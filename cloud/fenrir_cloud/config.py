@@ -52,6 +52,9 @@ class Settings:
     console_dir: Path = field(
         default_factory=lambda: Path(os.getenv("FENRIR_CONSOLE_DIR", str(Path(__file__).resolve().parents[2] / "console" / "dist")))
     )
+    model_dir: Path = field(
+        default_factory=lambda: Path(os.getenv("FENRIR_MODEL_DIR", str(Path(__file__).resolve().parents[2] / "ml" / "models")))
+    )
     rules_dir: Path = field(default_factory=lambda: Path(__file__).resolve().parent / "rules" / "sigma")
 
     # Mount the vendored Sentinel investigation API under /legacy/sentinel.

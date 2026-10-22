@@ -1,4 +1,7 @@
 #include "EventEnvelope.h"
+
+#include <Windows.h>
+
 #include <iomanip>
 #include <sstream>
 

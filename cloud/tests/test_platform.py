@@ -256,3 +256,20 @@ def test_audit_chain_detects_tampering(client, admin, tenant):
 def test_login_rejects_bad_password(client):
     assert client.post("/api/console/auth/login", json={"email": "admin@fenrir.local", "password": "nope"}).status_code == 401
     assert client.get("/api/console/devices").status_code == 401
+
+
+# --------------------------------------------------------------------------- static ML model
+
+
+def test_model_manifest_download_and_scoring(client, admin, device):
+    from pathlib import Path
+
+    manifest = client.get("/api/v1/agent/model/manifest").json()
+    assert manifest["version"].startswith("fenrir-pe-v") and len(manifest["sha256"]) == 64
+    blob = client.get("/api/v1/agent/model").content
+    assert blob[:4] == b"FGBT" and len(blob) == manifest["size"]
+    sample = (Path(__file__).resolve().parents[2] / "ml" / "testdata" / "hello64.exe").read_bytes()
+    result = client.post("/api/console/ml/score", content=sample, headers=admin).json()
+    assert result["pe"] is True and 0 <= result["score"] <= 1 and result["verdict"] in {"clean", "suspicious"}
+    text = client.post("/api/console/ml/score", content=b"just text", headers=admin).json()
+    assert text["pe"] is False

@@ -56,6 +56,8 @@ struct PolicySnapshot {
   std::vector<std::wstring> suppressionPathRoots;
   std::vector<std::wstring> suppressionSha256;
   std::vector<std::wstring> suppressionSignerNames;
+  // Raw "modules" object from Fenrir Cloud (UTF-8 JSON); parsed by ExtendedPolicy.
+  std::string modulesJson;
 };
 
 inline PolicySnapshot CreateDefaultPolicySnapshot() {

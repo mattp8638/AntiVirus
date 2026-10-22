@@ -105,6 +105,12 @@ add_library(antivirus-agent-core STATIC
   src/ServiceSnapshotCollector.cpp
   src/TelemetryQueueStore.cpp
   src/UpdaterService.cpp
+  src/WscCoexistenceManager.cpp
+  src/BehaviorRules.cpp
+  src/DeviceControl.cpp
+  src/ExtendedPolicy.cpp
+  src/MlStaticModel.cpp
+  src/ProcessGuard.cpp
   src/YaraScanner.cpp
   src/EventEnvelope.cpp
 )
@@ -418,3 +424,11 @@ if(ANTIVIRUS_ENABLE_BUILD_VALIDATION AND ANTIVIRUS_POWERSHELL_EXECUTABLE)
 elseif(ANTIVIRUS_ENABLE_BUILD_VALIDATION)
   message(STATUS "ANTIVIRUS_ENABLE_BUILD_VALIDATION is ON, but no PowerShell executable was found; validation target will not be created.")
 endif()
+
+# Portable unit tests and the ML inspection tool (also built on Linux in CI).
+add_executable(fenrir-mltest ../tools/mltestcli/src/MlTestCliMain.cpp src/MlStaticModel.cpp)
+target_include_directories(fenrir-mltest PRIVATE include)
+add_executable(fenrir-behavior-tests ../tests/BehaviorRulesTests.cpp src/BehaviorRules.cpp)
+target_include_directories(fenrir-behavior-tests PRIVATE include)
+add_executable(fenrir-policy-tests ../tests/PolicyAndDeviceControlTests.cpp src/ExtendedPolicy.cpp src/BehaviorRules.cpp src/DeviceControl.cpp)
+target_include_directories(fenrir-policy-tests PRIVATE include)

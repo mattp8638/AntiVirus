@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
+#include <iterator>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -21,6 +22,8 @@
 #include <system_error>
 
 #include "CryptoUtils.h"
+#include "ExtendedPolicy.h"
+#include "MlStaticModel.h"
 #include "ReputationLookup.h"
 #include "StringUtils.h"
 
@@ -902,6 +905,56 @@ std::vector<Rule> LoadExternalRules() {
   return cachedRules;
 }
 
+std::wstring MlSensitivityFor(const PolicySnapshot& policy) {
+  static std::mutex mutex;
+  static std::string cachedJson;
+  static std::wstring cachedSensitivity = L"balanced";
+  std::lock_guard lock(mutex);
+  if (policy.modulesJson != cachedJson) {
+    cachedJson = policy.modulesJson;
+    cachedSensitivity = policy.modulesJson.empty() ? L"balanced" : ExtendedPolicy::Parse(policy.modulesJson).mlSensitivity;
+  }
+  return cachedSensitivity;
+}
+
+// Adds a hit from the static ML model for portable executables. The model needs the whole file,
+// so it reads up to 64 MB independently of the 1 MB content window used by the rules.
+void AddMlHit(const FileData& file, const PolicySnapshot& policy, std::vector<Hit>& hits) {
+  const auto sensitivity = MlSensitivityFor(policy);
+  const auto modelPath = ml::DefaultModelPath();
+  if (!file.pe || sensitivity == L"off" || modelPath.empty() || file.sizeBytes > 64ull * 1024 * 1024) {
+    return;
+  }
+  const auto model = ml::LoadCached(modelPath);
+  if (!model) {
+    return;
+  }
+  std::vector<unsigned char> bytes = file.bytes;
+  if (file.readLimitHit) {
+    std::ifstream in(file.path, std::ios::binary);
+    bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  }
+  if (!ml::IsPortableExecutable(bytes)) {
+    return;
+  }
+  const auto score = model->Score(ml::ExtractFeatures(bytes));
+  const auto cut = model->ThresholdFor(sensitivity);
+  const auto& thresholds = model->Thresholds();
+  int weight = 0;
+  if (score >= thresholds.fpr001) {
+    weight = 92;
+  } else if (cut && score >= *cut) {
+    weight = 70;
+  } else if (score >= thresholds.fpr1) {
+    weight = 30;
+  }
+  if (weight > 0) {
+    AddHit(hits, Hit{L"ML_STATIC_PE", L"The static machine-learning model classified this executable as malicious (score " +
+                                          std::to_wstring(static_cast<int>(score * 100)) + L"%).",
+                     L"TA0002", L"T1204.002", weight});
+  }
+}
+
 std::optional<FileData> LoadFileData(const std::filesystem::path& path) {
   std::error_code error;
   if (!std::filesystem::exists(path, error) || !std::filesystem::is_regular_file(path, error)) {
@@ -1347,6 +1400,9 @@ std::optional<ScanFinding> ScanFile(const std::filesystem::path& path, const Pol
   }
 
   AddRuleHits(LoadExternalRules(), file, policy, hits, trustedSystemBinary);
+  if (!trustedSystemBinary) {
+    AddMlHit(file, policy, hits);
+  }
 
   int maliciousPressure = 0;
   int benignPressure = 0;

@@ -1,5 +1,7 @@
 #include "AgentService.h"
 
+#include "MlStaticModel.h"
+
 #include <WtsApi32.h>
 #include <lm.h>
 #include <sddl.h>
@@ -991,10 +993,15 @@ int AgentService::Run(const AgentRunMode mode) {
     commandJournalStore_ = std::make_unique<CommandJournalStore>(config_.runtimeDatabasePath);
     telemetryQueueStore_ = std::make_unique<TelemetryQueueStore>(config_.runtimeDatabasePath, config_.telemetryQueuePath);
     realtimeProtectionBroker_ = std::make_unique<RealtimeProtectionBroker>(config_);
+    processGuard_ = std::make_unique<ProcessGuard>(config_.installRootPath, config_.runtimeDatabasePath.parent_path());
+    ml::SetDefaultModelPath(processGuard_->ModelPath().wstring());
     processEtwSensor_ = std::make_unique<ProcessEtwSensor>(config_);
+    processEtwSensor_->SetProcessStartHandler(
+        [guard = processGuard_.get()](const EtwProcessContext& process) { return guard->OnProcessStart(process); });
     networkIsolationManager_ = std::make_unique<NetworkIsolationManager>(config_);
 
     LoadLocalPolicyCache();
+    ApplyProtectionPolicy();
     realtimeProtectionBroker_->SetPolicy(policy_);
     realtimeProtectionBroker_->SetDeviceId(state_.deviceId);
     processEtwSensor_->SetDeviceId(state_.deviceId);
@@ -1472,6 +1479,7 @@ void AgentService::SyncUpdateOnly(const int cycle) {
     const auto signatureRuntimeDirectory = config_.updateRootPath / L"signatures";
     const auto signatureStatePath = signatureRuntimeDirectory / L"delta-sync-state.ini";
     if (ShouldRunSignatureIntelSync(signatureStatePath, kSignatureIntelSyncIntervalMinutes)) {
+      SyncMlModel(cycle);
       auto signatureSyncState = LoadSimpleStateFile(signatureStatePath);
       const auto currentSignatureVersion = signatureSyncState[L"signatureVersion"];
       const auto currentYaraVersion = signatureSyncState[L"yaraVersion"];
@@ -1568,6 +1576,7 @@ void AgentService::EnsureEnrollment() {
   state_.lastEnrollmentAt = enrollment.issuedAt;
   state_.policy = enrollment.policy;
   policy_ = enrollment.policy;
+  ApplyProtectionPolicy();
 
   if (realtimeProtectionBroker_) {
     realtimeProtectionBroker_->SetDeviceId(state_.deviceId);
@@ -1635,6 +1644,7 @@ void AgentService::RefreshPolicy(const int cycle) {
   state_.lastPolicySyncAt = policyCheckIn.retrievedAt;
   state_.policy = policyCheckIn.policy;
   policy_ = policyCheckIn.policy;
+  ApplyProtectionPolicy();
   if (realtimeProtectionBroker_) {
     realtimeProtectionBroker_->SetPolicy(policy_);
   }
@@ -2196,6 +2206,65 @@ void AgentService::PersistState() {
 
   stateStore_->Save(state_);
   telemetryQueueStore_->SavePending(pendingTelemetry_);
+}
+
+void AgentService::ApplyProtectionPolicy() {
+  if (!processGuard_) {
+    return;
+  }
+  processGuard_->UpdatePolicy(policy_);
+  for (const auto& record : processGuard_->ApplyDeviceControl()) {
+    QueueTelemetryEvent(record.eventType, record.source, record.summary, record.payloadJson);
+  }
+}
+
+void AgentService::SyncMlModel(const int cycle) {
+  if (!processGuard_ || state_.deviceId.empty()) {
+    return;
+  }
+  const auto modelPath = processGuard_->ModelPath();
+  const auto versionPath = modelPath.parent_path() / L"fenrir-pe.version";
+  try {
+    const auto manifest = controlPlaneClient_->FetchMlModelManifest(state_);
+    if (manifest.version.empty()) {
+      return;
+    }
+    std::wstring installedVersion;
+    {
+      std::wifstream in(versionPath);
+      std::getline(in, installedVersion);
+    }
+    std::error_code error;
+    if (installedVersion == manifest.version && std::filesystem::exists(modelPath, error)) {
+      return;
+    }
+    const auto bytes = controlPlaneClient_->DownloadMlModel(state_);
+    const auto digest = ComputeBufferSha256(bytes);
+    if (!manifest.sha256.empty() && _wcsicmp(digest.c_str(), manifest.sha256.c_str()) != 0) {
+      throw std::runtime_error("model checksum mismatch");
+    }
+    std::string loadError;
+    if (!ml::GbdtModel::Load(bytes, &loadError)) {
+      throw std::runtime_error("downloaded model is invalid: " + loadError);
+    }
+    std::filesystem::create_directories(modelPath.parent_path(), error);
+    const auto staging = modelPath.wstring() + L".download";
+    {
+      std::ofstream out(std::filesystem::path(staging), std::ios::binary | std::ios::trunc);
+      out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    }
+    std::filesystem::rename(staging, modelPath, error);
+    if (error) {
+      throw std::runtime_error("could not install model: " + error.message());
+    }
+    std::wofstream(versionPath, std::ios::trunc) << manifest.version;
+    QueueTelemetryEvent(L"ml.model.updated", L"ml-updater", L"The endpoint installed a new static ML model.",
+                        BuildCyclePayload(cycle, L"\"version\":\"" + Utf8ToWide(EscapeJsonString(manifest.version)) +
+                                                     L"\",\"bytes\":" + std::to_wstring(bytes.size())));
+  } catch (const std::exception& error) {
+    QueueTelemetryEvent(L"ml.model.update_failed", L"ml-updater", L"The endpoint could not update the static ML model.",
+                        BuildCyclePayload(cycle, L"\"error\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(error.what()))) + L"\""));
+  }
 }
 
 void AgentService::LoadLocalPolicyCache() {

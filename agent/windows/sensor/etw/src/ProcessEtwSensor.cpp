@@ -812,6 +812,21 @@ void ProcessEtwSensor::HandleEventRecord(const EVENT_RECORD& eventRecord) {
         .occurredAt = context.startedAt,
         .payloadJson = BuildProcessStartPayload(context, eventRecord.EventHeader.EventDescriptor.Version),
     });
+
+    ProcessStartHandler handler;
+    {
+      const std::scoped_lock lock(stateMutex_);
+      handler = processStartHandler_;
+    }
+    if (handler) {
+      try {
+        for (const auto& record : handler(context)) {
+          QueueTelemetry(record);
+        }
+      } catch (...) {
+        // Enforcement must never take down the sensor thread.
+      }
+    }
     return;
   }
 
@@ -894,6 +909,11 @@ void ProcessEtwSensor::HandleEventRecord(const EVENT_RECORD& eventRecord) {
       .payloadJson = BuildImageLoadPayload(processContext, modulePath, signer, imageBase, imageSize,
                                            eventRecord.EventHeader.EventDescriptor.Version),
   });
+}
+
+void ProcessEtwSensor::SetProcessStartHandler(ProcessStartHandler handler) {
+  const std::scoped_lock lock(stateMutex_);
+  processStartHandler_ = std::move(handler);
 }
 
 void ProcessEtwSensor::QueueTelemetry(const TelemetryRecord& record) {

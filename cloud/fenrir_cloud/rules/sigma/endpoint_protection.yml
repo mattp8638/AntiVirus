@@ -1,0 +1,41 @@
+title: Attack surface reduction rule blocked a process
+id: fenrir-protection-asr-block
+description: The endpoint terminated a process that matched an attack surface reduction or ransomware tamper rule.
+tags: [attack.execution, attack.t1204]
+logsource: {category: endpoint_protection}
+detection:
+  selection:
+    EventType: ['asr.rule.blocked', 'asr.rule.block_failed']
+  condition: selection
+level: high
+---
+title: Attack surface reduction rule audit hit
+id: fenrir-protection-asr-audit
+description: A rule in audit mode matched. Review before switching the rule to block.
+tags: [attack.execution]
+logsource: {category: endpoint_protection}
+detection:
+  selection:
+    EventType: 'asr.rule.audited'
+  condition: selection
+level: low
+---
+title: Application control blocked a program
+id: fenrir-protection-appcontrol
+tags: [attack.execution, attack.t1204]
+logsource: {category: endpoint_protection}
+detection:
+  selection:
+    EventType: ['appcontrol.blocked', 'appcontrol.block_failed']
+  condition: selection
+level: medium
+---
+title: Device control could not be applied
+id: fenrir-protection-devicecontrol-failed
+tags: [attack.defense_evasion, attack.t1562]
+logsource: {category: endpoint_protection}
+detection:
+  selection:
+    EventType: 'devicecontrol.apply_failed'
+  condition: selection
+level: medium
