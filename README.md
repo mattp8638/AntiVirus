@@ -45,7 +45,7 @@ Put it behind TLS (Caddy, nginx, Cloudflare Tunnel). Agents and DoH need HTTPS.
 1. In the console, open **Deploy agents** and create an enrollment token for a customer.
 2. Install the agent:
    - **Linux:** `curl -fsSL https://<server>/install/linux.sh | sudo FENRIR_SERVER=https://<server> FENRIR_TOKEN=<token> sh`, or install the `.deb` from `dist/packages/`.
-   - **Windows:** build `FenrirSetup.exe` (`agent/windows/installer`). Set `HKLM\SOFTWARE\FenrirAgent\ControlPlaneBaseUrl` to your server. Devices enrol into **Unassigned**; approve them and move them to the right customer from the Devices page.
+   - **Windows:** build `fenrir-agent-service.exe` and `fenrir-remote.exe` (see `agent/windows`), copy both to a folder on the PC such as `C:\Fenrir`, then run from an Administrator prompt in that folder: `.\fenrir-agent-service.exe --install --server https://<server> --enroll-token <token>` and `Start-Service FenrirAgent`. Without a token the device enrols into **Unassigned** for you to approve.
    - **macOS:** the Swift agent in `agent/macos` (build on a Mac).
 
 ## Tests

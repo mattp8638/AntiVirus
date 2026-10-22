@@ -63,6 +63,13 @@ void ApplyLocalRemediation(const AgentConfig& config, std::vector<ScanFinding>& 
       continue;
     }
 
+    if (IsProtectedSystemLocation(finding.path, config.installRootPath)) {
+      finding.verdict.reasons.push_back(
+          {L"PROTECTED_LOCATION", L"Fenrir left this file in place because it is in a Windows, Program Files or "
+                                  L"Fenrir folder. Review it and quarantine it from the console if it is malicious."});
+      continue;
+    }
+
     if (RequiresProcessContainment(finding)) {
       const auto containment = remediationEngine.TerminateProcessesForPath(finding.path, true);
       if (containment.processesTerminated > 0) {

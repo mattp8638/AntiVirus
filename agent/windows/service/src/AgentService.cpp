@@ -1125,11 +1125,21 @@ void AgentService::RunSyncLoop(const AgentRunMode mode) {
     DrainProcessTelemetry();
     DrainRealtimeProtectionTelemetry();
     DrainNetworkTelemetry();
+    if (config_.managedMode) {
+      // Check in before the scans: a first full-drive scan can take hours.
+      SyncWithControlPlane(cycle);
+      PollAndExecuteCommands(cycle);
+      FlushTelemetryQueue();
+      PublishHeartbeat(cycle);
+    }
     SyncUpdateOnly(cycle);
     RunAutomatedRiskAssessments(cycle);
     DrainProcessTelemetry();
     DrainRealtimeProtectionTelemetry();
     DrainNetworkTelemetry();
+    if (config_.managedMode) {
+      FlushTelemetryQueue();
+    }
     PersistState();
 
     if (mode == AgentRunMode::Console && cycle >= configuredIterations) {
@@ -1189,6 +1199,22 @@ void AgentService::RunScheduledFullDriveScan(const int cycle) {
     if (!ShouldRunScheduledTask(database, kScheduledFullDriveScanSource,
                                 config_.scheduledFullDriveScanIntervalMinutes)) {
       return;
+    }
+    // A fresh install waits a day before its first full-drive scan (it can take hours and holds up
+    // commands and remote sessions); quick scans and the live sweep still run straight away.
+    if (!FindLatestScanSessionTimestamp(database, kScheduledFullDriveScanSource).has_value()) {
+      WIN32_FILE_ATTRIBUTE_DATA attributes{};
+      if (GetFileAttributesExW(config_.runtimeDatabasePath.c_str(), GetFileExInfoStandard, &attributes) != FALSE) {
+        FILETIME now{};
+        GetSystemTimeAsFileTime(&now);
+        const auto toTicks = [](const FILETIME& value) {
+          return (static_cast<unsigned long long>(value.dwHighDateTime) << 32) | value.dwLowDateTime;
+        };
+        constexpr unsigned long long kTicksPerDay = 24ULL * 60 * 60 * 10000000ULL;
+        if (toTicks(now) - toTicks(attributes.ftCreationTime) < kTicksPerDay) {
+          return;
+        }
+      }
     }
 
     QueueTelemetryEvent(L"scan.scheduled.started", L"agent-service",
@@ -1603,7 +1629,7 @@ void AgentService::EnsureEnrollment() {
     return;
   }
 
-  const auto enrollment = controlPlaneClient_->Enroll(state_);
+  const auto enrollment = controlPlaneClient_->Enroll(state_, config_.enrollmentToken);
   state_.deviceId = enrollment.deviceId;
   state_.commandChannelUrl = enrollment.commandChannelUrl;
   state_.lastEnrollmentAt = enrollment.issuedAt;
@@ -2552,7 +2578,9 @@ void AgentService::LoadLocalPolicyCache() {
 }
 
 void AgentService::StartTelemetrySpool() const {
-  const auto deviceLabel = state_.deviceId.empty() ? std::wstring(L"(unlicensed update-only mode)") : state_.deviceId;
+  const auto deviceLabel = state_.deviceId.empty()
+                               ? std::wstring(config_.managedMode ? L"(not enrolled yet)" : L"(unlicensed update-only mode)")
+                               : state_.deviceId;
   std::wcout << L"Telemetry spool ready for device " << deviceLabel << L" with " << pendingTelemetry_.size()
              << L" queued event(s)." << std::endl;
 }
@@ -2561,7 +2589,12 @@ void AgentService::StartCommandLoop() const {
   std::wcout << L"Update feed source: " << config_.controlPlaneBaseUrl << L"/api/v1/update-check" << std::endl;
   std::wcout << L"Signature feed source: " << config_.controlPlaneBaseUrl << L"/api/v1/agent/bundle" << std::endl;
 
-  std::wcout << L"External reporting is disabled; agent runs in update-only sync mode." << std::endl;
+  if (config_.managedMode) {
+    std::wcout << L"Managed mode: enrolling with " << config_.controlPlaneBaseUrl
+               << L" for heartbeats, telemetry, commands and remote access." << std::endl;
+  } else {
+    std::wcout << L"External reporting is disabled; agent runs in update-only sync mode." << std::endl;
+  }
 
   std::wcout << L"Real-time protection broker targeting port " << config_.realtimeProtectionPortName << std::endl;
   std::wcout << L"ETW process telemetry sensor " << (processEtwSensor_ && processEtwSensor_->IsActive() ? L"active"

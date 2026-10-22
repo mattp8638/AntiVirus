@@ -10,6 +10,7 @@
 #include "AgentService.h"
 #include "AgentConfig.h"
 #include "HardeningManager.h"
+#include "LocalStateStore.h"
 #include "RuntimeTrustValidator.h"
 #include "SelfTestRunner.h"
 #include "StringUtils.h"
@@ -512,9 +513,42 @@ int RunConsoleMode() {
   return exitCode;
 }
 
+// --server and --enroll-token come from the console's Deploy agents page.
+bool SaveCloudSettingsFromArguments(int argc, wchar_t* argv[]) {
+  const auto server = GetArgumentValue(argc, argv, L"--server");
+  const auto enrollToken = GetArgumentValue(argc, argv, L"--enroll-token");
+  if (server.empty() && enrollToken.empty()) {
+    return true;
+  }
+  if (!antivirus::agent::SaveCloudEnrollmentSettings(server, enrollToken)) {
+    std::wcerr << L"Could not save the Fenrir server settings. Run this from an Administrator prompt." << std::endl;
+    return false;
+  }
+  // A new server or token means a fresh enrollment: drop any identity from an earlier one.
+  const auto config = antivirus::agent::LoadAgentConfig();
+  std::error_code existsError;
+  if (std::filesystem::exists(config.runtimeDatabasePath, existsError)) {
+    try {
+      const antivirus::agent::LocalStateStore stateStore(config.runtimeDatabasePath, config.stateFilePath);
+      auto state = stateStore.LoadOrCreate();
+      if (!state.deviceId.empty()) {
+        state.deviceId.clear();
+        state.commandChannelUrl.clear();
+        state.lastEnrollmentAt.clear();
+        stateStore.Save(state);
+      }
+    } catch (const std::exception&) {
+    }
+  }
+  std::wcout << L"Fenrir server settings saved"
+             << (server.empty() ? std::wstring() : L" (server " + server + L")") << L"." << std::endl;
+  return true;
+}
+
 void PrintUsage() {
   std::wcout << L"Usage: fenrir-agent-service.exe [--console|--install [--elam-driver <path>]|--repair [--elam-driver <path>]|--upgrade <manifest>|--rollback-update <transaction>|--uninstall [--token <token>]|--wsc-status|--self-test|--register-amsi-provider|--unregister-amsi-provider|--help]" << std::endl;
   std::wcout << L"  --console   Run the agent loop interactively instead of under the SCM." << std::endl;
+  std::wcout << L"  --server <url> --enroll-token <token>  With --install or --console: connect this PC to your Fenrir cloud." << std::endl;
   std::wcout << L"  --install   Register the agent as an auto-start Windows service and apply hardening." << std::endl;
   std::wcout << L"  --repair    Reapply service hardening, AMSI registration, protected runtime settings, and runtime trust markers." << std::endl;
   std::wcout << L"  --upgrade   Stop the service, apply a verified update manifest, and restart the service." << std::endl;
@@ -542,10 +576,16 @@ int wmain(int argc, wchar_t* argv[]) {
   if (argc > 1) {
     const std::wstring command = argv[1];
     if (command == L"--console") {
+      if (!SaveCloudSettingsFromArguments(argc, argv)) {
+        return 1;
+      }
       return RunConsoleMode();
     }
 
     if (command == L"--install") {
+      if (!SaveCloudSettingsFromArguments(argc, argv)) {
+        return 1;
+      }
       return InstallOrRepairService(false, token) ? 0 : 1;
     }
 

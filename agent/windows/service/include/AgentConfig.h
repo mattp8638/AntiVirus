@@ -11,6 +11,10 @@ namespace antivirus::agent {
 
 struct AgentConfig {
   std::wstring controlPlaneBaseUrl{L"https://api.fenrir-security.co.uk"};
+  // Managed mode enrolls with the Fenrir cloud, sends heartbeats and telemetry, and runs commands.
+  // Off by default (standalone, update-only); turned on when a cloud URL is configured.
+  bool managedMode{false};
+  std::wstring enrollmentToken{};
   std::wstring signatureFeedToken{};
   std::filesystem::path installRootPath{};
   std::filesystem::path runtimeDatabasePath{std::filesystem::path(L"runtime") / L"agent-runtime.db"};
@@ -92,6 +96,8 @@ struct ScanScheduleSettings {
 };
 
 AgentConfig LoadAgentConfig();
+// Saves the cloud URL and enrollment token (HKLM) and turns managed mode on. Needs Administrator.
+bool SaveCloudEnrollmentSettings(const std::wstring& serverUrl, const std::wstring& enrollmentToken);
 AgentConfig LoadAgentConfigForModule(HMODULE moduleHandle);
 RuntimePathValidation ValidateRuntimePaths(const AgentConfig& config);
 std::vector<std::filesystem::path> LoadConfiguredScanExclusions();

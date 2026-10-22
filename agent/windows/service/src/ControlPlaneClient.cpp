@@ -945,11 +945,14 @@ std::vector<std::wstring> ParseYaraRules(const std::string& json) {
 
 ControlPlaneClient::ControlPlaneClient(std::wstring baseUrl) : baseUrl_(NormalizeControlPlaneBaseUrl(std::move(baseUrl))) {}
 
-EnrollmentResult ControlPlaneClient::Enroll(const AgentState& state) const {
+EnrollmentResult ControlPlaneClient::Enroll(const AgentState& state, const std::wstring& enrollmentToken) const {
   std::ostringstream body;
   body << "{"
        << "\"hostname\":\"" << EscapeJsonString(state.hostname) << "\","
        << "\"osVersion\":\"" << EscapeJsonString(state.osVersion) << "\","
+       << "\"platform\":\"windows\","
+       << "\"agentVersion\":\"" << EscapeJsonString(state.agentVersion) << "\","
+       << "\"enrollmentToken\":\"" << EscapeJsonString(enrollmentToken) << "\","
        << "\"serialNumber\":\"" << EscapeJsonString(state.serialNumber) << "\""
        << "}";
 
