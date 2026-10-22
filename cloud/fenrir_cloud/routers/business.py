@@ -37,7 +37,8 @@ def _get(db: Session, principal: Principal, model, obj_id: str):
 CRM_MODELS = {
     "contacts": (Contact, {"account_tenant_id", "name", "email", "phone", "title", "is_primary", "notes"}),
     "leads": (Lead, {"company", "contact", "email", "phone", "stage", "value", "seats", "source", "owner", "notes"}),
-    "projects": (Project, {"account_tenant_id", "name", "status", "progress", "budget", "due_date", "tasks"}),
+    "projects": (Project, {"account_tenant_id", "name", "status", "progress", "budget", "due_date", "tasks", "manager", "billing_method",
+                           "estimated_hours", "start_date", "phases", "description"}),
 }
 
 

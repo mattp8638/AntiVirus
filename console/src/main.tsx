@@ -1,6 +1,6 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, lazy, Suspense, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter, NavLink, Navigate, Route, Routes } from "react-router-dom";
+import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AppProvider, useApp } from "./app-context";
 import { TenantSelect } from "./components/ui";
 import "./styles.css";
@@ -22,8 +22,22 @@ import Vulnerabilities from "./pages/Vulnerabilities";
 import AttackSurface from "./pages/AttackSurface";
 import Compliance from "./pages/Compliance";
 import Crm from "./pages/Crm";
-import ServiceDesk from "./pages/ServiceDesk";
 import Billing from "./pages/Billing";
+import Portal from "./pages/Portal";
+
+const RemoteViewer = lazy(() => import("./pages/RemoteViewer"));
+import Scripts from "./pages/rmm/Scripts";
+import Jobs from "./pages/rmm/Jobs";
+import Monitoring from "./pages/rmm/Monitoring";
+import Patching from "./pages/rmm/Patching";
+import Software from "./pages/rmm/Software";
+import ServiceBoard from "./pages/psa/ServiceBoard";
+import TicketDetail from "./pages/psa/TicketDetail";
+import Time from "./pages/psa/Time";
+import Dispatch from "./pages/psa/Dispatch";
+import Companies, { CompanyDetail, Configurations } from "./pages/psa/Companies";
+import Catalog, { Knowledge } from "./pages/psa/Catalog";
+import PsaSettings, { ProjectDetail } from "./pages/psa/PsaSettings";
 import Reports from "./pages/Reports";
 import Settings from "./pages/Settings";
 import Deploy from "./pages/Deploy";
@@ -31,47 +45,53 @@ import Deploy from "./pages/Deploy";
 const NAV: { group: string; items: { to: string; label: string; icon: string }[] }[] = [
   { group: "Overview", items: [{ to: "/", label: "Dashboard", icon: "◎" }, { to: "/reports", label: "Reports", icon: "▤" }] },
   {
-    group: "Endpoint protection",
+    group: "Devices & RMM",
     items: [
       { to: "/devices", label: "Devices", icon: "▣" },
-      { to: "/policies", label: "Policies", icon: "⚙" },
+      { to: "/monitoring", label: "Monitoring", icon: "♥" },
+      { to: "/patching", label: "Patching", icon: "⟳" },
+      { to: "/scripts", label: "Scripts", icon: "❯" },
+      { to: "/automation", label: "Automation", icon: "⏱" },
+      { to: "/software", label: "Software", icon: "⬇" },
       { to: "/deploy", label: "Deploy agents", icon: "⇩" },
     ],
   },
   {
-    group: "Detection & response",
+    group: "Security",
     items: [
       { to: "/incidents", label: "Incidents", icon: "⚑" },
       { to: "/alerts", label: "Alerts", icon: "△" },
+      { to: "/policies", label: "Policies", icon: "⚙" },
       { to: "/hunt", label: "Threat hunting", icon: "⌕" },
       { to: "/rules", label: "Detection rules", icon: "≡" },
-      { to: "/automations", label: "Automations", icon: "↯" },
-    ],
-  },
-  {
-    group: "Network & intel",
-    items: [
+      { to: "/automations", label: "Response rules", icon: "↯" },
       { to: "/dns", label: "DNS protection", icon: "◈" },
       { to: "/intel", label: "Threat intel", icon: "✦" },
-    ],
-  },
-  {
-    group: "Exposure",
-    items: [
       { to: "/vulnerabilities", label: "Vulnerabilities", icon: "⚠" },
       { to: "/attack-surface", label: "Attack surface", icon: "◍" },
       { to: "/compliance", label: "Compliance", icon: "✓" },
     ],
   },
   {
-    group: "Business",
+    group: "Service (PSA)",
     items: [
-      { to: "/crm", label: "CRM", icon: "☺" },
-      { to: "/service-desk", label: "Service desk", icon: "✉" },
-      { to: "/billing", label: "Billing", icon: "£" },
+      { to: "/service-board", label: "Service board", icon: "✉" },
+      { to: "/dispatch", label: "Dispatch", icon: "▦" },
+      { to: "/time", label: "Time & timesheets", icon: "◷" },
+      { to: "/companies", label: "Companies", icon: "⌂" },
+      { to: "/configurations", label: "Configurations", icon: "⚿" },
+      { to: "/knowledge", label: "Knowledge base", icon: "❏" },
     ],
   },
-  { group: "Administration", items: [{ to: "/settings", label: "Settings", icon: "⚒" }] },
+  {
+    group: "Sales & finance",
+    items: [
+      { to: "/crm", label: "CRM & projects", icon: "☺" },
+      { to: "/quotes", label: "Products & quotes", icon: "❖" },
+      { to: "/billing", label: "Agreements & billing", icon: "£" },
+    ],
+  },
+  { group: "Administration", items: [{ to: "/service-settings", label: "Service settings", icon: "⚙" }, { to: "/settings", label: "Settings", icon: "⚒" }] },
 ];
 
 function Login() {
@@ -156,7 +176,23 @@ function Shell() {
             <Route path="/attack-surface" element={<AttackSurface />} />
             <Route path="/compliance" element={<Compliance />} />
             <Route path="/crm" element={<Crm />} />
-            <Route path="/service-desk" element={<ServiceDesk />} />
+            <Route path="/service-desk" element={<Navigate to="/service-board" replace />} />
+            <Route path="/service-board" element={<ServiceBoard />} />
+            <Route path="/tickets/:id" element={<TicketDetail />} />
+            <Route path="/dispatch" element={<Dispatch />} />
+            <Route path="/time" element={<Time />} />
+            <Route path="/companies" element={<Companies />} />
+            <Route path="/companies/:id" element={<CompanyDetail />} />
+            <Route path="/configurations" element={<Configurations />} />
+            <Route path="/knowledge" element={<Knowledge />} />
+            <Route path="/quotes" element={<Catalog />} />
+            <Route path="/projects/:id" element={<ProjectDetail />} />
+            <Route path="/service-settings" element={<PsaSettings />} />
+            <Route path="/monitoring" element={<Monitoring />} />
+            <Route path="/patching" element={<Patching />} />
+            <Route path="/scripts" element={<Scripts />} />
+            <Route path="/automation" element={<Jobs />} />
+            <Route path="/software" element={<Software />} />
             <Route path="/billing" element={<Billing />} />
             <Route path="/reports" element={<Reports />} />
             <Route path="/settings" element={<Settings />} />
@@ -170,8 +206,15 @@ function Shell() {
 
 function Root() {
   const { me, loading } = useApp();
+  const location = useLocation();
   if (loading) return <div className="empty">Loading…</div>;
-  return me ? <Shell /> : <Login />;
+  if (!me) return <Login />;
+  // The remote viewer is a pop-out window without the console chrome.
+  if (location.pathname.startsWith("/remote/")) {
+    return <Suspense fallback={<div className="empty">Opening session…</div>}><Routes><Route path="/remote/:id" element={<RemoteViewer />} /></Routes></Suspense>;
+  }
+  if (me.user.role === "client" || location.pathname.startsWith("/portal")) return <Portal />;
+  return <Shell />;
 }
 
 createRoot(document.getElementById("root")!).render(

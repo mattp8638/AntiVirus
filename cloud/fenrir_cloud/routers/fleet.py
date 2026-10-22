@@ -22,9 +22,16 @@ router = APIRouter(prefix="/api/console", tags=["Fleet"])
 ONLINE_WINDOW = timedelta(minutes=10)
 
 
-def _device_view(device: Device) -> dict:
-    data = to_dict(device, exclude={"dns_token"})
+def _device_view(device: Device, summary: bool = False) -> dict:
+    data = to_dict(device, exclude={"dns_token", "inventory"} if summary else {"dns_token"})
     data["online"] = bool(device.last_seen_at and device.last_seen_at >= utcnow() - ONLINE_WINDOW)
+    if summary:
+        metrics = device.metrics or {}
+        disks = metrics.get("disks") or []
+        data["metrics"] = {k: metrics[k] for k in ("cpuPercent", "memoryPercent", "loggedOnUser", "rebootPending", "uptimeSeconds",
+                                                   "reportedAt", "patchScanAt") if k in metrics}
+        if disks:
+            data["metrics"]["diskFreePercent"] = min(d.get("freePercent", 100) for d in disks)
     return data
 
 
@@ -69,7 +76,7 @@ def list_devices(
     elif status == "at-risk":
         query = query.where(Device.risk_score >= 40)
     rows = db.execute(query.order_by(Device.risk_score.desc(), Device.hostname).limit(2000)).scalars().all()
-    return [_device_view(d) for d in rows]
+    return [_device_view(d, summary=True) for d in rows]
 
 
 @router.get("/devices/{device_id}")

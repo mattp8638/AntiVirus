@@ -1,8 +1,10 @@
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ago, api, fmtTime } from "../api";
 import { useApp } from "../app-context";
 import { ErrorNote, Modal, PageHead, Pill, Sev, Table, Tabs, useAction, useData } from "../components/ui";
+import { ConnectButtons, JobDetail, JobStatus, pct, Sparkline } from "../components/rmm";
+import { RunScript } from "./rmm/Scripts";
 
 export default function DeviceDetail() {
   const { id } = useParams();
@@ -12,6 +14,8 @@ export default function DeviceDetail() {
   const { data: groups } = useData<any[]>("groups", { tenant_id: data?.device.tenantId }, [data?.device.tenantId]);
   const [tab, setTab] = useState("Overview");
   const [action, setAction] = useState<string | null>(null);
+  const [scriptPicker, setScriptPicker] = useState(false);
+  const [jobId, setJobId] = useState<string | null>(null);
   const { run } = useAction();
 
   if (error) return <ErrorNote error={error} />;
@@ -29,12 +33,18 @@ export default function DeviceDetail() {
                 subtitle={<>{d.osVersion} · {tenantName(d.tenantId)} · <span className={`dot ${d.online ? "on" : "off"}`} /> {d.online ? "online" : `last seen ${ago(d.lastSeenAt)}`}</>}
                 actions={can("respond") && <>
                   {!d.approved && can("configure") && <button className="primary" onClick={() => patch({ approved: true }, "Device approved")}>Approve</button>}
+                  <ConnectButtons device={d} />
+                  {can("configure") && <button onClick={() => setScriptPicker(true)}>Run script</button>}
                   <button onClick={() => setAction("scan.quick")}>Scan</button>
                   {d.isolated ? <button onClick={() => setAction("device.release")}>Release isolation</button>
                               : <button className="danger" onClick={() => setAction("device.isolate")}>Isolate</button>}
                   <button onClick={() => setAction("")}>More actions…</button>
                 </>} />
-      <Tabs tabs={["Overview", "Effective policy", "Alerts", "Actions", "Software", "Vulnerabilities"]} active={tab} onChange={setTab} />
+      <Tabs tabs={["Overview", "Health", "Patches", "Scripts & jobs", "Remote sessions", "Effective policy", "Alerts", "Actions", "Software", "Vulnerabilities"]} active={tab} onChange={setTab} />
+      {tab === "Health" && <HealthTab deviceId={d.id} />}
+      {tab === "Patches" && <PatchesTab device={d} />}
+      {tab === "Scripts & jobs" && <JobsTab deviceId={d.id} onOpen={setJobId} />}
+      {tab === "Remote sessions" && <SessionsTab deviceId={d.id} />}
 
       {tab === "Overview" && (
         <div className="grid k2">
@@ -127,6 +137,8 @@ export default function DeviceDetail() {
       )}
 
       {action !== null && <CommandModal device={d} initial={action} onClose={() => { setAction(null); reload(); }} />}
+      {scriptPicker && <ScriptPicker device={d} onClose={() => setScriptPicker(false)} onStarted={(id) => { setScriptPicker(false); setJobId(id); setTab("Scripts & jobs"); }} />}
+      {jobId && <JobDetail jobId={jobId} onClose={() => setJobId(null)} />}
     </>
   );
 }
@@ -195,6 +207,108 @@ export function CommandModal({ device, initial, onClose, incidentId }: { device:
       {spec?.description && <p className="muted">{spec.description}</p>}
       {isKill && !pid && <p style={{ color: "#fde68a" }}>No process ID: every running copy of this program on the device will be killed.</p>}
       {spec?.destructive && <p style={{ color: "#fecaca" }}>This action changes the device and cannot be undone automatically.</p>}
+    </Modal>
+  );
+}
+
+
+function HealthTab({ deviceId }: { deviceId: string }) {
+  const { data } = useData<any>(`rmm/devices/${deviceId}/metrics`, { hours: 24 });
+  if (!data) return <div className="empty">Loading…</div>;
+  const c = data.current || {};
+  const series = data.series || [];
+  return (
+    <div className="grid k2">
+      <div className="card">
+        <h3>Now</h3>
+        {!c.reportedAt ? <p className="muted">This agent has not reported health metrics yet (needs agent 1.1 or later).</p> : (
+          <dl className="kv">
+            <dt>CPU</dt><dd>{pct(c.cpuPercent)}</dd>
+            <dt>Memory</dt><dd>{pct(c.memoryPercent)} of {c.memoryTotalGb ? `${Math.round(c.memoryTotalGb)} GB` : "?"}</dd>
+            {(c.disks || []).map((disk: any) => <Fragment key={disk.mount}><dt>Disk {disk.mount}</dt><dd>{disk.freeGb.toFixed(1)} GB free of {disk.totalGb.toFixed(0)} GB ({pct(disk.freePercent)})</dd></Fragment>)}
+            <dt>Signed in</dt><dd>{c.loggedOnUser || "nobody"}</dd>
+            <dt>Up since</dt><dd>{fmtTime(c.lastBootAt)} ({c.uptimeSeconds ? `${(c.uptimeSeconds / 86400).toFixed(1)} days` : "?"})</dd>
+            <dt>Restart pending</dt><dd>{c.rebootPending ? <Pill value="yes" tone="warn" /> : "No"}</dd>
+            <dt>Stopped services</dt><dd className="small">{(c.stoppedServices || []).join(", ") || "None"}</dd>
+            <dt>Hardware</dt><dd>{[c.manufacturer, c.model].filter(Boolean).join(" ") || "—"}</dd>
+            <dt>Reported</dt><dd>{ago(c.reportedAt)}</dd>
+          </dl>
+        )}
+      </div>
+      <div className="card">
+        <h3>Last 24 hours</h3>
+        <div className="small muted">CPU %</div><Sparkline points={series.map((p: any) => p.cpu)} color="#38bdf8" />
+        <div className="small muted" style={{ marginTop: 8 }}>Memory %</div><Sparkline points={series.map((p: any) => p.memory)} color="#a855f7" />
+        <div className="small muted" style={{ marginTop: 8 }}>Lowest disk free %</div><Sparkline points={series.map((p: any) => p.diskFree)} color="#22c55e" />
+        <h3 style={{ marginTop: 14 }}>Monitors</h3>
+        {(data.monitors || []).length === 0 ? <p className="muted small">No monitor has evaluated this device yet.</p> :
+          data.monitors.map((m: any, i: number) => <div key={i} className="row small"><Pill value={m.triggered ? "triggered" : "ok"} tone={m.triggered ? "bad" : "good"} /> {m.condition} <span className="muted">{m.message}</span></div>)}
+      </div>
+    </div>
+  );
+}
+
+function PatchesTab({ device }: { device: any }) {
+  const { can } = useApp();
+  const { data, reload } = useData<any>(`rmm/devices/${device.id}/patches`);
+  const { run, busy } = useAction();
+  if (!data) return <div className="empty">Loading…</div>;
+  const targets = { deviceIds: [device.id], groupIds: [], tenantIds: [], platforms: [] };
+  return (
+    <div className="card">
+      <div className="row" style={{ marginBottom: 10 }}>
+        <span className="small muted">Policy: {data.policy?.name || "defaults"} · ring {data.ring.name} (+{data.ring.delayDays} days) · last scan {ago(data.lastScan)}</span>
+        {data.rebootPending && <Pill value="restart pending" tone="warn" />}
+        <span style={{ flex: 1 }} />
+        {can("respond") && <button disabled={busy} onClick={async () => { await run(() => api("rmm/patches/scan", { body: { targets } }), "Patch scan queued"); }}>Scan now</button>}
+        {can("configure") && <button className="primary" disabled={busy} onClick={async () => { await run(() => api("rmm/patches/install", { body: { targets } }), "Approved patches queued"); reload(); }}>Install approved</button>}
+      </div>
+      <Table rows={data.patches} empty="No patches reported yet. Run a scan."
+             columns={[{ key: "title", label: "Patch", render: (p) => <><b>{p.title}</b><div className="small muted mono">{p.patchKey}</div></> },
+                       { key: "classification", label: "Class", render: (p) => <Pill value={p.classification} tone={["critical", "security"].includes(p.classification) ? "bad" : "muted"} /> },
+                       { key: "approval", label: "Approval", render: (p) => <Pill value={p.approval} tone={p.approval === "approved" ? "good" : p.approval === "pending" ? "warn" : "muted"} /> },
+                       { key: "status", label: "Status", render: (p) => <><Pill value={p.status} tone={p.status === "installed" ? "good" : p.status === "failed" ? "bad" : p.status === "installing" ? "blue" : "warn"} />{p.error && <div className="small" style={{ color: "#fecaca" }}>{p.error}</div>}</> },
+                       { key: "firstSeenAt", label: "First seen", render: (p) => ago(p.firstSeenAt) }]} />
+    </div>
+  );
+}
+
+function JobsTab({ deviceId, onOpen }: { deviceId: string; onOpen: (id: string) => void }) {
+  const { data } = useData<any[]>("rmm/jobs", { deviceId });
+  return (
+    <div className="card">
+      <Table rows={data} onRow={(j) => onOpen(j.id)} empty="No scripts or jobs have run on this device."
+             columns={[{ key: "name", label: "Job" }, { key: "status", label: "Status", render: (j) => <JobStatus job={j} /> },
+                       { key: "createdBy", label: "By" }, { key: "createdAt", label: "When", render: (j) => ago(j.createdAt) }]} />
+    </div>
+  );
+}
+
+function SessionsTab({ deviceId }: { deviceId: string }) {
+  const { data } = useData<any[]>("remote/sessions", { deviceId });
+  return (
+    <div className="card">
+      <Table rows={data} empty="Nobody has connected to this device yet."
+             columns={[{ key: "technician", label: "Technician" }, { key: "mode", label: "Mode" },
+                       { key: "status", label: "Status", render: (s) => <Pill value={s.status} tone={s.status === "connected" ? "good" : s.status === "denied" || s.status === "failed" ? "bad" : "muted"} /> },
+                       { key: "createdAt", label: "Started", render: (s) => fmtTime(s.createdAt) },
+                       { key: "connectedMinutes", label: "Duration", render: (s) => s.connectedMinutes ? `${s.connectedMinutes} min` : "—" },
+                       { key: "events", label: "Activity", render: (s) => <span className="small muted">{(s.events || []).filter((e: any) => !["requested", "viewer.connected", "agent.connected"].includes(e.type)).map((e: any) => e.type).join(", ") || "—"}</span> }]} />
+    </div>
+  );
+}
+
+function ScriptPicker({ device, onClose, onStarted }: { device: any; onClose: () => void; onStarted: (jobId: string) => void }) {
+  const { data } = useData<any[]>("rmm/scripts");
+  const [script, setScript] = useState<any>(null);
+  const [q, setQ] = useState("");
+  if (script) return <RunScript script={script} presetDeviceId={device.id} onClose={onClose} onStarted={onStarted} />;
+  const usable = (data || []).filter((s) => s.platforms.includes(device.platform) && (!q || s.name.toLowerCase().includes(q.toLowerCase())));
+  return (
+    <Modal title={`Run a script on ${device.hostname}`} onClose={onClose}>
+      <input placeholder="Search scripts" value={q} onChange={(e) => setQ(e.target.value)} style={{ width: "100%", marginBottom: 8 }} autoFocus />
+      <Table rows={usable} onRow={setScript} empty="No scripts for this platform."
+             columns={[{ key: "name", label: "Script", render: (s) => <><b>{s.name}</b><div className="small muted">{s.description}</div></> }, { key: "category", label: "Category" }]} />
     </Modal>
   );
 }

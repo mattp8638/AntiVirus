@@ -107,6 +107,7 @@ export default function RemoteViewer() {
           setState((s) => (s === "ended" ? s : "ended"));
           setStatus((s) => (event.reason ? `Disconnected: ${event.reason}` : s.startsWith("Session ended") ? s : "Disconnected from the relay."));
         };
+        socket.addEventListener("open", () => window.setTimeout(() => send({ ch: "sys", t: "ping", ts: performance.now() }), 500));
         pingTimer = window.setInterval(() => send({ ch: "sys", t: "ping", ts: performance.now() }), 5000);
         fpsTimer = window.setInterval(() => { setFps(frames.current); frames.current = 0; }, 1000);
       } catch (err) {
@@ -317,7 +318,7 @@ export default function RemoteViewer() {
         </nav>
         {tab === "Desktop" && state === "live" && (
           <div className="rv-tools">
-            <button title="Send Ctrl+Alt+Del" disabled={viewOnly} onClick={() => send({ ch: "input", t: "cad" })}>Ctrl+Alt+Del</button>
+            {caps.includes("cad") && <button title="Send Ctrl+Alt+Del" disabled={viewOnly} onClick={() => send({ ch: "input", t: "cad" })}>Ctrl+Alt+Del</button>}
             <button title="Paste your clipboard as keystrokes" disabled={viewOnly} onClick={sendClipboard}>Send clipboard</button>
             <select title="Monitor" value={monitor} onChange={(e) => changeScreen({ monitor: Number(e.target.value) })}>
               {(info?.monitors?.length ? info.monitors : [{ index: 0 }]).map((m: any) => (
@@ -725,11 +726,4 @@ function EndDialog({ session, onCancel, onEnded }: { session: any; onCancel: () 
       </div>
     </div>
   );
-}
-
-/** Open a session in its own window, like ScreenConnect's host client. */
-export function openRemoteWindow(sessionId: string) {
-  const width = Math.min(window.screen.availWidth, 1440);
-  const height = Math.min(window.screen.availHeight, 900);
-  window.open(`/remote/${sessionId}`, `fenrir-remote-${sessionId}`, `popup,width=${width},height=${height}`);
 }
