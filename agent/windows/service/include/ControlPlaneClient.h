@@ -89,6 +89,12 @@ class DeviceIdentityRejectedError final : public std::runtime_error {
   explicit DeviceIdentityRejectedError(const std::string& message) : std::runtime_error(message) {}
 };
 
+struct MlModelManifest {
+  std::wstring version;
+  std::wstring sha256;
+  long long size{0};
+};
+
 class ControlPlaneClient {
  public:
   explicit ControlPlaneClient(std::wstring baseUrl);
@@ -105,6 +111,9 @@ class ControlPlaneClient {
   SignatureDeltaResult FetchSignatureDelta(const std::wstring& currentSignatureVersion = L"",
                                            const std::wstring& currentYaraVersion = L"",
                                            const std::wstring& signatureFeedToken = L"") const;
+  // Static ML model: manifest {version, sha256, size} and the FGBT binary.
+  MlModelManifest FetchMlModelManifest(const AgentState& state) const;
+  std::vector<unsigned char> DownloadMlModel(const AgentState& state) const;
 
  private:
   std::wstring baseUrl_;

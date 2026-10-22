@@ -4,6 +4,7 @@
 #include <evntrace.h>
 
 #include <atomic>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -42,6 +43,9 @@ class ProcessEtwSensor {
 
   bool IsActive() const;
   void SetDeviceId(std::wstring deviceId);
+  // Called on the ETW thread for every process start; returned records are queued as telemetry.
+  using ProcessStartHandler = std::function<std::vector<TelemetryRecord>(const EtwProcessContext&)>;
+  void SetProcessStartHandler(ProcessStartHandler handler);
   std::vector<TelemetryRecord> DrainTelemetry();
 
  private:
@@ -67,6 +71,7 @@ class ProcessEtwSensor {
   TRACEHANDLE sessionHandle_{0};
   TRACEHANDLE traceHandle_{0};
   std::atomic<bool> active_{false};
+  ProcessStartHandler processStartHandler_{};
 };
 
 }  // namespace antivirus::agent

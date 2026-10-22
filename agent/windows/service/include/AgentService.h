@@ -19,6 +19,7 @@
 #include "LocalStateStore.h"
 #include "PatchOrchestrator.h"
 #include "PolicySnapshot.h"
+#include "ProcessGuard.h"
 #include "ProcessDeltaTracker.h"
 #include "RemediationEngine.h"
 #include "ScanVerdict.h"
@@ -108,6 +109,8 @@ class AgentService {
   void DrainRealtimeProtectionTelemetry();
   void DrainNetworkTelemetry();
   void QueueCycleTelemetry(int cycle);
+  void ApplyProtectionPolicy();
+  void SyncMlModel(int cycle);
   void QueueTelemetryEvent(const std::wstring& eventType, const std::wstring& source, const std::wstring& summary,
                            const std::wstring& payloadJson);
   void QueueTelemetryRecords(const std::vector<TelemetryRecord>& records);
@@ -129,6 +132,7 @@ class AgentService {
   std::vector<TelemetryRecord> pendingTelemetry_{};
   std::unique_ptr<RealtimeProtectionBroker> realtimeProtectionBroker_{};
   std::unique_ptr<LocalControlChannel> localControlChannel_{};
+  std::unique_ptr<ProcessGuard> processGuard_{};
   std::unique_ptr<ProcessEtwSensor> processEtwSensor_{};
   std::unique_ptr<NetworkIsolationManager> networkIsolationManager_{};
   bool lastControlPlaneSyncFailed_{false};

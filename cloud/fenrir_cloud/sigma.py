@@ -52,6 +52,7 @@ CATEGORY_MAP = {
     "process_access": {"process_access"},
     "driver_load": {"image_load"},
     "webserver": {"web"},
+    "endpoint_protection": {"protection"},
     "proxy": {"web"},
 }
 

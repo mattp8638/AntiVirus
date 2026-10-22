@@ -357,12 +357,21 @@ def _automated_response(db: Session, device: Device, alert: Alert, incident: Inc
     response = resolution["settings"]["response"]
     taken: list[str] = []
     image = (alert.details or {}).get("process")
+    pid = (alert.details or {}).get("pid")
     actor = "automation"
+    skipped: list[str] = []
 
     def queue(command_type: str, target_path: str = "", why: str = "") -> None:
+        if command_type in KILL_COMMANDS:
+            # Only PID-targeted kills are automatic; a path-wide kill of e.g. powershell.exe would hit unrelated work.
+            stopped = _already_stopped_by_agent(db, alert)
+            if not target_path or not pid or stopped:
+                skipped.append(f"{command_type} ({'the agent already stopped it' if stopped else 'no process ID to target'})")
+                return
         try:
+            payload = {"pid": int(pid)} if command_type in KILL_COMMANDS and pid else {}
             services.enqueue_command(db, device, command_type, actor, target_path=target_path, reason=why or alert.title,
-                                     incident_id=incident.id)
+                                     incident_id=incident.id, payload=payload)
             taken.append(command_type)
         except services.CommandError as exc:
             log.info("auto-response %s skipped: %s", command_type, exc)
@@ -394,11 +403,38 @@ def _automated_response(db: Session, device: Device, alert: Alert, incident: Inc
                 services.fire_webhooks(db, device.tenant_id, "alert.automation", {"title": alert.title, "severity": alert.severity})
                 taken.append("webhook")
 
+    if skipped:
+        incident.timeline = (incident.timeline or []) + [
+            {"at": utcnow().isoformat(), "kind": "note", "text": "Automation skipped " + "; ".join(skipped)}
+        ]
     threshold = response["autoOpenTicket"]
     if threshold != "off" and not incident.ticket_id and services.severity_at_least(alert.severity, threshold):
         _ticket_for(db, device, incident, alert)
         taken.append("ticket")
     return taken
+
+
+KILL_COMMANDS = {"process.terminate", "process.tree.terminate"}
+
+# Interpreters and OS binaries are shared by many processes. The console warns before a path-wide kill of these.
+_SHARED_BINARIES = {
+    "cmd.exe", "powershell.exe", "pwsh.exe", "wscript.exe", "cscript.exe", "mshta.exe", "rundll32.exe", "regsvr32.exe",
+    "svchost.exe", "explorer.exe", "conhost.exe", "msiexec.exe", "wmic.exe", "certutil.exe", "bitsadmin.exe",
+    "sh", "bash", "dash", "zsh", "python", "python3", "perl", "ruby", "node", "java", "sudo", "systemd", "sshd",
+}
+
+
+def is_shared_binary(path: str) -> bool:
+    lowered = path.replace("\\", "/").lower()
+    name = lowered.rsplit("/", 1)[-1]
+    if name in _SHARED_BINARIES:
+        return True
+    return lowered.startswith(("c:/windows/", "/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/", "/usr/lib/", "/lib/"))
+
+
+def _already_stopped_by_agent(db: Session, alert: Alert) -> bool:
+    events = db.execute(select(Event.event_type).where(Event.id.in_((alert.event_ids or [])[:20]))).scalars().all()
+    return any(t.endswith((".blocked", ".terminated", ".quarantined")) for t in events)
 
 
 def _automation_matches(conditions: dict, alert: Alert) -> bool:

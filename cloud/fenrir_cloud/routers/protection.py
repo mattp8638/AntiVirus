@@ -217,6 +217,29 @@ def add_yara(body: dict = Body(...), principal: Principal = Depends(current_prin
     return to_dict(row)
 
 
+@console.get("/ml/model")
+def ml_model_info(principal: Principal = Depends(current_principal)):
+    from .. import mlmodel
+
+    bundle = mlmodel.current()
+    if bundle is None:
+        return {"available": False}
+    return {"available": True, "version": bundle.version, "sha256": bundle.sha256, "size": bundle.size, "metrics": bundle.metrics}
+
+
+@console.post("/ml/score")
+async def ml_score(request: Request, principal: Principal = Depends(current_principal)):
+    """Score an uploaded file (raw request body, max 64 MB) with the static model. Nothing is stored."""
+    from .. import mlmodel
+
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "Send the file as the request body")
+    if len(data) > 64 * 1024 * 1024:
+        raise HTTPException(413, "File larger than 64 MB")
+    return mlmodel.score_bytes(data)
+
+
 # --------------------------------------------------------------------------- vulnerabilities
 
 

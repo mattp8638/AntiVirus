@@ -269,6 +269,31 @@ def agent_bundle(
     return intel.agent_bundle(db, tenant_id, hashes_limit, urls_limit, rules_limit)
 
 
+@router.get("/agent/model/manifest")
+def model_manifest():
+    from .. import mlmodel
+
+    bundle = mlmodel.current()
+    if bundle is None:
+        raise HTTPException(404, "No model published")
+    return {"version": bundle.version, "sha256": bundle.sha256, "size": bundle.size, "format": "fgbt",
+            "features": "ember-v2", "metrics": bundle.metrics.get("test", {})}
+
+
+@router.get("/agent/model")
+def model_download(format: str = Query(default="fgbt", pattern="^(fgbt|json)$")):
+    from fastapi.responses import FileResponse
+
+    from .. import mlmodel
+
+    bundle = mlmodel.current()
+    if bundle is None:
+        raise HTTPException(404, "No model published")
+    if format == "json":
+        return FileResponse(bundle.json_path, media_type="application/gzip", filename=bundle.json_path.name)
+    return FileResponse(bundle.fgbt_path, media_type="application/octet-stream", filename=bundle.fgbt_path.name)
+
+
 @router.get("/reputation/{value:path}")
 def reputation(value: str, x_device_api_key: str | None = Header(default=None), db: Session = Depends(get_db)):
     tenant_id = None

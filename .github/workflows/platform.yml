@@ -52,10 +52,40 @@ jobs:
           name: fenrir-linux-agent
           path: dist/
 
+  ml:
+    name: ML model parity (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - run: pip install -r ml/requirements.txt pytest
+      - working-directory: ml
+        run: python -m pytest -q
+
+  windows-agent:
+    name: Windows agent (MinGW cross-build + portable tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y mingw-w64 g++ cmake
+      - name: Portable C++ unit tests (native)
+        working-directory: agent/windows
+        run: |
+          g++ -std=c++20 -Iservice/include service/src/BehaviorRules.cpp tests/BehaviorRulesTests.cpp -o /tmp/brtest && /tmp/brtest
+          g++ -std=c++20 -Iservice/include service/src/ExtendedPolicy.cpp service/src/BehaviorRules.cpp service/src/DeviceControl.cpp tests/PolicyAndDeviceControlTests.cpp -o /tmp/pdtest && /tmp/pdtest tests
+          g++ -std=c++20 -O2 -Iservice/include service/src/MlStaticModel.cpp tools/mltestcli/src/MlTestCliMain.cpp -o /tmp/mltest
+          /tmp/mltest score ../../ml/models/fenrir-pe-v1.fgbt ../../ml/testdata/hello64.exe
+      - name: Cross-compile service and scanner
+        run: |
+          agent/windows/cmake/make-mingw-header-shims.sh /tmp/shims
+          cmake -B /tmp/winbuild -S agent/windows/service -DCMAKE_TOOLCHAIN_FILE=$PWD/agent/windows/cmake/mingw-w64-x86_64.cmake -DCMAKE_BUILD_TYPE=Release -DANTIVIRUS_REQUIRE_MINIFILTER_PAYLOAD=OFF -DCMAKE_CXX_FLAGS=-I/tmp/shims -DCMAKE_C_FLAGS=-I/tmp/shims
+          cmake --build /tmp/winbuild -j4 --target antivirus-agent-service antivirus-scannercli fenrir-mltest fenrir-behavior-tests fenrir-policy-tests
+
   image:
     name: Platform image
     runs-on: ubuntu-latest
-    needs: [cloud, console, linux-agent]
+    needs: [cloud, console, linux-agent, ml, windows-agent]
     steps:
       - uses: actions/checkout@v4
       - run: docker build -f deploy/Dockerfile -t fenrir-cloud:${{ github.sha }} .

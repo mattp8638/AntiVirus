@@ -1,0 +1,4 @@
+lightgbm>=4.3
+scikit-learn>=1.4
+numpy>=1.26
+lief>=0.14  # parity tests only

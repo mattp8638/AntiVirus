@@ -7,22 +7,22 @@ Status key: **Built** = working in this repo and covered by tests or an end-to-e
 | Capability | Who is known for it | Fenrir status | Where |
 |---|---|---|---|
 | Signature + heuristic anti-malware with cloud reputation | ESET LiveGrid, Defender cloud protection | **Built** (Windows engine; Linux hash engine) + cloud intel bundle | `agent/windows/service`, `pkg/fleet/scanner.go`, `intel.py` |
-| Machine-learning static detection | SentinelOne Static AI, Defender | **Partial**: policy knob and thresholds exist; the Windows engine scores heuristics, but there is no trained ML model yet | `policy_schema.py` `antimalware.mlSensitivity` |
+| Machine-learning static detection | SentinelOne Static AI, Defender | **Built**: LightGBM model trained on SOREL-20M, on-device on Windows (scan + process start) and Linux (scans); 94.6% detection at 0.064% FPR out-of-time | `ml/`, `MlStaticModel.cpp`, `pkg/ml` |
 | Behavioural detection / EDR telemetry | SentinelOne Behavioral AI, Defender EDR | **Built**: ETW (Windows), procfs (Linux), Sigma + correlation in cloud | `detection.py`, `rules/sigma/` |
 | Attack storyline / process context | SentinelOne Storyline | **Partial**: alerts show ±5 min process lineage; no full graph view yet | `soc.py` `alert_detail` |
 | Threat hunting over raw telemetry | SentinelOne Deep Visibility, Defender Advanced Hunting | **Built**: query language + Sigma retro-hunt | `soc.py` `/events`, `/hunt` |
 | Ransomware behaviour + canaries | ESET Ransomware Shield, Heimdal REP, S1 | **Built**: canaries, mass-encryption correlation, shadow-copy/backup tamper rules, ransom-note rules | `rules/sigma/ransomware.yml`, `pkg/fleet/sensors.go` |
 | Ransomware rollback | SentinelOne 1-click rollback (VSS) | **Partial**: `ransomware.rollback` command, policy and auto-trigger exist; Windows executor still to implement | `commands.py` |
 | Controlled folder access | Defender CFA | **Partial**: policy (`protectedFolders*`); enforcement depends on the Windows minifilter path | `policy_schema.py` |
-| Attack surface reduction rules | Defender ASR | **Partial**: 15 rules as policy (off/audit/warn/block) and matching cloud detections; agent-side blocking per rule to follow | `attackSurface` section |
+| Attack surface reduction rules | Defender ASR | **Built**: 15 rules enforced per mode on Windows (ETW process-start, terminate on block) and Linux equivalents; without a kernel driver this acts just after start, not before | `BehaviorRules.cpp`, `ProcessGuard.cpp`, `pkg/fleet/protection.go` |
 | AMSI script inspection | Defender, ESET | **Built** (Windows AMSI provider) | `agent/windows/provider/amsi` |
 | Exploit blocker / memory scanner | ESET Exploit Blocker, Advanced Memory Scanner | **Planned** (policy flags exist) | `edr.exploitProtection`, `edr.memoryScanning` |
 | DNS filtering (on and off network) | Heimdal Threat Prevention, Cisco Umbrella | **Built**: per-device DoH resolver, categories, DGA, intel, DoH-bypass blocking, logs | `dnsfilter.py` |
 | Web / phishing protection | ESET Anti-Phishing, Defender SmartScreen | **Built** (Windows destination verdict engine) + cloud intel | `agent/windows/service/src/Destination*` |
 | Network isolation | All EDRs | **Built** (Windows WFP, Linux nftables) | `NetworkIsolationManager.cpp`, `pkg/fleet/agent.go` |
 | Host firewall and network attack protection | ESET Firewall/IDS | **Partial**: policy defined; Windows WFP sensor exists | `firewall` section |
-| Device control (USB etc.) | ESET Device Control, Heimdal | **Partial**: policy defined; enforcement to implement per OS | `deviceControl` section |
-| Application control | Heimdal, Defender WDAC | **Partial**: policy + `software.block` command on Windows | `applicationControl` section |
+| Device control (USB etc.) | ESET Device Control, Heimdal | **Built** for USB storage, CD/DVD, phones (MTP) and BitLocker-only USB on Windows via documented policies; USB block/read-only with per-device exceptions and Bluetooth on Linux. Per-device exceptions on Windows and printer control still need work | `DeviceControl.cpp`, `pkg/fleet/protection.go` |
+| Application control | Heimdal, Defender WDAC | **Built**: deny lists (name, hash, publisher), allow-list mode, unknown-reputation blocking on Windows and Linux | `BehaviorRules.cpp`, `pkg/fleet/protection.go` |
 | Privileged access management / JIT elevation | Heimdal PEDM, ThreatLocker | **Partial**: Windows PAM tooling, break-glass and local-admin commands; approval workflow UI to follow | `agent/windows/tools/pamui`, `commands.py` |
 | OS and third-party patching | Heimdal Patch & Asset, ConnectSecure, NinjaOne | **Partial**: Windows patch orchestrator and commands; patch rings in policy; no patch catalogue UI yet | `PatchOrchestrator.cpp`, `patch` section |
 | Vulnerability management | ConnectSecure, RoboShadow, Defender TVM | **Built**: inventory → OSV.dev, CISA KEV prioritisation, status workflow | `exposure.py` |
@@ -51,6 +51,6 @@ Status key: **Built** = working in this repo and covered by tests or an end-to-e
 ## Honest gaps before "best on the market"
 
 - **Independent test results** (AV-Test, AV-Comparatives, MITRE ATT&CK Evaluations). These need a production-grade engine and a test budget.
-- **Trained ML models and a large malware corpus.**
-- **Kernel-driver signing (Microsoft WHQL / ELAM) and Apple notarisation.**
+- **Ransomware file rollback on Windows** (the command and policy exist; the agent executor does not yet).
+- **Pre-execution blocking** needs the signed minifilter driver; see [DRIVER_SIGNING.md](DRIVER_SIGNING.md).
 - **SOC 2 / ISO 27001 for the service itself.**

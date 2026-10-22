@@ -476,6 +476,9 @@ PolicySnapshot ParsePolicySnapshot(const std::string& json) {
       policy.suppressionSha256.push_back(wide);
     }
   }
+  if (const auto modules = ExtractJsonObject(json, "modules"); modules.has_value()) {
+    policy.modulesJson = *modules;
+  }
   for (const auto& signer : ExtractJsonStringArray(json, "suppressionSignerNames")) {
     const auto wide = Utf8ToWide(signer);
     if (!wide.empty()) {
@@ -1133,6 +1136,20 @@ UpdateCheckResult ControlPlaneClient::CheckForUpdates(const AgentState& state, c
   }
 
   return result;
+}
+
+MlModelManifest ControlPlaneClient::FetchMlModelManifest(const AgentState& state) const {
+  const auto deviceApiKey = ExtractDeviceApiKeyFromCommandChannelUrl(state.commandChannelUrl);
+  const auto response = RequestJson(L"GET", JoinUrl(baseUrl_, L"/api/v1/agent/model/manifest"), {}, deviceApiKey);
+  return MlModelManifest{.version = Utf8ToWide(ExtractJsonString(response.body, "version").value_or("")),
+                         .sha256 = Utf8ToWide(ExtractJsonString(response.body, "sha256").value_or("")),
+                         .size = ExtractJsonInt(response.body, "size").value_or(0)};
+}
+
+std::vector<unsigned char> ControlPlaneClient::DownloadMlModel(const AgentState& state) const {
+  const auto deviceApiKey = ExtractDeviceApiKeyFromCommandChannelUrl(state.commandChannelUrl);
+  const auto response = RequestJson(L"GET", JoinUrl(baseUrl_, L"/api/v1/agent/model"), {}, deviceApiKey);
+  return std::vector<unsigned char>(response.body.begin(), response.body.end());
 }
 
 SignatureDeltaResult ControlPlaneClient::FetchSignatureDelta(const std::wstring& currentSignatureVersion,
