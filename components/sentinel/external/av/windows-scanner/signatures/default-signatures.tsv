@@ -1,0 +1,12 @@
+# scope|code|message|tacticId|techniqueId|score|pattern1;pattern2;pattern3
+script|REFLECTIVE_ASSEMBLY_LOAD|Script content contains in-memory .NET or reflective load patterns.|TA0005|T1620|44|reflection.assembly]::load;assembly.load([convert]::frombase64string;getdelegateforfunctionpointer
+text|SCHEDULED_TASK_PERSISTENCE|Scheduled-task persistence strings were found in the content.|TA0003|T1053.005|16|schtasks /create;register-scheduledtask;new-scheduledtaskaction
+ascii|MALICIOUS_MSI_CUSTOM_ACTION|MSI custom-action execution patterns were found in the package.|TA0002|T1218.007|26|customaction;installexecutesequence;powershell.exe;cmd.exe /c
+pe|SUSPICIOUS_REMOTE_INJECTION|Portable executable strings indicate remote-thread or APC injection.|TA0005|T1055|36|createremotethread;ntqueueapcthread;rtlcreateuserthread
+zip|ARCHIVE_LNK_LOLBIN_LURE|Archive content contains a shortcut lure referencing LOLBins or interpreters.|TA0002|T1204.001|28|.lnk;powershell;cmd.exe;mshta;rundll32
+text|RUN_KEY_PERSISTENCE|Run-key persistence strings were found in the content.|TA0003|T1547.001|14|currentversion\run;\runonce;reg add hkcu\software\microsoft\windows\currentversion\run
+pe|PE_PERSISTENCE_HELPERS|Portable executable strings indicate persistence helper behavior.|TA0003|T1547|16|software\microsoft\windows\currentversion\run;taskschd.dll;schtasks.exe
+text|SERVICE_PERSISTENCE|Windows service creation strings were found in the content.|TA0003|T1543.003|18|createservice;sc create;new-service
+text|CREDENTIAL_ACCESS_PATTERNS|Credential-access strings were found in the content.|TA0006|T1003|22|lsass dump;sam hive;vault credential
+text|DEFENDER_CONFIG_TAMPER|Security-product reconfiguration strings were found in the content.|TA0005|T1562.001|22|set mp preference;disable behavior monitoring;disable ioav protection
+zip|OOXML_MACRO_PAYLOAD|Archive content contains macro-capable Office project artifacts.|TA0002|T1204.002|26|vbaproject.bin;word/vba;xl/vba;ppt/vba

@@ -1,0 +1,51 @@
+[package]
+name = "tamsilcms-sentinel-agent"
+version = "1.0.0"
+edition = "2021"
+authors = ["TamsilCMS Security Team"]
+license = "MIT"
+description = "TamsilCMS Sentinel EDR Agent for SIEM Platform"
+
+[[bin]]
+name = "sentinel-agent"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# HTTP client
+reqwest = { version = "0.11", features = ["json"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Windows APIs
+windows = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_Etw",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_SystemInformation",
+]}
+
+# Windows service
+windows-service = "0.6"
+
+# Utilities
+uuid = { version = "1.6", features = ["v4"] }
+hostname = "0.3"
+local-ip-address = "0.5"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

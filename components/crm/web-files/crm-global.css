@@ -1,0 +1,371 @@
+/* Palmertech CRM/ERP Global Design System & CSS Variables */
+
+:root {
+  --bg-crm: #030712;               /* True dark back panel */
+  --bg-sidebar: #090d16;           /* Slate black side navigation */
+  --bg-card: rgba(17, 24, 39, 0.75); /* Translucent container backdrop */
+  --text-main: #f9fafb;            /* Primary light headings */
+  --text-sub: #9ca3af;             /* Subdued details description */
+  --border-glass: rgba(255, 255, 255, 0.06);
+  --border-active: rgba(255, 255, 255, 0.15);
+  
+  /* Brand/Aesthetic Colors */
+  --accent-green: #10b981;         /* CRM success state / active Leads */
+  --accent-blue: #3b82f6;          /* ERP systems / active Projects */
+  --accent-amber: #f59e0b;         /* Cautionary / unpaid Invoices */
+  --accent-rose: #f43f5e;          /* Urgent / High-priority Support */
+  --accent-glow: rgba(59, 130, 246, 0.4);
+  
+  --font-heading: 'Outfit', 'Segoe UI', sans-serif;
+  --font-body: 'Inter', 'Segoe UI', sans-serif;
+}
+
+/* Base resets & typography */
+body.crm-body {
+  background-color: var(--bg-crm) !important;
+  color: var(--text-main) !important;
+  font-family: var(--font-body);
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* CRM Layout Flex Grid */
+.crm-layout {
+  display: flex;
+  min-height: 100vh;
+  position: relative;
+  background: var(--bg-crm);
+  overflow-x: hidden;
+}
+
+/* Sidebar Styling */
+.crm-sidebar {
+  width: 280px;
+  background-color: var(--bg-sidebar);
+  border-right: 1px solid var(--border-glass);
+  display: flex;
+  flex-direction: column;
+  padding: 30px 20px;
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 100;
+  transition: all 0.3s ease;
+}
+
+.crm-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 50px;
+  padding: 0 10px;
+  text-decoration: none;
+}
+
+.crm-brand-logo {
+  width: 38px;
+  height: 38px;
+  background: linear-gradient(135deg, var(--accent-blue), var(--accent-green));
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  color: #fff;
+  font-size: 1.15rem;
+  box-shadow: 0 0 15px rgba(59, 130, 246, 0.4);
+}
+
+.crm-brand-text {
+  font-family: var(--font-heading);
+  font-weight: 800;
+  color: #fff;
+  font-size: 1.25rem;
+  letter-spacing: -0.5px;
+}
+
+.crm-brand-text span {
+  color: var(--accent-blue);
+}
+
+.crm-nav-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex-grow: 1;
+}
+
+.crm-nav-item a {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  padding: 14px 20px;
+  border-radius: 12px;
+  color: var(--text-sub);
+  text-decoration: none;
+  font-size: 0.95rem;
+  font-weight: 600;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  border: 1px solid transparent;
+}
+
+.crm-nav-item a:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.04);
+  transform: translateX(5px);
+}
+
+.crm-nav-item.active a {
+  color: #fff;
+  background: rgba(59, 130, 246, 0.15);
+  border-color: rgba(59, 130, 246, 0.3);
+  box-shadow: 0 4px 20px rgba(59, 130, 246, 0.1);
+}
+
+.crm-user-profile {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  border-top: 1px solid var(--border-glass);
+  padding-top: 25px;
+  margin-top: auto;
+}
+
+.crm-user-avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent-green), var(--accent-blue));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+  color: #fff;
+  font-size: 1.10rem;
+  border: 2px solid var(--border-glass);
+}
+
+.crm-user-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.crm-user-name {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #fff;
+}
+
+.crm-user-role {
+  font-size: 0.75rem;
+  color: var(--text-sub);
+}
+
+/* Content Area Layout */
+.crm-content {
+  flex-grow: 1;
+  margin-left: 280px;
+  padding: 40px 50px;
+  min-height: 100vh;
+  position: relative;
+  z-index: 10;
+}
+
+/* Glassmorphic Container Cards */
+.crm-card {
+  background: var(--bg-card);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border-glass);
+  border-radius: 20px;
+  padding: 30px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  transition: all 0.3s ease;
+}
+
+.crm-card:hover {
+  border-color: var(--border-active);
+}
+
+/* Metrics Grid */
+.crm-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 25px;
+  margin-bottom: 40px;
+}
+
+.crm-metric-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.crm-metric-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-sub);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.crm-metric-val {
+  font-size: 2.25rem;
+  font-weight: 800;
+  font-family: var(--font-heading);
+  letter-spacing: -1px;
+}
+
+.crm-metric-change {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+/* Data Tables */
+.crm-table-container {
+  overflow-x: auto;
+  margin-top: 20px;
+}
+
+.crm-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.crm-table th {
+  padding: 16px 20px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-sub);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  border-bottom: 1px solid var(--border-glass);
+}
+
+.crm-table td {
+  padding: 16px 20px;
+  font-size: 0.95rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  color: #d1d5db;
+}
+
+.crm-table tr:hover td {
+  background: rgba(255, 255, 255, 0.015);
+  color: #fff;
+}
+
+/* Badges */
+.crm-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  border-radius: 50px;
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.crm-badge.success {
+  background-color: rgba(16, 185, 129, 0.15);
+  color: var(--accent-green);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.crm-badge.info {
+  background-color: rgba(59, 130, 246, 0.15);
+  color: var(--accent-blue);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.crm-badge.warning {
+  background-color: rgba(245, 158, 11, 0.15);
+  color: var(--accent-amber);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.crm-badge.danger {
+  background-color: rgba(244, 63, 94, 0.15);
+  color: var(--accent-rose);
+  border: 1px solid rgba(244, 63, 94, 0.3);
+}
+
+/* Form Styles */
+.crm-form-group {
+  margin-bottom: 20px;
+}
+
+.crm-label {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text-sub);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.crm-input {
+  width: 100%;
+  background: rgba(0, 0, 0, 0.4) !important;
+  border: 1px solid var(--border-glass) !important;
+  color: #fff !important;
+  border-radius: 10px !important;
+  padding: 12px 18px !important;
+  font-family: var(--font-body) !important;
+  font-size: 0.95rem !important;
+  transition: all 0.3s ease !important;
+}
+
+.crm-input:focus {
+  border-color: var(--accent-blue) !important;
+  box-shadow: 0 0 12px var(--accent-glow) !important;
+  outline: none !important;
+  background: rgba(0, 0, 0, 0.6) !important;
+}
+
+/* Custom interactive Progress Bar */
+.crm-progress-track {
+  width: 100%;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.crm-progress-bar {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 1s ease-in-out;
+}
+
+/* Responsive adjustments */
+@media (max-width: 992px) {
+  .crm-sidebar {
+    width: 80px;
+    padding: 30px 10px;
+  }
+  .crm-brand-text, .crm-user-info {
+    display: none;
+  }
+  .crm-content {
+    margin-left: 80px;
+    padding: 30px;
+  }
+  .crm-nav-item a span:last-child {
+    display: none;
+  }
+  .crm-nav-item a {
+    justify-content: center;
+    padding: 14px 0;
+  }
+}
