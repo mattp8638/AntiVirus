@@ -1,0 +1,18 @@
+[Unit]
+Description=Fenrir endpoint protection agent (managed by Fenrir Cloud)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/fenrir/agent.env
+ExecStart=/usr/local/bin/fenrir-agent
+Restart=always
+RestartSec=5
+# Needs root: reads every process, kills malware, quarantines files, manages nftables.
+User=root
+ProtectHome=false
+ProtectSystem=full
+ReadWritePaths=/var/lib/fenrir /etc/nftables.d
+
+[Install]
+WantedBy=multi-user.target

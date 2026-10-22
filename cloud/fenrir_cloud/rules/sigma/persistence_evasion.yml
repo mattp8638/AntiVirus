@@ -1,0 +1,105 @@
+title: Scheduled task created from a user-writable path
+id: fenrir-persist-schtasks
+tags: [attack.persistence, attack.t1053.005]
+logsource: {category: process_creation, product: windows}
+detection:
+  selection:
+    Image|endswith: '\schtasks.exe'
+    CommandLine|contains: '/create'
+  path:
+    CommandLine|contains: ['\AppData\', '\Temp\', '\Users\Public\', '\ProgramData\', 'powershell', 'mshta', 'http']
+  condition: selection and path
+level: medium
+---
+title: Run key persistence
+id: fenrir-persist-runkey
+tags: [attack.persistence, attack.t1547.001]
+logsource: {category: registry_set, product: windows}
+detection:
+  selection:
+    TargetObject|contains: ['\Software\Microsoft\Windows\CurrentVersion\Run', '\Software\Microsoft\Windows\CurrentVersion\RunOnce', '\Winlogon\Userinit', '\Winlogon\Shell']
+  suspicious:
+    Details|contains: ['\AppData\', '\Temp\', '\Users\Public\', 'powershell', 'mshta', 'rundll32', 'regsvr32', 'cmd /c']
+  condition: selection and suspicious
+level: high
+---
+title: WMI event subscription persistence
+id: fenrir-persist-wmi
+tags: [attack.persistence, attack.t1546.003]
+logsource: {category: process_creation, product: windows}
+detection:
+  selection:
+    CommandLine|contains: ['__EventFilter', 'CommandLineEventConsumer', 'ActiveScriptEventConsumer', '__FilterToConsumerBinding']
+  condition: selection
+level: high
+---
+title: Cron or systemd persistence from shell
+id: fenrir-persist-linux
+tags: [attack.persistence, attack.t1053.003, attack.t1543.002]
+logsource: {category: file_event, product: linux}
+detection:
+  selection:
+    TargetFilename|startswith: ['/etc/cron', '/var/spool/cron', '/etc/systemd/system/', '/lib/systemd/system/', '/etc/rc.local', '/etc/init.d/']
+  filter:
+    ProcessName: ['dpkg', 'apt', 'apt-get', 'rpm', 'dnf', 'yum', 'systemctl', 'snapd', 'packagekitd']
+  condition: selection and not filter
+level: medium
+---
+title: SSH authorized_keys modified
+id: fenrir-persist-ssh-keys
+tags: [attack.persistence, attack.t1098.004]
+logsource: {category: file_event}
+detection:
+  selection:
+    TargetFilename|endswith: '/.ssh/authorized_keys'
+  condition: selection
+level: medium
+---
+title: macOS LaunchAgent or LaunchDaemon created
+id: fenrir-persist-macos-launchd
+tags: [attack.persistence, attack.t1543.001, attack.t1543.004]
+logsource: {category: file_event, product: macos}
+detection:
+  selection:
+    TargetFilename|contains: ['/Library/LaunchAgents/', '/Library/LaunchDaemons/']
+    TargetFilename|endswith: '.plist'
+  condition: selection
+level: medium
+---
+title: Security tooling disabled
+id: fenrir-evasion-disable-av
+tags: [attack.defense_evasion, attack.t1562.001]
+logsource: {category: process_creation}
+detection:
+  defender:
+    CommandLine|contains: ['Set-MpPreference -DisableRealtimeMonitoring', 'DisableAntiSpyware', 'Add-MpPreference -ExclusionPath', 'sc stop WinDefend', 'sc config WinDefend']
+  linux:
+    CommandLine|contains: ['systemctl stop auditd', 'systemctl disable auditd', 'setenforce 0', 'systemctl stop fenrir', 'systemctl disable fenrir']
+  fenrir:
+    CommandLine|contains: ['sc stop Fenrir', 'sc delete Fenrir', 'taskkill /im fenrir']
+  condition: 1 of them
+level: high
+---
+title: Event logs or shell history cleared
+id: fenrir-evasion-log-clear
+tags: [attack.defense_evasion, attack.t1070.001, attack.t1070.003]
+logsource: {category: process_creation}
+detection:
+  wevtutil:
+    CommandLine|contains|all: ['wevtutil', ' cl ']
+  powershell:
+    CommandLine|contains: ['Clear-EventLog', 'Remove-EventLog']
+  history:
+    CommandLine|contains: ['history -c', 'rm ~/.bash_history', 'unset HISTFILE', 'HISTSIZE=0', 'rm -rf /var/log']
+  condition: 1 of them
+level: high
+---
+title: Agent tamper protection degraded
+id: fenrir-evasion-tamper
+tags: [attack.defense_evasion, attack.t1562.001]
+logsource: {category: agent}
+detection:
+  selection:
+    EventType: ['tamper.protection.degraded', 'agent.repair.failed', 'device.identity.rejected']
+  condition: selection
+level: high

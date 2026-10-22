@@ -1,0 +1,81 @@
+title: Domain reconnaissance command
+id: fenrir-disc-domain
+tags: [attack.discovery, attack.t1087.002, attack.t1482]
+logsource: {category: process_creation, product: windows}
+detection:
+  selection:
+    CommandLine|contains: ['net group "domain admins"', 'net user /domain', 'nltest /domain_trusts', 'nltest /dclist', 'Get-ADComputer', 'AdFind', 'dsquery ']
+  condition: selection
+level: low
+---
+title: Hands-on-keyboard reconnaissance burst
+id: fenrir-disc-burst
+description: Five or more domain discovery commands from one device inside ten minutes.
+tags: [attack.discovery, attack.t1087]
+correlation:
+  type: event_count
+  rules: [fenrir-disc-domain]
+  group-by: [Hostname]
+  timespan: 10m
+  condition: {gte: 5}
+level: high
+---
+title: Remote execution via PsExec or WMI
+id: fenrir-lateral-remote-exec
+tags: [attack.lateral_movement, attack.t1021.002, attack.t1047]
+logsource: {category: process_creation, product: windows}
+detection:
+  psexec:
+    Image|endswith: ['\PSEXESVC.exe', '\psexec.exe', '\psexec64.exe']
+  wmic:
+    CommandLine|contains|all: ['wmic', '/node:', 'process call create']
+  winrm:
+    CommandLine|contains: ['Invoke-Command -ComputerName', 'Enter-PSSession']
+  condition: 1 of them
+level: medium
+---
+title: Remote desktop tunnelling tool
+id: fenrir-c2-tunnel
+tags: [attack.command_and_control, attack.t1572, attack.t1219]
+logsource: {category: process_creation}
+detection:
+  selection:
+    ProcessName|contains: ['ngrok', 'chisel', 'plink', 'frpc', 'cloudflared', 'rclone', 'anydesk', 'atera', 'screenconnect']
+  condition: selection
+falsepositives: [Approved remote support tooling - add an exclusion per tenant]
+level: medium
+---
+title: Script host or Office making outbound network connections
+id: fenrir-c2-script-network
+tags: [attack.command_and_control, attack.t1071.001]
+logsource: {category: network_connection, product: windows}
+detection:
+  selection:
+    Image|endswith: ['\wscript.exe', '\cscript.exe', '\mshta.exe', '\regsvr32.exe', '\rundll32.exe', '\winword.exe', '\excel.exe']
+  filter:
+    DestinationIp|cidr: ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '127.0.0.0/8']
+  condition: selection and not filter
+level: medium
+---
+title: Connection to a commonly abused C2 port
+id: fenrir-c2-port
+tags: [attack.command_and_control, attack.t1571]
+logsource: {category: network_connection}
+detection:
+  selection:
+    DestinationPort: [4444, 1337, 31337, 6666, 6667, 8888, 9001, 50050]
+  condition: selection
+level: low
+---
+title: Agent malware verdict
+id: fenrir-malware-verdict
+description: The endpoint engine blocked or quarantined malware. Promoted to an alert for triage and reporting.
+tags: [attack.execution, attack.t1204]
+logsource: {category: antivirus}
+detection:
+  selection:
+    EventType|contains: ['threat.', 'quarantine', 'malware', 'detection', 'blocked']
+  noise:
+    EventType|contains: ['quarantine.restored', 'quarantine.deleted', 'signatures.']
+  condition: selection and not noise
+level: high

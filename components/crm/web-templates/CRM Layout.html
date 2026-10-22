@@ -1,0 +1,310 @@
+<!-- Palmertech CRM/ERP Dynamic Sidebar Layout Template -->
+<div class="crm-layout">
+  
+  <!-- Left Navigation Sidebar -->
+  <aside class="crm-sidebar">
+    <a href="/dashboard/" class="crm-brand" id="brand-link">
+      <div class="crm-brand-logo" id="brand-logo">PT</div>
+      <span class="crm-brand-text" id="brand-text">Palmertech-<span>CRM</span></span>
+    </a>
+    
+    <nav class="crm-nav">
+      <ul class="crm-nav-list" id="sidebar-nav-list">
+        <!-- Rendered dynamically by crm-config.js data -->
+      </ul>
+    </nav>
+    
+    <!-- User Profile Footer -->
+    <div class="crm-user-profile">
+      <div class="crm-user-avatar" id="user-avatar">MA</div>
+      <div class="crm-user-info">
+        <span class="crm-user-name" id="user-name">Matt Admin</span>
+        <span class="crm-user-role" id="user-role">Super Administrator</span>
+      </div>
+    </div>
+  </aside>
+  
+  <!-- Right Side Main Content Panel -->
+  <main class="crm-content" id="crm-main-content" style="transition: opacity 0.25s ease-in-out; opacity: 1;">
+    {% block main %}
+      {% include 'Page Copy' %}
+    {% endblock %}
+  </main>
+  
+</div>
+
+<!-- Floating Toast Container -->
+<div id="crm-toast-container" style="position: fixed; bottom: 30px; right: 30px; z-index: 9999; display: flex; flex-direction: column; gap: 12px; pointer-events: none;"></div>
+
+<!-- Global Config Loader -->
+<script src="/crm-config.js"></script>
+
+<!-- SPA Router & Toast Styles -->
+<style>
+  /* Toast Slide-In Styles */
+  .crm-toast {
+    background: rgba(17, 24, 39, 0.85) !important;
+    backdrop-filter: blur(12px) !important;
+    -webkit-backdrop-filter: blur(12px) !important;
+    border: 1px solid var(--border-glass) !important;
+    border-radius: 12px !important;
+    padding: 16px 24px !important;
+    color: #fff !important;
+    font-size: 0.9rem !important;
+    font-weight: 600 !important;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.4) !important;
+    transform: translateX(120%);
+    transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275), opacity 0.4s ease;
+    opacity: 0;
+    pointer-events: auto;
+  }
+  .crm-toast.show {
+    transform: translateX(0);
+    opacity: 1;
+  }
+  .crm-toast-icon {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.75rem;
+    font-weight: 800;
+  }
+  
+  /* Fade Transitions for SPA page loads */
+  .page-fade-out {
+    opacity: 0 !important;
+  }
+</style>
+
+<!-- SPA Router & Toast Engine Script -->
+<script>
+  // Global Toast Alert Engine
+  window.showToast = function(message, type = "success") {
+    const container = document.getElementById("crm-toast-container");
+    if (!container) return;
+
+    const toast = document.createElement("div");
+    toast.className = "crm-toast";
+
+    let borderLeft = "3px solid var(--accent-green)";
+    let iconBg = "var(--accent-green)";
+    let icon = "✔";
+
+    if (type === "info") {
+      borderLeft = "3px solid var(--accent-blue)";
+      iconBg = "var(--accent-blue)";
+      icon = "ℹ";
+    } else if (type === "warning") {
+      borderLeft = "3px solid var(--accent-amber)";
+      iconBg = "var(--accent-amber)";
+      icon = "⚠";
+    } else if (type === "danger") {
+      borderLeft = "3px solid var(--accent-rose)";
+      iconBg = "var(--accent-rose)";
+      icon = "✖";
+    }
+
+    toast.style.borderLeft = borderLeft;
+    toast.innerHTML = `
+      <div class="crm-toast-icon" style="background: ${iconBg}; color: #fff;">${icon}</div>
+      <span>${message}</span>
+    `;
+
+    container.appendChild(toast);
+    
+    // Trigger slide-in
+    setTimeout(() => {
+      toast.classList.add("show");
+    }, 50);
+
+    // Fade-out and delete after 4 seconds
+    setTimeout(() => {
+      toast.classList.remove("show");
+      setTimeout(() => {
+        toast.remove();
+      }, 400);
+    }, 4000);
+  };
+
+  document.addEventListener("DOMContentLoaded", () => {
+    const config = window.CRM_CONFIG;
+    if (!config) return;
+
+    // 1. Set System Accent Color Root Variables
+    function applyAccentColor() {
+      if (config.branding.accentColor) {
+        document.documentElement.style.setProperty('--accent-blue', config.branding.accentColor);
+        const hex = config.branding.accentColor.replace('#', '');
+        const r = parseInt(hex.substring(0, 2), 16);
+        const g = parseInt(hex.substring(2, 4), 16);
+        const b = parseInt(hex.substring(4, 6), 16);
+        document.documentElement.style.setProperty('--accent-glow', `rgba(${r}, ${g}, ${b}, 0.4)`);
+      }
+    }
+    applyAccentColor();
+
+    // 2. Bind Layout Header details
+    function renderLayoutHeader() {
+      const brandLogo = document.getElementById("brand-logo");
+      const brandText = document.getElementById("brand-text");
+      if (brandLogo && config.branding.shortName) {
+        brandLogo.innerText = config.branding.shortName;
+        if (config.branding.logoGradients && !localStorage.getItem("CRM_SETTINGS_OVERRIDE")) {
+          brandLogo.style.background = config.branding.logoGradients;
+        } else {
+          brandLogo.style.background = config.branding.accentColor || 'var(--accent-blue)';
+        }
+      }
+      if (brandText && config.branding.name) {
+        const words = config.branding.name.split(" ");
+        if (words.length > 1) {
+          const lastWord = words.pop();
+          brandText.innerHTML = `${words.join(" ")}-<span>${lastWord}</span>`;
+        } else {
+          brandText.innerHTML = config.branding.name;
+        }
+      }
+
+      const userAvatar = document.getElementById("user-avatar");
+      const userName = document.getElementById("user-name");
+      const userRole = document.getElementById("user-role");
+      if (userAvatar && config.user.initials) userAvatar.innerText = config.user.initials;
+      if (userName && config.user.name) userName.innerText = config.user.name;
+      if (userRole && config.user.role) userRole.innerText = config.user.role;
+    }
+    renderLayoutHeader();
+
+    // 3. Render Navigation sidebar
+    function renderNavigation() {
+      const navList = document.getElementById("sidebar-nav-list");
+      if (navList && config.navigation) {
+        navList.innerHTML = "";
+        const currentPath = window.location.pathname;
+
+        config.navigation.forEach((item) => {
+          const li = document.createElement("li");
+          const isActive = currentPath === item.url || 
+                          (item.url !== "/dashboard/" && currentPath.includes(item.url)) ||
+                          (item.url === "/dashboard/" && (currentPath === "/" || currentPath === ""));
+
+          li.className = `crm-nav-item ${isActive ? "active" : ""}`;
+          li.innerHTML = `
+            <a href="${item.url}">
+              ${item.icon}
+              <span>${item.label}</span>
+            </a>
+          `;
+          navList.appendChild(li);
+        });
+      }
+    }
+    renderNavigation();
+
+    // Listen to settings update to re-draw headers instantly
+    window.addEventListener("crmDatabaseUpdated", () => {
+      applyAccentColor();
+      renderLayoutHeader();
+    });
+
+    // 4. Client-side Router Mechanics
+    const mainContent = document.getElementById("crm-main-content");
+
+    async function loadPage(url) {
+      // Begin fade transition
+      mainContent.classList.add("page-fade-out");
+
+      // Extract folder name (e.g. /leads/ -> Leads)
+      let rawFolder = url.replace(/\//g, "");
+      if (!rawFolder || rawFolder === "dashboard") rawFolder = "Dashboard";
+      
+      // Capitalize first letter (e.g. leads -> Leads)
+      const folder = rawFolder.charAt(0).toUpperCase() + rawFolder.slice(1);
+
+      setTimeout(async () => {
+        try {
+          // Asynchronously fetch webpage copy HTML
+          const copyUrl = `/web-pages/${folder}/${folder}.en-US.webpage.copy.html`;
+          let html = "";
+          
+          let response = await fetch(copyUrl);
+          if (response.ok) {
+            html = await response.text();
+          } else {
+            // Fallback: fetch page directly and extract content body
+            const fallbackResponse = await fetch(url);
+            const text = await fallbackResponse.text();
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(text, "text/html");
+            const innerBody = doc.querySelector(".crm-body-container") || doc.querySelector("main");
+            html = innerBody ? innerBody.outerHTML : text;
+          }
+
+          // Swap HTML content
+          mainContent.innerHTML = html;
+          renderNavigation();
+
+          // Load and append CSS overrides if necessary
+          const oldCss = document.getElementById("active-page-css");
+          if (oldCss) oldCss.remove();
+          const newCss = document.createElement("link");
+          newCss.id = "active-page-css";
+          newCss.rel = "stylesheet";
+          newCss.href = `/web-pages/${folder}/${folder}.en-US.customcss.css`;
+          document.head.appendChild(newCss);
+
+          // Load and execute dynamic Javascript
+          const oldScript = document.getElementById("active-page-script");
+          if (oldScript) oldScript.remove();
+          const newScript = document.createElement("script");
+          newScript.id = "active-page-script";
+          newScript.src = `/web-pages/${folder}/${folder}.en-US.customjs.js?t=${Date.now()}`; // cache bust
+          document.body.appendChild(newScript);
+
+        } catch (err) {
+          console.error("SPA Router fetch error loading page:", err);
+          mainContent.innerHTML = `<div style="padding: 50px; text-align: center; color: var(--accent-rose);"><h3>Failed to load page dynamically.</h3><p>${err.message}</p></div>`;
+        } finally {
+          // Fade page content back in
+          mainContent.classList.remove("page-fade-out");
+        }
+      }, 250);
+    }
+
+    // Intercept navigation links click
+    document.addEventListener("click", (e) => {
+      const anchor = e.target.closest("a");
+      if (anchor) {
+        const href = anchor.getAttribute("href");
+        if (href && href.startsWith("/")) {
+          e.preventDefault();
+          
+          // Only route if navigation target is a different URL
+          if (window.location.pathname !== href) {
+            window.history.pushState(null, "", href);
+            loadPage(href);
+          }
+        }
+      }
+    });
+
+    // Handle back/forward button clicks
+    window.addEventListener("popstate", () => {
+      loadPage(window.location.pathname);
+    });
+
+    // Load active script for initial load
+    const currentFolder = (window.location.pathname.replace(/\//g, "") || "Dashboard");
+    const initFolder = currentFolder.charAt(0).toUpperCase() + currentFolder.slice(1);
+    
+    const initScript = document.createElement("script");
+    initScript.id = "active-page-script";
+    initScript.src = `/web-pages/${initFolder}/${initFolder}.en-US.customjs.js`;
+    document.body.appendChild(initScript);
+  });
+</script>

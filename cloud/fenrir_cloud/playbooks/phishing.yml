@@ -1,0 +1,45 @@
+id: phishing-response
+name: Phishing Email Response
+incident_type: phishing
+lifecycle_framework: Fenrir Incident Lifecycle
+default_severity: medium
+
+stages:
+  preparation:
+    objective: Confirm ownership, logging and response permissions before closure.
+  detection:
+    objective: Record the source email, sender, recipients, headers, URLs and attachments.
+  triage:
+    objective: Determine user interaction and account compromise risk.
+  scoping:
+    objective: Search for matching emails, URLs, senders and affected users.
+  evidence_collection:
+    objective: Preserve original email, headers, attachments, URLs and sign-in evidence.
+  containment:
+    objective: Stop further account or mailbox misuse.
+  eradication:
+    objective: Remove malicious emails, mailbox rules, forwarding and unauthorised access paths.
+  recovery:
+    objective: Safely restore user access after account security is confirmed.
+  verification:
+    objective: Prove no further suspicious sign-ins, mailbox rules or related emails remain.
+  reporting:
+    objective: Produce a report-ready timeline, actions taken and residual risk statement.
+  lessons_learnt:
+    objective: Improve detection, user awareness, mail filtering and playbook logic.
+
+key_questions:
+  - q_email_opened
+  - q_link_clicked
+  - q_credentials_entered
+  - q_attachment_opened
+  - q_privileged_user
+  - q_multiple_assets
+
+critical_closure_gates:
+  - Original email and headers preserved.
+  - Sign-in logs reviewed if credentials were entered.
+  - Password reset and session revocation confirmed if credentials were entered.
+  - Mailbox rules reviewed if account compromise is suspected.
+  - Matching emails removed or confirmed absent.
+  - Verification evidence attached.

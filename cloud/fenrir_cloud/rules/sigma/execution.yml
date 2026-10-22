@@ -1,0 +1,132 @@
+title: Encoded PowerShell command
+id: fenrir-exec-ps-encoded
+tags: [attack.execution, attack.t1059.001, attack.defense_evasion, attack.t1027]
+logsource: {category: process_creation, product: windows}
+detection:
+  image:
+    Image|endswith: ['\powershell.exe', '\pwsh.exe']
+  encoded:
+    CommandLine|windash|contains: [' -enc ', ' -encodedcommand ', ' -ec ']
+  condition: image and encoded
+level: high
+---
+title: PowerShell download cradle
+id: fenrir-exec-ps-cradle
+tags: [attack.execution, attack.t1059.001, attack.command_and_control, attack.t1105]
+logsource: {category: process_creation, product: windows}
+detection:
+  selection:
+    CommandLine|contains: ['DownloadString(', 'DownloadFile(', 'Invoke-WebRequest', 'iwr ', 'Net.WebClient', 'Start-BitsTransfer']
+  exec:
+    CommandLine|contains: ['IEX', 'Invoke-Expression', '| iex', '|iex']
+  condition: selection and exec
+level: high
+---
+title: Office application spawned a shell
+id: fenrir-exec-office-child
+tags: [attack.execution, attack.t1204.002, attack.initial_access, attack.t1566.001]
+logsource: {category: process_creation, product: windows}
+detection:
+  parent:
+    ParentImage|endswith: ['\winword.exe', '\excel.exe', '\powerpnt.exe', '\outlook.exe', '\msaccess.exe', '\mspub.exe', '\onenote.exe']
+  child:
+    Image|endswith: ['\cmd.exe', '\powershell.exe', '\pwsh.exe', '\wscript.exe', '\cscript.exe', '\mshta.exe', '\rundll32.exe', '\regsvr32.exe', '\certutil.exe', '\bitsadmin.exe']
+  condition: parent and child
+level: high
+---
+title: LOLBin used to download or execute remote content
+id: fenrir-exec-lolbin
+tags: [attack.defense_evasion, attack.t1218, attack.command_and_control, attack.t1105]
+logsource: {category: process_creation, product: windows}
+detection:
+  certutil:
+    Image|endswith: '\certutil.exe'
+    CommandLine|contains: ['urlcache', '-decode', 'verifyctl']
+  mshta:
+    Image|endswith: '\mshta.exe'
+    CommandLine|contains: ['http', 'javascript:', 'vbscript:']
+  regsvr32:
+    Image|endswith: '\regsvr32.exe'
+    CommandLine|contains|all: ['/i:', 'scrobj.dll']
+  rundll32:
+    Image|endswith: '\rundll32.exe'
+    CommandLine|contains: ['javascript:', 'http://', 'https://']
+  bitsadmin:
+    Image|endswith: '\bitsadmin.exe'
+    CommandLine|contains: ['/transfer', '/addfile']
+  condition: 1 of them
+level: high
+---
+title: Script host running from a user-writable location
+id: fenrir-exec-script-temp
+tags: [attack.execution, attack.t1059.005, attack.t1059.007]
+logsource: {category: process_creation, product: windows}
+detection:
+  host:
+    Image|endswith: ['\wscript.exe', '\cscript.exe']
+  location:
+    CommandLine|contains: ['\AppData\Local\Temp\', '\Downloads\', '\Users\Public\', '\ProgramData\']
+  condition: host and location
+level: medium
+---
+title: Suspicious download piped to shell
+id: 5a4b7f80-085e-4c28-94f3-c5dc96704bb4
+tags: [attack.execution, attack.t1059.004]
+logsource: {category: process_creation, product: linux}
+detection:
+  download:
+    CommandLine|contains: ['wget ', 'curl ']
+  pipe:
+    CommandLine|re: '\|\s*(ba|z|da)?sh\b'
+  condition: download and pipe
+falsepositives: [Legitimate installer one-liners]
+level: high
+---
+title: Reverse shell command line
+id: fenrir-exec-reverse-shell
+tags: [attack.execution, attack.t1059.004, attack.command_and_control, attack.t1071]
+logsource: {category: process_creation}
+detection:
+  devtcp:
+    CommandLine|contains: ['/dev/tcp/', '/dev/udp/']
+  nc:
+    CommandLine|re: '\b(nc|ncat|netcat)\b.*\s-(e|c)\s'
+  socat:
+    CommandLine|contains|all: ['socat', 'exec:']
+  python:
+    CommandLine|contains|all: ['socket', 'subprocess', 'connect(']
+  ps:
+    CommandLine|contains|all: ['System.Net.Sockets.TCPClient', 'GetStream']
+  condition: 1 of them
+level: critical
+---
+title: Executable launched from /tmp or /dev/shm
+id: fenrir-exec-linux-tmp
+tags: [attack.execution, attack.t1059, attack.defense_evasion, attack.t1036]
+logsource: {category: process_creation, product: linux}
+detection:
+  selection:
+    Image|startswith: ['/tmp/', '/dev/shm/', '/var/tmp/']
+  condition: selection
+level: medium
+---
+title: AppleScript credential prompt
+id: fenrir-exec-macos-osascript-prompt
+tags: [attack.credential_access, attack.t1056.002]
+logsource: {category: process_creation, product: macos}
+detection:
+  selection:
+    Image|endswith: '/osascript'
+    CommandLine|contains|all: ['display dialog', 'password']
+  condition: selection
+level: high
+---
+title: Suspicious AMSI script content
+id: fenrir-exec-amsi-content
+tags: [attack.execution, attack.t1059.001]
+logsource: {category: amsi}
+detection:
+  selection:
+    ScriptBlockText|contains: ['AmsiScanBuffer', 'amsiInitFailed', 'Invoke-Mimikatz', 'Invoke-Shellcode', 'VirtualAlloc', 'Reflection.Assembly]::Load', 'FromBase64String(']
+  condition: selection
+level: high

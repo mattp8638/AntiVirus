@@ -1,0 +1,27 @@
+{
+  "name": "@fenrir/feed-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "dev:worker": "wrangler dev --remote",
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "test": "node --test --experimental-strip-types src/app.test.ts",
+    "start": "node dist/index.js",
+    "deploy:worker": "wrangler deploy"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.2.0",
+    "fastify": "^5.8.4",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260405.0",
+    "@types/node": "^24.6.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.83.0"
+  }
+}

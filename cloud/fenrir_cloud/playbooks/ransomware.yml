@@ -1,0 +1,44 @@
+id: ransomware-response
+name: Ransomware Response
+incident_type: ransomware
+lifecycle_framework: Fenrir Incident Lifecycle
+default_severity: critical
+match_mitre: [T1486, T1490, T1485]
+
+stages:
+  preparation:
+    objective: Confirm offline/immutable backups exist and the rollback snapshot interval in policy.
+  detection:
+    objective: Record the encrypting process, parent chain, first encrypted file and ransom note.
+  triage:
+    objective: Decide within minutes whether encryption is active. Assume yes until proven otherwise.
+  scoping:
+    objective: Hunt the same hash, ransom note name and SMB write bursts across every device in the tenant.
+  evidence_collection:
+    objective: Collect a forensic triage package and the ransom note before cleanup.
+  containment:
+    objective: Isolate affected devices, disable compromised accounts, block the C2 and the hash tenant-wide.
+  eradication:
+    objective: Kill the process tree, remove persistence, rotate credentials touched by the attacker.
+  recovery:
+    objective: Roll back encrypted files from snapshots; restore from backup where rollback is incomplete.
+  verification:
+    objective: Full scan clean, no new encryption events for 24 hours, backups re-verified.
+  reporting:
+    objective: Record timeline, data affected and any regulatory notification decision (GDPR 72h, NIS2 24h).
+  lessons_learnt:
+    objective: Close the initial access vector and tighten attack surface reduction rules.
+
+key_questions:
+  - q_encryption_active
+  - q_network_shares_affected
+  - q_backups_intact
+  - q_data_exfiltrated
+  - q_regulatory_notification
+
+critical_closure_gates:
+  - Encrypting process killed and quarantined.
+  - All affected devices isolated then released after verification.
+  - Rollback or restore completed and spot-checked.
+  - Initial access vector identified.
+  - Notification decision recorded.

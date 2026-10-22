@@ -1,0 +1,61 @@
+name: Fenrir Platform
+
+on:
+  push:
+    branches: ["main", "claude/**"]
+  pull_request:
+
+jobs:
+  cloud:
+    name: Fenrir Cloud (Python)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_USER: fenrir, POSTGRES_PASSWORD: fenrir, POSTGRES_DB: fenrir }
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - run: pip install -r cloud/requirements-dev.txt "psycopg[binary]>=3.2"
+      - name: Tests (SQLite)
+        working-directory: cloud
+        run: python -m pytest -q
+      - name: Tests (PostgreSQL)
+        working-directory: cloud
+        env: { FENRIR_TEST_DATABASE_URL: "postgresql+psycopg://fenrir:fenrir@localhost:5432/fenrir" }
+        run: python -m pytest -q
+
+  console:
+    name: Fenrir Console (TypeScript)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - working-directory: console
+        run: npm install --no-audit --no-fund && npm run build
+
+  linux-agent:
+    name: Linux agent (Go)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.24" }
+      - run: make -C agent/linux test agent agent-arm64
+      - run: packaging/linux/build-deb.sh 1.0.0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fenrir-linux-agent
+          path: dist/
+
+  image:
+    name: Platform image
+    runs-on: ubuntu-latest
+    needs: [cloud, console, linux-agent]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f deploy/Dockerfile -t fenrir-cloud:${{ github.sha }} .

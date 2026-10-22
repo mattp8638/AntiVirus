@@ -1,0 +1,24 @@
+/* Dashboard Specific CSS */
+
+.crm-timeline-item {
+  padding-bottom: 25px;
+}
+
+.crm-timeline-item:last-child {
+  padding-bottom: 0;
+}
+
+.crm-btn-action:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.crm-btn-action:first-child:hover {
+  background: rgba(59, 130, 246, 0.2) !important;
+  border-color: var(--accent-blue) !important;
+}
+
+.crm-btn-action:last-child:hover {
+  background: rgba(244, 63, 94, 0.2) !important;
+  border-color: var(--accent-rose) !important;
+}

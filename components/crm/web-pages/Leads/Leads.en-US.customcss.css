@@ -1,0 +1,37 @@
+/* Leads Page Custom CSS */
+
+.crm-btn-icon {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 5px;
+  border-radius: 6px;
+  transition: all 0.3s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.crm-btn-icon:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.crm-btn-icon svg {
+  transition: transform 0.3s ease;
+}
+
+.crm-btn-icon:hover:not(:disabled) svg {
+  transform: scale(1.15);
+}
+
+/* SlideDown Animation for Collapsible Form */
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

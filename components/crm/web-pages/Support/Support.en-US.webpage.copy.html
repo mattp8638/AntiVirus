@@ -1,0 +1,56 @@
+<div class="crm-body-container">
+  
+  <!-- Breadcrumbs & Heading -->
+  <div style="margin-bottom: 30px;">
+    <ul class="breadcrumb" style="margin-bottom: 10px;">
+      <li class="breadcrumb-item"><a href="/dashboard/">Admin</a></li>
+      <li class="breadcrumb-item active">Support</li>
+    </ul>
+    <h1 style="font-size: 2.25rem; font-weight: 800; font-family: var(--font-heading); letter-spacing: -0.5px; margin: 0;">Support Helpdesk</h1>
+  </div>
+
+  <!-- Helpdesk Metrics -->
+  <div class="crm-metrics-grid" id="support-metrics-grid" style="margin-bottom: 40px;">
+    <!-- Rendered dynamically by crm-config.js -->
+  </div>
+
+  <!-- Split Helpdesk Layout -->
+  <div style="display: flex; gap: 30px; flex-wrap: wrap; margin-bottom: 40px;">
+    
+    <!-- Left Column: Tickets List -->
+    <div style="flex: 1; min-width: 320px;">
+      <h2 style="font-size: 1.3rem; font-weight: 800; margin-top: 0; margin-bottom: 20px; color: #fff;">Active Tickets</h2>
+      
+      <div style="display: flex; flex-direction: column; gap: 15px;" id="ticketsList">
+        <!-- Rendered dynamically by crm-config.js -->
+      </div>
+    </div>
+
+    <!-- Right Column: Interactive Chat Logs -->
+    <div class="crm-card" style="flex: 1.5; min-width: 400px; display: flex; flex-direction: column; height: 500px; padding: 0; overflow: hidden;" id="ticketDetailPanel">
+      
+      <!-- Chat Header -->
+      <div style="padding: 20px 30px; border-bottom: 1px solid var(--border-glass); background: rgba(0, 0, 0, 0.2); display: flex; justify-content: space-between; align-items: center;">
+        <div>
+          <h3 style="margin: 0; color: #fff; font-size: 1.1rem; font-weight: 800;" id="chatTicketTitle">Select a Ticket</h3>
+          <span style="font-size: 0.8rem; color: var(--text-sub);" id="chatTicketSubtitle">Choose from the list to reply</span>
+        </div>
+        <button id="resolveTicketBtn" class="btn-primary" style="padding: 8px 16px; font-size: 0.75rem; background: rgba(16, 185, 129, 0.15); border-color: rgba(16, 185, 129, 0.3); color: var(--accent-green); display: none;">Resolve</button>
+      </div>
+
+      <!-- Chat Messages Scroll Container -->
+      <div style="flex-grow: 1; overflow-y: auto; padding: 25px; display: flex; flex-direction: column; gap: 20px;" id="chatLogsContainer">
+        <div style="text-align: center; color: var(--text-sub); margin-top: 100px;">Please click on a support ticket to review the conversation log.</div>
+      </div>
+
+      <!-- Chat Reply Box -->
+      <div style="padding: 15px 25px; border-top: 1px solid var(--border-glass); background: rgba(0, 0, 0, 0.2); display: flex; gap: 15px; align-items: center;">
+        <input type="text" id="chatReplyInput" class="crm-input" placeholder="Type a reply and press Enter to send..." style="margin-bottom: 0 !important;" disabled>
+        <button id="sendReplyBtn" class="btn-primary" style="padding: 10px 18px; border-radius: 10px;" disabled><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg></button>
+      </div>
+
+    </div>
+
+  </div>
+
+</div>

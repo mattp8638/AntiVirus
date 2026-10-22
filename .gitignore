@@ -19,3 +19,13 @@ tmp-phase3-corpora/
 tmp-phase3-exitcriteria/
 tmp-*
 probe-*
+
+# Fenrir Cloud
+__pycache__/
+*.pyc
+.pytest_cache/
+cloud/fenrir.db*
+cloud/downloads/
+dist/
+deploy/.env
+cloud/data/
