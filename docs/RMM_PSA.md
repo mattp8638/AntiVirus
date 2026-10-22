@@ -51,7 +51,7 @@ The wire protocol is in [REMOTE_PROTOCOL.md](REMOTE_PROTOCOL.md).
 
 ## Connecting a Windows PC
 
-Copy `fenrir-agent-service.exe` and `fenrir-remote.exe` to a local folder such as `C:\Fenrir`; a WSL or network path will not work for a service. Then, from an Administrator prompt in that folder:
+Copy `fenrir-agent-service.exe`, `fenrir-remote.exe` and `fenrir-amsi-provider.dll` (build target `antivirus-amsi-provider`) to a local folder such as `C:\Fenrir`; a WSL or network path will not work for a service. Then, from an Administrator prompt in that folder:
 
 ```powershell
 .\fenrir-agent-service.exe --install --server https://<your server> --enroll-token <token from Deploy agents>

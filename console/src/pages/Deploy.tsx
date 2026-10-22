@@ -43,7 +43,7 @@ export default function Deploy() {
             <div style={{ marginTop: 16 }}>
               <p>Copy this token now; it is not shown again.</p>
               <pre>{created.token}</pre>
-              <h3 style={{ marginTop: 12 }}>Windows (Administrator PowerShell, in the folder with fenrir-agent-service.exe and fenrir-remote.exe)</h3><pre>{created.install.windows}</pre>
+              <h3 style={{ marginTop: 12 }}>Windows (Administrator PowerShell, in the folder with fenrir-agent-service.exe, fenrir-remote.exe and fenrir-amsi-provider.dll)</h3><pre>{created.install.windows}</pre>
               <h3 style={{ marginTop: 12 }}>Linux (systemd)</h3><pre>{created.install.linux}</pre>
               <h3 style={{ marginTop: 12 }}>macOS</h3><pre>{created.install.macos}</pre>
             </div>
