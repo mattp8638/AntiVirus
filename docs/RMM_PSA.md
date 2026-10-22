@@ -60,6 +60,25 @@ Start-Service FenrirAgent
 
 `--server` and `--enroll-token` save `ControlPlaneBaseUrl`, `EnrollmentToken` and `ManagedMode=1` under `HKLM\SOFTWARE\FenrirAgent`. A device enrolled with a token goes straight into that customer and is approved. Without a token it lands in **Unassigned**. Running `--console` with the same options does a one-off interactive run. Set `ManagedMode` to `0` to run the agent standalone (updates only, no reporting).
 
+### Keeping the agent running
+
+- The service starts with Windows. Windows restarts it 5, 15 and then every 60 seconds after any crash, kill or error exit.
+- An error during one sync cycle is logged and the agent carries on.
+- Administrators can't stop, reconfigure or delete it from services.msc, `Stop-Service` or `sc`; they can still start it.
+- To stop it on purpose (for example to copy in a new build), run `.\fenrir-agent-service.exe --stop`. Add `--token <uninstall token>` if uninstall protection is on. `--install`, `--repair`, `--upgrade` and `--uninstall` lift the block themselves.
+- This stops casual tampering, not a determined administrator, who can still change the service's permissions. Full protection needs the signed ELAM driver (`--elam-driver`).
+
+### Remote sessions on Windows
+
+- The agent connects remote sessions to the same server address it uses for check-ins, so a wrong or unreachable `FENRIR_PUBLIC_URL` doesn't break remote access.
+- Sessions start straight away, even while a scan is running.
+- Each session writes a log to `C:\ProgramData\FenrirAgent\runtime\remote\<session id>.log`.
+- If the device can't start a session, the viewer shows why.
+
+### Console as an app
+
+In Chrome or Edge, click **Install app** in the console's top bar, or use the install icon in the address bar. The console then runs in its own window, and remote sessions open as app windows without browser bars. This needs HTTPS, or `http://localhost`.
+
 ## Setting up email
 
 | Setting | Purpose |

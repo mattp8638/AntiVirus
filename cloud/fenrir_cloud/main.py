@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import mimetypes
 import secrets
 import sys
 import threading
@@ -23,6 +24,9 @@ from .routers import admin, agent_api, business, fleet, portal, protection, soc
 from .routers import psa as psa_router, remote as remote_router, rmm as rmm_router
 from .security import hash_password
 from .services import GLOBAL_POLICY_ID
+
+# The console is installable as an app; browsers expect this type for its manifest.
+mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 log = logging.getLogger("fenrir")
 

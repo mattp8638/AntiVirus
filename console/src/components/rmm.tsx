@@ -90,8 +90,11 @@ export function TargetPicker({ value, onChange, platforms }: { value: Targets; o
 export function useConnect() {
   const { run, busy } = useAction();
   const connect = async (deviceId: string, mode: "desktop" | "terminal" | "files" = "desktop", ticketId?: string) => {
-    // Open the window first so pop-up blockers treat it as a direct click.
-    const placeholder = window.open("about:blank", "_blank", "popup,width=1366,height=860");
+    // Open the window first so pop-up blockers treat it as a direct click. It starts on an in-app page
+    // (not about:blank) so an installed console opens it as an app window without browser bars.
+    const width = Math.min(window.screen.availWidth, 1440);
+    const height = Math.min(window.screen.availHeight, 900);
+    const placeholder = window.open("/remote/starting", "_blank", `popup,width=${width},height=${height}`);
     const session = await run(() => api<any>("remote/sessions", { body: { deviceId, mode, ticketId } }));
     if (!session) { placeholder?.close(); return; }
     if (placeholder) placeholder.location.href = `/remote/${session.id}`;

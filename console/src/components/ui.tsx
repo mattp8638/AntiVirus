@@ -190,3 +190,36 @@ export function TenantSelect({ value, onChange, allowAll = true, label }: { valu
     </select>
   );
 }
+
+// Chrome and Edge offer to install the console as an app. Installed, it runs in its own window and
+// remote sessions open as app windows without browser bars. The prompt can fire before React mounts,
+// so it is captured here at load.
+let deferredInstall: any = null;
+const installListeners = new Set<() => void>();
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeinstallprompt", (event) => {
+    event.preventDefault();
+    deferredInstall = event;
+    installListeners.forEach((fn) => fn());
+  });
+  window.addEventListener("appinstalled", () => {
+    deferredInstall = null;
+    installListeners.forEach((fn) => fn());
+  });
+}
+
+export function InstallAppButton() {
+  const [, refresh] = useState(0);
+  useEffect(() => {
+    const fn = () => refresh((n) => n + 1);
+    installListeners.add(fn);
+    return () => { installListeners.delete(fn); };
+  }, []);
+  if (!deferredInstall) return null;
+  return (
+    <button className="small" title="Install the console as an app: it opens in its own window, and remote sessions open without browser bars"
+            onClick={async () => { const prompt = deferredInstall; deferredInstall = null; refresh((n) => n + 1); await prompt.prompt(); }}>
+      Install app
+    </button>
+  );
+}

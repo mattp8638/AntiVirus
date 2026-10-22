@@ -612,6 +612,7 @@ func (a *Agent) Execute(cmd Command) (map[string]interface{}, error) {
 		if !a.state.Policy.ModuleBool("remoteAccess", "enabled", true) {
 			return map[string]interface{}{"consent": "denied"}, errors.New("remote access is turned off by policy")
 		}
+		opts.RelayURL = RelayURLForServer(a.cfg.Server, opts.RelayURL)
 		if err := a.remote.Start(opts); err != nil {
 			return nil, err
 		}
@@ -629,6 +630,30 @@ func (a *Agent) Execute(cmd Command) (map[string]interface{}, error) {
 // ---------------------------------------------------------------------------
 // Isolation via nftables (falls back to a dry run when nft is unavailable)
 // ---------------------------------------------------------------------------
+
+// RelayURLForServer points the relay URL at the server this agent already talks to. The cloud builds
+// relayUrl from its public URL, which may not be reachable from here (a placeholder, or a name that
+// only resolves outside the LAN); the path and query are kept.
+func RelayURLForServer(server, relay string) string {
+	s, err := url.Parse(strings.TrimSpace(server))
+	if err != nil || s.Host == "" {
+		return relay
+	}
+	r, err := url.Parse(relay)
+	if err != nil || !strings.HasPrefix(r.Path, "/ws/remote/") {
+		return relay
+	}
+	r.Host = s.Host
+	if s.Scheme == "https" {
+		r.Scheme = "wss"
+	} else {
+		r.Scheme = "ws"
+	}
+	if prefix := strings.TrimSuffix(strings.TrimSuffix(s.Path, "/"), "/api/v1"); prefix != "" && prefix != "/" {
+		r.Path = prefix + r.Path
+	}
+	return r.String()
+}
 
 func (a *Agent) controlPlaneAddrs() []string {
 	u, err := url.Parse(a.cfg.Server)

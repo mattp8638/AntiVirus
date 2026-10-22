@@ -985,6 +985,7 @@ AgentService::~AgentService() {
 }
 
 int AgentService::Run(const AgentRunMode mode) {
+  mainThreadId_ = std::this_thread::get_id();
   try {
     if (stopEvent_ == nullptr) {
       stopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -1014,6 +1015,7 @@ int AgentService::Run(const AgentRunMode mode) {
     networkIsolationManager_ = std::make_unique<NetworkIsolationManager>(config_);
 
     LoadLocalPolicyCache();
+    PublishIdentitySnapshot();
     ApplyProtectionPolicy();
     realtimeProtectionBroker_->SetPolicy(policy_);
     realtimeProtectionBroker_->SetDeviceId(state_.deviceId);
@@ -1077,7 +1079,8 @@ int AgentService::Run(const AgentRunMode mode) {
     return 0;
   } catch (const std::exception& error) {
     std::wcerr << L"Agent service failed to initialize: " << Utf8ToWide(error.what()) << std::endl;
-    return 1;
+    StopRealtimeChannel();  // a running thread left behind would crash the process on exit
+    return 1;  // non-zero: Windows' recovery actions restart the service
   }
 }
 
@@ -1120,14 +1123,18 @@ void AgentService::RunSyncLoop(const AgentRunMode mode) {
   int cycle = 1;
 
   while (!ShouldStop()) {
+    // One bad cycle (a scan, the database, the network) must never stop the agent: log it and carry on.
+    try {
     ProcessPamRequests();
     QueueCycleTelemetry(cycle);
     DrainProcessTelemetry();
     DrainRealtimeProtectionTelemetry();
     DrainNetworkTelemetry();
+    DrainDeferredTelemetry();
     if (config_.managedMode) {
       // Check in before the scans: a first full-drive scan can take hours.
       SyncWithControlPlane(cycle);
+      PublishIdentitySnapshot();
       PollAndExecuteCommands(cycle);
       FlushTelemetryQueue();
       PublishHeartbeat(cycle);
@@ -1141,6 +1148,16 @@ void AgentService::RunSyncLoop(const AgentRunMode mode) {
       FlushTelemetryQueue();
     }
     PersistState();
+    } catch (const std::exception& error) {
+      std::wcerr << L"Sync cycle " << cycle << L" failed, continuing: " << Utf8ToWide(error.what()) << std::endl;
+      try {
+        QueueTelemetryEvent(L"agent.cycle.failed", L"agent-service", L"A sync cycle failed; the agent carried on.",
+                            BuildCyclePayload(cycle, L"\"error\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(error.what()))) + L"\""));
+      } catch (...) {
+      }
+    } catch (...) {
+      std::wcerr << L"Sync cycle " << cycle << L" failed with an unknown error, continuing." << std::endl;
+    }
 
     if (mode == AgentRunMode::Console && cycle >= configuredIterations) {
       break;
@@ -1400,8 +1417,14 @@ bool AgentService::WaitForNextCycle(const AgentRunMode mode, const int nextCycle
     }
     if (signalled == WAIT_OBJECT_0 + 1) {
       // The cloud queued something (a remote session, a script): run it now instead of at the next cycle.
-      PollAndExecuteCommands(nextCycle);
-      DrainProcessTelemetry();
+      try {
+        DrainDeferredTelemetry();
+        PollAndExecuteCommands(nextCycle);
+        DrainProcessTelemetry();
+      } catch (const std::exception& error) {
+        std::wcerr << L"Handling a wake-up failed, continuing: " << Utf8ToWide(error.what()) << std::endl;
+      } catch (...) {
+      }
       continue;
     }
     return true;
@@ -1733,6 +1756,10 @@ void AgentService::PollAndExecuteCommands(const int cycle) {
                           BuildCyclePayload(cycle, std::wstring(L"\"count\":") + std::to_wstring(pollResult.items.size())));
 
       for (const auto& command : pollResult.items) {
+        if ((command.type == L"remote.session.start" || command.type == L"remote.session.end") &&
+            !ClaimRemoteCommand(command.commandId)) {
+          continue;  // the realtime thread already has it
+        }
         if (commandJournalStore_) {
           commandJournalStore_->RecordPolled(command);
         }
@@ -2307,6 +2334,34 @@ DWORD InteractiveSessionId() {
 
 }  // namespace
 
+// The cloud builds relayUrl from its public URL, which may not be reachable from this PC (a
+// placeholder, or a name that only resolves outside the LAN). Point it at the server this agent
+// already talks to, keeping the /ws/remote/... path and query.
+static std::wstring RelayUrlForServer(std::wstring server, const std::wstring& relay) {
+  const auto relayScheme = relay.find(L"://");
+  if (relayScheme == std::wstring::npos) {
+    return relay;
+  }
+  const auto relayPath = relay.find(L'/', relayScheme + 3);
+  if (relayPath == std::wstring::npos || relay.compare(relayPath, 11, L"/ws/remote/") != 0) {
+    return relay;
+  }
+  while (!server.empty() && (server.back() == L'/' || server.back() == L' ')) {
+    server.pop_back();
+  }
+  if (server.size() > 7 && server.compare(server.size() - 7, 7, L"/api/v1") == 0) {
+    server.resize(server.size() - 7);
+  }
+  if (server.rfind(L"https://", 0) == 0) {
+    server = L"wss://" + server.substr(8);
+  } else if (server.rfind(L"http://", 0) == 0) {
+    server = L"ws://" + server.substr(7);
+  } else {
+    return relay;
+  }
+  return server + relay.substr(relayPath);
+}
+
 std::wstring AgentService::LaunchRemoteHelper(const RemoteCommand& command) {
   if (processGuard_ && !processGuard_->CurrentExtendedPolicy().remoteAccessEnabled) {
     throw std::runtime_error("Remote access is turned off by policy");
@@ -2324,9 +2379,17 @@ std::wstring AgentService::LaunchRemoteHelper(const RemoteCommand& command) {
   const auto folder = config_.runtimeDatabasePath.parent_path() / L"remote";
   std::filesystem::create_directories(folder, ec);
   const auto optionsPath = folder / (sessionId + L".json");
+  auto payload = command.payloadJson;
+  if (const auto relay = ExtractPayloadString(payload, "relayUrl"); relay.has_value() && !relay->empty()) {
+    const auto rewritten = RelayUrlForServer(config_.controlPlaneBaseUrl, *relay);
+    const auto quoted = L"\"" + *relay + L"\"";
+    if (const auto at = payload.find(quoted); rewritten != *relay && at != std::wstring::npos) {
+      payload.replace(at, quoted.size(), L"\"" + rewritten + L"\"");
+    }
+  }
   {
     std::ofstream out(optionsPath, std::ios::binary | std::ios::trunc);
-    out << WideToUtf8(command.payloadJson);
+    out << WideToUtf8(payload);
   }
   const auto windowsSession = InteractiveSessionId();
   HANDLE self = nullptr, primary = nullptr;
@@ -2393,6 +2456,62 @@ std::wstring AgentService::EndRemoteHelper(const RemoteCommand& command) {
   return std::wstring(L"{\"ended\":") + (ended ? L"true" : L"false") + L"}";
 }
 
+bool AgentService::ClaimRemoteCommand(const std::wstring& commandId) {
+  std::lock_guard lock(remoteMutex_);
+  return claimedRemoteCommands_.insert(commandId).second;
+}
+
+void AgentService::PublishIdentitySnapshot() {
+  std::lock_guard lock(remoteMutex_);
+  identitySnapshot_ = state_;
+}
+
+AgentState AgentService::IdentitySnapshot() {
+  std::lock_guard lock(remoteMutex_);
+  return identitySnapshot_;
+}
+
+void AgentService::DrainDeferredTelemetry() {
+  std::vector<DeferredTelemetry> events;
+  {
+    std::lock_guard lock(remoteMutex_);
+    events.swap(deferredTelemetry_);
+  }
+  for (const auto& event : events) {
+    QueueTelemetryEvent(event.eventType, event.source, event.summary, event.payloadJson);
+  }
+}
+
+void AgentService::HandleRemoteCommandsNow() {
+  const auto identity = IdentitySnapshot();
+  if (identity.deviceId.empty()) {
+    return;
+  }
+  try {
+    const auto pollResult = controlPlaneClient_->PollPendingCommands(identity);
+    for (const auto& command : pollResult.items) {
+      if ((command.type != L"remote.session.start" && command.type != L"remote.session.end") ||
+          !ClaimRemoteCommand(command.commandId)) {
+        continue;
+      }
+      std::wstring status = L"completed";
+      std::wstring resultJson;
+      try {
+        resultJson = command.type == L"remote.session.start" ? LaunchRemoteHelper(command) : EndRemoteHelper(command);
+      } catch (const std::exception& error) {
+        status = L"failed";
+        resultJson = L"{\"error\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(error.what()))) + L"\"}";
+      }
+      try {
+        controlPlaneClient_->CompleteCommand(identity, command.commandId, status, resultJson);
+      } catch (...) {
+      }
+    }
+  } catch (...) {
+    // The main loop polls again on its next cycle.
+  }
+}
+
 void AgentService::StartRealtimeChannel() {
   if (realtimeThread_.joinable() || wakeEvent_ == nullptr) {
     return;
@@ -2412,14 +2531,16 @@ void AgentService::StopRealtimeChannel() {
 void AgentService::RealtimeLoop() {
   DWORD backoff = 5000;
   while (!ShouldStop()) {
-    if (state_.deviceId.empty() || ControlPlaneClient::DeviceApiKey(state_).empty()) {
-      WaitForSingleObject(stopEvent_, 10000);
+    const auto identity = IdentitySnapshot();
+    if (identity.deviceId.empty() || ControlPlaneClient::DeviceApiKey(identity).empty()) {
+      WaitForSingleObject(stopEvent_, 2000);  // not enrolled yet: check again soon
       continue;
     }
     const auto started = GetTickCount64();
     try {
       WebSocketClient socket;
-      socket.Connect(controlPlaneClient_->RealtimeUrl(state_), L"X-Device-Api-Key: " + ControlPlaneClient::DeviceApiKey(state_) + L"\r\n");
+      socket.Connect(controlPlaneClient_->RealtimeUrl(identity), L"X-Device-Api-Key: " + ControlPlaneClient::DeviceApiKey(identity) + L"\r\n");
+      HandleRemoteCommandsNow();  // anything queued while the channel was down
       // A watcher closes the socket when the service stops, which unblocks Receive.
       std::atomic<bool> done{false};
       std::thread watcher([&] {
@@ -2435,6 +2556,7 @@ void AgentService::RealtimeLoop() {
       bool binary = false;
       while (!ShouldStop() && socket.Receive(&message, &binary)) {
         if (message.find("\"commands\"") != std::string::npos || message.find("\"pollNow\":true") != std::string::npos) {
+          HandleRemoteCommandsNow();
           SetEvent(wakeEvent_);
         }
       }
@@ -2852,6 +2974,11 @@ void AgentService::QueueCycleTelemetry(const int cycle) {
 
 void AgentService::QueueTelemetryEvent(const std::wstring& eventType, const std::wstring& source,
                                        const std::wstring& summary, const std::wstring& payloadJson) {
+  if (mainThreadId_ != std::thread::id{} && std::this_thread::get_id() != mainThreadId_) {
+    std::lock_guard lock(remoteMutex_);
+    deferredTelemetry_.push_back({eventType, source, summary, payloadJson});
+    return;
+  }
   pendingTelemetry_.push_back(TelemetryRecord{
       .eventId = GenerateGuidString(),
       .eventType = eventType,

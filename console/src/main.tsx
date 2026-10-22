@@ -2,7 +2,7 @@ import { FormEvent, lazy, Suspense, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AppProvider, useApp } from "./app-context";
-import { TenantSelect } from "./components/ui";
+import { InstallAppButton, TenantSelect } from "./components/ui";
 import "./styles.css";
 
 import Overview from "./pages/Overview";
@@ -153,6 +153,7 @@ function Shell() {
           <span className="muted small">Viewing</span>
           <TenantSelect value={tenantId} onChange={setTenantId} />
           <span className="spacer" />
+          <InstallAppButton />
           <span className="small muted">{me.user.email} · {me.user.role.replace(/_/g, " ")}</span>
           <button className="small" onClick={logout}>Sign out</button>
         </header>

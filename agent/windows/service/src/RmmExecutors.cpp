@@ -290,7 +290,25 @@ std::uint64_t FileTimeValue(const FILETIME& ft) { return (static_cast<std::uint6
 
 const char kPatchScanScript[] = R"PS(
 $ErrorActionPreference = 'Continue'
-$patches = New-Object System.Collections.Generic.List[object]
+# Windows PowerShell 5.1's ConvertTo-Json throws "Argument types do not match" on some objects
+# (lists of custom objects built from COM data), so the output JSON is written by hand.
+function J($v) {
+  if ($null -eq $v) { return 'null' }
+  if ($v -is [bool]) { if ($v) { return 'true' } else { return 'false' } }
+  $sb = New-Object System.Text.StringBuilder
+  [void]$sb.Append('"')
+  foreach ($ch in ([string]$v).ToCharArray()) {
+    $code = [int]$ch
+    if ($code -eq 34) { [void]$sb.Append('\"') }
+    elseif ($code -eq 92) { [void]$sb.Append('\\') }
+    elseif ($code -lt 32) { [void]$sb.Append(('\u{0:x4}' -f $code)) }
+    else { [void]$sb.Append($ch) }
+  }
+  [void]$sb.Append('"')
+  return $sb.ToString()
+}
+function O($h) { return '{' + ((@($h.Keys) | ForEach-Object { (J ([string]$_)) + ':' + (J $h[$_]) }) -join ',') + '}' }
+$patches = New-Object System.Collections.ArrayList
 try {
   $session = New-Object -ComObject Microsoft.Update.Session
   $searcher = $session.CreateUpdateSearcher()
@@ -301,8 +319,9 @@ try {
     $cats = ($u.Categories | ForEach-Object { $_.Name }) -join ', '
     $released = ''
     try { $released = $u.LastDeploymentChangeTime.ToUniversalTime().ToString('o') } catch { }
-    $patches.Add([pscustomobject]@{ id = $id; title = $u.Title; classification = $cats; severity = [string]$u.MsrcSeverity;
-      source = 'windows-update'; rebootRequired = [bool]$u.RebootRequired; releasedAt = $released })
+    [void]$patches.Add((O ([ordered]@{ id = [string]$id; title = [string]$u.Title; classification = [string]$cats;
+      severity = [string]$u.MsrcSeverity; source = 'windows-update'; rebootRequired = [bool]$u.RebootRequired;
+      releasedAt = [string]$released })))
   }
 } catch { [Console]::Error.WriteLine("Windows Update search failed: $_") }
 $winget = $env:FENRIR_WINGET
@@ -320,18 +339,41 @@ if ($winget -and (Test-Path $winget)) {
       $pkg = $line.Substring($idAt, $verAt - $idAt).Trim()
       $installed = $line.Substring($verAt, $availAt - $verAt).Trim()
       $available = if ($srcAt -gt 0 -and $line.Length -ge $srcAt) { $line.Substring($availAt, $srcAt - $availAt).Trim() } else { $line.Substring($availAt).Trim() }
-      if ($pkg) { $patches.Add([pscustomobject]@{ id = "winget:$pkg"; title = "$name $installed -> $available"; source = 'winget'; product = $name;
-        installedVersion = $installed; availableVersion = $available; classification = 'third-party' }) }
+      if ($pkg) { [void]$patches.Add((O ([ordered]@{ id = "winget:$pkg"; title = "$name $installed -> $available"; source = 'winget';
+        product = $name; installedVersion = $installed; availableVersion = $available; classification = 'third-party' }))) }
     }
   }
 }
-[Console]::Out.Write((ConvertTo-Json -InputObject @{ patches = @($patches) } -Depth 4 -Compress))
+[Console]::Out.Write('{"patches":[' + ($patches -join ',') + ']}')
 )PS";
 
 const char kPatchInstallScript[] = R"PS(
 $ErrorActionPreference = 'Continue'
+# Windows PowerShell 5.1's ConvertTo-Json throws "Argument types do not match" on some objects
+# (lists of custom objects built from COM data), so the output JSON is written by hand.
+function J($v) {
+  if ($null -eq $v) { return 'null' }
+  if ($v -is [bool]) { if ($v) { return 'true' } else { return 'false' } }
+  $sb = New-Object System.Text.StringBuilder
+  [void]$sb.Append('"')
+  foreach ($ch in ([string]$v).ToCharArray()) {
+    $code = [int]$ch
+    if ($code -eq 34) { [void]$sb.Append('\"') }
+    elseif ($code -eq 92) { [void]$sb.Append('\\') }
+    elseif ($code -lt 32) { [void]$sb.Append(('\u{0:x4}' -f $code)) }
+    else { [void]$sb.Append($ch) }
+  }
+  [void]$sb.Append('"')
+  return $sb.ToString()
+}
+function O($h) { return '{' + ((@($h.Keys) | ForEach-Object { (J ([string]$_)) + ':' + (J $h[$_]) }) -join ',') + '}' }
 $ids = @($env:FENRIR_PATCH_IDS -split ',' | Where-Object { $_ })
-$results = New-Object System.Collections.Generic.List[object]
+$results = New-Object System.Collections.ArrayList
+$done = @{}
+function Add-Result($id, $ok, $err) {
+  $done[[string]$id] = $true
+  [void]$results.Add((O ([ordered]@{ id = [string]$id; success = [bool]$ok; error = [string]$err })))
+}
 $rebootRequired = $false
 $wu = @($ids | Where-Object { $_ -notlike 'winget:*' })
 $wg = @($ids | Where-Object { $_ -like 'winget:*' } | ForEach-Object { $_.Substring(7) })
@@ -359,14 +401,15 @@ if ($wu.Count -gt 0) {
         $ok = ($r.ResultCode -eq 2 -or $r.ResultCode -eq 3)
         $err = ''
         if (-not $ok) { $err = 'Windows Update result {0}, HRESULT 0x{1:X8}' -f $r.ResultCode, $r.HResult }
-        $results.Add([pscustomobject]@{ id = $names[$i]; success = $ok; error = $err })
+        Add-Result $names[$i] $ok $err
       }
     }
     foreach ($id in $wu) {
-      if (-not ($results | Where-Object { $_.id -eq $id })) { $results.Add([pscustomobject]@{ id = $id; success = $true; error = 'already installed or superseded' }) }
+      if (-not $done.ContainsKey([string]$id)) { Add-Result $id $true 'already installed or superseded' }
     }
   } catch {
-    foreach ($id in $wu) { $results.Add([pscustomobject]@{ id = $id; success = $false; error = "$_" }) }
+    $failure = "$_"
+    foreach ($id in $wu) { if (-not $done.ContainsKey([string]$id)) { Add-Result $id $false $failure } }
   }
 }
 $winget = $env:FENRIR_WINGET
@@ -375,9 +418,9 @@ foreach ($pkg in $wg) {
   $code = $LASTEXITCODE
   $err = ''
   if ($code -ne 0) { $err = "winget exit code $code" }
-  $results.Add([pscustomobject]@{ id = "winget:$pkg"; success = ($code -eq 0); error = $err })
+  Add-Result "winget:$pkg" ($code -eq 0) $err
 }
-[Console]::Out.Write((ConvertTo-Json -InputObject @{ results = @($results); rebootRequired = $rebootRequired } -Depth 4 -Compress))
+[Console]::Out.Write('{"results":[' + ($results -join ',') + '],"rebootRequired":' + (J ([bool]$rebootRequired)) + '}')
 )PS";
 
 std::string ScheduleReboot(const json::Value& payload, bool rebootRequired) {

@@ -122,6 +122,25 @@ std::string RawJson(const json::Value& v, const char* key) {
 // Options (written by the service to a SYSTEM-only file, then deleted)
 // ---------------------------------------------------------------------------
 
+// One log file per session next to the (deleted) options file, e.g. runtime\\remote\\<session>.log,
+// so a session that never connects can be diagnosed. The token is never written.
+std::filesystem::path g_logPath;
+std::mutex g_logMutex;
+
+void HelperLog(const std::string& line) {
+  if (g_logPath.empty()) {
+    return;
+  }
+  SYSTEMTIME now{};
+  GetSystemTime(&now);
+  char stamp[32]{};
+  snprintf(stamp, sizeof(stamp), "%04u-%02u-%02uT%02u:%02u:%02uZ ", now.wYear, now.wMonth, now.wDay, now.wHour,
+           now.wMinute, now.wSecond);
+  std::lock_guard lock(g_logMutex);
+  std::ofstream out(g_logPath, std::ios::binary | std::ios::app);
+  out << stamp << line << "\r\n";
+}
+
 struct Options {
   std::string sessionId, relayUrl, token, mode, technician, consent{"when_user_present"}, onConsentTimeout{"deny"};
   int consentTimeout{30}, maxFps{15}, quality{70}, idleMinutes{30};
@@ -361,6 +380,7 @@ void Session::End(const std::string& reason) {
   if (!running_.exchange(false)) {
     return;
   }
+  HelperLog("Session ended: " + reason);
   socket_.SendText("{\"ch\":\"sys\",\"t\":\"end\",\"reason\":" + Q(reason) + "}");
   screenCv_.notify_all();
   socket_.Close(1000, reason);
@@ -1238,11 +1258,16 @@ void Session::Dispatch(const json::Value& m) {
 }
 
 int Session::Run() {
+  HelperLog("Starting " + (options_.mode.empty() ? std::string("desktop") : options_.mode) + " session " +
+            options_.sessionId + " for " + options_.technician + "; connecting to " + options_.relayUrl);
   try {
     socket_.Connect(Utf8ToWide(options_.relayUrl + (options_.relayUrl.find('?') == std::string::npos ? "?token=" : "&token=") + options_.token));
-  } catch (const std::exception&) {
+  } catch (const std::exception& error) {
+    HelperLog(std::string("Could not connect to the relay: ") + error.what() +
+              ". Check that this PC can reach that address (FENRIR_PUBLIC_URL on the server).");
     return 2;
   }
+  HelperLog("Connected to the relay.");
   quality_ = options_.quality;
   fps_ = options_.maxFps;
   if (options_.mode == "desktop" || options_.mode.empty()) {
@@ -1250,6 +1275,7 @@ int Session::Run() {
       socket_.SendText("{\"ch\":\"sys\",\"t\":\"consent\",\"state\":\"pending\"}");
     }
     if (!AskConsent(options_)) {
+      HelperLog("The signed-in user declined the connection, or the consent prompt timed out.");
       socket_.SendText("{\"ch\":\"sys\",\"t\":\"consent\",\"state\":\"denied\"}");
       End("the user declined the connection");
       return 3;
@@ -1310,7 +1336,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   }
   LocalFree(argv);
   Options options;
+  if (!optionsPath.empty()) {
+    g_logPath = std::filesystem::path(optionsPath).replace_extension(L".log");
+  }
   if (optionsPath.empty() || !LoadOptions(optionsPath, &options)) {
+    HelperLog("Could not read the session options file.");
     return 1;
   }
   SetProcessDPIAware();
@@ -1321,6 +1351,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   Session session(options);
   g_session = &session;
   const int code = session.Run();
+  HelperLog("Helper exiting with code " + std::to_string(code) + ".");
   g_session = nullptr;
   Gdiplus::GdiplusShutdown(gdiplusToken);
   CoUninitialize();
