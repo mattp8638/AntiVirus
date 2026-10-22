@@ -966,7 +966,27 @@ EnrollmentResult ControlPlaneClient::Enroll(const AgentState& state) const {
       .policy = ParsePolicySnapshot(*policyObject)};
 }
 
-HeartbeatResult ControlPlaneClient::SendHeartbeat(const AgentState& state) const {
+std::wstring ControlPlaneClient::DeviceApiKey(const AgentState& state) {
+  return ExtractDeviceApiKeyFromCommandChannelUrl(state.commandChannelUrl);
+}
+
+std::wstring ControlPlaneClient::RealtimeUrl(const AgentState& state) const {
+  auto base = baseUrl_;
+  while (!base.empty() && base.back() == L'/') {
+    base.pop_back();
+  }
+  if (base.size() > 7 && base.compare(base.size() - 7, 7, L"/api/v1") == 0) {
+    base.resize(base.size() - 7);
+  }
+  if (base.rfind(L"https://", 0) == 0) {
+    base = L"wss://" + base.substr(8);
+  } else if (base.rfind(L"http://", 0) == 0) {
+    base = L"ws://" + base.substr(7);
+  }
+  return base + L"/api/v1/devices/" + state.deviceId + L"/realtime";
+}
+
+HeartbeatResult ControlPlaneClient::SendHeartbeat(const AgentState& state, const std::string& metricsJson) const {
   if (state.deviceId.empty()) {
     throw std::runtime_error("Cannot send heartbeat without a device identifier");
   }
@@ -978,8 +998,11 @@ HeartbeatResult ControlPlaneClient::SendHeartbeat(const AgentState& state) const
        << "\"agentVersion\":\"" << EscapeJsonString(state.agentVersion) << "\","
        << "\"platformVersion\":\"" << EscapeJsonString(state.platformVersion) << "\","
        << "\"healthState\":\"" << EscapeJsonString(state.healthState) << "\","
-       << "\"isolated\":" << (state.isolated ? "true" : "false")
-       << "}";
+       << "\"isolated\":" << (state.isolated ? "true" : "false");
+  if (!metricsJson.empty()) {
+    body << ",\"metrics\":" << metricsJson;
+  }
+  body << "}";
 
   const auto response =
       RequestJson(L"POST", JoinUrl(baseUrl_, L"/api/v1/devices/" + state.deviceId + L"/heartbeat"), body.str(),

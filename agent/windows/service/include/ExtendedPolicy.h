@@ -55,6 +55,8 @@ struct ExtendedPolicy {
   DeviceControlSettings deviceControl;
   bool ransomwareEnabled{true};
   bool canaryFiles{true};
+  bool scriptExecution{true};      // modules.response.scriptExecution
+  bool remoteAccessEnabled{true};  // modules.remoteAccess.enabled
 
   static ExtendedPolicy Parse(const std::string& modulesJson);
 };

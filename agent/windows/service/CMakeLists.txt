@@ -113,11 +113,27 @@ add_library(antivirus-agent-core STATIC
   src/ProcessGuard.cpp
   src/YaraScanner.cpp
   src/EventEnvelope.cpp
+  src/RmmExecutors.cpp
+  src/WebSocketClient.cpp
 )
 
 target_include_directories(antivirus-agent-core PUBLIC include ../shared/include ../sensor/etw/include ../sensor/wfp/include)
-target_link_libraries(antivirus-agent-core PUBLIC antivirus-sqlite3 winhttp ole32 oleaut32 bcrypt advapi32 tdh crypt32 wintrust fwpuclnt iphlpapi shell32 ws2_32 wtsapi32 userenv netapi32)
+target_link_libraries(antivirus-agent-core PUBLIC antivirus-sqlite3 winhttp ole32 oleaut32 bcrypt advapi32 tdh crypt32 wintrust fwpuclnt iphlpapi shell32 ws2_32 wtsapi32 userenv netapi32 urlmon)
 antivirus_apply_portable_runtime(antivirus-agent-core)
+
+# Remote access helper: started by the service in the signed-in user's session.
+add_executable(fenrir-remote WIN32
+  ../tools/remotehelper/src/RemoteHelperMain.cpp
+  src/WebSocketClient.cpp
+  src/ExtendedPolicy.cpp
+  src/BehaviorRules.cpp
+  src/StringUtils.cpp
+)
+target_include_directories(fenrir-remote PRIVATE include ../shared/include)
+target_link_libraries(fenrir-remote PRIVATE winhttp gdiplus ole32 wtsapi32 advapi32 shell32 user32 gdi32)
+target_link_options(fenrir-remote PRIVATE -municode)
+antivirus_set_runtime_output(fenrir-remote "${ANTIVIRUS_DEV_OUTPUT_ROOT}")
+antivirus_apply_portable_runtime(fenrir-remote)
 
 add_library(antivirus-amsi-provider-core STATIC
   ../provider/amsi/src/AntiVirusAmsiProvider.cpp
@@ -431,4 +447,8 @@ target_include_directories(fenrir-mltest PRIVATE include)
 add_executable(fenrir-behavior-tests ../tests/BehaviorRulesTests.cpp src/BehaviorRules.cpp)
 target_include_directories(fenrir-behavior-tests PRIVATE include)
 add_executable(fenrir-policy-tests ../tests/PolicyAndDeviceControlTests.cpp src/ExtendedPolicy.cpp src/BehaviorRules.cpp src/DeviceControl.cpp)
+add_executable(fenrir-rmm-tests ../tests/RmmExecutorTests.cpp src/RmmExecutors.cpp src/ExtendedPolicy.cpp src/BehaviorRules.cpp src/StringUtils.cpp src/CryptoUtils.cpp)
+target_include_directories(fenrir-rmm-tests PRIVATE include ../shared/include)
+target_link_libraries(fenrir-rmm-tests PRIVATE wtsapi32 userenv urlmon advapi32 bcrypt crypt32 wintrust)
+antivirus_apply_portable_runtime(fenrir-rmm-tests)
 target_include_directories(fenrir-policy-tests PRIVATE include)
