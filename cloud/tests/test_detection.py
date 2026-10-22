@@ -197,3 +197,12 @@ def test_mitre_coverage(client, admin):
     coverage = client.get("/api/console/mitre", headers=admin).json()
     techniques = {t["technique"] for t in coverage["techniques"]}
     assert {"T1486", "T1490", "T1003.001", "T1059.001"} <= techniques
+
+
+def test_incident_upgrades_to_ransomware_playbook(client, admin, device):
+    send(client, device, [win_event("process.start", {"processImagePath": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                                                      "commandLine": "powershell -enc AAAA"}, "p1")])
+    send(client, device, [win_event("process.start", {"processImagePath": "C:\\Windows\\System32\\vssadmin.exe",
+                                                      "commandLine": "vssadmin delete shadows /all"}, "p2")])
+    incidents = client.get("/api/console/incidents", headers=admin).json()
+    assert len(incidents) == 1 and incidents[0]["playbook"] == "ransomware-response"

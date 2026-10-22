@@ -323,9 +323,15 @@ def _route_alert(db: Session, device: Device, tenant: Tenant | None, alert: Aler
         db.add(incident)
         db.flush()
         created = True
-    elif services.SEVERITY_ORDER[alert.severity] > services.SEVERITY_ORDER.get(incident.severity, 0):
-        incident.severity = alert.severity
-        incident.title = f"{alert.title} on {device.hostname}"
+    else:
+        if services.SEVERITY_ORDER[alert.severity] > services.SEVERITY_ORDER.get(incident.severity, 0):
+            incident.severity = alert.severity
+            incident.title = f"{alert.title} on {device.hostname}"
+        # Upgrade to a more specific playbook (e.g. ransomware) while nobody has started the checklist.
+        book = choose_playbook(sorted(set(incident.mitre or []) | set(alert.mitre)), alert.title)
+        if book and book.get("id") != incident.playbook and book.get("match_mitre") \
+                and not any(item.get("done") for item in incident.checklist or []):
+            incident.playbook, incident.checklist = book["id"], _checklist(book)
     alert.incident_id = incident.id
     incident.alert_count = (incident.alert_count or 0) + 1
     incident.mitre = sorted(set(incident.mitre or []) | set(alert.mitre))
