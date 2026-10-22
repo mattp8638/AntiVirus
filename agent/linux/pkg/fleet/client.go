@@ -183,9 +183,12 @@ type HeartbeatResponse struct {
 	Approved                bool   `json:"approved"`
 }
 
-func (c *Client) Heartbeat(agentVersion, health string, isolated bool) (*HeartbeatResponse, error) {
+func (c *Client) Heartbeat(agentVersion, health string, isolated bool, metrics map[string]interface{}) (*HeartbeatResponse, error) {
 	var out HeartbeatResponse
 	body := map[string]interface{}{"agentVersion": agentVersion, "platformVersion": agentVersion, "healthState": health, "isolated": isolated}
+	if metrics != nil {
+		body["metrics"] = metrics
+	}
 	return &out, c.do("POST", "/api/v1/devices/"+c.DeviceID+"/heartbeat", body, &out, nil)
 }
 

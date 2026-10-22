@@ -15,8 +15,8 @@ agent-arm64:
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o $(OUT)/fenrir-agent-linux-arm64 ./cmd/fenrir-agent
 
 test:
-	go vet ./pkg/fleet ./pkg/ml ./cmd/fenrir-agent
-	go test ./pkg/fleet/ ./pkg/ml/
+	go vet ./pkg/fleet ./pkg/ml ./pkg/remote ./cmd/fenrir-agent
+	go test ./pkg/fleet/ ./pkg/ml/ ./pkg/remote/
 
 # Experimental eBPF sensor (needs clang, llvm, libbpf headers).
 generate:
