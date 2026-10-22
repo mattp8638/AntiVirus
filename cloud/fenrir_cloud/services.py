@@ -116,13 +116,14 @@ def enqueue_command(
         raise CommandError(f"{command_type} needs recordId")
     if device.platform not in spec.platforms:
         raise CommandError(f"{command_type} is not supported on {device.platform}")
-    # Don't stack identical pending actions (e.g. two auto-isolations).
-    existing = db.execute(
+    # Don't stack identical pending actions (e.g. two auto-isolations). Different payloads (another remote
+    # session, a script with other parameters) are different actions.
+    for existing in db.execute(
         select(Command).where(Command.device_id == device.id, Command.type == command_type, Command.status == "pending",
                               Command.target_path == target_path, Command.record_id == record_id)
-    ).scalar_one_or_none()
-    if existing:
-        return existing
+    ).scalars():
+        if (existing.payload or {}) == (payload or {}):
+            return existing
     command = Command(
         tenant_id=device.tenant_id, device_id=device.id, type=command_type, issued_by=issued_by,
         target_path=target_path, record_id=record_id, payload=payload or {}, reason=reason, incident_id=incident_id,

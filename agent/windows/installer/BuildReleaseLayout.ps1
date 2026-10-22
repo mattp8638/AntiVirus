@@ -208,6 +208,7 @@ function Remove-LegacyBuildOutputs {
     foreach ($name in @(
         'fenrir-agent-service.exe',
         'fenrir-amsi-provider.dll',
+        'fenrir-remote.exe',
         'fenrir-amsitestcli.exe',
         'fenrir-endpoint-client.exe',
         'fenrir-etwtestcli.exe',
@@ -324,6 +325,7 @@ $requiredBuiltArtifacts = @(
     (Join-Path $outputRoot 'fenrir-endpoint-client.exe'),
     (Join-Path $outputRoot 'fenrir-pam.exe'),
     (Join-Path $outputRoot 'fenrir-amsi-provider.dll'),
+    (Join-Path $outputRoot 'fenrir-remote.exe'),
     (Join-Path $outputRoot 'WebView2Loader.dll'),
     (Join-Path $outputRoot 'tools\fenrir-scannercli.exe'),
     (Join-Path $outputRoot 'tools\fenrir-amsitestcli.exe'),

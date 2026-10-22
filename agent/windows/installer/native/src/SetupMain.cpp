@@ -49,6 +49,7 @@ constexpr wchar_t kInstallFolderName[] = L"Fenrir Endpoint";
 constexpr wchar_t kServiceExeName[] = L"fenrir-agent-service.exe";
 constexpr wchar_t kEndpointExeName[] = L"fenrir-endpoint-client.exe";
 constexpr wchar_t kPamExeName[] = L"fenrir-pam.exe";
+constexpr wchar_t kRemoteHelperExeName[] = L"fenrir-remote.exe";
 constexpr wchar_t kAmsiDllName[] = L"fenrir-amsi-provider.dll";
 constexpr wchar_t kScannerCliName[] = L"fenrir-scannercli.exe";
 constexpr wchar_t kAmsiTestCliName[] = L"fenrir-amsitestcli.exe";
@@ -2212,6 +2213,7 @@ bool InstallPayloadFiles(HWND hwnd, UiContext* context, const bool repair, std::
       {IDR_PAYLOAD_ENDPOINT_CLIENT, kEndpointExeName, 25, L"Installing endpoint client", true},
       {IDR_PAYLOAD_PAM_CLIENT, kPamExeName, 35, L"Installing PAM tool", true},
       {IDR_PAYLOAD_AMSI_PROVIDER, kAmsiDllName, 45, L"Installing AMSI provider", true},
+      {IDR_PAYLOAD_REMOTE_HELPER, kRemoteHelperExeName, 50, L"Installing remote access helper", true},
       {IDR_PAYLOAD_SCANNERCLI, kToolsRelativePath, 55, L"Installing diagnostic scanner", true},
       {IDR_PAYLOAD_AMSITESTCLI, kToolsAmsiTestCliRelativePath, 60, L"Installing AMSI diagnostic tool", true},
       {IDR_PAYLOAD_ETWTESTCLI, kToolsEtwTestCliRelativePath, 64, L"Installing ETW diagnostic tool", true},

@@ -1,6 +1,6 @@
 # Fenrir Platform
 
-One product that combines endpoint protection (AV, EDR, ransomware, DNS and web protection), a SIEM/XDR, exposure management (vulnerabilities, attack surface, compliance) and an MSP business suite (CRM, PSA ticketing, billing). Five earlier codebases are folded into it:
+One product that combines endpoint protection (AV, EDR, ransomware, DNS and web protection), a SIEM/XDR, exposure management (vulnerabilities, attack surface, compliance), an RMM (monitoring, scripting, automation, patching, software deployment and browser-based remote control) and an MSP business suite (a ConnectWise-style PSA, CRM, agreements and billing, and a client portal). Five earlier codebases are folded into it:
 
 | Source repo | Lives in | Role now |
 |---|---|---|
@@ -12,9 +12,10 @@ One product that combines endpoint protection (AV, EDR, ransomware, DNS and web 
 
 New in this repo:
 
-- **`cloud/`: Fenrir Cloud.** One FastAPI service that runs the agent control plane, SIEM, detection, response, DNS filtering, intel, exposure management, compliance, CRM/PSA and billing. It implements the API contract the Windows agent already speaks.
+- **`cloud/`: Fenrir Cloud.** One FastAPI service that runs the agent control plane, SIEM, detection, response, DNS filtering, intel, exposure management, compliance, RMM, the remote-access relay, PSA, CRM and billing. It implements the API contract the Windows agent already speaks.
 - **`console/`: Fenrir Console.** A React web app for all of the above, served by Fenrir Cloud.
-- **`agent/linux/cmd/fenrir-agent`.** A fully managed Linux agent: static Go binary, no kernel modules.
+- **`agent/linux/cmd/fenrir-agent`.** A fully managed Linux agent: static Go binary, no kernel modules. Includes remote desktop (X11), terminal and file transfer.
+- **`agent/windows/tools/remotehelper`: `fenrir-remote.exe`.** The Windows remote-control helper the service starts in the signed-in user's session.
 - **`deploy/`, `packaging/`, `Makefile`.** One Docker image, docker-compose with PostgreSQL, Linux packages and CI.
 
 ## Quick start (local)
@@ -24,7 +25,7 @@ make console agents                      # build the UI and Linux agents
 cd cloud && pip install -r requirements.txt
 FENRIR_ADMIN_PASSWORD='choose-a-long-one' FENRIR_PUBLIC_URL=http://localhost:8080 \
   python3 -m uvicorn --factory fenrir_cloud.main:create_app --port 8080
-# optional: realistic demo data (3 customers, 15 devices, a replayed ransomware attack)
+# optional: demo data (3 customers, 15 devices, a replayed ransomware attack, patches, scripts, tickets, time, quotes)
 python3 -m fenrir_cloud.demo --password 'choose-a-long-one'
 ```
 
@@ -50,9 +51,9 @@ Put it behind TLS (Caddy, nginx, Cloudflare Tunnel). Agents and DoH need HTTPS.
 ## Tests
 
 ```bash
-cd cloud && python3 -m pytest -q             # 43 tests; set FENRIR_TEST_DATABASE_URL to run on PostgreSQL
+cd cloud && python3 -m pytest -q             # 75 tests; set FENRIR_TEST_DATABASE_URL to run on PostgreSQL
 cd ml && python3 -m pytest -q                # feature/model parity
-make -C agent/linux test                     # Go unit tests
+make -C agent/linux test                     # Go unit tests (remote desktop tests use Xvfb when installed)
 cd console && npm run build                  # type-check + bundle
 ```
 
@@ -64,6 +65,8 @@ cd console && npm run build                  # type-check + bundle
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how the pieces fit together
 - [docs/COMPETITIVE_ANALYSIS.md](docs/COMPETITIVE_ANALYSIS.md): feature map against Heimdal, ESET, ConnectSecure, RoboShadow, SentinelOne and Defender
+- [docs/RMM_PSA.md](docs/RMM_PSA.md): RMM, remote access and PSA: what they do and how to set up email
+- [docs/REMOTE_PROTOCOL.md](docs/REMOTE_PROTOCOL.md): the remote-access wire protocol
 - [docs/ROADMAP.md](docs/ROADMAP.md): what is built, what is next
 - [docs/DRIVER_SIGNING.md](docs/DRIVER_SIGNING.md): what Windows/Apple signing really costs
 - [components/README.md](components/README.md): where the vendored code came from and what was removed

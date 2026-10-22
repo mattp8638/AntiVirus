@@ -103,6 +103,7 @@ def mint_viewer_token(session_id: str, principal: Principal = Depends(current_pr
 @router.post("/sessions/{session_id}/end")
 def end_remote_session(session_id: str, body: dict = Body(default={}), principal: Principal = Depends(current_principal),
                        db: Session = Depends(get_db)):
+    principal.require("respond")
     session = _owned_session(db, principal, session_id)
     remote.end_session(db, session, principal.actor, "ended")
     entry = None

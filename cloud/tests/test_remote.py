@@ -138,3 +138,11 @@ def test_other_tenants_cannot_connect(client, admin, tenant, device):
     assert client.post(f"/api/console/remote/sessions/{session['id']}/viewer-token", headers=outsider).status_code == 404
     linux = enroll(client, admin, tenant, hostname="lx", os_version="Ubuntu 24.04", serial="LX")
     assert start(client, admin, linux, mode="terminal")["mode"] == "terminal"
+
+
+def test_second_session_gets_its_own_command(client, admin, tenant, device):
+    first = start(client, admin, device)
+    second = start(client, admin, device)
+    items = client.get(f"/api/v1/devices/{device['deviceId']}/commands/pending", headers=device["headers"]).json()["items"]
+    sessions = {json.loads(i["payloadJson"])["sessionId"] for i in items if i["type"] == "remote.session.start"}
+    assert sessions == {first["id"], second["id"]}
