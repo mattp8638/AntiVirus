@@ -167,6 +167,7 @@ function Remove-LegacyBuildOutputs {
     foreach ($name in @(
         'fenrir-agent-service.exe',
         'fenrir-amsi-provider.dll',
+        'fenrir-remote.exe',
         'fenrir-amsitestcli.exe',
         'fenrir-endpoint-client.exe',
         'fenrir-etwtestcli.exe',

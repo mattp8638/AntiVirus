@@ -20,9 +20,10 @@ import (
 	"time"
 
 	"github.com/AntiVirus/agent/linux/pkg/ml"
+	"github.com/AntiVirus/agent/linux/pkg/remote"
 )
 
-const Version = "1.0.0"
+const Version = "1.1.0"
 
 type Config struct {
 	Server          string
@@ -61,15 +62,24 @@ type Agent struct {
 	mu      sync.Mutex
 	queue   []Event
 	stop    chan struct{}
+	wake    chan struct{}
 	lastInv time.Time
+	metrics *MetricsCollector
+	remote  *remote.Manager
+	cmdMu   sync.Mutex
 }
 
 func New(cfg Config) *Agent {
 	if cfg.ProcRoot == "" {
 		cfg.ProcRoot = "/proc"
 	}
-	return &Agent{cfg: cfg, client: NewClient(cfg.Server), scanner: NewScanner(filepath.Join(cfg.StateDir, "quarantine")),
-		stop: make(chan struct{})}
+	a := &Agent{cfg: cfg, client: NewClient(cfg.Server), scanner: NewScanner(filepath.Join(cfg.StateDir, "quarantine")),
+		stop: make(chan struct{}), wake: make(chan struct{}, 1), metrics: &MetricsCollector{ProcRoot: cfg.ProcRoot},
+		remote: remote.NewManager()}
+	a.remote.OnEvent = func(eventType, summary string, payload map[string]interface{}) {
+		a.emit(eventType, "remote-access", summary, payload)
+	}
+	return a
 }
 
 func (a *Agent) statePath() string { return filepath.Join(a.cfg.StateDir, "state.json") }
@@ -386,7 +396,7 @@ func (a *Agent) refreshSignatures() {
 }
 
 func (a *Agent) heartbeat() {
-	resp, err := a.client.Heartbeat(Version, "healthy", a.state.Isolated)
+	resp, err := a.client.Heartbeat(Version, "healthy", a.state.Isolated, a.metrics.Collect())
 	if err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && apiErr.Status == 401 {
@@ -416,12 +426,16 @@ func (a *Agent) Run() {
 	sigs := time.NewTicker(time.Duration(maxInt(5, a.state.Policy.ModuleInt("updates", "signatureIntervalMinutes", 60))) * time.Minute)
 	upload := time.NewTicker(time.Duration(maxInt(5, a.state.Policy.ModuleInt("edr", "telemetryUploadSeconds", 30))) * time.Second)
 	defer func() { sense.Stop(); beat.Stop(); commands.Stop(); sigs.Stop(); upload.Stop() }()
+	a.metrics.Collect() // prime the CPU counters so the first heartbeat has a real value
 	a.heartbeat()
+	go a.listenRealtime()
 	for {
 		select {
 		case <-a.stop:
 			_ = a.Flush()
 			return
+		case <-a.wake:
+			a.RunCommands()
 		case <-sense.C:
 			a.SenseOnce()
 		case <-upload.C:
@@ -453,6 +467,8 @@ func maxInt(a, b int) int {
 
 // RunCommands executes pending remote actions and reports results.
 func (a *Agent) RunCommands() {
+	a.cmdMu.Lock()
+	defer a.cmdMu.Unlock()
 	cmds, err := a.client.PendingCommands(20)
 	if err != nil {
 		log.Printf("command poll failed: %v", err)
@@ -463,7 +479,10 @@ func (a *Agent) RunCommands() {
 		status := "completed"
 		if err != nil {
 			status = "failed"
-			result = map[string]interface{}{"error": err.Error()}
+			if result == nil {
+				result = map[string]interface{}{}
+			}
+			result["error"] = err.Error()
 		}
 		if err := a.client.CompleteCommand(cmd.ID, status, result); err != nil {
 			log.Printf("could not report command %s: %v", cmd.ID, err)
@@ -568,6 +587,41 @@ func (a *Agent) Execute(cmd Command) (map[string]interface{}, error) {
 		return a.triage(), nil
 	case "agent.repair":
 		return map[string]interface{}{"repaired": true, "version": Version}, a.saveState()
+	case "script.run":
+		if !a.state.Policy.ModuleBool("response", "scriptExecution", true) {
+			return nil, errors.New("script execution is turned off by policy")
+		}
+		return RunScript(a.cfg.StateDir, cmd.PayloadJSON)
+	case "patch.scan":
+		return PatchScan()
+	case "patch.install":
+		return PatchInstall(cmd.PayloadJSON)
+	case "software.install":
+		return SoftwareInstall(cmd.PayloadJSON, false)
+	case "software.uninstall":
+		return SoftwareInstall(cmd.PayloadJSON, true)
+	case "service.control":
+		return ServiceControl(cmd.TargetPath, cmd.PayloadJSON)
+	case "device.reboot", "device.shutdown":
+		return PowerAction(cmd.Type == "device.reboot", cmd.PayloadJSON)
+	case "remote.session.start":
+		var opts remote.Options
+		if err := json.Unmarshal([]byte(cmd.PayloadJSON), &opts); err != nil {
+			return nil, fmt.Errorf("bad remote session payload: %w", err)
+		}
+		if !a.state.Policy.ModuleBool("remoteAccess", "enabled", true) {
+			return map[string]interface{}{"consent": "denied"}, errors.New("remote access is turned off by policy")
+		}
+		if err := a.remote.Start(opts); err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{"started": true, "consent": "not_required"}, nil
+	case "remote.session.end":
+		var p struct {
+			SessionID string `json:"sessionId"`
+		}
+		_ = json.Unmarshal([]byte(cmd.PayloadJSON), &p)
+		return map[string]interface{}{"ended": a.remote.End(p.SessionID)}, nil
 	}
 	return nil, fmt.Errorf("%s is not supported by the Linux agent %s", cmd.Type, Version)
 }

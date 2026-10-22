@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -58,6 +58,7 @@ def tenant_subtree(db: Session, root_id: str) -> set[str]:
 
 
 def current_principal(
+    request: Request,
     creds: HTTPAuthorizationCredentials | None = Depends(bearer),
     db: Session = Depends(get_db),
 ) -> Principal:
@@ -69,6 +70,9 @@ def current_principal(
     user = db.get(User, payload.get("sub"))
     if user is None or not user.active:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Account disabled")
+    path = request.url.path
+    if user.role == "client" and not (path.startswith("/api/portal") or path.startswith("/api/console/auth")):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Client accounts can only use the client portal")
     if user.role == "platform_admin":
         scope = {tid for (tid,) in db.execute(select(Tenant.id)).all()}
     else:

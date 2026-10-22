@@ -3,8 +3,12 @@
 #include <winsock2.h>
 #include <Windows.h>
 
+#include <atomic>
 #include <filesystem>
+#include <map>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 #include "AgentConfig.h"
@@ -119,6 +123,13 @@ class AgentService {
   std::wstring ExecuteSoftwareCommand(const RemoteCommand& command, bool uninstall, bool searchOnly);
   std::wstring ExecuteSoftwareBlockCommand(const RemoteCommand& command);
   void EnforceBlockedSoftware();
+  // RMM and remote access
+  std::wstring ExecuteRmmCommand(const RemoteCommand& command);
+  std::wstring LaunchRemoteHelper(const RemoteCommand& command);
+  std::wstring EndRemoteHelper(const RemoteCommand& command);
+  void StartRealtimeChannel();
+  void StopRealtimeChannel();
+  void RealtimeLoop();
 
   AgentConfig config_{};
   AgentState state_{};
@@ -140,6 +151,11 @@ class AgentService {
   bool lastTelemetryFlushFailed_{false};
   HANDLE stopEvent_{nullptr};
   HANDLE pamRequestEvent_{nullptr};
+  // Set by the realtime channel when the cloud queues a command.
+  HANDLE wakeEvent_{nullptr};
+  std::thread realtimeThread_{};
+  std::mutex remoteMutex_{};
+  std::map<std::wstring, HANDLE> remoteHelpers_{};
 };
 
 }  // namespace antivirus::agent

@@ -10,11 +10,11 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from .. import audit, compliance, policy_schema, services
+from .. import audit, compliance, policy_schema, psa, services
 from ..db import get_db
 from ..deps import Principal, current_principal, scoped_tenant
 from ..models import (Alert, Contact, Contract, Device, DnsQueryLog, Event, Incident, Invoice, Lead, Policy, Project, Tenant,
-                      Ticket, Vulnerability, Webhook, utcnow)
+                      Ticket, TimeEntry, Vulnerability, Webhook, utcnow)
 from ..security import new_secret
 from ..serialize import apply_fields, to_dict
 
@@ -37,7 +37,8 @@ def _get(db: Session, principal: Principal, model, obj_id: str):
 CRM_MODELS = {
     "contacts": (Contact, {"account_tenant_id", "name", "email", "phone", "title", "is_primary", "notes"}),
     "leads": (Lead, {"company", "contact", "email", "phone", "stage", "value", "seats", "source", "owner", "notes"}),
-    "projects": (Project, {"account_tenant_id", "name", "status", "progress", "budget", "due_date", "tasks"}),
+    "projects": (Project, {"account_tenant_id", "name", "status", "progress", "budget", "due_date", "tasks", "manager", "billing_method",
+                           "estimated_hours", "start_date", "phases", "description"}),
 }
 
 
@@ -144,72 +145,6 @@ def pipeline(principal: Principal = Depends(current_principal), db: Session = De
     return [{"stage": s, "count": c, "value": v or 0} for s, c, v in rows]
 
 
-# --------------------------------------------------------------------------- PSA tickets
-
-
-@router.get("/tickets")
-def list_tickets(tenant_id: str | None = None, status: str | None = None, queue: str | None = None,
-                 principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    scope = scoped_tenant(principal, tenant_id)
-    query = select(Ticket).where(or_(Ticket.account_tenant_id.in_(scope), Ticket.tenant_id.in_(scope)))
-    if status == "active":
-        query = query.where(Ticket.status.notin_(("Resolved", "Closed")))
-    elif status:
-        query = query.where(Ticket.status == status)
-    if queue:
-        query = query.where(Ticket.queue == queue)
-    rows = db.execute(query.order_by(Ticket.priority, Ticket.sla_due_at).limit(1000)).scalars().all()
-    names = dict(db.execute(select(Tenant.id, Tenant.name)).all())
-    now = utcnow()
-    return [{**to_dict(t), "account": names.get(t.account_tenant_id, ""),
-             "slaBreached": bool(t.sla_due_at and t.sla_due_at < now and t.status not in ("Resolved", "Closed"))} for t in rows]
-
-
-@router.post("/tickets")
-def create_ticket(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    account = body.get("accountTenantId") or principal.user.tenant_id
-    principal.check_tenant(account)
-    if not body.get("subject"):
-        raise HTTPException(400, "subject is required")
-    priority = str(body.get("priority") or "P3")
-    if priority not in services.DEFAULT_SLA_HOURS:
-        raise HTTPException(400, "priority must be P1-P4")
-    ticket = services.open_ticket(db, account, str(body["subject"]), str(body.get("description") or ""), priority,
-                                  str(body.get("source") or "portal"), principal.actor, device_id=body.get("deviceId"),
-                                  queue=str(body.get("queue") or "Service Desk"))
-    db.flush()
-    audit.record(db, principal.actor, "ticket.created", f"#{ticket.number}", account)
-    db.commit()
-    return to_dict(ticket)
-
-
-@router.patch("/tickets/{ticket_id}")
-def update_ticket(ticket_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
-                  db: Session = Depends(get_db)):
-    ticket = db.get(Ticket, ticket_id)
-    if ticket is None or (ticket.tenant_id not in principal.tenant_ids and ticket.account_tenant_id not in principal.tenant_ids):
-        raise HTTPException(404, "Not found")
-    if set(body) - {"comment"} and not (principal.can("crm") or principal.can("respond")):
-        raise HTTPException(403, "Your role can only comment on tickets")
-    if body.get("status") and body["status"] not in {"Open", "In Progress", "Waiting", "Resolved", "Closed"}:
-        raise HTTPException(400, "invalid status")
-    changed = apply_fields(ticket, body, {"status", "priority", "assignee", "queue", "billable"})
-    if body.get("addMinutes"):
-        ticket.time_minutes += int(body["addMinutes"])
-        changed.append("time")
-    if body.get("comment"):
-        ticket.comments = (ticket.comments or []) + [{"at": utcnow().isoformat(), "by": principal.actor, "text": str(body["comment"]),
-                                                      "internal": bool(body.get("internal"))}]
-    if "priority" in changed:
-        ticket.sla_due_at = ticket.created_at + timedelta(hours=services.sla_hours(db, ticket.account_tenant_id, ticket.priority))
-    if ticket.status in {"Resolved", "Closed"} and not ticket.resolved_at:
-        ticket.resolved_at = utcnow()
-    ticket.updated_at = utcnow()
-    audit.record(db, principal.actor, "ticket.updated", f"#{ticket.number}", ticket.account_tenant_id, fields=changed)
-    db.commit()
-    return to_dict(ticket)
-
-
 # --------------------------------------------------------------------------- billing
 
 
@@ -224,14 +159,18 @@ def list_contracts(principal: Principal = Depends(current_principal), db: Sessio
              "monthlyValue": round(c.monthly_fee + c.price_per_device * counts.get(c.account_tenant_id, 0), 2)} for c in rows]
 
 
+AGREEMENT_FIELDS = {"plan", "price_per_device", "monthly_fee", "hourly_rate", "included_hours", "currency", "sla", "active",
+                    "agreement_type", "billing_cycle", "end_date", "covered_work_types", "covers_after_hours", "additions",
+                    "business_hours", "notes"}
+
+
 @router.post("/billing/contracts")
 def create_contract(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("billing")
     account = body.get("accountTenantId")
     principal.check_tenant(account)
     contract = Contract(tenant_id=principal.user.tenant_id, account_tenant_id=account, name=str(body.get("name") or "Contract"))
-    apply_fields(contract, body, {"plan", "price_per_device", "monthly_fee", "hourly_rate", "included_hours", "currency", "sla",
-                                  "start_date", "active"})
+    apply_fields(contract, body, AGREEMENT_FIELDS | {"start_date"})
     contract.sla = contract.sla or dict(services.DEFAULT_SLA_HOURS)
     db.add(contract)
     audit.record(db, principal.actor, "billing.contract.created", contract.name, account)
@@ -244,8 +183,7 @@ def update_contract(contract_id: str, body: dict = Body(...), principal: Princip
                     db: Session = Depends(get_db)):
     principal.require("billing")
     contract = _get(db, principal, Contract, contract_id)
-    changed = apply_fields(contract, body, {"name", "plan", "price_per_device", "monthly_fee", "hourly_rate", "included_hours",
-                                            "currency", "sla", "active"})
+    changed = apply_fields(contract, body, AGREEMENT_FIELDS | {"name"})
     audit.record(db, principal.actor, "billing.contract.updated", contract.name, contract.account_tenant_id, fields=changed)
     db.commit()
     return to_dict(contract)
@@ -264,19 +202,39 @@ def generate_invoices(body: dict = Body(default={}), principal: Principal = Depe
         exists = db.execute(select(Invoice).where(Invoice.contract_id == contract.id, Invoice.period == period)).scalar_one_or_none()
         if exists:
             continue
-        devices = db.execute(select(func.count()).where(Device.tenant_id == contract.account_tenant_id, Device.approved.is_(True))).scalar() or 0
-        minutes = db.execute(select(func.sum(Ticket.time_minutes)).where(Ticket.account_tenant_id == contract.account_tenant_id,
-                                                                         Ticket.billable.is_(True), Ticket.updated_at >= start,
-                                                                         Ticket.updated_at < end)).scalar() or 0
+        devices = db.execute(select(Device).where(Device.tenant_id == contract.account_tenant_id, Device.approved.is_(True))).scalars().all()
+        entries = db.execute(select(TimeEntry).where(TimeEntry.account_tenant_id == contract.account_tenant_id,
+                                                     TimeEntry.billable == "Billable", TimeEntry.invoice_id.is_(None),
+                                                     TimeEntry.status.in_(("Open", "Submitted", "Approved")),
+                                                     TimeEntry.started_at < end)).scalars().all()
         lines = []
         if contract.monthly_fee:
             lines.append({"description": f"{contract.plan.title()} plan - monthly fee", "quantity": 1, "unitPrice": contract.monthly_fee})
         if contract.price_per_device and devices:
-            lines.append({"description": f"Protected endpoints ({contract.plan})", "quantity": devices, "unitPrice": contract.price_per_device})
-        extra_hours = max(0.0, minutes / 60 - contract.included_hours)
+            lines.append({"description": f"Protected endpoints ({contract.plan})", "quantity": len(devices), "unitPrice": contract.price_per_device})
+        for addition in contract.additions or []:
+            quantity = float(addition.get("quantity") or 0)
+            auto = str(addition.get("autoCount") or "")
+            if auto.startswith("devices"):
+                platform = auto.partition(":")[2]
+                quantity = len([d for d in devices if not platform or d.platform == platform or
+                                (platform == "server" and "server" in d.os_version.lower())])
+            if quantity and addition.get("unitPrice"):
+                lines.append({"description": str(addition.get("product") or "Addition"), "quantity": quantity,
+                              "unitPrice": float(addition["unitPrice"])})
+        covered_hours = sum(e.hours_billed or e.hours for e in entries if psa.coverage(contract, e.work_type))
+        extra_hours = max(0.0, covered_hours - (contract.included_hours or 0))
         if extra_hours and contract.hourly_rate:
             lines.append({"description": "Support time beyond allowance (hours)", "quantity": round(extra_hours, 2),
                           "unitPrice": contract.hourly_rate})
+        uncovered: dict[str, float] = {}
+        for entry in entries:
+            if not psa.coverage(contract, entry.work_type):
+                uncovered[entry.work_type] = uncovered.get(entry.work_type, 0) + (entry.hours_billed or entry.hours)
+        for work_type, hours in sorted(uncovered.items()):
+            rate = contract.hourly_rate * (1.5 if work_type in psa.AFTER_HOURS_TYPES else 1)
+            if rate:
+                lines.append({"description": f"Time & materials: {work_type} (hours)", "quantity": round(hours, 2), "unitPrice": rate})
         if not lines:
             continue
         for line in lines:
@@ -290,6 +248,8 @@ def generate_invoices(body: dict = Body(default={}), principal: Principal = Depe
                           due_date=(end + timedelta(days=30)).date().isoformat())
         db.add(invoice)
         db.flush()
+        for entry in entries:
+            entry.invoice_id, entry.status = invoice.id, "Billed"
         created.append(to_dict(invoice))
     audit.record(db, principal.actor, "billing.invoices.generated", period, principal.user.tenant_id, count=len(created))
     db.commit()

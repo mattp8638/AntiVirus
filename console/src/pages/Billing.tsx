@@ -16,22 +16,23 @@ export default function Billing() {
   const outstanding = invoices?.filter((i) => ["Sent", "Overdue"].includes(i.status)).reduce((n, i) => n + i.total, 0) ?? 0;
   return (
     <>
-      <PageHead title="Billing" subtitle="Per-device pricing that follows the live device count, plus fees and billable time."
+      <PageHead title="Agreements & billing" subtitle="Agreements set SLAs, covered work and included hours. Invoices follow the live device count, additions and billable time."
                 actions={can("billing") && <>
                   <input type="month" value={period} onChange={(e) => setPeriod(e.target.value)} aria-label="Billing period" />
                   <button disabled={busy} onClick={async () => { const r = await run(() => api<any>("billing/invoices/generate", { body: { period } })); if (r) { reloadInvoices(); setTab("Invoices"); } }}>Generate invoices</button>
-                  <button className="primary" onClick={() => setCreating(true)}>New contract</button>
+                  <button className="primary" onClick={() => setCreating(true)}>New agreement</button>
                 </>} />
       <div className="grid k3">
         <Stat label="Monthly recurring revenue" value={money(mrr)} accent="green" />
-        <Stat label="Active contracts" value={contracts?.filter((c) => c.active).length ?? 0} />
+        <Stat label="Active agreements" value={contracts?.filter((c) => c.active).length ?? 0} />
         <Stat label="Outstanding" value={money(outstanding)} accent={outstanding ? "amber" : undefined} />
       </div>
-      <div style={{ marginTop: 16 }}><Tabs tabs={["Contracts", "Invoices"]} active={tab} onChange={setTab} /></div>
+      <div style={{ marginTop: 16 }}><Tabs tabs={["Agreements", "Invoices"]} active={tab === "Contracts" ? "Agreements" : tab} onChange={(t) => setTab(t === "Agreements" ? "Contracts" : t)} /></div>
       {tab === "Contracts" ? (
         <div className="card">
           <Table rows={contracts} empty="No contracts. Converting a CRM lead creates one."
-                 columns={[{ key: "account", label: "Account" }, { key: "name", label: "Contract" }, { key: "plan", label: "Plan" },
+                 columns={[{ key: "account", label: "Company" }, { key: "name", label: "Agreement", render: (c) => <><b>{c.name}</b><div className="small muted">{c.agreementType || "Managed Services"} · {c.billingCycle || "Monthly"}</div></> }, { key: "plan", label: "Plan" },
+                           { key: "includedHours", label: "Hours incl." },
                            { key: "devices", label: "Devices", className: "right" }, { key: "pricePerDevice", label: "Per device", render: (c) => money(c.pricePerDevice, c.currency) },
                            { key: "monthlyFee", label: "Fee", render: (c) => money(c.monthlyFee, c.currency) },
                            { key: "sla", label: "SLA (h)", render: (c) => Object.entries(c.sla || {}).map(([k, v]) => `${k}:${v}`).join(" ") },
@@ -66,20 +67,54 @@ export default function Billing() {
 
 function NewContract({ onClose }: { onClose: () => void }) {
   const [account, setAccount] = useState("");
-  const [form, setForm] = useState({ name: "Managed security", plan: "complete", pricePerDevice: 6, monthlyFee: 0, hourlyRate: 85, includedHours: 2, currency: "GBP" });
+  const [form, setForm] = useState<any>({ name: "Managed services", agreementType: "Managed Services", billingCycle: "Monthly", plan: "complete", pricePerDevice: 6,
+                                          monthlyFee: 0, hourlyRate: 85, includedHours: 2, currency: "GBP", coveredWorkTypes: "Remote Support, Onsite Support",
+                                          coversAfterHours: false, additions: [] as any[], businessStart: 9, businessEnd: 17, respondP1: 0.25, respondP2: 1, respondP3: 4, respondP4: 8,
+                                          resolveP1: 4, resolveP2: 8, resolveP3: 24, resolveP4: 72 });
   const { run, busy } = useAction();
-  const submit = async () => { if (await run(() => api("billing/contracts", { body: { ...form, accountTenantId: account } }), "Contract created")) onClose(); };
+  const submit = async () => {
+    const body = { name: form.name, agreementType: form.agreementType, billingCycle: form.billingCycle, plan: form.plan, pricePerDevice: Number(form.pricePerDevice),
+                   monthlyFee: Number(form.monthlyFee), hourlyRate: Number(form.hourlyRate), includedHours: Number(form.includedHours), currency: form.currency,
+                   coveredWorkTypes: form.coveredWorkTypes.split(",").map((w: string) => w.trim()).filter(Boolean), coversAfterHours: form.coversAfterHours,
+                   additions: form.additions.map((a: any) => ({ ...a, unitPrice: Number(a.unitPrice), quantity: Number(a.quantity || 0) })),
+                   businessHours: { days: [0, 1, 2, 3, 4], start: Number(form.businessStart), end: Number(form.businessEnd), tz: Intl.DateTimeFormat().resolvedOptions().timeZone, p1AllHours: true },
+                   sla: { P1: Number(form.resolveP1), P2: Number(form.resolveP2), P3: Number(form.resolveP3), P4: Number(form.resolveP4),
+                          respond: { P1: Number(form.respondP1), P2: Number(form.respondP2), P3: Number(form.respondP3), P4: Number(form.respondP4) } },
+                   accountTenantId: account };
+    if (await run(() => api("billing/contracts", { body }), "Agreement created")) onClose();
+  };
+  const num = (k: string, label: string, step = "0.01") => <label key={k} className="field">{label}<input type="number" step={step} value={form[k]} onChange={(e) => setForm({ ...form, [k]: e.target.value })} /></label>;
   return (
-    <Modal title="New contract" onClose={onClose} footer={<><button onClick={onClose}>Cancel</button><button className="primary" disabled={busy || !account} onClick={submit}>Create</button></>}>
+    <Modal title="New agreement" onClose={onClose} footer={<><button onClick={onClose}>Cancel</button><button className="primary" disabled={busy || !account} onClick={submit}>Create</button></>}>
       <div className="form-grid">
-        <label className="field">Account<TenantSelect value={account} onChange={setAccount} allowAll={false} /></label>
+        <label className="field">Company<TenantSelect value={account} onChange={setAccount} allowAll={false} /></label>
         <label className="field">Name<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
-        <label className="field">Plan<select value={form.plan} onChange={(e) => setForm({ ...form, plan: e.target.value })}>{["essentials", "advanced", "complete", "mdr"].map((p) => <option key={p}>{p}</option>)}</select></label>
-        {(["pricePerDevice", "monthlyFee", "hourlyRate", "includedHours"] as const).map((k) => (
-          <label key={k} className="field">{k.replace(/([A-Z])/g, " $1").toLowerCase()}<input type="number" step="0.01" value={form[k]} onChange={(e) => setForm({ ...form, [k]: Number(e.target.value) })} /></label>
-        ))}
+        <label className="field">Type<select value={form.agreementType} onChange={(e) => setForm({ ...form, agreementType: e.target.value })}>{["Managed Services", "Block Hours", "Retainer", "Time & Materials"].map((p) => <option key={p}>{p}</option>)}</select></label>
+        <label className="field">Billing cycle<select value={form.billingCycle} onChange={(e) => setForm({ ...form, billingCycle: e.target.value })}>{["Monthly", "Quarterly", "Annually"].map((p) => <option key={p}>{p}</option>)}</select></label>
+        <label className="field">Security plan<select value={form.plan} onChange={(e) => setForm({ ...form, plan: e.target.value })}>{["essentials", "advanced", "complete", "mdr"].map((p) => <option key={p}>{p}</option>)}</select></label>
         <label className="field">Currency<select value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })}>{["GBP", "EUR", "USD"].map((c) => <option key={c}>{c}</option>)}</select></label>
+        {num("pricePerDevice", "Price per device")}{num("monthlyFee", "Monthly fee")}{num("hourlyRate", "Hourly rate")}{num("includedHours", "Hours included per month")}
       </div>
+      <label className="field" style={{ marginTop: 10 }}>Covered work types (blank = everything)<input value={form.coveredWorkTypes} onChange={(e) => setForm({ ...form, coveredWorkTypes: e.target.value })} /></label>
+      <label className="small" style={{ display: "block", marginTop: 6 }}><input type="checkbox" checked={form.coversAfterHours} onChange={(e) => setForm({ ...form, coversAfterHours: e.target.checked })} /> Covers after-hours work (otherwise billed at 1.5×)</label>
+      <h3 style={{ marginTop: 14 }}>SLA (hours, business hours {form.businessStart}:00–{form.businessEnd}:00; P1 runs 24×7)</h3>
+      <div className="form-grid">
+        {["P1", "P2", "P3", "P4"].map((p) => num(`respond${p}`, `${p} respond`, "0.25"))}
+        {["P1", "P2", "P3", "P4"].map((p) => num(`resolve${p}`, `${p} resolve`, "1"))}
+        {num("businessStart", "Day starts", "1")}{num("businessEnd", "Day ends", "1")}
+      </div>
+      <h3 style={{ marginTop: 14 }}>Additions</h3>
+      {form.additions.map((a: any, i: number) => (
+        <div key={i} className="row" style={{ marginBottom: 4 }}>
+          <input value={a.product} placeholder="Product" onChange={(e) => setForm({ ...form, additions: form.additions.map((x: any, j: number) => (i === j ? { ...x, product: e.target.value } : x)) })} style={{ flex: 1 }} />
+          <select value={a.autoCount || ""} onChange={(e) => setForm({ ...form, additions: form.additions.map((x: any, j: number) => (i === j ? { ...x, autoCount: e.target.value } : x)) })}>
+            <option value="">Fixed quantity</option><option value="devices">Count all devices</option><option value="devices:windows">Count Windows devices</option><option value="devices:linux">Count Linux devices</option><option value="devices:server">Count servers</option></select>
+          {!a.autoCount && <input type="number" value={a.quantity || 1} style={{ width: 70 }} onChange={(e) => setForm({ ...form, additions: form.additions.map((x: any, j: number) => (i === j ? { ...x, quantity: e.target.value } : x)) })} />}
+          <input type="number" step="0.01" value={a.unitPrice} placeholder="Unit price" style={{ width: 100 }} onChange={(e) => setForm({ ...form, additions: form.additions.map((x: any, j: number) => (i === j ? { ...x, unitPrice: e.target.value } : x)) })} />
+          <button className="small ghost" onClick={() => setForm({ ...form, additions: form.additions.filter((_: any, j: number) => j !== i) })}>✕</button>
+        </div>
+      ))}
+      <button className="small" onClick={() => setForm({ ...form, additions: [...form.additions, { product: "Server backup", autoCount: "devices:server", unitPrice: 15 }] })}>Add addition</button>
     </Modal>
   );
 }

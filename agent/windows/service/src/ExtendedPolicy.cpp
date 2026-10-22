@@ -320,6 +320,9 @@ ExtendedPolicy ExtendedPolicy::Parse(const std::string& modulesJson) {
     }
   }
 
+  policy.scriptExecution = BoolOr(root->Get("response"), "scriptExecution", true);
+  policy.remoteAccessEnabled = BoolOr(root->Get("remoteAccess"), "enabled", true);
+
   const auto* ransomware = root->Get("ransomware");
   policy.ransomwareEnabled = BoolOr(ransomware, "enabled", true);
   policy.behavior.blockShadowCopyDeletion = policy.ransomwareEnabled && BoolOr(ransomware, "blockShadowCopyDeletion", true);

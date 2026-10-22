@@ -25,6 +25,8 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
     "tenant_admin": {"read", "respond", "configure"},
     "tenant_analyst": {"read", "respond"},
     "viewer": {"read"},
+    # Customer end users: the client portal only (their own tickets, invoices and public KB).
+    "client": {"portal"},
 }
 ROLES = tuple(ROLE_PERMISSIONS)
 

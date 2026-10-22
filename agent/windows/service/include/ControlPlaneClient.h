@@ -100,7 +100,11 @@ class ControlPlaneClient {
   explicit ControlPlaneClient(std::wstring baseUrl);
 
   EnrollmentResult Enroll(const AgentState& state) const;
-  HeartbeatResult SendHeartbeat(const AgentState& state) const;
+  // metricsJson: the RMM health object (CPU, memory, disks...) or empty.
+  HeartbeatResult SendHeartbeat(const AgentState& state, const std::string& metricsJson = "") const;
+  // ws(s)://.../api/v1/devices/<id>/realtime and the device key that authenticates it.
+  std::wstring RealtimeUrl(const AgentState& state) const;
+  static std::wstring DeviceApiKey(const AgentState& state);
   PolicyCheckInResult CheckInPolicy(const AgentState& state) const;
   TelemetryBatchResult SendTelemetryBatch(const AgentState& state, const std::vector<TelemetryRecord>& records) const;
   CommandPollResult PollPendingCommands(const AgentState& state, int limit = 10) const;

@@ -116,18 +116,21 @@ def enqueue_command(
         raise CommandError(f"{command_type} needs recordId")
     if device.platform not in spec.platforms:
         raise CommandError(f"{command_type} is not supported on {device.platform}")
-    # Don't stack identical pending actions (e.g. two auto-isolations).
-    existing = db.execute(
+    # Don't stack identical pending actions (e.g. two auto-isolations). Different payloads (another remote
+    # session, a script with other parameters) are different actions.
+    for existing in db.execute(
         select(Command).where(Command.device_id == device.id, Command.type == command_type, Command.status == "pending",
                               Command.target_path == target_path, Command.record_id == record_id)
-    ).scalar_one_or_none()
-    if existing:
-        return existing
+    ).scalars():
+        if (existing.payload or {}) == (payload or {}):
+            return existing
     command = Command(
         tenant_id=device.tenant_id, device_id=device.id, type=command_type, issued_by=issued_by,
         target_path=target_path, record_id=record_id, payload=payload or {}, reason=reason, incident_id=incident_id,
     )
     db.add(command)
+    # Agents holding a realtime channel are told to poll as soon as this commits.
+    db.info.setdefault("wake_devices", set()).add(device.id)
     audit.record(db, issued_by, "command.queued", f"{device.hostname}:{command_type}", device.tenant_id,
                  targetPath=target_path, recordId=record_id, reason=reason)
     return command
@@ -170,15 +173,43 @@ def open_ticket(
     incident_id: str | None = None,
     device_id: str | None = None,
     queue: str = "Service Desk",
+    board_id: str | None = None,
+    **fields,
 ) -> Ticket:
+    """Open a ticket on a service board, apply its SLA, auto-assign, and run "ticket created" workflow rules."""
+    from . import psa
+
     owner = msp_tenant_id(db, account_tenant_id)
+    board = None
+    if board_id:
+        from .models import Board
+
+        board = db.get(Board, board_id)
+        if board is not None and board.tenant_id != owner:
+            board = None
+    if board is None:
+        board = psa.board_by_name(db, owner, queue)
     number = (db.execute(select(func.max(Ticket.number)).where(Ticket.tenant_id == owner)).scalar() or 1000) + 1
+    now = utcnow()
     ticket = Ticket(
         number=number, tenant_id=owner, account_tenant_id=account_tenant_id, subject=subject[:300], description=description,
-        priority=priority, source=source, requester=requester, incident_id=incident_id, device_id=device_id, queue=queue,
-        sla_due_at=utcnow() + timedelta(hours=sla_hours(db, account_tenant_id, priority)),
+        priority=priority, source=source, requester=requester, incident_id=incident_id, device_id=device_id,
+        queue=board.name if board else queue, board_id=board.id if board else None, status=psa.default_status(board),
+        created_at=now, updated_at=now, status_changed_at=now, comments=[], tasks=[], resources=[], configuration_ids=[],
+        workflow_fired=[],
     )
+    for key, value in fields.items():
+        if hasattr(ticket, key) and value is not None:
+            setattr(ticket, key, value)
+    if ticket.agreement_id is None:
+        agreement = psa.active_agreement(db, account_tenant_id)
+        ticket.agreement_id = agreement.id if agreement else None
+    psa.apply_sla(db, ticket)
+    if board is not None and not ticket.assignee and board.auto_assign == "round_robin":
+        ticket.assignee = psa.next_round_robin(db, board)
     db.add(ticket)
+    db.flush()
+    psa.run_workflows(db, ticket, "ticket.created")
     return ticket
 
 

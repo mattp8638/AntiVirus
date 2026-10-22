@@ -113,11 +113,27 @@ add_library(antivirus-agent-core STATIC
   src/ProcessGuard.cpp
   src/YaraScanner.cpp
   src/EventEnvelope.cpp
+  src/RmmExecutors.cpp
+  src/WebSocketClient.cpp
 )
 
 target_include_directories(antivirus-agent-core PUBLIC include ../shared/include ../sensor/etw/include ../sensor/wfp/include)
-target_link_libraries(antivirus-agent-core PUBLIC antivirus-sqlite3 winhttp ole32 oleaut32 bcrypt advapi32 tdh crypt32 wintrust fwpuclnt iphlpapi shell32 ws2_32 wtsapi32 userenv netapi32)
+target_link_libraries(antivirus-agent-core PUBLIC antivirus-sqlite3 winhttp ole32 oleaut32 bcrypt advapi32 tdh crypt32 wintrust fwpuclnt iphlpapi shell32 ws2_32 wtsapi32 userenv netapi32 urlmon)
 antivirus_apply_portable_runtime(antivirus-agent-core)
+
+# Remote access helper: started by the service in the signed-in user's session.
+add_executable(fenrir-remote WIN32
+  ../tools/remotehelper/src/RemoteHelperMain.cpp
+  src/WebSocketClient.cpp
+  src/ExtendedPolicy.cpp
+  src/BehaviorRules.cpp
+  src/StringUtils.cpp
+)
+target_include_directories(fenrir-remote PRIVATE include ../shared/include)
+target_link_libraries(fenrir-remote PRIVATE winhttp gdiplus ole32 wtsapi32 advapi32 shell32 user32 gdi32)
+target_link_options(fenrir-remote PRIVATE -municode)
+antivirus_set_runtime_output(fenrir-remote "${ANTIVIRUS_DEV_OUTPUT_ROOT}")
+antivirus_apply_portable_runtime(fenrir-remote)
 
 add_library(antivirus-amsi-provider-core STATIC
   ../provider/amsi/src/AntiVirusAmsiProvider.cpp
@@ -263,6 +279,7 @@ file(TO_CMAKE_PATH "${INSTALLER_NATIVE_DIR}/include/SetupResourceIds.h" SETUP_RE
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/fenrir-agent-service.exe" SETUP_SERVICE_EXE)
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/fenrir-endpoint-client.exe" SETUP_ENDPOINT_CLIENT_EXE)
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/fenrir-pam.exe" SETUP_PAM_EXE)
+file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/fenrir-remote.exe" SETUP_REMOTE_HELPER_EXE)
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/WebView2Loader.dll" SETUP_WEBVIEW2_LOADER_DLL)
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/fenrir-amsi-provider.dll" SETUP_AMSI_PROVIDER_DLL)
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_TOOLS_OUTPUT_ROOT}/fenrir-scannercli.exe" SETUP_SCANNERCLI_EXE)
@@ -320,6 +337,7 @@ file(GENERATE OUTPUT ${INSTALLER_GENERATED_DIR}/SetupPayload.rc CONTENT
 IDR_PAYLOAD_SERVICE RCDATA \"${SETUP_SERVICE_EXE}\"\n\
 IDR_PAYLOAD_ENDPOINT_CLIENT RCDATA \"${SETUP_ENDPOINT_CLIENT_EXE}\"\n\
 IDR_PAYLOAD_PAM_CLIENT RCDATA \"${SETUP_PAM_EXE}\"\n\
+IDR_PAYLOAD_REMOTE_HELPER RCDATA \"${SETUP_REMOTE_HELPER_EXE}\"\n\
 IDR_PAYLOAD_WEBVIEW2_LOADER RCDATA \"${SETUP_WEBVIEW2_LOADER_DLL}\"\n\
 ${SETUP_WEBVIEW2_BOOTSTRAPPER_RESOURCE_LINE}\n\
 IDR_PAYLOAD_AMSI_PROVIDER RCDATA \"${SETUP_AMSI_PROVIDER_DLL}\"\n\
@@ -339,6 +357,7 @@ set(SETUP_PAYLOAD_DEPENDENCIES
   ${SETUP_SERVICE_EXE}
   ${SETUP_ENDPOINT_CLIENT_EXE}
   ${SETUP_PAM_EXE}
+  ${SETUP_REMOTE_HELPER_EXE}
   ${SETUP_WEBVIEW2_LOADER_DLL}
   ${SETUP_AMSI_PROVIDER_DLL}
   ${SETUP_SCANNERCLI_EXE}
@@ -371,6 +390,7 @@ add_executable(antivirus-setup WIN32
 
 add_dependencies(antivirus-setup
   antivirus-agent-service
+  fenrir-remote
   antivirus-endpoint-client
   antivirus-pam-client
   antivirus-amsi-provider
@@ -431,4 +451,8 @@ target_include_directories(fenrir-mltest PRIVATE include)
 add_executable(fenrir-behavior-tests ../tests/BehaviorRulesTests.cpp src/BehaviorRules.cpp)
 target_include_directories(fenrir-behavior-tests PRIVATE include)
 add_executable(fenrir-policy-tests ../tests/PolicyAndDeviceControlTests.cpp src/ExtendedPolicy.cpp src/BehaviorRules.cpp src/DeviceControl.cpp)
+add_executable(fenrir-rmm-tests ../tests/RmmExecutorTests.cpp src/RmmExecutors.cpp src/ExtendedPolicy.cpp src/BehaviorRules.cpp src/StringUtils.cpp src/CryptoUtils.cpp)
+target_include_directories(fenrir-rmm-tests PRIVATE include ../shared/include)
+target_link_libraries(fenrir-rmm-tests PRIVATE wtsapi32 userenv urlmon advapi32 bcrypt crypt32 wintrust)
+antivirus_apply_portable_runtime(fenrir-rmm-tests)
 target_include_directories(fenrir-policy-tests PRIVATE include)

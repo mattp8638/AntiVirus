@@ -1,5 +1,10 @@
 #include "AgentService.h"
 
+#include <WtsApi32.h>
+
+#include "RmmExecutors.h"
+#include "WebSocketClient.h"
+
 #include "MlStaticModel.h"
 
 #include <WtsApi32.h>
@@ -968,6 +973,11 @@ AgentService::~AgentService() {
     CloseHandle(pamRequestEvent_);
     pamRequestEvent_ = nullptr;
   }
+  StopRealtimeChannel();
+  if (wakeEvent_ != nullptr) {
+    CloseHandle(wakeEvent_);
+    wakeEvent_ = nullptr;
+  }
   if (stopEvent_ != nullptr) {
     CloseHandle(stopEvent_);
     stopEvent_ = nullptr;
@@ -985,6 +995,9 @@ int AgentService::Run(const AgentRunMode mode) {
 
     if (pamRequestEvent_ == nullptr) {
       pamRequestEvent_ = CreateEventW(nullptr, TRUE, FALSE, kPamRequestEventName);
+    }
+    if (wakeEvent_ == nullptr) {
+      wakeEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     }
 
     config_ = LoadAgentConfig();
@@ -1031,10 +1044,12 @@ int AgentService::Run(const AgentRunMode mode) {
 
     StartTelemetrySpool();
     StartCommandLoop();
+    StartRealtimeChannel();
     QueueTelemetryEvent(L"service.started", L"agent-service", L"The endpoint agent boot sequence started.",
                         L"{\"phase\":\"bootstrap\"}");
 
     RunSyncLoop(mode);
+    StopRealtimeChannel();
     DrainProcessTelemetry();
     DrainRealtimeProtectionTelemetry();
     DrainNetworkTelemetry();
@@ -1345,8 +1360,26 @@ bool AgentService::WaitForNextCycle(const AgentRunMode mode, const int nextCycle
                << std::endl;
   }
 
-  const auto waitMilliseconds = static_cast<DWORD>(std::max(config_.syncIntervalSeconds, 1) * 1000);
-  return WaitForSingleObject(stopEvent_, waitMilliseconds) != WAIT_OBJECT_0;
+  const auto deadline = GetTickCount64() + static_cast<ULONGLONG>(std::max(config_.syncIntervalSeconds, 1)) * 1000;
+  for (;;) {
+    const auto now = GetTickCount64();
+    if (now >= deadline) {
+      return true;
+    }
+    HANDLE events[2] = {stopEvent_, wakeEvent_};
+    const DWORD count = wakeEvent_ != nullptr ? 2 : 1;
+    const auto signalled = WaitForMultipleObjects(count, events, FALSE, static_cast<DWORD>(deadline - now));
+    if (signalled == WAIT_OBJECT_0) {
+      return false;
+    }
+    if (signalled == WAIT_OBJECT_0 + 1) {
+      // The cloud queued something (a remote session, a script): run it now instead of at the next cycle.
+      PollAndExecuteCommands(nextCycle);
+      DrainProcessTelemetry();
+      continue;
+    }
+    return true;
+  }
 }
 
 bool AgentService::ShouldStop() const {
@@ -1684,6 +1717,20 @@ void AgentService::PollAndExecuteCommands(const int cycle) {
           if (commandJournalStore_) {
             commandJournalStore_->RecordCompleted(command, resultJson);
           }
+        } catch (const rmm::CommandFailed& failed) {
+          // The action ran but failed: keep its output (stdout/stderr, exit code) and add the reason.
+          auto resultJson = Utf8ToWide(failed.resultJson);
+          if (!resultJson.empty() && resultJson.back() == L'}') {
+            resultJson.pop_back();
+            resultJson += std::wstring(resultJson.size() > 1 ? L"," : L"") + L"\"error\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(failed.what()))) + L"\"}";
+          }
+          try {
+            controlPlaneClient_->CompleteCommand(state_, command.commandId, L"failed", resultJson);
+          } catch (...) {
+          }
+          if (commandJournalStore_) {
+            commandJournalStore_->RecordFailed(command, resultJson, Utf8ToWide(failed.what()));
+          }
         } catch (const std::exception& error) {
           const auto errorMessage = Utf8ToWide(error.what());
           const auto failureJson = std::wstring(L"{\"commandId\":\"") + command.commandId + L"\",\"error\":\"" +
@@ -1804,8 +1851,16 @@ std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
   if (command.type == L"remediate.path") {
     return ExecutePathRemediationCommand(command);
   }
-  if (command.type == L"script.run") {
-    return ExecuteScriptCommand(command);
+  if (command.type == L"script.run" || command.type == L"patch.scan" || command.type == L"patch.install" ||
+      command.type == L"software.install" || command.type == L"service.control" || command.type == L"device.reboot" ||
+      command.type == L"device.shutdown" || command.type == L"device.message") {
+    return ExecuteRmmCommand(command);
+  }
+  if (command.type == L"remote.session.start") {
+    return LaunchRemoteHelper(command);
+  }
+  if (command.type == L"remote.session.end") {
+    return EndRemoteHelper(command);
   }
   if (command.type == L"software.search") {
     return ExecuteSoftwareCommand(command, false, true);
@@ -1814,6 +1869,9 @@ std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
     return ExecuteSoftwareCommand(command, false, false);
   }
   if (command.type == L"software.uninstall") {
+    if (command.payloadJson.find(L"\"installer\"") != std::wstring::npos) {
+      return ExecuteRmmCommand(command);  // a package from the cloud software library
+    }
     return ExecuteSoftwareCommand(command, true, false);
   }
   if (command.type == L"software.block") {
@@ -2167,8 +2225,206 @@ std::wstring AgentService::ExecutePathRemediationCommand(const RemoteCommand& co
          result.quarantineRecordId + L"\",\"evidenceRecordId\":\"" + result.evidenceRecordId + L"\"}";
 }
 
-std::wstring AgentService::ExecuteScriptCommand(const RemoteCommand&) {
-  throw std::runtime_error("Script execution is not enabled in the current service build");
+std::wstring AgentService::ExecuteScriptCommand(const RemoteCommand& command) { return ExecuteRmmCommand(command); }
+
+std::wstring AgentService::ExecuteRmmCommand(const RemoteCommand& command) {
+  const auto workRoot = config_.runtimeDatabasePath.parent_path() / L"rmm";
+  std::string result;
+  if (command.type == L"script.run") {
+    if (!processGuard_ || processGuard_->CurrentExtendedPolicy().scriptExecution) {
+      result = rmm::RunScript(command.payloadJson, workRoot);
+    } else {
+      throw std::runtime_error("Script execution is turned off by policy");
+    }
+  } else if (command.type == L"patch.scan") {
+    result = rmm::PatchScan(workRoot);
+  } else if (command.type == L"patch.install") {
+    result = rmm::PatchInstall(command.payloadJson, workRoot);
+  } else if (command.type == L"software.install") {
+    result = rmm::Software(command.payloadJson, false, workRoot);
+  } else if (command.type == L"software.uninstall") {
+    result = rmm::Software(command.payloadJson, true, workRoot);
+  } else if (command.type == L"service.control") {
+    result = rmm::ServiceControl(command.targetPath, command.payloadJson);
+  } else if (command.type == L"device.reboot" || command.type == L"device.shutdown") {
+    result = rmm::PowerAction(command.type == L"device.reboot", command.payloadJson);
+  } else if (command.type == L"device.message") {
+    result = rmm::MessageUser(command.payloadJson);
+  }
+  QueueTelemetryEvent(L"rmm." + command.type, L"rmm", L"Completed " + command.type,
+                      std::wstring(L"{\"commandId\":\"") + command.commandId + L"\"}");
+  return Utf8ToWide(result);
+}
+
+namespace {
+
+DWORD InteractiveSessionId() {
+  const auto console = WTSGetActiveConsoleSessionId();
+  if (console != 0xFFFFFFFF) {
+    return console;
+  }
+  // No console (a server reached over RDP): use the first active remote session.
+  WTS_SESSION_INFOW* sessions = nullptr;
+  DWORD count = 0;
+  DWORD found = 0xFFFFFFFF;
+  if (WTSEnumerateSessionsW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &sessions, &count)) {
+    for (DWORD i = 0; i < count; ++i) {
+      if (sessions[i].State == WTSActive) {
+        found = sessions[i].SessionId;
+        break;
+      }
+    }
+    WTSFreeMemory(sessions);
+  }
+  return found;
+}
+
+}  // namespace
+
+std::wstring AgentService::LaunchRemoteHelper(const RemoteCommand& command) {
+  if (processGuard_ && !processGuard_->CurrentExtendedPolicy().remoteAccessEnabled) {
+    throw std::runtime_error("Remote access is turned off by policy");
+  }
+  const auto sessionId = ExtractPayloadString(command.payloadJson, "sessionId").value_or(L"");
+  if (sessionId.empty() || sessionId.size() > 64 || sessionId.find_first_of(L"\\/:*?\"<>|") != std::wstring::npos) {
+    throw std::runtime_error("The remote session id is missing or invalid");
+  }
+  const auto helper = config_.installRootPath / L"fenrir-remote.exe";
+  std::error_code ec;
+  if (!std::filesystem::exists(helper, ec)) {
+    throw std::runtime_error("The remote access helper (fenrir-remote.exe) is not installed");
+  }
+  // The token travels in a file inside the protected runtime folder, never on a command line.
+  const auto folder = config_.runtimeDatabasePath.parent_path() / L"remote";
+  std::filesystem::create_directories(folder, ec);
+  const auto optionsPath = folder / (sessionId + L".json");
+  {
+    std::ofstream out(optionsPath, std::ios::binary | std::ios::trunc);
+    out << WideToUtf8(command.payloadJson);
+  }
+  const auto windowsSession = InteractiveSessionId();
+  HANDLE self = nullptr, primary = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID, &self) ||
+      !DuplicateTokenEx(self, MAXIMUM_ALLOWED, nullptr, SecurityImpersonation, TokenPrimary, &primary)) {
+    if (self) CloseHandle(self);
+    std::filesystem::remove(optionsPath, ec);
+    throw std::runtime_error("Could not prepare the remote access helper token");
+  }
+  CloseHandle(self);
+  DWORD target = windowsSession;
+  if (target != 0xFFFFFFFF) {
+    SetTokenInformation(primary, TokenSessionId, &target, sizeof(target));
+  }
+  std::wstring commandLine = L"\"" + helper.wstring() + L"\" --options \"" + optionsPath.wstring() + L"\"";
+  std::vector<wchar_t> mutableCommand(commandLine.begin(), commandLine.end());
+  mutableCommand.push_back(L'\0');
+  STARTUPINFOW startup{};
+  startup.cb = sizeof(startup);
+  wchar_t desktop[] = L"winsta0\\default";
+  startup.lpDesktop = desktop;
+  PROCESS_INFORMATION process{};
+  const BOOL created = CreateProcessAsUserW(primary, helper.c_str(), mutableCommand.data(), nullptr, nullptr, FALSE,
+                                            CREATE_NEW_PROCESS_GROUP, nullptr, helper.parent_path().c_str(), &startup, &process);
+  CloseHandle(primary);
+  if (!created) {
+    std::filesystem::remove(optionsPath, ec);
+    throw std::runtime_error("Could not start the remote access helper (error " + std::to_string(GetLastError()) + ")");
+  }
+  CloseHandle(process.hThread);
+  {
+    std::lock_guard lock(remoteMutex_);
+    if (auto it = remoteHelpers_.find(sessionId); it != remoteHelpers_.end()) {
+      CloseHandle(it->second);
+    }
+    remoteHelpers_[sessionId] = process.hProcess;
+  }
+  QueueTelemetryEvent(L"remote.session.started", L"remote-access", L"A remote access session was started.",
+                      std::wstring(L"{\"sessionId\":\"") + sessionId + L"\",\"windowsSession\":" + std::to_wstring(windowsSession) +
+                          L",\"technician\":\"" + Utf8ToWide(EscapeJsonString(ExtractPayloadString(command.payloadJson, "technician").value_or(L""))) + L"\"}");
+  return std::wstring(L"{\"started\":true,\"consent\":\"pending\",\"helperPid\":") + std::to_wstring(process.dwProcessId) +
+         L",\"windowsSession\":" + std::to_wstring(windowsSession) + L"}";
+}
+
+std::wstring AgentService::EndRemoteHelper(const RemoteCommand& command) {
+  const auto sessionId = ExtractPayloadString(command.payloadJson, "sessionId").value_or(L"");
+  HANDLE process = nullptr;
+  {
+    std::lock_guard lock(remoteMutex_);
+    if (auto it = remoteHelpers_.find(sessionId); it != remoteHelpers_.end()) {
+      process = it->second;
+      remoteHelpers_.erase(it);
+    }
+  }
+  bool ended = false;
+  if (process) {
+    // The helper normally exits by itself when the relay closes; give it a moment first.
+    if (WaitForSingleObject(process, 5000) == WAIT_TIMEOUT) {
+      TerminateProcess(process, 0);
+    }
+    CloseHandle(process);
+    ended = true;
+  }
+  return std::wstring(L"{\"ended\":") + (ended ? L"true" : L"false") + L"}";
+}
+
+void AgentService::StartRealtimeChannel() {
+  if (realtimeThread_.joinable() || wakeEvent_ == nullptr) {
+    return;
+  }
+  realtimeThread_ = std::thread([this] { RealtimeLoop(); });
+}
+
+void AgentService::StopRealtimeChannel() {
+  if (stopEvent_ != nullptr) {
+    SetEvent(stopEvent_);
+  }
+  if (realtimeThread_.joinable()) {
+    realtimeThread_.join();
+  }
+}
+
+void AgentService::RealtimeLoop() {
+  DWORD backoff = 5000;
+  while (!ShouldStop()) {
+    if (state_.deviceId.empty() || ControlPlaneClient::DeviceApiKey(state_).empty()) {
+      WaitForSingleObject(stopEvent_, 10000);
+      continue;
+    }
+    const auto started = GetTickCount64();
+    try {
+      WebSocketClient socket;
+      socket.Connect(controlPlaneClient_->RealtimeUrl(state_), L"X-Device-Api-Key: " + ControlPlaneClient::DeviceApiKey(state_) + L"\r\n");
+      // A watcher closes the socket when the service stops, which unblocks Receive.
+      std::atomic<bool> done{false};
+      std::thread watcher([&] {
+        while (!done) {
+          if (WaitForSingleObject(stopEvent_, 30000) == WAIT_OBJECT_0) {
+            socket.Close();
+            return;
+          }
+          socket.SendText("ping");
+        }
+      });
+      std::string message;
+      bool binary = false;
+      while (!ShouldStop() && socket.Receive(&message, &binary)) {
+        if (message.find("\"commands\"") != std::string::npos || message.find("\"pollNow\":true") != std::string::npos) {
+          SetEvent(wakeEvent_);
+        }
+      }
+      done = true;
+      socket.Close();
+      watcher.join();
+    } catch (const std::exception&) {
+    }
+    if (GetTickCount64() - started > 60000) {
+      backoff = 5000;
+    }
+    if (WaitForSingleObject(stopEvent_, backoff) == WAIT_OBJECT_0) {
+      return;
+    }
+    backoff = std::min<DWORD>(backoff * 2, 120000);
+  }
 }
 
 void AgentService::PublishHeartbeat(const int cycle) {
@@ -2191,7 +2447,7 @@ void AgentService::PublishHeartbeat(const int cycle) {
   bool attemptedRecovery = false;
   for (;;) {
     try {
-      const auto heartbeat = controlPlaneClient_->SendHeartbeat(state_);
+      const auto heartbeat = controlPlaneClient_->SendHeartbeat(state_, rmm::CollectHealthMetricsJson());
       state_.lastHeartbeatAt = heartbeat.receivedAt;
       lastControlPlaneSyncFailed_ = false;
       QueueTelemetryEvent(L"device.heartbeat", L"control-plane-client",

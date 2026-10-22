@@ -17,7 +17,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Requ
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import audit, intel, services
+from .. import audit, intel, rmm, services
 from ..config import get_settings
 from ..db import get_db
 from ..deps import current_device
@@ -119,6 +119,8 @@ def enroll(
         "deviceApiKey": api_key,
         "commandChannelUrl": f"{base}/api/v1/devices/{device.id}/commands/pending?deviceApiKey={api_key}",
         "dnsOverHttpsUrl": f"{base}/dns/{device.dns_token}/dns-query",
+        "realtimeUrl": ("wss://" + base[8:] if base.startswith("https://") else "ws://" + base.removeprefix("http://"))
+        + f"/api/v1/devices/{device.id}/realtime",
         "policy": policy_doc,
     }
 
@@ -130,11 +132,14 @@ def heartbeat(body: dict = Body(default={}), device: Device = Depends(current_de
     device.health_state = str(body.get("healthState") or device.health_state)[:40]
     if "isolated" in body:
         device.isolated = bool(body["isolated"])
+    if isinstance(body.get("metrics"), dict):
+        rmm.record_heartbeat_metrics(db, device, body["metrics"])
+        rmm.evaluate_device(db, device)
     _, policy_doc = services.effective_policy(db, device)
     pending = db.execute(select(func.count()).where(Command.device_id == device.id, Command.status == "pending")).scalar() or 0
     db.commit()
     return {"receivedAt": _iso(utcnow()), "effectivePolicyRevision": policy_doc["revision"], "commandsPending": pending,
-            "approved": device.approved}
+            "approved": device.approved, "realtimePath": f"/api/v1/devices/{device.id}/realtime"}
 
 
 @router.post("/devices/{device_id}/policy-check-in")
@@ -203,6 +208,7 @@ def complete_command(command_id: str, body: dict = Body(...), device: Device = D
         device.isolated = False
     audit.record(db, f"device:{device.hostname}", "command.completed", command.id, device.tenant_id,
                  type=command.type, status=command.status)
+    rmm.on_command_complete(db, device, command)
     db.commit()
     return {"id": command.id, "status": command.status}
 

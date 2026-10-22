@@ -92,8 +92,15 @@ def main() -> None:
             device["headers"] = {"X-Device-Api-Key": device["deviceApiKey"]}
             device["linux"] = linux
             fleet.append(device)
+            free = random.choice([62.0, 48.5, 33.1, 21.7, 7.4]) if i else 6.2
             http.post(f"/api/v1/devices/{device['deviceId']}/heartbeat", headers=device["headers"],
-                      json={"agentVersion": "1.6.0", "platformVersion": "1.6.0", "healthState": "healthy", "isolated": False})
+                      json={"agentVersion": "1.6.0", "platformVersion": "1.6.0", "healthState": "healthy", "isolated": False,
+                            "metrics": {"cpuPercent": random.uniform(3, 65), "memoryPercent": random.uniform(30, 85),
+                                        "memoryTotalGb": 16, "uptimeSeconds": random.randint(3600, 40 * 86400),
+                                        "disks": [{"mount": "/" if linux else "C:", "totalGb": 256, "freeGb": 256 * free / 100,
+                                                   "freePercent": free}],
+                                        "loggedOnUser": "" if linux else f"{prefix}\\user{i + 1}", "rebootPending": i == 2,
+                                        "manufacturer": "Dell Inc." if not linux else "QEMU", "model": "OptiPlex 7010" if not linux else "Standard PC"}})
 
     def telemetry(device: dict, events: list[dict]) -> None:
         for start in range(0, len(events), 500):
@@ -136,9 +143,87 @@ def main() -> None:
         post("/api/console/billing/contracts", {"accountTenantId": tenant["id"], "name": f"{tenant['name']} managed security",
                                                 "pricePerDevice": price, "monthlyFee": 150, "hourlyRate": 85, "includedHours": 2})
         post("/api/console/tickets", {"accountTenantId": tenant["id"], "subject": "New starter laptop setup", "priority": "P3"})
-    post("/api/console/crm/projects", {"name": "Cyber Essentials Plus certification", "accountTenantId": tenants[1]["id"],
-                                       "status": "In Progress", "progress": 45, "budget": 4500})
-    print(f"Demo ready: {len(tenants)} tenants, {len(fleet)} devices, attacks replayed. Open {args.url}")
+    project = post("/api/console/crm/projects", {"name": "Cyber Essentials Plus certification", "accountTenantId": tenants[1]["id"],
+                                                 "status": "In Progress", "progress": 45, "budget": 4500, "estimatedHours": 40,
+                                                 "phases": [{"name": "Scoping", "status": "Done", "budgetHours": 4},
+                                                            {"name": "Remediation", "status": "In Progress", "budgetHours": 24},
+                                                            {"name": "Assessment", "status": "Open", "budgetHours": 12}]})
+
+    # ---- RMM: patches reported by agents, a script job, a patch policy and a schedule ----
+    def complete(device: dict, command_type: str, result: dict) -> None:
+        items = http.get(f"/api/v1/devices/{device['deviceId']}/commands/pending", headers=device["headers"]).json()["items"]
+        for item in items:
+            if item["type"] == command_type:
+                post(f"/api/v1/devices/{device['deviceId']}/commands/{item['id']}/complete",
+                     {"status": "completed", "resultJson": json.dumps(result)}, device["headers"])
+
+    windows_patches = [{"id": "KB5048685", "title": "2026-10 Cumulative Update for Windows 11 (KB5048685)", "classification": "Security Updates", "severity": "Critical"},
+                       {"id": "KB5048779", "title": "2026-10 .NET Framework Cumulative Update", "classification": "Security Updates", "severity": "Important"},
+                       {"id": "KB890830", "title": "Windows Malicious Software Removal Tool", "classification": "Update Rollups"},
+                       {"id": "KB5049999", "title": "Feature update to Windows 11, version 25H2", "classification": "Upgrades"},
+                       {"id": "winget:Google.Chrome", "title": "Google Chrome 129 -> 130", "source": "winget", "installedVersion": "129.0.6668.90", "availableVersion": "130.0.6723.70"},
+                       {"id": "winget:Adobe.Acrobat.Reader.64-bit", "title": "Adobe Acrobat Reader 24.003 -> 24.004", "source": "winget"}]
+    linux_patches = [{"id": "apt:openssl", "title": "openssl 3.0.2-0ubuntu1.15 -> 3.0.2-0ubuntu1.18", "source": "apt", "classification": "security"},
+                     {"id": "apt:curl", "title": "curl 7.81.0-1ubuntu1.16 -> 7.81.0-1ubuntu1.20", "source": "apt", "classification": "security"},
+                     {"id": "apt:tzdata", "title": "tzdata 2024a -> 2024b", "source": "apt", "classification": "updates"}]
+    post("/api/console/rmm/patches/scan", {"targets": {"tenantIds": [t["id"] for t in tenants]}})
+    for n, device in enumerate(fleet):
+        patches = linux_patches if device["linux"] else windows_patches[: 6 - (n % 3)]
+        complete(device, "patch.scan", {"patches": patches if n % 5 else [], "rebootPending": n % 4 == 0})
+    for tenant in tenants:
+        post("/api/console/rmm/patch-policies", {"tenantId": tenant["id"], "name": f"{tenant['name']} patching",
+                                                 "window": {"days": [1, 3], "start": "22:00", "durationMinutes": 180, "tz": "Europe/London"},
+                                                 "rings": [{"name": "Pilot", "groupIds": [], "delayDays": 0}, {"name": "Broad", "groupIds": [], "delayDays": 5}]})
+    scripts = http.get("/api/console/rmm/scripts", headers=admin).json()
+    disk_report = next(sc for sc in scripts if sc["name"] == "Disk space report" and sc["language"] == "powershell")
+    job = post(f"/api/console/rmm/scripts/{disk_report['id']}/run", {"targets": {"tenantIds": [tenants[0]["id"]]}, "parameters": {"Path": "C:\\Users"}})
+    for device in fleet:
+        complete(device, "script.run", {"exitCode": 0, "durationMs": 2140, "stdout": "DeviceID SizeGB FreeGB FreePct\n-------- ------ ------ -------\nC:       237.9  58.2   24.5\n",
+                                        "stderr": ""})
+    temp = next(sc for sc in scripts if sc["name"] == "Clear temporary files")
+    post("/api/console/rmm/tasks", {"tenantId": tenants[0]["id"], "name": "Weekly clean-up", "schedule": {"type": "weekly", "at": "03:00", "days": [6], "tz": "Europe/London"},
+                                    "targets": {"tenantIds": [tenants[0]["id"]], "platforms": ["windows"]},
+                                    "actions": [{"type": "script", "scriptId": temp["id"], "parameters": {"OlderThanDays": "7"}}, {"type": "command", "command": "patch.scan"}]})
+
+    # ---- PSA: tickets on boards with notes, time and dispatch; configurations; quotes; KB ----
+    me = http.get("/api/console/auth/me", headers=admin).json()["user"]["email"]
+    samples = [(tenants[0], "Reception printer shows offline", "Incident", "Hardware", "Printer", "Medium", "High"),
+               (tenants[0], "New starter: Sarah Jones (Monday)", "Service Request", "User", "New starter", "Low", "Medium"),
+               (tenants[1], "Outlook keeps asking for password", "Incident", "Software", "Microsoft 365", "Medium", "Medium"),
+               (tenants[1], "VPN disconnects every 10 minutes", "Incident", "Network", "VPN", "High", "Medium"),
+               (tenants[2], "Line-of-business app slow on SRV-01", "Incident", "Software", "Line of business", "High", "High")]
+    tickets = []
+    for tenant, subject, type_, subtype, item, impact, urgency in samples:
+        tickets.append(post("/api/console/tickets", {"accountTenantId": tenant["id"], "subject": subject, "type": type_, "subtype": subtype,
+                                                    "item": item, "impact": impact, "urgency": urgency, "source": "phone",
+                                                    "description": f"Customer reported: {subject.lower()}."}))
+    http.patch(f"/api/console/tickets/{tickets[0]['id']}", headers=admin, json={"status": "In Progress", "assignee": me,
+                                                                                 "comment": "Restarted the print spooler remotely; test page printed."})
+    post("/api/console/psa/time", {"ticketId": tickets[0]["id"], "hours": 0.5, "workType": "Remote Support", "notes": "Spooler restart and test print"})
+    post("/api/console/psa/time", {"ticketId": tickets[3]["id"], "hours": 1.25, "workType": "Remote Support", "notes": "Captured VPN logs; MTU looks wrong"})
+    from datetime import datetime as _dt, timedelta as _td
+    tomorrow = (_dt.now() + _td(days=1)).replace(hour=10, minute=0, second=0, microsecond=0)
+    post("/api/console/psa/schedule", {"ticketId": tickets[1]["id"], "member": me, "kind": "Onsite", "startAt": tomorrow.isoformat(),
+                                        "endAt": (tomorrow + _td(hours=2)).isoformat(), "location": "Acme Dental, reception"})
+    post("/api/console/psa/configurations/sync", {})
+    post("/api/console/psa/configurations", {"accountTenantId": tenants[0]["id"], "name": "Acme firewall", "type": "Firewall",
+                                             "manufacturer": "Fortinet", "model": "FortiGate 60F", "serialNumber": "FGT60F0000001",
+                                             "ipAddress": "192.168.1.1", "warrantyExpires": "2027-03-31"})
+    m365 = post("/api/console/psa/products", {"sku": "M365-BP", "description": "Microsoft 365 Business Premium", "price": 18.10, "cost": 16.40, "recurring": True})
+    laptop = post("/api/console/psa/products", {"sku": "LAP-DELL-5450", "description": "Dell Latitude 5450, 16GB, 512GB", "category": "Hardware", "price": 1049, "cost": 879})
+    post("/api/console/psa/quotes", {"accountTenantId": tenants[0]["id"], "title": "New starter kit",
+                                     "lines": [{"productId": laptop["id"], "quantity": 1}, {"productId": m365["id"], "quantity": 1},
+                                               {"description": "Build and deployment (hours)", "quantity": 2, "unitPrice": 85}]})
+    post("/api/console/psa/kb", {"title": "Reset your Microsoft 365 password", "category": "Accounts", "public": True,
+                                 "body": "1. Go to https://aka.ms/sspr\n2. Enter your work email\n3. Follow the verification steps."})
+    post("/api/console/psa/kb", {"title": "Runbook: printer offline at Acme reception", "category": "Runbooks", "public": False,
+                                 "body": "Restart the Spooler service (script: Restart a service), then check the printer's IP lease on the firewall."})
+    post("/api/console/psa/workflows", {"name": "Close tickets waiting on the customer for 3 days", "trigger": "ticket.idle", "idleHours": 72,
+                                        "conditions": [{"field": "status", "op": "equals", "value": "Waiting Customer"}],
+                                        "actions": [{"type": "set", "field": "status", "value": "Closed"},
+                                                    {"type": "note", "text": "Closed automatically after 3 days without a reply. Reply to reopen.", "kind": "discussion", "emailContact": True}]})
+    print(f"Demo ready: {len(tenants)} tenants, {len(fleet)} devices, attacks replayed, RMM and PSA data loaded "
+          f"(job {job['id']}, project {project['id']}). Open {args.url}")
 
 
 if __name__ == "__main__":

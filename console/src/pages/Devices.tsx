@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { ago, api } from "../api";
 import { useApp } from "../app-context";
 import { ErrorNote, Meter, Modal, PageHead, Pill, Table, useAction, useData } from "../components/ui";
+import { ConnectButtons, pct } from "../components/rmm";
 
 export default function Devices() {
   const { tenantId, tenantName, can } = useApp();
@@ -52,8 +53,11 @@ export default function Devices() {
                      {r.isolated && <Pill value="isolated" tone="bad" />}
                      <Pill value={r.healthState || "unknown"} tone={r.healthState === "healthy" ? "good" : "muted"} />
                    </div> },
+                 { key: "health", label: "CPU · Mem · Disk free", render: (r) => r.metrics?.reportedAt ? <span className="small mono">{pct(r.metrics.cpuPercent)} · {pct(r.metrics.memoryPercent)} · <span style={{ color: r.metrics.diskFreePercent < 10 ? "#fecaca" : undefined }}>{pct(r.metrics.diskFreePercent)}</span></span> : <span className="muted small">—</span> },
+                 { key: "user", label: "User", render: (r) => <span className="small">{r.metrics?.loggedOnUser || "—"}{r.metrics?.rebootPending && <> <Pill value="restart" tone="warn" /></>}</span> },
                  { key: "riskScore", label: "Risk", render: (r) => <div style={{ minWidth: 90 }}><Meter value={r.riskScore} /><span className="small muted">{r.riskScore}</span></div> },
                  { key: "lastSeenAt", label: "Last seen", render: (r) => ago(r.lastSeenAt) },
+                 { key: "connect", label: "", render: (r) => r.online && <ConnectButtons device={r} compact /> },
                ]} />
       </div>
       {bulk && <BulkAction ids={[...selected]} onClose={() => { setBulk(false); setSelected(new Set()); reload(); }} />}

@@ -125,6 +125,11 @@ class Device(Base):
     risk_score: Mapped[int] = mapped_column(Integer, default=0)
     inventory: Mapped[dict] = mapped_column(JSON, default=dict)
     ip_address: Mapped[str] = mapped_column(String(64), default="")
+    # Live health from the agent heartbeat: cpu/memory/disks/uptime/logged-on user/reboot pending.
+    metrics: Mapped[dict | None] = mapped_column(JSON, default=dict, nullable=True)
+    custom_fields: Mapped[dict | None] = mapped_column(JSON, default=dict, nullable=True)
+    site_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, default="", nullable=True)
     enrolled_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -438,6 +443,13 @@ class Project(Base):
     due_date: Mapped[str] = mapped_column(String(20), default="")
     tasks: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    manager: Mapped[str | None] = mapped_column(String(200), default="", nullable=True)
+    billing_method: Mapped[str | None] = mapped_column(String(30), default="Time & Materials", nullable=True)  # or Fixed Fee
+    estimated_hours: Mapped[float | None] = mapped_column(Float, default=0, nullable=True)
+    start_date: Mapped[str | None] = mapped_column(String(20), default="", nullable=True)
+    # [{"name": "Discovery", "status": "Open", "budgetHours": 4, "tasks": [{"text": "...", "done": false}]}]
+    phases: Mapped[list | None] = mapped_column(JSON, default=list, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, default="", nullable=True)
 
 
 class Ticket(Base):
@@ -463,6 +475,32 @@ class Ticket(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Service board fields. Nullable so older databases gain them with ALTER TABLE.
+    board_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    type: Mapped[str | None] = mapped_column(String(80), default="", nullable=True)
+    subtype: Mapped[str | None] = mapped_column(String(80), default="", nullable=True)
+    item: Mapped[str | None] = mapped_column(String(80), default="", nullable=True)
+    impact: Mapped[str | None] = mapped_column(String(10), default="Medium", nullable=True)
+    urgency: Mapped[str | None] = mapped_column(String(10), default="Medium", nullable=True)
+    site_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    contact_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    contact_email: Mapped[str | None] = mapped_column(String(200), default="", nullable=True)
+    agreement_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    project_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    phase: Mapped[str | None] = mapped_column(String(120), default="", nullable=True)
+    parent_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    resources: Mapped[list | None] = mapped_column(JSON, default=list, nullable=True)  # extra assigned members
+    team: Mapped[str | None] = mapped_column(String(80), default="", nullable=True)
+    configuration_ids: Mapped[list | None] = mapped_column(JSON, default=list, nullable=True)
+    tasks: Mapped[list | None] = mapped_column(JSON, default=list, nullable=True)  # [{text, done, by, at}]
+    budget_hours: Mapped[float | None] = mapped_column(Float, default=0, nullable=True)
+    required_date: Mapped[str | None] = mapped_column(String(20), default="", nullable=True)
+    responded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    respond_due_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    sla_warned: Mapped[bool | None] = mapped_column(Boolean, default=False, nullable=True)
+    status_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    email_thread_id: Mapped[str | None] = mapped_column(String(300), default="", nullable=True)
+    workflow_fired: Mapped[list | None] = mapped_column(JSON, default=list, nullable=True)  # markers so timed rules fire once
 
 
 class Contract(Base):
@@ -481,6 +519,16 @@ class Contract(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     start_date: Mapped[str] = mapped_column(String(20), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # Agreement fields (ConnectWise-style). Managed Services | Block Hours | Retainer | Time & Materials
+    agreement_type: Mapped[str | None] = mapped_column(String(40), default="Managed Services", nullable=True)
+    billing_cycle: Mapped[str | None] = mapped_column(String(20), default="Monthly", nullable=True)  # Monthly|Quarterly|Annually
+    end_date: Mapped[str | None] = mapped_column(String(20), default="", nullable=True)
+    covered_work_types: Mapped[list | None] = mapped_column(JSON, default=list, nullable=True)  # empty = all covered
+    covers_after_hours: Mapped[bool | None] = mapped_column(Boolean, default=False, nullable=True)
+    # [{"product": "Backup per server", "quantity": 2, "unitPrice": 15, "autoCount": "devices:windows"}]
+    additions: Mapped[list | None] = mapped_column(JSON, default=list, nullable=True)
+    business_hours: Mapped[dict | None] = mapped_column(JSON, default=dict, nullable=True)  # {"days":[0..4],"start":9,"end":17,"tz":"Europe/London"}
+    notes: Mapped[str | None] = mapped_column(Text, default="", nullable=True)
 
 
 class Invoice(Base):
@@ -512,3 +560,423 @@ class Webhook(Base):
     secret: Mapped[str] = mapped_column(String(80), default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
+
+
+# --------------------------------------------------------------------------
+# RMM: scripting, jobs, scheduling, monitoring, patching, software
+# --------------------------------------------------------------------------
+
+
+class Script(Base):
+    """A reusable script in the library. Parameters become a form when it is run."""
+
+    __tablename__ = "rmm_scripts"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("scr"))
+    tenant_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)  # null = shared built-in
+    name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text, default="")
+    category: Mapped[str] = mapped_column(String(80), default="General")
+    language: Mapped[str] = mapped_column(String(20), default="powershell")  # powershell|cmd|bash|sh|python
+    platforms: Mapped[list] = mapped_column(JSON, default=lambda: ["windows"])
+    body: Mapped[str] = mapped_column(Text, default="")
+    # [{"name": "ServiceName", "label": "Service", "type": "string|number|boolean|choice", "default": "", "required": true, "choices": []}]
+    parameters: Mapped[list] = mapped_column(JSON, default=list)
+    run_as: Mapped[str] = mapped_column(String(20), default="system")  # system|user
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=600)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_by: Mapped[str] = mapped_column(String(200), default="system")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Job(Base):
+    """One run of an action across many devices (a script, patch install, software deploy...)."""
+
+    __tablename__ = "rmm_jobs"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("job"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    kind: Mapped[str] = mapped_column(String(30), default="script")  # script|command|patch|software
+    command_type: Mapped[str] = mapped_column(String(80), default="script.run")
+    script_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    parameters: Mapped[dict] = mapped_column(JSON, default=dict)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    targets: Mapped[dict] = mapped_column(JSON, default=dict)  # {"deviceIds": [], "groupIds": [], "tenantIds": [], "platforms": []}
+    # {deviceId: commandId}
+    command_ids: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(20), default="running")  # running|completed|failed|partial|cancelled
+    created_by: Mapped[str] = mapped_column(String(200), default="system")
+    scheduled_task_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    ticket_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class ScheduledTask(Base):
+    """Run scripts/commands on a schedule against a set of devices."""
+
+    __tablename__ = "rmm_scheduled_tasks"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("sch"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # {"type": "once|interval|daily|weekly|monthly", "at": "02:00", "days": [0..6], "dayOfMonth": 1, "everyMinutes": 60, "date": "2026-11-01"}
+    schedule: Mapped[dict] = mapped_column(JSON, default=dict)
+    targets: Mapped[dict] = mapped_column(JSON, default=dict)
+    # [{"type": "script", "scriptId": "...", "parameters": {}} | {"type": "command", "command": "patch.install", "payload": {}}]
+    actions: Mapped[list] = mapped_column(JSON, default=list)
+    run_offline_on_reconnect: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(200), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class MonitorCondition(Base):
+    """A health check evaluated against agent heartbeats (CPU, disk, offline, service down...)."""
+
+    __tablename__ = "rmm_conditions"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("mon"))
+    tenant_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)  # null = every tenant
+    name: Mapped[str] = mapped_column(String(200))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # cpu|memory|disk_free_percent|disk_free_gb|offline_minutes|service_stopped|process_missing|reboot_pending|
+    # pending_patches|uptime_days|av_unhealthy|script
+    metric: Mapped[str] = mapped_column(String(40))
+    operator: Mapped[str] = mapped_column(String(4), default=">")  # > < >= <= == !=
+    threshold: Mapped[float] = mapped_column(Float, default=0)
+    target: Mapped[str] = mapped_column(String(200), default="")  # service/process name, mount point, script id
+    duration_minutes: Mapped[int] = mapped_column(Integer, default=5)
+    severity: Mapped[str] = mapped_column(String(16), default="medium")
+    scope: Mapped[dict] = mapped_column(JSON, default=dict)  # {"groupIds": [], "platforms": [], "tags": []}
+    # [{"type": "ticket"}, {"type": "script", "scriptId": "..."}, {"type": "webhook"}, {"type": "email", "to": "..."}]
+    actions: Mapped[list] = mapped_column(JSON, default=list)
+    auto_resolve: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ConditionState(Base):
+    """Per-device state of a monitor: when it started failing and the alert it raised."""
+
+    __tablename__ = "rmm_condition_states"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    condition_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    failing_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    triggered: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    message: Mapped[str] = mapped_column(String(300), default="")
+    alert_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    ticket_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    triggered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    __table_args__ = (UniqueConstraint("condition_id", "device_id"),)
+
+
+class DeviceMetric(Base):
+    """Down-sampled health history for device charts (one row per heartbeat, kept 30 days)."""
+
+    __tablename__ = "rmm_device_metrics"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    cpu: Mapped[float] = mapped_column(Float, default=0)
+    memory: Mapped[float] = mapped_column(Float, default=0)
+    disk_free_percent: Mapped[float] = mapped_column(Float, default=100)
+
+
+class PatchPolicy(Base):
+    """Approval rules, rings, maintenance window and reboot behaviour for a tenant or group."""
+
+    __tablename__ = "rmm_patch_policies"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ppl"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    group_id: Mapped[str | None] = mapped_column(String(32), nullable=True)  # null = whole tenant
+    name: Mapped[str] = mapped_column(String(200))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # {"critical": "auto", "security": "auto", "updates": "manual", "feature": "reject", "driver": "reject",
+    #  "definition": "auto", "third-party": "auto"}  values: auto | manual | reject
+    approvals: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Auto-approved patches wait this many days after release before installing.
+    delay_days: Mapped[int] = mapped_column(Integer, default=0)
+    # [{"name": "Pilot", "groupIds": [...], "delayDays": 0}, {"name": "Broad", "groupIds": [], "delayDays": 7}]
+    rings: Mapped[list] = mapped_column(JSON, default=list)
+    # {"days": [5, 6], "start": "02:00", "durationMinutes": 180}
+    window: Mapped[dict] = mapped_column(JSON, default=dict)
+    # {"mode": "if_required|never|always", "notifyUser": true, "deferMinutes": 60, "maxDeferrals": 3}
+    reboot: Mapped[dict] = mapped_column(JSON, default=dict)
+    scan_interval_hours: Mapped[int] = mapped_column(Integer, default=12)
+    last_window_run: Mapped[str] = mapped_column(String(20), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class DevicePatch(Base):
+    """A patch the agent reported as missing, installed or failed on a device."""
+
+    __tablename__ = "rmm_device_patches"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    patch_key: Mapped[str] = mapped_column(String(200), index=True)  # KB5034441 | apt:openssl | winget:Mozilla.Firefox
+    title: Mapped[str] = mapped_column(String(400), default="")
+    classification: Mapped[str] = mapped_column(String(30), default="updates")
+    severity: Mapped[str] = mapped_column(String(20), default="")
+    source: Mapped[str] = mapped_column(String(30), default="windows-update")  # windows-update|apt|dnf|zypper|winget
+    product: Mapped[str] = mapped_column(String(200), default="")
+    installed_version: Mapped[str] = mapped_column(String(80), default="")
+    available_version: Mapped[str] = mapped_column(String(80), default="")
+    reboot_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(20), default="missing")  # missing|installing|installed|failed
+    released_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    installed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    error: Mapped[str] = mapped_column(String(300), default="")
+    __table_args__ = (UniqueConstraint("device_id", "patch_key"),)
+
+
+class PatchApproval(Base):
+    """A manual approve/reject decision that overrides the policy's rule for one patch."""
+
+    __tablename__ = "rmm_patch_approvals"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    patch_key: Mapped[str] = mapped_column(String(200))
+    decision: Mapped[str] = mapped_column(String(10))  # approved|rejected
+    decided_by: Mapped[str] = mapped_column(String(200))
+    note: Mapped[str] = mapped_column(String(300), default="")
+    decided_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    __table_args__ = (UniqueConstraint("tenant_id", "patch_key"),)
+
+
+class SoftwarePackage(Base):
+    """An application the MSP can deploy: winget/choco/apt id, or a downloadable installer."""
+
+    __tablename__ = "rmm_software_packages"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("pkg"))
+    tenant_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    publisher: Mapped[str] = mapped_column(String(200), default="")
+    platform: Mapped[str] = mapped_column(String(20), default="windows")
+    installer: Mapped[str] = mapped_column(String(20), default="winget")  # winget|choco|msi|exe|apt|dnf|snap|script
+    identifier: Mapped[str] = mapped_column(String(300), default="")  # winget id, apt package, or download URL
+    sha256: Mapped[str] = mapped_column(String(64), default="")
+    install_args: Mapped[str] = mapped_column(String(400), default="")
+    uninstall_args: Mapped[str] = mapped_column(String(400), default="")
+    version: Mapped[str] = mapped_column(String(60), default="latest")
+    keep_updated: Mapped[bool] = mapped_column(Boolean, default=True)
+    builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+# --------------------------------------------------------------------------
+# Remote access
+# --------------------------------------------------------------------------
+
+
+class RemoteSession(Base):
+    """A remote desktop / terminal / file session brokered by the cloud relay."""
+
+    __tablename__ = "remote_sessions"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("rs"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    technician: Mapped[str] = mapped_column(String(200))
+    mode: Mapped[str] = mapped_column(String(20), default="desktop")  # desktop|terminal|files
+    status: Mapped[str] = mapped_column(String(20), default="waiting")  # waiting|connected|ended|failed|denied
+    consent: Mapped[str] = mapped_column(String(20), default="not_required")  # not_required|pending|granted|denied
+    view_only: Mapped[bool] = mapped_column(Boolean, default=False)
+    command_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    ticket_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    # Session events: connect, file transfer, Ctrl+Alt+Del, chat... for the audit trail.
+    events: Mapped[list] = mapped_column(JSON, default=list)
+    bytes_relayed: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    connected_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+# --------------------------------------------------------------------------
+# PSA (ConnectWise Manage-style)
+# --------------------------------------------------------------------------
+
+
+class Board(Base):
+    """A service board: its own statuses, types/subtypes/items, team and defaults."""
+
+    __tablename__ = "psa_boards"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("brd"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    # [{"name": "New", "closed": false, "default": true, "customerResponded": false, "timeEntryNotAllowed": false}]
+    statuses: Mapped[list] = mapped_column(JSON, default=list)
+    # [{"name": "Hardware", "subtypes": [{"name": "Laptop", "items": ["Screen", "Battery"]}]}]
+    types: Mapped[list] = mapped_column(JSON, default=list)
+    members: Mapped[list] = mapped_column(JSON, default=list)  # user emails
+    teams: Mapped[list] = mapped_column(JSON, default=list)  # [{"name": "Tier 1", "members": [...]}]
+    default_priority: Mapped[str] = mapped_column(String(4), default="P3")
+    default_work_type: Mapped[str] = mapped_column(String(60), default="Remote Support")
+    mailbox: Mapped[str] = mapped_column(String(200), default="")  # inbound address routed to this board
+    auto_assign: Mapped[str] = mapped_column(String(20), default="none")  # none|round_robin
+    rr_index: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Site(Base):
+    __tablename__ = "psa_sites"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("sit"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)  # MSP owner
+    account_tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    address: Mapped[str] = mapped_column(Text, default="")
+    city: Mapped[str] = mapped_column(String(100), default="")
+    postcode: Mapped[str] = mapped_column(String(20), default="")
+    country: Mapped[str] = mapped_column(String(60), default="United Kingdom")
+    phone: Mapped[str] = mapped_column(String(60), default="")
+    primary: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class TimeEntry(Base):
+    __tablename__ = "psa_time_entries"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("tim"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)  # MSP owner
+    account_tenant_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    member: Mapped[str] = mapped_column(String(200), index=True)
+    charge_to: Mapped[str] = mapped_column(String(20), default="ticket")  # ticket|project|activity|internal
+    ticket_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    project_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    remote_session_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    work_type: Mapped[str] = mapped_column(String(60), default="Remote Support")
+    work_role: Mapped[str] = mapped_column(String(60), default="Engineer")
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    hours: Mapped[float] = mapped_column(Float, default=0)
+    hours_billed: Mapped[float] = mapped_column(Float, default=0)
+    billable: Mapped[str] = mapped_column(String(20), default="Billable")  # Billable|Do Not Bill|No Charge
+    notes: Mapped[str] = mapped_column(Text, default="")
+    internal_notes: Mapped[str] = mapped_column(Text, default="")
+    agreement_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    covered: Mapped[bool] = mapped_column(Boolean, default=False)  # covered by an agreement (not billed per hour)
+    rate: Mapped[float] = mapped_column(Float, default=0)
+    status: Mapped[str] = mapped_column(String(20), default="Open")  # Open|Submitted|Approved|Rejected|Billed
+    invoice_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Configuration(Base):
+    """CMDB item: a device, network kit, licence or service a customer owns."""
+
+    __tablename__ = "psa_configurations"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("cfg"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    account_tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    type: Mapped[str] = mapped_column(String(60), default="Workstation")
+    status: Mapped[str] = mapped_column(String(30), default="Active")
+    device_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    site_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    contact_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    manufacturer: Mapped[str] = mapped_column(String(120), default="")
+    model: Mapped[str] = mapped_column(String(120), default="")
+    serial_number: Mapped[str] = mapped_column(String(120), default="")
+    ip_address: Mapped[str] = mapped_column(String(64), default="")
+    mac_address: Mapped[str] = mapped_column(String(64), default="")
+    os: Mapped[str] = mapped_column(String(200), default="")
+    purchase_date: Mapped[str] = mapped_column(String(20), default="")
+    warranty_expires: Mapped[str] = mapped_column(String(20), default="")
+    vendor: Mapped[str] = mapped_column(String(120), default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    questions: Mapped[dict] = mapped_column(JSON, default=dict)  # type-specific fields
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Product(Base):
+    """Catalogue item for quotes, agreements additions and procurement."""
+
+    __tablename__ = "psa_products"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("prd"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    sku: Mapped[str] = mapped_column(String(80))
+    description: Mapped[str] = mapped_column(String(300))
+    category: Mapped[str] = mapped_column(String(80), default="Service")  # Hardware|Software|Service|Licence
+    cost: Mapped[float] = mapped_column(Float, default=0)
+    price: Mapped[float] = mapped_column(Float, default=0)
+    recurring: Mapped[bool] = mapped_column(Boolean, default=False)
+    taxable: Mapped[bool] = mapped_column(Boolean, default=True)
+    vendor: Mapped[str] = mapped_column(String(120), default="")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Quote(Base):
+    __tablename__ = "psa_quotes"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("quo"))
+    number: Mapped[str] = mapped_column(String(30), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    account_tenant_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    lead_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    title: Mapped[str] = mapped_column(String(200))
+    # [{"productId": "...", "description": "...", "quantity": 1, "unitPrice": 0, "recurring": false}]
+    lines: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="Draft")  # Draft|Sent|Accepted|Declined
+    valid_until: Mapped[str] = mapped_column(String(20), default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ScheduleEntry(Base):
+    """Dispatch calendar entry: a member booked on a ticket, project or other activity."""
+
+    __tablename__ = "psa_schedule"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("sce"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    member: Mapped[str] = mapped_column(String(200), index=True)
+    ticket_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    project_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    title: Mapped[str] = mapped_column(String(300), default="")
+    kind: Mapped[str] = mapped_column(String(20), default="Service")  # Service|Onsite|Meeting|Leave|Project
+    status: Mapped[str] = mapped_column(String(20), default="Firm")  # Firm|Tentative|Done|Cancelled
+    location: Mapped[str] = mapped_column(String(200), default="")
+    start_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    end_at: Mapped[datetime] = mapped_column(DateTime)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class WorkflowRule(Base):
+    """Board automation: when a ticket matches conditions on an event or after a delay, do things."""
+
+    __tablename__ = "psa_workflow_rules"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("wfr"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    board_id: Mapped[str | None] = mapped_column(String(32), nullable=True)  # null = every board
+    name: Mapped[str] = mapped_column(String(200))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    trigger: Mapped[str] = mapped_column(String(30), default="ticket.created")  # ticket.created|ticket.updated|ticket.idle|sla.warning|sla.breached
+    idle_hours: Mapped[float] = mapped_column(Float, default=0)  # for ticket.idle: hours in the same status
+    # [{"field": "status", "op": "equals|not_equals|contains|in", "value": "Waiting Customer"}]
+    conditions: Mapped[list] = mapped_column(JSON, default=list)
+    # [{"type": "set", "field": "status", "value": "Closed"}, {"type": "note", "text": "...", "kind": "discussion"},
+    #  {"type": "email_contact", "subject": "...", "body": "..."}, {"type": "notify", "to": "..."}, {"type": "assign", "member": "..."}]
+    actions: Mapped[list] = mapped_column(JSON, default=list)
+    runs: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class KbArticle(Base):
+    __tablename__ = "psa_kb_articles"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("kb"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    title: Mapped[str] = mapped_column(String(300))
+    body: Mapped[str] = mapped_column(Text, default="")
+    category: Mapped[str] = mapped_column(String(80), default="General")
+    tags: Mapped[list] = mapped_column(JSON, default=list)
+    public: Mapped[bool] = mapped_column(Boolean, default=False)  # visible in the client portal
+    author: Mapped[str] = mapped_column(String(200), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

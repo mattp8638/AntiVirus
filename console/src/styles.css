@@ -146,3 +146,27 @@ label.field input, label.field select, label.field textarea { color: var(--text)
 .chip { display: inline-flex; gap: 4px; align-items: center; background: #15203a; border: 1px solid var(--line-2); border-radius: 999px; padding: 1px 8px; font-size: 12px; margin: 2px; }
 .heat { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; }
 .heat div { border-radius: 6px; padding: 6px 8px; font-size: 12px; border: 1px solid var(--line); }
+
+/* Remote viewer pop-out */
+.rv { display: flex; flex-direction: column; height: 100vh; background: #03060c; }
+.rv-bar { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-bottom: 1px solid var(--line); background: #0a1020; flex-wrap: wrap; }
+.rv-bar .spacer { flex: 1; }
+.rv-bar button, .rv-bar select { padding: 4px 9px; font-size: 12.5px; }
+.rv-title { display: flex; align-items: center; gap: 8px; min-width: 200px; }
+.rv-tabs { display: flex; gap: 2px; }
+.rv-tabs button { background: transparent; border-color: transparent; color: var(--muted); position: relative; }
+.rv-tabs button.active { background: var(--panel-2); border-color: var(--line-2); color: #fff; }
+.rv-tools { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.rv-check { display: inline-flex; gap: 4px; align-items: center; font-size: 12.5px; color: var(--muted); }
+.rv-badge { background: var(--red); color: #fff; border-radius: 999px; font-size: 10px; padding: 0 6px; margin-left: 4px; }
+.rv-body { flex: 1; min-height: 0; position: relative; display: flex; }
+.rv-screen[hidden] { display: none; }
+.rv-screen { flex: 1; display: flex; align-items: center; justify-content: center; background: #000; }
+.rv-screen canvas { outline: none; image-rendering: auto; }
+.rv-screen canvas.fit { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
+.rv-pane { flex: 1; padding: 14px; overflow: auto; }
+.rv-term { height: calc(100vh - 140px); background: #05080f; border: 1px solid var(--line); border-radius: 8px; padding: 6px; }
+.rv-wait { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; gap: 10px; padding: 20px; }
+.rv-spinner { width: 42px; height: 42px; margin: 0 auto; border: 3px solid var(--line-2); border-top-color: var(--blue); border-radius: 50%; animation: rv-spin 0.9s linear infinite; }
+@keyframes rv-spin { to { transform: rotate(360deg); } }
+.btn { text-decoration: none; }
