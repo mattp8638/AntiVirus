@@ -36,6 +36,10 @@ class ProcessGuard {
 
   std::filesystem::path ModelPath() const;
 
+  // Terminates one process (and optionally its children) only if its image still matches
+  // expectedImagePath. Returns the number terminated, or -1 if the process is gone or different.
+  static int TerminateIfImageMatches(unsigned long pid, const std::wstring& expectedImagePath, bool includeChildren);
+
  private:
   std::filesystem::path installRoot_;
   std::filesystem::path runtimeRoot_;

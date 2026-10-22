@@ -2103,6 +2103,23 @@ std::wstring AgentService::ExecuteProcessTerminationCommand(const RemoteCommand&
     throw std::runtime_error("Process termination command is missing targetPath");
   }
 
+  // PID-targeted kill: only that process (and children), and only if it is still the same program.
+  const auto pidPosition = command.payloadJson.find(L"\"pid\"");
+  if (pidPosition != std::wstring::npos) {
+    const auto digits = command.payloadJson.find_first_of(L"0123456789", pidPosition + 5);
+    if (digits != std::wstring::npos) {
+      const auto pid = std::wcstoul(command.payloadJson.c_str() + digits, nullptr, 10);
+      const auto killed = ProcessGuard::TerminateIfImageMatches(pid, command.targetPath, includeChildren);
+      QueueTelemetryEvent(includeChildren ? L"process.tree.terminated" : L"process.terminated", L"command-executor",
+                          killed > 0 ? L"The endpoint terminated the targeted process."
+                                     : L"The targeted process had already exited or no longer matched.",
+                          std::wstring(L"{\"commandId\":\"") + command.commandId + L"\",\"pid\":" + std::to_wstring(pid) +
+                              L",\"terminatedCount\":" + std::to_wstring(killed < 0 ? 0 : killed) + L"}");
+      return std::wstring(L"{\"commandId\":\"") + command.commandId + L"\",\"pid\":" + std::to_wstring(pid) +
+             L",\"terminatedCount\":" + std::to_wstring(killed < 0 ? 0 : killed) + L"}";
+    }
+  }
+
   RemediationEngine remediationEngine(config_);
   const auto result = remediationEngine.TerminateProcessesForPath(command.targetPath, includeChildren);
   QueueTelemetryEvent(includeChildren ? L"process.tree.terminated" : L"process.terminated", L"command-executor",

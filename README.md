@@ -50,14 +50,20 @@ Put it behind TLS (Caddy, nginx, Cloudflare Tunnel). Agents and DoH need HTTPS.
 ## Tests
 
 ```bash
-cd cloud && python3 -m pytest -q             # 41 tests; set FENRIR_TEST_DATABASE_URL to run on PostgreSQL
+cd cloud && python3 -m pytest -q             # 43 tests; set FENRIR_TEST_DATABASE_URL to run on PostgreSQL
+cd ml && python3 -m pytest -q                # feature/model parity
 make -C agent/linux test                     # Go unit tests
 cd console && npm run build                  # type-check + bundle
 ```
+
+## Machine learning
+
+`ml/` holds the static malware model: training, evaluation and the cross-language feature extractor. Results are in [ml/README.md](ml/README.md).
 
 ## Documentation
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how the pieces fit together
 - [docs/COMPETITIVE_ANALYSIS.md](docs/COMPETITIVE_ANALYSIS.md): feature map against Heimdal, ESET, ConnectSecure, RoboShadow, SentinelOne and Defender
 - [docs/ROADMAP.md](docs/ROADMAP.md): what is built, what is next
+- [docs/DRIVER_SIGNING.md](docs/DRIVER_SIGNING.md): what Windows/Apple signing really costs
 - [components/README.md](components/README.md): where the vendored code came from and what was removed

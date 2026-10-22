@@ -168,12 +168,14 @@ export function CommandModal({ device, initial, onClose, incidentId }: { device:
   const [type, setType] = useState(initial || "scan.quick");
   const [targetPath, setTargetPath] = useState("");
   const [recordId, setRecordId] = useState("");
+  const [pid, setPid] = useState("");
   const [reason, setReason] = useState("");
   const { run, busy } = useAction();
+  const isKill = type === "process.terminate" || type === "process.tree.terminate";
   const available = catalog?.filter((c) => c.platforms.includes(device.platform)) ?? [];
   const spec = available.find((c) => c.type === type);
   const submit = async () => {
-    const ok = await run(() => api(`devices/${device.id}/commands`, { body: { type, targetPath, recordId, reason, incidentId } }), `${spec?.label ?? type} queued`);
+    const ok = await run(() => api(`devices/${device.id}/commands`, { body: { type, targetPath, recordId, reason, incidentId, payload: isKill && pid ? { pid: Number(pid) } : {} } }), `${spec?.label ?? type} queued`);
     if (ok) onClose();
   };
   return (
@@ -186,10 +188,12 @@ export function CommandModal({ device, initial, onClose, incidentId }: { device:
           </select>
         </label>
         {spec?.needs.includes("targetPath") && <label className="field">Target path<input value={targetPath} onChange={(e) => setTargetPath(e.target.value)} placeholder="C:\\path\\file.exe" /></label>}
+        {isKill && <label className="field">Process ID<input value={pid} onChange={(e) => setPid(e.target.value.replace(/\D/g, ""))} placeholder="from the alert" /></label>}
         {spec?.needs.includes("recordId") && <label className="field">Record ID<input value={recordId} onChange={(e) => setRecordId(e.target.value)} /></label>}
         <label className="field">Reason<input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Recorded in the audit log" /></label>
       </div>
       {spec?.description && <p className="muted">{spec.description}</p>}
+      {isKill && !pid && <p style={{ color: "#fde68a" }}>No process ID: every running copy of this program on the device will be killed.</p>}
       {spec?.destructive && <p style={{ color: "#fecaca" }}>This action changes the device and cannot be undone automatically.</p>}
     </Modal>
   );

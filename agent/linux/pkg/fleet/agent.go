@@ -18,6 +18,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/AntiVirus/agent/linux/pkg/ml"
 )
 
 const Version = "1.0.0"
@@ -206,6 +208,15 @@ func (a *Agent) SenseOnce() {
 				}
 			}
 		}
+		var sha string
+		if v, ok := payload["sha256"].(string); ok {
+			sha = v
+		} else if hasHashRules(p) && proc.Exe != "" {
+			sha, _ = HashFile(proc.Exe, a.scanner.MaxFileBytes)
+		}
+		if decisions := EvaluateProcess(p, proc, parent, sha); len(decisions) > 0 {
+			a.applyDecisions(proc, decisions)
+		}
 		a.emit("process.start", "procfs", "", payload)
 	}
 	if p.ModuleBool("edr", "collectNetworkEvents", true) {
@@ -222,6 +233,90 @@ func (a *Agent) SenseOnce() {
 		}
 		a.emit("file."+map[string]string{"created": "create", "modified": "write", "deleted": "delete"}[change.Kind], "persistence-monitor", "",
 			map[string]interface{}{"path": change.Path, "targetPath": change.Path, "change": change.Kind})
+	}
+}
+
+func hasHashRules(p Policy) bool {
+	return len(p.ModuleStrings("applicationControl", "blockedApps")) > 0 || len(p.ModuleStrings("applicationControl", "allowedHashes")) > 0
+}
+
+func (a *Agent) applyDecisions(proc ProcInfo, decisions []RuleDecision) {
+	terminated := false
+	if strongest(decisions) == "block" && proc.PID != os.Getpid() {
+		targets := []int{proc.PID}
+		if a.state.Policy.TerminateProcessTreeOnBlock {
+			targets = append(Descendants(a.cfg.ProcRoot, proc.PID), proc.PID)
+		}
+		for _, pid := range targets {
+			if syscall.Kill(pid, syscall.SIGKILL) == nil {
+				terminated = true
+			}
+		}
+	}
+	for _, d := range decisions {
+		family := "asr.rule"
+		if strings.HasPrefix(d.Rule, "applicationControl") {
+			family = "appcontrol"
+		}
+		suffix := ".audited"
+		if d.Mode == "block" {
+			suffix = ".block_failed"
+			if terminated {
+				suffix = ".blocked"
+			}
+		}
+		a.emit(family+suffix, "process-guard", d.Reason, map[string]interface{}{"rule": d.Rule, "mode": d.Mode, "pid": proc.PID,
+			"processImagePath": proc.Exe, "commandLine": proc.Cmdline, "reason": d.Reason, "technique": d.MITRE})
+	}
+}
+
+func (a *Agent) applyDeviceControl() {
+	summary, notes, err := ApplyDeviceControl(a.state.Policy, "/", a.cfg.DryRunIsolation)
+	switch {
+	case err != nil:
+		a.emit("devicecontrol.apply_failed", "device-control", "Device control could not be applied: "+err.Error(), map[string]interface{}{"notes": notes})
+	case summary != "":
+		a.emit("devicecontrol.applied", "device-control", "Device control applied ("+summary+")", map[string]interface{}{"summary": summary, "notes": notes})
+	}
+}
+
+func mlThreshold(m *ml.Model, sensitivity string) float64 {
+	if m == nil || sensitivity == "off" {
+		return 0
+	}
+	if sensitivity == "" {
+		sensitivity = "balanced"
+	}
+	t, ok := m.Threshold(sensitivity)
+	if !ok {
+		return 0
+	}
+	return t
+}
+
+func (a *Agent) refreshModel() {
+	path := filepath.Join(a.cfg.StateDir, "models", "fenrir-pe.json.gz")
+	versionPath := path + ".version"
+	manifest, err := a.client.FetchModelManifest()
+	if err == nil && manifest.Version != "" {
+		installed, _ := os.ReadFile(versionPath)
+		if strings.TrimSpace(string(installed)) != manifest.Version {
+			if data, err := a.client.DownloadModel(); err == nil {
+				if _, err := ml.LoadModel(data); err == nil {
+					_ = os.MkdirAll(filepath.Dir(path), 0o700)
+					if os.WriteFile(path+".tmp", data, 0o600) == nil && os.Rename(path+".tmp", path) == nil {
+						_ = os.WriteFile(versionPath, []byte(manifest.Version), 0o600)
+						a.emit("ml.model.updated", "ml-updater", "Installed static ML model "+manifest.Version, map[string]interface{}{"version": manifest.Version})
+					}
+				} else {
+					a.emit("ml.model.update_failed", "ml-updater", "Downloaded model is invalid", map[string]interface{}{"error": err.Error()})
+				}
+			}
+		}
+	}
+	if model, err := ml.LoadModelFile(path); err == nil {
+		sens, _ := a.state.Policy.Modules["antimalware"]["mlSensitivity"].(string)
+		a.scanner.SetModel(model, mlThreshold(model, sens))
 	}
 }
 
@@ -269,6 +364,11 @@ func (a *Agent) refreshPolicy() {
 	if changed || a.state.Policy.Revision == "" {
 		a.state.Policy = policy
 		_ = a.saveState()
+		a.applyDeviceControl()
+		if a.scanner.Model != nil {
+			sens, _ := policy.Modules["antimalware"]["mlSensitivity"].(string)
+			a.scanner.SetModel(a.scanner.Model, mlThreshold(a.scanner.Model, sens))
+		}
 		a.emit("policy.checked-in", "agent", "Applied policy "+policy.Revision, map[string]interface{}{"revision": policy.Revision})
 	}
 }
@@ -306,7 +406,9 @@ func (a *Agent) heartbeat() {
 // Run blocks until Stop is called.
 func (a *Agent) Run() {
 	a.refreshPolicy()
+	a.applyDeviceControl()
 	a.refreshSignatures()
+	a.refreshModel()
 	a.sendInventory()
 	sense := time.NewTicker(2 * time.Second)
 	beat := time.NewTicker(60 * time.Second)
@@ -335,6 +437,7 @@ func (a *Agent) Run() {
 			a.RunCommands()
 		case <-sigs.C:
 			a.refreshSignatures()
+			a.refreshModel()
 		}
 	}
 }
@@ -392,7 +495,20 @@ func (a *Agent) Execute(cmd Command) (map[string]interface{}, error) {
 			return nil, errors.New("targetPath is required")
 		}
 		killed := 0
-		for _, pid := range FindByExe(a.cfg.ProcRoot, cmd.TargetPath) {
+		var payload struct {
+			PID int `json:"pid"`
+		}
+		_ = json.Unmarshal([]byte(cmd.PayloadJSON), &payload)
+		candidates := FindByExe(a.cfg.ProcRoot, cmd.TargetPath)
+		if payload.PID > 0 {
+			// PID-targeted: only that process (and its children), and only if it is still the same program.
+			info, ok := a.procs.Lookup(payload.PID)
+			if !ok || info.Exe != cmd.TargetPath {
+				return map[string]interface{}{"terminatedCount": 0, "note": "process already exited or no longer matches"}, nil
+			}
+			candidates = []int{payload.PID}
+		}
+		for _, pid := range candidates {
 			targets := []int{pid}
 			if cmd.Type == "process.tree.terminate" {
 				targets = append(Descendants(a.cfg.ProcRoot, pid), pid)

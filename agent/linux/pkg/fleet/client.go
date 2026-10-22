@@ -221,6 +221,38 @@ func (c *Client) CompleteCommand(id, status string, result interface{}) error {
 		map[string]string{"status": status, "resultJson": string(data)}, nil, nil)
 }
 
+type ModelManifest struct {
+	Version string `json:"version"`
+	SHA256  string `json:"sha256"`
+}
+
+func (c *Client) FetchModelManifest() (*ModelManifest, error) {
+	var out ModelManifest
+	return &out, c.do("GET", "/api/v1/agent/model/manifest", nil, &out, nil)
+}
+
+// DownloadModel fetches the JSON (gzipped) model, which the Go evaluator reads.
+func (c *Client) DownloadModel() ([]byte, error) {
+	req, err := http.NewRequest("GET", c.BaseURL+"/api/v1/agent/model?format=json", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Device-Api-Key", c.APIKey)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 128<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 300 {
+		return nil, &APIError{Status: resp.StatusCode, Body: string(data)}
+	}
+	return data, nil
+}
+
 func (c *Client) FetchBundle() (*Bundle, error) {
 	var out Bundle
 	return &out, c.do("GET", "/api/v1/agent/bundle?hashesLimit=200000&urlsLimit=0&rulesLimit=0", nil, &out, nil)

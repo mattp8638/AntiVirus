@@ -4,6 +4,7 @@
 #include <TlHelp32.h>
 
 #include <fstream>
+#include <iterator>
 #include <sstream>
 
 #include "BehaviorRules.h"
@@ -87,6 +88,22 @@ TelemetryRecord Record(const std::wstring& type, const std::wstring& summary, co
 std::wstring J(const std::wstring& value) { return Utf8ToWide(EscapeJsonString(value)); }
 
 }  // namespace
+
+int ProcessGuard::TerminateIfImageMatches(unsigned long pid, const std::wstring& expectedImagePath, bool includeChildren) {
+  HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+  if (process == nullptr) return -1;
+  wchar_t buffer[32768];
+  DWORD size = static_cast<DWORD>(std::size(buffer));
+  const bool ok = QueryFullProcessImageNameW(process, 0, buffer, &size) != FALSE;
+  CloseHandle(process);
+  if (!ok || LowerCopy(std::wstring(buffer, size)) != LowerCopy(expectedImagePath)) return -1;
+  int killed = 0;
+  if (includeChildren) {
+    for (const auto child : ChildProcesses(pid)) killed += Terminate(child) ? 1 : 0;
+  }
+  killed += Terminate(pid) ? 1 : 0;
+  return killed;
+}
 
 ProcessGuard::ProcessGuard(std::filesystem::path installRoot, std::filesystem::path runtimeRoot)
     : installRoot_(std::move(installRoot)), runtimeRoot_(std::move(runtimeRoot)) {}

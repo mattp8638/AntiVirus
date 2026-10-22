@@ -113,6 +113,19 @@ def test_shadow_copy_deletion_raises_incident_kills_and_tickets(client, admin, d
     pending = client.get(f"/api/v1/devices/{device['deviceId']}/commands/pending", headers=device["headers"]).json()["items"]
     kill = next(i for i in pending if i["type"] == "process.tree.terminate")
     assert kill["targetPath"].endswith("vssadmin.exe")
+    assert json.loads(kill["payloadJson"]) == {"pid": 4242}  # PID-targeted, never "every vssadmin.exe"
+
+
+def test_no_path_wide_kill_without_pid_or_after_agent_block(client, admin, device):
+    send(client, device, [win_event("process.start", {"processImagePath": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                                                      "commandLine": "powershell -enc AAAA"}, "nopid")])
+    send(client, device, [win_event("asr.rule.blocked", {"rule": "attackSurface.blockObfuscatedScripts", "pid": 77,
+                                                         "processImagePath": "C:\\Windows\\System32\\cmd.exe"}, "blk")])
+    commands = client.get(f"/api/console/commands?device_id={device['deviceId']}", headers=admin).json()
+    assert not any(c["type"] in {"process.terminate", "process.tree.terminate"} for c in commands)
+    incident = client.get("/api/console/incidents", headers=admin).json()[0]
+    detail = client.get(f"/api/console/incidents/{incident['id']}", headers=admin).json()
+    assert any("Automation skipped" in item["text"] for item in detail["incident"]["timeline"])
 
 
 def test_duplicate_events_are_ignored(client, device):

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/AntiVirus/agent/linux/pkg/ml"
 )
 
 // Scanner holds the malicious hash set from the cloud bundle and quarantines matches.
@@ -22,6 +24,9 @@ type Scanner struct {
 	Version       string
 	QuarantineDir string
 	MaxFileBytes  int64
+	// Static PE model (optional). Threshold <= 0 disables it.
+	Model       *ml.Model
+	MLThreshold float64
 }
 
 func NewScanner(quarantineDir string) *Scanner {
@@ -190,7 +195,13 @@ func (s *Scanner) ScanPaths(roots []string, skip []string, quarantine bool, maxF
 				return nil
 			}
 			scanned++
-			if bad, family := s.Verdict(sha); bad {
+			bad, family := s.Verdict(sha)
+			if !bad {
+				if score, ok := s.MLScore(path); ok && score >= s.MLThreshold {
+					bad, family = true, fmt.Sprintf("ML.Static.PE (score %.2f)", score)
+				}
+			}
+			if bad {
 				f := Finding{Path: path, SHA256: sha, Family: family, Action: "detected"}
 				if quarantine {
 					if id, err := s.Quarantine(path, sha); err == nil {
@@ -222,4 +233,39 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	return out.Close()
+}
+
+// MLScore scores a Windows PE file with the static model. ok=false if not evaluated.
+func (s *Scanner) MLScore(path string) (float64, bool) {
+	s.mu.RLock()
+	model, threshold := s.Model, s.MLThreshold
+	s.mu.RUnlock()
+	if model == nil || threshold <= 0 {
+		return 0, false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, false
+	}
+	magic := make([]byte, 2)
+	_, err = io.ReadFull(f, magic)
+	f.Close()
+	if err != nil || magic[0] != 'M' || magic[1] != 'Z' {
+		return 0, false
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Size() > 64<<20 {
+		return 0, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !ml.IsPE(data) {
+		return 0, false
+	}
+	return model.Score(ml.Extract(data)), true
+}
+
+func (s *Scanner) SetModel(model *ml.Model, threshold float64) {
+	s.mu.Lock()
+	s.Model, s.MLThreshold = model, threshold
+	s.mu.Unlock()
 }
