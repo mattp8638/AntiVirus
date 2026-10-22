@@ -15,11 +15,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from sqlalchemy import delete, select
 
-from . import __version__, audit, db as database, policy_schema
-from .config import Settings, get_settings
+from . import __version__, audit, db as database, policy_schema, psa, remote, rmm, rmm_library
+from .config import Settings, get_settings, set_settings
 from .detection import sync_builtin_rules
 from .models import DnsQueryLog, Event, Policy, RuleMatch, Tenant, User, utcnow
-from .routers import admin, agent_api, business, fleet, protection, soc
+from .routers import admin, agent_api, business, fleet, portal, protection, soc
+from .routers import psa as psa_router, remote as remote_router, rmm as rmm_router
 from .security import hash_password
 from .services import GLOBAL_POLICY_ID
 
@@ -28,6 +29,9 @@ log = logging.getLogger("fenrir")
 
 def bootstrap(settings: Settings) -> None:
     database.Base.metadata.create_all(database.engine())
+    added = database.ensure_columns(database.Base, database.engine())
+    if added:
+        log.info("added database columns: %s", ", ".join(added))
     db = database.session_factory()()
     try:
         msp = db.execute(select(Tenant).where(Tenant.kind == "msp")).scalars().first()
@@ -46,6 +50,8 @@ def bootstrap(settings: Settings) -> None:
             if not settings.bootstrap_admin_password:
                 # Printed once so the first operator can sign in; change it straight away.
                 print(f"\n[fenrir] Created admin {settings.bootstrap_admin_email} with password: {password}\n", file=sys.stderr)
+        rmm_library.seed(db)
+        psa.ensure_default_boards(db, msp.id)
         db.commit()
         sync_builtin_rules(db, settings.rules_dir)
     finally:
@@ -71,6 +77,28 @@ def _maintenance_loop(settings: Settings, stop: threading.Event) -> None:
                 log.info("feed sync: %s", result)
         except Exception as exc:  # noqa: BLE001 - keep the loop alive
             log.warning("maintenance cycle failed: %s", exc)
+            db.rollback()
+        finally:
+            db.close()
+
+
+def _scheduler_loop(stop: threading.Event, interval: float = 30.0) -> None:
+    """Every 30 seconds: scheduled tasks, monitors, patch windows, PSA timed workflows, remote session expiry, inbound mail."""
+    passes = 0
+    while not stop.wait(interval):
+        passes += 1
+        db = database.session_factory()()
+        try:
+            rmm.tick(db)
+            psa.timed_workflows(db)
+            remote.expire_sessions(db)
+            if passes % 4 == 0:
+                msp = db.execute(select(Tenant).where(Tenant.kind == "msp")).scalars().first()
+                if msp is not None:
+                    psa.poll_imap(db, msp.id)
+            db.commit()
+        except Exception as exc:  # noqa: BLE001 - keep the loop alive
+            log.warning("scheduler pass failed: %s", exc)
             db.rollback()
         finally:
             db.close()
@@ -118,6 +146,7 @@ echo "Fenrir agent installed and enrolling with $FENRIR_SERVER"
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
+    set_settings(settings)
     database.init_engine(settings.database_url)
     stop = threading.Event()
 
@@ -126,6 +155,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         bootstrap(settings)
         worker = threading.Thread(target=_maintenance_loop, args=(settings, stop), daemon=True)
         worker.start()
+        if settings.scheduler_enabled:
+            threading.Thread(target=_scheduler_loop, args=(stop,), daemon=True).start()
         yield
         stop.set()
 
@@ -139,11 +170,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response = await call_next(request)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
+        # The remote viewer needs the clipboard and fullscreen; nothing else may use powerful features.
+        response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         return response
 
-    for module in (agent_api, admin, fleet, soc, business):
+    remote.install_wake_hook()
+    for module in (agent_api, admin, fleet, soc, business, rmm_router, psa_router, remote_router, portal):
         app.include_router(module.router)
+    app.include_router(psa_router.inbound)
+    app.include_router(remote_router.sockets)
     app.include_router(protection.router)
     app.include_router(protection.console)
 

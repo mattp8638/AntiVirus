@@ -55,6 +55,8 @@ class Settings:
     model_dir: Path = field(
         default_factory=lambda: Path(os.getenv("FENRIR_MODEL_DIR", str(Path(__file__).resolve().parents[2] / "ml" / "models")))
     )
+    # The 30-second RMM/PSA scheduler (scheduled tasks, monitors, patch windows, workflows).
+    scheduler_enabled: bool = field(default_factory=lambda: _bool("FENRIR_SCHEDULER", True))
     rules_dir: Path = field(default_factory=lambda: Path(__file__).resolve().parent / "rules" / "sigma")
 
     # Mount the vendored Sentinel investigation API under /legacy/sentinel.
@@ -63,6 +65,19 @@ class Settings:
     max_telemetry_batch: int = field(default_factory=lambda: int(os.getenv("FENRIR_MAX_TELEMETRY_BATCH", "2000")))
 
 
+_active: Settings | None = None
+
+
 @lru_cache
-def get_settings() -> Settings:
+def _from_environment() -> Settings:
     return Settings()
+
+
+def get_settings() -> Settings:
+    """Settings passed to ``create_app`` win; otherwise read once from the environment."""
+    return _active or _from_environment()
+
+
+def set_settings(settings: Settings | None) -> None:
+    global _active
+    _active = settings

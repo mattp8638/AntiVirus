@@ -1,0 +1,814 @@
+"""Remote monitoring and management: jobs, scripts, schedules, monitors, patching.
+
+The agent side of everything here is an ordinary command (``script.run``,
+``patch.scan``, ``patch.install``...). This module decides *what* to send
+and *when*, and folds the results back into jobs, patch state and alerts.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from . import audit, services
+from .models import (Alert, Command, ConditionState, Device, DeviceGroup, DeviceMetric, DevicePatch, Job, MonitorCondition,
+                     PatchApproval, PatchPolicy, ScheduledTask, Script, SoftwarePackage, Ticket, utcnow)
+
+log = logging.getLogger("fenrir.rmm")
+
+PARAM_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+LANGUAGES = {"powershell": ("windows",), "cmd": ("windows",), "bash": ("linux", "macos"), "sh": ("linux", "macos"),
+             "python": ("windows", "linux", "macos"), "zsh": ("macos",)}
+MAX_OUTPUT = 64 * 1024
+
+
+# --------------------------------------------------------------------------- targets
+
+
+def resolve_targets(db: Session, allowed_tenants: set[str] | frozenset[str], targets: dict) -> list[Device]:
+    """Devices selected by ids, groups (including sub-groups), tenants and platform/tag filters."""
+    device_ids = set(targets.get("deviceIds") or [])
+    group_ids = set(targets.get("groupIds") or [])
+    tenant_ids = set(targets.get("tenantIds") or [])
+    platforms = set(targets.get("platforms") or [])
+    tags = set(targets.get("tags") or [])
+    if group_ids:
+        # Expand to child groups.
+        groups = db.execute(select(DeviceGroup.id, DeviceGroup.parent_id)).all()
+        changed = True
+        while changed:
+            changed = False
+            for gid, parent in groups:
+                if parent in group_ids and gid not in group_ids:
+                    group_ids.add(gid)
+                    changed = True
+    query = select(Device).where(Device.tenant_id.in_(list(allowed_tenants)), Device.approved.is_(True))
+    selected: dict[str, Device] = {}
+    if device_ids:
+        for device in db.execute(query.where(Device.id.in_(device_ids))).scalars():
+            selected[device.id] = device
+    if group_ids:
+        for device in db.execute(query.where(Device.group_id.in_(group_ids))).scalars():
+            selected[device.id] = device
+    if tenant_ids:
+        for device in db.execute(query.where(Device.tenant_id.in_(tenant_ids & set(allowed_tenants)))).scalars():
+            selected[device.id] = device
+    devices = list(selected.values())
+    if platforms:
+        devices = [d for d in devices if d.platform in platforms]
+    if tags:
+        devices = [d for d in devices if tags & set(d.tags or [])]
+    return sorted(devices, key=lambda d: d.hostname.lower())
+
+
+# --------------------------------------------------------------------------- scripts
+
+
+def _quote(language: str, value) -> str:
+    text = "" if value is None else str(value)
+    if language == "powershell":
+        return "'" + text.replace("'", "''") + "'"
+    if language in {"bash", "sh", "zsh"}:
+        return "'" + text.replace("'", "'\"'\"'") + "'"
+    if language == "python":
+        return json.dumps(text)
+    return text
+
+
+def validate_parameters(script: Script, supplied: dict) -> dict:
+    values: dict[str, str] = {}
+    for spec in script.parameters or []:
+        name = str(spec.get("name") or "")
+        if not PARAM_NAME.match(name):
+            raise ValueError(f"invalid parameter name '{name}'")
+        value = supplied.get(name, spec.get("default", ""))
+        if spec.get("required") and (value is None or str(value) == ""):
+            raise ValueError(f"parameter '{spec.get('label') or name}' is required")
+        kind = spec.get("type", "string")
+        if kind == "number" and str(value) != "":
+            try:
+                float(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"parameter '{name}' must be a number") from exc
+        if kind == "boolean":
+            value = "true" if str(value).lower() in {"1", "true", "yes", "on"} else "false"
+        if kind == "choice" and spec.get("choices") and str(value) not in [str(c) for c in spec["choices"]]:
+            raise ValueError(f"parameter '{name}' must be one of {spec['choices']}")
+        values[name] = "" if value is None else str(value)
+    return values
+
+
+def render_script(script: Script, values: dict) -> str:
+    """Prefix the body with parameter assignments. cmd scripts read %NAME% environment variables instead."""
+    lang = script.language
+    lines: list[str] = []
+    for name, value in values.items():
+        if lang == "powershell":
+            lines.append(f"${name} = {_quote(lang, value)}")
+        elif lang in {"bash", "sh", "zsh"}:
+            lines.append(f"{name}={_quote(lang, value)}")
+        elif lang == "python":
+            lines.append(f"{name} = {_quote(lang, value)}")
+    if not lines:
+        return script.body
+    if lang in {"bash", "sh", "zsh"} and script.body.startswith("#!"):
+        shebang, _, rest = script.body.partition("\n")
+        return shebang + "\n" + "\n".join(lines) + "\n" + rest
+    return "\n".join(lines) + "\n" + script.body
+
+
+def script_payload(script: Script, values: dict) -> dict:
+    return {
+        "scriptId": script.id,
+        "scriptName": script.name,
+        "language": script.language,
+        "body": render_script(script, values),
+        "environment": {f"FENRIR_{k.upper()}": v for k, v in values.items()} | dict(values),
+        "timeoutSeconds": int(script.timeout_seconds or 600),
+        "runAs": script.run_as,
+    }
+
+
+# --------------------------------------------------------------------------- jobs
+
+
+def create_job(db: Session, *, tenant_id: str, actor: str, name: str, devices: list[Device], command_type: str,
+               kind: str = "command", payload: dict | None = None, script: Script | None = None, parameters: dict | None = None,
+               targets: dict | None = None, target_path: str = "", record_id: str = "", scheduled_task_id: str | None = None,
+               ticket_id: str | None = None) -> Job:
+    job = Job(tenant_id=tenant_id, name=name[:200], kind=kind, command_type=command_type, script_id=script.id if script else None,
+              parameters=parameters or {}, payload=payload or {}, targets=targets or {}, created_by=actor,
+              scheduled_task_id=scheduled_task_id, ticket_id=ticket_id)
+    db.add(job)
+    db.flush()
+    skipped: dict[str, str] = {}
+    command_ids: dict[str, str] = {}
+    for device in devices:
+        if script and device.platform not in (script.platforms or []):
+            skipped[device.id] = f"script does not support {device.platform}"
+            continue
+        try:
+            command = services.enqueue_command(db, device, command_type, actor, target_path=target_path, record_id=record_id,
+                                               payload={**(payload or {}), "jobId": job.id}, reason=f"Job: {name}")
+        except services.CommandError as exc:
+            skipped[device.id] = str(exc)
+            continue
+        db.flush()
+        command_ids[device.id] = command.id
+    job.command_ids = command_ids
+    if skipped:
+        job.payload = {**job.payload, "skipped": skipped}
+    if not command_ids:
+        job.status, job.finished_at = "failed", utcnow()
+    audit.record(db, actor, "rmm.job.created", name, tenant_id, devices=len(command_ids), skipped=len(skipped), command=command_type)
+    return job
+
+
+def run_script(db: Session, *, script: Script, devices: list[Device], actor: str, tenant_id: str, parameters: dict | None = None,
+               targets: dict | None = None, scheduled_task_id: str | None = None, ticket_id: str | None = None,
+               name: str | None = None) -> Job:
+    values = validate_parameters(script, parameters or {})
+    return create_job(db, tenant_id=tenant_id, actor=actor, name=name or script.name, devices=devices, command_type="script.run",
+                      kind="script", payload=script_payload(script, values), script=script, parameters=values, targets=targets,
+                      scheduled_task_id=scheduled_task_id, ticket_id=ticket_id)
+
+
+def job_summary(db: Session, job: Job) -> dict:
+    ids = list((job.command_ids or {}).values())
+    commands = db.execute(select(Command).where(Command.id.in_(ids))).scalars().all() if ids else []
+    counts: dict[str, int] = {}
+    for command in commands:
+        counts[command.status] = counts.get(command.status, 0) + 1
+    return {"total": len(ids), "skipped": len((job.payload or {}).get("skipped") or {}), **counts}
+
+
+def refresh_job(db: Session, job_id: str) -> None:
+    job = db.get(Job, job_id)
+    if job is None or job.status not in {"running"}:
+        return
+    summary = job_summary(db, job)
+    open_count = summary.get("pending", 0) + summary.get("dispatched", 0)
+    if open_count:
+        return
+    failed, done, cancelled = summary.get("failed", 0), summary.get("completed", 0), summary.get("cancelled", 0)
+    if done == 0 and failed == 0 and cancelled:
+        job.status = "cancelled"
+    else:
+        job.status = "completed" if failed == 0 else ("failed" if done == 0 else "partial")
+    job.finished_at = utcnow()
+
+
+# --------------------------------------------------------------------------- command results
+
+
+def on_command_complete(db: Session, device: Device, command: Command) -> None:
+    """Fold agent results into RMM state. Called from the agent API after a command completes."""
+    result = command.result or {}
+    if command.type == "patch.scan" and command.status == "completed":
+        ingest_patch_scan(db, device, result)
+    elif command.type == "patch.install":
+        apply_patch_install_result(db, device, command, result)
+    elif command.type in {"remote.session.start", "remote.session.end"}:
+        from . import remote
+
+        remote.on_command_complete(db, device, command)
+    job_id = (command.payload or {}).get("jobId")
+    if job_id:
+        refresh_job(db, job_id)
+
+
+CLASSIFICATIONS = ("critical", "security", "updates", "feature", "driver", "definition", "third-party", "other")
+
+
+def _classify(raw: str, severity: str, source: str) -> str:
+    text = f"{raw} {severity}".lower()
+    if source in {"winget", "choco", "third-party"}:
+        return "third-party"
+    if "critical" in text:
+        return "critical"
+    if "security" in text:
+        return "security"
+    if "definition" in text:
+        return "definition"
+    if "driver" in text:
+        return "driver"
+    if "feature" in text or "upgrade" in text:
+        return "feature"
+    return "updates"
+
+
+def ingest_patch_scan(db: Session, device: Device, result: dict) -> int:
+    patches = result.get("patches")
+    if not isinstance(patches, list):
+        return 0
+    now = utcnow()
+    existing = {p.patch_key: p for p in db.execute(select(DevicePatch).where(DevicePatch.device_id == device.id)).scalars()}
+    seen: set[str] = set()
+    for item in patches[:5000]:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("id") or item.get("kb") or "").strip()[:200]
+        if not key:
+            continue
+        seen.add(key)
+        source = str(item.get("source") or ("windows-update" if device.platform == "windows" else "package"))[:30]
+        row = existing.get(key)
+        if row is None:
+            row = DevicePatch(device_id=device.id, tenant_id=device.tenant_id, patch_key=key, first_seen_at=now)
+            db.add(row)
+        row.title = str(item.get("title") or key)[:400]
+        row.source = source
+        row.severity = str(item.get("severity") or "")[:20]
+        row.classification = (str(item.get("classification") or "").lower()
+                              if str(item.get("classification") or "").lower() in CLASSIFICATIONS
+                              else _classify(str(item.get("classification") or item.get("categories") or ""), row.severity, source))
+        row.product = str(item.get("product") or "")[:200]
+        row.installed_version = str(item.get("installedVersion") or "")[:80]
+        row.available_version = str(item.get("availableVersion") or "")[:80]
+        row.reboot_required = bool(item.get("rebootRequired"))
+        released = item.get("releasedAt")
+        if released:
+            try:
+                row.released_at = datetime.fromisoformat(str(released).replace("Z", "+00:00")).astimezone(timezone.utc).replace(tzinfo=None)
+            except ValueError:
+                pass
+        # Still reported as missing: keep "installing" briefly and keep "failed" visible; anything else is missing.
+        if not (row.status == "installing" and now - row.last_seen_at < timedelta(hours=6)) and row.status != "failed":
+            row.status = "missing"
+        row.last_seen_at = now
+    # Anything previously missing that is no longer reported has been installed.
+    for key, row in existing.items():
+        if key not in seen and row.status in {"missing", "installing", "failed"}:
+            row.status, row.installed_at = "installed", now
+    metrics = dict(device.metrics or {})
+    metrics["patchScanAt"] = now.isoformat() + "Z"
+    if "rebootPending" in result:
+        metrics["rebootPending"] = bool(result["rebootPending"])
+    device.metrics = metrics
+    return len(seen)
+
+
+def apply_patch_install_result(db: Session, device: Device, command: Command, result: dict) -> None:
+    now = utcnow()
+    outcomes = {str(o.get("id")): o for o in result.get("results", []) if isinstance(o, dict) and o.get("id")}
+    requested = [str(i) for i in (command.payload or {}).get("patchIds", [])]
+    for key in requested or outcomes:
+        row = db.execute(select(DevicePatch).where(DevicePatch.device_id == device.id, DevicePatch.patch_key == key)).scalar_one_or_none()
+        if row is None:
+            continue
+        outcome = outcomes.get(key)
+        ok = command.status == "completed" and (outcome is None or outcome.get("success", True))
+        row.status = "installed" if ok else "failed"
+        row.installed_at = now if ok else row.installed_at
+        row.error = "" if ok else str((outcome or {}).get("error") or result.get("error") or "install failed")[:300]
+    if result.get("rebootRequired"):
+        device.metrics = {**(device.metrics or {}), "rebootPending": True}
+
+
+# --------------------------------------------------------------------------- patch policy
+
+
+DEFAULT_APPROVALS = {"critical": "auto", "security": "auto", "updates": "manual", "feature": "reject", "driver": "manual",
+                     "definition": "auto", "third-party": "auto", "other": "manual"}
+DEFAULT_WINDOW = {"days": [0, 1, 2, 3, 4, 5, 6], "start": "02:00", "durationMinutes": 180, "tz": "UTC"}
+DEFAULT_REBOOT = {"mode": "if_required", "notifyUser": True, "deferMinutes": 60, "maxDeferrals": 3}
+
+
+def policy_for_device(db: Session, device: Device, policies: list[PatchPolicy] | None = None) -> PatchPolicy | None:
+    candidates = policies if policies is not None else db.execute(
+        select(PatchPolicy).where(PatchPolicy.tenant_id == device.tenant_id, PatchPolicy.enabled.is_(True))).scalars().all()
+    group_match = [p for p in candidates if p.tenant_id == device.tenant_id and p.group_id and p.group_id == device.group_id]
+    if group_match:
+        return group_match[0]
+    tenant_match = [p for p in candidates if p.tenant_id == device.tenant_id and not p.group_id]
+    return tenant_match[0] if tenant_match else None
+
+
+def ring_delay(policy: PatchPolicy, device: Device) -> tuple[str, int]:
+    for ring in policy.rings or []:
+        if device.group_id and device.group_id in (ring.get("groupIds") or []):
+            return str(ring.get("name") or "Ring"), int(ring.get("delayDays") or 0)
+    rings = policy.rings or []
+    catch_all = [r for r in rings if not r.get("groupIds")]
+    if catch_all:
+        return str(catch_all[-1].get("name") or "Broad"), int(catch_all[-1].get("delayDays") or 0)
+    return "Default", int(policy.delay_days or 0)
+
+
+def approval_state(policy: PatchPolicy | None, patch: DevicePatch, decisions: dict[str, str]) -> str:
+    """approved | rejected | pending (needs a human)."""
+    decision = decisions.get(patch.patch_key)
+    if decision:
+        return decision
+    rules = {**DEFAULT_APPROVALS, **((policy.approvals if policy else None) or {})}
+    rule = rules.get(patch.classification, "manual")
+    return {"auto": "approved", "reject": "rejected"}.get(rule, "pending")
+
+
+def installable_patches(db: Session, device: Device, policy: PatchPolicy | None, now: datetime | None = None) -> list[DevicePatch]:
+    now = now or utcnow()
+    decisions = dict(db.execute(select(PatchApproval.patch_key, PatchApproval.decision)
+                                .where(PatchApproval.tenant_id == device.tenant_id)).all())
+    _, delay = ring_delay(policy, device) if policy else ("Default", 0)
+    out = []
+    for patch in db.execute(select(DevicePatch).where(DevicePatch.device_id == device.id, DevicePatch.status.in_(("missing", "failed")))).scalars():
+        state = approval_state(policy, patch, decisions)
+        if state != "approved":
+            continue
+        # Manual approvals install straight away; auto-approvals respect the ring delay.
+        reference = patch.released_at or patch.first_seen_at
+        if patch.patch_key not in decisions and delay and reference + timedelta(days=delay) > now:
+            continue
+        out.append(patch)
+    return out
+
+
+def _tz(name: str | None):
+    try:
+        from zoneinfo import ZoneInfo
+
+        return ZoneInfo(name or "UTC")
+    except Exception:  # noqa: BLE001 - unknown zone or no tz database
+        return timezone.utc
+
+
+def in_window(window: dict, now_utc: datetime) -> tuple[bool, str]:
+    """(inside?, window key) for a maintenance window like {"days": [5,6], "start": "02:00", "durationMinutes": 180}."""
+    window = {**DEFAULT_WINDOW, **(window or {})}
+    local = now_utc.replace(tzinfo=timezone.utc).astimezone(_tz(window.get("tz")))
+    hour, minute = (int(x) for x in str(window.get("start", "02:00")).split(":")[:2])
+    duration = timedelta(minutes=int(window.get("durationMinutes") or 180))
+    for days_back in (0, 1):
+        start = (local - timedelta(days=days_back)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if start.weekday() in [int(d) for d in window.get("days", [])] and start <= local < start + duration:
+            return True, start.strftime("%Y-%m-%dT%H:%M")
+    return False, ""
+
+
+def run_patch_windows(db: Session, now: datetime | None = None) -> int:
+    """Queue patch.install for devices whose policy window is open and have approved missing patches."""
+    now = now or utcnow()
+    queued = 0
+    policies = db.execute(select(PatchPolicy).where(PatchPolicy.enabled.is_(True))).scalars().all()
+    for policy in policies:
+        inside, key = in_window(policy.window, now)
+        if not inside or policy.last_window_run == key:
+            continue
+        policy.last_window_run = key
+        devices = db.execute(select(Device).where(Device.tenant_id == policy.tenant_id, Device.approved.is_(True))).scalars().all()
+        per_tenant = [p for p in policies if p.tenant_id == policy.tenant_id]
+        for device in devices:
+            if policy_for_device(db, device, per_tenant) is not policy:
+                continue
+            patches = installable_patches(db, device, policy, now)
+            if not patches:
+                continue
+            reboot = {**DEFAULT_REBOOT, **(policy.reboot or {})}
+            payload = {"patchIds": [p.patch_key for p in patches],
+                       "patches": [{"id": p.patch_key, "source": p.source, "title": p.title} for p in patches],
+                       "reboot": reboot, "policyId": policy.id}
+            try:
+                services.enqueue_command(db, device, "patch.install", "patch-policy", payload=payload,
+                                         reason=f"Maintenance window {key} ({policy.name})")
+            except services.CommandError as exc:
+                log.info("skip patch install on %s: %s", device.hostname, exc)
+                continue
+            for patch in patches:
+                patch.status = "installing"
+            queued += 1
+    return queued
+
+
+def queue_patch_scans(db: Session, now: datetime | None = None) -> int:
+    """Ask online devices for a patch scan when their last one is older than the policy interval (default 12h)."""
+    now = now or utcnow()
+    online_since = now - timedelta(minutes=10)
+    policies = db.execute(select(PatchPolicy).where(PatchPolicy.enabled.is_(True))).scalars().all()
+    queued = 0
+    for device in db.execute(select(Device).where(Device.approved.is_(True), Device.last_seen_at >= online_since)).scalars():
+        policy = policy_for_device(db, device, [p for p in policies if p.tenant_id == device.tenant_id])
+        interval = timedelta(hours=(policy.scan_interval_hours if policy else 24) or 24)
+        last = (device.metrics or {}).get("patchScanAt")
+        last_at = datetime.fromisoformat(last.rstrip("Z")) if last else None
+        if last_at and now - last_at < interval:
+            continue
+        recent = db.execute(select(Command.id).where(Command.device_id == device.id, Command.type == "patch.scan",
+                                                     Command.created_at >= now - interval)).first()
+        if recent:
+            continue
+        try:
+            services.enqueue_command(db, device, "patch.scan", "patch-policy", reason="Scheduled patch scan")
+            queued += 1
+        except services.CommandError:
+            continue
+    return queued
+
+
+def patch_compliance(db: Session, tenant_ids: list[str]) -> dict:
+    devices = db.execute(select(Device).where(Device.tenant_id.in_(tenant_ids), Device.approved.is_(True))).scalars().all()
+    missing_by_device: dict[str, dict[str, int]] = {}
+    for device_id, classification, count in db.execute(
+            select(DevicePatch.device_id, DevicePatch.classification, func.count())
+            .where(DevicePatch.tenant_id.in_(tenant_ids), DevicePatch.status.in_(("missing", "failed", "installing")))
+            .group_by(DevicePatch.device_id, DevicePatch.classification)).all():
+        missing_by_device.setdefault(device_id, {})[classification] = count
+    failed = db.execute(select(func.count()).where(DevicePatch.tenant_id.in_(tenant_ids), DevicePatch.status == "failed")).scalar() or 0
+    scanned = [d for d in devices if (d.metrics or {}).get("patchScanAt")]
+    fully = [d for d in scanned if not missing_by_device.get(d.id)]
+    critical = [d for d in scanned if missing_by_device.get(d.id, {}).get("critical") or missing_by_device.get(d.id, {}).get("security")]
+    reboot = [d for d in devices if (d.metrics or {}).get("rebootPending")]
+    return {
+        "devices": len(devices), "scanned": len(scanned), "fullyPatched": len(fully),
+        "missingCriticalOrSecurity": len(critical), "pendingReboot": len(reboot), "failedPatches": failed,
+        "compliancePercent": round(100 * len(fully) / len(scanned), 1) if scanned else 0,
+        "byDevice": {d.id: missing_by_device.get(d.id, {}) for d in devices},
+    }
+
+
+# --------------------------------------------------------------------------- scheduling
+
+
+def next_run(schedule: dict, after: datetime) -> datetime | None:
+    """Next UTC run time strictly after ``after`` for once/interval/daily/weekly/monthly schedules."""
+    kind = schedule.get("type", "daily")
+    tz = _tz(schedule.get("tz"))
+    if kind == "interval":
+        minutes = max(5, int(schedule.get("everyMinutes") or 60))
+        return after + timedelta(minutes=minutes)
+    hour, minute = (int(x) for x in str(schedule.get("at") or "02:00").split(":")[:2])
+    local_after = after.replace(tzinfo=timezone.utc).astimezone(tz)
+    if kind == "once":
+        try:
+            day = datetime.fromisoformat(str(schedule.get("date")))
+        except ValueError:
+            return None
+        candidate = day.replace(hour=hour, minute=minute, tzinfo=tz)
+        utc = candidate.astimezone(timezone.utc).replace(tzinfo=None)
+        return utc if utc > after else None
+    for offset in range(0, 400):
+        day = local_after + timedelta(days=offset)
+        candidate = day.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if candidate <= local_after:
+            continue
+        if kind == "weekly" and candidate.weekday() not in [int(d) for d in schedule.get("days", [0])]:
+            continue
+        if kind == "monthly" and candidate.day != int(schedule.get("dayOfMonth") or 1):
+            continue
+        return candidate.astimezone(timezone.utc).replace(tzinfo=None)
+    return None
+
+
+def run_scheduled_task(db: Session, task: ScheduledTask, actor: str | None = None) -> list[Job]:
+    from .deps import tenant_subtree
+
+    allowed = tenant_subtree(db, task.tenant_id)
+    devices = resolve_targets(db, allowed, task.targets or {})
+    jobs: list[Job] = []
+    who = actor or f"schedule:{task.name}"
+    for action in task.actions or []:
+        if action.get("type") == "script":
+            script = db.get(Script, action.get("scriptId"))
+            if script is None:
+                continue
+            try:
+                jobs.append(run_script(db, script=script, devices=devices, actor=who, tenant_id=task.tenant_id,
+                                       parameters=action.get("parameters") or {}, targets=task.targets, scheduled_task_id=task.id,
+                                       name=f"{task.name}: {script.name}"))
+            except ValueError as exc:
+                log.warning("scheduled task %s script error: %s", task.id, exc)
+        elif action.get("type") == "command":
+            jobs.append(create_job(db, tenant_id=task.tenant_id, actor=who, name=f"{task.name}: {action.get('command')}",
+                                   devices=devices, command_type=str(action.get("command")), payload=action.get("payload") or {},
+                                   targets=task.targets, target_path=str(action.get("targetPath") or ""), scheduled_task_id=task.id))
+        elif action.get("type") == "software":
+            package = db.get(SoftwarePackage, action.get("packageId"))
+            if package is not None:
+                jobs.append(deploy_software(db, package, devices, who, task.tenant_id, scheduled_task_id=task.id))
+    task.last_run_at = utcnow()
+    return jobs
+
+
+def run_due_tasks(db: Session, now: datetime | None = None) -> int:
+    now = now or utcnow()
+    count = 0
+    for task in db.execute(select(ScheduledTask).where(ScheduledTask.enabled.is_(True), ScheduledTask.next_run_at <= now)).scalars():
+        run_scheduled_task(db, task)
+        task.next_run_at = next_run(task.schedule or {}, now)
+        if task.next_run_at is None:
+            task.enabled = False
+        count += 1
+    return count
+
+
+# --------------------------------------------------------------------------- software
+
+
+def software_payload(package: SoftwarePackage, action: str = "install") -> dict:
+    return {"packageId": package.id, "name": package.name, "installer": package.installer, "identifier": package.identifier,
+            "sha256": package.sha256, "args": package.install_args if action == "install" else package.uninstall_args,
+            "version": package.version, "action": action}
+
+
+def deploy_software(db: Session, package: SoftwarePackage, devices: list[Device], actor: str, tenant_id: str,
+                    action: str = "install", scheduled_task_id: str | None = None) -> Job:
+    matching = [d for d in devices if d.platform == package.platform]
+    command = "software.install" if action == "install" else "software.uninstall"
+    return create_job(db, tenant_id=tenant_id, actor=actor, name=f"{action.title()} {package.name}", devices=matching,
+                      command_type=command, kind="software", payload=software_payload(package, action),
+                      record_id=package.identifier if action == "uninstall" else "", scheduled_task_id=scheduled_task_id)
+
+
+# --------------------------------------------------------------------------- monitoring
+
+OPS = {">": lambda a, b: a > b, "<": lambda a, b: a < b, ">=": lambda a, b: a >= b, "<=": lambda a, b: a <= b,
+       "==": lambda a, b: a == b, "!=": lambda a, b: a != b}
+METRICS = {
+    "cpu": "CPU usage (%)", "memory": "Memory usage (%)", "disk_free_percent": "Disk free (%)", "disk_free_gb": "Disk free (GB)",
+    "offline_minutes": "Offline for (minutes)", "service_stopped": "Service not running", "process_missing": "Process not running",
+    "reboot_pending": "Reboot pending", "pending_patches": "Missing patches (count)", "uptime_days": "Uptime (days)",
+    "av_unhealthy": "Protection unhealthy",
+}
+
+
+def _disks(metrics: dict, target: str) -> list[dict]:
+    disks = [d for d in metrics.get("disks", []) if isinstance(d, dict)]
+    if target:
+        disks = [d for d in disks if str(d.get("mount", "")).lower().rstrip("\\/") == target.lower().rstrip("\\/")]
+    return disks
+
+
+def metric_value(db: Session, condition: MonitorCondition, device: Device, now: datetime) -> tuple[float | None, str]:
+    """Current value of the condition's metric for this device, and a human description."""
+    metrics = device.metrics or {}
+    m, target = condition.metric, condition.target.strip()
+    if m == "offline_minutes":
+        if device.last_seen_at is None:
+            return None, ""
+        minutes = (now - device.last_seen_at).total_seconds() / 60
+        return round(minutes, 1), f"offline for {int(minutes)} minutes"
+    if m == "pending_patches":
+        query = select(func.count()).where(DevicePatch.device_id == device.id, DevicePatch.status.in_(("missing", "failed")))
+        if target:
+            query = query.where(DevicePatch.classification == target)
+        count = db.execute(query).scalar() or 0
+        return float(count), f"{count} missing {target or ''} patches".replace("  ", " ")
+    if m == "av_unhealthy":
+        bad = device.health_state not in {"healthy", "unknown", "isolated"}
+        return (1.0 if bad else 0.0), f"agent health is {device.health_state}"
+    if not metrics or not metrics.get("reportedAt"):
+        return None, ""
+    if m == "cpu" and "cpuPercent" in metrics:
+        return float(metrics["cpuPercent"]), f"CPU at {metrics['cpuPercent']:.0f}%"
+    if m == "memory" and "memoryPercent" in metrics:
+        return float(metrics["memoryPercent"]), f"memory at {metrics['memoryPercent']:.0f}%"
+    if m in {"disk_free_percent", "disk_free_gb"}:
+        disks = _disks(metrics, target)
+        if not disks:
+            return None, ""
+        key = "freePercent" if m == "disk_free_percent" else "freeGb"
+        worst = min(disks, key=lambda d: float(d.get(key, 1e9)))
+        unit = "%" if m == "disk_free_percent" else " GB"
+        return float(worst.get(key, 0)), f"{worst.get('mount')} has {float(worst.get(key, 0)):.1f}{unit} free"
+    if m == "service_stopped":
+        stopped = [str(s).lower() for s in metrics.get("stoppedServices", [])]
+        if target:
+            hit = target.lower() in stopped
+            return (1.0 if hit else 0.0), f"service {target} is not running"
+        return float(len(stopped)), f"{len(stopped)} automatic services are not running"
+    if m == "process_missing":
+        if not target:
+            return None, ""
+        running = {str(p).lower() for p in metrics.get("processNames", [])}
+        if not running:
+            return None, ""
+        missing = target.lower() not in running
+        return (1.0 if missing else 0.0), f"process {target} is not running"
+    if m == "reboot_pending":
+        return (1.0 if metrics.get("rebootPending") else 0.0), "a restart is pending"
+    if m == "uptime_days" and "uptimeSeconds" in metrics:
+        days = float(metrics["uptimeSeconds"]) / 86400
+        return round(days, 1), f"up for {days:.1f} days"
+    return None, ""
+
+
+def _conditions_for(db: Session, device: Device) -> list[MonitorCondition]:
+    """Enabled monitors that apply to a device. A monitor on a parent tenant (e.g. the MSP) covers its customers."""
+    from .deps import tenant_subtree
+
+    out = []
+    for condition in db.execute(select(MonitorCondition).where(MonitorCondition.enabled.is_(True))).scalars():
+        if condition.tenant_id and condition.tenant_id != device.tenant_id \
+                and device.tenant_id not in tenant_subtree(db, condition.tenant_id):
+            continue
+        scope = condition.scope or {}
+        if scope.get("platforms") and device.platform not in scope["platforms"]:
+            continue
+        if scope.get("groupIds") and device.group_id not in scope["groupIds"]:
+            continue
+        if scope.get("tags") and not set(scope["tags"]) & set(device.tags or []):
+            continue
+        if scope.get("tenantIds") and device.tenant_id not in scope["tenantIds"]:
+            continue
+        out.append(condition)
+    return out
+
+
+def evaluate_device(db: Session, device: Device, now: datetime | None = None, offline_only: bool = False) -> list[str]:
+    """Evaluate monitors for one device. Returns the ids of conditions that triggered on this call.
+
+    Heartbeats evaluate everything except offline checks; the scheduler evaluates offline checks only.
+    """
+    now = now or utcnow()
+    fired: list[str] = []
+    for condition in _conditions_for(db, device):
+        if (condition.metric == "offline_minutes") != offline_only:
+            continue
+        value, message = metric_value(db, condition, device, now)
+        state = db.execute(select(ConditionState).where(ConditionState.condition_id == condition.id,
+                                                        ConditionState.device_id == device.id)).scalar_one_or_none()
+        if value is None:
+            continue
+        failing = OPS.get(condition.operator, OPS[">"])(value, condition.threshold)
+        if state is None:
+            state = ConditionState(condition_id=condition.id, device_id=device.id, tenant_id=device.tenant_id)
+            db.add(state)
+        state.last_value = value
+        if failing:
+            state.message = message[:300]
+            if state.failing_since is None:
+                state.failing_since = now
+            elapsed = (now - state.failing_since).total_seconds() / 60
+            # Offline checks measure their own duration, so they trigger as soon as the threshold is crossed.
+            needed = 0 if condition.metric == "offline_minutes" else condition.duration_minutes
+            if not state.triggered and elapsed >= needed:
+                _trigger(db, condition, device, state, message, now)
+                fired.append(condition.id)
+        else:
+            if state.triggered:
+                _clear(db, condition, device, state, now)
+            state.failing_since = None
+            state.triggered = False
+    return fired
+
+
+def _trigger(db: Session, condition: MonitorCondition, device: Device, state: ConditionState, message: str, now: datetime) -> None:
+    state.triggered, state.triggered_at, state.resolved_at = True, now, None
+    title = f"{condition.name}: {device.hostname} — {message}"
+    alert = Alert(tenant_id=device.tenant_id, device_id=device.id, rule_id=f"monitor:{condition.id}", title=title[:300],
+                  severity=condition.severity,
+                  details={"category": "monitoring", "metric": condition.metric, "value": state.last_value,
+                           "threshold": condition.threshold, "operator": condition.operator, "target": condition.target})
+    db.add(alert)
+    db.flush()
+    state.alert_id = alert.id
+    for action in condition.actions or []:
+        kind = action.get("type")
+        if kind == "ticket":
+            priority = action.get("priority") or services.PRIORITY_BY_SEVERITY.get(condition.severity, "P3")
+            ticket = services.open_ticket(db, device.tenant_id, title, f"Raised by monitor '{condition.name}'.\n\n{message}",
+                                          priority, "rmm", "rmm-monitor", device_id=device.id,
+                                          queue=str(action.get("board") or "Service Desk"))
+            db.flush()
+            state.ticket_id = ticket.id
+        elif kind == "script":
+            script = db.get(Script, action.get("scriptId"))
+            if script is not None and device.platform in (script.platforms or []):
+                try:
+                    run_script(db, script=script, devices=[device], actor=f"monitor:{condition.name}", tenant_id=device.tenant_id,
+                               parameters=action.get("parameters") or {}, name=f"Self-heal: {script.name}")
+                except ValueError as exc:
+                    log.warning("self-heal script failed validation: %s", exc)
+        elif kind == "command" and action.get("command"):
+            try:
+                services.enqueue_command(db, device, str(action["command"]), f"monitor:{condition.name}",
+                                         target_path=str(action.get("targetPath") or condition.target or ""),
+                                         payload=action.get("payload") or {}, reason=title)
+            except services.CommandError as exc:
+                log.info("monitor command skipped: %s", exc)
+        elif kind == "webhook":
+            services.fire_webhooks(db, device.tenant_id, "monitor.triggered",
+                                   {"title": title, "severity": condition.severity, "device": device.hostname})
+        elif kind == "email" and action.get("to"):
+            from . import mailer
+
+            mailer.send(str(action["to"]), f"[Fenrir] {title}", f"{title}\n\nDevice: {device.hostname}\nCondition: {condition.name}")
+    audit.record(db, "rmm-monitor", "monitor.triggered", f"{device.hostname}:{condition.name}", device.tenant_id, value=state.last_value)
+
+
+def _clear(db: Session, condition: MonitorCondition, device: Device, state: ConditionState, now: datetime) -> None:
+    state.resolved_at = now
+    if not condition.auto_resolve:
+        return
+    if state.alert_id:
+        alert = db.get(Alert, state.alert_id)
+        if alert is not None and alert.status in {"new", "triaged"}:
+            alert.status, alert.updated_at = "resolved", now
+    if state.ticket_id:
+        ticket = db.get(Ticket, state.ticket_id)
+        if ticket is not None and ticket.status not in {"Resolved", "Closed"}:
+            ticket.comments = (ticket.comments or []) + [{"at": now.isoformat(), "by": "rmm-monitor", "internal": False,
+                                                          "kind": "resolution",
+                                                          "text": f"Condition '{condition.name}' cleared automatically."}]
+            ticket.status, ticket.resolved_at, ticket.updated_at = "Resolved", now, now
+
+
+def record_heartbeat_metrics(db: Session, device: Device, metrics: dict) -> None:
+    if not isinstance(metrics, dict) or not metrics:
+        return
+    clean: dict = {"reportedAt": utcnow().isoformat() + "Z"}
+    for key in ("cpuPercent", "memoryPercent", "memoryTotalGb", "uptimeSeconds"):
+        if isinstance(metrics.get(key), (int, float)):
+            clean[key] = round(float(metrics[key]), 2)
+    if isinstance(metrics.get("disks"), list):
+        clean["disks"] = [
+            {"mount": str(d.get("mount", ""))[:120], "totalGb": round(float(d.get("totalGb", 0)), 1),
+             "freeGb": round(float(d.get("freeGb", 0)), 1), "freePercent": round(float(d.get("freePercent", 0)), 1)}
+            for d in metrics["disks"][:32] if isinstance(d, dict)
+        ]
+    for key in ("loggedOnUser", "lastBootAt", "publicIp", "domain", "manufacturer", "model", "cpuModel", "timezone"):
+        if metrics.get(key):
+            clean[key] = str(metrics[key])[:200]
+    for key in ("stoppedServices", "processNames", "users"):
+        if isinstance(metrics.get(key), list):
+            clean[key] = [str(x)[:120] for x in metrics[key][:400]]
+    if "rebootPending" in metrics:
+        clean["rebootPending"] = bool(metrics["rebootPending"])
+    if isinstance(metrics.get("remoteCapabilities"), list):
+        clean["remoteCapabilities"] = [str(x)[:20] for x in metrics["remoteCapabilities"][:10]]
+    previous = device.metrics or {}
+    for key in ("patchScanAt",):
+        if key in previous:
+            clean[key] = previous[key]
+    if "rebootPending" not in clean and "rebootPending" in previous:
+        clean["rebootPending"] = previous["rebootPending"]
+    device.metrics = clean
+    free = [d["freePercent"] for d in clean.get("disks", [])]
+    db.add(DeviceMetric(device_id=device.id, cpu=clean.get("cpuPercent", 0), memory=clean.get("memoryPercent", 0),
+                        disk_free_percent=min(free) if free else 100))
+
+
+def evaluate_offline(db: Session, now: datetime | None = None) -> int:
+    now = now or utcnow()
+    count = 0
+    has_offline = db.execute(select(MonitorCondition.id).where(MonitorCondition.enabled.is_(True),
+                                                               MonitorCondition.metric == "offline_minutes")).first()
+    if not has_offline:
+        return 0
+    for device in db.execute(select(Device).where(Device.approved.is_(True), Device.last_seen_at.is_not(None))).scalars():
+        count += len(evaluate_device(db, device, now, offline_only=True))
+    return count
+
+
+def tick(db: Session) -> dict:
+    """One scheduler pass: due tasks, offline monitors, patch windows and scans."""
+    now = utcnow()
+    result = {"tasks": run_due_tasks(db, now), "offline": evaluate_offline(db, now), "patchInstalls": run_patch_windows(db, now),
+              "patchScans": queue_patch_scans(db, now)}
+    cutoff = now - timedelta(days=30)
+    db.query(DeviceMetric).filter(DeviceMetric.at < cutoff).delete()
+    return result

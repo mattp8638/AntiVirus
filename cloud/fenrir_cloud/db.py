@@ -59,3 +59,32 @@ def get_db() -> Iterator[Session]:
         yield db
     finally:
         db.close()
+
+
+def ensure_columns(base: type[DeclarativeBase], bind: Engine) -> list[str]:
+    """Add columns that exist in the models but not yet in the database.
+
+    ``create_all`` creates new tables but never alters existing ones. New
+    columns on existing tables are declared nullable, so a plain
+    ``ALTER TABLE ... ADD COLUMN`` is safe on SQLite and PostgreSQL.
+    """
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(bind)
+    existing_tables = set(inspector.get_table_names())
+    added: list[str] = []
+    with bind.begin() as conn:
+        for table in base.metadata.sorted_tables:
+            if table.name not in existing_tables:
+                continue
+            present = {col["name"] for col in inspector.get_columns(table.name)}
+            for column in table.columns:
+                if column.name in present:
+                    continue
+                if not column.nullable:
+                    # Never guess a backfill value for a required column.
+                    continue
+                ddl_type = column.type.compile(dialect=bind.dialect)
+                conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {ddl_type}'))
+                added.append(f"{table.name}.{column.name}")
+    return added
