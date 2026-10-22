@@ -1,4 +1,5 @@
 import dataclasses
+import os
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,10 +12,15 @@ ADMIN_PASSWORD = "correct-horse-battery-staple"
 
 @pytest.fixture()
 def client():
-    settings = dataclasses.replace(Settings(), database_url="sqlite://", bootstrap_admin_password=ADMIN_PASSWORD,
+    settings = dataclasses.replace(Settings(), database_url=os.getenv("FENRIR_TEST_DATABASE_URL", "sqlite://"), bootstrap_admin_password=ADMIN_PASSWORD,
                                    secret_key="test-secret", public_base_url="https://fenrir.test")
     with TestClient(create_app(settings)) as test_client:
         yield test_client
+    if settings.database_url.startswith("postgresql"):
+        from fenrir_cloud import db
+
+        db.Base.metadata.drop_all(db.engine())
+        db.engine().dispose()
 
 
 def login(client, email="admin@fenrir.local", password=ADMIN_PASSWORD) -> dict:
