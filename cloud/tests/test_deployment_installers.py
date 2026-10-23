@@ -1,6 +1,7 @@
 """OS-specific deployment regression tests: no unauthorised downloads or phantom tokens."""
 import hashlib
 import io
+import subprocess
 import zipfile
 
 from fenrir_cloud import deployment_installers as installers
@@ -29,6 +30,8 @@ def test_linux_installer_is_authenticated_customer_bound_and_persistent(client, 
     assert result.headers["cache-control"].startswith("private, no-store")
     assert "Install-Fenrir-Linux.sh" in result.headers["content-disposition"]
     script = result.content.decode()
+    syntax = subprocess.run(["sh", "-n"], input=script, text=True, capture_output=True, check=False)
+    assert syntax.returncode == 0, syntax.stderr
     assert "systemctl enable fenrir-agent" in script
     assert "systemctl restart fenrir-agent" in script
     assert "chmod 600 /etc/fenrir/agent.env" in script
