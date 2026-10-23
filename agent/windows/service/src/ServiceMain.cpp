@@ -156,7 +156,7 @@ bool PrepareRuntimeLayout(const antivirus::agent::AgentConfig& config, std::wstr
          EnsureDirectoryReady(config.evidenceRootPath, L"evidence root", errorMessage);
 }
 
-void ConfigureServiceHardening(SC_HANDLE service) {
+bool ConfigureServiceHardening(SC_HANDLE service) {
   SERVICE_DESCRIPTIONW description{};
   description.lpDescription = const_cast<LPWSTR>(kServiceDescription);
   ChangeServiceConfig2W(service, SERVICE_CONFIG_DESCRIPTION, &description);
@@ -184,11 +184,18 @@ void ConfigureServiceHardening(SC_HANDLE service) {
   failureActions.dwResetPeriod = 60 * 60;
   failureActions.cActions = static_cast<DWORD>(std::size(actions));
   failureActions.lpsaActions = actions;
-  ChangeServiceConfig2W(service, SERVICE_CONFIG_FAILURE_ACTIONS, &failureActions);
+  if (ChangeServiceConfig2W(service, SERVICE_CONFIG_FAILURE_ACTIONS, &failureActions) == FALSE) {
+    std::wcerr << L"Unable to configure service restart recovery (error " << GetLastError() << L")." << std::endl;
+    return false;
+  }
 
   SERVICE_FAILURE_ACTIONS_FLAG failureActionsFlag{};
   failureActionsFlag.fFailureActionsOnNonCrashFailures = TRUE;
-  ChangeServiceConfig2W(service, SERVICE_CONFIG_FAILURE_ACTIONS_FLAG, &failureActionsFlag);
+  if (ChangeServiceConfig2W(service, SERVICE_CONFIG_FAILURE_ACTIONS_FLAG, &failureActionsFlag) == FALSE) {
+    std::wcerr << L"Unable to configure recovery for non-crash failures (error " << GetLastError() << L")." << std::endl;
+    return false;
+  }
+  return true;
 }
 
 // Lifts the stop/reconfigure/delete lock (see ApplyServiceControlProtection) so Fenrir's own
@@ -253,7 +260,11 @@ bool InstallOrRepairService(const bool repair, const std::wstring& uninstallToke
     }
   }
 
-  ConfigureServiceHardening(service);
+  if (!ConfigureServiceHardening(service)) {
+    CloseServiceHandle(service);
+    CloseServiceHandle(scManager);
+    return false;  // Never report a persistent install without working SCM recovery settings.
+  }
 
   auto config = antivirus::agent::LoadAgentConfigForModule(nullptr);
   std::wstring runtimeLayoutError;
