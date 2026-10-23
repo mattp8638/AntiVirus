@@ -36,7 +36,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: "22" }
       - working-directory: console
-        run: npm install --no-audit --no-fund && npm run build
+        run: npm install --no-audit --no-fund && npm run build && npm run test:shapes
 
   linux-agent:
     name: Linux agent (Go)
