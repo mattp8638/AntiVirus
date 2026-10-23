@@ -1,3 +1,4 @@
+import { M365Administration } from "./M365Administration";
 import { useEffect, useState } from "react";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
@@ -22,7 +23,8 @@ export default function M365() {
       onSave={body=>api("m365/connections",{body})} onClose={()=>{setCreate(false);reload();}} />}
     {selected && <Modal title={selected.name} onClose={()=>setSelected(null)} footer={<><button onClick={()=>setSecret(true)}>Replace application secret</button><button className="primary" disabled={busy} onClick={async()=>{const row=await run(()=>api("m365/connections/"+selected.id+"/sync",{method:"POST"}),"Directory synchronised");if(row)setSelected(row);reload();}}>Sync now</button></>}>
       <ErrorNote error={selected.lastError || null}/>
-      <h3>Users</h3><Table rows={selected.snapshot?.users || []} columns={[{key:"displayName",label:"Name"},{key:"userPrincipalName",label:"Sign-in"},{key:"accountEnabled",label:"Enabled"}]}/>
+      <M365Administration key={selected.id} connection={selected}/>
+      <h3>Cached users from last snapshot</h3><Table rows={selected.snapshot?.users || []} columns={[{key:"displayName",label:"Name"},{key:"userPrincipalName",label:"Sign-in"},{key:"accountEnabled",label:"Enabled"}]}/>
       <h3>Licences</h3><Table rows={selected.snapshot?.licenses || []} columns={[{key:"skuPartNumber",label:"Product"},{key:"consumedUnits",label:"Assigned"},{key:"available",label:"Available",render:r=>Math.max(0,(r.prepaidUnits?.enabled||0)-(r.consumedUnits||0))}]}/>
       <h3>Secure Score</h3><Table rows={selected.snapshot?.secureScores || []} columns={[{key:"currentScore",label:"Current score"},{key:"maxScore",label:"Maximum"},{key:"createdDateTime",label:"Measured"}]}/>
     </Modal>}
