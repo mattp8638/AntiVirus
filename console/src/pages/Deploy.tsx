@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { fmtTime, getToken } from "../api";
 import { useApp } from "../app-context";
 import { ErrorNote, PageHead, Pill, Table, TenantSelect, useData, useListData } from "../components/ui";
@@ -11,6 +11,7 @@ const OS_LABEL: Record<OsName, string> = { windows: "Windows", linux: "Linux", m
 export default function Deploy() {
   const { tenantId, tenantName, can } = useApp();
   const [target, setTarget] = useState(tenantId);
+  useEffect(() => { setTarget(tenantId); setGroupId(""); }, [tenantId]);
   const [os, setOs] = useState<OsName>("linux");
   const [label, setLabel] = useState("Rollout");
   const [groupId, setGroupId] = useState("");
