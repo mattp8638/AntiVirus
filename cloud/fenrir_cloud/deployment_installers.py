@@ -170,7 +170,9 @@ $service = Get-Service -Name 'FenrirAgent' -ErrorAction SilentlyContinue
 if (-not $service -or $service.Status -ne 'Running') { throw 'FenrirAgent is not running after setup. Inspect the setup log.' }
 $configured = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\FenrirAgent' -Name ControlPlaneBaseUrl -ErrorAction Stop).ControlPlaneBaseUrl
 if ($configured.TrimEnd('/') -ne $server) { throw 'The installed agent is not configured for the intended cloud server.' }
-Write-Host 'Fenrir service is running. Confirm the device appears in the selected customer tenant.'
+$storedEnrollment = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\FenrirAgent' -Name EnrollmentToken -ErrorAction Stop).EnrollmentToken
+if ($storedEnrollment -ne $enroll) { throw 'Setup did not apply the selected customer enrollment token.' }
+Write-Host 'Fenrir service is running and configured with the correct customer enrollment token. Confirm cloud check-in.'
 '''
     return (content.replace("__SHA256__", checksum.upper())
             .replace("__CERT__", signer_fingerprint.upper())
