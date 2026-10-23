@@ -40,7 +40,7 @@ $defender = @(Get-WinEvent -FilterHashtable @{
     $_.Message -match 'Fenrir|fenrir-agent-service|AntivirusMinifilter'
 } | Select-Object -First 30 TimeCreated, Id, LevelDisplayName, Message)
 $uninstall = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\FenrirEndpoint' -ErrorAction SilentlyContinue
-$autostart = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name 'FenrirEndpoint' -ErrorAction SilentlyContinue).'FenrirEndpoint'
+$autostart = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name 'FenrirEndpointClient' -ErrorAction SilentlyContinue).'FenrirEndpointClient'
 
 $report = [ordered]@{
     RecordedAt = $now.ToString('o')
