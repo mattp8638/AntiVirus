@@ -4,10 +4,13 @@ This change addresses installer correctness and service recovery configuration. 
 
 ## Source findings
 
-1. The service already requests `SERVICE_AUTO_START`, restart recovery actions and a service failure-actions flag in `ServiceMain.cpp`. Previously those recovery configuration calls ignored failure. They now cause installation/repair to report failure if Windows refuses the required recovery settings.
+1. The service already requests `SERVICE_AUTO_START`, restart recovery actions and a service failure-actions flag in `ServiceMain.cpp`. Previously those recovery configuration calls ignored failure. They now cause installation/repair to report failure if Windows refuses the required recovery settings. Unexpected exits are also reported to Windows Application Event Log (source `FenrirAgent`, event ID `4097`) and marked as service failures so SCM recovery can act.
 2. The native setup had a placeholder `if (!true)` in place of minifilter installation while still running driver-required post-install checks. Setup now checks the **actual Windows minifilter service state**, explicitly reports reduced protection, and does not pretend that an unsigned/unavailable driver is installed.
 3. Setup previously unconditionally reset the stored cloud endpoint to the default during repair, potentially causing a valid installed device to appear offline in its original MSP tenant. Repair now retains the registered cloud endpoint.
-4. Setup now checks that `FenrirAgent` is registered as automatic-start, points at the permanent Program Files executable, has restart-on-failure configured and remains in SCM `RUNNING` state for a short observation period. This does not replace a reboot test.
+4. Setup now checks that `FenrirAgent` is registered as automatic-start, points at the permanent Program Files executable, has restart-on-failure configured, retains its executable and remains in SCM `RUNNING` state without restarting during an observation period. This does not replace a reboot test.
+5. Repair uses the agent's authorised `--stop` maintenance command before modifying files. A protected installation requires valid maintenance authorisation; setup must not bypass it.
+6. Failed stop requests cannot hang forever or lead to an automatic uninstall/upgrade while the service is still running. A failed maintenance request restores service-control protection.
+7. Repairs and startup hardening preserve the existing uninstall-protection token hash rather than silently clearing it.
 
 No change weakens Windows Defender, disables endpoint protection, creates a persistence bypass or forces a service to survive an authorised uninstall. The minifilter still needs a legitimately signed/verified deployment to provide kernel-level real-time enforcement.
 
