@@ -73,6 +73,7 @@ def me(principal: Principal = Depends(current_principal), db: Session = Depends(
 
 @router.post("/auth/password")
 def change_password(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    ratelimit.check(f"password:{principal.user.id}", 10, 300)
     if not verify_password(str(body.get("currentPassword") or ""), principal.user.password_hash):
         raise HTTPException(400, "Current password is incorrect")
     new = str(body.get("newPassword") or "")
@@ -117,6 +118,7 @@ def mfa_setup(principal: Principal = Depends(current_principal), db: Session = D
 
 @router.post("/auth/mfa/enable")
 def mfa_enable(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    ratelimit.check(f"mfa-enable:{principal.user.id}", 10, 300)
     user = db.get(User, principal.user.id)
     secret = _mfa_secret(user)
     if not secret:
@@ -131,6 +133,7 @@ def mfa_enable(body: dict = Body(...), principal: Principal = Depends(current_pr
 
 @router.post("/auth/mfa/disable")
 def mfa_disable(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    ratelimit.check(f"mfa-disable:{principal.user.id}", 10, 300)
     user = db.get(User, principal.user.id)
     if not verify_password(str(body.get("password") or ""), user.password_hash):
         raise HTTPException(401, "Password is incorrect")

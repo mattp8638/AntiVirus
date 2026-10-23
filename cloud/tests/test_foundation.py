@@ -173,8 +173,14 @@ def test_reauth_proof_is_bound_to_session_and_password(client, admin):
     assert client.post(rotate_url, headers={**admin, "X-Fenrir-Reauth": proof}).status_code == 403
 
 
-@pytest.mark.parametrize("claims", [{"exp": "invalid"}, {"exp": None}, {"exp": True}])
+@pytest.mark.parametrize("claims", [{"exp": "invalid"}, {"exp": None}, {"exp": True}, {"exp": float("inf")}])
 def test_malformed_signed_expiry_is_rejected(claims):
     from fenrir_cloud.security import issue_token, read_token
     token = issue_token("secret", "user", 5, **claims)
+    assert read_token("secret", token) is None
+
+
+@pytest.mark.parametrize("token", ["a.é", "x" * 20000, "", "no-dot"])
+def test_malformed_bearer_tokens_are_rejected(token):
+    from fenrir_cloud.security import read_token
     assert read_token("secret", token) is None

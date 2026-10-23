@@ -10,6 +10,7 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import secrets
 import time
 
@@ -67,6 +68,8 @@ def issue_token(secret: str, subject: str, ttl_minutes: int, **claims) -> str:
 
 
 def read_token(secret: str, token: str) -> dict | None:
+    if not isinstance(token, str) or len(token) > 16384 or not token.isascii():
+        return None
     try:
         body, sig = token.split(".")
     except ValueError:
@@ -81,7 +84,7 @@ def read_token(secret: str, token: str) -> dict | None:
     if not isinstance(payload, dict):
         return None
     expiry = payload.get("exp")
-    if isinstance(expiry, bool) or not isinstance(expiry, (int, float)) or not expiry > time.time():
+    if isinstance(expiry, bool) or not isinstance(expiry, (int, float)) or not math.isfinite(expiry) or not expiry > time.time():
         return None
     return payload
 

@@ -131,3 +131,32 @@ def test_newer_schema_is_rejected_without_changing_data(tmp_path):
     with engine.connect() as conn:
         assert list(conn.execute(text("SELECT version FROM schema_migrations")).scalars()) == [999]
     engine.dispose()
+
+
+def test_msp_admin_cannot_reset_platform_admin_mfa(client, admin):
+    from conftest import ADMIN_PASSWORD, login
+    target = client.get("/api/console/auth/me", headers=admin).json()["user"]
+    created = client.post("/api/console/users", headers=admin,
+                          json={"email": "msp-admin@example.com", "password": ADMIN_PASSWORD, "role": "msp_admin"})
+    assert created.status_code == 200
+    staff = login(client, "msp-admin@example.com")
+    proof = client.post("/api/console/auth/reauth", headers=staff,
+                        json={"password": ADMIN_PASSWORD}).json()["reauthToken"]
+    denied = client.post(f"/api/console/users/{target['id']}/mfa/reset",
+                         headers={**staff, "X-Fenrir-Reauth": proof})
+    assert denied.status_code == 403
+    assert "platform admins" in denied.json()["detail"]
+
+
+def test_concurrent_migration_startup_applies_versions_once(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'startup.db'}", connect_args={"check_same_thread": False})
+    barrier = Barrier(2)
+
+    def upgrade(_):
+        barrier.wait()
+        return database.migrate(engine)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(upgrade, range(2)))
+    assert sorted(results) == [[], [1, 2]]
+    engine.dispose()

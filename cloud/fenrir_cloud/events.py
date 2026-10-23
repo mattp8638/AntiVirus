@@ -108,6 +108,8 @@ def process(db: Session, limit: int = 200) -> int:
     candidates = (select(PlatformEvent.id)
                   .where(PlatformEvent.status == "pending", PlatformEvent.next_attempt_at <= utcnow())
                   .order_by(PlatformEvent.id).limit(limit))
+    if db.get_bind().dialect.name == "postgresql":
+        candidates = candidates.with_for_update(skip_locked=True)
     claimed = db.execute(
         update(PlatformEvent).where(PlatformEvent.id.in_(candidates), PlatformEvent.status == "pending",
                                     PlatformEvent.next_attempt_at <= utcnow())

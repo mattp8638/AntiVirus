@@ -20,7 +20,7 @@ from . import __version__, crypto, audit, db as database, events, policy_schema,
 from . import vulnmgmt  # noqa: F401 - registers its event handlers
 from .config import Settings, get_settings, set_settings
 from .detection import sync_builtin_rules
-from .models import DnsQueryLog, Event, Policy, RuleMatch, Tenant, User, utcnow
+from .models import DnsQueryLog, Event, RateLimitBucket, Policy, RuleMatch, Tenant, User, utcnow
 from .routers import admin, agent_api, business, fleet, portal, protection, soc
 from .routers import psa as psa_router, remote as remote_router, rmm as rmm_router
 from .security import hash_password
@@ -74,6 +74,7 @@ def _maintenance_loop(settings: Settings, stop: threading.Event) -> None:
             db.execute(delete(Event).where(Event.occurred_at < cutoff))
             db.execute(delete(RuleMatch).where(RuleMatch.at < cutoff))
             db.execute(delete(DnsQueryLog).where(DnsQueryLog.at < cutoff))
+            db.execute(delete(RateLimitBucket).where(RateLimitBucket.expires_at < utcnow()))
             db.commit()
             if settings.feed_sync_enabled:
                 from .intel import sync_feed

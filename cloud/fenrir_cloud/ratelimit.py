@@ -31,6 +31,8 @@ def check(key: str, limit: int, window_seconds: int) -> None:
     retry_after = None
     with engine().begin() as conn:
         now = conn.scalar(select(func.current_timestamp()))
+        if now.tzinfo is not None:
+            now = now.astimezone(timezone.utc).replace(tzinfo=None)
         # A no-op upsert locks even an existing bucket before its window is read.
         conn.execute(insert(table).values(key=bucket_key, hits=[], expires_at=now + timedelta(seconds=window_seconds))
                      .on_conflict_do_update(index_elements=[table.c.key], set_={"key": bucket_key}))
@@ -42,7 +44,6 @@ def check(key: str, limit: int, window_seconds: int) -> None:
         else:
             hits.append(stamp)
         conn.execute(table.update().where(table.c.key == bucket_key).values(hits=hits, expires_at=now + timedelta(seconds=window_seconds)))
-        conn.execute(delete(table).where(table.c.expires_at < now))
     if retry_after is not None:
         raise HTTPException(429, "Too many attempts. Try again later.", headers={"Retry-After": str(retry_after)})
 
