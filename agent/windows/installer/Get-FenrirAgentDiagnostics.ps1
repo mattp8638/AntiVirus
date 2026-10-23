@@ -33,6 +33,13 @@ $recentScm = @(Get-WinEvent -FilterHashtable @{
 } -ErrorAction SilentlyContinue | Where-Object {
     $_.Message -like "*$ServiceName*" -or $_.Message -like '*Fenrir*'
 } | Select-Object -First 30 TimeCreated, Id, LevelDisplayName, Message)
+$application = @(Get-WinEvent -FilterHashtable @{
+    LogName = 'Application'
+    StartTime = $now.AddHours(-[Math]::Abs($Hours))
+} -ErrorAction SilentlyContinue | Where-Object {
+    $_.ProviderName -eq 'FenrirAgent' -or
+    ($_.Message -match 'FenrirAgent|fenrir-agent-service' -and $_.Level -le 3)
+} | Select-Object -First 30 TimeCreated, ProviderName, Id, LevelDisplayName, Message)
 $defender = @(Get-WinEvent -FilterHashtable @{
     LogName = 'Microsoft-Windows-Windows Defender/Operational'
     StartTime = $now.AddHours(-[Math]::Abs($Hours))
@@ -51,6 +58,7 @@ $report = [ordered]@{
     UninstallLocation = if ($uninstall) { $uninstall.InstallLocation } else { $null }
     EndpointClientAutostart = $autostart
     ServiceEvents = $recentScm
+    AgentApplicationEvents = $application
     RelevantDefenderEvents = $defender
     Note = 'Only service, local Windows logging and startup entries are checked. An absent service, stopped service and quarantined binary are different failure modes.'
 }
