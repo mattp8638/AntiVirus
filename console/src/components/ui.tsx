@@ -1,30 +1,48 @@
-import { ReactNode, useCallback, useEffect, useState } from "react";
+import { ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { expectArray, safeArray } from "../data-shapes";
 import { api, rememberReauth, setReauthPrompt } from "../api";
 import { useApp } from "../app-context";
 
 /** Load data from the API and reload when deps change. */
-export function useData<T>(path: string | null, query: Record<string, unknown> = {}, deps: unknown[] = []) {
+export function useData<T>(path: string | null, query: Record<string, unknown> = {}, deps: unknown[] = [], expectList = false) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const requestVersion = useRef(0);
   const key = JSON.stringify(query);
   const reload = useCallback(async () => {
-    if (!path) return;
+    const version = ++requestVersion.current;
+    if (!path) {
+      setData(null);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
-      setData(await api<T>(path, { query }));
+      const result = await api<unknown>(path, { query });
+      const validated = expectList ? expectArray(result, path) : result;
+      if (version !== requestVersion.current) return;
+      setData(validated as T);
       setError(null);
     } catch (err) {
+      if (version !== requestVersion.current) return;
+      setData(null);
       setError((err as Error).message);
     } finally {
-      setLoading(false);
+      if (version === requestVersion.current) setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path, key, ...deps]);
+  }, [path, key, expectList, ...deps]);
   useEffect(() => {
     reload();
   }, [reload]);
   return { data, error, loading, reload, setData };
+}
+
+/** List endpoints are validated at runtime; a 200 response is not necessarily a JSON array. */
+export function useListData<T>(path: string | null, query: Record<string, unknown> = {}, deps: unknown[] = []) {
+  return useData<T[]>(path, query, deps, true);
 }
 
 /** Wrap an async action with toast feedback. */
@@ -102,7 +120,10 @@ export function Table<T extends Record<string, any>>({ rows, columns, onRow, emp
   onRow?: (row: T) => void;
   empty?: string;
 }) {
-  if (!rows) return <div className="empty">Loading…</div>;
+  if (rows == null) return <div className="empty">Loading…</div>;
+  if (!Array.isArray(rows)) {
+    return <div role="alert" className="empty">Unable to display records: the server returned an unexpected response format. Please check the API response.</div>;
+  }
   if (!rows.length) return <div className="empty">{empty}</div>;
   return (
     <div className="table-wrap">
@@ -186,7 +207,7 @@ export function TenantSelect({ value, onChange, allowAll = true, label }: { valu
   return (
     <select value={value} onChange={(e) => onChange(e.target.value)} aria-label={label ?? "Tenant"}>
       {allowAll && <option value="">All tenants</option>}
-      {me?.tenants.map((t) => <option key={t.id} value={t.id}>{t.name}{t.kind === "msp" ? " (MSP)" : ""}</option>)}
+      {safeArray<{ id: string; name: string; kind: string }>(me?.tenants).map((t) => <option key={t.id} value={t.id}>{t.name}{t.kind === "msp" ? " (MSP)" : ""}</option>)}
     </select>
   );
 }
