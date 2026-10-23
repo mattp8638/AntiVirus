@@ -11,11 +11,11 @@ const OS_LABEL: Record<OsName, string> = { windows: "Windows", linux: "Linux", m
 export default function Deploy() {
   const { tenantId, tenantName, can } = useApp();
   const [target, setTarget] = useState(tenantId);
-  useEffect(() => { setTarget(tenantId); setGroupId(""); }, [tenantId]);
   const [os, setOs] = useState<OsName>("linux");
   const [label, setLabel] = useState("Rollout");
   const [groupId, setGroupId] = useState("");
   const [days, setDays] = useState("30");
+  useEffect(() => { setTarget(tenantId); setGroupId(""); }, [tenantId]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
