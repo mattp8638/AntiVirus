@@ -29,6 +29,17 @@ constexpr wchar_t kLocalSystemAccountName[] = L"LocalSystem";
 SERVICE_STATUS_HANDLE g_serviceStatusHandle = nullptr;
 SERVICE_STATUS g_serviceStatus{};
 antivirus::agent::AgentService* g_activeService = nullptr;
+volatile LONG g_stopRequested = 0;
+
+// Failed starts and unexpected termination must be visible in Windows Event Viewer.
+void ReportServiceFailure(const std::wstring& detail) {
+  const auto source = RegisterEventSourceW(nullptr, kServiceName);
+  if (source == nullptr) return;
+  const wchar_t* strings[] = {detail.c_str()};
+  ReportEventW(source, EVENTLOG_ERROR_TYPE, 0, 0x1001, nullptr, 1, 0, strings, nullptr);
+  DeregisterEventSource(source);
+}
+
 
 bool InvokeAdjacentDllRegistration(bool registerProvider);
 void WaitForServiceStop(SC_HANDLE service);
@@ -54,6 +65,7 @@ DWORD WINAPI ServiceControlHandler(const DWORD controlCode, DWORD, void*, void*)
   switch (controlCode) {
     case SERVICE_CONTROL_STOP:
     case SERVICE_CONTROL_SHUTDOWN:
+      InterlockedExchange(&g_stopRequested, 1);
       UpdateServiceStatus(SERVICE_STOP_PENDING, NO_ERROR, 15'000);
       if (g_activeService != nullptr) {
         g_activeService->RequestStop();
@@ -75,6 +87,7 @@ void WINAPI ServiceEntry(DWORD, LPWSTR*) {
     return;
   }
 
+  InterlockedExchange(&g_stopRequested, 0);
   UpdateServiceStatus(SERVICE_START_PENDING, NO_ERROR, 5'000);
 
   antivirus::agent::AgentService service;
@@ -82,10 +95,22 @@ void WINAPI ServiceEntry(DWORD, LPWSTR*) {
 
   UpdateServiceStatus(SERVICE_RUNNING);
   const auto exitCode = service.Run(antivirus::agent::AgentRunMode::Service);
-
+  const bool requestedStop = InterlockedCompareExchange(&g_stopRequested, 0, 0) != 0;
+  const bool unexpectedExit = !requestedStop;
+  if (exitCode != 0 || unexpectedExit) {
+    ReportServiceFailure(L"FenrirAgent stopped " +
+                         std::wstring(unexpectedExit ? L"without a Windows service stop/shutdown request" :
+                                                    L"after a requested stop with an error") +
+                         L" (agent exit code " + std::to_wstring(exitCode) +
+                         L"). Review the installation, signature trust and agent runtime diagnostics.");
+  }
   g_activeService = nullptr;
-  UpdateServiceStatus(SERVICE_STOPPED, exitCode == 0 ? NO_ERROR : ERROR_SERVICE_SPECIFIC_ERROR, 0,
-                      static_cast<DWORD>(exitCode));
+  // An unexpected clean exit must count as a service failure so Windows can
+  // apply the configured restart policy instead of leaving the agent stopped.
+  const DWORD failureCode = exitCode != 0 ? static_cast<DWORD>(exitCode) : 1;
+  UpdateServiceStatus(SERVICE_STOPPED,
+                      (exitCode == 0 && !unexpectedExit) ? NO_ERROR : ERROR_SERVICE_SPECIFIC_ERROR,
+                      0, (exitCode == 0 && !unexpectedExit) ? 0 : failureCode);
 }
 
 std::wstring GetModulePath() {
