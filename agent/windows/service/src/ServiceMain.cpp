@@ -29,9 +29,20 @@ constexpr wchar_t kLocalSystemAccountName[] = L"LocalSystem";
 SERVICE_STATUS_HANDLE g_serviceStatusHandle = nullptr;
 SERVICE_STATUS g_serviceStatus{};
 antivirus::agent::AgentService* g_activeService = nullptr;
+volatile LONG g_stopRequested = 0;
+
+// Failed starts and unexpected termination must be visible in Windows Event Viewer.
+void ReportServiceFailure(const std::wstring& detail) {
+  const auto source = RegisterEventSourceW(nullptr, kServiceName);
+  if (source == nullptr) return;
+  const wchar_t* strings[] = {detail.c_str()};
+  ReportEventW(source, EVENTLOG_ERROR_TYPE, 0, 0x1001, nullptr, 1, 0, strings, nullptr);
+  DeregisterEventSource(source);
+}
+
 
 bool InvokeAdjacentDllRegistration(bool registerProvider);
-void WaitForServiceStop(SC_HANDLE service);
+bool WaitForServiceStop(SC_HANDLE service, DWORD timeoutMs);
 
 void UpdateServiceStatus(const DWORD currentState, const DWORD win32ExitCode = NO_ERROR,
                          const DWORD waitHint = 0, const DWORD serviceSpecificExitCode = 0) {
@@ -54,6 +65,7 @@ DWORD WINAPI ServiceControlHandler(const DWORD controlCode, DWORD, void*, void*)
   switch (controlCode) {
     case SERVICE_CONTROL_STOP:
     case SERVICE_CONTROL_SHUTDOWN:
+      InterlockedExchange(&g_stopRequested, 1);
       UpdateServiceStatus(SERVICE_STOP_PENDING, NO_ERROR, 15'000);
       if (g_activeService != nullptr) {
         g_activeService->RequestStop();
@@ -75,6 +87,7 @@ void WINAPI ServiceEntry(DWORD, LPWSTR*) {
     return;
   }
 
+  InterlockedExchange(&g_stopRequested, 0);
   UpdateServiceStatus(SERVICE_START_PENDING, NO_ERROR, 5'000);
 
   antivirus::agent::AgentService service;
@@ -82,10 +95,22 @@ void WINAPI ServiceEntry(DWORD, LPWSTR*) {
 
   UpdateServiceStatus(SERVICE_RUNNING);
   const auto exitCode = service.Run(antivirus::agent::AgentRunMode::Service);
-
+  const bool requestedStop = InterlockedCompareExchange(&g_stopRequested, 0, 0) != 0;
+  const bool unexpectedExit = !requestedStop;
+  if (exitCode != 0 || unexpectedExit) {
+    ReportServiceFailure(L"FenrirAgent stopped " +
+                         std::wstring(unexpectedExit ? L"without a Windows service stop/shutdown request" :
+                                                    L"after a requested stop with an error") +
+                         L" (agent exit code " + std::to_wstring(exitCode) +
+                         L"). Review the installation, signature trust and agent runtime diagnostics.");
+  }
   g_activeService = nullptr;
-  UpdateServiceStatus(SERVICE_STOPPED, exitCode == 0 ? NO_ERROR : ERROR_SERVICE_SPECIFIC_ERROR, 0,
-                      static_cast<DWORD>(exitCode));
+  // An unexpected clean exit must count as a service failure so Windows can
+  // apply the configured restart policy instead of leaving the agent stopped.
+  const DWORD failureCode = exitCode != 0 ? static_cast<DWORD>(exitCode) : 1;
+  UpdateServiceStatus(SERVICE_STOPPED,
+                      (exitCode == 0 && !unexpectedExit) ? NO_ERROR : ERROR_SERVICE_SPECIFIC_ERROR,
+                      0, (exitCode == 0 && !unexpectedExit) ? 0 : failureCode);
 }
 
 std::wstring GetModulePath() {
@@ -156,7 +181,7 @@ bool PrepareRuntimeLayout(const antivirus::agent::AgentConfig& config, std::wstr
          EnsureDirectoryReady(config.evidenceRootPath, L"evidence root", errorMessage);
 }
 
-void ConfigureServiceHardening(SC_HANDLE service) {
+bool ConfigureServiceHardening(SC_HANDLE service) {
   SERVICE_DESCRIPTIONW description{};
   description.lpDescription = const_cast<LPWSTR>(kServiceDescription);
   ChangeServiceConfig2W(service, SERVICE_CONFIG_DESCRIPTION, &description);
@@ -184,11 +209,18 @@ void ConfigureServiceHardening(SC_HANDLE service) {
   failureActions.dwResetPeriod = 60 * 60;
   failureActions.cActions = static_cast<DWORD>(std::size(actions));
   failureActions.lpsaActions = actions;
-  ChangeServiceConfig2W(service, SERVICE_CONFIG_FAILURE_ACTIONS, &failureActions);
+  if (ChangeServiceConfig2W(service, SERVICE_CONFIG_FAILURE_ACTIONS, &failureActions) == FALSE) {
+    std::wcerr << L"Unable to configure service restart recovery (error " << GetLastError() << L")." << std::endl;
+    return false;
+  }
 
   SERVICE_FAILURE_ACTIONS_FLAG failureActionsFlag{};
   failureActionsFlag.fFailureActionsOnNonCrashFailures = TRUE;
-  ChangeServiceConfig2W(service, SERVICE_CONFIG_FAILURE_ACTIONS_FLAG, &failureActionsFlag);
+  if (ChangeServiceConfig2W(service, SERVICE_CONFIG_FAILURE_ACTIONS_FLAG, &failureActionsFlag) == FALSE) {
+    std::wcerr << L"Unable to configure recovery for non-crash failures (error " << GetLastError() << L")." << std::endl;
+    return false;
+  }
+  return true;
 }
 
 // Lifts the stop/reconfigure/delete lock (see ApplyServiceControlProtection) so Fenrir's own
@@ -213,7 +245,19 @@ bool InstallOrRepairService(const bool repair, const std::wstring& uninstallToke
   }
 
   const auto serviceCommandLine = L"\"" + modulePath + L"\"";
+  // Installation and repair must not bypass a protected existing deployment.
+  // A new installation (no saved token) remains unaffected.
+  const auto maintenanceConfig = antivirus::agent::LoadAgentConfigForModule(nullptr);
+  antivirus::agent::HardeningManager maintenanceGuard(maintenanceConfig, GetInstallRoot());
+  std::wstring maintenanceError;
+  if (!maintenanceGuard.ValidateUninstallAuthorization(uninstallToken, &maintenanceError)) {
+    std::wcerr << L"Agent maintenance was not authorised: " << maintenanceError << std::endl;
+    return false;
+  }
   UnlockServiceControl();
+  struct RestoreServiceControl {
+    ~RestoreServiceControl() { LockServiceControl(); }
+  } restoreControl; // Reapply protection on every success or failure exit.
   const auto scManager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CREATE_SERVICE | SC_MANAGER_CONNECT);
   if (scManager == nullptr) {
     const auto error = GetLastError();
@@ -253,7 +297,11 @@ bool InstallOrRepairService(const bool repair, const std::wstring& uninstallToke
     }
   }
 
-  ConfigureServiceHardening(service);
+  if (!ConfigureServiceHardening(service)) {
+    CloseServiceHandle(service);
+    CloseServiceHandle(scManager);
+    return false;  // Never report a persistent install without working SCM recovery settings.
+  }
 
   auto config = antivirus::agent::LoadAgentConfigForModule(nullptr);
   std::wstring runtimeLayoutError;
@@ -363,18 +411,44 @@ bool InvokeAdjacentDllRegistration(const bool registerProvider) {
   return true;
 }
 
-void WaitForServiceStop(SC_HANDLE service) {
+bool WaitForServiceStop(SC_HANDLE service, const DWORD timeoutMs) {
   SERVICE_STATUS_PROCESS status{};
   DWORD bytesNeeded = 0;
-
-  while (QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO, reinterpret_cast<LPBYTE>(&status), sizeof(status),
-                              &bytesNeeded) != FALSE) {
-    if (status.dwCurrentState == SERVICE_STOPPED) {
-      return;
+  const ULONGLONG deadline = GetTickCount64() + timeoutMs;
+  do {
+    if (!QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO,
+                              reinterpret_cast<LPBYTE>(&status), sizeof(status), &bytesNeeded)) {
+      return false;
     }
+    if (status.dwCurrentState == SERVICE_STOPPED) return true;
+    Sleep(250);
+  } while (GetTickCount64() < deadline);
+  return false;
+}
 
-    Sleep(500);
+bool RequestAndWaitForServiceStop(SC_HANDLE service, const wchar_t* operation) {
+  SERVICE_STATUS_PROCESS current{};
+  DWORD bytesNeeded = 0;
+  if (!QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO,
+                            reinterpret_cast<LPBYTE>(&current), sizeof(current), &bytesNeeded)) {
+    std::wcerr << operation << L": could not query the service status (" << GetLastError() << L")." << std::endl;
+    return false;
   }
+  if (current.dwCurrentState == SERVICE_STOPPED) return true;
+
+  SERVICE_STATUS status{};
+  if (!ControlService(service, SERVICE_CONTROL_STOP, &status)) {
+    const auto error = GetLastError();
+    if (error != ERROR_SERVICE_NOT_ACTIVE) {
+      std::wcerr << operation << L": Windows refused the service stop (" << error << L")." << std::endl;
+      return false;
+    }
+  }
+  if (!WaitForServiceStop(service, 30'000)) {
+    std::wcerr << operation << L": the agent service did not reach STOPPED within 30 seconds." << std::endl;
+    return false;
+  }
+  return true;
 }
 
 bool UninstallService(const std::wstring& uninstallToken) {
@@ -387,6 +461,7 @@ bool UninstallService(const std::wstring& uninstallToken) {
   }
 
   UnlockServiceControl();
+  struct RelockOnExit { ~RelockOnExit() { LockServiceControl(); } } relock;
   const auto scManager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
   if (scManager == nullptr) {
     std::wcerr << L"OpenSCManagerW failed with error " << GetLastError() << std::endl;
@@ -407,9 +482,11 @@ bool UninstallService(const std::wstring& uninstallToken) {
     return false;
   }
 
-  SERVICE_STATUS status{};
-  ControlService(service, SERVICE_CONTROL_STOP, &status);
-  WaitForServiceStop(service);
+  if (!RequestAndWaitForServiceStop(service, L"Uninstall")) {
+    CloseServiceHandle(service);
+    CloseServiceHandle(scManager);
+    return false;  // Never mark a running service for deletion after reboot.
+  }
 
   const auto deleted = DeleteService(service) != FALSE;
   if (!deleted) {
@@ -440,6 +517,7 @@ bool StopProtectedService(const std::wstring& uninstallToken) {
     return false;
   }
   UnlockServiceControl();
+  struct RelockOnExit { ~RelockOnExit() { LockServiceControl(); } } relock;
   const auto scManager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
   if (scManager == nullptr) {
     std::wcerr << L"OpenSCManagerW failed with error " << GetLastError() << std::endl;
@@ -451,12 +529,10 @@ bool StopProtectedService(const std::wstring& uninstallToken) {
     CloseServiceHandle(scManager);
     return false;
   }
-  SERVICE_STATUS status{};
-  ControlService(service, SERVICE_CONTROL_STOP, &status);
-  WaitForServiceStop(service);
+  const auto stopped = RequestAndWaitForServiceStop(service, L"Authorised stop");
   CloseServiceHandle(service);
   CloseServiceHandle(scManager);
-  LockServiceControl();  // stopped, but still not stoppable/deletable by hand once restarted
+  if (!stopped) return false;
   std::wcout << L"Stopped " << kServiceDisplayName << L"." << std::endl;
   return true;
 }
@@ -485,9 +561,11 @@ bool UpgradeInstalledService(const std::wstring& manifestPath) {
     return false;
   }
 
-  SERVICE_STATUS status{};
-  ControlService(service, SERVICE_CONTROL_STOP, &status);
-  WaitForServiceStop(service);
+  if (!RequestAndWaitForServiceStop(service, L"Upgrade")) {
+    CloseServiceHandle(service);
+    CloseServiceHandle(scManager);
+    return false;  // Do not replace in-use binaries.
+  }
 
   antivirus::agent::UpdaterService updater(config, GetInstallRoot());
   const auto result = updater.ApplyPackage(manifestPath, antivirus::agent::UpdateApplyMode::Maintenance);

@@ -1338,6 +1338,93 @@ bool StartInstalledService(std::wstring* errorMessage) {
   return StartServiceByName(kServiceName, 20'000, errorMessage);
 }
 
+
+bool VerifyInstalledServicePersistence(const std::filesystem::path& installRoot, std::wstring* errorMessage) {
+  const auto manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+  if (!manager) {
+    if (errorMessage) *errorMessage = L"Cannot open Windows Service Control Manager to verify persistence.";
+    return false;
+  }
+  const auto service = OpenServiceW(manager, kServiceName, SERVICE_QUERY_CONFIG | SERVICE_QUERY_STATUS);
+  if (!service) {
+    if (errorMessage) *errorMessage = L"FenrirAgent service registration was not found after installation.";
+    CloseServiceHandle(manager);
+    return false;
+  }
+  const auto done = [&]() { CloseServiceHandle(service); CloseServiceHandle(manager); };
+  DWORD required = 0;
+  QueryServiceConfigW(service, nullptr, 0, &required);
+  if (!required) {
+    if (errorMessage) *errorMessage = L"Cannot determine FenrirAgent startup configuration size.";
+    done();
+    return false;
+  }
+  std::vector<BYTE> buffer(required);
+  if (!QueryServiceConfigW(service, reinterpret_cast<LPQUERY_SERVICE_CONFIGW>(buffer.data()),
+                           static_cast<DWORD>(buffer.size()), &required)) {
+    if (errorMessage) *errorMessage = L"Cannot read FenrirAgent startup configuration.";
+    done();
+    return false;
+  }
+  const auto* config = reinterpret_cast<const QUERY_SERVICE_CONFIGW*>(buffer.data());
+  const auto expected = std::wstring(L"\"") + (installRoot / kServiceExeName).wstring() + L"\"";
+  if (config->dwStartType != SERVICE_AUTO_START || !config->lpBinaryPathName ||
+      _wcsicmp(config->lpBinaryPathName, expected.c_str()) != 0) {
+    if (errorMessage) *errorMessage = L"Agent service is not configured to start automatically from its permanent installation folder.";
+    done();
+    return false;
+  }
+  required = 0;
+  QueryServiceConfig2W(service, SERVICE_CONFIG_FAILURE_ACTIONS, nullptr, 0, &required);
+  if (!required) {
+    if (errorMessage) *errorMessage = L"Cannot determine agent service recovery configuration size.";
+    done();
+    return false;
+  }
+  std::vector<BYTE> recoveryBuffer(required);
+  if (!QueryServiceConfig2W(service, SERVICE_CONFIG_FAILURE_ACTIONS, recoveryBuffer.data(),
+                            static_cast<DWORD>(recoveryBuffer.size()), &required)) {
+    if (errorMessage) *errorMessage = L"Cannot query agent restart-on-failure policy.";
+    done();
+    return false;
+  }
+  const auto* recovery = reinterpret_cast<const SERVICE_FAILURE_ACTIONSW*>(recoveryBuffer.data());
+  if (!recovery->cActions || !recovery->lpsaActions || recovery->lpsaActions[0].Type != SC_ACTION_RESTART) {
+    if (errorMessage) *errorMessage = L"Agent service restart-on-failure policy is missing.";
+    done();
+    return false;
+  }
+  // SCM reports RUNNING before the agent's full initialization completes.
+  // Check again after a short observation period to catch immediate startup exits.
+  DWORD initialPid = 0;
+  for (int sample = 0; sample < 11; ++sample) {
+    SERVICE_STATUS_PROCESS status{};
+    DWORD bytes = 0;
+    if (!QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO, reinterpret_cast<LPBYTE>(&status),
+                              sizeof(status), &bytes) || status.dwCurrentState != SERVICE_RUNNING) {
+      if (errorMessage) *errorMessage = L"Agent service stopped during startup verification. Check service events and the agent's local diagnostics.";
+      done();
+      return false;
+    }
+    if (status.dwProcessId == 0 || (initialPid != 0 && status.dwProcessId != initialPid)) {
+      if (errorMessage) *errorMessage = L"Agent process restarted repeatedly during startup verification; review service crash events.";
+      done();
+      return false;
+    }
+    std::error_code binaryError;
+    if (!std::filesystem::exists(installRoot / kServiceExeName, binaryError) || binaryError) {
+      if (errorMessage) *errorMessage = L"Agent executable disappeared from its permanent installation path during startup verification. Check antivirus quarantine and pending file operations.";
+      done();
+      return false;
+    }
+    initialPid = status.dwProcessId;
+    if (sample < 10) Sleep(1000);
+  }
+  done();
+  return true;
+}
+
+
 bool ConfigureMinifilterInstanceRegistry(std::wstring* errorMessage) {
   const auto instancesRoot =
       std::wstring(L"SYSTEM\\CurrentControlSet\\Services\\") + kMinifilterServiceName + L"\\Instances";
@@ -2183,13 +2270,29 @@ bool InstallPayloadFiles(HWND hwnd, UiContext* context, const bool repair, std::
     StopMatchingProcess(installRoot / kEndpointExeName);
     StopMatchingProcess(installRoot / kPamExeName);
 
-    std::wstring stopError;
-    PostLog(hwnd, L"Stopping the protection service before replacing payloads");
-    if (!StopInstalledService(&stopError)) {
-      if (errorMessage != nullptr) {
-        *errorMessage = stopError;
+    if (ServiceExists()) {
+      // Existing services have an intentionally restricted SCM DACL. Use the
+      // agent's authorised maintenance path, which validates uninstall protection,
+      // rather than attempting an unprivileged ControlService on a protected service.
+      const auto existingServiceExe = installRoot / kServiceExeName;
+      if (!std::filesystem::exists(existingServiceExe)) {
+        if (errorMessage) {
+          *errorMessage = L"Cannot repair: the existing FenrirAgent service binary is missing. "
+                          L"Inspect quarantine and restore the approved signed binary before repair.";
+        }
+        return false;
       }
-      return false;
+      std::wstring stopError;
+      DWORD stopExitCode = 0;
+      PostLog(hwnd, L"Requesting authorised maintenance stop before replacing service files");
+      if (!RunProcessHidden(existingServiceExe, L"--stop", installRoot, &stopExitCode, &stopError) ||
+          !WaitForServiceState(SERVICE_STOPPED, 20'000)) {
+        if (errorMessage) {
+          *errorMessage = L"Could not safely stop the protected FenrirAgent service for repair. " +
+                          stopError + L" If maintenance protection is enabled, use the approved maintenance token.";
+        }
+        return false;
+      }
     }
   }
 
@@ -2312,8 +2415,10 @@ void RunInstallOrRepair(HWND hwnd, UiContext* context, const bool repair) {
     }
   }
 
-  context->controlPlaneBaseUrl = kDefaultControlPlaneBaseUrl;
-  PostLog(hwnd, L"Applying managed update endpoint configuration.");
+  // Repair must not silently reset a customer-enrolled server to the default endpoint.
+  const auto registeredServer = ReadRegistryString(HKEY_LOCAL_MACHINE, kAgentRegistryRoot, kControlPlaneBaseUrlValueName);
+  context->controlPlaneBaseUrl = registeredServer.empty() ? std::wstring(kDefaultControlPlaneBaseUrl) : registeredServer;
+  PostLog(hwnd, L"Preserving existing managed cloud endpoint configuration.");
   if (!PersistControlPlaneUrl(context->controlPlaneBaseUrl, &errorMessage)) {
     PostComplete(hwnd, false, false, false, errorMessage);
     return;
@@ -2328,22 +2433,25 @@ void RunInstallOrRepair(HWND hwnd, UiContext* context, const bool repair) {
     return;
   }
 
-  PostStatus(hwnd, repair ? L"Repairing minifilter registration..." : L"Registering minifilter driver...", 84);
-  PostLog(hwnd, repair ? L"Refreshing AntivirusMinifilter deployment" : L"Installing AntivirusMinifilter driver package");
+  PostStatus(hwnd, L"Checking minifilter driver state...", 84);
   std::wstring minifilterWarning;
-  if (!true) {
-    PostComplete(hwnd, false, false, false, errorMessage);
-    return;
+  // The old no-op driver branch was followed by a mandatory strict driver self-test.
+  // A missing driver must be explicit, not confused with an uninstalled agent.
+  const auto driverState = QueryServiceStateByName(kMinifilterServiceName);
+  const bool minifilterDegraded = driverState != L"running";
+  if (minifilterDegraded) {
+    minifilterWarning = L"AntivirusMinifilter is not running (state: " + driverState +
+        L"). Kernel real-time protection is unavailable; deploy a validated, signed driver separately.";
   }
-  const auto minifilterDegraded = !minifilterWarning.empty();
   if (minifilterDegraded) {
     PostLog(hwnd, L"Warning: " + minifilterWarning);
   }
 
   PostStatus(hwnd, L"Starting protection service...", 87);
   PostLog(hwnd, L"Starting the installed protection service");
-  if (!StartInstalledService(&errorMessage)) {
-    PostComplete(hwnd, false, false, false, errorMessage);
+  if (!StartInstalledService(&errorMessage) ||
+      !VerifyInstalledServicePersistence(context->installRoot, &errorMessage)) {
+    PostComplete(hwnd, false, IsInstalledAt(context->installRoot), false, errorMessage);
     return;
   }
 
@@ -2385,9 +2493,8 @@ void RunInstallOrRepair(HWND hwnd, UiContext* context, const bool repair) {
   auto completionMessage = repair ? std::wstring(L"Fenrir Endpoint was repaired successfully.")
                                   : std::wstring(L"Fenrir Endpoint was installed successfully.");
   if (minifilterDegraded) {
-    completionMessage +=
-        L" Real-time minifilter enforcement is currently unavailable because Windows rejected the driver signature. "
-        L"Deploy a Microsoft-attested signed AntivirusMinifilter.sys/.cat package to restore full protection.";
+    completionMessage += L" WARNING: AntivirusMinifilter is not running. Kernel real-time enforcement is NOT active. "
+                         L"Deploy a verified Microsoft-signed minifilter package to enable full protection.";
   }
   if (!webViewRuntimeReady) {
     completionMessage += hasEmbeddedWebViewInstaller

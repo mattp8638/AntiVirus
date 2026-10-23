@@ -2,7 +2,7 @@ name: Fenrir Multi-OS Build Pipeline
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "fix/**" ]
   pull_request:
     branches: [ "main" ]
 
@@ -11,27 +11,36 @@ jobs:
     name: Windows Agent (MSVC + CMake)
     runs-on: windows-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
-    - name: Configure CMake
+    - name: Configure CMake (development build without signed minifilter)
       run: cmake -B build -S agent/windows/service -DANTIVIRUS_REQUIRE_MINIFILTER_PAYLOAD=OFF
 
-    - name: Build C++ Agent
-      run: cmake --build build --config Release
+    - name: Build Windows agent and real native FenrirSetup
+      run: cmake --build build --config Release --target antivirus-setup
 
-    - name: Sign Windows Binaries (Placeholder)
+    - name: Verify installer and agent binary outputs
+      shell: pwsh
       run: |
-        echo "Requires secrets.WINDOWS_SIGNING_CERT"
-        # & "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64\signtool.exe" sign /fd SHA256 /a /t http://timestamp.digicert.com build\Release\fenrir-agent-service.exe
+        $agent = 'agent/windows/out/dev/fenrir-agent-service.exe'
+        $setup = 'agent/windows/out/install/FenrirSetup.exe'
+        foreach ($file in @($agent, $setup)) {
+          if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+            throw "Expected build output missing: $file"
+          }
+          Get-FileHash -Algorithm SHA256 -LiteralPath $file | Format-List
+        }
+        & $agent --help
+        if ($LASTEXITCODE -ne 0) { throw "Built service --help returned $LASTEXITCODE" }
+        Write-Warning 'Unsigned development artifacts only. Not approved for customer installation or kernel antimalware claims.'
 
-    - name: Build MSI Installer
-      run: |
-        echo "Placeholder: Use WiX Toolset to package binaries into an MSI"
-        
-    - uses: actions/upload-artifact@v3
+    - uses: actions/upload-artifact@v4
       with:
-        name: Fenrir-Windows
-        path: build/Release/FenrirSetup.exe # Or .msi
+        name: Fenrir-Windows-UNSIGNED-CI
+        path: |
+          agent/windows/out/install/FenrirSetup.exe
+          agent/windows/out/dev/fenrir-agent-service.exe
+        if-no-files-found: error
 
   # The Linux agent is built by platform.yml (managed agent + .deb packages).
 
@@ -39,7 +48,7 @@ jobs:
     name: macOS Agent (Swift + EndpointSecurity)
     runs-on: macos-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Build Swift Package
       working-directory: agent/macos
@@ -54,7 +63,8 @@ jobs:
       run: |
         echo "Placeholder: pkgbuild --root .build/release --identifier com.fenrir.agent FenrirAgent.pkg"
 
-    - uses: actions/upload-artifact@v3
+    - uses: actions/upload-artifact@v4
       with:
         name: Fenrir-macOS
         path: agent/macos/.build/release/fenrir-agent
+        if-no-files-found: error
