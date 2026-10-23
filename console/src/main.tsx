@@ -1,3 +1,8 @@
+import M365 from "./pages/M365";
+import Network from "./pages/Network";
+import Governance from "./pages/Governance";
+import Backup from "./pages/Backup";
+import SocWorkflows from "./pages/SocWorkflows";
 import { FormEvent, lazy, Suspense, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
@@ -41,6 +46,7 @@ import PsaSettings, { ProjectDetail } from "./pages/psa/PsaSettings";
 import Reports from "./pages/Reports";
 import Settings from "./pages/Settings";
 import Deploy from "./pages/Deploy";
+import Vault from "./pages/Vault";
 import ProtectionHealth from "./pages/ProtectionHealth";
 
 const NAV: { group: string; items: { to: string; label: string; icon: string }[] }[] = [
@@ -83,6 +89,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string }[]
       { to: "/companies", label: "Companies", icon: "⌂" },
       { to: "/configurations", label: "Configurations", icon: "⚿" },
       { to: "/knowledge", label: "Knowledge base", icon: "❏" },
+      { to: "/vault", label: "Credential vault", icon: "⚿" },
     ],
   },
   {
@@ -93,6 +100,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string }[]
       { to: "/billing", label: "Agreements & billing", icon: "£" },
     ],
   },
+  { group: "MSP operations", items: [{to:"/m365",label:"Microsoft 365",icon:"▦"},{to:"/network",label:"Network monitoring",icon:"⌁"},{to:"/governance",label:"GRC & ISMS",icon:"✓"},{to:"/backup",label:"Backup & recovery",icon:"⟳"},{to:"/soc-workflows",label:"SOC maintenance",icon:"◷"}] },
   { group: "Administration", items: [{ to: "/service-settings", label: "Service settings", icon: "⚙" }, { to: "/settings", label: "Settings", icon: "⚒" }] },
 ];
 
@@ -194,6 +202,7 @@ function Shell() {
             <Route path="/companies/:id" element={<CompanyDetail />} />
             <Route path="/configurations" element={<Configurations />} />
             <Route path="/knowledge" element={<Knowledge />} />
+            <Route path="/vault" element={<Vault />} />
             <Route path="/quotes" element={<Catalog />} />
             <Route path="/projects/:id" element={<ProjectDetail />} />
             <Route path="/service-settings" element={<PsaSettings />} />
@@ -205,6 +214,11 @@ function Shell() {
             <Route path="/billing" element={<Billing />} />
             <Route path="/reports" element={<Reports />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/m365" element={<M365 />} />
+            <Route path="/network" element={<Network />} />
+            <Route path="/governance" element={<Governance />} />
+            <Route path="/backup" element={<Backup />} />
+            <Route path="/soc-workflows" element={<SocWorkflows />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>
