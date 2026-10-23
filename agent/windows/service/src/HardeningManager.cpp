@@ -343,7 +343,15 @@ bool HardeningManager::ApplyPostInstallHardening(const std::wstring& uninstallTo
     return false;
   }
 
-  const auto tokenHash = uninstallToken.empty() ? std::wstring{} : HashToken(uninstallToken);
+  const auto previousTokenHash = ReadRegistryString(key, L"UninstallTokenSha256");
+  // Never silently clear an existing tamper/uninstall secret on a repair,
+  // startup hardening pass, or an upgrade without a supplied token.
+  const auto tokenHash = uninstallToken.empty() ? previousTokenHash : HashToken(uninstallToken);
+  if (!previousTokenHash.empty() && !uninstallToken.empty() && tokenHash != previousTokenHash) {
+    if (errorMessage != nullptr) *errorMessage = L"The maintenance token does not match the installed endpoint policy.";
+    RegCloseKey(key);
+    return false;
+  }
   const auto success =
       WriteRegistryString(key, L"InstallRoot", installRoot_.wstring()) &&
       WriteRegistryString(key, kRuntimeRootValueName, config_.runtimeDatabasePath.parent_path().wstring()) &&
