@@ -173,12 +173,15 @@ export function ErrorNote({ error }: { error: string | null }) {
 
 /** Simple bar chart in SVG; no chart library needed. */
 export function Bars({ data, height = 140 }: { data: { label: string; value: number }[]; height?: number }) {
-  if (!data.length) return <div className="empty">No data in this period.</div>;
-  const max = Math.max(...data.map((d) => d.value), 1);
-  const width = 100 / data.length;
+  const points = safeArray<{ label: string; value: number }>(data).filter(
+    (d) => d !== null && typeof d === "object" && Number.isFinite(d.value)
+  );
+  if (!points.length) return <div className="empty">No chart data available.</div>;
+  const max = Math.max(...points.map((d) => d.value), 1);
+  const width = 100 / points.length;
   return (
     <svg viewBox={`0 0 100 ${height}`} preserveAspectRatio="none" style={{ width: "100%", height }} role="img">
-      {data.map((d, i) => {
+      {points.map((d, i) => {
         const h = (d.value / max) * (height - 18);
         return (
           <g key={d.label}>
