@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:shapes": "node --experimental-strip-types --test tests/data-shapes.test.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "0.10.0",

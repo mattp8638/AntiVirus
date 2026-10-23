@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useApp } from "../app-context";
-import { ErrorNote, Modal, TenantSelect, useAction, useData } from "./ui";
+import { safeArray } from "../data-shapes";
+import { ErrorNote, Modal, TenantSelect, useAction, useListData } from "./ui";
 
 export type EntryField = { key: string; label: string; type?: "text" | "password" | "number" | "textarea" | "select"; options?: string[]; source?: "configurations" | "documents" | "rules"; required?: boolean; value?: string | number };
 export function RecordEditor({ title, fields, tenant = true, onSave, onClose }: {
@@ -9,14 +10,14 @@ export function RecordEditor({ title, fields, tenant = true, onSave, onClose }: 
   const { tenantId } = useApp();
   const [form, setForm] = useState<any>(() => Object.fromEntries([["tenantId", tenantId], ...fields.map(f => [f.key, f.value ?? ""])]));
   const { run, busy } = useAction();
-  const {data: configurations, error: configError} = useData<any[]>(fields.some(f=>f.source==="configurations") && form.tenantId ? "psa/configurations" : null, {accountTenantId:form.tenantId});
-  const {data: documents, error: docError} = useData<any[]>(fields.some(f=>f.source==="documents") && form.tenantId ? "psa/kb" : null, {tenant_id:form.tenantId});
-  const {data: rules, error: ruleError} = useData<any[]>(fields.some(f=>f.source==="rules") ? "rules" : null);
+  const {data: configurations, error: configError} = useListData<any>(fields.some(f=>f.source==="configurations") && form.tenantId ? "psa/configurations" : null, {accountTenantId:form.tenantId});
+  const {data: documents, error: docError} = useListData<any>(fields.some(f=>f.source==="documents") && form.tenantId ? "psa/kb" : null, {tenant_id:form.tenantId});
+  const {data: rules, error: ruleError} = useListData<any>(fields.some(f=>f.source==="rules") ? "rules" : null);
   const choices = (f: EntryField) => f.source
-    ? ((f.source==="configurations"?configurations:f.source==="documents"?documents:rules)||[])
+    ? safeArray<any>(f.source==="configurations"?configurations:f.source==="documents"?documents:rules)
       .filter(r=>f.source!=="rules" || !r.tenantId || r.tenantId===form.tenantId)
       .map(r=>({value:r.id,label:r.name||r.title}))
-    : (f.options||[]).map(value=>({value,label:value}));
+    : safeArray<string>(f.options).map(value=>({value,label:value}));
   return <Modal title={title} onClose={onClose}>
     <ErrorNote error={configError || docError || ruleError}/><form onSubmit={async e => { e.preventDefault(); if (await run(() => onSave(form), "Saved")) onClose(); }}>
       {tenant && <label className="field">Customer<TenantSelect value={form.tenantId} onChange={id => setForm({ ...form, tenantId: id, ...Object.fromEntries(fields.filter(f=>f.source).map(f=>[f.key,""])) })} /></label>}

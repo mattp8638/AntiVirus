@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
-import { ErrorNote, Modal, Pill, Table, Tabs, useAction, useData } from "../components/ui";
+import { safeArray } from "../data-shapes";
+import { ErrorNote, Modal, Pill, Table, Tabs, useAction, useListData } from "../components/ui";
 
 export function M365Administration({connection}:{connection:any}) {
   const {can}=useApp();
@@ -11,10 +12,10 @@ export function M365Administration({connection}:{connection:any}) {
   const [confirmed,setConfirmed]=useState(false),[diagnostics,setDiagnostics]=useState<any>(null);
   const [requestId,setRequestId]=useState(()=>crypto.randomUUID());
   const {run,busy}=useAction();
-  const {data:users,error:userError,reload:reloadUsers}=useData<any[]>(base+"/inventory/users");
-  const {data:groups,error:groupError}=useData<any[]>(tab==="Groups"||operation.startsWith("group.")?base+"/inventory/groups":null);
-  const {data:licenses,error:licenseError}=useData<any[]>(tab==="Licences"||operation.startsWith("license.")?base+"/inventory/licenses":null);
-  const {data:history,error:historyError,reload:reloadHistory}=useData<any[]>(can("m365_admin")?base+"/actions":null);
+  const {data:users,error:userError,reload:reloadUsers}=useListData<any>(base+"/inventory/users");
+  const {data:groups,error:groupError}=useListData<any>(tab==="Groups"||operation.startsWith("group.")?base+"/inventory/groups":null);
+  const {data:licenses,error:licenseError}=useListData<any>(tab==="Licences"||operation.startsWith("license.")?base+"/inventory/licenses":null);
+  const {data:history,error:historyError,reload:reloadHistory}=useListData<any>(can("m365_admin")?base+"/actions":null);
   useEffect(()=>{setSelected(null);setJob(null);setDiagnostics(null);setConfirmed(false);},[connection.id]);
   const choose=(row:any)=>{setSelected(row);setOperation("user.update");setValue(row.displayName||"");setJob(null);setConfirmed(false);setRequestId(crypto.randomUUID());};
   const prepare=async()=>{
@@ -36,14 +37,14 @@ export function M365Administration({connection}:{connection:any}) {
     {tab==="Users"&&<Table rows={users?.filter(r=>(r.displayName+" "+r.userPrincipalName).toLowerCase().includes(query.toLowerCase()))} onRow={can("m365_admin")?choose:undefined}
       columns={[{key:"displayName",label:"Name"},{key:"userPrincipalName",label:"Sign-in"},{key:"accountEnabled",label:"Sign-in enabled"},{key:"department",label:"Department"}]}/>}
     {tab==="Groups"&&<><p>Manage membership from a selected user. Dynamic, role-assignable, synced and Exchange-managed groups require separate workflows.</p>
-      <Table rows={groups?.filter(r=>r.displayName?.toLowerCase().includes(query.toLowerCase()))} columns={[{key:"displayName",label:"Group"},{key:"groupTypes",label:"Type",render:r=>(r.groupTypes||[]).join(", ")||"Security"},{key:"isAssignableToRole",label:"Role assignable"},{key:"onPremisesSyncEnabled",label:"Synced"}]}/></>}
+      <Table rows={groups?.filter(r=>r.displayName?.toLowerCase().includes(query.toLowerCase()))} columns={[{key:"displayName",label:"Group"},{key:"groupTypes",label:"Type",render:r=>safeArray<string>(r.groupTypes).join(", ")||"Security"},{key:"isAssignableToRole",label:"Role assignable"},{key:"onPremisesSyncEnabled",label:"Synced"}]}/></>}
     {tab==="Licences"&&<Table rows={licenses?.filter(r=>r.skuPartNumber?.toLowerCase().includes(query.toLowerCase()))} columns={[{key:"skuPartNumber",label:"Product"},{key:"consumedUnits",label:"Assigned"},{key:"available",label:"Available",render:r=>Math.max(0,(r.prepaidUnits?.enabled||0)-(r.consumedUnits||0))}]}/>}
     {tab==="Actions"&&<><p>Refresh to check progress. Running or unknown outcomes must be reconciled against Microsoft before preparing another action; they are never replayed automatically.</p><button onClick={reloadHistory}>Refresh history</button>
       <Table rows={history} onRow={r=>{setJob(r);setSelected(null);setConfirmed(false);}} columns={[{key:"operation",label:"Operation"},{key:"target",label:"User",render:r=>r.preview?.user?.userPrincipalName||r.targetId},{key:"status",label:"Status",render:r=><Pill value={r.status}/>},{key:"executedBy",label:"Executed by"},{key:"createdAt",label:"Prepared",render:r=>fmtTime(r.createdAt)}]}/></>}
     {tab==="Access checks"&&<><p>These checks test read access. Write consent and target restrictions are validated by Microsoft when an operation runs.</p>
       <button disabled={busy} onClick={async()=>{const result=await run(()=>api(base+"/diagnostics",{method:"POST"}),"Checks completed");if(result)setDiagnostics(result);}}>Run access checks</button>
-      {diagnostics&&<><Table rows={diagnostics.checks} columns={[{key:"resource",label:"Resource"},{key:"status",label:"Read access"}]}/>
-      <Table rows={Object.entries(diagnostics.operations as Record<string,string[]>).map(([operation,permissions])=>({operation,permissions}))} columns={[{key:"operation",label:"Operation"},{key:"permissions",label:"Application permissions",render:r=>r.permissions.join(", ")}]}/></>}</>}
+      {diagnostics&&<><Table rows={safeArray<any>(diagnostics.checks)} columns={[{key:"resource",label:"Resource"},{key:"status",label:"Read access"}]}/>
+      <Table rows={Object.entries((diagnostics.operations && typeof diagnostics.operations === "object" && !Array.isArray(diagnostics.operations) ? diagnostics.operations : {}) as Record<string,string[]>).map(([operation,permissions])=>({operation,permissions}))} columns={[{key:"operation",label:"Operation"},{key:"permissions",label:"Application permissions",render:r=>safeArray<string>(r.permissions).join(", ")}]}/></>}</>}
     {selected&&!job&&<Modal title={selected.userPrincipalName} onClose={()=>setSelected(null)}>
       <label className="field">Action<select value={operation} onChange={e=>{setOperation(e.target.value);setValue("");setRequestId(crypto.randomUUID());}}>
         <option value="user.update">Change display name</option><option value="user.signin">Enable or block sign-in</option>

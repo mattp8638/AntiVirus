@@ -1,9 +1,9 @@
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
-import { ErrorNote, Table, useAction, useData } from "../components/ui";
+import { ErrorNote, Table, useAction, useListData } from "../components/ui";
 
 export function DocumentTemplates({ onSelect }: { onSelect: (row: any) => void }) {
-  const { data } = useData<any[]>("documentation/templates");
+  const { data } = useListData<any>("documentation/templates");
   return <select value="" aria-label="Document template" onChange={e => {
     const template = data?.find(t => t.id === e.target.value);
     if (template) onSelect({ title: template.title, body: template.body, category: template.category, public: false });
@@ -12,7 +12,7 @@ export function DocumentTemplates({ onSelect }: { onSelect: (row: any) => void }
 
 export function DocumentHistory({ articleId, onRestore }: { articleId: string; onRestore: (row: any) => void }) {
   const { can } = useApp();
-  const { data, error, reload } = useData<any[]>("documentation/" + articleId + "/revisions");
+  const { data, error, reload } = useListData<any>("documentation/" + articleId + "/revisions");
   const { run, busy } = useAction();
   return <details><summary>Revision history</summary><ErrorNote error={error} /><Table rows={data} columns={[
     { key: "createdAt", label: "Saved", render: r => fmtTime(r.createdAt) },
