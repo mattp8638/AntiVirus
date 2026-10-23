@@ -208,7 +208,10 @@ func TestTerminalFilesProcessesAndPolicy(t *testing.T) {
 	readJSON(t, conn, func(m Message) bool { return m.str("t") == "info" })
 
 	send(t, conn, Message{"ch": "term", "t": "open", "cols": 80, "rows": 24, "shell": "/bin/sh"})
-	readJSON(t, conn, func(m Message) bool { return m.str("t") == "opened" })
+	opened := readJSON(t, conn, func(m Message) bool { return m.str("ch") == "term" && (m.str("t") == "opened" || m.str("t") == "error") })
+	if opened.str("t") != "opened" {
+		t.Fatalf("terminal failed to open: %v", opened)
+	}
 	send(t, conn, Message{"ch": "term", "t": "in", "data": base64.StdEncoding.EncodeToString([]byte("echo fenrir-$((40+2))\n"))})
 	var output strings.Builder
 	readJSON(t, conn, func(m Message) bool {
