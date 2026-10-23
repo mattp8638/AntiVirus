@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -1038,3 +1038,149 @@ class SchemaMigration(Base):
     __tablename__ = "schema_migrations"
     version: Mapped[int] = mapped_column(Integer, primary_key=True)
     applied_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class DocumentRevision(Base):
+    __tablename__ = "document_revisions"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("rev"))
+    article_id: Mapped[str] = mapped_column(String(32), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    snapshot: Mapped[dict] = mapped_column(JSON)
+    author: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class VaultCredential(Base):
+    __tablename__ = "vault_credentials"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("cred"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    username: Mapped[str] = mapped_column(String(200), default="")
+    url: Mapped[str] = mapped_column(String(1000), default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    configuration_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    ciphertext: Mapped[dict] = mapped_column(JSON)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class M365Connection(Base):
+    __tablename__ = "m365_connections"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("m365"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    directory_id: Mapped[str] = mapped_column(String(36))
+    client_id: Mapped[str] = mapped_column(String(36))
+    credentials_envelope: Mapped[dict] = mapped_column(JSON)
+    snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(30), default="not_synced")
+    last_error: Mapped[str] = mapped_column(String(300), default="")
+    synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    __table_args__ = (UniqueConstraint("tenant_id", "directory_id", name="uq_m365_tenant_directory"),)
+
+
+class NetworkMonitor(Base):
+    __tablename__ = "network_monitors"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("net"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    address: Mapped[str] = mapped_column(String(64))
+    port: Mapped[int] = mapped_column(Integer)
+    configuration_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    interval_seconds: Mapped[int] = mapped_column(Integer, default=300)
+    state: Mapped[str] = mapped_column(String(20), default="unknown")
+    samples: Mapped[list] = mapped_column(JSON, default=list)
+    failures: Mapped[int] = mapped_column(Integer, default=0)
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    next_check_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class GovernanceRecord(Base):
+    __tablename__ = "governance_records"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("grc"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    kind: Mapped[str] = mapped_column(String(20))
+    title: Mapped[str] = mapped_column(String(300))
+    description: Mapped[str] = mapped_column(Text, default="")
+    framework: Mapped[str] = mapped_column(String(100), default="")
+    control: Mapped[str] = mapped_column(String(200), default="")
+    owner: Mapped[str] = mapped_column(String(200), default="")
+    status: Mapped[str] = mapped_column(String(30), default="draft")
+    likelihood: Mapped[int] = mapped_column(Integer, default=1)
+    impact: Mapped[int] = mapped_column(Integer, default=1)
+    review_due: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    document_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    evidence_url: Mapped[str] = mapped_column(String(2000), default="")
+    approved_by: Mapped[str] = mapped_column(String(200), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class BackupPlan(Base):
+    __tablename__ = "backup_plans"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("bkp"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    provider: Mapped[str] = mapped_column(String(100))
+    configuration_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    rpo_hours: Mapped[int] = mapped_column(Integer, default=24)
+    rto_minutes: Mapped[int] = mapped_column(Integer, default=240)
+    runbook_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class BackupRun(Base):
+    __tablename__ = "backup_runs"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("bkr"))
+    plan_id: Mapped[str] = mapped_column(String(32), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    external_id: Mapped[str] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(30))
+    completed_at: Mapped[datetime] = mapped_column(DateTime)
+    bytes_protected: Mapped[int] = mapped_column(BigInteger, default=0)
+    evidence: Mapped[str] = mapped_column(Text, default="")
+    recorded_by: Mapped[str] = mapped_column(String(200))
+    __table_args__ = (UniqueConstraint("plan_id", "external_id", name="uq_backup_run_external"),)
+
+
+class RecoveryExercise(Base):
+    __tablename__ = "recovery_exercises"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("rec"))
+    plan_id: Mapped[str] = mapped_column(String(32), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="requested")
+    requested_by: Mapped[str] = mapped_column(String(200))
+    approved_by: Mapped[str] = mapped_column(String(200), default="")
+    target: Mapped[str] = mapped_column(String(500))
+    evidence: Mapped[str] = mapped_column(Text, default="")
+    duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class IncidentEvidence(Base):
+    __tablename__ = "incident_evidence"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("evd"))
+    incident_id: Mapped[str] = mapped_column(String(32), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    content: Mapped[str] = mapped_column(Text)
+    sha256: Mapped[str] = mapped_column(String(64))
+    author: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AlertSuppression(Base):
+    __tablename__ = "alert_suppressions"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("sup"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    rule_id: Mapped[str] = mapped_column(String(64))
+    reason: Mapped[str] = mapped_column(String(1000))
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    created_by: Mapped[str] = mapped_column(String(200))
