@@ -1396,7 +1396,8 @@ bool VerifyInstalledServicePersistence(const std::filesystem::path& installRoot,
   }
   // SCM reports RUNNING before the agent's full initialization completes.
   // Check again after a short observation period to catch immediate startup exits.
-  for (int sample = 0; sample < 6; ++sample) {
+  DWORD initialPid = 0;
+  for (int sample = 0; sample < 11; ++sample) {
     SERVICE_STATUS_PROCESS status{};
     DWORD bytes = 0;
     if (!QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO, reinterpret_cast<LPBYTE>(&status),
@@ -1405,7 +1406,13 @@ bool VerifyInstalledServicePersistence(const std::filesystem::path& installRoot,
       done();
       return false;
     }
-    if (sample < 5) Sleep(1000);
+    if (status.dwProcessId == 0 || (initialPid != 0 && status.dwProcessId != initialPid)) {
+      if (errorMessage) *errorMessage = L"Agent process restarted repeatedly during startup verification; review service crash events.";
+      done();
+      return false;
+    }
+    initialPid = status.dwProcessId;
+    if (sample < 10) Sleep(1000);
   }
   done();
   return true;
