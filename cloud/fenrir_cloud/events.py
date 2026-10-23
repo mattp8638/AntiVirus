@@ -18,7 +18,7 @@ import traceback
 from collections.abc import Callable
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -51,10 +51,12 @@ def registered() -> dict[str, list[str]]:
 def publish(db: Session, event_type: str, payload: dict, tenant_id: str | None = None, key: str | None = None) -> PlatformEvent:
     """Queue an event. Publishing the same ``key`` twice returns the first event (no duplicate)."""
     key = key or f"{event_type}:{uuid.uuid4().hex}"
+    if len(key) > 200:
+        raise ValueError("Event idempotency keys must not exceed 200 characters")
     existing = db.execute(select(PlatformEvent).where(PlatformEvent.key == key)).scalar_one_or_none()
     if existing is not None:
         return existing
-    event = PlatformEvent(type=event_type, tenant_id=tenant_id, key=key[:200], payload=payload, results={})
+    event = PlatformEvent(type=event_type, tenant_id=tenant_id, key=key, payload=payload, results={})
     nested = db.begin_nested()
     try:
         db.add(event)
@@ -86,6 +88,7 @@ def _run(db: Session, event: PlatformEvent) -> None:
     event.results = results
     event.attempts = (event.attempts or 0) + 1
     if errors:
+        event.status = "pending"
         event.last_error = "; ".join(errors)[:2000]
         if event.attempts >= MAX_ATTEMPTS:
             event.status = "dead"
@@ -97,13 +100,24 @@ def _run(db: Session, event: PlatformEvent) -> None:
 
 def process(db: Session, limit: int = 200) -> int:
     """Run due events. Returns how many were attempted."""
-    due = db.execute(
-        select(PlatformEvent).where(PlatformEvent.status == "pending", PlatformEvent.next_attempt_at <= utcnow())
-        .order_by(PlatformEvent.id).limit(limit)
+    if limit < 1:
+        return 0
+    # One write statement claims the batch before reading any handler state.
+    # This avoids read-to-write lock upgrades on SQLite. The claim and effects
+    # share a transaction, so rollback immediately makes the events eligible.
+    candidates = (select(PlatformEvent.id)
+                  .where(PlatformEvent.status == "pending", PlatformEvent.next_attempt_at <= utcnow())
+                  .order_by(PlatformEvent.id).limit(limit))
+    claimed = db.execute(
+        update(PlatformEvent).where(PlatformEvent.id.in_(candidates), PlatformEvent.status == "pending",
+                                    PlatformEvent.next_attempt_at <= utcnow())
+        .values(status="processing").returning(PlatformEvent.id)
+        .execution_options(synchronize_session=False)
     ).scalars().all()
-    for event in due:
+    for event_id in claimed:
+        event = db.get(PlatformEvent, event_id, populate_existing=True)
         _run(db, event)
-    return len(due)
+    return len(claimed)
 
 
 def retry(db: Session, event: PlatformEvent) -> None:

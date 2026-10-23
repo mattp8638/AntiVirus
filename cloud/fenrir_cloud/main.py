@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from sqlalchemy import delete, select
 
-from . import __version__, audit, db as database, events, policy_schema, psa, ratelimit, remote, rmm, rmm_library
+from . import __version__, crypto, audit, db as database, events, policy_schema, psa, ratelimit, remote, rmm, rmm_library
 from . import vulnmgmt  # noqa: F401 - registers its event handlers
 from .config import Settings, get_settings, set_settings
 from .detection import sync_builtin_rules
@@ -33,10 +33,10 @@ log = logging.getLogger("fenrir")
 
 
 def bootstrap(settings: Settings) -> None:
-    database.Base.metadata.create_all(database.engine())
-    added = database.ensure_columns(database.Base, database.engine())
-    if added:
-        log.info("added database columns: %s", ", ".join(added))
+    crypto.key_status()  # Validate configured keys before changing the database.
+    applied = database.migrate(database.engine())
+    if applied:
+        log.info("applied database migrations: %s", applied)
     db = database.session_factory()()
     try:
         msp = db.execute(select(Tenant).where(Tenant.kind == "msp")).scalars().first()
@@ -154,7 +154,6 @@ echo "Fenrir agent installed and enrolling with $FENRIR_SERVER"
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     set_settings(settings)
-    ratelimit.reset()
     database.init_engine(settings.database_url)
     stop = threading.Event()
 
