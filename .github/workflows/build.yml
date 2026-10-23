@@ -11,7 +11,7 @@ jobs:
     name: Windows Agent (MSVC + CMake)
     runs-on: windows-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Configure CMake
       run: cmake -B build -S agent/windows/service -DANTIVIRUS_REQUIRE_MINIFILTER_PAYLOAD=OFF
@@ -28,10 +28,13 @@ jobs:
       run: |
         echo "Placeholder: Use WiX Toolset to package binaries into an MSI"
         
-    - uses: actions/upload-artifact@v3
+    - uses: actions/upload-artifact@v4
       with:
         name: Fenrir-Windows
-        path: build/Release/FenrirSetup.exe # Or .msi
+        path: |
+          agent/windows/out/install/FenrirSetup.exe
+          agent/windows/out/dev/fenrir-agent-service.exe
+        if-no-files-found: error
 
   # The Linux agent is built by platform.yml (managed agent + .deb packages).
 
@@ -39,7 +42,7 @@ jobs:
     name: macOS Agent (Swift + EndpointSecurity)
     runs-on: macos-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Build Swift Package
       working-directory: agent/macos
@@ -54,7 +57,8 @@ jobs:
       run: |
         echo "Placeholder: pkgbuild --root .build/release --identifier com.fenrir.agent FenrirAgent.pkg"
 
-    - uses: actions/upload-artifact@v3
+    - uses: actions/upload-artifact@v4
       with:
         name: Fenrir-macOS
         path: agent/macos/.build/release/fenrir-agent
+        if-no-files-found: error
