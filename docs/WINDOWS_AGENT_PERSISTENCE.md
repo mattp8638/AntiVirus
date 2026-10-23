@@ -25,7 +25,16 @@ Restart-Computer
 .\agent\windows\installer\Get-FenrirAgentDiagnostics.ps1 | Out-File -Encoding utf8 .\fenrir-after.json
 ```
 
-Compare both reports. A missing SCM service, a stopped service, a missing executable, absent Add/Remove Programs entry and an offline cloud enrolment require different fixes. Check Windows System service-control events and Defender/third-party antivirus quarantine for the exact cause. Do **not** suppress a legitimate malware detection or disable protection to make installation pass.
+Compare both reports. A missing SCM service, a stopped service, a missing executable, absent Add/Remove Programs entry and an offline cloud enrolment require different fixes. The reports now include pending Windows file deletion/replacement operations and Fenrir application error events. Check Windows System service-control events and Defender/third-party antivirus quarantine for the exact cause. Do **not** suppress a legitimate malware detection or disable protection to make installation pass.
+
+The diagnostic also supports `-AssertHealthy` (exit code 0 only when the local automatic Windows service exists, is running, has its executable and installed-program registration, and no Fenrir file removal is queued for reboot):
+
+```powershell
+.\agent\windows\installer\Get-FenrirAgentDiagnostics.ps1 -AssertHealthy
+if ($LASTEXITCODE -ne 0) { throw 'Fenrir local persistence verification failed' }
+```
+
+Run this **before and after both reboots**. It does not verify actual cloud check-in, unchanged tenant/device identity, a signed kernel driver, active scanning or malware detection. Those require separate test evidence.
 
 ## Release acceptance criteria
 
