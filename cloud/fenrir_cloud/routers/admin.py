@@ -409,6 +409,7 @@ def download_installer(body: dict = Body(...), principal: Principal = Depends(cu
     exposed in a query parameter and never served from public static files.
     """
     principal.require("configure")
+    ratelimit.check(f"installer-download:{principal.user.id}", 5, 300)
     os_name = body.get("os")
     if os_name not in ("windows", "linux", "macos"):
         raise HTTPException(422, "Select Windows, Linux or macOS.")
