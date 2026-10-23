@@ -16,14 +16,14 @@ import time
 
 ROLE_PERMISSIONS: dict[str, set[str]] = {
     # Full control of the platform, every tenant.
-    "platform_admin": {"read", "respond", "configure", "manage_tenants", "platform", "billing", "crm", "vault"},
+    "platform_admin": {"read", "respond", "configure", "manage_tenants", "platform", "billing", "crm", "vault", "grc"},
     # MSP staff manage every customer tenant below their own.
-    "msp_admin": {"read", "respond", "configure", "manage_tenants", "billing", "crm", "vault"},
+    "msp_admin": {"read", "respond", "configure", "manage_tenants", "billing", "crm", "vault", "grc"},
     "soc_analyst": {"read", "respond", "configure"},
     "technician": {"read", "respond", "crm", "vault"},
     "billing": {"read", "billing", "crm"},
     # Customer-side roles are limited to their own tenant subtree.
-    "tenant_admin": {"read", "respond", "configure", "vault"},
+    "tenant_admin": {"read", "respond", "configure", "vault", "grc"},
     "tenant_analyst": {"read", "respond"},
     "viewer": {"read"},
     # Customer end users: the client portal only (their own tickets, invoices and public KB).

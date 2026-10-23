@@ -1,3 +1,4 @@
+import { DocumentHistory, DocumentTemplates } from "../Documentation";
 import { useState } from "react";
 import { api, getToken, money } from "../../api";
 import { useApp } from "../../app-context";
@@ -107,8 +108,8 @@ function QuoteEditor({ quote, products, onClose }: { quote: any; products: any[]
 }
 
 export function Knowledge() {
-  const { can } = useApp();
-  const { data, reload } = useData<any[]>("psa/kb");
+  const { can, tenantId } = useApp();
+  const { data, reload } = useData<any[]>("psa/kb", {tenant_id: tenantId});
   const [editing, setEditing] = useState<any>(null);
   const [q, setQ] = useState("");
   const { run, busy } = useAction();
@@ -116,6 +117,7 @@ export function Knowledge() {
     <>
       <PageHead title="Knowledge base" subtitle="Runbooks for the team and how-to articles for customers. Public articles show in the client portal."
                 actions={can("crm") && <button className="primary" onClick={() => setEditing({ title: "", body: "", category: "General", public: false })}>New article</button>} />
+      {can("crm") && <DocumentTemplates onSelect={setEditing} />}
       <input placeholder="Search articles" value={q} onChange={(e) => setQ(e.target.value)} style={{ minWidth: 280, marginBottom: 12 }} />
       <div className="card">
         <Table rows={data?.filter((a) => !q || `${a.title} ${a.body}`.toLowerCase().includes(q.toLowerCase()))} onRow={setEditing} empty="No articles."
@@ -127,7 +129,7 @@ export function Knowledge() {
         <Modal title={editing.id ? editing.title : "New article"} onClose={() => setEditing(null)}
                footer={<>{editing.id && <button className="danger" onClick={async () => { if (await run(() => api(`psa/kb/${editing.id}`, { method: "DELETE" }), "Deleted")) { setEditing(null); reload(); } }}>Delete</button>}
                        <button className="primary" disabled={busy || !editing.title} onClick={async () => {
-                         const body = { title: editing.title, body: editing.body, category: editing.category, public: editing.public };
+                         const body = { tenantId: editing.tenantId || tenantId || undefined, title: editing.title, body: editing.body, category: editing.category, public: editing.public };
                          if (await run(() => (editing.id ? api(`psa/kb/${editing.id}`, { method: "PATCH", body }) : api("psa/kb", { body })), "Saved")) { setEditing(null); reload(); }
                        }}>Save</button></>}>
           <div className="form-grid">
@@ -135,6 +137,7 @@ export function Knowledge() {
             <label className="field">Category<input value={editing.category} onChange={(e) => setEditing({ ...editing, category: e.target.value })} /></label>
             <label className="field">Visible to<select value={editing.public ? "yes" : "no"} onChange={(e) => setEditing({ ...editing, public: e.target.value === "yes" })}><option value="no">Team only</option><option value="yes">Customers too</option></select></label>
           </div>
+          {editing.id && <DocumentHistory articleId={editing.id} onRestore={row => { setEditing(row); reload(); }} />}
           <textarea rows={14} value={editing.body} onChange={(e) => setEditing({ ...editing, body: e.target.value })} style={{ width: "100%", marginTop: 10, fontFamily: "var(--font)" }} />
         </Modal>
       )}

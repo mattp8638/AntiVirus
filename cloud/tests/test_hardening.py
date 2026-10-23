@@ -86,11 +86,11 @@ def test_versioned_upgrade_preserves_legacy_rows_and_is_repeatable(tmp_path):
     with engine.begin() as conn:
         conn.execute(text("CREATE TABLE psa_tickets (id VARCHAR(32) PRIMARY KEY, subject VARCHAR(300))"))
         conn.execute(text("INSERT INTO psa_tickets VALUES ('legacy', 'Keep me')"))
-    assert database.migrate(engine) == [1, 2]
+    assert database.migrate(engine) == [1, 2, 3, 4]
     assert database.migrate(engine) == []
     with engine.connect() as conn:
         assert conn.scalar(text("SELECT subject FROM psa_tickets WHERE id = 'legacy'")) == "Keep me"
-        assert list(conn.execute(text("SELECT version FROM schema_migrations ORDER BY version")).scalars()) == [1, 2]
+        assert list(conn.execute(text("SELECT version FROM schema_migrations ORDER BY version")).scalars()) == [1, 2, 3, 4]
     engine.dispose()
 
 
@@ -158,5 +158,32 @@ def test_concurrent_migration_startup_applies_versions_once(tmp_path):
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(upgrade, range(2)))
-    assert sorted(results) == [[], [1, 2]]
+    assert sorted(results) == [[], [1, 2, 3, 4]]
+    engine.dispose()
+
+def test_version_two_upgrade_preserves_existing_documents_and_devices(tmp_path):
+    from fenrir_cloud.models import (Tenant, KbArticle, Device, DocumentRevision, VaultCredential,
+        M365Connection, NetworkMonitor, GovernanceRecord, BackupPlan, BackupRun,
+        RecoveryExercise, IncidentEvidence, AlertSuppression)
+    added = {model.__table__ for model in (DocumentRevision, VaultCredential, M365Connection,
+        NetworkMonitor, GovernanceRecord, BackupPlan, BackupRun, RecoveryExercise, IncidentEvidence, AlertSuppression)}
+    engine = create_engine(f"sqlite:///{tmp_path / 'version-two.db'}")
+    database.Base.metadata.create_all(engine, tables=[table for table in database.Base.metadata.sorted_tables if table not in added and table.name != "schema_migrations"])
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"))
+        conn.execute(text("INSERT INTO schema_migrations (version) VALUES (1), (2)"))
+    with Session(engine) as db:
+        tenant = Tenant(id="existing", name="Existing customer", slug="existing")
+        db.add(tenant); db.flush()
+        db.add(KbArticle(id="existing-doc", tenant_id=tenant.id, title="Preserve", body="Existing runbook"))
+        db.add(Device(id="existing-device", tenant_id=tenant.id, hostname="Keep host", api_key_hash="keep-key-hash", dns_token="keep-token"))
+        db.commit()
+    assert database.migrate(engine) == [3, 4]
+    assert database.migrate(engine) == []
+    from sqlalchemy import inspect
+    assert {table.name for table in added}.issubset(inspect(engine).get_table_names())
+    with Session(engine) as db:
+        assert db.get(KbArticle, "existing-doc").body == "Existing runbook"
+        assert db.get(Device, "existing-device").api_key_hash == "keep-key-hash"
+        assert db.get(Device, "existing-device").dns_token == "keep-token"
     engine.dispose()

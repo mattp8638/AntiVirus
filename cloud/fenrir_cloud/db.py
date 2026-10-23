@@ -111,7 +111,7 @@ def migrate(bind: Engine) -> list[int]:
             conn.execute(text("CREATE TABLE IF NOT EXISTS schema_migrations "
                               "(version INTEGER PRIMARY KEY, applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"))
             versions = set(conn.execute(text("SELECT version FROM schema_migrations")).scalars())
-            if versions - {1, 2}:
+            if versions - {1, 2, 3, 4}:
                 raise RuntimeError("Database schema is newer than this application")
             if 1 not in versions:
                 Base.metadata.create_all(conn)
@@ -123,6 +123,18 @@ def migrate(bind: Engine) -> list[int]:
                 RateLimitBucket.__table__.create(conn, checkfirst=True)
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (2)"))
                 applied.append(2)
+            if 3 not in versions:
+                from .models import DocumentRevision, VaultCredential
+                for model in (DocumentRevision, VaultCredential):
+                    model.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (3)"))
+                applied.append(3)
+            if 4 not in versions:
+                from .models import (M365Connection, NetworkMonitor, GovernanceRecord, BackupPlan, BackupRun, RecoveryExercise, IncidentEvidence, AlertSuppression)
+                for model in (M365Connection, NetworkMonitor, GovernanceRecord, BackupPlan, BackupRun, RecoveryExercise, IncidentEvidence, AlertSuppression):
+                    model.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (4)"))
+                applied.append(4)
             conn.commit()
         except Exception:
             conn.rollback()

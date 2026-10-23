@@ -1,3 +1,4 @@
+import { IncidentEvidence } from "./SocWorkflows";
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ago, api, fmtTime } from "../api";
@@ -39,6 +40,7 @@ export default function IncidentDetail() {
                     {["open", "investigating", "contained", "resolved", "closed"].map((s) => <option key={s}>{s}</option>)}
                   </select>
                 </>} />
+      <IncidentEvidence incidentId={inc.id} />
       <div className="grid side">
         <div>
           <div className="card">
