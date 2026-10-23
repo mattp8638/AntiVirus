@@ -4,7 +4,7 @@ import { useApp } from "../app-context";
 import { ErrorNote, PageHead, Pill, Table, TenantSelect, useData, useListData } from "../components/ui";
 
 type OsName = "windows" | "linux" | "macos";
-type InstallerStatus = Record<OsName, { ready: boolean; reason: string; extension: string }>;
+type InstallerStatus = Record<OsName, { ready: boolean; reason: string; extension: string; mode?: string; warning?: string }>;
 
 const OS_LABEL: Record<OsName, string> = { windows: "Windows", linux: "Linux", macos: "macOS" };
 
@@ -108,6 +108,7 @@ export default function Deploy() {
                 <button className="small" onClick={reloadStatus}>Refresh availability</button>
               </p>
             )}
+            {selected?.warning && <p role="alert" style={{ color: "#fbbf24", fontWeight: 700 }}>{selected.warning}</p>}
             <ErrorNote error={statusError || error} />
             {success && <div role="status" className="card">{success}</div>}
           </div>
@@ -115,7 +116,7 @@ export default function Deploy() {
             <button className="primary" disabled={busy || !selected?.ready || !target || !Number.isInteger(expires) || expires < 1 || expires > 365}
                     onClick={generate}>{busy ? "Generating installer…" : `Generate & download ${OS_LABEL[os]} installer`}</button>
           </div>
-          <p style={{ marginTop: 12 }}>Every download creates a new customer-bound enrollment token. Treat downloaded files as credentials. Windows downloads require a staged, signed release; macOS stays unavailable until its installable agent is complete.</p>
+          <p style={{ marginTop: 12 }}>Every download creates a new customer-bound enrollment token. Treat downloaded files as credentials. Windows requires a staged signed release or explicitly enabled SHA-256-pinned unsigned hobby build; macOS stays unavailable until its installable agent is complete.</p>
         </div>
       )}
       <div className="card">
