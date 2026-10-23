@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
-import { ErrorNote, Modal, PageHead, Pill, Table, TenantSelect, useAction, useData } from "../components/ui";
+import { ErrorNote, Modal, PageHead, Pill, Table, TenantSelect, useAction, useListData } from "../components/ui";
 
 export default function Vault() {
   const { tenantId, can } = useApp();
-  const { data, error, reload } = useData<any[]>(can("vault") ? "vault/credentials" : null, { tenant_id: tenantId });
+  const { data, error, reload } = useListData<any>(can("vault") ? "vault/credentials" : null, { tenant_id: tenantId });
   const [editing, setEditing] = useState<any>(null);
   const [revealed, setRevealed] = useState<string | null>(null);
   const { run, busy } = useAction();
