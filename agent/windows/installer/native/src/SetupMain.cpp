@@ -2386,8 +2386,10 @@ void RunInstallOrRepair(HWND hwnd, UiContext* context, const bool repair) {
     }
   }
 
-  context->controlPlaneBaseUrl = kDefaultControlPlaneBaseUrl;
-  PostLog(hwnd, L"Applying managed update endpoint configuration.");
+  // Repair must not silently reset a customer-enrolled server to the default endpoint.
+  const auto registeredServer = ReadRegistryString(HKEY_LOCAL_MACHINE, kAgentRegistryRoot, kControlPlaneBaseUrlValueName);
+  context->controlPlaneBaseUrl = registeredServer.empty() ? std::wstring(kDefaultControlPlaneBaseUrl) : registeredServer;
+  PostLog(hwnd, L"Preserving existing managed cloud endpoint configuration.");
   if (!PersistControlPlaneUrl(context->controlPlaneBaseUrl, &errorMessage)) {
     PostComplete(hwnd, false, false, false, errorMessage);
     return;
