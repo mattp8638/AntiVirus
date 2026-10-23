@@ -3,7 +3,9 @@
 #include <Windows.h>
 #include <aclapi.h>
 
+#include <algorithm>
 #include <array>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -587,6 +589,67 @@ void AppendQuarantineJournalEntry(const std::filesystem::path& rootPath, const s
 QuarantineStore::QuarantineStore(std::filesystem::path rootPath, std::filesystem::path databasePath)
     : rootPath_(std::move(rootPath)), databasePath_(ResolveDatabasePath(rootPath_, databasePath)) {}
 
+namespace {
+
+std::wstring LowerFolder(std::wstring value) {
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](const wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
+  std::replace(value.begin(), value.end(), L'/', L'\\');
+  while (!value.empty() && value.back() == L'\\') {
+    value.pop_back();
+  }
+  return value.empty() ? value : value + L"\\";
+}
+
+std::wstring EnvironmentFolder(const wchar_t* name) {
+  wchar_t buffer[MAX_PATH]{};
+  const auto length = GetEnvironmentVariableW(name, buffer, MAX_PATH);
+  return length > 0 && length < MAX_PATH ? LowerFolder(buffer) : std::wstring{};
+}
+
+std::wstring ModuleFolder() {
+  wchar_t buffer[MAX_PATH]{};
+  const auto length = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
+  if (length == 0 || length >= MAX_PATH) {
+    return {};
+  }
+  return LowerFolder(std::filesystem::path(buffer).parent_path().wstring());
+}
+
+}  // namespace
+
+bool IsProtectedSystemLocation(const std::filesystem::path& path, const std::filesystem::path& extraRoot) {
+  std::vector<std::wstring> roots;
+  wchar_t windowsDirectory[MAX_PATH]{};
+  const auto windowsLength = GetSystemWindowsDirectoryW(windowsDirectory, MAX_PATH);
+  roots.push_back(windowsLength > 0 && windowsLength < MAX_PATH ? LowerFolder(windowsDirectory)
+                                                                 : std::wstring(L"c:\\windows\\"));
+  for (const auto* name : {L"ProgramFiles", L"ProgramFiles(x86)", L"ProgramW6432", L"CommonProgramFiles",
+                           L"CommonProgramFiles(x86)"}) {
+    roots.push_back(EnvironmentFolder(name));
+  }
+  roots.push_back(L"c:\\program files\\");
+  roots.push_back(L"c:\\program files (x86)\\");
+  const auto programData = EnvironmentFolder(L"ProgramData");
+  if (!programData.empty()) {
+    roots.push_back(programData + L"fenriragent\\");
+  }
+  roots.push_back(ModuleFolder());
+  if (!extraRoot.empty()) {
+    roots.push_back(LowerFolder(extraRoot.wstring()));
+  }
+
+  std::error_code error;
+  const auto absolute = std::filesystem::absolute(path, error);
+  auto candidate = (error ? path : absolute).lexically_normal().wstring();
+  std::transform(candidate.begin(), candidate.end(), candidate.begin(),
+                 [](const wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
+  std::replace(candidate.begin(), candidate.end(), L'/', L'\\');
+  return std::any_of(roots.begin(), roots.end(), [&candidate](const std::wstring& root) {
+    return root.size() > 3 && candidate.rfind(root, 0) == 0;
+  });
+}
+
 QuarantineResult QuarantineStore::QuarantineFile(const ScanFinding& finding) const {
   QuarantineResult result{
       .attempted = true,
@@ -598,6 +661,14 @@ QuarantineResult QuarantineStore::QuarantineFile(const ScanFinding& finding) con
       .localStatus = L"quarantine-failed",
       .verificationDetail = {},
       .errorMessage = {}};
+
+  if (IsProtectedSystemLocation(finding.path)) {
+    result.attempted = false;
+    result.originalArtifactPresent = true;
+    result.localStatus = L"protected-location";
+    result.errorMessage = L"Fenrir does not quarantine files in Windows, Program Files or Fenrir folders.";
+    return result;
+  }
 
   try {
     std::filesystem::create_directories(rootPath_ / L"files");

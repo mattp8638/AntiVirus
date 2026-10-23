@@ -90,8 +90,11 @@ export function TargetPicker({ value, onChange, platforms }: { value: Targets; o
 export function useConnect() {
   const { run, busy } = useAction();
   const connect = async (deviceId: string, mode: "desktop" | "terminal" | "files" = "desktop", ticketId?: string) => {
-    // Open the window first so pop-up blockers treat it as a direct click.
-    const placeholder = window.open("about:blank", "_blank", "popup,width=1366,height=860");
+    // Open the window first so pop-up blockers treat it as a direct click. It starts on an in-app page
+    // (not about:blank) so an installed console opens it as an app window without browser bars.
+    const width = Math.min(window.screen.availWidth, 1440);
+    const height = Math.min(window.screen.availHeight, 900);
+    const placeholder = window.open("/remote/starting", "_blank", `popup,width=${width},height=${height}`);
     const session = await run(() => api<any>("remote/sessions", { body: { deviceId, mode, ticketId } }));
     if (!session) { placeholder?.close(); return; }
     if (placeholder) placeholder.location.href = `/remote/${session.id}`;
@@ -141,6 +144,7 @@ export function JobDetail({ jobId, onClose }: { jobId: string; onClose: () => vo
   return (
     <Modal title={data.name} onClose={onClose}
            footer={<>{data.status === "running" && <button onClick={async () => { await run(() => api(`rmm/jobs/${jobId}/cancel`, { method: "POST" }), "Pending actions cancelled"); reload(); }}>Cancel pending</button>}
+                     {["failed", "partial"].includes(data.status) && <button title="Run again on the devices where it failed" onClick={async () => { await run(() => api(`rmm/jobs/${jobId}/retry`, { method: "POST" }), "Retry queued"); reload(); }}>Retry failed devices</button>}
                    <button onClick={reload}>Refresh</button><button className="primary" onClick={onClose}>Close</button></>}>
       <p className="small muted">{data.createdBy} · {fmtTime(data.createdAt)} · {data.commandType}{data.script ? ` · ${data.script.language}` : ""}</p>
       <JobStatus job={data} />

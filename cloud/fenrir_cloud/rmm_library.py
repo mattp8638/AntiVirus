@@ -67,6 +67,40 @@ Rename-Item "$env:windir\SoftwareDistribution" "SoftwareDistribution.$stamp" -Er
 Rename-Item "$env:windir\System32\catroot2" "catroot2.$stamp" -ErrorAction SilentlyContinue
 Start-Service $services -ErrorAction SilentlyContinue
 'Windows Update components reset'"""},
+    # Safe protection test: the EICAR test string is an industry-standard, harmless file every antivirus
+    # detects. It is assembled at run time from two halves so this source file is not itself flagged.
+    {"name": "Validate real-time protection (EICAR test)", "category": "Security", "language": "powershell", "platforms": WIN,
+     "description": "Writes the harmless EICAR test file to the temp folder and checks that real-time protection (Fenrir or "
+                    "Microsoft Defender) removes it within 60 seconds. Exit code 0 means protection worked. Leaves nothing behind.",
+     "body": r"""$ErrorActionPreference = 'SilentlyContinue'
+$path = Join-Path $env:TEMP ('fenrir-eicar-test-' + [guid]::NewGuid().ToString('N') + '.com')
+$a = 'X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR'
+$b = '-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*'
+try { [IO.File]::WriteAllText($path, $a + $b, [Text.Encoding]::ASCII) } catch { "PASS: protection blocked creating the test file ($($_.Exception.Message))"; exit 0 }
+for ($i = 0; $i -lt 60; $i++) {
+  Start-Sleep -Seconds 1
+  if (-not (Test-Path $path)) { "PASS: the EICAR test file was removed after $($i + 1) seconds"; exit 0 }
+  try { $null = Get-Content $path -TotalCount 1 -ErrorAction Stop } catch { "PASS: the test file is blocked from being read"; Remove-Item $path -Force; exit 0 }
+}
+Remove-Item $path -Force
+"FAIL: the EICAR test file was still present after 60 seconds. Check that real-time protection is on."
+exit 1"""},
+    {"name": "Validate real-time protection (EICAR test, Linux/macOS)", "category": "Security", "language": "bash", "platforms": NIX,
+     "description": "Writes the harmless EICAR test file to /tmp and checks that real-time protection removes or blocks it within "
+                    "60 seconds. Exit code 0 means protection worked. Leaves nothing behind.",
+     "body": r"""#!/bin/bash
+path="/tmp/fenrir-eicar-test-$$.com"
+a='X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR'
+b='-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*'
+if ! printf '%s%s' "$a" "$b" > "$path" 2>/dev/null; then echo "PASS: protection blocked creating the test file"; exit 0; fi
+for i in $(seq 1 60); do
+  sleep 1
+  if [ ! -e "$path" ]; then echo "PASS: the EICAR test file was removed after $i seconds"; exit 0; fi
+  if ! head -c 1 "$path" >/dev/null 2>&1; then echo "PASS: the test file is blocked from being read"; rm -f "$path"; exit 0; fi
+done
+rm -f "$path"
+echo "FAIL: the EICAR test file was still present after 60 seconds. Check that real-time protection is on."
+exit 1"""},
     {"name": "BitLocker status", "category": "Security", "language": "powershell", "platforms": WIN,
      "description": "Encryption status and protectors for every volume.",
      "body": "Get-BitLockerVolume | Select-Object MountPoint, VolumeStatus, EncryptionPercentage, ProtectionStatus, @{n='Protectors';e={($_.KeyProtector.KeyProtectorType) -join ', '}} | Format-Table -AutoSize"},
@@ -152,10 +186,13 @@ SOFTWARE: list[dict] = [
 
 
 def seed(db: Session) -> None:
-    if db.execute(select(Script.id).where(Script.builtin.is_(True))).first() is None:
-        for item in SCRIPTS:
-            db.add(Script(tenant_id=None, builtin=True, updated_by="system", parameters=item.get("parameters", []),
-                          **{k: v for k, v in item.items() if k != "parameters"}))
+    # Add built-in scripts that are missing by name, so upgrades get new ones without touching existing rows.
+    present = {name for (name,) in db.execute(select(Script.name).where(Script.builtin.is_(True))).all()}
+    for item in SCRIPTS:
+        if item["name"] in present:
+            continue
+        db.add(Script(tenant_id=None, builtin=True, updated_by="system", parameters=item.get("parameters", []),
+                      **{k: v for k, v in item.items() if k != "parameters"}))
     if db.execute(select(MonitorCondition.id)).first() is None:
         for item in MONITORS:
             db.add(MonitorCondition(tenant_id=None, target=item.get("target", ""), scope=item.get("scope", {}),

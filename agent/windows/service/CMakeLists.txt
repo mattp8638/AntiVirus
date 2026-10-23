@@ -25,9 +25,11 @@ file(MAKE_DIRECTORY "${ANTIVIRUS_INSTALL_OUTPUT_ROOT}")
 
 function(antivirus_apply_portable_runtime target_name)
   if(MINGW)
-    target_link_options(${target_name} PRIVATE -static-libgcc -static-libstdc++)
-    if(NOT "${target_name}" STREQUAL "antivirus-sqlite3")
-      target_link_libraries(${target_name} PRIVATE -Wl,-Bstatic winpthread -Wl,-Bdynamic)
+    # -static links the GCC, C++ and winpthread runtimes into the binary, so a clean
+    # Windows PC needs no extra DLLs (libwinpthread-1.dll etc.). Windows system DLLs stay dynamic.
+    get_target_property(target_type ${target_name} TYPE)
+    if(target_type STREQUAL "EXECUTABLE" OR target_type STREQUAL "SHARED_LIBRARY")
+      target_link_options(${target_name} PRIVATE -static -static-libgcc -static-libstdc++)
     endif()
   endif()
 endfunction()

@@ -122,7 +122,9 @@ def update_device(device_id: str, body: dict = Body(...), principal: Principal =
         policy = db.get(Policy, body["policyId"])
         if policy is None or policy.tenant_id not in (None, device.tenant_id):
             raise HTTPException(400, "Policy belongs to another tenant")
-    changed = apply_fields(device, body, {"group_id", "policy_id", "tags", "approved"})
+    if "criticality" in body and body["criticality"] not in {"low", "medium", "high", "critical"}:
+        raise HTTPException(400, "criticality must be low, medium, high or critical")
+    changed = apply_fields(device, body, {"group_id", "policy_id", "tags", "approved", "criticality"})
     audit.record(db, principal.actor, "device.updated", device.hostname, device.tenant_id, fields=changed)
     db.commit()
     return _device_view(device)
@@ -140,6 +142,14 @@ def retire_device(device_id: str, principal: Principal = Depends(current_princip
 
 
 # --------------------------------------------------------------------------- commands
+
+
+@router.get("/protection/health")
+def protection_health(tenant_id: str | None = None, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Is every endpoint protected, current, scanning and reporting?"""
+    from .. import endpoint_health
+
+    return endpoint_health.summary(db, scoped_tenant(principal, tenant_id))
 
 
 @router.get("/commands/catalog")

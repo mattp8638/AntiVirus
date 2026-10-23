@@ -11,7 +11,7 @@ from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Qu
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import audit, compliance, dnsfilter, exposure, intel, services
+from .. import audit, compliance, dnsfilter, exposure, intel, services, vulnmgmt
 from ..config import get_settings
 from ..db import get_db, session_factory
 from ..deps import Principal, current_principal, scoped_tenant
@@ -253,21 +253,80 @@ def list_vulnerabilities(tenant_id: str | None = None, status: str | None = "ope
         query = query.where(Vulnerability.severity == severity)
     rows = db.execute(query.order_by(Vulnerability.known_exploited.desc(), Vulnerability.cvss.desc().nullslast())
                       .limit(5000)).scalars().all()
-    hosts = dict(db.execute(select(Device.id, Device.hostname).where(Device.id.in_({v.device_id for v in rows}))).all())
+    devices = {d.id: d for d in db.execute(select(Device).where(Device.id.in_({v.device_id for v in rows}))).scalars()}
+    now = utcnow()
     by_cve: dict[str, dict] = {}
     for v in rows:
+        device = devices.get(v.device_id)
+        criticality = (device.criticality if device else None) or "medium"
+        risk = vulnmgmt.risk_score(v, criticality)
         entry = by_cve.setdefault(v.vuln_id, {"vulnId": v.vuln_id, "severity": v.severity, "cvss": v.cvss,
                                               "knownExploited": v.known_exploited, "summary": v.summary, "packages": set(),
-                                              "fixedVersion": v.fixed_version, "devices": []})
+                                              "fixedVersion": v.fixed_version, "devices": [], "riskScore": 0.0,
+                                              "recommendation": vulnmgmt.recommendation(v), "overdue": 0})
         entry["packages"].add(v.package)
-        entry["devices"].append({"deviceId": v.device_id, "hostname": hosts.get(v.device_id, ""), "installed": v.installed_version,
-                                 "id": v.id, "status": v.status})
-    out = sorted(by_cve.values(), key=lambda e: (not e["knownExploited"], -(e["cvss"] or 0), -len(e["devices"])))
+        entry["riskScore"] = max(entry["riskScore"], risk)
+        overdue = bool(v.due_at and v.due_at < now and v.status in {"open", "patching"})
+        entry["overdue"] += int(overdue)
+        entry["devices"].append({"deviceId": v.device_id, "hostname": device.hostname if device else "", "installed": v.installed_version,
+                                 "id": v.id, "status": v.status, "criticality": criticality, "riskScore": risk,
+                                 "assignee": v.assignee or "", "ticketId": v.ticket_id, "overdue": overdue,
+                                 "dueAt": v.due_at.isoformat(timespec="seconds") + "Z" if v.due_at else None,
+                                 "verifiedAt": v.verified_at.isoformat(timespec="seconds") + "Z" if v.verified_at else None,
+                                 "exception": {"reason": v.exception_reason, "approvedBy": v.exception_approved_by,
+                                               "expiresAt": v.exception_expires_at.isoformat(timespec="seconds") + "Z"}
+                                 if v.status == "accepted" else None})
+    out = sorted(by_cve.values(), key=lambda e: (-e["riskScore"], -len(e["devices"])))
     for entry in out:
         entry["packages"] = sorted(entry["packages"])
         entry["priority"] = ("P1" if entry["knownExploited"] else "P2" if entry["severity"] == "critical"
                              else "P3" if entry["severity"] == "high" else "P4")
     return out
+
+
+@console.get("/vulnerabilities/trends")
+def vulnerability_trends(tenant_id: str | None = None, weeks: int = Query(default=12, ge=1, le=52),
+                         principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Open vulnerabilities at the end of each week (by severity), plus found/fixed counts per week."""
+    scope = scoped_tenant(principal, tenant_id)
+    rows = db.execute(select(Vulnerability.severity, Vulnerability.first_seen, Vulnerability.verified_at, Vulnerability.status,
+                             Vulnerability.known_exploited).where(Vulnerability.tenant_id.in_(scope))).all()
+    now = utcnow()
+    out = []
+    for week in range(weeks - 1, -1, -1):
+        end = now - timedelta(weeks=week)
+        start = end - timedelta(weeks=1)
+        open_rows = [r for r in rows if r.first_seen <= end and (r.verified_at is None or r.verified_at > end)]
+        out.append({"weekEnding": end.date().isoformat(),
+                    "open": Counter(r.severity for r in open_rows),
+                    "knownExploited": sum(1 for r in open_rows if r.known_exploited),
+                    "found": sum(1 for r in rows if start < r.first_seen <= end),
+                    "fixed": sum(1 for r in rows if r.verified_at and start < r.verified_at <= end)})
+    for entry in out:
+        entry["open"] = {sev: entry["open"].get(sev, 0) for sev in ("critical", "high", "medium", "low")}
+    return out
+
+
+@console.post("/vulnerabilities/ticket")
+def vulnerability_ticket(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Open one remediation ticket for a CVE across a customer's affected devices (or the given rows)."""
+    principal.require("respond")
+    query = select(Vulnerability).where(Vulnerability.status.in_(("open", "patching", "mitigated")))
+    if body.get("ids"):
+        query = query.where(Vulnerability.id.in_([int(i) for i in body["ids"]]))
+    elif body.get("vulnId") and body.get("tenantId"):
+        principal.check_tenant(body["tenantId"])
+        query = query.where(Vulnerability.vuln_id == body["vulnId"], Vulnerability.tenant_id == body["tenantId"])
+    else:
+        raise HTTPException(400, "Give ids, or vulnId and tenantId")
+    rows = [r for r in db.execute(query).scalars().all() if r.tenant_id in principal.tenant_ids]
+    if not rows:
+        raise HTTPException(404, "No open vulnerabilities matched")
+    if len({r.tenant_id for r in rows}) > 1 or len({r.vuln_id for r in rows}) > 1:
+        raise HTTPException(400, "A remediation ticket covers one vulnerability for one customer")
+    ticket = vulnmgmt.open_remediation_ticket(db, rows, principal.actor)
+    db.commit()
+    return {"ticketId": ticket.id, "number": ticket.number, "linked": len(rows)}
 
 
 @console.patch("/vulnerabilities/{vuln_pk}")
@@ -278,11 +337,24 @@ def update_vulnerability(vuln_pk: int, body: dict = Body(...), principal: Princi
     if row is None:
         raise HTTPException(404, "Not found")
     principal.check_tenant(row.tenant_id)
-    if body.get("status") not in {"open", "patching", "mitigated", "accepted", "fixed"}:
-        raise HTTPException(400, "invalid status")
-    row.status = body["status"]
-    audit.record(db, principal.actor, "vulnerability.status", f"{row.vuln_id}@{row.device_id}", row.tenant_id, status=row.status,
-                 reason=str(body.get("reason") or ""))
+    if "assignee" in body:
+        row.assignee = str(body.get("assignee") or "")[:200] or None
+        audit.record(db, principal.actor, "vulnerability.assigned", f"{row.vuln_id}@{row.device_id}", row.tenant_id, assignee=row.assignee)
+    if "status" in body:
+        if body["status"] == "accepted":
+            principal.require("configure")  # accepting risk is a management decision
+        expires = None
+        if body.get("expiresAt"):
+            from datetime import datetime
+
+            try:
+                expires = datetime.fromisoformat(str(body["expiresAt"]).replace("Z", "+00:00")).replace(tzinfo=None)
+            except ValueError as exc:
+                raise HTTPException(400, "expiresAt must be an ISO date") from exc
+        try:
+            vulnmgmt.set_status(db, row, body["status"], principal.actor, reason=str(body.get("reason") or ""), expires_at=expires)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
     db.commit()
     return to_dict(row)
 

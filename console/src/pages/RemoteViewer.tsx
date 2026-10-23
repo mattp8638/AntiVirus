@@ -78,6 +78,10 @@ export default function RemoteViewer() {
     let closed = false;
     let pingTimer = 0;
     let fpsTimer = 0;
+    if (id === "starting") {
+      setStatus("Starting the session…");  // the opener fills in the real session id in a moment
+      return;
+    }
     (async () => {
       try {
         const detail = await api(`remote/sessions/${id}`);
@@ -123,6 +127,27 @@ export default function RemoteViewer() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  // While waiting for the device, keep checking the session: if the device could not start it (helper
+  // missing, consent refused, policy), say why instead of waiting forever.
+  const [waitedSeconds, setWaitedSeconds] = useState(0);
+  useEffect(() => {
+    if (state !== "waiting") return;
+    const started = Date.now();
+    const timer = window.setInterval(async () => {
+      setWaitedSeconds(Math.round((Date.now() - started) / 1000));
+      try {
+        const detail = await api<any>(`remote/sessions/${id}`);
+        if (["ended", "failed", "denied"].includes(detail.status)) {
+          const reason = [...(detail.events || [])].reverse().find((e: any) => e.detail)?.detail;
+          setState("ended");
+          setStatus(detail.status === "denied" ? "The user declined the connection."
+            : `The device could not start the session${reason ? `: ${reason}` : "."}`);
+        }
+      } catch { /* keep waiting */ }
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [state, id]);
 
   const startScreen = useCallback(() => send({ ch: "screen", t: "start", quality, fps: maxFps, monitor }), [send, quality, maxFps, monitor]);
 
@@ -354,6 +379,12 @@ export default function RemoteViewer() {
             <div className="rv-spinner" hidden={state === "ended" || state === "error"} />
             <h2>{status}</h2>
             {state === "waiting" && <p className="muted">Online devices answer within a few seconds. Offline devices connect the next time they check in.</p>}
+            {state === "waiting" && waitedSeconds >= 30 && (
+              <p className="muted small" style={{ maxWidth: 560 }}>
+                Still waiting after {waitedSeconds} seconds. If the device is online, check that it can reach this server, and on
+                Windows look at <code>C:\ProgramData\FenrirAgent\runtime\remote\{id}.log</code> for the reason.
+              </p>
+            )}
           </div>
         )}
         <div className="rv-screen" hidden={tab !== "Desktop" || state !== "live"} style={{ overflow: fit ? "hidden" : "auto" }}>

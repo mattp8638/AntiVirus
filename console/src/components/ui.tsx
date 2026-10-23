@@ -1,5 +1,5 @@
 import { ReactNode, useCallback, useEffect, useState } from "react";
-import { api } from "../api";
+import { api, rememberReauth, setReauthPrompt } from "../api";
 import { useApp } from "../app-context";
 
 /** Load data from the API and reload when deps change. */
@@ -188,5 +188,79 @@ export function TenantSelect({ value, onChange, allowAll = true, label }: { valu
       {allowAll && <option value="">All tenants</option>}
       {me?.tenants.map((t) => <option key={t.id} value={t.id}>{t.name}{t.kind === "msp" ? " (MSP)" : ""}</option>)}
     </select>
+  );
+}
+
+// Chrome and Edge offer to install the console as an app. Installed, it runs in its own window and
+// remote sessions open as app windows without browser bars. The prompt can fire before React mounts,
+// so it is captured here at load.
+let deferredInstall: any = null;
+const installListeners = new Set<() => void>();
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeinstallprompt", (event) => {
+    event.preventDefault();
+    deferredInstall = event;
+    installListeners.forEach((fn) => fn());
+  });
+  window.addEventListener("appinstalled", () => {
+    deferredInstall = null;
+    installListeners.forEach((fn) => fn());
+  });
+}
+
+export function InstallAppButton() {
+  const [, refresh] = useState(0);
+  useEffect(() => {
+    const fn = () => refresh((n) => n + 1);
+    installListeners.add(fn);
+    return () => { installListeners.delete(fn); };
+  }, []);
+  if (!deferredInstall) return null;
+  return (
+    <button className="small" title="Install the console as an app: it opens in its own window, and remote sessions open without browser bars"
+            onClick={async () => { const prompt = deferredInstall; deferredInstall = null; refresh((n) => n + 1); await prompt.prompt(); }}>
+      Install app
+    </button>
+  );
+}
+
+/** Asks for the password (and MFA code) when the server needs a recent re-authentication. */
+export function ReauthDialog() {
+  const [pending, setPending] = useState<((ok: string | null) => void) | null>(null);
+  const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+  const [needCode, setNeedCode] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    setReauthPrompt(() => new Promise<string | null>((resolve) => { setError(null); setPassword(""); setCode(""); setPending(() => resolve); }));
+    return () => setReauthPrompt(null);
+  }, []);
+  if (!pending) return null;
+  const finish = (token: string | null) => { pending(token); setPending(null); };
+  const submit = async () => {
+    setBusy(true);
+    try {
+      const result = await api<{ reauthToken: string; expiresInSeconds: number }>("auth/reauth", { body: { password, ...(code ? { code } : {}) } });
+      rememberReauth(result.reauthToken, result.expiresInSeconds);
+      finish(result.reauthToken);
+    } catch (err) {
+      const message = (err as Error).message;
+      if (message === "MFA code required") { setNeedCode(true); setError(null); } else setError(message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal title="Confirm it's you" onClose={() => finish(null)}
+           footer={<button className="primary" disabled={busy || !password || (needCode && code.length !== 6)} onClick={submit}>Confirm</button>}>
+      <p className="muted">This action is sensitive. Enter your password{needCode ? " and authenticator code" : ""} to continue. It stays confirmed for 5 minutes.</p>
+      <form onSubmit={(e) => { e.preventDefault(); submit(); }}>
+        <label className="field">Password<input type="password" autoFocus value={password} onChange={(e) => setPassword(e.target.value)} /></label>
+        {needCode && <label className="field" style={{ marginTop: 10 }}>Authenticator code<input inputMode="numeric" maxLength={6} value={code} onChange={(e) => setCode(e.target.value)} /></label>}
+        <button type="submit" hidden />
+      </form>
+      <ErrorNote error={error} />
+    </Modal>
   );
 }

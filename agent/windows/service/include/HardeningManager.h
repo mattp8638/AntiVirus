@@ -27,8 +27,11 @@ class HardeningManager {
   HardeningManager(const AgentConfig& config, std::filesystem::path installRoot);
 
   bool ApplyPostInstallHardening(const std::wstring& uninstallToken, std::wstring* errorMessage = nullptr) const;
+  // locked = true: administrators can start, query and re-permission the service but not stop,
+  // reconfigure or delete it (services.msc, Stop-Service, sc stop are refused). Fenrir's own
+  // --install/--repair/--upgrade/--uninstall unlock it first (uninstall needs the uninstall token).
   bool ApplyServiceControlProtection(const std::wstring& serviceName, SC_HANDLE serviceHandle = nullptr,
-                                     std::wstring* errorMessage = nullptr) const;
+                                     std::wstring* errorMessage = nullptr, bool locked = true) const;
   bool ApplyProtectedServiceRegistration(const std::wstring& serviceName, SC_HANDLE serviceHandle,
                                          const std::filesystem::path& elamDriverPath,
                                          std::wstring* errorMessage = nullptr) const;

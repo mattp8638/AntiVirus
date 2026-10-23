@@ -4,6 +4,7 @@
 #include <softpub.h>
 #include <wincrypt.h>
 #include <wintrust.h>
+#include <mscat.h>
 
 #include <algorithm>
 #include <array>
@@ -270,6 +271,105 @@ bool VerifyAuthenticodeSignature(const std::filesystem::path& path) {
   trustData.dwStateAction = WTD_STATEACTION_CLOSE;
   WinVerifyTrust(nullptr, &policyGuid, &trustData);
   return status == ERROR_SUCCESS;
+}
+
+// Most Windows system files carry no embedded signature: they are signed through a catalog (.cat)
+// file instead. Returns the catalog's signer when the file's hash is in a catalog that verifies,
+// so System32 files count as Microsoft-signed like they do in Windows itself.
+std::wstring QuerySigner(const std::wstring& path);
+
+std::wstring VerifyCatalogSigner(const std::filesystem::path& path) {
+  using AcquireContext2 = BOOL(WINAPI*)(HCATADMIN*, const GUID*, PCWSTR, PCCERT_STRONG_SIGN_PARA, DWORD);
+  using CalcHash2 = BOOL(WINAPI*)(HCATADMIN, HANDLE, DWORD*, BYTE*, DWORD);
+  using AcquireContext1 = BOOL(WINAPI*)(HCATADMIN*, const GUID*, DWORD);
+  using CalcHash1 = BOOL(WINAPI*)(HANDLE, DWORD*, BYTE*, DWORD);
+  using ReleaseContext = BOOL(WINAPI*)(HCATADMIN, DWORD);
+
+  static const HMODULE wintrust = LoadLibraryExW(L"wintrust.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+  if (wintrust == nullptr) {
+    return {};
+  }
+  const auto acquire2 = reinterpret_cast<AcquireContext2>(GetProcAddress(wintrust, "CryptCATAdminAcquireContext2"));
+  const auto hash2 = reinterpret_cast<CalcHash2>(GetProcAddress(wintrust, "CryptCATAdminCalcHashFromFileHandle2"));
+  const auto acquire1 = reinterpret_cast<AcquireContext1>(GetProcAddress(wintrust, "CryptCATAdminAcquireContext"));
+  const auto hash1 = reinterpret_cast<CalcHash1>(GetProcAddress(wintrust, "CryptCATAdminCalcHashFromFileHandle"));
+  const auto release = reinterpret_cast<ReleaseContext>(GetProcAddress(wintrust, "CryptCATAdminReleaseContext"));
+  if (release == nullptr) {
+    return {};
+  }
+
+  const HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                  nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) {
+    return {};
+  }
+
+  GUID driverAction = DRIVER_ACTION_VERIFY;
+  std::wstring signer;
+  // Windows 8+ catalogs use SHA-256; older ones SHA-1. Try both.
+  for (int attempt = 0; attempt < 2 && signer.empty(); ++attempt) {
+    HCATADMIN admin = nullptr;
+    const bool sha256 = attempt == 0;
+    if (sha256 ? (acquire2 == nullptr || acquire2(&admin, &driverAction, L"SHA256", nullptr, 0) == FALSE)
+               : (acquire1 == nullptr || acquire1(&admin, &driverAction, 0) == FALSE)) {
+      continue;
+    }
+
+    std::vector<BYTE> hash(64);
+    DWORD hashSize = static_cast<DWORD>(hash.size());
+    SetFilePointer(file, 0, nullptr, FILE_BEGIN);
+    const BOOL hashed = sha256 ? (hash2 != nullptr && hash2(admin, file, &hashSize, hash.data(), 0))
+                               : (hash1 != nullptr && hash1(file, &hashSize, hash.data(), 0));
+    if (hashed != FALSE) {
+      HCATINFO catalog = CryptCATAdminEnumCatalogFromHash(admin, hash.data(), hashSize, 0, nullptr);
+      if (catalog != nullptr) {
+        CATALOG_INFO catalogInfo{};
+        catalogInfo.cbStruct = sizeof(catalogInfo);
+        if (CryptCATCatalogInfoFromContext(catalog, &catalogInfo, 0) != FALSE) {
+          std::wstring memberTag;
+          static const wchar_t* hex = L"0123456789ABCDEF";
+          for (DWORD index = 0; index < hashSize; ++index) {
+            memberTag.push_back(hex[hash[index] >> 4]);
+            memberTag.push_back(hex[hash[index] & 0x0F]);
+          }
+
+          WINTRUST_CATALOG_INFO trustCatalog{};
+          trustCatalog.cbStruct = sizeof(trustCatalog);
+          trustCatalog.pcwszCatalogFilePath = catalogInfo.wszCatalogFile;
+          trustCatalog.pcwszMemberTag = memberTag.c_str();
+          trustCatalog.pcwszMemberFilePath = path.c_str();
+          trustCatalog.hMemberFile = file;
+          trustCatalog.pbCalculatedFileHash = hash.data();
+          trustCatalog.cbCalculatedFileHash = hashSize;
+          trustCatalog.hCatAdmin = admin;
+
+          WINTRUST_DATA trustData{};
+          trustData.cbStruct = sizeof(trustData);
+          trustData.dwUIChoice = WTD_UI_NONE;
+          trustData.fdwRevocationChecks = WTD_REVOKE_NONE;
+          trustData.dwUnionChoice = WTD_CHOICE_CATALOG;
+          trustData.pCatalog = &trustCatalog;
+          trustData.dwStateAction = WTD_STATEACTION_VERIFY;
+          trustData.dwProvFlags = WTD_CACHE_ONLY_URL_RETRIEVAL;
+          GUID policyGuid = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+          const auto status = WinVerifyTrust(nullptr, &policyGuid, &trustData);
+          trustData.dwStateAction = WTD_STATEACTION_CLOSE;
+          WinVerifyTrust(nullptr, &policyGuid, &trustData);
+          if (status == ERROR_SUCCESS) {
+            signer = QuerySigner(catalogInfo.wszCatalogFile);
+            if (signer.empty()) {
+              signer = L"catalog-signed (publisher unknown)";
+            }
+          }
+        }
+        CryptCATAdminReleaseCatalogContext(admin, catalog, 0);
+      }
+    }
+    release(admin, 0);
+  }
+
+  CloseHandle(file);
+  return signer;
 }
 
 std::wstring NormalizePathForComparison(const std::filesystem::path& path) {
@@ -705,7 +805,8 @@ std::wstring QuerySigner(const std::wstring& path) {
   DWORD contentType = 0;
   DWORD formatType = 0;
   if (CryptQueryObject(CERT_QUERY_OBJECT_FILE, path.c_str(),
-                       CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED | CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED,
+                       CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED | CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED |
+                           CERT_QUERY_CONTENT_FLAG_CTL,  // CTL: catalog (.cat) files
                        CERT_QUERY_FORMAT_FLAG_BINARY, 0, &encoding, &contentType, &formatType, &store, &message,
                        nullptr) == FALSE) {
     return {};
@@ -985,6 +1086,12 @@ std::optional<FileData> LoadFileData(const std::filesystem::path& path) {
   if (file.pe || ExecutableExt(file.extension)) {
     file.signer = QuerySigner(path.wstring());
     file.signatureVerified = VerifyAuthenticodeSignature(path);
+    if (!file.signatureVerified) {
+      if (auto catalogSigner = VerifyCatalogSigner(path); !catalogSigner.empty()) {
+        file.signer = std::move(catalogSigner);
+        file.signatureVerified = true;
+      }
+    }
   }
   file.reputation = file.signatureVerified && !file.signer.empty() && TrustedSigner(file.signer) && file.trustedPath
                         ? L"trusted-signed-system"

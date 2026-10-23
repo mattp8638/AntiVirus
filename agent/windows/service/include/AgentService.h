@@ -6,6 +6,7 @@
 #include <atomic>
 #include <filesystem>
 #include <map>
+#include <set>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -156,6 +157,21 @@ class AgentService {
   std::thread realtimeThread_{};
   std::mutex remoteMutex_{};
   std::map<std::wstring, HANDLE> remoteHelpers_{};
+  // The realtime thread starts remote sessions straight away, even while the main loop is busy
+  // scanning. It works from a copy of the device identity, claims commands so a session never starts
+  // twice, and hands its telemetry to the main thread (guarded by remoteMutex_).
+  struct DeferredTelemetry {
+    std::wstring eventType, source, summary, payloadJson;
+  };
+  void HandleRemoteCommandsNow();
+  bool ClaimRemoteCommand(const std::wstring& commandId);
+  void PublishIdentitySnapshot();
+  AgentState IdentitySnapshot();
+  void DrainDeferredTelemetry();
+  std::thread::id mainThreadId_{};
+  AgentState identitySnapshot_{};
+  std::set<std::wstring> claimedRemoteCommands_{};
+  std::vector<DeferredTelemetry> deferredTelemetry_{};
 };
 
 }  // namespace antivirus::agent

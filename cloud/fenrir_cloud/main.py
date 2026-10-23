@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import mimetypes
 import secrets
 import sys
 import threading
@@ -15,7 +16,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from sqlalchemy import delete, select
 
-from . import __version__, audit, db as database, policy_schema, psa, remote, rmm, rmm_library
+from . import __version__, audit, db as database, events, policy_schema, psa, ratelimit, remote, rmm, rmm_library
+from . import vulnmgmt  # noqa: F401 - registers its event handlers
 from .config import Settings, get_settings, set_settings
 from .detection import sync_builtin_rules
 from .models import DnsQueryLog, Event, Policy, RuleMatch, Tenant, User, utcnow
@@ -23,6 +25,9 @@ from .routers import admin, agent_api, business, fleet, portal, protection, soc
 from .routers import psa as psa_router, remote as remote_router, rmm as rmm_router
 from .security import hash_password
 from .services import GLOBAL_POLICY_ID
+
+# The console is installable as an app; browsers expect this type for its manifest.
+mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 log = logging.getLogger("fenrir")
 
@@ -92,6 +97,8 @@ def _scheduler_loop(stop: threading.Event, interval: float = 30.0) -> None:
             rmm.tick(db)
             psa.timed_workflows(db)
             remote.expire_sessions(db)
+            db.commit()
+            events.process(db)  # cross-module automation, with retries
             if passes % 4 == 0:
                 msp = db.execute(select(Tenant).where(Tenant.kind == "msp")).scalars().first()
                 if msp is not None:
@@ -147,6 +154,7 @@ echo "Fenrir agent installed and enrolling with $FENRIR_SERVER"
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     set_settings(settings)
+    ratelimit.reset()
     database.init_engine(settings.database_url)
     stop = threading.Event()
 

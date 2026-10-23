@@ -5,27 +5,55 @@ from __future__ import annotations
 import re
 from datetime import timedelta
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import audit, policy_schema
+from .. import audit, crypto, policy_schema, ratelimit
 from ..config import get_settings
 from ..db import get_db
-from ..deps import Principal, current_principal, scoped_tenant
+from ..deps import REAUTH_MINUTES, Principal, current_principal, scoped_tenant
 from ..models import AuditLog, DeviceGroup, EnrollmentToken, Policy, Tenant, User, utcnow
-from ..security import ROLES, digest, hash_password, issue_token, new_secret, verify_password
+from ..security import ROLES, digest, hash_password, issue_token, new_secret, new_totp_secret, totp_uri, verify_password, verify_totp
 from ..serialize import apply_fields, to_dict
 
 router = APIRouter(prefix="/api/console", tags=["Administration"])
+crypto.register_encrypted(User, "mfa_secret", lambda user: f"mfa:{user.id}")
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _mfa_secret(user: User) -> str | None:
+    if not user.mfa_secret:
+        return None
+    return crypto.decrypt(user.mfa_secret, f"mfa:{user.id}")
+
+
+def _check_mfa(user: User, code) -> None:
+    if not user.mfa_enabled:
+        return
+    if not code:
+        # 428: the console shows the code field and submits again.
+        raise HTTPException(428, "MFA code required")
+    secret = _mfa_secret(user)
+    if not secret or not verify_totp(secret, str(code)):
+        raise HTTPException(401, "The MFA code is incorrect")
 
 
 @router.post("/auth/login")
-def login(body: dict = Body(...), db: Session = Depends(get_db)):
+def login(request: Request, body: dict = Body(...), db: Session = Depends(get_db)):
     email = str(body.get("email") or "").strip().lower()
+    ratelimit.check(f"login:{_client_ip(request)}", 30, 300)
+    ratelimit.check(f"login:{email}", 10, 300)
     user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
     if user is None or not user.active or not verify_password(str(body.get("password") or ""), user.password_hash):
+        if user is not None:
+            audit.record(db, email, "auth.login_failed", user.id, user.tenant_id, ip=_client_ip(request))
+            db.commit()
         raise HTTPException(401, "Email or password is incorrect")
+    _check_mfa(user, body.get("code"))
     user.last_login_at = utcnow()
     audit.record(db, user.email, "auth.login", user.id, user.tenant_id)
     db.commit()
@@ -55,6 +83,130 @@ def change_password(body: dict = Body(...), principal: Principal = Depends(curre
     audit.record(db, principal.actor, "auth.password_changed", user.id, user.tenant_id)
     db.commit()
     return {"ok": True}
+
+
+@router.post("/auth/reauth")
+def reauthenticate(request: Request, body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Confirm the password (and MFA code) again before a sensitive action; returns a 5-minute token."""
+    ratelimit.check(f"reauth:{principal.user.id}", 10, 300)
+    user = db.get(User, principal.user.id)
+    if not verify_password(str(body.get("password") or ""), user.password_hash):
+        audit.record(db, principal.actor, "auth.reauth_failed", user.id, user.tenant_id, ip=_client_ip(request))
+        db.commit()
+        raise HTTPException(401, "Password is incorrect")
+    _check_mfa(user, body.get("code"))
+    audit.record(db, principal.actor, "auth.reauth", user.id, user.tenant_id)
+    db.commit()
+    token = issue_token(get_settings().secret_key, user.id, REAUTH_MINUTES, aud="reauth")
+    return {"reauthToken": token, "expiresInSeconds": REAUTH_MINUTES * 60, "mfaEnabled": bool(user.mfa_enabled)}
+
+
+@router.post("/auth/mfa/setup")
+def mfa_setup(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Start enrolling an authenticator app. MFA is only switched on once a code is confirmed."""
+    user = db.get(User, principal.user.id)
+    if user.mfa_enabled:
+        raise HTTPException(409, "MFA is already on. Turn it off first to enrol a new device.")
+    secret = new_totp_secret()
+    user.mfa_secret = crypto.encrypt(secret, f"mfa:{user.id}")
+    db.commit()
+    return {"secret": secret, "otpauthUri": totp_uri(secret, user.email)}
+
+
+@router.post("/auth/mfa/enable")
+def mfa_enable(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    user = db.get(User, principal.user.id)
+    secret = _mfa_secret(user)
+    if not secret:
+        raise HTTPException(400, "Start MFA setup first")
+    if not verify_totp(secret, str(body.get("code") or "")):
+        raise HTTPException(400, "That code is not correct. Check the time on your phone and try again.")
+    user.mfa_enabled = True
+    audit.record(db, principal.actor, "auth.mfa_enabled", user.id, user.tenant_id)
+    db.commit()
+    return {"mfaEnabled": True}
+
+
+@router.post("/auth/mfa/disable")
+def mfa_disable(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    user = db.get(User, principal.user.id)
+    if not verify_password(str(body.get("password") or ""), user.password_hash):
+        raise HTTPException(401, "Password is incorrect")
+    _check_mfa(user, body.get("code"))
+    user.mfa_enabled, user.mfa_secret = False, None
+    audit.record(db, principal.actor, "auth.mfa_disabled", user.id, user.tenant_id)
+    db.commit()
+    return {"mfaEnabled": False}
+
+
+@router.post("/users/{user_id}/mfa/reset")
+def mfa_reset(user_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """For a user who lost their phone: an administrator clears their MFA so they can enrol again."""
+    principal.require("manage_tenants")
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(404, "Not found")
+    principal.check_tenant(user.tenant_id)
+    user.mfa_enabled, user.mfa_secret = False, None
+    audit.record(db, principal.actor, "auth.mfa_reset", user.id, user.tenant_id, user=user.email)
+    db.commit()
+    return {"mfaEnabled": False}
+
+
+@router.get("/platform/status")
+def platform_status(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Operational view for administrators: vault key mode, event queue health."""
+    principal.require("configure")
+    from sqlalchemy import func
+
+    from .. import events
+    from ..models import PlatformEvent
+
+    counts = dict(db.execute(select(PlatformEvent.status, func.count()).group_by(PlatformEvent.status)).all())
+    return {"vault": crypto.key_status(), "events": {"pending": counts.get("pending", 0), "done": counts.get("done", 0),
+                                                     "dead": counts.get("dead", 0)},
+            "handlers": events.registered()}
+
+
+@router.post("/platform/vault/rotate")
+def rotate_vault_key(request: Request, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Re-encrypt all stored secrets under the current FENRIR_VAULT_KEY (after changing it)."""
+    principal.require("platform")
+    from ..deps import require_reauth
+
+    require_reauth(request, principal)
+    result = crypto.rotate(db)
+    audit.record(db, principal.actor, "platform.vault_rotated", result["keyId"], None, **result)
+    db.commit()
+    return result
+
+
+@router.get("/platform/events")
+def list_platform_events(status: str | None = None, limit: int = 100, principal: Principal = Depends(current_principal),
+                         db: Session = Depends(get_db)):
+    principal.require("configure")
+    from ..models import PlatformEvent
+
+    query = select(PlatformEvent).order_by(PlatformEvent.id.desc()).limit(min(limit, 500))
+    if status:
+        query = query.where(PlatformEvent.status == status)
+    rows = db.execute(query).scalars().all()
+    return [to_dict(row) for row in rows if row.tenant_id is None and principal.can("platform") or row.tenant_id in principal.tenant_ids]
+
+
+@router.post("/platform/events/{event_id}/retry")
+def retry_platform_event(event_id: int, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("configure")
+    from .. import events
+    from ..models import PlatformEvent
+
+    event = db.get(PlatformEvent, event_id)
+    if event is None or (event.tenant_id is not None and event.tenant_id not in principal.tenant_ids):
+        raise HTTPException(404, "Not found")
+    events.retry(db, event)
+    audit.record(db, principal.actor, "platform.event_retried", str(event.id), event.tenant_id, type=event.type)
+    db.commit()
+    return to_dict(event)
 
 
 # --------------------------------------------------------------------------- tenants
@@ -226,7 +378,7 @@ def create_token(body: dict = Body(...), principal: Principal = Depends(current_
     return {
         **to_dict(token), "token": raw,
         "install": {
-            "windows": f'FenrirSetup.exe /quiet SERVER="{base}" TOKEN="{raw}"',
+            "windows": f'fenrir-agent-service.exe --install --server "{base}" --enroll-token "{raw}"',
             "linux": f"curl -fsSL {base}/install/linux.sh | sudo FENRIR_SERVER={base} FENRIR_TOKEN={raw} sh",
             "macos": f"sudo installer -pkg FenrirAgent.pkg -target / && sudo /Library/Fenrir/fenrirctl enroll --server {base} --token {raw}",
         },

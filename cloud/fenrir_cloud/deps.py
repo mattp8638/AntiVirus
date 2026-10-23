@@ -65,7 +65,8 @@ def current_principal(
     if creds is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Sign in required", headers={"WWW-Authenticate": "Bearer"})
     payload = read_token(get_settings().secret_key, creds.credentials)
-    if payload is None:
+    # Only session tokens sign a user in; re-auth, remote-session and other purpose tokens carry an "aud".
+    if payload is None or payload.get("aud") not in (None, "session"):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Session expired", headers={"WWW-Authenticate": "Bearer"})
     user = db.get(User, payload.get("sub"))
     if user is None or not user.active:
@@ -100,3 +101,19 @@ def current_device(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unknown device credentials")
     device.last_seen_at = utcnow()
     return device
+
+
+REAUTH_HEADER = "X-Fenrir-Reauth"
+REAUTH_MINUTES = 5
+
+
+def require_reauth(request: Request, principal: Principal) -> None:
+    """Sensitive actions (revealing secrets, identity changes, restores) need a recent password (+MFA) check.
+
+    The console gets a short-lived token from POST /api/console/auth/reauth and sends it in
+    the X-Fenrir-Reauth header. 403 with detail "reauth_required" tells it to ask again.
+    """
+    token = request.headers.get(REAUTH_HEADER, "")
+    payload = read_token(get_settings().secret_key, token) if token else None
+    if payload is None or payload.get("aud") != "reauth" or payload.get("sub") != principal.user.id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "reauth_required")

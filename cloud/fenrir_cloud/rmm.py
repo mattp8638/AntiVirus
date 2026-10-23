@@ -178,6 +178,33 @@ def run_script(db: Session, *, script: Script, devices: list[Device], actor: str
                       scheduled_task_id=scheduled_task_id, ticket_id=ticket_id)
 
 
+def retry_failed(db: Session, job: Job, actor: str) -> int:
+    """Queue the job's command again on the devices where it failed or expired. Returns how many."""
+    command_ids = dict(job.command_ids or {})
+    failed = db.execute(select(Command).where(Command.id.in_(list(command_ids.values())),
+                                              Command.status.in_(("failed", "expired")))).scalars().all()
+    retried = 0
+    for old in failed:
+        device = db.get(Device, old.device_id)
+        if device is None:
+            continue
+        try:
+            command = services.enqueue_command(db, device, old.type, actor, target_path=old.target_path, record_id=old.record_id,
+                                               payload={**(old.payload or {}), "jobId": job.id, "retryOf": old.id},
+                                               reason=f"Retry of job: {job.name}")
+        except services.CommandError:
+            continue
+        db.flush()
+        command_ids[device.id] = command.id
+        retried += 1
+    if retried:
+        job.command_ids = command_ids
+        job.status, job.finished_at = "running", None
+        job.payload = {**(job.payload or {}), "retries": int((job.payload or {}).get("retries", 0)) + 1}
+    audit.record(db, actor, "rmm.job.retried", job.name, job.tenant_id, commands=retried)
+    return retried
+
+
 def job_summary(db: Session, job: Job) -> dict:
     ids = list((job.command_ids or {}).values())
     commands = db.execute(select(Command).where(Command.id.in_(ids))).scalars().all() if ids else []
@@ -809,6 +836,9 @@ def tick(db: Session) -> dict:
     now = utcnow()
     result = {"tasks": run_due_tasks(db, now), "offline": evaluate_offline(db, now), "patchInstalls": run_patch_windows(db, now),
               "patchScans": queue_patch_scans(db, now)}
+    from . import vulnmgmt
+
+    result["vulnerabilityAcceptancesExpired"] = vulnmgmt.expire_acceptances(db, now)
     cutoff = now - timedelta(days=30)
     db.query(DeviceMetric).filter(DeviceMetric.at < cutoff).delete()
     return result

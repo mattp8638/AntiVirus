@@ -38,6 +38,11 @@ struct QuarantineActionResult {
   std::wstring errorMessage;
 };
 
+// Windows itself, installed programs and Fenrir's own folders are never quarantined or killed
+// automatically: a false positive there can leave the PC unbootable. extraRoot adds another folder
+// (the agent's install root).
+bool IsProtectedSystemLocation(const std::filesystem::path& path, const std::filesystem::path& extraRoot = {});
+
 class QuarantineStore {
  public:
   QuarantineStore(std::filesystem::path rootPath, std::filesystem::path databasePath = {});

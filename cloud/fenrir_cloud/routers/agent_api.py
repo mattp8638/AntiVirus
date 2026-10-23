@@ -17,7 +17,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Requ
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import audit, intel, rmm, services
+from .. import audit, endpoint_health, intel, rmm, services
 from ..config import get_settings
 from ..db import get_db
 from ..deps import current_device
@@ -129,7 +129,9 @@ def enroll(
 def heartbeat(body: dict = Body(default={}), device: Device = Depends(current_device), db: Session = Depends(get_db)):
     device.agent_version = str(body.get("agentVersion") or device.agent_version)[:64]
     device.platform_version = str(body.get("platformVersion") or device.platform_version)[:64]
+    previous_health = device.health_state
     device.health_state = str(body.get("healthState") or device.health_state)[:40]
+    endpoint_health.on_heartbeat(db, device, previous_health)
     if "isolated" in body:
         device.isolated = bool(body["isolated"])
     if isinstance(body.get("metrics"), dict):

@@ -25,12 +25,36 @@ export function setToken(token: string | null) {
   }
 }
 
+// Sensitive actions (revealing a secret, identity changes, restores) need a recent password check.
+// The server answers 403 "reauth_required"; we ask the user once, keep the 5-minute token in memory
+// only (never in storage), and retry the request.
+let reauthToken: { value: string; expires: number } | null = null;
+let reauthPrompt: (() => Promise<string | null>) | null = null;
+export function setReauthPrompt(prompt: (() => Promise<string | null>) | null) {
+  reauthPrompt = prompt;
+}
+export function rememberReauth(token: string, seconds: number) {
+  reauthToken = { value: token, expires: Date.now() + (seconds - 10) * 1000 };
+}
+
 let onUnauthorized: () => void = () => {};
 export function setUnauthorizedHandler(handler: () => void) {
   onUnauthorized = handler;
 }
 
 export async function api<T = any>(path: string, options: { method?: string; body?: unknown; query?: Record<string, unknown> } = {}): Promise<T> {
+  try {
+    return await rawApi<T>(path, options);
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 403 && err.message === "reauth_required" && reauthPrompt) {
+      reauthToken = null;
+      if (await reauthPrompt()) return rawApi<T>(path, options);
+    }
+    throw err;
+  }
+}
+
+async function rawApi<T>(path: string, options: { method?: string; body?: unknown; query?: Record<string, unknown> }): Promise<T> {
   const url = new URL(path.startsWith("/") ? path : `/api/console/${path}`, window.location.origin);
   for (const [key, value] of Object.entries(options.query ?? {})) {
     if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, String(value));
@@ -38,6 +62,7 @@ export async function api<T = any>(path: string, options: { method?: string; bod
   const headers: Record<string, string> = {};
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
+  if (reauthToken && reauthToken.expires > Date.now()) headers["X-Fenrir-Reauth"] = reauthToken.value;
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
   const response = await fetch(url.toString(), {
     method: options.method ?? (options.body !== undefined ? "POST" : "GET"),

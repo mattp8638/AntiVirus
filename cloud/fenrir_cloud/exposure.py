@@ -20,6 +20,8 @@ import httpx
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from . import vulnmgmt
+
 from .models import Device, ExternalAsset, SoftwareItem, Vulnerability, utcnow
 
 log = logging.getLogger("fenrir.exposure")
@@ -134,6 +136,7 @@ def scan_device(db: Session, device: Device, client: httpx.Client | None = None,
         return {"device": device.id, "queried": 0, "found": 0, "note": "No packages in an OSV-supported ecosystem."}
     own_client = client is None
     client = client or httpx.Client(timeout=30)
+    scan_started = utcnow()
     try:
         found = 0
         details_fetched = 0
@@ -163,8 +166,10 @@ def scan_device(db: Session, device: Device, client: httpx.Client | None = None,
                     row = db.execute(select(Vulnerability).where(Vulnerability.device_id == device.id,
                                                                  Vulnerability.vuln_id == cve,
                                                                  Vulnerability.package == item.name)).scalar_one_or_none()
+                    is_new = row is None
                     if row is None:
-                        row = Vulnerability(tenant_id=device.tenant_id, device_id=device.id, vuln_id=cve, package=item.name)
+                        row = Vulnerability(tenant_id=device.tenant_id, device_id=device.id, vuln_id=cve, package=item.name,
+                                            first_seen=utcnow())
                         db.add(row)
                         found += 1
                     row.installed_version = item.version
@@ -172,9 +177,15 @@ def scan_device(db: Session, device: Device, client: httpx.Client | None = None,
                     row.severity, row.cvss, row.known_exploited = severity, score, exploited
                     row.summary = str(detail.get("summary") or detail.get("details") or "")[:2000]
                     row.last_seen = utcnow()
-                    if row.status == "fixed":
-                        row.status = "open"
-        return {"device": device.id, "queried": len(queryable), "found": found}
+                    reopened = row.status == "fixed"
+                    if reopened:
+                        row.status, row.verified_at, row.status_changed_at = "open", None, utcnow()
+                    if is_new or reopened:
+                        db.flush()
+                        vulnmgmt.record_detection(db, row, reopened)
+        # Every query completed: whatever was not seen again is verified as fixed.
+        verified = vulnmgmt.verify_after_scan(db, device, scan_started)
+        return {"device": device.id, "queried": len(queryable), "found": found, "verifiedFixed": verified}
     finally:
         if own_client:
             client.close()

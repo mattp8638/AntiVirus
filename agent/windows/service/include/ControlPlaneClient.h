@@ -99,7 +99,8 @@ class ControlPlaneClient {
  public:
   explicit ControlPlaneClient(std::wstring baseUrl);
 
-  EnrollmentResult Enroll(const AgentState& state) const;
+  // enrollmentToken comes from the console (Deploy agents); without one the device lands in Unassigned.
+  EnrollmentResult Enroll(const AgentState& state, const std::wstring& enrollmentToken = {}) const;
   // metricsJson: the RMM health object (CPU, memory, disks...) or empty.
   HeartbeatResult SendHeartbeat(const AgentState& state, const std::string& metricsJson = "") const;
   // ws(s)://.../api/v1/devices/<id>/realtime and the device key that authenticates it.

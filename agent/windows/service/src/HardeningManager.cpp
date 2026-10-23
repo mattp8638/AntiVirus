@@ -370,7 +370,7 @@ bool HardeningManager::ApplyPostInstallHardening(const std::wstring& uninstallTo
 }
 
 bool HardeningManager::ApplyServiceControlProtection(const std::wstring& serviceName, SC_HANDLE serviceHandle,
-                                                     std::wstring* errorMessage) const {
+                                                     std::wstring* errorMessage, const bool locked) const {
   SC_HANDLE manager = nullptr;
   SC_HANDLE ownedService = nullptr;
   if (serviceHandle == nullptr) {
@@ -382,8 +382,7 @@ bool HardeningManager::ApplyServiceControlProtection(const std::wstring& service
       return false;
     }
 
-    ownedService = OpenServiceW(manager, serviceName.c_str(),
-                                READ_CONTROL | WRITE_DAC | SERVICE_QUERY_STATUS | SERVICE_START);
+    ownedService = OpenServiceW(manager, serviceName.c_str(), READ_CONTROL | WRITE_DAC);
     if (ownedService == nullptr) {
       if (errorMessage != nullptr) {
         *errorMessage = L"Could not open the protection service to apply stop-control protection.";
@@ -418,7 +417,9 @@ bool HardeningManager::ApplyServiceControlProtection(const std::wstring& service
 
   std::array<EXPLICIT_ACCESSW, 3> entries{};
 
-  entries[0].grfAccessPermissions = SERVICE_ALL_ACCESS;
+  entries[0].grfAccessPermissions =
+      locked ? (SERVICE_ALL_ACCESS & ~(SERVICE_STOP | SERVICE_PAUSE_CONTINUE | SERVICE_CHANGE_CONFIG | DELETE))
+             : SERVICE_ALL_ACCESS;
   entries[0].grfAccessMode = SET_ACCESS;
   entries[0].Trustee.TrusteeForm = TRUSTEE_IS_SID;
   entries[0].Trustee.TrusteeType = TRUSTEE_IS_GROUP;
@@ -471,7 +472,7 @@ bool HardeningManager::ApplyServiceControlProtection(const std::wstring& service
     return false;
   }
 
-  PersistRegistryDwordValue(kServiceControlProtectedValueName, 1);
+  PersistRegistryDwordValue(kServiceControlProtectedValueName, locked ? 1 : 0);
   return true;
 }
 

@@ -18,6 +18,8 @@ namespace {
 constexpr wchar_t kRegistryRoot[] = L"SOFTWARE\\FenrirAgent";
 constexpr wchar_t kLegacyRegistryRoot[] = L"SOFTWARE\\AntiVirusAgent";
 constexpr wchar_t kControlPlaneBaseUrlValueName[] = L"ControlPlaneBaseUrl";
+constexpr wchar_t kManagedModeValueName[] = L"ManagedMode";
+constexpr wchar_t kEnrollmentTokenValueName[] = L"EnrollmentToken";
 constexpr wchar_t kScanExcludePathsValueName[] = L"ScanExcludePaths";
 constexpr wchar_t kQuickScanIntervalMinutesValueName[] = L"QuickScanIntervalMinutes";
 constexpr wchar_t kFullScanIntervalMinutesValueName[] = L"FullScanIntervalMinutes";
@@ -772,6 +774,17 @@ std::filesystem::path ResolveRuntimePath(const std::filesystem::path& configured
   return GetModuleDirectory(moduleHandle) / configuredPath;
 }
 
+bool SaveCloudEnrollmentSettings(const std::wstring& serverUrl, const std::wstring& enrollmentToken) {
+  bool saved = true;
+  if (!serverUrl.empty()) {
+    saved = WriteRegistryString(HKEY_LOCAL_MACHINE, kControlPlaneBaseUrlValueName, serverUrl) && saved;
+  }
+  if (!enrollmentToken.empty()) {
+    saved = WriteRegistryString(HKEY_LOCAL_MACHINE, kEnrollmentTokenValueName, enrollmentToken) && saved;
+  }
+  return WriteRegistryString(HKEY_LOCAL_MACHINE, kManagedModeValueName, L"1") && saved;
+}
+
 AgentConfig LoadAgentConfig() {
   return LoadAgentConfigForModule(nullptr);
 }
@@ -792,6 +805,26 @@ AgentConfig LoadAgentConfigForModule(HMODULE moduleHandle) {
   const auto controlPlaneBaseUrl = ReadEnvironmentVariable(L"ANTIVIRUS_CONTROL_PLANE_URL");
   if (!controlPlaneBaseUrl.empty() && config.controlPlaneBaseUrl == AgentConfig{}.controlPlaneBaseUrl) {
     config.controlPlaneBaseUrl = controlPlaneBaseUrl;
+  }
+
+  // A configured cloud URL means this endpoint is managed. ManagedMode (registry) or
+  // ANTIVIRUS_MANAGED_MODE (environment) set to 0 or 1 overrides that.
+  config.managedMode = config.controlPlaneBaseUrl != AgentConfig{}.controlPlaneBaseUrl;
+  std::wstring managedOverride = ReadEnvironmentVariable(L"ANTIVIRUS_MANAGED_MODE");
+  for (const auto hive : {HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER}) {
+    if (!managedOverride.empty()) {
+      break;
+    }
+    managedOverride = ReadRegistryString(hive, kManagedModeValueName);
+  }
+  config.enrollmentToken = ReadEnvironmentVariable(L"FENRIR_TOKEN");
+  if (config.enrollmentToken.empty()) {
+    config.enrollmentToken = ReadRegistryString(HKEY_LOCAL_MACHINE, kEnrollmentTokenValueName);
+  }
+  if (managedOverride == L"1" || managedOverride == L"true") {
+    config.managedMode = true;
+  } else if (managedOverride == L"0" || managedOverride == L"false") {
+    config.managedMode = false;
   }
   auto signatureFeedToken = ReadEnvironmentVariable(L"ANTIVIRUS_SIGNATURE_FEED_TOKEN");
   if (signatureFeedToken.empty()) {

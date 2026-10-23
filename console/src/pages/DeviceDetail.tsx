@@ -79,6 +79,11 @@ export default function DeviceDetail() {
                   {policies?.filter((p) => p.tenantId).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
               </label>
+              <label className="field">Business criticality
+                <select value={d.criticality ?? "medium"} disabled={!can("configure")} onChange={(e) => patch({ criticality: e.target.value }, "Criticality updated")}>
+                  {["low", "medium", "high", "critical"].map((c) => <option key={c}>{c}</option>)}
+                </select>
+              </label>
             </div>
             <p className="small muted" style={{ marginTop: 12 }}>
               Policy revision {data.policy.revision} · {data.policy.applied ? <Pill value="applied" tone="good" /> : <Pill value="waiting for agent" tone="warn" />}

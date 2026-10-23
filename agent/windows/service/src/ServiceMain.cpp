@@ -10,6 +10,7 @@
 #include "AgentService.h"
 #include "AgentConfig.h"
 #include "HardeningManager.h"
+#include "LocalStateStore.h"
 #include "RuntimeTrustValidator.h"
 #include "SelfTestRunner.h"
 #include "StringUtils.h"
@@ -160,24 +161,27 @@ void ConfigureServiceHardening(SC_HANDLE service) {
   description.lpDescription = const_cast<LPWSTR>(kServiceDescription);
   ChangeServiceConfig2W(service, SERVICE_CONFIG_DESCRIPTION, &description);
 
+  // Start with Windows (not delayed) so protection is running before users sign in.
   SERVICE_DELAYED_AUTO_START_INFO delayedStart{};
-  delayedStart.fDelayedAutostart = TRUE;
+  delayedStart.fDelayedAutostart = FALSE;
   ChangeServiceConfig2W(service, SERVICE_CONFIG_DELAYED_AUTO_START_INFO, &delayedStart);
 
   SERVICE_SID_INFO sidInfo{};
   sidInfo.dwServiceSidType = SERVICE_SID_TYPE_UNRESTRICTED;
   ChangeServiceConfig2W(service, SERVICE_CONFIG_SERVICE_SID_INFO, &sidInfo);
 
+  // Restart after every crash, kill or error exit. Windows repeats the last action for every later
+  // failure, so the service is never left stopped.
   SC_ACTION actions[3]{};
   actions[0].Type = SC_ACTION_RESTART;
-  actions[0].Delay = 15'000;
+  actions[0].Delay = 5'000;
   actions[1].Type = SC_ACTION_RESTART;
-  actions[1].Delay = 30'000;
-  actions[2].Type = SC_ACTION_NONE;
-  actions[2].Delay = 0;
+  actions[1].Delay = 15'000;
+  actions[2].Type = SC_ACTION_RESTART;
+  actions[2].Delay = 60'000;
 
   SERVICE_FAILURE_ACTIONSW failureActions{};
-  failureActions.dwResetPeriod = 24 * 60 * 60;
+  failureActions.dwResetPeriod = 60 * 60;
   failureActions.cActions = static_cast<DWORD>(std::size(actions));
   failureActions.lpsaActions = actions;
   ChangeServiceConfig2W(service, SERVICE_CONFIG_FAILURE_ACTIONS, &failureActions);
@@ -185,6 +189,20 @@ void ConfigureServiceHardening(SC_HANDLE service) {
   SERVICE_FAILURE_ACTIONS_FLAG failureActionsFlag{};
   failureActionsFlag.fFailureActionsOnNonCrashFailures = TRUE;
   ChangeServiceConfig2W(service, SERVICE_CONFIG_FAILURE_ACTIONS_FLAG, &failureActionsFlag);
+}
+
+// Lifts the stop/reconfigure/delete lock (see ApplyServiceControlProtection) so Fenrir's own
+// maintenance commands can manage the service. Harmless when the service is not installed.
+void UnlockServiceControl() {
+  const auto config = antivirus::agent::LoadAgentConfigForModule(nullptr);
+  antivirus::agent::HardeningManager hardeningManager(config, GetInstallRoot());
+  hardeningManager.ApplyServiceControlProtection(kServiceName, nullptr, nullptr, false);
+}
+
+void LockServiceControl() {
+  const auto config = antivirus::agent::LoadAgentConfigForModule(nullptr);
+  antivirus::agent::HardeningManager hardeningManager(config, GetInstallRoot());
+  hardeningManager.ApplyServiceControlProtection(kServiceName, nullptr, nullptr, true);
 }
 
 bool InstallOrRepairService(const bool repair, const std::wstring& uninstallToken) {
@@ -195,6 +213,7 @@ bool InstallOrRepairService(const bool repair, const std::wstring& uninstallToke
   }
 
   const auto serviceCommandLine = L"\"" + modulePath + L"\"";
+  UnlockServiceControl();
   const auto scManager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CREATE_SERVICE | SC_MANAGER_CONNECT);
   if (scManager == nullptr) {
     const auto error = GetLastError();
@@ -301,7 +320,7 @@ bool InstallOrRepairService(const bool repair, const std::wstring& uninstallToke
   CloseServiceHandle(service);
   CloseServiceHandle(scManager);
   std::wcout << (repair ? L"Repaired " : L"Installed ") << kServiceDisplayName
-             << L" with delayed auto-start, recovery actions, AMSI registration, tamper hardening, and "
+             << L" with start-at-boot, restart-on-failure, stop protection, AMSI registration, tamper hardening, and "
              << (hardeningStatus.launchProtectedConfigured ? L"launch-protected antimalware service posture."
                                                            : L"standard service posture.")
              << std::endl;
@@ -367,6 +386,7 @@ bool UninstallService(const std::wstring& uninstallToken) {
     return false;
   }
 
+  UnlockServiceControl();
   const auto scManager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
   if (scManager == nullptr) {
     std::wcerr << L"OpenSCManagerW failed with error " << GetLastError() << std::endl;
@@ -408,6 +428,39 @@ bool UninstallService(const std::wstring& uninstallToken) {
   return deleted;
 }
 
+// --stop: the supported way to stop the protected service (Stop-Service is refused). Needs the
+// uninstall token when uninstall protection is on. It starts again on reboot, with --install or
+// --repair, or with Start-Service.
+bool StopProtectedService(const std::wstring& uninstallToken) {
+  const auto config = antivirus::agent::LoadAgentConfigForModule(nullptr);
+  antivirus::agent::HardeningManager hardeningManager(config, GetInstallRoot());
+  std::wstring validationError;
+  if (!hardeningManager.ValidateUninstallAuthorization(uninstallToken, &validationError)) {
+    std::wcerr << validationError << std::endl;
+    return false;
+  }
+  UnlockServiceControl();
+  const auto scManager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+  if (scManager == nullptr) {
+    std::wcerr << L"OpenSCManagerW failed with error " << GetLastError() << std::endl;
+    return false;
+  }
+  const auto service = OpenServiceW(scManager, kServiceName, SERVICE_STOP | SERVICE_QUERY_STATUS);
+  if (service == nullptr) {
+    std::wcerr << L"OpenServiceW failed with error " << GetLastError() << std::endl;
+    CloseServiceHandle(scManager);
+    return false;
+  }
+  SERVICE_STATUS status{};
+  ControlService(service, SERVICE_CONTROL_STOP, &status);
+  WaitForServiceStop(service);
+  CloseServiceHandle(service);
+  CloseServiceHandle(scManager);
+  LockServiceControl();  // stopped, but still not stoppable/deletable by hand once restarted
+  std::wcout << L"Stopped " << kServiceDisplayName << L"." << std::endl;
+  return true;
+}
+
 bool UpgradeInstalledService(const std::wstring& manifestPath) {
   if (manifestPath.empty()) {
     std::wcerr << L"--upgrade requires a manifest path." << std::endl;
@@ -415,6 +468,10 @@ bool UpgradeInstalledService(const std::wstring& manifestPath) {
   }
 
   const auto config = antivirus::agent::LoadAgentConfigForModule(nullptr);
+  UnlockServiceControl();
+  struct Relock {
+    ~Relock() { LockServiceControl(); }
+  } relock;  // locked again however the upgrade ends
   const auto scManager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
   if (scManager == nullptr) {
     std::wcerr << L"OpenSCManagerW failed with error " << GetLastError() << std::endl;
@@ -512,13 +569,47 @@ int RunConsoleMode() {
   return exitCode;
 }
 
+// --server and --enroll-token come from the console's Deploy agents page.
+bool SaveCloudSettingsFromArguments(int argc, wchar_t* argv[]) {
+  const auto server = GetArgumentValue(argc, argv, L"--server");
+  const auto enrollToken = GetArgumentValue(argc, argv, L"--enroll-token");
+  if (server.empty() && enrollToken.empty()) {
+    return true;
+  }
+  if (!antivirus::agent::SaveCloudEnrollmentSettings(server, enrollToken)) {
+    std::wcerr << L"Could not save the Fenrir server settings. Run this from an Administrator prompt." << std::endl;
+    return false;
+  }
+  // A new server or token means a fresh enrollment: drop any identity from an earlier one.
+  const auto config = antivirus::agent::LoadAgentConfig();
+  std::error_code existsError;
+  if (std::filesystem::exists(config.runtimeDatabasePath, existsError)) {
+    try {
+      const antivirus::agent::LocalStateStore stateStore(config.runtimeDatabasePath, config.stateFilePath);
+      auto state = stateStore.LoadOrCreate();
+      if (!state.deviceId.empty()) {
+        state.deviceId.clear();
+        state.commandChannelUrl.clear();
+        state.lastEnrollmentAt.clear();
+        stateStore.Save(state);
+      }
+    } catch (const std::exception&) {
+    }
+  }
+  std::wcout << L"Fenrir server settings saved"
+             << (server.empty() ? std::wstring() : L" (server " + server + L")") << L"." << std::endl;
+  return true;
+}
+
 void PrintUsage() {
   std::wcout << L"Usage: fenrir-agent-service.exe [--console|--install [--elam-driver <path>]|--repair [--elam-driver <path>]|--upgrade <manifest>|--rollback-update <transaction>|--uninstall [--token <token>]|--wsc-status|--self-test|--register-amsi-provider|--unregister-amsi-provider|--help]" << std::endl;
   std::wcout << L"  --console   Run the agent loop interactively instead of under the SCM." << std::endl;
+  std::wcout << L"  --server <url> --enroll-token <token>  With --install or --console: connect this PC to your Fenrir cloud." << std::endl;
   std::wcout << L"  --install   Register the agent as an auto-start Windows service and apply hardening." << std::endl;
   std::wcout << L"  --repair    Reapply service hardening, AMSI registration, protected runtime settings, and runtime trust markers." << std::endl;
   std::wcout << L"  --upgrade   Stop the service, apply a verified update manifest, and restart the service." << std::endl;
   std::wcout << L"  --rollback-update  Roll back a recorded update transaction from the local update journal." << std::endl;
+  std::wcout << L"  --stop      Stop the service (Stop-Service and services.msc are blocked). Use --token when uninstall protection is enabled." << std::endl;
   std::wcout << L"  --uninstall Remove the Windows service registration. Use --token when uninstall protection is enabled." << std::endl;
   std::wcout << L"  --wsc-status Print the local Windows Security Center coexistence snapshot." << std::endl;
   std::wcout << L"  --self-test Run a local endpoint validation sweep for packaging, hardening, AMSI, ETW, WFP, runtime store, and Phase 1 disk/execute blocking checks." << std::endl;
@@ -542,10 +633,16 @@ int wmain(int argc, wchar_t* argv[]) {
   if (argc > 1) {
     const std::wstring command = argv[1];
     if (command == L"--console") {
+      if (!SaveCloudSettingsFromArguments(argc, argv)) {
+        return 1;
+      }
       return RunConsoleMode();
     }
 
     if (command == L"--install") {
+      if (!SaveCloudSettingsFromArguments(argc, argv)) {
+        return 1;
+      }
       return InstallOrRepairService(false, token) ? 0 : 1;
     }
 
@@ -559,6 +656,10 @@ int wmain(int argc, wchar_t* argv[]) {
 
     if (command == L"--rollback-update") {
       return RollbackInstalledUpdate(argc > 2 ? argv[2] : L"") ? 0 : 1;
+    }
+
+    if (command == L"--stop") {
+      return StopProtectedService(token) ? 0 : 1;
     }
 
     if (command == L"--uninstall") {
