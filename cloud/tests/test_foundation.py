@@ -109,7 +109,13 @@ def test_mfa_enrolment_login_and_reset(client, admin):
     user = db.query(User).filter_by(email="admin@fenrir.local").one()
     assert setup["secret"] not in str(user.mfa_secret)
     db.close()
-    assert client.post(f"/api/console/users/{user.id}/mfa/reset", headers=admin).json()["mfaEnabled"] is False
+    reset_url = f"/api/console/users/{user.id}/mfa/reset"
+    assert client.post(reset_url, headers=admin).status_code == 403
+    proof = client.post("/api/console/auth/reauth", headers=admin,
+                        json={"password": ADMIN_PASSWORD, "code": totp_code(setup["secret"])}).json()["reauthToken"]
+    assert client.post(reset_url, headers={**admin, "X-Fenrir-Reauth": proof}).json()["mfaEnabled"] is False
+    # Resetting the authentication state invalidates the old proof.
+    assert client.post(reset_url, headers={**admin, "X-Fenrir-Reauth": proof}).status_code == 403
     assert client.post("/api/console/auth/login", json={"email": "admin@fenrir.local", "password": ADMIN_PASSWORD}).status_code == 200
 
 
@@ -152,3 +158,29 @@ def test_vault_rotation_from_derived_key(client, admin, monkeypatch):
     # MFA still works with the seed now under the new key.
     ok = client.post("/api/console/auth/login", json={"email": "admin@fenrir.local", "password": ADMIN_PASSWORD, "code": totp_code(setup["secret"])})
     assert ok.status_code == 200
+
+
+def test_reauth_proof_is_bound_to_session_and_password(client, admin):
+    proof = client.post("/api/console/auth/reauth", headers=admin,
+                        json={"password": ADMIN_PASSWORD}).json()["reauthToken"]
+    other_session = login(client)
+    assert other_session != admin
+    rotate_url = "/api/console/platform/vault/rotate"
+    assert client.post(rotate_url, headers={**other_session, "X-Fenrir-Reauth": proof}).status_code == 403
+    assert client.post(rotate_url, headers={**admin, "X-Fenrir-Reauth": proof}).status_code == 200
+    assert client.post("/api/console/auth/password", headers=admin,
+                       json={"currentPassword": ADMIN_PASSWORD, "newPassword": "a-new-long-password"}).status_code == 200
+    assert client.post(rotate_url, headers={**admin, "X-Fenrir-Reauth": proof}).status_code == 403
+
+
+@pytest.mark.parametrize("claims", [{"exp": "invalid"}, {"exp": None}, {"exp": True}, {"exp": float("inf")}])
+def test_malformed_signed_expiry_is_rejected(claims):
+    from fenrir_cloud.security import issue_token, read_token
+    token = issue_token("secret", "user", 5, **claims)
+    assert read_token("secret", token) is None
+
+
+@pytest.mark.parametrize("token", ["a.é", "x" * 20000, "", "no-dot"])
+def test_malformed_bearer_tokens_are_rejected(token):
+    from fenrir_cloud.security import read_token
+    assert read_token("secret", token) is None

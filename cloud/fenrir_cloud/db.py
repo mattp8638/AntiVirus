@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import nullcontext
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
@@ -73,7 +74,7 @@ def ensure_columns(base: type[DeclarativeBase], bind: Engine) -> list[str]:
     inspector = inspect(bind)
     existing_tables = set(inspector.get_table_names())
     added: list[str] = []
-    with bind.begin() as conn:
+    with (bind.begin() if isinstance(bind, Engine) else nullcontext(bind)) as conn:
         for table in base.metadata.sorted_tables:
             if table.name not in existing_tables:
                 continue
@@ -88,3 +89,42 @@ def ensure_columns(base: type[DeclarativeBase], bind: Engine) -> list[str]:
                 conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {ddl_type}'))
                 added.append(f"{table.name}.{column.name}")
     return added
+
+
+def migrate(bind: Engine) -> list[int]:
+    """Apply ordered additive upgrades under one database-wide migration lock.
+
+    Version 1 adopts the legacy schema without recreating tables or rows. Future
+    upgrades must be appended here; applied versions are never rerun or edited.
+    """
+    from sqlalchemy import text
+
+    applied = []
+    with bind.connect() as conn:
+        if bind.dialect.name == "sqlite":
+            conn.exec_driver_sql("BEGIN IMMEDIATE")
+        elif bind.dialect.name == "postgresql":
+            conn.execute(text("SELECT pg_advisory_xact_lock(721484616)"))
+        else:
+            raise RuntimeError("Migrations require SQLite or PostgreSQL")
+        try:
+            conn.execute(text("CREATE TABLE IF NOT EXISTS schema_migrations "
+                              "(version INTEGER PRIMARY KEY, applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"))
+            versions = set(conn.execute(text("SELECT version FROM schema_migrations")).scalars())
+            if versions - {1, 2}:
+                raise RuntimeError("Database schema is newer than this application")
+            if 1 not in versions:
+                Base.metadata.create_all(conn)
+                ensure_columns(Base, conn)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (1)"))
+                applied.append(1)
+            if 2 not in versions:
+                from .models import RateLimitBucket
+                RateLimitBucket.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (2)"))
+                applied.append(2)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return applied
