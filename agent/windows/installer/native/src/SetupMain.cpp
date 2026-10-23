@@ -2270,13 +2270,29 @@ bool InstallPayloadFiles(HWND hwnd, UiContext* context, const bool repair, std::
     StopMatchingProcess(installRoot / kEndpointExeName);
     StopMatchingProcess(installRoot / kPamExeName);
 
-    std::wstring stopError;
-    PostLog(hwnd, L"Stopping the protection service before replacing payloads");
-    if (!StopInstalledService(&stopError)) {
-      if (errorMessage != nullptr) {
-        *errorMessage = stopError;
+    if (ServiceExists()) {
+      // Existing services have an intentionally restricted SCM DACL. Use the
+      // agent's authorised maintenance path, which validates uninstall protection,
+      // rather than attempting an unprivileged ControlService on a protected service.
+      const auto existingServiceExe = installRoot / kServiceExeName;
+      if (!std::filesystem::exists(existingServiceExe)) {
+        if (errorMessage) {
+          *errorMessage = L"Cannot repair: the existing FenrirAgent service binary is missing. "
+                          L"Inspect quarantine and restore the approved signed binary before repair.";
+        }
+        return false;
       }
-      return false;
+      std::wstring stopError;
+      DWORD stopExitCode = 0;
+      PostLog(hwnd, L"Requesting authorised maintenance stop before replacing service files");
+      if (!RunProcessHidden(existingServiceExe, L"--stop", installRoot, &stopExitCode, &stopError) ||
+          !WaitForServiceState(SERVICE_STOPPED, 20'000)) {
+        if (errorMessage) {
+          *errorMessage = L"Could not safely stop the protected FenrirAgent service for repair. " +
+                          stopError + L" If maintenance protection is enabled, use the approved maintenance token.";
+        }
+        return false;
+      }
     }
   }
 
