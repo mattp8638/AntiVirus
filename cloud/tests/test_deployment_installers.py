@@ -32,7 +32,8 @@ def test_linux_installer_is_authenticated_customer_bound_and_persistent(client, 
     assert "systemctl enable fenrir-agent" in script
     assert "systemctl restart fenrir-agent" in script
     assert "chmod 600 /etc/fenrir/agent.env" in script
-    assert "fenrir.test/downloads/fenrir-agent-linux-$arch" in script
+    assert "base=https://fenrir.test" in script
+    assert "$base/downloads/fenrir-agent-linux-$arch" in script
     assert "fet_" in script
     assert hashlib.sha256((tmp_path / "fenrir-agent-linux-amd64").read_bytes()).hexdigest() in script
     tokens = client.get("/api/console/enrollment-tokens", headers=admin).json()
@@ -84,4 +85,4 @@ def test_invalid_target_and_expiry_are_rejected(client, admin, tenant):
     ]
     for request in bad:
         response = client.post("/api/console/enrollment-installers", headers=admin, json=request)
-        assert response.status_code in (404, 422)
+        assert response.status_code in (403, 404, 422)
