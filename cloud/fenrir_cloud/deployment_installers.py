@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import re
 import shlex
 import zipfile
@@ -46,12 +47,14 @@ def release_file(name: str) -> Path | None:
 def available() -> dict:
     linux = all(release_file(f"fenrir-agent-linux-{arch}") for arch in ("amd64", "arm64"))
     win = release_file("releases/FenrirSetup.exe")
+    fingerprint = os.getenv("FENRIR_WINDOWS_SIGNER_THUMBPRINT", "").strip()
+    signed_release_ready = bool(win and win.stat().st_size <= MAX_SETUP_BYTES and re.fullmatch(r"[a-fA-F0-9]{40}", fingerprint))
     # Swift source is present, but there is no packaged/entitled agent with
     # fenrirctl enrollment + launchd service yet. Never claim it is installable.
     return {
         "linux": {"ready": linux, "extension": ".sh", "reason": "" if linux else "Linux x64 and ARM64 agent binaries must be built in the cloud image."},
-        "windows": {"ready": bool(win and win.stat().st_size <= MAX_SETUP_BYTES), "extension": ".zip",
-                    "reason": "" if win and win.stat().st_size <= MAX_SETUP_BYTES else "Stage a verified signed FenrirSetup.exe in the cloud releases directory."},
+        "windows": {"ready": signed_release_ready, "extension": ".zip",
+                    "reason": "" if signed_release_ready else "Stage signed FenrirSetup.exe and configure its trusted Authenticode certificate thumbprint."},
         "macos": {"ready": False, "extension": ".pkg",
                   "reason": "Not yet deployable: the macOS agent lacks a signed, entitled PKG, enrollment client and launchd integration."},
     }
@@ -137,20 +140,22 @@ echo "Fenrir agent installed as an automatic-start service. Confirm the device c
     return script.encode("utf-8")
 
 
-def _windows_script(base: str, token: str, checksum: str) -> bytes:
+def _windows_script(base: str, token: str, checksum: str, signer_fingerprint: str) -> bytes:
     # Generated scripts are never available at public /downloads URLs.
     # Installer is expected to be Authenticode signed by the releasing organisation.
     content = r'''#Requires -RunAsAdministrator
 $ErrorActionPreference = 'Stop'
 $setup = Join-Path $PSScriptRoot 'FenrirSetup.exe'
 $expectedHash = '__SHA256__'
+$expectedSigner = '__CERT__'
 $server = '__SERVER__'
 $enroll = '__TOKEN__'
 if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) { throw 'FenrirSetup.exe is missing from this package.' }
 $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash
 if ($hash -ne $expectedHash) { throw 'Installer SHA-256 mismatch. Do not run this package.' }
 $signature = Get-AuthenticodeSignature -LiteralPath $setup
-if ($signature.Status -ne 'Valid') { throw "Installer signature is not valid: $($signature.Status). Request a signed release." }
+if ($signature.Status -ne 'Valid' -or -not $signature.SignerCertificate) { throw "Installer signature is not valid: $($signature.Status). Request a signed release." }
+if ($signature.SignerCertificate.Thumbprint -ne $expectedSigner) { throw 'Installer certificate does not match the approved Fenrir release signer.' }
 Write-Host 'Opening Fenrir Setup. Complete the installation in its window.'
 $args = '--server "' + $server + '" --enroll-token "' + $enroll + '"'
 $process = Start-Process -FilePath $setup -ArgumentList $args -Wait -PassThru
@@ -161,7 +166,9 @@ $configured = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\FenrirAgent' -Name Control
 if ($configured.TrimEnd('/') -ne $server) { throw 'The installed agent is not configured for the intended cloud server.' }
 Write-Host 'Fenrir service is running. Confirm the device appears in the selected customer tenant.'
 '''
-    return content.replace("__SHA256__", checksum.upper()).replace("__SERVER__", base).replace("__TOKEN__", token).encode("utf-8")
+    return (content.replace("__SHA256__", checksum.upper())
+            .replace("__CERT__", signer_fingerprint.upper())
+            .replace("__SERVER__", base).replace("__TOKEN__", token).encode("utf-8"))
 
 
 def build(os_name: str, base: str, token: str) -> tuple[bytes, str, str]:
@@ -174,11 +181,14 @@ def build(os_name: str, base: str, token: str) -> tuple[bytes, str, str]:
         executable = release_file("releases/FenrirSetup.exe")
         if not executable or executable.stat().st_size > MAX_SETUP_BYTES:
             raise HTTPException(409, "No verified Windows installer release is staged on this server.")
+        signer = os.getenv("FENRIR_WINDOWS_SIGNER_THUMBPRINT", "").strip()
+        if not re.fullmatch(r"[a-fA-F0-9]{40}", signer):
+            raise HTTPException(409, "Configure FENRIR_WINDOWS_SIGNER_THUMBPRINT for your signed Windows release.")
         executable_hash = _digest(executable)
         data = io.BytesIO()
         with zipfile.ZipFile(data, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=2) as archive:
             archive.write(executable, "FenrirSetup.exe")
-            archive.writestr("Install-Fenrir.ps1", _windows_script(base, token, executable_hash))
+            archive.writestr("Install-Fenrir.ps1", _windows_script(base, token, executable_hash, signer))
             archive.writestr("README.txt",
                 "Fenrir Windows enrollment bundle - contains a customer secret.\\r\\n"
                 "Extract this ZIP on the target Windows PC. In an elevated PowerShell window,\\r\\n"
