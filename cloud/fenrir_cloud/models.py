@@ -1184,3 +1184,24 @@ class AlertSuppression(Base):
     reason: Mapped[str] = mapped_column(String(1000))
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     created_by: Mapped[str] = mapped_column(String(200))
+
+
+class M365Action(Base):
+    """Reviewed provider operation. Running/unknown operations must never be replayed."""
+    __tablename__ = "m365_actions"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("mact"))
+    connection_id: Mapped[str] = mapped_column(String(32), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    request_id: Mapped[str] = mapped_column(String(36))
+    operation: Mapped[str] = mapped_column(String(40))
+    target_id: Mapped[str] = mapped_column(String(36))
+    parameters: Mapped[dict] = mapped_column(JSON)
+    preview: Mapped[dict] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(40), default="prepared")
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    requested_by: Mapped[str] = mapped_column(String(200))
+    executed_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    __table_args__ = (UniqueConstraint("connection_id", "request_id", name="uq_m365_action_request"),)

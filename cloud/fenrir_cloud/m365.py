@@ -31,16 +31,20 @@ def collect(client, url, token, deadline=None):
     return rows
 
 def synchronize(connection):
-    secret = crypto.decrypt(connection.credentials_envelope, f"m365:{connection.tenant_id}:{connection.id}")
     deadline = monotonic() + 120
     with httpx.Client(timeout=20, follow_redirects=False) as client:
-        response = client.post(f"https://login.microsoftonline.com/{connection.directory_id}/oauth2/v2.0/token",
-            data={"client_id": connection.client_id, "client_secret": secret,
-                  "grant_type": "client_credentials", "scope": "https://graph.microsoft.com/.default"})
-        response.raise_for_status()
-        token = response.json()["access_token"]
+        token = access_token(client, connection)
         return {
             "users": collect(client, GRAPH + "/users?$select=id,displayName,userPrincipalName,accountEnabled,assignedLicenses&$top=999", token, deadline),
             "licenses": collect(client, GRAPH + "/subscribedSkus", token, deadline),
             "secureScores": collect(client, GRAPH + "/security/secureScores?$top=1", token, deadline),
         }
+
+
+def access_token(client, connection):
+    secret = crypto.decrypt(connection.credentials_envelope, f"m365:{connection.tenant_id}:{connection.id}")
+    response = client.post(f"https://login.microsoftonline.com/{connection.directory_id}/oauth2/v2.0/token",
+        data={"client_id": connection.client_id, "client_secret": secret,
+              "grant_type": "client_credentials", "scope": "https://graph.microsoft.com/.default"})
+    response.raise_for_status()
+    return response.json()["access_token"]
