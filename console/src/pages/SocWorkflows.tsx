@@ -2,11 +2,11 @@ import { useEffect, useState } from "react";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
 import { RecordEditor } from "../components/RecordEditor";
-import { ErrorNote, PageHead, Table, useAction, useData } from "../components/ui";
+import { ErrorNote, PageHead, Table, useAction, useListData } from "../components/ui";
 
 export default function SocWorkflows() {
   const {tenantId,can}=useApp();
-  const {data,error,reload}=useData<any[]>("soc/suppressions",{tenant_id:tenantId});
+  const {data,error,reload}=useListData<any>("soc/suppressions",{tenant_id:tenantId});
   const [create,setCreate]=useState(false);
   const {run,busy}=useAction();
   useEffect(()=>{setCreate(false);},[tenantId]);
@@ -22,7 +22,7 @@ export default function SocWorkflows() {
 
 export function IncidentEvidence({incidentId}:{incidentId:string}) {
   const {can}=useApp();
-  const {data,error,reload}=useData<any[]>("soc/incidents/"+incidentId+"/evidence");
+  const {data,error,reload}=useListData<any>("soc/incidents/"+incidentId+"/evidence");
   const [create,setCreate]=useState(false);
   return <section className="card"><h2>Evidence</h2><p>Text evidence is immutable after submission and recorded with its SHA-256 fingerprint.</p>
     <ErrorNote error={error}/>{can("respond")&&<button onClick={()=>setCreate(true)}>Attach text evidence</button>}
