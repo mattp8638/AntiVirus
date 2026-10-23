@@ -1040,19 +1040,15 @@ bool ExtractResourceToFile(HINSTANCE instance, const int resourceId, const std::
   }
 
   const auto replaceError = GetLastError();
-  if (MoveFileExW(temporaryPath.c_str(), targetPath.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_DELAY_UNTIL_REBOOT) !=
-      FALSE) {
-    if (errorMessage != nullptr) {
-      *errorMessage = L"Scheduled replacement of " + targetPath.wstring() +
-                      L" for the next reboot because the existing file is currently in use.";
-    }
-    return true;
-  }
-
+  // A half-upgraded service whose files are replaced at the NEXT reboot is
+  // difficult to recover and can explain apparent uninstall/startup failures.
+  // Never claim success for a deferred file replacement. Stop protected
+  // processes through the authorised maintenance path, then retry or repair.
   DeleteFileW(temporaryPath.c_str());
-
   if (errorMessage != nullptr) {
-    *errorMessage = L"Could not replace " + targetPath.wstring() + L" (error " + std::to_wstring(replaceError) + L")";
+    *errorMessage = L"Could not replace " + targetPath.wstring() + L" (error " +
+                    std::to_wstring(replaceError) +
+                    L"). No reboot-time replacement was queued. Close in-use processes and retry repair.";
   }
   return false;
 }

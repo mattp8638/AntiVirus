@@ -7,8 +7,12 @@ The **Deploy agents** page now selects a target OS and customer/group **before**
 | Operating system | Download | Runtime prerequisites | Current limitations |
 |---|---|---|---|
 | Linux amd64 / arm64 | `Install-Fenrir-Linux.sh` | systemd, curl, SHA-256 tooling, sudo | Fully provisions the managed Go agent and automatic-start systemd service. Confirm cloud check-in and test a reboot. |
-| Windows x64 | `Fenrir-Windows-Enrollment.zip` | **Signed native FenrirSetup.exe** staged on the cloud, configured certificate thumbprint, Administrator PowerShell | The bundle embeds a signed native GUI installer. The PowerShell launcher verifies signature and SHA-256, opens setup, then checks the service and cloud URL. Kernel minifilter requires separate proper driver signing. |
+| Windows x64 | `Fenrir-Windows-Enrollment.zip` | Signed staged Setup, **or explicitly enabled SHA-256-pinned unsigned hobby build**; Administrator PowerShell | Both modes verify SHA-256. Signed mode additionally validates Authenticode signer. Unsigned hobby mode is for user-mode lab testing only; it does not disable Windows security or provide kernel minifilter protection. |
 | macOS | Not offered | Signed/entitled package, device enrollment support and launchd | **Not implemented:** current Swift prototype lacks an installable enrollment daemon. The UI deliberately disables downloads. |
+
+### No-cost unsigned hobby / lab mode
+
+If you're experimenting rather than distributing a commercial antivirus, a signed Windows installer isn't mandatory for **user-mode testing**. See [the Phase 1 hobby reliability instructions](PHASE1_HOBBY_AGENT_ACCEPTANCE.md) for building the unsigned setup, pinning its SHA-256 and testing persistence. Set `FENRIR_ALLOW_UNSIGNED_WINDOWS_INSTALLERS=true` explicitly and set `FENRIR_WINDOWS_SETUP_SHA256` to the exact trusted setup hash. This is never the default, is visually flagged in the console, and does not work around Defender, SmartScreen or Windows driver signing.
 
 ### Windows release staging
 

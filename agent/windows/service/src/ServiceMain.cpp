@@ -9,6 +9,7 @@
 
 #include "AgentService.h"
 #include "AgentConfig.h"
+#include "EnrollmentPersistence.h"
 #include "HardeningManager.h"
 #include "LocalStateStore.h"
 #include "RuntimeTrustValidator.h"
@@ -654,28 +655,45 @@ bool SaveCloudSettingsFromArguments(int argc, wchar_t* argv[]) {
   if (server.empty() && enrollToken.empty()) {
     return true;
   }
-  if (!antivirus::agent::SaveCloudEnrollmentSettings(server, enrollToken)) {
-    std::wcerr << L"Could not save the Fenrir server settings. Run this from an Administrator prompt." << std::endl;
+
+  // Reinstalling, repairing, and reinstalling the same package must never
+  // silently discard the device identity: that creates duplicate cloud devices.
+  // Changing tenant/server requires a separate, explicit, authorised migration.
+  const auto existingConfig = antivirus::agent::LoadAgentConfig();
+  try {
+    // Fail closed on missing/inaccessible state. Do not overwrite enrollment
+    // before confirming whether the current device belongs to another tenant.
+    std::error_code existsError;
+    const bool databaseExists = std::filesystem::exists(existingConfig.runtimeDatabasePath, existsError);
+    if (existsError) {
+      std::wcerr << L"Could not inspect existing Fenrir device identity; installation stopped." << std::endl;
+      return false;
+    }
+    bool enrolled = false;
+    if (databaseExists) {
+      const antivirus::agent::LocalStateStore stateStore(existingConfig.runtimeDatabasePath,
+                                                          existingConfig.stateFilePath);
+      const auto currentState = stateStore.LoadOrCreate();
+      enrolled = !currentState.deviceId.empty();
+    }
+    if (antivirus::agent::EnrollmentChangeRequiresMigration(existingConfig.controlPlaneBaseUrl,
+                                                             existingConfig.enrollmentToken,
+                                                             server, enrollToken, enrolled)) {
+      std::wcerr << L"Fenrir is already enrolled. A new server or deployment token cannot "
+                    L"silently replace the existing device identity. An authorised "
+                    L"migration workflow is required." << std::endl;
+      return false;
+    }
+  } catch (const std::exception&) {
+    std::wcerr << L"Could not verify existing Fenrir identity before enrollment change." << std::endl;
     return false;
   }
-  // A new server or token means a fresh enrollment: drop any identity from an earlier one.
-  const auto config = antivirus::agent::LoadAgentConfig();
-  std::error_code existsError;
-  if (std::filesystem::exists(config.runtimeDatabasePath, existsError)) {
-    try {
-      const antivirus::agent::LocalStateStore stateStore(config.runtimeDatabasePath, config.stateFilePath);
-      auto state = stateStore.LoadOrCreate();
-      if (!state.deviceId.empty()) {
-        state.deviceId.clear();
-        state.commandChannelUrl.clear();
-        state.lastEnrollmentAt.clear();
-        stateStore.Save(state);
-      }
-    } catch (const std::exception&) {
-    }
+
+  if (!antivirus::agent::SaveCloudEnrollmentSettings(server, enrollToken)) {
+    std::wcerr << L"Could not save Fenrir server settings. Run this from an Administrator prompt." << std::endl;
+    return false;
   }
-  std::wcout << L"Fenrir server settings saved"
-             << (server.empty() ? std::wstring() : L" (server " + server + L")") << L"." << std::endl;
+  std::wcout << L"Fenrir server settings saved; existing device identity preserved." << std::endl;
   return true;
 }
 
