@@ -19,7 +19,7 @@ export default function Network() {
     {create&&<RecordEditor title="Add TCP monitor" fields={[{key:"name",label:"Service name",required:true},{key:"address",label:"Reachable service IP address",required:true},{key:"port",label:"TCP port",type:"number",value:443,required:true},{key:"intervalSeconds",label:"Interval in seconds (60–86400)",type:"number",value:300,required:true},{key:"configurationId",label:"Linked configuration (optional)",type:"select",source:"configurations"}]}
       onSave={body=>api("network/monitors",{body:{...body,configurationId:body.configurationId||null}})} onClose={()=>{setCreate(false);reload();}}/>}
     {selected&&<Modal title={selected.name} onClose={()=>setSelected(null)} footer={can("configure")&&<><button disabled={busy} onClick={()=>action("",{enabled:!selected.enabled})}>{selected.enabled?"Pause":"Resume"}</button><button disabled={busy} onClick={()=>action("/check")}>Check now</button></>}>
-      <Table rows={[...safeArray(selected.samples)].reverse()} columns={[{key:"at",label:"Time",render:r=>fmtTime(r.at)},{key:"up",label:"Available"},{key:"latencyMs",label:"Connection time (ms)"}]}/>
+      <Table rows={[...safeArray<any>(selected.samples)].reverse()} columns={[{key:"at",label:"Time",render:r=>fmtTime(r.at)},{key:"up",label:"Available"},{key:"latencyMs",label:"Connection time (ms)"}]}/>
     </Modal>}
   </>;
 }
