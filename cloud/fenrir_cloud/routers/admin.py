@@ -12,9 +12,9 @@ from sqlalchemy.orm import Session
 from .. import audit, crypto, policy_schema, ratelimit
 from ..config import get_settings
 from ..db import get_db
-from ..deps import REAUTH_MINUTES, Principal, current_principal, scoped_tenant
+from ..deps import REAUTH_MINUTES, Principal, current_principal, require_reauth, scoped_tenant
 from ..models import AuditLog, DeviceGroup, EnrollmentToken, Policy, Tenant, User, utcnow
-from ..security import ROLES, digest, hash_password, issue_token, new_secret, new_totp_secret, totp_uri, verify_password, verify_totp
+from ..security import ROLES, digest, hash_password, issue_token, new_secret, new_totp_secret, totp_uri, verify_password, verify_totp, reauth_state
 from ..serialize import apply_fields, to_dict
 
 router = APIRouter(prefix="/api/console", tags=["Administration"])
@@ -58,7 +58,7 @@ def login(request: Request, body: dict = Body(...), db: Session = Depends(get_db
     audit.record(db, user.email, "auth.login", user.id, user.tenant_id)
     db.commit()
     settings = get_settings()
-    token = issue_token(settings.secret_key, user.id, settings.token_ttl_minutes, role=user.role)
+    token = issue_token(settings.secret_key, user.id, settings.token_ttl_minutes, role=user.role, jti=new_secret("session"))
     return {"token": token, "user": to_dict(user)}
 
 
@@ -97,7 +97,9 @@ def reauthenticate(request: Request, body: dict = Body(...), principal: Principa
     _check_mfa(user, body.get("code"))
     audit.record(db, principal.actor, "auth.reauth", user.id, user.tenant_id)
     db.commit()
-    token = issue_token(get_settings().secret_key, user.id, REAUTH_MINUTES, aud="reauth")
+    token = issue_token(get_settings().secret_key, user.id, REAUTH_MINUTES, aud="reauth",
+                        session=digest(request.headers.get("Authorization", "")),
+                        state=reauth_state(get_settings().secret_key, user))
     return {"reauthToken": token, "expiresInSeconds": REAUTH_MINUTES * 60, "mfaEnabled": bool(user.mfa_enabled)}
 
 
@@ -140,13 +142,16 @@ def mfa_disable(body: dict = Body(...), principal: Principal = Depends(current_p
 
 
 @router.post("/users/{user_id}/mfa/reset")
-def mfa_reset(user_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+def mfa_reset(user_id: str, request: Request, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     """For a user who lost their phone: an administrator clears their MFA so they can enrol again."""
     principal.require("manage_tenants")
     user = db.get(User, user_id)
     if user is None:
         raise HTTPException(404, "Not found")
     principal.check_tenant(user.tenant_id)
+    require_reauth(request, principal)
+    if user.role == "platform_admin" and not principal.can("platform"):
+        raise HTTPException(403, "Only platform admins can reset platform admin MFA")
     user.mfa_enabled, user.mfa_secret = False, None
     audit.record(db, principal.actor, "auth.mfa_reset", user.id, user.tenant_id, user=user.email)
     db.commit()

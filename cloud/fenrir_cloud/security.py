@@ -78,7 +78,10 @@ def read_token(secret: str, token: str) -> dict | None:
         payload = json.loads(_unb64(body))
     except (ValueError, json.JSONDecodeError):
         return None
-    if int(payload.get("exp", 0)) < time.time():
+    if not isinstance(payload, dict):
+        return None
+    expiry = payload.get("exp")
+    if isinstance(expiry, bool) or not isinstance(expiry, (int, float)) or not expiry > time.time():
         return None
     return payload
 
@@ -124,3 +127,10 @@ def totp_uri(secret: str, account: str, issuer: str = "Fenrir") -> str:
     from urllib.parse import quote
 
     return f"otpauth://totp/{quote(issuer)}:{quote(account)}?secret={secret}&issuer={quote(issuer)}&algorithm=SHA1&digits=6&period=30"
+
+
+def reauth_state(secret: str, user) -> str:
+    """Opaque fingerprint invalidated by identity or authentication changes."""
+    state = json.dumps([user.password_hash, bool(user.mfa_enabled), user.mfa_secret,
+                        user.role, user.tenant_id, bool(user.active)], sort_keys=True)
+    return hmac.new(secret.encode(), state.encode(), hashlib.sha256).hexdigest()
