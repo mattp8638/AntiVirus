@@ -255,6 +255,9 @@ bool InstallOrRepairService(const bool repair, const std::wstring& uninstallToke
     return false;
   }
   UnlockServiceControl();
+  struct RestoreServiceControl {
+    ~RestoreServiceControl() { LockServiceControl(); }
+  } restoreControl; // Reapply protection on every success or failure exit.
   const auto scManager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CREATE_SERVICE | SC_MANAGER_CONNECT);
   if (scManager == nullptr) {
     const auto error = GetLastError();
