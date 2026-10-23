@@ -89,3 +89,65 @@ def test_invalid_target_and_expiry_are_rejected(client, admin, tenant):
     for request in bad:
         response = client.post("/api/console/enrollment-installers", headers=admin, json=request)
         assert response.status_code in (403, 404, 422)
+
+
+def test_unsigned_hobby_bundle_requires_opt_in_and_trusted_hash(client, admin, tenant, monkeypatch, tmp_path):
+    """Unsigned Windows user-mode testing must never be enabled implicitly."""
+    monkeypatch.setattr(installers, "DOWNLOADS", tmp_path)
+    (tmp_path / "releases").mkdir()
+    binary = b"MZ" + b"test-hobby-build"
+    (tmp_path / "releases" / "FenrirSetup.exe").write_bytes(binary)
+    checksum = hashlib.sha256(binary).hexdigest()
+    monkeypatch.delenv("FENRIR_WINDOWS_SIGNER_THUMBPRINT", raising=False)
+    monkeypatch.delenv("FENRIR_ALLOW_UNSIGNED_WINDOWS_INSTALLERS", raising=False)
+    monkeypatch.delenv("FENRIR_WINDOWS_SETUP_SHA256", raising=False)
+
+    def count_tokens():
+        return len(client.get("/api/console/enrollment-tokens", headers=admin).json())
+
+    before = count_tokens()
+    assert _request(client, tenant["id"], "windows").status_code == 401  # anonymous
+    assert client.post("/api/console/enrollment-installers", headers=admin, json={
+        "tenantId": tenant["id"], "os": "windows"}).status_code == 409
+    assert count_tokens() == before
+
+    monkeypatch.setenv("FENRIR_ALLOW_UNSIGNED_WINDOWS_INSTALLERS", "true")
+    monkeypatch.setenv("FENRIR_WINDOWS_SETUP_SHA256", "0" * 64)
+    status = client.get("/api/console/enrollment-installers/status", headers=admin).json()
+    assert not status["windows"]["ready"]
+    assert client.post("/api/console/enrollment-installers", headers=admin, json={
+        "tenantId": tenant["id"], "os": "windows"}).status_code == 409
+    assert count_tokens() == before
+
+    monkeypatch.setenv("FENRIR_WINDOWS_SETUP_SHA256", checksum)
+    status = client.get("/api/console/enrollment-installers/status", headers=admin).json()
+    assert status["windows"]["ready"] is True
+    assert status["windows"]["mode"] == "unsigned-hobby"
+    assert "unsigned" in status["windows"]["warning"].lower()
+    response = client.post("/api/console/enrollment-installers", headers=admin, json={
+        "tenantId": tenant["id"], "os": "windows", "label": "Lab"})
+    assert response.status_code == 200, response.text
+    assert count_tokens() == before + 1
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        script = archive.read("Install-Fenrir.ps1").decode()
+        assert "$hobbyUnsigned = $true" in script
+        assert "Get-FileHash" in script
+        assert checksum.upper() in script
+        assert "Do not bypass those protections" in script
+        assert "Get-Service -Name 'FenrirAgent'" in script
+
+
+def test_unsigned_mode_does_not_accept_unpinned_replacement(client, admin, tenant, monkeypatch, tmp_path):
+    monkeypatch.setattr(installers, "DOWNLOADS", tmp_path)
+    (tmp_path / "releases").mkdir()
+    staged = tmp_path / "releases" / "FenrirSetup.exe"
+    staged.write_bytes(b"MZapproved-test")
+    monkeypatch.delenv("FENRIR_WINDOWS_SIGNER_THUMBPRINT", raising=False)
+    monkeypatch.setenv("FENRIR_ALLOW_UNSIGNED_WINDOWS_INSTALLERS", "true")
+    monkeypatch.setenv("FENRIR_WINDOWS_SETUP_SHA256", hashlib.sha256(staged.read_bytes()).hexdigest())
+    staged.write_bytes(b"MZtampered-test")
+    response = client.post("/api/console/enrollment-installers", headers=admin, json={
+        "tenantId": tenant["id"], "os": "windows", "label": "Lab"})
+    assert response.status_code == 409
+    assert "SHA-256" in response.text
+    assert client.get("/api/console/enrollment-tokens", headers=admin).json() == []
