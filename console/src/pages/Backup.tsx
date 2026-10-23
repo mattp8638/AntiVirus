@@ -2,13 +2,13 @@ import { useEffect, useState } from "react";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
 import { RecordEditor } from "../components/RecordEditor";
-import { ErrorNote, Modal, PageHead, Pill, Table, useData } from "../components/ui";
+import { ErrorNote, Modal, PageHead, Pill, Table, useListData } from "../components/ui";
 export default function Backup() {
   const {tenantId,can}=useApp();
-  const {data,error,reload}=useData<any[]>("backup/plans",{tenant_id:tenantId});
-  const {data:exercises,reload:reloadExercises}=useData<any[]>("backup/exercises",{tenant_id:tenantId});
+  const {data,error,reload}=useListData<any>("backup/plans",{tenant_id:tenantId});
+  const {data:exercises,reload:reloadExercises}=useListData<any>("backup/exercises",{tenant_id:tenantId});
   const [mode,setMode]=useState(""),[selected,setSelected]=useState<any>(null),[exercise,setExercise]=useState<any>(null);
-  const {data:runs,reload:reloadRuns}=useData<any[]>(selected?"backup/plans/"+selected.id+"/runs":null);
+  const {data:runs,reload:reloadRuns}=useListData<any>(selected?"backup/plans/"+selected.id+"/runs":null);
   useEffect(()=>{setMode("");setSelected(null);setExercise(null);},[tenantId]);
   const close=()=>{setMode("");reload();reloadRuns();reloadExercises();};
   return <>
