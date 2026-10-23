@@ -458,6 +458,7 @@ bool UninstallService(const std::wstring& uninstallToken) {
   }
 
   UnlockServiceControl();
+  struct RelockOnExit { ~RelockOnExit() { LockServiceControl(); } } relock;
   const auto scManager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
   if (scManager == nullptr) {
     std::wcerr << L"OpenSCManagerW failed with error " << GetLastError() << std::endl;
@@ -513,6 +514,7 @@ bool StopProtectedService(const std::wstring& uninstallToken) {
     return false;
   }
   UnlockServiceControl();
+  struct RelockOnExit { ~RelockOnExit() { LockServiceControl(); } } relock;
   const auto scManager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
   if (scManager == nullptr) {
     std::wcerr << L"OpenSCManagerW failed with error " << GetLastError() << std::endl;
@@ -527,7 +529,6 @@ bool StopProtectedService(const std::wstring& uninstallToken) {
   const auto stopped = RequestAndWaitForServiceStop(service, L"Authorised stop");
   CloseServiceHandle(service);
   CloseServiceHandle(scManager);
-  LockServiceControl();  // stopped, but still not stoppable/deletable by hand once restarted
   if (!stopped) return false;
   std::wcout << L"Stopped " << kServiceDisplayName << L"." << std::endl;
   return true;
