@@ -141,6 +141,7 @@ struct UiContext {
   std::filesystem::path installRoot;
   std::filesystem::path setupPath;
   std::wstring controlPlaneBaseUrl;
+  std::wstring enrollmentToken;  // supplied only by a tenant-specific deployment package
   bool installed{false};
   bool busy{false};
 };
@@ -2417,8 +2418,12 @@ void RunInstallOrRepair(HWND hwnd, UiContext* context, const bool repair) {
 
   // Repair must not silently reset a customer-enrolled server to the default endpoint.
   const auto registeredServer = ReadRegistryString(HKEY_LOCAL_MACHINE, kAgentRegistryRoot, kControlPlaneBaseUrlValueName);
-  context->controlPlaneBaseUrl = registeredServer.empty() ? std::wstring(kDefaultControlPlaneBaseUrl) : registeredServer;
-  PostLog(hwnd, L"Preserving existing managed cloud endpoint configuration.");
+  if (context->enrollmentToken.empty()) {
+    context->controlPlaneBaseUrl = registeredServer.empty() ? std::wstring(kDefaultControlPlaneBaseUrl) : registeredServer;
+    PostLog(hwnd, L"Preserving existing managed cloud endpoint configuration.");
+  } else {
+    PostLog(hwnd, L"Preparing customer-managed enrollment for the selected cloud server.");
+  }
   if (!PersistControlPlaneUrl(context->controlPlaneBaseUrl, &errorMessage)) {
     PostComplete(hwnd, false, false, false, errorMessage);
     return;
@@ -2428,7 +2433,14 @@ void RunInstallOrRepair(HWND hwnd, UiContext* context, const bool repair) {
   DWORD exitCode = 0;
   PostStatus(hwnd, repair ? L"Repairing service registration..." : L"Registering protection service...", 80);
   PostLog(hwnd, repair ? L"Running service repair" : L"Installing the protection service");
-  if (!RunProcessHidden(serviceExe, repair ? L"--repair" : L"--install", context->installRoot, &exitCode, &errorMessage)) {
+  std::wstring serviceArgs = repair ? L"--repair" : L"--install";
+  if (!context->enrollmentToken.empty()) {
+    // Save the customer/cloud association before the service starts. Do not
+    // print the token to the UI logs or include it in an error message.
+    serviceArgs = L"--install --server \"" + context->controlPlaneBaseUrl +
+                  L"\" --enroll-token \"" + context->enrollmentToken + L"\"";
+  }
+  if (!RunProcessHidden(serviceExe, serviceArgs, context->installRoot, &exitCode, &errorMessage)) {
     PostComplete(hwnd, false, false, false, errorMessage);
     return;
   }
@@ -2986,6 +2998,13 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
   return DefWindowProcW(hwnd, message, wParam, lParam);
 }
 
+std::wstring InstallerArgument(int argc, wchar_t* argv[], const wchar_t* name) {
+  for (int i = 1; i + 1 < argc; ++i) {
+    if (_wcsicmp(argv[i], name) == 0) return argv[i + 1];
+  }
+  return {};
+}
+
 bool HasArgument(int argc, wchar_t* argv[], const wchar_t* name) {
   for (int index = 1; index < argc; ++index) {
     if (_wcsicmp(argv[index], name) == 0) {
@@ -3033,6 +3052,26 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     }
     CoUninitialize();
     return 1;
+  }
+
+  if (argv != nullptr) {
+    const auto server = InstallerArgument(argc, argv, L"--server");
+    const auto token = InstallerArgument(argc, argv, L"--enroll-token");
+    if (!server.empty() || !token.empty()) {
+      if (server.rfind(L"https://", 0) != 0 || token.rfind(L"fet_", 0) != 0 ||
+          server.find_first_of(L" \r\n\t\"") != std::wstring::npos ||
+          token.find_first_not_of(L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") != std::wstring::npos) {
+        MessageBoxW(hwnd, L"Invalid cloud URL or enrollment token provided.", kWindowTitle, MB_OK | MB_ICONERROR);
+        DestroyWindow(hwnd);
+        LocalFree(argv);
+        CoUninitialize();
+        return 1;
+      }
+      if (auto* context = GetContext(hwnd)) {
+        context->controlPlaneBaseUrl = server;
+        context->enrollmentToken = token;
+      }
+    }
   }
 
   ShowWindow(hwnd, showCommand == 0 ? SW_SHOWDEFAULT : showCommand);
