@@ -245,6 +245,15 @@ bool InstallOrRepairService(const bool repair, const std::wstring& uninstallToke
   }
 
   const auto serviceCommandLine = L"\"" + modulePath + L"\"";
+  // Installation and repair must not bypass a protected existing deployment.
+  // A new installation (no saved token) remains unaffected.
+  const auto maintenanceConfig = antivirus::agent::LoadAgentConfigForModule(nullptr);
+  antivirus::agent::HardeningManager maintenanceGuard(maintenanceConfig, GetInstallRoot());
+  std::wstring maintenanceError;
+  if (!maintenanceGuard.ValidateUninstallAuthorization(uninstallToken, &maintenanceError)) {
+    std::wcerr << L"Agent maintenance was not authorised: " << maintenanceError << std::endl;
+    return false;
+  }
   UnlockServiceControl();
   const auto scManager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CREATE_SERVICE | SC_MANAGER_CONNECT);
   if (scManager == nullptr) {
