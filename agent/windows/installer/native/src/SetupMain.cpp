@@ -1411,6 +1411,12 @@ bool VerifyInstalledServicePersistence(const std::filesystem::path& installRoot,
       done();
       return false;
     }
+    std::error_code binaryError;
+    if (!std::filesystem::exists(installRoot / kServiceExeName, binaryError) || binaryError) {
+      if (errorMessage) *errorMessage = L"Agent executable disappeared from its permanent installation path during startup verification. Check antivirus quarantine and pending file operations.";
+      done();
+      return false;
+    }
     initialPid = status.dwProcessId;
     if (sample < 10) Sleep(1000);
   }
