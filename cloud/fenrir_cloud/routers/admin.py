@@ -5,11 +5,11 @@ from __future__ import annotations
 import re
 from datetime import timedelta
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import audit, crypto, policy_schema, ratelimit
+from .. import audit, crypto, deployment_installers, policy_schema, ratelimit
 from ..config import get_settings
 from ..db import get_db
 from ..deps import REAUTH_MINUTES, Principal, current_principal, require_reauth, scoped_tenant
@@ -391,6 +391,63 @@ def create_token(body: dict = Body(...), principal: Principal = Depends(current_
             "macos": f"sudo installer -pkg FenrirAgent.pkg -target / && sudo /Library/Fenrir/fenrirctl enroll --server {base} --token {raw}",
         },
     }
+
+
+
+@router.get("/enrollment-installers/status")
+def installer_status(principal: Principal = Depends(current_principal)):
+    principal.require("configure")
+    return deployment_installers.available()
+
+
+@router.post("/enrollment-installers")
+def download_installer(body: dict = Body(...), principal: Principal = Depends(current_principal),
+                       db: Session = Depends(get_db)):
+    """Create a token and return its OS-specific installer in one authenticated request.
+
+    The raw token is embedded in the response, never saved in cleartext, never
+    exposed in a query parameter and never served from public static files.
+    """
+    principal.require("configure")
+    ratelimit.check(f"installer-download:{principal.user.id}", 5, 300)
+    os_name = body.get("os")
+    if os_name not in ("windows", "linux", "macos"):
+        raise HTTPException(422, "Select Windows, Linux or macOS.")
+    tenant_id = str(body.get("tenantId") or "")
+    if not tenant_id:
+        raise HTTPException(422, "Select a customer tenant before generating an installer.")
+    principal.check_tenant(tenant_id)
+    if db.get(Tenant, tenant_id) is None:
+        raise HTTPException(404, "Selected customer tenant does not exist.")
+    group_id = str(body.get("groupId") or "") or None
+    if group_id:
+        group = db.get(DeviceGroup, group_id)
+        if group is None or group.tenant_id != tenant_id:
+            raise HTTPException(422, "Selected device group does not belong to the customer tenant.")
+    try:
+        days = int(body.get("expiresInDays", 30))
+    except (TypeError, ValueError):
+        raise HTTPException(422, "Expiry must be a whole number of days.") from None
+    if not 1 <= days <= 365:
+        raise HTTPException(422, "Expiry must be between 1 and 365 days.")
+    label = str(body.get("label") or "Deployment").strip()[:200] or "Deployment"
+    raw = new_secret("fet", 24)
+    data, filename, media_type = deployment_installers.build(
+        os_name, get_settings().public_base_url, raw
+    )  # Build/release validation BEFORE issuing a token.
+    row = EnrollmentToken(tenant_id=tenant_id, group_id=group_id, label=label,
+                          token_hash=digest(raw), token_hint=raw[-6:],
+                          expires_at=utcnow() + timedelta(days=days))
+    db.add(row)
+    audit.record(db, principal.actor, "enrollment_installer.generated", os_name, tenant_id,
+                 group=group_id or "", label=label)
+    db.commit()
+    return Response(
+        content=data, media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"',
+                 "Cache-Control": "private, no-store, max-age=0",
+                 "X-Content-Type-Options": "nosniff"},
+    )
 
 
 @router.delete("/enrollment-tokens/{token_id}")

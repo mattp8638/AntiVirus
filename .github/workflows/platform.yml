@@ -2,7 +2,7 @@ name: Fenrir Platform
 
 on:
   push:
-    branches: ["main", "claude/**", "fix/**"]
+    branches: ["main", "claude/**", "fix/**", "feat/**"]
   pull_request:
 
 jobs:
