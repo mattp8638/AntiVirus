@@ -2,7 +2,7 @@ import { FormEvent, lazy, Suspense, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AppProvider, useApp } from "./app-context";
-import { InstallAppButton, TenantSelect } from "./components/ui";
+import { InstallAppButton, ReauthDialog, TenantSelect } from "./components/ui";
 import "./styles.css";
 
 import Overview from "./pages/Overview";
@@ -41,6 +41,7 @@ import PsaSettings, { ProjectDetail } from "./pages/psa/PsaSettings";
 import Reports from "./pages/Reports";
 import Settings from "./pages/Settings";
 import Deploy from "./pages/Deploy";
+import ProtectionHealth from "./pages/ProtectionHealth";
 
 const NAV: { group: string; items: { to: string; label: string; icon: string }[] }[] = [
   { group: "Overview", items: [{ to: "/", label: "Dashboard", icon: "◎" }, { to: "/reports", label: "Reports", icon: "▤" }] },
@@ -59,6 +60,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string }[]
   {
     group: "Security",
     items: [
+      { to: "/protection-health", label: "Protection health", icon: "⛨" },
       { to: "/incidents", label: "Incidents", icon: "⚑" },
       { to: "/alerts", label: "Alerts", icon: "△" },
       { to: "/policies", label: "Policies", icon: "⚙" },
@@ -98,6 +100,8 @@ function Login() {
   const { login } = useApp();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+  const [needCode, setNeedCode] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const submit = async (event: FormEvent) => {
@@ -105,9 +109,11 @@ function Login() {
     setBusy(true);
     setError(null);
     try {
-      await login(email, password);
+      await login(email, password, needCode ? code : undefined);
     } catch (err) {
-      setError((err as Error).message);
+      const message = (err as Error).message;
+      if (message === "MFA code required") { setNeedCode(true); setError(null); }
+      else setError(message);
     } finally {
       setBusy(false);
     }
@@ -121,6 +127,7 @@ function Login() {
         </div>
         <label className="field">Email<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus required /></label>
         <label className="field" style={{ marginTop: 12 }}>Password<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required /></label>
+        {needCode && <label className="field" style={{ marginTop: 12 }}>Authenticator code<input inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} onChange={(e) => setCode(e.target.value)} autoFocus required /></label>}
         {error && <p style={{ color: "#fecaca" }}>{error}</p>}
         <button className="primary" style={{ width: "100%", justifyContent: "center", marginTop: 18 }} disabled={busy}>
           {busy ? "Signing in…" : "Sign in"}
@@ -166,6 +173,7 @@ function Shell() {
             <Route path="/policies/:id" element={<PolicyEditor />} />
             <Route path="/deploy" element={<Deploy />} />
             <Route path="/alerts" element={<Alerts />} />
+            <Route path="/protection-health" element={<ProtectionHealth />} />
             <Route path="/incidents" element={<Incidents />} />
             <Route path="/incidents/:id" element={<IncidentDetail />} />
             <Route path="/hunt" element={<Hunt />} />
@@ -223,5 +231,6 @@ createRoot(document.getElementById("root")!).render(
     <BrowserRouter>
       <Root />
     </BrowserRouter>
+    <ReauthDialog />
   </AppProvider>,
 );

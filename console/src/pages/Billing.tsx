@@ -27,6 +27,7 @@ export default function Billing() {
         <Stat label="Active agreements" value={contracts?.filter((c) => c.active).length ?? 0} />
         <Stat label="Outstanding" value={money(outstanding)} accent={outstanding ? "amber" : undefined} />
       </div>
+      <Renewals />
       <div style={{ marginTop: 16 }}><Tabs tabs={["Agreements", "Invoices"]} active={tab === "Contracts" ? "Agreements" : tab} onChange={(t) => setTab(t === "Agreements" ? "Contracts" : t)} /></div>
       {tab === "Contracts" ? (
         <div className="card">
@@ -116,5 +117,19 @@ function NewContract({ onClose }: { onClose: () => void }) {
       ))}
       <button className="small" onClick={() => setForm({ ...form, additions: [...form.additions, { product: "Server backup", autoCount: "devices:server", unitPrice: 15 }] })}>Add addition</button>
     </Modal>
+  );
+}
+
+
+function Renewals() {
+  const { data } = useData<any[]>("billing/renewals", { days: 90 });
+  if (!data?.length) return null;
+  return (
+    <div className="card" style={{ marginTop: 14 }}>
+      <h3 style={{ marginTop: 0 }}>Agreements ending in the next 90 days</h3>
+      <Table rows={data} columns={[{ key: "account", label: "Company" }, { key: "name", label: "Agreement" }, { key: "endDate", label: "Ends" },
+        { key: "daysLeft", label: "Days left", render: (c) => <Pill value={c.daysLeft < 0 ? "ended" : `${c.daysLeft} days`} tone={c.daysLeft < 30 ? "bad" : "warn"} /> },
+        { key: "monthlyValue", label: "Monthly fee", render: (c) => money(c.monthlyValue, c.currency) }]} />
+    </div>
   );
 }

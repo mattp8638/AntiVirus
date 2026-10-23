@@ -144,6 +144,7 @@ export function JobDetail({ jobId, onClose }: { jobId: string; onClose: () => vo
   return (
     <Modal title={data.name} onClose={onClose}
            footer={<>{data.status === "running" && <button onClick={async () => { await run(() => api(`rmm/jobs/${jobId}/cancel`, { method: "POST" }), "Pending actions cancelled"); reload(); }}>Cancel pending</button>}
+                     {["failed", "partial"].includes(data.status) && <button title="Run again on the devices where it failed" onClick={async () => { await run(() => api(`rmm/jobs/${jobId}/retry`, { method: "POST" }), "Retry queued"); reload(); }}>Retry failed devices</button>}
                    <button onClick={reload}>Refresh</button><button className="primary" onClick={onClose}>Close</button></>}>
       <p className="small muted">{data.createdBy} · {fmtTime(data.createdAt)} · {data.commandType}{data.script ? ` · ${data.script.language}` : ""}</p>
       <JobStatus job={data} />

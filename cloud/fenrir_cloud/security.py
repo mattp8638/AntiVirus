@@ -15,19 +15,20 @@ import time
 
 ROLE_PERMISSIONS: dict[str, set[str]] = {
     # Full control of the platform, every tenant.
-    "platform_admin": {"read", "respond", "configure", "manage_tenants", "platform", "billing", "crm"},
+    "platform_admin": {"read", "respond", "configure", "manage_tenants", "platform", "billing", "crm", "vault"},
     # MSP staff manage every customer tenant below their own.
-    "msp_admin": {"read", "respond", "configure", "manage_tenants", "billing", "crm"},
+    "msp_admin": {"read", "respond", "configure", "manage_tenants", "billing", "crm", "vault"},
     "soc_analyst": {"read", "respond", "configure"},
-    "technician": {"read", "respond", "crm"},
+    "technician": {"read", "respond", "crm", "vault"},
     "billing": {"read", "billing", "crm"},
     # Customer-side roles are limited to their own tenant subtree.
-    "tenant_admin": {"read", "respond", "configure"},
+    "tenant_admin": {"read", "respond", "configure", "vault"},
     "tenant_analyst": {"read", "respond"},
     "viewer": {"read"},
     # Customer end users: the client portal only (their own tickets, invoices and public KB).
     "client": {"portal"},
 }
+# "vault": reveal and copy stored credentials (always with recent re-authentication and an audit record).
 ROLES = tuple(ROLE_PERMISSIONS)
 
 
@@ -92,3 +93,34 @@ def digest(value: str) -> str:
 
 def has_permission(role: str, permission: str) -> bool:
     return permission in ROLE_PERMISSIONS.get(role, set())
+
+
+# --------------------------------------------------------------------------- TOTP (RFC 6238)
+
+
+def new_totp_secret() -> str:
+    """160-bit random seed, base32 as authenticator apps expect."""
+    return base64.b32encode(secrets.token_bytes(20)).decode().rstrip("=")
+
+
+def totp_code(secret: str, at: float | None = None, step: int = 30, digits: int = 6) -> str:
+    key = base64.b32decode(secret + "=" * (-len(secret) % 8), casefold=True)
+    counter = int((time.time() if at is None else at) // step)
+    mac = hmac.new(key, counter.to_bytes(8, "big"), hashlib.sha1).digest()
+    offset = mac[-1] & 0x0F
+    value = (int.from_bytes(mac[offset:offset + 4], "big") & 0x7FFFFFFF) % (10 ** digits)
+    return str(value).zfill(digits)
+
+
+def verify_totp(secret: str, code: str, window: int = 1, at: float | None = None) -> bool:
+    code = "".join(ch for ch in str(code or "") if ch.isdigit())
+    if len(code) != 6:
+        return False
+    now = time.time() if at is None else at
+    return any(hmac.compare_digest(totp_code(secret, now + drift * 30), code) for drift in range(-window, window + 1))
+
+
+def totp_uri(secret: str, account: str, issuer: str = "Fenrir") -> str:
+    from urllib.parse import quote
+
+    return f"otpauth://totp/{quote(issuer)}:{quote(account)}?secret={secret}&issuer={quote(issuer)}&algorithm=SHA1&digits=6&period=30"

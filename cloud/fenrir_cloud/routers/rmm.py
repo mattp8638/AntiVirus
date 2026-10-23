@@ -231,6 +231,18 @@ def create_command_job(body: dict = Body(...), principal: Principal = Depends(cu
     return _job_view(db, job)
 
 
+@router.post("/jobs/{job_id}/retry")
+def retry_job(job_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Run the job again on the devices where it failed (same script, parameters and payload)."""
+    job = db.get(Job, job_id)
+    if job is None or job.tenant_id not in principal.tenant_ids:
+        raise HTTPException(404, "Not found")
+    principal.require("configure" if job.command_type == "script.run" else "respond")
+    retried = rmm.retry_failed(db, job, principal.actor)
+    db.commit()
+    return {**_job_view(db, job), "retried": retried}
+
+
 @router.post("/jobs/{job_id}/cancel")
 def cancel_job(job_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("respond")

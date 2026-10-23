@@ -7,7 +7,7 @@ const ROLES = ["platform_admin", "msp_admin", "soc_analyst", "technician", "bill
 
 export default function Settings() {
   const { can } = useApp();
-  const tabs = ["Tenants", "Users", "Groups", "Webhooks", "Agent releases", "Audit log", "Account"];
+  const tabs = ["Tenants", "Users", "Groups", "Webhooks", "Agent releases", "Audit log", ...(can("configure") ? ["Platform"] : []), "Account"];
   const [tab, setTab] = useState("Tenants");
   return (
     <>
@@ -19,6 +19,7 @@ export default function Settings() {
       {tab === "Webhooks" && <WebhooksTab />}
       {tab === "Agent releases" && <ReleasesTab canPublish={can("platform")} />}
       {tab === "Audit log" && <AuditTab />}
+      {tab === "Platform" && <PlatformTab />}
       {tab === "Account" && <AccountTab />}
     </>
   );
@@ -60,7 +61,11 @@ function UsersTab() {
       <Table rows={data} columns={[{ key: "email", label: "Email" }, { key: "name", label: "Name" }, { key: "role", label: "Role", render: (u) => u.role.replace(/_/g, " ") },
         { key: "tenantId", label: "Tenant", render: (u) => tenantName(u.tenantId) }, { key: "active", label: "Status", render: (u) => <Pill value={u.active ? "active" : "disabled"} tone={u.active ? "good" : "muted"} /> },
         { key: "lastLoginAt", label: "Last sign-in", render: (u) => fmtTime(u.lastLoginAt) },
-        { key: "act", label: "", render: (u) => can("configure") && <button className="small" onClick={async () => { await run(() => api(`users/${u.id}`, { method: "PATCH", body: { active: !u.active } }), "User updated"); reload(); }}>{u.active ? "Disable" : "Enable"}</button> }]} />
+        { key: "mfaEnabled", label: "MFA", render: (u) => <Pill value={u.mfaEnabled ? "on" : "off"} tone={u.mfaEnabled ? "good" : "warn"} /> },
+        { key: "act", label: "", render: (u) => <span className="row" style={{ gap: 6 }}>
+          {can("configure") && <button className="small" onClick={async () => { await run(() => api(`users/${u.id}`, { method: "PATCH", body: { active: !u.active } }), "User updated"); reload(); }}>{u.active ? "Disable" : "Enable"}</button>}
+          {can("manage_tenants") && u.mfaEnabled && <button className="small" title="For a user who lost their phone" onClick={async () => { if (confirm(`Reset MFA for ${u.email}? They will need to set it up again.`)) { await run(() => api(`users/${u.id}/mfa/reset`, { method: "POST" }), "MFA reset"); reload(); } }}>Reset MFA</button>}
+        </span> }]} />
       {form && (
         <Modal title="Invite user" onClose={() => setForm(null)} footer={<button className="primary" disabled={busy}
                onClick={async () => { if (await run(() => api("users", { body: form }), "User created")) { setForm(null); reload(); } }}>Create</button>}>
@@ -178,12 +183,78 @@ function AuditTab() {
   );
 }
 
+function MfaCard() {
+  const { me, refreshMe } = useApp();
+  const [setup, setSetup] = useState<{ secret: string; otpauthUri: string } | null>(null);
+  const [code, setCode] = useState("");
+  const [password, setPassword] = useState("");
+  const { run, busy } = useAction();
+  const enabled = !!me?.user.mfaEnabled;
+  return (
+    <div className="card" style={{ maxWidth: 520, marginTop: 14 }}>
+      <h3 style={{ marginTop: 0 }}>Two-step sign-in (MFA) <Pill value={enabled ? "on" : "off"} tone={enabled ? "good" : "warn"} /></h3>
+      {!enabled && !setup && <>
+        <p className="muted">Use an authenticator app (Microsoft Authenticator, Google Authenticator, 1Password…) for a code at each sign-in.</p>
+        <button className="primary" disabled={busy} onClick={async () => setSetup((await run(() => api("auth/mfa/setup", { method: "POST" }))) ?? null)}>Set up MFA</button>
+      </>}
+      {!enabled && setup && <>
+        <p>In your authenticator app, add an account with this key (or open the link on your phone):</p>
+        <p className="mono" style={{ wordBreak: "break-all", fontSize: 16 }}>{setup.secret.replace(/(.{4})/g, "$1 ").trim()}</p>
+        <p className="small"><a href={setup.otpauthUri}>Open in authenticator app</a></p>
+        <label className="field">Code from the app<input inputMode="numeric" maxLength={6} value={code} onChange={(e) => setCode(e.target.value)} /></label>
+        <button className="primary" style={{ marginTop: 10 }} disabled={busy || code.length !== 6}
+                onClick={async () => { if (await run(() => api("auth/mfa/enable", { body: { code } }), "MFA is on")) { setSetup(null); setCode(""); refreshMe(); } }}>Turn on MFA</button>
+      </>}
+      {enabled && <>
+        <p className="muted">To turn MFA off, confirm your password and a current code.</p>
+        <div className="form-grid">
+          <label className="field">Password<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
+          <label className="field">Code<input inputMode="numeric" maxLength={6} value={code} onChange={(e) => setCode(e.target.value)} /></label>
+        </div>
+        <button className="danger" style={{ marginTop: 10 }} disabled={busy || !password || code.length !== 6}
+                onClick={async () => { if (await run(() => api("auth/mfa/disable", { body: { password, code } }), "MFA is off")) { setPassword(""); setCode(""); refreshMe(); } }}>Turn off MFA</button>
+      </>}
+    </div>
+  );
+}
+
+function PlatformTab() {
+  const { data, error, reload } = useData<any>("platform/status");
+  const { data: dead, reload: reloadDead } = useData<any[]>("platform/events", { status: "dead" });
+  const { run } = useAction();
+  return (
+    <>
+      <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
+        <div className="card"><div className="label muted small">Vault encryption</div>
+          <p><b>{data?.vault.algorithm ?? "…"}</b></p>
+          <p>Key {data?.vault.keyId} · {data?.vault.source === "derived" ? <Pill value="derived from FENRIR_SECRET_KEY" tone="warn" /> : <Pill value={`from ${data?.vault.source ?? "…"}`} tone="good" />}</p>
+          {data && !data.vault.productionReady && <p className="small muted">Set FENRIR_VAULT_KEY (openssl rand -base64 32) before storing production secrets.</p>}
+        </div>
+        <div className="card"><div className="label muted small">Automation events</div>
+          <p>{data?.events.pending ?? 0} waiting · {data?.events.done ?? 0} done · <b>{data?.events.dead ?? 0} failed</b></p></div>
+        <div className="card"><div className="label muted small">Event handlers</div>
+          <p className="small">{Object.entries(data?.handlers ?? {}).map(([k, v]: any) => `${k} (${v.length})`).join(", ") || "none"}</p></div>
+      </div>
+      {error && <p className="muted">{error}</p>}
+      <div className="card" style={{ marginTop: 14 }}>
+        <h3 style={{ marginTop: 0 }}>Failed automation events</h3>
+        <Table rows={dead} empty="No failed events."
+               columns={[{ key: "id", label: "#" }, { key: "type", label: "Type" }, { key: "attempts", label: "Attempts" },
+                         { key: "lastError", label: "Last error", render: (e) => <span className="small">{e.lastError}</span> },
+                         { key: "createdAt", label: "Raised", render: (e) => fmtTime(e.createdAt) },
+                         { key: "retry", label: "", render: (e) => <button className="small" onClick={async () => { await run(() => api(`platform/events/${e.id}/retry`, { method: "POST" }), "Queued for retry"); reload(); reloadDead(); }}>Retry</button> }]} />
+      </div>
+    </>
+  );
+}
+
 function AccountTab() {
   const { me } = useApp();
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const { run, busy } = useAction();
   return (
+    <>
     <div className="card" style={{ maxWidth: 520 }}>
       <p>Signed in as <b>{me?.user.email}</b> ({me?.user.role.replace(/_/g, " ")}).</p>
       <label className="field">Current password<input type="password" value={current} onChange={(e) => setCurrent(e.target.value)} /></label>
@@ -191,5 +262,7 @@ function AccountTab() {
       <button className="primary" style={{ marginTop: 12 }} disabled={busy || next.length < 12}
               onClick={async () => { if (await run(() => api("auth/password", { body: { currentPassword: current, newPassword: next } }), "Password changed")) { setCurrent(""); setNext(""); } }}>Change password</button>
     </div>
+    <MfaCard />
+    </>
   );
 }

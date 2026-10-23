@@ -55,6 +55,9 @@ class User(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # TOTP multi-factor authentication. The seed is stored encrypted (crypto.encrypt envelope).
+    mfa_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
+    mfa_secret: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class AuditLog(Base):
@@ -132,6 +135,8 @@ class Device(Base):
     notes: Mapped[str | None] = mapped_column(Text, default="", nullable=True)
     enrolled_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Business criticality (low|medium|high|critical) used to rank vulnerabilities and alerts.
+    criticality: Mapped[str | None] = mapped_column(String(16), nullable=True, default="medium")
 
 
 class Policy(Base):
@@ -377,6 +382,15 @@ class Vulnerability(Base):
     source: Mapped[str] = mapped_column(String(40), default="osv")
     first_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # Remediation workflow. "fixed" is only set by a rescan that no longer finds the vulnerability.
+    assignee: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    ticket_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    status_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    exception_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    exception_approved_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    exception_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     __table_args__ = (UniqueConstraint("device_id", "vuln_id", "package", name="uq_vuln_device"),)
 
@@ -980,3 +994,32 @@ class KbArticle(Base):
     public: Mapped[bool] = mapped_column(Boolean, default=False)  # visible in the client portal
     author: Mapped[str] = mapped_column(String(200), default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+# --------------------------------------------------------------------------
+# Platform foundation: cross-module events
+# --------------------------------------------------------------------------
+
+
+class PlatformEvent(Base):
+    """Durable outbox for cross-module automation (vulnerability -> ticket -> patch -> evidence).
+
+    ``key`` makes publishing idempotent; ``results`` records each handler's outcome so a retry
+    re-runs only the handlers that failed.
+    """
+
+    __tablename__ = "platform_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    type: Mapped[str] = mapped_column(String(80), index=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    key: Mapped[str] = mapped_column(String(200), unique=True)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|done|dead
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    results: Mapped[dict] = mapped_column(JSON, default=dict)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (Index("ix_platform_events_due", "status", "next_attempt_at"),)

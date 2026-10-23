@@ -12,7 +12,7 @@ export interface Tenant {
 }
 
 export interface Me {
-  user: { id: string; email: string; name: string; role: string; tenantId: string };
+  user: { id: string; email: string; name: string; role: string; tenantId: string; mfaEnabled?: boolean };
   permissions: string[];
   tenants: Tenant[];
 }
@@ -24,7 +24,7 @@ interface Ctx {
   setTenantId: (id: string) => void;
   tenantName: (id?: string | null) => string;
   can: (permission: string) => boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string, code?: string) => Promise<void>;
   logout: () => void;
   refreshMe: () => Promise<void>;
   toast: (message: string, error?: boolean) => void;
@@ -69,8 +69,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     refreshMe();
   }, [logout, refreshMe]);
 
-  const login = async (email: string, password: string) => {
-    const result = await api<{ token: string }>("auth/login", { body: { email, password } });
+  const login = async (email: string, password: string, code?: string) => {
+    const result = await api<{ token: string }>("auth/login", { body: { email, password, ...(code ? { code } : {}) } });
     setToken(result.token);
     await refreshMe();
   };

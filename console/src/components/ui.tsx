@@ -1,5 +1,5 @@
 import { ReactNode, useCallback, useEffect, useState } from "react";
-import { api } from "../api";
+import { api, rememberReauth, setReauthPrompt } from "../api";
 import { useApp } from "../app-context";
 
 /** Load data from the API and reload when deps change. */
@@ -221,5 +221,46 @@ export function InstallAppButton() {
             onClick={async () => { const prompt = deferredInstall; deferredInstall = null; refresh((n) => n + 1); await prompt.prompt(); }}>
       Install app
     </button>
+  );
+}
+
+/** Asks for the password (and MFA code) when the server needs a recent re-authentication. */
+export function ReauthDialog() {
+  const [pending, setPending] = useState<((ok: string | null) => void) | null>(null);
+  const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+  const [needCode, setNeedCode] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    setReauthPrompt(() => new Promise<string | null>((resolve) => { setError(null); setPassword(""); setCode(""); setPending(() => resolve); }));
+    return () => setReauthPrompt(null);
+  }, []);
+  if (!pending) return null;
+  const finish = (token: string | null) => { pending(token); setPending(null); };
+  const submit = async () => {
+    setBusy(true);
+    try {
+      const result = await api<{ reauthToken: string; expiresInSeconds: number }>("auth/reauth", { body: { password, ...(code ? { code } : {}) } });
+      rememberReauth(result.reauthToken, result.expiresInSeconds);
+      finish(result.reauthToken);
+    } catch (err) {
+      const message = (err as Error).message;
+      if (message === "MFA code required") { setNeedCode(true); setError(null); } else setError(message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal title="Confirm it's you" onClose={() => finish(null)}
+           footer={<button className="primary" disabled={busy || !password || (needCode && code.length !== 6)} onClick={submit}>Confirm</button>}>
+      <p className="muted">This action is sensitive. Enter your password{needCode ? " and authenticator code" : ""} to continue. It stays confirmed for 5 minutes.</p>
+      <form onSubmit={(e) => { e.preventDefault(); submit(); }}>
+        <label className="field">Password<input type="password" autoFocus value={password} onChange={(e) => setPassword(e.target.value)} /></label>
+        {needCode && <label className="field" style={{ marginTop: 10 }}>Authenticator code<input inputMode="numeric" maxLength={6} value={code} onChange={(e) => setCode(e.target.value)} /></label>}
+        <button type="submit" hidden />
+      </form>
+      <ErrorNote error={error} />
+    </Modal>
   );
 }

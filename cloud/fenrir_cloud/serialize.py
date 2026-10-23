@@ -11,7 +11,9 @@ def _camel(name: str) -> str:
     return head + "".join(part.title() for part in rest)
 
 
-SECRET_COLUMNS = {"password_hash", "api_key_hash", "token_hash", "secret"}
+# Never serialised, whatever the model: hashes, keys and encrypted envelopes.
+SECRET_COLUMNS = {"password_hash", "api_key_hash", "token_hash", "secret", "mfa_secret", "ciphertext", "secret_envelope",
+                  "credentials_envelope"}
 
 
 def to_dict(obj: Any, exclude: Iterable[str] = ()) -> dict:

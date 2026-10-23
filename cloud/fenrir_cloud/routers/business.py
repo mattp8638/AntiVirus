@@ -5,7 +5,7 @@ from __future__ import annotations
 import html
 from datetime import date, timedelta
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -187,6 +187,28 @@ def update_contract(contract_id: str, body: dict = Body(...), principal: Princip
     audit.record(db, principal.actor, "billing.contract.updated", contract.name, contract.account_tenant_id, fields=changed)
     db.commit()
     return to_dict(contract)
+
+
+@router.get("/billing/renewals")
+def contract_renewals(days: int = Query(default=90, ge=1, le=730), principal: Principal = Depends(current_principal),
+                      db: Session = Depends(get_db)):
+    """Agreements ending within ``days`` (or already ended but still active), soonest first."""
+    principal.require("crm")
+    from datetime import date, timedelta as _td
+
+    today = date.today()
+    horizon = today + _td(days=days)
+    out = []
+    for contract in db.execute(select(Contract).where(Contract.tenant_id.in_(_crm_scope(principal)), Contract.active.is_(True))).scalars():
+        try:
+            end = date.fromisoformat((contract.end_date or "")[:10])
+        except ValueError:
+            continue
+        if end <= horizon:
+            tenant = db.get(Tenant, contract.account_tenant_id)
+            out.append({**to_dict(contract), "account": tenant.name if tenant else "", "daysLeft": (end - today).days,
+                        "monthlyValue": contract.monthly_fee})
+    return sorted(out, key=lambda c: c["daysLeft"])
 
 
 @router.post("/billing/invoices/generate")
