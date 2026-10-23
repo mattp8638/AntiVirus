@@ -27,8 +27,14 @@ def server_address(value: str) -> str:
         raise HTTPException(503, "Configure FENRIR_PUBLIC_URL as a public HTTPS origin (no path or credentials).")
     if parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1")):
         raise HTTPException(503, "Agent enrollment requires a public HTTPS server URL.")
-    if not parsed.netloc:
-        raise HTTPException(503, "FENRIR_PUBLIC_URL is missing a hostname.")
+    if not parsed.netloc or not parsed.hostname or not re.fullmatch(r"[A-Za-z0-9.-]+", parsed.hostname):
+        raise HTTPException(503, "FENRIR_PUBLIC_URL must contain a valid DNS hostname or IPv4 address.")
+    try:
+        port = parsed.port
+    except ValueError:
+        raise HTTPException(503, "FENRIR_PUBLIC_URL contains an invalid port.") from None
+    if port is not None and not (1 <= port <= 65535):
+        raise HTTPException(503, "FENRIR_PUBLIC_URL contains an invalid port.")
     return value
 
 
