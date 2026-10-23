@@ -129,7 +129,7 @@ class IngestResult:
     alerts: int = 0
 
 
-def ingest(db: Session, device: Device, raw_events: list[dict]) -> IngestResult:
+def ingest(db: Session, device: Device, raw_events: list[dict], *, apply_device_effects: bool = True) -> IngestResult:
     result = IngestResult()
     compiled = RULES.get(db)
     tenant = db.get(Tenant, device.tenant_id)
@@ -158,7 +158,8 @@ def ingest(db: Session, device: Device, raw_events: list[dict]) -> IngestResult:
             result.duplicates += 1
             continue
         result.accepted += 1
-        _apply_side_effects(db, device, norm)
+        if apply_device_effects:
+            _apply_side_effects(db, device, norm)
 
         for row, rule in compiled.sigma:
             if not _rule_visible(row, device.tenant_id, compiled.suppressed) or not rule.matches(fields, norm["category"], device.platform):
@@ -244,6 +245,10 @@ def _evaluate_correlation(db: Session, device: Device, corr_row: DetectionRule, 
 def _raise_alert(db: Session, device: Device, rule_id: str, title: str, level: str, mitre: list[str], event: Event,
                  details: dict) -> Alert | None:
     """Create an alert, or fold the event into a recent alert for the same rule and device."""
+    from .models import AlertSuppression
+    if db.scalar(select(AlertSuppression.id).where(AlertSuppression.tenant_id == device.tenant_id,
+            AlertSuppression.rule_id == rule_id, AlertSuppression.expires_at > utcnow()).limit(1)):
+        return None
     since = event.occurred_at - ALERT_DEDUP_WINDOW
     recent = db.execute(
         select(Alert).where(Alert.device_id == device.id, Alert.rule_id == rule_id, Alert.created_at >= since,

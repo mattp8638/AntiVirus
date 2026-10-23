@@ -560,9 +560,13 @@ def _crud(model, prefix: str, fields: set[str], required: str, permission: str =
 
     @router.get(f"/psa/{prefix}", name=f"list_{prefix}")
     def _list(account_tenant_id: str | None = Query(default=None, alias="accountTenantId"),
+              tenant_id: str | None = None,
               principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
         query = select(model).where(or_(model.tenant_id.in_(principal.tenant_ids),
                                         *( [model.account_tenant_id.in_(principal.tenant_ids)] if hasattr(model, "account_tenant_id") else [])))
+        if tenant_id and model is KbArticle:
+            principal.check_tenant(tenant_id)
+            query = query.where(model.tenant_id == tenant_id)
         if account_tenant_id and hasattr(model, "account_tenant_id"):
             query = query.where(model.account_tenant_id == account_tenant_id)
         names = dict(db.execute(select(Tenant.id, Tenant.name)).all())
@@ -572,7 +576,10 @@ def _crud(model, prefix: str, fields: set[str], required: str, permission: str =
     @router.post(f"/psa/{prefix}", name=f"create_{prefix}")
     def _create(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
         principal.require(permission)
-        obj = model(tenant_id=_msp(principal, db))
+        owner = body.get("tenantId") if model is KbArticle else None
+        if owner:
+            principal.check_tenant(owner)
+        obj = model(tenant_id=owner or _msp(principal, db))
         if hasattr(model, "account_tenant_id"):
             account = body.get("accountTenantId")
             principal.check_tenant(account)
@@ -584,6 +591,9 @@ def _crud(model, prefix: str, fields: set[str], required: str, permission: str =
             obj.author = principal.actor
         db.add(obj)
         audit.record(db, principal.actor, f"psa.{prefix}.created", str(getattr(obj, required)), getattr(obj, "account_tenant_id", obj.tenant_id))
+        if model is KbArticle:
+            from ..documentation import snapshot
+            snapshot(db, obj, principal.actor)
         db.commit()
         return to_dict(obj)
 
@@ -591,10 +601,15 @@ def _crud(model, prefix: str, fields: set[str], required: str, permission: str =
     def _update(obj_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
         principal.require(permission)
         obj = _owned(db, principal, model, obj_id)
+        if model is KbArticle:
+            from ..documentation import snapshot
+            snapshot(db, obj, principal.actor)
         changed = apply_fields(obj, body, fields)
         if hasattr(obj, "updated_at"):
             obj.updated_at = utcnow()
         audit.record(db, principal.actor, f"psa.{prefix}.updated", obj_id, getattr(obj, "account_tenant_id", obj.tenant_id), fields=changed)
+        if model is KbArticle:
+            snapshot(db, obj, principal.actor)
         db.commit()
         return to_dict(obj)
 

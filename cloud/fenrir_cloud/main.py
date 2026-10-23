@@ -21,6 +21,8 @@ from . import vulnmgmt  # noqa: F401 - registers its event handlers
 from .config import Settings, get_settings, set_settings
 from .detection import sync_builtin_rules
 from .models import DnsQueryLog, Event, RateLimitBucket, Policy, RuleMatch, Tenant, User, utcnow
+from .routers import m365 as m365_router, network as network_router, grc as grc_router, backup as backup_router, soc_workflows
+from .routers import documentation as documentation_router
 from .routers import admin, agent_api, business, fleet, portal, protection, soc
 from .routers import psa as psa_router, remote as remote_router, rmm as rmm_router
 from .security import hash_password
@@ -100,6 +102,9 @@ def _scheduler_loop(stop: threading.Event, interval: float = 30.0) -> None:
             remote.expire_sessions(db)
             db.commit()
             events.process(db)  # cross-module automation, with retries
+            db.commit()
+            from . import network
+            network.tick(db)
             if passes % 4 == 0:
                 msp = db.execute(select(Tenant).where(Tenant.kind == "msp")).scalars().first()
                 if msp is not None:
@@ -186,6 +191,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     remote.install_wake_hook()
     for module in (agent_api, admin, fleet, soc, business, rmm_router, psa_router, remote_router, portal):
         app.include_router(module.router)
+    for module in (m365_router, network_router, grc_router, backup_router, soc_workflows):
+        app.include_router(module.router)
+    app.include_router(documentation_router.router)
     app.include_router(psa_router.inbound)
     app.include_router(remote_router.sockets)
     app.include_router(protection.router)
