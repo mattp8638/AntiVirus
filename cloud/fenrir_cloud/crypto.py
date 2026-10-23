@@ -54,7 +54,7 @@ def _b64e(data: bytes) -> str:
 
 
 def _b64d(data: str) -> bytes:
-    return base64.b64decode(data.encode())
+    return base64.b64decode(data.encode(), validate=True)
 
 
 def _kid(key: bytes) -> str:
@@ -70,6 +70,7 @@ def _parse_key(raw: str) -> bytes:
 
 def _keys() -> tuple[MasterKey, dict[str, MasterKey]]:
     settings = get_settings()
+    require_explicit = os.getenv("FENRIR_VAULT_REQUIRE_EXPLICIT_KEY", "").lower() in {"1", "true", "yes"}
     raw = os.getenv("FENRIR_VAULT_KEY", "").strip()
     source = "env"
     key_file = os.getenv("FENRIR_VAULT_KEY_FILE", "").strip()
@@ -77,6 +78,8 @@ def _keys() -> tuple[MasterKey, dict[str, MasterKey]]:
         with open(key_file, encoding="utf-8") as handle:
             raw = handle.read().strip()
         source = "file"
+    if require_explicit and not raw:
+        raise ValueError("An explicit FENRIR_VAULT_KEY or FENRIR_VAULT_KEY_FILE is required")
     derived = HKDF(algorithm=hashes.SHA256(), length=32, salt=b"fenrir-vault", info=b"fenrir-vault-master-v1").derive(
         settings.secret_key.encode())
     if raw:
@@ -86,7 +89,8 @@ def _keys() -> tuple[MasterKey, dict[str, MasterKey]]:
     active = MasterKey(_kid(key), key, source)
     every = {active.kid: active}
     # Values stored before a vault key was configured stay readable, so they can be re-encrypted (rotate()).
-    every.setdefault(_kid(derived), MasterKey(_kid(derived), derived, "derived-legacy"))
+    if os.getenv("FENRIR_VAULT_ALLOW_DERIVED_LEGACY", "true").lower() in {"1", "true", "yes"}:
+        every.setdefault(_kid(derived), MasterKey(_kid(derived), derived, "derived-legacy"))
     for old in filter(None, (item.strip() for item in os.getenv("FENRIR_VAULT_OLD_KEYS", "").split(","))):
         old_key = _parse_key(old)
         every.setdefault(_kid(old_key), MasterKey(_kid(old_key), old_key, "old"))
@@ -100,6 +104,7 @@ def key_status() -> dict:
         "source": active.source,
         "productionReady": active.source in {"env", "file"},
         "decryptOnlyKeys": sum(1 for k in every.values() if k.source == "old"),
+        "legacyDerivedKeyAccepted": any(k.source == "derived-legacy" for k in every.values()),
         "algorithm": "AES-256-GCM envelope encryption",
     }
 

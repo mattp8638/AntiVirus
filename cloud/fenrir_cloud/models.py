@@ -1023,3 +1023,18 @@ class PlatformEvent(Base):
     processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     __table_args__ = (Index("ix_platform_events_due", "status", "next_attempt_at"),)
+
+
+class RateLimitBucket(Base):
+    """Shared sliding windows, serialized using a database write lock per key."""
+    __tablename__ = "rate_limit_buckets"
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    hits: Mapped[list] = mapped_column(JSON, default=list)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
+class SchemaMigration(Base):
+    """History of additive schema upgrades; also included in test DB cleanup."""
+    __tablename__ = "schema_migrations"
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    applied_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

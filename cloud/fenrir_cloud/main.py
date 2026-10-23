@@ -16,11 +16,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from sqlalchemy import delete, select
 
-from . import __version__, audit, db as database, events, policy_schema, psa, ratelimit, remote, rmm, rmm_library
+from . import __version__, crypto, audit, db as database, events, policy_schema, psa, ratelimit, remote, rmm, rmm_library
 from . import vulnmgmt  # noqa: F401 - registers its event handlers
 from .config import Settings, get_settings, set_settings
 from .detection import sync_builtin_rules
-from .models import DnsQueryLog, Event, Policy, RuleMatch, Tenant, User, utcnow
+from .models import DnsQueryLog, Event, RateLimitBucket, Policy, RuleMatch, Tenant, User, utcnow
 from .routers import admin, agent_api, business, fleet, portal, protection, soc
 from .routers import psa as psa_router, remote as remote_router, rmm as rmm_router
 from .security import hash_password
@@ -33,10 +33,10 @@ log = logging.getLogger("fenrir")
 
 
 def bootstrap(settings: Settings) -> None:
-    database.Base.metadata.create_all(database.engine())
-    added = database.ensure_columns(database.Base, database.engine())
-    if added:
-        log.info("added database columns: %s", ", ".join(added))
+    crypto.key_status()  # Validate configured keys before changing the database.
+    applied = database.migrate(database.engine())
+    if applied:
+        log.info("applied database migrations: %s", applied)
     db = database.session_factory()()
     try:
         msp = db.execute(select(Tenant).where(Tenant.kind == "msp")).scalars().first()
@@ -74,6 +74,7 @@ def _maintenance_loop(settings: Settings, stop: threading.Event) -> None:
             db.execute(delete(Event).where(Event.occurred_at < cutoff))
             db.execute(delete(RuleMatch).where(RuleMatch.at < cutoff))
             db.execute(delete(DnsQueryLog).where(DnsQueryLog.at < cutoff))
+            db.execute(delete(RateLimitBucket).where(RateLimitBucket.expires_at < utcnow()))
             db.commit()
             if settings.feed_sync_enabled:
                 from .intel import sync_feed
@@ -154,7 +155,6 @@ echo "Fenrir agent installed and enrolling with $FENRIR_SERVER"
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     set_settings(settings)
-    ratelimit.reset()
     database.init_engine(settings.database_url)
     stop = threading.Event()
 

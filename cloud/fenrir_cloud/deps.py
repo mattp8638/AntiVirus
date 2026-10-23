@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from .config import get_settings
 from .db import get_db
 from .models import Device, Tenant, User, utcnow
-from .security import digest, has_permission, read_token
+from .security import digest, has_permission, read_token, reauth_state
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -115,5 +115,7 @@ def require_reauth(request: Request, principal: Principal) -> None:
     """
     token = request.headers.get(REAUTH_HEADER, "")
     payload = read_token(get_settings().secret_key, token) if token else None
-    if payload is None or payload.get("aud") != "reauth" or payload.get("sub") != principal.user.id:
+    if (payload is None or payload.get("aud") != "reauth" or payload.get("sub") != principal.user.id
+            or payload.get("session") != digest(request.headers.get("Authorization", ""))
+            or payload.get("state") != reauth_state(get_settings().secret_key, principal.user)):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "reauth_required")
