@@ -42,7 +42,7 @@ void ReportServiceFailure(const std::wstring& detail) {
 
 
 bool InvokeAdjacentDllRegistration(bool registerProvider);
-void WaitForServiceStop(SC_HANDLE service);
+bool WaitForServiceStop(SC_HANDLE service, DWORD timeoutMs);
 
 void UpdateServiceStatus(const DWORD currentState, const DWORD win32ExitCode = NO_ERROR,
                          const DWORD waitHint = 0, const DWORD serviceSpecificExitCode = 0) {
@@ -408,18 +408,44 @@ bool InvokeAdjacentDllRegistration(const bool registerProvider) {
   return true;
 }
 
-void WaitForServiceStop(SC_HANDLE service) {
+bool WaitForServiceStop(SC_HANDLE service, const DWORD timeoutMs) {
   SERVICE_STATUS_PROCESS status{};
   DWORD bytesNeeded = 0;
-
-  while (QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO, reinterpret_cast<LPBYTE>(&status), sizeof(status),
-                              &bytesNeeded) != FALSE) {
-    if (status.dwCurrentState == SERVICE_STOPPED) {
-      return;
+  const ULONGLONG deadline = GetTickCount64() + timeoutMs;
+  do {
+    if (!QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO,
+                              reinterpret_cast<LPBYTE>(&status), sizeof(status), &bytesNeeded)) {
+      return false;
     }
+    if (status.dwCurrentState == SERVICE_STOPPED) return true;
+    Sleep(250);
+  } while (GetTickCount64() < deadline);
+  return false;
+}
 
-    Sleep(500);
+bool RequestAndWaitForServiceStop(SC_HANDLE service, const wchar_t* operation) {
+  SERVICE_STATUS_PROCESS current{};
+  DWORD bytesNeeded = 0;
+  if (!QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO,
+                            reinterpret_cast<LPBYTE>(&current), sizeof(current), &bytesNeeded)) {
+    std::wcerr << operation << L": could not query the service status (" << GetLastError() << L")." << std::endl;
+    return false;
   }
+  if (current.dwCurrentState == SERVICE_STOPPED) return true;
+
+  SERVICE_STATUS status{};
+  if (!ControlService(service, SERVICE_CONTROL_STOP, &status)) {
+    const auto error = GetLastError();
+    if (error != ERROR_SERVICE_NOT_ACTIVE) {
+      std::wcerr << operation << L": Windows refused the service stop (" << error << L")." << std::endl;
+      return false;
+    }
+  }
+  if (!WaitForServiceStop(service, 30'000)) {
+    std::wcerr << operation << L": the agent service did not reach STOPPED within 30 seconds." << std::endl;
+    return false;
+  }
+  return true;
 }
 
 bool UninstallService(const std::wstring& uninstallToken) {
@@ -452,9 +478,11 @@ bool UninstallService(const std::wstring& uninstallToken) {
     return false;
   }
 
-  SERVICE_STATUS status{};
-  ControlService(service, SERVICE_CONTROL_STOP, &status);
-  WaitForServiceStop(service);
+  if (!RequestAndWaitForServiceStop(service, L"Uninstall")) {
+    CloseServiceHandle(service);
+    CloseServiceHandle(scManager);
+    return false;  // Never mark a running service for deletion after reboot.
+  }
 
   const auto deleted = DeleteService(service) != FALSE;
   if (!deleted) {
@@ -496,12 +524,11 @@ bool StopProtectedService(const std::wstring& uninstallToken) {
     CloseServiceHandle(scManager);
     return false;
   }
-  SERVICE_STATUS status{};
-  ControlService(service, SERVICE_CONTROL_STOP, &status);
-  WaitForServiceStop(service);
+  const auto stopped = RequestAndWaitForServiceStop(service, L"Authorised stop");
   CloseServiceHandle(service);
   CloseServiceHandle(scManager);
   LockServiceControl();  // stopped, but still not stoppable/deletable by hand once restarted
+  if (!stopped) return false;
   std::wcout << L"Stopped " << kServiceDisplayName << L"." << std::endl;
   return true;
 }
@@ -530,9 +557,11 @@ bool UpgradeInstalledService(const std::wstring& manifestPath) {
     return false;
   }
 
-  SERVICE_STATUS status{};
-  ControlService(service, SERVICE_CONTROL_STOP, &status);
-  WaitForServiceStop(service);
+  if (!RequestAndWaitForServiceStop(service, L"Upgrade")) {
+    CloseServiceHandle(service);
+    CloseServiceHandle(scManager);
+    return false;  // Do not replace in-use binaries.
+  }
 
   antivirus::agent::UpdaterService updater(config, GetInstallRoot());
   const auto result = updater.ApplyPackage(manifestPath, antivirus::agent::UpdateApplyMode::Maintenance);
