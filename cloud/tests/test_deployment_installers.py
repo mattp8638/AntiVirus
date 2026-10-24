@@ -1,6 +1,7 @@
 """OS-specific deployment regression tests: no unauthorised downloads or phantom tokens."""
 import hashlib
 import io
+import shlex
 import subprocess
 import zipfile
 
