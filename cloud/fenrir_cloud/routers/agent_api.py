@@ -212,17 +212,6 @@ def complete_command(command_id: str, body: dict = Body(...), device: Device = D
     if status not in {"completed", "succeeded", "success", "ok", "failed", "error"}:
         raise HTTPException(422, "Invalid command completion status")
     requested_status = "completed" if status in {"completed", "succeeded", "success", "ok"} else "failed"
-    # A network retry must never mutate a previously completed command, fire
-    # RMM callbacks twice, or turn a cancelled action into 'completed'.
-    if command.status in {"completed", "failed"}:
-        if command.status != requested_status:
-            raise HTTPException(409, "Command was already completed with a different outcome")
-        return {"id": command.id, "status": command.status, "duplicate": True}
-    if command.status in {"cancelled", "expired"}:
-        raise HTTPException(409, "Command can no longer be completed")
-    if command.status not in {"pending", "dispatched"}:
-        raise HTTPException(409, "Command is not active")
-    command.status = requested_status
     raw = body.get("resultJson")
     if isinstance(raw, str) and len(raw) > 1_048_576:
         raise HTTPException(413, "Command result exceeds the maximum size")
@@ -232,9 +221,19 @@ def complete_command(command_id: str, body: dict = Body(...), device: Device = D
         raise HTTPException(422, "Command result must be valid JSON") from None
     if not isinstance(result, dict):
         raise HTTPException(422, "Command result must be a JSON object")
+    # Derive the *effective* result before idempotency checks; a retry of the
+    # same non-zero exit code must acknowledge the same failed outcome.
     if isinstance(result.get("exitCode"), int) and result["exitCode"] != 0:
         requested_status = "failed"
-        command.status = "failed"
+    if command.status in {"completed", "failed"}:
+        if command.status != requested_status:
+            raise HTTPException(409, "Command was already completed with a different outcome")
+        return {"id": command.id, "status": command.status, "duplicate": True}
+    if command.status in {"cancelled", "expired"}:
+        raise HTTPException(409, "Command can no longer be completed")
+    if command.status not in {"pending", "dispatched"}:
+        raise HTTPException(409, "Command is not active")
+    command.status = requested_status
     command.result = result
     command.completed_at = command.updated_at = utcnow()
     if command.type == "device.isolate" and command.status == "completed":
