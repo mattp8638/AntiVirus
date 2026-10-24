@@ -31,9 +31,6 @@ services:
       FENRIR_VAULT_REQUIRE_EXPLICIT_KEY: "true"
       FENRIR_VAULT_ALLOW_DERIVED_LEGACY: ${FENRIR_VAULT_ALLOW_DERIVED_LEGACY:-true}
       FENRIR_VAULT_OLD_KEYS: ${FENRIR_VAULT_OLD_KEYS:-}
-      FENRIR_WINDOWS_SIGNER_THUMBPRINT: ${FENRIR_WINDOWS_SIGNER_THUMBPRINT:-}
-      FENRIR_ALLOW_UNSIGNED_WINDOWS_INSTALLERS: ${FENRIR_ALLOW_UNSIGNED_WINDOWS_INSTALLERS:-false}
-      FENRIR_WINDOWS_SETUP_SHA256: ${FENRIR_WINDOWS_SETUP_SHA256:-}
       FENRIR_FEED_SYNC: ${FENRIR_FEED_SYNC:-true}
       FENRIR_CORS_ORIGINS: ${FENRIR_PUBLIC_URL}
       FENRIR_SMTP_HOST: ${FENRIR_SMTP_HOST:-}
@@ -45,10 +42,8 @@ services:
       FENRIR_IMAP_USER: ${FENRIR_IMAP_USER:-}
       FENRIR_IMAP_PASSWORD: ${FENRIR_IMAP_PASSWORD:-}
       FENRIR_IMAP_FOLDER: ${FENRIR_IMAP_FOLDER:-INBOX}
-    # A verified, signed Windows release can be staged here without rebuilding the cloud image.
-    # The macOS release is deliberately not exposed until its agent supports enrollment.
-    volumes:
-      - ./releases:/app/cloud/downloads/releases:ro
+    # The Windows installer template is built into this Docker image from source.
+    # No manually staged host release, volume mount, or paid signature required.
     ports: ["8080:8080"]
 
 volumes:
