@@ -21,7 +21,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import audit, mailer
-from .models import Board, Contact, Contract, Tenant, Ticket, TimeEntry, User, WorkflowRule, utcnow
+from .models import Board, Configuration, Contact, Contract, Device, Site, Tenant, Ticket, TimeEntry, User, WorkflowRule, utcnow
 
 log = logging.getLogger("fenrir.psa")
 
@@ -72,6 +72,52 @@ DEFAULT_RESOLVE_HOURS = {"P1": 4, "P2": 8, "P3": 24, "P4": 72}
 DEFAULT_BUSINESS_HOURS = {"days": [0, 1, 2, 3, 4], "start": 9, "end": 17, "tz": "Europe/London", "p1AllHours": True}
 
 TICKET_REF = re.compile(r"\[(?:ticket\s*)?#\s*(\d{3,})\]|ticket\s*#\s*(\d{3,})", re.IGNORECASE)
+
+
+def sync_managed_device(db: Session, device: Device) -> str:
+    """Idempotently keep one CMDB configuration in sync with an approved agent.
+
+    Manually maintained owner/warranty/contact notes are preserved. A conflicting
+    existing relationship is a data-integrity fault, not permission to move the
+    asset silently between customers.
+    """
+    if not device.approved:
+        return "skipped"
+    existing = db.execute(select(Configuration).where(Configuration.device_id == device.id)).scalars().all()
+    if len(existing) > 1:
+        raise ValueError(f"Device {device.id} is linked to multiple CMDB records")
+    config = existing[0] if existing else None
+    if config and config.account_tenant_id != device.tenant_id:
+        raise ValueError(f"Device {device.id} CMDB owner differs from enrolled customer")
+    created = config is None
+    if created:
+        config = Configuration(tenant_id=_configuration_owner(db, device.tenant_id),
+                               account_tenant_id=device.tenant_id, device_id=device.id,
+                               name=device.hostname)
+        db.add(config)
+    metrics = device.metrics or {}
+    version = (device.os_version or "").lower()
+    config.type = "Server" if "server" in version else (
+        "Workstation" if device.platform in {"windows", "macos"} else "Server")
+    if config.status == "Retired":
+        config.status = "Active"
+    config.name = device.hostname
+    config.os = device.os_version
+    config.serial_number = device.serial_number
+    config.ip_address = device.ip_address
+    config.manufacturer = metrics.get("manufacturer") or config.manufacturer
+    config.model = metrics.get("model") or config.model
+    if device.site_id:
+        site = db.get(Site, device.site_id)
+        if site and site.account_tenant_id == device.tenant_id:
+            config.site_id = site.id
+    config.updated_at = utcnow()
+    return "created" if created else "updated"
+
+
+def _configuration_owner(db: Session, tenant_id: str) -> str:
+    from .services import msp_tenant_id
+    return msp_tenant_id(db, tenant_id)
 
 
 # --------------------------------------------------------------------------- boards

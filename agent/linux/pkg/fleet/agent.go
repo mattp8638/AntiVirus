@@ -475,19 +475,50 @@ func (a *Agent) RunCommands() {
 		return
 	}
 	for _, cmd := range cmds {
-		result, err := a.Execute(cmd)
-		status := "completed"
-		if err != nil {
-			status = "failed"
-			if result == nil {
-				result = map[string]interface{}{}
-			}
-			result["error"] = err.Error()
-		}
-		if err := a.client.CompleteCommand(cmd.ID, status, result); err != nil {
-			log.Printf("could not report command %s: %v", cmd.ID, err)
-		}
-		a.emit("command."+status, "command-executor", cmd.Type, map[string]interface{}{"commandId": cmd.ID, "type": cmd.Type})
+        receipt, found, receiptErr := a.loadCommandReceipt(cmd.ID)
+        if receiptErr != nil {
+            // Corrupt or inaccessible receipts are NOT a reason to re-execute an
+            // unknown remote action. An operator must investigate the local state.
+            log.Printf("unsafe command replay prevented for %s: %v", cmd.ID, receiptErr)
+            continue
+        }
+        if found {
+            if receipt.Status == "started" {
+                receipt = commandReceipt{Status:"failed", Result: map[string]interface{}{
+                    "error":"Agent restarted while the command outcome was uncertain. No automatic replay was attempted.",
+                    "outcomeUncertain":true,
+                }}
+                if err := a.saveCommandReceipt(cmd.ID, receipt.Status, receipt.Result); err != nil {
+                    log.Printf("cannot persist interrupted command %s: %v", cmd.ID, err)
+                    continue
+                }
+            }
+            // A previously executed action is NEVER executed again to recover
+            // from a lost HTTP acknowledgement.
+            if err := a.client.CompleteCommand(cmd.ID, receipt.Status, receipt.Result); err != nil {
+                log.Printf("command %s result replay failed: %v", cmd.ID, err)
+            }
+            continue
+        }
+        if err := a.saveCommandReceipt(cmd.ID, "started", nil); err != nil {
+            log.Printf("cannot journal command %s; execution blocked: %v", cmd.ID, err)
+            continue
+        }
+        result, err := a.Execute(cmd)
+        status := "completed"
+        if err != nil {
+            status = "failed"
+            if result == nil { result = map[string]interface{}{} }
+            result["error"] = err.Error()
+        }
+        if err := a.saveCommandReceipt(cmd.ID, status, result); err != nil {
+            log.Printf("command %s executed but could not persist its result; NOT sending an unjournaled outcome: %v", cmd.ID, err)
+            continue
+        }
+        if err := a.client.CompleteCommand(cmd.ID, status, result); err != nil {
+            log.Printf("could not report command %s; saved result will be replayed: %v", cmd.ID, err)
+        }
+        a.emit("command."+status, "command-executor", cmd.Type, map[string]interface{}{"commandId": cmd.ID, "type": cmd.Type})
 	}
 	_ = a.Flush()
 }

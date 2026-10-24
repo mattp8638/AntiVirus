@@ -17,7 +17,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Requ
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import audit, endpoint_health, intel, rmm, services
+from .. import audit, endpoint_health, intel, psa, rmm, services
 from ..config import get_settings
 from ..db import get_db
 from ..deps import current_device
@@ -66,6 +66,16 @@ def _resolve_enrollment_token(db: Session, raw: str | None) -> EnrollmentToken |
     return token
 
 
+def _sync_cmdb_from_agent(db: Session, device: Device) -> None:
+    try:
+        psa.sync_managed_device(db, device)
+    except ValueError as exc:
+        # CMDB corruption must be visible, but must not take down the agent's
+        # security heartbeat or repeatedly rotate a valid enrollment key.
+        audit.record(db, "system", "cmdb.sync.conflict", device.id, device.tenant_id,
+                     reason=str(exc))
+
+
 @router.post("/enroll")
 def enroll(
     request: Request,
@@ -106,6 +116,7 @@ def enroll(
     db.flush()
     _, policy_doc = services.effective_policy(db, device)
     device.applied_policy_revision = policy_doc["revision"]
+    _sync_cmdb_from_agent(db, device)
     audit.record(db, f"device:{hostname}", "device.enrolled", device.id, tenant.id, platform=device.platform,
                  token=token.label if token else "open-enrollment")
     db.commit()
@@ -137,6 +148,7 @@ def heartbeat(body: dict = Body(default={}), device: Device = Depends(current_de
     if isinstance(body.get("metrics"), dict):
         rmm.record_heartbeat_metrics(db, device, body["metrics"])
         rmm.evaluate_device(db, device)
+    _sync_cmdb_from_agent(db, device)
     _, policy_doc = services.effective_policy(db, device)
     pending = db.execute(select(func.count()).where(Command.device_id == device.id, Command.status == "pending")).scalar() or 0
     db.commit()
@@ -193,16 +205,41 @@ def pending_commands(limit: int = Query(default=20, ge=1, le=100), device: Devic
 @router.post("/devices/{device_id}/commands/{command_id}/complete")
 def complete_command(command_id: str, body: dict = Body(...), device: Device = Depends(current_device),
                      db: Session = Depends(get_db)):
-    command = db.get(Command, command_id)
-    if command is None or command.device_id != device.id:
+    query = select(Command).where(Command.id == command_id)
+    if db.bind is not None and db.bind.dialect.name == "postgresql":
+        # Lock the command until commit: concurrent agent retries must not
+        # trigger duplicate monitoring/RMM callbacks.
+        query = query.with_for_update()
+    command = db.execute(query).scalar_one_or_none()
+    if command is None or command.device_id != device.id or command.tenant_id != device.tenant_id:
         raise HTTPException(404, "Unknown command")
     status = str(body.get("status") or "completed").lower()
-    command.status = "completed" if status in {"completed", "succeeded", "success", "ok"} else "failed"
+    if status not in {"completed", "succeeded", "success", "ok", "failed", "error"}:
+        raise HTTPException(422, "Invalid command completion status")
+    requested_status = "completed" if status in {"completed", "succeeded", "success", "ok"} else "failed"
     raw = body.get("resultJson")
+    if isinstance(raw, str) and len(raw) > 1_048_576:
+        raise HTTPException(413, "Command result exceeds the maximum size")
     try:
-        command.result = json.loads(raw) if isinstance(raw, str) and raw else (raw or {})
+        result = json.loads(raw) if isinstance(raw, str) and raw else (raw or {})
     except json.JSONDecodeError:
-        command.result = {"raw": raw}
+        raise HTTPException(422, "Command result must be valid JSON") from None
+    if not isinstance(result, dict):
+        raise HTTPException(422, "Command result must be a JSON object")
+    # Derive the *effective* result before idempotency checks; a retry of the
+    # same non-zero exit code must acknowledge the same failed outcome.
+    if isinstance(result.get("exitCode"), int) and result["exitCode"] != 0:
+        requested_status = "failed"
+    if command.status in {"completed", "failed"}:
+        if command.status != requested_status:
+            raise HTTPException(409, "Command was already completed with a different outcome")
+        return {"id": command.id, "status": command.status, "duplicate": True}
+    if command.status in {"cancelled", "expired"}:
+        raise HTTPException(409, "Command can no longer be completed")
+    if command.status not in {"pending", "dispatched"}:
+        raise HTTPException(409, "Command is not active")
+    command.status = requested_status
+    command.result = result
     command.completed_at = command.updated_at = utcnow()
     if command.type == "device.isolate" and command.status == "completed":
         device.isolated = True

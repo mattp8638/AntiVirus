@@ -12,10 +12,10 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from .. import audit, psa, services
+from .. import audit, psa, rmm, services
 from ..db import get_db
 from ..deps import Principal, current_principal, scoped_tenant
-from ..models import (Board, Configuration, Contact, Contract, Device, KbArticle, Product, Project, Quote, RemoteSession,
+from ..models import (Board, Configuration, Contact, Contract, Device, Job, KbArticle, Product, Project, Quote, RemoteSession,
                       ScheduleEntry, Site, Tenant, Ticket, TimeEntry, WorkflowRule, utcnow)
 from ..serialize import apply_fields, to_dict
 
@@ -207,6 +207,10 @@ def get_ticket(ticket_id: str, principal: Principal = Depends(current_principal)
     view["contact"] = to_dict(db.get(Contact, ticket.contact_id)) if ticket.contact_id and db.get(Contact, ticket.contact_id) else None
     view["agreement"] = to_dict(db.get(Contract, ticket.agreement_id)) if ticket.agreement_id and db.get(Contract, ticket.agreement_id) else None
     view["remoteSessions"] = [to_dict(s) for s in db.execute(select(RemoteSession).where(RemoteSession.ticket_id == ticket.id)).scalars()]
+    view["rmmJobs"] = [{**to_dict(j), "summary": rmm.job_summary(db, j)}
+                       for j in db.execute(select(Job).where(Job.ticket_id == ticket.id,
+                                                            Job.tenant_id == ticket.account_tenant_id)
+                                           .order_by(Job.created_at.desc())).scalars()]
     view["children"] = [{"id": c.id, "number": c.number, "subject": c.subject, "status": c.status}
                         for c in db.execute(select(Ticket).where(Ticket.parent_id == ticket.id)).scalars()]
     return view
@@ -555,6 +559,29 @@ def company_detail(tenant_id: str, principal: Principal = Depends(current_princi
     }
 
 
+def _validate_configuration_links(db: Session, account_tenant_id: str | None, values: dict,
+                                  existing_id: str | None = None) -> None:
+    """A CMDB record must never link devices, sites or people across customers."""
+    if not account_tenant_id:
+        raise HTTPException(422, "A customer account is required for an asset")
+    for key, linked_model in (("device_id", Device), ("site_id", Site), ("contact_id", Contact)):
+        linked_id = values.get(key)
+        if not linked_id:
+            continue
+        linked = db.get(linked_model, linked_id)
+        if linked is None:
+            raise HTTPException(422, f"{key} does not exist")
+        linked_account = linked.tenant_id if linked_model is Device else linked.account_tenant_id
+        if linked_account != account_tenant_id:
+            raise HTTPException(422, f"{key} belongs to another customer")
+        if key == "device_id":
+            duplicate = db.execute(select(Configuration).where(
+                Configuration.device_id == linked_id,
+                Configuration.id != (existing_id or ""))).scalar_one_or_none()
+            if duplicate is not None:
+                raise HTTPException(409, "The device is already linked to another configuration")
+
+
 def _crud(model, prefix: str, fields: set[str], required: str, permission: str = "crm"):
     """Register list/create/update/delete routes for a simple tenant-owned PSA collection."""
 
@@ -584,6 +611,12 @@ def _crud(model, prefix: str, fields: set[str], required: str, permission: str =
             account = body.get("accountTenantId")
             principal.check_tenant(account)
             obj.account_tenant_id = account
+        if model is Configuration:
+            _validate_configuration_links(db, obj.account_tenant_id, {
+                "device_id": body.get("device_id", body.get("deviceId")),
+                "site_id": body.get("site_id", body.get("siteId")),
+                "contact_id": body.get("contact_id", body.get("contactId")),
+            })
         apply_fields(obj, body, fields)
         if not getattr(obj, required, None):
             raise HTTPException(400, f"{required} is required")
@@ -604,6 +637,12 @@ def _crud(model, prefix: str, fields: set[str], required: str, permission: str =
         if model is KbArticle:
             from ..documentation import snapshot
             snapshot(db, obj, principal.actor)
+        if model is Configuration:
+            _validate_configuration_links(db, obj.account_tenant_id, {
+                "device_id": body.get("device_id", body.get("deviceId", obj.device_id)),
+                "site_id": body.get("site_id", body.get("siteId", obj.site_id)),
+                "contact_id": body.get("contact_id", body.get("contactId", obj.contact_id)),
+            }, existing_id=obj.id)
         changed = apply_fields(obj, body, fields)
         if hasattr(obj, "updated_at"):
             obj.updated_at = utcnow()
@@ -638,25 +677,15 @@ def sync_configurations(body: dict = Body(default={}), principal: Principal = De
     principal.require("crm")
     scope = scoped_tenant(principal, body.get("tenantId"))
     owner = _msp(principal, db)
-    existing = {c.device_id: c for c in db.execute(select(Configuration).where(Configuration.device_id.is_not(None))).scalars()}
     created = updated = 0
-    for device in db.execute(select(Device).where(Device.tenant_id.in_(scope), Device.approved.is_(True))).scalars():
-        config = existing.get(device.id)
-        if config is None:
-            config = Configuration(tenant_id=owner, account_tenant_id=device.tenant_id, device_id=device.id, name=device.hostname)
-            db.add(config)
-            created += 1
-        else:
-            updated += 1
-        metrics = device.metrics or {}
-        os_text = device.os_version.lower()
-        config.type = "Server" if "server" in os_text else ("Workstation" if device.platform in {"windows", "macos"} else "Server")
-        config.name, config.os, config.serial_number = device.hostname, device.os_version, device.serial_number
-        config.ip_address = device.ip_address
-        config.manufacturer = metrics.get("manufacturer", config.manufacturer)
-        config.model = metrics.get("model", config.model)
-        config.site_id = device.site_id or config.site_id
-        config.updated_at = utcnow()
+    for device in db.execute(select(Device).where(
+        Device.tenant_id.in_(scope), Device.approved.is_(True))).scalars():
+        try:
+            result = psa.sync_managed_device(db, device)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        created += result == "created"
+        updated += result == "updated"
     audit.record(db, principal.actor, "psa.configurations.synced", f"{created} new, {updated} updated", owner)
     db.commit()
     return {"created": created, "updated": updated}

@@ -1,0 +1,148 @@
+name: Phase 2 Full-Stack Smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  cloud-regressions:
+    name: Cloud API and Phase 2 regressions (SQLite + PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: fenrir
+          POSTGRES_PASSWORD: fenrir
+          POSTGRES_DB: fenrir
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U fenrir" --health-interval 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install tests
+        run: pip install -r cloud/requirements-dev.txt "psycopg[binary]>=3.2"
+      - name: Run all tests with SQLite
+        working-directory: cloud
+        run: python -m pytest -q
+      - name: Run all tests with real PostgreSQL
+        working-directory: cloud
+        env:
+          FENRIR_TEST_DATABASE_URL: postgresql+psycopg://fenrir:fenrir@localhost:5432/fenrir
+        run: python -m pytest -q
+
+  console-regressions:
+    name: Console TypeScript build and array-contract tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - name: Compile and test the console
+        working-directory: console
+        run: npm ci --no-audit --no-fund && npm run build && npm run test:shapes
+
+  linux-agent-regressions:
+    name: Linux agent Go tests and both native architectures
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: agent/linux/go.sum
+      - name: Run Go vet, tests, amd64 and arm64 builds
+        run: make -C agent/linux test agent agent-arm64
+
+  unsigned-windows-agent:
+    name: Windows native service and unsigned hobby installer (MSVC)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure Windows user-mode build
+        shell: pwsh
+        run: cmake -B build -S agent/windows/service -DANTIVIRUS_REQUIRE_MINIFILTER_PAYLOAD=OFF
+      - name: Build Windows native installer and bundled service
+        shell: pwsh
+        run: cmake --build build --config Release --target antivirus-setup
+      - name: Verify unsigned binaries and their trusted build digests
+        shell: pwsh
+        run: |
+          foreach ($file in @('agent/windows/out/dev/fenrir-agent-service.exe', 'agent/windows/out/install/FenrirSetup.exe')) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing Windows build output: $file" }
+            Get-FileHash -Algorithm SHA256 -LiteralPath $file
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Phase2-Windows-UNSIGNED-VM-CANDIDATE
+          path: |
+            agent/windows/out/install/FenrirSetup.exe
+            agent/windows/out/dev/fenrir-agent-service.exe
+          if-no-files-found: error
+
+  isolated-docker-smoke:
+    name: Docker, PostgreSQL and served console
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate isolated one-run deployment secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p deploy/releases
+          {
+            printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 20)"
+            printf 'FENRIR_SECRET_KEY=%s\n' "$(openssl rand -hex 32)"
+            printf 'FENRIR_VAULT_KEY=%s\n' "$(openssl rand -base64 32 | tr -d '\n')"
+            printf 'FENRIR_ADMIN_PASSWORD=%s\n' "$(openssl rand -hex 24)"
+            printf 'FENRIR_PUBLIC_URL=http://127.0.0.1:8080\n'
+            printf 'FENRIR_OPEN_ENROLLMENT=false\n'
+            printf 'FENRIR_FEED_SYNC=false\n'
+            printf 'FENRIR_ALLOW_UNSIGNED_WINDOWS_INSTALLERS=false\n'
+          } > deploy/.env
+      - name: Build the actual Docker image and start PostgreSQL + cloud
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d --build --wait --wait-timeout 180
+      - name: Real HTTP and Python module smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --retry 8 --retry-delay 3 --retry-connrefused http://127.0.0.1:8080/health
+          curl --fail --silent --show-error http://127.0.0.1:8080/ -o /tmp/fenrir-ui.html
+          grep -Eiq '<title>|id="root"' /tmp/fenrir-ui.html
+          docker compose -f deploy/docker-compose.yml --env-file deploy/.env exec -T cloud python -c 'import ast,pathlib; files=list(pathlib.Path("/app/cloud/fenrir_cloud").rglob("*.py")); [ast.parse(p.read_text(),filename=str(p)) for p in files]; print("PASS:",len(files),"Python modules parsed without writing to read-only runtime")'
+      - name: Verify complete monitoring-to-ticket-to-RMM outcome using real HTTP/PostgreSQL
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -a
+          source deploy/.env
+          set +a
+          python3 scripts/phase2_cloud_smoke.py
+      - name: Diagnostics on failure
+        if: failure()
+        shell: bash
+        run: |
+          docker compose -f deploy/docker-compose.yml --env-file deploy/.env ps || true
+          docker compose -f deploy/docker-compose.yml --env-file deploy/.env logs --tail=100 db cloud || true
+      - name: Always remove the test database and ephemeral volumes
+        if: always()
+        shell: bash
+        run: |
+          docker compose -f deploy/docker-compose.yml --env-file deploy/.env down -v --remove-orphans || true
+          rm -f deploy/.env

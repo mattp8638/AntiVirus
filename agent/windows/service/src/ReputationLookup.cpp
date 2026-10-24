@@ -1,5 +1,5 @@
+#include <winsock2.h>  // Load Winsock2 before any transitive Windows.h include.
 #include "ReputationLookup.h"
-
 #include <Windows.h>
 #include <softpub.h>
 #include <winhttp.h>
@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cwctype>
 #include <fstream>
 #include <mutex>
 #include <optional>

@@ -183,6 +183,7 @@ def retry_failed(db: Session, job: Job, actor: str) -> int:
     command_ids = dict(job.command_ids or {})
     failed = db.execute(select(Command).where(Command.id.in_(list(command_ids.values())),
                                               Command.status.in_(("failed", "expired")))).scalars().all()
+    history = list((job.payload or {}).get("retryHistory") or [])
     retried = 0
     for old in failed:
         device = db.get(Device, old.device_id)
@@ -195,12 +196,15 @@ def retry_failed(db: Session, job: Job, actor: str) -> int:
         except services.CommandError:
             continue
         db.flush()
+        history.append({"deviceId": device.id, "previousCommandId": old.id, "newCommandId": command.id,
+                        "at": utcnow().isoformat(), "by": actor})
         command_ids[device.id] = command.id
         retried += 1
     if retried:
         job.command_ids = command_ids
         job.status, job.finished_at = "running", None
-        job.payload = {**(job.payload or {}), "retries": int((job.payload or {}).get("retries", 0)) + 1}
+        job.payload = {**(job.payload or {}), "retries": int((job.payload or {}).get("retries", 0)) + 1,
+                       "retryHistory": history}
     audit.record(db, actor, "rmm.job.retried", job.name, job.tenant_id, commands=retried)
     return retried
 
@@ -214,6 +218,25 @@ def job_summary(db: Session, job: Job) -> dict:
     return {"total": len(ids), "skipped": len((job.payload or {}).get("skipped") or {}), **counts}
 
 
+def _ticket_remediation_finished(db: Session, ticket: Ticket) -> bool:
+    """An automatic ticket resolution requires verified healthy monitoring AND all completed work."""
+    jobs = db.execute(select(Job).where(Job.ticket_id == ticket.id)).scalars().all()
+    return all(job.status == "completed" for job in jobs)
+
+
+def _maybe_close_recovered_monitor_ticket(db: Session, ticket: Ticket) -> None:
+    from . import psa
+    if ticket.assignee or psa.is_closed(db, ticket) or not _ticket_remediation_finished(db, ticket):
+        return
+    states = db.execute(select(ConditionState).where(ConditionState.ticket_id == ticket.id)).scalars().all()
+    if not states or any(state.triggered or state.resolved_at is None for state in states):
+        return
+    psa.add_note(db, ticket, "rmm-monitor",
+                 "Monitoring has recovered and all linked remediation jobs completed successfully.",
+                 kind="resolution")
+    psa.set_status(db, ticket, "Resolved", "rmm-monitor")
+
+
 def refresh_job(db: Session, job_id: str) -> None:
     job = db.get(Job, job_id)
     if job is None or job.status not in {"running"}:
@@ -222,12 +245,28 @@ def refresh_job(db: Session, job_id: str) -> None:
     open_count = summary.get("pending", 0) + summary.get("dispatched", 0)
     if open_count:
         return
-    failed, done, cancelled = summary.get("failed", 0), summary.get("completed", 0), summary.get("cancelled", 0)
-    if done == 0 and failed == 0 and cancelled:
+    failed = summary.get("failed", 0) + summary.get("expired", 0)
+    done, cancelled = summary.get("completed", 0), summary.get("cancelled", 0)
+    skipped = summary.get("skipped", 0)
+    if done == 0 and failed == 0 and cancelled and not skipped:
         job.status = "cancelled"
+    elif failed == 0 and cancelled == 0 and skipped == 0:
+        job.status = "completed"
+    elif done == 0 and failed:
+        job.status = "failed"
     else:
-        job.status = "completed" if failed == 0 else ("failed" if done == 0 else "partial")
+        job.status = "partial"
     job.finished_at = utcnow()
+    if job.ticket_id:
+        ticket = db.get(Ticket, job.ticket_id)
+        if ticket is not None and ticket.account_tenant_id == job.tenant_id:
+            from . import psa
+            psa.add_note(db, ticket, "rmm-job",
+                         f"RMM job '{job.name}' finished: {job.status}. "
+                         f"{done} completed, {failed} failed/expired, {cancelled} cancelled, "
+                         f"{skipped} skipped. Job reference: {job.id}.",
+                         kind="internal")
+            _maybe_close_recovered_monitor_ticket(db, ticket)
 
 
 # --------------------------------------------------------------------------- command results
@@ -733,30 +772,36 @@ def _trigger(db: Session, condition: MonitorCondition, device: Device, state: Co
     db.add(alert)
     db.flush()
     state.alert_id = alert.id
+    # Create the linked ticket first, even if it appears after a remediation
+    # action in the user's rule order. All remediation jobs then share its ID.
+    for action in condition.actions or []:
+        if action.get("type") != "ticket" or state.ticket_id:
+            continue
+        priority = action.get("priority") or services.PRIORITY_BY_SEVERITY.get(condition.severity, "P3")
+        ticket = services.open_ticket(db, device.tenant_id, title, f"Raised by monitor '{condition.name}'.\n\n{message}",
+                                      priority, "rmm", "rmm-monitor", device_id=device.id,
+                                      queue=str(action.get("board") or "Service Desk"))
+        db.flush()
+        state.ticket_id = ticket.id
     for action in condition.actions or []:
         kind = action.get("type")
         if kind == "ticket":
-            priority = action.get("priority") or services.PRIORITY_BY_SEVERITY.get(condition.severity, "P3")
-            ticket = services.open_ticket(db, device.tenant_id, title, f"Raised by monitor '{condition.name}'.\n\n{message}",
-                                          priority, "rmm", "rmm-monitor", device_id=device.id,
-                                          queue=str(action.get("board") or "Service Desk"))
-            db.flush()
-            state.ticket_id = ticket.id
+            continue
         elif kind == "script":
             script = db.get(Script, action.get("scriptId"))
             if script is not None and device.platform in (script.platforms or []):
                 try:
                     run_script(db, script=script, devices=[device], actor=f"monitor:{condition.name}", tenant_id=device.tenant_id,
-                               parameters=action.get("parameters") or {}, name=f"Self-heal: {script.name}")
+                               parameters=action.get("parameters") or {}, name=f"Self-heal: {script.name}",
+                               ticket_id=state.ticket_id)
                 except ValueError as exc:
                     log.warning("self-heal script failed validation: %s", exc)
         elif kind == "command" and action.get("command"):
-            try:
-                services.enqueue_command(db, device, str(action["command"]), f"monitor:{condition.name}",
-                                         target_path=str(action.get("targetPath") or condition.target or ""),
-                                         payload=action.get("payload") or {}, reason=title)
-            except services.CommandError as exc:
-                log.info("monitor command skipped: %s", exc)
+            create_job(db, tenant_id=device.tenant_id, actor=f"monitor:{condition.name}",
+                       name=f"Self-heal: {condition.name}", devices=[device],
+                       command_type=str(action["command"]),
+                       target_path=str(action.get("targetPath") or condition.target or ""),
+                       payload=action.get("payload") or {}, ticket_id=state.ticket_id)
         elif kind == "webhook":
             services.fire_webhooks(db, device.tenant_id, "monitor.triggered",
                                    {"title": title, "severity": condition.severity, "device": device.hostname})
@@ -769,6 +814,7 @@ def _trigger(db: Session, condition: MonitorCondition, device: Device, state: Co
 
 def _clear(db: Session, condition: MonitorCondition, device: Device, state: ConditionState, now: datetime) -> None:
     state.resolved_at = now
+    state.triggered = False  # Persist recovery before checking linked ticket/job states.
     if not condition.auto_resolve:
         return
     if state.alert_id:
@@ -777,11 +823,22 @@ def _clear(db: Session, condition: MonitorCondition, device: Device, state: Cond
             alert.status, alert.updated_at = "resolved", now
     if state.ticket_id:
         ticket = db.get(Ticket, state.ticket_id)
-        if ticket is not None and ticket.status not in {"Resolved", "Closed"}:
-            ticket.comments = (ticket.comments or []) + [{"at": now.isoformat(), "by": "rmm-monitor", "internal": False,
-                                                          "kind": "resolution",
-                                                          "text": f"Condition '{condition.name}' cleared automatically."}]
-            ticket.status, ticket.resolved_at, ticket.updated_at = "Resolved", now, now
+        if ticket is not None and ticket.device_id == device.id and ticket.source == "rmm":
+            from . import psa
+            if not psa.is_closed(db, ticket):
+                # A technician-assigned ticket requires a human resolution.
+                if ticket.assignee:
+                    psa.add_note(db, ticket, "rmm-monitor",
+                                 f"Condition '{condition.name}' recovered. Ticket remains open for its assigned technician.",
+                                 kind="internal")
+                else:
+                    if not _ticket_remediation_finished(db, ticket):
+                        psa.add_note(db, ticket, "rmm-monitor",
+                                     f"Condition '{condition.name}' recovered, but linked RMM work has not "
+                                     "all completed successfully. The ticket remains open for review.",
+                                     kind="internal")
+                    else:
+                        _maybe_close_recovered_monitor_ticket(db, ticket)
 
 
 def record_heartbeat_metrics(db: Session, device: Device, metrics: dict) -> None:
@@ -831,6 +888,32 @@ def evaluate_offline(db: Session, now: datetime | None = None) -> int:
     return count
 
 
+MAX_PENDING_COMMAND_DAYS = 7
+
+
+def expire_stale_queued_commands(db: Session, now: datetime | None = None) -> int:
+    """Expire only commands that were NEVER delivered to an endpoint.
+
+    Already-dispatched work may have executed; those commands deliberately stay
+    outstanding for durable-result reconciliation instead of being re-issued.
+    """
+    now = now or utcnow()
+    cutoff = now - timedelta(days=MAX_PENDING_COMMAND_DAYS)
+    query = select(Command).where(Command.status == "pending", Command.created_at < cutoff)
+    if db.bind is not None and db.bind.dialect.name == "postgresql":
+        query = query.with_for_update(skip_locked=True)
+    expired = db.execute(query).scalars().all()
+    for command in expired:
+        command.status = "expired"
+        command.updated_at = command.completed_at = now
+        command.result = {"error": "Queued command expired before endpoint delivery",
+                          "expiredWithoutExecution": True}
+        job_id = (command.payload or {}).get("jobId")
+        if job_id:
+            refresh_job(db, job_id)
+    return len(expired)
+
+
 def tick(db: Session) -> dict:
     """One scheduler pass: due tasks, offline monitors, patch windows and scans."""
     now = utcnow()
@@ -839,6 +922,7 @@ def tick(db: Session) -> dict:
     from . import vulnmgmt
 
     result["vulnerabilityAcceptancesExpired"] = vulnmgmt.expire_acceptances(db, now)
+    result["undeliveredCommandsExpired"] = expire_stale_queued_commands(db, now)
     cutoff = now - timedelta(days=30)
     db.query(DeviceMetric).filter(DeviceMetric.at < cutoff).delete()
     return result

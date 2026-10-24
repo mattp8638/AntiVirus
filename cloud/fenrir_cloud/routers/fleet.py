@@ -8,12 +8,12 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from .. import audit, policy_schema, services
+from .. import audit, policy_schema, rmm, services
 from ..commands import BY_TYPE, catalog_document
 from ..config import get_settings
 from ..db import get_db
 from ..deps import Principal, current_principal, scoped_tenant
-from ..models import (AgentRelease, Alert, Command, Device, DeviceGroup, Event, Policy, SoftwareItem, Tenant, Vulnerability,
+from ..models import (AgentRelease, Alert, Command, Configuration, Device, DeviceGroup, Event, Policy, RemoteSession, SoftwareItem, Tenant, Vulnerability,
                       utcnow)
 from ..serialize import apply_fields, to_dict
 
@@ -109,10 +109,13 @@ def update_device(device_id: str, body: dict = Body(...), principal: Principal =
                   db: Session = Depends(get_db)):
     principal.require("configure")
     device = _get_device(db, principal, device_id)
-    if "tenantId" in body:
-        principal.require("manage_tenants")
-        principal.check_tenant(body["tenantId"])
-        device.tenant_id = body["tenantId"]
+    if "tenantId" in body and body["tenantId"] != device.tenant_id:
+        raise HTTPException(409, "An enrolled device cannot move customers without retirement and fresh enrollment.")
+    if body.get("approved") is False:
+        raise HTTPException(409, "Use the device retirement action to revoke credentials and preserve asset history.")
+    if body.get("approved") is True and device.api_key_hash == f"retired-{device.id}":
+        raise HTTPException(409, "Retired devices require fresh enrollment credentials.")
+    if body.get("approved") is True:
         device.approved = True
     if body.get("groupId"):
         group = db.get(DeviceGroup, body["groupId"])
@@ -134,6 +137,29 @@ def update_device(device_id: str, body: dict = Body(...), principal: Principal =
 def retire_device(device_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("configure")
     device = _get_device(db, principal, device_id)
+    in_flight = db.execute(select(Command).where(
+        Command.device_id == device.id, Command.status == "dispatched")).first()
+    if in_flight:
+        raise HTTPException(409, "This device has in-flight work. Reconcile command outcomes before retirement.")
+    active_support = db.execute(select(RemoteSession).where(
+        RemoteSession.device_id == device.id,
+        RemoteSession.status.in_(("waiting", "connected")))).first()
+    if active_support:
+        raise HTTPException(409, "End active remote support sessions before retiring this device.")
+    affected_jobs: set[str] = set()
+    for command in db.execute(select(Command).where(
+            Command.device_id == device.id, Command.status == "pending")).scalars():
+        command.status, command.updated_at = "cancelled", utcnow()
+        job_id = (command.payload or {}).get("jobId")
+        if job_id:
+            affected_jobs.add(job_id)
+    for job_id in affected_jobs:
+        rmm.refresh_job(db, job_id)
+    # Preserve historical ownership; never leave retired endpoints active in CMDB.
+    for asset in db.execute(select(Configuration).where(
+            Configuration.device_id == device.id)).scalars():
+        asset.status = "Retired"
+        asset.updated_at = utcnow()
     device.approved = False
     device.api_key_hash = f"retired-{device.id}"
     audit.record(db, principal.actor, "device.retired", device.hostname, device.tenant_id)

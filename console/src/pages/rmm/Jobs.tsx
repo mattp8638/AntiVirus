@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { ago, api, fmtTime } from "../../api";
 import { useApp } from "../../app-context";
 import { describeTargets, emptyTargets, JobDetail, JobStatus, TargetPicker, Targets } from "../../components/rmm";
@@ -6,9 +7,11 @@ import { Modal, PageHead, Pill, Table, Tabs, useAction, useData } from "../../co
 
 export default function Jobs() {
   const { tenantId, tenantName } = useApp();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [tab, setTab] = useState("Activity");
   const { data, reload } = useData<any[]>("rmm/jobs", { tenant_id: tenantId });
-  const [jobId, setJobId] = useState<string | null>(null);
+  const [jobId, setJobId] = useState<string | null>(searchParams.get("job"));
+  useEffect(() => { const linked = searchParams.get("job"); if (linked) { setTab("Activity"); setJobId(linked); } }, [searchParams]);
   useEffect(() => { const t = window.setInterval(reload, 8000); return () => window.clearInterval(t); }, [reload]);
   return (
     <>
@@ -24,7 +27,7 @@ export default function Jobs() {
                            { key: "createdAt", label: "Started", render: (j) => ago(j.createdAt) }]} />
         </div>
       ) : <ScheduledTasks />}
-      {jobId && <JobDetail jobId={jobId} onClose={() => { setJobId(null); reload(); }} />}
+      {jobId && <JobDetail jobId={jobId} onClose={() => { setJobId(null); if (searchParams.has("job")) { setSearchParams({}); } reload(); }} />}
     </>
   );
 }

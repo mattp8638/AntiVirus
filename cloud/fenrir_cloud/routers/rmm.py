@@ -199,7 +199,9 @@ def _job_view(db: Session, job: Job, detail: bool = False) -> dict:
 def list_jobs(tenant_id: str | None = None, device_id: str | None = Query(default=None, alias="deviceId"), limit: int = 200,
               principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     scope = scoped_tenant(principal, tenant_id)
-    rows = db.execute(select(Job).where(or_(Job.tenant_id.in_(scope), Job.created_by == principal.actor))
+    # Creator identity never overrides current tenant authorisation: access
+    # may be revoked or the technician reassigned to another MSP.
+    rows = db.execute(select(Job).where(Job.tenant_id.in_(scope))
                       .order_by(Job.created_at.desc()).limit(min(limit, 1000))).scalars().all()
     if device_id:
         rows = [r for r in rows if device_id in (r.command_ids or {})]
@@ -209,7 +211,7 @@ def list_jobs(tenant_id: str | None = None, device_id: str | None = Query(defaul
 @router.get("/jobs/{job_id}")
 def get_job(job_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     job = db.get(Job, job_id)
-    if job is None or (job.tenant_id not in principal.tenant_ids and job.created_by != principal.actor):
+    if job is None or job.tenant_id not in principal.tenant_ids:
         raise HTTPException(404, "Not found")
     return _job_view(db, job, detail=True)
 
@@ -255,11 +257,17 @@ def cancel_job(job_id: str, principal: Principal = Depends(current_principal), d
         command.status, command.updated_at = "cancelled", utcnow()
         cancelled += 1
     rmm.refresh_job(db, job.id)
-    if job.status == "running":
-        job.status, job.finished_at = "cancelled", utcnow()
-    audit.record(db, principal.actor, "rmm.job.cancelled", job.name, job.tenant_id, commands=cancelled)
+    # A command already dispatched to an endpoint cannot be recalled safely.
+    # Leave the job running until the real agent result is received rather
+    # than falsely telling technicians that executing work was cancelled.
+    in_flight = db.execute(select(Command).where(
+        Command.id.in_(list((job.command_ids or {}).values())),
+        Command.status == "dispatched")).scalars().all()
+    audit.record(db, principal.actor, "rmm.job.cancel.requested", job.name, job.tenant_id,
+                 cancelledPending=cancelled, alreadyDispatched=len(in_flight))
     db.commit()
-    return _job_view(db, job)
+    return {**_job_view(db, job), "cancelledPending": cancelled,
+            "alreadyDispatched": len(in_flight), "cancellationComplete": not bool(in_flight)}
 
 
 # --------------------------------------------------------------------------- scheduled tasks
@@ -355,13 +363,45 @@ def list_conditions(principal: Principal = Depends(current_principal), db: Sessi
     return {"metrics": rmm.METRICS, "conditions": [{**to_dict(r), "triggered": triggered.get(r.id, 0)} for r in rows]}
 
 
-def _check_condition(cond: MonitorCondition) -> None:
+def _check_condition(cond: MonitorCondition, db: Session, principal: Principal) -> None:
     if cond.metric not in rmm.METRICS:
         raise HTTPException(400, f"metric must be one of {sorted(rmm.METRICS)}")
     if cond.operator not in rmm.OPS:
         raise HTTPException(400, "operator must be one of > < >= <= == !=")
     if cond.severity not in {"low", "medium", "high", "critical", "info"}:
         raise HTTPException(400, "invalid severity")
+    if not isinstance(cond.actions, list) or len(cond.actions) > 12:
+        raise HTTPException(400, "monitor actions must be a list of at most 12 actions")
+    for action in cond.actions:
+        if not isinstance(action, dict):
+            raise HTTPException(400, "monitor action must be an object")
+        kind = action.get("type")
+        if kind not in {"ticket", "script", "command", "webhook", "email"}:
+            raise HTTPException(400, f"unsupported monitor action: {kind}")
+        if kind == "script":
+            script = db.get(Script, action.get("scriptId")) if action.get("scriptId") else None
+            if script is None or not _visible(principal, script):
+                raise HTTPException(400, "monitor self-heal script does not exist or is not accessible")
+            if cond.tenant_id is not None and script.tenant_id not in {
+                None, cond.tenant_id, services.msp_tenant_id(db, cond.tenant_id),
+            }:
+                raise HTTPException(400, "monitor script belongs to an unrelated customer")
+            if cond.tenant_id is None and script.tenant_id is not None:
+                raise HTTPException(400, "global monitors may only use global scripts")
+            try:
+                rmm.validate_parameters(script, action.get("parameters") or {})
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+        if kind == "command":
+            spec = BY_TYPE.get(action.get("command"))
+            if spec is None or action.get("command") in {"script.run", "remote.session.start", "remote.session.end"}:
+                raise HTTPException(400, "invalid command in monitor action")
+            if "targetPath" in spec.needs and not (action.get("targetPath") or cond.target):
+                raise HTTPException(400, "monitor command needs a target path")
+            if "recordId" in spec.needs:
+                raise HTTPException(400, "monitor command requires an explicit record ID and cannot run automatically")
+        if kind == "email" and not action.get("to"):
+            raise HTTPException(400, "monitor email action needs a recipient")
 
 
 @router.post("/conditions")
@@ -373,7 +413,7 @@ def create_condition(body: dict = Body(...), principal: Principal = Depends(curr
                             target="", scope={}, actions=[], severity="medium", operator=">", threshold=0, duration_minutes=5,
                             enabled=True, auto_resolve=True)
     apply_fields(cond, body, CONDITION_FIELDS)
-    _check_condition(cond)
+    _check_condition(cond, db, principal)
     db.add(cond)
     audit.record(db, principal.actor, "rmm.condition.created", cond.name, tenant_id)
     db.commit()
@@ -387,7 +427,7 @@ def update_condition(condition_id: str, body: dict = Body(...), principal: Princ
     cond = db.get(MonitorCondition, condition_id)
     _editable(principal, cond)
     changed = apply_fields(cond, body, CONDITION_FIELDS)
-    _check_condition(cond)
+    _check_condition(cond, db, principal)
     audit.record(db, principal.actor, "rmm.condition.updated", cond.name, cond.tenant_id, fields=changed)
     db.commit()
     return to_dict(cond)

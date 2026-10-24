@@ -2,6 +2,16 @@ cmake_minimum_required(VERSION 3.24)
 
 project(AntiVirusAgentService LANGUAGES C CXX)
 
+# Windows SDK min/max macros corrupt std::min/std::max declarations across
+# MSVC builds. Keep NOMINMAX on every C++ Windows target and dependency.
+add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN WINVER=0x0A00 _WIN32_WINNT=0x0A00 NTDDI_VERSION=0x0A000000)
+
+# Source files contain Unicode phishing-homoglyph rules: MSVC must decode
+# repository source as UTF-8 rather than the runner's system code page.
+if(MSVC)
+  add_compile_options(/utf-8)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -133,7 +143,9 @@ add_executable(fenrir-remote WIN32
 )
 target_include_directories(fenrir-remote PRIVATE include ../shared/include)
 target_link_libraries(fenrir-remote PRIVATE winhttp gdiplus ole32 wtsapi32 advapi32 shell32 user32 gdi32)
-target_link_options(fenrir-remote PRIVATE -municode)
+if(MINGW)
+  target_link_options(fenrir-remote PRIVATE -municode)
+endif()
 antivirus_set_runtime_output(fenrir-remote "${ANTIVIRUS_DEV_OUTPUT_ROOT}")
 antivirus_apply_portable_runtime(fenrir-remote)
 
@@ -158,6 +170,10 @@ target_include_directories(antivirus-amsi-provider PRIVATE
 )
 target_link_libraries(antivirus-amsi-provider PRIVATE antivirus-amsi-provider-core antivirus-agent-core ole32 advapi32)
 set_target_properties(antivirus-amsi-provider PROPERTIES OUTPUT_NAME "fenrir-amsi-provider" PREFIX "")
+if(MSVC)
+  target_link_options(antivirus-amsi-provider PRIVATE
+    "/DEF:${CMAKE_CURRENT_SOURCE_DIR}/../provider/amsi/AmsiExports.def")
+endif()
 antivirus_set_runtime_output(antivirus-amsi-provider "${ANTIVIRUS_DEV_OUTPUT_ROOT}")
 antivirus_apply_portable_runtime(antivirus-amsi-provider)
 
@@ -166,7 +182,9 @@ add_executable(antivirus-agent-service
 )
 
 target_link_libraries(antivirus-agent-service PRIVATE antivirus-agent-core advapi32)
-target_link_options(antivirus-agent-service PRIVATE -municode)
+if(MINGW)
+  target_link_options(antivirus-agent-service PRIVATE -municode)
+endif()
 set_target_properties(antivirus-agent-service PROPERTIES OUTPUT_NAME "fenrir-agent-service")
 antivirus_set_runtime_output(antivirus-agent-service "${ANTIVIRUS_DEV_OUTPUT_ROOT}")
 antivirus_apply_portable_runtime(antivirus-agent-service)
@@ -179,7 +197,9 @@ add_executable(antivirus-endpoint-client WIN32
 target_include_directories(antivirus-endpoint-client PRIVATE include ../third_party/webview2/include)
 target_link_libraries(antivirus-endpoint-client PRIVATE antivirus-agent-core comctl32 ole32 uxtheme dwmapi)
 target_compile_definitions(antivirus-endpoint-client PRIVATE UNICODE _UNICODE)
-target_link_options(antivirus-endpoint-client PRIVATE -municode)
+if(MINGW)
+  target_link_options(antivirus-endpoint-client PRIVATE -municode)
+endif()
 set_target_properties(antivirus-endpoint-client PROPERTIES OUTPUT_NAME "fenrir-endpoint-client")
 antivirus_set_runtime_output(antivirus-endpoint-client "${ANTIVIRUS_DEV_OUTPUT_ROOT}")
 antivirus_apply_portable_runtime(antivirus-endpoint-client)
@@ -202,7 +222,9 @@ add_executable(antivirus-pam-client WIN32
 target_include_directories(antivirus-pam-client PRIVATE include)
 target_link_libraries(antivirus-pam-client PRIVATE comdlg32 comctl32 shell32)
 target_compile_definitions(antivirus-pam-client PRIVATE UNICODE _UNICODE)
-target_link_options(antivirus-pam-client PRIVATE -municode)
+if(MINGW)
+  target_link_options(antivirus-pam-client PRIVATE -municode)
+endif()
 set_target_properties(antivirus-pam-client PROPERTIES OUTPUT_NAME "fenrir-pam")
 antivirus_set_runtime_output(antivirus-pam-client "${ANTIVIRUS_DEV_OUTPUT_ROOT}")
 antivirus_apply_portable_runtime(antivirus-pam-client)
@@ -213,7 +235,9 @@ add_executable(antivirus-scannercli
 
 target_include_directories(antivirus-scannercli PRIVATE include)
 target_link_libraries(antivirus-scannercli PRIVATE antivirus-agent-core)
-target_link_options(antivirus-scannercli PRIVATE -municode)
+if(MINGW)
+  target_link_options(antivirus-scannercli PRIVATE -municode)
+endif()
 set_target_properties(antivirus-scannercli PROPERTIES OUTPUT_NAME "fenrir-scannercli")
 antivirus_set_runtime_output(antivirus-scannercli "${ANTIVIRUS_DEV_TOOLS_OUTPUT_ROOT}")
 antivirus_apply_portable_runtime(antivirus-scannercli)
@@ -227,7 +251,9 @@ target_include_directories(antivirus-amsitestcli PRIVATE
   ../provider/amsi/include
 )
 target_link_libraries(antivirus-amsitestcli PRIVATE antivirus-amsi-provider-core antivirus-agent-core ole32)
-target_link_options(antivirus-amsitestcli PRIVATE -municode)
+if(MINGW)
+  target_link_options(antivirus-amsitestcli PRIVATE -municode)
+endif()
 set_target_properties(antivirus-amsitestcli PROPERTIES OUTPUT_NAME "fenrir-amsitestcli")
 antivirus_set_runtime_output(antivirus-amsitestcli "${ANTIVIRUS_DEV_TOOLS_OUTPUT_ROOT}")
 antivirus_apply_portable_runtime(antivirus-amsitestcli)
@@ -241,7 +267,9 @@ target_include_directories(antivirus-etwtestcli PRIVATE
   ../sensor/etw/include
 )
 target_link_libraries(antivirus-etwtestcli PRIVATE antivirus-agent-core)
-target_link_options(antivirus-etwtestcli PRIVATE -municode)
+if(MINGW)
+  target_link_options(antivirus-etwtestcli PRIVATE -municode)
+endif()
 set_target_properties(antivirus-etwtestcli PROPERTIES OUTPUT_NAME "fenrir-etwtestcli")
 antivirus_set_runtime_output(antivirus-etwtestcli "${ANTIVIRUS_DEV_TOOLS_OUTPUT_ROOT}")
 antivirus_apply_portable_runtime(antivirus-etwtestcli)
@@ -255,7 +283,9 @@ target_include_directories(antivirus-wfptestcli PRIVATE
   ../sensor/wfp/include
 )
 target_link_libraries(antivirus-wfptestcli PRIVATE antivirus-agent-core)
-target_link_options(antivirus-wfptestcli PRIVATE -municode)
+if(MINGW)
+  target_link_options(antivirus-wfptestcli PRIVATE -municode)
+endif()
 set_target_properties(antivirus-wfptestcli PROPERTIES OUTPUT_NAME "fenrir-wfptestcli")
 antivirus_set_runtime_output(antivirus-wfptestcli "${ANTIVIRUS_DEV_TOOLS_OUTPUT_ROOT}")
 antivirus_apply_portable_runtime(antivirus-wfptestcli)
@@ -293,7 +323,13 @@ file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/driver/AntivirusMinifilter.inf"
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/driver/AntivirusMinifilter.sys" SETUP_DRIVER_SYS_FILE)
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/driver/AntivirusMinifilter.cat" SETUP_DRIVER_CAT_FILE)
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/driver/README.md" SETUP_DRIVER_README_FILE)
-file(TO_CMAKE_PATH "${SETUP_WINPTHREAD_DLL}" SETUP_WINPTHREAD_DLL_CMAKE)
+set(SETUP_WINPTHREAD_RESOURCE_LINE "")
+set(SETUP_WINPTHREAD_RESOURCE_DEPENDENCY "")
+if(MINGW)
+  file(TO_CMAKE_PATH "${SETUP_WINPTHREAD_DLL}" SETUP_WINPTHREAD_DLL_CMAKE)
+  set(SETUP_WINPTHREAD_RESOURCE_LINE "IDR_PAYLOAD_WINPTHREAD RCDATA \"${SETUP_WINPTHREAD_DLL_CMAKE}\"")
+  set(SETUP_WINPTHREAD_RESOURCE_DEPENDENCY "${SETUP_WINPTHREAD_DLL_CMAKE}")
+endif()
 
 if(ANTIVIRUS_REQUIRE_MINIFILTER_PAYLOAD)
   foreach(required_driver_payload
@@ -304,6 +340,21 @@ if(ANTIVIRUS_REQUIRE_MINIFILTER_PAYLOAD)
       message(FATAL_ERROR "Required staged minifilter payload is missing: ${required_driver_payload}")
     endif()
   endforeach()
+endif()
+
+set(SETUP_DRIVER_INF_RESOURCE_LINE "")
+set(SETUP_DRIVER_README_RESOURCE_LINE "")
+set(SETUP_DRIVER_INF_DEPENDENCY "")
+set(SETUP_DRIVER_README_DEPENDENCY "")
+if(EXISTS "${SETUP_DRIVER_INF_FILE}")
+  set(SETUP_DRIVER_INF_RESOURCE_LINE
+      "IDR_PAYLOAD_DRIVER_INF RCDATA \"${SETUP_DRIVER_INF_FILE}\"")
+  set(SETUP_DRIVER_INF_DEPENDENCY "${SETUP_DRIVER_INF_FILE}")
+endif()
+if(EXISTS "${SETUP_DRIVER_README_FILE}")
+  set(SETUP_DRIVER_README_RESOURCE_LINE
+      "IDR_PAYLOAD_DRIVER_README RCDATA \"${SETUP_DRIVER_README_FILE}\"")
+  set(SETUP_DRIVER_README_DEPENDENCY "${SETUP_DRIVER_README_FILE}")
 endif()
 
 set(SETUP_DRIVER_SYS_RESOURCE_LINE "")
@@ -348,11 +399,11 @@ IDR_PAYLOAD_AMSITESTCLI RCDATA \"${SETUP_AMSITESTCLI_EXE}\"\n\
 IDR_PAYLOAD_ETWTESTCLI RCDATA \"${SETUP_ETWTESTCLI_EXE}\"\n\
 IDR_PAYLOAD_WFPTESTCLI RCDATA \"${SETUP_WFPTESTCLI_EXE}\"\n\
 IDR_PAYLOAD_SIGNATURES RCDATA \"${SETUP_SIGNATURES_FILE}\"\n\
-IDR_PAYLOAD_DRIVER_INF RCDATA \"${SETUP_DRIVER_INF_FILE}\"\n\
-IDR_PAYLOAD_DRIVER_README RCDATA \"${SETUP_DRIVER_README_FILE}\"\n\
+${SETUP_DRIVER_INF_RESOURCE_LINE}\n\
+${SETUP_DRIVER_README_RESOURCE_LINE}\n\
 ${SETUP_DRIVER_SYS_RESOURCE_LINE}\n\
 ${SETUP_DRIVER_CAT_RESOURCE_LINE}\n\
-IDR_PAYLOAD_WINPTHREAD RCDATA \"${SETUP_WINPTHREAD_DLL_CMAKE}\"\n")
+${SETUP_WINPTHREAD_RESOURCE_LINE}\n")
 
 set(SETUP_PAYLOAD_RC ${INSTALLER_GENERATED_DIR}/SetupPayload.rc)
 set(SETUP_PAYLOAD_DEPENDENCIES
@@ -367,10 +418,13 @@ set(SETUP_PAYLOAD_DEPENDENCIES
   ${SETUP_ETWTESTCLI_EXE}
   ${SETUP_WFPTESTCLI_EXE}
   ${SETUP_SIGNATURES_FILE}
-  ${SETUP_DRIVER_INF_FILE}
-  ${SETUP_DRIVER_README_FILE}
-  ${SETUP_WINPTHREAD_DLL_CMAKE}
+  ${SETUP_WINPTHREAD_RESOURCE_DEPENDENCY}
 )
+foreach(optional_driver_dependency SETUP_DRIVER_INF_DEPENDENCY SETUP_DRIVER_README_DEPENDENCY)
+  if(${optional_driver_dependency})
+    list(APPEND SETUP_PAYLOAD_DEPENDENCIES "${${optional_driver_dependency}}")
+  endif()
+endforeach()
 if(SETUP_DRIVER_SYS_DEPENDENCY)
   list(APPEND SETUP_PAYLOAD_DEPENDENCIES ${SETUP_DRIVER_SYS_DEPENDENCY})
 endif()
@@ -410,7 +464,9 @@ if(MINGW)
   target_link_libraries(antivirus-setup PRIVATE -Wl,-Bstatic stdc++ -Wl,-Bdynamic)
 endif()
 target_compile_definitions(antivirus-setup PRIVATE UNICODE _UNICODE)
-target_link_options(antivirus-setup PRIVATE -municode -static)
+if(MINGW)
+  target_link_options(antivirus-setup PRIVATE -municode -static)
+endif()
 set_target_properties(antivirus-setup PROPERTIES OUTPUT_NAME "FenrirSetup")
 antivirus_set_runtime_output(antivirus-setup "${ANTIVIRUS_INSTALL_OUTPUT_ROOT}")
 antivirus_apply_portable_runtime(antivirus-setup)

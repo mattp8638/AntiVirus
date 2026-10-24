@@ -34,6 +34,17 @@ std::wstring GetModulePath(HMODULE moduleHandle) {
 
 }  // namespace
 
+}  // namespace antivirus::agent
+
+// COM entry points must be global C exports, matching combaseapi.h declarations.
+// MSVC exports these through AmsiExports.def: SDK declarations cannot gain dllexport.
+#ifdef _MSC_VER
+#define FENRIR_AMSI_COM_EXPORT
+#else
+#define FENRIR_AMSI_COM_EXPORT __declspec(dllexport)
+#endif
+using namespace antivirus::agent;
+
 extern "C" BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
   if (reason == DLL_PROCESS_ATTACH) {
     DisableThreadLibraryCalls(instance);
@@ -42,7 +53,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
   return TRUE;
 }
 
-extern "C" __declspec(dllexport) HRESULT __stdcall DllGetClassObject(REFCLSID clsid, REFIID riid, void** object) {
+extern "C" FENRIR_AMSI_COM_EXPORT HRESULT __stdcall DllGetClassObject(REFCLSID clsid, REFIID riid, void** object) {
   if (!InlineIsEqualGUID(clsid, CLSID_AntiVirusAmsiProvider)) {
     return CLASS_E_CLASSNOTAVAILABLE;
   }
@@ -50,7 +61,7 @@ extern "C" __declspec(dllexport) HRESULT __stdcall DllGetClassObject(REFCLSID cl
   return CreateAntiVirusAmsiProviderClassFactory(riid, object);
 }
 
-extern "C" __declspec(dllexport) HRESULT __stdcall DllCanUnloadNow() {
+extern "C" FENRIR_AMSI_COM_EXPORT HRESULT __stdcall DllCanUnloadNow() {
   return CanAntiVirusAmsiProviderUnloadNow() ? S_OK : S_FALSE;
 }
 
@@ -93,4 +104,3 @@ extern "C" __declspec(dllexport) HRESULT __stdcall DllUnregisterServer() {
   return S_OK;
 }
 
-}  // namespace antivirus::agent

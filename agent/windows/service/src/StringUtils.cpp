@@ -1,6 +1,7 @@
 #include "StringUtils.h"
 
 #include <Windows.h>
+#include <objbase.h>  // Explicit COM GUID declarations for lean Windows headers
 
 #include <algorithm>
 #include <cctype>

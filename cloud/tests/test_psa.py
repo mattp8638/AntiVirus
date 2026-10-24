@@ -209,8 +209,12 @@ def test_dispatch_schedule_and_conflicts(client, admin, tenant):
 
 
 def test_configurations_sync_quotes_and_merge(client, admin, tenant, device):
+    # Enrollment now syncs a customer-scoped CMDB asset automatically.
+    automatically_created = client.get("/api/console/psa/configurations", headers=admin,
+                                       params={"accountTenantId": tenant["id"]}).json()
+    assert len(automatically_created) == 1
     synced = client.post("/api/console/psa/configurations/sync", headers=admin, json={}).json()
-    assert synced["created"] == 1
+    assert synced == {"created": 0, "updated": 1}
     assert client.post("/api/console/psa/configurations/sync", headers=admin, json={}).json() == {"created": 0, "updated": 1}
     configs = client.get("/api/console/psa/configurations", headers=admin, params={"accountTenantId": tenant["id"]}).json()
     assert configs[0]["deviceId"] == device["deviceId"] and configs[0]["type"] == "Workstation"
