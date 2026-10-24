@@ -1,0 +1,4 @@
+LIBRARY fenrir-amsi-provider
+EXPORTS
+  DllGetClassObject
+  DllCanUnloadNow
