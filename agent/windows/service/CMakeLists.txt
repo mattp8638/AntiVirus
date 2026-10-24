@@ -2,6 +2,10 @@ cmake_minimum_required(VERSION 3.24)
 
 project(AntiVirusAgentService LANGUAGES C CXX)
 
+# Windows SDK min/max macros corrupt std::min/std::max declarations across
+# MSVC builds. Keep NOMINMAX on every C++ Windows target and dependency.
+add_compile_definitions(NOMINMAX)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
