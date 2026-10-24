@@ -430,3 +430,26 @@ def test_retired_device_can_reenroll_only_with_fresh_token_and_restores_existing
     assert len(assets) == 1 and assets[0]["status"] == "Active"
     assert client.post(f"/api/v1/devices/{dev_id}/heartbeat", headers=device["headers"],
                        json={}).status_code == 401
+
+
+def test_monitor_action_validation_prevents_cross_customer_scripts_and_bad_commands(client, admin, tenant, device):
+    other = client.post("/api/console/tenants", headers=admin,
+                        json={"name": "Action isolation customer"}).json()
+    private_script = client.post("/api/console/rmm/scripts", headers=admin, json={
+        "tenantId": other["id"], "name": "Other customer's maintenance script",
+        "language": "powershell", "body": "Write-Output 'test'"
+    })
+    assert private_script.status_code == 200, private_script.text
+    bad_actions = [
+        [{"type": "script", "scriptId": private_script.json()["id"]}],
+        [{"type": "command", "command": "nonexistent.command"}],
+        [{"type": "command", "command": "remote.session.start"}],
+        [{"type": "script", "scriptId": "scr_does_not_exist"}],
+        [{"type": "email"}],
+        [{"type": "unsupported_action"}],
+    ]
+    for actions in bad_actions:
+        result = client.post("/api/console/rmm/conditions", headers=admin, json={
+            "name": "Reject invalid action", "metric": "cpu", "operator": ">",
+            "threshold": 90, "tenantId": tenant["id"], "actions": actions})
+        assert result.status_code == 400, (actions, result.text)
