@@ -228,15 +228,25 @@ def refresh_job(db: Session, job_id: str) -> None:
         return
     failed = summary.get("failed", 0) + summary.get("expired", 0)
     done, cancelled = summary.get("completed", 0), summary.get("cancelled", 0)
-    if done == 0 and failed == 0 and cancelled:
+    skipped = summary.get("skipped", 0)
+    if done == 0 and failed == 0 and cancelled and not skipped:
         job.status = "cancelled"
-    elif failed == 0 and cancelled == 0:
+    elif failed == 0 and cancelled == 0 and skipped == 0:
         job.status = "completed"
     elif done == 0 and failed:
         job.status = "failed"
     else:
         job.status = "partial"
     job.finished_at = utcnow()
+    if job.ticket_id:
+        ticket = db.get(Ticket, job.ticket_id)
+        if ticket is not None and ticket.account_tenant_id == job.tenant_id:
+            from . import psa
+            psa.add_note(db, ticket, "rmm-job",
+                         f"RMM job '{job.name}' finished: {job.status}. "
+                         f"{done} completed, {failed} failed/expired, {cancelled} cancelled, "
+                         f"{skipped} skipped. Job reference: {job.id}.",
+                         kind="internal")
 
 
 # --------------------------------------------------------------------------- command results
