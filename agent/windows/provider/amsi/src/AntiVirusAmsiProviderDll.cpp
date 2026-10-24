@@ -34,6 +34,11 @@ std::wstring GetModulePath(HMODULE moduleHandle) {
 
 }  // namespace
 
+}  // namespace antivirus::agent
+
+// COM entry points must be global C exports, matching combaseapi.h declarations.
+using namespace antivirus::agent;
+
 extern "C" BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
   if (reason == DLL_PROCESS_ATTACH) {
     DisableThreadLibraryCalls(instance);
@@ -93,4 +98,3 @@ extern "C" __declspec(dllexport) HRESULT __stdcall DllUnregisterServer() {
   return S_OK;
 }
 
-}  // namespace antivirus::agent
