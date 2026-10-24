@@ -2329,10 +2329,10 @@ bool InstallPayloadFiles(HWND hwnd, UiContext* context, const bool repair, std::
       {IDR_PAYLOAD_WINPTHREAD, kToolsWinpthreadRelativePath, 76, L"Installing tool runtime dependencies", kRequiresWinpthreadRuntime},
       {IDR_PAYLOAD_WEBVIEW2_LOADER, kWebView2LoaderDllName, 80, L"Installing WebView2 runtime loader", true},
       {IDR_PAYLOAD_SIGNATURES, kSignatureBundleRelativePath, 84, L"Installing signature bundle", true},
-      {IDR_PAYLOAD_DRIVER_INF, kDriverInfRelativePath, 88, L"Installing minifilter deployment metadata", true},
+      {IDR_PAYLOAD_DRIVER_INF, kDriverInfRelativePath, 88, L"Installing minifilter deployment metadata", false},
       {IDR_PAYLOAD_DRIVER_SYS, kDriverSysRelativePath, 90, L"Installing minifilter driver payload", false},
       {IDR_PAYLOAD_DRIVER_CAT, kDriverCatRelativePath, 92, L"Installing minifilter catalog payload", false},
-      {IDR_PAYLOAD_DRIVER_README, kDriverReadmeRelativePath, 94, L"Installing minifilter documentation", true},
+      {IDR_PAYLOAD_DRIVER_README, kDriverReadmeRelativePath, 94, L"Installing minifilter documentation", false},
   };
 
   for (const auto& item : payloadItems) {
