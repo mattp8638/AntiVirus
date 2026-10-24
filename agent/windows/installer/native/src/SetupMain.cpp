@@ -724,7 +724,8 @@ bool EnsureDirectory(const std::filesystem::path& path, std::wstring* errorMessa
 bool ExtractResourceToFile(HINSTANCE instance, int resourceId, const std::filesystem::path& targetPath,
                            std::wstring* errorMessage);
 bool RunProcessHidden(const std::filesystem::path& executable, const std::wstring& arguments,
-                      const std::filesystem::path& workingDirectory, DWORD* exitCode, std::wstring* errorMessage);
+                      const std::filesystem::path& workingDirectory, DWORD* exitCode, std::wstring* errorMessage,
+                      const std::wstring* privateEnrollmentToken = nullptr);
 bool WaitForServiceStateByName(const wchar_t* serviceName, DWORD targetState, DWORD timeoutMs);
 bool WaitForServiceState(DWORD targetState, DWORD timeoutMs);
 bool StartServiceByName(const wchar_t* serviceName, DWORD timeoutMs, std::wstring* errorMessage,
@@ -1056,11 +1057,40 @@ bool ExtractResourceToFile(HINSTANCE instance, const int resourceId, const std::
 }
 
 bool RunProcessHidden(const std::filesystem::path& executable, const std::wstring& arguments,
-                      const std::filesystem::path& workingDirectory, DWORD* exitCode, std::wstring* errorMessage) {
+                      const std::filesystem::path& workingDirectory, DWORD* exitCode, std::wstring* errorMessage,
+                      const std::wstring* privateEnrollmentToken) {
   std::wstring commandLine = QuotePath(executable);
   if (!arguments.empty()) {
     commandLine += L" ";
     commandLine += arguments;
+  }
+
+  // The enrollment credential is inherited only by this short-lived child
+  // process; it never appears on its command line or in an SCM ImagePath.
+  std::vector<wchar_t> privateEnvironment;
+  if (privateEnrollmentToken != nullptr) {
+    const auto original = GetEnvironmentStringsW();
+    if (original == nullptr) {
+      if (errorMessage != nullptr) *errorMessage = L"Could not read setup process environment.";
+      return false;
+    }
+    std::vector<std::wstring> entries;
+    constexpr wchar_t kPrivateTokenName[] = L"FENRIR_SETUP_ENROLLMENT_TOKEN=";
+    for (const wchar_t* entry = original; *entry; entry += std::wcslen(entry) + 1) {
+      if (_wcsnicmp(entry, kPrivateTokenName, std::size(kPrivateTokenName) - 1) != 0) {
+        entries.emplace_back(entry);
+      }
+    }
+    FreeEnvironmentStringsW(original);
+    entries.emplace_back(std::wstring(kPrivateTokenName) + *privateEnrollmentToken);
+    std::sort(entries.begin(), entries.end(), [](const std::wstring& left, const std::wstring& right) {
+      return _wcsicmp(left.c_str(), right.c_str()) < 0;
+    });
+    for (const auto& entry : entries) {
+      privateEnvironment.insert(privateEnvironment.end(), entry.begin(), entry.end());
+      privateEnvironment.push_back(L'\0');
+    }
+    privateEnvironment.push_back(L'\0');
   }
 
   STARTUPINFOW startupInfo{};
@@ -1090,9 +1120,13 @@ bool RunProcessHidden(const std::filesystem::path& executable, const std::wstrin
   auto mutableCommandLine = commandLine;
   const auto launched = CreateProcessW(nullptr, mutableCommandLine.data(), nullptr, nullptr,
                                        outputCaptureHandle != INVALID_HANDLE_VALUE,
-                                       CREATE_NO_WINDOW, nullptr,
+                                       CREATE_NO_WINDOW | (privateEnrollmentToken != nullptr ? CREATE_UNICODE_ENVIRONMENT : 0),
+                                       privateEnvironment.empty() ? nullptr : privateEnvironment.data(),
                                        workingDirectory.empty() ? nullptr : workingDirectory.c_str(),
                                        &startupInfo, &processInfo);
+  if (!privateEnvironment.empty()) {
+    SecureZeroMemory(privateEnvironment.data(), privateEnvironment.size() * sizeof(wchar_t));
+  }
   if (outputCaptureHandle != INVALID_HANDLE_VALUE) {
     CloseHandle(outputCaptureHandle);
   }
@@ -2437,12 +2471,11 @@ void RunInstallOrRepair(HWND hwnd, UiContext* context, const bool repair) {
   PostLog(hwnd, repair ? L"Running service repair" : L"Installing the protection service");
   std::wstring serviceArgs = repair ? L"--repair" : L"--install";
   if (!context->enrollmentToken.empty()) {
-    // Save the customer/cloud association before the service starts. Do not
-    // print the token to the UI logs or include it in an error message.
-    serviceArgs = L"--install --server \"" + context->controlPlaneBaseUrl +
-                  L"\" --enroll-token \"" + context->enrollmentToken + L"\"";
+    // Do not reveal a customer enrollment token in process command-line metadata.
+    serviceArgs = L"--install --server \"" + context->controlPlaneBaseUrl + L"\"";
   }
-  if (!RunProcessHidden(serviceExe, serviceArgs, context->installRoot, &exitCode, &errorMessage)) {
+  const std::wstring* privateToken = context->enrollmentToken.empty() ? nullptr : &context->enrollmentToken;
+  if (!RunProcessHidden(serviceExe, serviceArgs, context->installRoot, &exitCode, &errorMessage, privateToken)) {
     PostComplete(hwnd, false, false, false, errorMessage);
     return;
   }
