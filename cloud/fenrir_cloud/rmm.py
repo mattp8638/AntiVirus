@@ -737,30 +737,36 @@ def _trigger(db: Session, condition: MonitorCondition, device: Device, state: Co
     db.add(alert)
     db.flush()
     state.alert_id = alert.id
+    # Create the linked ticket first, even if it appears after a remediation
+    # action in the user's rule order. All remediation jobs then share its ID.
+    for action in condition.actions or []:
+        if action.get("type") != "ticket" or state.ticket_id:
+            continue
+        priority = action.get("priority") or services.PRIORITY_BY_SEVERITY.get(condition.severity, "P3")
+        ticket = services.open_ticket(db, device.tenant_id, title, f"Raised by monitor '{condition.name}'.\n\n{message}",
+                                      priority, "rmm", "rmm-monitor", device_id=device.id,
+                                      queue=str(action.get("board") or "Service Desk"))
+        db.flush()
+        state.ticket_id = ticket.id
     for action in condition.actions or []:
         kind = action.get("type")
         if kind == "ticket":
-            priority = action.get("priority") or services.PRIORITY_BY_SEVERITY.get(condition.severity, "P3")
-            ticket = services.open_ticket(db, device.tenant_id, title, f"Raised by monitor '{condition.name}'.\n\n{message}",
-                                          priority, "rmm", "rmm-monitor", device_id=device.id,
-                                          queue=str(action.get("board") or "Service Desk"))
-            db.flush()
-            state.ticket_id = ticket.id
+            continue
         elif kind == "script":
             script = db.get(Script, action.get("scriptId"))
             if script is not None and device.platform in (script.platforms or []):
                 try:
                     run_script(db, script=script, devices=[device], actor=f"monitor:{condition.name}", tenant_id=device.tenant_id,
-                               parameters=action.get("parameters") or {}, name=f"Self-heal: {script.name}")
+                               parameters=action.get("parameters") or {}, name=f"Self-heal: {script.name}",
+                               ticket_id=state.ticket_id)
                 except ValueError as exc:
                     log.warning("self-heal script failed validation: %s", exc)
         elif kind == "command" and action.get("command"):
-            try:
-                services.enqueue_command(db, device, str(action["command"]), f"monitor:{condition.name}",
-                                         target_path=str(action.get("targetPath") or condition.target or ""),
-                                         payload=action.get("payload") or {}, reason=title)
-            except services.CommandError as exc:
-                log.info("monitor command skipped: %s", exc)
+            create_job(db, tenant_id=device.tenant_id, actor=f"monitor:{condition.name}",
+                       name=f"Self-heal: {condition.name}", devices=[device],
+                       command_type=str(action["command"]),
+                       target_path=str(action.get("targetPath") or condition.target or ""),
+                       payload=action.get("payload") or {}, ticket_id=state.ticket_id)
         elif kind == "webhook":
             services.fire_webhooks(db, device.tenant_id, "monitor.triggered",
                                    {"title": title, "severity": condition.severity, "device": device.hostname})
