@@ -31,6 +31,10 @@ RUN cmake -S agent/windows/service -B /build -G Ninja \
     && cmake --build /build --target antivirus-setup --parallel 2 \
     && mkdir -p /out/windows \
     && cp agent/windows/out/install/FenrirSetup.exe /out/windows/
+# Setup must start on a clean Windows host before extracting any resources.
+RUN x86_64-w64-mingw32-objdump -p /out/windows/FenrirSetup.exe > /out/windows/imports.txt \\
+    && if grep -Ei 'DLL Name:.*(libwinpthread|libgcc|libstdc++)' /out/windows/imports.txt; then \\
+         echo "ERROR: setup depends on an external compiler runtime"; exit 1; fi
 RUN python3 -c 'import hashlib,json,pathlib; p=pathlib.Path("/out/windows/FenrirSetup.exe"); p.with_name("build.json").write_text(json.dumps({"sha256":hashlib.sha256(p.read_bytes()).hexdigest(),"platform":"windows-x64","mode":"unsigned-hobby"}))'
 
 FROM python:3.13-slim-bookworm
