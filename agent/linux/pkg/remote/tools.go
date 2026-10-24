@@ -64,9 +64,17 @@ func (s *Session) handleTerm(t string, m Message) {
 		}
 		cmd := exec.Command(shell, "-l")
 		cmd.Env = append(os.Environ(), "TERM=xterm-256color", "FENRIR_REMOTE_SESSION="+s.opts.SessionID)
-		cmd.Dir = "/root"
-		if _, err := os.Stat(cmd.Dir); err != nil {
-			cmd.Dir = "/"
+		// The service may run as a dedicated non-root account. Testing
+		// whether /root exists does NOT prove we may traverse it: a shell
+		// otherwise fails with "fork/exec /bin/sh: permission denied".
+		cmd.Dir = "/"
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			if dir, err := os.Open(home); err == nil {
+				if info, statErr := dir.Stat(); statErr == nil && info.IsDir() {
+					cmd.Dir = home
+				}
+				_ = dir.Close()
+			}
 		}
 		size := &pty.Winsize{Cols: uint16(clamp(int(m.num("cols")), 20, 500, 120)), Rows: uint16(clamp(int(m.num("rows")), 5, 300, 32))}
 		ptmx, err := pty.StartWithSize(cmd, size)
