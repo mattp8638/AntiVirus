@@ -19,7 +19,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o
 # customer download. There are no proprietary compilers or signing costs.
 FROM debian:bookworm-slim AS windows-agent
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates cmake ninja-build python3 gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
+    ca-certificates cmake ninja-build python3 gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix \
     binutils-mingw-w64-x86-64 \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
@@ -30,8 +30,8 @@ RUN python3 /src/deploy/prepare_mingw_headers.py \
       /usr/x86_64-w64-mingw32/include /src/agent/windows /opt/fenrir-windows-compat
 RUN cmake -S agent/windows/service -B /tmp/fenrir-windows-build -G Ninja \
       -DCMAKE_SYSTEM_NAME=Windows \
-      -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
-      -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
+      -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc-posix \
+      -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++-posix \
       -DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres \
       -DCMAKE_C_FLAGS=-I/opt/fenrir-windows-compat \
       -DCMAKE_CXX_FLAGS=-I/opt/fenrir-windows-compat \
