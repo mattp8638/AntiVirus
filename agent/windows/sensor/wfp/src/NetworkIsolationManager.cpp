@@ -4,7 +4,6 @@
 #include <Windows.h>
 #include <fwpmu.h>
 #include <iphlpapi.h>
-#include <tcpmib.h>  // MIB_TCP6TABLE_OWNER_PID for IPv6 process attribution (MSVC SDK)
 #include <sddl.h>
 #include <winhttp.h>
 #include <ws2tcpip.h>
