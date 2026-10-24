@@ -183,6 +183,7 @@ def retry_failed(db: Session, job: Job, actor: str) -> int:
     command_ids = dict(job.command_ids or {})
     failed = db.execute(select(Command).where(Command.id.in_(list(command_ids.values())),
                                               Command.status.in_(("failed", "expired")))).scalars().all()
+    history = list((job.payload or {}).get("retryHistory") or [])
     retried = 0
     for old in failed:
         device = db.get(Device, old.device_id)
@@ -195,12 +196,15 @@ def retry_failed(db: Session, job: Job, actor: str) -> int:
         except services.CommandError:
             continue
         db.flush()
+        history.append({"deviceId": device.id, "previousCommandId": old.id, "newCommandId": command.id,
+                        "at": utcnow().isoformat(), "by": actor})
         command_ids[device.id] = command.id
         retried += 1
     if retried:
         job.command_ids = command_ids
         job.status, job.finished_at = "running", None
-        job.payload = {**(job.payload or {}), "retries": int((job.payload or {}).get("retries", 0)) + 1}
+        job.payload = {**(job.payload or {}), "retries": int((job.payload or {}).get("retries", 0)) + 1,
+                       "retryHistory": history}
     audit.record(db, actor, "rmm.job.retried", job.name, job.tenant_id, commands=retried)
     return retried
 
@@ -777,11 +781,19 @@ def _clear(db: Session, condition: MonitorCondition, device: Device, state: Cond
             alert.status, alert.updated_at = "resolved", now
     if state.ticket_id:
         ticket = db.get(Ticket, state.ticket_id)
-        if ticket is not None and ticket.status not in {"Resolved", "Closed"}:
-            ticket.comments = (ticket.comments or []) + [{"at": now.isoformat(), "by": "rmm-monitor", "internal": False,
-                                                          "kind": "resolution",
-                                                          "text": f"Condition '{condition.name}' cleared automatically."}]
-            ticket.status, ticket.resolved_at, ticket.updated_at = "Resolved", now, now
+        if ticket is not None and ticket.device_id == device.id and ticket.source == "rmm":
+            from . import psa
+            if not psa.is_closed(db, ticket):
+                # A technician-assigned ticket requires a human resolution.
+                if ticket.assignee:
+                    psa.add_note(db, ticket, "rmm-monitor",
+                                 f"Condition '{condition.name}' recovered. Ticket remains open for its assigned technician.",
+                                 kind="internal")
+                else:
+                    psa.add_note(db, ticket, "rmm-monitor",
+                                 f"Condition '{condition.name}' cleared automatically.",
+                                 kind="resolution")
+                    psa.set_status(db, ticket, "Resolved", "rmm-monitor")
 
 
 def record_heartbeat_metrics(db: Session, device: Device, metrics: dict) -> None:
