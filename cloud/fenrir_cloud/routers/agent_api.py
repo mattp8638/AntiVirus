@@ -224,10 +224,18 @@ def complete_command(command_id: str, body: dict = Body(...), device: Device = D
         raise HTTPException(409, "Command is not active")
     command.status = requested_status
     raw = body.get("resultJson")
+    if isinstance(raw, str) and len(raw) > 1_048_576:
+        raise HTTPException(413, "Command result exceeds the maximum size")
     try:
-        command.result = json.loads(raw) if isinstance(raw, str) and raw else (raw or {})
+        result = json.loads(raw) if isinstance(raw, str) and raw else (raw or {})
     except json.JSONDecodeError:
-        command.result = {"raw": raw}
+        raise HTTPException(422, "Command result must be valid JSON") from None
+    if not isinstance(result, dict):
+        raise HTTPException(422, "Command result must be a JSON object")
+    if isinstance(result.get("exitCode"), int) and result["exitCode"] != 0:
+        requested_status = "failed"
+        command.status = "failed"
+    command.result = result
     command.completed_at = command.updated_at = utcnow()
     if command.type == "device.isolate" and command.status == "completed":
         device.isolated = True
