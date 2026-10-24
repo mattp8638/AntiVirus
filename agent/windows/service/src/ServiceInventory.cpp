@@ -4,6 +4,7 @@
 #include <winsvc.h>
 
 #include <algorithm>
+#include <cwctype>
 #include <initializer_list>
 #include <memory>
 #include <string>
