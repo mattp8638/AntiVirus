@@ -7,7 +7,7 @@ import mimetypes
 import secrets
 import sys
 import threading
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import timedelta
 from pathlib import Path
 
@@ -91,31 +91,63 @@ def _maintenance_loop(settings: Settings, stop: threading.Event) -> None:
             db.close()
 
 
+@contextmanager
+def _scheduler_lease():
+    """Only one cloud worker may run scheduled MSP operations at a time.
+
+    PostgreSQL session advisory locks survive the intermediate commits used by
+    the existing scheduler. Hold a *dedicated connection* throughout the pass
+    and release the lock on that same connection on every exit.
+    """
+    engine = database.engine()
+    if engine.dialect.name != "postgresql":
+        # SQLite remains supported for single-process local development only.
+        yield True
+        return
+    lock_key = 726191904221
+    with engine.connect() as lock_connection:
+        acquired = bool(lock_connection.exec_driver_sql(
+            f"SELECT pg_try_advisory_lock({lock_key})").scalar())
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                lock_connection.exec_driver_sql(
+                    f"SELECT pg_advisory_unlock({lock_key})")
+            lock_connection.rollback()
+
+
 def _scheduler_loop(stop: threading.Event, interval: float = 30.0) -> None:
-    """Every 30 seconds: scheduled tasks, monitors, patch windows, PSA timed workflows, remote session expiry, inbound mail."""
+    """Periodic MSP jobs are single-owner across PostgreSQL API workers."""
     passes = 0
     while not stop.wait(interval):
-        passes += 1
-        db = database.session_factory()()
         try:
-            rmm.tick(db)
-            psa.timed_workflows(db)
-            remote.expire_sessions(db)
-            db.commit()
-            events.process(db)  # cross-module automation, with retries
-            db.commit()
-            from . import network
-            network.tick(db)
-            if passes % 4 == 0:
-                msp = db.execute(select(Tenant).where(Tenant.kind == "msp")).scalars().first()
-                if msp is not None:
-                    psa.poll_imap(db, msp.id)
-            db.commit()
-        except Exception as exc:  # noqa: BLE001 - keep the loop alive
-            log.warning("scheduler pass failed: %s", exc)
-            db.rollback()
-        finally:
-            db.close()
+            with _scheduler_lease() as acquired:
+                if not acquired:
+                    continue
+                passes += 1
+                db = database.session_factory()()
+                try:
+                    rmm.tick(db)
+                    psa.timed_workflows(db)
+                    remote.expire_sessions(db)
+                    db.commit()
+                    events.process(db)
+                    db.commit()
+                    from . import network
+                    network.tick(db)
+                    if passes % 4 == 0:
+                        msp = db.execute(select(Tenant).where(Tenant.kind == "msp")).scalars().first()
+                        if msp is not None:
+                            psa.poll_imap(db, msp.id)
+                    db.commit()
+                except Exception as exc:
+                    log.warning("scheduler pass failed: %s", exc)
+                    db.rollback()
+                finally:
+                    db.close()
+        except Exception as exc:
+            log.warning("scheduler lease could not be acquired/released: %s", exc)
 
 
 LINUX_INSTALLER = r"""#!/bin/sh
