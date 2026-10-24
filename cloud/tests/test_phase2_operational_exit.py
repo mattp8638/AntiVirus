@@ -123,3 +123,51 @@ def test_remote_ticket_must_match_device_customer_and_device_binding(client, adm
     good = client.post("/api/console/remote/sessions", headers=admin, json={
         "deviceId": device["deviceId"], "ticketId": ticket["id"]})
     assert good.status_code == 200, good.text
+
+
+def test_monitor_ticket_contains_verified_remediation_job_outcome(client, admin, tenant, device):
+    """Actions may be configured before the ticket; job remains linked."""
+    rule = client.post("/api/console/rmm/conditions", headers=admin, json={
+        "name": "Disk action trace", "tenantId": tenant["id"],
+        "metric": "disk_free_percent", "operator": "<", "threshold": 10,
+        "durationMinutes": 0, "actions": [
+            {"type": "command", "command": "inventory.refresh"},
+            {"type": "ticket"},
+        ],
+    })
+    assert rule.status_code == 200, rule.text
+    beat = client.post(f"/api/v1/devices/{device['deviceId']}/heartbeat", headers=device["headers"], json={
+        "metrics": {"disks": [{"mount": "C:", "totalGb": 100, "freeGb": 2, "freePercent": 2}]}})
+    assert beat.status_code == 200, beat.text
+    tickets = client.get("/api/console/tickets", headers=admin).json()
+    ticket = next(t for t in tickets if t["source"] == "rmm")
+    detail = client.get(f"/api/console/tickets/{ticket['id']}", headers=admin).json()
+    assert len(detail["rmmJobs"]) == 1
+    job = detail["rmmJobs"][0]
+    assert job["ticketId"] == ticket["id"]
+    [command] = client.get(f"/api/v1/devices/{device['deviceId']}/commands/pending",
+                           headers=device["headers"]).json()["items"]
+    assert command["type"] == "inventory.refresh"
+    completed = client.post(f"/api/v1/devices/{device['deviceId']}/commands/{command['id']}/complete",
+                            headers=device["headers"], json={"status": "completed", "resultJson": {"exitCode": 0}})
+    assert completed.status_code == 200, completed.text
+    refreshed = client.get(f"/api/console/tickets/{ticket['id']}", headers=admin).json()
+    assert refreshed["rmmJobs"][0]["status"] == "completed"
+    assert refreshed["rmmJobs"][0]["summary"]["completed"] == 1
+
+
+def test_approved_device_updates_asset_automatically_from_heartbeat(client, admin, tenant, device):
+    endpoint = "/api/console/psa/configurations"
+    before = client.get(endpoint, headers=admin, params={"accountTenantId": tenant["id"]}).json()
+    assert len(before) == 1
+    original_id = before[0]["id"]
+    response = client.post(f"/api/v1/devices/{device['deviceId']}/heartbeat",
+                           headers=device["headers"], json={"metrics": {
+                           "manufacturer": "Lenovo", "model": "ThinkPad Test",
+                           "cpuPercent": 11, "memoryPercent": 17}})
+    assert response.status_code == 200, response.text
+    after = client.get(endpoint, headers=admin, params={"accountTenantId": tenant["id"]}).json()
+    assert len(after) == 1
+    assert after[0]["id"] == original_id
+    assert after[0]["manufacturer"] == "Lenovo"
+    assert after[0]["model"] == "ThinkPad Test"
