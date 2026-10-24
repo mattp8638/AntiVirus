@@ -282,3 +282,47 @@ def test_reassigned_technician_cannot_read_old_customer_job_outputs(client, admi
     exposed = client.get("/api/console/rmm/jobs", headers=engineer)
     assert exposed.status_code == 200
     assert job_id not in [j["id"] for j in exposed.json()]
+
+
+def test_device_retirement_revokes_agent_key_cancels_work_and_preserves_asset(client, admin, tenant, device):
+    identity = device["deviceId"]
+    new_customer = client.post("/api/console/tenants", headers=admin,
+                               json={"name": "Device destination"}).json()
+    move = client.patch(f"/api/console/devices/{identity}", headers=admin,
+                        json={"tenantId": new_customer["id"]})
+    assert move.status_code == 409
+    unsafe = client.patch(f"/api/console/devices/{identity}", headers=admin,
+                          json={"approved": False})
+    assert unsafe.status_code == 409
+
+    job = client.post("/api/console/rmm/jobs", headers=admin,
+                      json={"commandType": "inventory.refresh", "targets": {"deviceIds": [identity]}})
+    assert job.status_code == 200, job.text
+    retired = client.delete(f"/api/console/devices/{identity}", headers=admin)
+    assert retired.status_code == 200, retired.text
+    heartbeat = client.post(f"/api/v1/devices/{identity}/heartbeat",
+                            headers=device["headers"], json={"healthState": "healthy"})
+    assert heartbeat.status_code == 401
+    completed = client.get(f"/api/console/rmm/jobs/{job.json()['id']}", headers=admin).json()
+    assert completed["status"] == "cancelled"
+    assets = client.get("/api/console/psa/configurations", headers=admin,
+                        params={"accountTenantId": tenant["id"]}).json()
+    assert len(assets) == 1 and assets[0]["status"] == "Retired"
+    assert assets[0]["deviceId"] == identity
+
+
+def test_device_retirement_waits_for_command_reconciliation(client, admin, tenant, device):
+    job = client.post("/api/console/rmm/jobs", headers=admin,
+                      json={"commandType": "inventory.refresh", "targets": {"deviceIds": [device["deviceId"]]}})
+    assert job.status_code == 200
+    [running] = client.get(f"/api/v1/devices/{device['deviceId']}/commands/pending",
+                           headers=device["headers"]).json()["items"]
+    blocked = client.delete(f"/api/console/devices/{device['deviceId']}", headers=admin)
+    assert blocked.status_code == 409
+    still_online = client.post(f"/api/v1/devices/{device['deviceId']}/heartbeat",
+                               headers=device["headers"], json={"healthState": "healthy"})
+    assert still_online.status_code == 200
+    completed = client.post(f"/api/v1/devices/{device['deviceId']}/commands/{running['id']}/complete",
+                            headers=device["headers"], json={"status": "completed", "resultJson": {}})
+    assert completed.status_code == 200
+    assert client.delete(f"/api/console/devices/{device['deviceId']}", headers=admin).status_code == 200
