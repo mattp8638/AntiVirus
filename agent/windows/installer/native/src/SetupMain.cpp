@@ -9,6 +9,7 @@
 #include <wincrypt.h>
 #include <wrl/client.h>
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <chrono>
@@ -74,8 +75,8 @@ constexpr DWORD kPnpUtilUntrustedRootExitCode = static_cast<DWORD>(CERT_E_UNTRUS
 constexpr DWORD kPnpUtilNoMoreItemsExitCode = ERROR_NO_MORE_ITEMS;
 constexpr DWORD kWin32InvalidImageHashError = 577;
 constexpr DWORD kWin32DriverBlockedError = 1275;
-constexpr DWORD kWin32VirusInfectedError = ERROR_VIRUS_INFECTED;
-constexpr DWORD kWin32VirusDeletedError = ERROR_VIRUS_DELETED;
+constexpr DWORD kWin32VirusInfectedError = 225;  // ERROR_VIRUS_INFECTED, WinError.h
+constexpr DWORD kWin32VirusDeletedError = 226;   // ERROR_VIRUS_DELETED, WinError.h
 
 constexpr UINT kInstallerLogMessage = WM_APP + 1;
 constexpr UINT kInstallerStatusMessage = WM_APP + 2;
