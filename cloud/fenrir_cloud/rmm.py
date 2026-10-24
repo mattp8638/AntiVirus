@@ -814,6 +814,7 @@ def _trigger(db: Session, condition: MonitorCondition, device: Device, state: Co
 
 def _clear(db: Session, condition: MonitorCondition, device: Device, state: ConditionState, now: datetime) -> None:
     state.resolved_at = now
+    state.triggered = False  # Persist recovery before checking linked ticket/job states.
     if not condition.auto_resolve:
         return
     if state.alert_id:
