@@ -2308,6 +2308,13 @@ bool InstallPayloadFiles(HWND hwnd, UiContext* context, const bool repair, std::
     bool required;
   };
 
+#if defined(__MINGW32__)
+  constexpr bool kRequiresWinpthreadRuntime = true;
+#else
+  // MSVC binaries use the Microsoft runtime, never libwinpthread-1.dll.
+  constexpr bool kRequiresWinpthreadRuntime = false;
+#endif
+
   const std::vector<PayloadItem> payloadItems{
       {IDR_PAYLOAD_SERVICE, kServiceExeName, 15, L"Installing service binary", true},
       {IDR_PAYLOAD_ENDPOINT_CLIENT, kEndpointExeName, 25, L"Installing endpoint client", true},
@@ -2318,8 +2325,8 @@ bool InstallPayloadFiles(HWND hwnd, UiContext* context, const bool repair, std::
       {IDR_PAYLOAD_AMSITESTCLI, kToolsAmsiTestCliRelativePath, 60, L"Installing AMSI diagnostic tool", true},
       {IDR_PAYLOAD_ETWTESTCLI, kToolsEtwTestCliRelativePath, 64, L"Installing ETW diagnostic tool", true},
       {IDR_PAYLOAD_WFPTESTCLI, kToolsWfpTestCliRelativePath, 68, L"Installing WFP diagnostic tool", true},
-      {IDR_PAYLOAD_WINPTHREAD, kWinpthreadDllName, 72, L"Installing runtime dependencies", true},
-      {IDR_PAYLOAD_WINPTHREAD, kToolsWinpthreadRelativePath, 76, L"Installing tool runtime dependencies", true},
+      {IDR_PAYLOAD_WINPTHREAD, kWinpthreadDllName, 72, L"Installing runtime dependencies", kRequiresWinpthreadRuntime},
+      {IDR_PAYLOAD_WINPTHREAD, kToolsWinpthreadRelativePath, 76, L"Installing tool runtime dependencies", kRequiresWinpthreadRuntime},
       {IDR_PAYLOAD_WEBVIEW2_LOADER, kWebView2LoaderDllName, 80, L"Installing WebView2 runtime loader", true},
       {IDR_PAYLOAD_SIGNATURES, kSignatureBundleRelativePath, 84, L"Installing signature bundle", true},
       {IDR_PAYLOAD_DRIVER_INF, kDriverInfRelativePath, 88, L"Installing minifilter deployment metadata", true},
