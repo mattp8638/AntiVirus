@@ -99,13 +99,12 @@ def test_cmdb_rejects_cross_customer_devices_and_duplicate_assets(client, admin,
     bad = client.post(base, headers=admin, json={"accountTenantId": tenant["id"],
                         "name": "Wrong customer", "deviceId": other_device["deviceId"]})
     assert bad.status_code == 422
-    valid = client.post(base, headers=admin, json={"accountTenantId": tenant["id"],
-                          "name": "My workstation", "deviceId": device["deviceId"]})
-    assert valid.status_code == 200, valid.text
+    existing = client.get(base, headers=admin, params={"accountTenantId": tenant["id"]}).json()
+    assert len(existing) == 1 and existing[0]["deviceId"] == device["deviceId"]
     duplicate = client.post(base, headers=admin, json={"accountTenantId": tenant["id"],
                               "name": "Same machine twice", "deviceId": device["deviceId"]})
     assert duplicate.status_code == 409
-    updated = client.patch(f"{base}/{valid.json()['id']}", headers=admin,
+    updated = client.patch(f"{base}/{existing[0]['id']}", headers=admin,
                            json={"deviceId": other_device["deviceId"]})
     assert updated.status_code == 422
     assert client.get(f"{base}", headers=admin, params={"accountTenantId":tenant["id"]}).json()[0]["deviceId"] == device["deviceId"]
