@@ -194,10 +194,23 @@ def pending_commands(limit: int = Query(default=20, ge=1, le=100), device: Devic
 def complete_command(command_id: str, body: dict = Body(...), device: Device = Depends(current_device),
                      db: Session = Depends(get_db)):
     command = db.get(Command, command_id)
-    if command is None or command.device_id != device.id:
+    if command is None or command.device_id != device.id or command.tenant_id != device.tenant_id:
         raise HTTPException(404, "Unknown command")
     status = str(body.get("status") or "completed").lower()
-    command.status = "completed" if status in {"completed", "succeeded", "success", "ok"} else "failed"
+    if status not in {"completed", "succeeded", "success", "ok", "failed", "error"}:
+        raise HTTPException(422, "Invalid command completion status")
+    requested_status = "completed" if status in {"completed", "succeeded", "success", "ok"} else "failed"
+    # A network retry must never mutate a previously completed command, fire
+    # RMM callbacks twice, or turn a cancelled action into 'completed'.
+    if command.status in {"completed", "failed"}:
+        if command.status != requested_status:
+            raise HTTPException(409, "Command was already completed with a different outcome")
+        return {"id": command.id, "status": command.status, "duplicate": True}
+    if command.status in {"cancelled", "expired"}:
+        raise HTTPException(409, "Command can no longer be completed")
+    if command.status not in {"pending", "dispatched"}:
+        raise HTTPException(409, "Command is not active")
+    command.status = requested_status
     raw = body.get("resultJson")
     try:
         command.result = json.loads(raw) if isinstance(raw, str) and raw else (raw or {})
