@@ -467,9 +467,9 @@ target_include_directories(antivirus-setup PRIVATE
   ${INSTALLER_NATIVE_DIR}/src
 )
 target_link_libraries(antivirus-setup PRIVATE comctl32 ole32 shell32 advapi32 crypt32 dwmapi)
-if(MINGW)
-  target_link_libraries(antivirus-setup PRIVATE -Wl,-Bstatic stdc++ -Wl,-Bdynamic)
-endif()
+# Keep the runtime fully static. A trailing -Bdynamic here overrides -static
+# for implicit runtime libraries and makes setup require libwinpthread-1.dll
+# before it can extract any embedded payload.
 target_compile_definitions(antivirus-setup PRIVATE UNICODE _UNICODE)
 if(MINGW)
   target_link_options(antivirus-setup PRIVATE -municode -static)
