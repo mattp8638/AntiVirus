@@ -158,6 +158,8 @@ def test_monitor_ticket_contains_verified_remediation_job_outcome(client, admin,
     refreshed = client.get(f"/api/console/tickets/{ticket['id']}", headers=admin).json()
     assert refreshed["rmmJobs"][0]["status"] == "completed"
     assert refreshed["rmmJobs"][0]["summary"]["completed"] == 1
+    assert any(job["id"] in note.get("text", "") and "completed" in note.get("text", "")
+               for note in refreshed["comments"])
 
 
 def test_approved_device_updates_asset_automatically_from_heartbeat(client, admin, tenant, device):
@@ -326,3 +328,24 @@ def test_device_retirement_waits_for_command_reconciliation(client, admin, tenan
                             headers=device["headers"], json={"status": "completed", "resultJson": {}})
     assert completed.status_code == 200
     assert client.delete(f"/api/console/devices/{device['deviceId']}", headers=admin).status_code == 200
+
+
+def test_mixed_platform_script_does_not_claim_complete_success_when_targets_skipped(client, admin, tenant, device):
+    linux = enroll(client, admin, tenant, hostname="linux-skipped", os_version="Ubuntu 24.04",
+                   serial="SKIP-LINUX-01")
+    script = client.post("/api/console/rmm/scripts", headers=admin, json={
+        "name": "Windows-only safe diagnostic", "language": "powershell", "body": "Write-Output 'ok'"
+    })
+    assert script.status_code == 200, script.text
+    job = client.post(f"/api/console/rmm/scripts/{script.json()['id']}/run", headers=admin,
+                      json={"targets": {"deviceIds": [device["deviceId"], linux["deviceId"]]}})
+    assert job.status_code == 200, job.text
+    assert job.json()["summary"]["skipped"] == 1
+    [command] = client.get(f"/api/v1/devices/{device['deviceId']}/commands/pending",
+                           headers=device["headers"]).json()["items"]
+    completed = client.post(f"/api/v1/devices/{device['deviceId']}/commands/{command['id']}/complete",
+                            headers=device["headers"], json={"status": "completed", "resultJson": {"exitCode": 0}})
+    assert completed.status_code == 200, completed.text
+    final = client.get(f"/api/console/rmm/jobs/{job.json()['id']}", headers=admin).json()
+    assert final["status"] == "partial"
+    assert final["summary"]["completed"] == 1 and final["summary"]["skipped"] == 1
