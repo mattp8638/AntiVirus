@@ -6,6 +6,7 @@
 #include <tlhelp32.h>
 
 #include <algorithm>
+#include <cwctype>
 #include <array>
 #include <fstream>
 #include <map>
