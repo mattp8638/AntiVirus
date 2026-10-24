@@ -205,7 +205,12 @@ def pending_commands(limit: int = Query(default=20, ge=1, le=100), device: Devic
 @router.post("/devices/{device_id}/commands/{command_id}/complete")
 def complete_command(command_id: str, body: dict = Body(...), device: Device = Depends(current_device),
                      db: Session = Depends(get_db)):
-    command = db.get(Command, command_id)
+    query = select(Command).where(Command.id == command_id)
+    if db.bind is not None and db.bind.dialect.name == "postgresql":
+        # Lock the command until commit: concurrent agent retries must not
+        # trigger duplicate monitoring/RMM callbacks.
+        query = query.with_for_update()
+    command = db.execute(query).scalar_one_or_none()
     if command is None or command.device_id != device.id or command.tenant_id != device.tenant_id:
         raise HTTPException(404, "Unknown command")
     status = str(body.get("status") or "completed").lower()
