@@ -12,10 +12,10 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from .. import audit, psa, services
+from .. import audit, psa, rmm, services
 from ..db import get_db
 from ..deps import Principal, current_principal, scoped_tenant
-from ..models import (Board, Configuration, Contact, Contract, Device, KbArticle, Product, Project, Quote, RemoteSession,
+from ..models import (Board, Configuration, Contact, Contract, Device, Job, KbArticle, Product, Project, Quote, RemoteSession,
                       ScheduleEntry, Site, Tenant, Ticket, TimeEntry, WorkflowRule, utcnow)
 from ..serialize import apply_fields, to_dict
 
@@ -207,6 +207,10 @@ def get_ticket(ticket_id: str, principal: Principal = Depends(current_principal)
     view["contact"] = to_dict(db.get(Contact, ticket.contact_id)) if ticket.contact_id and db.get(Contact, ticket.contact_id) else None
     view["agreement"] = to_dict(db.get(Contract, ticket.agreement_id)) if ticket.agreement_id and db.get(Contract, ticket.agreement_id) else None
     view["remoteSessions"] = [to_dict(s) for s in db.execute(select(RemoteSession).where(RemoteSession.ticket_id == ticket.id)).scalars()]
+    view["rmmJobs"] = [{**to_dict(j), "summary": rmm.job_summary(db, j)}
+                       for j in db.execute(select(Job).where(Job.ticket_id == ticket.id,
+                                                            Job.tenant_id == ticket.account_tenant_id)
+                                           .order_by(Job.created_at.desc())).scalars()]
     view["children"] = [{"id": c.id, "number": c.number, "subject": c.subject, "status": c.status}
                         for c in db.execute(select(Ticket).where(Ticket.parent_id == ticket.id)).scalars()]
     return view
