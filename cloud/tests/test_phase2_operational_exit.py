@@ -408,3 +408,25 @@ def test_failed_remediation_leaves_recovered_monitor_ticket_open(client, admin, 
     current = client.get(f"/api/console/tickets/{ticket['id']}", headers=admin).json()
     assert current["status"] not in {"Resolved", "Closed"}
     assert current["rmmJobs"][0]["status"] == "failed"
+
+
+def test_retired_device_can_reenroll_only_with_fresh_token_and_restores_existing_asset(client, admin, tenant, device):
+    dev_id = device["deviceId"]
+    assert client.delete(f"/api/console/devices/{dev_id}", headers=admin).status_code == 200
+    assert client.post(f"/api/v1/devices/{dev_id}/heartbeat", headers=device["headers"],
+                       json={}).status_code == 401
+    new_token = client.post("/api/console/enrollment-tokens", headers=admin, json={
+        "tenantId": tenant["id"], "label": "Explicitly authorised recovery"
+    }).json()["token"]
+    recovered = client.post("/api/v1/enroll", json={
+        "hostname": "ACME-WS-01", "osVersion": "Windows 11 Pro", "platform": "windows",
+        "serialNumber": "SN-1", "enrollmentToken": new_token
+    })
+    assert recovered.status_code == 200, recovered.text
+    assert recovered.json()["deviceId"] == dev_id
+    assert recovered.json()["deviceApiKey"] != device["headers"]["X-Device-Api-Key"]
+    assets = client.get("/api/console/psa/configurations", headers=admin,
+                        params={"accountTenantId": tenant["id"]}).json()
+    assert len(assets) == 1 and assets[0]["status"] == "Active"
+    assert client.post(f"/api/v1/devices/{dev_id}/heartbeat", headers=device["headers"],
+                       json={}).status_code == 401
