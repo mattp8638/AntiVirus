@@ -170,6 +170,10 @@ target_include_directories(antivirus-amsi-provider PRIVATE
 )
 target_link_libraries(antivirus-amsi-provider PRIVATE antivirus-amsi-provider-core antivirus-agent-core ole32 advapi32)
 set_target_properties(antivirus-amsi-provider PROPERTIES OUTPUT_NAME "fenrir-amsi-provider" PREFIX "")
+if(MSVC)
+  target_link_options(antivirus-amsi-provider PRIVATE
+    "/DEF:${CMAKE_CURRENT_SOURCE_DIR}/../provider/amsi/AmsiExports.def")
+endif()
 antivirus_set_runtime_output(antivirus-amsi-provider "${ANTIVIRUS_DEV_OUTPUT_ROOT}")
 antivirus_apply_portable_runtime(antivirus-amsi-provider)
 
