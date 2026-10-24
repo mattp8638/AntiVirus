@@ -99,6 +99,8 @@ def sync_managed_device(db: Session, device: Device) -> str:
     version = (device.os_version or "").lower()
     config.type = "Server" if "server" in version else (
         "Workstation" if device.platform in {"windows", "macos"} else "Server")
+    if config.status == "Retired":
+        config.status = "Active"
     config.name = device.hostname
     config.os = device.os_version
     config.serial_number = device.serial_number
