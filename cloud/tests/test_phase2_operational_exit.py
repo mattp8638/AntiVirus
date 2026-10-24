@@ -251,3 +251,34 @@ def _check_secondary_scheduler_lease():
     from fenrir_cloud.main import _scheduler_lease
     with _scheduler_lease() as acquired:
         return acquired
+
+
+def test_reassigned_technician_cannot_read_old_customer_job_outputs(client, admin, tenant, device):
+    """Creator attribution does not grant permanent rights after tenant removal."""
+    from conftest import login
+    from fenrir_cloud.models import User
+
+    other = client.post("/api/console/tenants", headers=admin,
+                        json={"name": "New MSP service assignment"}).json()
+    created = client.post("/api/console/users", headers=admin, json={
+        "email": "transferred.technician@example.test", "password": "test-long-password-02",
+        "name": "Transferred technician", "role": "tenant_admin",
+        "tenantId": tenant["id"]})
+    assert created.status_code == 200, created.text
+    engineer = login(client, "transferred.technician@example.test", "test-long-password-02")
+    queued = client.post("/api/console/rmm/jobs", headers=engineer, json={
+        "commandType": "inventory.refresh", "targets": {
+            "deviceIds": [device["deviceId"]]}})
+    assert queued.status_code == 200, queued.text
+    job_id = queued.json()["id"]
+    session = database.session_factory()()
+    try:
+        member = session.get(User, created.json()["id"])
+        member.tenant_id = other["id"]
+        session.commit()
+    finally:
+        session.close()
+    assert client.get(f"/api/console/rmm/jobs/{job_id}", headers=engineer).status_code == 404
+    exposed = client.get("/api/console/rmm/jobs", headers=engineer)
+    assert exposed.status_code == 200
+    assert job_id not in [j["id"] for j in exposed.json()]
