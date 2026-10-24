@@ -5,10 +5,6 @@ on:
   pull_request:
     branches: ["main"]
 
-concurrency:
-  group: phase2-smoke-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 jobs:
   cloud-regressions:
     name: Cloud API and Phase 2 regressions (SQLite + PostgreSQL)
