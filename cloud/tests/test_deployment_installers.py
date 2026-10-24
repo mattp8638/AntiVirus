@@ -114,7 +114,7 @@ def test_windows_overlay_detects_invalid_data_and_corruption():
     with pytest.raises(ValueError):
         installer_overlay.inspect(exe[:-8])
     with pytest.raises(ValueError):
-        installer_overlay.personalise(template, "https://bad\\nserver", "fet_" + "x" * 24)
+        installer_overlay.personalise(template, "https://bad" + chr(10) + "server", "fet_" + "x" * 24)
     with pytest.raises(ValueError):
         installer_overlay.personalise(b"not-a-pe", "https://fenrir.test", "fet_" + "x" * 24)
 
