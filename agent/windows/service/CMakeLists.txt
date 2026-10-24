@@ -194,7 +194,7 @@ add_executable(antivirus-endpoint-client WIN32
   ../tools/endpointui/src/EndpointClientMain.cpp
 )
 
-target_include_directories(antivirus-endpoint-client PRIVATE include ../third_party/webview2/include)
+target_include_directories(antivirus-endpoint-client PRIVATE include ../third_party/webview2/include "${ANTIVIRUS_WINDOWS_ROOT}")
 target_link_libraries(antivirus-endpoint-client PRIVATE antivirus-agent-core comctl32 ole32 uxtheme dwmapi)
 target_compile_definitions(antivirus-endpoint-client PRIVATE UNICODE _UNICODE)
 if(MINGW)
@@ -214,7 +214,7 @@ add_executable(antivirus-pam-client WIN32
   ../tools/pamui/src/PamClientMain.cpp
 )
 
-target_include_directories(antivirus-pam-client PRIVATE include)
+target_include_directories(antivirus-pam-client PRIVATE include "${ANTIVIRUS_WINDOWS_ROOT}")
 target_link_libraries(antivirus-pam-client PRIVATE comdlg32 comctl32 shell32)
 target_compile_definitions(antivirus-pam-client PRIVATE UNICODE _UNICODE)
 if(MINGW)
@@ -446,6 +446,7 @@ add_dependencies(antivirus-setup
 
 target_include_directories(antivirus-setup PRIVATE
   ${INSTALLER_NATIVE_DIR}/include
+  "${ANTIVIRUS_WINDOWS_ROOT}"
 )
 target_link_libraries(antivirus-setup PRIVATE comctl32 ole32 shell32 advapi32 crypt32 dwmapi)
 if(MINGW)
