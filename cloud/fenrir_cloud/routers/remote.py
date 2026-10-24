@@ -50,6 +50,10 @@ def create_session(body: dict = Body(...), principal: Principal = Depends(curren
         ticket = db.get(Ticket, ticket_id)
         if ticket is None or (ticket.tenant_id not in principal.tenant_ids and ticket.account_tenant_id not in principal.tenant_ids):
             raise HTTPException(404, "Ticket not found")
+        if ticket.account_tenant_id != device.tenant_id:
+            raise HTTPException(422, "The ticket and remote-support device must belong to the same customer")
+        if ticket.device_id and ticket.device_id != device.id:
+            raise HTTPException(422, "The ticket is linked to a different managed device")
     try:
         session = remote.start_session(db, device, principal.actor, mode, bool(body.get("viewOnly")), ticket_id,
                                        str(body.get("reason") or ""))
