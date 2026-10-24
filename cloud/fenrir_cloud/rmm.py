@@ -226,11 +226,16 @@ def refresh_job(db: Session, job_id: str) -> None:
     open_count = summary.get("pending", 0) + summary.get("dispatched", 0)
     if open_count:
         return
-    failed, done, cancelled = summary.get("failed", 0), summary.get("completed", 0), summary.get("cancelled", 0)
+    failed = summary.get("failed", 0) + summary.get("expired", 0)
+    done, cancelled = summary.get("completed", 0), summary.get("cancelled", 0)
     if done == 0 and failed == 0 and cancelled:
         job.status = "cancelled"
+    elif failed == 0 and cancelled == 0:
+        job.status = "completed"
+    elif done == 0 and failed:
+        job.status = "failed"
     else:
-        job.status = "completed" if failed == 0 else ("failed" if done == 0 else "partial")
+        job.status = "partial"
     job.finished_at = utcnow()
 
 
