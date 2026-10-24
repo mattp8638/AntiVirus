@@ -1,5 +1,5 @@
 #include <winsock2.h>
-#include <Windows.h>
+#include <windows.h>
 
 #include <filesystem>
 #include <iostream>

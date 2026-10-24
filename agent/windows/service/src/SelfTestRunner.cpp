@@ -1,7 +1,7 @@
 #include <winsock2.h>
 #include "SelfTestRunner.h"
 
-#include <Psapi.h>
+#include <psapi.h>
 
 #include <algorithm>
 #include <chrono>

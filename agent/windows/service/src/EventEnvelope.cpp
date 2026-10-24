@@ -1,7 +1,7 @@
 #include "EventEnvelope.h"
 #include "StringUtils.h"  // Single canonical UTF-8 converter; prevents duplicate link symbols.
 
-#include <Windows.h>
+#include <windows.h>
 
 #include <iomanip>
 #include <sstream>

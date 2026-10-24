@@ -1,6 +1,6 @@
 #include "WscCoexistenceManager.h"
 
-#include <Windows.h>
+#include <windows.h>
 
 #include <vector>
 

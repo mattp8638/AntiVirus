@@ -3,7 +3,7 @@
 // Minimal WebSocket client on WinHTTP (Windows 8+). Used for the realtime
 // wake channel and by the remote-access helper to reach the cloud relay.
 
-#include <Windows.h>
+#include <windows.h>
 #include <winhttp.h>
 
 #include <mutex>

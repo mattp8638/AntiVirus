@@ -1,7 +1,7 @@
 #include "DeviceControl.h"
 
 #ifdef _WIN32
-#include <Windows.h>
+#include <windows.h>
 #endif
 
 namespace antivirus::agent::devicecontrol {

@@ -2,7 +2,7 @@
 
 #include <winsock2.h>
 #include <ws2tcpip.h>  // Must precede iphlpapi.h: tcpmib.h gates IPv6 PID rows on _WS2IPDEF_.
-#include <Windows.h>
+#include <windows.h>
 #include <fwpmu.h>
 #include <iphlpapi.h>
 #include <sddl.h>

@@ -1,6 +1,6 @@
 #include "RemediationEngine.h"
 
-#include <Windows.h>
+#include <windows.h>
 #include <shlobj.h>
 #include <shobjidl.h>
 #include <tlhelp32.h>

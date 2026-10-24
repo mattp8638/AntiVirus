@@ -1,4 +1,4 @@
 #include "SetupResourceIds.h"
 
-IDI_SETUP_ICON ICON "..\\..\\..\\Fenrir.ico"
+IDI_SETUP_ICON ICON "../../../Fenrir.ico"
 1 RT_MANIFEST "setup.manifest"
