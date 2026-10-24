@@ -41,6 +41,14 @@ jobs:
           curl --fail --silent --show-error http://127.0.0.1:8080/ -o /tmp/fenrir-ui.html
           grep -Eiq '<title>|id="root"' /tmp/fenrir-ui.html
           docker compose -f deploy/docker-compose.yml --env-file deploy/.env exec -T cloud python -m compileall -q /app/cloud/fenrir_cloud
+      - name: Verify complete monitoring-to-ticket-to-RMM outcome using real HTTP/PostgreSQL
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -a
+          source deploy/.env
+          set +a
+          python3 scripts/phase2_cloud_smoke.py
       - name: Diagnostics on failure
         if: failure()
         shell: bash
