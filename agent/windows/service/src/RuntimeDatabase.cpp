@@ -866,6 +866,20 @@ void RuntimeDatabase::UpsertCommandJournal(const RemoteCommand& command, const s
   StepDone(db.get(), statement.get());
 }
 
+bool RuntimeDatabase::LoadCommandJournal(const std::wstring& commandId, std::wstring& status,
+                                         std::wstring& resultJson) const {
+  const auto db = OpenConnection(databasePath_);
+  auto statement = Prepare(db.get(),
+                           "SELECT status, result_json FROM command_journal WHERE command_id=?;");
+  BindText(statement.get(), 1, commandId);
+  const auto step = sqlite3_step(statement.get());
+  if (step == SQLITE_DONE) return false;
+  if (step != SQLITE_ROW) ThrowSqliteError(db.get(), "loading command journal failed");
+  status = ColumnText(statement.get(), 0);
+  resultJson = ColumnText(statement.get(), 1);
+  return true;
+}
+
 void RuntimeDatabase::UpdateCommandJournalStatus(const std::wstring& commandId, const std::wstring& status,
                                                  const std::wstring& resultJson, const std::wstring& lastError) const {
   const auto db = OpenConnection(databasePath_);
