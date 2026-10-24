@@ -211,3 +211,43 @@ def test_stale_undelivered_commands_expire_but_dispatched_work_remains_reconcila
     finally:
         session.close()
     assert client.get(f"/api/console/rmm/jobs/{job2.json()['id']}", headers=admin).json()["status"] == "running"
+
+
+def test_nonzero_exit_is_a_failure_and_same_result_can_be_retried(client, admin, tenant, device):
+    command = client.post(f"/api/console/devices/{device['deviceId']}/commands",
+                          headers=admin, json={"type": "scan.targeted",
+                          "targetPath": "C:\\Users\\Public"})
+    assert command.status_code == 200
+    polled = client.get(f"/api/v1/devices/{device['deviceId']}/commands/pending",
+                        headers=device["headers"]).json()["items"][0]
+    url = f"/api/v1/devices/{device['deviceId']}/commands/{polled['id']}/complete"
+    malformed = client.post(url, headers=device["headers"],
+                            json={"status": "completed", "resultJson": "not valid JSON"})
+    assert malformed.status_code == 422
+    invalid = client.post(url, headers=device["headers"],
+                          json={"status": "completed", "resultJson": [1, 2]})
+    assert invalid.status_code == 422
+    payload = {"status": "completed", "resultJson": {"exitCode": 1603, "stderr": "Installer failed"}}
+    failed = client.post(url, headers=device["headers"], json=payload)
+    assert failed.status_code == 200 and failed.json()["status"] == "failed"
+    retry = client.post(url, headers=device["headers"], json=payload)
+    assert retry.status_code == 200 and retry.json()["duplicate"] is True
+
+
+def test_scheduler_lock_is_available_and_postgres_prevents_concurrent_owners(client):
+    from concurrent.futures import ThreadPoolExecutor
+    from fenrir_cloud.main import _scheduler_lease
+    from fenrir_cloud import db as database
+
+    with _scheduler_lease() as owner:
+        assert owner is True
+        if database.engine().dialect.name == "postgresql":
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                other = pool.submit(lambda: _check_secondary_scheduler_lease()).result(timeout=10)
+            assert other is False
+
+
+def _check_secondary_scheduler_lease():
+    from fenrir_cloud.main import _scheduler_lease
+    with _scheduler_lease() as acquired:
+        return acquired
