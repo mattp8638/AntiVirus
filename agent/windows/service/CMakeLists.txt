@@ -194,7 +194,7 @@ add_executable(antivirus-endpoint-client WIN32
   ../tools/endpointui/src/EndpointClientMain.cpp
 )
 
-target_include_directories(antivirus-endpoint-client PRIVATE include ../third_party/webview2/include)
+target_include_directories(antivirus-endpoint-client PRIVATE include ../third_party/webview2/include "${ANTIVIRUS_WINDOWS_ROOT}")
 target_link_libraries(antivirus-endpoint-client PRIVATE antivirus-agent-core comctl32 ole32 uxtheme dwmapi)
 target_compile_definitions(antivirus-endpoint-client PRIVATE UNICODE _UNICODE)
 if(MINGW)
@@ -208,18 +208,13 @@ file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/webview2/runtime/
 if(NOT EXISTS "${WEBVIEW2_LOADER_DLL}")
   message(FATAL_ERROR "Could not locate WebView2Loader.dll in the vendored WebView2 runtime.")
 endif()
-add_custom_command(TARGET antivirus-endpoint-client POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-          "${WEBVIEW2_LOADER_DLL}"
-          "$<TARGET_FILE_DIR:antivirus-endpoint-client>/WebView2Loader.dll"
-)
 
 add_executable(antivirus-pam-client WIN32
   ../tools/pamui/src/pamui.rc
   ../tools/pamui/src/PamClientMain.cpp
 )
 
-target_include_directories(antivirus-pam-client PRIVATE include)
+target_include_directories(antivirus-pam-client PRIVATE include "${ANTIVIRUS_WINDOWS_ROOT}")
 target_link_libraries(antivirus-pam-client PRIVATE comdlg32 comctl32 shell32)
 target_compile_definitions(antivirus-pam-client PRIVATE UNICODE _UNICODE)
 if(MINGW)
@@ -294,18 +289,11 @@ set(INSTALLER_NATIVE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../installer/native)
 set(INSTALLER_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/installer-generated)
 file(MAKE_DIRECTORY ${INSTALLER_GENERATED_DIR})
 
-get_filename_component(ANTIVIRUS_CXX_COMPILER_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
-find_file(SETUP_WINPTHREAD_DLL
-  NAMES libwinpthread-1.dll
-  PATHS
-    "${ANTIVIRUS_CXX_COMPILER_DIR}"
-    "${ANTIVIRUS_CXX_COMPILER_DIR}/../bin"
-  NO_DEFAULT_PATH
-)
-
-if(MINGW AND NOT SETUP_WINPTHREAD_DLL)
-  message(FATAL_ERROR "Could not locate libwinpthread-1.dll next to the configured MinGW compiler.")
-endif()
+# GNU targets are already linked with -static in antivirus_apply_portable_runtime.
+# An external libwinpthread DLL is not necessary, and Debian cross-compilers
+# do not keep one beside /usr/bin/x86_64-w64-mingw32-g++.
+set(SETUP_WINPTHREAD_RESOURCE_LINE "")
+set(SETUP_WINPTHREAD_RESOURCE_DEPENDENCY "")
 
 file(TO_CMAKE_PATH "${INSTALLER_NATIVE_DIR}/include/SetupResourceIds.h" SETUP_RESOURCE_HEADER)
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/fenrir-agent-service.exe" SETUP_SERVICE_EXE)
@@ -313,6 +301,14 @@ file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/fenrir-endpoint-client.exe" SET
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/fenrir-pam.exe" SETUP_PAM_EXE)
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/fenrir-remote.exe" SETUP_REMOTE_HELPER_EXE)
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/WebView2Loader.dll" SETUP_WEBVIEW2_LOADER_DLL)
+# Ninja requires an explicit output rule for files consumed as installer
+# resources. A POST_BUILD copy on another target is not an output dependency.
+add_custom_command(OUTPUT "${SETUP_WEBVIEW2_LOADER_DLL}"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${WEBVIEW2_LOADER_DLL}" "${SETUP_WEBVIEW2_LOADER_DLL}"
+  DEPENDS antivirus-endpoint-client "${WEBVIEW2_LOADER_DLL}"
+  VERBATIM)
+
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/fenrir-amsi-provider.dll" SETUP_AMSI_PROVIDER_DLL)
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_TOOLS_OUTPUT_ROOT}/fenrir-scannercli.exe" SETUP_SCANNERCLI_EXE)
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_TOOLS_OUTPUT_ROOT}/fenrir-amsitestcli.exe" SETUP_AMSITESTCLI_EXE)
@@ -323,14 +319,6 @@ file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/driver/AntivirusMinifilter.inf"
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/driver/AntivirusMinifilter.sys" SETUP_DRIVER_SYS_FILE)
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/driver/AntivirusMinifilter.cat" SETUP_DRIVER_CAT_FILE)
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/driver/README.md" SETUP_DRIVER_README_FILE)
-set(SETUP_WINPTHREAD_RESOURCE_LINE "")
-set(SETUP_WINPTHREAD_RESOURCE_DEPENDENCY "")
-if(MINGW)
-  file(TO_CMAKE_PATH "${SETUP_WINPTHREAD_DLL}" SETUP_WINPTHREAD_DLL_CMAKE)
-  set(SETUP_WINPTHREAD_RESOURCE_LINE "IDR_PAYLOAD_WINPTHREAD RCDATA \"${SETUP_WINPTHREAD_DLL_CMAKE}\"")
-  set(SETUP_WINPTHREAD_RESOURCE_DEPENDENCY "${SETUP_WINPTHREAD_DLL_CMAKE}")
-endif()
-
 if(ANTIVIRUS_REQUIRE_MINIFILTER_PAYLOAD)
   foreach(required_driver_payload
       "${SETUP_DRIVER_INF_FILE}"
@@ -458,6 +446,7 @@ add_dependencies(antivirus-setup
 
 target_include_directories(antivirus-setup PRIVATE
   ${INSTALLER_NATIVE_DIR}/include
+  "${ANTIVIRUS_WINDOWS_ROOT}"
 )
 target_link_libraries(antivirus-setup PRIVATE comctl32 ole32 shell32 advapi32 crypt32 dwmapi)
 if(MINGW)

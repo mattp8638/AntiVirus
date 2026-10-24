@@ -9,7 +9,9 @@
 #include <wincrypt.h>
 #include <wrl/client.h>
 
+#include <algorithm>
 #include <array>
+#include <cstring>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -73,8 +75,8 @@ constexpr DWORD kPnpUtilUntrustedRootExitCode = static_cast<DWORD>(CERT_E_UNTRUS
 constexpr DWORD kPnpUtilNoMoreItemsExitCode = ERROR_NO_MORE_ITEMS;
 constexpr DWORD kWin32InvalidImageHashError = 577;
 constexpr DWORD kWin32DriverBlockedError = 1275;
-constexpr DWORD kWin32VirusInfectedError = ERROR_VIRUS_INFECTED;
-constexpr DWORD kWin32VirusDeletedError = ERROR_VIRUS_DELETED;
+constexpr DWORD kWin32VirusInfectedError = 225;  // ERROR_VIRUS_INFECTED, WinError.h
+constexpr DWORD kWin32VirusDeletedError = 226;   // ERROR_VIRUS_DELETED, WinError.h
 
 constexpr UINT kInstallerLogMessage = WM_APP + 1;
 constexpr UINT kInstallerStatusMessage = WM_APP + 2;
@@ -722,7 +724,8 @@ bool EnsureDirectory(const std::filesystem::path& path, std::wstring* errorMessa
 bool ExtractResourceToFile(HINSTANCE instance, int resourceId, const std::filesystem::path& targetPath,
                            std::wstring* errorMessage);
 bool RunProcessHidden(const std::filesystem::path& executable, const std::wstring& arguments,
-                      const std::filesystem::path& workingDirectory, DWORD* exitCode, std::wstring* errorMessage);
+                      const std::filesystem::path& workingDirectory, DWORD* exitCode, std::wstring* errorMessage,
+                      const std::wstring* privateEnrollmentToken = nullptr);
 bool WaitForServiceStateByName(const wchar_t* serviceName, DWORD targetState, DWORD timeoutMs);
 bool WaitForServiceState(DWORD targetState, DWORD timeoutMs);
 bool StartServiceByName(const wchar_t* serviceName, DWORD timeoutMs, std::wstring* errorMessage,
@@ -1054,11 +1057,40 @@ bool ExtractResourceToFile(HINSTANCE instance, const int resourceId, const std::
 }
 
 bool RunProcessHidden(const std::filesystem::path& executable, const std::wstring& arguments,
-                      const std::filesystem::path& workingDirectory, DWORD* exitCode, std::wstring* errorMessage) {
+                      const std::filesystem::path& workingDirectory, DWORD* exitCode, std::wstring* errorMessage,
+                      const std::wstring* privateEnrollmentToken) {
   std::wstring commandLine = QuotePath(executable);
   if (!arguments.empty()) {
     commandLine += L" ";
     commandLine += arguments;
+  }
+
+  // The enrollment credential is inherited only by this short-lived child
+  // process; it never appears on its command line or in an SCM ImagePath.
+  std::vector<wchar_t> privateEnvironment;
+  if (privateEnrollmentToken != nullptr) {
+    const auto original = GetEnvironmentStringsW();
+    if (original == nullptr) {
+      if (errorMessage != nullptr) *errorMessage = L"Could not read setup process environment.";
+      return false;
+    }
+    std::vector<std::wstring> entries;
+    constexpr wchar_t kPrivateTokenName[] = L"FENRIR_SETUP_ENROLLMENT_TOKEN=";
+    for (const wchar_t* entry = original; *entry; entry += std::wcslen(entry) + 1) {
+      if (_wcsnicmp(entry, kPrivateTokenName, std::size(kPrivateTokenName) - 1) != 0) {
+        entries.emplace_back(entry);
+      }
+    }
+    FreeEnvironmentStringsW(original);
+    entries.emplace_back(std::wstring(kPrivateTokenName) + *privateEnrollmentToken);
+    std::sort(entries.begin(), entries.end(), [](const std::wstring& left, const std::wstring& right) {
+      return _wcsicmp(left.c_str(), right.c_str()) < 0;
+    });
+    for (const auto& entry : entries) {
+      privateEnvironment.insert(privateEnvironment.end(), entry.begin(), entry.end());
+      privateEnvironment.push_back(L'\0');
+    }
+    privateEnvironment.push_back(L'\0');
   }
 
   STARTUPINFOW startupInfo{};
@@ -1088,9 +1120,13 @@ bool RunProcessHidden(const std::filesystem::path& executable, const std::wstrin
   auto mutableCommandLine = commandLine;
   const auto launched = CreateProcessW(nullptr, mutableCommandLine.data(), nullptr, nullptr,
                                        outputCaptureHandle != INVALID_HANDLE_VALUE,
-                                       CREATE_NO_WINDOW, nullptr,
+                                       CREATE_NO_WINDOW | (privateEnrollmentToken != nullptr ? CREATE_UNICODE_ENVIRONMENT : 0),
+                                       privateEnvironment.empty() ? nullptr : privateEnvironment.data(),
                                        workingDirectory.empty() ? nullptr : workingDirectory.c_str(),
                                        &startupInfo, &processInfo);
+  if (!privateEnvironment.empty()) {
+    SecureZeroMemory(privateEnvironment.data(), privateEnvironment.size() * sizeof(wchar_t));
+  }
   if (outputCaptureHandle != INVALID_HANDLE_VALUE) {
     CloseHandle(outputCaptureHandle);
   }
@@ -2308,12 +2344,9 @@ bool InstallPayloadFiles(HWND hwnd, UiContext* context, const bool repair, std::
     bool required;
   };
 
-#if defined(__MINGW32__)
-  constexpr bool kRequiresWinpthreadRuntime = true;
-#else
-  // MSVC binaries use the Microsoft runtime, never libwinpthread-1.dll.
+// Both MinGW (statically linked) and MSVC release builds are self-contained.
+  // Never require a separately staged libwinpthread-1.dll.
   constexpr bool kRequiresWinpthreadRuntime = false;
-#endif
 
   const std::vector<PayloadItem> payloadItems{
       {IDR_PAYLOAD_SERVICE, kServiceExeName, 15, L"Installing service binary", true},
@@ -2438,12 +2471,11 @@ void RunInstallOrRepair(HWND hwnd, UiContext* context, const bool repair) {
   PostLog(hwnd, repair ? L"Running service repair" : L"Installing the protection service");
   std::wstring serviceArgs = repair ? L"--repair" : L"--install";
   if (!context->enrollmentToken.empty()) {
-    // Save the customer/cloud association before the service starts. Do not
-    // print the token to the UI logs or include it in an error message.
-    serviceArgs = L"--install --server \"" + context->controlPlaneBaseUrl +
-                  L"\" --enroll-token \"" + context->enrollmentToken + L"\"";
+    // Do not reveal a customer enrollment token in process command-line metadata.
+    serviceArgs = L"--install --server \"" + context->controlPlaneBaseUrl + L"\"";
   }
-  if (!RunProcessHidden(serviceExe, serviceArgs, context->installRoot, &exitCode, &errorMessage)) {
+  const std::wstring* privateToken = context->enrollmentToken.empty() ? nullptr : &context->enrollmentToken;
+  if (!RunProcessHidden(serviceExe, serviceArgs, context->installRoot, &exitCode, &errorMessage, privateToken)) {
     PostComplete(hwnd, false, false, false, errorMessage);
     return;
   }
@@ -3017,6 +3049,94 @@ bool HasArgument(int argc, wchar_t* argv[], const wchar_t* name) {
   return false;
 }
 
+// Cloud-built personalised installers append an authenticated-delivery payload
+// to the unsigned PE template. SHA-256 detects accidental corruption only;
+// it is not a publisher signature. There is no external PS1 or CLI secret.
+enum class EnrollmentOverlayStatus { Absent, Valid, Invalid };
+
+EnrollmentOverlayStatus ReadEnrollmentOverlay(std::wstring& server, std::wstring& token) {
+  std::array<wchar_t, 32768> executablePath{};
+  const DWORD count = GetModuleFileNameW(nullptr, executablePath.data(),
+                                          static_cast<DWORD>(executablePath.size()));
+  if (count == 0 || count == executablePath.size()) return EnrollmentOverlayStatus::Invalid;
+  HANDLE raw = CreateFileW(executablePath.data(), GENERIC_READ, FILE_SHARE_READ,
+                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (raw == INVALID_HANDLE_VALUE) return EnrollmentOverlayStatus::Invalid;
+  struct HandleCloser {
+    HANDLE handle;
+    ~HandleCloser() { CloseHandle(handle); }
+  } handle{raw};
+
+  LARGE_INTEGER fileSize{};
+  if (!GetFileSizeEx(raw, &fileSize) || fileSize.QuadPart < 44) {
+    return EnrollmentOverlayStatus::Absent;
+  }
+  auto readAt = [&](LONGLONG offset, void* destination, DWORD size) -> bool {
+    LARGE_INTEGER position{};
+    position.QuadPart = offset;
+    if (!SetFilePointerEx(raw, position, nullptr, FILE_BEGIN)) return false;
+    DWORD countRead = 0;
+    return ReadFile(raw, destination, size, &countRead, nullptr) && countRead == size;
+  };
+
+  // payload | SHA256 (32 bytes) | payload length (little endian uint32) | magic (8 bytes)
+  std::array<unsigned char, 44> tail{};
+  if (!readAt(fileSize.QuadPart - tail.size(), tail.data(), static_cast<DWORD>(tail.size()))) {
+    return EnrollmentOverlayStatus::Invalid;
+  }
+  constexpr unsigned char magic[8] = {'F', 'E', 'N', 'R', 'I', 'R', '0', '1'};
+  if (std::memcmp(tail.data() + 36, magic, sizeof(magic)) != 0) {
+    return EnrollmentOverlayStatus::Absent;
+  }
+  const DWORD size = static_cast<DWORD>(tail[32]) |
+                     (static_cast<DWORD>(tail[33]) << 8) |
+                     (static_cast<DWORD>(tail[34]) << 16) |
+                     (static_cast<DWORD>(tail[35]) << 24);
+  if (size == 0 || size > 4096 || fileSize.QuadPart < static_cast<LONGLONG>(44 + size)) {
+    return EnrollmentOverlayStatus::Invalid;
+  }
+  std::string payload(size, '\0');
+  if (!readAt(fileSize.QuadPart - 44 - size, payload.data(), size)) {
+    return EnrollmentOverlayStatus::Invalid;
+  }
+  HCRYPTPROV provider{};
+  HCRYPTHASH hash{};
+  std::array<BYTE, 32> digest{};
+  DWORD digestSize = static_cast<DWORD>(digest.size());
+  const bool hasProvider = CryptAcquireContextW(&provider, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT) != FALSE;
+  const bool hasHash = hasProvider && CryptCreateHash(provider, CALG_SHA_256, 0, 0, &hash);
+  const bool verified = hasHash &&
+      CryptHashData(hash, reinterpret_cast<const BYTE*>(payload.data()), size, 0) &&
+      CryptGetHashParam(hash, HP_HASHVAL, digest.data(), &digestSize, 0) &&
+      digestSize == digest.size() && std::memcmp(digest.data(), tail.data(), digest.size()) == 0;
+  if (hash) CryptDestroyHash(hash);
+  if (provider) CryptReleaseContext(provider, 0);
+  if (!verified) return EnrollmentOverlayStatus::Invalid;
+
+  const auto first = payload.find('\n');
+  if (first == std::string::npos || first == 0 || payload.back() != '\n' ||
+      payload.find('\n', first + 1) != payload.size() - 1) {
+    return EnrollmentOverlayStatus::Invalid;
+  }
+  const auto address = payload.substr(0, first);
+  const auto secret = payload.substr(first + 1, payload.size() - first - 2);
+  if (secret.empty()) return EnrollmentOverlayStatus::Invalid;
+
+  auto decode = [](const std::string& utf8, std::wstring& decoded) -> bool {
+    const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                           utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+    if (length <= 0) return false;
+    decoded.resize(length);
+    return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                utf8.data(), static_cast<int>(utf8.size()),
+                                decoded.data(), length) == length;
+  };
+  if (!decode(address, server) || !decode(secret, token)) {
+    return EnrollmentOverlayStatus::Invalid;
+  }
+  return EnrollmentOverlayStatus::Valid;
+}
+
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
@@ -3057,23 +3177,38 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     return 1;
   }
 
-  if (argv != nullptr) {
-    const auto server = InstallerArgument(argc, argv, L"--server");
-    const auto token = InstallerArgument(argc, argv, L"--enroll-token");
-    if (!server.empty() || !token.empty()) {
-      if (server.rfind(L"https://", 0) != 0 || token.rfind(L"fet_", 0) != 0 ||
-          server.find_first_of(L" \r\n\t\"") != std::wstring::npos ||
-          token.find_first_not_of(L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") != std::wstring::npos) {
-        MessageBoxW(hwnd, L"Invalid cloud URL or enrollment token provided.", kWindowTitle, MB_OK | MB_ICONERROR);
-        DestroyWindow(hwnd);
-        LocalFree(argv);
-        CoUninitialize();
-        return 1;
-      }
-      if (auto* context = GetContext(hwnd)) {
-        context->controlPlaneBaseUrl = server;
-        context->enrollmentToken = token;
-      }
+  std::wstring server = argv != nullptr ? InstallerArgument(argc, argv, L"--server") : L"";
+  std::wstring token = argv != nullptr ? InstallerArgument(argc, argv, L"--enroll-token") : L"";
+  std::wstring embeddedServer;
+  std::wstring embeddedToken;
+  const auto overlay = ReadEnrollmentOverlay(embeddedServer, embeddedToken);
+  if (overlay == EnrollmentOverlayStatus::Invalid ||
+      (overlay == EnrollmentOverlayStatus::Valid &&
+       ((!server.empty() && server != embeddedServer) || (!token.empty() && token != embeddedToken)))) {
+    MessageBoxW(hwnd, L"The embedded enrollment configuration is corrupt or conflicts with command-line settings. "
+                      L"Generate a new installer from Fenrir.", kWindowTitle, MB_OK | MB_ICONERROR);
+    DestroyWindow(hwnd);
+    if (argv != nullptr) LocalFree(argv);
+    CoUninitialize();
+    return 1;
+  }
+  if (overlay == EnrollmentOverlayStatus::Valid) {
+    server = embeddedServer;
+    token = embeddedToken;
+  }
+  if (!server.empty() || !token.empty()) {
+    if (server.rfind(L"https://", 0) != 0 || token.rfind(L"fet_", 0) != 0 ||
+        server.find_first_of(L" \\r\\n\\t\\\"") != std::wstring::npos ||
+        token.find_first_not_of(L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") != std::wstring::npos) {
+      MessageBoxW(hwnd, L"Invalid cloud URL or enrollment token provided.", kWindowTitle, MB_OK | MB_ICONERROR);
+      DestroyWindow(hwnd);
+      if (argv != nullptr) LocalFree(argv);
+      CoUninitialize();
+      return 1;
+    }
+    if (auto* context = GetContext(hwnd)) {
+      context->controlPlaneBaseUrl = server;
+      context->enrollmentToken = token;
     }
   }
 

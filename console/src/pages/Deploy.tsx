@@ -48,7 +48,7 @@ export default function Deploy() {
         throw new Error(reason);
       }
       const file = await response.blob();
-      const filename = os === "windows" ? "Fenrir-Windows-Enrollment.zip" : "Install-Fenrir-Linux.sh";
+      const filename = os === "windows" ? "Fenrir-Windows-Installer.exe" : "Install-Fenrir-Linux.sh";
       const url = URL.createObjectURL(file);
       try {
         const link = document.createElement("a");
@@ -101,7 +101,7 @@ export default function Deploy() {
           </div>
           <div style={{ marginTop: 12 }}>
             {selected?.ready ? (
-              <p>Ready: download the {OS_LABEL[os]} installer {selected.extension}. Install it on the target device with administrator privileges.</p>
+              <p>Ready: generate a unique {OS_LABEL[os]} installer {selected.extension} for this customer. Install it on the target device with administrator privileges.</p>
             ) : (
               <p role="status" style={{ color: "#fbbf24" }}>
                 {selected?.reason || "Checking installer availability…"}{" "}
@@ -116,7 +116,7 @@ export default function Deploy() {
             <button className="primary" disabled={busy || !selected?.ready || !target || !Number.isInteger(expires) || expires < 1 || expires > 365}
                     onClick={generate}>{busy ? "Generating installer…" : `Generate & download ${OS_LABEL[os]} installer`}</button>
           </div>
-          <p style={{ marginTop: 12 }}>Every download creates a new customer-bound enrollment token. Treat downloaded files as credentials. Windows requires a staged signed release or explicitly enabled SHA-256-pinned unsigned hobby build; macOS stays unavailable until its installable agent is complete.</p>
+          <p style={{ marginTop: 12 }}>Every download creates a new customer-bound enrollment token. Treat downloaded files as credentials. The Ubuntu Docker build automatically compiles the Windows template. Each click generates a unique, self-contained Windows EXE containing the selected customer's enrollment credentials. No manual staging or scripts. macOS remains unavailable until its agent is complete.</p>
         </div>
       )}
       <div className="card">

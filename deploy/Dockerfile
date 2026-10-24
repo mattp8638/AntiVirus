@@ -14,6 +14,36 @@ COPY agent/linux/ ./
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/fenrir-agent-linux-amd64 ./cmd/fenrir-agent \
  && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o /out/fenrir-agent-linux-arm64 ./cmd/fenrir-agent
 
+# Build Windows user-mode agent and self-extracting Setup from source on the
+# Ubuntu/Debian Docker host. This happens once per image rebuild, not on every
+# customer download. There are no proprietary compilers or signing costs.
+FROM debian:bookworm-slim AS windows-agent
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates cmake ninja-build python3 gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix \
+    binutils-mingw-w64-x86-64 \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY agent/windows/ /src/agent/windows/
+COPY third_party/ /src/third_party/
+COPY deploy/prepare_mingw_headers.py /src/deploy/prepare_mingw_headers.py
+RUN python3 /src/deploy/prepare_mingw_headers.py \
+      /usr/x86_64-w64-mingw32/include /src/agent/windows /opt/fenrir-windows-compat
+RUN cmake -S agent/windows/service -B /tmp/fenrir-windows-build -G Ninja \
+      -DCMAKE_SYSTEM_NAME=Windows \
+      -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc-posix \
+      -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++-posix \
+      -DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres \
+      -DCMAKE_C_FLAGS=-I/opt/fenrir-windows-compat \
+      -DCMAKE_CXX_FLAGS=-I/opt/fenrir-windows-compat \
+      -DANTIVIRUS_REQUIRE_MINIFILTER_PAYLOAD=OFF \
+      -DANTIVIRUS_ENABLE_BUILD_VALIDATION=OFF \
+ && cmake --build /tmp/fenrir-windows-build --target antivirus-setup --parallel 2 \
+ && test -s /src/agent/windows/out/install/FenrirSetup.exe \
+ && mkdir -p /out/windows \
+ && cp /src/agent/windows/out/install/FenrirSetup.exe /out/windows/FenrirSetup.exe \
+ && printf 'Windows cloud build template: ' \
+ && sha256sum /out/windows/FenrirSetup.exe
+
 FROM python:3.13-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 FENRIR_CONSOLE_DIR=/app/console/dist
 WORKDIR /app/cloud
@@ -24,6 +54,8 @@ COPY ml/fenrir_ml /app/ml/fenrir_ml
 COPY ml/models /app/ml/models
 COPY --from=console /src/console/dist /app/console/dist
 COPY --from=agents /out/ /app/cloud/downloads/
+# Read-only trusted Windows template, copied in automatically. No host mount.
+COPY --from=windows-agent /out/windows/ /app/cloud/downloads/windows/
 RUN useradd --system --uid 10001 fenrir && mkdir -p /data && chown fenrir /data
 USER fenrir
 EXPOSE 8080

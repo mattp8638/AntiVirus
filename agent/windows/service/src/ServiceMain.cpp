@@ -1,6 +1,7 @@
 #include <winsock2.h>
 #include <Windows.h>
 
+#include <array>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -651,7 +652,24 @@ int RunConsoleMode() {
 // --server and --enroll-token come from the console's Deploy agents page.
 bool SaveCloudSettingsFromArguments(int argc, wchar_t* argv[]) {
   const auto server = GetArgumentValue(argc, argv, L"--server");
-  const auto enrollToken = GetArgumentValue(argc, argv, L"--enroll-token");
+  const auto commandLineToken = GetArgumentValue(argc, argv, L"--enroll-token");
+  // Cloud-personalised Setup passes this value in a child-only environment
+  // block instead of leaking it into process command line audit metadata.
+  std::array<wchar_t, 256> privateTokenBuffer{};
+  const DWORD privateTokenLength = GetEnvironmentVariableW(
+      L"FENRIR_SETUP_ENROLLMENT_TOKEN", privateTokenBuffer.data(),
+      static_cast<DWORD>(privateTokenBuffer.size()));
+  SetEnvironmentVariableW(L"FENRIR_SETUP_ENROLLMENT_TOKEN", nullptr);
+  if (privateTokenLength >= privateTokenBuffer.size() ||
+      (privateTokenLength != 0 && !commandLineToken.empty())) {
+    std::wcerr << L"Conflicting or oversized Fenrir enrollment credentials." << std::endl;
+    SecureZeroMemory(privateTokenBuffer.data(), sizeof(privateTokenBuffer));
+    return false;
+  }
+  const std::wstring enrollToken = privateTokenLength
+      ? std::wstring(privateTokenBuffer.data(), privateTokenLength)
+      : commandLineToken;
+  SecureZeroMemory(privateTokenBuffer.data(), sizeof(privateTokenBuffer));
   if (server.empty() && enrollToken.empty()) {
     return true;
   }
