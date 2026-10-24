@@ -1,4 +1,5 @@
 #include "EventEnvelope.h"
+#include "StringUtils.h"  // Single canonical UTF-8 converter; prevents duplicate link symbols.
 
 #include <Windows.h>
 
@@ -26,14 +27,6 @@ std::string EventKindToString(EventKind kind) {
     default:
       return "Unknown";
   }
-}
-
-std::string WideToUtf8(const std::wstring& wideStr) {
-  if (wideStr.empty()) return "";
-  int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, wideStr.data(), (int)wideStr.size(), NULL, 0, NULL, NULL);
-  std::string utf8Str(sizeNeeded, 0);
-  WideCharToMultiByte(CP_UTF8, 0, wideStr.data(), (int)wideStr.size(), &utf8Str[0], sizeNeeded, NULL, NULL);
-  return utf8Str;
 }
 
 std::string FormatTimestamp(std::chrono::system_clock::time_point tp) {
