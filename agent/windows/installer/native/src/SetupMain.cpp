@@ -2309,12 +2309,9 @@ bool InstallPayloadFiles(HWND hwnd, UiContext* context, const bool repair, std::
     bool required;
   };
 
-#if defined(__MINGW32__)
-  constexpr bool kRequiresWinpthreadRuntime = true;
-#else
-  // MSVC binaries use the Microsoft runtime, never libwinpthread-1.dll.
+// Both MinGW (statically linked) and MSVC release builds are self-contained.
+  // Never require a separately staged libwinpthread-1.dll.
   constexpr bool kRequiresWinpthreadRuntime = false;
-#endif
 
   const std::vector<PayloadItem> payloadItems{
       {IDR_PAYLOAD_SERVICE, kServiceExeName, 15, L"Installing service binary", true},
