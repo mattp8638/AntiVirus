@@ -24,7 +24,7 @@ for existing in sdk.rglob("*"):
         relative = existing.relative_to(sdk).as_posix()
         headers.setdefault(relative.casefold(), existing)
 
-pattern = re.compile(r"^\s*#\s*include\s*<([^>]+)>", re.MULTILINE)
+pattern = re.compile(r"^\s*#\s*include\s*[<\"]([^>\"]+)[>\"]", re.MULTILINE)
 count = 0
 for path in source.rglob("*"):
     if path.suffix.lower() not in {".cpp", ".c", ".h", ".hpp", ".rc"} or not path.is_file():
