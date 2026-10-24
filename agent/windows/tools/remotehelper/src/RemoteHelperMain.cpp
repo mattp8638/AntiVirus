@@ -13,8 +13,8 @@
 #define NTDDI_VERSION 0x0A000006
 
 #include <Windows.h>
+#include <objidl.h>  // GDI+ needs IStream and related COM interfaces first.
 #include <gdiplus.h>
-#include <objidl.h>
 #include <psapi.h>
 #include <sddl.h>
 #include <shellapi.h>
