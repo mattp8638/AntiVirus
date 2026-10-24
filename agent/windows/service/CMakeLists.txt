@@ -4,7 +4,7 @@ project(AntiVirusAgentService LANGUAGES C CXX)
 
 # Windows SDK min/max macros corrupt std::min/std::max declarations across
 # MSVC builds. Keep NOMINMAX on every C++ Windows target and dependency.
-add_compile_definitions(NOMINMAX)
+add_compile_definitions(NOMINMAX WINVER=0x0A00 _WIN32_WINNT=0x0A00)
 
 # Source files contain Unicode phishing-homoglyph rules: MSVC must decode
 # repository source as UTF-8 rather than the runner's system code page.
