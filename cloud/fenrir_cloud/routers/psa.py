@@ -677,25 +677,15 @@ def sync_configurations(body: dict = Body(default={}), principal: Principal = De
     principal.require("crm")
     scope = scoped_tenant(principal, body.get("tenantId"))
     owner = _msp(principal, db)
-    existing = {c.device_id: c for c in db.execute(select(Configuration).where(Configuration.device_id.is_not(None))).scalars()}
     created = updated = 0
-    for device in db.execute(select(Device).where(Device.tenant_id.in_(scope), Device.approved.is_(True))).scalars():
-        config = existing.get(device.id)
-        if config is None:
-            config = Configuration(tenant_id=owner, account_tenant_id=device.tenant_id, device_id=device.id, name=device.hostname)
-            db.add(config)
-            created += 1
-        else:
-            updated += 1
-        metrics = device.metrics or {}
-        os_text = device.os_version.lower()
-        config.type = "Server" if "server" in os_text else ("Workstation" if device.platform in {"windows", "macos"} else "Server")
-        config.name, config.os, config.serial_number = device.hostname, device.os_version, device.serial_number
-        config.ip_address = device.ip_address
-        config.manufacturer = metrics.get("manufacturer", config.manufacturer)
-        config.model = metrics.get("model", config.model)
-        config.site_id = device.site_id or config.site_id
-        config.updated_at = utcnow()
+    for device in db.execute(select(Device).where(
+        Device.tenant_id.in_(scope), Device.approved.is_(True))).scalars():
+        try:
+            result = psa.sync_managed_device(db, device)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        created += result == "created"
+        updated += result == "updated"
     audit.record(db, principal.actor, "psa.configurations.synced", f"{created} new, {updated} updated", owner)
     db.commit()
     return {"created": created, "updated": updated}
