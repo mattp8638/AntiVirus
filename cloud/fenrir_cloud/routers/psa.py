@@ -555,6 +555,29 @@ def company_detail(tenant_id: str, principal: Principal = Depends(current_princi
     }
 
 
+def _validate_configuration_links(db: Session, account_tenant_id: str | None, values: dict,
+                                  existing_id: str | None = None) -> None:
+    """A CMDB record must never link devices, sites or people across customers."""
+    if not account_tenant_id:
+        raise HTTPException(422, "A customer account is required for an asset")
+    for key, linked_model in (("device_id", Device), ("site_id", Site), ("contact_id", Contact)):
+        linked_id = values.get(key)
+        if not linked_id:
+            continue
+        linked = db.get(linked_model, linked_id)
+        if linked is None:
+            raise HTTPException(422, f"{key} does not exist")
+        linked_account = linked.tenant_id if linked_model is Device else linked.account_tenant_id
+        if linked_account != account_tenant_id:
+            raise HTTPException(422, f"{key} belongs to another customer")
+        if key == "device_id":
+            duplicate = db.execute(select(Configuration).where(
+                Configuration.device_id == linked_id,
+                Configuration.id != (existing_id or ""))).scalar_one_or_none()
+            if duplicate is not None:
+                raise HTTPException(409, "The device is already linked to another configuration")
+
+
 def _crud(model, prefix: str, fields: set[str], required: str, permission: str = "crm"):
     """Register list/create/update/delete routes for a simple tenant-owned PSA collection."""
 
@@ -584,6 +607,12 @@ def _crud(model, prefix: str, fields: set[str], required: str, permission: str =
             account = body.get("accountTenantId")
             principal.check_tenant(account)
             obj.account_tenant_id = account
+        if model is Configuration:
+            _validate_configuration_links(db, obj.account_tenant_id, {
+                "device_id": body.get("device_id", body.get("deviceId")),
+                "site_id": body.get("site_id", body.get("siteId")),
+                "contact_id": body.get("contact_id", body.get("contactId")),
+            })
         apply_fields(obj, body, fields)
         if not getattr(obj, required, None):
             raise HTTPException(400, f"{required} is required")
@@ -604,6 +633,12 @@ def _crud(model, prefix: str, fields: set[str], required: str, permission: str =
         if model is KbArticle:
             from ..documentation import snapshot
             snapshot(db, obj, principal.actor)
+        if model is Configuration:
+            _validate_configuration_links(db, obj.account_tenant_id, {
+                "device_id": body.get("device_id", body.get("deviceId", obj.device_id)),
+                "site_id": body.get("site_id", body.get("siteId", obj.site_id)),
+                "contact_id": body.get("contact_id", body.get("contactId", obj.contact_id)),
+            }, existing_id=obj.id)
         changed = apply_fields(obj, body, fields)
         if hasattr(obj, "updated_at"):
             obj.updated_at = utcnow()
