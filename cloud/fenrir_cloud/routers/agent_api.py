@@ -17,7 +17,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Requ
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import audit, endpoint_health, intel, rmm, services
+from .. import audit, endpoint_health, intel, psa, rmm, services
 from ..config import get_settings
 from ..db import get_db
 from ..deps import current_device
@@ -66,6 +66,16 @@ def _resolve_enrollment_token(db: Session, raw: str | None) -> EnrollmentToken |
     return token
 
 
+def _sync_cmdb_from_agent(db: Session, device: Device) -> None:
+    try:
+        psa.sync_managed_device(db, device)
+    except ValueError as exc:
+        # CMDB corruption must be visible, but must not take down the agent's
+        # security heartbeat or repeatedly rotate a valid enrollment key.
+        audit.record(db, "system", "cmdb.sync.conflict", device.id, device.tenant_id,
+                     reason=str(exc))
+
+
 @router.post("/enroll")
 def enroll(
     request: Request,
@@ -106,6 +116,7 @@ def enroll(
     db.flush()
     _, policy_doc = services.effective_policy(db, device)
     device.applied_policy_revision = policy_doc["revision"]
+    _sync_cmdb_from_agent(db, device)
     audit.record(db, f"device:{hostname}", "device.enrolled", device.id, tenant.id, platform=device.platform,
                  token=token.label if token else "open-enrollment")
     db.commit()
@@ -137,6 +148,7 @@ def heartbeat(body: dict = Body(default={}), device: Device = Depends(current_de
     if isinstance(body.get("metrics"), dict):
         rmm.record_heartbeat_metrics(db, device, body["metrics"])
         rmm.evaluate_device(db, device)
+    _sync_cmdb_from_agent(db, device)
     _, policy_doc = services.effective_policy(db, device)
     pending = db.execute(select(func.count()).where(Command.device_id == device.id, Command.status == "pending")).scalar() or 0
     db.commit()
