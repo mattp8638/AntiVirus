@@ -854,6 +854,32 @@ def evaluate_offline(db: Session, now: datetime | None = None) -> int:
     return count
 
 
+MAX_PENDING_COMMAND_DAYS = 7
+
+
+def expire_stale_queued_commands(db: Session, now: datetime | None = None) -> int:
+    """Expire only commands that were NEVER delivered to an endpoint.
+
+    Already-dispatched work may have executed; those commands deliberately stay
+    outstanding for durable-result reconciliation instead of being re-issued.
+    """
+    now = now or utcnow()
+    cutoff = now - timedelta(days=MAX_PENDING_COMMAND_DAYS)
+    query = select(Command).where(Command.status == "pending", Command.created_at < cutoff)
+    if db.bind is not None and db.bind.dialect.name == "postgresql":
+        query = query.with_for_update(skip_locked=True)
+    expired = db.execute(query).scalars().all()
+    for command in expired:
+        command.status = "expired"
+        command.updated_at = command.completed_at = now
+        command.result = {"error": "Queued command expired before endpoint delivery",
+                          "expiredWithoutExecution": True}
+        job_id = (command.payload or {}).get("jobId")
+        if job_id:
+            refresh_job(db, job_id)
+    return len(expired)
+
+
 def tick(db: Session) -> dict:
     """One scheduler pass: due tasks, offline monitors, patch windows and scans."""
     now = utcnow()
@@ -862,6 +888,7 @@ def tick(db: Session) -> dict:
     from . import vulnmgmt
 
     result["vulnerabilityAcceptancesExpired"] = vulnmgmt.expire_acceptances(db, now)
+    result["undeliveredCommandsExpired"] = expire_stale_queued_commands(db, now)
     cutoff = now - timedelta(days=30)
     db.query(DeviceMetric).filter(DeviceMetric.at < cutoff).delete()
     return result
