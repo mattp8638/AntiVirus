@@ -255,11 +255,17 @@ def cancel_job(job_id: str, principal: Principal = Depends(current_principal), d
         command.status, command.updated_at = "cancelled", utcnow()
         cancelled += 1
     rmm.refresh_job(db, job.id)
-    if job.status == "running":
-        job.status, job.finished_at = "cancelled", utcnow()
-    audit.record(db, principal.actor, "rmm.job.cancelled", job.name, job.tenant_id, commands=cancelled)
+    # A command already dispatched to an endpoint cannot be recalled safely.
+    # Leave the job running until the real agent result is received rather
+    # than falsely telling technicians that executing work was cancelled.
+    in_flight = db.execute(select(Command).where(
+        Command.id.in_(list((job.command_ids or {}).values())),
+        Command.status == "dispatched")).scalars().all()
+    audit.record(db, principal.actor, "rmm.job.cancel.requested", job.name, job.tenant_id,
+                 cancelledPending=cancelled, alreadyDispatched=len(in_flight))
     db.commit()
-    return _job_view(db, job)
+    return {**_job_view(db, job), "cancelledPending": cancelled,
+            "alreadyDispatched": len(in_flight), "cancellationComplete": not bool(in_flight)}
 
 
 # --------------------------------------------------------------------------- scheduled tasks
