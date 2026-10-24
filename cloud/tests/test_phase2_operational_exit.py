@@ -349,3 +349,62 @@ def test_mixed_platform_script_does_not_claim_complete_success_when_targets_skip
     final = client.get(f"/api/console/rmm/jobs/{job.json()['id']}", headers=admin).json()
     assert final["status"] == "partial"
     assert final["summary"]["completed"] == 1 and final["summary"]["skipped"] == 1
+
+
+def test_monitor_cannot_auto_resolve_while_remediation_is_unverified(client, admin, tenant, device):
+    condition = client.post("/api/console/rmm/conditions", headers=admin, json={
+        "name": "Disk auto-heal pending", "tenantId": tenant["id"],
+        "metric": "disk_free_percent", "operator": "<", "threshold": 15,
+        "durationMinutes": 0, "actions": [
+            {"type": "ticket"},
+            {"type": "command", "command": "inventory.refresh"}]})
+    assert condition.status_code == 200, condition.text
+
+    def heartbeat(free):
+        return client.post(f"/api/v1/devices/{device['deviceId']}/heartbeat",
+                           headers=device["headers"], json={"metrics": {
+                           "disks": [{"mount": "/", "totalGb": 100,
+                                      "freeGb": free, "freePercent": free}]}})
+
+    assert heartbeat(3).status_code == 200
+    ticket = next(t for t in client.get("/api/console/tickets", headers=admin).json()
+                  if t["source"] == "rmm")
+    assert heartbeat(75).status_code == 200
+    still_open = client.get(f"/api/console/tickets/{ticket['id']}", headers=admin).json()
+    assert still_open["status"] not in {"Resolved", "Closed"}
+    assert any("not all completed" in note["text"] for note in still_open["comments"])
+
+    [command] = client.get(f"/api/v1/devices/{device['deviceId']}/commands/pending",
+                           headers=device["headers"]).json()["items"]
+    completion = client.post(f"/api/v1/devices/{device['deviceId']}/commands/{command['id']}/complete",
+                             headers=device["headers"],
+                             json={"status": "completed", "resultJson": {"exitCode": 0}})
+    assert completion.status_code == 200, completion.text
+    final = client.get(f"/api/console/tickets/{ticket['id']}", headers=admin).json()
+    assert final["status"] == "Resolved"
+    assert any("all linked remediation jobs completed" in note["text"] for note in final["comments"])
+
+
+def test_failed_remediation_leaves_recovered_monitor_ticket_open(client, admin, tenant, device):
+    cond = client.post("/api/console/rmm/conditions", headers=admin, json={
+        "name": "Disk auto-heal fails", "tenantId": tenant["id"],
+        "metric": "disk_free_percent", "operator": "<", "threshold": 15,
+        "durationMinutes": 0, "actions": [
+            {"type": "ticket"}, {"type": "command", "command": "inventory.refresh"}]})
+    assert cond.status_code == 200
+    def beat(free):
+        return client.post(f"/api/v1/devices/{device['deviceId']}/heartbeat",
+                           headers=device["headers"], json={"metrics": {
+                           "disks": [{"mount": "/", "totalGb": 100, "freeGb": free, "freePercent": free}]}})
+    assert beat(3).status_code == 200
+    ticket = next(t for t in client.get("/api/console/tickets", headers=admin).json() if t["source"] == "rmm")
+    [command] = client.get(f"/api/v1/devices/{device['deviceId']}/commands/pending",
+                           headers=device["headers"]).json()["items"]
+    fail = client.post(f"/api/v1/devices/{device['deviceId']}/commands/{command['id']}/complete",
+                       headers=device["headers"],
+                       json={"status": "failed", "resultJson": {"error": "Agent execution failed"}})
+    assert fail.status_code == 200
+    assert beat(75).status_code == 200
+    current = client.get(f"/api/console/tickets/{ticket['id']}", headers=admin).json()
+    assert current["status"] not in {"Resolved", "Closed"}
+    assert current["rmmJobs"][0]["status"] == "failed"
