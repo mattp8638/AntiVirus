@@ -363,13 +363,45 @@ def list_conditions(principal: Principal = Depends(current_principal), db: Sessi
     return {"metrics": rmm.METRICS, "conditions": [{**to_dict(r), "triggered": triggered.get(r.id, 0)} for r in rows]}
 
 
-def _check_condition(cond: MonitorCondition) -> None:
+def _check_condition(cond: MonitorCondition, db: Session, principal: Principal) -> None:
     if cond.metric not in rmm.METRICS:
         raise HTTPException(400, f"metric must be one of {sorted(rmm.METRICS)}")
     if cond.operator not in rmm.OPS:
         raise HTTPException(400, "operator must be one of > < >= <= == !=")
     if cond.severity not in {"low", "medium", "high", "critical", "info"}:
         raise HTTPException(400, "invalid severity")
+    if not isinstance(cond.actions, list) or len(cond.actions) > 12:
+        raise HTTPException(400, "monitor actions must be a list of at most 12 actions")
+    for action in cond.actions:
+        if not isinstance(action, dict):
+            raise HTTPException(400, "monitor action must be an object")
+        kind = action.get("type")
+        if kind not in {"ticket", "script", "command", "webhook", "email"}:
+            raise HTTPException(400, f"unsupported monitor action: {kind}")
+        if kind == "script":
+            script = db.get(Script, action.get("scriptId")) if action.get("scriptId") else None
+            if script is None or not _visible(principal, script):
+                raise HTTPException(400, "monitor self-heal script does not exist or is not accessible")
+            if cond.tenant_id is not None and script.tenant_id not in {
+                None, cond.tenant_id, services.msp_tenant_id(db, cond.tenant_id),
+            }:
+                raise HTTPException(400, "monitor script belongs to an unrelated customer")
+            if cond.tenant_id is None and script.tenant_id is not None:
+                raise HTTPException(400, "global monitors may only use global scripts")
+            try:
+                rmm.validate_parameters(script, action.get("parameters") or {})
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+        if kind == "command":
+            spec = BY_TYPE.get(action.get("command"))
+            if spec is None or action.get("command") in {"script.run", "remote.session.start", "remote.session.end"}:
+                raise HTTPException(400, "invalid command in monitor action")
+            if "targetPath" in spec.needs and not (action.get("targetPath") or cond.target):
+                raise HTTPException(400, "monitor command needs a target path")
+            if "recordId" in spec.needs:
+                raise HTTPException(400, "monitor command requires an explicit record ID and cannot run automatically")
+        if kind == "email" and not action.get("to"):
+            raise HTTPException(400, "monitor email action needs a recipient")
 
 
 @router.post("/conditions")
@@ -381,7 +413,7 @@ def create_condition(body: dict = Body(...), principal: Principal = Depends(curr
                             target="", scope={}, actions=[], severity="medium", operator=">", threshold=0, duration_minutes=5,
                             enabled=True, auto_resolve=True)
     apply_fields(cond, body, CONDITION_FIELDS)
-    _check_condition(cond)
+    _check_condition(cond, db, principal)
     db.add(cond)
     audit.record(db, principal.actor, "rmm.condition.created", cond.name, tenant_id)
     db.commit()
@@ -395,7 +427,7 @@ def update_condition(condition_id: str, body: dict = Body(...), principal: Princ
     cond = db.get(MonitorCondition, condition_id)
     _editable(principal, cond)
     changed = apply_fields(cond, body, CONDITION_FIELDS)
-    _check_condition(cond)
+    _check_condition(cond, db, principal)
     audit.record(db, principal.actor, "rmm.condition.updated", cond.name, cond.tenant_id, fields=changed)
     db.commit()
     return to_dict(cond)
