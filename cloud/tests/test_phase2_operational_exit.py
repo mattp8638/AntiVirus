@@ -1,3 +1,7 @@
+from datetime import timedelta
+
+from fenrir_cloud import db as database, rmm
+from fenrir_cloud.models import Command, utcnow
 """Phase 2 exit-gate regressions. Each test represents a real MSP workflow contract.
 
 These tests run the cloud API with a simulated device. A physical Windows/Linux
@@ -171,3 +175,39 @@ def test_approved_device_updates_asset_automatically_from_heartbeat(client, admi
     assert after[0]["id"] == original_id
     assert after[0]["manufacturer"] == "Lenovo"
     assert after[0]["model"] == "ThinkPad Test"
+
+
+def test_stale_undelivered_commands_expire_but_dispatched_work_remains_reconcilable(client, admin, tenant, device):
+    job = client.post("/api/console/rmm/jobs", headers=admin, json={
+        "commandType": "inventory.refresh", "targets": {"deviceIds": [device["deviceId"]]}})
+    assert job.status_code == 200, job.text
+    command_id = next(iter(job.json()["commandIds"].values()))
+    session = database.session_factory()()
+    try:
+        command = session.get(Command, command_id)
+        command.created_at = utcnow() - timedelta(days=9)
+        session.commit()
+        assert rmm.expire_stale_queued_commands(session) == 1
+        session.commit()
+    finally:
+        session.close()
+    detail = client.get(f"/api/console/rmm/jobs/{job.json()['id']}", headers=admin).json()
+    assert detail["status"] == "failed" and detail["summary"]["expired"] == 1
+    assert client.get(f"/api/v1/devices/{device['deviceId']}/commands/pending",
+                      headers=device["headers"]).json()["items"] == []
+
+    job2 = client.post("/api/console/rmm/jobs", headers=admin, json={
+        "commandType": "inventory.refresh", "targets": {"deviceIds": [device["deviceId"]]}})
+    assert job2.status_code == 200
+    [dispatched] = client.get(f"/api/v1/devices/{device['deviceId']}/commands/pending",
+                              headers=device["headers"]).json()["items"]
+    session = database.session_factory()()
+    try:
+        command = session.get(Command, dispatched["id"])
+        command.created_at = utcnow() - timedelta(days=9)
+        session.commit()
+        assert rmm.expire_stale_queued_commands(session) == 0
+        session.commit()
+    finally:
+        session.close()
+    assert client.get(f"/api/console/rmm/jobs/{job2.json()['id']}", headers=admin).json()["status"] == "running"
