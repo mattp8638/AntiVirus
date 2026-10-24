@@ -1,6 +1,7 @@
 name: Fenrir Platform
 
 on:
+  workflow_dispatch:
   push:
     branches: ["main", "claude/**", "fix/**", "feat/**"]
   pull_request:
