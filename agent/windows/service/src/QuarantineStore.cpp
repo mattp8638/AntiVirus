@@ -1,6 +1,6 @@
 #include "QuarantineStore.h"
 
-#include <Windows.h>
+#include <windows.h>
 #include <aclapi.h>
 
 #include <algorithm>

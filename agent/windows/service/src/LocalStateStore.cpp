@@ -1,6 +1,6 @@
 #include "LocalStateStore.h"
 
-#include <Windows.h>
+#include <windows.h>
 #include <objbase.h>  // CoCreateGuid / StringFromGUID2 with WIN32_LEAN_AND_MEAN
 
 #include <algorithm>

@@ -1,6 +1,6 @@
 #include "EndpointClient.h"
 
-#include <Windows.h>
+#include <windows.h>
 #include <lm.h>
 
 #include <algorithm>

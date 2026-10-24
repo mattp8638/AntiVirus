@@ -1,6 +1,6 @@
 #include "HardeningManager.h"
 
-#include <Windows.h>
+#include <windows.h>
 #include <aclapi.h>
 
 #include <array>

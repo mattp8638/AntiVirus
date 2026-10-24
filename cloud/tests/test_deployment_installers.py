@@ -1,9 +1,9 @@
 """OS-specific deployment regression tests: no unauthorised downloads or phantom tokens."""
 import hashlib
-import io
+import json
+import struct
 import shlex
 import subprocess
-import zipfile
 
 from fenrir_cloud import deployment_installers as installers
 from fenrir_cloud.db import get_db
@@ -37,7 +37,8 @@ def test_linux_installer_is_authenticated_customer_bound_and_persistent(client, 
     assert "systemctl restart fenrir-agent" in script
     assert "chmod 600 /etc/fenrir/agent.env" in script
     assert "base=" + shlex.quote("https://fenrir.test") in script
-    assert "$base/downloads/fenrir-agent-linux-$arch" in script
+    assert "FENRIR_AMD64_PAYLOAD" in script
+    assert "curl --fail" not in script
     assert "fet_" in script
     assert hashlib.sha256((tmp_path / "fenrir-agent-linux-amd64").read_bytes()).hexdigest() in script
     tokens = client.get("/api/console/enrollment-tokens", headers=admin).json()
@@ -59,25 +60,40 @@ def test_missing_artifact_and_macos_do_not_create_credentials(client, admin, ten
     assert not status["windows"]["ready"] and not status["linux"]["ready"] and not status["macos"]["ready"]
 
 
-def test_windows_bundle_includes_checked_setup_and_customer_enrollment(client, admin, tenant, monkeypatch, tmp_path):
+def _windows_payload(tmp_path, monkeypatch):
     monkeypatch.setattr(installers, "DOWNLOADS", tmp_path)
-    monkeypatch.setenv("FENRIR_WINDOWS_SIGNER_THUMBPRINT", "a" * 40)
-    (tmp_path / "releases").mkdir()
-    binary = b"MZ" + b"test-only-unsigned-fixture"
-    (tmp_path / "releases" / "FenrirSetup.exe").write_bytes(binary)
-    response = client.post("/api/console/enrollment-installers", headers=admin, json={
+    (tmp_path / "windows").mkdir()
+    binary = b"MZ" + b"automatically-built-test-fixture"
+    (tmp_path / "windows" / "FenrirSetup.exe").write_bytes(binary)
+    (tmp_path / "windows" / "build.json").write_text(json.dumps({"sha256": hashlib.sha256(binary).hexdigest()}))
+    return binary
+
+
+def test_windows_exe_is_unique_self_contained_and_customer_bound(client, admin, tenant, monkeypatch, tmp_path):
+    binary = _windows_payload(tmp_path, monkeypatch)
+    results = [client.post("/api/console/enrollment-installers", headers=admin, json={
         "tenantId": tenant["id"], "os": "windows", "expiresInDays": 3,
-    })
-    assert response.status_code == 200, response.text
-    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
-        assert set(archive.namelist()) == {"FenrirSetup.exe", "Install-Fenrir.ps1", "README.txt"}
-        assert archive.read("FenrirSetup.exe") == binary
-        powershell = archive.read("Install-Fenrir.ps1").decode()
-        assert hashlib.sha256(binary).hexdigest().upper() in powershell
-        assert ("a" * 40).upper() in powershell
-        assert "fet_" in powershell
-        assert "Get-AuthenticodeSignature" in powershell
-        assert "Get-Service -Name 'FenrirAgent'" in powershell
+    }) for _ in range(2)]
+    assert all(r.status_code == 200 for r in results)
+    assert results[0].content != results[1].content
+    assert results[0].headers["content-disposition"] != results[1].headers["content-disposition"]
+    for response in results:
+        assert ".exe" in response.headers["content-disposition"]
+        assert response.headers["cache-control"].startswith("private, no-store")
+        assert response.content.startswith(binary)
+        assert response.content.endswith(installers.WINDOWS_CONFIG_MAGIC)
+        footer = len(installers.WINDOWS_CONFIG_MAGIC) + 4
+        length = struct.unpack("<I", response.content[-footer:-footer+4])[0]
+        base, token, request_id = response.content[-footer-length:-footer].decode().split("\n")
+        assert base == "https://fenrir.test"
+        assert token.startswith("fet_") and len(request_id) == 32
+        from fenrir_cloud.security import digest
+        db = next(get_db())
+        try:
+            row = db.scalar(select(EnrollmentToken).where(EnrollmentToken.token_hash == digest(token)))
+            assert row.tenant_id == tenant["id"]
+        finally:
+            db.close()
 
 
 def test_invalid_target_and_expiry_are_rejected(client, admin, tenant):
@@ -92,63 +108,22 @@ def test_invalid_target_and_expiry_are_rejected(client, admin, tenant):
         assert response.status_code in (403, 404, 422)
 
 
-def test_unsigned_hobby_bundle_requires_opt_in_and_trusted_hash(client, admin, tenant, monkeypatch, tmp_path):
-    """Unsigned Windows user-mode testing must never be enabled implicitly."""
-    monkeypatch.setattr(installers, "DOWNLOADS", tmp_path)
-    (tmp_path / "releases").mkdir()
-    binary = b"MZ" + b"test-hobby-build"
-    (tmp_path / "releases" / "FenrirSetup.exe").write_bytes(binary)
-    checksum = hashlib.sha256(binary).hexdigest()
-    monkeypatch.delenv("FENRIR_WINDOWS_SIGNER_THUMBPRINT", raising=False)
-    monkeypatch.delenv("FENRIR_ALLOW_UNSIGNED_WINDOWS_INSTALLERS", raising=False)
-    monkeypatch.delenv("FENRIR_WINDOWS_SETUP_SHA256", raising=False)
-
-    def count_tokens():
-        return len(client.get("/api/console/enrollment-tokens", headers=admin).json())
-
-    before = count_tokens()
-    assert _request(client, tenant["id"], "windows").status_code == 401  # anonymous
-    assert client.post("/api/console/enrollment-installers", headers=admin, json={
-        "tenantId": tenant["id"], "os": "windows"}).status_code == 409
-    assert count_tokens() == before
-
-    monkeypatch.setenv("FENRIR_ALLOW_UNSIGNED_WINDOWS_INSTALLERS", "true")
-    monkeypatch.setenv("FENRIR_WINDOWS_SETUP_SHA256", "0" * 64)
-    status = client.get("/api/console/enrollment-installers/status", headers=admin).json()
-    assert not status["windows"]["ready"]
-    assert client.post("/api/console/enrollment-installers", headers=admin, json={
-        "tenantId": tenant["id"], "os": "windows"}).status_code == 409
-    assert count_tokens() == before
-
-    monkeypatch.setenv("FENRIR_WINDOWS_SETUP_SHA256", checksum)
-    status = client.get("/api/console/enrollment-installers/status", headers=admin).json()
-    assert status["windows"]["ready"] is True
-    assert status["windows"]["mode"] == "unsigned-hobby"
-    assert "unsigned" in status["windows"]["warning"].lower()
+def test_windows_automatic_manifest_rejects_tampering_without_creating_token(client, admin, tenant, monkeypatch, tmp_path):
+    _windows_payload(tmp_path, monkeypatch)
+    (tmp_path / "windows" / "FenrirSetup.exe").write_bytes(b"MZtampered")
     response = client.post("/api/console/enrollment-installers", headers=admin, json={
-        "tenantId": tenant["id"], "os": "windows", "label": "Lab"})
-    assert response.status_code == 200, response.text
-    assert count_tokens() == before + 1
-    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
-        script = archive.read("Install-Fenrir.ps1").decode()
-        assert "$hobbyUnsigned = $true" in script
-        assert "Get-FileHash" in script
-        assert checksum.upper() in script
-        assert "Do not bypass those protections" in script
-        assert "Get-Service -Name 'FenrirAgent'" in script
-
-
-def test_unsigned_mode_does_not_accept_unpinned_replacement(client, admin, tenant, monkeypatch, tmp_path):
-    monkeypatch.setattr(installers, "DOWNLOADS", tmp_path)
-    (tmp_path / "releases").mkdir()
-    staged = tmp_path / "releases" / "FenrirSetup.exe"
-    staged.write_bytes(b"MZapproved-test")
-    monkeypatch.delenv("FENRIR_WINDOWS_SIGNER_THUMBPRINT", raising=False)
-    monkeypatch.setenv("FENRIR_ALLOW_UNSIGNED_WINDOWS_INSTALLERS", "true")
-    monkeypatch.setenv("FENRIR_WINDOWS_SETUP_SHA256", hashlib.sha256(staged.read_bytes()).hexdigest())
-    staged.write_bytes(b"MZtampered-test")
-    response = client.post("/api/console/enrollment-installers", headers=admin, json={
-        "tenantId": tenant["id"], "os": "windows", "label": "Lab"})
+        "tenantId": tenant["id"], "os": "windows"})
     assert response.status_code == 409
     assert "SHA-256" in response.text
     assert client.get("/api/console/enrollment-tokens", headers=admin).json() == []
+
+
+def test_windows_manifest_malformed_or_symlink_refuses_download(monkeypatch, tmp_path):
+    _windows_payload(tmp_path, monkeypatch)
+    manifest = tmp_path / "windows" / "build.json"
+    for content in ("bad", "{}", '{"sha256":123}', 'null'):
+        manifest.write_text(content)
+        assert not installers.available()["windows"]["ready"]
+    manifest.unlink()
+    manifest.symlink_to(tmp_path / "elsewhere")
+    assert not installers.available()["windows"]["ready"]

@@ -1,7 +1,7 @@
 #include "RealtimeProtectionBroker.h"
 
-#include <Windows.h>
-#include <TlHelp32.h>
+#include <windows.h>
+#include <tlhelp32.h>
 #include <sddl.h>
 #include <winternl.h>
 

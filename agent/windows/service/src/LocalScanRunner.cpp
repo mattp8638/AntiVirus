@@ -1,6 +1,6 @@
 #include "LocalScanRunner.h"
 
-#include <Windows.h>
+#include <windows.h>
 
 #include <algorithm>
 #include <array>

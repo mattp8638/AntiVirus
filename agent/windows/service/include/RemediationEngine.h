@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <string>
 #include <vector>
-#include <Windows.h>
+#include <windows.h>
 
 #include "AgentConfig.h"
 #include "PolicySnapshot.h"

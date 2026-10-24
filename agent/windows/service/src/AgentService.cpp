@@ -1,13 +1,13 @@
 #include "AgentService.h"
 
-#include <WtsApi32.h>
+#include <wtsapi32.h>
 
 #include "RmmExecutors.h"
 #include "WebSocketClient.h"
 
 #include "MlStaticModel.h"
 
-#include <WtsApi32.h>
+#include <wtsapi32.h>
 #include <lm.h>
 #include <sddl.h>
 #include <userenv.h>

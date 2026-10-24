@@ -1,6 +1,6 @@
 #include "CryptoUtils.h"
 
-#include <Windows.h>
+#include <windows.h>
 #include <bcrypt.h>
 #include <wincrypt.h>
 #include <wintrust.h>

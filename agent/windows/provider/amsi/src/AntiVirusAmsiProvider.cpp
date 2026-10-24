@@ -1,7 +1,7 @@
 #include "AntiVirusAmsiProvider.h"
 
-#include <Windows.h>
-#include <Unknwn.h>
+#include <windows.h>
+#include <unknwn.h>
 
 #include <algorithm>
 #include <atomic>

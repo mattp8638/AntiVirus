@@ -1,6 +1,6 @@
 #include "ProcessInventory.h"
 
-#include <Psapi.h>
+#include <psapi.h>
 #include <tlhelp32.h>
 
 #include <algorithm>

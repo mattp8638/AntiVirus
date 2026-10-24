@@ -1,8 +1,8 @@
 #include "RmmExecutors.h"
 
-#include <Windows.h>
-#include <TlHelp32.h>
-#include <WtsApi32.h>
+#include <windows.h>
+#include <tlhelp32.h>
+#include <wtsapi32.h>
 #include <userenv.h>
 #include <urlmon.h>
 

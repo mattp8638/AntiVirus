@@ -5,7 +5,7 @@
 #endif
 
 #include <winsock2.h>
-#include <Windows.h>
+#include <windows.h>
 #include <iphlpapi.h>
 #include <iptypes.h>
 #include <wtsapi32.h>

@@ -1,6 +1,6 @@
 #include "ServiceInventory.h"
 
-#include <Windows.h>
+#include <windows.h>
 #include <winsvc.h>
 
 #include <algorithm>
