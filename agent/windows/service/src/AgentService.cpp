@@ -1756,10 +1756,6 @@ void AgentService::PollAndExecuteCommands(const int cycle) {
                           BuildCyclePayload(cycle, std::wstring(L"\"count\":") + std::to_wstring(pollResult.items.size())));
 
       for (const auto& command : pollResult.items) {
-        if ((command.type == L"remote.session.start" || command.type == L"remote.session.end") &&
-            !ClaimRemoteCommand(command.commandId)) {
-          continue;
-        }
         if (!commandJournalStore_) {
           std::wcerr << L"Cannot execute remote command without its durable journal." << std::endl;
           continue;
@@ -2497,11 +2493,6 @@ std::wstring AgentService::EndRemoteHelper(const RemoteCommand& command) {
   return std::wstring(L"{\"ended\":") + (ended ? L"true" : L"false") + L"}";
 }
 
-bool AgentService::ClaimRemoteCommand(const std::wstring& commandId) {
-  std::lock_guard lock(remoteMutex_);
-  return claimedRemoteCommands_.insert(commandId).second;
-}
-
 void AgentService::PublishIdentitySnapshot() {
   std::lock_guard lock(remoteMutex_);
   identitySnapshot_ = state_;
@@ -2520,36 +2511,6 @@ void AgentService::DrainDeferredTelemetry() {
   }
   for (const auto& event : events) {
     QueueTelemetryEvent(event.eventType, event.source, event.summary, event.payloadJson);
-  }
-}
-
-void AgentService::HandleRemoteCommandsNow() {
-  const auto identity = IdentitySnapshot();
-  if (identity.deviceId.empty()) {
-    return;
-  }
-  try {
-    const auto pollResult = controlPlaneClient_->PollPendingCommands(identity);
-    for (const auto& command : pollResult.items) {
-      if ((command.type != L"remote.session.start" && command.type != L"remote.session.end") ||
-          !ClaimRemoteCommand(command.commandId)) {
-        continue;
-      }
-      std::wstring status = L"completed";
-      std::wstring resultJson;
-      try {
-        resultJson = command.type == L"remote.session.start" ? LaunchRemoteHelper(command) : EndRemoteHelper(command);
-      } catch (const std::exception& error) {
-        status = L"failed";
-        resultJson = L"{\"error\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(error.what()))) + L"\"}";
-      }
-      try {
-        controlPlaneClient_->CompleteCommand(identity, command.commandId, status, resultJson);
-      } catch (...) {
-      }
-    }
-  } catch (...) {
-    // The main loop polls again on its next cycle.
   }
 }
 
@@ -2581,7 +2542,7 @@ void AgentService::RealtimeLoop() {
     try {
       WebSocketClient socket;
       socket.Connect(controlPlaneClient_->RealtimeUrl(identity), L"X-Device-Api-Key: " + ControlPlaneClient::DeviceApiKey(identity) + L"\r\n");
-      HandleRemoteCommandsNow();  // anything queued while the channel was down
+      SetEvent(wakeEvent_);  // Main loop owns execution and journal persistence.
       // A watcher closes the socket when the service stops, which unblocks Receive.
       std::atomic<bool> done{false};
       std::thread watcher([&] {
@@ -2597,7 +2558,6 @@ void AgentService::RealtimeLoop() {
       bool binary = false;
       while (!ShouldStop() && socket.Receive(&message, &binary)) {
         if (message.find("\"commands\"") != std::string::npos || message.find("\"pollNow\":true") != std::string::npos) {
-          HandleRemoteCommandsNow();
           SetEvent(wakeEvent_);
         }
       }
