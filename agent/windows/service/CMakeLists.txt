@@ -6,6 +6,12 @@ project(AntiVirusAgentService LANGUAGES C CXX)
 # MSVC builds. Keep NOMINMAX on every C++ Windows target and dependency.
 add_compile_definitions(NOMINMAX)
 
+# Source files contain Unicode phishing-homoglyph rules: MSVC must decode
+# repository source as UTF-8 rather than the runner's system code page.
+if(MSVC)
+  add_compile_options(/utf-8)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
