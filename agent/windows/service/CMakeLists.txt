@@ -294,18 +294,11 @@ set(INSTALLER_NATIVE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../installer/native)
 set(INSTALLER_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/installer-generated)
 file(MAKE_DIRECTORY ${INSTALLER_GENERATED_DIR})
 
-get_filename_component(ANTIVIRUS_CXX_COMPILER_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
-find_file(SETUP_WINPTHREAD_DLL
-  NAMES libwinpthread-1.dll
-  PATHS
-    "${ANTIVIRUS_CXX_COMPILER_DIR}"
-    "${ANTIVIRUS_CXX_COMPILER_DIR}/../bin"
-  NO_DEFAULT_PATH
-)
-
-if(MINGW AND NOT SETUP_WINPTHREAD_DLL)
-  message(FATAL_ERROR "Could not locate libwinpthread-1.dll next to the configured MinGW compiler.")
-endif()
+# GNU targets are already linked with -static in antivirus_apply_portable_runtime.
+# An external libwinpthread DLL is not necessary, and Debian cross-compilers
+# do not keep one beside /usr/bin/x86_64-w64-mingw32-g++.
+set(SETUP_WINPTHREAD_RESOURCE_LINE "")
+set(SETUP_WINPTHREAD_RESOURCE_DEPENDENCY "")
 
 file(TO_CMAKE_PATH "${INSTALLER_NATIVE_DIR}/include/SetupResourceIds.h" SETUP_RESOURCE_HEADER)
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/fenrir-agent-service.exe" SETUP_SERVICE_EXE)
@@ -323,14 +316,6 @@ file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/driver/AntivirusMinifilter.inf"
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/driver/AntivirusMinifilter.sys" SETUP_DRIVER_SYS_FILE)
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/driver/AntivirusMinifilter.cat" SETUP_DRIVER_CAT_FILE)
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/driver/README.md" SETUP_DRIVER_README_FILE)
-set(SETUP_WINPTHREAD_RESOURCE_LINE "")
-set(SETUP_WINPTHREAD_RESOURCE_DEPENDENCY "")
-if(MINGW)
-  file(TO_CMAKE_PATH "${SETUP_WINPTHREAD_DLL}" SETUP_WINPTHREAD_DLL_CMAKE)
-  set(SETUP_WINPTHREAD_RESOURCE_LINE "IDR_PAYLOAD_WINPTHREAD RCDATA \"${SETUP_WINPTHREAD_DLL_CMAKE}\"")
-  set(SETUP_WINPTHREAD_RESOURCE_DEPENDENCY "${SETUP_WINPTHREAD_DLL_CMAKE}")
-endif()
-
 if(ANTIVIRUS_REQUIRE_MINIFILTER_PAYLOAD)
   foreach(required_driver_payload
       "${SETUP_DRIVER_INF_FILE}"
