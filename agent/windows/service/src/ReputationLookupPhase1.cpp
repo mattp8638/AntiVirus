@@ -6,7 +6,7 @@
 #include "PhishingHeuristics.h"
 
 #include <winsock2.h>
-#include <Windows.h>
+#include <windows.h>
 #include <winhttp.h>
 #include <ws2tcpip.h>
 

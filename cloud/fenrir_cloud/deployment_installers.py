@@ -5,12 +5,15 @@ customer enrollment secret. They are returned only by an authenticated POST.
 """
 from __future__ import annotations
 
+import base64
+import gzip
 import hashlib
-import io
+import json
 import os
 import re
 import shlex
-import zipfile
+import struct
+import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -51,24 +54,18 @@ def release_file(name: str) -> Path | None:
 
 
 def windows_release_mode() -> tuple[str | None, str]:
-    """Allow unsigned *user-mode* hobby builds only by explicit opt-in + pinned SHA-256.
-
-    This never disables SmartScreen, Defender, Windows driver-signature checks,
-    or the signed-release path.
-    """
-    executable = release_file("releases/FenrirSetup.exe")
-    if not executable or executable.stat().st_size > MAX_SETUP_BYTES:
-        return None, "Stage FenrirSetup.exe in deploy/releases before enabling Windows downloads."
-    signer = os.getenv("FENRIR_WINDOWS_SIGNER_THUMBPRINT", "").strip()
-    if re.fullmatch(r"[a-fA-F0-9]{40}", signer):
-        return "signed", ""
-    if os.getenv("FENRIR_ALLOW_UNSIGNED_WINDOWS_INSTALLERS", "").strip().lower() != "true":
-        return None, "Stage a signed setup or explicitly enable unsigned hobby-mode user-space installers."
-    pinned_sha256 = os.getenv("FENRIR_WINDOWS_SETUP_SHA256", "").strip().lower()
-    if not re.fullmatch(r"[a-f0-9]{64}", pinned_sha256):
-        return None, "Unsigned hobby mode requires FENRIR_WINDOWS_SETUP_SHA256 from your trusted build."
-    if _digest(executable) != pinned_sha256:
-        return None, "Staged FenrirSetup.exe does not match the pinned SHA-256; refusing download."
+    """Validate the automatically compiled, immutable image payload."""
+    executable = release_file("windows/FenrirSetup.exe")
+    manifest = release_file("windows/build.json")
+    if not executable or not manifest or executable.stat().st_size > MAX_SETUP_BYTES:
+        return None, "Windows components are missing. Rebuild the cloud Docker image; no manual staging is required."
+    try:
+        metadata = json.loads(manifest.read_text())
+        expected = metadata["sha256"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None, "Windows build manifest is invalid; rebuild the cloud image."
+    if not isinstance(expected, str) or not re.fullmatch(r"[a-f0-9]{64}", expected) or _digest(executable) != expected:
+        return None, "Windows components failed SHA-256 verification; rebuild the cloud image."
     return "unsigned-hobby", ""
 
 
@@ -79,7 +76,7 @@ def available() -> dict:
     # fenrirctl enrollment + launchd service yet. Never claim it is installable.
     return {
         "linux": {"ready": linux, "extension": ".sh", "reason": "" if linux else "Linux x64 and ARM64 agent binaries must be built in the cloud image."},
-        "windows": {"ready": windows_mode is not None, "extension": ".zip",
+        "windows": {"ready": windows_mode is not None, "extension": ".exe",
                     "mode": windows_mode or "unavailable", "reason": windows_reason,
                     "warning": ("Unsigned hobby build: user-mode testing only; no signed Windows kernel driver or "
                                 "full antivirus protection." if windows_mode == "unsigned-hobby" else "")},
@@ -113,7 +110,7 @@ def _linux_script(base: str, token: str) -> bytes:
 # Fenrir Linux customer installer. Treat this file as a secret until enrollment completes.
 set -eu
 if [ "$(id -u)" -ne 0 ]; then echo "Run this installer with sudo." >&2; exit 1; fi
-for tool in curl sha256sum install systemctl mktemp; do
+for tool in base64 gzip sha256sum install systemctl mktemp; do
   command -v "$tool" >/dev/null 2>&1 || {{ echo "Missing dependency: $tool" >&2; exit 1; }}
 done
 [ -d /run/systemd/system ] || {{ echo "systemd is required for a persistent installation." >&2; exit 1; }}
@@ -126,7 +123,17 @@ base={shlex.quote(base)}
 token={shlex.quote(token)}
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
-curl --fail --silent --show-error --location --retry 3 "$base/downloads/fenrir-agent-linux-$arch" -o "$tmp/fenrir-agent"
+# Both architectures are embedded; installation never fetches mutable binaries.
+case "$arch" in
+  amd64) base64 -d <<'FENRIR_AMD64_PAYLOAD' | gzip -d > "$tmp/fenrir-agent"
+{base64.encodebytes(gzip.compress(bins['amd64'].read_bytes(), mtime=0)).decode().rstrip()}
+FENRIR_AMD64_PAYLOAD
+    ;;
+  arm64) base64 -d <<'FENRIR_ARM64_PAYLOAD' | gzip -d > "$tmp/fenrir-agent"
+{base64.encodebytes(gzip.compress(bins['arm64'].read_bytes(), mtime=0)).decode().rstrip()}
+FENRIR_ARM64_PAYLOAD
+    ;;
+esac
 printf '%s  %s\\n' "$expected" "$tmp/fenrir-agent" | sha256sum --check --status || {{
   echo "Agent binary SHA-256 mismatch; refusing installation." >&2; exit 1;
 }}
@@ -168,43 +175,23 @@ echo "Fenrir agent installed as an automatic-start service. Confirm the device c
     return script.encode("utf-8")
 
 
-def _windows_script(base: str, token: str, checksum: str, signer_fingerprint: str, mode: str = "signed") -> bytes:
-    # Generated scripts are never available at public /downloads URLs.
-    # Installer is expected to be Authenticode signed by the releasing organisation.
-    content = r'''#Requires -RunAsAdministrator
-$ErrorActionPreference = 'Stop'
-$setup = Join-Path $PSScriptRoot 'FenrirSetup.exe'
-$expectedHash = '__SHA256__'
-$expectedSigner = '__CERT__'
-$hobbyUnsigned = __UNSIGNED__
-$server = '__SERVER__'
-$enroll = '__TOKEN__'
-if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) { throw 'FenrirSetup.exe is missing from this package.' }
-$hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash
-if ($hash -ne $expectedHash) { throw 'Installer SHA-256 mismatch. Do not run this package.' }
-if ($hobbyUnsigned) {
-    Write-Warning 'UNSIGNED HOBBY BUILD: User-mode development/testing only. Windows SmartScreen or antivirus may warn or block this executable. Do not bypass those protections. Kernel minifilter enforcement is NOT available.'
-} else {
-    $signature = Get-AuthenticodeSignature -LiteralPath $setup
-    if ($signature.Status -ne 'Valid' -or -not $signature.SignerCertificate) { throw "Installer signature is not valid: $($signature.Status). Request a signed release." }
-    if ($signature.SignerCertificate.Thumbprint -ne $expectedSigner) { throw 'Installer certificate does not match the approved Fenrir release signer.' }
-}
-Write-Host 'Opening Fenrir Setup. Complete the installation in its window.'
-$args = '--server "' + $server + '" --enroll-token "' + $enroll + '"'
-$process = Start-Process -FilePath $setup -ArgumentList $args -Wait -PassThru
-if ($process.ExitCode -ne 0) { throw "Fenrir Setup failed with exit code $($process.ExitCode)." }
-$service = Get-Service -Name 'FenrirAgent' -ErrorAction SilentlyContinue
-if (-not $service -or $service.Status -ne 'Running') { throw 'FenrirAgent is not running after setup. Inspect the setup log.' }
-$configured = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\FenrirAgent' -Name ControlPlaneBaseUrl -ErrorAction Stop).ControlPlaneBaseUrl
-if ($configured.TrimEnd('/') -ne $server) { throw 'The installed agent is not configured for the intended cloud server.' }
-$storedEnrollment = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\FenrirAgent' -Name EnrollmentToken -ErrorAction Stop).EnrollmentToken
-if ($storedEnrollment -ne $enroll) { throw 'Setup did not apply the selected customer enrollment token.' }
-Write-Host 'Fenrir service is running and configured with the correct customer enrollment token. Confirm cloud check-in.'
-'''
-    return (content.replace("__SHA256__", checksum.upper())
-            .replace("__CERT__", signer_fingerprint.upper())
-            .replace("__UNSIGNED__", "$true" if mode == "unsigned-hobby" else "$false")
-            .replace("__SERVER__", base).replace("__TOKEN__", token).encode("utf-8"))
+WINDOWS_CONFIG_MAGIC = b"FENRIR_ENROLL_V1!"
+
+
+def _windows_executable(base: str, token: str) -> tuple[bytes, str, str]:
+    mode, problem = windows_release_mode()
+    if mode is None:
+        raise HTTPException(409, problem)
+    executable = release_file("windows/FenrirSetup.exe")
+    # A small overlay is read by native setup before its UAC elevation. All agent
+    # components are already embedded as PE resources in the shared template.
+    # No shell, compiler, temporary customer files or public download URL needed.
+    request_id = uuid.uuid4().hex
+    payload = (base + "\n" + token + "\n" + request_id).encode("ascii")
+    if len(payload) > 4096:
+        raise HTTPException(422, "Installer enrollment configuration is too large.")
+    data = executable.read_bytes() + payload + struct.pack("<I", len(payload)) + WINDOWS_CONFIG_MAGIC
+    return data, f"FenrirSetup-{request_id}.exe", "application/vnd.microsoft.portable-executable"
 
 
 def build(os_name: str, base: str, token: str) -> tuple[bytes, str, str]:
@@ -214,24 +201,5 @@ def build(os_name: str, base: str, token: str) -> tuple[bytes, str, str]:
     if os_name == "linux":
         return _linux_script(base, token), "Install-Fenrir-Linux.sh", "text/x-shellscript"
     if os_name == "windows":
-        executable = release_file("releases/FenrirSetup.exe")
-        if not executable or executable.stat().st_size > MAX_SETUP_BYTES:
-            raise HTTPException(409, "No verified Windows installer release is staged on this server.")
-        mode, problem = windows_release_mode()
-        if mode is None:
-            raise HTTPException(409, problem)
-        signer = os.getenv("FENRIR_WINDOWS_SIGNER_THUMBPRINT", "").strip() if mode == "signed" else ""
-        executable_hash = _digest(executable)
-        data = io.BytesIO()
-        with zipfile.ZipFile(data, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=2) as archive:
-            archive.write(executable, "FenrirSetup.exe")
-            archive.writestr("Install-Fenrir.ps1", _windows_script(base, token, executable_hash, signer, mode))
-            archive.writestr("README.txt",
-                "Fenrir Windows enrollment bundle - contains a customer secret.\\r\\n"
-                "Extract this ZIP on the target Windows PC. In an elevated PowerShell window,\\r\\n"
-                "verify the source, run Unblock-File .\\Install-Fenrir.ps1 if needed, then\\r\\n"
-                "run .\\Install-Fenrir.ps1 and complete Fenrir Setup.\\r\\n"
-                "The installer verifies the release signature and SHA-256 before executing.\\r\\n"
-                "Delete this ZIP after successful enrollment. Do not publish it.\\r\\n")
-        return data.getvalue(), "Fenrir-Windows-Enrollment.zip", "application/zip"
+        return _windows_executable(base, token)
     raise HTTPException(409, "The selected operating system does not have an installable agent release yet.")

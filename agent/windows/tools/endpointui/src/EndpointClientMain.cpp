@@ -1,4 +1,4 @@
-#include <Windows.h>
+#include <windows.h>
 #include <commdlg.h>
 #include <dwmapi.h>
 #include <commctrl.h>

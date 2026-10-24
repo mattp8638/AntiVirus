@@ -1,6 +1,6 @@
 #include "LocalSecurity.h"
 
-#include <Windows.h>
+#include <windows.h>
 #include <sddl.h>
 
 #include <algorithm>

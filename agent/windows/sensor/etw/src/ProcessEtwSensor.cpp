@@ -1,6 +1,6 @@
 #include "ProcessEtwSensor.h"
 
-#include <Windows.h>
+#include <windows.h>
 #include <evntrace.h>
 #include <sddl.h>
 #include <tdh.h>

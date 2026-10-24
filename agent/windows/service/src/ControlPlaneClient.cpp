@@ -1,6 +1,6 @@
 #include "ControlPlaneClient.h"
 
-#include <Windows.h>
+#include <windows.h>
 #include <winhttp.h>
 
 #include <algorithm>

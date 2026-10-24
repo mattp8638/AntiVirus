@@ -14,6 +14,25 @@ COPY agent/linux/ ./
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/fenrir-agent-linux-amd64 ./cmd/fenrir-agent \
  && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o /out/fenrir-agent-linux-arm64 ./cmd/fenrir-agent
 
+# Automatically compile the unsigned Windows user-mode payload on Ubuntu.
+# Docker's layer cache reuses it until agent source or its toolchain changes.
+FROM ubuntu:24.04 AS windows-agents
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake ninja-build g++-mingw-w64-x86-64-posix python3 \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY agent/windows/ agent/windows/
+COPY third_party/sqlite/ third_party/sqlite/
+COPY deploy/mingw-x64.cmake deploy/mingw-x64.cmake
+RUN cmake -S agent/windows/service -B /build -G Ninja \
+    -DCMAKE_TOOLCHAIN_FILE=/src/deploy/mingw-x64.cmake \
+    -DCMAKE_BUILD_TYPE=Release -DANTIVIRUS_ENABLE_BUILD_VALIDATION=OFF \
+    -DANTIVIRUS_REQUIRE_MINIFILTER_PAYLOAD=OFF \
+    && cmake --build /build --target antivirus-setup --parallel 2 \
+    && mkdir -p /out/windows \
+    && cp agent/windows/out/install/FenrirSetup.exe /out/windows/
+RUN python3 -c 'import hashlib,json,pathlib; p=pathlib.Path("/out/windows/FenrirSetup.exe"); p.with_name("build.json").write_text(json.dumps({"sha256":hashlib.sha256(p.read_bytes()).hexdigest(),"platform":"windows-x64","mode":"unsigned-hobby"}))'
+
 FROM python:3.13-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 FENRIR_CONSOLE_DIR=/app/console/dist
 WORKDIR /app/cloud
@@ -24,6 +43,7 @@ COPY ml/fenrir_ml /app/ml/fenrir_ml
 COPY ml/models /app/ml/models
 COPY --from=console /src/console/dist /app/console/dist
 COPY --from=agents /out/ /app/cloud/downloads/
+COPY --from=windows-agents /out/windows/ /app/cloud/downloads/windows/
 RUN useradd --system --uid 10001 fenrir && mkdir -p /data && chown fenrir /data
 USER fenrir
 EXPOSE 8080

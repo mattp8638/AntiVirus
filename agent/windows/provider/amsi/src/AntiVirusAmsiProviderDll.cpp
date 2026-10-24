@@ -1,6 +1,6 @@
 #include "AntiVirusAmsiProvider.h"
 
-#include <Windows.h>
+#include <windows.h>
 
 #include <string>
 

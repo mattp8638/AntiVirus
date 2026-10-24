@@ -12,14 +12,14 @@
 #undef NTDDI_VERSION
 #define NTDDI_VERSION 0x0A000006
 
-#include <Windows.h>
+#include <windows.h>
 #include <objidl.h>  // GDI+ needs IStream and related COM interfaces first.
 #include <gdiplus.h>
 #include <psapi.h>
 #include <sddl.h>
 #include <shellapi.h>
-#include <TlHelp32.h>
-#include <WtsApi32.h>
+#include <tlhelp32.h>
+#include <wtsapi32.h>
 
 #include <algorithm>
 #include <atomic>

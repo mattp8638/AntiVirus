@@ -194,7 +194,7 @@ add_executable(antivirus-endpoint-client WIN32
   ../tools/endpointui/src/EndpointClientMain.cpp
 )
 
-target_include_directories(antivirus-endpoint-client PRIVATE include ../third_party/webview2/include)
+target_include_directories(antivirus-endpoint-client PRIVATE ../tools/endpointui/src include ../third_party/webview2/include)
 target_link_libraries(antivirus-endpoint-client PRIVATE antivirus-agent-core comctl32 ole32 uxtheme dwmapi)
 target_compile_definitions(antivirus-endpoint-client PRIVATE UNICODE _UNICODE)
 if(MINGW)
@@ -209,6 +209,7 @@ if(NOT EXISTS "${WEBVIEW2_LOADER_DLL}")
   message(FATAL_ERROR "Could not locate WebView2Loader.dll in the vendored WebView2 runtime.")
 endif()
 add_custom_command(TARGET antivirus-endpoint-client POST_BUILD
+  BYPRODUCTS "${ANTIVIRUS_DEV_OUTPUT_ROOT}/WebView2Loader.dll"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           "${WEBVIEW2_LOADER_DLL}"
           "$<TARGET_FILE_DIR:antivirus-endpoint-client>/WebView2Loader.dll"
@@ -219,7 +220,7 @@ add_executable(antivirus-pam-client WIN32
   ../tools/pamui/src/PamClientMain.cpp
 )
 
-target_include_directories(antivirus-pam-client PRIVATE include)
+target_include_directories(antivirus-pam-client PRIVATE ../tools/pamui/src include)
 target_link_libraries(antivirus-pam-client PRIVATE comdlg32 comctl32 shell32)
 target_compile_definitions(antivirus-pam-client PRIVATE UNICODE _UNICODE)
 if(MINGW)
@@ -304,6 +305,11 @@ find_file(SETUP_WINPTHREAD_DLL
 )
 
 if(MINGW AND NOT SETUP_WINPTHREAD_DLL)
+  execute_process(COMMAND "${CMAKE_CXX_COMPILER}" -print-file-name=libwinpthread-1.dll
+    OUTPUT_VARIABLE SETUP_WINPTHREAD_DLL OUTPUT_STRIP_TRAILING_WHITESPACE)
+endif()
+
+if(MINGW AND NOT EXISTS "${SETUP_WINPTHREAD_DLL}")
   message(FATAL_ERROR "Could not locate libwinpthread-1.dll next to the configured MinGW compiler.")
 endif()
 
@@ -458,6 +464,7 @@ add_dependencies(antivirus-setup
 
 target_include_directories(antivirus-setup PRIVATE
   ${INSTALLER_NATIVE_DIR}/include
+  ${INSTALLER_NATIVE_DIR}/src
 )
 target_link_libraries(antivirus-setup PRIVATE comctl32 ole32 shell32 advapi32 crypt32 dwmapi)
 if(MINGW)

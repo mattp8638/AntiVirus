@@ -1,7 +1,7 @@
 #pragma once
 
-#include <Windows.h>
-#include <Unknwn.h>
+#include <windows.h>
+#include <unknwn.h>
 
 typedef enum AMSI_RESULT {
   AMSI_RESULT_CLEAN = 0,

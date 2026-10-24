@@ -48,7 +48,9 @@ export default function Deploy() {
         throw new Error(reason);
       }
       const file = await response.blob();
-      const filename = os === "windows" ? "Fenrir-Windows-Enrollment.zip" : "Install-Fenrir-Linux.sh";
+      const disposition = response.headers.get("Content-Disposition") || "";
+      const filename = /filename="([A-Za-z0-9._-]+)"/.exec(disposition)?.[1]
+        || (os === "windows" ? "FenrirSetup.exe" : "Install-Fenrir-Linux.sh");
       const url = URL.createObjectURL(file);
       try {
         const link = document.createElement("a");
@@ -116,7 +118,7 @@ export default function Deploy() {
             <button className="primary" disabled={busy || !selected?.ready || !target || !Number.isInteger(expires) || expires < 1 || expires > 365}
                     onClick={generate}>{busy ? "Generating installer…" : `Generate & download ${OS_LABEL[os]} installer`}</button>
           </div>
-          <p style={{ marginTop: 12 }}>Every download creates a new customer-bound enrollment token. Treat downloaded files as credentials. Windows requires a staged signed release or explicitly enabled SHA-256-pinned unsigned hobby build; macOS stays unavailable until its installable agent is complete.</p>
+          <p style={{ marginTop: 12 }}>Every download creates a new customer-bound enrollment token. Treat downloaded files as credentials. Windows components are built automatically on the server; each request creates a self-contained customer installer; macOS stays unavailable until its installable agent is complete.</p>
         </div>
       )}
       <div className="card">
