@@ -7,7 +7,9 @@ Only use with an isolated, disposable lab stack/tenant.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import struct
 import os
 import uuid
 from urllib.error import HTTPError
@@ -48,6 +50,39 @@ def main():
         "name": "PHASE2-DISPOSABLE-CI-" + uuid.uuid4().hex[:8], "template": "balanced"
     }, auth))
     customer_id = customer["id"]
+
+    # The Windows PE must have been cross-compiled automatically inside the
+    # Ubuntu Docker image. Two customer downloads must each be a unique EXE;
+    # no staged release or public customer-token download is permitted.
+    status = require(request("GET", "/api/console/enrollment-installers/status", headers=auth))
+    assert status["windows"]["ready"] and status["windows"]["mode"] == "cloud-built"
+    def get_installer(label):
+        req = Request(BASE + "/api/console/enrollment-installers", method="POST",
+                      data=json.dumps({"os": "windows", "tenantId": customer_id,
+                                       "label": label}).encode(),
+                      headers={"Content-Type": "application/json", **auth})
+        with urlopen(req, timeout=60) as response:
+            assert response.status == 200
+            assert "no-store" in response.headers["Cache-Control"]
+            assert "Fenrir-Windows-Installer.exe" in response.headers["Content-Disposition"]
+            return response.read(180 * 1024 * 1024 + 4096)
+    def unpack_installer(binary):
+        assert binary.startswith(b"MZ") and binary[-8:] == b"FENRIR01"
+        size = struct.unpack("<I", binary[-12:-8])[0]
+        assert 0 < size <= 4096
+        data = binary[-44-size:-44]
+        assert hashlib.sha256(data).digest() == binary[-44:-12]
+        server, token, empty = data.decode("ascii").split("\n")
+        assert not empty
+        return server, token
+    exe1 = get_installer("Lab Windows A")
+    exe2 = get_installer("Lab Windows B")
+    assert exe1 != exe2
+    server1, token1 = unpack_installer(exe1)
+    server2, token2 = unpack_installer(exe2)
+    assert server1 == server2 == BASE and token1 != token2
+    assert token1.startswith("fet_") and token2.startswith("fet_")
+
     enrollment_token = require(request("POST", "/api/console/enrollment-tokens", {
         "tenantId": customer_id, "label": "Phase 2 CI synthetic agent"
     }, auth))["token"]
