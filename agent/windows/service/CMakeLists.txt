@@ -208,11 +208,6 @@ file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/webview2/runtime/
 if(NOT EXISTS "${WEBVIEW2_LOADER_DLL}")
   message(FATAL_ERROR "Could not locate WebView2Loader.dll in the vendored WebView2 runtime.")
 endif()
-add_custom_command(TARGET antivirus-endpoint-client POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-          "${WEBVIEW2_LOADER_DLL}"
-          "$<TARGET_FILE_DIR:antivirus-endpoint-client>/WebView2Loader.dll"
-)
 
 add_executable(antivirus-pam-client WIN32
   ../tools/pamui/src/pamui.rc
@@ -306,6 +301,14 @@ file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/fenrir-endpoint-client.exe" SET
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/fenrir-pam.exe" SETUP_PAM_EXE)
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/fenrir-remote.exe" SETUP_REMOTE_HELPER_EXE)
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/WebView2Loader.dll" SETUP_WEBVIEW2_LOADER_DLL)
+# Ninja requires an explicit output rule for files consumed as installer
+# resources. A POST_BUILD copy on another target is not an output dependency.
+add_custom_command(OUTPUT "${SETUP_WEBVIEW2_LOADER_DLL}"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${WEBVIEW2_LOADER_DLL}" "${SETUP_WEBVIEW2_LOADER_DLL}"
+  DEPENDS antivirus-endpoint-client "${WEBVIEW2_LOADER_DLL}"
+  VERBATIM)
+
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/fenrir-amsi-provider.dll" SETUP_AMSI_PROVIDER_DLL)
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_TOOLS_OUTPUT_ROOT}/fenrir-scannercli.exe" SETUP_SCANNERCLI_EXE)
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_TOOLS_OUTPUT_ROOT}/fenrir-amsitestcli.exe" SETUP_AMSITESTCLI_EXE)
