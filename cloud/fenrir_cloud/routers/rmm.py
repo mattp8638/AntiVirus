@@ -199,7 +199,9 @@ def _job_view(db: Session, job: Job, detail: bool = False) -> dict:
 def list_jobs(tenant_id: str | None = None, device_id: str | None = Query(default=None, alias="deviceId"), limit: int = 200,
               principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     scope = scoped_tenant(principal, tenant_id)
-    rows = db.execute(select(Job).where(or_(Job.tenant_id.in_(scope), Job.created_by == principal.actor))
+    # Creator identity never overrides current tenant authorisation: access
+    # may be revoked or the technician reassigned to another MSP.
+    rows = db.execute(select(Job).where(Job.tenant_id.in_(scope))
                       .order_by(Job.created_at.desc()).limit(min(limit, 1000))).scalars().all()
     if device_id:
         rows = [r for r in rows if device_id in (r.command_ids or {})]
@@ -209,7 +211,7 @@ def list_jobs(tenant_id: str | None = None, device_id: str | None = Query(defaul
 @router.get("/jobs/{job_id}")
 def get_job(job_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     job = db.get(Job, job_id)
-    if job is None or (job.tenant_id not in principal.tenant_ids and job.created_by != principal.actor):
+    if job is None or job.tenant_id not in principal.tenant_ids:
         raise HTTPException(404, "Not found")
     return _job_view(db, job, detail=True)
 
