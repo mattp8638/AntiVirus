@@ -130,7 +130,7 @@ export default function TicketDetail() {
                                                            { key: "createdAt", label: "Started", render: (s) => fmtTime(s.createdAt) }]} />}
             {tab === "RMM jobs" && <Table rows={Array.isArray(t.rmmJobs) ? t.rmmJobs : []}
                         empty="No RMM remediation jobs are linked to this ticket."
-                        columns={[{ key: "name", label: "Action", render: (j) => <Link to={`/rmm/jobs/${j.id}`}>{j.name}</Link> },
+                        columns={[{ key: "name", label: "Action", render: (j) => <Link to={`/automation?job=${encodeURIComponent(j.id)}`}>{j.name}</Link> },
                                   { key: "kind", label: "Kind" },
                                   { key: "status", label: "Outcome", render: (j) => <Pill value={j.status} /> },
                                   { key: "summary", label: "Results",
