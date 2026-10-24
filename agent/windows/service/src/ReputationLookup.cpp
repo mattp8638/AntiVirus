@@ -1,6 +1,5 @@
+#include <winsock2.h>  // Load Winsock2 before any transitive Windows.h include.
 #include "ReputationLookup.h"
-
-#include <winsock2.h>  // Must precede Windows.h to prevent legacy winsock.h collisions.
 #include <Windows.h>
 #include <softpub.h>
 #include <winhttp.h>
