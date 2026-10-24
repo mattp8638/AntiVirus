@@ -8,7 +8,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from .. import audit, policy_schema, services
+from .. import audit, policy_schema, rmm, services
 from ..commands import BY_TYPE, catalog_document
 from ..config import get_settings
 from ..db import get_db
@@ -146,9 +146,15 @@ def retire_device(device_id: str, principal: Principal = Depends(current_princip
         RemoteSession.status.in_(("waiting", "connected")))).first()
     if active_support:
         raise HTTPException(409, "End active remote support sessions before retiring this device.")
+    affected_jobs: set[str] = set()
     for command in db.execute(select(Command).where(
             Command.device_id == device.id, Command.status == "pending")).scalars():
         command.status, command.updated_at = "cancelled", utcnow()
+        job_id = (command.payload or {}).get("jobId")
+        if job_id:
+            affected_jobs.add(job_id)
+    for job_id in affected_jobs:
+        rmm.refresh_job(db, job_id)
     # Preserve historical ownership; never leave retired endpoints active in CMDB.
     for asset in db.execute(select(Configuration).where(
             Configuration.device_id == device.id)).scalars():
