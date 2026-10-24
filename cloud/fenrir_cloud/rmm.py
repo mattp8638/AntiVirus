@@ -218,6 +218,25 @@ def job_summary(db: Session, job: Job) -> dict:
     return {"total": len(ids), "skipped": len((job.payload or {}).get("skipped") or {}), **counts}
 
 
+def _ticket_remediation_finished(db: Session, ticket: Ticket) -> bool:
+    """An automatic ticket resolution requires verified healthy monitoring AND all completed work."""
+    jobs = db.execute(select(Job).where(Job.ticket_id == ticket.id)).scalars().all()
+    return all(job.status == "completed" for job in jobs)
+
+
+def _maybe_close_recovered_monitor_ticket(db: Session, ticket: Ticket) -> None:
+    from . import psa
+    if ticket.assignee or psa.is_closed(db, ticket) or not _ticket_remediation_finished(db, ticket):
+        return
+    states = db.execute(select(ConditionState).where(ConditionState.ticket_id == ticket.id)).scalars().all()
+    if not states or any(state.triggered or state.resolved_at is None for state in states):
+        return
+    psa.add_note(db, ticket, "rmm-monitor",
+                 "Monitoring has recovered and all linked remediation jobs completed successfully.",
+                 kind="resolution")
+    psa.set_status(db, ticket, "Resolved", "rmm-monitor")
+
+
 def refresh_job(db: Session, job_id: str) -> None:
     job = db.get(Job, job_id)
     if job is None or job.status not in {"running"}:
@@ -247,6 +266,7 @@ def refresh_job(db: Session, job_id: str) -> None:
                          f"{done} completed, {failed} failed/expired, {cancelled} cancelled, "
                          f"{skipped} skipped. Job reference: {job.id}.",
                          kind="internal")
+            _maybe_close_recovered_monitor_ticket(db, ticket)
 
 
 # --------------------------------------------------------------------------- command results
@@ -811,10 +831,13 @@ def _clear(db: Session, condition: MonitorCondition, device: Device, state: Cond
                                  f"Condition '{condition.name}' recovered. Ticket remains open for its assigned technician.",
                                  kind="internal")
                 else:
-                    psa.add_note(db, ticket, "rmm-monitor",
-                                 f"Condition '{condition.name}' cleared automatically.",
-                                 kind="resolution")
-                    psa.set_status(db, ticket, "Resolved", "rmm-monitor")
+                    if not _ticket_remediation_finished(db, ticket):
+                        psa.add_note(db, ticket, "rmm-monitor",
+                                     f"Condition '{condition.name}' recovered, but linked RMM work has not "
+                                     "all completed successfully. The ticket remains open for review.",
+                                     kind="internal")
+                    else:
+                        _maybe_close_recovered_monitor_ticket(db, ticket)
 
 
 def record_heartbeat_metrics(db: Session, device: Device, metrics: dict) -> None:
