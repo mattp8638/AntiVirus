@@ -6,6 +6,91 @@ on:
     branches: ["main"]
 
 jobs:
+  cloud-regressions:
+    name: Cloud API and Phase 2 regressions (SQLite + PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: fenrir
+          POSTGRES_PASSWORD: fenrir
+          POSTGRES_DB: fenrir
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install tests
+        run: pip install -r cloud/requirements-dev.txt "psycopg[binary]>=3.2"
+      - name: Run all tests with SQLite
+        working-directory: cloud
+        run: python -m pytest -q
+      - name: Run all tests with real PostgreSQL
+        working-directory: cloud
+        env:
+          FENRIR_TEST_DATABASE_URL: postgresql+psycopg://fenrir:fenrir@localhost:5432/fenrir
+        run: python -m pytest -q
+
+  console-regressions:
+    name: Console TypeScript build and array-contract tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - name: Compile and test the console
+        working-directory: console
+        run: npm ci --no-audit --no-fund && npm run build && npm run test:shapes
+
+  linux-agent-regressions:
+    name: Linux agent Go tests and both native architectures
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: agent/linux/go.sum
+      - name: Run Go vet, tests, amd64 and arm64 builds
+        run: make -C agent/linux test agent agent-arm64
+
+  unsigned-windows-agent:
+    name: Windows native service and unsigned hobby installer (MSVC)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure Windows user-mode build
+        shell: pwsh
+        run: cmake -B build -S agent/windows/service -DANTIVIRUS_REQUIRE_MINIFILTER_PAYLOAD=OFF
+      - name: Build Windows native installer and bundled service
+        shell: pwsh
+        run: cmake --build build --config Release --target antivirus-setup
+      - name: Verify unsigned binaries and their trusted build digests
+        shell: pwsh
+        run: |
+          foreach ($file in @('agent/windows/out/dev/fenrir-agent-service.exe', 'agent/windows/out/install/FenrirSetup.exe')) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing Windows build output: $file" }
+            Get-FileHash -Algorithm SHA256 -LiteralPath $file
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Phase2-Windows-UNSIGNED-VM-CANDIDATE
+          path: |
+            agent/windows/out/install/FenrirSetup.exe
+            agent/windows/out/dev/fenrir-agent-service.exe
+          if-no-files-found: error
+
   isolated-docker-smoke:
     name: Docker, PostgreSQL and served console
     runs-on: ubuntu-latest
