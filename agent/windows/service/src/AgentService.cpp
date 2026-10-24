@@ -1758,45 +1758,86 @@ void AgentService::PollAndExecuteCommands(const int cycle) {
       for (const auto& command : pollResult.items) {
         if ((command.type == L"remote.session.start" || command.type == L"remote.session.end") &&
             !ClaimRemoteCommand(command.commandId)) {
-          continue;  // the realtime thread already has it
+          continue;
         }
-        if (commandJournalStore_) {
+        if (!commandJournalStore_) {
+          std::wcerr << L"Cannot execute remote command without its durable journal." << std::endl;
+          continue;
+        }
+        // Previously executed commands may be re-polled if the cloud did not
+        // receive the completion. Never perform their side effects again.
+        try {
+          std::wstring savedStatus;
+          std::wstring savedResult;
+          if (commandJournalStore_->LoadReceipt(command.commandId, savedStatus, savedResult)) {
+            if (savedStatus == L"started" || savedStatus == L"polled") {
+              savedStatus = L"failed";
+              savedResult = L"{\"outcomeUncertain\":true,\"error\":\"Agent stopped while command execution was in progress; manual review required. No automatic replay.\"}";
+              commandJournalStore_->RecordFailed(command, savedResult,
+                                                  L"Interrupted command; outcome uncertain");
+            }
+            if (savedStatus == L"completed" || savedStatus == L"failed") {
+              try {
+                controlPlaneClient_->CompleteCommand(state_, command.commandId, savedStatus, savedResult);
+              } catch (const std::exception& error) {
+                std::wcerr << L"Could not replay command outcome: " << Utf8ToWide(error.what()) << std::endl;
+              }
+              continue;
+            }
+            std::wcerr << L"Unrecognised prior command state; manual investigation needed." << std::endl;
+            continue;
+          }
+          // Atomic sqlite commit before any potentially irreversible action.
           commandJournalStore_->RecordPolled(command);
+        } catch (const std::exception& error) {
+          std::wcerr << L"Cannot safely journal command before execution: " << Utf8ToWide(error.what()) << std::endl;
+          continue;
+        }
+
+        std::wstring resultJson;
+        std::wstring completionStatus = L"completed";
+        std::wstring failureReason;
+        try {
+          resultJson = ExecuteCommand(command);
+        } catch (const rmm::CommandFailed& failed) {
+          completionStatus = L"failed";
+          failureReason = Utf8ToWide(failed.what());
+          resultJson = Utf8ToWide(failed.resultJson);
+          if (!resultJson.empty() && resultJson.back() == L'}') {
+            resultJson.pop_back();
+            resultJson += std::wstring(resultJson.size() > 1 ? L"," : L"") + L"\"error\":\"" +
+                          Utf8ToWide(EscapeJsonString(failureReason)) + L"\"}";
+          }
+        } catch (const std::exception& error) {
+          completionStatus = L"failed";
+          failureReason = Utf8ToWide(error.what());
+          resultJson = std::wstring(L"{\"commandId\":\"") + command.commandId + L"\",\"error\":\"" +
+                       Utf8ToWide(EscapeJsonString(failureReason)) + L"\"}";
         }
 
         try {
-          const auto resultJson = ExecuteCommand(command);
-          controlPlaneClient_->CompleteCommand(state_, command.commandId, L"completed", resultJson);
-          if (commandJournalStore_) {
+          if (completionStatus == L"completed") {
             commandJournalStore_->RecordCompleted(command, resultJson);
-          }
-        } catch (const rmm::CommandFailed& failed) {
-          // The action ran but failed: keep its output (stdout/stderr, exit code) and add the reason.
-          auto resultJson = Utf8ToWide(failed.resultJson);
-          if (!resultJson.empty() && resultJson.back() == L'}') {
-            resultJson.pop_back();
-            resultJson += std::wstring(resultJson.size() > 1 ? L"," : L"") + L"\"error\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(failed.what()))) + L"\"}";
-          }
-          try {
-            controlPlaneClient_->CompleteCommand(state_, command.commandId, L"failed", resultJson);
-          } catch (...) {
-          }
-          if (commandJournalStore_) {
-            commandJournalStore_->RecordFailed(command, resultJson, Utf8ToWide(failed.what()));
+          } else {
+            commandJournalStore_->RecordFailed(command, resultJson, failureReason);
           }
         } catch (const std::exception& error) {
-          const auto errorMessage = Utf8ToWide(error.what());
-          const auto failureJson = std::wstring(L"{\"commandId\":\"") + command.commandId + L"\",\"error\":\"" +
-                                   Utf8ToWide(EscapeJsonString(errorMessage)) + L"\"}";
-          try {
-            controlPlaneClient_->CompleteCommand(state_, command.commandId, L"failed", failureJson);
-          } catch (...) {
-          }
-          if (commandJournalStore_) {
-            commandJournalStore_->RecordFailed(command, failureJson, errorMessage);
-          }
+          // Do not acknowledge work whose result cannot survive a process
+          // restart. The 'started' journal entry will require manual review.
+          std::wcerr << L"Remote command result persistence failed: " << Utf8ToWide(error.what()) << std::endl;
+          continue;
+        }
+
+        try {
+          controlPlaneClient_->CompleteCommand(state_, command.commandId, completionStatus, resultJson);
+        } catch (const std::exception& error) {
+          // The saved outcome will be re-sent on the next poll; never rerun.
+          std::wcerr << L"Command completion not delivered; saved for reconnect: " <<
+                        Utf8ToWide(error.what()) << std::endl;
+        }
+        if (completionStatus == L"failed") {
           QueueTelemetryEvent(L"command.failed", L"command-executor",
-                              std::wstring(L"Remote command failed: ") + command.type + L".", failureJson);
+                              std::wstring(L"Remote command failed: ") + command.type + L".", resultJson);
         }
       }
 
