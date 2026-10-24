@@ -72,7 +72,7 @@ export default function TicketDetail() {
           </div>
 
           <div className="card">
-            <Tabs tabs={["Notes", `Time (${t.timeEntries.length})`, `Tasks (${(t.tasks || []).filter((x: any) => !x.done).length})`, "Configurations", "Schedule", "Remote sessions"]}
+            <Tabs tabs={["Notes", `Time (${t.timeEntries.length})`, `Tasks (${(t.tasks || []).filter((x: any) => !x.done).length})`, "Configurations", "Schedule", "Remote sessions", "RMM jobs"]}
                   active={tab.startsWith("Time") ? `Time (${t.timeEntries.length})` : tab.startsWith("Tasks") ? `Tasks (${(t.tasks || []).filter((x: any) => !x.done).length})` : tab}
                   onChange={(x) => setTab(x.split(" (")[0])} />
             {tab === "Notes" && <>
@@ -128,6 +128,14 @@ export default function TicketDetail() {
             {tab === "Remote sessions" && <Table rows={t.remoteSessions} empty="No remote sessions from this ticket."
                                                  columns={[{ key: "technician", label: "Technician" }, { key: "mode", label: "Mode" }, { key: "status", label: "Status", render: (s) => <Pill value={s.status} /> },
                                                            { key: "createdAt", label: "Started", render: (s) => fmtTime(s.createdAt) }]} />}
+            {tab === "RMM jobs" && <Table rows={Array.isArray(t.rmmJobs) ? t.rmmJobs : []}
+                        empty="No RMM remediation jobs are linked to this ticket."
+                        columns={[{ key: "name", label: "Action", render: (j) => <Link to={`/rmm/jobs/${j.id}`}>{j.name}</Link> },
+                                  { key: "kind", label: "Kind" },
+                                  { key: "status", label: "Outcome", render: (j) => <Pill value={j.status} /> },
+                                  { key: "summary", label: "Results",
+                                    render: (j) => <span>{j.summary?.completed || 0} completed, {j.summary?.failed || 0} failed, {j.summary?.dispatched || 0} in progress</span> },
+                                  { key: "createdAt", label: "Started", render: (j) => fmtTime(j.createdAt) }]} />}
           </div>
         </div>
 
