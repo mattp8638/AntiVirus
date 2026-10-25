@@ -194,6 +194,23 @@ def list_commands(tenant_id: str | None = None, device_id: str | None = None, st
     return [to_dict(c) for c in db.execute(query.order_by(Command.created_at.desc()).limit(500)).scalars()]
 
 
+def _command_arguments(body: dict) -> dict:
+    payload = body.get("payload")
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise HTTPException(422, "Command payload must be a JSON object")
+    arguments = {"payload": payload}
+    for field, name in (("targetPath", "target_path"), ("recordId", "record_id"), ("reason", "reason")):
+        value = body.get(field)
+        if value is None:
+            value = ""
+        if not isinstance(value, str):
+            raise HTTPException(422, f"{field} must be a string")
+        arguments[name] = value.strip()
+    return arguments
+
+
 @router.post("/devices/{device_id}/commands")
 def issue_command(device_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
                   db: Session = Depends(get_db)):
@@ -203,10 +220,10 @@ def issue_command(device_id: str, body: dict = Body(...), principal: Principal =
     if spec is None:
         raise HTTPException(400, "Unknown command type")
     principal.require(spec.permission)
+    arguments = _command_arguments(body)
     try:
-        command = services.enqueue_command(db, device, command_type, principal.actor, target_path=str(body.get("targetPath") or ""),
-                                           record_id=str(body.get("recordId") or ""), payload=body.get("payload") or {},
-                                           reason=str(body.get("reason") or ""), incident_id=body.get("incidentId"))
+        command = services.enqueue_command(db, device, command_type, principal.actor,
+                                           **arguments, incident_id=body.get("incidentId"))
     except services.CommandError as exc:
         raise HTTPException(400, str(exc)) from exc
     db.commit()
@@ -221,22 +238,21 @@ def bulk_command(body: dict = Body(...), principal: Principal = Depends(current_
     if spec is None:
         raise HTTPException(400, "Unknown command type")
     principal.require(spec.permission)
-    ids = body.get("deviceIds") or []
-    payload = body.get("payload")
-    if payload is None:
-        payload = {}
-    if not isinstance(payload, dict):
-        raise HTTPException(422, "Command payload must be a JSON object")
+    ids = body.get("deviceIds")
+    if not isinstance(ids, list) or not ids or any(not isinstance(i, str) or not i.strip() for i in ids):
+        raise HTTPException(422, "deviceIds must be a non-empty list of device IDs")
+    if len(ids) > 5000:
+        raise HTTPException(422, "A bulk action supports at most 5000 device IDs")
+    ids = list(dict.fromkeys(i.strip() for i in ids))
+    arguments = _command_arguments(body)
     queued, skipped = [], []
-    for device_id in ids[:5000]:
+    for device_id in ids:
         device = db.get(Device, device_id)
         if device is None or device.tenant_id not in principal.tenant_ids:
             skipped.append({"deviceId": device_id, "reason": "not found"})
             continue
         try:
-            queued.append(services.enqueue_command(db, device, command_type, principal.actor, target_path=str(body.get("targetPath") or ""),
-                                                   record_id=str(body.get("recordId") or ""), payload=payload,
-                                                   reason=str(body.get("reason") or "")).id)
+            queued.append(services.enqueue_command(db, device, command_type, principal.actor, **arguments).id)
         except services.CommandError as exc:
             skipped.append({"deviceId": device_id, "reason": str(exc)})
     db.commit()
