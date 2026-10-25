@@ -19,7 +19,7 @@ export function M365Administration({connection}:{connection:any}) {
   useEffect(()=>{setSelected(null);setJob(null);setDiagnostics(null);setConfirmed(false);},[connection.id]);
   const choose=(row:any)=>{setSelected(row);setOperation("user.update");setValue(row.displayName||"");setJob(null);setConfirmed(false);setRequestId(crypto.randomUUID());};
   const prepare=async()=>{
-    const parameters=operation==="user.update"?{displayName:value}:operation==="user.signin"?{accountEnabled:value==="true"}:
+    const parameters=operation==="user.revoke_sessions"?{}:operation==="user.update"?{displayName:value}:operation==="user.signin"?{accountEnabled:value==="true"}:
       operation.startsWith("license.")?{skuId:value}:{groupId:value};
     const result=await run(()=>api(base+"/actions",{body:{requestId,operation,targetId:selected.id,parameters}}),"Action prepared");
     if(result){setJob(result);reloadHistory();}
@@ -48,25 +48,27 @@ export function M365Administration({connection}:{connection:any}) {
     {selected&&!job&&<Modal title={selected.userPrincipalName} onClose={()=>setSelected(null)}>
       <label className="field">Action<select value={operation} onChange={e=>{setOperation(e.target.value);setValue("");setRequestId(crypto.randomUUID());}}>
         <option value="user.update">Change display name</option><option value="user.signin">Enable or block sign-in</option>
+        <option value="user.revoke_sessions">Revoke sign-in sessions</option>
         <option value="license.add">Assign licence</option><option value="license.remove">Remove licence</option>
         <option value="group.add_member">Add to group</option><option value="group.remove_member">Remove from group</option>
       </select></label>
-      <label className="field">{operation==="user.update"?"Display name":"New setting"}
+      {operation!=="user.revoke_sessions"&&<label className="field">{operation==="user.update"?"Display name":"New setting"}
         {operation==="user.update"?<input value={value} onChange={e=>{setValue(e.target.value);setRequestId(crypto.randomUUID());}}/>:
         <select value={value} onChange={e=>{setValue(e.target.value);setRequestId(crypto.randomUUID());}}><option value="">Choose…</option>
           {operation==="user.signin"?<><option value="true">Allow sign-in</option><option value="false">Block sign-in</option></>:
           operation.startsWith("license.")?licenses?.map(r=><option key={r.skuId} value={r.skuId}>{r.skuPartNumber}</option>):
           groups?.map(r=><option key={r.id} value={r.id}>{r.displayName}</option>)}
         </select>}
-      </label>
-      <button className="primary" disabled={busy||!value} onClick={prepare}>Review change</button>
+      </label>}
+      {operation==="user.revoke_sessions"&&<p>Invalidate this user’s refresh tokens and browser sessions. This can take a few minutes and does not block future sign-ins. External users must be managed in their home tenant.</p>}
+      <button className="primary" disabled={busy||(operation!=="user.revoke_sessions"&&!value)} onClick={prepare}>Review change</button>
     </Modal>}
     {job&&<Modal title="Review Microsoft action" onClose={()=>{setJob(null);setSelected(null);}}>
       <p><b>Customer connection:</b> {connection.name}</p><p><b>Directory:</b> {connection.directoryId}</p>
       <p><b>User:</b> {job.preview?.user?.userPrincipalName}</p><p><b>Action:</b> {job.operation} · <b>Status:</b> {job.status}</p>
       {job.preview?.group&&<p><b>Group:</b> {job.preview.group.displayName}</p>}
       {job.preview?.license&&<p><b>Licence:</b> {job.preview.license.name}</p>}
-      <p><b>Change:</b> {job.operation==="user.update"?`Display name: ${job.preview?.user?.displayName} → ${job.parameters.displayName}`:job.operation==="user.signin"?`${job.preview?.user?.accountEnabled?"Sign-in allowed":"Sign-in blocked"} → ${job.parameters.accountEnabled?"Allow sign-in":"Block sign-in"}`:job.operation==="license.add"?"Assign the selected licence":job.operation==="license.remove"?"Remove the selected licence":job.operation==="group.add_member"?"Add this user to the selected group":"Remove this user from the selected group"}</p>
+      <p><b>Change:</b> {job.operation==="user.revoke_sessions"?"Revoke this user’s sign-in sessions; future sign-ins remain allowed":job.operation==="user.update"?`Display name: ${job.preview?.user?.displayName} → ${job.parameters.displayName}`:job.operation==="user.signin"?`${job.preview?.user?.accountEnabled?"Sign-in allowed":"Sign-in blocked"} → ${job.parameters.accountEnabled?"Allow sign-in":"Block sign-in"}`:job.operation==="license.add"?"Assign the selected licence":job.operation==="license.remove"?"Remove the selected licence":job.operation==="group.add_member"?"Add this user to the selected group":"Remove this user from the selected group"}</p>
       <p>Required application permissions: {job.preview?.requiredPermissions?.join(", ")}</p>
       {job.result?.message&&<p>{job.result.message}</p>}
       {job.status==="prepared"&&can("m365_admin")&&<><p>This changes the selected tenant. Removing licences or blocking sign-in can interrupt service. The preview expires after ten minutes.</p>
