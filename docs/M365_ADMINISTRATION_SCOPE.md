@@ -7,8 +7,7 @@ Fenrir is not a like-for-like CIPP replacement. This is a scope record, not a ce
 Select a connection on the Microsoft 365 page, then select a user in Tenant administration.
 Users with the `m365_admin` permission can prepare and review profile, sign-in,
 licence assignment and supported group-membership changes. Execution requires fresh
-authentication. Profile editing currently exposes display name in the UI; the API
-also supports department, job title and usage location.
+authentication. Profile editing exposes display name, department, job title and usage location.
 
 Session revocation is available as `Revoke sign-in sessions`. The application needs
 Microsoft Graph application permission `User.RevokeSessions.All`, plus `User.Read.All`
@@ -24,7 +23,7 @@ preparing another action.
 ## Remaining CIPP parity work
 
 - Delegated partner onboarding and GDAP/CPV permission lifecycle.
-- User creation, password-reset delivery and complete onboarding/offboarding.
+- Bulk user creation, guest invitations, password resets and complete onboarding/offboarding.
 - Exchange mailbox administration, permissions, forwarding and mail-flow tooling.
 - Tenant-wide standards, scheduled evaluation, drift alerts and remediation.
 - Full Intune policy/application administration and Conditional Access workflows.
@@ -45,3 +44,24 @@ References:
 - https://learn.microsoft.com/en-us/graph/api/user-revokesigninsessions?view=graph-rest-1.0
 - https://docs.cipp.app/user-documentation/tenant/standards
 - https://docs.cipp.app/user-documentation/cipp/settings/tenants
+
+
+## New-user creation
+
+Users > New user supports cloud member accounts in verified managed domains.
+Required Graph application permissions: User.ReadWrite.All and Domain.Read.All,
+with administrator consent. Microsoft validates its own password policy.
+The preview checks domain verification and duplicate sign-in names; execution
+rechecks both. Federated provisioning is explicitly unsupported.
+
+The temporary password is entered at execution, sent to Microsoft, and omitted
+from stored action parameters, previews, results and audit details. It must be
+12–128 characters and is cleared from the form after the execution attempt.
+It must be delivered securely by the administrator; no email is sent.
+Password change is required at first sign-in. Account creation enables sign-in.
+Licence assignment and group membership are subsequent reviewed actions; this
+release does not claim atomic onboarding or mailbox provisioning.
+
+A create action uses its request UUID as the action target until Microsoft
+returns the real user UUID in result.user.id. A timeout becomes unknown and
+must be reconciled in the directory; retries do not repeat the write.
