@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ago, api } from "../api";
 import { useApp } from "../app-context";
@@ -14,6 +14,11 @@ export default function Devices() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulk, setBulk] = useState(false);
   const { data, error, reload } = useData<any[]>("devices", { tenant_id: tenantId, q, status, platform });
+
+  useEffect(() => {
+    setSelected(new Set());
+    setBulk(false);
+  }, [tenantId, q, status, platform]);
 
   const toggle = (id: string) => {
     const next = new Set(selected);
