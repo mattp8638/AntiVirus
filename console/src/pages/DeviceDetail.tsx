@@ -181,7 +181,8 @@ function EffectivePolicy({ policy }: { policy: any }) {
 }
 
 export function CommandModal({ device, initial, onClose, incidentId }: { device: any; initial: string; onClose: () => void; incidentId?: string }) {
-  const { data: catalog } = useData<any[]>("commands/catalog");
+  const { can } = useApp();
+  const { data: catalog, error: catalogError } = useData<any[]>("commands/catalog");
   const [type, setType] = useState(initial || "scan.quick");
   const [targetPath, setTargetPath] = useState("");
   const [recordId, setRecordId] = useState("");
@@ -189,15 +190,19 @@ export function CommandModal({ device, initial, onClose, incidentId }: { device:
   const [reason, setReason] = useState("");
   const { run, busy } = useAction();
   const isKill = type === "process.terminate" || type === "process.tree.terminate";
-  const available = catalog?.filter((c) => c.platforms.includes(device.platform)) ?? [];
+  const available = catalog?.filter((c) => c.platforms.includes(device.platform) && can(c.permission)) ?? [];
   const spec = available.find((c) => c.type === type);
+  const valid = !!spec && (!spec.needs.includes("targetPath") || !!targetPath.trim()) &&
+    (!spec.needs.includes("recordId") || !!recordId.trim());
   const submit = async () => {
+    if (!valid || busy) return;
     const ok = await run(() => api(`devices/${device.id}/commands`, { body: { type, targetPath, recordId, reason, incidentId, payload: isKill && pid ? { pid: Number(pid) } : {} } }), `${spec?.label ?? type} queued`);
     if (ok) onClose();
   };
   return (
     <Modal title={`Remote action · ${device.hostname}`} onClose={onClose}
-           footer={<><button onClick={onClose}>Cancel</button><button className={spec?.destructive ? "danger" : "primary"} disabled={busy || !spec} onClick={submit}>Queue action</button></>}>
+           footer={<><button onClick={onClose}>Cancel</button><button className={spec?.destructive ? "danger" : "primary"} disabled={busy || !valid} onClick={submit}>Queue action</button></>}>
+      <ErrorNote error={catalogError} />
       <div className="form-grid">
         <label className="field">Action
           <select value={type} onChange={(e) => setType(e.target.value)}>
