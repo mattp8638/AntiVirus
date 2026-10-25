@@ -37,7 +37,7 @@ export default function Devices() {
       <div className="row" style={{ marginBottom: 12 }}>
         <input placeholder="Search hostname, OS, IP" value={q} onChange={(e) => setQ(e.target.value)} style={{ minWidth: 260 }} />
         <select value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Status">
-          <option value="">Any status</option><option value="online">Online</option><option value="offline">Offline</option>
+          <option value="">Active devices</option><option value="retired">Decommissioned</option><option value="online">Online</option><option value="offline">Offline</option>
           <option value="isolated">Isolated</option><option value="pending">Awaiting approval</option><option value="at-risk">At risk</option>
         </select>
         <select value={platform} onChange={(e) => setPlatform(e.target.value)} aria-label="Platform">
@@ -48,13 +48,14 @@ export default function Devices() {
       <div className="card">
         <Table rows={data} onRow={(r) => navigate(`/devices/${r.id}`)} empty="No devices match. Deploy the agent to get started."
                columns={[
-                 { key: "sel", label: "", render: (r) => <input type="checkbox" checked={selected.has(r.id)} onClick={(e) => e.stopPropagation()} onChange={() => toggle(r.id)} aria-label={`Select ${r.hostname}`} /> },
+                 { key: "sel", label: "", render: (r) => <input type="checkbox" disabled={r.retired} checked={selected.has(r.id)} onClick={(e) => e.stopPropagation()} onChange={() => toggle(r.id)} aria-label={`Select ${r.hostname}`} /> },
                  { key: "hostname", label: "Device", render: (r) => <><span className={`dot ${r.online ? "on" : "off"}`} /> <b>{r.hostname}</b><div className="small muted">{r.osVersion}</div></> },
                  { key: "tenantId", label: "Tenant", render: (r) => tenantName(r.tenantId) },
                  { key: "platform", label: "Platform" },
                  { key: "agentVersion", label: "Agent", render: (r) => r.agentVersion || "—" },
                  { key: "state", label: "State", render: (r) => <div className="row">
-                     {!r.approved && <Pill value="pending approval" tone="warn" />}
+                     {r.retired && <Pill value="decommissioned" />}
+                     {!r.retired && !r.approved && <Pill value="pending approval" tone="warn" />}
                      {r.isolated && <Pill value="isolated" tone="bad" />}
                      <Pill value={r.healthState || "unknown"} tone={r.healthState === "healthy" ? "good" : "muted"} />
                    </div> },
