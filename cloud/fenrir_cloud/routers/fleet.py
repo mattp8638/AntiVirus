@@ -222,6 +222,11 @@ def bulk_command(body: dict = Body(...), principal: Principal = Depends(current_
         raise HTTPException(400, "Unknown command type")
     principal.require(spec.permission)
     ids = body.get("deviceIds") or []
+    payload = body.get("payload")
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise HTTPException(422, "Command payload must be a JSON object")
     queued, skipped = [], []
     for device_id in ids[:5000]:
         device = db.get(Device, device_id)
@@ -230,7 +235,8 @@ def bulk_command(body: dict = Body(...), principal: Principal = Depends(current_
             continue
         try:
             queued.append(services.enqueue_command(db, device, command_type, principal.actor, target_path=str(body.get("targetPath") or ""),
-                                                   record_id=str(body.get("recordId") or ""), reason=str(body.get("reason") or "")).id)
+                                                   record_id=str(body.get("recordId") or ""), payload=payload,
+                                                   reason=str(body.get("reason") or "")).id)
         except services.CommandError as exc:
             skipped.append({"deviceId": device_id, "reason": str(exc)})
     db.commit()
