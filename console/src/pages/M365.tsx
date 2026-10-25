@@ -15,10 +15,10 @@ export default function M365() {
   useEffect(()=>{setCreate(false);setSelected(null);setSecret(false);},[tenantId]);
   if (!can("configure")) return <PageHead title="Microsoft 365" subtitle="Configuration access is required." />;
   return <>
-    <PageHead title="Microsoft 365" subtitle="Customer directory, licence and Secure Score snapshots from Microsoft Graph."
+    <PageHead title="Microsoft 365" subtitle="Customer directory administration, licences and security snapshots."
       actions={<button className="primary" onClick={() => setCreate(true)}>Connect directory</button>} />
     <ErrorNote error={error} />
-    <div className="card"><p>Register an application in the customer's directory and grant application permissions: User.Read.All, LicenseAssignment.Read.All and SecurityEvents.Read.All, with admin consent. Sync is read-only and runs on demand.</p></div>
+    <div className="card"><p>Register an application in the customer's directory and grant application permissions: User.Read.All, LicenseAssignment.Read.All and SecurityEvents.Read.All, with admin consent. Snapshot sync is read-only. Select a connection below for live administration and access checks. New-user creation additionally requires User.ReadWrite.All and Domain.Read.All with admin consent; other actions list their required permissions before execution.</p></div>
     <Table rows={data} onRow={setSelected} columns={[{key:"name",label:"Connection"},{key:"directoryId",label:"Directory"},{key:"status",label:"Status",render:r=><Pill value={r.status}/>},{key:"syncedAt",label:"Last successful sync",render:r=>fmtTime(r.syncedAt)}]} />
     {create && <RecordEditor title="Connect Microsoft 365" fields={[{key:"name",label:"Name",required:true},{key:"directoryId",label:"Directory (tenant) UUID",required:true},{key:"clientId",label:"Application (client) UUID",required:true},{key:"clientSecret",label:"Client secret",type:"password",required:true}]}
       onSave={body=>api("m365/connections",{body})} onClose={()=>{setCreate(false);reload();}} />}
