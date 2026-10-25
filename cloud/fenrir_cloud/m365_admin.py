@@ -4,9 +4,10 @@ from uuid import UUID
 import httpx
 from . import m365
 
-USER_FIELDS = "id,displayName,userPrincipalName,accountEnabled,department,jobTitle,usageLocation,assignedLicenses"
+USER_FIELDS = "id,displayName,userPrincipalName,accountEnabled,department,jobTitle,usageLocation,assignedLicenses,userType"
 GROUP_FIELDS = "id,displayName,groupTypes,mailEnabled,securityEnabled,isAssignableToRole,onPremisesSyncEnabled"
 CAPABILITIES = {
+    "user.revoke_sessions": ["User.RevokeSessions.All", "User.Read.All"],
     "user.update": ["User.ReadWrite.All"],
     "user.signin": ["User.EnableDisableAccount.All", "User.Read.All"],
     "license.add": ["LicenseAssignment.ReadWrite.All", "User.Read.All"],
@@ -47,6 +48,8 @@ def preview(connection, operation, target, parameters):
     with session(connection) as (client, headers):
         current = user(client, headers, target)
         validate_license(operation, parameters, current)
+        if operation == "user.revoke_sessions" and current.get("userType") != "Member":
+            raise ProviderError("Session revocation requires a member user in this directory; external users must be managed in their home tenant.")
         result = {"user": current, "changes": parameters, "requiredPermissions": CAPABILITIES[operation]}
         if operation.startswith("group."):
             result["group"] = group(client, headers, parameters["groupId"])
@@ -85,8 +88,12 @@ def execute(connection, operation, target, parameters):
     with session(connection) as (client, headers):
         current = user(client, headers, target)
         validate_license(operation, parameters, current)
+        if operation == "user.revoke_sessions" and current.get("userType") != "Member":
+            raise ProviderError("Session revocation requires a member user in this directory; external users must be managed in their home tenant.")
         method, path, body = "PATCH", f"/users/{UUID(target)}", parameters
-        if operation == "user.signin":
+        if operation == "user.revoke_sessions":
+            method, path, body = "POST", path + "/revokeSignInSessions", None
+        elif operation == "user.signin":
             body = {"accountEnabled": parameters["accountEnabled"]}
         elif operation.startswith("license."):
             body = {"addLicenses": [{"skuId": parameters["skuId"], "disabledPlans": []}] if operation == "license.add" else [],
@@ -100,13 +107,17 @@ def execute(connection, operation, target, parameters):
             else:
                 method, path, body = "DELETE", path + "/" + str(UUID(target)) + "/$ref", None
         try:
-            request(client, headers, method, path, body)
+            response = request(client, headers, method, path, body)
+            if operation == "user.revoke_sessions" and response.get("value") is False:
+                raise ProviderError("Microsoft did not confirm session revocation.", uncertain=True)
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             raise ProviderError("Microsoft rejected the action. Check consent, target restrictions and service availability.",
                                 uncertain=status >= 500 or status == 408) from None
         except (httpx.RequestError, ValueError, KeyError):
             raise ProviderError("Microsoft's result is unknown. Inspect the tenant before preparing another action.", uncertain=True) from None
+        if operation == "user.revoke_sessions":
+            return "succeeded", {"message": "Microsoft accepted session revocation. It can take a few minutes to take effect; this does not block future sign-ins."}
         # A successful write must not be reclassified as failed if refresh fails.
         try:
             result = {"user": user(client, headers, target)}
