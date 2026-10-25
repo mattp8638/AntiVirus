@@ -66,29 +66,44 @@ export default function Devices() {
 }
 
 function BulkAction({ ids, onClose }: { ids: string[]; onClose: () => void }) {
-  const { data: catalog } = useData<any[]>("commands/catalog");
+  const { can } = useApp();
+  const { data: catalog, error: catalogError } = useData<any[]>("commands/catalog");
   const [type, setType] = useState("scan.quick");
   const [targetPath, setTargetPath] = useState("");
   const [reason, setReason] = useState("");
+  const [recordId, setRecordId] = useState("");
+  const [outcome, setOutcome] = useState<{ queued: string[]; skipped: { deviceId: string; reason: string }[] } | null>(null);
   const { run, busy } = useAction();
-  const spec = catalog?.find((c) => c.type === type);
+  const available = catalog?.filter((c) => can(c.permission)) ?? [];
+  const spec = available.find((c) => c.type === type);
+  const valid = !!spec && (!spec.needs.includes("targetPath") || !!targetPath.trim()) &&
+    (!spec.needs.includes("recordId") || !!recordId.trim());
   const submit = async () => {
-    const result = await run(() => api("commands/bulk", { body: { type, deviceIds: ids, targetPath, reason } }));
-    if (result) onClose();
+    if (!valid || busy || outcome) return;
+    const result = await run(() => api<{ queued: string[]; skipped: { deviceId: string; reason: string }[] }>("commands/bulk", { body: { type, deviceIds: ids, targetPath: targetPath.trim(), recordId: recordId.trim(), reason } }));
+    if (result) setOutcome(result);
   };
   return (
     <Modal title={`Run action on ${ids.length} devices`} onClose={onClose}
-           footer={<><button onClick={onClose}>Cancel</button><button className={spec?.destructive ? "danger" : "primary"} disabled={busy} onClick={submit}>Queue</button></>}>
+           footer={<><button onClick={onClose}>{outcome ? "Done" : "Cancel"}</button>{!outcome && <button className={spec?.destructive ? "danger" : "primary"} disabled={busy || !valid} onClick={submit}>Queue</button>}</>}>
+      <ErrorNote error={catalogError} />
+      {outcome ? <div role="status">
+        <p>{outcome.queued.length} queued; {outcome.skipped.length} skipped.</p>
+        {outcome.queued.length > 0 && <p className="muted">Queued actions are awaiting endpoint execution. Check command history for completion.</p>}
+        {outcome.skipped.length > 0 && <ul>{outcome.skipped.map((item, index) => <li key={`${item.deviceId}-${index}`}><code>{item.deviceId}</code>: {item.reason}</li>)}</ul>}
+      </div> : <>
       <div className="form-grid">
         <label className="field">Action
           <select value={type} onChange={(e) => setType(e.target.value)}>
-            {catalog?.map((c) => <option key={c.type} value={c.type}>{c.group}: {c.label}</option>)}
+            {available.map((c) => <option key={c.type} value={c.type}>{c.group}: {c.label}</option>)}
           </select>
         </label>
         {spec?.needs.includes("targetPath") && <label className="field">Target path<input value={targetPath} onChange={(e) => setTargetPath(e.target.value)} /></label>}
+        {spec?.needs.includes("recordId") && <label className="field">Record ID<input value={recordId} onChange={(e) => setRecordId(e.target.value)} /></label>}
         <label className="field">Reason<input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Shown in the audit log" /></label>
       </div>
       {spec?.description && <p className="muted">{spec.description}</p>}
+      </>}
     </Modal>
   );
 }
