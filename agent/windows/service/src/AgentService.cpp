@@ -1085,6 +1085,7 @@ int AgentService::Run(const AgentRunMode mode) {
 }
 
 void AgentService::RequestStop() {
+  stopRequested_->store(true);  // also cancels a running background scan
   if (stopEvent_ != nullptr) {
     SetEvent(stopEvent_);
   }
@@ -1184,24 +1185,8 @@ void AgentService::RunScheduledQuickScan(const int cycle) {
       return;
     }
 
-    QueueTelemetryEvent(L"scan.quick-scheduled.started", L"agent-service",
-                        L"The endpoint is starting a scheduled quick scan.",
-                        BuildCyclePayload(cycle, L"\"scope\":\"quick\""));
-
-    LocalScanExecutionOptions options{};
-    options.source = kScheduledQuickScanSource;
-    options.queueTelemetry = true;
-    options.applyRemediation = true;
-    const auto result = ExecuteLocalScan(config_, state_, BuildQuickScanTargets(), options);
-
-    QueueTelemetryEvent(L"scan.quick-scheduled.completed", L"agent-service",
-                        L"The endpoint completed a scheduled quick scan.",
-                        BuildCyclePayload(cycle, std::wstring(L"\"scope\":\"quick\",\"targetsScanned\":") +
-                                                     std::to_wstring(result.targetCount) + L",\"findings\":"
-                                                     + std::to_wstring(result.findings.size()) +
-                                                     L",\"remediationFailed\":"
-                                                     + (result.remediationFailed ? std::wstring(L"true")
-                                                                                 : std::wstring(L"false"))));
+    // Runs in the background; skipped this cycle if another scan is still running.
+    StartBackgroundScan(L"scan.quick-scheduled", L"quick", kScheduledQuickScanSource, BuildQuickScanTargets());
   } catch (const std::exception& error) {
     QueueTelemetryEvent(L"scan.quick-scheduled.failed", L"agent-service",
                         L"The endpoint failed to complete a scheduled quick scan.",
@@ -1234,24 +1219,7 @@ void AgentService::RunScheduledFullDriveScan(const int cycle) {
       }
     }
 
-    QueueTelemetryEvent(L"scan.scheduled.started", L"agent-service",
-                        L"The endpoint is starting a scheduled full C: drive scan.",
-                        BuildCyclePayload(cycle, L"\"scope\":\"C:\\\\\""));
-
-    LocalScanExecutionOptions options{};
-    options.source = kScheduledFullDriveScanSource;
-    options.queueTelemetry = true;
-    options.applyRemediation = true;
-    const auto result = ExecuteLocalScan(config_, state_, {std::filesystem::path(LR"(C:\)")}, options);
-
-    QueueTelemetryEvent(L"scan.scheduled.completed", L"agent-service",
-                        L"The endpoint completed a scheduled full C: drive scan.",
-                        BuildCyclePayload(cycle, std::wstring(L"\"scope\":\"C:\\\\\",\"targetsScanned\":") +
-                                                     std::to_wstring(result.targetCount) + L",\"findings\":"
-                                                     + std::to_wstring(result.findings.size()) +
-                                                     L",\"remediationFailed\":"
-                                                     + (result.remediationFailed ? std::wstring(L"true")
-                                                                                 : std::wstring(L"false"))));
+    StartBackgroundScan(L"scan.scheduled", L"full", kScheduledFullDriveScanSource, BuildFullScanTargets());
   } catch (const std::exception& error) {
     QueueTelemetryEvent(L"scan.scheduled.failed", L"agent-service",
                         L"The endpoint failed to complete a scheduled full C: drive scan.",
@@ -1863,6 +1831,19 @@ std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
   if (command.type == L"scan.targeted") {
     return ExecuteTargetedScan(command);
   }
+  if (command.type == L"scan.quick" || command.type == L"scan.full") {
+    return ExecuteOnDemandScan(command, command.type == L"scan.full");
+  }
+  if (command.type == L"inventory.refresh") {
+    return ExecuteInventoryRefreshCommand(command);
+  }
+  if (command.type == L"policy.refresh") {
+    return ExecutePolicyRefreshCommand(command);
+  }
+  if (command.type == L"forensics.collect") {
+    // A full (unsanitised) support bundle: processes, network, persistence, logs and runtime evidence.
+    return ExecuteSupportBundleCommand(command, false);
+  }
   if (command.type == L"quarantine.restore") {
     return ExecuteQuarantineMutation(command, true);
   }
@@ -1969,6 +1950,76 @@ std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
   }
 
   throw std::runtime_error("Unsupported remote command type");
+}
+
+bool AgentService::StartBackgroundScan(const std::wstring& eventPrefix, const std::wstring& scopeLabel, const std::wstring& source,
+                                       std::vector<std::filesystem::path> targets) {
+  bool expected = false;
+  if (!backgroundScanBusy_->compare_exchange_strong(expected, true)) {
+    return false;
+  }
+  QueueTelemetryEvent(eventPrefix + L".started", L"agent-service", L"The endpoint started a " + scopeLabel + L" scan.",
+                      L"{\"scope\":\"" + scopeLabel + L"\",\"source\":\"" + source + L"\",\"targets\":" +
+                          std::to_wstring(targets.size()) + L"}");
+  // The thread works only on copies and shared flags, never on `this`, so it is safe even if the
+  // service object goes away; a stop request cancels it at the next file.
+  auto busy = backgroundScanBusy_;
+  auto stopping = stopRequested_;
+  const auto config = config_;
+  const auto state = state_;
+  std::thread([busy, stopping, config, state, eventPrefix, scopeLabel, source, targets = std::move(targets)]() {
+    const TelemetryQueueStore queue(config.runtimeDatabasePath, config.telemetryQueuePath);
+    const auto record = [&](const std::wstring& type, const std::wstring& summary, const std::wstring& payload) {
+      try {
+        queue.Append({TelemetryRecord{.eventId = GenerateGuidString(), .eventType = type, .source = L"agent-service",
+                                      .summary = summary, .occurredAt = CurrentUtcTimestamp(), .payloadJson = payload}});
+      } catch (...) {
+      }
+    };
+    try {
+      LocalScanExecutionOptions options{};
+      options.source = source;
+      options.queueTelemetry = true;  // appended to the shared queue (findings + summary)
+      options.applyRemediation = true;
+      const auto result = ExecuteLocalScan(config, state, targets, options, [stopping](const LocalScanProgressUpdate&) {
+        if (stopping->load()) {
+          throw std::runtime_error("the service is stopping");
+        }
+      });
+      record(eventPrefix + L".completed", L"The endpoint completed a " + scopeLabel + L" scan.",
+             L"{\"scope\":\"" + scopeLabel + L"\",\"targetsScanned\":" + std::to_wstring(result.targetCount) +
+                 L",\"findings\":" + std::to_wstring(result.findings.size()) + L",\"remediationFailed\":" +
+                 (result.remediationFailed ? L"true" : L"false") + L"}");
+    } catch (const std::exception& error) {
+      record(eventPrefix + L".failed", L"The endpoint could not complete a " + scopeLabel + L" scan.",
+             L"{\"scope\":\"" + scopeLabel + L"\",\"error\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(error.what()))) + L"\"}");
+    }
+    busy->store(false);
+  }).detach();
+  return true;
+}
+
+std::wstring AgentService::ExecuteOnDemandScan(const RemoteCommand& command, const bool full) {
+  const auto scope = full ? std::wstring(L"full") : std::wstring(L"quick");
+  auto targets = full ? BuildFullScanTargets() : BuildQuickScanTargets();
+  const auto count = targets.size();
+  if (!StartBackgroundScan(L"scan." + scope, scope, L"command." + command.commandId, std::move(targets))) {
+    throw std::runtime_error("Another scan is already running on this device; try again when it finishes");
+  }
+  // Findings arrive as scan.finding telemetry; completion as scan.<scope>.completed.
+  return std::wstring(L"{\"started\":true,\"scope\":\"") + scope + L"\",\"targets\":" + std::to_wstring(count) + L"}";
+}
+
+std::wstring AgentService::ExecuteInventoryRefreshCommand(const RemoteCommand& command) {
+  QueueDeviceInventoryTelemetry(0);
+  QueuePatchTelemetry(0);
+  FlushTelemetryQueue();
+  return std::wstring(L"{\"commandId\":\"") + command.commandId + L"\",\"inventory\":\"sent\"}";
+}
+
+std::wstring AgentService::ExecutePolicyRefreshCommand(const RemoteCommand& command) {
+  RefreshPolicy(0);
+  return std::wstring(L"{\"commandId\":\"") + command.commandId + L"\",\"revision\":\"" + policy_.revision + L"\"}";
 }
 
 std::wstring AgentService::ExecuteTargetedScan(const RemoteCommand& command) {
@@ -2627,7 +2678,7 @@ void AgentService::PersistState() {
   }
 
   stateStore_->Save(state_);
-  telemetryQueueStore_->SavePending(pendingTelemetry_);
+  // Telemetry is appended to the queue as it is raised (QueueTelemetryRecords), so nothing to rewrite here.
 }
 
 void AgentService::ApplyProtectionPolicy() {
@@ -2980,25 +3031,32 @@ void AgentService::QueueTelemetryEvent(const std::wstring& eventType, const std:
     deferredTelemetry_.push_back({eventType, source, summary, payloadJson});
     return;
   }
-  pendingTelemetry_.push_back(TelemetryRecord{
+  QueueTelemetryRecords({TelemetryRecord{
       .eventId = GenerateGuidString(),
       .eventType = eventType,
       .source = source,
       .summary = summary,
       .occurredAt = CurrentUtcTimestamp(),
-      .payloadJson = payloadJson});
-
-  EnforceTelemetryQueueBudget(&pendingTelemetry_);
-  telemetryQueueStore_->SavePending(pendingTelemetry_);
+      .payloadJson = payloadJson}});
 }
 
 void AgentService::QueueTelemetryRecords(const std::vector<TelemetryRecord>& records) {
+  // Append only: scans, the scanner CLI and the AMSI provider add rows to the same queue, and a
+  // whole-queue rewrite from this in-memory copy would silently drop them.
   pendingTelemetry_.insert(pendingTelemetry_.end(), records.begin(), records.end());
-  EnforceTelemetryQueueBudget(&pendingTelemetry_);
-  telemetryQueueStore_->SavePending(pendingTelemetry_);
+  telemetryQueueStore_->Append(records);
+  constexpr std::size_t kMaxQueuedTelemetry = 5000;
+  if (pendingTelemetry_.size() > kMaxQueuedTelemetry) {
+    EnforceTelemetryQueueBudget(&pendingTelemetry_);
+    telemetryQueueStore_->Trim(kMaxQueuedTelemetry);
+  }
 }
 
 void AgentService::FlushTelemetryQueue() {
+  if (telemetryQueueStore_) {
+    // Pick up rows other writers appended since the last flush.
+    pendingTelemetry_ = telemetryQueueStore_->LoadPending();
+  }
   if (state_.deviceId.empty() || pendingTelemetry_.empty()) {
     lastTelemetryFlushFailed_ = false;
     return;
@@ -3013,8 +3071,13 @@ void AgentService::FlushTelemetryQueue() {
 
     try {
       const auto result = controlPlaneClient_->SendTelemetryBatch(state_, batch);
+      std::vector<std::wstring> delivered;
+      delivered.reserve(batch.size());
+      for (const auto& record : batch) {
+        delivered.push_back(record.eventId);
+      }
+      telemetryQueueStore_->Remove(delivered);
       pendingTelemetry_.erase(pendingTelemetry_.begin(), pendingTelemetry_.begin() + batchSize);
-      telemetryQueueStore_->SavePending(pendingTelemetry_);
       std::wcout << L"Uploaded " << result.accepted << L" telemetry event(s) at " << result.receivedAt
                  << L". Backend now stores " << result.totalStored << L" event(s)." << std::endl;
     } catch (const std::exception& error) {

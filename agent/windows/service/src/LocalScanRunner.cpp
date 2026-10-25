@@ -41,14 +41,12 @@ bool RequiresProcessContainment(const ScanFinding& finding) {
 void QueueTelemetry(const AgentConfig& config, const PolicySnapshot& policy, const std::vector<ScanFinding>& findings,
                     const std::size_t targetCount, const std::wstring& source) {
   TelemetryQueueStore queueStore(config.runtimeDatabasePath, config.telemetryQueuePath);
-  auto pending = queueStore.LoadPending();
-
-  pending.push_back(BuildScanSummaryTelemetry(targetCount, findings.size(), policy, source));
+  std::vector<TelemetryRecord> records;
+  records.push_back(BuildScanSummaryTelemetry(targetCount, findings.size(), policy, source));
   for (const auto& finding : findings) {
-    pending.push_back(BuildScanFindingTelemetry(finding, source));
+    records.push_back(BuildScanFindingTelemetry(finding, source));
   }
-
-  queueStore.SavePending(pending);
+  queueStore.Append(records);
 }
 
 void ApplyLocalRemediation(const AgentConfig& config, std::vector<ScanFinding>& findings, const bool applyRemediation) {

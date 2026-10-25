@@ -67,6 +67,11 @@ type Agent struct {
 	metrics *MetricsCollector
 	remote  *remote.Manager
 	cmdMu   sync.Mutex
+	// Self-update (selfupdate.go); exePath/exit/restartDelay are overridable in tests.
+	lastUpdateCheck time.Time
+	exePath         string
+	exit            func(int)
+	restartDelay    time.Duration
 }
 
 func New(cfg Config) *Agent {
@@ -75,7 +80,7 @@ func New(cfg Config) *Agent {
 	}
 	a := &Agent{cfg: cfg, client: NewClient(cfg.Server), scanner: NewScanner(filepath.Join(cfg.StateDir, "quarantine")),
 		stop: make(chan struct{}), wake: make(chan struct{}, 1), metrics: &MetricsCollector{ProcRoot: cfg.ProcRoot},
-		remote: remote.NewManager()}
+		remote: remote.NewManager(), exit: os.Exit, restartDelay: 5 * time.Second}
 	a.remote.OnEvent = func(eventType, summary string, payload map[string]interface{}) {
 		a.emit(eventType, "remote-access", summary, payload)
 	}
@@ -447,6 +452,7 @@ func (a *Agent) Run() {
 			if time.Since(a.lastInv) > 12*time.Hour {
 				a.sendInventory()
 			}
+			a.maybeAutoUpdate()
 		case <-commands.C:
 			a.RunCommands()
 		case <-sigs.C:
@@ -616,6 +622,12 @@ func (a *Agent) Execute(cmd Command) (map[string]interface{}, error) {
 		return map[string]interface{}{"revision": a.state.Policy.Revision, "signatures": a.scanner.Version}, nil
 	case "support.bundle", "forensics.collect":
 		return a.triage(), nil
+	case "update.apply":
+		var p struct {
+			Force bool `json:"force"`
+		}
+		_ = json.Unmarshal([]byte(cmd.PayloadJSON), &p)
+		return a.selfUpdate(p.Force)
 	case "agent.repair":
 		return map[string]interface{}{"repaired": true, "version": Version}, a.saveState()
 	case "script.run":

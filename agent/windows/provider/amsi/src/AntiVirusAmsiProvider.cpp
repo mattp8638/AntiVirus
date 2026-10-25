@@ -120,10 +120,9 @@ void QueueTelemetry(const AgentConfig& config, const std::vector<TelemetryRecord
     return;
   }
 
-  TelemetryQueueStore queueStore(config.telemetryQueuePath);
-  auto pending = queueStore.LoadPending();
-  pending.insert(pending.end(), records.begin(), records.end());
-  queueStore.SavePending(pending);
+  // Same queue database the service uploads from (it was previously given the legacy file path as the database).
+  TelemetryQueueStore queueStore(config.runtimeDatabasePath, config.telemetryQueuePath);
+  queueStore.Append(records);
 }
 
 class AntiVirusAmsiProvider final : public IAntimalwareProvider2 {

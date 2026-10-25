@@ -296,6 +296,8 @@ SCHEMA: tuple[Section, ...] = (
             F("deferralDaysCritical", "int", 0, "Defer critical (days)", min=0, max=30),
             F("deferralDaysOther", "int", 7, "Defer others (days)", min=0, max=90),
             F("maintenanceWindow", "str", "daily 22:00-05:00", "Maintenance window"),
+            F("installInWindow", "bool", False, "Install approved patches automatically in the window",
+              help="Applies to devices no Patching-page policy covers. Off by default so upgrades never start patching unasked."),
             F("rebootBehaviour", "enum", "prompt", "Reboots", options=("never", "prompt", "outside-hours", "force")),
             F("vulnerabilityScanHours", "int", 24, "Vulnerability scan interval (hours)", min=1, max=168),
         ),

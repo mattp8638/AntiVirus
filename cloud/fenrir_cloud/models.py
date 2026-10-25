@@ -137,6 +137,8 @@ class Device(Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # Business criticality (low|medium|high|critical) used to rank vulnerabilities and alerts.
     criticality: Mapped[str | None] = mapped_column(String(16), nullable=True, default="medium")
+    # Last maintenance window in which protection-policy patching ran on this device ("2026-10-25T22:00").
+    patch_window_run: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
 
 class Policy(Base):
