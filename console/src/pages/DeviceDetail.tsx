@@ -1,6 +1,6 @@
 import { Fragment, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ago, api, fmtTime } from "../api";
+import { ago, api, fmtTime, getToken } from "../api";
 import { useApp } from "../app-context";
 import { ErrorNote, Modal, PageHead, Pill, Sev, Table, Tabs, useAction, useData } from "../components/ui";
 import { ConnectButtons, JobDetail, JobStatus, pct, Sparkline } from "../components/rmm";
@@ -12,6 +12,8 @@ export default function DeviceDetail() {
   const { data, error, reload } = useData<any>(`devices/${id}`);
   const { data: policies } = useData<any[]>("policies", { tenant_id: data?.device.tenantId }, [data?.device.tenantId]);
   const { data: groups } = useData<any[]>("groups", { tenant_id: data?.device.tenantId }, [data?.device.tenantId]);
+  const [reinstating, setReinstating] = useState(false);
+  const [installerReady, setInstallerReady] = useState(false);
   const [retiring, setRetiring] = useState(false);
   const [retireName, setRetireName] = useState("");
   const [tab, setTab] = useState("Overview");
@@ -42,7 +44,28 @@ export default function DeviceDetail() {
                               : <button className="danger" onClick={() => setAction("device.isolate")}>Isolate</button>}
                   <button onClick={() => setAction("")}>More actions…</button>
                 </>} />
-      {d.retired ? <p role="status">Decommissioned — agent access is revoked. Historical records remain available. Re-enrol the endpoint to manage it again.</p> : can("configure") && <button className="danger" onClick={()=>{setRetireName("");setRetiring(true);}}>Decommission device</button>}
+      {d.retired ? <p role="status">Decommissioned — agent access is revoked. Historical records remain available. Use Reinstate device to reconnect the endpoint to this record.</p> : can("configure") && <button className="danger" onClick={()=>{setRetireName("");setRetiring(true);}}>Decommission device</button>}
+      {d.retired && can("configure") && <button className="primary" onClick={()=>{setInstallerReady(false);setReinstating(true);}}>Reinstate device</button>}
+      {reinstating && <Modal title={`Reinstate ${d.hostname}`} onClose={()=>{if(!busy)setReinstating(false);}}>
+        <p>Generate a replacement installer bound to this device record and customer. Run it on the original endpoint as administrator. The device stays decommissioned until enrollment succeeds; its history, group and policy are retained.</p>
+        <p>The installer expires after 24 hours and can be used once. Generating another replaces the previous reinstatement token. Old agent credentials remain revoked.</p>
+        <button disabled={busy} onClick={async()=>{
+          const ok=await run(async()=>{
+            const token=getToken();
+            if(!token)throw new Error("Sign in again before generating an installer.");
+            const response=await fetch("/api/console/enrollment-installers",{method:"POST",headers:{Authorization:`Bearer ${token}`,"Content-Type":"application/json"},body:JSON.stringify({os:d.platform,tenantId:d.tenantId,reinstateDeviceId:d.id}),cache:"no-store"});
+            if(!response.ok){const body=await response.json();throw new Error(typeof body.detail==="string"?body.detail:"Installer generation failed");}
+            const file=await response.blob();
+            const filename=/filename="([A-Za-z0-9._-]+)"/.exec(response.headers.get("Content-Disposition")||"")?.[1]||"Fenrir-reinstatement-installer";
+            const url=URL.createObjectURL(file);
+            const link=document.createElement("a");link.href=url;link.download=filename;document.body.appendChild(link);link.click();link.remove();window.setTimeout(()=>URL.revokeObjectURL(url),60000);
+            return true;
+          });
+          if(ok)setInstallerReady(true);
+        }}>{busy?"Generating…":"Download reinstatement installer"}</button>
+        {installerReady&&<p role="status">Installer downloaded. Run it on the original device, then refresh this page. This does not uninstall or release network isolation.</p>}
+        <button onClick={reload}>Refresh device status</button>
+      </Modal>}
       {retiring && <Modal title={`Decommission ${d.hostname}`} onClose={()=>{if(!busy)setRetiring(false);}}>
         <p>This removes the device from the active list, revokes its agent credentials and cancels pending commands. Logs, alerts, inventory and command history are retained under the existing retention policy. It does not uninstall the agent or remove network isolation.</p>
         <p>Active remote sessions must be ended and dispatched commands reconciled first.</p>
