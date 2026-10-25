@@ -219,3 +219,72 @@ def test_incident_upgrades_to_ransomware_playbook(client, admin, device):
                                                       "commandLine": "vssadmin delete shadows /all"}, "p2")])
     incidents = client.get("/api/console/incidents", headers=admin).json()
     assert len(incidents) == 1 and incidents[0]["playbook"] == "ransomware-response"
+
+
+def test_antimalware_findings_raise_alerts(client, admin, tenant):
+    import json as _json
+
+    from conftest import enroll
+
+    def send(dev, events):
+        response = client.post(f"/api/v1/devices/{dev['deviceId']}/telemetry", headers=dev["headers"], json={"events": events})
+        assert response.status_code == 200, response.text
+
+    win = enroll(client, admin, tenant, hostname="AV-WIN", serial="AV-1")
+    send(win, [
+        {"eventId": "av-1", "eventType": "scan.finding", "source": "scan.quick", "summary": "EICAR",
+         "occurredAt": "2030-01-01T00:00:00Z",
+         "payloadJson": _json.dumps({"path": "C:\\Users\\Public\\eicar.com", "remediationStatus": "quarantined",
+                                     "disposition": "quarantine"})},
+        {"eventId": "av-2", "eventType": "scan.finding", "source": "scan.quick", "summary": "Stuck file",
+         "occurredAt": "2030-01-01T00:00:01Z",
+         "payloadJson": _json.dumps({"path": "C:\\locked.exe", "remediationStatus": "failed", "disposition": "quarantine"})},
+    ])
+    lin = enroll(client, admin, tenant, hostname="AV-LIN", os_version="Ubuntu 24.04", serial="AV-2")
+    send(lin, [
+        {"eventId": "av-3", "eventType": "ransomware.canary.touched", "timestamp": "2030-01-01T00:00:02Z",
+         "payload": {"path": "/home/jo/.fenrir-canary.docx", "change": "renamed"}},
+        {"eventId": "av-4", "eventType": "scan.threat.detected", "timestamp": "2030-01-01T00:00:03Z",
+         "payload": {"path": "/tmp/x", "threatName": "Linux.Miner", "verdict": "detected"}},
+    ])
+    alerts = client.get("/api/console/alerts", headers=admin).json()
+    by_rule = {}
+    for alert in alerts:
+        by_rule.setdefault(alert["ruleId"], []).append(alert)
+    assert len(by_rule["fenrir-av-threat-remediated"]) == 1
+    assert len(by_rule["fenrir-av-threat-unremediated"]) == 2
+    assert by_rule["fenrir-av-ransomware-canary"][0]["severity"] == "critical"
+
+
+def test_quarantine_view_tracks_restore_and_delete(client, admin, tenant):
+    import json as _json
+
+    from conftest import enroll
+
+    dev = enroll(client, admin, tenant, hostname="Q-WIN", serial="Q-1")
+    events = [{"eventId": f"q-{i}", "eventType": "scan.finding", "source": "scan.quick", "summary": f"Threat {i}",
+               "occurredAt": f"2030-01-01T00:00:0{i}Z",
+               "payloadJson": _json.dumps({"path": f"C:\\bad{i}.exe", "remediationStatus": "quarantined",
+                                           "quarantineRecordId": f"rec-{i}", "sha256": "ab" * 32})} for i in range(3)]
+    events.append({"eventId": "q-none", "eventType": "scan.finding", "occurredAt": "2030-01-01T00:00:09Z",
+                   "payloadJson": _json.dumps({"path": "C:\\left.exe", "remediationStatus": "failed", "quarantineRecordId": ""})})
+    assert client.post(f"/api/v1/devices/{dev['deviceId']}/telemetry", headers=dev["headers"], json={"events": events}).status_code == 200
+    items = client.get("/api/console/protection/quarantine", headers=admin).json()
+    assert sorted(i["recordId"] for i in items) == ["rec-0", "rec-1", "rec-2"]
+    assert items[0]["hostname"] == "Q-WIN" and items[0]["status"] == "quarantined"
+
+    def issue(kind, record):
+        response = client.post(f"/api/console/devices/{dev['deviceId']}/commands", headers=admin,
+                               json={"type": kind, "recordId": record, "reason": "test"})
+        assert response.status_code == 200, response.text
+        return response.json()["id"]
+
+    restored = issue("quarantine.restore", "rec-0")
+    deleting = issue("quarantine.delete", "rec-1")
+    assert client.post(f"/api/v1/devices/{dev['deviceId']}/commands/{restored}/complete", headers=dev["headers"],
+                       json={"status": "completed", "resultJson": "{}"}).status_code == 200
+    state = {i["recordId"]: i["status"] for i in client.get("/api/console/protection/quarantine", headers=admin).json()}
+    assert state == {"rec-1": "deleting", "rec-2": "quarantined"}
+    everything = client.get("/api/console/protection/quarantine?include_released=true", headers=admin).json()
+    assert {i["recordId"]: i["status"] for i in everything}["rec-0"] == "restored"
+    assert deleting

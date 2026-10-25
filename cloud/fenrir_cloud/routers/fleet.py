@@ -178,6 +178,57 @@ def protection_health(tenant_id: str | None = None, principal: Principal = Depen
     return endpoint_health.summary(db, scoped_tenant(principal, tenant_id))
 
 
+QUARANTINE_EVENTS = ("scan.finding", "realtime.protection.action", "scan.threat.quarantined", "threat.process.blocked",
+                     "quarantine.added")
+
+
+@router.get("/protection/quarantine")
+def quarantine_items(tenant_id: str | None = None, device_id: str | None = None, include_released: bool = False,
+                     principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Files agents hold in quarantine, with the state of any restore/delete action taken on them."""
+    tenants = scoped_tenant(principal, tenant_id)
+    query = (select(Event, Device.hostname).join(Device, Device.id == Event.device_id)
+             .where(Event.tenant_id.in_(tenants), Event.event_type.in_(QUARANTINE_EVENTS),
+                    Event.occurred_at >= utcnow() - timedelta(days=180)))
+    if device_id:
+        query = query.where(Event.device_id == device_id)
+    items: dict[tuple[str, str], dict] = {}
+    for event, hostname in db.execute(query.order_by(Event.occurred_at.desc()).limit(5000)):
+        fields = event.fields or {}
+        record = str(fields.get("quarantineRecordId") or fields.get("recordId") or "")
+        if not record or (event.device_id, record) in items:
+            continue
+        items[(event.device_id, record)] = {
+            "deviceId": event.device_id, "hostname": hostname, "tenantId": event.tenant_id, "recordId": record,
+            "path": fields.get("TargetFilename") or fields.get("path") or fields.get("Image") or "",
+            "threat": fields.get("ThreatName") or fields.get("alertTitle") or event.summary or "",
+            "sha256": fields.get("sha256") or "", "source": event.event_type, "quarantinedAt": event.occurred_at,
+            "status": "quarantined", "commandId": None, "lastError": "",
+        }
+    if items:
+        actions = db.execute(select(Command).where(
+            Command.tenant_id.in_(tenants), Command.type.in_(("quarantine.restore", "quarantine.delete")),
+            Command.device_id.in_({key[0] for key in items}), Command.record_id.in_({key[1] for key in items}))
+            .order_by(Command.created_at)).scalars()
+        for command in actions:  # oldest first, so the newest action decides the state
+            item = items.get((command.device_id, command.record_id))
+            if item is None or command.status == "cancelled":
+                continue
+            verb = "restore" if command.type == "quarantine.restore" else "delete"
+            item["commandId"] = command.id
+            if command.status == "completed":
+                item["status"], item["lastError"] = ("restored" if verb == "restore" else "deleted"), ""
+            elif command.status == "failed":
+                item["status"] = "quarantined"
+                item["lastError"] = str((command.result or {}).get("error") or command.result or "")[:500]
+            else:
+                item["status"] = "restoring" if verb == "restore" else "deleting"
+    rows = list(items.values())
+    if not include_released:
+        rows = [r for r in rows if r["status"] not in ("restored", "deleted")]
+    return rows
+
+
 @router.get("/commands/catalog")
 def command_catalog(principal: Principal = Depends(current_principal)):
     return catalog_document()

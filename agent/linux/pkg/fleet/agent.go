@@ -357,7 +357,7 @@ func (a *Agent) suppressed(path string) bool {
 
 func (a *Agent) blockProcess(proc ProcInfo, sha, family string) {
 	p := a.state.Policy
-	action := "observed"
+	action, record := "observed", ""
 	if p.EnforceProcessStartVerdicts {
 		targets := []int{proc.PID}
 		if p.TerminateProcessTreeOnBlock {
@@ -369,12 +369,12 @@ func (a *Agent) blockProcess(proc ProcInfo, sha, family string) {
 		action = "terminated"
 		if p.QuarantineOnMalicious {
 			if id, err := a.scanner.Quarantine(proc.Exe, sha); err == nil {
-				action = "terminated+quarantined:" + id
+				action, record = "terminated+quarantined:"+id, id
 			}
 		}
 	}
 	a.emit("threat.process.blocked", "realtime", fmt.Sprintf("Malicious process %s (%s)", filepath.Base(proc.Exe), family),
-		map[string]interface{}{"processImagePath": proc.Exe, "pid": proc.PID, "sha256": sha, "threatName": family, "verdict": action, "score": 95})
+		map[string]interface{}{"processImagePath": proc.Exe, "pid": proc.PID, "sha256": sha, "threatName": family, "verdict": action, "score": 95, "recordId": record})
 }
 
 // ---------------------------------------------------------------------------
@@ -607,7 +607,7 @@ func (a *Agent) Execute(cmd Command) (map[string]interface{}, error) {
 		scanned, findings := a.scanner.ScanPaths(roots, a.state.Policy.SuppressionPathRoots, a.state.Policy.QuarantineOnMalicious, 0)
 		for _, f := range findings {
 			a.emit("scan.threat."+strings.SplitN(f.Action, ":", 2)[0], "scanner", "Malware found: "+f.Family,
-				map[string]interface{}{"path": f.Path, "sha256": f.SHA256, "threatName": f.Family, "verdict": f.Action, "score": 95})
+				map[string]interface{}{"path": f.Path, "sha256": f.SHA256, "threatName": f.Family, "verdict": f.Action, "score": 95, "recordId": f.Record})
 		}
 		return map[string]interface{}{"scanned": scanned, "findings": findings}, nil
 	case "remediate.path":
