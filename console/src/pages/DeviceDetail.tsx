@@ -12,11 +12,13 @@ export default function DeviceDetail() {
   const { data, error, reload } = useData<any>(`devices/${id}`);
   const { data: policies } = useData<any[]>("policies", { tenant_id: data?.device.tenantId }, [data?.device.tenantId]);
   const { data: groups } = useData<any[]>("groups", { tenant_id: data?.device.tenantId }, [data?.device.tenantId]);
+  const [retiring, setRetiring] = useState(false);
+  const [retireName, setRetireName] = useState("");
   const [tab, setTab] = useState("Overview");
   const [action, setAction] = useState<string | null>(null);
   const [scriptPicker, setScriptPicker] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
-  const { run } = useAction();
+  const { run, busy } = useAction();
 
   if (error) return <ErrorNote error={error} />;
   if (!data) return <div className="empty">Loading…</div>;
@@ -31,7 +33,7 @@ export default function DeviceDetail() {
     <>
       <PageHead title={d.hostname}
                 subtitle={<>{d.osVersion} · {tenantName(d.tenantId)} · <span className={`dot ${d.online ? "on" : "off"}`} /> {d.online ? "online" : `last seen ${ago(d.lastSeenAt)}`}</>}
-                actions={can("respond") && <>
+                actions={!d.retired && can("respond") && <>
                   {!d.approved && can("configure") && <button className="primary" onClick={() => patch({ approved: true }, "Device approved")}>Approve</button>}
                   <ConnectButtons device={d} />
                   {can("configure") && <button onClick={() => setScriptPicker(true)}>Run script</button>}
@@ -40,6 +42,13 @@ export default function DeviceDetail() {
                               : <button className="danger" onClick={() => setAction("device.isolate")}>Isolate</button>}
                   <button onClick={() => setAction("")}>More actions…</button>
                 </>} />
+      {d.retired ? <p role="status">Decommissioned — agent access is revoked. Historical records remain available. Re-enrol the endpoint to manage it again.</p> : can("configure") && <button className="danger" onClick={()=>{setRetireName("");setRetiring(true);}}>Decommission device</button>}
+      {retiring && <Modal title={`Decommission ${d.hostname}`} onClose={()=>{if(!busy)setRetiring(false);}}>
+        <p>This removes the device from the active list, revokes its agent credentials and cancels pending commands. Logs, alerts, inventory and command history are retained under the existing retention policy. It does not uninstall the agent or remove network isolation.</p>
+        <p>Active remote sessions must be ended and dispatched commands reconciled first.</p>
+        <label className="field">Type {d.hostname} to confirm<input value={retireName} onChange={e=>setRetireName(e.target.value)}/></label>
+        <button className="danger" disabled={busy||retireName!==d.hostname} onClick={async()=>{const result=await run(()=>api(`devices/${d.id}`,{method:"DELETE"}),"Device decommissioned; history retained");if(result){setRetiring(false);reload();}}}>Decommission and retain history</button>
+      </Modal>}
       <Tabs tabs={["Overview", "Health", "Patches", "Scripts & jobs", "Remote sessions", "Effective policy", "Alerts", "Actions", "Software", "Vulnerabilities"]} active={tab} onChange={setTab} />
       {tab === "Health" && <HealthTab deviceId={d.id} />}
       {tab === "Patches" && <PatchesTab device={d} />}
