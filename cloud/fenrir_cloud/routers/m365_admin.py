@@ -20,14 +20,17 @@ router = APIRouter(prefix="/api/console/m365/connections", tags=["Microsoft admi
 class ActionInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     requestId: UUID
-    operation: Literal["user.update", "user.signin", "license.add", "license.remove", "group.add_member", "group.remove_member"]
+    operation: Literal["user.revoke_sessions", "user.update", "user.signin", "license.add", "license.remove", "group.add_member", "group.remove_member"]
     targetId: UUID
     parameters: dict
 
     @model_validator(mode="after")
     def validate_parameters(self):
         p = self.parameters
-        if self.operation == "user.update":
+        if self.operation == "user.revoke_sessions":
+            if p:
+                raise ValueError("Session revocation takes no parameters")
+        elif self.operation == "user.update":
             allowed = {"displayName", "department", "jobTitle", "usageLocation"}
             if not p or set(p) - allowed:
                 raise ValueError("Choose supported profile fields")
