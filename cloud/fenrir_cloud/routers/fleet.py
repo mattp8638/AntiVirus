@@ -24,7 +24,8 @@ ONLINE_WINDOW = timedelta(minutes=10)
 
 def _device_view(device: Device, summary: bool = False) -> dict:
     data = to_dict(device, exclude={"dns_token", "inventory"} if summary else {"dns_token"})
-    data["online"] = bool(device.last_seen_at and device.last_seen_at >= utcnow() - ONLINE_WINDOW)
+    data["retired"] = device.api_key_hash == f"retired-{device.id}"
+    data["online"] = not data["retired"] and bool(device.last_seen_at and device.last_seen_at >= utcnow() - ONLINE_WINDOW)
     if summary:
         metrics = device.metrics or {}
         disks = metrics.get("disks") or []
@@ -52,11 +53,13 @@ def list_devices(
     q: str | None = None,
     platform: str | None = None,
     group_id: str | None = None,
-    status: str | None = Query(default=None, description="online | offline | isolated | pending | at-risk"),
+    status: str | None = Query(default=None, description="online | offline | isolated | pending | at-risk | retired"),
     principal: Principal = Depends(current_principal),
     db: Session = Depends(get_db),
 ):
     query = select(Device).where(Device.tenant_id.in_(scoped_tenant(principal, tenant_id)))
+    retired = Device.api_key_hash == ("retired-" + Device.id)
+    query = query.where(retired if status == "retired" else ~retired)
     if q:
         like = f"%{q}%"
         query = query.where(or_(Device.hostname.ilike(like), Device.os_version.ilike(like), Device.ip_address.ilike(like)))
@@ -137,6 +140,8 @@ def update_device(device_id: str, body: dict = Body(...), principal: Principal =
 def retire_device(device_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("configure")
     device = _get_device(db, principal, device_id)
+    if device.api_key_hash == f"retired-{device.id}":
+        return {"ok": True}
     in_flight = db.execute(select(Command).where(
         Command.device_id == device.id, Command.status == "dispatched")).first()
     if in_flight:
