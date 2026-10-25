@@ -297,6 +297,25 @@ def test_linux_agent_update_metadata(client, device, tmp_path, monkeypatch):
     assert client.get("/api/v1/agent/update/linux?arch=mips", headers=device["headers"]).status_code == 422
 
 
+def test_macos_agent_update_metadata(client, device, tmp_path, monkeypatch):
+    import hashlib as _hashlib
+    import json as _json
+
+    from fenrir_cloud import deployment_installers
+
+    monkeypatch.setattr(deployment_installers, "DOWNLOADS", tmp_path)
+    binary = b"macho fake agent"
+    (tmp_path / "fenrir-agent-darwin-arm64").write_bytes(binary)
+    (tmp_path / "linux-build.json").write_text(_json.dumps({
+        "version": "1.3.0", "sha256": {"amd64": "1" * 64, "arm64": "2" * 64},
+        "darwinSha256": {"amd64": "3" * 64, "arm64": _hashlib.sha256(binary).hexdigest()}}))
+    info = client.get("/api/v1/agent/update/macos?arch=arm64", headers=device["headers"]).json()
+    assert info == {"available": True, "version": "1.3.0", "sha256": _hashlib.sha256(binary).hexdigest(),
+                    "url": "/downloads/fenrir-agent-darwin-arm64"}
+    assert client.get("/api/v1/agent/update/macos?arch=amd64", headers=device["headers"]).json()["available"] is False
+    assert client.get("/api/v1/agent/update/windows?arch=amd64", headers=device["headers"]).status_code == 422
+
+
 def test_maintenance_window_parsing():
     assert rmm.parse_maintenance_window("daily 22:00-05:00") == {"days": [0, 1, 2, 3, 4, 5, 6], "start": "22:00", "durationMinutes": 420, "tz": "UTC"}
     assert rmm.parse_maintenance_window("weekdays 19:00-23:30", "Europe/London")["days"] == [0, 1, 2, 3, 4]

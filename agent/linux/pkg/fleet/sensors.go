@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -87,10 +88,8 @@ type ProcessSensor struct {
 
 func NewProcessSensor(root string) *ProcessSensor {
 	s := &ProcessSensor{Root: root, known: map[int]uint64{}}
-	for _, pid := range listPIDs(root) { // baseline: don't report what was running at startup
-		if p, err := readProc(root, pid); err == nil {
-			s.known[pid] = p.StartTicks
-		}
+	for pid, p := range processTable(root) { // baseline: don't report what was running at startup
+		s.known[pid] = p.StartTicks
 	}
 	return s
 }
@@ -98,12 +97,8 @@ func NewProcessSensor(root string) *ProcessSensor {
 func (s *ProcessSensor) Poll() []ProcInfo {
 	seen := map[int]bool{}
 	var started []ProcInfo
-	for _, pid := range listPIDs(s.Root) {
+	for pid, p := range processTable(s.Root) {
 		seen[pid] = true
-		p, err := readProc(s.Root, pid)
-		if err != nil {
-			continue
-		}
 		if ticks, ok := s.known[pid]; ok && ticks == p.StartTicks {
 			continue
 		}
@@ -122,6 +117,10 @@ func (s *ProcessSensor) Poll() []ProcInfo {
 }
 
 func (s *ProcessSensor) Lookup(pid int) (ProcInfo, bool) {
+	if IsMacOS {
+		p, ok := processTable(s.Root)[pid]
+		return p, ok
+	}
 	p, err := readProc(s.Root, pid)
 	return p, err == nil
 }
@@ -129,23 +128,20 @@ func (s *ProcessSensor) Lookup(pid int) (ProcInfo, bool) {
 // FindByExe returns PIDs whose executable matches path.
 func FindByExe(root, path string) []int {
 	var out []int
-	for _, pid := range listPIDs(root) {
-		if exe, err := os.Readlink(filepath.Join(root, strconv.Itoa(pid), "exe")); err == nil {
-			if strings.TrimSuffix(exe, " (deleted)") == path {
-				out = append(out, pid)
-			}
+	for pid, p := range processTable(root) {
+		if p.Exe == path {
+			out = append(out, pid)
 		}
 	}
+	sort.Ints(out)
 	return out
 }
 
 // Descendants returns all child PIDs of pid (recursively).
 func Descendants(root string, pid int) []int {
 	children := map[int][]int{}
-	for _, p := range listPIDs(root) {
-		if info, err := readProc(root, p); err == nil {
-			children[info.PPID] = append(children[info.PPID], p)
-		}
+	for p, info := range processTable(root) {
+		children[info.PPID] = append(children[info.PPID], p)
 	}
 	var out []int
 	stack := []int{pid}
@@ -371,6 +367,9 @@ func PlantCanaries(homes []string) []string {
 }
 
 func homeDirs() []string {
+	if IsMacOS {
+		return macHomeDirs()
+	}
 	dirs, _ := filepath.Glob("/home/*")
 	if info, err := os.Stat("/root"); err == nil && info.IsDir() {
 		dirs = append(dirs, "/root")

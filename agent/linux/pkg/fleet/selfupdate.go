@@ -27,7 +27,7 @@ type AgentUpdate struct {
 
 func (c *Client) FetchAgentUpdate(arch string) (*AgentUpdate, error) {
 	var out AgentUpdate
-	return &out, c.do("GET", "/api/v1/agent/update/linux?arch="+arch, nil, &out, nil)
+	return &out, c.do("GET", "/api/v1/agent/update/"+platformName()+"?arch="+arch, nil, &out, nil)
 }
 
 // DownloadFile fetches a path on the cloud (with the device key), capped at limit bytes.

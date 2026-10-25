@@ -13,9 +13,13 @@ WORKDIR /src/agent/linux
 COPY agent/linux/ ./
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/fenrir-agent-linux-amd64 ./cmd/fenrir-agent \
  && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o /out/fenrir-agent-linux-arm64 ./cmd/fenrir-agent \
+ && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/fenrir-agent-darwin-amd64 ./cmd/fenrir-agent \
+ && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o /out/fenrir-agent-darwin-arm64 ./cmd/fenrir-agent \
  && VERSION=$(sed -n 's/^const Version = "\(.*\)"/\1/p' pkg/fleet/agent.go) \
- && printf '{"version":"%s","sha256":{"amd64":"%s","arm64":"%s"}}\n' "$VERSION" \
-      "$(sha256sum /out/fenrir-agent-linux-amd64 | cut -d' ' -f1)" "$(sha256sum /out/fenrir-agent-linux-arm64 | cut -d' ' -f1)" \
+ && sum() { sha256sum "$1" | cut -d' ' -f1; } \
+ && printf '{"version":"%s","sha256":{"amd64":"%s","arm64":"%s"},"darwinSha256":{"amd64":"%s","arm64":"%s"}}\n' "$VERSION" \
+      "$(sum /out/fenrir-agent-linux-amd64)" "$(sum /out/fenrir-agent-linux-arm64)" \
+      "$(sum /out/fenrir-agent-darwin-amd64)" "$(sum /out/fenrir-agent-darwin-arm64)" \
       > /out/linux-build.json
 
 # Automatically compile the unsigned Windows user-mode payload on Ubuntu.

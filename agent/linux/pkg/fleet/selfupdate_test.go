@@ -21,7 +21,7 @@ func updateServer(t *testing.T, version string, binary []byte, advertisedSHA str
 			return
 		}
 		switch r.URL.Path {
-		case "/api/v1/agent/update/linux":
+		case "/api/v1/agent/update/" + platformName():
 			if r.URL.Query().Get("arch") != runtime.GOARCH {
 				w.WriteHeader(400)
 				return

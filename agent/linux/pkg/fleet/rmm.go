@@ -185,6 +185,9 @@ func ParseDnfCheckUpdate(out string, security map[string]bool, source string) []
 
 // PatchScan lists available package updates.
 func PatchScan() (map[string]interface{}, error) {
+	if IsMacOS {
+		return macPatchScan()
+	}
 	pm := packageManager()
 	var patches []map[string]interface{}
 	switch pm {
@@ -250,6 +253,9 @@ type installPayload struct {
 func PatchInstall(raw string) (map[string]interface{}, error) {
 	var p installPayload
 	_ = json.Unmarshal([]byte(raw), &p)
+	if IsMacOS {
+		return macPatchInstall(p)
+	}
 	pm := packageManager()
 	var names []string
 	byName := map[string]string{}
@@ -307,12 +313,16 @@ type softwarePayload struct {
 	Installer  string `json:"installer"`
 	Identifier string `json:"identifier"`
 	Action     string `json:"action"`
+	SHA256     string `json:"sha256"`
 }
 
 // SoftwareInstall installs or removes a package from the software library.
 func SoftwareInstall(raw string, uninstall bool) (map[string]interface{}, error) {
 	var p softwarePayload
 	_ = json.Unmarshal([]byte(raw), &p)
+	if IsMacOS {
+		return macSoftware(p, p.SHA256, uninstall)
+	}
 	if !packageName.MatchString(p.Identifier) {
 		return nil, errors.New("invalid package name")
 	}
@@ -358,6 +368,9 @@ func ServiceControl(name, raw string) (map[string]interface{}, error) {
 	}
 	if p.Action != "start" && p.Action != "stop" && p.Action != "restart" {
 		return nil, errors.New("action must be start, stop or restart")
+	}
+	if IsMacOS {
+		return macServiceControl(name, p.Action)
 	}
 	if !packageName.MatchString(name) {
 		return nil, errors.New("invalid service name")

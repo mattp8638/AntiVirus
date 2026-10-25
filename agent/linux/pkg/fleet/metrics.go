@@ -189,6 +189,9 @@ func dmi(name string) string {
 
 // Collect returns the heartbeat "metrics" object understood by Fenrir Cloud's RMM monitors.
 func (m *MetricsCollector) Collect() map[string]interface{} {
+	if IsMacOS {
+		return macMetrics()
+	}
 	out := map[string]interface{}{"remoteCapabilities": []string{"terminal", "files", "processes", "services", "desktop"}}
 	if cpu, ok := m.cpuPercent(); ok {
 		out["cpuPercent"] = cpu
