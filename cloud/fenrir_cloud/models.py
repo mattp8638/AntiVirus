@@ -196,6 +196,26 @@ class DeviceArtifact(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class LocalAdminPassword(Base):
+    """A local administrator password the Windows agent set (LAPS-style), stored encrypted with the vault key.
+
+    The agent escrows a new password here first (status "pending") and only then changes it on the device, so a
+    password can never be set without the cloud holding it. The confirmed one becomes "active"; earlier ones are
+    kept as "superseded" for recovery.
+    """
+
+    __tablename__ = "local_admin_passwords"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("lap"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    account: Mapped[str] = mapped_column(String(120))
+    ciphertext: Mapped[dict] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|active|superseded|failed
+    error: Mapped[str] = mapped_column(String(300), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class AgentRelease(Base):
     __tablename__ = "agent_releases"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("rel"))

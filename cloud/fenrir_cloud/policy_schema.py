@@ -288,7 +288,12 @@ SCHEMA: tuple[Section, ...] = (
             F("elevationMinutes", "int", 30, "Elevation length (minutes)", min=5, max=480),
             F("autoApprovePublishers", "list", [], "Auto-approve signed by"),
             F("breakGlassAllowed", "bool", True, "Allow break-glass admin"),
-            F("rotateLocalAdminPassword", "bool", True, "Rotate the local admin password (LAPS)", platforms=("windows",)),
+            F("rotateLocalAdminPassword", "bool", False, "Rotate the local admin password (LAPS)",
+              "The agent sets a random password for the local Administrator and stores it in the vault first. "
+              "Never runs on domain controllers.", platforms=("windows",)),
+            F("localAdminAccount", "str", "", "Local admin account to manage",
+              "Leave empty for the built-in Administrator (RID 500).", platforms=("windows",)),
+            F("localAdminPasswordDays", "int", 30, "Rotate every (days)", min=1, max=365, platforms=("windows",)),
         ),
     ),
     Section(
@@ -455,9 +460,7 @@ AGENT_SUPPORT: dict[str, tuple[str, ...]] = {
     "web.phishingBlockThreshold": ('windows',),
     "web.destinationCacheTtlMinutes": ('windows',),
     "web.bankingProtection": (),
-    "dns.blockThirdPartyDoh": (),
     "firewall.networkAttackProtection": (),
-    "firewall.botnetProtection": (),
     "firewall.bruteForceProtection": (),
     "firewall.blockSmbV1": ('windows',),
     "firewall.blockLlmnrNetbios": ('windows',),
@@ -467,7 +470,6 @@ AGENT_SUPPORT: dict[str, tuple[str, ...]] = {
     "privilege.elevationRequests": (),
     "privilege.elevationMinutes": (),
     "privilege.autoApprovePublishers": (),
-    "privilege.rotateLocalAdminPassword": (),
     "tamper.uninstallRequiresToken": (),
     "tamper.protectServiceAndFiles": (),
     "tamper.selfDefenceSensitivity": (),
@@ -771,7 +773,48 @@ def parse_firewall_rule(text: str) -> dict | None:
     return rule
 
 
-def to_agent_policy(policy_id: str, name: str, settings: dict) -> dict:
+# Public resolvers that browsers and malware use to bypass the device's DNS (and Fenrir's DNS filtering).
+THIRD_PARTY_DOH_RESOLVERS = (
+    "1.1.1.1", "1.0.0.1", "2606:4700:4700::1111", "2606:4700:4700::1001",      # Cloudflare
+    "8.8.8.8", "8.8.4.4", "2001:4860:4860::8888", "2001:4860:4860::8844",      # Google
+    "9.9.9.9", "149.112.112.112", "2620:fe::fe", "2620:fe::9",                 # Quad9
+    "208.67.222.222", "208.67.220.220", "2620:119:35::35", "2620:119:53::53",  # OpenDNS
+    "94.140.14.14", "94.140.15.15",                                            # AdGuard
+    "45.90.28.0/24", "45.90.30.0/24",                                          # NextDNS
+)
+MAX_BOTNET_IPS = 1000
+_LOCAL_NETWORKS = tuple(ipaddress.ip_network(n) for n in (
+    "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16",
+    "224.0.0.0/4", "240.0.0.0/4", "::/128", "::1/128", "fc00::/7", "fe80::/10", "ff00::/8"))
+
+
+def managed_firewall_rules(settings: dict, botnet_ips: list[str] | None = None) -> list[dict]:
+    """Block rules Fenrir adds to the custom rules: third-party encrypted DNS and known C2 addresses."""
+    rules: list[dict] = []
+    if settings.get("dns", {}).get("blockThirdPartyDoh"):
+        resolvers = list(THIRD_PARTY_DOH_RESOLVERS)
+        rules.append({"action": "block", "direction": "out", "protocol": "tcp", "ports": [[443, 443]], "remote": resolvers})
+        rules.append({"action": "block", "direction": "out", "protocol": "udp", "ports": [[443, 443]], "remote": resolvers})
+        rules.append({"action": "block", "direction": "out", "protocol": "tcp", "ports": [[853, 853]], "remote": []})  # DNS over TLS
+        rules.append({"action": "block", "direction": "out", "protocol": "udp", "ports": [[853, 853]], "remote": []})
+    ips = []
+    for value in (botnet_ips or [])[:MAX_BOTNET_IPS] if settings.get("firewall", {}).get("botnetProtection") else []:
+        try:
+            network = ipaddress.ip_network(value, strict=False)
+        except ValueError:
+            continue
+        if any(network.version == local.version and network.overlaps(local) for local in _LOCAL_NETWORKS) or network.prefixlen < 8:
+            continue  # a bad feed entry must never cut a device off its own network (or a huge range)
+        ips.append(str(network) if "/" in value else str(network.network_address))
+    # One rule per direction and address family keeps each firewall rule a manageable size.
+    for start in range(0, len(ips), 200):
+        chunk = ips[start:start + 200]
+        rules.append({"action": "block", "direction": "out", "protocol": "any", "ports": [], "remote": chunk})
+        rules.append({"action": "block", "direction": "in", "protocol": "any", "ports": [], "remote": chunk})
+    return rules
+
+
+def to_agent_policy(policy_id: str, name: str, settings: dict, botnet_ips: list[str] | None = None) -> dict:
     """Translate effective settings into the document agents parse.
 
     The top-level keys are exactly what the Windows service's
@@ -822,9 +865,13 @@ def to_agent_policy(policy_id: str, name: str, settings: dict) -> dict:
                                  "exclusionProcesses")
     }
     doc["modules"]["firewall"] = dict(fw)
+    managed = managed_firewall_rules(settings, botnet_ips)
     doc["modules"]["firewall"]["parsedRules"] = [
         rule for rule in (parse_firewall_rule(line) for line in fw.get("rules", []) if not line.startswith("#")) if rule
-    ]
+    ] + managed
+    if botnet_ips and settings.get("firewall", {}).get("botnetProtection"):
+        # The block list changes without the settings changing: fold it into the revision so agents refresh.
+        doc["revision"] = hashlib.sha256((doc["revision"] + "|" + ",".join(botnet_ips)).encode()).hexdigest()[:16]
     for key, plan_key in (("quickScanSchedule", "quickScanPlan"), ("fullScanSchedule", "fullScanPlan")):
         plan = parse_scan_schedule(str(am.get(key) or ""))
         if plan is not None:

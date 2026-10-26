@@ -1,5 +1,6 @@
 #include "AgentService.h"
 #include "BuildInfo.h"
+#include "LocalAdminRotation.h"
 #include "ExtendedPolicy.h"
 #include "FirewallPolicy.h"
 #include "NetworkProbe.h"
@@ -1197,6 +1198,15 @@ void AgentService::RunSyncLoop(const AgentRunMode mode) {
       FlushTelemetryQueue();
       PublishHeartbeat(cycle);
       MaybeSelfUpdate(cycle);
+      if (GetTickCount64() - lastLocalAdminCheck_ > 60ULL * 60 * 1000 || lastLocalAdminCheck_ == 0) {
+        lastLocalAdminCheck_ = GetTickCount64();
+        try {
+          RotateLocalAdminPassword(false);
+        } catch (const std::exception& error) {
+          QueueTelemetryEvent(L"laps.rotation.failed", L"laps", L"The local admin password could not be rotated.",
+                              L"{\"error\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(error.what()))) + L"\"}");
+        }
+      }
     }
     SyncUpdateOnly(cycle);
     RunAutomatedRiskAssessments(cycle);
@@ -2029,6 +2039,9 @@ std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
       command.type == L"software.install" || command.type == L"service.control" || command.type == L"device.reboot" ||
       command.type == L"device.shutdown" || command.type == L"device.message") {
     return ExecuteRmmCommand(command);
+  }
+  if (command.type == L"localadmin.rotate") {
+    return RotateLocalAdminPassword(true);
   }
   if (command.type == L"support.request") {
     // Only from the agent window on this PC (the local pipe); the cloud never asks a device to file a ticket.
@@ -2973,6 +2986,58 @@ void AgentService::ApplyProtectionPolicy() {
 
 // Publishes what the agent window may show (branding, support contact, which protections are on) to
 // experience.json in the install folder, which signed-in users can read. Nothing sensitive goes in it.
+std::wstring AgentService::RotateLocalAdminPassword(const bool force) {
+  const auto root = policy_.modulesJson.empty() ? std::optional<json::Value>{} : json::Parse(policy_.modulesJson);
+  const auto* privilege = root && root->IsObject() ? root->Get("privilege") : nullptr;
+  const auto field = [privilege](const char* key) { return privilege ? privilege->Get(key) : nullptr; };
+  const bool enabled = field("rotateLocalAdminPassword") && field("rotateLocalAdminPassword")->Bool().value_or(false);
+  if (!enabled && !force) {
+    return L"{\"rotated\":false,\"reason\":\"off by policy\"}";
+  }
+  if (state_.deviceId.empty()) {
+    throw std::runtime_error("The device is not enrolled");
+  }
+  if (laps::IsDomainController()) {
+    throw std::runtime_error("This is a domain controller; local admin password rotation never runs on one");
+  }
+  double days = 30;
+  if (const auto* value = field("localAdminPasswordDays"); value && value->Number()) {
+    days = std::clamp(*value->Number(), 1.0, 365.0);
+  }
+  const auto stampFile = config_.runtimeDatabasePath.parent_path() / L"laps-last-rotation.txt";
+  if (!force) {
+    std::ifstream in(stampFile);
+    long long last = 0;
+    if (in >> last && static_cast<long long>(std::time(nullptr)) - last < static_cast<long long>(days * 86400)) {
+      return L"{\"rotated\":false,\"reason\":\"not due\"}";
+    }
+  }
+  std::wstring account;
+  if (const auto* value = field("localAdminAccount"); value && value->String() && !value->String()->empty()) {
+    account = Utf8ToWide(*value->String());
+  } else {
+    account = laps::BuiltinAdministratorName();
+  }
+  if (account.empty() || account.size() > 20 || account.find_first_of(L"\\/[]:;|=,+*?<>\"@") != std::wstring::npos) {
+    throw std::runtime_error("The local admin account to manage could not be determined");
+  }
+  auto password = laps::GeneratePassword(24);
+  // Escrow first: if the cloud cannot store it, the account keeps its current password.
+  const auto version = controlPlaneClient_->EscrowLocalAdminPassword(state_, account, password);
+  const auto status = laps::SetLocalAccountPassword(account, password);
+  SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+  if (status != 0) {
+    const auto error = L"NetUserSetInfo failed with error " + std::to_wstring(status);
+    controlPlaneClient_->ConfirmLocalAdminPassword(state_, version, false, error);
+    throw std::runtime_error(WideToUtf8(error));
+  }
+  controlPlaneClient_->ConfirmLocalAdminPassword(state_, version, true, L"");
+  std::ofstream(stampFile, std::ios::trunc) << static_cast<long long>(std::time(nullptr));
+  QueueTelemetryEvent(L"laps.rotated", L"laps", L"The local admin password was rotated and stored in the vault.",
+                      L"{\"account\":\"" + Utf8ToWide(EscapeJsonString(account)) + L"\",\"version\":\"" + version + L"\"}");
+  return L"{\"rotated\":true,\"account\":\"" + Utf8ToWide(EscapeJsonString(account)) + L"\",\"version\":\"" + version + L"\"}";
+}
+
 void AgentService::MaybeSelfUpdate(const int cycle) {
   if (std::wstring(kFenrirBuildId) == L"dev" || state_.deviceId.empty()) {
     return;

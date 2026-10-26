@@ -235,6 +235,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(documentation_router.router)
     app.include_router(psa_router.inbound)
     app.include_router(backup_router.ingest)
+    from .routers import local_admin as local_admin_router
+    app.include_router(local_admin_router.agent)
+    app.include_router(local_admin_router.console)
     app.include_router(artifacts_router.agent)
     app.include_router(artifacts_router.console)
     app.include_router(remote_router.sockets)

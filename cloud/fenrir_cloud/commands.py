@@ -58,6 +58,8 @@ CATALOG: tuple[CommandSpec, ...] = (
                 description="Show a message box to the signed-in user."),
     CommandSpec("service.control", "Start/stop/restart a service", "Administration", needs=("targetPath",), platforms=ALL,
                 description="targetPath is the service name; payload action is start, stop or restart."),
+    CommandSpec("localadmin.rotate", "Rotate local admin password", "Administration",
+                description="Sets a new random local Administrator password; the old one stays in the history."),
     CommandSpec("remote.session.start", "Start remote session", "Remote access", platforms=ALL,
                 description="Opened from the Connect button; connects the device to the cloud relay."),
     CommandSpec("remote.session.end", "End remote session", "Remote access", platforms=ALL),

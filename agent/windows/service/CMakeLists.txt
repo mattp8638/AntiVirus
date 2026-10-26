@@ -138,6 +138,7 @@ add_library(antivirus-agent-core STATIC
   src/NetworkProbe.cpp
   src/BundleArchive.cpp
   src/FirewallPolicy.cpp
+  src/LocalAdminRotation.cpp
 )
 
 target_include_directories(antivirus-agent-core PUBLIC include ../shared/include ../sensor/etw/include ../sensor/wfp/include)
@@ -553,7 +554,8 @@ add_executable(fenrir-mltest ../tools/mltestcli/src/MlTestCliMain.cpp src/MlStat
 target_include_directories(fenrir-mltest PRIVATE include)
 add_executable(fenrir-behavior-tests ../tests/BehaviorRulesTests.cpp src/BehaviorRules.cpp)
 target_include_directories(fenrir-behavior-tests PRIVATE include)
-add_executable(fenrir-policy-tests ../tests/PolicyAndDeviceControlTests.cpp src/ExtendedPolicy.cpp src/BehaviorRules.cpp src/DeviceControl.cpp src/FirewallPolicy.cpp)
+add_executable(fenrir-policy-tests ../tests/PolicyAndDeviceControlTests.cpp src/ExtendedPolicy.cpp src/BehaviorRules.cpp src/DeviceControl.cpp src/FirewallPolicy.cpp src/LocalAdminRotation.cpp)
+target_link_libraries(fenrir-policy-tests PRIVATE bcrypt netapi32 advapi32)
 add_executable(fenrir-rmm-tests ../tests/RmmExecutorTests.cpp src/RmmExecutors.cpp src/ExtendedPolicy.cpp src/BehaviorRules.cpp src/StringUtils.cpp src/CryptoUtils.cpp)
 target_include_directories(fenrir-rmm-tests PRIVATE include ../shared/include)
 target_link_libraries(fenrir-rmm-tests PRIVATE wtsapi32 userenv urlmon advapi32 bcrypt crypt32 wintrust)

@@ -38,8 +38,28 @@ def test_firewall_rules_are_validated_and_parsed_for_agents():
     settings = ps.defaults()
     settings["firewall"].update(cleaned["firewall"])
     doc = ps.to_agent_policy("p1", "Test", settings)
-    assert doc["modules"]["firewall"]["parsedRules"] == [ps.parse_firewall_rule("allow in tcp 3389 from 10.0.0.0/8")]
+    assert doc["modules"]["firewall"]["parsedRules"][0] == ps.parse_firewall_rule("allow in tcp 3389 from 10.0.0.0/8")
     assert doc["modules"]["firewall"]["rules"] == ["# office VPN", "allow in tcp 3389 from 10.0.0.0/8"]
     fields = {f["path"]: f for s in ps.schema_document()["sections"] for f in s["fields"]}
     assert fields["firewall.defaultOutbound"]["enforcedOn"] == ["windows", "linux", "macos"]
     assert fields["firewall.blockSmbV1"]["enforcedOn"] == ["windows"]
+
+
+def test_managed_firewall_rules_block_doh_and_botnet_ips():
+    from fenrir_cloud import policy_schema as ps
+
+    settings = ps.defaults()
+    doc = ps.to_agent_policy("p1", "Test", settings, botnet_ips=["203.0.113.7", "10.0.0.5", "198.51.100.0/24", "nonsense"])
+    rules = doc["modules"]["firewall"]["parsedRules"]
+    doh = [r for r in rules if "8.8.8.8" in r["remote"]]
+    assert {r["protocol"] for r in doh} == {"tcp", "udp"} and all(r["ports"] == [[443, 443]] for r in doh)
+    assert any(r["ports"] == [[853, 853]] and r["remote"] == [] for r in rules)
+    botnet = [r for r in rules if "203.0.113.7" in r["remote"]]
+    assert {r["direction"] for r in botnet} == {"in", "out"}
+    assert botnet[0]["remote"] == ["203.0.113.7", "198.51.100.0/24"]  # private and invalid entries dropped
+    # The block list is part of the revision, so agents pick up feed changes.
+    assert doc["revision"] != ps.to_agent_policy("p1", "Test", settings, botnet_ips=["203.0.113.8"])["revision"]
+    settings["dns"]["blockThirdPartyDoh"] = False
+    settings["firewall"]["botnetProtection"] = False
+    off = ps.to_agent_policy("p1", "Test", settings, botnet_ips=["203.0.113.7"])
+    assert off["modules"]["firewall"]["parsedRules"] == [] and off["revision"] == ps.revision(settings)

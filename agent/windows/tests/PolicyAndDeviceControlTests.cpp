@@ -7,6 +7,7 @@
 #include "DeviceControl.h"
 #include "ExtendedPolicy.h"
 #include "FirewallPolicy.h"
+#include "LocalAdminRotation.h"
 
 using namespace antivirus::agent;
 
@@ -140,6 +141,13 @@ int main(int argc, char** argv) {
     CHECK(offScript.find("Remove-NetFirewallRule") != std::string::npos);  // stale Fenrir rules still go
     CHECK(offScript.find("EnableMulticast -Type DWord -Value 0") != std::string::npos);
     CHECK(offScript.find("New-Item -Path $path -Force") != std::string::npos && offScript.find("Test-Path") != std::string::npos);
+  }
+  {  // Local admin passwords: length, every character class, and no repeats between calls
+    const auto a = laps::GeneratePassword(24), b = laps::GeneratePassword(24);
+    CHECK(a.size() == 24 && a != b);
+    CHECK(a.find_first_of(L"ABCDEFGHJKLMNPQRSTUVWXYZ") != std::wstring::npos && a.find_first_of(L"abcdefghijkmnopqrstuvwxyz") != std::wstring::npos);
+    CHECK(a.find_first_of(L"23456789") != std::wstring::npos && a.find_first_of(L"!#$%&*+-=?@_~") != std::wstring::npos);
+    CHECK(a.find_first_of(L"O0Il1") == std::wstring::npos);
   }
   CHECK(!ExtendedPolicy::Parse("not json").present);
   std::printf(failures ? "%d failure(s)\n" : "all policy/device-control tests passed\n", failures);

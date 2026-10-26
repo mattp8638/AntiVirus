@@ -10,7 +10,7 @@ import threading
 from datetime import timedelta
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from . import audit, policy_schema
@@ -83,8 +83,19 @@ def effective_policy(db: Session, device: Device) -> tuple[dict, dict]:
     resolution = policy_schema.resolve(layers)
     name = layers[-1].name if layers else "Fenrir baseline"
     doc = policy_schema.to_agent_policy(policy_id=device.policy_id or (tenant.default_policy_id if tenant else None) or GLOBAL_POLICY_ID,
-                                        name=name, settings=resolution["settings"])
+                                        name=name, settings=resolution["settings"], botnet_ips=botnet_ips(db, device.tenant_id))
     return resolution, doc
+
+
+def botnet_ips(db: Session, tenant_id: str | None) -> list[str]:
+    """Malicious IP indicators (global and the tenant's own), newest first, for firewall blocking."""
+    from .intel import _not_expired
+    from .models import Indicator
+
+    scope = or_(Indicator.tenant_id.is_(None), Indicator.tenant_id == tenant_id) if tenant_id else Indicator.tenant_id.is_(None)
+    rows = db.execute(select(Indicator.value).where(scope, Indicator.type == "ip", Indicator.verdict == "malicious", _not_expired())
+                      .order_by(Indicator.created_at.desc(), Indicator.id.desc()).limit(policy_schema.MAX_BOTNET_IPS)).scalars().all()
+    return sorted(set(rows))
 
 
 # ---------------------------------------------------------------------------

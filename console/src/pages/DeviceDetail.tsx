@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ago, api, fmtTime, getToken } from "../api";
 import { useApp } from "../app-context";
@@ -92,7 +92,7 @@ export default function DeviceDetail() {
         <label className="field">Type {d.hostname} to confirm<input value={retireName} onChange={e=>setRetireName(e.target.value)}/></label>
         <button className="danger" disabled={busy||retireName!==d.hostname} onClick={async()=>{const result=await run(()=>api(`devices/${d.id}`,{method:"DELETE"}),"Device decommissioned; history retained");if(result){setRetiring(false);reload();}}}>Decommission and retain history</button>
       </Modal>}
-      <Tabs tabs={["Overview", "Health", "Patches", "Scripts & jobs", "Remote sessions", "Effective policy", "Alerts", "Actions", "Bundles & recordings", "Software", "Vulnerabilities"]} active={tab} onChange={setTab} />
+      <Tabs tabs={["Overview", "Health", "Patches", "Scripts & jobs", "Remote sessions", "Effective policy", "Alerts", "Actions", "Bundles & recordings", "Software", "Vulnerabilities", ...(String(d.platform || "windows").toLowerCase() === "windows" ? ["Local admin"] : [])]} active={tab} onChange={setTab} />
       {tab === "Health" && <HealthTab deviceId={d.id} />}
       {tab === "Patches" && <PatchesTab device={d} />}
       {tab === "Scripts & jobs" && <JobsTab deviceId={d.id} onOpen={setJobId} />}
@@ -164,6 +164,7 @@ export default function DeviceDetail() {
       )}
 
       {tab === "Bundles & recordings" && <Bundles deviceId={data.device?.id ?? id ?? ""} />}
+      {tab === "Local admin" && <LocalAdmin deviceId={data.device?.id ?? id ?? ""} />}
       {tab === "Actions" && (
         <div className="card">
           <Table rows={data.commands} empty="No remote actions yet."
@@ -376,6 +377,41 @@ function ScriptPicker({ device, onClose, onStarted }: { device: any; onClose: ()
   );
 }
 
+
+// LAPS-style local admin passwords: history, reveal (asks to re-enter your password, audited) and rotate now.
+function LocalAdmin({ deviceId }: { deviceId: string }) {
+  const { can } = useApp();
+  const { data, error, reload } = useData<any>(`devices/${deviceId}/local-admin`);
+  const { run, busy } = useAction();
+  const [shown, setShown] = useState<{ account: string; password: string } | null>(null);
+  useEffect(() => { if (!shown) return; const timer = setTimeout(() => setShown(null), 30000); return () => clearTimeout(timer); }, [shown]);
+  const reveal = async (row: any) => {
+    const result = await run(() => api<{ account: string; password: string }>(`devices/${deviceId}/local-admin/${row.id}/reveal`, { method: "POST" }));
+    if (result) setShown(result);
+  };
+  return (
+    <div className="card">
+      <ErrorNote error={error} />
+      <p className="muted small">
+        {data?.enabled ? `The agent rotates this password every ${data.rotationDays} days and stores it here before changing it.`
+          : "Rotation is off for this device. Turn on Privilege management → Rotate the local admin password in its policy, or rotate once now."}
+        {" "}It never runs on domain controllers.
+      </p>
+      {can("respond") && <button disabled={busy} onClick={async () => { if (await run(() => api(`devices/${deviceId}/local-admin/rotate`, { method: "POST" }), "Rotation requested; it runs when the device next checks in")) reload(); }}>Rotate now</button>}
+      {shown && <div className="card" style={{ marginTop: 12 }}>
+        <div className="small muted">{shown.account}</div>
+        <pre className="mono" style={{ fontSize: 16, userSelect: "all" }}>{shown.password}</pre>
+        <button onClick={() => navigator.clipboard?.writeText(shown.password)}>Copy</button>{" "}<button onClick={() => setShown(null)}>Hide now</button>
+        <span className="muted small"> Hidden automatically after 30 seconds.</span>
+      </div>}
+      <Table rows={data?.items ?? []} empty="No password has been set by Fenrir on this device yet."
+             columns={[{ key: "account", label: "Account" }, { key: "status", label: "Status", render: (r) => <Pill value={r.status} /> },
+                       { key: "createdAt", label: "Set", render: (r) => fmtTime(r.confirmedAt || r.createdAt) },
+                       { key: "error", label: "Note", render: (r) => r.error || "" },
+                       { key: "reveal", label: "", render: (r) => r.status !== "failed" && can("respond") && <button className="small" disabled={busy} onClick={() => reveal(r)}>Reveal</button> }]} />
+    </div>
+  );
+}
 
 function Bundles({ deviceId }: { deviceId: string }) {
   const { can } = useApp();

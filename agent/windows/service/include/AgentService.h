@@ -163,6 +163,9 @@ class AgentService {
   // Self-update (Windows): compare this build's id with the server's and run its installer silently.
   void MaybeSelfUpdate(int cycle);
   void RelaunchClientAfterUpgrade();
+  // Local admin password rotation (privilege.rotateLocalAdminPassword); force = the localadmin.rotate command.
+  std::wstring RotateLocalAdminPassword(bool force);
+  unsigned long long lastLocalAdminCheck_{0};
   unsigned long long lastSelfUpdateCheck_{0};
   bool ScanNetworkDrives() const;
   int ScheduledScanCpuLimit() const;

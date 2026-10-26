@@ -136,6 +136,9 @@ class ControlPlaneClient {
   MlModelManifest FetchMlModelManifest(const AgentState& state) const;
   std::vector<unsigned char> DownloadMlModel(const AgentState& state) const;
   AgentPackageInfo CheckWindowsAgentUpdate(const AgentState& state) const;
+  // Local admin password rotation: escrow returns the version id; confirm reports whether it was applied.
+  std::wstring EscrowLocalAdminPassword(const AgentState& state, const std::wstring& account, const std::wstring& password) const;
+  void ConfirmLocalAdminPassword(const AgentState& state, const std::wstring& version, bool applied, const std::wstring& error) const;
   // Downloads a server-relative /api/v1/ path with the device key into target.
   void DownloadToFile(const AgentState& state, const std::wstring& path, const std::filesystem::path& target) const;
 

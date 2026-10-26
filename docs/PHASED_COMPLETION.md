@@ -72,6 +72,16 @@ Later additions (enforcing settings that were previously ignored):
     `PUA:`, `Adware.`, `not-a-virus:`). Linux/macOS ignore them when `puaProtection` is off and report without
     quarantining or stopping the process when it is audit. Windows does not separate PUA yet.
 
+- Batch 4, network and privilege:
+  - "Block third-party encrypted DNS" adds firewall rules against well-known DoH resolvers and all DNS-over-TLS.
+  - "Botnet / C2 callback blocking" blocks malicious IP indicators from the intel feed, both directions, on all
+    platforms. Private and very wide ranges are never blocked, and feed changes refresh devices.
+  - Local admin password rotation (Windows, opt-in):
+    - The service generates a 24-character password, stores it encrypted in the cloud first, then sets it on the
+      built-in Administrator or a named account.
+    - It never runs on domain controllers.
+    - Device → Local admin shows the history. Reveal needs re-authentication and is audited; Rotate now is available.
+
 Agent window (Windows):
 - Redesigned: sidebar with counts, a clear protected / needs attention / off status, protection tiles, recent
   activity, and plain-language pages for threats, quarantine, scans, updates, activity, help and settings. Follows the

@@ -1268,6 +1268,28 @@ MlModelManifest ControlPlaneClient::FetchMlModelManifest(const AgentState& state
                          .size = ExtractJsonInt(response.body, "size").value_or(0)};
 }
 
+std::wstring ControlPlaneClient::EscrowLocalAdminPassword(const AgentState& state, const std::wstring& account,
+                                                          const std::wstring& password) const {
+  const auto deviceApiKey = ExtractDeviceApiKeyFromCommandChannelUrl(state.commandChannelUrl);
+  std::string body = "{\"account\":\"" + EscapeJsonString(account) + "\",\"password\":\"" + EscapeJsonString(password) + "\"}";
+  const auto response =
+      RequestJson(L"POST", JoinUrl(baseUrl_, L"/api/v1/devices/" + state.deviceId + L"/local-admin/escrow"), body, deviceApiKey);
+  SecureZeroMemory(body.data(), body.size());
+  const auto version = Utf8ToWide(ExtractJsonString(response.body, "version").value_or(""));
+  if (version.empty()) {
+    throw std::runtime_error("The server did not confirm it stored the new password");
+  }
+  return version;
+}
+
+void ControlPlaneClient::ConfirmLocalAdminPassword(const AgentState& state, const std::wstring& version, const bool applied,
+                                                   const std::wstring& error) const {
+  const auto deviceApiKey = ExtractDeviceApiKeyFromCommandChannelUrl(state.commandChannelUrl);
+  const std::string body = "{\"version\":\"" + EscapeJsonString(version) + "\",\"applied\":" + (applied ? "true" : "false") +
+                           ",\"error\":\"" + EscapeJsonString(error) + "\"}";
+  RequestJson(L"POST", JoinUrl(baseUrl_, L"/api/v1/devices/" + state.deviceId + L"/local-admin/confirm"), body, deviceApiKey);
+}
+
 AgentPackageInfo ControlPlaneClient::CheckWindowsAgentUpdate(const AgentState& state) const {
   const auto deviceApiKey = ExtractDeviceApiKeyFromCommandChannelUrl(state.commandChannelUrl);
   const auto response = RequestJson(L"GET", JoinUrl(baseUrl_, L"/api/v1/agent/update/windows"), {}, deviceApiKey);
