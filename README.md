@@ -46,7 +46,7 @@ Put it behind TLS (Caddy, nginx, Cloudflare Tunnel). Agents and DoH need HTTPS.
 2. Install the agent:
    - **Linux:** `curl -fsSL https://<server>/install/linux.sh | sudo FENRIR_SERVER=https://<server> FENRIR_TOKEN=<token> sh`, or install the `.deb` from `dist/packages/`.
    - **Windows:** build `fenrir-agent-service.exe`, `fenrir-remote.exe` and `fenrir-amsi-provider.dll` (targets `antivirus-agent-service fenrir-remote antivirus-amsi-provider`, see `agent/windows`), copy all three to a folder on the PC such as `C:\Fenrir`, then run from an Administrator prompt in that folder: `.\fenrir-agent-service.exe --install --server https://<server> --enroll-token <token>` and `Start-Service FenrirAgent`. Without a token the device enrols into **Unassigned** for you to approve.
-   - **macOS:** the Swift agent in `agent/macos` (build on a Mac).
+   - **macOS:** download `Install-Fenrir-macOS.sh` from **Deploy agents** and run it with `sudo sh` (installs the Go agent as a LaunchDaemon; grant it Full Disk Access). The older Swift prototype in `agent/macos` is not used for deployment.
 
 ## Tests
 

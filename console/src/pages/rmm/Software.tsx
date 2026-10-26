@@ -4,7 +4,7 @@ import { useApp } from "../../app-context";
 import { emptyTargets, JobDetail, TargetPicker } from "../../components/rmm";
 import { Modal, PageHead, Pill, Table, useAction, useData } from "../../components/ui";
 
-const INSTALLERS: Record<string, string[]> = { windows: ["winget", "choco", "msi", "exe"], linux: ["apt", "dnf", "snap"], macos: ["brew"] };
+const INSTALLERS: Record<string, string[]> = { windows: ["winget", "choco", "msi", "exe"], linux: ["apt", "dnf", "snap"], macos: ["brew", "pkg"] };
 
 export default function Software() {
   const { can } = useApp();
@@ -61,7 +61,7 @@ function PackageEditor({ pkg, onClose }: { pkg: any; onClose: () => void }) {
                    sha256: form.sha256 || "", installArgs: form.installArgs || "", uninstallArgs: form.uninstallArgs || "", keepUpdated: form.keepUpdated };
     if (await run(() => (form.id ? api(`rmm/software/${form.id}`, { method: "PATCH", body }) : api("rmm/software", { body })), "Package saved")) onClose();
   };
-  const direct = ["msi", "exe"].includes(form.installer);
+  const direct = ["msi", "exe", "pkg"].includes(form.installer);
   return (
     <Modal title={form.id ? form.name : "Add package"} onClose={onClose}
            footer={<>{form.id && <button className="danger" onClick={async () => { if (await run(() => api(`rmm/software/${form.id}`, { method: "DELETE" }), "Deleted")) onClose(); }}>Delete</button>}

@@ -13,14 +13,14 @@ import json
 import re
 import secrets
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import audit, endpoint_health, intel, psa, rmm, services
 from ..config import get_settings
 from ..db import get_db
-from ..deps import current_device
+from ..deps import current_device, current_device_by_key
 from ..detection import ingest
 from ..models import AgentRelease, Command, Device, EnrollmentToken, Event, Tenant, utcnow
 from ..security import digest, new_secret
@@ -273,6 +273,28 @@ def complete_command(command_id: str, body: dict = Body(...), device: Device = D
 
 def _version_tuple(version: str) -> tuple:
     return tuple(int(part) if part.isdigit() else 0 for part in re.split(r"[.\-+]", version or "0"))
+
+
+@router.get("/agent/update/{os_name}")
+def agent_update(os_name: str = Path(pattern="^(linux|macos)$"), arch: str = Query(pattern="^(amd64|arm64)$"),
+                 device: Device = Depends(current_device_by_key), db: Session = Depends(get_db)):
+    """The Linux/macOS agent build this server ships (version and SHA-256 from the image's build metadata)."""
+    from .. import deployment_installers
+
+    goos, sha_key = ("darwin", "darwinSha256") if os_name == "macos" else ("linux", "sha256")
+    name = f"fenrir-agent-{goos}-{arch}"
+    empty = {"available": False, "version": "", "sha256": "", "url": ""}
+    binary = deployment_installers.release_file(name)
+    meta_file = deployment_installers.release_file("linux-build.json")
+    if binary is None or meta_file is None:
+        return empty
+    try:
+        meta = json.loads(meta_file.read_text())
+        version, sha = str(meta["version"]), str(meta[sha_key][arch]).lower()
+    except (OSError, ValueError, KeyError, TypeError):
+        return empty
+    db.commit()  # records last_seen from the device lookup
+    return {"available": True, "version": version, "sha256": sha, "url": f"/downloads/{name}"}
 
 
 @router.post("/update-check")

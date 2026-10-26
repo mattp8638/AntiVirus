@@ -1,5 +1,5 @@
 import { Fragment, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { ago, api, fmtTime, getToken } from "../api";
 import { useApp } from "../app-context";
 import { ErrorNote, Modal, PageHead, Pill, Sev, Table, Tabs, useAction, useData } from "../components/ui";
@@ -73,6 +73,13 @@ export default function DeviceDetail() {
         <button className="danger" disabled={busy||retireName!==d.hostname} onClick={async()=>{const result=await run(()=>api(`devices/${d.id}`,{method:"DELETE"}),"Device decommissioned; history retained");if(result){setRetiring(false);reload();}}}>Decommission and retain history</button>
       </Modal>}
       <Tabs tabs={["Overview", "Health", "Patches", "Scripts & jobs", "Remote sessions", "Effective policy", "Alerts", "Actions", "Software", "Vulnerabilities"]} active={tab} onChange={setTab} />
+      {d.platform === "macos" && d.inventory?.permissions?.fullDiskAccess === false && (
+        <div className="card" role="alert" style={{ borderColor: "rgba(251,191,36,.5)", marginBottom: 12 }}>
+          <b>Full Disk Access is not granted on this Mac.</b> Scans and forensic collection cannot read protected folders
+          (Mail, Messages, Safari, other users' files). On the Mac, open System Settings › Privacy &amp; Security › Full Disk Access
+          and allow <span className="mono">/usr/local/bin/fenrir-agent</span>, or push the permission with an MDM profile.
+        </div>)}
+      <Tabs tabs={["Overview", "Health", "Patches", "Scripts & jobs", "Remote sessions", "Effective policy", "Alerts", "Actions", "Bundles & recordings", "Software", "Vulnerabilities"]} active={tab} onChange={setTab} />
       {tab === "Health" && <HealthTab deviceId={d.id} />}
       {tab === "Patches" && <PatchesTab device={d} />}
       {tab === "Scripts & jobs" && <JobsTab deviceId={d.id} onOpen={setJobId} />}
@@ -143,6 +150,7 @@ export default function DeviceDetail() {
         </div>
       )}
 
+      {tab === "Bundles & recordings" && <Bundles deviceId={data.device?.id ?? id ?? ""} />}
       {tab === "Actions" && (
         <div className="card">
           <Table rows={data.commands} empty="No remote actions yet."
@@ -352,5 +360,50 @@ function ScriptPicker({ device, onClose, onStarted }: { device: any; onClose: ()
       <Table rows={usable} onRow={setScript} empty="No scripts for this platform."
              columns={[{ key: "name", label: "Script", render: (s) => <><b>{s.name}</b><div className="small muted">{s.description}</div></> }, { key: "category", label: "Category" }]} />
     </Modal>
+  );
+}
+
+
+function Bundles({ deviceId }: { deviceId: string }) {
+  const { can } = useApp();
+  const navigate = useNavigate();
+  const { data, error, reload } = useData<any[]>(`devices/${deviceId}/artifacts`);
+  const { run, busy } = useAction();
+  const collect = async (type: string) => {
+    if (await run(() => api(`devices/${deviceId}/commands`, { body: { type, reason: "Collected from the device page" } }),
+                  "Requested; the bundle appears here after the device next checks in")) reload();
+  };
+  const download = async (row: any) => {
+    await run(async () => {
+      const response = await fetch(`/api/console/artifacts/${row.id}/download`, { headers: { Authorization: `Bearer ${getToken() ?? ""}` }, cache: "no-store" });
+      if (!response.ok) throw new Error(response.status === 403 ? "Only incident responders can download bundles" : `Download failed (HTTP ${response.status})`);
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = row.filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+    });
+  };
+  return (
+    <div className="card">
+      <ErrorNote error={error} />
+      <div className="row" style={{ gap: 6, marginBottom: 10 }}>
+        <span className="small muted" style={{ flex: 1 }}>Forensic and support bundles the agent uploaded, and recorded remote sessions. They hold process lists, logs and file copies, so downloads are limited to responders and audited. Bundles are deleted after 30 days.</span>
+        {can("respond") && <><button disabled={busy} onClick={() => collect("forensics.collect")}>Collect forensic bundle</button>
+          <button disabled={busy} onClick={() => collect("support.bundle")}>Collect support bundle</button></>}
+      </div>
+      <Table rows={data} empty="No bundles yet."
+             columns={[{ key: "filename", label: "Bundle", render: (r) => <><b>{r.filename}</b><div className="small muted mono" title={r.sha256}>SHA-256 {String(r.sha256).slice(0, 16)}…</div></> },
+                       { key: "kind", label: "Type", render: (r) => ({ "remote.recording": "Remote session recording", "forensics.collect": "Forensic bundle",
+                           "support.bundle": "Support bundle", "support.bundle.sanitized": "Support bundle (sanitised)" } as Record<string, string>)[r.kind] ?? r.kind },
+                       { key: "size", label: "Size", className: "right", render: (r) => r.size >= 1048576 ? `${(r.size / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(r.size / 1024))} KB` },
+                       { key: "createdAt", label: "Uploaded", render: (r) => ago(r.createdAt) },
+                       { key: "dl", label: "", className: "right", render: (r) => can("respond") ? <span style={{ display: "inline-flex", gap: 6 }}>
+                           {r.kind === "remote.recording" && <button className="small" onClick={() => navigate(`/recordings/${r.id}`)}>Play</button>}
+                           <button className="small" disabled={busy} onClick={() => download(r)}>Download</button></span> : null }]} />
+    </div>
   );
 }

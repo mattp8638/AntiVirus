@@ -8,12 +8,15 @@ from sqlalchemy.orm import Session
 from .. import audit
 from ..db import get_db
 from ..deps import Principal, current_principal, require_reauth, scoped_tenant
-from ..models import GovernanceRecord, KbArticle, utcnow
+from ..models import GovernanceRecord, KbArticle, Tenant, utcnow
 from ..serialize import to_dict
 from .documentation import owned
 
 router = APIRouter(prefix="/api/console/grc", tags=["GRC and ISMS"])
-FRAMEWORKS = ["ISO 27001:2022", "Cyber Essentials", "NCSC CAF", "UK GDPR", "NIST CSF", "CIS Controls"]
+FRAMEWORKS = ["ISO 27001:2022", "Cyber Essentials", "NCSC CAF", "UK GDPR", "NIST CSF", "CIS Controls", "Essential Eight"]
+# Built-in control libraries (compliance.FRAMEWORKS) -> the framework label register records use.
+LIBRARY_LABELS = {"iso-27001": "ISO 27001:2022", "cyber-essentials": "Cyber Essentials", "nist-csf-2": "NIST CSF",
+                  "cis-v8-ig1": "CIS Controls", "essential-eight": "Essential Eight"}
 
 class RecordInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -90,3 +93,35 @@ def review(record_id: str, body: ReviewInput, request: Request, principal: Princ
     audit.record(db, principal.actor, "grc.reviewed", row.id, row.tenant_id, status=row.status)
     db.commit()
     return serialize(row)
+
+
+def _control_matches(record_control: str, control_id: str) -> bool:
+    text = (record_control or "").strip()
+    return text == control_id or text.startswith(control_id + " ") or text.startswith(control_id + ":")
+
+
+@router.get("/controls")
+def controls(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Statement of applicability: each library control with its automatic check and the register records linked to it."""
+    from .. import compliance
+
+    principal.require("read")
+    principal.check_tenant(tenant_id)
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(404, "Not found")
+    records = list(db.scalars(select(GovernanceRecord).where(GovernanceRecord.tenant_id == tenant_id)))
+    out = []
+    for framework in compliance.evaluate(db, tenant):
+        label = LIBRARY_LABELS.get(framework["framework"], framework["name"])
+        rows, counts = [], {"met": 0, "evidenced": 0, "exception": 0, "gap": 0}
+        for control in framework["controls"]:
+            linked = [r for r in records if r.framework == label and _control_matches(r.control, control["id"])]
+            approved = [r for r in linked if r.kind in ("policy", "evidence", "audit") and r.status == "approved"]
+            excepted = [r for r in linked if r.kind == "exception" and r.status in ("approved", "accepted")]
+            status = "met" if control["passed"] else "evidenced" if approved else "exception" if excepted else "gap"
+            counts[status] += 1
+            rows.append({**control, "status": status, "records": [serialize(r) for r in linked]})
+        out.append({"framework": framework["framework"], "label": label, "name": framework["name"], "counts": counts,
+                    "coverage": round(100 * (counts["met"] + counts["evidenced"]) / len(rows)) if rows else 0, "controls": rows})
+    return {"tenantId": tenant_id, "frameworks": out}

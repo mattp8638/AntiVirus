@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from . import audit, services
 from .models import (Alert, Command, ConditionState, Device, DeviceGroup, DeviceMetric, DevicePatch, Job, MonitorCondition,
-                     PatchApproval, PatchPolicy, ScheduledTask, Script, SoftwarePackage, Ticket, utcnow)
+                     PatchApproval, PatchPolicy, ScheduledTask, Script, SoftwarePackage, Ticket, Vulnerability, utcnow)
 
 log = logging.getLogger("fenrir.rmm")
 
@@ -283,6 +283,10 @@ def on_command_complete(db: Session, device: Device, command: Command) -> None:
         from . import remote
 
         remote.on_command_complete(db, device, command)
+    elif command.type == "network.probe":
+        from . import network
+
+        network.apply_probe_results(db, device, command)
     job_id = (command.payload or {}).get("jobId")
     if job_id:
         refresh_job(db, job_id)
@@ -315,6 +319,7 @@ def ingest_patch_scan(db: Session, device: Device, result: dict) -> int:
     now = utcnow()
     existing = {p.patch_key: p for p in db.execute(select(DevicePatch).where(DevicePatch.device_id == device.id)).scalars()}
     seen: set[str] = set()
+    row_cves: dict[str, list[str]] = {}
     for item in patches[:5000]:
         if not isinstance(item, dict):
             continue
@@ -337,6 +342,10 @@ def ingest_patch_scan(db: Session, device: Device, result: dict) -> int:
         row.installed_version = str(item.get("installedVersion") or "")[:80]
         row.available_version = str(item.get("availableVersion") or "")[:80]
         row.reboot_required = bool(item.get("rebootRequired"))
+        cves = item.get("cves") or []
+        if isinstance(cves, str):
+            cves = [c.strip() for c in cves.split(",")]
+        row_cves[key] = [str(c)[:30] for c in cves if str(c).startswith("CVE-")][:200]
         released = item.get("releasedAt")
         if released:
             try:
@@ -351,12 +360,75 @@ def ingest_patch_scan(db: Session, device: Device, result: dict) -> int:
     for key, row in existing.items():
         if key not in seen and row.status in {"missing", "installing", "failed"}:
             row.status, row.installed_at = "installed", now
+    db.flush()
+    sync_update_vulnerabilities(db, device, now, row_cves)
     metrics = dict(device.metrics or {})
     metrics["patchScanAt"] = now.isoformat() + "Z"
     if "rebootPending" in result:
         metrics["rebootPending"] = bool(result["rebootPending"])
     device.metrics = metrics
     return len(seen)
+
+
+MSRC_SEVERITY = {"critical": "critical", "important": "high", "moderate": "medium", "low": "low"}
+UPDATE_VULN_SOURCE = "windows-update"
+
+
+def sync_update_vulnerabilities(db: Session, device: Device, scanned_at: datetime, cves: dict[str, list[str]]) -> int:
+    """Missing Windows security updates are this device's OS vulnerabilities (OSV has no Windows data).
+
+    One vulnerability per missing update, named by its KB; it is verified fixed once a patch scan no
+    longer reports the update. Returns how many new ones were found.
+    """
+    from . import vulnmgmt
+
+    if device.platform != "windows":
+        return 0
+    missing = db.execute(select(DevicePatch).where(
+        DevicePatch.device_id == device.id, DevicePatch.source == "windows-update",
+        DevicePatch.status.in_(("missing", "installing", "failed")),
+        DevicePatch.classification.in_(("critical", "security")))).scalars().all()
+    kev = _known_exploited_cves(db)
+    found = 0
+    for patch in missing:
+        ids = cves.get(patch.patch_key, [])
+        row = db.execute(select(Vulnerability).where(Vulnerability.device_id == device.id,
+                                                     Vulnerability.vuln_id == patch.patch_key[:80],
+                                                     Vulnerability.package == "Windows")).scalar_one_or_none()
+        is_new = row is None
+        if row is None:
+            row = Vulnerability(tenant_id=device.tenant_id, device_id=device.id, vuln_id=patch.patch_key[:80], package="Windows",
+                                source=UPDATE_VULN_SOURCE, first_seen=patch.first_seen_at or scanned_at)
+            db.add(row)
+            found += 1
+        row.source = UPDATE_VULN_SOURCE
+        row.installed_version = (device.os_version or "")[:100]
+        row.fixed_version = patch.patch_key[:100]
+        row.severity = MSRC_SEVERITY.get((patch.severity or "").lower(),
+                                         "critical" if patch.classification == "critical" else "high")
+        row.known_exploited = bool(set(ids) & kev)
+        if row.known_exploited:
+            row.severity = "critical"
+        summary = patch.title
+        if ids:
+            summary += "\nAddresses " + ", ".join(ids[:50]) + (f" and {len(ids) - 50} more" if len(ids) > 50 else "")
+        row.summary = summary[:2000]
+        row.last_seen = scanned_at
+        reopened = row.status == "fixed"
+        if reopened:
+            row.status, row.verified_at, row.status_changed_at = "open", None, utcnow()
+        if is_new or reopened:
+            db.flush()
+            vulnmgmt.record_detection(db, row, reopened)
+    vulnmgmt.verify_after_scan(db, device, scanned_at, source=UPDATE_VULN_SOURCE)
+    return found
+
+
+def _known_exploited_cves(db: Session) -> set[str]:
+    """CISA KEV CVE IDs from the catalogue the vulnerability scanner last fetched (no network call here)."""
+    from . import exposure
+
+    return exposure._KEV_CACHE[1]
 
 
 def apply_patch_install_result(db: Session, device: Device, command: Command, result: dict) -> None:
@@ -385,7 +457,8 @@ DEFAULT_WINDOW = {"days": [0, 1, 2, 3, 4, 5, 6], "start": "02:00", "durationMinu
 DEFAULT_REBOOT = {"mode": "if_required", "notifyUser": True, "deferMinutes": 60, "maxDeferrals": 3}
 
 
-def policy_for_device(db: Session, device: Device, policies: list[PatchPolicy] | None = None) -> PatchPolicy | None:
+def rmm_policy_for_device(db: Session, device: Device, policies: list[PatchPolicy] | None = None) -> PatchPolicy | None:
+    """The RMM patch policy (Patching page) that covers this device, if any."""
     candidates = policies if policies is not None else db.execute(
         select(PatchPolicy).where(PatchPolicy.tenant_id == device.tenant_id, PatchPolicy.enabled.is_(True))).scalars().all()
     group_match = [p for p in candidates if p.tenant_id == device.tenant_id and p.group_id and p.group_id == device.group_id]
@@ -393,6 +466,89 @@ def policy_for_device(db: Session, device: Device, policies: list[PatchPolicy] |
         return group_match[0]
     tenant_match = [p for p in candidates if p.tenant_id == device.tenant_id and not p.group_id]
     return tenant_match[0] if tenant_match else None
+
+
+def policy_for_device(db: Session, device: Device, policies: list[PatchPolicy] | None = None) -> PatchPolicy | None:
+    """An RMM patch policy wins; otherwise the patch section of the device's protection policy applies."""
+    return rmm_policy_for_device(db, device, policies) or protection_patch_policy(db, device)
+
+
+# ---------------------------------------------------------------- patching from the protection policy
+
+WINDOW_DAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+WINDOW_GROUPS = {"daily": list(range(7)), "everyday": list(range(7)), "weekdays": [0, 1, 2, 3, 4], "weekends": [5, 6]}
+REBOOT_BY_BEHAVIOUR = {
+    "never": {"mode": "never", "notifyUser": False, "deferMinutes": 0},
+    "prompt": {"mode": "if_required", "notifyUser": True, "deferMinutes": 60},
+    "outside-hours": {"mode": "if_required", "notifyUser": True, "deferMinutes": 5},  # installs already run in the window
+    "force": {"mode": "always", "notifyUser": True, "deferMinutes": 5},
+}
+
+
+def parse_maintenance_window(text: str, tz: str = "UTC") -> dict:
+    """'daily 22:00-05:00', 'weekdays 19:00-23:00', 'sat,sun 02:00-06:00', 'mon-fri 20:00-23:30' -> window dict."""
+    match = re.fullmatch(r"\s*([a-z,\-]+)\s+(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})\s*", (text or "").lower())
+    if not match:
+        return {**DEFAULT_WINDOW, "tz": tz}
+    spec, h1, m1, h2, m2 = match.groups()
+    days: list[int] = []
+    for part in spec.split(","):
+        if part in WINDOW_GROUPS:
+            days += WINDOW_GROUPS[part]
+        elif "-" in part and all(p in WINDOW_DAYS for p in part.split("-", 1)):
+            start, end = (WINDOW_DAYS[p] for p in part.split("-", 1))
+            days += [d % 7 for d in range(start, start + ((end - start) % 7) + 1)]
+        elif part in WINDOW_DAYS:
+            days.append(WINDOW_DAYS[part])
+    start_minutes, end_minutes = int(h1) * 60 + int(m1), int(h2) * 60 + int(m2)
+    duration = (end_minutes - start_minutes) % (24 * 60) or 24 * 60
+    return {"days": sorted(set(days)) or DEFAULT_WINDOW["days"], "start": f"{int(h1):02d}:{int(m1):02d}", "durationMinutes": duration, "tz": tz}
+
+
+def protection_patch_policy(db: Session, device: Device) -> PatchPolicy | None:
+    """A transient (never saved) patch policy built from the protection policy's patch settings."""
+    cache = db.info.setdefault("protection_patch_policy", {})
+    if device.id in cache:
+        return cache[device.id]
+    resolution, _ = services.effective_policy(db, device)
+    settings = resolution["settings"]["patch"]
+    policy = None
+    if settings.get("enabled"):
+        auto = settings.get("autoApprove", "security")
+        approvals = {
+            "critical": "auto" if auto in {"critical", "security", "all"} else "manual",
+            "security": "auto" if auto in {"security", "all"} else "manual",
+            "definition": "manual" if auto == "none" else "auto",
+            "updates": "auto" if auto == "all" else "manual",
+            "other": "auto" if auto == "all" else "manual",
+            "driver": "manual",
+            "feature": "reject",
+            "third-party": ("auto" if auto in {"security", "all"} else "manual") if settings.get("thirdPartyApps", True) else "reject",
+        }
+        from .models import Tenant
+
+        tenant = db.get(Tenant, device.tenant_id)
+        tz = str(((tenant.settings or {}) if tenant else {}).get("timezone") or "UTC")
+        policy = PatchPolicy(id=f"protection-policy:{device.tenant_id}", tenant_id=device.tenant_id, name="Protection policy patch settings",
+                             enabled=True, approvals=approvals, delay_days=int(settings.get("deferralDaysOther", 7)), rings=[],
+                             window=parse_maintenance_window(settings.get("maintenanceWindow", ""), tz),
+                             reboot=dict(REBOOT_BY_BEHAVIOUR.get(settings.get("rebootBehaviour", "prompt"), DEFAULT_REBOOT)),
+                             scan_interval_hours=int(settings.get("vulnerabilityScanHours", 24)), last_window_run="")
+        policy.derived = True  # python attribute only, not a column
+        policy.critical_delay_days = int(settings.get("deferralDaysCritical", 0))
+        policy.prioritise_known_exploited = bool(settings.get("prioritiseKnownExploited", True))
+        policy.install_in_window = bool(settings.get("installInWindow", False))
+    cache[device.id] = policy
+    return policy
+
+
+def _known_exploited_products(db: Session, device: Device) -> set[str]:
+    """Packages on this device with an open known-exploited (CISA KEV) vulnerability."""
+    from .models import Vulnerability
+
+    rows = db.execute(select(Vulnerability.package).where(Vulnerability.device_id == device.id, Vulnerability.known_exploited.is_(True),
+                                                          Vulnerability.status.in_(("open", "patching")))).all()
+    return {name.lower() for (name,) in rows}
 
 
 def ring_delay(policy: PatchPolicy, device: Device) -> tuple[str, int]:
@@ -416,16 +572,26 @@ def approval_state(policy: PatchPolicy | None, patch: DevicePatch, decisions: di
     return {"auto": "approved", "reject": "rejected"}.get(rule, "pending")
 
 
-def installable_patches(db: Session, device: Device, policy: PatchPolicy | None, now: datetime | None = None) -> list[DevicePatch]:
+def installable_patches(db: Session, device: Device, policy: PatchPolicy | None, now: datetime | None = None,
+                        scheduled: bool = False) -> list[DevicePatch]:
+    """Approved, missing patches. Protection-policy deferrals apply to scheduled installs, not to "Install now"."""
     now = now or utcnow()
     decisions = dict(db.execute(select(PatchApproval.patch_key, PatchApproval.decision)
                                 .where(PatchApproval.tenant_id == device.tenant_id)).all())
     _, delay = ring_delay(policy, device) if policy else ("Default", 0)
+    derived = bool(getattr(policy, "derived", False))
+    kev_products = _known_exploited_products(db, device) if derived and getattr(policy, "prioritise_known_exploited", False) else set()
     out = []
     for patch in db.execute(select(DevicePatch).where(DevicePatch.device_id == device.id, DevicePatch.status.in_(("missing", "failed")))).scalars():
         state = approval_state(policy, patch, decisions)
         if state != "approved":
             continue
+        if derived and scheduled:
+            # Protection-policy deferrals: critical vs everything else; known-exploited fixes skip deferral.
+            name = (patch.product or patch.patch_key.split(":", 1)[-1]).lower()
+            delay = 0 if name in kev_products else (policy.critical_delay_days if patch.classification == "critical" else policy.delay_days)
+        elif derived:
+            delay = 0  # "Install now" from a technician is never deferred by the protection policy
         # Manual approvals install straight away; auto-approvals respect the ring delay.
         reference = patch.released_at or patch.first_seen_at
         if patch.patch_key not in decisions and delay and reference + timedelta(days=delay) > now:
@@ -487,6 +653,38 @@ def run_patch_windows(db: Session, now: datetime | None = None) -> int:
             for patch in patches:
                 patch.status = "installing"
             queued += 1
+    queued += _run_protection_policy_windows(db, policies, now)
+    return queued
+
+
+def _run_protection_policy_windows(db: Session, rmm_policies: list[PatchPolicy], now: datetime) -> int:
+    """Devices no RMM patch policy covers follow their protection policy's window, approvals and reboots."""
+    queued = 0
+    for device in db.execute(select(Device).where(Device.approved.is_(True))).scalars():
+        if rmm_policy_for_device(db, device, [p for p in rmm_policies if p.tenant_id == device.tenant_id]):
+            continue
+        policy = protection_patch_policy(db, device)
+        if policy is None or not policy.install_in_window:
+            continue
+        inside, key = in_window(policy.window, now)
+        if not inside or device.patch_window_run == key:
+            continue
+        device.patch_window_run = key  # once per window per device
+        patches = installable_patches(db, device, policy, now, scheduled=True)
+        if not patches:
+            continue
+        payload = {"patchIds": [p.patch_key for p in patches],
+                   "patches": [{"id": p.patch_key, "source": p.source, "title": p.title} for p in patches],
+                   "reboot": dict(policy.reboot), "policyId": policy.id}
+        try:
+            services.enqueue_command(db, device, "patch.install", "protection-policy", payload=payload,
+                                     reason=f"Maintenance window {key} (protection policy)")
+        except services.CommandError as exc:
+            log.info("skip patch install on %s: %s", device.hostname, exc)
+            continue
+        for patch in patches:
+            patch.status = "installing"
+        queued += 1
     return queued
 
 

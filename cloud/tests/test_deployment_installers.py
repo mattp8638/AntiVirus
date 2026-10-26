@@ -60,6 +60,28 @@ def test_missing_artifact_and_macos_do_not_create_credentials(client, admin, ten
     assert not status["windows"]["ready"] and not status["linux"]["ready"] and not status["macos"]["ready"]
 
 
+def test_macos_installer_is_customer_bound_launchdaemon(client, admin, tenant, monkeypatch, tmp_path):
+    monkeypatch.setattr(installers, "DOWNLOADS", tmp_path)
+    for arch in ("amd64", "arm64"):
+        (tmp_path / f"fenrir-agent-darwin-{arch}").write_bytes(b"macho-test-binary-" + arch.encode())
+    status = client.get("/api/console/enrollment-installers/status", headers=admin).json()
+    assert status["macos"]["ready"] and status["macos"]["extension"] == ".sh"
+    result = client.post("/api/console/enrollment-installers", headers=admin, json={
+        "tenantId": tenant["id"], "os": "macos", "label": "Mac pilot", "expiresInDays": 14,
+    })
+    assert result.status_code == 200, result.text
+    assert "Install-Fenrir-macOS.sh" in result.headers["content-disposition"]
+    script = result.content.decode()
+    syntax = subprocess.run(["sh", "-n"], input=script, text=True, capture_output=True, check=False)
+    assert syntax.returncode == 0, syntax.stderr
+    assert "/Library/LaunchDaemons/com.fenrir.agent.plist" in script
+    assert "launchctl bootstrap system" in script
+    assert "shasum -a 256 -c -s" in script
+    assert "fet_" in script and "Full Disk Access" in script
+    for arch in ("amd64", "arm64"):
+        assert hashlib.sha256((tmp_path / f"fenrir-agent-darwin-{arch}").read_bytes()).hexdigest() in script
+
+
 def _windows_payload(tmp_path, monkeypatch):
     monkeypatch.setattr(installers, "DOWNLOADS", tmp_path)
     (tmp_path / "windows").mkdir()

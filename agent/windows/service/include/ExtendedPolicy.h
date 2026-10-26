@@ -48,6 +48,14 @@ struct DeviceControlSettings {
   std::vector<std::wstring> usbAllowedIds;
 };
 
+// A calendar scan schedule from the cloud ("daily 12:30" -> every day at 750 minutes, device local time).
+struct ScanPlan {
+  bool present{false};  // false: no usable schedule; keep the agent's built-in interval
+  bool off{false};
+  std::vector<int> days;  // 0 = Monday .. 6 = Sunday
+  int minuteOfDay{0};
+};
+
 struct ExtendedPolicy {
   bool present{false};  // false until a cloud policy with modules has been received
   std::wstring mlSensitivity{L"balanced"};
@@ -57,6 +65,8 @@ struct ExtendedPolicy {
   bool canaryFiles{true};
   bool scriptExecution{true};      // modules.response.scriptExecution
   bool remoteAccessEnabled{true};  // modules.remoteAccess.enabled
+  ScanPlan quickScanPlan;          // modules.antimalware.quickScanPlan
+  ScanPlan fullScanPlan;           // modules.antimalware.fullScanPlan
 
   static ExtendedPolicy Parse(const std::string& modulesJson);
 };

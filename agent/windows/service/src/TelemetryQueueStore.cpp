@@ -65,4 +65,16 @@ void TelemetryQueueStore::SavePending(const std::vector<TelemetryRecord>& events
   RuntimeDatabase(databasePath_).ReplaceTelemetryQueue(events);
 }
 
+void TelemetryQueueStore::Append(const std::vector<TelemetryRecord>& events) const {
+  RuntimeDatabase(databasePath_).AppendTelemetryQueue(events);
+}
+
+void TelemetryQueueStore::Remove(const std::vector<std::wstring>& eventIds) const {
+  RuntimeDatabase(databasePath_).DeleteTelemetryEvents(eventIds);
+}
+
+std::size_t TelemetryQueueStore::Trim(const std::size_t keepNewest) const {
+  return RuntimeDatabase(databasePath_).TrimTelemetryQueue(keepNewest);
+}
+
 }  // namespace antivirus::agent

@@ -46,13 +46,27 @@ def ecosystem_for(device: Device) -> str:
     return device.platform
 
 
+SOFTWARE_KEYS = ("software", "packages", "installedSoftware")
+# Windows sends {"cycle": n, "inventory": {...}}; flattened that becomes "inventory.<key>".
+INVENTORY_ALIASES = {"privateIpAddresses": "ipAddresses", "lastLoggedOnUser": "loggedOnUser"}
+
+
 def record_inventory(db: Session, device: Device, fields: dict) -> int:
-    software = fields.get("software") or fields.get("packages") or fields.get("installedSoftware") or []
-    summary = {key: fields[key] for key in ("osName", "osVersion", "cpu", "memoryMb", "diskFreeGb", "ipAddresses", "macAddresses",
-                                            "domain", "lastBoot", "manufacturer", "model", "bitlocker", "firewall", "secureBoot",
-                                            "tpm", "localAdmins") if key in fields}
+    view = dict(fields)
+    for key, value in fields.items():
+        if key.startswith("inventory."):
+            view.setdefault(key[len("inventory."):], value)
+    for source, target in INVENTORY_ALIASES.items():
+        if source in view:
+            view.setdefault(target, view[source])
+    summary = {key: view[key] for key in ("osName", "osVersion", "cpu", "memoryMb", "diskFreeGb", "ipAddresses", "macAddresses",
+                                          "domain", "lastBoot", "manufacturer", "model", "bitlocker", "firewall", "secureBoot",
+                                          "tpm", "localAdmins", "loggedOnUser", "permissions") if key in view}
     if summary:
         device.inventory = {**(device.inventory or {}), **summary, "updatedAt": utcnow().isoformat()}
+    present = [key for key in SOFTWARE_KEYS if key in view]
+    software = view[present[0]] if present else None
+    # Only a snapshot that actually carries a software list replaces the stored one.
     if not isinstance(software, list):
         return 0
     db.execute(delete(SoftwareItem).where(SoftwareItem.device_id == device.id))

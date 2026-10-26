@@ -4,6 +4,7 @@ import { ago, api, fmtTime } from "../../api";
 import { useApp } from "../../app-context";
 import { ConnectButtons } from "../../components/rmm";
 import { ErrorNote, Modal, Pill, Table, Tabs, useAction, useData } from "../../components/ui";
+import ServiceRecord from "./ServiceRecord";
 import { PRIORITY_TONE } from "./ServiceBoard";
 
 const NOTE_TONE: Record<string, string> = { discussion: "blue", internal: "warn", resolution: "good", system: "muted" };
@@ -140,6 +141,7 @@ export default function TicketDetail() {
         </div>
 
         <div>
+          <ServiceRecord ticket={t} onChange={reload} />
           <div className="card">
             <h3>SLA</h3>
             <dl className="kv">

@@ -146,3 +146,50 @@ def test_second_session_gets_its_own_command(client, admin, tenant, device):
     items = client.get(f"/api/v1/devices/{device['deviceId']}/commands/pending", headers=device["headers"]).json()["items"]
     sessions = {json.loads(i["payloadJson"])["sessionId"] for i in items if i["type"] == "remote.session.start"}
     assert sessions == {first["id"], second["id"]}
+
+
+def test_recorded_session_is_kept_for_playback(client, admin, tenant, device, tmp_path, monkeypatch):
+    import dataclasses
+    import struct
+    from fenrir_cloud import config
+
+    monkeypatch.setattr(config, "_active", dataclasses.replace(config.get_settings(), artifact_dir=tmp_path))
+    response = client.put(f"/api/console/policies/{tenant['defaultPolicyId']}", headers=admin,
+                          json={"settings": {"remoteAccess": {"recordSessions": True}}})
+    assert response.status_code == 200, response.text
+    session = start(client, admin, device, mode="desktop")
+    assert client.get(f"/api/console/remote/sessions/{session['id']}", headers=admin).json()["recorded"] is True
+    payload = json.loads(agent_command(client, device)["payloadJson"])
+    viewer = client.post(f"/api/console/remote/sessions/{session['id']}/viewer-token", headers=admin).json()
+    tile = b"\x01" + b"\x00" * 12 + b"JPEG"
+    with client.websocket_connect(f"/ws/remote/{session['id']}/agent?token={payload['token']}") as agent:
+        with client.websocket_connect(f"{viewer['path']}?token={viewer['token']}") as browser:
+            browser.receive_text()
+            agent.receive_text()
+            agent.send_bytes(tile)
+            browser.receive_bytes()
+            agent.send_bytes(b"\x02" + b"file-chunk")  # file transfers are not recorded
+            browser.receive_bytes()
+            agent.send_text(json.dumps({"ch": "term", "t": "out", "data": "aGk="}, separators=(",", ":")))
+            browser.receive_text()
+            browser.send_text(json.dumps({"ch": "term", "t": "in", "data": "c2VjcmV0"}))  # input is never recorded
+            agent.receive_text()
+            browser.send_text(json.dumps({"ch": "sys", "t": "end"}))
+        agent.receive_text()
+    import time
+    for _ in range(50):  # the relay saves the recording just after the socket closes
+        detail = client.get(f"/api/console/remote/sessions/{session['id']}", headers=admin).json()
+        if detail["recordingId"]:
+            break
+        time.sleep(0.05)
+    assert detail["recordingId"], list(tmp_path.iterdir())
+    [row] = [a for a in client.get(f"/api/console/devices/{device['deviceId']}/artifacts", headers=admin).json()
+             if a["kind"] == "remote.recording"]
+    data = client.get(f"/api/console/artifacts/{row['id']}/download", headers=admin).content
+    assert data.startswith(b"FENREC1\n")
+    records, offset = [], 8
+    while offset < len(data):
+        _ms, kind, size = struct.unpack(">IBI", data[offset:offset + 9])
+        records.append((kind, data[offset + 9:offset + 9 + size]))
+        offset += 9 + size
+    assert records == [(1, tile), (0, b'{"ch":"term","t":"out","data":"aGk="}')]

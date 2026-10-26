@@ -200,22 +200,18 @@ std::vector<std::filesystem::path> ResolveTargets(const std::vector<std::filesys
 void QueueTelemetry(const antivirus::agent::AgentConfig& config, const antivirus::agent::PolicySnapshot& policy,
                     const std::vector<antivirus::agent::ScanFinding>& findings, const std::size_t targetCount) {
   antivirus::agent::TelemetryQueueStore queueStore(config.runtimeDatabasePath, config.telemetryQueuePath);
-  auto pending = queueStore.LoadPending();
-
-  pending.push_back(antivirus::agent::BuildScanSummaryTelemetry(targetCount, findings.size(), policy, L"scannercli"));
+  std::vector<antivirus::agent::TelemetryRecord> records;
+  records.push_back(antivirus::agent::BuildScanSummaryTelemetry(targetCount, findings.size(), policy, L"scannercli"));
   for (const auto& finding : findings) {
-    pending.push_back(antivirus::agent::BuildScanFindingTelemetry(finding, L"scannercli"));
+    records.push_back(antivirus::agent::BuildScanFindingTelemetry(finding, L"scannercli"));
   }
-
-  queueStore.SavePending(pending);
+  queueStore.Append(records);
 }
 
 void QueueTelemetryRecords(const antivirus::agent::AgentConfig& config,
                           const std::vector<antivirus::agent::TelemetryRecord>& records) {
   antivirus::agent::TelemetryQueueStore queueStore(config.runtimeDatabasePath, config.telemetryQueuePath);
-  auto pending = queueStore.LoadPending();
-  pending.insert(pending.end(), records.begin(), records.end());
-  queueStore.SavePending(pending);
+  queueStore.Append(records);
 }
 
 void ApplyLocalRemediation(const antivirus::agent::AgentConfig& config, std::vector<antivirus::agent::ScanFinding>& findings,

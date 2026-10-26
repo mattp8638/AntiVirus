@@ -1,4 +1,5 @@
 #include "ControlPlaneClient.h"
+#include "CryptoUtils.h"
 
 #include <windows.h>
 #include <winhttp.h>
@@ -464,6 +465,59 @@ PolicySnapshot ParsePolicySnapshot(const std::string& json) {
   if (const auto value = ExtractJsonBool(json, "enableKnownGoodHashDampening"); value.has_value()) {
     policy.enableKnownGoodHashDampening = *value;
   }
+  // Web and destination protection (cloud "web" policy section).
+  if (const auto value = ExtractJsonBool(json, "destinationProtectionEnabled"); value.has_value()) {
+    policy.destinationProtectionEnabled = *value;
+  }
+  if (const auto value = ExtractJsonBool(json, "antiPhishingEnabled"); value.has_value()) {
+    policy.antiPhishingEnabled = *value;
+  }
+  if (const auto value = ExtractJsonBool(json, "webProtectionEnabled"); value.has_value()) {
+    policy.webProtectionEnabled = *value;
+  }
+  if (const auto value = ExtractJsonBool(json, "emailLinkProtectionEnabled"); value.has_value()) {
+    policy.emailLinkProtectionEnabled = *value;
+  }
+  if (const auto value = ExtractJsonBool(json, "evaluateDomains"); value.has_value()) {
+    policy.evaluateDomains = *value;
+  }
+  if (const auto value = ExtractJsonBool(json, "evaluateUrls"); value.has_value()) {
+    policy.evaluateUrls = *value;
+  }
+  if (const auto value = ExtractJsonBool(json, "blockKnownMaliciousDestinations"); value.has_value()) {
+    policy.blockKnownMaliciousDestinations = *value;
+  }
+  if (const auto value = ExtractJsonBool(json, "blockKnownPhishingDestinations"); value.has_value()) {
+    policy.blockKnownPhishingDestinations = *value;
+  }
+  if (const auto value = ExtractJsonBool(json, "blockKnownScamDestinations"); value.has_value()) {
+    policy.blockKnownScamDestinations = *value;
+  }
+  if (const auto value = ExtractJsonBool(json, "warnOnSuspiciousDestinations"); value.has_value()) {
+    policy.warnOnSuspiciousDestinations = *value;
+  }
+  if (const auto value = ExtractJsonBool(json, "warnOnNewlyRegisteredDomains"); value.has_value()) {
+    policy.warnOnNewlyRegisteredDomains = *value;
+  }
+  if (const auto value = ExtractJsonBool(json, "allowDegradedDestinationModeWhenOffline"); value.has_value()) {
+    policy.allowDegradedDestinationModeWhenOffline = *value;
+  }
+  if (const auto value = ExtractJsonBool(json, "browserContextRequiredForWarnOnly"); value.has_value()) {
+    policy.browserContextRequiredForWarnOnly = *value;
+  }
+  if (const auto value = ExtractJsonInt(json, "suspiciousDestinationWarnThreshold"); value.has_value()) {
+    policy.suspiciousDestinationWarnThreshold = static_cast<std::uint32_t>(std::clamp(*value, 1, 99));
+  }
+  if (const auto value = ExtractJsonInt(json, "phishingWarnThreshold"); value.has_value()) {
+    policy.phishingWarnThreshold = static_cast<std::uint32_t>(std::clamp(*value, 1, 99));
+  }
+  if (const auto value = ExtractJsonInt(json, "phishingBlockThreshold"); value.has_value()) {
+    policy.phishingBlockThreshold = static_cast<std::uint32_t>(std::clamp(*value, 1, 99));
+  }
+  if (const auto value = ExtractJsonInt(json, "destinationCacheTtlMinutes"); value.has_value()) {
+    policy.destinationCacheTtlMinutes = static_cast<std::uint32_t>(std::clamp(*value, 5, 10080));
+  }
+  policy.phishingBlockThreshold = std::max(policy.phishingBlockThreshold, policy.phishingWarnThreshold);
   for (const auto& root : ExtractJsonStringArray(json, "suppressionPathRoots")) {
     const auto wide = Utf8ToWide(root);
     if (!wide.empty()) {
@@ -1130,6 +1184,24 @@ void ControlPlaneClient::CompleteCommand(const AgentState& state, const std::wst
   static_cast<void>(RequestJson(
       L"POST", JoinUrl(baseUrl_, L"/api/v1/devices/" + state.deviceId + L"/commands/" + commandId + L"/complete"),
       body.str(), deviceApiKey));
+}
+
+std::wstring ControlPlaneClient::UploadCommandArtifact(const AgentState& state, const std::wstring& commandId,
+                                                     const std::wstring& filename, const std::string& data) const {
+  if (state.deviceId.empty()) {
+    throw std::runtime_error("Cannot upload a bundle without a device identifier");
+  }
+  std::wstring safeName;
+  for (const auto ch : filename) {
+    safeName += (std::iswalnum(ch) || ch == L'.' || ch == L'-' || ch == L'_') ? ch : L'_';
+  }
+  const auto sha256 = ComputeBufferSha256(reinterpret_cast<const unsigned char*>(data.data()), data.size());
+  const auto response = RequestJson(
+      L"POST",
+      JoinUrl(baseUrl_, L"/api/v1/devices/" + state.deviceId + L"/commands/" + commandId + L"/artifact?filename=" + safeName +
+                            L"&sha256=" + sha256),
+      data, ExtractDeviceApiKeyFromCommandChannelUrl(state.commandChannelUrl));
+  return RequireString(ExtractJsonString(response.body, "artifactId"), "artifactId");
 }
 
 UpdateCheckResult ControlPlaneClient::CheckForUpdates(const AgentState& state, const std::wstring& signaturesVersion,

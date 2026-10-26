@@ -831,6 +831,65 @@ void RuntimeDatabase::ReplaceTelemetryQueue(const std::vector<TelemetryRecord>& 
   }
 }
 
+void RuntimeDatabase::AppendTelemetryQueue(const std::vector<TelemetryRecord>& records) const {
+  if (records.empty()) {
+    return;
+  }
+  const auto db = OpenConnection(databasePath_);
+  try {
+    Begin(db.get());
+    auto statement = Prepare(db.get(),
+                             "INSERT INTO telemetry_queue(event_id, event_type, source, summary, occurred_at, payload_json)"
+                             " VALUES(?, ?, ?, ?, ?, ?);");
+    for (const auto& record : records) {
+      sqlite3_reset(statement.get());
+      sqlite3_clear_bindings(statement.get());
+      BindText(statement.get(), 1, record.eventId);
+      BindText(statement.get(), 2, record.eventType);
+      BindText(statement.get(), 3, record.source);
+      BindText(statement.get(), 4, record.summary);
+      BindText(statement.get(), 5, record.occurredAt);
+      BindText(statement.get(), 6, record.payloadJson);
+      StepDone(db.get(), statement.get());
+    }
+    Commit(db.get());
+  } catch (...) {
+    Rollback(db.get());
+    throw;
+  }
+}
+
+void RuntimeDatabase::DeleteTelemetryEvents(const std::vector<std::wstring>& eventIds) const {
+  if (eventIds.empty()) {
+    return;
+  }
+  const auto db = OpenConnection(databasePath_);
+  try {
+    Begin(db.get());
+    auto statement = Prepare(db.get(), "DELETE FROM telemetry_queue WHERE event_id = ?;");
+    for (const auto& eventId : eventIds) {
+      sqlite3_reset(statement.get());
+      sqlite3_clear_bindings(statement.get());
+      BindText(statement.get(), 1, eventId);
+      StepDone(db.get(), statement.get());
+    }
+    Commit(db.get());
+  } catch (...) {
+    Rollback(db.get());
+    throw;
+  }
+}
+
+std::size_t RuntimeDatabase::TrimTelemetryQueue(const std::size_t keepNewest) const {
+  const auto db = OpenConnection(databasePath_);
+  auto statement = Prepare(db.get(),
+                           "DELETE FROM telemetry_queue WHERE queue_id NOT IN"
+                           " (SELECT queue_id FROM telemetry_queue ORDER BY queue_id DESC LIMIT ?);");
+  sqlite3_bind_int64(statement.get(), 1, static_cast<sqlite3_int64>(keepNewest));
+  StepDone(db.get(), statement.get());
+  return static_cast<std::size_t>(sqlite3_changes(db.get()));
+}
+
 std::size_t RuntimeDatabase::CountTelemetryQueue() const {
   const auto db = OpenConnection(databasePath_);
   auto statement = Prepare(db.get(), "SELECT COUNT(*) FROM telemetry_queue;");

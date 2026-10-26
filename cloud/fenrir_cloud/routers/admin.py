@@ -388,7 +388,7 @@ def create_token(body: dict = Body(...), principal: Principal = Depends(current_
         "install": {
             "windows": f'fenrir-agent-service.exe --install --server "{base}" --enroll-token "{raw}"',
             "linux": f"curl -fsSL {base}/install/linux.sh | sudo FENRIR_SERVER={base} FENRIR_TOKEN={raw} sh",
-            "macos": f"sudo installer -pkg FenrirAgent.pkg -target / && sudo /Library/Fenrir/fenrirctl enroll --server {base} --token {raw}",
+            "macos": "Download the macOS installer from Deploy, then run: sudo sh Install-Fenrir-macOS.sh",
         },
     }
 

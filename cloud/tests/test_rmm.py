@@ -253,3 +253,194 @@ def test_builtin_scripts_cannot_be_edited_by_tenant_admins(client, admin, tenant
     ta = login(client, "ta@acme.test", "a-long-password-1")
     builtin = next(s for s in client.get("/api/console/rmm/scripts", headers=ta).json() if s["builtin"])
     assert client.patch(f"/api/console/rmm/scripts/{builtin['id']}", headers=ta, json={"body": "x"}).status_code == 403
+
+
+def test_windows_nested_inventory_snapshot_is_recorded(client, admin, tenant, device):
+    """The Windows service sends {"cycle": n, "inventory": {...installedSoftware...}} as payloadJson."""
+    import json as _json
+
+    payload = {"cycle": 1, "inventory": {"privateIpAddresses": ["10.0.0.5"], "lastLoggedOnUser": "ACME\\jo",
+                                         "installedSoftware": [{"id": "7zip", "displayName": "7-Zip 23.01 (x64)", "displayVersion": "23.01",
+                                                                "publisher": "Igor Pavlov"}]}}
+    response = client.post(f"/api/v1/devices/{device['deviceId']}/telemetry", headers=device["headers"], json={"events": [{
+        "eventId": "inv-win-1", "eventType": "device.inventory.snapshot", "source": "device-inventory", "summary": "inventory",
+        "occurredAt": "2030-01-01T00:00:00Z", "payloadJson": _json.dumps(payload)}]})
+    assert response.status_code == 200
+    detail = client.get(f"/api/console/devices/{device['deviceId']}", headers=admin).json()
+    assert [s["name"] for s in detail["software"]] == ["7-Zip 23.01 (x64)"] and detail["software"][0]["vendor"] == "Igor Pavlov"
+    inventory = detail["device"]["inventory"] if "device" in detail else detail["inventory"]
+    assert inventory["ipAddresses"] == ["10.0.0.5"] and inventory["loggedOnUser"] == "ACME\\jo"
+    # A later snapshot without a software list (e.g. a periodic status snapshot) keeps the stored software.
+    client.post(f"/api/v1/devices/{device['deviceId']}/telemetry", headers=device["headers"], json={"events": [{
+        "eventId": "inv-win-2", "eventType": "device.inventory.snapshot", "occurredAt": "2030-01-01T00:01:00Z",
+        "payloadJson": _json.dumps({"cycle": 2, "inventory": {"lastLoggedOnUser": "ACME\\sam"}})}]})
+    detail = client.get(f"/api/console/devices/{device['deviceId']}", headers=admin).json()
+    assert len(detail["software"]) == 1
+
+
+def test_linux_agent_update_metadata(client, device, tmp_path, monkeypatch):
+    import hashlib as _hashlib
+    import json as _json
+
+    from fenrir_cloud import deployment_installers
+
+    monkeypatch.setattr(deployment_installers, "DOWNLOADS", tmp_path)
+    assert client.get("/api/v1/agent/update/linux?arch=amd64").status_code == 401
+    assert client.get("/api/v1/agent/update/linux?arch=amd64", headers=device["headers"]).json()["available"] is False
+    binary = b"\x7fELF fake agent"
+    (tmp_path / "fenrir-agent-linux-amd64").write_bytes(binary)
+    (tmp_path / "linux-build.json").write_text(_json.dumps({"version": "1.2.0", "sha256": {"amd64": _hashlib.sha256(binary).hexdigest(),
+                                                                                          "arm64": "0" * 64}}))
+    info = client.get("/api/v1/agent/update/linux?arch=amd64", headers=device["headers"]).json()
+    assert info == {"available": True, "version": "1.2.0", "sha256": _hashlib.sha256(binary).hexdigest(),
+                    "url": "/downloads/fenrir-agent-linux-amd64"}
+    assert client.get("/api/v1/agent/update/linux?arch=mips", headers=device["headers"]).status_code == 422
+
+
+def test_macos_agent_update_metadata(client, device, tmp_path, monkeypatch):
+    import hashlib as _hashlib
+    import json as _json
+
+    from fenrir_cloud import deployment_installers
+
+    monkeypatch.setattr(deployment_installers, "DOWNLOADS", tmp_path)
+    binary = b"macho fake agent"
+    (tmp_path / "fenrir-agent-darwin-arm64").write_bytes(binary)
+    (tmp_path / "linux-build.json").write_text(_json.dumps({
+        "version": "1.3.0", "sha256": {"amd64": "1" * 64, "arm64": "2" * 64},
+        "darwinSha256": {"amd64": "3" * 64, "arm64": _hashlib.sha256(binary).hexdigest()}}))
+    info = client.get("/api/v1/agent/update/macos?arch=arm64", headers=device["headers"]).json()
+    assert info == {"available": True, "version": "1.3.0", "sha256": _hashlib.sha256(binary).hexdigest(),
+                    "url": "/downloads/fenrir-agent-darwin-arm64"}
+    assert client.get("/api/v1/agent/update/macos?arch=amd64", headers=device["headers"]).json()["available"] is False
+    assert client.get("/api/v1/agent/update/windows?arch=amd64", headers=device["headers"]).status_code == 422
+
+
+def test_maintenance_window_parsing():
+    assert rmm.parse_maintenance_window("daily 22:00-05:00") == {"days": [0, 1, 2, 3, 4, 5, 6], "start": "22:00", "durationMinutes": 420, "tz": "UTC"}
+    assert rmm.parse_maintenance_window("weekdays 19:00-23:30", "Europe/London")["days"] == [0, 1, 2, 3, 4]
+    assert rmm.parse_maintenance_window("sat,sun 02:00-06:00")["days"] == [5, 6]
+    assert rmm.parse_maintenance_window("fri-mon 01:00-02:00")["days"] == [0, 4, 5, 6]
+    assert rmm.parse_maintenance_window("nonsense") == {**rmm.DEFAULT_WINDOW, "tz": "UTC"}
+
+
+def _protection_patch_settings(client, admin, tenant, **patch):
+    response = client.put(f"/api/console/policies/{tenant['defaultPolicyId']}", headers=admin, json={"settings": {"patch": patch}})
+    assert response.status_code == 200, response.text
+
+
+def _report_patches(client, device, patches, released=None):
+    from fenrir_cloud.models import DevicePatch
+
+    released = released or utcnow() - timedelta(days=2)
+    session = database.session_factory()()
+    try:
+        row = session.get(Device, device["deviceId"])
+        rmm.ingest_patch_scan(session, row, {"patches": patches})
+        for patch in session.query(DevicePatch).filter_by(device_id=row.id):
+            patch.released_at = released
+            patch.first_seen_at = released
+        session.commit()
+    finally:
+        session.close()
+
+
+def _window_run(at):
+    session = database.session_factory()()
+    try:
+        queued = rmm.run_patch_windows(session, at)
+        session.commit()
+        return queued
+    finally:
+        session.close()
+
+
+def test_protection_policy_patch_settings_drive_patching(client, admin, tenant, device):
+    now = utcnow()
+    monday = (now + timedelta(days=(7 - now.weekday()) % 7 or 7)).replace(hour=0, minute=0, second=0, microsecond=0)
+    _report_patches(client, device, [
+        {"id": "KB5048685", "title": "Cumulative Update", "classification": "Security Updates", "severity": "Critical"},
+        {"id": "winget:Mozilla.Firefox", "title": "Firefox", "source": "winget", "installedVersion": "131.0", "availableVersion": "132.0"},
+        {"id": "KB890830", "title": "Malicious Software Removal Tool", "classification": "Updates"},
+    ], released=monday - timedelta(days=2))
+    # Defaults: automatic window installs are off, so nothing is queued even inside the window.
+    monday_night, tuesday_night = monday.replace(hour=23), (monday + timedelta(days=1)).replace(hour=23)
+    assert _window_run(monday_night) == 0
+    detail = client.get(f"/api/console/rmm/devices/{device['deviceId']}/patches", headers=admin).json()
+    assert detail["policy"]["name"] == "Protection policy patch settings"
+    approvals = {p["patchKey"]: p["approval"] for p in detail["patches"]}
+    assert approvals == {"KB5048685": "approved", "winget:Mozilla.Firefox": "approved", "KB890830": "pending"}
+
+    _protection_patch_settings(client, admin, tenant, installInWindow=True, maintenanceWindow="weekdays 22:00-05:00",
+                               deferralDaysCritical=0, deferralDaysOther=7, rebootBehaviour="force", thirdPartyApps=True)
+    assert _window_run(monday.replace(hour=12)) == 0  # outside the window
+    assert _window_run(monday_night) == 1
+    [command] = [c for c in poll(client, device) if c["type"] == "patch.install"]
+    payload = json.loads(command["payloadJson"])
+    # Critical goes now; Firefox (released 2 days ago) waits for the 7-day deferral; reboot follows "force".
+    assert payload["patchIds"] == ["KB5048685"] and payload["reboot"]["mode"] == "always"
+    assert _window_run(monday_night) == 0  # once per window
+
+    # Known-exploited vulnerability in Firefox on this device: its fix skips the deferral.
+    from fenrir_cloud.models import Vulnerability
+
+    session = database.session_factory()()
+    try:
+        session.add(Vulnerability(tenant_id=tenant["id"], device_id=device["deviceId"], vuln_id="CVE-2030-0001", package="Mozilla.Firefox",
+                                  severity="critical", known_exploited=True))
+        session.commit()
+    finally:
+        session.close()
+    complete(client, device, command["id"], {"results": [{"id": "KB5048685", "success": True}]})
+    assert _window_run(tuesday_night) == 1
+    install = [c for c in poll(client, device) if c["type"] == "patch.install"][-1]
+    assert json.loads(install["payloadJson"])["patchIds"] == ["winget:Mozilla.Firefox"]
+
+    # Turning third-party patching off rejects winget updates.
+    _protection_patch_settings(client, admin, tenant, thirdPartyApps=False, installInWindow=True)
+    detail = client.get(f"/api/console/rmm/devices/{device['deviceId']}/patches", headers=admin).json()
+    assert {p["patchKey"]: p["approval"] for p in detail["patches"]}["winget:Mozilla.Firefox"] == "rejected"
+
+
+def test_rmm_patch_policy_still_wins_over_protection_policy(client, admin, tenant, device):
+    session = database.session_factory()()
+    try:
+        session.add(PatchPolicy(tenant_id=tenant["id"], name="Servers", approvals={"third-party": "reject"}))
+        session.commit()
+    finally:
+        session.close()
+    detail = client.get(f"/api/console/rmm/devices/{device['deviceId']}/patches", headers=admin).json()
+    assert detail["policy"]["name"] == "Servers"
+
+
+def test_missing_windows_security_updates_become_vulnerabilities(client, admin, device):
+    from fenrir_cloud import exposure
+    from fenrir_cloud.models import Vulnerability
+
+    patches = [
+        {"id": "KB5040001", "title": "2030-01 Cumulative Update", "classification": "Security Updates", "severity": "Important",
+         "source": "windows-update", "cves": "CVE-2030-0001,CVE-2030-0002"},
+        {"id": "KB5040002", "title": "Feature pack", "classification": "Feature Packs", "severity": "", "source": "windows-update"},
+        {"id": "winget:Mozilla.Firefox", "title": "Firefox", "source": "winget", "availableVersion": "200"},
+    ]
+    old_cache = exposure._KEV_CACHE
+    exposure._KEV_CACHE = (0.0, {"CVE-2030-0002"})
+    session = database.session_factory()()
+    try:
+        row = session.get(Device, device["deviceId"])
+        rmm.ingest_patch_scan(session, row, {"patches": patches})
+        session.commit()
+        vulns = session.query(Vulnerability).filter_by(device_id=row.id).all()
+        assert [(v.vuln_id, v.package, v.source, v.status) for v in vulns] == [("KB5040001", "Windows", "windows-update", "open")]
+        assert vulns[0].known_exploited and vulns[0].severity == "critical"
+        assert "CVE-2030-0001" in vulns[0].summary and vulns[0].fixed_version == "KB5040001"
+        # An unrelated OSV rescan must not close update-based findings.
+        from fenrir_cloud import vulnmgmt
+        assert vulnmgmt.verify_after_scan(session, row, utcnow() + timedelta(seconds=5)) == 0
+        rmm.ingest_patch_scan(session, row, {"patches": patches[1:]})
+        session.commit()
+        fixed = session.query(Vulnerability).filter_by(device_id=row.id).one()
+        assert fixed.status == "fixed" and fixed.verified_at is not None
+    finally:
+        exposure._KEV_CACHE = old_cache
+        session.close()

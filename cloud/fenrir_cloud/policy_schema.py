@@ -17,6 +17,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -296,6 +297,8 @@ SCHEMA: tuple[Section, ...] = (
             F("deferralDaysCritical", "int", 0, "Defer critical (days)", min=0, max=30),
             F("deferralDaysOther", "int", 7, "Defer others (days)", min=0, max=90),
             F("maintenanceWindow", "str", "daily 22:00-05:00", "Maintenance window"),
+            F("installInWindow", "bool", False, "Install approved patches automatically in the window",
+              help="Applies to devices no Patching-page policy covers. Off by default so upgrades never start patching unasked."),
             F("rebootBehaviour", "enum", "prompt", "Reboots", options=("never", "prompt", "outside-hours", "force")),
             F("vulnerabilityScanHours", "int", 24, "Vulnerability scan interval (hours)", min=1, max=168),
         ),
@@ -336,6 +339,8 @@ SCHEMA: tuple[Section, ...] = (
             F("consentTimeoutSeconds", "int", 30, "Consent prompt timeout (seconds)", min=10, max=300),
             F("onConsentTimeout", "enum", "deny", "If nobody answers", options=("deny", "allow")),
             F("allowControl", "bool", True, "Technicians can control mouse and keyboard", "Off = view only."),
+            F("recordSessions", "bool", False, "Record remote sessions (screen and terminal output)",
+              help="Recordings are kept with device bundles for the retention period; only responders can play them back."),
             F("allowTerminal", "bool", True, "Allow remote terminal (PowerShell / shell)"),
             F("allowFileTransfer", "bool", True, "Allow file transfer"),
             F("showBanner", "bool", True, "Show a 'session in progress' banner to the user"),
@@ -372,6 +377,121 @@ SCHEMA: tuple[Section, ...] = (
         ),
     ),
 )
+
+# Settings an agent does not (yet) enforce on every platform it applies to: path -> platforms that DO
+# enforce it (empty = stored and shown, but no agent acts on it yet). Everything not listed is enforced
+# wherever it applies, by the agents or by the cloud itself. Keep in step with the agents.
+AGENT_SUPPORT: dict[str, tuple[str, ...]] = {
+    "antimalware.cloudLookupObserveOnly": ('windows',),
+    "antimalware.puaProtection": (),
+    "antimalware.scanArchives": (),
+    "antimalware.archiveObserveOnly": ('windows',),
+    "antimalware.archiveMaxDepth": (),
+    "antimalware.scanNetworkDrives": (),
+    "antimalware.scanMaliciousBlockThreshold": ('windows',),
+    "antimalware.scanMaliciousQuarantineThreshold": ('windows',),
+    "antimalware.scanBenignDampeningScore": ('windows',),
+    "antimalware.genericRuleScoreScalePercent": ('windows',),
+    "antimalware.realtimeExecuteBlockThreshold": ('windows',),
+    "antimalware.realtimeNonExecuteBlockThreshold": ('windows',),
+    "antimalware.realtimeQuarantineThreshold": ('windows',),
+    "antimalware.realtimeObserveTelemetryThreshold": ('windows',),
+    "antimalware.realtimeObserveOnlyForNonExecute": ('windows',),
+    "antimalware.enableCleanwareSignerDampening": ('windows',),
+    "antimalware.enableKnownGoodHashDampening": ('windows',),
+    "antimalware.scanCpuLimitPercent": (),
+    "antimalware.exclusionSigners": ('windows',),
+    "antimalware.requireSignerForSuppression": ('windows',),
+    "antimalware.allowUnsignedSuppressionPathExecutables": ('windows',),
+    "edr.quarantineAfterProcessKill": ('windows',),
+    "edr.memoryScanning": (),
+    "edr.exploitProtection": (),
+    "edr.credentialProtection": (),
+    "edr.deceptionLures": (),
+    "edr.telemetryLevel": (),
+    "edr.collectProcessEvents": (),
+    "edr.collectNetworkEvents": ('linux', 'macos'),
+    "edr.collectFileEvents": (),
+    "edr.collectRegistryEvents": (),
+    "edr.collectDnsEvents": (),
+    "edr.collectScriptEvents": (),
+    "edr.telemetryUploadSeconds": ('linux', 'macos'),
+    "attackSurface.blockOfficeChildProcesses": ('windows',),
+    "attackSurface.blockOfficeExecutableContent": (),
+    "attackSurface.blockOfficeCodeInjection": (),
+    "attackSurface.blockScriptDownloadedPayloads": ('windows',),
+    "attackSurface.blockEmailExecutables": ('windows',),
+    "attackSurface.blockPsexecWmiProcessCreation": ('windows',),
+    "attackSurface.blockWmiPersistence": ('windows',),
+    "attackSurface.blockVulnerableSignedDrivers": ('windows',),
+    "attackSurface.blockAdobeReaderChildProcesses": ('windows',),
+    "attackSurface.advancedRansomwareProtection": ('windows',),
+    "ransomware.massEncryptionFilesPerMinute": (),
+    "ransomware.entropyDetection": (),
+    "ransomware.blockShadowCopyDeletion": ('windows',),
+    "ransomware.protectedFolders": (),
+    "ransomware.protectedFoldersMode": (),
+    "ransomware.allowedApps": (),
+    "ransomware.rollbackSnapshots": (),
+    "response.autoRollbackRansomware": (),
+    "ransomware.snapshotIntervalHours": (),
+    "ransomware.networkShareProtection": (),
+    "web.destinationProtectionEnabled": ('windows',),
+    "web.antiPhishingEnabled": ('windows',),
+    "web.webProtectionEnabled": ('windows',),
+    "web.emailLinkProtectionEnabled": ('windows',),
+    "web.evaluateDomains": ('windows',),
+    "web.evaluateUrls": ('windows',),
+    "web.blockKnownMaliciousDestinations": ('windows',),
+    "web.blockKnownPhishingDestinations": ('windows',),
+    "web.blockKnownScamDestinations": ('windows',),
+    "web.warnOnSuspiciousDestinations": ('windows',),
+    "web.warnOnNewlyRegisteredDomains": ('windows',),
+    "web.networkObserveOnly": ('windows',),
+    "web.allowDegradedDestinationModeWhenOffline": ('windows',),
+    "web.browserContextRequiredForWarnOnly": ('windows',),
+    "web.suspiciousDestinationWarnThreshold": ('windows',),
+    "web.phishingWarnThreshold": ('windows',),
+    "web.phishingBlockThreshold": ('windows',),
+    "web.destinationCacheTtlMinutes": ('windows',),
+    "web.bankingProtection": (),
+    "dns.blockThirdPartyDoh": (),
+    "firewall.defaultInbound": (),
+    "firewall.defaultOutbound": (),
+    "firewall.networkAttackProtection": (),
+    "firewall.botnetProtection": (),
+    "firewall.bruteForceProtection": (),
+    "firewall.blockSmbV1": (),
+    "firewall.blockLlmnrNetbios": (),
+    "firewall.isolationAllowlist": ('linux', 'macos'),
+    "applicationControl.allowedPublishers": ('windows',),
+    "applicationControl.blockNewlySeenExecutables": (),
+    "privilege.elevationRequests": (),
+    "privilege.elevationMinutes": (),
+    "privilege.autoApprovePublishers": (),
+    "privilege.breakGlassAllowed": (),
+    "privilege.rotateLocalAdminPassword": (),
+    "tamper.uninstallRequiresToken": (),
+    "tamper.protectServiceAndFiles": (),
+    "tamper.selfDefenceSensitivity": (),
+    "response.autoQuarantine": (),
+    "response.remoteShell": (),
+    "experience.trayIcon": (),
+    "experience.notifications": (),
+    "experience.allowUserScans": (),
+    "experience.allowUserPause": (),
+    "experience.allowQuarantineRestore": (),
+    "experience.brandName": (),
+    "experience.supportContact": (),
+    "updates.autoUpdateAgent": ('linux', 'macos'),
+    "updates.signatureIntervalMinutes": ('linux', 'macos'),
+    "updates.peerCaching": (),
+}
+
+
+def enforced_on(path: str, spec: "F") -> list[str]:
+    return list(AGENT_SUPPORT.get(path, spec.platforms))
+
 
 SECTIONS = {section.key: section for section in SCHEMA}
 FIELDS = {f"{section.key}.{f.key}": f for section in SCHEMA for f in section.fields}
@@ -494,6 +614,8 @@ def _coerce(path: str, spec: F, value: Any) -> Any:
     if spec.kind == "str":
         if not isinstance(value, str):
             raise PolicyError(f"{path} must be text")
+        if spec.key in {"quickScanSchedule", "fullScanSchedule"} and parse_scan_schedule(value) is None:
+            raise PolicyError(f"{path}: use a schedule like 'daily 12:30', 'weekdays 09:00', 'weekly sun 02:00' or 'off'")
         return value[:500]
     raise PolicyError(f"{path} has unsupported type")  # pragma: no cover
 
@@ -576,6 +698,36 @@ def revision(settings: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
+_DAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+_DAY_GROUPS = {"daily": list(range(7)), "weekdays": [0, 1, 2, 3, 4], "weekends": [5, 6]}
+
+
+def parse_scan_schedule(text: str) -> dict | None:
+    """'daily 12:30', 'weekdays 09:00', 'weekly sun 02:00', 'sat,sun 03:00', 'mon-fri 20:00', 'off'.
+
+    Returns {"off": bool, "days": [0=Mon..6], "minuteOfDay": int} in the device's local time, or None
+    when the text cannot be read (agents then keep their built-in interval).
+    """
+    text = (text or "").strip().lower()
+    if text in {"off", "never", "disabled", "none"}:
+        return {"off": True, "days": [], "minuteOfDay": 0}
+    match = re.fullmatch(r"(?:weekly\s+)?([a-z,\-]+)\s+(\d{1,2}):(\d{2})", text)
+    if not match or int(match.group(2)) > 23 or int(match.group(3)) > 59:
+        return None
+    days: list[int] = []
+    for part in match.group(1).split(","):
+        if part in _DAY_GROUPS:
+            days += _DAY_GROUPS[part]
+        elif "-" in part and all(p in _DAYS for p in part.split("-", 1)):
+            start, end = (_DAYS[p] for p in part.split("-", 1))
+            days += [d % 7 for d in range(start, start + ((end - start) % 7) + 1)]
+        elif part in _DAYS:
+            days.append(_DAYS[part])
+        else:
+            return None
+    return {"off": False, "days": sorted(set(days)), "minuteOfDay": int(match.group(2)) * 60 + int(match.group(3))}
+
+
 def to_agent_policy(policy_id: str, name: str, settings: dict) -> dict:
     """Translate effective settings into the document agents parse.
 
@@ -626,6 +778,10 @@ def to_agent_policy(policy_id: str, name: str, settings: dict) -> dict:
                                  "scanNetworkDrives", "quickScanSchedule", "fullScanSchedule", "scanCpuLimitPercent",
                                  "exclusionProcesses")
     }
+    for key, plan_key in (("quickScanSchedule", "quickScanPlan"), ("fullScanSchedule", "fullScanPlan")):
+        plan = parse_scan_schedule(str(am.get(key) or ""))
+        if plan is not None:
+            doc["modules"]["antimalware"][plan_key] = plan
     return doc
 
 
@@ -649,6 +805,7 @@ def schema_document() -> dict:
                         "max": f.max,
                         "options": list(f.options),
                         "platforms": list(f.platforms),
+                        "enforcedOn": enforced_on(f"{section.key}.{f.key}", f),
                     }
                     for f in section.fields
                 ],

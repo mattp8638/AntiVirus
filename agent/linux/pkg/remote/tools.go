@@ -352,6 +352,9 @@ func (s *Session) handleProcs(t string, m Message) {
 }
 
 func (p *procSampler) list() []Message {
+	if isMacOS {
+		return macProcesses()
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
@@ -436,6 +439,14 @@ func (s *Session) handleServices(t string, m Message) {
 			s.fail("svc", req, errors.New("action must be start, stop or restart"))
 			return
 		}
+		if isMacOS {
+			if err := macControlService(name, action); err != nil {
+				s.fail("svc", req, err)
+				return
+			}
+			s.reply(req, "svc", Message{"t": "done"})
+			return
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		if out, err := exec.CommandContext(ctx, "systemctl", action, "--", name).CombinedOutput(); err != nil {
@@ -447,6 +458,9 @@ func (s *Session) handleServices(t string, m Message) {
 }
 
 func listServices() ([]Message, error) {
+	if isMacOS {
+		return macListServices()
+	}
 	out, err := exec.Command("systemctl", "list-units", "--type=service", "--all", "--no-legend", "--plain", "--no-pager").Output()
 	if err != nil {
 		return nil, errors.New("systemd is not available on this device")
@@ -506,8 +520,11 @@ func askConsent(opts Options) bool {
 	if timeout <= 0 {
 		timeout = 30
 	}
-	display, xauth := findDisplay()
 	text := fmt.Sprintf("%s from your IT provider wants to connect to this computer.\n\nAllow remote access?", firstNonEmpty(opts.Technician, "A technician"))
+	if isMacOS {
+		return macAskConsent(opts, text, timeout)
+	}
+	display, xauth := findDisplay()
 	var cmd *exec.Cmd
 	if path, err := exec.LookPath("zenity"); err == nil {
 		cmd = exec.Command(path, "--question", "--title=Remote support request", "--text="+text, fmt.Sprintf("--timeout=%d", timeout))
@@ -541,11 +558,17 @@ func askConsent(opts Options) bool {
 }
 
 func lockSessions() error {
+	if isMacOS {
+		return exec.Command("pmset", "displaysleepnow").Run() // locks when a password is required after sleep
+	}
 	return exec.Command("loginctl", "lock-sessions").Run()
 }
 
 // consoleUser is the user signed in at the graphical console, if any.
 func consoleUser() string {
+	if isMacOS {
+		return macConsoleUser()
+	}
 	out, err := exec.Command("loginctl", "list-sessions", "--no-legend").Output()
 	if err == nil {
 		for _, line := range strings.Split(string(out), "\n") {

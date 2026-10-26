@@ -701,7 +701,7 @@ def delete_patch_policy(policy_id: str, principal: Principal = Depends(current_p
 
 PACKAGE_FIELDS = {"name", "publisher", "platform", "installer", "identifier", "sha256", "install_args", "uninstall_args", "version",
                   "keep_updated"}
-INSTALLERS = {"winget", "choco", "msi", "exe", "apt", "dnf", "snap", "brew", "script"}
+INSTALLERS = {"winget", "choco", "msi", "exe", "apt", "dnf", "snap", "brew", "pkg", "script"}
 
 
 @router.get("/software")
@@ -715,11 +715,11 @@ def list_packages(principal: Principal = Depends(current_principal), db: Session
 def _check_package(package: SoftwarePackage) -> None:
     if package.installer not in INSTALLERS:
         raise HTTPException(400, f"installer must be one of {sorted(INSTALLERS)}")
-    if package.installer in {"msi", "exe"}:
+    if package.installer in {"msi", "exe", "pkg"}:
         if not package.identifier.startswith("https://"):
-            raise HTTPException(400, "MSI/EXE packages need an https:// download URL")
-        if len(package.sha256) != 64:
-            raise HTTPException(400, "MSI/EXE packages need the installer's SHA-256 so agents can verify the download")
+            raise HTTPException(400, "MSI/EXE/PKG packages need an https:// download URL")
+        if len(package.sha256 or "") != 64:
+            raise HTTPException(400, "MSI/EXE/PKG packages need the installer's SHA-256 so agents can verify the download")
     if not package.identifier:
         raise HTTPException(400, "identifier is required (package id or download URL)")
 

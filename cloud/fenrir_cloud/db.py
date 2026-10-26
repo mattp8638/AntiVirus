@@ -111,7 +111,7 @@ def migrate(bind: Engine) -> list[int]:
             conn.execute(text("CREATE TABLE IF NOT EXISTS schema_migrations "
                               "(version INTEGER PRIMARY KEY, applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"))
             versions = set(conn.execute(text("SELECT version FROM schema_migrations")).scalars())
-            if versions - {1, 2, 3, 4, 5}:
+            if versions - {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}:
                 raise RuntimeError("Database schema is newer than this application")
             if 1 not in versions:
                 Base.metadata.create_all(conn)
@@ -140,6 +140,35 @@ def migrate(bind: Engine) -> list[int]:
                 M365Action.__table__.create(conn, checkfirst=True)
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (5)"))
                 applied.append(5)
+            if 6 not in versions:
+                # Nullable columns added to existing tables (e.g. devices.patch_window_run).
+                ensure_columns(Base, conn)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (6)"))
+                applied.append(6)
+            if 7 not in versions:
+                from .models import Activity, Opportunity
+                for model in (Opportunity, Activity):
+                    model.__table__.create(conn, checkfirst=True)
+                ensure_columns(Base, conn)  # tenants.account_owner
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (7)"))
+                applied.append(7)
+            if 8 not in versions:
+                ensure_columns(Base, conn)  # problem/change management fields on psa tickets
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (8)"))
+                applied.append(8)
+            if 9 not in versions:
+                ensure_columns(Base, conn)  # network_monitors.probe_device_id
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (9)"))
+                applied.append(9)
+            if 10 not in versions:
+                ensure_columns(Base, conn)  # backup_plans.ingest_token_hash
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (10)"))
+                applied.append(10)
+            if 11 not in versions:
+                from .models import DeviceArtifact
+                DeviceArtifact.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (11)"))
+                applied.append(11)
             conn.commit()
         except Exception:
             conn.rollback()

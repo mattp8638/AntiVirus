@@ -1,4 +1,7 @@
 #include "AgentService.h"
+#include "ExtendedPolicy.h"
+#include "NetworkProbe.h"
+#include "BundleArchive.h"
 
 #include <wtsapi32.h>
 
@@ -15,6 +18,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <ctime>
 #include <cctype>
 #include <cwctype>
 #include <filesystem>
@@ -923,6 +927,53 @@ bool ShouldRunScheduledTask(const RuntimeDatabase& database, const std::wstring&
   return elapsed >= std::chrono::minutes(intervalMinutes);
 }
 
+// Most recent slot of a calendar scan plan at or before now, in device local time (looks back a week).
+std::optional<std::chrono::system_clock::time_point> LatestPlannedSlot(const ScanPlan& plan) {
+  const std::time_t nowT = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+  for (int back = 0; back <= 7; ++back) {
+    std::time_t dayT = nowT - static_cast<std::time_t>(back) * 24 * 60 * 60;
+    std::tm local{};
+    if (localtime_s(&local, &dayT) != 0) {
+      return std::nullopt;
+    }
+    const int weekday = (local.tm_wday + 6) % 7;  // tm_wday: 0 = Sunday
+    if (std::find(plan.days.begin(), plan.days.end(), weekday) == plan.days.end()) {
+      continue;
+    }
+    local.tm_hour = plan.minuteOfDay / 60;
+    local.tm_min = plan.minuteOfDay % 60;
+    local.tm_sec = 0;
+    local.tm_isdst = -1;
+    const std::time_t slot = std::mktime(&local);
+    if (slot != static_cast<std::time_t>(-1) && slot <= nowT) {
+      return std::chrono::system_clock::from_time_t(slot);
+    }
+  }
+  return std::nullopt;
+}
+
+// With a cloud schedule: run once per slot, catching up a slot missed while the device was off.
+// Without one: the agent's built-in interval.
+bool ShouldRunPlannedScan(const RuntimeDatabase& database, const std::wstring& source, const ScanPlan& plan,
+                          const int fallbackIntervalMinutes) {
+  if (!plan.present) {
+    return ShouldRunScheduledTask(database, source, fallbackIntervalMinutes);
+  }
+  if (plan.off) {
+    return false;
+  }
+  const auto slot = LatestPlannedSlot(plan);
+  if (!slot.has_value()) {
+    return false;
+  }
+  const auto lastRecordedAt = FindLatestScanSessionTimestamp(database, source);
+  if (!lastRecordedAt.has_value()) {
+    return true;
+  }
+  const auto lastRecordedTime = ParseUtcTimestamp(*lastRecordedAt);
+  return !lastRecordedTime.has_value() || *lastRecordedTime < *slot;
+}
+
 bool IsPendingWindowsVulnerability(const WindowsUpdateRecord& record) {
   const auto lowerStatus = ToLowerCopy(record.status);
   if (lowerStatus != L"available") {
@@ -1085,6 +1136,7 @@ int AgentService::Run(const AgentRunMode mode) {
 }
 
 void AgentService::RequestStop() {
+  stopRequested_->store(true);  // also cancels a running background scan
   if (stopEvent_ != nullptr) {
     SetEvent(stopEvent_);
   }
@@ -1180,28 +1232,13 @@ void AgentService::RunAutomatedRiskAssessments(const int cycle) {
 void AgentService::RunScheduledQuickScan(const int cycle) {
   try {
     RuntimeDatabase database(config_.runtimeDatabasePath);
-    if (!ShouldRunScheduledTask(database, kScheduledQuickScanSource, config_.scheduledQuickScanIntervalMinutes)) {
+    const auto plan = policy_.modulesJson.empty() ? ScanPlan{} : ExtendedPolicy::Parse(policy_.modulesJson).quickScanPlan;
+    if (!ShouldRunPlannedScan(database, kScheduledQuickScanSource, plan, config_.scheduledQuickScanIntervalMinutes)) {
       return;
     }
 
-    QueueTelemetryEvent(L"scan.quick-scheduled.started", L"agent-service",
-                        L"The endpoint is starting a scheduled quick scan.",
-                        BuildCyclePayload(cycle, L"\"scope\":\"quick\""));
-
-    LocalScanExecutionOptions options{};
-    options.source = kScheduledQuickScanSource;
-    options.queueTelemetry = true;
-    options.applyRemediation = true;
-    const auto result = ExecuteLocalScan(config_, state_, BuildQuickScanTargets(), options);
-
-    QueueTelemetryEvent(L"scan.quick-scheduled.completed", L"agent-service",
-                        L"The endpoint completed a scheduled quick scan.",
-                        BuildCyclePayload(cycle, std::wstring(L"\"scope\":\"quick\",\"targetsScanned\":") +
-                                                     std::to_wstring(result.targetCount) + L",\"findings\":"
-                                                     + std::to_wstring(result.findings.size()) +
-                                                     L",\"remediationFailed\":"
-                                                     + (result.remediationFailed ? std::wstring(L"true")
-                                                                                 : std::wstring(L"false"))));
+    // Runs in the background; skipped this cycle if another scan is still running.
+    StartBackgroundScan(L"scan.quick-scheduled", L"quick", kScheduledQuickScanSource, BuildQuickScanTargets());
   } catch (const std::exception& error) {
     QueueTelemetryEvent(L"scan.quick-scheduled.failed", L"agent-service",
                         L"The endpoint failed to complete a scheduled quick scan.",
@@ -1213,8 +1250,9 @@ void AgentService::RunScheduledQuickScan(const int cycle) {
 void AgentService::RunScheduledFullDriveScan(const int cycle) {
   try {
     RuntimeDatabase database(config_.runtimeDatabasePath);
-    if (!ShouldRunScheduledTask(database, kScheduledFullDriveScanSource,
-                                config_.scheduledFullDriveScanIntervalMinutes)) {
+    const auto plan = policy_.modulesJson.empty() ? ScanPlan{} : ExtendedPolicy::Parse(policy_.modulesJson).fullScanPlan;
+    if (!ShouldRunPlannedScan(database, kScheduledFullDriveScanSource, plan,
+                              config_.scheduledFullDriveScanIntervalMinutes)) {
       return;
     }
     // A fresh install waits a day before its first full-drive scan (it can take hours and holds up
@@ -1234,24 +1272,7 @@ void AgentService::RunScheduledFullDriveScan(const int cycle) {
       }
     }
 
-    QueueTelemetryEvent(L"scan.scheduled.started", L"agent-service",
-                        L"The endpoint is starting a scheduled full C: drive scan.",
-                        BuildCyclePayload(cycle, L"\"scope\":\"C:\\\\\""));
-
-    LocalScanExecutionOptions options{};
-    options.source = kScheduledFullDriveScanSource;
-    options.queueTelemetry = true;
-    options.applyRemediation = true;
-    const auto result = ExecuteLocalScan(config_, state_, {std::filesystem::path(LR"(C:\)")}, options);
-
-    QueueTelemetryEvent(L"scan.scheduled.completed", L"agent-service",
-                        L"The endpoint completed a scheduled full C: drive scan.",
-                        BuildCyclePayload(cycle, std::wstring(L"\"scope\":\"C:\\\\\",\"targetsScanned\":") +
-                                                     std::to_wstring(result.targetCount) + L",\"findings\":"
-                                                     + std::to_wstring(result.findings.size()) +
-                                                     L",\"remediationFailed\":"
-                                                     + (result.remediationFailed ? std::wstring(L"true")
-                                                                                 : std::wstring(L"false"))));
+    StartBackgroundScan(L"scan.scheduled", L"full", kScheduledFullDriveScanSource, BuildFullScanTargets());
   } catch (const std::exception& error) {
     QueueTelemetryEvent(L"scan.scheduled.failed", L"agent-service",
                         L"The endpoint failed to complete a scheduled full C: drive scan.",
@@ -1863,6 +1884,25 @@ std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
   if (command.type == L"scan.targeted") {
     return ExecuteTargetedScan(command);
   }
+  if (command.type == L"scan.quick" || command.type == L"scan.full") {
+    return ExecuteOnDemandScan(command, command.type == L"scan.full");
+  }
+  if (command.type == L"inventory.refresh") {
+    return ExecuteInventoryRefreshCommand(command);
+  }
+  if (command.type == L"network.probe") {
+    return Utf8ToWide(RunNetworkProbe(WideToUtf8(command.payloadJson)));
+  }
+  if (command.type == L"amsi.telemetry.submit") {
+    return ExecuteAmsiTelemetrySubmitCommand(command);
+  }
+  if (command.type == L"policy.refresh") {
+    return ExecutePolicyRefreshCommand(command);
+  }
+  if (command.type == L"forensics.collect") {
+    // A full (unsanitised) support bundle: processes, network, persistence, logs and runtime evidence.
+    return ExecuteSupportBundleCommand(command, false);
+  }
   if (command.type == L"quarantine.restore") {
     return ExecuteQuarantineMutation(command, true);
   }
@@ -1969,6 +2009,76 @@ std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
   }
 
   throw std::runtime_error("Unsupported remote command type");
+}
+
+bool AgentService::StartBackgroundScan(const std::wstring& eventPrefix, const std::wstring& scopeLabel, const std::wstring& source,
+                                       std::vector<std::filesystem::path> targets) {
+  bool expected = false;
+  if (!backgroundScanBusy_->compare_exchange_strong(expected, true)) {
+    return false;
+  }
+  QueueTelemetryEvent(eventPrefix + L".started", L"agent-service", L"The endpoint started a " + scopeLabel + L" scan.",
+                      L"{\"scope\":\"" + scopeLabel + L"\",\"source\":\"" + source + L"\",\"targets\":" +
+                          std::to_wstring(targets.size()) + L"}");
+  // The thread works only on copies and shared flags, never on `this`, so it is safe even if the
+  // service object goes away; a stop request cancels it at the next file.
+  auto busy = backgroundScanBusy_;
+  auto stopping = stopRequested_;
+  const auto config = config_;
+  const auto state = state_;
+  std::thread([busy, stopping, config, state, eventPrefix, scopeLabel, source, targets = std::move(targets)]() {
+    const TelemetryQueueStore queue(config.runtimeDatabasePath, config.telemetryQueuePath);
+    const auto record = [&](const std::wstring& type, const std::wstring& summary, const std::wstring& payload) {
+      try {
+        queue.Append({TelemetryRecord{.eventId = GenerateGuidString(), .eventType = type, .source = L"agent-service",
+                                      .summary = summary, .occurredAt = CurrentUtcTimestamp(), .payloadJson = payload}});
+      } catch (...) {
+      }
+    };
+    try {
+      LocalScanExecutionOptions options{};
+      options.source = source;
+      options.queueTelemetry = true;  // appended to the shared queue (findings + summary)
+      options.applyRemediation = true;
+      const auto result = ExecuteLocalScan(config, state, targets, options, [stopping](const LocalScanProgressUpdate&) {
+        if (stopping->load()) {
+          throw std::runtime_error("the service is stopping");
+        }
+      });
+      record(eventPrefix + L".completed", L"The endpoint completed a " + scopeLabel + L" scan.",
+             L"{\"scope\":\"" + scopeLabel + L"\",\"targetsScanned\":" + std::to_wstring(result.targetCount) +
+                 L",\"findings\":" + std::to_wstring(result.findings.size()) + L",\"remediationFailed\":" +
+                 (result.remediationFailed ? L"true" : L"false") + L"}");
+    } catch (const std::exception& error) {
+      record(eventPrefix + L".failed", L"The endpoint could not complete a " + scopeLabel + L" scan.",
+             L"{\"scope\":\"" + scopeLabel + L"\",\"error\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(error.what()))) + L"\"}");
+    }
+    busy->store(false);
+  }).detach();
+  return true;
+}
+
+std::wstring AgentService::ExecuteOnDemandScan(const RemoteCommand& command, const bool full) {
+  const auto scope = full ? std::wstring(L"full") : std::wstring(L"quick");
+  auto targets = full ? BuildFullScanTargets() : BuildQuickScanTargets();
+  const auto count = targets.size();
+  if (!StartBackgroundScan(L"scan." + scope, scope, L"command." + command.commandId, std::move(targets))) {
+    throw std::runtime_error("Another scan is already running on this device; try again when it finishes");
+  }
+  // Findings arrive as scan.finding telemetry; completion as scan.<scope>.completed.
+  return std::wstring(L"{\"started\":true,\"scope\":\"") + scope + L"\",\"targets\":" + std::to_wstring(count) + L"}";
+}
+
+std::wstring AgentService::ExecuteInventoryRefreshCommand(const RemoteCommand& command) {
+  QueueDeviceInventoryTelemetry(0);
+  QueuePatchTelemetry(0);
+  FlushTelemetryQueue();
+  return std::wstring(L"{\"commandId\":\"") + command.commandId + L"\",\"inventory\":\"sent\"}";
+}
+
+std::wstring AgentService::ExecutePolicyRefreshCommand(const RemoteCommand& command) {
+  RefreshPolicy(0);
+  return std::wstring(L"{\"commandId\":\"") + command.commandId + L"\",\"revision\":\"" + policy_.revision + L"\"}";
 }
 
 std::wstring AgentService::ExecuteTargetedScan(const RemoteCommand& command) {
@@ -2149,9 +2259,25 @@ std::wstring AgentService::ExecuteSupportBundleCommand(const RemoteCommand& comm
                       std::wstring(L"{\"commandId\":\"") + command.commandId + L"\",\"manifestPath\":\"" +
                           Utf8ToWide(EscapeJsonString(result.manifestPath.wstring())) + L"\"}");
 
+  // Send the bundle to the cloud so responders can download it; the local copy stays as before.
+  std::wstring upload;
+  try {
+    std::vector<std::string> skipped;
+    const auto archive = BuildTarArchive(result.bundleRoot, 150u * 1024u * 1024u, &skipped);
+    if (!controlPlaneClient_ || state_.deviceId.empty()) {
+      throw std::runtime_error("the device is not enrolled");
+    }
+    const auto name = std::wstring(sanitized ? L"support-bundle-sanitized" : L"support-bundle") + L".tar";
+    const auto artifactId = controlPlaneClient_->UploadCommandArtifact(state_, command.commandId, name, archive);
+    upload = L",\"artifactId\":\"" + artifactId + L"\",\"bundleBytes\":" + std::to_wstring(archive.size()) +
+             L",\"skippedFiles\":" + std::to_wstring(skipped.size());
+  } catch (const std::exception& error) {
+    upload = L",\"uploadError\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(error.what()))) + L"\"";
+  }
+
   return std::wstring(L"{\"commandId\":\"") + command.commandId + L"\",\"manifestPath\":\"" +
          Utf8ToWide(EscapeJsonString(result.manifestPath.wstring())) + L"\",\"copiedFileCount\":" +
-         std::to_wstring(result.copiedFileCount) + L"}";
+         std::to_wstring(result.copiedFileCount) + upload + L"}";
 }
 
 std::wstring AgentService::ExecuteStorageMaintenanceCommand(const RemoteCommand& command) {
@@ -2216,6 +2342,45 @@ std::wstring AgentService::ExecuteBreakGlassCommand(const RemoteCommand& command
                              : L"The endpoint recorded a break-glass disable request.",
                       std::wstring(L"{\"commandId\":\"") + command.commandId + L"\"}");
   throw std::runtime_error("Break-glass execution is not wired into the current service build");
+}
+
+// AMSI runs inside user processes that cannot write the protected runtime database, so the provider
+// hands findings to the service over the local control pipe. Only AMSI event types are accepted, the
+// source is fixed and the submitting user is recorded, so a local user cannot forge other telemetry.
+std::wstring AgentService::ExecuteAmsiTelemetrySubmitCommand(const RemoteCommand& command) {
+  if (command.recordId != L"scan.finding" && command.recordId != L"amsi.scan") {
+    throw std::runtime_error("Only AMSI telemetry can be submitted through local control.");
+  }
+  const auto parsed = json::Parse(WideToUtf8(command.payloadJson));
+  const auto* members = parsed ? std::get_if<json::Object>(&parsed->v) : nullptr;
+  if (members == nullptr) {
+    throw std::runtime_error("AMSI telemetry payload must be a JSON object.");
+  }
+  {
+    static std::mutex rateLock;
+    static auto windowStart = std::chrono::steady_clock::now();
+    static int submitted = 0;
+    std::lock_guard guard(rateLock);
+    const auto now = std::chrono::steady_clock::now();
+    if (now - windowStart > std::chrono::minutes(1)) {
+      windowStart = now;
+      submitted = 0;
+    }
+    if (++submitted > 120) {
+      throw std::runtime_error("AMSI telemetry rate limit reached; try again shortly.");
+    }
+  }
+  auto payload = command.payloadJson;
+  const auto open = payload.find(L'{');
+  payload.insert(open + 1, L"\"reportedBy\":\"" + Utf8ToWide(EscapeJsonString(command.issuedBy)) + L"\"" +
+                               (members->empty() ? L"" : L","));
+  QueueTelemetryRecords({TelemetryRecord{.eventId = GenerateGuidString(),
+                                         .eventType = command.recordId,
+                                         .source = L"amsi-provider",
+                                         .summary = command.targetPath.substr(0, 1000),
+                                         .occurredAt = CurrentUtcTimestamp(),
+                                         .payloadJson = payload}});
+  return L"{\"queued\":1}";
 }
 
 std::wstring AgentService::ExecuteLocalApprovalCommand(const RemoteCommand&) {
@@ -2627,7 +2792,7 @@ void AgentService::PersistState() {
   }
 
   stateStore_->Save(state_);
-  telemetryQueueStore_->SavePending(pendingTelemetry_);
+  // Telemetry is appended to the queue as it is raised (QueueTelemetryRecords), so nothing to rewrite here.
 }
 
 void AgentService::ApplyProtectionPolicy() {
@@ -2980,25 +3145,32 @@ void AgentService::QueueTelemetryEvent(const std::wstring& eventType, const std:
     deferredTelemetry_.push_back({eventType, source, summary, payloadJson});
     return;
   }
-  pendingTelemetry_.push_back(TelemetryRecord{
+  QueueTelemetryRecords({TelemetryRecord{
       .eventId = GenerateGuidString(),
       .eventType = eventType,
       .source = source,
       .summary = summary,
       .occurredAt = CurrentUtcTimestamp(),
-      .payloadJson = payloadJson});
-
-  EnforceTelemetryQueueBudget(&pendingTelemetry_);
-  telemetryQueueStore_->SavePending(pendingTelemetry_);
+      .payloadJson = payloadJson}});
 }
 
 void AgentService::QueueTelemetryRecords(const std::vector<TelemetryRecord>& records) {
+  // Append only: scans, the scanner CLI and the AMSI provider add rows to the same queue, and a
+  // whole-queue rewrite from this in-memory copy would silently drop them.
   pendingTelemetry_.insert(pendingTelemetry_.end(), records.begin(), records.end());
-  EnforceTelemetryQueueBudget(&pendingTelemetry_);
-  telemetryQueueStore_->SavePending(pendingTelemetry_);
+  telemetryQueueStore_->Append(records);
+  constexpr std::size_t kMaxQueuedTelemetry = 5000;
+  if (pendingTelemetry_.size() > kMaxQueuedTelemetry) {
+    EnforceTelemetryQueueBudget(&pendingTelemetry_);
+    telemetryQueueStore_->Trim(kMaxQueuedTelemetry);
+  }
 }
 
 void AgentService::FlushTelemetryQueue() {
+  if (telemetryQueueStore_) {
+    // Pick up rows other writers appended since the last flush.
+    pendingTelemetry_ = telemetryQueueStore_->LoadPending();
+  }
   if (state_.deviceId.empty() || pendingTelemetry_.empty()) {
     lastTelemetryFlushFailed_ = false;
     return;
@@ -3013,8 +3185,13 @@ void AgentService::FlushTelemetryQueue() {
 
     try {
       const auto result = controlPlaneClient_->SendTelemetryBatch(state_, batch);
+      std::vector<std::wstring> delivered;
+      delivered.reserve(batch.size());
+      for (const auto& record : batch) {
+        delivered.push_back(record.eventId);
+      }
+      telemetryQueueStore_->Remove(delivered);
       pendingTelemetry_.erase(pendingTelemetry_.begin(), pendingTelemetry_.begin() + batchSize);
-      telemetryQueueStore_->SavePending(pendingTelemetry_);
       std::wcout << L"Uploaded " << result.accepted << L" telemetry event(s) at " << result.receivedAt
                  << L". Backend now stores " << result.totalStored << L" event(s)." << std::endl;
     } catch (const std::exception& error) {

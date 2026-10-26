@@ -22,7 +22,7 @@ export default function ServiceBoard() {
   const [boardId, setBoardId] = useState(() => { try { return localStorage.getItem("fenrir.board") || ""; } catch { return ""; } });
   const [view, setView] = useState<"list" | "board">("list");
   const [status, setStatus] = useState("active");
-  const [assignee, setAssignee] = useState("");
+  const [assignee, setAssignee] = useState(() => new URLSearchParams(window.location.search).get("assignee") ?? "");
   const [q, setQ] = useState("");
   const [creating, setCreating] = useState(false);
   const { data, reload } = useData<any[]>("tickets", { tenant_id: tenantId, board_id: boardId, status, assignee, q });

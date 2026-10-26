@@ -42,6 +42,7 @@ class Tenant(Base):
     default_policy_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     settings: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    account_owner: Mapped[str | None] = mapped_column(String(200), nullable=True)  # MSP staff member who owns the customer
 
 
 class User(Base):
@@ -137,6 +138,8 @@ class Device(Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # Business criticality (low|medium|high|critical) used to rank vulnerabilities and alerts.
     criticality: Mapped[str | None] = mapped_column(String(16), nullable=True, default="medium")
+    # Last maintenance window in which protection-policy patching ran on this device ("2026-10-25T22:00").
+    patch_window_run: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
 
 class Policy(Base):
@@ -175,6 +178,22 @@ class Command(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     dispatched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class DeviceArtifact(Base):
+    """A forensic or support bundle an agent uploaded for a command."""
+
+    __tablename__ = "device_artifacts"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("art"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    command_id: Mapped[str] = mapped_column(String(32), index=True)
+    kind: Mapped[str] = mapped_column(String(40))  # the command type that produced it
+    filename: Mapped[str] = mapped_column(String(200))
+    size: Mapped[int] = mapped_column(BigInteger, default=0)
+    sha256: Mapped[str] = mapped_column(String(64))
+    storage_name: Mapped[str] = mapped_column(String(80))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class AgentRelease(Base):
@@ -445,6 +464,51 @@ class Lead(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class Opportunity(Base):
+    """A deal: new business from a lead, or an upsell/renewal for an existing customer."""
+
+    __tablename__ = "crm_opportunities"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("opp"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)  # owning MSP tenant
+    account_tenant_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    lead_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    name: Mapped[str] = mapped_column(String(200))
+    kind: Mapped[str] = mapped_column(String(30), default="New business")  # New business|Upsell|Renewal|Project
+    stage: Mapped[str] = mapped_column(String(30), default="Prospecting")
+    value: Mapped[float] = mapped_column(Float, default=0)  # one-off value
+    monthly_value: Mapped[float] = mapped_column(Float, default=0)  # recurring value per month
+    probability: Mapped[int] = mapped_column(Integer, default=10)
+    close_date: Mapped[str] = mapped_column(String(20), default="")
+    owner: Mapped[str] = mapped_column(String(200), default="")
+    source: Mapped[str] = mapped_column(String(80), default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    lost_reason: Mapped[str] = mapped_column(String(300), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class Activity(Base):
+    """Communication history and follow-ups: calls, emails, meetings, notes and tasks."""
+
+    __tablename__ = "crm_activities"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("act"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    account_tenant_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    contact_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    lead_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    opportunity_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(20), default="note")  # call|email|meeting|note|task
+    direction: Mapped[str] = mapped_column(String(10), default="")  # inbound|outbound|""
+    subject: Mapped[str] = mapped_column(String(300))
+    body: Mapped[str] = mapped_column(Text, default="")
+    owner: Mapped[str] = mapped_column(String(200), default="")
+    due_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class Project(Base):
     __tablename__ = "crm_projects"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("prj"))
@@ -512,6 +576,20 @@ class Ticket(Base):
     responded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     respond_due_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     sla_warned: Mapped[bool | None] = mapped_column(Boolean, default=False, nullable=True)
+    # ITIL record type and problem/change management (all optional; plain tickets are incidents).
+    record_type: Mapped[str | None] = mapped_column(String(20), default="incident", nullable=True)  # incident|service_request|problem|change
+    problem_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)  # incident -> its problem
+    root_cause: Mapped[str | None] = mapped_column(Text, default="", nullable=True)
+    workaround: Mapped[str | None] = mapped_column(Text, default="", nullable=True)
+    known_error: Mapped[bool | None] = mapped_column(Boolean, default=False, nullable=True)
+    change_risk: Mapped[str | None] = mapped_column(String(10), default="", nullable=True)  # Low|Medium|High
+    change_state: Mapped[str | None] = mapped_column(String(20), default="", nullable=True)
+    planned_start: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    planned_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    implementation_plan: Mapped[str | None] = mapped_column(Text, default="", nullable=True)
+    backout_plan: Mapped[str | None] = mapped_column(Text, default="", nullable=True)
+    test_plan: Mapped[str | None] = mapped_column(Text, default="", nullable=True)
+    change_approvals: Mapped[list | None] = mapped_column(JSON, default=list, nullable=True)  # [{by, decision, comment, at}]
     status_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     email_thread_id: Mapped[str | None] = mapped_column(String(300), default="", nullable=True)
     workflow_fired: Mapped[list | None] = mapped_column(JSON, default=list, nullable=True)  # markers so timed rules fire once
@@ -1093,6 +1171,8 @@ class NetworkMonitor(Base):
     configuration_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     interval_seconds: Mapped[int] = mapped_column(Integer, default=300)
+    # Probe from this enrolled device (for services on the customer's LAN) instead of from the cloud.
+    probe_device_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     state: Mapped[str] = mapped_column(String(20), default="unknown")
     samples: Mapped[list] = mapped_column(JSON, default=list)
     failures: Mapped[int] = mapped_column(Integer, default=0)
@@ -1132,6 +1212,7 @@ class BackupPlan(Base):
     rpo_hours: Mapped[int] = mapped_column(Integer, default=24)
     rto_minutes: Mapped[int] = mapped_column(Integer, default=240)
     runbook_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    ingest_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)  # backup tools push results with it
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
