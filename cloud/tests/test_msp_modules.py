@@ -41,6 +41,44 @@ def test_m365_sync_pagination_and_failure_retains_snapshot(client, admin, tenant
     saved = client.get("/api/console/m365/connections",headers=admin).json()[0]
     assert saved["status"] == "failed" and len(saved["snapshot"]["users"]) == 2
 
+def test_m365_insights_find_unused_licences_and_missing_mfa(client, admin, tenant, monkeypatch):
+    row = connection(client, admin, tenant)
+    def handle(request):
+        if request.url.host == "login.microsoftonline.com":
+            return httpx.Response(200, json={"access_token": "token"})
+        path = request.url.path
+        if path.endswith("/users"):
+            return httpx.Response(200, json={"value": [
+                {"id": "1", "userPrincipalName": "jo@acme.example", "accountEnabled": True, "assignedLicenses": [{"skuId": "x"}]},
+                {"id": "2", "userPrincipalName": "left@acme.example", "accountEnabled": False, "assignedLicenses": [{"skuId": "x"}]},
+                {"id": "3", "userPrincipalName": "admin@acme.example", "accountEnabled": True, "assignedLicenses": []}]})
+        if path.endswith("/subscribedSkus"):
+            return httpx.Response(200, json={"value": [{"skuPartNumber": "SPB", "prepaidUnits": {"enabled": 5}, "consumedUnits": 2}]})
+        if path.endswith("/secureScores"):
+            return httpx.Response(200, json={"value": [{"currentScore": 30, "maxScore": 60}]})
+        if "userRegistrationDetails" in path:
+            return httpx.Response(200, json={"value": [
+                {"userPrincipalName": "jo@acme.example", "isAdmin": False, "isMfaRegistered": True},
+                {"userPrincipalName": "admin@acme.example", "isAdmin": True, "isMfaRegistered": False}]})
+        return httpx.Response(404)
+    real_client = httpx.Client
+    monkeypatch.setattr(m365.httpx, "Client", lambda **kwargs: real_client(transport=httpx.MockTransport(handle)))
+    insights = post(client, admin, "m365/connections/"+row["id"]+"/sync", {})["snapshot"]["insights"]
+    assert insights["disabledButLicensed"] == ["left@acme.example"] and insights["licencesUnused"] == 3
+    assert insights["mfa"] == {"registered": 1, "notRegistered": 1, "percent": 50, "adminsWithoutMfa": ["admin@acme.example"]}
+    assert insights["secureScore"]["percent"] == 50
+
+    def no_reports(request):
+        if "userRegistrationDetails" in request.url.path:
+            return httpx.Response(403, json={"error": {"code": "Authorization_RequestDenied"}})
+        return handle(request)
+    monkeypatch.setattr(m365.httpx, "Client", lambda **kwargs: real_client(transport=httpx.MockTransport(no_reports)))
+    from fenrir_cloud import ratelimit
+    monkeypatch.setattr(ratelimit, "check", lambda *a, **k: None)
+    snapshot = post(client, admin, "m365/connections/"+row["id"]+"/sync", {})["snapshot"]
+    assert snapshot["mfaRegistration"] is None and snapshot["insights"]["mfa"] is None
+
+
 def test_graph_pagination_cannot_exfiltrate_bearer():
     seen = []
     def handle(request):
