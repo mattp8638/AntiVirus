@@ -38,6 +38,9 @@ type Config struct {
 }
 
 func DefaultPersistenceGlobs() []string {
+	if IsMacOS {
+		return macPersistenceGlobs()
+	}
 	return []string{"/etc/cron.d", "/etc/cron.daily", "/etc/cron.hourly", "/etc/crontab", "/var/spool/cron/crontabs",
 		"/etc/systemd/system", "/etc/rc.local", "/etc/ld.so.preload", "/root/.ssh/authorized_keys", "/home/*/.ssh/authorized_keys",
 		"/etc/sudoers.d", "/etc/profile.d"}
@@ -67,6 +70,12 @@ type Agent struct {
 	metrics *MetricsCollector
 	remote  *remote.Manager
 	cmdMu   sync.Mutex
+	// Self-update (selfupdate.go); exePath/exit/restartDelay are overridable in tests.
+	schedule        *scanSchedule
+	lastUpdateCheck time.Time
+	exePath         string
+	exit            func(int)
+	restartDelay    time.Duration
 }
 
 func New(cfg Config) *Agent {
@@ -74,8 +83,9 @@ func New(cfg Config) *Agent {
 		cfg.ProcRoot = "/proc"
 	}
 	a := &Agent{cfg: cfg, client: NewClient(cfg.Server), scanner: NewScanner(filepath.Join(cfg.StateDir, "quarantine")),
-		stop: make(chan struct{}), wake: make(chan struct{}, 1), metrics: &MetricsCollector{ProcRoot: cfg.ProcRoot},
-		remote: remote.NewManager()}
+		schedule: loadScanSchedule(cfg.StateDir),
+		stop:     make(chan struct{}), wake: make(chan struct{}, 1), metrics: &MetricsCollector{ProcRoot: cfg.ProcRoot},
+		remote: remote.NewManager(), exit: os.Exit, restartDelay: 5 * time.Second}
 	a.remote.OnEvent = func(eventType, summary string, payload map[string]interface{}) {
 		a.emit(eventType, "remote-access", summary, payload)
 	}
@@ -94,6 +104,9 @@ func (a *Agent) saveState() error {
 }
 
 func readOSRelease() string {
+	if IsMacOS {
+		return macOSRelease()
+	}
 	f, err := os.Open("/etc/os-release")
 	if err != nil {
 		return "Linux"
@@ -109,6 +122,11 @@ func readOSRelease() string {
 }
 
 func serialNumber() string {
+	if IsMacOS {
+		if serial := macSerial(); serial != "" {
+			return serial
+		}
+	}
 	for _, path := range []string{"/sys/class/dmi/id/product_serial", "/etc/machine-id"} {
 		if data, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(data)) != "" {
 			return strings.TrimSpace(string(data))
@@ -130,7 +148,7 @@ func (a *Agent) Start() error {
 	if a.state.DeviceID == "" {
 		host, _ := os.Hostname()
 		resp, err := a.client.Enroll(EnrollRequest{Hostname: host, OSVersion: readOSRelease(), SerialNumber: serialNumber(),
-			Platform: "linux", AgentVersion: Version, EnrollmentToken: a.cfg.EnrollmentToken})
+			Platform: platformName(), AgentVersion: Version, EnrollmentToken: a.cfg.EnrollmentToken})
 		if err != nil {
 			return fmt.Errorf("enrollment failed: %w", err)
 		}
@@ -157,7 +175,7 @@ func (a *Agent) Start() error {
 			a.files.AddCanary(path)
 		}
 	}
-	a.emit("service.started", "agent", "Fenrir Linux agent started", map[string]interface{}{"version": Version, "os": readOSRelease()})
+	a.emit("service.started", "agent", "Fenrir "+platformName()+" agent started", map[string]interface{}{"version": Version, "os": readOSRelease()})
 	return nil
 }
 
@@ -167,7 +185,30 @@ func newID() string {
 	return hex.EncodeToString(b)
 }
 
+// routineTelemetry maps routine (non-detection) event types to the EDR setting that collects them.
+var routineTelemetry = []struct{ prefix, setting string }{
+	{"process.start", "collectProcessEvents"}, {"file.", "collectFileEvents"},
+	{"network.connect", "collectNetworkEvents"}, {"dns.", "collectDnsEvents"},
+}
+
+// TelemetryAllowed applies the policy's EDR collection settings. Detections, scans, quarantine and agent
+// health events are always sent; only routine activity telemetry can be turned off.
+func TelemetryAllowed(p Policy, eventType string) bool {
+	for _, r := range routineTelemetry {
+		if strings.HasPrefix(eventType, r.prefix) {
+			if p.ModuleString("edr", "telemetryLevel", "standard") == "minimal" {
+				return false
+			}
+			return p.ModuleBool("edr", r.setting, true)
+		}
+	}
+	return true
+}
+
 func (a *Agent) emit(eventType, source, summary string, payload map[string]interface{}) {
+	if !TelemetryAllowed(a.state.Policy, eventType) {
+		return
+	}
 	data, _ := json.Marshal(payload)
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -341,7 +382,7 @@ func (a *Agent) suppressed(path string) bool {
 
 func (a *Agent) blockProcess(proc ProcInfo, sha, family string) {
 	p := a.state.Policy
-	action := "observed"
+	action, record := "observed", ""
 	if p.EnforceProcessStartVerdicts {
 		targets := []int{proc.PID}
 		if p.TerminateProcessTreeOnBlock {
@@ -353,12 +394,12 @@ func (a *Agent) blockProcess(proc ProcInfo, sha, family string) {
 		action = "terminated"
 		if p.QuarantineOnMalicious {
 			if id, err := a.scanner.Quarantine(proc.Exe, sha); err == nil {
-				action = "terminated+quarantined:" + id
+				action, record = "terminated+quarantined:"+id, id
 			}
 		}
 	}
 	a.emit("threat.process.blocked", "realtime", fmt.Sprintf("Malicious process %s (%s)", filepath.Base(proc.Exe), family),
-		map[string]interface{}{"processImagePath": proc.Exe, "pid": proc.PID, "sha256": sha, "threatName": family, "verdict": action, "score": 95})
+		map[string]interface{}{"processImagePath": proc.Exe, "pid": proc.PID, "sha256": sha, "threatName": family, "verdict": action, "score": 95, "recordId": record})
 }
 
 // ---------------------------------------------------------------------------
@@ -447,6 +488,8 @@ func (a *Agent) Run() {
 			if time.Since(a.lastInv) > 12*time.Hour {
 				a.sendInventory()
 			}
+			a.maybeAutoUpdate()
+			a.maybeScheduledScans(time.Now())
 		case <-commands.C:
 			a.RunCommands()
 		case <-sigs.C:
@@ -475,50 +518,52 @@ func (a *Agent) RunCommands() {
 		return
 	}
 	for _, cmd := range cmds {
-        receipt, found, receiptErr := a.loadCommandReceipt(cmd.ID)
-        if receiptErr != nil {
-            // Corrupt or inaccessible receipts are NOT a reason to re-execute an
-            // unknown remote action. An operator must investigate the local state.
-            log.Printf("unsafe command replay prevented for %s: %v", cmd.ID, receiptErr)
-            continue
-        }
-        if found {
-            if receipt.Status == "started" {
-                receipt = commandReceipt{Status:"failed", Result: map[string]interface{}{
-                    "error":"Agent restarted while the command outcome was uncertain. No automatic replay was attempted.",
-                    "outcomeUncertain":true,
-                }}
-                if err := a.saveCommandReceipt(cmd.ID, receipt.Status, receipt.Result); err != nil {
-                    log.Printf("cannot persist interrupted command %s: %v", cmd.ID, err)
-                    continue
-                }
-            }
-            // A previously executed action is NEVER executed again to recover
-            // from a lost HTTP acknowledgement.
-            if err := a.client.CompleteCommand(cmd.ID, receipt.Status, receipt.Result); err != nil {
-                log.Printf("command %s result replay failed: %v", cmd.ID, err)
-            }
-            continue
-        }
-        if err := a.saveCommandReceipt(cmd.ID, "started", nil); err != nil {
-            log.Printf("cannot journal command %s; execution blocked: %v", cmd.ID, err)
-            continue
-        }
-        result, err := a.Execute(cmd)
-        status := "completed"
-        if err != nil {
-            status = "failed"
-            if result == nil { result = map[string]interface{}{} }
-            result["error"] = err.Error()
-        }
-        if err := a.saveCommandReceipt(cmd.ID, status, result); err != nil {
-            log.Printf("command %s executed but could not persist its result; NOT sending an unjournaled outcome: %v", cmd.ID, err)
-            continue
-        }
-        if err := a.client.CompleteCommand(cmd.ID, status, result); err != nil {
-            log.Printf("could not report command %s; saved result will be replayed: %v", cmd.ID, err)
-        }
-        a.emit("command."+status, "command-executor", cmd.Type, map[string]interface{}{"commandId": cmd.ID, "type": cmd.Type})
+		receipt, found, receiptErr := a.loadCommandReceipt(cmd.ID)
+		if receiptErr != nil {
+			// Corrupt or inaccessible receipts are NOT a reason to re-execute an
+			// unknown remote action. An operator must investigate the local state.
+			log.Printf("unsafe command replay prevented for %s: %v", cmd.ID, receiptErr)
+			continue
+		}
+		if found {
+			if receipt.Status == "started" {
+				receipt = commandReceipt{Status: "failed", Result: map[string]interface{}{
+					"error":            "Agent restarted while the command outcome was uncertain. No automatic replay was attempted.",
+					"outcomeUncertain": true,
+				}}
+				if err := a.saveCommandReceipt(cmd.ID, receipt.Status, receipt.Result); err != nil {
+					log.Printf("cannot persist interrupted command %s: %v", cmd.ID, err)
+					continue
+				}
+			}
+			// A previously executed action is NEVER executed again to recover
+			// from a lost HTTP acknowledgement.
+			if err := a.client.CompleteCommand(cmd.ID, receipt.Status, receipt.Result); err != nil {
+				log.Printf("command %s result replay failed: %v", cmd.ID, err)
+			}
+			continue
+		}
+		if err := a.saveCommandReceipt(cmd.ID, "started", nil); err != nil {
+			log.Printf("cannot journal command %s; execution blocked: %v", cmd.ID, err)
+			continue
+		}
+		result, err := a.Execute(cmd)
+		status := "completed"
+		if err != nil {
+			status = "failed"
+			if result == nil {
+				result = map[string]interface{}{}
+			}
+			result["error"] = err.Error()
+		}
+		if err := a.saveCommandReceipt(cmd.ID, status, result); err != nil {
+			log.Printf("command %s executed but could not persist its result; NOT sending an unjournaled outcome: %v", cmd.ID, err)
+			continue
+		}
+		if err := a.client.CompleteCommand(cmd.ID, status, result); err != nil {
+			log.Printf("could not report command %s; saved result will be replayed: %v", cmd.ID, err)
+		}
+		a.emit("command."+status, "command-executor", cmd.Type, map[string]interface{}{"commandId": cmd.ID, "type": cmd.Type})
 	}
 	_ = a.Flush()
 }
@@ -574,18 +619,14 @@ func (a *Agent) Execute(cmd Command) (map[string]interface{}, error) {
 		roots := []string{cmd.TargetPath}
 		switch cmd.Type {
 		case "scan.quick":
-			roots = append([]string{"/tmp", "/var/tmp", "/dev/shm"}, homeDirs()...)
+			roots = a.quickScanRoots()
 		case "scan.full":
 			roots = []string{"/"}
 		}
 		if cmd.TargetPath == "" && cmd.Type == "scan.targeted" {
 			return nil, errors.New("targetPath is required")
 		}
-		scanned, findings := a.scanner.ScanPaths(roots, a.state.Policy.SuppressionPathRoots, a.state.Policy.QuarantineOnMalicious, 0)
-		for _, f := range findings {
-			a.emit("scan.threat."+strings.SplitN(f.Action, ":", 2)[0], "scanner", "Malware found: "+f.Family,
-				map[string]interface{}{"path": f.Path, "sha256": f.SHA256, "threatName": f.Family, "verdict": f.Action, "score": 95})
-		}
+		scanned, findings := a.runScan(roots, a.state.Policy.SuppressionPathRoots, a.state.Policy.QuarantineOnMalicious)
 		return map[string]interface{}{"scanned": scanned, "findings": findings}, nil
 	case "remediate.path":
 		sha, err := HashFile(cmd.TargetPath, 0)
@@ -607,6 +648,8 @@ func (a *Agent) Execute(cmd Command) (map[string]interface{}, error) {
 		return map[string]interface{}{"restoredTo": path}, nil
 	case "quarantine.delete":
 		return map[string]interface{}{"deleted": cmd.RecordID}, a.scanner.Delete(cmd.RecordID)
+	case "network.probe":
+		return NetworkProbe(cmd.PayloadJSON, nil)
 	case "inventory.refresh":
 		a.sendInventory()
 		return map[string]interface{}{"ok": true}, nil
@@ -615,7 +658,13 @@ func (a *Agent) Execute(cmd Command) (map[string]interface{}, error) {
 		a.refreshSignatures()
 		return map[string]interface{}{"revision": a.state.Policy.Revision, "signatures": a.scanner.Version}, nil
 	case "support.bundle", "forensics.collect":
-		return a.triage(), nil
+		return a.collectBundle(cmd), nil
+	case "update.apply":
+		var p struct {
+			Force bool `json:"force"`
+		}
+		_ = json.Unmarshal([]byte(cmd.PayloadJSON), &p)
+		return a.selfUpdate(p.Force)
 	case "agent.repair":
 		return map[string]interface{}{"repaired": true, "version": Version}, a.saveState()
 	case "script.run":
@@ -716,12 +765,20 @@ func (a *Agent) isolate(on bool) error {
 		if len(allow) == 0 {
 			return errors.New("refusing to isolate: cannot resolve the Fenrir Cloud address, so the device would be unreachable")
 		}
-		if !a.cfg.DryRunIsolation {
+		if !a.cfg.DryRunIsolation && IsMacOS {
+			if err := macIsolate(true, allow); err != nil {
+				return err
+			}
+		} else if !a.cfg.DryRunIsolation {
 			cmd := exec.Command("nft", "-f", "-")
 			cmd.Stdin = strings.NewReader(IsolationRuleset(allow))
 			if out, err := cmd.CombinedOutput(); err != nil {
 				return fmt.Errorf("nft failed: %v: %s", err, strings.TrimSpace(string(out)))
 			}
+		}
+	} else if !a.cfg.DryRunIsolation && IsMacOS {
+		if err := macIsolate(false, nil); err != nil {
+			return err
 		}
 	} else if !a.cfg.DryRunIsolation {
 		if out, err := exec.Command("nft", "delete", "table", "inet", "fenrir_isolation").CombinedOutput(); err != nil &&
@@ -738,6 +795,9 @@ func (a *Agent) isolate(on bool) error {
 // ---------------------------------------------------------------------------
 
 func installedPackages() []map[string]string {
+	if IsMacOS {
+		return macInstalledApps()
+	}
 	var out []map[string]string
 	if b, err := exec.Command("dpkg-query", "-W", "-f=${Package}\t${Version}\t${Maintainer}\n").Output(); err == nil {
 		for _, line := range strings.Split(string(b), "\n") {
@@ -767,21 +827,34 @@ func (a *Agent) sendInventory() {
 			}
 		}
 	}
-	a.emit("device.inventory.snapshot", "inventory", "Inventory snapshot", map[string]interface{}{
+	snapshot := map[string]interface{}{
 		"osName": readOSRelease(), "hostname": host, "arch": runtime.GOARCH, "ipAddresses": addrs, "software": installedPackages(),
-	})
+	}
+	if IsMacOS {
+		snapshot["permissions"] = macPermissions()
+		if user := consoleUser(); user != "" {
+			snapshot["loggedOnUser"] = user
+		}
+	}
+	a.emit("device.inventory.snapshot", "inventory", "Inventory snapshot", snapshot)
 	a.lastInv = time.Now()
 	_ = a.Flush()
 }
 
 func (a *Agent) triage() map[string]interface{} {
 	var procs []map[string]interface{}
-	for _, pid := range listPIDs(a.cfg.ProcRoot) {
-		if p, err := readProc(a.cfg.ProcRoot, pid); err == nil && p.Exe != "" {
+	for _, p := range processTable(a.cfg.ProcRoot) {
+		if p.Exe != "" {
 			procs = append(procs, map[string]interface{}{"pid": p.PID, "ppid": p.PPID, "exe": p.Exe, "cmdline": p.Cmdline, "uid": p.UID})
 		}
 	}
-	conns := append(readConns(filepath.Join(a.cfg.ProcRoot, "net/tcp")), readConns(filepath.Join(a.cfg.ProcRoot, "net/tcp6"))...)
+	var conns interface{}
+	if IsMacOS {
+		out, _ := run(20*time.Second, "lsof", "-nP", "-iTCP", "-sTCP:ESTABLISHED", "-F", "pcn")
+		conns = ParseLsofConnections(out)
+	} else {
+		conns = append(readConns(filepath.Join(a.cfg.ProcRoot, "net/tcp")), readConns(filepath.Join(a.cfg.ProcRoot, "net/tcp6"))...)
+	}
 	persistence := map[string]string{}
 	for path, fp := range a.files.snapshot() {
 		persistence[path] = fp

@@ -97,6 +97,9 @@ export default function PolicyEditor() {
               <div key={f.path} className={`policy-field ${isSet ? "overridden" : ""}`}>
                 <div className="meta">
                   <b>{f.label}</b> {f.platforms.length < 3 && <span className="chip">{f.platforms.join(", ")}</span>}
+                  {f.enforcedOn && f.enforcedOn.length === 0 && <Pill value="not enforced by agents yet" tone="warn" />}
+                  {f.enforcedOn && f.enforcedOn.length > 0 && f.enforcedOn.length < f.platforms.length &&
+                    <Pill value={`enforced on ${f.enforcedOn.join(", ")} only`} tone="muted" />}
                   {f.help && <small>{f.help}</small>}
                   <small>Inherited: <span className="mono">{JSON.stringify(inheritedValue)}</span> from {inheritedOrigin[f.path] ?? "default"}</small>
                   {lockedAbove && <Pill value={`locked by ${lockedAbove}`} tone="blue" />}

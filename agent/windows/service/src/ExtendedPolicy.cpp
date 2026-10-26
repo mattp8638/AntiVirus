@@ -1,5 +1,6 @@
 #include "ExtendedPolicy.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
@@ -300,6 +301,31 @@ bool BoolOr(const json::Value* section, const char* key, bool fallback) {
 
 }  // namespace
 
+namespace {
+ScanPlan ParseScanPlan(const json::Value* antimalware, const char* key) {
+  ScanPlan plan;
+  if (antimalware == nullptr) return plan;
+  const auto* value = antimalware->Get(key);
+  if (value == nullptr || !value->IsObject()) return plan;
+  plan.present = true;
+  plan.off = value->Get("off") != nullptr && value->Get("off")->Bool().value_or(false);
+  if (const auto* minute = value->Get("minuteOfDay"); minute != nullptr) {
+    plan.minuteOfDay = std::clamp(static_cast<int>(minute->Number().value_or(0)), 0, 24 * 60 - 1);
+  }
+  if (const auto* days = value->Get("days"); days != nullptr) {
+    if (const auto* list = std::get_if<json::Array>(&days->v)) {
+      for (const auto& day : *list) {
+        if (const auto number = day.Number(); number && *number >= 0 && *number <= 6) {
+          plan.days.push_back(static_cast<int>(*number));
+        }
+      }
+    }
+  }
+  if (!plan.off && plan.days.empty()) plan.present = false;
+  return plan;
+}
+}  // namespace
+
 ExtendedPolicy ExtendedPolicy::Parse(const std::string& modulesJson) {
   ExtendedPolicy policy;
   const auto root = json::Parse(modulesJson);
@@ -309,6 +335,8 @@ ExtendedPolicy ExtendedPolicy::Parse(const std::string& modulesJson) {
   const auto* antimalware = root->Get("antimalware");
   policy.mlSensitivity = WideString(antimalware, "mlSensitivity", L"balanced");
   policy.behavior.excludedProcesses = WideList(antimalware, "exclusionProcesses");
+  policy.quickScanPlan = ParseScanPlan(antimalware, "quickScanPlan");
+  policy.fullScanPlan = ParseScanPlan(antimalware, "fullScanPlan");
 
   if (const auto* asr = root->Get("attackSurface"); asr != nullptr) {
     if (const auto* obj = std::get_if<json::Object>(&asr->v)) {

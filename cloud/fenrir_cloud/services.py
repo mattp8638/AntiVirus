@@ -118,6 +118,10 @@ def enqueue_command(
         raise CommandError(f"{command_type} needs recordId")
     if device.platform not in spec.platforms:
         raise CommandError(f"{command_type} is not supported on {device.platform}")
+    if command_type == "breakglass.enable":
+        resolution, _ = effective_policy(db, device)
+        if not resolution["settings"]["privilege"].get("breakGlassAllowed", True):
+            raise CommandError("The break-glass admin account is turned off by this device's policy")
     # Don't stack identical pending actions (e.g. two auto-isolations). Different payloads (another remote
     # session, a script with other parameters) are different actions.
     for existing in db.execute(

@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
-from sqlalchemy import func, or_, select
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from .. import audit, policy_schema, rmm, services
 from ..commands import BY_TYPE, catalog_document
 from ..config import get_settings
 from ..db import get_db
-from ..deps import Principal, current_principal, scoped_tenant
+from ..deps import Principal, current_principal, require_reauth, scoped_tenant
 from ..models import (AgentRelease, Alert, Command, Configuration, Device, DeviceGroup, Event, Policy, RemoteSession, SoftwareItem, Tenant, Vulnerability,
                       utcnow)
 from ..serialize import apply_fields, to_dict
@@ -172,6 +172,47 @@ def retire_device(device_id: str, principal: Principal = Depends(current_princip
     return {"ok": True}
 
 
+@router.post("/devices/{device_id}/purge")
+def purge_device(device_id: str, request: Request, body: dict = Body(default={}), principal: Principal = Depends(current_principal),
+                 db: Session = Depends(get_db)):
+    """Permanently delete a decommissioned device and everything recorded about it.
+
+    Tickets and CMDB configurations are service and billing history: they stay, unlinked from the device.
+    The audit log keeps a record of the deletion.
+    """
+    from ..models import (Alert, ConditionState, DeviceArtifact, DeviceMetric, DevicePatch, DnsQueryLog, EnrollmentToken,
+                          Incident, IncidentEvidence, NetworkMonitor, RuleMatch, Ticket)
+
+    principal.require("configure")
+    require_reauth(request, principal)
+    device = _get_device(db, principal, device_id)
+    if device.api_key_hash != f"retired-{device.id}":
+        raise HTTPException(409, "Decommission the device first; only decommissioned devices can be deleted.")
+    if str(body.get("confirmHostname") or "") != device.hostname:
+        raise HTTPException(422, "Type the device's hostname to confirm permanent deletion.")
+    removed: dict[str, int] = {}
+    artifact_dir = get_settings().artifact_dir
+    for artifact in db.scalars(select(DeviceArtifact).where(DeviceArtifact.device_id == device.id)):
+        (artifact_dir / artifact.storage_name).unlink(missing_ok=True)
+    incident_ids = list(db.scalars(select(Incident.id).where(Incident.device_id == device.id)))
+    if incident_ids:
+        removed["incident_evidence"] = db.execute(delete(IncidentEvidence).where(
+            IncidentEvidence.incident_id.in_(incident_ids))).rowcount or 0
+    for model in (Event, RuleMatch, Alert, Incident, Command, ConditionState, DeviceMetric, DevicePatch, SoftwareItem,
+                  Vulnerability, DnsQueryLog, RemoteSession, DeviceArtifact):
+        removed[model.__tablename__] = db.execute(delete(model).where(model.device_id == device.id)).rowcount or 0
+    db.execute(update(Ticket).where(Ticket.device_id == device.id).values(device_id=None))
+    db.execute(update(Configuration).where(Configuration.device_id == device.id).values(device_id=None))
+    db.execute(update(NetworkMonitor).where(NetworkMonitor.probe_device_id == device.id).values(probe_device_id=None))
+    db.execute(update(EnrollmentToken).where(EnrollmentToken.label == f"Reinstate {device.id}").values(revoked=True))
+    hostname, tenant_id = device.hostname, device.tenant_id
+    db.delete(device)
+    audit.record(db, principal.actor, "device.purged", hostname, tenant_id, deviceId=device_id,
+                 removed={k: v for k, v in removed.items() if v})
+    db.commit()
+    return {"ok": True, "removed": removed}
+
+
 # --------------------------------------------------------------------------- commands
 
 
@@ -181,6 +222,57 @@ def protection_health(tenant_id: str | None = None, principal: Principal = Depen
     from .. import endpoint_health
 
     return endpoint_health.summary(db, scoped_tenant(principal, tenant_id))
+
+
+QUARANTINE_EVENTS = ("scan.finding", "realtime.protection.action", "scan.threat.quarantined", "threat.process.blocked",
+                     "quarantine.added")
+
+
+@router.get("/protection/quarantine")
+def quarantine_items(tenant_id: str | None = None, device_id: str | None = None, include_released: bool = False,
+                     principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Files agents hold in quarantine, with the state of any restore/delete action taken on them."""
+    tenants = scoped_tenant(principal, tenant_id)
+    query = (select(Event, Device.hostname).join(Device, Device.id == Event.device_id)
+             .where(Event.tenant_id.in_(tenants), Event.event_type.in_(QUARANTINE_EVENTS),
+                    Event.occurred_at >= utcnow() - timedelta(days=180)))
+    if device_id:
+        query = query.where(Event.device_id == device_id)
+    items: dict[tuple[str, str], dict] = {}
+    for event, hostname in db.execute(query.order_by(Event.occurred_at.desc()).limit(5000)):
+        fields = event.fields or {}
+        record = str(fields.get("quarantineRecordId") or fields.get("recordId") or "")
+        if not record or (event.device_id, record) in items:
+            continue
+        items[(event.device_id, record)] = {
+            "deviceId": event.device_id, "hostname": hostname, "tenantId": event.tenant_id, "recordId": record,
+            "path": fields.get("TargetFilename") or fields.get("path") or fields.get("Image") or "",
+            "threat": fields.get("ThreatName") or fields.get("alertTitle") or event.summary or "",
+            "sha256": fields.get("sha256") or "", "source": event.event_type, "quarantinedAt": event.occurred_at,
+            "status": "quarantined", "commandId": None, "lastError": "",
+        }
+    if items:
+        actions = db.execute(select(Command).where(
+            Command.tenant_id.in_(tenants), Command.type.in_(("quarantine.restore", "quarantine.delete")),
+            Command.device_id.in_({key[0] for key in items}), Command.record_id.in_({key[1] for key in items}))
+            .order_by(Command.created_at)).scalars()
+        for command in actions:  # oldest first, so the newest action decides the state
+            item = items.get((command.device_id, command.record_id))
+            if item is None or command.status == "cancelled":
+                continue
+            verb = "restore" if command.type == "quarantine.restore" else "delete"
+            item["commandId"] = command.id
+            if command.status == "completed":
+                item["status"], item["lastError"] = ("restored" if verb == "restore" else "deleted"), ""
+            elif command.status == "failed":
+                item["status"] = "quarantined"
+                item["lastError"] = str((command.result or {}).get("error") or command.result or "")[:500]
+            else:
+                item["status"] = "restoring" if verb == "restore" else "deleting"
+    rows = list(items.values())
+    if not include_released:
+        rows = [r for r in rows if r["status"] not in ("restored", "deleted")]
+    return rows
 
 
 @router.get("/commands/catalog")

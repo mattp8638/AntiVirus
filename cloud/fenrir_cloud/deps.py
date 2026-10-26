@@ -119,3 +119,14 @@ def require_reauth(request: Request, principal: Principal) -> None:
             or payload.get("session") != digest(request.headers.get("Authorization", ""))
             or payload.get("state") != reauth_state(get_settings().secret_key, principal.user)):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "reauth_required")
+
+
+def current_device_by_key(x_device_api_key: str | None = Header(default=None), db: Session = Depends(get_db)) -> Device:
+    """Device authentication for agent endpoints that have no device id in the path."""
+    if not x_device_api_key:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing X-Device-Api-Key")
+    device = db.execute(select(Device).where(Device.api_key_hash == digest(x_device_api_key))).scalar_one_or_none()
+    if device is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unknown device credentials")
+    device.last_seen_at = utcnow()
+    return device

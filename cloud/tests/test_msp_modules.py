@@ -41,6 +41,44 @@ def test_m365_sync_pagination_and_failure_retains_snapshot(client, admin, tenant
     saved = client.get("/api/console/m365/connections",headers=admin).json()[0]
     assert saved["status"] == "failed" and len(saved["snapshot"]["users"]) == 2
 
+def test_m365_insights_find_unused_licences_and_missing_mfa(client, admin, tenant, monkeypatch):
+    row = connection(client, admin, tenant)
+    def handle(request):
+        if request.url.host == "login.microsoftonline.com":
+            return httpx.Response(200, json={"access_token": "token"})
+        path = request.url.path
+        if path.endswith("/users"):
+            return httpx.Response(200, json={"value": [
+                {"id": "1", "userPrincipalName": "jo@acme.example", "accountEnabled": True, "assignedLicenses": [{"skuId": "x"}]},
+                {"id": "2", "userPrincipalName": "left@acme.example", "accountEnabled": False, "assignedLicenses": [{"skuId": "x"}]},
+                {"id": "3", "userPrincipalName": "admin@acme.example", "accountEnabled": True, "assignedLicenses": []}]})
+        if path.endswith("/subscribedSkus"):
+            return httpx.Response(200, json={"value": [{"skuPartNumber": "SPB", "prepaidUnits": {"enabled": 5}, "consumedUnits": 2}]})
+        if path.endswith("/secureScores"):
+            return httpx.Response(200, json={"value": [{"currentScore": 30, "maxScore": 60}]})
+        if "userRegistrationDetails" in path:
+            return httpx.Response(200, json={"value": [
+                {"userPrincipalName": "jo@acme.example", "isAdmin": False, "isMfaRegistered": True},
+                {"userPrincipalName": "admin@acme.example", "isAdmin": True, "isMfaRegistered": False}]})
+        return httpx.Response(404)
+    real_client = httpx.Client
+    monkeypatch.setattr(m365.httpx, "Client", lambda **kwargs: real_client(transport=httpx.MockTransport(handle)))
+    insights = post(client, admin, "m365/connections/"+row["id"]+"/sync", {})["snapshot"]["insights"]
+    assert insights["disabledButLicensed"] == ["left@acme.example"] and insights["licencesUnused"] == 3
+    assert insights["mfa"] == {"registered": 1, "notRegistered": 1, "percent": 50, "adminsWithoutMfa": ["admin@acme.example"]}
+    assert insights["secureScore"]["percent"] == 50
+
+    def no_reports(request):
+        if "userRegistrationDetails" in request.url.path:
+            return httpx.Response(403, json={"error": {"code": "Authorization_RequestDenied"}})
+        return handle(request)
+    monkeypatch.setattr(m365.httpx, "Client", lambda **kwargs: real_client(transport=httpx.MockTransport(no_reports)))
+    from fenrir_cloud import ratelimit
+    monkeypatch.setattr(ratelimit, "check", lambda *a, **k: None)
+    snapshot = post(client, admin, "m365/connections/"+row["id"]+"/sync", {})["snapshot"]
+    assert snapshot["mfaRegistration"] is None and snapshot["insights"]["mfa"] is None
+
+
 def test_graph_pagination_cannot_exfiltrate_bearer():
     seen = []
     def handle(request):
@@ -167,3 +205,20 @@ def test_backup_stale_and_future_completion(client, admin, tenant):
     assert client.get("/api/console/backup/plans", headers=admin).json()[0]["health"] == "stale"
     body.update(externalId="future", completedAt=(datetime.now(timezone.utc)+timedelta(hours=2)).isoformat())
     assert client.post("/api/console/backup/plans/"+plan["id"]+"/runs",headers=admin,json=body).status_code == 400
+
+
+def test_grc_controls_combine_automatic_checks_and_register_evidence(client, admin, tenant):
+    library = client.get(f"/api/console/grc/controls?tenant_id={tenant['id']}", headers=admin).json()["frameworks"]
+    ce = next(f for f in library if f["framework"] == "cyber-essentials")
+    access = next(c for c in ce["controls"] if c["id"] == "CE-3")
+    assert access["status"] in ("met", "gap") and access["records"] == []
+    gap = next(c for c in ce["controls"] if c["status"] == "gap")
+    record = post(client, admin, "grc/records", {"tenantId": tenant["id"], "kind": "evidence", "title": "Signed access policy",
+                                                 "framework": "Cyber Essentials", "control": f"{gap['id']} {gap['title']}"})
+    library = client.get(f"/api/console/grc/controls?tenant_id={tenant['id']}", headers=admin).json()["frameworks"]
+    linked = next(c for f in library if f["framework"] == "cyber-essentials" for c in f["controls"] if c["id"] == gap["id"])
+    assert [r["id"] for r in linked["records"]] == [record["id"]] and linked["status"] == "gap"  # draft is not evidence yet
+    # Unenforced policy switches never count as passing evidence.
+    nist = next(f for f in library if f["framework"] == "nist-csf-2")
+    recovery = next(c for c in nist["controls"] if c["id"] == "RC.RP")
+    assert not recovery["passed"] and "not enforced" in recovery["evidence"][0]

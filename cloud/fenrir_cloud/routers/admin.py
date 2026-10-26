@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import secrets
+
 import re
 from datetime import timedelta
 
@@ -16,6 +18,8 @@ from ..deps import REAUTH_MINUTES, Principal, current_principal, require_reauth,
 from ..models import AuditLog, Device, DeviceGroup, EnrollmentToken, Policy, Tenant, User, utcnow
 from ..security import ROLES, digest, hash_password, issue_token, new_secret, new_totp_secret, totp_uri, verify_password, verify_totp, reauth_state
 from ..serialize import apply_fields, to_dict
+
+REINSTATE_PREFIX = "fet_rs-"
 
 router = APIRouter(prefix="/api/console", tags=["Administration"])
 crypto.register_encrypted(User, "mfa_secret", lambda user: f"mfa:{user.id}")
@@ -388,7 +392,7 @@ def create_token(body: dict = Body(...), principal: Principal = Depends(current_
         "install": {
             "windows": f'fenrir-agent-service.exe --install --server "{base}" --enroll-token "{raw}"',
             "linux": f"curl -fsSL {base}/install/linux.sh | sudo FENRIR_SERVER={base} FENRIR_TOKEN={raw} sh",
-            "macos": f"sudo installer -pkg FenrirAgent.pkg -target / && sudo /Library/Fenrir/fenrirctl enroll --server {base} --token {raw}",
+            "macos": "Download the macOS installer from Deploy, then run: sudo sh Install-Fenrir-macOS.sh",
         },
     }
 
@@ -446,7 +450,9 @@ def download_installer(body: dict = Body(...), principal: Principal = Depends(cu
         days = 1
     label = (f"Reinstate {reinstatement.id}" if reinstatement else
              str(body.get("label") or "Deployment").strip()[:200] or "Deployment")
-    raw = (f"frs.{reinstatement.id}." + new_secret("key", 32)) if reinstatement else new_secret("fet", 24)
+    # Reinstatement tokens keep the fet_ shape (letters, digits, "_" and "-") that the installers and
+    # Windows setup accept, and name the device they reconnect: fet_rs-<device id>-<hex secret>.
+    raw = (f"{REINSTATE_PREFIX}{reinstatement.id}-{secrets.token_hex(24)}") if reinstatement else new_secret("fet", 24)
     data, filename, media_type = deployment_installers.build(
         os_name, get_settings().public_base_url, raw
     )  # Build/release validation BEFORE issuing a token.

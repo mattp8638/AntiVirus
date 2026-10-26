@@ -55,6 +55,12 @@ class Settings:
     model_dir: Path = field(
         default_factory=lambda: Path(os.getenv("FENRIR_MODEL_DIR", str(Path(__file__).resolve().parents[2] / "ml" / "models")))
     )
+    # Forensic and support bundles uploaded by agents (mount a volume here in production).
+    artifact_dir: Path = field(
+        default_factory=lambda: Path(os.getenv("FENRIR_ARTIFACT_DIR", str(Path(__file__).resolve().parents[1] / "data" / "artifacts")))
+    )
+    artifact_max_bytes: int = field(default_factory=lambda: int(os.getenv("FENRIR_ARTIFACT_MAX_BYTES", str(200 * 1024 * 1024))))
+    artifact_retention_days: int = field(default_factory=lambda: int(os.getenv("FENRIR_ARTIFACT_RETENTION_DAYS", "30")))
     # The 30-second RMM/PSA scheduler (scheduled tasks, monitors, patch windows, workflows).
     scheduler_enabled: bool = field(default_factory=lambda: _bool("FENRIR_SCHEDULER", True))
     rules_dir: Path = field(default_factory=lambda: Path(__file__).resolve().parent / "rules" / "sigma")

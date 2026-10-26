@@ -71,6 +71,13 @@ func (p Policy) ModuleBool(section, key string, def bool) bool {
 	return def
 }
 
+func (p Policy) ModuleString(section, key, def string) string {
+	if v, ok := p.Modules[section][key].(string); ok {
+		return v
+	}
+	return def
+}
+
 func (p Policy) ModuleInt(section, key string, def int) int {
 	if v, ok := p.Modules[section][key].(float64); ok {
 		return int(v)

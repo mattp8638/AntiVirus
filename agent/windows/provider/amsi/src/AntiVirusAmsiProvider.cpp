@@ -15,6 +15,8 @@
 #include "../../../service/include/AmsiScanEngine.h"
 #include "../../../service/include/AgentConfig.h"
 #include "../../../service/include/LocalStateStore.h"
+#include "../../../service/include/LocalControlChannel.h"
+#include "../../../service/include/StringUtils.h"
 #include "../../../service/include/TelemetryQueueStore.h"
 
 namespace antivirus::agent {
@@ -115,15 +117,55 @@ bool ReadQuietAttribute(IAmsiStream* stream) {
   return quiet != 0;
 }
 
+// Hands one record to the service over the local control pipe. Never blocks a script for long:
+// gives up after a short wait if the service is busy or not running.
+void SubmitTelemetryToService(const TelemetryRecord& record) {
+  if (WaitNamedPipeW(kFenrirLocalControlPipeName, 250) == FALSE) {
+    return;
+  }
+  const HANDLE pipe = CreateFileW(kFenrirLocalControlPipeName, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                                  SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, nullptr);
+  if (pipe == INVALID_HANDLE_VALUE) {
+    return;
+  }
+  DWORD mode = PIPE_READMODE_MESSAGE;
+  SetNamedPipeHandleState(pipe, &mode, nullptr, nullptr);
+  const std::string request = "{\"type\":\"amsi.telemetry.submit\",\"recordId\":\"" + EscapeJsonString(record.eventType) +
+                              "\",\"targetPath\":\"" + EscapeJsonString(record.summary.substr(0, 1000)) +
+                              "\",\"payloadJson\":\"" + EscapeJsonString(record.payloadJson) + "\"}";
+  DWORD written = 0;
+  if (request.size() < 60 * 1024 &&
+      WriteFile(pipe, request.data(), static_cast<DWORD>(request.size()), &written, nullptr) != FALSE) {
+    char reply[512];
+    DWORD read = 0;
+    ReadFile(pipe, reply, sizeof(reply), &read, nullptr);  // wait for the service to take it
+  }
+  CloseHandle(pipe);
+}
+
+bool WorthForwarding(const TelemetryRecord& record) {
+  // Findings and blocks only: routine "allowed" decisions are not worth a pipe round trip per script.
+  return record.eventType == L"scan.finding" || record.payloadJson.find(L"\"blocked\":true") != std::wstring::npos;
+}
+
 void QueueTelemetry(const AgentConfig& config, const std::vector<TelemetryRecord>& records) {
   if (records.empty()) {
     return;
   }
 
-  TelemetryQueueStore queueStore(config.telemetryQueuePath);
-  auto pending = queueStore.LoadPending();
-  pending.insert(pending.end(), records.begin(), records.end());
-  queueStore.SavePending(pending);
+  // Same queue database the service uploads from. Elevated hosts can write it directly; ordinary
+  // user processes cannot (it is protected), so their findings go through the service instead.
+  try {
+    TelemetryQueueStore queueStore(config.runtimeDatabasePath, config.telemetryQueuePath);
+    queueStore.Append(records);
+    return;
+  } catch (...) {
+  }
+  for (const auto& record : records) {
+    if (WorthForwarding(record)) {
+      SubmitTelemetryToService(record);
+    }
+  }
 }
 
 class AntiVirusAmsiProvider final : public IAntimalwareProvider2 {

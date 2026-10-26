@@ -194,6 +194,11 @@ class RuntimeDatabase {
 
   std::vector<TelemetryRecord> LoadTelemetryQueue() const;
   void ReplaceTelemetryQueue(const std::vector<TelemetryRecord>& records) const;
+  // Append-only writers (service, scans, scanner CLI) and delete-after-delivery keep concurrent
+  // writers from overwriting each other's queued events.
+  void AppendTelemetryQueue(const std::vector<TelemetryRecord>& records) const;
+  void DeleteTelemetryEvents(const std::vector<std::wstring>& eventIds) const;
+  std::size_t TrimTelemetryQueue(std::size_t keepNewest) const;
   std::size_t CountTelemetryQueue() const;
 
   void UpsertCommandJournal(const RemoteCommand& command, const std::wstring& status, const std::wstring& resultJson,

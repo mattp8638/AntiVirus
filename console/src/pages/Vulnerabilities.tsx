@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useState } from "react";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
@@ -69,7 +70,7 @@ export default function Vulnerabilities() {
             { key: "riskScore", label: "Risk", className: "right" },
             { key: "dueAt", label: "Due", render: (d) => d.dueAt ? <span style={{ color: d.overdue ? "#fca5a5" : undefined }}>{fmtTime(d.dueAt)}</span> : "—" },
             { key: "status", label: "Status", render: (d) => <>
-                <Pill value={d.status} /> {d.ticketId && <Pill value="ticket" tone="blue" />}
+                <Pill value={d.status} /> {d.ticketId && <Link to={`/tickets/${d.ticketId}`} onClick={(e) => e.stopPropagation()}><Pill value="ticket" tone="blue" /></Link>}
                 {d.verifiedAt && <div className="small muted">verified {fmtTime(d.verifiedAt)}</div>}
                 {d.exception && <div className="small muted">accepted by {d.exception.approvedBy} until {fmtTime(d.exception.expiresAt)}: {d.exception.reason}</div>}
               </> },

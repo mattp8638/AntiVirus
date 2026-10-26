@@ -78,6 +78,16 @@ int main(int argc, char** argv) {
     CHECK(HasOp(plan, devicecontrol::kRemovableDisksClass, L"Deny_Read", false, 1));
     CHECK(plan.notes.size() == 1);  // per-device exceptions note
   }
+  {  // Calendar scan schedules from the cloud
+    const auto policy = ExtendedPolicy::Parse(
+        R"({"antimalware":{"quickScanPlan":{"off":false,"days":[0,1,2,3,4],"minuteOfDay":540},)"
+        R"("fullScanPlan":{"off":true,"days":[],"minuteOfDay":0}}})");
+    CHECK(policy.quickScanPlan.present && !policy.quickScanPlan.off);
+    CHECK(policy.quickScanPlan.days.size() == 5 && policy.quickScanPlan.minuteOfDay == 540);
+    CHECK(policy.fullScanPlan.present && policy.fullScanPlan.off);
+    CHECK(!ExtendedPolicy::Parse(R"({"antimalware":{}})").quickScanPlan.present);
+    CHECK(!ExtendedPolicy::Parse(R"({"antimalware":{"quickScanPlan":{"days":[9]}}})").quickScanPlan.present);
+  }
   CHECK(!ExtendedPolicy::Parse("not json").present);
   std::printf(failures ? "%d failure(s)\n" : "all policy/device-control tests passed\n", failures);
   return failures ? 1 : 0;

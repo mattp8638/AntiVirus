@@ -13,11 +13,14 @@ from sqlalchemy.orm import Session
 from .. import audit, psa, remote
 from ..db import get_db, session_factory
 from ..deps import Principal, current_principal, scoped_tenant
-from ..models import Device, RemoteSession, Tenant, Ticket, utcnow
+from ..config import get_settings
+from ..models import Device, DeviceArtifact, RemoteSession, Tenant, Ticket, utcnow
 from ..security import digest
 from ..serialize import to_dict
 
 log = logging.getLogger("fenrir.remote")
+# Security analysts (not technicians or admins) get a remote shell only when response.remoteShell allows it.
+ANALYST_ROLES = {"soc_analyst", "tenant_analyst"}
 
 router = APIRouter(prefix="/api/console/remote", tags=["Remote access"])
 sockets = APIRouter(tags=["Remote access"])
@@ -31,7 +34,10 @@ def _session_view(db: Session, session: RemoteSession) -> dict:
         connected_minutes = round((end - session.connected_at).total_seconds() / 60, 1)
     return {**to_dict(session), "hostname": device.hostname if device else "", "platform": device.platform if device else "",
             "deviceOnline": remote.hub.device_online(session.device_id), "agentConnected": session.id in remote.hub.rooms
-            and remote.hub.rooms[session.id].agent is not None, "connectedMinutes": connected_minutes}
+            and remote.hub.rooms[session.id].agent is not None, "connectedMinutes": connected_minutes,
+            "recorded": bool(device and remote.remote_policy(db, device).get("recordSessions")),
+            "recordingId": db.scalar(select(DeviceArtifact.id).where(DeviceArtifact.command_id == session.id,
+                                                                     DeviceArtifact.kind == "remote.recording"))}
 
 
 @router.post("/sessions")
@@ -54,6 +60,11 @@ def create_session(body: dict = Body(...), principal: Principal = Depends(curren
             raise HTTPException(422, "The ticket and remote-support device must belong to the same customer")
         if ticket.device_id and ticket.device_id != device.id:
             raise HTTPException(422, "The ticket is linked to a different managed device")
+    if mode == "terminal" and principal.user.role in ANALYST_ROLES:
+        from .. import services
+        settings, _ = services.effective_policy(db, device)
+        if not settings["settings"]["response"].get("remoteShell", False):
+            raise HTTPException(403, "Analysts need the policy's 'Allow remote shell for analysts' setting to open a terminal")
     try:
         session = remote.start_session(db, device, principal.actor, mode, bool(body.get("viewOnly")), ticket_id,
                                        str(body.get("reason") or ""))
@@ -202,6 +213,12 @@ async def agent_socket(websocket: WebSocket, session_id: str, token: str | None 
         return
     await websocket.accept()
     room = remote.hub.room(session_id, info["viewOnly"], info["allow"])
+    if info["allow"].get("recordSessions") and room.recorder is None:
+        try:
+            from .artifacts import artifact_dir
+            room.recorder = remote.Recorder(artifact_dir() / f"rec-{session_id}", get_settings().artifact_max_bytes * 5)
+        except OSError as exc:
+            log.warning("cannot record remote session %s: %s", session_id, exc)
     if room.agent is not None:
         await room.agent.send(json.dumps({"ch": "sys", "t": "end", "reason": "replaced"}))
     peer = remote.Peer(websocket, actor=f"device:{claims.get('dev')}")
@@ -222,12 +239,21 @@ async def agent_socket(websocket: WebSocket, session_id: str, token: str | None 
             if data is None:
                 continue
             room.bytes_relayed += len(data)
+            if room.recorder is not None:
+                room.recorder.add(data)
             if isinstance(data, str) and _is_end(data):
                 reason = "ended by device"
             for viewer in list(room.viewers):
                 if not await viewer.send(data):
                     room.viewers.remove(viewer)
     finally:
+        if room.agent is peer and room.recorder is not None:
+            # Save before any await: cleanup can be cancelled (server shutdown) and the recording must survive.
+            recording, room.recorder = room.recorder.close(), None
+            try:
+                _db_call(_save_recording, session_id, *recording)
+            except Exception as exc:  # noqa: BLE001 - never lose the relay cleanup over a recording
+                log.warning("could not save recording for %s: %s", session_id, exc)
         if room.agent is peer:
             room.agent = None
             gone = json.dumps({"ch": "sys", "t": "agent.disconnected", "reason": reason})
@@ -238,6 +264,23 @@ async def agent_socket(websocket: WebSocket, session_id: str, token: str | None 
             room.events, room.bytes_relayed = [], 0
             remote.hub.drop(session_id)
             await run_in_threadpool(_db_call, _flush_room, session_id, events, relayed, reason, peer.actor)
+
+
+def _save_recording(db: Session, session_id: str, size: int, sha256: str, records: int) -> None:
+    """Keep a recording that captured something as a device artifact (same retention and access as bundles)."""
+    from .artifacts import artifact_dir
+
+    path = artifact_dir() / f"rec-{session_id}"
+    session = db.get(RemoteSession, session_id)
+    if session is None or records == 0:
+        path.unlink(missing_ok=True)
+        return
+    device = db.get(Device, session.device_id)
+    stamp = (session.connected_at or utcnow()).strftime("%Y%m%d-%H%M")
+    db.add(DeviceArtifact(tenant_id=session.tenant_id, device_id=session.device_id, command_id=session.id, kind="remote.recording",
+                          filename=f"{device.hostname if device else 'device'}-remote-{stamp}.fenrec", size=size, sha256=sha256,
+                          storage_name=path.name))
+    audit.record(db, "system:relay", "remote.recording.saved", session.id, session.tenant_id, size=size, technician=session.technician)
 
 
 @sockets.websocket("/ws/remote/{session_id}/viewer")

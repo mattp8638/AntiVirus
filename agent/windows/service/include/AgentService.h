@@ -80,6 +80,13 @@ class AgentService {
   void PollAndExecuteCommands(int cycle);
   std::wstring ExecuteCommand(const RemoteCommand& command);
   std::wstring ExecuteTargetedScan(const RemoteCommand& command);
+  // Quick/full scans run on a background thread so commands and check-ins continue meanwhile.
+  bool StartBackgroundScan(const std::wstring& eventPrefix, const std::wstring& scopeLabel, const std::wstring& source,
+                           std::vector<std::filesystem::path> targets);
+  std::wstring ExecuteOnDemandScan(const RemoteCommand& command, bool full);
+  std::wstring ExecuteInventoryRefreshCommand(const RemoteCommand& command);
+  std::wstring ExecutePolicyRefreshCommand(const RemoteCommand& command);
+  std::wstring ExecuteAmsiTelemetrySubmitCommand(const RemoteCommand& command);
   std::wstring ExecuteIsolationCommand(const RemoteCommand& command, bool isolate);
   std::wstring ExecuteQuarantineMutation(const RemoteCommand& command, bool restore);
   std::wstring ExecuteUpdateCommand(const RemoteCommand& command, bool rollback);
@@ -167,6 +174,8 @@ class AgentService {
   AgentState IdentitySnapshot();
   void DrainDeferredTelemetry();
   std::thread::id mainThreadId_{};
+  std::shared_ptr<std::atomic<bool>> backgroundScanBusy_{std::make_shared<std::atomic<bool>>(false)};
+  std::shared_ptr<std::atomic<bool>> stopRequested_{std::make_shared<std::atomic<bool>>(false)};
   AgentState identitySnapshot_{};
   std::vector<DeferredTelemetry> deferredTelemetry_{};
 };

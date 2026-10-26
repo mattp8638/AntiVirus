@@ -71,17 +71,18 @@ def windows_release_mode() -> tuple[str | None, str]:
 
 def available() -> dict:
     linux = all(release_file(f"fenrir-agent-linux-{arch}") for arch in ("amd64", "arm64"))
+    macos = all(release_file(f"fenrir-agent-darwin-{arch}") for arch in ("amd64", "arm64"))
     windows_mode, windows_reason = windows_release_mode()
-    # Swift source is present, but there is no packaged/entitled agent with
-    # fenrirctl enrollment + launchd service yet. Never claim it is installable.
     return {
         "linux": {"ready": linux, "extension": ".sh", "reason": "" if linux else "Linux x64 and ARM64 agent binaries must be built in the cloud image."},
         "windows": {"ready": windows_mode is not None, "extension": ".exe",
                     "mode": windows_mode or "unavailable", "reason": windows_reason,
                     "warning": ("Unsigned hobby build: user-mode testing only; no signed Windows kernel driver or "
                                 "full antivirus protection." if windows_mode == "unsigned-hobby" else "")},
-        "macos": {"ready": False, "extension": ".pkg",
-                  "reason": "Not yet deployable: the macOS agent lacks a signed, entitled PKG, enrollment client and launchd integration."},
+        "macos": {"ready": macos, "extension": ".sh",
+                  "reason": "" if macos else "macOS Intel and Apple Silicon agent binaries must be built in the cloud image.",
+                  "warning": ("Unsigned build installed as a LaunchDaemon. Allow the agent Full Disk Access for complete "
+                              "scanning, and Screen Recording plus Accessibility for remote control." if macos else "")},
     }
 
 
@@ -175,6 +176,81 @@ echo "Fenrir agent installed as an automatic-start service. Confirm the device c
     return script.encode("utf-8")
 
 
+def _macos_script(base: str, token: str) -> bytes:
+    bins = {arch: release_file(f"fenrir-agent-darwin-{arch}") for arch in ("amd64", "arm64")}
+    if not all(bins.values()):
+        raise HTTPException(409, "macOS agent binaries are not available; rebuild the cloud image.")
+    digests = {arch: _digest(path) for arch, path in bins.items()}
+    payloads = {arch: base64.encodebytes(gzip.compress(path.read_bytes(), mtime=0)).decode().rstrip()
+                for arch, path in bins.items()}
+    script = f"""#!/bin/sh
+# Fenrir macOS customer installer. Treat this file as a secret until enrollment completes.
+set -eu
+if [ "$(id -u)" -ne 0 ]; then echo "Run this installer with sudo." >&2; exit 1; fi
+case "$(uname -m)" in
+  x86_64) arch=amd64; expected={digests['amd64']} ;;
+  arm64) arch=arm64; expected={digests['arm64']} ;;
+  *) echo "Unsupported macOS architecture." >&2; exit 1 ;;
+esac
+base={shlex.quote(base)}
+token={shlex.quote(token)}
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+case "$arch" in
+  amd64) /usr/bin/base64 -D <<'FENRIR_AMD64_PAYLOAD' | /usr/bin/gzip -d > "$tmp/fenrir-agent"
+{payloads['amd64']}
+FENRIR_AMD64_PAYLOAD
+    ;;
+  arm64) /usr/bin/base64 -D <<'FENRIR_ARM64_PAYLOAD' | /usr/bin/gzip -d > "$tmp/fenrir-agent"
+{payloads['arm64']}
+FENRIR_ARM64_PAYLOAD
+    ;;
+esac
+printf '%s  %s\\n' "$expected" "$tmp/fenrir-agent" | /usr/bin/shasum -a 256 -c -s || {{
+  echo "Agent binary SHA-256 mismatch; refusing installation." >&2; exit 1;
+}}
+/bin/mkdir -p /usr/local/bin /var/db/fenrir
+/bin/chmod 700 /var/db/fenrir
+/usr/bin/install -m 0755 "$tmp/fenrir-agent" /usr/local/bin/fenrir-agent.new
+/bin/mv -f /usr/local/bin/fenrir-agent.new /usr/local/bin/fenrir-agent
+/usr/bin/xattr -d com.apple.quarantine /usr/local/bin/fenrir-agent 2>/dev/null || true
+plist=/Library/LaunchDaemons/com.fenrir.agent.plist
+umask 077
+cat > "$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.fenrir.agent</string>
+  <key>ProgramArguments</key><array><string>/usr/local/bin/fenrir-agent</string></array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>FENRIR_SERVER</key><string>$base</string>
+    <key>FENRIR_ENROLLMENT_TOKEN</key><string>$token</string>
+    <key>FENRIR_STATE_DIR</key><string>/var/db/fenrir</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>/var/log/fenrir-agent.log</string>
+  <key>StandardErrorPath</key><string>/var/log/fenrir-agent.log</string>
+</dict>
+</plist>
+EOF
+/usr/sbin/chown root:wheel "$plist"
+/bin/chmod 600 "$plist"
+/bin/launchctl bootout system/com.fenrir.agent 2>/dev/null || true
+/bin/launchctl bootstrap system "$plist"
+/bin/launchctl enable system/com.fenrir.agent
+/bin/launchctl kickstart -k system/com.fenrir.agent
+echo "Fenrir agent installed as a LaunchDaemon. Confirm the device checks in to your tenant."
+echo "In System Settings > Privacy & Security, allow /usr/local/bin/fenrir-agent under:"
+echo "  - Full Disk Access (complete scanning)"
+echo "  - Screen Recording and Accessibility (remote screen view and control)"
+"""
+    return script.encode("utf-8")
+
+
 WINDOWS_CONFIG_MAGIC = b"FENRIR_ENROLL_V1!"
 
 
@@ -202,4 +278,6 @@ def build(os_name: str, base: str, token: str) -> tuple[bytes, str, str]:
         return _linux_script(base, token), "Install-Fenrir-Linux.sh", "text/x-shellscript"
     if os_name == "windows":
         return _windows_executable(base, token)
+    if os_name == "macos":
+        return _macos_script(base, token), "Install-Fenrir-macOS.sh", "text/x-shellscript"
     raise HTTPException(409, "The selected operating system does not have an installable agent release yet.")

@@ -13,14 +13,14 @@ import json
 import re
 import secrets
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import audit, endpoint_health, intel, psa, rmm, services
 from ..config import get_settings
 from ..db import get_db
-from ..deps import current_device
+from ..deps import current_device, current_device_by_key
 from ..detection import ingest
 from ..models import AgentRelease, Command, Device, EnrollmentToken, Event, Tenant, utcnow
 from ..security import digest, new_secret
@@ -30,6 +30,18 @@ router = APIRouter(prefix="/api/v1", tags=["Agent API"])
 
 def _iso(value) -> str:
     return value.isoformat(timespec="seconds") + "Z" if value else ""
+
+
+def reinstatement_target(raw_token: str | None) -> str | None:
+    """Device id named by a reinstatement token (fet_rs-<device id>-<secret>; older frs.<id>.<secret> too)."""
+    raw = str(raw_token or "")
+    if raw.startswith("fet_rs-"):
+        device_id, _, secret = raw[len("fet_rs-"):].rpartition("-")
+        return device_id if device_id and secret else None
+    if raw.startswith("frs."):
+        parts = raw.split(".", 2)
+        return parts[1] if len(parts) == 3 else None
+    return None
 
 
 def _platform(os_version: str, hint: str | None) -> str:
@@ -97,10 +109,11 @@ def enroll(
     tenant = db.get(Tenant, token.tenant_id) if token else _unassigned_tenant(db)
     api_key = new_secret("fdk", 32)
     device = None
-    reinstating = bool(token and raw_token.startswith("frs."))
+    target_id = reinstatement_target(raw_token) if token else None
+    # Only a token issued for reinstating exactly this device counts (an ordinary token cannot pose as one).
+    reinstating = target_id is not None and token.label == f"Reinstate {target_id}"
     if reinstating:
-        parts = raw_token.split(".", 2)
-        device = db.scalar(select(Device).where(Device.id == parts[1]).with_for_update())
+        device = db.scalar(select(Device).where(Device.id == target_id).with_for_update())
         if device is None or device.tenant_id != tenant.id:
             raise HTTPException(403, "Reinstatement target is invalid")
         if device.api_key_hash != f"retired-{device.id}":
@@ -273,6 +286,28 @@ def complete_command(command_id: str, body: dict = Body(...), device: Device = D
 
 def _version_tuple(version: str) -> tuple:
     return tuple(int(part) if part.isdigit() else 0 for part in re.split(r"[.\-+]", version or "0"))
+
+
+@router.get("/agent/update/{os_name}")
+def agent_update(os_name: str = Path(pattern="^(linux|macos)$"), arch: str = Query(pattern="^(amd64|arm64)$"),
+                 device: Device = Depends(current_device_by_key), db: Session = Depends(get_db)):
+    """The Linux/macOS agent build this server ships (version and SHA-256 from the image's build metadata)."""
+    from .. import deployment_installers
+
+    goos, sha_key = ("darwin", "darwinSha256") if os_name == "macos" else ("linux", "sha256")
+    name = f"fenrir-agent-{goos}-{arch}"
+    empty = {"available": False, "version": "", "sha256": "", "url": ""}
+    binary = deployment_installers.release_file(name)
+    meta_file = deployment_installers.release_file("linux-build.json")
+    if binary is None or meta_file is None:
+        return empty
+    try:
+        meta = json.loads(meta_file.read_text())
+        version, sha = str(meta["version"]), str(meta[sha_key][arch]).lower()
+    except (OSError, ValueError, KeyError, TypeError):
+        return empty
+    db.commit()  # records last_seen from the device lookup
+    return {"available": True, "version": version, "sha256": sha, "url": f"/downloads/{name}"}
 
 
 @router.post("/update-check")

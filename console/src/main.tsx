@@ -27,6 +27,7 @@ import Vulnerabilities from "./pages/Vulnerabilities";
 import AttackSurface from "./pages/AttackSurface";
 import Compliance from "./pages/Compliance";
 import Crm from "./pages/Crm";
+import CrmAccount from "./pages/CrmAccount";
 import Billing from "./pages/Billing";
 import Portal from "./pages/Portal";
 
@@ -40,6 +41,7 @@ import ServiceBoard from "./pages/psa/ServiceBoard";
 import TicketDetail from "./pages/psa/TicketDetail";
 import Time from "./pages/psa/Time";
 import Dispatch from "./pages/psa/Dispatch";
+import Workload from "./pages/psa/Workload";
 import Companies, { CompanyDetail, Configurations } from "./pages/psa/Companies";
 import Catalog, { Knowledge } from "./pages/psa/Catalog";
 import PsaSettings, { ProjectDetail } from "./pages/psa/PsaSettings";
@@ -48,6 +50,8 @@ import Settings from "./pages/Settings";
 import Deploy from "./pages/Deploy";
 import Vault from "./pages/Vault";
 import ProtectionHealth from "./pages/ProtectionHealth";
+import Quarantine from "./pages/Quarantine";
+import RecordingPlayer from "./pages/RecordingPlayer";
 
 const NAV: { group: string; items: { to: string; label: string; icon: string }[] }[] = [
   { group: "Overview", items: [{ to: "/", label: "Dashboard", icon: "◎" }, { to: "/reports", label: "Reports", icon: "▤" }] },
@@ -67,6 +71,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string }[]
     group: "Security",
     items: [
       { to: "/protection-health", label: "Protection health", icon: "⛨" },
+      { to: "/quarantine", label: "Quarantine", icon: "⊘" },
       { to: "/incidents", label: "Incidents", icon: "⚑" },
       { to: "/alerts", label: "Alerts", icon: "△" },
       { to: "/policies", label: "Policies", icon: "⚙" },
@@ -85,6 +90,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string }[]
     items: [
       { to: "/service-board", label: "Service board", icon: "✉" },
       { to: "/dispatch", label: "Dispatch", icon: "▦" },
+      { to: "/workload", label: "Workload & changes", icon: "⚖" },
       { to: "/time", label: "Time & timesheets", icon: "◷" },
       { to: "/companies", label: "Companies", icon: "⌂" },
       { to: "/configurations", label: "Configurations", icon: "⚿" },
@@ -182,6 +188,8 @@ function Shell() {
             <Route path="/deploy" element={<Deploy />} />
             <Route path="/alerts" element={<Alerts />} />
             <Route path="/protection-health" element={<ProtectionHealth />} />
+            <Route path="/quarantine" element={<Quarantine />} />
+            <Route path="/recordings/:id" element={<RecordingPlayer />} />
             <Route path="/incidents" element={<Incidents />} />
             <Route path="/incidents/:id" element={<IncidentDetail />} />
             <Route path="/hunt" element={<Hunt />} />
@@ -193,10 +201,12 @@ function Shell() {
             <Route path="/attack-surface" element={<AttackSurface />} />
             <Route path="/compliance" element={<Compliance />} />
             <Route path="/crm" element={<Crm />} />
+            <Route path="/crm/accounts/:id" element={<CrmAccount />} />
             <Route path="/service-desk" element={<Navigate to="/service-board" replace />} />
             <Route path="/service-board" element={<ServiceBoard />} />
             <Route path="/tickets/:id" element={<TicketDetail />} />
             <Route path="/dispatch" element={<Dispatch />} />
+            <Route path="/workload" element={<Workload />} />
             <Route path="/time" element={<Time />} />
             <Route path="/companies" element={<Companies />} />
             <Route path="/companies/:id" element={<CompanyDetail />} />

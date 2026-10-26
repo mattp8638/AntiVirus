@@ -185,6 +185,11 @@ def create_ticket(body: dict = Body(...), principal: Principal = Depends(current
                                   str(body.get("source") or "portal"), principal.actor, device_id=body.get("deviceId"),
                                   queue=str(body.get("queue") or "Service Desk"), board_id=body.get("boardId"),
                                   **{k: v for k, v in extra.items() if k != "device_id"})
+    record_type = str(body.get("recordType") or "incident")
+    if record_type not in ("incident", "service_request", "problem", "change"):
+        raise HTTPException(400, "recordType must be incident, service_request, problem or change")
+    ticket.record_type = record_type
+    ticket.change_state = "Draft" if record_type == "change" else ""
     audit.record(db, principal.actor, "ticket.created", f"#{ticket.number}", account)
     db.commit()
     return to_dict(ticket)

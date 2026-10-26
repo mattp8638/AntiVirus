@@ -321,7 +321,7 @@ try {
     try { $released = $u.LastDeploymentChangeTime.ToUniversalTime().ToString('o') } catch { }
     [void]$patches.Add((O ([ordered]@{ id = [string]$id; title = [string]$u.Title; classification = [string]$cats;
       severity = [string]$u.MsrcSeverity; source = 'windows-update'; rebootRequired = [bool]$u.RebootRequired;
-      releasedAt = [string]$released })))
+      releasedAt = [string]$released; cves = [string](@($u.CveIDs) -join ',') })))
   }
 } catch { [Console]::Error.WriteLine("Windows Update search failed: $_") }
 $winget = $env:FENRIR_WINGET

@@ -1,19 +1,21 @@
 """Backup oversight and audited recovery exercises; provider execution stays external."""
 from datetime import datetime, timedelta, timezone
 from typing import Literal
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy import select, func, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from .. import audit, events
+from .. import audit, events, ratelimit
 from ..db import get_db
 from ..deps import Principal, current_principal, require_reauth, scoped_tenant
-from ..models import BackupPlan, BackupRun, RecoveryExercise, Configuration, KbArticle, utcnow
+from ..models import Alert, BackupPlan, BackupRun, RecoveryExercise, Configuration, KbArticle, utcnow
+from ..security import digest, new_secret
 from ..serialize import to_dict
 from .documentation import owned
 
 router = APIRouter(prefix="/api/console/backup", tags=["Backup and disaster recovery"])
+ingest = APIRouter(prefix="/api/v1/backup", tags=["Backup and disaster recovery"])
 
 def utc(value):
     return value.astimezone(timezone.utc).replace(tzinfo=None) if value.tzinfo else value
@@ -49,7 +51,43 @@ def plan_summary(db, row):
     health = "unknown" if last is None else ("stale" if last < utcnow() - timedelta(hours=row.rpo_hours) else "protected")
     if latest and latest.status == "failed":
         health = "failed"
-    return {**to_dict(row), "health": health, "lastSuccessAt": last.isoformat() + "Z" if last else None}
+    return {**to_dict(row, exclude={"ingest_token_hash"}), "health": health, "lastSuccessAt": last.isoformat() + "Z" if last else None,
+            "ingestConfigured": bool(row.ingest_token_hash)}
+
+
+def _alert_rule(plan) -> str:
+    return "backup:" + plan.id
+
+
+def _open_alert(db, plan):
+    return db.scalars(select(Alert).where(Alert.tenant_id == plan.tenant_id, Alert.rule_id == _alert_rule(plan),
+                                          Alert.status.in_(("new", "triaged")))).first()
+
+
+def raise_backup_alert(db, plan, title: str, severity: str, details: dict) -> None:
+    if _open_alert(db, plan) is None:
+        db.add(Alert(tenant_id=plan.tenant_id, rule_id=_alert_rule(plan), title=title, severity=severity,
+                     details={"planId": plan.id, "provider": plan.provider, **details}))
+
+
+def resolve_backup_alerts(db, plan) -> None:
+    now = utcnow()
+    for alert in db.scalars(select(Alert).where(Alert.tenant_id == plan.tenant_id, Alert.rule_id == _alert_rule(plan),
+                                                Alert.status.in_(("new", "triaged")))):
+        alert.status, alert.updated_at = "resolved", now
+
+
+def health_tick(db) -> int:
+    """Alert once when a plan's last successful backup is older than its RPO (scheduler pass)."""
+    raised = 0
+    for plan in db.scalars(select(BackupPlan)):
+        last = db.scalar(select(func.max(BackupRun.completed_at)).where(BackupRun.plan_id == plan.id, BackupRun.status == "success"))
+        reference = last or plan.created_at
+        if reference < utcnow() - timedelta(hours=plan.rpo_hours) and _open_alert(db, plan) is None:
+            raise_backup_alert(db, plan, f"Backup overdue: {plan.name}", "high",
+                               {"lastSuccessAt": last.isoformat() + "Z" if last else None, "rpoHours": plan.rpo_hours})
+            raised += 1
+    return raised
 
 @router.get("/plans")
 def plans(tenant_id: str | None = None, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
@@ -85,6 +123,10 @@ def runs(plan_id: str, principal: Principal = Depends(current_principal), db: Se
 def report(plan_id: str, body: RunInput, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("configure")
     plan = owned(db, BackupPlan, plan_id, principal)
+    return record_run(db, plan, body, principal.actor)
+
+
+def record_run(db, plan, body: RunInput, actor: str) -> dict:
     when = utc(body.completedAt)
     if when > utcnow() + timedelta(minutes=5):
         raise HTTPException(400, "Completion time cannot be in the future")
@@ -94,17 +136,48 @@ def report(plan_id: str, body: RunInput, principal: Principal = Depends(current_
             raise HTTPException(409, "Run ID already exists with different results")
         return to_dict(existing)
     row = BackupRun(plan_id=plan.id, tenant_id=plan.tenant_id, external_id=body.externalId, status=body.status,
-                    completed_at=when, bytes_protected=body.bytesProtected, evidence=body.evidence, recorded_by=principal.actor)
+                    completed_at=when, bytes_protected=body.bytesProtected, evidence=body.evidence, recorded_by=actor)
     db.add(row)
     try:
         db.flush()
     except IntegrityError:
         db.rollback()
         raise HTTPException(409, "Run ID already exists; retry to read the recorded result")
-    audit.record(db, principal.actor, "backup.run_recorded", row.id, row.tenant_id, status=row.status)
+    audit.record(db, actor, "backup.run_recorded", row.id, row.tenant_id, status=row.status)
     events.publish(db, "backup." + row.status, {"planId": plan.id, "runId": row.id}, row.tenant_id, key="backup:" + row.id)
+    latest = db.scalars(select(BackupRun).where(BackupRun.plan_id == plan.id).order_by(BackupRun.completed_at.desc()).limit(1)).first()
+    if latest is row:  # only the newest result changes alert state (late-arriving old runs do not)
+        if row.status == "failed":
+            raise_backup_alert(db, plan, f"Backup failed: {plan.name}", "high", {"runId": row.id, "evidence": row.evidence[:500]})
+        else:
+            resolve_backup_alerts(db, plan)
     db.commit()
     return to_dict(row)
+
+
+@router.post("/plans/{plan_id}/ingest-token")
+def ingest_token(plan_id: str, request: Request, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Issue (or rotate) the token a backup tool uses to push this plan's job results. Shown once."""
+    principal.require("configure")
+    require_reauth(request, principal)
+    plan = owned(db, BackupPlan, plan_id, principal)
+    token = new_secret("fbk", 24)
+    plan.ingest_token_hash = digest(token)
+    audit.record(db, principal.actor, "backup.ingest_token_issued", plan.id, plan.tenant_id)
+    db.commit()
+    return {"token": token, "url": "/api/v1/backup/runs", "header": "X-Fenrir-Backup-Token"}
+
+
+@ingest.post("/runs")
+def ingest_run(body: RunInput, x_fenrir_backup_token: str | None = Header(default=None), db: Session = Depends(get_db)):
+    """Backup software or a post-job script reports a run: POST with the plan's X-Fenrir-Backup-Token."""
+    if not x_fenrir_backup_token or not x_fenrir_backup_token.startswith("fbk_"):
+        raise HTTPException(401, "Missing backup ingest token")
+    ratelimit.check("backup-ingest:" + digest(x_fenrir_backup_token)[:16], 120, 3600)
+    plan = db.scalar(select(BackupPlan).where(BackupPlan.ingest_token_hash == digest(x_fenrir_backup_token)))
+    if plan is None:
+        raise HTTPException(401, "Unknown backup ingest token")
+    return record_run(db, plan, body, f"backup-tool:{plan.provider}")
 
 @router.get("/exercises")
 def exercises(tenant_id: str | None = None, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):

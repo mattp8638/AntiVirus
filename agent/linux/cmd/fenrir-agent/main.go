@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/AntiVirus/agent/linux/pkg/fleet"
+	"github.com/AntiVirus/agent/linux/pkg/remote"
 )
 
 func env(key, def string) string {
@@ -24,6 +25,14 @@ func env(key, def string) string {
 }
 
 func main() {
+	// macOS: the agent starts itself as the screen helper inside the signed-in user's session.
+	if len(os.Args) == 2 && os.Args[1] == remote.HelperCommand {
+		if err := remote.RunDesktopHelper(); err != nil {
+			log.Printf("desktop helper: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
 	server := flag.String("server", env("FENRIR_SERVER", ""), "Fenrir Cloud URL")
 	token := flag.String("token", env("FENRIR_ENROLLMENT_TOKEN", ""), "enrollment token (first run only)")
 	stateDir := flag.String("state-dir", env("FENRIR_STATE_DIR", "/var/lib/fenrir"), "where identity, quarantine and spool live")

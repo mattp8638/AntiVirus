@@ -34,11 +34,51 @@ def synchronize(connection):
     deadline = monotonic() + 120
     with httpx.Client(timeout=20, follow_redirects=False) as client:
         token = access_token(client, connection)
-        return {
+        snapshot = {
             "users": collect(client, GRAPH + "/users?$select=id,displayName,userPrincipalName,accountEnabled,assignedLicenses&$top=999", token, deadline),
             "licenses": collect(client, GRAPH + "/subscribedSkus", token, deadline),
             "secureScores": collect(client, GRAPH + "/security/secureScores?$top=1", token, deadline),
         }
+        # MFA registration needs AuditLog.Read.All (and Entra ID P1/P2); sync carries on without it.
+        try:
+            snapshot["mfaRegistration"] = collect(
+                client, GRAPH + "/reports/authenticationMethods/userRegistrationDetails?$select=userPrincipalName,isAdmin,isMfaRegistered",
+                token, deadline)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code not in (400, 401, 403, 404):
+                raise
+            snapshot["mfaRegistration"] = None
+        snapshot["insights"] = insights(snapshot)
+        return snapshot
+
+
+def insights(snapshot: dict) -> dict:
+    """What an MSP acts on: licences paid for but unused, accounts without MFA, Secure Score."""
+    users = [u for u in snapshot.get("users") or [] if isinstance(u, dict)]
+    enabled = [u for u in users if u.get("accountEnabled") is not False]
+    disabled_licensed = sorted(u.get("userPrincipalName") or u.get("id") or "" for u in users
+                               if u.get("accountEnabled") is False and u.get("assignedLicenses"))
+    purchased = assigned = 0
+    for sku in snapshot.get("licenses") or []:
+        if isinstance(sku, dict):
+            purchased += int(((sku.get("prepaidUnits") or {}).get("enabled")) or 0)
+            assigned += int(sku.get("consumedUnits") or 0)
+    mfa = None
+    registration = snapshot.get("mfaRegistration")
+    if isinstance(registration, list):
+        rows = [r for r in registration if isinstance(r, dict)]
+        missing = [r for r in rows if not r.get("isMfaRegistered")]
+        mfa = {"registered": len(rows) - len(missing), "notRegistered": len(missing),
+               "percent": round(100 * (len(rows) - len(missing)) / len(rows)) if rows else None,
+               "adminsWithoutMfa": sorted(r.get("userPrincipalName") or "" for r in missing if r.get("isAdmin"))[:50]}
+    score = next((s for s in snapshot.get("secureScores") or [] if isinstance(s, dict)), None)
+    secure = None
+    if score and score.get("maxScore"):
+        secure = {"current": score.get("currentScore"), "max": score.get("maxScore"),
+                  "percent": round(100 * float(score.get("currentScore") or 0) / float(score["maxScore"]))}
+    return {"users": len(users), "enabledUsers": len(enabled), "licencesPurchased": purchased, "licencesAssigned": assigned,
+            "licencesUnused": max(purchased - assigned, 0), "disabledButLicensed": disabled_licensed[:100],
+            "mfa": mfa, "secureScore": secure}
 
 
 def access_token(client, connection):
