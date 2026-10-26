@@ -113,10 +113,10 @@ New tables are created on start-up. New columns on existing tables (tickets, agr
 - Windows scans run in the background, so commands and remote sessions are not held up; one scan runs at a time. A fresh install still waits a day before its first full-drive scan. Scheduled quick/full scans follow the protection policy's schedule.
 - Automatic quarantine never touches files under `C:\Windows`, `Program Files` or Fenrir's own folders; findings there are reported for review instead. Windows system files signed through catalog (`.cat`) files are now recognised as Microsoft-signed. That check runs only on real Windows, because Wine has no catalogs.
 - The relay keeps sessions in one server process. If you run several cloud instances, route `/ws/remote/<session>` by session id (sticky sessions).
+- Session recording (policy `remoteAccess.recordSessions`) captures screen and terminal output for playback; viewer input and file transfers are not recorded.
+- Multiple monitors: pick a screen in the viewer on Windows and macOS; Windows also offers "All screens". Linux X11 shows all monitors as one screen.
+- macOS remote control runs through a helper in the signed-in user's session and needs the Screen Recording and Accessibility permissions. Not yet tested on a real Mac.
 - Not built yet:
-  - session video recording
-  - multi-monitor "all screens" view
-  - macOS remote control
   - procurement/purchase orders
   - accounting sync (Xero, QuickBooks)
   - customer satisfaction surveys

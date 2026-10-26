@@ -87,11 +87,19 @@ func consoleUserName() string {
 
 type cgPoint struct{ X, Y float64 }
 
+type cgRect struct {
+	Origin cgPoint
+	Width  float64
+	Height float64
+}
+
 var cg struct {
 	once sync.Once
 	err  error
 
 	mainDisplayID       func() uint32
+	activeDisplays      func(uint32, *uint32, *uint32) int32
+	displayBounds       func(uint32) cgRect
 	displayPixelsWide   func(uint32) uint64
 	displayCreateImage  func(uint32) uintptr
 	imageGetWidth       func(uintptr) uint64
@@ -134,6 +142,8 @@ func loadCoreGraphics() error {
 			purego.RegisterLibFunc(fn, lib, name)
 		}
 		reg(&cg.mainDisplayID, core, "CGMainDisplayID")
+		reg(&cg.activeDisplays, core, "CGGetActiveDisplayList")
+		reg(&cg.displayBounds, core, "CGDisplayBounds")
 		reg(&cg.displayPixelsWide, core, "CGDisplayPixelsWide")
 		if _, err := purego.Dlsym(core, "CGDisplayCreateImage"); err == nil {
 			reg(&cg.displayCreateImage, core, "CGDisplayCreateImage")
@@ -190,6 +200,9 @@ const (
 type cgDesktop struct {
 	mu        sync.Mutex
 	display   uint32
+	displays  []uint32 // main display first
+	selected  int
+	origin    cgPoint // top-left of the selected display in global points
 	width     int
 	height    int
 	scale     float64 // backing pixels per point (2 on Retina)
@@ -210,6 +223,11 @@ func openNativeDesktop() (Desktop, error) {
 		return nil, errors.New("allow Screen Recording for fenrir-agent in System Settings > Privacy & Security, then reconnect")
 	}
 	d := &cgDesktop{display: cg.mainDisplayID(), buttons: map[int]bool{}, scale: 1}
+	d.displays = activeDisplayList()
+	if len(d.displays) > 0 {
+		d.display = d.displays[0]
+	}
+	d.origin = cg.displayBounds(d.display).Origin
 	if _, _, _, err := d.Capture(); err != nil {
 		return nil, err
 	}
@@ -217,6 +235,46 @@ func openNativeDesktop() (Desktop, error) {
 		fmt.Fprintln(os.Stderr, "fenrir: Accessibility permission missing; the screen is view-only until it is granted")
 	}
 	return d, nil
+}
+
+func activeDisplayList() []uint32 {
+	ids := make([]uint32, 16)
+	var count uint32
+	if cg.activeDisplays(uint32(len(ids)), &ids[0], &count) != 0 || count == 0 {
+		return []uint32{cg.mainDisplayID()}
+	}
+	ids = ids[:count]
+	main := cg.mainDisplayID()
+	for i, id := range ids {
+		if id == main {
+			ids[0], ids[i] = ids[i], ids[0]
+		}
+	}
+	return ids
+}
+
+// Monitors lists the displays (index, position and size in points; the first is the main display).
+func (d *cgDesktop) Monitors() []Message {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]Message, 0, len(d.displays))
+	for i, id := range d.displays {
+		b := cg.displayBounds(id)
+		out = append(out, Message{"index": i, "x": int(b.Origin.X), "y": int(b.Origin.Y), "w": int(b.Width), "h": int(b.Height),
+			"primary": i == 0})
+	}
+	return out
+}
+
+func (d *cgDesktop) SelectMonitor(index int) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if index < 0 || index >= len(d.displays) {
+		return fmt.Errorf("this Mac has %d display(s)", len(d.displays))
+	}
+	d.selected, d.display = index, d.displays[index]
+	d.origin = cg.displayBounds(d.display).Origin
+	return nil
 }
 
 func (d *cgDesktop) Size() (int, int) {
@@ -230,7 +288,10 @@ func (d *cgDesktop) Close() {}
 func (d *cgDesktop) Capture() ([]byte, int, int, error) {
 	pixels, w, h, err := d.captureCG()
 	if err != nil || pixels == nil {
-		pixels, w, h, err = captureWithTool()
+		d.mu.Lock()
+		selected := d.selected
+		d.mu.Unlock()
+		pixels, w, h, err = captureWithTool(selected + 1)
 	}
 	if err != nil {
 		return nil, 0, 0, err
@@ -248,7 +309,10 @@ func (d *cgDesktop) captureCG() ([]byte, int, int, error) {
 	if !cg.haveCreateImage {
 		return nil, 0, 0, nil
 	}
-	img := cg.displayCreateImage(d.display)
+	d.mu.Lock()
+	display := d.display
+	d.mu.Unlock()
+	img := cg.displayCreateImage(display)
 	if img == 0 {
 		return nil, 0, 0, nil
 	}
@@ -273,10 +337,10 @@ func (d *cgDesktop) captureCG() ([]byte, int, int, error) {
 }
 
 // captureWithTool is the fallback when CGDisplayCreateImage is gone (newer macOS).
-func captureWithTool() ([]byte, int, int, error) {
+func captureWithTool(displayNumber int) ([]byte, int, int, error) {
 	file := filepath.Join(os.TempDir(), "fenrir-screen-"+strconv.Itoa(os.Getpid())+".png")
 	defer os.Remove(file)
-	if out, err := exec.Command("/usr/sbin/screencapture", "-x", "-C", "-t", "png", file).CombinedOutput(); err != nil {
+	if out, err := exec.Command("/usr/sbin/screencapture", "-x", "-C", "-D", strconv.Itoa(displayNumber), "-t", "png", file).CombinedOutput(); err != nil {
 		return nil, 0, 0, fmt.Errorf("screencapture failed: %s", bytes.TrimSpace(out))
 	}
 	f, err := os.Open(file)
@@ -300,7 +364,7 @@ func captureWithTool() ([]byte, int, int, error) {
 
 func (d *cgDesktop) postMouse(kind uint32, button uint32) {
 	x, y := pointsFromPixels(d.x, d.y, d.scale)
-	event := cg.mouseEvent(0, kind, cgPoint{X: x, Y: y}, button)
+	event := cg.mouseEvent(0, kind, cgPoint{X: d.origin.X + x, Y: d.origin.Y + y}, button)
 	if event == 0 {
 		return
 	}

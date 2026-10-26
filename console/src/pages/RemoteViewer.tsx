@@ -350,6 +350,7 @@ export default function RemoteViewer() {
               {(info?.monitors?.length ? info.monitors : [{ index: 0 }]).map((m: any) => (
                 <option key={m.index} value={m.index}>Screen {m.index + 1}{m.primary ? " (primary)" : ""}</option>
               ))}
+              {info?.monitors?.length > 1 && String(info?.os).startsWith("windows") && <option value={-1}>All screens</option>}
             </select>
             <select title="Image quality" value={quality} onChange={(e) => changeScreen({ quality: Number(e.target.value) })}>
               {[30, 50, 70, 85, 95].map((q) => <option key={q} value={q}>Quality {q}%</option>)}

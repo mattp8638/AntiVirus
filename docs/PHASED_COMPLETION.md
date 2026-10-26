@@ -17,9 +17,17 @@ Done:
 - Windows: background scans that no longer block commands; telemetry queue that no longer loses events;
   `inventory.refresh`, `policy.refresh`, `scan.quick/full`, `forensics.collect` commands.
 
+Later additions:
+- macOS remote screen and control (helper in the user's session, CoreGraphics via purego), display selection,
+  Homebrew patching, network connection sensor.
+- Forensic and support bundles upload to the cloud (Windows tar, Linux/macOS tar.gz); responder-only, audited
+  download; 30-day retention.
+- Remote session recording and playback; multi-monitor selection, with "All screens" on Windows.
+
 Open:
-- macOS has not been run on a real Mac; no screen sharing on macOS; needs Full Disk Access granted by hand.
-- Forensic bundles stay on the device (no upload yet).
+- macOS has not been run on a real Mac. It needs Full Disk Access, Screen Recording and Accessibility granted by
+  hand (an MDM profile can pre-approve them).
+- No "all screens" view on macOS; Linux remote control needs X11 (Wayland blocks it).
 
 ## 2. Protection
 

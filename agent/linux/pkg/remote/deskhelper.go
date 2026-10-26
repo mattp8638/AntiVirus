@@ -25,6 +25,8 @@ const (
 	helperOpWheel
 	helperOpKey
 	helperOpType
+	helperOpMonitors
+	helperOpSelectMonitor
 
 	helperOK    byte = 0
 	helperError byte = 1
@@ -166,6 +168,22 @@ func (d *helperDesktop) Type(text string) error {
 	return err
 }
 
+// Monitors lists the helper's displays (empty when it has only one).
+func (d *helperDesktop) Monitors() []Message {
+	data, err := d.call(helperOpMonitors, helperArgs{})
+	if err != nil {
+		return nil
+	}
+	var out []Message
+	_ = json.Unmarshal(data, &out)
+	return out
+}
+
+func (d *helperDesktop) SelectMonitor(index int) error {
+	_, err := d.call(helperOpSelectMonitor, helperArgs{Button: index})
+	return err
+}
+
 func (d *helperDesktop) Close() {
 	_ = d.w.Close()
 	if d.closer != nil {
@@ -234,6 +252,16 @@ func ServeDesktop(r io.Reader, w io.Writer, d Desktop) error {
 			err = d.Key(args.Code, args.Down)
 		case helperOpType:
 			err = d.Type(args.Text)
+		case helperOpMonitors:
+			var list []Message
+			if md, ok := d.(MonitorDesktop); ok {
+				list = md.Monitors()
+			}
+			payload, _ = json.Marshal(list)
+		case helperOpSelectMonitor:
+			if md, ok := d.(MonitorDesktop); ok {
+				err = md.SelectMonitor(args.Button)
+			}
 		default:
 			err = fmt.Errorf("unknown helper request %d", op)
 		}

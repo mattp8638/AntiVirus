@@ -128,3 +128,47 @@ func TestPackBGRA(t *testing.T) {
 		t.Fatalf("bgra: %v", got)
 	}
 }
+
+type multiFake struct {
+	helperFakeDesktop
+	selected int
+}
+
+func (m *multiFake) Monitors() []Message {
+	return []Message{{"index": 0, "primary": true}, {"index": 1, "primary": false}}
+}
+func (m *multiFake) SelectMonitor(i int) error {
+	if i > 1 {
+		return errors.New("only 2 displays")
+	}
+	m.selected = i
+	return nil
+}
+
+func TestDesktopHelperMonitors(t *testing.T) {
+	toHelperR, toHelperW := io.Pipe()
+	fromHelperR, fromHelperW := io.Pipe()
+	fake := &multiFake{helperFakeDesktop: helperFakeDesktop{w: 10, h: 10}}
+	go func() {
+		_ = writeHelperFrame(fromHelperW, helperOK, nil)
+		_ = ServeDesktop(toHelperR, fromHelperW, fake)
+	}()
+	d, err := newHelperDesktop(toHelperW, fromHelperR, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var md MonitorDesktop = d
+	if got := md.Monitors(); len(got) != 2 || got[1]["index"] != float64(1) {
+		t.Fatalf("monitors: %v", got)
+	}
+	if err := md.SelectMonitor(1); err != nil || fake.selected != 1 {
+		t.Fatalf("select: %v %d", err, fake.selected)
+	}
+	if err := md.SelectMonitor(0); err != nil || fake.selected != 0 {
+		t.Fatalf("select 0 must reach the helper: %v %d", err, fake.selected)
+	}
+	if err := md.SelectMonitor(5); err == nil {
+		t.Fatal("errors must come back")
+	}
+	d.Close()
+}

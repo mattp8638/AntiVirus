@@ -219,6 +219,16 @@ std::vector<Monitor> Monitors() {
   return out;
 }
 
+// The area a viewer asked for: one monitor, or every monitor at once (index -1, the virtual desktop).
+RECT TargetRect(int index) {
+  if (index < 0) {
+    const int x = GetSystemMetrics(SM_XVIRTUALSCREEN), y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    return RECT{x, y, x + GetSystemMetrics(SM_CXVIRTUALSCREEN), y + GetSystemMetrics(SM_CYVIRTUALSCREEN)};
+  }
+  const auto monitors = Monitors();
+  return monitors[std::min<std::size_t>(static_cast<std::size_t>(index), monitors.size() - 1)].rect;
+}
+
 // Captures a monitor into a top-down BGRA buffer, with the mouse cursor drawn in.
 bool CaptureMonitor(const RECT& rect, std::vector<std::uint8_t>* pixels, int* width, int* height) {
   const int w = rect.right - rect.left, h = rect.bottom - rect.top;
@@ -442,8 +452,7 @@ void Session::ScreenLoop() {
     }
     const auto started = GetTickCount64();
     SyncInputDesktop();  // follow switches to the sign-in screen or a UAC prompt
-    const auto monitors = Monitors();
-    const auto& rect = monitors[std::min<std::size_t>(monitorIndex, monitors.size() - 1)].rect;
+    const auto rect = TargetRect(monitorIndex);
     int w = 0, h = 0;
     if (!CaptureMonitor(rect, &current, &w, &h)) {
       Sleep(500);
@@ -570,13 +579,12 @@ void Session::HandleInput(const std::string& type, const json::Value& m) {
     return;
   }
   SyncInputDesktop();
-  const auto monitors = Monitors();
   int index;
   {
     std::lock_guard lock(screenMutex_);
     index = monitor_;
   }
-  const auto& rect = monitors[std::min<std::size_t>(index, monitors.size() - 1)].rect;
+  const auto rect = TargetRect(index);
   auto moveTo = [&](double x, double y) {
     const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
     const int vw = std::max(1, GetSystemMetrics(SM_CXVIRTUALSCREEN) - 1), vh = std::max(1, GetSystemMetrics(SM_CYVIRTUALSCREEN) - 1);
@@ -1233,7 +1241,7 @@ void Session::Dispatch(const json::Value& m) {
       full_ = true;
       if (const auto q = Num(m, "quality", 0); q >= 10 && q <= 100) quality_ = static_cast<int>(q);
       if (const auto f = Num(m, "fps", 0); f >= 1) fps_ = std::min(static_cast<int>(f), options_.maxFps);
-      monitor_ = std::max(0, static_cast<int>(Num(m, "monitor", monitor_)));
+      monitor_ = std::max(-1, static_cast<int>(Num(m, "monitor", monitor_)));  // -1: all screens
     } else if (t == "refresh") {
       full_ = true;
     } else if (t == "ack") {

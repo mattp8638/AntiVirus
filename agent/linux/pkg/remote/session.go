@@ -67,6 +67,12 @@ type Desktop interface {
 	Close()
 }
 
+// MonitorDesktop is a Desktop with several displays the viewer can switch between (macOS).
+type MonitorDesktop interface {
+	Monitors() []Message
+	SelectMonitor(index int) error
+}
+
 // DesktopOpener finds the console display. Replaced in tests.
 var DesktopOpener = OpenX11Desktop
 
@@ -190,7 +196,9 @@ func (s *Session) info() Message {
 	}
 	m := Message{"ch": "sys", "t": "info", "hostname": host, "os": runtime.GOOS + " " + osRelease(), "user": consoleUser(),
 		"home": home, "capabilities": s.capabilities(), "shells": availableShells(), "quality": s.opts.Quality, "maxFps": s.opts.MaxFps}
-	if s.desktop != nil {
+	if md, ok := s.desktop.(MonitorDesktop); ok && len(md.Monitors()) > 0 {
+		m["monitors"] = md.Monitors()
+	} else if s.desktop != nil {
 		w, h := s.desktop.Size()
 		m["monitors"] = []Message{{"index": 0, "x": 0, "y": 0, "w": w, "h": h, "primary": true}}
 	} else if s.desktopErr != nil {
@@ -320,6 +328,13 @@ func (s *Session) handleScreen(t string, m Message) {
 	}
 	switch t {
 	case "start":
+		if md, ok := s.desktop.(MonitorDesktop); ok {
+			if idx, present := m["monitor"].(float64); present && idx >= 0 {
+				if err := md.SelectMonitor(int(idx)); err != nil {
+					_ = s.send(Message{"ch": "sys", "t": "error", "message": err.Error()})
+				}
+			}
+		}
 		if s.screen == nil {
 			s.screen = newScreenStreamer(s, s.desktop)
 			go s.screen.run()
