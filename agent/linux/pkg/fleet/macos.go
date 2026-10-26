@@ -764,3 +764,16 @@ func (s *NetworkSensor) pollMac() []ConnEvent {
 	s.seen = current
 	return fresh
 }
+
+// macPermissions reports the privacy permissions the agent can check itself. Full Disk Access is
+// detected by reading the system TCC database, which macOS only allows with that permission.
+// (Screen Recording and Accessibility belong to the screen helper and are reported when a remote
+// session starts.)
+func macPermissions() map[string]interface{} {
+	f, err := os.Open("/Library/Application Support/com.apple.TCC/TCC.db")
+	fda := err == nil
+	if f != nil {
+		f.Close()
+	}
+	return map[string]interface{}{"fullDiskAccess": fda}
+}

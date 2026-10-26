@@ -40,6 +40,12 @@ export default function DeviceDetail() {
                               : <button className="danger" onClick={() => setAction("device.isolate")}>Isolate</button>}
                   <button onClick={() => setAction("")}>More actions…</button>
                 </>} />
+      {d.platform === "macos" && d.inventory?.permissions?.fullDiskAccess === false && (
+        <div className="card" role="alert" style={{ borderColor: "rgba(251,191,36,.5)", marginBottom: 12 }}>
+          <b>Full Disk Access is not granted on this Mac.</b> Scans and forensic collection cannot read protected folders
+          (Mail, Messages, Safari, other users' files). On the Mac, open System Settings › Privacy &amp; Security › Full Disk Access
+          and allow <span className="mono">/usr/local/bin/fenrir-agent</span>, or push the permission with an MDM profile.
+        </div>)}
       <Tabs tabs={["Overview", "Health", "Patches", "Scripts & jobs", "Remote sessions", "Effective policy", "Alerts", "Actions", "Bundles & recordings", "Software", "Vulnerabilities"]} active={tab} onChange={setTab} />
       {tab === "Health" && <HealthTab deviceId={d.id} />}
       {tab === "Patches" && <PatchesTab device={d} />}

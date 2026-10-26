@@ -61,7 +61,7 @@ def record_inventory(db: Session, device: Device, fields: dict) -> int:
             view.setdefault(target, view[source])
     summary = {key: view[key] for key in ("osName", "osVersion", "cpu", "memoryMb", "diskFreeGb", "ipAddresses", "macAddresses",
                                           "domain", "lastBoot", "manufacturer", "model", "bitlocker", "firewall", "secureBoot",
-                                          "tpm", "localAdmins", "loggedOnUser") if key in view}
+                                          "tpm", "localAdmins", "loggedOnUser", "permissions") if key in view}
     if summary:
         device.inventory = {**(device.inventory or {}), **summary, "updatedAt": utcnow().isoformat()}
     present = [key for key in SOFTWARE_KEYS if key in view]

@@ -804,9 +804,16 @@ func (a *Agent) sendInventory() {
 			}
 		}
 	}
-	a.emit("device.inventory.snapshot", "inventory", "Inventory snapshot", map[string]interface{}{
+	snapshot := map[string]interface{}{
 		"osName": readOSRelease(), "hostname": host, "arch": runtime.GOARCH, "ipAddresses": addrs, "software": installedPackages(),
-	})
+	}
+	if IsMacOS {
+		snapshot["permissions"] = macPermissions()
+		if user := consoleUser(); user != "" {
+			snapshot["loggedOnUser"] = user
+		}
+	}
+	a.emit("device.inventory.snapshot", "inventory", "Inventory snapshot", snapshot)
 	a.lastInv = time.Now()
 	_ = a.Flush()
 }
@@ -818,7 +825,13 @@ func (a *Agent) triage() map[string]interface{} {
 			procs = append(procs, map[string]interface{}{"pid": p.PID, "ppid": p.PPID, "exe": p.Exe, "cmdline": p.Cmdline, "uid": p.UID})
 		}
 	}
-	conns := append(readConns(filepath.Join(a.cfg.ProcRoot, "net/tcp")), readConns(filepath.Join(a.cfg.ProcRoot, "net/tcp6"))...)
+	var conns interface{}
+	if IsMacOS {
+		out, _ := run(20*time.Second, "lsof", "-nP", "-iTCP", "-sTCP:ESTABLISHED", "-F", "pcn")
+		conns = ParseLsofConnections(out)
+	} else {
+		conns = append(readConns(filepath.Join(a.cfg.ProcRoot, "net/tcp")), readConns(filepath.Join(a.cfg.ProcRoot, "net/tcp6"))...)
+	}
 	persistence := map[string]string{}
 	for path, fp := range a.files.snapshot() {
 		persistence[path] = fp
