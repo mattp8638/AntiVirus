@@ -14,7 +14,7 @@ from .. import audit, psa, remote
 from ..db import get_db, session_factory
 from ..deps import Principal, current_principal, scoped_tenant
 from ..config import get_settings
-from ..models import Device, DeviceArtifact, RemoteSession, Tenant, Ticket, utcnow
+from ..models import Command, Device, DeviceArtifact, RemoteSession, Tenant, Ticket, utcnow
 from ..security import digest
 from ..serialize import to_dict
 
@@ -32,7 +32,15 @@ def _session_view(db: Session, session: RemoteSession) -> dict:
     if session.connected_at:
         end = session.ended_at or utcnow()
         connected_minutes = round((end - session.connected_at).total_seconds() / 60, 1)
-    return {**to_dict(session), "hostname": device.hostname if device else "", "platform": device.platform if device else "",
+    command = db.get(Command, session.command_id) if session.command_id else None
+    start = None
+    if command is not None:
+        result = command.result or {}
+        start = {"status": command.status, "updatedAt": to_dict(command).get("updatedAt"),
+                 "reachedRelay": result.get("reachedRelay"), "logPath": result.get("logPath"), "error": result.get("error")}
+    return {**to_dict(session), "startCommand": start,
+            "deviceLastSeenAt": device.last_seen_at.isoformat() + "Z" if device and device.last_seen_at else None,
+            "hostname": device.hostname if device else "", "platform": device.platform if device else "",
             "deviceOnline": remote.hub.device_online(session.device_id), "agentConnected": session.id in remote.hub.rooms
             and remote.hub.rooms[session.id].agent is not None, "connectedMinutes": connected_minutes,
             "recorded": bool(device and remote.remote_policy(db, device).get("recordSessions")),

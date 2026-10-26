@@ -42,8 +42,38 @@ Done:
 - AMSI findings from ordinary user processes reach the cloud through the service's local pipe.
 - The policy editor marks settings no agent enforces yet, and compliance no longer counts them as evidence.
 
+Later additions (enforcing settings that were previously ignored):
+- Batch 1: EDR collection switches and minimal telemetry (Windows, Linux, macOS); automatic quarantine of
+  unremediated malware; terminal sessions for analysts only when `response.remoteShell` allows; break-glass refused
+  when `privilege.breakGlassAllowed` is off; end-user restores from the Windows tray only when
+  `experience.allowQuarantineRestore` is on.
+- Batch 2, firewall: the managed firewall, default inbound/outbound action and custom rules are applied on all
+  three platforms. Rules are checked when the policy is saved (`allow|block in|out tcp|udp|any [ports]
+  [from|to addresses]`); block rules win over allow rules.
+  - Windows: Windows Firewall profiles, rules in the "Fenrir policy" group, the agent's own programs allowed out
+    when outbound is blocked. SMBv1 server off and LLMNR/NetBIOS off (`blockSmbV1`, `blockLlmnrNetbios`).
+    Turning LLMNR/NetBIOS blocking off undoes it; turning SMBv1 blocking off stops enforcing but never re-enables
+    SMBv1.
+  - Linux: a separate nftables table (`inet fenrir_policy`), so ufw/firewalld are untouched. macOS: a pf anchor
+    (`com.apple/fenrir-policy`) and the application firewall (on, stealth mode when inbound is blocked).
+  - On Linux and macOS the default inbound/outbound action only applies once "Apply default actions on Linux and
+    macOS" is turned on, so upgrading never cuts off services a server offers; custom rules apply regardless.
+  - Safeguards on Linux and macOS: loopback, replies, DHCP, ICMP and DNS always pass; the Fenrir Cloud address
+    stays reachable when outbound is blocked; inbound SSH stays open unless a custom rule blocks port 22.
+- Batch 3, scanning:
+  - Scheduled scans keep to `scanCpuLimitPercent` of one core (Windows measures the scan thread's processor time
+    and lowers its priority; Linux/macOS rest between files). Scans an analyst starts run at full speed.
+  - `scanNetworkDrives`: Windows full scans add network drive letters; Linux/macOS skip NFS, SMB, AFP, sshfs and
+    similar mounts unless it is on. On Windows, drives mapped in a user's session are not visible to the
+    service, so only drives mapped for the system account are scanned.
+  - Linux/macOS look inside zip (and jar/apk/docx), tar, gzip and tar.gz archives, nested up to `archiveMaxDepth`,
+    with limits against archive bombs; a match quarantines the whole archive and names the member.
+  - PUA: the cloud tags signatures for potentially unwanted applications (indicator category, or names such as
+    `PUA:`, `Adware.`, `not-a-virus:`). Linux/macOS ignore them when `puaProtection` is off and report without
+    quarantining or stopping the process when it is audit. Windows does not separate PUA yet.
+
 Open:
-- About 55 policy settings are still not enforced by any agent (marked in the editor; see
+- About 35 policy settings are still not enforced by any agent (marked in the editor; see
   `AGENT_SUPPORT` in `cloud/fenrir_cloud/policy_schema.py`).
 - Ransomware rollback is withdrawn: no agent keeps file snapshots.
 

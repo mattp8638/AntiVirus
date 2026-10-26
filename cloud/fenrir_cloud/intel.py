@@ -143,6 +143,15 @@ def sync_feed(db: Session, base_url: str, token: str = "", client: httpx.Client 
 # ---------------------------------------------------------------------------
 
 
+PUA_CATEGORIES = {"pua", "pup", "adware", "riskware", "grayware"}
+_PUA_NAME = re.compile(r"(?i)(^|[^a-z])(pua|pup|adware|riskware|not-a-virus|grayware|toolbar|bundler|browsermodifier)([^a-z]|$)")
+
+
+def is_pua(category: str | None, family: str | None) -> bool:
+    """Potentially unwanted applications: by indicator category, or by the usual vendor naming (PUA:, Adware., not-a-virus:)."""
+    return (category or "").lower() in PUA_CATEGORIES or bool(_PUA_NAME.search(family or ""))
+
+
 def agent_bundle(db: Session, tenant_id: str | None, hashes_limit: int = 50000, urls_limit: int = 50000, rules_limit: int = 5000) -> dict:
     scope = or_(Indicator.tenant_id.is_(None), Indicator.tenant_id == tenant_id) if tenant_id else Indicator.tenant_id.is_(None)
     hash_rows = db.execute(
@@ -158,6 +167,7 @@ def agent_bundle(db: Session, tenant_id: str | None, hashes_limit: int = 50000, 
     allow_rows = db.execute(select(Indicator).where(scope, Indicator.verdict == "allow", Indicator.type == "sha256")).scalars().all()
 
     hashes = [{"id": f"ind-{r.id}", "type": r.type, "value": r.value, "malwareFamily": r.description, "source": r.source,
+               "category": "pua" if is_pua(r.category, r.description) else "malware",
                "firstSeen": r.created_at.isoformat()} for r in hash_rows]
     urls = []
     for r in url_rows:

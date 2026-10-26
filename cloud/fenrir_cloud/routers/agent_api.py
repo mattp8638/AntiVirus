@@ -213,12 +213,14 @@ def telemetry(body: dict = Body(...), device: Device = Depends(current_device), 
 
 
 @router.get("/devices/{device_id}/commands/pending")
-def pending_commands(limit: int = Query(default=20, ge=1, le=100), device: Device = Depends(current_device),
-                     db: Session = Depends(get_db)):
-    commands = db.execute(
-        select(Command).where(Command.device_id == device.id, Command.status.in_(("pending", "dispatched")))
-        .order_by(Command.created_at).limit(limit)
-    ).scalars().all()
+def pending_commands(limit: int = Query(default=20, ge=1, le=100), types: str | None = Query(default=None, max_length=500),
+                     device: Device = Depends(current_device), db: Session = Depends(get_db)):
+    # `types` lets an agent fetch only some commands (the Windows agent polls remote sessions on their own thread).
+    query = select(Command).where(Command.device_id == device.id, Command.status.in_(("pending", "dispatched")))
+    wanted = [t.strip() for t in (types or "").split(",") if t.strip()]
+    if wanted:
+        query = query.where(Command.type.in_(wanted))
+    commands = db.execute(query.order_by(Command.created_at).limit(limit)).scalars().all()
     now = utcnow()
     for command in commands:
         if command.status == "pending":

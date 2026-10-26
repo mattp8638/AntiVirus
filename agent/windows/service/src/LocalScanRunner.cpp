@@ -317,7 +317,7 @@ std::vector<std::filesystem::path> BuildQuickScanTargets() {
   return ResolveScanTargets(targets, false);
 }
 
-std::vector<std::filesystem::path> BuildFullScanTargets() {
+std::vector<std::filesystem::path> BuildFullScanTargets(const bool includeNetworkDrives) {
   DWORD bufferLength = GetLogicalDriveStringsW(0, nullptr);
   if (bufferLength == 0) {
     return {};
@@ -335,7 +335,8 @@ std::vector<std::filesystem::path> BuildFullScanTargets() {
   const wchar_t* current = buffer.c_str();
   while (*current != L'\0') {
     std::wstring drive(current);
-    if (GetDriveTypeW(drive.c_str()) == DRIVE_FIXED) {
+    const auto type = GetDriveTypeW(drive.c_str());
+    if (type == DRIVE_FIXED || (includeNetworkDrives && type == DRIVE_REMOTE)) {
       AddUniqueTarget(targets, seen, drive);
     }
 

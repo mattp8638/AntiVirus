@@ -193,3 +193,28 @@ def test_recorded_session_is_kept_for_playback(client, admin, tenant, device, tm
         records.append((kind, data[offset + 9:offset + 9 + size]))
         offset += 9 + size
     assert records == [(1, tile), (0, b'{"ch":"term","t":"out","data":"aGk="}')]
+
+
+def test_waiting_session_reports_where_the_start_request_is(client, admin, tenant, device):
+    session = start(client, admin, device)
+    detail = client.get(f"/api/console/remote/sessions/{session['id']}", headers=admin).json()
+    assert detail["startCommand"]["status"] == "pending" and detail["deviceOnline"] is False
+    url = f"/api/v1/devices/{device['deviceId']}"
+    item = next(i for i in client.get(f"{url}/commands/pending", headers=device["headers"]).json()["items"]
+                if i["type"] == "remote.session.start")
+    client.post(f"{url}/commands/{item['id']}/complete", headers=device["headers"],
+                json={"status": "failed", "resultJson": {"error": "The remote helper stopped before reaching the relay (exit code 2): "
+                                                               "Could not connect to the relay: error 12029"}})
+    detail = client.get(f"/api/console/remote/sessions/{session['id']}", headers=admin).json()
+    assert detail["status"] == "failed" and detail["startCommand"]["status"] == "failed"
+    assert "error 12029" in detail["events"][-1]["detail"]
+
+
+def test_pending_commands_can_be_filtered_by_type(client, admin, tenant, device):
+    client.post(f"/api/console/devices/{device['deviceId']}/commands", json={"type": "patch.scan"}, headers=admin)
+    start(client, admin, device)
+    url = f"/api/v1/devices/{device['deviceId']}/commands/pending"
+    everything = client.get(url, headers=device["headers"]).json()["items"]
+    assert [i["type"] for i in everything][:2] == ["patch.scan", "remote.session.start"]
+    only = client.get(url, params={"types": "remote.session.start,remote.session.end"}, headers=device["headers"]).json()["items"]
+    assert [i["type"] for i in only] == ["remote.session.start"]

@@ -87,10 +87,21 @@ def test_signature_bundle_matches_agent_parser(client, admin, device):
                 headers=admin)
     bundle = client.get("/api/v1/agent/bundle?hashesLimit=10", headers=device["headers"]).json()
     assert bundle["signatureVersion"]
-    assert {"type": "sha256", "value": sha}.items() <= bundle["hashes"][0].items()
+    assert {"type": "sha256", "value": sha, "category": "malware"}.items() <= bundle["hashes"][0].items()
     assert any(u["host"] == "evil.example" for u in bundle["urls"])
     rep = client.get(f"/api/v1/reputation/{sha}").json()
     assert rep["verdict"] == "malicious"
+
+
+def test_pua_classification():
+    from fenrir_cloud.intel import is_pua
+
+    assert is_pua("pua", "")
+    assert is_pua("malware", "PUA:Win32/Presenoker")
+    assert is_pua(None, "Win32/Adware.Agent.X")
+    assert is_pua("", "not-a-virus:HEUR:AdWare.Win32.X")
+    assert not is_pua("malware", "Trojan.Emotet")
+    assert not is_pua("malware", "Puabot")  # a word containing "pua" is not a PUA label
 
 
 def test_update_check(client, admin):

@@ -76,6 +76,9 @@ type Agent struct {
 	exePath         string
 	exit            func(int)
 	restartDelay    time.Duration
+	// Policy firewall (firewall.go): the rules last loaded, so they are only reloaded on change.
+	firewallApplied string
+	firewallSet     bool
 }
 
 func New(cfg Config) *Agent {
@@ -255,7 +258,14 @@ func (a *Agent) SenseOnce() {
 			if sha, err := HashFile(proc.Exe, a.scanner.MaxFileBytes); err == nil {
 				payload["sha256"] = sha
 				if bad, family := a.scanner.Verdict(sha); bad {
-					a.blockProcess(proc, sha, family)
+					switch mode := ScanOptionsFromPolicy(p).PUA; {
+					case !a.scanner.IsPUA(sha) || mode == "block":
+						a.blockProcess(proc, sha, family)
+					case mode == "audit":
+						a.emit("threat.pua.detected", "realtime", "Potentially unwanted application running: "+filepath.Base(proc.Exe),
+							map[string]interface{}{"processImagePath": proc.Exe, "pid": proc.PID, "sha256": sha, "threatName": family,
+								"verdict": "audit", "score": 60, "category": "pua"})
+					}
 				}
 			}
 		}
@@ -416,6 +426,7 @@ func (a *Agent) refreshPolicy() {
 		a.state.Policy = policy
 		_ = a.saveState()
 		a.applyDeviceControl()
+		a.applyFirewall()
 		if a.scanner.Model != nil {
 			sens, _ := policy.Modules["antimalware"]["mlSensitivity"].(string)
 			a.scanner.SetModel(a.scanner.Model, mlThreshold(a.scanner.Model, sens))
@@ -449,6 +460,7 @@ func (a *Agent) heartbeat() {
 	if resp.EffectivePolicyRevision != a.state.Policy.Revision {
 		a.refreshPolicy()
 	}
+	a.applyFirewall() // no-op unless the rules or the cloud's address changed
 	if resp.CommandsPending > 0 {
 		a.RunCommands()
 	}
@@ -626,7 +638,7 @@ func (a *Agent) Execute(cmd Command) (map[string]interface{}, error) {
 		if cmd.TargetPath == "" && cmd.Type == "scan.targeted" {
 			return nil, errors.New("targetPath is required")
 		}
-		scanned, findings := a.runScan(roots, a.state.Policy.SuppressionPathRoots, a.state.Policy.QuarantineOnMalicious)
+		scanned, findings := a.runScan(roots, a.state.Policy.SuppressionPathRoots, a.state.Policy.QuarantineOnMalicious, false)
 		return map[string]interface{}{"scanned": scanned, "findings": findings}, nil
 	case "remediate.path":
 		sha, err := HashFile(cmd.TargetPath, 0)
@@ -787,7 +799,9 @@ func (a *Agent) isolate(on bool) error {
 		}
 	}
 	a.state.Isolated = on
-	return a.saveState()
+	err := a.saveState()
+	a.applyFirewall() // macOS: the policy anchor steps aside while isolated
+	return err
 }
 
 // ---------------------------------------------------------------------------

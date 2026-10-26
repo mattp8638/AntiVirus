@@ -15,6 +15,7 @@ key, after which lower layers cannot override it (ESET calls this "force").
 from __future__ import annotations
 
 import copy
+import ipaddress
 import hashlib
 import json
 import re
@@ -233,12 +234,17 @@ SCHEMA: tuple[Section, ...] = (
             F("enabled", "bool", True, "Managed firewall"),
             F("defaultInbound", "enum", "block", "Default inbound", options=("allow", "block")),
             F("defaultOutbound", "enum", "allow", "Default outbound", options=("allow", "block")),
+            F("defaultsOnLinuxMac", "bool", False, "Apply default actions on Linux and macOS",
+              "Off: Linux and macOS only apply custom rules. Turn on after allowing the services a server offers "
+              "(SSH always stays open).", platforms=("linux", "macos")),
             F("networkAttackProtection", "bool", True, "Network attack protection (IDS)"),
             F("botnetProtection", "bool", True, "Botnet / C2 callback blocking"),
             F("bruteForceProtection", "bool", True, "Block RDP/SMB/SSH brute force"),
             F("blockSmbV1", "bool", True, "Block SMBv1", platforms=("windows",)),
             F("blockLlmnrNetbios", "bool", True, "Block LLMNR and NetBIOS poisoning", platforms=("windows",)),
-            F("rules", "list", [], "Custom rules", "Lines like 'allow in tcp 3389 from 10.0.0.0/8'."),
+            F("rules", "list", [], "Custom rules",
+              "One rule per line: allow|block in|out tcp|udp|any [ports] [from|to addresses], e.g. "
+              "'allow in tcp 3389 from 10.0.0.0/8'. Block rules win over allow rules."),
             F("networkContainment", "bool", True, "Allow remote network isolation"),
             F("isolationAllowlist", "list", [], "Reachable while isolated", "Hosts/CIDRs still reachable during isolation."),
         ),
@@ -384,11 +390,10 @@ SCHEMA: tuple[Section, ...] = (
 # wherever it applies, by the agents or by the cloud itself. Keep in step with the agents.
 AGENT_SUPPORT: dict[str, tuple[str, ...]] = {
     "antimalware.cloudLookupObserveOnly": ('windows',),
-    "antimalware.puaProtection": (),
-    "antimalware.scanArchives": (),
+    "antimalware.puaProtection": ('linux', 'macos'),
+    "antimalware.scanArchives": ('linux', 'macos'),
     "antimalware.archiveObserveOnly": ('windows',),
-    "antimalware.archiveMaxDepth": (),
-    "antimalware.scanNetworkDrives": (),
+    "antimalware.archiveMaxDepth": ('linux', 'macos'),
     "antimalware.scanMaliciousBlockThreshold": ('windows',),
     "antimalware.scanMaliciousQuarantineThreshold": ('windows',),
     "antimalware.scanBenignDampeningScore": ('windows',),
@@ -400,7 +405,6 @@ AGENT_SUPPORT: dict[str, tuple[str, ...]] = {
     "antimalware.realtimeObserveOnlyForNonExecute": ('windows',),
     "antimalware.enableCleanwareSignerDampening": ('windows',),
     "antimalware.enableKnownGoodHashDampening": ('windows',),
-    "antimalware.scanCpuLimitPercent": (),
     "antimalware.exclusionSigners": ('windows',),
     "antimalware.requireSignerForSuppression": ('windows',),
     "antimalware.allowUnsignedSuppressionPathExecutables": ('windows',),
@@ -452,13 +456,11 @@ AGENT_SUPPORT: dict[str, tuple[str, ...]] = {
     "web.destinationCacheTtlMinutes": ('windows',),
     "web.bankingProtection": (),
     "dns.blockThirdPartyDoh": (),
-    "firewall.defaultInbound": (),
-    "firewall.defaultOutbound": (),
     "firewall.networkAttackProtection": (),
     "firewall.botnetProtection": (),
     "firewall.bruteForceProtection": (),
-    "firewall.blockSmbV1": (),
-    "firewall.blockLlmnrNetbios": (),
+    "firewall.blockSmbV1": ('windows',),
+    "firewall.blockLlmnrNetbios": ('windows',),
     "firewall.isolationAllowlist": ('linux', 'macos'),
     "applicationControl.allowedPublishers": ('windows',),
     "applicationControl.blockNewlySeenExecutables": (),
@@ -603,6 +605,13 @@ def _coerce(path: str, spec: F, value: Any) -> Any:
             bad = [item for item in cleaned if item not in spec.options]
             if bad:
                 raise PolicyError(f"{path} has unknown values: {', '.join(bad)}")
+        if path == "firewall.rules":
+            for item in cleaned:
+                if not item.startswith("#") and parse_firewall_rule(item) is None:
+                    raise PolicyError(
+                        f"firewall.rules: cannot read '{item}'. Use lines like 'allow in tcp 3389 from 10.0.0.0/8', "
+                        "'block out udp any to 203.0.113.0/24' or 'allow in tcp 80,443'."
+                    )
         return cleaned
     if spec.kind == "str":
         if not isinstance(value, str):
@@ -721,6 +730,48 @@ def parse_scan_schedule(text: str) -> dict | None:
     return {"off": False, "days": sorted(set(days)), "minuteOfDay": int(match.group(2)) * 60 + int(match.group(3))}
 
 
+def parse_firewall_rule(text: str) -> dict | None:
+    """Parse one custom firewall rule line.
+
+    Grammar: ``<allow|block> <in|out> <tcp|udp|any> [ports] [from|to <addresses>]``.
+    Ports are ``any``, ``N``, ``N-M`` or a comma list of those (tcp/udp only). Addresses are ``any`` or a comma
+    list of IPv4/IPv6 addresses or CIDR ranges; they are always the remote end. Returns None when unreadable.
+    """
+    words = text.strip().lower().split()
+    if len(words) < 3 or words[0] not in {"allow", "block"} or words[1] not in {"in", "out"} or words[2] not in {"tcp", "udp", "any"}:
+        return None
+    rule: dict = {"action": words[0], "direction": words[1], "protocol": words[2], "ports": [], "remote": []}
+    rest = words[3:]
+    if rest and rest[0] not in {"from", "to"}:
+        ports = rest.pop(0)
+        if ports != "any":
+            if rule["protocol"] == "any":
+                return None
+            for part in ports.split(","):
+                low, _, high = part.partition("-")
+                if not low.isdigit() or (high and not high.isdigit()):
+                    return None
+                lo, hi = int(low), int(high or low)
+                if not 1 <= lo <= hi <= 65535:
+                    return None
+                rule["ports"].append([lo, hi])
+            if len(rule["ports"]) > 32:
+                return None
+    if rest:
+        if len(rest) != 2 or rest[0] not in {"from", "to"}:
+            return None
+        if rest[1] != "any":
+            for part in rest[1].split(","):
+                try:
+                    network = ipaddress.ip_network(part, strict=False)
+                except ValueError:
+                    return None
+                rule["remote"].append(str(network) if "/" in part else str(network.network_address))
+            if len(rule["remote"]) > 64:
+                return None
+    return rule
+
+
 def to_agent_policy(policy_id: str, name: str, settings: dict) -> dict:
     """Translate effective settings into the document agents parse.
 
@@ -771,6 +822,10 @@ def to_agent_policy(policy_id: str, name: str, settings: dict) -> dict:
                                  "scanNetworkDrives", "quickScanSchedule", "fullScanSchedule", "scanCpuLimitPercent",
                                  "exclusionProcesses")
     }
+    doc["modules"]["firewall"] = dict(fw)
+    doc["modules"]["firewall"]["parsedRules"] = [
+        rule for rule in (parse_firewall_rule(line) for line in fw.get("rules", []) if not line.startswith("#")) if rule
+    ]
     for key, plan_key in (("quickScanSchedule", "quickScanPlan"), ("fullScanSchedule", "fullScanPlan")):
         plan = parse_scan_schedule(str(am.get(key) or ""))
         if plan is not None:

@@ -83,7 +83,7 @@ class AgentService {
   std::wstring ExecuteTargetedScan(const RemoteCommand& command);
   // Quick/full scans run on a background thread so commands and check-ins continue meanwhile.
   bool StartBackgroundScan(const std::wstring& eventPrefix, const std::wstring& scopeLabel, const std::wstring& source,
-                           std::vector<std::filesystem::path> targets);
+                           std::vector<std::filesystem::path> targets, int cpuLimitPercent = 100);
   std::wstring ExecuteOnDemandScan(const RemoteCommand& command, bool full);
   std::wstring ExecuteInventoryRefreshCommand(const RemoteCommand& command);
   std::wstring ExecutePolicyRefreshCommand(const RemoteCommand& command);
@@ -139,6 +139,11 @@ class AgentService {
   void StartRealtimeChannel();
   void StopRealtimeChannel();
   void RealtimeLoop();
+  // Remote-session commands run on their own thread so a long patch scan or install on the main loop
+  // never keeps a technician waiting.
+  void InteractiveCommandLoop();
+  void ExecuteJournaledCommand(const RemoteCommand& command, const AgentState& identity);
+  static bool IsInteractiveCommand(const std::wstring& type);
 
   AgentConfig config_{};
   AgentState state_{};
@@ -146,6 +151,18 @@ class AgentService {
   ExtendedPolicy telemetryFilter_{};  // parsed edr collection switches, refreshed when the policy revision changes
   std::wstring telemetryFilterRevision_;
   std::mutex telemetryFilterMutex_{};
+  // Firewall and network hardening (FirewallPolicy.h) run on a worker thread so PowerShell never delays protection.
+  std::mutex firewallMutex_{};
+  std::string appliedFirewallScript_{};  // last script that ran; re-run only on change
+  std::string pendingFirewallScript_{};
+  std::wstring pendingFirewallSummary_{};
+  bool firewallWorkerBusy_{false};
+  std::thread firewallThread_{};
+  void ApplyFirewallPolicy();
+  bool ScanNetworkDrives() const;
+  int ScheduledScanCpuLimit() const;
+  void FirewallWorker();
+  bool RunFirewallScript(const std::string& script, const std::wstring& summary);
   std::unique_ptr<LocalStateStore> stateStore_{};
   std::unique_ptr<ControlPlaneClient> controlPlaneClient_{};
   std::unique_ptr<CommandJournalStore> commandJournalStore_{};
@@ -166,6 +183,10 @@ class AgentService {
   // Set by the realtime channel when the cloud queues a command.
   HANDLE wakeEvent_{nullptr};
   std::thread realtimeThread_{};
+  std::thread interactiveThread_{};
+  HANDLE interactiveWakeEvent_{nullptr};
+  std::atomic<bool> interactiveLoopRunning_{false};
+  std::atomic<bool> realtimeConnected_{false};
   std::mutex remoteMutex_{};
   std::map<std::wstring, HANDLE> remoteHelpers_{};
   // The realtime thread starts remote sessions straight away, even while the main loop is busy

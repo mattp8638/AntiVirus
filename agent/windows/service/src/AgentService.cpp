@@ -1,5 +1,6 @@
 #include "AgentService.h"
 #include "ExtendedPolicy.h"
+#include "FirewallPolicy.h"
 #include "NetworkProbe.h"
 #include "BundleArchive.h"
 
@@ -1025,6 +1026,9 @@ AgentService::~AgentService() {
     pamRequestEvent_ = nullptr;
   }
   StopRealtimeChannel();
+  if (firewallThread_.joinable()) {
+    firewallThread_.join();  // bounded by the script's three-minute timeout
+  }
   if (wakeEvent_ != nullptr) {
     CloseHandle(wakeEvent_);
     wakeEvent_ = nullptr;
@@ -1238,7 +1242,8 @@ void AgentService::RunScheduledQuickScan(const int cycle) {
     }
 
     // Runs in the background; skipped this cycle if another scan is still running.
-    StartBackgroundScan(L"scan.quick-scheduled", L"quick", kScheduledQuickScanSource, BuildQuickScanTargets());
+    StartBackgroundScan(L"scan.quick-scheduled", L"quick", kScheduledQuickScanSource, BuildQuickScanTargets(),
+                        ScheduledScanCpuLimit());
   } catch (const std::exception& error) {
     QueueTelemetryEvent(L"scan.quick-scheduled.failed", L"agent-service",
                         L"The endpoint failed to complete a scheduled quick scan.",
@@ -1272,7 +1277,8 @@ void AgentService::RunScheduledFullDriveScan(const int cycle) {
       }
     }
 
-    StartBackgroundScan(L"scan.scheduled", L"full", kScheduledFullDriveScanSource, BuildFullScanTargets());
+    StartBackgroundScan(L"scan.scheduled", L"full", kScheduledFullDriveScanSource, BuildFullScanTargets(ScanNetworkDrives()),
+                        ScheduledScanCpuLimit());
   } catch (const std::exception& error) {
     QueueTelemetryEvent(L"scan.scheduled.failed", L"agent-service",
                         L"The endpoint failed to complete a scheduled full C: drive scan.",
@@ -1777,85 +1783,10 @@ void AgentService::PollAndExecuteCommands(const int cycle) {
                           BuildCyclePayload(cycle, std::wstring(L"\"count\":") + std::to_wstring(pollResult.items.size())));
 
       for (const auto& command : pollResult.items) {
-        if (!commandJournalStore_) {
-          std::wcerr << L"Cannot execute remote command without its durable journal." << std::endl;
-          continue;
+        if (IsInteractiveCommand(command.type) && interactiveLoopRunning_) {
+          continue;  // the interactive thread runs these
         }
-        // Previously executed commands may be re-polled if the cloud did not
-        // receive the completion. Never perform their side effects again.
-        try {
-          std::wstring savedStatus;
-          std::wstring savedResult;
-          if (commandJournalStore_->LoadReceipt(command.commandId, savedStatus, savedResult)) {
-            if (savedStatus == L"started" || savedStatus == L"polled") {
-              savedStatus = L"failed";
-              savedResult = L"{\"outcomeUncertain\":true,\"error\":\"Agent stopped while command execution was in progress; manual review required. No automatic replay.\"}";
-              commandJournalStore_->RecordFailed(command, savedResult,
-                                                  L"Interrupted command; outcome uncertain");
-            }
-            if (savedStatus == L"completed" || savedStatus == L"failed") {
-              try {
-                controlPlaneClient_->CompleteCommand(state_, command.commandId, savedStatus, savedResult);
-              } catch (const std::exception& error) {
-                std::wcerr << L"Could not replay command outcome: " << Utf8ToWide(error.what()) << std::endl;
-              }
-              continue;
-            }
-            std::wcerr << L"Unrecognised prior command state; manual investigation needed." << std::endl;
-            continue;
-          }
-          // Atomic sqlite commit before any potentially irreversible action.
-          commandJournalStore_->RecordPolled(command);
-        } catch (const std::exception& error) {
-          std::wcerr << L"Cannot safely journal command before execution: " << Utf8ToWide(error.what()) << std::endl;
-          continue;
-        }
-
-        std::wstring resultJson;
-        std::wstring completionStatus = L"completed";
-        std::wstring failureReason;
-        try {
-          resultJson = ExecuteCommand(command);
-        } catch (const rmm::CommandFailed& failed) {
-          completionStatus = L"failed";
-          failureReason = Utf8ToWide(failed.what());
-          resultJson = Utf8ToWide(failed.resultJson);
-          if (!resultJson.empty() && resultJson.back() == L'}') {
-            resultJson.pop_back();
-            resultJson += std::wstring(resultJson.size() > 1 ? L"," : L"") + L"\"error\":\"" +
-                          Utf8ToWide(EscapeJsonString(failureReason)) + L"\"}";
-          }
-        } catch (const std::exception& error) {
-          completionStatus = L"failed";
-          failureReason = Utf8ToWide(error.what());
-          resultJson = std::wstring(L"{\"commandId\":\"") + command.commandId + L"\",\"error\":\"" +
-                       Utf8ToWide(EscapeJsonString(failureReason)) + L"\"}";
-        }
-
-        try {
-          if (completionStatus == L"completed") {
-            commandJournalStore_->RecordCompleted(command, resultJson);
-          } else {
-            commandJournalStore_->RecordFailed(command, resultJson, failureReason);
-          }
-        } catch (const std::exception& error) {
-          // Do not acknowledge work whose result cannot survive a process
-          // restart. The 'started' journal entry will require manual review.
-          std::wcerr << L"Remote command result persistence failed: " << Utf8ToWide(error.what()) << std::endl;
-          continue;
-        }
-
-        try {
-          controlPlaneClient_->CompleteCommand(state_, command.commandId, completionStatus, resultJson);
-        } catch (const std::exception& error) {
-          // The saved outcome will be re-sent on the next poll; never rerun.
-          std::wcerr << L"Command completion not delivered; saved for reconnect: " <<
-                        Utf8ToWide(error.what()) << std::endl;
-        }
-        if (completionStatus == L"failed") {
-          QueueTelemetryEvent(L"command.failed", L"command-executor",
-                              std::wstring(L"Remote command failed: ") + command.type + L".", resultJson);
-        }
+        ExecuteJournaledCommand(command, state_);
       }
 
       return;
@@ -1869,6 +1800,116 @@ void AgentService::PollAndExecuteCommands(const int cycle) {
                           L"The endpoint could not retrieve pending commands from the control plane.",
                           BuildCyclePayload(cycle));
       std::wcerr << L"Command polling failed: " << Utf8ToWide(error.what()) << std::endl;
+      return;
+    }
+  }
+}
+
+bool AgentService::IsInteractiveCommand(const std::wstring& type) {
+  return type == L"remote.session.start" || type == L"remote.session.end";
+}
+
+void AgentService::ExecuteJournaledCommand(const RemoteCommand& command, const AgentState& identity) {
+  if (!commandJournalStore_) {
+    std::wcerr << L"Cannot execute remote command without its durable journal." << std::endl;
+    return;
+  }
+  // Previously executed commands may be re-polled if the cloud did not
+  // receive the completion. Never perform their side effects again.
+  try {
+    std::wstring savedStatus;
+    std::wstring savedResult;
+    if (commandJournalStore_->LoadReceipt(command.commandId, savedStatus, savedResult)) {
+      if (savedStatus == L"started" || savedStatus == L"polled") {
+        savedStatus = L"failed";
+        savedResult = L"{\"outcomeUncertain\":true,\"error\":\"Agent stopped while command execution was in progress; manual review required. No automatic replay.\"}";
+        commandJournalStore_->RecordFailed(command, savedResult,
+                                            L"Interrupted command; outcome uncertain");
+      }
+      if (savedStatus == L"completed" || savedStatus == L"failed") {
+        try {
+          controlPlaneClient_->CompleteCommand(identity, command.commandId, savedStatus, savedResult);
+        } catch (const std::exception& error) {
+          std::wcerr << L"Could not replay command outcome: " << Utf8ToWide(error.what()) << std::endl;
+        }
+        return;
+      }
+      std::wcerr << L"Unrecognised prior command state; manual investigation needed." << std::endl;
+      return;
+    }
+    // Atomic sqlite commit before any potentially irreversible action.
+    commandJournalStore_->RecordPolled(command);
+  } catch (const std::exception& error) {
+    std::wcerr << L"Cannot safely journal command before execution: " << Utf8ToWide(error.what()) << std::endl;
+    return;
+  }
+
+  std::wstring resultJson;
+  std::wstring completionStatus = L"completed";
+  std::wstring failureReason;
+  try {
+    resultJson = ExecuteCommand(command);
+  } catch (const rmm::CommandFailed& failed) {
+    completionStatus = L"failed";
+    failureReason = Utf8ToWide(failed.what());
+    resultJson = Utf8ToWide(failed.resultJson);
+    if (!resultJson.empty() && resultJson.back() == L'}') {
+      resultJson.pop_back();
+      resultJson += std::wstring(resultJson.size() > 1 ? L"," : L"") + L"\"error\":\"" +
+                    Utf8ToWide(EscapeJsonString(failureReason)) + L"\"}";
+    }
+  } catch (const std::exception& error) {
+    completionStatus = L"failed";
+    failureReason = Utf8ToWide(error.what());
+    resultJson = std::wstring(L"{\"commandId\":\"") + command.commandId + L"\",\"error\":\"" +
+                 Utf8ToWide(EscapeJsonString(failureReason)) + L"\"}";
+  }
+
+  try {
+    if (completionStatus == L"completed") {
+      commandJournalStore_->RecordCompleted(command, resultJson);
+    } else {
+      commandJournalStore_->RecordFailed(command, resultJson, failureReason);
+    }
+  } catch (const std::exception& error) {
+    // Do not acknowledge work whose result cannot survive a process
+    // restart. The 'started' journal entry will require manual review.
+    std::wcerr << L"Remote command result persistence failed: " << Utf8ToWide(error.what()) << std::endl;
+    return;
+  }
+
+  try {
+    controlPlaneClient_->CompleteCommand(identity, command.commandId, completionStatus, resultJson);
+  } catch (const std::exception& error) {
+    // The saved outcome will be re-sent on the next poll; never rerun.
+    std::wcerr << L"Command completion not delivered; saved for reconnect: " <<
+                  Utf8ToWide(error.what()) << std::endl;
+  }
+  if (completionStatus == L"failed") {
+    QueueTelemetryEvent(L"command.failed", L"command-executor",
+                        std::wstring(L"Remote command failed: ") + command.type + L".", resultJson);
+  }
+}
+
+void AgentService::InteractiveCommandLoop() {
+  while (!ShouldStop()) {
+    const auto identity = IdentitySnapshot();
+    if (!identity.deviceId.empty() && !ControlPlaneClient::DeviceApiKey(identity).empty()) {
+      try {
+        const auto poll = controlPlaneClient_->PollPendingCommands(identity, 25, L"remote.session.start,remote.session.end");
+        for (const auto& command : poll.items) {
+          if (IsInteractiveCommand(command.type)) {
+            ExecuteJournaledCommand(command, identity);
+          }
+        }
+      } catch (const std::exception& error) {
+        std::wcerr << L"Interactive command polling failed: " << Utf8ToWide(error.what()) << std::endl;
+      }
+    }
+    // Woken at once by the realtime channel; without it, check every 15 seconds.
+    const DWORD wait = realtimeConnected_ ? 60000 : 15000;
+    HANDLE events[] = {stopEvent_, interactiveWakeEvent_};
+    if (WaitForMultipleObjects(2, events, FALSE, wait) == WAIT_OBJECT_0) {
       return;
     }
   }
@@ -2012,7 +2053,7 @@ std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
 }
 
 bool AgentService::StartBackgroundScan(const std::wstring& eventPrefix, const std::wstring& scopeLabel, const std::wstring& source,
-                                       std::vector<std::filesystem::path> targets) {
+                                       std::vector<std::filesystem::path> targets, const int cpuLimitPercent) {
   bool expected = false;
   if (!backgroundScanBusy_->compare_exchange_strong(expected, true)) {
     return false;
@@ -2026,7 +2067,21 @@ bool AgentService::StartBackgroundScan(const std::wstring& eventPrefix, const st
   auto stopping = stopRequested_;
   const auto config = config_;
   const auto state = state_;
-  std::thread([busy, stopping, config, state, eventPrefix, scopeLabel, source, targets = std::move(targets)]() {
+  std::thread([busy, stopping, config, state, eventPrefix, scopeLabel, source, cpuLimitPercent, targets = std::move(targets)]() {
+    // CPU limit (scheduled scans): measure this thread's processor time between files and rest to match.
+    if (cpuLimitPercent < 100) {
+      SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    }
+    const auto threadCpuMs = []() -> unsigned long long {
+      FILETIME created{}, exited{}, kernel{}, user{};
+      if (!GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user)) {
+        return 0;
+      }
+      const auto ticks = [](const FILETIME& t) { return (static_cast<unsigned long long>(t.dwHighDateTime) << 32) | t.dwLowDateTime; };
+      return (ticks(kernel) + ticks(user)) / 10000;  // 100 ns units to ms
+    };
+    unsigned long long lastCpu = threadCpuMs();
+    unsigned long long restDebt = 0;
     const TelemetryQueueStore queue(config.runtimeDatabasePath, config.telemetryQueuePath);
     const auto record = [&](const std::wstring& type, const std::wstring& summary, const std::wstring& payload) {
       try {
@@ -2040,9 +2095,19 @@ bool AgentService::StartBackgroundScan(const std::wstring& eventPrefix, const st
       options.source = source;
       options.queueTelemetry = true;  // appended to the shared queue (findings + summary)
       options.applyRemediation = true;
-      const auto result = ExecuteLocalScan(config, state, targets, options, [stopping](const LocalScanProgressUpdate&) {
+      const auto result = ExecuteLocalScan(config, state, targets, options, [&](const LocalScanProgressUpdate&) {
         if (stopping->load()) {
           throw std::runtime_error("the service is stopping");
+        }
+        if (cpuLimitPercent < 100) {
+          const auto now = threadCpuMs();
+          restDebt += ScanThrottleRestMs(cpuLimitPercent, now - lastCpu);
+          lastCpu = now;
+          if (restDebt >= 20) {
+            Sleep(static_cast<DWORD>(std::min<unsigned long long>(restDebt, 2000)));
+            restDebt = 0;
+            lastCpu = threadCpuMs();
+          }
         }
       });
       record(eventPrefix + L".completed", L"The endpoint completed a " + scopeLabel + L" scan.",
@@ -2060,7 +2125,7 @@ bool AgentService::StartBackgroundScan(const std::wstring& eventPrefix, const st
 
 std::wstring AgentService::ExecuteOnDemandScan(const RemoteCommand& command, const bool full) {
   const auto scope = full ? std::wstring(L"full") : std::wstring(L"quick");
-  auto targets = full ? BuildFullScanTargets() : BuildQuickScanTargets();
+  auto targets = full ? BuildFullScanTargets(ScanNetworkDrives()) : BuildQuickScanTargets();
   const auto count = targets.size();
   if (!StartBackgroundScan(L"scan." + scope, scope, L"command." + command.commandId, std::move(targets))) {
     throw std::runtime_error("Another scan is already running on this device; try again when it finishes");
@@ -2635,6 +2700,41 @@ std::wstring AgentService::LaunchRemoteHelper(const RemoteCommand& command) {
     throw std::runtime_error("Could not start the remote access helper (error " + std::to_string(GetLastError()) + ")");
   }
   CloseHandle(process.hThread);
+  // Wait until the helper reaches the relay (its log says so) or quits, so a helper that cannot connect
+  // fails the command with its reason instead of leaving the technician on "waiting" forever.
+  const auto logPath = std::filesystem::path(optionsPath).replace_extension(L".log");
+  const auto readLog = [&logPath]() {
+    std::ifstream in(logPath, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  };
+  bool reachedRelay = false;
+  for (int waited = 0; waited < 30000; waited += 250) {
+    if (readLog().find("Connected to the relay.") != std::string::npos) {
+      reachedRelay = true;
+      break;
+    }
+    if (WaitForSingleObject(process.hProcess, 250) == WAIT_OBJECT_0) {
+      break;
+    }
+  }
+  if (!reachedRelay && WaitForSingleObject(process.hProcess, 0) == WAIT_OBJECT_0) {
+    DWORD exitCode = 0;
+    GetExitCodeProcess(process.hProcess, &exitCode);
+    CloseHandle(process.hProcess);
+    std::filesystem::remove(optionsPath, ec);
+    auto log = readLog();
+    std::string last;
+    for (std::size_t end = log.size(); end > 0 && last.empty();) {
+      const auto start = log.rfind('\n', end - 1);
+      auto line = log.substr(start == std::string::npos ? 0 : start + 1, end - (start == std::string::npos ? 0 : start + 1));
+      while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
+      if (!line.empty() && line.find("Helper exiting") == std::string::npos) last = line.size() > 21 ? line.substr(21) : line;
+      if (start == std::string::npos) break;
+      end = start;
+    }
+    throw std::runtime_error("The remote helper stopped before reaching the relay (exit code " + std::to_string(exitCode) + ")" +
+                             (last.empty() ? std::string(".") : ": " + last) + " Log: " + WideToUtf8(logPath.wstring()));
+  }
   {
     std::lock_guard lock(remoteMutex_);
     if (auto it = remoteHelpers_.find(sessionId); it != remoteHelpers_.end()) {
@@ -2646,7 +2746,8 @@ std::wstring AgentService::LaunchRemoteHelper(const RemoteCommand& command) {
                       std::wstring(L"{\"sessionId\":\"") + sessionId + L"\",\"windowsSession\":" + std::to_wstring(windowsSession) +
                           L",\"technician\":\"" + Utf8ToWide(EscapeJsonString(ExtractPayloadString(command.payloadJson, "technician").value_or(L""))) + L"\"}");
   return std::wstring(L"{\"started\":true,\"consent\":\"pending\",\"helperPid\":") + std::to_wstring(process.dwProcessId) +
-         L",\"windowsSession\":" + std::to_wstring(windowsSession) + L"}";
+         L",\"windowsSession\":" + std::to_wstring(windowsSession) + L",\"reachedRelay\":" + (reachedRelay ? L"true" : L"false") +
+         L",\"logPath\":\"" + Utf8ToWide(EscapeJsonString(logPath.wstring())) + L"\"}";
 }
 
 std::wstring AgentService::EndRemoteHelper(const RemoteCommand& command) {
@@ -2697,6 +2798,13 @@ void AgentService::StartRealtimeChannel() {
     return;
   }
   realtimeThread_ = std::thread([this] { RealtimeLoop(); });
+  if (!interactiveThread_.joinable()) {
+    interactiveWakeEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (interactiveWakeEvent_ != nullptr) {
+      interactiveLoopRunning_ = true;
+      interactiveThread_ = std::thread([this] { InteractiveCommandLoop(); });
+    }
+  }
 }
 
 void AgentService::StopRealtimeChannel() {
@@ -2705,6 +2813,14 @@ void AgentService::StopRealtimeChannel() {
   }
   if (realtimeThread_.joinable()) {
     realtimeThread_.join();
+  }
+  if (interactiveThread_.joinable()) {
+    interactiveThread_.join();
+  }
+  interactiveLoopRunning_ = false;
+  if (interactiveWakeEvent_ != nullptr) {
+    CloseHandle(interactiveWakeEvent_);
+    interactiveWakeEvent_ = nullptr;
   }
 }
 
@@ -2721,6 +2837,8 @@ void AgentService::RealtimeLoop() {
       WebSocketClient socket;
       socket.Connect(controlPlaneClient_->RealtimeUrl(identity), L"X-Device-Api-Key: " + ControlPlaneClient::DeviceApiKey(identity) + L"\r\n");
       SetEvent(wakeEvent_);  // Main loop owns execution and journal persistence.
+      if (interactiveWakeEvent_) SetEvent(interactiveWakeEvent_);
+      realtimeConnected_ = true;
       // A watcher closes the socket when the service stops, which unblocks Receive.
       std::atomic<bool> done{false};
       std::thread watcher([&] {
@@ -2737,12 +2855,24 @@ void AgentService::RealtimeLoop() {
       while (!ShouldStop() && socket.Receive(&message, &binary)) {
         if (message.find("\"commands\"") != std::string::npos || message.find("\"pollNow\":true") != std::string::npos) {
           SetEvent(wakeEvent_);
+          if (interactiveWakeEvent_) SetEvent(interactiveWakeEvent_);
         }
       }
+      realtimeConnected_ = false;
       done = true;
       socket.Close();
       watcher.join();
-    } catch (const std::exception&) {
+    } catch (const std::exception& error) {
+      realtimeConnected_ = false;
+      // Report why the live channel is down (once per distinct error) so it shows in the device's activity.
+      static std::string lastError;
+      if (lastError != error.what()) {
+        lastError = error.what();
+        QueueTelemetryEvent(L"realtime.connect_failed", L"agent-service",
+                            L"The agent could not open its live connection to the server; remote sessions start on the next poll instead.",
+                            L"{\"error\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(lastError))) + L"\",\"url\":\"" +
+                                Utf8ToWide(EscapeJsonString(controlPlaneClient_->RealtimeUrl(identity))) + L"\"}");
+      }
     }
     if (GetTickCount64() - started > 60000) {
       backoff = 5000;
@@ -2815,6 +2945,110 @@ void AgentService::ApplyProtectionPolicy() {
   processGuard_->UpdatePolicy(policy_);
   for (const auto& record : processGuard_->ApplyDeviceControl()) {
     QueueTelemetryEvent(record.eventType, record.source, record.summary, record.payloadJson);
+  }
+  ApplyFirewallPolicy();
+}
+
+bool AgentService::ScanNetworkDrives() const {
+  return !policy_.modulesJson.empty() && ExtendedPolicy::Parse(policy_.modulesJson).scanNetworkDrives;
+}
+
+int AgentService::ScheduledScanCpuLimit() const {
+  return policy_.modulesJson.empty() ? 100 : ExtendedPolicy::Parse(policy_.modulesJson).scanCpuLimitPercent;
+}
+
+void AgentService::ApplyFirewallPolicy() {
+  if (policy_.modulesJson.empty()) {
+    return;
+  }
+  const auto settings = firewall::Parse(policy_.modulesJson);
+  if (!settings.present) {
+    return;
+  }
+  auto script = firewall::BuildScript(settings, WideToUtf8(config_.installRootPath.wstring()));
+  std::wstring summary = settings.enabled
+                             ? std::wstring(L"Firewall policy applied (inbound ") + (settings.blockInbound ? L"block" : L"allow") +
+                                   L", outbound " + (settings.blockOutbound ? L"block" : L"allow") + L", " +
+                                   std::to_wstring(settings.rules.size()) + L" custom rules)"
+                             : std::wstring(L"Network hardening applied (Windows Firewall not managed)");
+  std::lock_guard lock(firewallMutex_);
+  if (script == appliedFirewallScript_ && pendingFirewallScript_.empty()) {
+    return;
+  }
+  pendingFirewallScript_ = std::move(script);
+  pendingFirewallSummary_ = std::move(summary);
+  if (firewallWorkerBusy_) {
+    return;  // the running worker picks up the newest script when it finishes
+  }
+  if (firewallThread_.joinable()) {
+    firewallThread_.join();  // finished: busy is false
+  }
+  firewallWorkerBusy_ = true;
+  firewallThread_ = std::thread([this] { FirewallWorker(); });
+}
+
+void AgentService::FirewallWorker() {
+  for (;;) {
+    std::string script;
+    std::wstring summary;
+    {
+      std::lock_guard lock(firewallMutex_);
+      if (pendingFirewallScript_.empty() || pendingFirewallScript_ == appliedFirewallScript_) {
+        pendingFirewallScript_.clear();
+        firewallWorkerBusy_ = false;
+        return;
+      }
+      script = std::move(pendingFirewallScript_);
+      summary = std::move(pendingFirewallSummary_);
+      pendingFirewallScript_.clear();
+    }
+    const bool ok = RunFirewallScript(script, summary);
+    std::lock_guard lock(firewallMutex_);
+    if (ok) {
+      appliedFirewallScript_ = script;
+    }
+    if (!ok && pendingFirewallScript_.empty()) {
+      firewallWorkerBusy_ = false;
+      return;  // retried on the next policy change or service start
+    }
+  }
+}
+
+bool AgentService::RunFirewallScript(const std::string& script, const std::wstring& summaryIn) {
+  const auto workRoot = config_.runtimeDatabasePath.parent_path() / L"rmm" / L"firewall";
+  try {
+    std::error_code ec;
+    std::filesystem::create_directories(workRoot, ec);
+    const auto path = workRoot / L"apply-firewall.ps1";
+    {
+      std::ofstream file(path, std::ios::binary | std::ios::trunc);
+      file << "\xEF\xBB\xBF" << script;
+    }
+    wchar_t systemDir[MAX_PATH]{};
+    GetSystemDirectoryW(systemDir, MAX_PATH);
+    const std::wstring command = L"\"" + std::wstring(systemDir) +
+                                 L"\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" +
+                                 path.wstring() + L"\"";
+    const auto result = rmm::RunProcess(command, workRoot.wstring(), {}, 3 * 60 * 1000);
+    std::filesystem::remove(path, ec);
+    auto output = result.stdoutText;
+    while (!output.empty() && (output.back() == '\n' || output.back() == '\r' || output.back() == ' ')) {
+      output.pop_back();
+    }
+    const auto parsed = json::Parse(output);
+    if (result.timedOut || !parsed || !parsed->IsObject()) {
+      QueueTelemetryEvent(L"firewall.apply_failed", L"firewall", L"Firewall policy could not be applied",
+                          L"{\"stderr\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(result.stderrText.substr(0, 2000)))) + L"\"}");
+      return false;
+    }
+    const bool ok = parsed->Get("ok") && parsed->Get("ok")->Bool().value_or(false);
+    QueueTelemetryEvent(ok ? L"firewall.applied" : L"firewall.applied_with_warnings", L"firewall",
+                        ok ? summaryIn : summaryIn + L" with warnings", Utf8ToWide(output));
+    return true;
+  } catch (const std::exception& error) {
+    QueueTelemetryEvent(L"firewall.apply_failed", L"firewall", L"Firewall policy could not be applied",
+                        L"{\"error\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(error.what()))) + L"\"}");
+    return false;
   }
 }
 

@@ -32,6 +32,29 @@ function fmtSize(bytes: number): string {
   return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
 }
 
+// Where a waiting session is stuck, in words a technician can act on.
+export function waitingHint(detail: any, waitedSeconds: number): string {
+  const start = detail?.startCommand;
+  const ago = (iso?: string | null) => {
+    if (!iso) return "never";
+    const minutes = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+    return minutes < 1 ? "just now" : minutes < 120 ? `${minutes} min ago` : `${Math.round(minutes / 60)} h ago`;
+  };
+  if (!start || start.status === "pending") {
+    return detail?.deviceOnline
+      ? "Sending the request to the device…"
+      : `The device has not picked up the request yet (last check-in ${ago(detail?.deviceLastSeenAt)}). It has no live connection to the server, ` +
+        "so it will only see the request at its next check-in. If the agent is running, check that your HTTPS proxy passes WebSocket connections.";
+  }
+  if (start.status === "dispatched") return "The device has the request and is starting its remote helper…";
+  if (start.status === "completed" && waitedSeconds > 10) {
+    return start.reachedRelay === false
+      ? `The device started its remote helper, but the helper has not reached the server yet. On the device, see ${start.logPath || "the session log in the agent's runtime\\remote folder"}.`
+      : "The remote helper reached the server; waiting for it to finish connecting…";
+  }
+  return "";
+}
+
 export default function RemoteViewer() {
   const { id } = useParams();
   const [session, setSession] = useState<any>(null);
@@ -131,13 +154,16 @@ export default function RemoteViewer() {
   // While waiting for the device, keep checking the session: if the device could not start it (helper
   // missing, consent refused, policy), say why instead of waiting forever.
   const [waitedSeconds, setWaitedSeconds] = useState(0);
+  const [waitHint, setWaitHint] = useState("");
   useEffect(() => {
     if (state !== "waiting") return;
     const started = Date.now();
     const timer = window.setInterval(async () => {
-      setWaitedSeconds(Math.round((Date.now() - started) / 1000));
+      const waited = Math.round((Date.now() - started) / 1000);
+      setWaitedSeconds(waited);
       try {
         const detail = await api<any>(`remote/sessions/${id}`);
+        setWaitHint(waitingHint(detail, waited));
         if (["ended", "failed", "denied"].includes(detail.status)) {
           const reason = [...(detail.events || [])].reverse().find((e: any) => e.detail)?.detail;
           setState("ended");
@@ -380,7 +406,7 @@ export default function RemoteViewer() {
           <div className="rv-wait">
             <div className="rv-spinner" hidden={state === "ended" || state === "error"} />
             <h2>{status}</h2>
-            {state === "waiting" && <p className="muted">Online devices answer within a few seconds. Offline devices connect the next time they check in.</p>}
+            {state === "waiting" && <p className="muted" style={{ maxWidth: 640 }}>{waitHint || "Online devices answer within a few seconds. Offline devices connect the next time they check in."}</p>}
             {state === "waiting" && waitedSeconds >= 30 && (
               <p className="muted small" style={{ maxWidth: 560 }}>
                 Still waiting after {waitedSeconds} seconds. If the device is online, check that it can reach this server, and on

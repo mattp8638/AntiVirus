@@ -153,7 +153,7 @@ def on_command_complete(db: Session, device: Device, command: Command) -> None:
         session.consent = "denied" if denied else session.consent
         session.ended_at = utcnow()
         session.events = (session.events or []) + [{"at": utcnow().isoformat(), "by": f"device:{device.hostname}",
-                                                    "type": session.status, "detail": str(result.get("error", ""))[:300]}]
+                                                    "type": session.status, "detail": str(result.get("error", ""))[:600]}]
     elif result.get("consent") in {"granted", "not_required"}:
         session.consent = result["consent"]
 

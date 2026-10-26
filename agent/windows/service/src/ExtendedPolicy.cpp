@@ -336,6 +336,12 @@ ExtendedPolicy ExtendedPolicy::Parse(const std::string& modulesJson) {
   policy.mlSensitivity = WideString(antimalware, "mlSensitivity", L"balanced");
   policy.behavior.excludedProcesses = WideList(antimalware, "exclusionProcesses");
   policy.quickScanPlan = ParseScanPlan(antimalware, "quickScanPlan");
+  policy.scanNetworkDrives = BoolOr(antimalware, "scanNetworkDrives", false);
+  if (antimalware) {
+    if (const auto* limit = antimalware->Get("scanCpuLimitPercent"); limit && limit->Number()) {
+      policy.scanCpuLimitPercent = std::clamp(static_cast<int>(*limit->Number()), 5, 100);
+    }
+  }
   policy.fullScanPlan = ParseScanPlan(antimalware, "fullScanPlan");
 
   if (const auto* asr = root->Get("attackSurface"); asr != nullptr) {
@@ -401,6 +407,13 @@ bool RoutineTelemetryAllowed(const ExtendedPolicy& policy, const std::wstring& e
     return true;
   }
   return !policy.telemetryMinimal && *setting;
+}
+
+unsigned long long ScanThrottleRestMs(const int limitPercent, const unsigned long long cpuMs) {
+  if (limitPercent <= 0 || limitPercent >= 100) {
+    return 0;
+  }
+  return cpuMs * static_cast<unsigned long long>(100 - limitPercent) / static_cast<unsigned long long>(limitPercent);
 }
 
 }  // namespace antivirus::agent

@@ -108,7 +108,8 @@ class ControlPlaneClient {
   static std::wstring DeviceApiKey(const AgentState& state);
   PolicyCheckInResult CheckInPolicy(const AgentState& state) const;
   TelemetryBatchResult SendTelemetryBatch(const AgentState& state, const std::vector<TelemetryRecord>& records) const;
-  CommandPollResult PollPendingCommands(const AgentState& state, int limit = 10) const;
+  // types: optional comma-separated command types to fetch (servers without the filter return everything).
+  CommandPollResult PollPendingCommands(const AgentState& state, int limit = 10, const std::wstring& types = L"") const;
   // Uploads a forensic/support bundle for a command (before it is completed); returns the artifact id.
   std::wstring UploadCommandArtifact(const AgentState& state, const std::wstring& commandId, const std::wstring& filename,
                                      const std::string& data) const;

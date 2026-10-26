@@ -35,7 +35,7 @@ using LocalScanProgressCallback = std::function<void(const LocalScanProgressUpda
 std::vector<std::filesystem::path> ResolveScanTargets(const std::vector<std::filesystem::path>& requestedTargets,
                                                       bool allowMissingFiles = false);
 std::vector<std::filesystem::path> BuildQuickScanTargets();
-std::vector<std::filesystem::path> BuildFullScanTargets();
+std::vector<std::filesystem::path> BuildFullScanTargets(bool includeNetworkDrives = false);
 
 LocalScanExecutionResult ExecuteLocalScan(const AgentConfig& config, const AgentState& state,
                                           const std::vector<std::filesystem::path>& targets,
