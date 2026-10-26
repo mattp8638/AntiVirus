@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
-from sqlalchemy import func, or_, select
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from .. import audit, policy_schema, rmm, services
 from ..commands import BY_TYPE, catalog_document
 from ..config import get_settings
 from ..db import get_db
-from ..deps import Principal, current_principal, scoped_tenant
+from ..deps import Principal, current_principal, require_reauth, scoped_tenant
 from ..models import (AgentRelease, Alert, Command, Configuration, Device, DeviceGroup, Event, Policy, RemoteSession, SoftwareItem, Tenant, Vulnerability,
                       utcnow)
 from ..serialize import apply_fields, to_dict
@@ -24,7 +24,8 @@ ONLINE_WINDOW = timedelta(minutes=10)
 
 def _device_view(device: Device, summary: bool = False) -> dict:
     data = to_dict(device, exclude={"dns_token", "inventory"} if summary else {"dns_token"})
-    data["online"] = bool(device.last_seen_at and device.last_seen_at >= utcnow() - ONLINE_WINDOW)
+    data["retired"] = device.api_key_hash == f"retired-{device.id}"
+    data["online"] = not data["retired"] and bool(device.last_seen_at and device.last_seen_at >= utcnow() - ONLINE_WINDOW)
     if summary:
         metrics = device.metrics or {}
         disks = metrics.get("disks") or []
@@ -52,11 +53,13 @@ def list_devices(
     q: str | None = None,
     platform: str | None = None,
     group_id: str | None = None,
-    status: str | None = Query(default=None, description="online | offline | isolated | pending | at-risk"),
+    status: str | None = Query(default=None, description="online | offline | isolated | pending | at-risk | retired"),
     principal: Principal = Depends(current_principal),
     db: Session = Depends(get_db),
 ):
     query = select(Device).where(Device.tenant_id.in_(scoped_tenant(principal, tenant_id)))
+    retired = Device.api_key_hash == ("retired-" + Device.id)
+    query = query.where(retired if status == "retired" else ~retired)
     if q:
         like = f"%{q}%"
         query = query.where(or_(Device.hostname.ilike(like), Device.os_version.ilike(like), Device.ip_address.ilike(like)))
@@ -137,6 +140,8 @@ def update_device(device_id: str, body: dict = Body(...), principal: Principal =
 def retire_device(device_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("configure")
     device = _get_device(db, principal, device_id)
+    if device.api_key_hash == f"retired-{device.id}":
+        return {"ok": True}
     in_flight = db.execute(select(Command).where(
         Command.device_id == device.id, Command.status == "dispatched")).first()
     if in_flight:
@@ -165,6 +170,47 @@ def retire_device(device_id: str, principal: Principal = Depends(current_princip
     audit.record(db, principal.actor, "device.retired", device.hostname, device.tenant_id)
     db.commit()
     return {"ok": True}
+
+
+@router.post("/devices/{device_id}/purge")
+def purge_device(device_id: str, request: Request, body: dict = Body(default={}), principal: Principal = Depends(current_principal),
+                 db: Session = Depends(get_db)):
+    """Permanently delete a decommissioned device and everything recorded about it.
+
+    Tickets and CMDB configurations are service and billing history: they stay, unlinked from the device.
+    The audit log keeps a record of the deletion.
+    """
+    from ..models import (Alert, ConditionState, DeviceArtifact, DeviceMetric, DevicePatch, DnsQueryLog, EnrollmentToken,
+                          Incident, IncidentEvidence, NetworkMonitor, RuleMatch, Ticket)
+
+    principal.require("configure")
+    require_reauth(request, principal)
+    device = _get_device(db, principal, device_id)
+    if device.api_key_hash != f"retired-{device.id}":
+        raise HTTPException(409, "Decommission the device first; only decommissioned devices can be deleted.")
+    if str(body.get("confirmHostname") or "") != device.hostname:
+        raise HTTPException(422, "Type the device's hostname to confirm permanent deletion.")
+    removed: dict[str, int] = {}
+    artifact_dir = get_settings().artifact_dir
+    for artifact in db.scalars(select(DeviceArtifact).where(DeviceArtifact.device_id == device.id)):
+        (artifact_dir / artifact.storage_name).unlink(missing_ok=True)
+    incident_ids = list(db.scalars(select(Incident.id).where(Incident.device_id == device.id)))
+    if incident_ids:
+        removed["incident_evidence"] = db.execute(delete(IncidentEvidence).where(
+            IncidentEvidence.incident_id.in_(incident_ids))).rowcount or 0
+    for model in (Event, RuleMatch, Alert, Incident, Command, ConditionState, DeviceMetric, DevicePatch, SoftwareItem,
+                  Vulnerability, DnsQueryLog, RemoteSession, DeviceArtifact):
+        removed[model.__tablename__] = db.execute(delete(model).where(model.device_id == device.id)).rowcount or 0
+    db.execute(update(Ticket).where(Ticket.device_id == device.id).values(device_id=None))
+    db.execute(update(Configuration).where(Configuration.device_id == device.id).values(device_id=None))
+    db.execute(update(NetworkMonitor).where(NetworkMonitor.probe_device_id == device.id).values(probe_device_id=None))
+    db.execute(update(EnrollmentToken).where(EnrollmentToken.label == f"Reinstate {device.id}").values(revoked=True))
+    hostname, tenant_id = device.hostname, device.tenant_id
+    db.delete(device)
+    audit.record(db, principal.actor, "device.purged", hostname, tenant_id, deviceId=device_id,
+                 removed={k: v for k, v in removed.items() if v})
+    db.commit()
+    return {"ok": True, "removed": removed}
 
 
 # --------------------------------------------------------------------------- commands
@@ -245,6 +291,23 @@ def list_commands(tenant_id: str | None = None, device_id: str | None = None, st
     return [to_dict(c) for c in db.execute(query.order_by(Command.created_at.desc()).limit(500)).scalars()]
 
 
+def _command_arguments(body: dict) -> dict:
+    payload = body.get("payload")
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise HTTPException(422, "Command payload must be a JSON object")
+    arguments = {"payload": payload}
+    for field, name in (("targetPath", "target_path"), ("recordId", "record_id"), ("reason", "reason")):
+        value = body.get(field)
+        if value is None:
+            value = ""
+        if not isinstance(value, str):
+            raise HTTPException(422, f"{field} must be a string")
+        arguments[name] = value.strip()
+    return arguments
+
+
 @router.post("/devices/{device_id}/commands")
 def issue_command(device_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
                   db: Session = Depends(get_db)):
@@ -254,10 +317,10 @@ def issue_command(device_id: str, body: dict = Body(...), principal: Principal =
     if spec is None:
         raise HTTPException(400, "Unknown command type")
     principal.require(spec.permission)
+    arguments = _command_arguments(body)
     try:
-        command = services.enqueue_command(db, device, command_type, principal.actor, target_path=str(body.get("targetPath") or ""),
-                                           record_id=str(body.get("recordId") or ""), payload=body.get("payload") or {},
-                                           reason=str(body.get("reason") or ""), incident_id=body.get("incidentId"))
+        command = services.enqueue_command(db, device, command_type, principal.actor,
+                                           **arguments, incident_id=body.get("incidentId"))
     except services.CommandError as exc:
         raise HTTPException(400, str(exc)) from exc
     db.commit()
@@ -272,16 +335,21 @@ def bulk_command(body: dict = Body(...), principal: Principal = Depends(current_
     if spec is None:
         raise HTTPException(400, "Unknown command type")
     principal.require(spec.permission)
-    ids = body.get("deviceIds") or []
+    ids = body.get("deviceIds")
+    if not isinstance(ids, list) or not ids or any(not isinstance(i, str) or not i.strip() for i in ids):
+        raise HTTPException(422, "deviceIds must be a non-empty list of device IDs")
+    if len(ids) > 5000:
+        raise HTTPException(422, "A bulk action supports at most 5000 device IDs")
+    ids = list(dict.fromkeys(i.strip() for i in ids))
+    arguments = _command_arguments(body)
     queued, skipped = [], []
-    for device_id in ids[:5000]:
+    for device_id in ids:
         device = db.get(Device, device_id)
         if device is None or device.tenant_id not in principal.tenant_ids:
             skipped.append({"deviceId": device_id, "reason": "not found"})
             continue
         try:
-            queued.append(services.enqueue_command(db, device, command_type, principal.actor, target_path=str(body.get("targetPath") or ""),
-                                                   record_id=str(body.get("recordId") or ""), reason=str(body.get("reason") or "")).id)
+            queued.append(services.enqueue_command(db, device, command_type, principal.actor, **arguments).id)
         except services.CommandError as exc:
             skipped.append({"deviceId": device_id, "reason": str(exc)})
     db.commit()

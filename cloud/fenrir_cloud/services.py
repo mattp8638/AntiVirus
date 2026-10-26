@@ -107,6 +107,8 @@ def enqueue_command(
     reason: str = "",
     incident_id: str | None = None,
 ) -> Command:
+    if device.api_key_hash == f"retired-{device.id}":
+        raise CommandError("Decommissioned devices cannot receive commands; enrol the device again to manage it.")
     spec = BY_TYPE.get(command_type)
     if spec is None:
         raise CommandError(f"unknown command type '{command_type}'")

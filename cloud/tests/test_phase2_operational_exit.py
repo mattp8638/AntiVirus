@@ -410,14 +410,22 @@ def test_failed_remediation_leaves_recovered_monitor_ticket_open(client, admin, 
     assert current["rmmJobs"][0]["status"] == "failed"
 
 
-def test_retired_device_can_reenroll_only_with_fresh_token_and_restores_existing_asset(client, admin, tenant, device):
+def test_retired_device_can_reenroll_only_with_fresh_token_and_restores_existing_asset(client, admin, tenant, device, monkeypatch):
     dev_id = device["deviceId"]
     assert client.delete(f"/api/console/devices/{dev_id}", headers=admin).status_code == 200
     assert client.post(f"/api/v1/devices/{dev_id}/heartbeat", headers=device["headers"],
                        json={}).status_code == 401
-    new_token = client.post("/api/console/enrollment-tokens", headers=admin, json={
-        "tenantId": tenant["id"], "label": "Explicitly authorised recovery"
-    }).json()["token"]
+    from fenrir_cloud import deployment_installers
+    tokens = []
+    def build(platform, server, token):
+        tokens.append(token)
+        return b"installer", "FenrirSetup.exe", "application/octet-stream"
+    monkeypatch.setattr(deployment_installers, "build", build)
+    generated = client.post("/api/console/enrollment-installers", headers=admin, json={
+        "tenantId": tenant["id"], "os": "windows", "reinstateDeviceId": dev_id
+    })
+    assert generated.status_code == 200, generated.text
+    new_token = tokens[0]
     recovered = client.post("/api/v1/enroll", json={
         "hostname": "ACME-WS-01", "osVersion": "Windows 11 Pro", "platform": "windows",
         "serialNumber": "SN-1", "enrollmentToken": new_token
