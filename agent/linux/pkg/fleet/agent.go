@@ -185,7 +185,30 @@ func newID() string {
 	return hex.EncodeToString(b)
 }
 
+// routineTelemetry maps routine (non-detection) event types to the EDR setting that collects them.
+var routineTelemetry = []struct{ prefix, setting string }{
+	{"process.start", "collectProcessEvents"}, {"file.", "collectFileEvents"},
+	{"network.connect", "collectNetworkEvents"}, {"dns.", "collectDnsEvents"},
+}
+
+// TelemetryAllowed applies the policy's EDR collection settings. Detections, scans, quarantine and agent
+// health events are always sent; only routine activity telemetry can be turned off.
+func TelemetryAllowed(p Policy, eventType string) bool {
+	for _, r := range routineTelemetry {
+		if strings.HasPrefix(eventType, r.prefix) {
+			if p.ModuleString("edr", "telemetryLevel", "standard") == "minimal" {
+				return false
+			}
+			return p.ModuleBool("edr", r.setting, true)
+		}
+	}
+	return true
+}
+
 func (a *Agent) emit(eventType, source, summary string, payload map[string]interface{}) {
+	if !TelemetryAllowed(a.state.Policy, eventType) {
+		return
+	}
 	data, _ := json.Marshal(payload)
 	a.mu.Lock()
 	defer a.mu.Unlock()

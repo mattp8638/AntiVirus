@@ -173,3 +173,17 @@ func TestParseLsofConnections(t *testing.T) {
 		t.Fatalf("ipv6: %+v", events[1])
 	}
 }
+
+func TestTelemetryAllowed(t *testing.T) {
+	p := Policy{Modules: map[string]map[string]interface{}{"edr": {"collectFileEvents": false}}}
+	if TelemetryAllowed(p, "file.modified") || !TelemetryAllowed(p, "process.start") {
+		t.Fatal("collectFileEvents only drops file events")
+	}
+	if !TelemetryAllowed(p, "scan.threat.quarantined") || !TelemetryAllowed(p, "ransomware.canary.touched") {
+		t.Fatal("detections are always sent")
+	}
+	p.Modules["edr"]["telemetryLevel"] = "minimal"
+	if TelemetryAllowed(p, "process.start") || TelemetryAllowed(p, "network.connect") || !TelemetryAllowed(p, "threat.process.blocked") {
+		t.Fatal("minimal keeps only detections and health")
+	}
+}

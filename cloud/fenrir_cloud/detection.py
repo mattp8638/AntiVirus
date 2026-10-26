@@ -385,6 +385,11 @@ def _automated_response(db: Session, device: Device, alert: Alert, incident: Inc
         queue("process.tree.terminate", str(image))
     if response["autoIsolateOnCritical"] and alert.severity == "critical" and not device.isolated:
         queue("device.isolate")
+    target_file = str((alert.details or {}).get("file") or "")
+    if response["autoQuarantine"] and alert.rule_id == "fenrir-av-threat-unremediated" and target_file \
+            and not is_shared_binary(target_file) and not _protected_location(target_file):
+        # The agent found malware it did not (or could not) remove: ask it to quarantine the file.
+        queue("remediate.path", target_file, "auto-quarantine: malware was left in place")
     if response["autoRollbackRansomware"] and "T1486" in alert.mitre and alert.severity == "critical":
         queue("ransomware.rollback")
 
@@ -427,6 +432,15 @@ _SHARED_BINARIES = {
     "svchost.exe", "explorer.exe", "conhost.exe", "msiexec.exe", "wmic.exe", "certutil.exe", "bitsadmin.exe",
     "sh", "bash", "dash", "zsh", "python", "python3", "perl", "ruby", "node", "java", "sudo", "systemd", "sshd",
 }
+
+
+_PROTECTED_PREFIXES = ("c:\\windows\\", "c:\\program files", "/system/", "/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/",
+                       "/usr/lib/", "/lib/")
+
+
+def _protected_location(path: str) -> bool:
+    """Operating-system locations are never auto-quarantined; a person reviews those findings."""
+    return path.lower().replace("/", "\\" if "\\" in path else "/").startswith(_PROTECTED_PREFIXES)
 
 
 def is_shared_binary(path: str) -> bool:

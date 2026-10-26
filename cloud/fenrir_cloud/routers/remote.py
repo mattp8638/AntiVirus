@@ -19,6 +19,8 @@ from ..security import digest
 from ..serialize import to_dict
 
 log = logging.getLogger("fenrir.remote")
+# Security analysts (not technicians or admins) get a remote shell only when response.remoteShell allows it.
+ANALYST_ROLES = {"soc_analyst", "tenant_analyst"}
 
 router = APIRouter(prefix="/api/console/remote", tags=["Remote access"])
 sockets = APIRouter(tags=["Remote access"])
@@ -58,6 +60,11 @@ def create_session(body: dict = Body(...), principal: Principal = Depends(curren
             raise HTTPException(422, "The ticket and remote-support device must belong to the same customer")
         if ticket.device_id and ticket.device_id != device.id:
             raise HTTPException(422, "The ticket is linked to a different managed device")
+    if mode == "terminal" and principal.user.role in ANALYST_ROLES:
+        from .. import services
+        settings, _ = services.effective_policy(db, device)
+        if not settings["settings"]["response"].get("remoteShell", False):
+            raise HTTPException(403, "Analysts need the policy's 'Allow remote shell for analysts' setting to open a terminal")
     try:
         session = remote.start_session(db, device, principal.actor, mode, bool(body.get("viewOnly")), ticket_id,
                                        str(body.get("reason") or ""))
