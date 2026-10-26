@@ -552,8 +552,8 @@ QuarantineActionResult RestoreQuarantinedItem(const AgentConfig& config, const s
                        ? std::wstring(L"Fenrir could not broker the quarantine restore action through the protection service.")
                        : brokerResult.errorMessage;
     if (brokerResult.requestOnly && !brokerResult.approvalRequestId.empty()) {
-      message += L" Approval request: " + brokerResult.approvalRequestId +
-                 L". Ask an owner or administrator to execute local.approval.execute for this request.";
+      message += L" Your IT provider can do this for you from the Fenrir console (reference " +
+                 brokerResult.approvalRequestId + L").";
     }
 
     return QuarantineActionResult{
@@ -586,8 +586,8 @@ QuarantineActionResult DeleteQuarantinedItem(const AgentConfig& config, const st
                        ? std::wstring(L"Fenrir could not broker the quarantine delete action through the protection service.")
                        : brokerResult.errorMessage;
     if (brokerResult.requestOnly && !brokerResult.approvalRequestId.empty()) {
-      message += L" Approval request: " + brokerResult.approvalRequestId +
-                 L". Ask an owner or administrator to execute local.approval.execute for this request.";
+      message += L" Your IT provider can do this for you from the Fenrir console (reference " +
+                 brokerResult.approvalRequestId + L").";
     }
 
     return QuarantineActionResult{

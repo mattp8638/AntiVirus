@@ -4168,10 +4168,6 @@ void PerformQuarantineAction(UiContext& context, const bool restore) {
   if (!result.success) {
     const auto heading = restore ? L"Unable to restore the selected item." : L"Unable to delete the selected item.";
     auto detail = result.errorMessage.empty() ? std::wstring(L"Unknown error") : result.errorMessage;
-    if (!result.approvalRequestId.empty()) {
-      detail += L"\r\n\r\nApproval request: " + result.approvalRequestId +
-                L"\r\nProvide this ID to an owner/admin to execute local.approval.execute.";
-    }
     MessageBoxW(context.hwnd,
                 (std::wstring(heading) + L"\r\n\r\n" + detail).c_str(),
                 kWindowTitle, MB_OK | MB_ICONERROR);
@@ -4632,11 +4628,7 @@ void HandleWebViewMessage(UiContext& context, const std::wstring& message) {
     if (!result.success) {
       auto detail = result.errorMessage.empty() ? std::wstring(L"Unable to restore the selected item.")
                                                 : result.errorMessage;
-      if (!result.approvalRequestId.empty()) {
-        detail += L"\r\n\r\nApproval request: " + result.approvalRequestId +
-                  L"\r\nProvide this ID to an owner/admin to execute local.approval.execute.";
-      }
-      MessageBoxW(context.hwnd, detail.c_str(), kWindowTitle, MB_OK | MB_ICONERROR);
+      PostWebViewNotice(context, L"danger", detail);
       return;
     }
 
@@ -4659,11 +4651,7 @@ void HandleWebViewMessage(UiContext& context, const std::wstring& message) {
     if (!result.success) {
       auto detail = result.errorMessage.empty() ? std::wstring(L"Unable to delete the selected item.")
                                                 : result.errorMessage;
-      if (!result.approvalRequestId.empty()) {
-        detail += L"\r\n\r\nApproval request: " + result.approvalRequestId +
-                  L"\r\nProvide this ID to an owner/admin to execute local.approval.execute.";
-      }
-      MessageBoxW(context.hwnd, detail.c_str(), kWindowTitle, MB_OK | MB_ICONERROR);
+      PostWebViewNotice(context, L"danger", detail);
       return;
     }
 
