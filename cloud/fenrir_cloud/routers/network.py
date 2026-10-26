@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from .. import audit, network, ratelimit
 from ..db import get_db
 from ..deps import Principal, current_principal, scoped_tenant
-from ..models import Configuration, NetworkMonitor
+from ..models import Configuration, Device, NetworkMonitor
 from ..serialize import to_dict
 from .documentation import owned
 
@@ -19,6 +19,7 @@ class MonitorInput(BaseModel):
     port: int = Field(ge=1, le=65535)
     intervalSeconds: int = Field(default=300, ge=60, le=86400)
     configurationId: str | None = None
+    probeDeviceId: str | None = None
 
     @field_validator("address")
     @classmethod
@@ -26,7 +27,17 @@ class MonitorInput(BaseModel):
         return network.validate_address(value)
 
 class MonitorState(BaseModel):
-    enabled: bool
+    enabled: bool | None = None
+    probeDeviceId: str | None = None
+
+
+def _probe_device(db, tenant_id, device_id):
+    if not device_id:
+        return None
+    device = db.get(Device, device_id)
+    if device is None or device.tenant_id != tenant_id:
+        raise HTTPException(404, "Probe device not found in this tenant")
+    return device.id
 
 @router.get("/monitors")
 def monitors(tenant_id: str | None = None, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
@@ -42,7 +53,8 @@ def create(body: MonitorInput, principal: Principal = Depends(current_principal)
         if config is None or config.account_tenant_id != body.tenantId:
             raise HTTPException(404, "Configuration not found in this tenant")
     row = NetworkMonitor(tenant_id=body.tenantId, name=body.name, address=body.address, port=body.port,
-                         interval_seconds=body.intervalSeconds, configuration_id=body.configurationId)
+                         interval_seconds=body.intervalSeconds, configuration_id=body.configurationId,
+                         probe_device_id=_probe_device(db, body.tenantId, body.probeDeviceId))
     db.add(row)
     db.flush()
     audit.record(db, principal.actor, "network.created", row.id, row.tenant_id)
@@ -53,8 +65,13 @@ def create(body: MonitorInput, principal: Principal = Depends(current_principal)
 def enable(monitor_id: str, body: MonitorState, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("configure")
     row = owned(db, NetworkMonitor, monitor_id, principal)
-    row.enabled = body.enabled
-    audit.record(db, principal.actor, "network.enabled" if row.enabled else "network.disabled", row.id, row.tenant_id)
+    if body.enabled is not None:
+        row.enabled = body.enabled
+        audit.record(db, principal.actor, "network.enabled" if row.enabled else "network.disabled", row.id, row.tenant_id)
+    if "probeDeviceId" in body.model_fields_set:
+        row.probe_device_id = _probe_device(db, row.tenant_id, body.probeDeviceId)
+        row.state, row.failures = "unknown", 0
+        audit.record(db, principal.actor, "network.probe_changed", row.id, row.tenant_id, probeDeviceId=row.probe_device_id)
     db.commit()
     return to_dict(row)
 

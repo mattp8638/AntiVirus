@@ -1,5 +1,6 @@
 #include "AgentService.h"
 #include "ExtendedPolicy.h"
+#include "NetworkProbe.h"
 
 #include <wtsapi32.h>
 
@@ -1887,6 +1888,9 @@ std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
   }
   if (command.type == L"inventory.refresh") {
     return ExecuteInventoryRefreshCommand(command);
+  }
+  if (command.type == L"network.probe") {
+    return Utf8ToWide(RunNetworkProbe(WideToUtf8(command.payloadJson)));
   }
   if (command.type == L"amsi.telemetry.submit") {
     return ExecuteAmsiTelemetrySubmitCommand(command);

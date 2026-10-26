@@ -625,6 +625,8 @@ func (a *Agent) Execute(cmd Command) (map[string]interface{}, error) {
 		return map[string]interface{}{"restoredTo": path}, nil
 	case "quarantine.delete":
 		return map[string]interface{}{"deleted": cmd.RecordID}, a.scanner.Delete(cmd.RecordID)
+	case "network.probe":
+		return NetworkProbe(cmd.PayloadJSON, nil)
 	case "inventory.refresh":
 		a.sendInventory()
 		return map[string]interface{}{"ok": true}, nil

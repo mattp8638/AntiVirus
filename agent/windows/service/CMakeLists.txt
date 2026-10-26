@@ -127,6 +127,7 @@ add_library(antivirus-agent-core STATIC
   src/EventEnvelope.cpp
   src/RmmExecutors.cpp
   src/WebSocketClient.cpp
+  src/NetworkProbe.cpp
 )
 
 target_include_directories(antivirus-agent-core PUBLIC include ../shared/include ../sensor/etw/include ../sensor/wfp/include)

@@ -283,6 +283,10 @@ def on_command_complete(db: Session, device: Device, command: Command) -> None:
         from . import remote
 
         remote.on_command_complete(db, device, command)
+    elif command.type == "network.probe":
+        from . import network
+
+        network.apply_probe_results(db, device, command)
     job_id = (command.payload or {}).get("jobId")
     if job_id:
         refresh_job(db, job_id)

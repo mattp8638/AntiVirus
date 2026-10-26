@@ -1155,6 +1155,8 @@ class NetworkMonitor(Base):
     configuration_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     interval_seconds: Mapped[int] = mapped_column(Integer, default=300)
+    # Probe from this enrolled device (for services on the customer's LAN) instead of from the cloud.
+    probe_device_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     state: Mapped[str] = mapped_column(String(20), default="unknown")
     samples: Mapped[list] = mapped_column(JSON, default=list)
     failures: Mapped[int] = mapped_column(Integer, default=0)

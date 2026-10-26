@@ -47,6 +47,8 @@ CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("forensics.collect", "Collect forensic triage package", "Investigation", platforms=ALL,
                 description="Processes, autoruns, network, event logs and prefetch in one archive."),
     CommandSpec("inventory.refresh", "Refresh inventory", "Investigation", platforms=ALL),
+    CommandSpec("network.probe", "Probe network services", "Investigation", platforms=ALL,
+                description="Sent automatically for network monitors that probe from this device; checks TCP services on its LAN."),
     CommandSpec("script.run", "Run script", "Administration", permission="configure", platforms=ALL,
                 description="Run a script from the library. Pick it on the Scripts page to fill in parameters."),
     CommandSpec("device.reboot", "Restart device", "Administration", platforms=ALL, destructive=True,
