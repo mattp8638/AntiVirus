@@ -42,6 +42,7 @@ class Tenant(Base):
     default_policy_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     settings: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    account_owner: Mapped[str | None] = mapped_column(String(200), nullable=True)  # MSP staff member who owns the customer
 
 
 class User(Base):
@@ -445,6 +446,51 @@ class Lead(Base):
     converted_tenant_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Opportunity(Base):
+    """A deal: new business from a lead, or an upsell/renewal for an existing customer."""
+
+    __tablename__ = "crm_opportunities"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("opp"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)  # owning MSP tenant
+    account_tenant_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    lead_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    name: Mapped[str] = mapped_column(String(200))
+    kind: Mapped[str] = mapped_column(String(30), default="New business")  # New business|Upsell|Renewal|Project
+    stage: Mapped[str] = mapped_column(String(30), default="Prospecting")
+    value: Mapped[float] = mapped_column(Float, default=0)  # one-off value
+    monthly_value: Mapped[float] = mapped_column(Float, default=0)  # recurring value per month
+    probability: Mapped[int] = mapped_column(Integer, default=10)
+    close_date: Mapped[str] = mapped_column(String(20), default="")
+    owner: Mapped[str] = mapped_column(String(200), default="")
+    source: Mapped[str] = mapped_column(String(80), default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    lost_reason: Mapped[str] = mapped_column(String(300), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class Activity(Base):
+    """Communication history and follow-ups: calls, emails, meetings, notes and tasks."""
+
+    __tablename__ = "crm_activities"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("act"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    account_tenant_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    contact_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    lead_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    opportunity_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(20), default="note")  # call|email|meeting|note|task
+    direction: Mapped[str] = mapped_column(String(10), default="")  # inbound|outbound|""
+    subject: Mapped[str] = mapped_column(String(300))
+    body: Mapped[str] = mapped_column(Text, default="")
+    owner: Mapped[str] = mapped_column(String(200), default="")
+    due_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class Project(Base):

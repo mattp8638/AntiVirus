@@ -111,7 +111,7 @@ def migrate(bind: Engine) -> list[int]:
             conn.execute(text("CREATE TABLE IF NOT EXISTS schema_migrations "
                               "(version INTEGER PRIMARY KEY, applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"))
             versions = set(conn.execute(text("SELECT version FROM schema_migrations")).scalars())
-            if versions - {1, 2, 3, 4, 5, 6}:
+            if versions - {1, 2, 3, 4, 5, 6, 7}:
                 raise RuntimeError("Database schema is newer than this application")
             if 1 not in versions:
                 Base.metadata.create_all(conn)
@@ -145,6 +145,13 @@ def migrate(bind: Engine) -> list[int]:
                 ensure_columns(Base, conn)
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (6)"))
                 applied.append(6)
+            if 7 not in versions:
+                from .models import Activity, Opportunity
+                for model in (Opportunity, Activity):
+                    model.__table__.create(conn, checkfirst=True)
+                ensure_columns(Base, conn)  # tenants.account_owner
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (7)"))
+                applied.append(7)
             conn.commit()
         except Exception:
             conn.rollback()

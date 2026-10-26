@@ -24,7 +24,7 @@ from .models import DnsQueryLog, Event, RateLimitBucket, Policy, RuleMatch, Tena
 from .routers import m365_admin as m365_admin_router
 from .routers import m365 as m365_router, network as network_router, grc as grc_router, backup as backup_router, soc_workflows
 from .routers import documentation as documentation_router
-from .routers import admin, agent_api, business, fleet, portal, protection, soc
+from .routers import admin, agent_api, business, crm as crm_router, fleet, portal, protection, soc
 from .routers import psa as psa_router, remote as remote_router, rmm as rmm_router
 from .security import hash_password
 from .services import GLOBAL_POLICY_ID
@@ -222,7 +222,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return response
 
     remote.install_wake_hook()
-    for module in (agent_api, admin, fleet, soc, business, rmm_router, psa_router, remote_router, portal):
+    for module in (agent_api, admin, fleet, soc, crm_router, business, rmm_router, psa_router, remote_router, portal):
         app.include_router(module.router)
     for module in (m365_admin_router, m365_router, network_router, grc_router, backup_router, soc_workflows):
         app.include_router(module.router)

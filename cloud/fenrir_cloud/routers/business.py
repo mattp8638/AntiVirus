@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import html
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from .. import audit, compliance, policy_schema, psa, services
 from ..db import get_db
 from ..deps import Principal, current_principal, scoped_tenant
-from ..models import (Alert, Contact, Contract, Device, DnsQueryLog, Event, Incident, Invoice, Lead, Policy, Project, Tenant,
+from ..models import (Activity, Alert, Contact, Contract, Device, DnsQueryLog, Event, Incident, Invoice, Lead, Opportunity, Policy, Project, Tenant,
                       Ticket, TimeEntry, Vulnerability, Webhook, utcnow)
 from ..security import new_secret
 from ..serialize import apply_fields, to_dict
@@ -39,16 +39,86 @@ CRM_MODELS = {
     "leads": (Lead, {"company", "contact", "email", "phone", "stage", "value", "seats", "source", "owner", "notes"}),
     "projects": (Project, {"account_tenant_id", "name", "status", "progress", "budget", "due_date", "tasks", "manager", "billing_method",
                            "estimated_hours", "start_date", "phases", "description"}),
+    "opportunities": (Opportunity, {"account_tenant_id", "lead_id", "name", "kind", "stage", "value", "monthly_value", "probability",
+                                    "close_date", "owner", "source", "notes", "lost_reason"}),
+    "activities": (Activity, {"account_tenant_id", "contact_id", "lead_id", "opportunity_id", "kind", "direction", "subject", "body",
+                              "owner"}),
 }
+
+OPPORTUNITY_STAGES = {"Prospecting": 10, "Qualification": 25, "Proposal": 50, "Negotiation": 75, "Won": 100, "Lost": 0}
+OPPORTUNITY_KINDS = ("New business", "Upsell", "Renewal", "Project")
+ACTIVITY_KINDS = ("call", "email", "meeting", "note", "task")
+
+
+def _parse_time(value) -> datetime | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(400, "Dates must be ISO 8601") from None
+    return parsed.astimezone(timezone.utc).replace(tzinfo=None) if parsed.tzinfo else parsed
+
+
+def _validate_crm(db: Session, principal: Principal, kind: str, obj, body: dict, changed: list[str]) -> None:
+    """Shared checks: linked records must be the caller's; per-kind rules for deals and activities."""
+    if getattr(obj, "account_tenant_id", None) and obj.account_tenant_id not in principal.tenant_ids:
+        raise HTTPException(400, "accountTenantId is not one of your customers")
+    for attr, model in (("contact_id", Contact), ("lead_id", Lead), ("opportunity_id", Opportunity)):
+        linked = getattr(obj, attr, None)
+        if linked:
+            row = db.get(model, linked)
+            if row is None or row.tenant_id not in principal.tenant_ids:
+                raise HTTPException(400, f"{attr} not found")
+    if kind == "opportunities":
+        if not obj.name:
+            raise HTTPException(400, "name is required")
+        if obj.stage not in OPPORTUNITY_STAGES:
+            raise HTTPException(400, f"stage must be one of {', '.join(OPPORTUNITY_STAGES)}")
+        if obj.kind not in OPPORTUNITY_KINDS:
+            raise HTTPException(400, f"kind must be one of {', '.join(OPPORTUNITY_KINDS)}")
+        if "stage" in changed and "probability" not in changed or obj.stage in {"Won", "Lost"}:
+            obj.probability = OPPORTUNITY_STAGES[obj.stage]
+        obj.probability = max(0, min(100, int(obj.probability or 0)))
+        obj.value, obj.monthly_value = float(obj.value or 0), float(obj.monthly_value or 0)
+        if obj.value < 0 or obj.monthly_value < 0:
+            raise HTTPException(400, "Values cannot be negative")
+        if obj.stage in {"Won", "Lost"}:
+            obj.closed_at = obj.closed_at or utcnow()
+        else:
+            obj.closed_at, obj.lost_reason = None, ""
+    if kind == "activities":
+        if not obj.subject:
+            raise HTTPException(400, "subject is required")
+        if obj.kind not in ACTIVITY_KINDS:
+            raise HTTPException(400, f"kind must be one of {', '.join(ACTIVITY_KINDS)}")
+        if obj.direction not in ("", "inbound", "outbound"):
+            raise HTTPException(400, "direction must be inbound or outbound")
+        if "dueAt" in body:
+            obj.due_at = _parse_time(body.get("dueAt"))
+        if "completedAt" in body:
+            obj.completed_at = _parse_time(body.get("completedAt"))
+        if "done" in body:
+            obj.completed_at = (obj.completed_at or utcnow()) if body.get("done") else None
+        if obj.kind != "task" and obj.completed_at is None:
+            obj.completed_at = obj.created_at or utcnow()  # calls, emails, meetings and notes are logged as done
 
 
 @router.get("/crm/{kind}")
-def crm_list(kind: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+def crm_list(kind: str, account_tenant_id: str | None = None, open_only: bool = False,
+             principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     if kind not in CRM_MODELS:
         raise HTTPException(404, "Unknown CRM collection")
     principal.require("read")
     model, _ = CRM_MODELS[kind]
-    rows = db.execute(select(model).where(model.tenant_id.in_(_crm_scope(principal))).order_by(model.created_at.desc())).scalars().all()
+    query = select(model).where(model.tenant_id.in_(_crm_scope(principal)))
+    if account_tenant_id and hasattr(model, "account_tenant_id"):
+        query = query.where(model.account_tenant_id == account_tenant_id)
+    if open_only and kind == "activities":
+        query = query.where(Activity.kind == "task", Activity.completed_at.is_(None))
+    elif open_only and kind == "opportunities":
+        query = query.where(Opportunity.closed_at.is_(None))
+    rows = db.execute(query.order_by(model.created_at.desc()).limit(2000)).scalars().all()
     return [to_dict(r) for r in rows]
 
 
@@ -59,13 +129,21 @@ def crm_create(kind: str, body: dict = Body(...), principal: Principal = Depends
     principal.require("crm")
     model, allowed = CRM_MODELS[kind]
     obj = model(tenant_id=principal.user.tenant_id)
-    apply_fields(obj, body, allowed)
+    changed = apply_fields(obj, body, allowed)
+    if kind == "opportunities":
+        obj.stage, obj.kind = obj.stage or "Prospecting", obj.kind or "New business"
+    if kind == "activities":
+        obj.kind, obj.direction, obj.created_by = obj.kind or "note", obj.direction or "", principal.actor
+        obj.owner = obj.owner or principal.actor
+        obj.created_at = utcnow()
+    _validate_crm(db, principal, kind, obj, body, changed)
     if kind == "leads" and not obj.company:
         raise HTTPException(400, "company is required")
     if kind in {"contacts", "projects"} and not obj.name:
         raise HTTPException(400, "name is required")
     db.add(obj)
-    audit.record(db, principal.actor, f"crm.{kind}.created", getattr(obj, "name", None) or getattr(obj, "company", ""), obj.tenant_id)
+    audit.record(db, principal.actor, f"crm.{kind}.created",
+                 getattr(obj, "name", None) or getattr(obj, "company", None) or getattr(obj, "subject", ""), obj.tenant_id)
     db.commit()
     return to_dict(obj)
 
@@ -79,6 +157,7 @@ def crm_update(kind: str, obj_id: str, body: dict = Body(...), principal: Princi
     model, allowed = CRM_MODELS[kind]
     obj = _get(db, principal, model, obj_id)
     changed = apply_fields(obj, body, allowed)
+    _validate_crm(db, principal, kind, obj, body, changed)
     if hasattr(obj, "updated_at"):
         obj.updated_at = utcnow()
     audit.record(db, principal.actor, f"crm.{kind}.updated", obj_id, obj.tenant_id, fields=changed)
@@ -132,6 +211,11 @@ def convert_lead(lead_id: str, body: dict = Body(default={}), principal: Princip
                         plan=tenant.plan, price_per_device=round(price, 2), sla=dict(services.DEFAULT_SLA_HOURS),
                         start_date=date.today().isoformat())
     db.add(contract)
+    db.add(Opportunity(tenant_id=principal.user.tenant_id, account_tenant_id=tenant.id, lead_id=lead.id, name=f"{lead.company} onboarding",
+                       kind="New business", stage="Won", probability=100, value=0, monthly_value=round(lead.value / 12, 2) if lead.value else 0,
+                       owner=lead.owner, source=lead.source, closed_at=utcnow()))
+    if lead.owner:
+        tenant.account_owner = lead.owner
     lead.stage, lead.converted_tenant_id, lead.updated_at = "Won", tenant.id, utcnow()
     audit.record(db, principal.actor, "crm.lead.converted", lead.company, tenant.id, template=template)
     db.commit()

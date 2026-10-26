@@ -27,6 +27,7 @@ import Vulnerabilities from "./pages/Vulnerabilities";
 import AttackSurface from "./pages/AttackSurface";
 import Compliance from "./pages/Compliance";
 import Crm from "./pages/Crm";
+import CrmAccount from "./pages/CrmAccount";
 import Billing from "./pages/Billing";
 import Portal from "./pages/Portal";
 
@@ -196,6 +197,7 @@ function Shell() {
             <Route path="/attack-surface" element={<AttackSurface />} />
             <Route path="/compliance" element={<Compliance />} />
             <Route path="/crm" element={<Crm />} />
+            <Route path="/crm/accounts/:id" element={<CrmAccount />} />
             <Route path="/service-desk" element={<Navigate to="/service-board" replace />} />
             <Route path="/service-board" element={<ServiceBoard />} />
             <Route path="/tickets/:id" element={<TicketDetail />} />
