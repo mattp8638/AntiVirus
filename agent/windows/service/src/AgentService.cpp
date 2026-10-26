@@ -1069,6 +1069,9 @@ int AgentService::Run(const AgentRunMode mode) {
     processEtwSensor_ = std::make_unique<ProcessEtwSensor>(config_);
     processEtwSensor_->SetProcessStartHandler(
         [guard = processGuard_.get()](const EtwProcessContext& process) { return guard->OnProcessStart(process); });
+    processEtwSensor_->SetRemoteThreadHandler([guard = processGuard_.get()](const EtwProcessContext& source, DWORD target) {
+      return guard->OnRemoteThread(source, target);
+    });
     networkIsolationManager_ = std::make_unique<NetworkIsolationManager>(config_);
     ransomwareShield_ = std::make_unique<RansomwareShield>(config_.runtimeDatabasePath.parent_path());
     ransomwareShield_->SetUrgentCallback([this] {

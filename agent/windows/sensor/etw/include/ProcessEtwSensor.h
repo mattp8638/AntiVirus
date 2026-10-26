@@ -46,6 +46,10 @@ class ProcessEtwSensor {
   // Called on the ETW thread for every process start; returned records are queued as telemetry.
   using ProcessStartHandler = std::function<std::vector<TelemetryRecord>(const EtwProcessContext&)>;
   void SetProcessStartHandler(ProcessStartHandler handler);
+  // Called on the ETW thread when a process starts a thread inside another process (code injection).
+  // Set before Start(): thread events are only collected when a handler exists.
+  using RemoteThreadHandler = std::function<std::vector<TelemetryRecord>(const EtwProcessContext& source, DWORD targetPid)>;
+  void SetRemoteThreadHandler(RemoteThreadHandler handler);
   std::vector<TelemetryRecord> DrainTelemetry();
 
  private:
@@ -54,6 +58,7 @@ class ProcessEtwSensor {
 
   void RunTraceLoop();
   void HandleEventRecord(const EVENT_RECORD& eventRecord);
+  void HandleThreadStart(const EVENT_RECORD& eventRecord);
   void QueueTelemetry(const TelemetryRecord& record);
   void QueueStateEvent(const std::wstring& eventType, const std::wstring& summary,
                        const std::wstring& payloadJson);
@@ -72,6 +77,8 @@ class ProcessEtwSensor {
   TRACEHANDLE traceHandle_{0};
   std::atomic<bool> active_{false};
   ProcessStartHandler processStartHandler_{};
+  RemoteThreadHandler remoteThreadHandler_{};
+  int threadLayout_{0};  // 0 unknown, 1 ProcessID first, -1 unsupported
 };
 
 }  // namespace antivirus::agent

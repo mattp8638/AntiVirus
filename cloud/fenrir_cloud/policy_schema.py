@@ -423,7 +423,7 @@ AGENT_SUPPORT: dict[str, tuple[str, ...]] = {
     "edr.telemetryUploadSeconds": ('linux', 'macos'),
     "attackSurface.blockOfficeChildProcesses": ('windows',),
     "attackSurface.blockOfficeExecutableContent": ('windows',),
-    "attackSurface.blockOfficeCodeInjection": (),
+    "attackSurface.blockOfficeCodeInjection": ('windows',),
     "attackSurface.blockScriptDownloadedPayloads": ('windows',),
     "attackSurface.blockEmailExecutables": ('windows',),
     "attackSurface.blockPsexecWmiProcessCreation": ('windows',),
