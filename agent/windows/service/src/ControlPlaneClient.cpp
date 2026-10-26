@@ -1,4 +1,6 @@
 #include "ControlPlaneClient.h"
+
+#include <fstream>
 #include "CryptoUtils.h"
 
 #include <windows.h>
@@ -1264,6 +1266,33 @@ MlModelManifest ControlPlaneClient::FetchMlModelManifest(const AgentState& state
   return MlModelManifest{.version = Utf8ToWide(ExtractJsonString(response.body, "version").value_or("")),
                          .sha256 = Utf8ToWide(ExtractJsonString(response.body, "sha256").value_or("")),
                          .size = ExtractJsonInt(response.body, "size").value_or(0)};
+}
+
+AgentPackageInfo ControlPlaneClient::CheckWindowsAgentUpdate(const AgentState& state) const {
+  const auto deviceApiKey = ExtractDeviceApiKeyFromCommandChannelUrl(state.commandChannelUrl);
+  const auto response = RequestJson(L"GET", JoinUrl(baseUrl_, L"/api/v1/agent/update/windows"), {}, deviceApiKey);
+  AgentPackageInfo info;
+  info.available = ExtractJsonBool(response.body, "available").value_or(false);
+  info.autoUpdate = ExtractJsonBool(response.body, "autoUpdate").value_or(true);
+  info.buildId = Utf8ToWide(ExtractJsonString(response.body, "buildId").value_or(""));
+  info.sha256 = Utf8ToWide(ExtractJsonString(response.body, "sha256").value_or(""));
+  info.url = Utf8ToWide(ExtractJsonString(response.body, "url").value_or(""));
+  return info;
+}
+
+void ControlPlaneClient::DownloadToFile(const AgentState& state, const std::wstring& path,
+                                        const std::filesystem::path& target) const {
+  if (path.rfind(L"/api/v1/", 0) != 0 || path.find(L"..") != std::wstring::npos) {
+    throw std::runtime_error("Refusing to download from outside the Fenrir agent API");
+  }
+  const auto deviceApiKey = ExtractDeviceApiKeyFromCommandChannelUrl(state.commandChannelUrl);
+  const auto response = RequestJson(L"GET", JoinUrl(baseUrl_, path), {}, deviceApiKey);
+  std::ofstream out(target, std::ios::binary | std::ios::trunc);
+  out.write(response.body.data(), static_cast<std::streamsize>(response.body.size()));
+  out.close();
+  if (!out) {
+    throw std::runtime_error("Could not write the downloaded file");
+  }
 }
 
 std::vector<unsigned char> ControlPlaneClient::DownloadMlModel(const AgentState& state) const {

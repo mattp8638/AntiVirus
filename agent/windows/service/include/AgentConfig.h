@@ -37,7 +37,7 @@ struct AgentConfig {
   std::filesystem::path phase2RuleQualityReportPath{std::filesystem::path(L"runtime") /
                                                     L"phase2-rule-quality.json"};
   std::wstring realtimeProtectionPortName{L"\\AntiVirusRealtimePort"};
-  std::wstring agentVersion{L"0.1.0-alpha"};
+  std::wstring agentVersion{L"1.2.0"};
   std::wstring platformVersion{L"platform-0.1.0"};
   int syncIntervalSeconds{60};
   int syncIterations{1};

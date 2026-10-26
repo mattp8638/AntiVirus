@@ -115,6 +115,7 @@ struct CompletionPayload {
 };
 
 struct UiContext {
+  bool silent{false};  // --silent-upgrade: started by the agent service to upgrade itself; no window, no prompts
   HINSTANCE instance{};
   HWND hwnd{};
   HWND eyebrowLabel{};
@@ -2542,8 +2543,15 @@ void RunInstallOrRepair(HWND hwnd, UiContext* context, const bool repair) {
   }
 
   PostStatus(hwnd, L"Launching background companion...", 100);
-  PostLog(hwnd, L"Starting the installed endpoint client in silent tray mode");
-  LaunchInstalledEndpointClient(context->installRoot, true);
+  if (context->silent) {
+    // Running as SYSTEM: the restarted service reopens the agent window in the signed-in user's session.
+    std::error_code markerError;
+    std::filesystem::create_directories(context->installRoot / L"runtime", markerError);
+    std::ofstream(context->installRoot / L"runtime" / L"relaunch-client.flag") << "1";
+  } else {
+    PostLog(hwnd, L"Starting the installed endpoint client in silent tray mode");
+    LaunchInstalledEndpointClient(context->installRoot, true);
+  }
   auto completionMessage = repair ? std::wstring(L"Fenrir Endpoint was repaired successfully.")
                                   : std::wstring(L"Fenrir Endpoint was installed successfully.");
   if (minifilterDegraded) {
@@ -2991,6 +2999,19 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         context->installed = payload->installed;
         SetWindowTextW(context->statusLabel, payload->message.c_str());
         AppendLog(context->logEdit, payload->message);
+        if (context->silent) {
+          // Record the outcome for support (runtime\last-upgrade.log) and exit without any UI.
+          std::error_code logError;
+          std::filesystem::create_directories(context->installRoot / L"runtime", logError);
+          std::wofstream log(context->installRoot / L"runtime" / L"last-upgrade.log", std::ios::trunc);
+          const int length = GetWindowTextLengthW(context->logEdit);
+          std::wstring text(static_cast<std::size_t>(length) + 1, L'\0');
+          GetWindowTextW(context->logEdit, text.data(), length + 1);
+          log << (payload->success ? L"OK: " : L"FAILED: ") << payload->message << L"\r\n\r\n" << text.c_str();
+          delete payload;
+          DestroyWindow(hwnd);
+          return 0;
+        }
         RefreshUi(*context);
         MessageBoxW(hwnd, payload->message.c_str(), kWindowTitle,
                     MB_OK | (payload->success ? MB_ICONINFORMATION : MB_ICONWARNING));
@@ -3130,8 +3151,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     }
   }
 
-  ShowWindow(hwnd, showCommand == 0 ? SW_SHOWDEFAULT : showCommand);
-  UpdateWindow(hwnd);
+  const bool silentUpgrade = argv != nullptr && HasArgument(argc, argv, L"--silent-upgrade");
+  if (silentUpgrade) {
+    auto* context = GetContext(hwnd);
+    if (context == nullptr || !context->installed) {
+      DestroyWindow(hwnd);  // only upgrades an existing installation, never installs one silently
+      if (argv != nullptr) LocalFree(argv);
+      CoUninitialize();
+      return 2;
+    }
+    context->silent = true;
+    PostMessageW(hwnd, WM_COMMAND, IDC_PRIMARY_BUTTON, 0);
+  } else {
+    ShowWindow(hwnd, showCommand == 0 ? SW_SHOWDEFAULT : showCommand);
+    UpdateWindow(hwnd);
+  }
 
   if (argv != nullptr && HasArgument(argc, argv, L"--uninstall")) {
     PostMessageW(hwnd, WM_COMMAND, IDC_UNINSTALL_BUTTON, 0);

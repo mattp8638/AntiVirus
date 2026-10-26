@@ -23,7 +23,7 @@ import (
 	"github.com/AntiVirus/agent/linux/pkg/remote"
 )
 
-const Version = "1.1.0"
+const Version = "1.2.0"
 
 type Config struct {
 	Server          string

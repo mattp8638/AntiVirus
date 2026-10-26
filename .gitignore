@@ -32,3 +32,4 @@ cloud/data/
 
 # Signed installer staging directory (do not commit customer release binaries)
 deploy/releases/
+deploy/auto-update.env

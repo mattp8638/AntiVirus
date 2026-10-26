@@ -292,8 +292,8 @@ def test_linux_agent_update_metadata(client, device, tmp_path, monkeypatch):
     (tmp_path / "linux-build.json").write_text(_json.dumps({"version": "1.2.0", "sha256": {"amd64": _hashlib.sha256(binary).hexdigest(),
                                                                                           "arm64": "0" * 64}}))
     info = client.get("/api/v1/agent/update/linux?arch=amd64", headers=device["headers"]).json()
-    assert info == {"available": True, "version": "1.2.0", "sha256": _hashlib.sha256(binary).hexdigest(),
-                    "url": "/downloads/fenrir-agent-linux-amd64"}
+    assert info == {"available": True, "version": "1.2.0", "buildId": "", "sha256": _hashlib.sha256(binary).hexdigest(),
+                    "url": "/downloads/fenrir-agent-linux-amd64", "autoUpdate": True}
     assert client.get("/api/v1/agent/update/linux?arch=mips", headers=device["headers"]).status_code == 422
 
 
@@ -310,10 +310,10 @@ def test_macos_agent_update_metadata(client, device, tmp_path, monkeypatch):
         "version": "1.3.0", "sha256": {"amd64": "1" * 64, "arm64": "2" * 64},
         "darwinSha256": {"amd64": "3" * 64, "arm64": _hashlib.sha256(binary).hexdigest()}}))
     info = client.get("/api/v1/agent/update/macos?arch=arm64", headers=device["headers"]).json()
-    assert info == {"available": True, "version": "1.3.0", "sha256": _hashlib.sha256(binary).hexdigest(),
-                    "url": "/downloads/fenrir-agent-darwin-arm64"}
+    assert info == {"available": True, "version": "1.3.0", "buildId": "", "sha256": _hashlib.sha256(binary).hexdigest(),
+                    "url": "/downloads/fenrir-agent-darwin-arm64", "autoUpdate": True}
     assert client.get("/api/v1/agent/update/macos?arch=amd64", headers=device["headers"]).json()["available"] is False
-    assert client.get("/api/v1/agent/update/windows?arch=amd64", headers=device["headers"]).status_code == 422
+    assert client.get("/api/v1/agent/update/beos?arch=amd64", headers=device["headers"]).status_code == 422
 
 
 def test_maintenance_window_parsing():
@@ -444,3 +444,34 @@ def test_missing_windows_security_updates_become_vulnerabilities(client, admin, 
     finally:
         exposure._KEV_CACHE = old_cache
         session.close()
+
+
+def test_windows_agent_update_by_build_id(client, admin, tenant, device, tmp_path, monkeypatch):
+    import hashlib as _hashlib
+    import json as _json
+
+    from fenrir_cloud import deployment_installers
+
+    monkeypatch.setattr(deployment_installers, "DOWNLOADS", tmp_path)
+    url = "/api/v1/agent/update/windows"
+    assert client.get(url).status_code == 401
+    assert client.get(url, headers=device["headers"]).json()["available"] is False
+    (tmp_path / "windows").mkdir()
+    setup = b"MZ fake setup"
+    (tmp_path / "windows" / "FenrirSetup.exe").write_bytes(setup)
+    meta = {"sha256": _hashlib.sha256(setup).hexdigest(), "platform": "windows-x64", "mode": "unsigned-hobby"}
+    (tmp_path / "windows" / "build.json").write_text(_json.dumps(meta))
+    # Images built before build ids existed are never offered (agents could not compare them).
+    assert client.get(url, headers=device["headers"]).json()["available"] is False
+    (tmp_path / "windows" / "build.json").write_text(_json.dumps({**meta, "buildId": "0123456789abcdef"}))
+    info = client.get(url, headers=device["headers"]).json()
+    assert info == {"available": True, "autoUpdate": True, "buildId": "0123456789abcdef", "sha256": meta["sha256"],
+                    "url": "/api/v1/agent/update/windows/package"}
+    assert client.get(info["url"]).status_code == 401
+    package = client.get(info["url"], headers=device["headers"])
+    assert package.status_code == 200 and package.content == setup
+    # Turning automatic updates off in the policy is passed to the agent.
+    pid = client.post("/api/console/policies", json={"name": "No auto update", "tenantId": tenant["id"],
+                                                      "settings": {"updates": {"autoUpdateAgent": False}}}, headers=admin).json()["id"]
+    client.patch(f"/api/console/devices/{device['deviceId']}", json={"policyId": pid}, headers=admin)
+    assert client.get(url, headers=device["headers"]).json()["autoUpdate"] is False

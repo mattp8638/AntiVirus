@@ -17,10 +17,15 @@ import (
 	"time"
 )
 
+// BuildID fingerprints the source this binary was built from (set with -ldflags -X by the cloud image).
+// Agents upgrade whenever the server's build id differs, so no version bump is needed to roll out a change.
+var BuildID = ""
+
 // AgentUpdate describes the Linux agent build the cloud serves (from its own /downloads).
 type AgentUpdate struct {
 	Available bool   `json:"available"`
 	Version   string `json:"version"`
+	BuildID   string `json:"buildId"`
 	SHA256    string `json:"sha256"`
 	URL       string `json:"url"`
 }
@@ -57,6 +62,15 @@ func (c *Client) DownloadFile(path string, limit int64) ([]byte, error) {
 		return nil, errors.New("update is larger than allowed")
 	}
 	return data, nil
+}
+
+// NeedsUpdate compares build ids when both sides have one (any difference means the server has the build to
+// run), and falls back to version numbers for servers or binaries built without them.
+func NeedsUpdate(serverVersion, serverBuild, version, build string) bool {
+	if serverBuild != "" && build != "" {
+		return serverBuild != build
+	}
+	return NewerVersion(serverVersion, version)
 }
 
 // NewerVersion reports whether candidate (e.g. 1.2.0) is newer than current.
@@ -100,7 +114,7 @@ func (a *Agent) selfUpdate(force bool) (map[string]interface{}, error) {
 	if !info.Available {
 		return nil, errors.New("the Fenrir server has no Linux agent build for " + runtime.GOARCH)
 	}
-	if !force && !NewerVersion(info.Version, Version) {
+	if !force && !NeedsUpdate(info.Version, info.BuildID, Version, BuildID) {
 		return map[string]interface{}{"updated": false, "current": Version, "available": info.Version, "reason": "already up to date"}, nil
 	}
 	data, err := a.client.DownloadFile(info.URL, maxAgentBinary)
@@ -146,9 +160,9 @@ func (a *Agent) executablePath() (string, error) {
 	return filepath.EvalSymlinks(exe)
 }
 
-// maybeAutoUpdate runs at most every 6 hours when the policy turns on automatic agent updates.
+// maybeAutoUpdate checks at most every 30 minutes when the policy turns on automatic agent updates.
 func (a *Agent) maybeAutoUpdate() {
-	if !a.state.Policy.ModuleBool("updates", "autoUpdateAgent", false) || time.Since(a.lastUpdateCheck) < 6*time.Hour {
+	if !a.state.Policy.ModuleBool("updates", "autoUpdateAgent", false) || time.Since(a.lastUpdateCheck) < 30*time.Minute {
 		return
 	}
 	a.lastUpdateCheck = time.Now()
