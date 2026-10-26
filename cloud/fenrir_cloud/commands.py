@@ -37,9 +37,10 @@ CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("persistence.cleanup", "Remove persistence", "Remediation", destructive=True),
     CommandSpec("quarantine.restore", "Restore from quarantine", "Remediation", needs=("recordId",), platforms=ALL),
     CommandSpec("quarantine.delete", "Delete quarantined file", "Remediation", needs=("recordId",), platforms=ALL, destructive=True),
-    # No agent keeps file snapshots yet, so rollback is not offered on any platform.
-    CommandSpec("ransomware.rollback", "Roll back ransomware changes", "Remediation", platforms=(), destructive=True,
-                description="Not available yet: agents do not keep rollback snapshots."),
+    # Windows keeps Volume Shadow Copy snapshots (ransomware.rollbackSnapshots) and records the files an attack changed.
+    CommandSpec("ransomware.rollback", "Roll back ransomware changes", "Remediation", platforms=("windows",), destructive=True,
+                description="Restores the files changed in the device's last ransomware incident (within 24 hours) from the "
+                            "newest snapshot taken before it. Current versions are kept as <name>.fenrir-pre-restore."),
     CommandSpec("threatintel.lookup", "Threat-intel lookup", "Investigation", needs=("targetPath",)),
     CommandSpec("threatintel.pack.ingest", "Push intel pack", "Investigation", permission="configure"),
     CommandSpec("support.bundle", "Collect support bundle", "Investigation", platforms=ALL),

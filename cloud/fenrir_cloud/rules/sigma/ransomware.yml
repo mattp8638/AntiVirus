@@ -117,3 +117,15 @@ detection:
     FileCount|gte: 20
   condition: selection
 level: high
+---
+title: Unapproved program wrote to a protected folder
+id: fenrir-ransom-protected-folder
+description: An unsigned program that is not on the ransomware allowed-apps list changed files in a protected folder.
+tags: [attack.impact, attack.t1565]
+logsource: {category: ransomware}
+detection:
+  selection:
+    EventType|contains: ['ransomware.protected_folder']
+  condition: selection
+falsepositives: [Portable or in-house tools that save into Documents; add them to the allowed apps]
+level: medium

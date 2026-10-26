@@ -1070,6 +1070,10 @@ int AgentService::Run(const AgentRunMode mode) {
     processEtwSensor_->SetProcessStartHandler(
         [guard = processGuard_.get()](const EtwProcessContext& process) { return guard->OnProcessStart(process); });
     networkIsolationManager_ = std::make_unique<NetworkIsolationManager>(config_);
+    ransomwareShield_ = std::make_unique<RansomwareShield>(config_.runtimeDatabasePath.parent_path());
+    ransomwareShield_->SetUrgentCallback([this] {
+      if (wakeEvent_ != nullptr) SetEvent(wakeEvent_);  // send a detection now, not at the next cycle
+    });
 
     LoadLocalPolicyCache();
     PublishIdentitySnapshot();
@@ -1111,6 +1115,7 @@ int AgentService::Run(const AgentRunMode mode) {
     RunSyncLoop(mode);
     StopRealtimeChannel();
     DrainProcessTelemetry();
+    DrainRansomwareTelemetry();
     DrainRealtimeProtectionTelemetry();
     DrainNetworkTelemetry();
 
@@ -1123,6 +1128,9 @@ int AgentService::Run(const AgentRunMode mode) {
     }
     if (processEtwSensor_) {
       processEtwSensor_->Stop();
+    }
+    if (ransomwareShield_) {
+      ransomwareShield_->Stop();
     }
     if (realtimeProtectionBroker_) {
       realtimeProtectionBroker_->Stop();
@@ -1187,6 +1195,7 @@ void AgentService::RunSyncLoop(const AgentRunMode mode) {
     ProcessPamRequests();
     QueueCycleTelemetry(cycle);
     DrainProcessTelemetry();
+    DrainRansomwareTelemetry();
     DrainRealtimeProtectionTelemetry();
     DrainNetworkTelemetry();
     DrainDeferredTelemetry();
@@ -1211,6 +1220,7 @@ void AgentService::RunSyncLoop(const AgentRunMode mode) {
     SyncUpdateOnly(cycle);
     RunAutomatedRiskAssessments(cycle);
     DrainProcessTelemetry();
+    DrainRansomwareTelemetry();
     DrainRealtimeProtectionTelemetry();
     DrainNetworkTelemetry();
     if (config_.managedMode) {
@@ -2042,6 +2052,19 @@ std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
   }
   if (command.type == L"localadmin.rotate") {
     return RotateLocalAdminPassword(true);
+  }
+  if (command.type == L"ransomware.rollback") {
+    if (command.issuedBy.rfind(L"local-dashboard:", 0) == 0) {
+      throw std::runtime_error("Ransomware rollback can only be started from the Fenrir console.");
+    }
+    if (!ransomwareShield_) {
+      throw std::runtime_error("The ransomware shield is not running.");
+    }
+    const auto result = ransomwareShield_->RollbackLastIncident(L"console command");
+    if (result.find(L"\"ok\":false") != std::wstring::npos) {
+      throw std::runtime_error(WideToUtf8(result));
+    }
+    return result;
   }
   if (command.type == L"support.request") {
     // Only from the agent window on this PC (the local pipe); the cloud never asks a device to file a ticket.
@@ -2982,6 +3005,12 @@ void AgentService::ApplyProtectionPolicy() {
   }
   ApplyFirewallPolicy();
   WriteExperienceFile();
+  if (ransomwareShield_ && !policy_.modulesJson.empty()) {
+    const auto extended = ExtendedPolicy::Parse(policy_.modulesJson);
+    if (extended.present) {
+      ransomwareShield_->Apply(extended.ransomware);
+    }
+  }
 }
 
 // Publishes what the agent window may show (branding, support contact, which protections are on) to
@@ -3440,6 +3469,16 @@ void AgentService::DrainProcessTelemetry() {
   }
 
   const auto telemetry = processEtwSensor_->DrainTelemetry();
+  if (!telemetry.empty()) {
+    QueueTelemetryRecords(telemetry);
+  }
+}
+
+void AgentService::DrainRansomwareTelemetry() {
+  if (!ransomwareShield_) {
+    return;
+  }
+  const auto telemetry = ransomwareShield_->DrainTelemetry();
   if (!telemetry.empty()) {
     QueueTelemetryRecords(telemetry);
   }

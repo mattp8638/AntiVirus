@@ -16,6 +16,7 @@
 #include "AgentState.h"
 #include "ControlPlaneClient.h"
 #include "ExtendedPolicy.h"
+#include "RansomwareShield.h"
 #include "CommandJournalStore.h"
 #include "DeviceInventoryCollector.h"
 #include "EventEnvelope.h"
@@ -120,6 +121,7 @@ class AgentService {
   void QueuePatchTelemetry(int cycle);
   void DrainProcessTelemetry();
   void DrainRealtimeProtectionTelemetry();
+  void DrainRansomwareTelemetry();
   void DrainNetworkTelemetry();
   void QueueCycleTelemetry(int cycle);
   void ApplyProtectionPolicy();
@@ -182,6 +184,7 @@ class AgentService {
   std::unique_ptr<LocalControlChannel> localControlChannel_{};
   std::unique_ptr<ProcessGuard> processGuard_{};
   std::unique_ptr<ProcessEtwSensor> processEtwSensor_{};
+  std::unique_ptr<RansomwareShield> ransomwareShield_{};
   std::unique_ptr<NetworkIsolationManager> networkIsolationManager_{};
   bool lastControlPlaneSyncFailed_{false};
   bool lastHardeningCheckFailed_{false};

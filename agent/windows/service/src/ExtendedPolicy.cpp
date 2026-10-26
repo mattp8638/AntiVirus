@@ -290,6 +290,15 @@ std::wstring WideString(const json::Value* section, const char* key, const wchar
   return fallback;
 }
 
+int IntOr(const json::Value* section, const char* key, int fallback) {
+  if (section != nullptr) {
+    if (const auto* v = section->Get(key)) {
+      if (auto n = v->Number(); n && std::isfinite(*n)) return static_cast<int>(std::clamp(*n, -1e9, 1e9));
+    }
+  }
+  return fallback;
+}
+
 bool BoolOr(const json::Value* section, const char* key, bool fallback) {
   if (section != nullptr) {
     if (const auto* v = section->Get(key)) {
@@ -370,6 +379,30 @@ ExtendedPolicy ExtendedPolicy::Parse(const std::string& modulesJson) {
   policy.ransomwareEnabled = BoolOr(ransomware, "enabled", true);
   policy.behavior.blockShadowCopyDeletion = policy.ransomwareEnabled && BoolOr(ransomware, "blockShadowCopyDeletion", true);
   policy.canaryFiles = policy.ransomwareEnabled && BoolOr(ransomware, "canaryFiles", true);
+  {
+    auto& r = policy.ransomware;
+    r.enabled = policy.ransomwareEnabled;
+    r.mode = WideString(ransomware, "mode", L"block");
+    if (r.mode != L"audit" && r.mode != L"block" && r.mode != L"block-and-rollback") {
+      r.mode = L"block";
+    }
+    r.filesPerMinute = std::clamp(IntOr(ransomware, "massEncryptionFilesPerMinute", 40), 5, 1000);
+    r.entropyDetection = BoolOr(ransomware, "entropyDetection", true);
+    r.canaryFiles = policy.canaryFiles;
+    if (ransomware != nullptr && ransomware->Get("protectedFolders") != nullptr) {
+      r.protectedFolders = WideList(ransomware, "protectedFolders");
+    } else {
+      r.protectedFolders = {L"%USERPROFILE%\\Documents", L"%USERPROFILE%\\Desktop", L"%USERPROFILE%\\Pictures"};
+    }
+    r.protectedFoldersMode = WideString(ransomware, "protectedFoldersMode", L"audit");
+    if (r.protectedFoldersMode != L"off" && r.protectedFoldersMode != L"audit" && r.protectedFoldersMode != L"block") {
+      r.protectedFoldersMode = L"audit";
+    }
+    r.allowedApps = WideList(ransomware, "allowedApps");
+    r.rollbackSnapshots = BoolOr(ransomware, "rollbackSnapshots", true);
+    r.snapshotIntervalHours = std::clamp(IntOr(ransomware, "snapshotIntervalHours", 4), 1, 72);
+    r.networkShareProtection = BoolOr(ransomware, "networkShareProtection", true);
+  }
 
   const auto* app = root->Get("applicationControl");
   policy.behavior.appControlMode = WideString(app, "mode", L"off");

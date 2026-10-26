@@ -1,5 +1,6 @@
 // Tests ExtendedPolicy parsing against real Fenrir Cloud policy documents and the device-control planner.
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -8,6 +9,9 @@
 #include "ExtendedPolicy.h"
 #include "FirewallPolicy.h"
 #include "LocalAdminRotation.h"
+#include "RansomwareDetector.h"
+
+#include <random>
 
 using namespace antivirus::agent;
 
@@ -148,6 +152,120 @@ int main(int argc, char** argv) {
     CHECK(a.find_first_of(L"ABCDEFGHJKLMNPQRSTUVWXYZ") != std::wstring::npos && a.find_first_of(L"abcdefghijkmnopqrstuvwxyz") != std::wstring::npos);
     CHECK(a.find_first_of(L"23456789") != std::wstring::npos && a.find_first_of(L"!#$%&*+-=?@_~") != std::wstring::npos);
     CHECK(a.find_first_of(L"O0Il1") == std::wstring::npos);
+  }
+  {  // Ransomware settings from the policy
+    const auto policy = ExtendedPolicy::Parse(R"({"ransomware":{"mode":"block-and-rollback","massEncryptionFilesPerMinute":2,"protectedFolders":["D:\\Data"],"protectedFoldersMode":"block","allowedApps":["backup.exe"],"snapshotIntervalHours":200}})");
+    CHECK(policy.ransomware.mode == L"block-and-rollback" && policy.ransomware.Blocks() && policy.ransomware.RollsBack());
+    CHECK(policy.ransomware.filesPerMinute == 5);         // clamped to the schema minimum
+    CHECK(policy.ransomware.snapshotIntervalHours == 72);  // clamped to the maximum
+    CHECK(policy.ransomware.protectedFolders.size() == 1 && policy.ransomware.protectedFolders[0] == L"D:\\Data");
+    CHECK(policy.ransomware.allowedApps.size() == 1 && policy.ransomware.protectedFoldersMode == L"block");
+    const auto defaults = ExtendedPolicy::Parse(R"({"ransomware":{"mode":"bogus"}})");
+    CHECK(defaults.ransomware.mode == L"block" && defaults.ransomware.protectedFolders.size() == 3 && !defaults.ransomware.RollsBack());
+    CHECK(defaults.ransomware.protectedFoldersMode == L"audit" && defaults.ransomware.filesPerMinute == 40);
+    const auto audit = ExtendedPolicy::Parse(R"({"ransomware":{"mode":"audit"}})");
+    CHECK(!audit.ransomware.Blocks());
+  }
+  {  // Ransomware detector: entropy and format checks
+    using namespace ransomware;
+    std::mt19937 rng(7);
+    std::vector<unsigned char> random(8192);
+    for (auto& b : random) b = static_cast<unsigned char>(rng());
+    CHECK(ShannonEntropy(random.data(), random.size()) > 7.9);
+    CHECK(LooksEncrypted(random.data(), random.size()));
+    std::vector<unsigned char> small(random.begin(), random.begin() + 600);
+    CHECK(LooksEncrypted(small.data(), small.size()));  // the bar follows the sample size
+    CHECK(!LooksEncrypted(random.data(), 100));          // too small to judge
+    auto zip = random;
+    zip[0] = 'P'; zip[1] = 'K'; zip[2] = 3; zip[3] = 4;
+    CHECK(!LooksEncrypted(zip.data(), zip.size()));       // Office documents are zip files
+    auto mp4 = random;
+    std::memcpy(mp4.data() + 4, "ftyp", 4);
+    CHECK(!LooksEncrypted(mp4.data(), mp4.size()));
+    std::string text;
+    while (text.size() < 8192) text += "Quarterly report: revenue grew in every region this year.\n";
+    CHECK(!LooksEncrypted(reinterpret_cast<const unsigned char*>(text.data()), text.size()));
+    CHECK(EncryptionConfirmed(8, 5) && !EncryptionConfirmed(8, 4) && EncryptionConfirmed(2, 2) && !EncryptionConfirmed(2, 1));
+    CHECK(!EncryptionConfirmed(0, 0));
+  }
+  {  // Ransomware detector: folders, allow list, canaries, bursts
+    using namespace ransomware;
+    const auto expanded = ExpandProtectedFolder(L"%USERPROFILE%\\Documents\\", {L"C:\\Users\\alice", L"C:\\Users\\bob\\"});
+    CHECK(expanded.size() == 2 && expanded[0] == L"C:\\Users\\alice\\Documents" && expanded[1] == L"C:\\Users\\bob\\Documents");
+    CHECK(ExpandProtectedFolder(L"  D:\\Finance\\ ", {}).at(0) == L"D:\\Finance");
+    CHECK(ExpandProtectedFolder(L"", {L"C:\\Users\\a"}).empty());
+    CHECK(PathUnder(L"\\Device\\HarddiskVolume3\\Users\\A\\Documents\\x.docx", L"\\device\\harddiskvolume3\\users\\a\\documents"));
+    CHECK(!PathUnder(L"\\Device\\HarddiskVolume3\\Users\\A\\DocumentsOld\\x.docx", L"\\device\\harddiskvolume3\\users\\a\\documents"));
+    CHECK(PathUnder(L"C:\\x\\y", L"C:\\"));
+    CHECK(AppAllowed(L"C:\\Program Files\\Backup\\backup.exe", {L"BACKUP.EXE"}));
+    CHECK(AppAllowed(L"C:\\Program Files\\Backup\\agent.exe", {L"c:\\program files\\backup\\"}));
+    CHECK(AppAllowed(L"C:\\Tools\\sync.exe", {L"C:\\Tools\\sync.exe"}));
+    CHECK(!AppAllowed(L"C:\\Tools\\evil.exe", {L"C:\\Tools\\sync.exe", L"sync.exe"}));
+
+    const std::wstring docs = L"\\Device\\HarddiskVolume3\\Users\\alice\\Documents";
+    const std::wstring share = L"\\Device\\HarddiskVolume4\\Shares\\Finance";
+    DetectorConfig config;
+    config.roots = {docs};
+    config.shareRoots = {share};
+    config.canaries = {docs + L"\\$fenrir-canary-budget-2024.docx"};
+    config.filesPerMinute = 10;
+    config.protectedFoldersWatch = true;
+    config.allowedApps = {L"backup.exe"};
+    config.selfPid = 99;
+    Detector detector;
+    detector.Configure(config);
+    const std::wstring evil = L"C:\\Users\\alice\\AppData\\Local\\Temp\\evil.exe";
+
+    // Canary: reported once a minute, never for the agent itself.
+    auto obs = detector.OnWrite(500, evil, docs + L"\\$FENRIR-CANARY-BUDGET-2024.DOCX", 1000);
+    CHECK(obs.size() == 1 && obs[0].kind == ObservationKind::Canary && obs[0].pid == 500);
+    CHECK(detector.OnWrite(500, evil, docs + L"\\$fenrir-canary-budget-2024.docx", 2000).empty());
+    CHECK(detector.OnWrite(99, evil, docs + L"\\$fenrir-canary-budget-2024.docx", 70000).empty());
+
+    // Outside the protected folders: ignored.
+    CHECK(detector.OnWrite(500, evil, L"\\Device\\HarddiskVolume3\\Temp\\a.txt", 3000).empty());
+
+    // First write into a protected folder is reported once (protected folders in audit/block).
+    obs = detector.OnWrite(600, evil, docs + L"\\a.docx", 10000);
+    CHECK(obs.size() == 1 && obs[0].kind == ObservationKind::ProtectedFolderWrite);
+    // Same file again does not count twice; nine more distinct files trip the burst at ten.
+    CHECK(detector.OnWrite(600, evil, docs + L"\\a.docx", 10001).empty());
+    for (int i = 0; i < 8; ++i) CHECK(detector.OnWrite(600, evil, docs + L"\\f" + std::to_wstring(i) + L".docx", 10010 + i).empty());
+    obs = detector.OnWrite(600, evil, docs + L"\\sub\\last.xlsx", 10100);
+    CHECK(obs.size() == 1 && obs[0].kind == ObservationKind::MassChange && obs[0].count == 10 && obs[0].paths.size() == 10);
+    CHECK(obs.size() == 1 && obs[0].paths.back() == docs + L"\\sub\\last.xlsx");  // original case kept for restores
+    // No repeat inside the same minute.
+    CHECK(detector.OnWrite(600, evil, docs + L"\\g.docx", 10200).empty());
+
+    // Writes spread out over more than a minute never add up.
+    for (int i = 0; i < 30; ++i) {
+      const auto o = detector.OnWrite(700, L"C:\\Apps\\slow.exe", docs + L"\\s" + std::to_wstring(i), 100000 + i * 7000);
+      for (const auto& x : o) CHECK(x.kind != ObservationKind::MassChange);
+    }
+
+    // Allowed apps are never counted or reported.
+    for (int i = 0; i < 20; ++i) CHECK(detector.OnWrite(800, L"D:\\Backup\\Backup.exe", docs + L"\\b" + std::to_wstring(i), 200000 + i).empty());
+
+    // A reused process id with a different image starts afresh.
+    for (int i = 0; i < 9; ++i) detector.OnWrite(900, L"C:\\a.exe", docs + L"\\r" + std::to_wstring(i), 300000 + i);
+    obs = detector.OnWrite(900, L"C:\\b.exe", docs + L"\\r9", 300010);
+    CHECK(obs.size() == 1 && obs[0].kind == ObservationKind::ProtectedFolderWrite);
+
+    // SMB clients (System): only on shares or protected folders, flagged as remote, no folder report.
+    for (int i = 0; i < 9; ++i) CHECK(detector.OnWrite(kSystemPid, L"System", share + L"\\q" + std::to_wstring(i), 400000 + i).empty());
+    obs = detector.OnWrite(kSystemPid, L"System", share + L"\\q9", 400020);
+    CHECK(obs.size() == 1 && obs[0].kind == ObservationKind::MassChange && obs[0].remote);
+    CHECK(detector.OnWrite(kSystemPid, L"System", L"\\Device\\HarddiskVolume3\\Windows\\x.log", 400030).empty());
+    // A share written by a local program is not watched (only protected folders are).
+    CHECK(detector.OnWrite(1000, evil, share + L"\\local.txt", 400040).empty());
+
+    // With network protection off (no share roots), System writes are ignored everywhere.
+    config.shareRoots.clear();
+    config.protectedFoldersWatch = false;
+    detector.Configure(config);
+    for (int i = 0; i < 12; ++i) CHECK(detector.OnWrite(kSystemPid, L"System", docs + L"\\n" + std::to_wstring(i), 500000 + i).empty());
+    CHECK(detector.Watches(L"\\device\\harddiskvolume3\\users\\alice\\documents\\x"));
+    CHECK(!detector.Watches(L"\\device\\harddiskvolume4\\shares\\finance\\x"));
   }
   CHECK(!ExtendedPolicy::Parse("not json").present);
   std::printf(failures ? "%d failure(s)\n" : "all policy/device-control tests passed\n", failures);

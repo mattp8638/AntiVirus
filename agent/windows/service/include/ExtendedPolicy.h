@@ -56,6 +56,25 @@ struct ScanPlan {
   int minuteOfDay{0};
 };
 
+// modules.ransomware (plus response.autoRollbackRansomware), used by RansomwareShield.
+struct RansomwareSettings {
+  bool enabled{true};
+  std::wstring mode{L"block"};  // audit | block | block-and-rollback
+  int filesPerMinute{40};
+  bool entropyDetection{true};
+  bool canaryFiles{true};
+  std::vector<std::wstring> protectedFolders;  // may contain %USERPROFILE% and other variables
+  std::wstring protectedFoldersMode{L"audit"};  // off | audit | block
+  std::vector<std::wstring> allowedApps;
+  bool rollbackSnapshots{true};
+  int snapshotIntervalHours{4};
+  bool networkShareProtection{true};
+
+  bool Blocks() const { return mode == L"block" || mode == L"block-and-rollback"; }
+  // response.autoRollbackRansomware is handled by the cloud, which queues the ransomware.rollback command.
+  bool RollsBack() const { return mode == L"block-and-rollback"; }
+};
+
 struct ExtendedPolicy {
   bool present{false};  // false until a cloud policy with modules has been received
   std::wstring mlSensitivity{L"balanced"};
@@ -63,6 +82,7 @@ struct ExtendedPolicy {
   DeviceControlSettings deviceControl;
   bool ransomwareEnabled{true};
   bool canaryFiles{true};
+  RansomwareSettings ransomware;
   bool scriptExecution{true};      // modules.response.scriptExecution
   bool remoteAccessEnabled{true};  // modules.remoteAccess.enabled
   // modules.edr collection switches: routine telemetry only; detections are always sent.
