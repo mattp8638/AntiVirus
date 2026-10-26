@@ -66,7 +66,21 @@ def windows_release_mode() -> tuple[str | None, str]:
         return None, "Windows build manifest is invalid; rebuild the cloud image."
     if not isinstance(expected, str) or not re.fullmatch(r"[a-f0-9]{64}", expected) or _digest(executable) != expected:
         return None, "Windows components failed SHA-256 verification; rebuild the cloud image."
-    return "unsigned-hobby", ""
+    return ("signed" if isinstance(metadata, dict) and metadata.get("signed") else "unsigned-hobby"), ""
+
+
+def _windows_warning(mode: str | None) -> str:
+    if mode == "unsigned-hobby":
+        return "Unsigned hobby build: user-mode testing only; no signed Windows kernel driver or full antivirus protection."
+    if mode == "signed":
+        sig = windows_signature()
+        text = (f"Signed by {sig['signer'] or 'your code-signing certificate'}. If that certificate is self-signed, Windows "
+                "trusts it only after the certificate (download below) is installed on each device under Trusted "
+                "Publishers and Trusted Root Certification Authorities, for example by Group Policy or Intune.")
+        if not sig["timestamped"]:
+            text += " The build has no timestamp, so its signature stops being valid when the certificate expires."
+        return text
+    return ""
 
 
 def available() -> dict:
@@ -77,8 +91,9 @@ def available() -> dict:
         "linux": {"ready": linux, "extension": ".sh", "reason": "" if linux else "Linux x64 and ARM64 agent binaries must be built in the cloud image."},
         "windows": {"ready": windows_mode is not None, "extension": ".exe",
                     "mode": windows_mode or "unavailable", "reason": windows_reason,
-                    "warning": ("Unsigned hobby build: user-mode testing only; no signed Windows kernel driver or "
-                                "full antivirus protection." if windows_mode == "unsigned-hobby" else "")},
+                    "warning": _windows_warning(windows_mode),
+                    "signature": windows_signature(),
+                    "certificateUrl": "/downloads/fenrir-codesign.cer" if windows_mode == "signed" else ""},
         "macos": {"ready": macos, "extension": ".sh",
                   "reason": "" if macos else "macOS Intel and Apple Silicon agent binaries must be built in the cloud image.",
                   "warning": ("Unsigned build installed as a LaunchDaemon. Allow the agent Full Disk Access for complete "
@@ -254,6 +269,51 @@ echo "  - Screen Recording and Accessibility (remote screen view and control)"
 WINDOWS_CONFIG_MAGIC = b"FENRIR_ENROLL_V1!"
 
 
+def attach_windows_overlay(executable: bytes, overlay: bytes) -> bytes:
+    """Attach the per-customer enrolment overlay without breaking an Authenticode signature.
+
+    Unsigned files get it appended. Signed files get it inside the signature's certificate table (the same place
+    Chrome puts its download tags): Windows does not hash that table, so the signature stays valid, and the
+    overlay still ends the file where setup reads it.
+    """
+    if len(executable) < 0x40 or executable[:2] != b"MZ":
+        return executable + overlay  # not a PE (test stubs): nothing to keep valid
+    pe = struct.unpack_from("<I", executable, 0x3C)[0]
+    if pe + 24 + 112 + 40 > len(executable) or executable[pe:pe + 4] != b"PE\0\0":
+        return executable + overlay
+    optional = pe + 24
+    magic = struct.unpack_from("<H", executable, optional)[0]
+    directories = optional + (96 if magic == 0x10B else 112)  # PE32 / PE32+
+    security = directories + 4 * 8  # IMAGE_DIRECTORY_ENTRY_SECURITY
+    table_offset, table_size = struct.unpack_from("<II", executable, security)
+    if table_size == 0:
+        return executable + overlay
+    if table_offset + table_size != len(executable):
+        raise ValueError("the signature is not at the end of the file")
+    padding = (-len(overlay)) % 8  # the certificate table stays 8-byte aligned
+    extra = b"\0" * padding + overlay
+    data = bytearray(executable + extra)
+    struct.pack_into("<I", data, security + 4, table_size + len(extra))
+    first_length = struct.unpack_from("<I", data, table_offset)[0]  # WIN_CERTIFICATE.dwLength of the only entry
+    if first_length != table_size:
+        raise ValueError("unexpected certificate table layout")
+    struct.pack_into("<I", data, table_offset, first_length + len(extra))
+    return bytes(data)
+
+
+def windows_signature() -> dict:
+    """Whether the image's Windows build is code-signed, from its build manifest."""
+    manifest = release_file("windows/build.json")
+    try:
+        meta = json.loads(manifest.read_text()) if manifest else {}
+    except (OSError, ValueError):
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    return {"signed": bool(meta.get("signed")), "signer": str(meta.get("signer") or ""),
+            "thumbprint": str(meta.get("signerSha1") or ""), "timestamped": bool(meta.get("timestamped"))}
+
+
 def _windows_executable(base: str, token: str) -> tuple[bytes, str, str]:
     mode, problem = windows_release_mode()
     if mode is None:
@@ -266,7 +326,7 @@ def _windows_executable(base: str, token: str) -> tuple[bytes, str, str]:
     payload = (base + "\n" + token + "\n" + request_id).encode("ascii")
     if len(payload) > 4096:
         raise HTTPException(422, "Installer enrollment configuration is too large.")
-    data = executable.read_bytes() + payload + struct.pack("<I", len(payload)) + WINDOWS_CONFIG_MAGIC
+    data = attach_windows_overlay(executable.read_bytes(), payload + struct.pack("<I", len(payload)) + WINDOWS_CONFIG_MAGIC)
     return data, f"FenrirSetup-{request_id}.exe", "application/vnd.microsoft.portable-executable"
 
 

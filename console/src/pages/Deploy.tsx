@@ -4,7 +4,7 @@ import { useApp } from "../app-context";
 import { ErrorNote, PageHead, Pill, Table, TenantSelect, useData, useListData } from "../components/ui";
 
 type OsName = "windows" | "linux" | "macos";
-type InstallerStatus = Record<OsName, { ready: boolean; reason: string; extension: string; mode?: string; warning?: string }>;
+type InstallerStatus = Record<OsName, { ready: boolean; reason: string; extension: string; mode?: string; warning?: string; certificateUrl?: string }>;
 
 const OS_LABEL: Record<OsName, string> = { windows: "Windows", linux: "Linux", macos: "macOS" };
 
@@ -111,6 +111,7 @@ export default function Deploy() {
               </p>
             )}
             {selected?.warning && <p role="alert" style={{ color: "#fbbf24", fontWeight: 700 }}>{selected.warning}</p>}
+            {selected?.certificateUrl && <p className="small"><a href={selected.certificateUrl} download>Download the code-signing certificate (.cer)</a> to deploy it to devices.</p>}
             <ErrorNote error={statusError || error} />
             {success && <div role="status" className="card">{success}</div>}
           </div>

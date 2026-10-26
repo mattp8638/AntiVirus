@@ -30,24 +30,31 @@ RUN BUILD_ID=$(find . -type f \( -name '*.go' -o -name 'go.mod' -o -name 'go.sum
 # Docker's layer cache reuses it until agent source or its toolchain changes.
 FROM ubuntu:24.04 AS windows-agents
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    cmake ninja-build g++-mingw-w64-x86-64-posix python3 \
+    cmake ninja-build g++-mingw-w64-x86-64-posix python3 osslsigncode openssl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY agent/windows/ agent/windows/
 COPY third_party/sqlite/ third_party/sqlite/
 COPY deploy/mingw-x64.cmake deploy/mingw-x64.cmake
-RUN find agent/windows third_party/sqlite deploy/mingw-x64.cmake -type f -not -path 'agent/windows/out/*' -print0 \
+COPY deploy/sign-windows.sh deploy/sign-windows.sh
+# Code signing (optional): deploy/signing/codesign.pfx is passed as a BuildKit secret, so the key never lands in
+# a layer. Components are signed first, the installer is rebuilt to embed the signed copies, then it is signed.
+RUN --mount=type=secret,id=codesign_pfx --mount=type=secret,id=codesign_password \
+    find agent/windows third_party/sqlite deploy/mingw-x64.cmake -type f -not -path 'agent/windows/out/*' -print0 \
       | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16 > /build-id \
  && cmake -S agent/windows/service -B /build -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE=/src/deploy/mingw-x64.cmake -DFENRIR_BUILD_ID=$(cat /build-id) \
     -DCMAKE_BUILD_TYPE=Release -DANTIVIRUS_ENABLE_BUILD_VALIDATION=OFF \
     -DANTIVIRUS_REQUIRE_MINIFILTER_PAYLOAD=OFF \
     && cmake --build /build --target antivirus-setup --parallel 2 \
+    && sh deploy/sign-windows.sh agent/windows/out/dev \
+    && cmake --build /build --target antivirus-setup --parallel 2 \
+    && sh deploy/sign-windows.sh agent/windows/out/install/FenrirSetup.exe \
     && mkdir -p /out/windows \
     && cp agent/windows/out/install/FenrirSetup.exe /out/windows/
 # Setup must start on a clean Windows host before extracting any resources.
 RUN x86_64-w64-mingw32-objdump -p /out/windows/FenrirSetup.exe > /out/windows/imports.txt && if grep -Ei 'DLL Name:.*(libwinpthread|libgcc|libstdc[+][+])' /out/windows/imports.txt; then echo "ERROR: setup depends on an external compiler runtime"; exit 1; fi
-RUN python3 -c 'import hashlib,json,pathlib; p=pathlib.Path("/out/windows/FenrirSetup.exe"); p.with_name("build.json").write_text(json.dumps({"sha256":hashlib.sha256(p.read_bytes()).hexdigest(),"buildId":pathlib.Path("/build-id").read_text().strip(),"platform":"windows-x64","mode":"unsigned-hobby"}))'
+RUN python3 -c 'import hashlib,json,pathlib; p=pathlib.Path("/out/windows/FenrirSetup.exe"); sig=json.loads(pathlib.Path("/out/windows/signing.json").read_text()); p.with_name("build.json").write_text(json.dumps({"sha256":hashlib.sha256(p.read_bytes()).hexdigest(),"buildId":pathlib.Path("/build-id").read_text().strip(),"platform":"windows-x64","mode":"signed" if sig.get("signed") else "unsigned-hobby",**sig}))'
 
 FROM python:3.13-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 FENRIR_CONSOLE_DIR=/app/console/dist
