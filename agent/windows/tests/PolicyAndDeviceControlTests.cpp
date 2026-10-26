@@ -6,6 +6,7 @@
 
 #include "DeviceControl.h"
 #include "ExtendedPolicy.h"
+#include "FirewallPolicy.h"
 
 using namespace antivirus::agent;
 
@@ -101,6 +102,36 @@ int main(int argc, char** argv) {
     CHECK(!RoutineTelemetryAllowed(policy, L"destination.observed", L"{}"));
     CHECK(RoutineTelemetryAllowed(policy, L"realtime.protection.action", L"{}"));
     CHECK(!policy.allowQuarantineRestore && policy.breakGlassAllowed);  // defaults
+  }
+  {  // Firewall and network hardening
+    CHECK(firewall::ValidAddress("10.0.0.0/8") && firewall::ValidAddress("192.168.1.10") && firewall::ValidAddress("fd00::/8"));
+    CHECK(!firewall::ValidAddress("10.0.0.256") && !firewall::ValidAddress("10.0.0.0/33") && !firewall::ValidAddress("a';calc;'"));
+    CHECK(!firewall::ValidAddress("host.example.com") && !firewall::ValidAddress("::/129"));
+    CHECK(!firewall::Parse(R"({"edr":{}})").present);
+    const auto s = firewall::Parse(
+        R"({"firewall":{"enabled":true,"defaultInbound":"block","defaultOutbound":"block","blockSmbV1":true,"blockLlmnrNetbios":false,)"
+        R"("parsedRules":[{"action":"allow","direction":"in","protocol":"tcp","ports":[[3389,3389],[8000,8100]],"remote":["10.0.0.0/8"]},)"
+        R"({"action":"block","direction":"out","protocol":"any","ports":[],"remote":["203.0.113.0/24"]},)"
+        R"({"action":"allow","direction":"in","protocol":"any","ports":[[80,80]],"remote":[]},)"
+        R"({"action":"allow","direction":"in","protocol":"tcp","ports":[],"remote":["1.2.3.4'; Remove-Item C:/ -Recurse; '"]}]}})");
+    CHECK(s.present && s.enabled && s.blockInbound && s.blockOutbound && s.blockSmbV1 && !s.blockLlmnrNetbios);
+    CHECK(s.rules.size() == 2);  // port on "any" and the injected address are dropped
+    const auto script = firewall::BuildScript(s, "C:\\Program Files\\Fenrir's Agent");
+    CHECK(script.find("-DefaultInboundAction Block -DefaultOutboundAction Block") != std::string::npos);
+    CHECK(script.find("-Direction Inbound -Action Allow -Protocol TCP -LocalPort @('3389','8000-8100') -RemoteAddress @('10.0.0.0/8')") != std::string::npos);
+    CHECK(script.find("-Direction Outbound -Action Block -Protocol Any -RemoteAddress @('203.0.113.0/24')") != std::string::npos);
+    CHECK(script.find("Get-ChildItem -LiteralPath 'C:\\Program Files\\Fenrir''s Agent'") != std::string::npos);
+    CHECK(script.find("SMB1 -Type DWord -Value 0") != std::string::npos);
+    CHECK(script.find("NetbiosOptions -Type DWord -Value 0") != std::string::npos);  // undo path, marker-gated
+    CHECK(script.find("Remove-Item C") == std::string::npos);
+    auto off = s;
+    off.enabled = false;
+    off.blockLlmnrNetbios = true;
+    const auto offScript = firewall::BuildScript(off, "C:\\Fenrir");
+    CHECK(offScript.find("Set-NetFirewallProfile") == std::string::npos && offScript.find("New-NetFirewallRule") == std::string::npos);
+    CHECK(offScript.find("Remove-NetFirewallRule") != std::string::npos);  // stale Fenrir rules still go
+    CHECK(offScript.find("EnableMulticast -Type DWord -Value 0") != std::string::npos);
+    CHECK(offScript.find("New-Item -Path $path -Force") != std::string::npos && offScript.find("Test-Path") != std::string::npos);
   }
   CHECK(!ExtendedPolicy::Parse("not json").present);
   std::printf(failures ? "%d failure(s)\n" : "all policy/device-control tests passed\n", failures);

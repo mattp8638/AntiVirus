@@ -146,6 +146,16 @@ class AgentService {
   ExtendedPolicy telemetryFilter_{};  // parsed edr collection switches, refreshed when the policy revision changes
   std::wstring telemetryFilterRevision_;
   std::mutex telemetryFilterMutex_{};
+  // Firewall and network hardening (FirewallPolicy.h) run on a worker thread so PowerShell never delays protection.
+  std::mutex firewallMutex_{};
+  std::string appliedFirewallScript_{};  // last script that ran; re-run only on change
+  std::string pendingFirewallScript_{};
+  std::wstring pendingFirewallSummary_{};
+  bool firewallWorkerBusy_{false};
+  std::thread firewallThread_{};
+  void ApplyFirewallPolicy();
+  void FirewallWorker();
+  bool RunFirewallScript(const std::string& script, const std::wstring& summary);
   std::unique_ptr<LocalStateStore> stateStore_{};
   std::unique_ptr<ControlPlaneClient> controlPlaneClient_{};
   std::unique_ptr<CommandJournalStore> commandJournalStore_{};

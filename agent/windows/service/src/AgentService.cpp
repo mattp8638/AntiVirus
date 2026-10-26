@@ -1,5 +1,6 @@
 #include "AgentService.h"
 #include "ExtendedPolicy.h"
+#include "FirewallPolicy.h"
 #include "NetworkProbe.h"
 #include "BundleArchive.h"
 
@@ -1025,6 +1026,9 @@ AgentService::~AgentService() {
     pamRequestEvent_ = nullptr;
   }
   StopRealtimeChannel();
+  if (firewallThread_.joinable()) {
+    firewallThread_.join();  // bounded by the script's three-minute timeout
+  }
   if (wakeEvent_ != nullptr) {
     CloseHandle(wakeEvent_);
     wakeEvent_ = nullptr;
@@ -2815,6 +2819,102 @@ void AgentService::ApplyProtectionPolicy() {
   processGuard_->UpdatePolicy(policy_);
   for (const auto& record : processGuard_->ApplyDeviceControl()) {
     QueueTelemetryEvent(record.eventType, record.source, record.summary, record.payloadJson);
+  }
+  ApplyFirewallPolicy();
+}
+
+void AgentService::ApplyFirewallPolicy() {
+  if (policy_.modulesJson.empty()) {
+    return;
+  }
+  const auto settings = firewall::Parse(policy_.modulesJson);
+  if (!settings.present) {
+    return;
+  }
+  auto script = firewall::BuildScript(settings, WideToUtf8(config_.installRootPath.wstring()));
+  std::wstring summary = settings.enabled
+                             ? std::wstring(L"Firewall policy applied (inbound ") + (settings.blockInbound ? L"block" : L"allow") +
+                                   L", outbound " + (settings.blockOutbound ? L"block" : L"allow") + L", " +
+                                   std::to_wstring(settings.rules.size()) + L" custom rules)"
+                             : std::wstring(L"Network hardening applied (Windows Firewall not managed)");
+  std::lock_guard lock(firewallMutex_);
+  if (script == appliedFirewallScript_ && pendingFirewallScript_.empty()) {
+    return;
+  }
+  pendingFirewallScript_ = std::move(script);
+  pendingFirewallSummary_ = std::move(summary);
+  if (firewallWorkerBusy_) {
+    return;  // the running worker picks up the newest script when it finishes
+  }
+  if (firewallThread_.joinable()) {
+    firewallThread_.join();  // finished: busy is false
+  }
+  firewallWorkerBusy_ = true;
+  firewallThread_ = std::thread([this] { FirewallWorker(); });
+}
+
+void AgentService::FirewallWorker() {
+  for (;;) {
+    std::string script;
+    std::wstring summary;
+    {
+      std::lock_guard lock(firewallMutex_);
+      if (pendingFirewallScript_.empty() || pendingFirewallScript_ == appliedFirewallScript_) {
+        pendingFirewallScript_.clear();
+        firewallWorkerBusy_ = false;
+        return;
+      }
+      script = std::move(pendingFirewallScript_);
+      summary = std::move(pendingFirewallSummary_);
+      pendingFirewallScript_.clear();
+    }
+    const bool ok = RunFirewallScript(script, summary);
+    std::lock_guard lock(firewallMutex_);
+    if (ok) {
+      appliedFirewallScript_ = script;
+    }
+    if (!ok && pendingFirewallScript_.empty()) {
+      firewallWorkerBusy_ = false;
+      return;  // retried on the next policy change or service start
+    }
+  }
+}
+
+bool AgentService::RunFirewallScript(const std::string& script, const std::wstring& summaryIn) {
+  const auto workRoot = config_.runtimeDatabasePath.parent_path() / L"rmm" / L"firewall";
+  try {
+    std::error_code ec;
+    std::filesystem::create_directories(workRoot, ec);
+    const auto path = workRoot / L"apply-firewall.ps1";
+    {
+      std::ofstream file(path, std::ios::binary | std::ios::trunc);
+      file << "\xEF\xBB\xBF" << script;
+    }
+    wchar_t systemDir[MAX_PATH]{};
+    GetSystemDirectoryW(systemDir, MAX_PATH);
+    const std::wstring command = L"\"" + std::wstring(systemDir) +
+                                 L"\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" +
+                                 path.wstring() + L"\"";
+    const auto result = rmm::RunProcess(command, workRoot.wstring(), {}, 3 * 60 * 1000);
+    std::filesystem::remove(path, ec);
+    auto output = result.stdoutText;
+    while (!output.empty() && (output.back() == '\n' || output.back() == '\r' || output.back() == ' ')) {
+      output.pop_back();
+    }
+    const auto parsed = json::Parse(output);
+    if (result.timedOut || !parsed || !parsed->IsObject()) {
+      QueueTelemetryEvent(L"firewall.apply_failed", L"firewall", L"Firewall policy could not be applied",
+                          L"{\"stderr\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(result.stderrText.substr(0, 2000)))) + L"\"}");
+      return false;
+    }
+    const bool ok = parsed->Get("ok") && parsed->Get("ok")->Bool().value_or(false);
+    QueueTelemetryEvent(ok ? L"firewall.applied" : L"firewall.applied_with_warnings", L"firewall",
+                        ok ? summaryIn : summaryIn + L" with warnings", Utf8ToWide(output));
+    return true;
+  } catch (const std::exception& error) {
+    QueueTelemetryEvent(L"firewall.apply_failed", L"firewall", L"Firewall policy could not be applied",
+                        L"{\"error\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(error.what()))) + L"\"}");
+    return false;
   }
 }
 

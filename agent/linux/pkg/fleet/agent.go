@@ -76,6 +76,9 @@ type Agent struct {
 	exePath         string
 	exit            func(int)
 	restartDelay    time.Duration
+	// Policy firewall (firewall.go): the rules last loaded, so they are only reloaded on change.
+	firewallApplied string
+	firewallSet     bool
 }
 
 func New(cfg Config) *Agent {
@@ -416,6 +419,7 @@ func (a *Agent) refreshPolicy() {
 		a.state.Policy = policy
 		_ = a.saveState()
 		a.applyDeviceControl()
+		a.applyFirewall()
 		if a.scanner.Model != nil {
 			sens, _ := policy.Modules["antimalware"]["mlSensitivity"].(string)
 			a.scanner.SetModel(a.scanner.Model, mlThreshold(a.scanner.Model, sens))
@@ -449,6 +453,7 @@ func (a *Agent) heartbeat() {
 	if resp.EffectivePolicyRevision != a.state.Policy.Revision {
 		a.refreshPolicy()
 	}
+	a.applyFirewall() // no-op unless the rules or the cloud's address changed
 	if resp.CommandsPending > 0 {
 		a.RunCommands()
 	}
@@ -787,7 +792,9 @@ func (a *Agent) isolate(on bool) error {
 		}
 	}
 	a.state.Isolated = on
-	return a.saveState()
+	err := a.saveState()
+	a.applyFirewall() // macOS: the policy anchor steps aside while isolated
+	return err
 }
 
 // ---------------------------------------------------------------------------
