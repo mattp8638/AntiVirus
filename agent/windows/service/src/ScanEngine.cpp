@@ -811,6 +811,18 @@ std::wstring QuerySigner(const std::wstring& path) {
                        nullptr) == FALSE) {
     return {};
   }
+  // CryptQueryObject can succeed for a CTL without returning a message.
+  // CryptMsgGetParam dereferences its handle; passing nullptr crashes CRYPT32.
+  if (message == nullptr || store == nullptr) {
+    if (message != nullptr) {
+      CryptMsgClose(message);
+    }
+    if (store != nullptr) {
+      CertCloseStore(store, 0);
+    }
+    return {};
+  }
+
   DWORD signerInfoSize = 0;
   if (CryptMsgGetParam(message, CMSG_SIGNER_INFO_PARAM, 0, nullptr, &signerInfoSize) == FALSE) {
     if (message) CryptMsgClose(message);

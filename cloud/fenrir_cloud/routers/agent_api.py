@@ -56,7 +56,7 @@ def _unassigned_tenant(db: Session) -> Tenant:
 def _resolve_enrollment_token(db: Session, raw: str | None) -> EnrollmentToken | None:
     if not raw:
         return None
-    token = db.execute(select(EnrollmentToken).where(EnrollmentToken.token_hash == digest(raw))).scalar_one_or_none()
+    token = db.execute(select(EnrollmentToken).where(EnrollmentToken.token_hash == digest(raw)).with_for_update()).scalar_one_or_none()
     if token is None or token.revoked:
         raise HTTPException(403, "Enrollment token is invalid or revoked")
     if token.expires_at and token.expires_at < utcnow():
@@ -89,21 +89,38 @@ def enroll(
         raise HTTPException(400, "hostname is required")
     os_version = str(body.get("osVersion") or "")[:255]
     serial = str(body.get("serialNumber") or "")[:255]
-    token = _resolve_enrollment_token(db, body.get("enrollmentToken") or x_fenrir_token)
+    raw_token = body.get("enrollmentToken") or x_fenrir_token
+    token = _resolve_enrollment_token(db, raw_token)
     if token is None and not settings.open_enrollment:
         raise HTTPException(403, "An enrollment token is required")
 
     tenant = db.get(Tenant, token.tenant_id) if token else _unassigned_tenant(db)
     api_key = new_secret("fdk", 32)
     device = None
-    if token and serial:
+    reinstating = bool(token and raw_token.startswith("frs."))
+    if reinstating:
+        parts = raw_token.split(".", 2)
+        device = db.scalar(select(Device).where(Device.id == parts[1]).with_for_update())
+        if device is None or device.tenant_id != tenant.id:
+            raise HTTPException(403, "Reinstatement target is invalid")
+        if device.api_key_hash != f"retired-{device.id}":
+            raise HTTPException(409, "Device is no longer decommissioned")
+        if device.platform != _platform(os_version, body.get("platform")):
+            raise HTTPException(409, "Device platform does not match the reinstatement target")
+        if device.serial_number and device.serial_number != serial:
+            raise HTTPException(409, "Device serial number does not match the reinstatement target")
+    elif token and serial:
         # Re-imaged or reinstalled machine: keep its history, rotate its key.
         device = db.execute(select(Device).where(Device.tenant_id == tenant.id, Device.serial_number == serial)).scalars().first()
+    if not reinstating and device is not None and device.api_key_hash == f"retired-{device.id}":
+        raise HTTPException(409, "Use a reinstatement installer for this decommissioned device")
     if device is None:
         device = Device(tenant_id=tenant.id, hostname=hostname, serial_number=serial, dns_token=secrets.token_urlsafe(24),
                         api_key_hash=digest(api_key))
         db.add(device)
     device.api_key_hash = digest(api_key)
+    if reinstating:
+        device.dns_token = secrets.token_urlsafe(24)
     device.hostname, device.os_version = hostname, os_version
     device.platform = _platform(os_version, body.get("platform"))
     device.agent_version = str(body.get("agentVersion") or device.agent_version or "")[:64]
@@ -117,6 +134,8 @@ def enroll(
     _, policy_doc = services.effective_policy(db, device)
     device.applied_policy_revision = policy_doc["revision"]
     _sync_cmdb_from_agent(db, device)
+    if reinstating:
+        audit.record(db, f"device:{hostname}", "device.reinstated", device.id, tenant.id)
     audit.record(db, f"device:{hostname}", "device.enrolled", device.id, tenant.id, platform=device.platform,
                  token=token.label if token else "open-enrollment")
     db.commit()

@@ -13,7 +13,7 @@ from .. import audit, crypto, deployment_installers, policy_schema, ratelimit
 from ..config import get_settings
 from ..db import get_db
 from ..deps import REAUTH_MINUTES, Principal, current_principal, require_reauth, scoped_tenant
-from ..models import AuditLog, DeviceGroup, EnrollmentToken, Policy, Tenant, User, utcnow
+from ..models import AuditLog, Device, DeviceGroup, EnrollmentToken, Policy, Tenant, User, utcnow
 from ..security import ROLES, digest, hash_password, issue_token, new_secret, new_totp_secret, totp_uri, verify_password, verify_totp, reauth_state
 from ..serialize import apply_fields, to_dict
 
@@ -430,14 +430,35 @@ def download_installer(body: dict = Body(...), principal: Principal = Depends(cu
         raise HTTPException(422, "Expiry must be a whole number of days.") from None
     if not 1 <= days <= 365:
         raise HTTPException(422, "Expiry must be between 1 and 365 days.")
-    label = str(body.get("label") or "Deployment").strip()[:200] or "Deployment"
-    raw = new_secret("fet", 24)
+    reinstatement_id = body.get("reinstateDeviceId")
+    reinstatement = None
+    if reinstatement_id:
+        if not isinstance(reinstatement_id, str):
+            raise HTTPException(422, "Invalid reinstatement device ID")
+        reinstatement = db.scalar(select(Device).where(Device.id == reinstatement_id).with_for_update())
+        if reinstatement is None or reinstatement.tenant_id != tenant_id:
+            raise HTTPException(404, "Device not found in this customer")
+        if reinstatement.api_key_hash != f"retired-{reinstatement.id}":
+            raise HTTPException(409, "Only decommissioned devices can be reinstated")
+        if os_name != reinstatement.platform:
+            raise HTTPException(422, "Installer platform must match the original device")
+        group_id = reinstatement.group_id
+        days = 1
+    label = (f"Reinstate {reinstatement.id}" if reinstatement else
+             str(body.get("label") or "Deployment").strip()[:200] or "Deployment")
+    raw = (f"frs.{reinstatement.id}." + new_secret("key", 32)) if reinstatement else new_secret("fet", 24)
     data, filename, media_type = deployment_installers.build(
         os_name, get_settings().public_base_url, raw
     )  # Build/release validation BEFORE issuing a token.
     row = EnrollmentToken(tenant_id=tenant_id, group_id=group_id, label=label,
                           token_hash=digest(raw), token_hint=raw[-6:],
+                          max_uses=1 if reinstatement else None,
                           expires_at=utcnow() + timedelta(days=days))
+    if reinstatement:
+        for old in db.scalars(select(EnrollmentToken).where(EnrollmentToken.tenant_id == tenant_id,
+                               EnrollmentToken.label == label, EnrollmentToken.revoked.is_(False))):
+            old.revoked = True
+        audit.record(db, principal.actor, "device.reinstatement_requested", reinstatement.id, tenant_id)
     db.add(row)
     audit.record(db, principal.actor, "enrollment_installer.generated", os_name, tenant_id,
                  group=group_id or "", label=label)

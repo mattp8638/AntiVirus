@@ -1,12 +1,15 @@
 """Allowlisted Graph administration. No arbitrary URLs, scripts, or blind write retries."""
 from contextlib import contextmanager
 from uuid import UUID
+from urllib.parse import quote
 import httpx
 from . import m365
 
-USER_FIELDS = "id,displayName,userPrincipalName,accountEnabled,department,jobTitle,usageLocation,assignedLicenses"
+USER_FIELDS = "id,displayName,userPrincipalName,accountEnabled,department,jobTitle,usageLocation,assignedLicenses,userType"
 GROUP_FIELDS = "id,displayName,groupTypes,mailEnabled,securityEnabled,isAssignableToRole,onPremisesSyncEnabled"
 CAPABILITIES = {
+    "user.create": ["User.ReadWrite.All", "Domain.Read.All"],
+    "user.revoke_sessions": ["User.RevokeSessions.All", "User.Read.All"],
     "user.update": ["User.ReadWrite.All"],
     "user.signin": ["User.EnableDisableAccount.All", "User.Read.All"],
     "license.add": ["LicenseAssignment.ReadWrite.All", "User.Read.All"],
@@ -44,9 +47,15 @@ def group(client, headers, ident):
     return row
 
 def preview(connection, operation, target, parameters):
+    if operation == "user.create":
+        with session(connection) as (client, headers):
+            validate_new_user(client, headers, parameters)
+        return {"user": parameters, "changes": parameters, "requiredPermissions": CAPABILITIES[operation]}
     with session(connection) as (client, headers):
         current = user(client, headers, target)
         validate_license(operation, parameters, current)
+        if operation == "user.revoke_sessions" and current.get("userType") != "Member":
+            raise ProviderError("Session revocation requires a member user in this directory; external users must be managed in their home tenant.")
         result = {"user": current, "changes": parameters, "requiredPermissions": CAPABILITIES[operation]}
         if operation.startswith("group."):
             result["group"] = group(client, headers, parameters["groupId"])
@@ -85,8 +94,12 @@ def execute(connection, operation, target, parameters):
     with session(connection) as (client, headers):
         current = user(client, headers, target)
         validate_license(operation, parameters, current)
+        if operation == "user.revoke_sessions" and current.get("userType") != "Member":
+            raise ProviderError("Session revocation requires a member user in this directory; external users must be managed in their home tenant.")
         method, path, body = "PATCH", f"/users/{UUID(target)}", parameters
-        if operation == "user.signin":
+        if operation == "user.revoke_sessions":
+            method, path, body = "POST", path + "/revokeSignInSessions", None
+        elif operation == "user.signin":
             body = {"accountEnabled": parameters["accountEnabled"]}
         elif operation.startswith("license."):
             body = {"addLicenses": [{"skuId": parameters["skuId"], "disabledPlans": []}] if operation == "license.add" else [],
@@ -100,13 +113,17 @@ def execute(connection, operation, target, parameters):
             else:
                 method, path, body = "DELETE", path + "/" + str(UUID(target)) + "/$ref", None
         try:
-            request(client, headers, method, path, body)
+            response = request(client, headers, method, path, body)
+            if operation == "user.revoke_sessions" and response.get("value") is False:
+                raise ProviderError("Microsoft did not confirm session revocation.", uncertain=True)
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             raise ProviderError("Microsoft rejected the action. Check consent, target restrictions and service availability.",
                                 uncertain=status >= 500 or status == 408) from None
         except (httpx.RequestError, ValueError, KeyError):
             raise ProviderError("Microsoft's result is unknown. Inspect the tenant before preparing another action.", uncertain=True) from None
+        if operation == "user.revoke_sessions":
+            return "succeeded", {"message": "Microsoft accepted session revocation. It can take a few minutes to take effect; this does not block future sign-ins."}
         # A successful write must not be reclassified as failed if refresh fails.
         try:
             result = {"user": user(client, headers, target)}
@@ -120,3 +137,37 @@ def execute(connection, operation, target, parameters):
 def validate_license(operation, parameters, current):
     if operation == "license.add" and any(x.get("skuId") == parameters["skuId"] for x in current.get("assignedLicenses", [])):
         raise ProviderError("User already has this licence. Existing disabled service plans are preserved; use a separate plan-edit workflow.")
+
+
+def validate_new_user(client, headers, parameters):
+    domain = parameters["userPrincipalName"].rsplit("@", 1)[1].lower()
+    info = request(client, headers, "GET", "/domains/" + quote(domain, safe=""))
+    if info.get("isVerified") is not True or info.get("authenticationType") != "Managed":
+        raise ProviderError("Choose a verified managed domain. Federated users require a separate provisioning workflow.")
+    try:
+        request(client, headers, "GET", "/users/" + quote(parameters["userPrincipalName"], safe="") + "?$select=id")
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return
+        raise
+    raise ProviderError("A user with this sign-in name already exists.")
+
+
+def create_user(connection, parameters, password):
+    with session(connection) as (client, headers):
+        validate_new_user(client, headers, parameters)
+        body = {**parameters, "accountEnabled": True,
+                "passwordProfile": {"password": password, "forceChangePasswordNextSignIn": True}}
+        try:
+            created = request(client, headers, "POST", "/users", body)
+            ident = str(UUID(created["id"]))
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            raise ProviderError("Microsoft rejected user creation. Check domain, password policy, consent and duplicate sign-in names.",
+                                uncertain=status >= 500 or status == 408) from None
+        except (httpx.RequestError, ValueError, KeyError, TypeError):
+            raise ProviderError("User creation outcome is unknown. Check the directory before preparing another action.", uncertain=True) from None
+        # Never persist provider passwordProfile data, even if returned by Microsoft.
+        return "succeeded", {"user": {"id": ident, "displayName": parameters["displayName"],
+            "userPrincipalName": parameters["userPrincipalName"]},
+            "message": "User created. A password change is required at first sign-in. Assign licences and groups separately."}

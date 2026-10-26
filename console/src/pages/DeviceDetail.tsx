@@ -1,6 +1,6 @@
 import { Fragment, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ago, api, fmtTime } from "../api";
+import { ago, api, fmtTime, getToken } from "../api";
 import { useApp } from "../app-context";
 import { ErrorNote, Modal, PageHead, Pill, Sev, Table, Tabs, useAction, useData } from "../components/ui";
 import { ConnectButtons, JobDetail, JobStatus, pct, Sparkline } from "../components/rmm";
@@ -12,11 +12,15 @@ export default function DeviceDetail() {
   const { data, error, reload } = useData<any>(`devices/${id}`);
   const { data: policies } = useData<any[]>("policies", { tenant_id: data?.device.tenantId }, [data?.device.tenantId]);
   const { data: groups } = useData<any[]>("groups", { tenant_id: data?.device.tenantId }, [data?.device.tenantId]);
+  const [reinstating, setReinstating] = useState(false);
+  const [installerReady, setInstallerReady] = useState(false);
+  const [retiring, setRetiring] = useState(false);
+  const [retireName, setRetireName] = useState("");
   const [tab, setTab] = useState("Overview");
   const [action, setAction] = useState<string | null>(null);
   const [scriptPicker, setScriptPicker] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
-  const { run } = useAction();
+  const { run, busy } = useAction();
 
   if (error) return <ErrorNote error={error} />;
   if (!data) return <div className="empty">Loading…</div>;
@@ -31,7 +35,7 @@ export default function DeviceDetail() {
     <>
       <PageHead title={d.hostname}
                 subtitle={<>{d.osVersion} · {tenantName(d.tenantId)} · <span className={`dot ${d.online ? "on" : "off"}`} /> {d.online ? "online" : `last seen ${ago(d.lastSeenAt)}`}</>}
-                actions={can("respond") && <>
+                actions={!d.retired && can("respond") && <>
                   {!d.approved && can("configure") && <button className="primary" onClick={() => patch({ approved: true }, "Device approved")}>Approve</button>}
                   <ConnectButtons device={d} />
                   {can("configure") && <button onClick={() => setScriptPicker(true)}>Run script</button>}
@@ -40,6 +44,34 @@ export default function DeviceDetail() {
                               : <button className="danger" onClick={() => setAction("device.isolate")}>Isolate</button>}
                   <button onClick={() => setAction("")}>More actions…</button>
                 </>} />
+      {d.retired ? <p role="status">Decommissioned — agent access is revoked. Historical records remain available. Use Reinstate device to reconnect the endpoint to this record.</p> : can("configure") && <button className="danger" onClick={()=>{setRetireName("");setRetiring(true);}}>Decommission device</button>}
+      {d.retired && can("configure") && <button className="primary" onClick={()=>{setInstallerReady(false);setReinstating(true);}}>Reinstate device</button>}
+      {reinstating && <Modal title={`Reinstate ${d.hostname}`} onClose={()=>{if(!busy)setReinstating(false);}}>
+        <p>Generate a replacement installer bound to this device record and customer. Run it on the original endpoint as administrator. The device stays decommissioned until enrollment succeeds; its history, group and policy are retained.</p>
+        <p>The installer expires after 24 hours and can be used once. Generating another replaces the previous reinstatement token. Old agent credentials remain revoked.</p>
+        <button disabled={busy} onClick={async()=>{
+          const ok=await run(async()=>{
+            const token=getToken();
+            if(!token)throw new Error("Sign in again before generating an installer.");
+            const response=await fetch("/api/console/enrollment-installers",{method:"POST",headers:{Authorization:`Bearer ${token}`,"Content-Type":"application/json"},body:JSON.stringify({os:d.platform,tenantId:d.tenantId,reinstateDeviceId:d.id}),cache:"no-store"});
+            if(!response.ok){const body=await response.json();throw new Error(typeof body.detail==="string"?body.detail:"Installer generation failed");}
+            const file=await response.blob();
+            const filename=/filename="([A-Za-z0-9._-]+)"/.exec(response.headers.get("Content-Disposition")||"")?.[1]||"Fenrir-reinstatement-installer";
+            const url=URL.createObjectURL(file);
+            const link=document.createElement("a");link.href=url;link.download=filename;document.body.appendChild(link);link.click();link.remove();window.setTimeout(()=>URL.revokeObjectURL(url),60000);
+            return true;
+          });
+          if(ok)setInstallerReady(true);
+        }}>{busy?"Generating…":"Download reinstatement installer"}</button>
+        {installerReady&&<p role="status">Installer downloaded. Run it on the original device, then refresh this page. This does not uninstall or release network isolation.</p>}
+        <button onClick={reload}>Refresh device status</button>
+      </Modal>}
+      {retiring && <Modal title={`Decommission ${d.hostname}`} onClose={()=>{if(!busy)setRetiring(false);}}>
+        <p>This removes the device from the active list, revokes its agent credentials and cancels pending commands. Logs, alerts, inventory and command history are retained under the existing retention policy. It does not uninstall the agent or remove network isolation.</p>
+        <p>Active remote sessions must be ended and dispatched commands reconciled first.</p>
+        <label className="field">Type {d.hostname} to confirm<input value={retireName} onChange={e=>setRetireName(e.target.value)}/></label>
+        <button className="danger" disabled={busy||retireName!==d.hostname} onClick={async()=>{const result=await run(()=>api(`devices/${d.id}`,{method:"DELETE"}),"Device decommissioned; history retained");if(result){setRetiring(false);reload();}}}>Decommission and retain history</button>
+      </Modal>}
       <Tabs tabs={["Overview", "Health", "Patches", "Scripts & jobs", "Remote sessions", "Effective policy", "Alerts", "Actions", "Software", "Vulnerabilities"]} active={tab} onChange={setTab} />
       {tab === "Health" && <HealthTab deviceId={d.id} />}
       {tab === "Patches" && <PatchesTab device={d} />}
@@ -181,7 +213,8 @@ function EffectivePolicy({ policy }: { policy: any }) {
 }
 
 export function CommandModal({ device, initial, onClose, incidentId }: { device: any; initial: string; onClose: () => void; incidentId?: string }) {
-  const { data: catalog } = useData<any[]>("commands/catalog");
+  const { can } = useApp();
+  const { data: catalog, error: catalogError } = useData<any[]>("commands/catalog");
   const [type, setType] = useState(initial || "scan.quick");
   const [targetPath, setTargetPath] = useState("");
   const [recordId, setRecordId] = useState("");
@@ -189,15 +222,19 @@ export function CommandModal({ device, initial, onClose, incidentId }: { device:
   const [reason, setReason] = useState("");
   const { run, busy } = useAction();
   const isKill = type === "process.terminate" || type === "process.tree.terminate";
-  const available = catalog?.filter((c) => c.platforms.includes(device.platform)) ?? [];
+  const available = catalog?.filter((c) => c.platforms.includes(device.platform) && can(c.permission)) ?? [];
   const spec = available.find((c) => c.type === type);
+  const valid = !!spec && (!spec.needs.includes("targetPath") || !!targetPath.trim()) &&
+    (!spec.needs.includes("recordId") || !!recordId.trim());
   const submit = async () => {
+    if (!valid || busy) return;
     const ok = await run(() => api(`devices/${device.id}/commands`, { body: { type, targetPath, recordId, reason, incidentId, payload: isKill && pid ? { pid: Number(pid) } : {} } }), `${spec?.label ?? type} queued`);
     if (ok) onClose();
   };
   return (
     <Modal title={`Remote action · ${device.hostname}`} onClose={onClose}
-           footer={<><button onClick={onClose}>Cancel</button><button className={spec?.destructive ? "danger" : "primary"} disabled={busy || !spec} onClick={submit}>Queue action</button></>}>
+           footer={<><button onClick={onClose}>Cancel</button><button className={spec?.destructive ? "danger" : "primary"} disabled={busy || !valid} onClick={submit}>Queue action</button></>}>
+      <ErrorNote error={catalogError} />
       <div className="form-grid">
         <label className="field">Action
           <select value={type} onChange={(e) => setType(e.target.value)}>
