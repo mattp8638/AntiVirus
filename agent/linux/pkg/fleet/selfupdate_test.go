@@ -115,3 +115,21 @@ func TestNewerVersion(t *testing.T) {
 		}
 	}
 }
+
+func TestNeedsUpdatePrefersBuildIDs(t *testing.T) {
+	cases := []struct {
+		sv, sb, v, b string
+		want         bool
+	}{
+		{"1.0.0", "aaaa", "1.0.0", "bbbb", true},   // same version, different source: update
+		{"1.0.0", "aaaa", "1.0.0", "aaaa", false},  // identical build
+		{"0.9.0", "aaaa", "1.0.0", "bbbb", true},   // the server's build wins even with a lower number
+		{"1.1.0", "", "1.0.0", "bbbb", true},       // older server: compare versions
+		{"1.0.0", "aaaa", "1.0.0", "", false},      // dev binary without an id: compare versions
+	}
+	for _, c := range cases {
+		if got := NeedsUpdate(c.sv, c.sb, c.v, c.b); got != c.want {
+			t.Errorf("NeedsUpdate(%q,%q,%q,%q) = %v", c.sv, c.sb, c.v, c.b, got)
+		}
+	}
+}

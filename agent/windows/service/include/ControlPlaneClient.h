@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdexcept>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -89,6 +90,15 @@ class DeviceIdentityRejectedError final : public std::runtime_error {
   explicit DeviceIdentityRejectedError(const std::string& message) : std::runtime_error(message) {}
 };
 
+// The Windows agent build the server ships (GET /api/v1/agent/update/windows).
+struct AgentPackageInfo {
+  bool available{false};
+  bool autoUpdate{true};
+  std::wstring buildId;
+  std::wstring sha256;
+  std::wstring url;  // server-relative
+};
+
 struct MlModelManifest {
   std::wstring version;
   std::wstring sha256;
@@ -125,6 +135,9 @@ class ControlPlaneClient {
   // Static ML model: manifest {version, sha256, size} and the FGBT binary.
   MlModelManifest FetchMlModelManifest(const AgentState& state) const;
   std::vector<unsigned char> DownloadMlModel(const AgentState& state) const;
+  AgentPackageInfo CheckWindowsAgentUpdate(const AgentState& state) const;
+  // Downloads a server-relative /api/v1/ path with the device key into target.
+  void DownloadToFile(const AgentState& state, const std::wstring& path, const std::filesystem::path& target) const;
 
  private:
   std::wstring baseUrl_;

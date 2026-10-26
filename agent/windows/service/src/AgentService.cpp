@@ -1,4 +1,5 @@
 #include "AgentService.h"
+#include "BuildInfo.h"
 #include "ExtendedPolicy.h"
 #include "FirewallPolicy.h"
 #include "NetworkProbe.h"
@@ -1072,6 +1073,7 @@ int AgentService::Run(const AgentRunMode mode) {
     LoadLocalPolicyCache();
     PublishIdentitySnapshot();
     ApplyProtectionPolicy();
+    RelaunchClientAfterUpgrade();
     realtimeProtectionBroker_->SetPolicy(policy_);
     realtimeProtectionBroker_->SetDeviceId(state_.deviceId);
     processEtwSensor_->SetDeviceId(state_.deviceId);
@@ -1194,6 +1196,7 @@ void AgentService::RunSyncLoop(const AgentRunMode mode) {
       PollAndExecuteCommands(cycle);
       FlushTelemetryQueue();
       PublishHeartbeat(cycle);
+      MaybeSelfUpdate(cycle);
     }
     SyncUpdateOnly(cycle);
     RunAutomatedRiskAssessments(cycle);
@@ -2970,6 +2973,109 @@ void AgentService::ApplyProtectionPolicy() {
 
 // Publishes what the agent window may show (branding, support contact, which protections are on) to
 // experience.json in the install folder, which signed-in users can read. Nothing sensitive goes in it.
+void AgentService::MaybeSelfUpdate(const int cycle) {
+  if (std::wstring(kFenrirBuildId) == L"dev" || state_.deviceId.empty()) {
+    return;
+  }
+  const auto now = GetTickCount64();
+  if (lastSelfUpdateCheck_ != 0 && now - lastSelfUpdateCheck_ < 30ULL * 60 * 1000) {
+    return;
+  }
+  lastSelfUpdateCheck_ = now;
+  const auto folder = config_.runtimeDatabasePath.parent_path() / L"updates";
+  try {
+    const auto info = controlPlaneClient_->CheckWindowsAgentUpdate(state_);
+    const auto isHex = [](const std::wstring& v, std::size_t min, std::size_t max) {
+      return v.size() >= min && v.size() <= max &&
+             std::all_of(v.begin(), v.end(), [](wchar_t c) { return (c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'f'); });
+    };
+    if (!info.available || !info.autoUpdate || !isHex(info.buildId, 8, 64) || !isHex(info.sha256, 64, 64) ||
+        info.buildId == kFenrirBuildId) {
+      return;
+    }
+    // One attempt per build every six hours, so a failing upgrade cannot loop.
+    std::error_code ec;
+    std::filesystem::create_directories(folder, ec);
+    const auto attemptFile = folder / L"last-attempt.txt";
+    {
+      std::wifstream in(attemptFile);
+      std::wstring lastBuild;
+      long long lastTime = 0;
+      if (in >> lastBuild >> lastTime && lastBuild == info.buildId &&
+          static_cast<long long>(std::time(nullptr)) - lastTime < 6LL * 3600) {
+        return;
+      }
+    }
+    std::wofstream(attemptFile, std::ios::trunc) << info.buildId << L" " << static_cast<long long>(std::time(nullptr));
+
+    const auto package = folder / (L"FenrirSetup-" + info.buildId + L".exe");
+    controlPlaneClient_->DownloadToFile(state_, info.url, package);
+    if (ToLowerCopy(ComputeFileSha256(package)) != info.sha256) {
+      std::filesystem::remove(package, ec);
+      throw std::runtime_error("the downloaded installer failed its SHA-256 check");
+    }
+    QueueTelemetryEvent(L"agent.update.started", L"updater",
+                        L"Upgrading the agent to the server's current build.",
+                        L"{\"from\":\"" + std::wstring(kFenrirBuildId) + L"\",\"to\":\"" + info.buildId + L"\"}");
+    FlushTelemetryQueue();  // the installer stops this service next
+
+    std::wstring commandLine = L"\"" + package.wstring() + L"\" --silent-upgrade";
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    const DWORD flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW;
+    BOOL started = CreateProcessW(package.c_str(), commandLine.data(), nullptr, nullptr, FALSE, flags | CREATE_BREAKAWAY_FROM_JOB,
+                                  nullptr, folder.c_str(), &startup, &process);
+    if (!started) {
+      started = CreateProcessW(package.c_str(), commandLine.data(), nullptr, nullptr, FALSE, flags, nullptr, folder.c_str(),
+                               &startup, &process);
+    }
+    if (!started) {
+      throw std::runtime_error("could not start the installer (error " + std::to_string(GetLastError()) + ")");
+    }
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+  } catch (const std::exception& error) {
+    QueueTelemetryEvent(L"agent.update.failed", L"updater", L"The agent could not upgrade itself.",
+                        BuildCyclePayload(cycle, L"\"error\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(error.what()))) + L"\""));
+  }
+}
+
+// After a silent upgrade the installer (running as SYSTEM) cannot open the agent window for the user, so the
+// restarted service does it in the active console session.
+void AgentService::RelaunchClientAfterUpgrade() {
+  const auto flag = config_.installRootPath / L"runtime" / L"relaunch-client.flag";
+  std::error_code ec;
+  if (!std::filesystem::exists(flag, ec)) {
+    return;
+  }
+  std::filesystem::remove(flag, ec);
+  QueueTelemetryEvent(L"agent.updated", L"updater", L"The agent finished upgrading to the server's current build.",
+                      L"{\"buildId\":\"" + std::wstring(kFenrirBuildId) + L"\"}");
+  const auto sessionId = WTSGetActiveConsoleSessionId();
+  HANDLE userToken = nullptr;
+  if (sessionId == 0xFFFFFFFF || !WTSQueryUserToken(sessionId, &userToken)) {
+    return;  // nobody signed in: the window starts at the next sign-in
+  }
+  LPVOID environment = nullptr;
+  CreateEnvironmentBlock(&environment, userToken, FALSE);
+  const auto client = config_.installRootPath / L"fenrir-endpoint-client.exe";
+  std::wstring commandLine = L"\"" + client.wstring() + L"\" --background";
+  STARTUPINFOW startup{};
+  startup.cb = sizeof(startup);
+  wchar_t desktop[] = L"winsta0\\default";
+  startup.lpDesktop = desktop;
+  PROCESS_INFORMATION process{};
+  if (CreateProcessAsUserW(userToken, client.c_str(), commandLine.data(), nullptr, nullptr, FALSE,
+                           CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW, environment, config_.installRootPath.c_str(), &startup,
+                           &process)) {
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+  }
+  if (environment) DestroyEnvironmentBlock(environment);
+  CloseHandle(userToken);
+}
+
 void AgentService::WriteExperienceFile() {
   const auto root = policy_.modulesJson.empty() ? std::optional<json::Value>{} : json::Parse(policy_.modulesJson);
   const auto section = [&root](const char* name) -> const json::Value* { return root && root->IsObject() ? root->Get(name) : nullptr; };

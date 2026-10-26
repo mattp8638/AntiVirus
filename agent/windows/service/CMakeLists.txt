@@ -2,6 +2,14 @@ cmake_minimum_required(VERSION 3.24)
 
 project(AntiVirusAgentService LANGUAGES C CXX)
 
+# Source fingerprint stamped by the cloud image build (deploy/Dockerfile); agents self-update when it differs
+# from the server's. Local builds are "dev" and never self-update.
+set(FENRIR_BUILD_ID "dev" CACHE STRING "Agent source fingerprint")
+if(NOT FENRIR_BUILD_ID MATCHES "^[a-z0-9]+$")
+  message(FATAL_ERROR "FENRIR_BUILD_ID must be lowercase letters and digits")
+endif()
+add_compile_definitions(FENRIR_BUILD_ID="${FENRIR_BUILD_ID}")
+
 # Windows SDK min/max macros corrupt std::min/std::max declarations across
 # MSVC builds. Keep NOMINMAX on every C++ Windows target and dependency.
 add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN WINVER=0x0A00 _WIN32_WINNT=0x0A00 NTDDI_VERSION=0x0A000000)

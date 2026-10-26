@@ -111,6 +111,11 @@ Open:
 - No direct API integrations with specific backup vendors (results arrive by push or by hand).
 - Network probes are TCP only (no ICMP/SNMP).
 
+## Automatic updates
+
+The server can follow a git branch and rebuild itself (`deploy/install-auto-update.sh`). Windows, Linux and macOS
+agents upgrade themselves to the server's build when its source fingerprint changes. See `docs/AUTO_UPDATE.md`.
+
 ## Upgrading
 
 Database migrations 6–10 run automatically on start-up and only add tables and nullable columns.

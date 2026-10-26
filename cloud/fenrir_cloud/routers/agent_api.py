@@ -320,6 +320,50 @@ def _version_tuple(version: str) -> tuple:
     return tuple(int(part) if part.isdigit() else 0 for part in re.split(r"[.\-+]", version or "0"))
 
 
+def _windows_build() -> dict | None:
+    """The Windows agent this server's image ships: build id and SHA-256 of FenrirSetup.exe."""
+    from .. import deployment_installers
+
+    mode, _ = deployment_installers.windows_release_mode()  # also verifies the SHA-256
+    meta_file = deployment_installers.release_file("windows/build.json")
+    if mode is None or meta_file is None:
+        return None
+    try:
+        meta = json.loads(meta_file.read_text())
+    except (OSError, ValueError):
+        return None
+    build_id = str(meta.get("buildId") or "")
+    if not re.fullmatch(r"[a-f0-9]{8,64}", build_id):
+        return None  # images built before build ids existed cannot be compared safely
+    return {"buildId": build_id, "sha256": str(meta["sha256"]).lower()}
+
+
+@router.get("/agent/update/windows")
+def agent_update_windows(device: Device = Depends(current_device_by_key), db: Session = Depends(get_db)):
+    """What a Windows agent should be running. It upgrades itself when its build id differs."""
+    build = _windows_build()
+    resolution, _ = services.effective_policy(db, device)
+    allowed = bool(resolution["settings"].get("updates", {}).get("autoUpdateAgent", True))
+    db.commit()  # records last_seen from the device lookup
+    if build is None:
+        return {"available": False, "autoUpdate": allowed, "buildId": "", "sha256": "", "url": ""}
+    return {"available": True, "autoUpdate": allowed, **build, "url": "/api/v1/agent/update/windows/package"}
+
+
+@router.get("/agent/update/windows/package")
+def agent_update_windows_package(device: Device = Depends(current_device_by_key), db: Session = Depends(get_db)):
+    from fastapi.responses import FileResponse
+
+    from .. import deployment_installers
+
+    if _windows_build() is None:
+        raise HTTPException(404, "No Windows agent build is available on this server")
+    audit.record(db, f"device:{device.hostname}", "agent.update.downloaded", "windows", device.tenant_id)
+    db.commit()
+    return FileResponse(deployment_installers.release_file("windows/FenrirSetup.exe"), filename="FenrirSetup.exe",
+                        media_type="application/vnd.microsoft.portable-executable")
+
+
 @router.get("/agent/update/{os_name}")
 def agent_update(os_name: str = Path(pattern="^(linux|macos)$"), arch: str = Query(pattern="^(amd64|arm64)$"),
                  device: Device = Depends(current_device_by_key), db: Session = Depends(get_db)):
@@ -336,10 +380,14 @@ def agent_update(os_name: str = Path(pattern="^(linux|macos)$"), arch: str = Que
     try:
         meta = json.loads(meta_file.read_text())
         version, sha = str(meta["version"]), str(meta[sha_key][arch]).lower()
+        build_id = str(meta.get("buildId") or "")
     except (OSError, ValueError, KeyError, TypeError):
         return empty
+    resolution, _ = services.effective_policy(db, device)
+    allowed = bool(resolution["settings"].get("updates", {}).get("autoUpdateAgent", True))
     db.commit()  # records last_seen from the device lookup
-    return {"available": True, "version": version, "sha256": sha, "url": f"/downloads/{name}"}
+    return {"available": True, "version": version, "buildId": build_id, "sha256": sha, "url": f"/downloads/{name}",
+            "autoUpdate": allowed}
 
 
 @router.post("/update-check")

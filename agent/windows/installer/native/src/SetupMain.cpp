@@ -115,6 +115,7 @@ struct CompletionPayload {
 };
 
 struct UiContext {
+  bool silent{false};  // --silent-upgrade: started by the agent service to upgrade itself; no window, no prompts
   HINSTANCE instance{};
   HWND hwnd{};
   HWND eyebrowLabel{};
@@ -1078,7 +1079,24 @@ bool ExtractResourceToFile(HINSTANCE instance, const int resourceId, const std::
     return true;
   }
 
-  const auto replaceError = GetLastError();
+  auto replaceError = GetLastError();
+  if (replaceError == ERROR_ACCESS_DENIED || replaceError == ERROR_SHARING_VIOLATION) {
+    // A DLL loaded by other programs (the AMSI provider is loaded into PowerShell, Office and every other
+    // script host) cannot be overwritten, but it can be renamed. Move it aside, put the new file in place
+    // (new processes load it at once; running ones keep the old copy until they exit), and delete the old
+    // copy now if possible or at the next restart. The replacement itself is complete, not deferred.
+    const auto asidePath = targetPath.wstring() + L".old-" + std::to_wstring(GetTickCount64());
+    if (MoveFileExW(targetPath.c_str(), asidePath.c_str(), MOVEFILE_WRITE_THROUGH) != FALSE) {
+      if (MoveFileExW(temporaryPath.c_str(), targetPath.c_str(), MOVEFILE_WRITE_THROUGH) != FALSE) {
+        if (DeleteFileW(asidePath.c_str()) == FALSE) {
+          MoveFileExW(asidePath.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
+        }
+        return true;
+      }
+      replaceError = GetLastError();
+      MoveFileExW(asidePath.c_str(), targetPath.c_str(), MOVEFILE_WRITE_THROUGH);  // put the original back
+    }
+  }
   // A half-upgraded service whose files are replaced at the NEXT reboot is
   // difficult to recover and can explain apparent uninstall/startup failures.
   // Never claim success for a deferred file replacement. Stop protected
@@ -2298,6 +2316,16 @@ bool LaunchInstalledEndpointClient(const std::filesystem::path& installRoot, con
 
 bool InstallPayloadFiles(HWND hwnd, UiContext* context, const bool repair, std::wstring* errorMessage) {
   const auto installRoot = context->installRoot;
+  {
+    // Remove copies set aside by an earlier upgrade once nothing has them loaded any more.
+    std::error_code listError;
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(
+             installRoot, std::filesystem::directory_options::skip_permission_denied, listError)) {
+      if (entry.path().filename().wstring().find(L".old-") != std::wstring::npos) {
+        DeleteFileW(entry.path().c_str());
+      }
+    }
+  }
   PostStatus(hwnd, repair ? L"Preparing repair..." : L"Preparing install...", 5);
   PostLog(hwnd, L"Using install path " + installRoot.wstring());
 
@@ -2542,8 +2570,15 @@ void RunInstallOrRepair(HWND hwnd, UiContext* context, const bool repair) {
   }
 
   PostStatus(hwnd, L"Launching background companion...", 100);
-  PostLog(hwnd, L"Starting the installed endpoint client in silent tray mode");
-  LaunchInstalledEndpointClient(context->installRoot, true);
+  if (context->silent) {
+    // Running as SYSTEM: the restarted service reopens the agent window in the signed-in user's session.
+    std::error_code markerError;
+    std::filesystem::create_directories(context->installRoot / L"runtime", markerError);
+    std::ofstream(context->installRoot / L"runtime" / L"relaunch-client.flag") << "1";
+  } else {
+    PostLog(hwnd, L"Starting the installed endpoint client in silent tray mode");
+    LaunchInstalledEndpointClient(context->installRoot, true);
+  }
   auto completionMessage = repair ? std::wstring(L"Fenrir Endpoint was repaired successfully.")
                                   : std::wstring(L"Fenrir Endpoint was installed successfully.");
   if (minifilterDegraded) {
@@ -2991,6 +3026,19 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         context->installed = payload->installed;
         SetWindowTextW(context->statusLabel, payload->message.c_str());
         AppendLog(context->logEdit, payload->message);
+        if (context->silent) {
+          // Record the outcome for support (runtime\last-upgrade.log) and exit without any UI.
+          std::error_code logError;
+          std::filesystem::create_directories(context->installRoot / L"runtime", logError);
+          std::wofstream log(context->installRoot / L"runtime" / L"last-upgrade.log", std::ios::trunc);
+          const int length = GetWindowTextLengthW(context->logEdit);
+          std::wstring text(static_cast<std::size_t>(length) + 1, L'\0');
+          GetWindowTextW(context->logEdit, text.data(), length + 1);
+          log << (payload->success ? L"OK: " : L"FAILED: ") << payload->message << L"\r\n\r\n" << text.c_str();
+          delete payload;
+          DestroyWindow(hwnd);
+          return 0;
+        }
         RefreshUi(*context);
         MessageBoxW(hwnd, payload->message.c_str(), kWindowTitle,
                     MB_OK | (payload->success ? MB_ICONINFORMATION : MB_ICONWARNING));
@@ -3130,8 +3178,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     }
   }
 
-  ShowWindow(hwnd, showCommand == 0 ? SW_SHOWDEFAULT : showCommand);
-  UpdateWindow(hwnd);
+  const bool silentUpgrade = argv != nullptr && HasArgument(argc, argv, L"--silent-upgrade");
+  if (silentUpgrade) {
+    auto* context = GetContext(hwnd);
+    if (context == nullptr || !context->installed) {
+      DestroyWindow(hwnd);  // only upgrades an existing installation, never installs one silently
+      if (argv != nullptr) LocalFree(argv);
+      CoUninitialize();
+      return 2;
+    }
+    context->silent = true;
+    PostMessageW(hwnd, WM_COMMAND, IDC_PRIMARY_BUTTON, 0);
+  } else {
+    ShowWindow(hwnd, showCommand == 0 ? SW_SHOWDEFAULT : showCommand);
+    UpdateWindow(hwnd);
+  }
 
   if (argv != nullptr && HasArgument(argc, argv, L"--uninstall")) {
     PostMessageW(hwnd, WM_COMMAND, IDC_UNINSTALL_BUTTON, 0);

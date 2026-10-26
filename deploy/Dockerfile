@@ -11,13 +11,17 @@ RUN npm run build
 FROM golang:1.24-bookworm AS agents
 WORKDIR /src/agent/linux
 COPY agent/linux/ ./
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/fenrir-agent-linux-amd64 ./cmd/fenrir-agent \
- && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o /out/fenrir-agent-linux-arm64 ./cmd/fenrir-agent \
- && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/fenrir-agent-darwin-amd64 ./cmd/fenrir-agent \
- && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o /out/fenrir-agent-darwin-arm64 ./cmd/fenrir-agent \
+# BUILD_ID fingerprints the agent source: agents compare it with their own and upgrade themselves when it
+# differs, so every server rebuild with agent changes rolls out without version bumps.
+RUN BUILD_ID=$(find . -type f \( -name '*.go' -o -name 'go.mod' -o -name 'go.sum' \) -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16) \
+ && LDFLAGS="-s -w -X github.com/AntiVirus/agent/linux/pkg/fleet.BuildID=$BUILD_ID" \
+ && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" -o /out/fenrir-agent-linux-amd64 ./cmd/fenrir-agent \
+ && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" -o /out/fenrir-agent-linux-arm64 ./cmd/fenrir-agent \
+ && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" -o /out/fenrir-agent-darwin-amd64 ./cmd/fenrir-agent \
+ && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" -o /out/fenrir-agent-darwin-arm64 ./cmd/fenrir-agent \
  && VERSION=$(sed -n 's/^const Version = "\(.*\)"/\1/p' pkg/fleet/agent.go) \
  && sum() { sha256sum "$1" | cut -d' ' -f1; } \
- && printf '{"version":"%s","sha256":{"amd64":"%s","arm64":"%s"},"darwinSha256":{"amd64":"%s","arm64":"%s"}}\n' "$VERSION" \
+ && printf '{"version":"%s","buildId":"%s","sha256":{"amd64":"%s","arm64":"%s"},"darwinSha256":{"amd64":"%s","arm64":"%s"}}\n' "$VERSION" "$BUILD_ID" \
       "$(sum /out/fenrir-agent-linux-amd64)" "$(sum /out/fenrir-agent-linux-arm64)" \
       "$(sum /out/fenrir-agent-darwin-amd64)" "$(sum /out/fenrir-agent-darwin-arm64)" \
       > /out/linux-build.json
@@ -32,8 +36,10 @@ WORKDIR /src
 COPY agent/windows/ agent/windows/
 COPY third_party/sqlite/ third_party/sqlite/
 COPY deploy/mingw-x64.cmake deploy/mingw-x64.cmake
-RUN cmake -S agent/windows/service -B /build -G Ninja \
-    -DCMAKE_TOOLCHAIN_FILE=/src/deploy/mingw-x64.cmake \
+RUN find agent/windows third_party/sqlite deploy/mingw-x64.cmake -type f -not -path 'agent/windows/out/*' -print0 \
+      | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16 > /build-id \
+ && cmake -S agent/windows/service -B /build -G Ninja \
+    -DCMAKE_TOOLCHAIN_FILE=/src/deploy/mingw-x64.cmake -DFENRIR_BUILD_ID=$(cat /build-id) \
     -DCMAKE_BUILD_TYPE=Release -DANTIVIRUS_ENABLE_BUILD_VALIDATION=OFF \
     -DANTIVIRUS_REQUIRE_MINIFILTER_PAYLOAD=OFF \
     && cmake --build /build --target antivirus-setup --parallel 2 \
@@ -41,7 +47,7 @@ RUN cmake -S agent/windows/service -B /build -G Ninja \
     && cp agent/windows/out/install/FenrirSetup.exe /out/windows/
 # Setup must start on a clean Windows host before extracting any resources.
 RUN x86_64-w64-mingw32-objdump -p /out/windows/FenrirSetup.exe > /out/windows/imports.txt && if grep -Ei 'DLL Name:.*(libwinpthread|libgcc|libstdc[+][+])' /out/windows/imports.txt; then echo "ERROR: setup depends on an external compiler runtime"; exit 1; fi
-RUN python3 -c 'import hashlib,json,pathlib; p=pathlib.Path("/out/windows/FenrirSetup.exe"); p.with_name("build.json").write_text(json.dumps({"sha256":hashlib.sha256(p.read_bytes()).hexdigest(),"platform":"windows-x64","mode":"unsigned-hobby"}))'
+RUN python3 -c 'import hashlib,json,pathlib; p=pathlib.Path("/out/windows/FenrirSetup.exe"); p.with_name("build.json").write_text(json.dumps({"sha256":hashlib.sha256(p.read_bytes()).hexdigest(),"buildId":pathlib.Path("/build-id").read_text().strip(),"platform":"windows-x64","mode":"unsigned-hobby"}))'
 
 FROM python:3.13-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 FENRIR_CONSOLE_DIR=/app/console/dist

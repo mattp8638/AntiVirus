@@ -160,6 +160,10 @@ class AgentService {
   std::thread firewallThread_{};
   void ApplyFirewallPolicy();
   void WriteExperienceFile();
+  // Self-update (Windows): compare this build's id with the server's and run its installer silently.
+  void MaybeSelfUpdate(int cycle);
+  void RelaunchClientAfterUpgrade();
+  unsigned long long lastSelfUpdateCheck_{0};
   bool ScanNetworkDrives() const;
   int ScheduledScanCpuLimit() const;
   void FirewallWorker();

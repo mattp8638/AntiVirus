@@ -478,7 +478,6 @@ AGENT_SUPPORT: dict[str, tuple[str, ...]] = {
     "experience.allowQuarantineRestore": ('windows',),
     "experience.brandName": ('windows',),
     "experience.supportContact": ('windows',),
-    "updates.autoUpdateAgent": ('linux', 'macos'),
     "updates.signatureIntervalMinutes": ('linux', 'macos'),
     "updates.peerCaching": (),
 }
