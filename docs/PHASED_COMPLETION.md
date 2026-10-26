@@ -72,8 +72,17 @@ Later additions (enforcing settings that were previously ignored):
     `PUA:`, `Adware.`, `not-a-virus:`). Linux/macOS ignore them when `puaProtection` is off and report without
     quarantining or stopping the process when it is audit. Windows does not separate PUA yet.
 
+Agent window (Windows):
+- Redesigned: sidebar with counts, a clear protected / needs attention / off status, protection tiles, recent
+  activity, and plain-language pages for threats, quarantine, scans, updates, activity, help and settings. Follows the
+  Windows light or dark theme. The page source is `agent/windows/tools/endpointui/web/protection-centre.html`.
+- Branding and behaviour come from the policy's end-user experience settings (brand name, support contact, tray
+  icon, notification level, whether users can run scans). The service publishes them in `experience.json` in the
+  install folder.
+- "Request support" opens a PSA ticket for the device (source `agent`, at most 5 an hour per device).
+
 Open:
-- About 35 policy settings are still not enforced by any agent (marked in the editor; see
+- About 30 policy settings are still not enforced by any agent (marked in the editor; see
   `AGENT_SUPPORT` in `cloud/fenrir_cloud/policy_schema.py`).
 - Ransomware rollback is withdrawn: no agent keeps file snapshots.
 

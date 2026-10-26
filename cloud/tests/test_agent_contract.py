@@ -120,3 +120,20 @@ def test_reenroll_same_serial_rotates_key(client, admin, tenant, device):
     assert again["deviceApiKey"] != device["deviceApiKey"]
     old = client.post(f"/api/v1/devices/{device['deviceId']}/heartbeat", json={}, headers=device["headers"])
     assert old.status_code == 401
+
+
+def test_support_request_from_agent_opens_ticket(client, admin, device):
+    url = f"/api/v1/devices/{device['deviceId']}/support-requests"
+    assert client.post(url, json={"summary": "  "}, headers=device["headers"]).status_code == 422
+    assert client.post(url, json={"summary": "x"}).status_code == 401
+    r = client.post(url, json={"summary": "Outlook keeps crashing", "details": "Since this morning", "user": "ACME\\\\jo",
+                               "contact": "07700 900123"}, headers=device["headers"])
+    assert r.status_code == 200, r.text
+    tickets = client.get("/api/console/tickets", headers=admin).json()
+    tickets = tickets["items"] if isinstance(tickets, dict) else tickets
+    ticket = next(t for t in tickets if t["id"] == r.json()["ticketId"])
+    assert ticket["subject"] == "Outlook keeps crashing" and ticket["source"] == "agent" and ticket["deviceId"] == device["deviceId"]
+    assert "07700 900123" in ticket["description"]
+    for _ in range(4):
+        client.post(url, json={"summary": "again"}, headers=device["headers"])
+    assert client.post(url, json={"summary": "once more"}, headers=device["headers"]).status_code == 429

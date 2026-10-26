@@ -159,6 +159,7 @@ class AgentService {
   bool firewallWorkerBusy_{false};
   std::thread firewallThread_{};
   void ApplyFirewallPolicy();
+  void WriteExperienceFile();
   bool ScanNetworkDrives() const;
   int ScheduledScanCpuLimit() const;
   void FirewallWorker();

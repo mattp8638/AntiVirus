@@ -103,6 +103,8 @@ class ControlPlaneClient {
   EnrollmentResult Enroll(const AgentState& state, const std::wstring& enrollmentToken = {}) const;
   // metricsJson: the RMM health object (CPU, memory, disks...) or empty.
   HeartbeatResult SendHeartbeat(const AgentState& state, const std::string& metricsJson = "") const;
+  // 'Request support' from the agent window; returns the ticket number. bodyJson: {summary, details, user, contact}.
+  std::wstring SubmitSupportRequest(const AgentState& state, const std::string& bodyJson) const;
   // ws(s)://.../api/v1/devices/<id>/realtime and the device key that authenticates it.
   std::wstring RealtimeUrl(const AgentState& state) const;
   static std::wstring DeviceApiKey(const AgentState& state);

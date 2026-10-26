@@ -22,7 +22,7 @@ from ..config import get_settings
 from ..db import get_db
 from ..deps import current_device, current_device_by_key
 from ..detection import ingest
-from ..models import AgentRelease, Command, Device, EnrollmentToken, Event, Tenant, utcnow
+from ..models import AgentRelease, Command, Device, EnrollmentToken, Event, Tenant, Ticket, utcnow
 from ..security import digest, new_secret
 
 router = APIRouter(prefix="/api/v1", tags=["Agent API"])
@@ -186,6 +186,36 @@ def heartbeat(body: dict = Body(default={}), device: Device = Depends(current_de
     db.commit()
     return {"receivedAt": _iso(utcnow()), "effectivePolicyRevision": policy_doc["revision"], "commandsPending": pending,
             "approved": device.approved, "realtimePath": f"/api/v1/devices/{device.id}/realtime"}
+
+
+SUPPORT_REQUESTS_PER_HOUR = 5
+
+
+@router.post("/devices/{device_id}/support-requests")
+def support_request(body: dict = Body(default={}), device: Device = Depends(current_device), db: Session = Depends(get_db)):
+    """'Request support' from the agent window: the person at the device asks their IT provider for help."""
+    from datetime import timedelta
+
+    summary = " ".join(str(body.get("summary") or "").split())[:200]
+    details = str(body.get("details") or "").strip()[:4000]
+    if not summary:
+        raise HTTPException(422, "Describe the problem in a few words")
+    recent = db.execute(select(func.count()).where(Ticket.device_id == device.id, Ticket.source == "agent",
+                                                   Ticket.created_at > utcnow() - timedelta(hours=1))).scalar() or 0
+    if recent >= SUPPORT_REQUESTS_PER_HOUR:
+        raise HTTPException(429, "Several requests were already sent from this device in the last hour; your IT provider has them")
+    user = str(body.get("user") or "")[:120]
+    contact = str(body.get("contact") or "")[:200]
+    description = "\n\n".join(part for part in (
+        details,
+        f"Sent from the agent on {device.hostname} by {user or 'the signed-in user'}." + (f" Contact: {contact}" if contact else ""),
+    ) if part)
+    ticket = services.open_ticket(db, device.tenant_id, summary, description=description, priority="P3", source="agent",
+                                  requester=user or device.hostname, device_id=device.id)
+    audit.record(db, f"device:{device.hostname}", "ticket.requested_from_agent", str(ticket.number), device.tenant_id,
+                 ticket=ticket.id)
+    db.commit()
+    return {"ticketId": ticket.id, "number": ticket.number}
 
 
 @router.post("/devices/{device_id}/policy-check-in")

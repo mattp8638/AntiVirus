@@ -15,7 +15,8 @@ def test_scan_schedules_reach_agents_as_plans():
         ps.validate_partial({"antimalware": {"quickScanSchedule": "every so often"}})
     fields = {f["path"]: f for s in ps.schema_document()["sections"] for f in s["fields"]}
     assert fields["antimalware.quickScanSchedule"]["enforcedOn"] == ["windows", "linux", "macos"]
-    assert fields["experience.trayIcon"]["enforcedOn"] == []
+    assert fields["experience.trayIcon"]["enforcedOn"] == ["windows"]
+    assert fields["experience.allowUserPause"]["enforcedOn"] == []
 
 
 def test_firewall_rules_are_validated_and_parsed_for_agents():
