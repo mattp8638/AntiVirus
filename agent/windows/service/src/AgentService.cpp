@@ -1214,8 +1214,10 @@ void AgentService::RunSyncLoop(const AgentRunMode mode) {
       FlushTelemetryQueue();
       PublishHeartbeat(cycle);
       MaybeSelfUpdate(cycle);
+      ExpireBreakGlassAccount();
       if (GetTickCount64() - lastLocalAdminCheck_ > 60ULL * 60 * 1000 || lastLocalAdminCheck_ == 0) {
         lastLocalAdminCheck_ = GetTickCount64();
+        EnforceLocalAdminPolicy();
         try {
           RotateLocalAdminPassword(false);
         } catch (const std::exception& error) {
@@ -2479,11 +2481,72 @@ std::wstring AgentService::ExecuteBreakGlassCommand(const RemoteCommand& command
       throw std::runtime_error("The break-glass admin account is turned off by this device's policy");
     }
   }
-  QueueTelemetryEvent(enable ? L"breakglass.enabled" : L"breakglass.disabled", L"local-security",
-                      enable ? L"The endpoint recorded a temporary break-glass enable request."
-                             : L"The endpoint recorded a break-glass disable request.",
-                      std::wstring(L"{\"commandId\":\"") + command.commandId + L"\"}");
-  throw std::runtime_error("Break-glass execution is not wired into the current service build");
+  if (laps::IsDomainController()) {
+    throw std::runtime_error("This is a domain controller; the break-glass account is never created on one");
+  }
+  const auto expiryFile = config_.runtimeDatabasePath.parent_path() / L"breakglass-expiry.txt";
+  const std::wstring account = laps::kBreakGlassAccount;
+  if (!enable) {
+    const auto status = laps::DisableBreakGlassAccount();
+    std::error_code ec;
+    std::filesystem::remove(expiryFile, ec);
+    if (status != 0) {
+      throw std::runtime_error("The break-glass account could not be disabled (error " + std::to_string(status) + ")");
+    }
+    QueueTelemetryEvent(L"breakglass.disabled", L"local-security", L"The break-glass admin account was disabled.",
+                        L"{\"commandId\":\"" + command.commandId + L"\",\"account\":\"" + account + L"\"}");
+    return L"{\"enabled\":false,\"account\":\"" + account + L"\"}";
+  }
+  if (state_.deviceId.empty()) {
+    throw std::runtime_error("The device is not enrolled");
+  }
+  double hours = 4;
+  if (const auto value = ExtractPayloadString(command.payloadJson, "hours")) {
+    hours = std::wcstod(value->c_str(), nullptr);
+  } else if (const auto pos = command.payloadJson.find(L"\"hours\""); pos != std::wstring::npos) {
+    const auto digits = command.payloadJson.find_first_of(L"0123456789", pos + 7);
+    if (digits != std::wstring::npos) hours = std::wcstod(command.payloadJson.c_str() + digits, nullptr);
+  }
+  hours = std::clamp(hours <= 0 ? 4.0 : hours, 1.0, 24.0);
+  auto password = laps::GeneratePassword(24);
+  // Escrow first, as with LAPS: the cloud always holds the password before the account uses it.
+  const auto version = controlPlaneClient_->EscrowLocalAdminPassword(state_, account, password);
+  const auto status = laps::EnableBreakGlassAccount(password);
+  SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+  if (status != 0) {
+    const auto error = L"The break-glass account could not be enabled (error " + std::to_wstring(status) + L")";
+    controlPlaneClient_->ConfirmLocalAdminPassword(state_, version, false, error);
+    throw std::runtime_error(WideToUtf8(error));
+  }
+  controlPlaneClient_->ConfirmLocalAdminPassword(state_, version, true, L"");
+  const auto expires = static_cast<long long>(std::time(nullptr)) + static_cast<long long>(hours * 3600);
+  std::ofstream(expiryFile, std::ios::trunc) << expires;
+  QueueTelemetryEvent(L"breakglass.enabled", L"local-security",
+                      L"The break-glass admin account was enabled for " + std::to_wstring(static_cast<int>(hours)) +
+                          L" hours; its password is in the device's Local admin tab.",
+                      L"{\"commandId\":\"" + command.commandId + L"\",\"account\":\"" + account + L"\",\"hours\":" +
+                          std::to_wstring(static_cast<int>(hours)) + L",\"version\":\"" + version + L"\"}");
+  return L"{\"enabled\":true,\"account\":\"" + account + L"\",\"hours\":" + std::to_wstring(static_cast<int>(hours)) +
+         L",\"version\":\"" + version + L"\"}";
+}
+
+void AgentService::ExpireBreakGlassAccount() {
+  const auto expiryFile = config_.runtimeDatabasePath.parent_path() / L"breakglass-expiry.txt";
+  long long expires = 0;
+  {
+    std::ifstream in(expiryFile);
+    if (!(in >> expires)) return;
+  }
+  if (static_cast<long long>(std::time(nullptr)) < expires) return;
+  const auto status = laps::DisableBreakGlassAccount();
+  if (status == 0) {
+    std::error_code ec;
+    std::filesystem::remove(expiryFile, ec);
+  }
+  QueueTelemetryEvent(status == 0 ? L"breakglass.expired" : L"breakglass.expiry.failed", L"local-security",
+                      status == 0 ? L"The break-glass admin account expired and was disabled."
+                                  : L"The break-glass admin account expired but could not be disabled.",
+                      L"{\"error\":" + std::to_wstring(status) + L"}");
 }
 
 // AMSI runs inside user processes that cannot write the protected runtime database, so the provider
@@ -2533,16 +2596,146 @@ std::wstring AgentService::ExecuteLocalApprovalListCommand(const RemoteCommand&)
   throw std::runtime_error("Local approval listing is not wired into the current service build");
 }
 
-std::wstring AgentService::ExecuteLocalAdminAuditCommand(const RemoteCommand&) {
-  throw std::runtime_error("Local admin audit execution is not wired into the current service build");
+namespace {
+
+std::wstring AdminMembersJson(const std::vector<laps::AdminMember>& members, const std::vector<std::size_t>* only = nullptr) {
+  std::wstring out = L"[";
+  bool first = true;
+  for (std::size_t i = 0; i < members.size(); ++i) {
+    if (only && std::find(only->begin(), only->end(), i) == only->end()) continue;
+    const auto& m = members[i];
+    out += (first ? L"" : L",") + std::wstring(L"{\"name\":\"") + Utf8ToWide(EscapeJsonString(m.name)) + L"\",\"sid\":\"" + m.sid +
+           L"\",\"type\":\"" + (m.group ? L"group" : L"user") + L"\",\"enabled\":" + (m.enabled ? L"true" : L"false") +
+           L",\"builtin\":" + (m.builtin ? L"true" : L"false") + L"}";
+    first = false;
+  }
+  return out + L"]";
 }
 
-std::wstring AgentService::ExecuteLocalAdminReductionCommand(const RemoteCommand&, const bool) {
-  throw std::runtime_error("Local admin reduction execution is not wired into the current service build");
+}  // namespace
+
+std::wstring AgentService::ExecuteLocalAdminAuditCommand(const RemoteCommand& command) {
+  const auto members = laps::ListAdministrators();
+  const auto body = L"{\"domainController\":" + std::wstring(laps::IsDomainController() ? L"true" : L"false") +
+                    L",\"members\":" + AdminMembersJson(members) + L"}";
+  QueueTelemetryEvent(L"localadmin.audited", L"local-security",
+                      L"The local Administrators group has " + std::to_wstring(members.size()) + L" members.",
+                      L"{\"commandId\":\"" + command.commandId + L"\",\"members\":" + AdminMembersJson(members) + L"}");
+  return body;
 }
 
-std::wstring AgentService::ExecuteLocalAdminRollbackCommand(const RemoteCommand&) {
-  throw std::runtime_error("Local admin rollback execution is not wired into the current service build");
+std::vector<std::wstring> AgentService::LocalAdminKeepList(const std::wstring& payloadJson) const {
+  auto keep = ExtractPayloadStringArray(payloadJson, "keep");
+  keep.push_back(laps::kBreakGlassAccount);
+  // The account LAPS manages stays an administrator.
+  if (const auto root = policy_.modulesJson.empty() ? std::optional<json::Value>{} : json::Parse(policy_.modulesJson)) {
+    if (const auto* privilege = root->Get("privilege")) {
+      if (const auto* account = privilege->Get("localAdminAccount"); account && account->String() && !account->String()->empty()) {
+        keep.push_back(Utf8ToWide(*account->String()));
+      }
+    }
+  }
+  return keep;
+}
+
+std::wstring AgentService::ExecuteLocalAdminReductionCommand(const RemoteCommand& command, const bool applyChanges) {
+  if (laps::IsDomainController()) {
+    throw std::runtime_error("This is a domain controller; its Administrators group is the domain's and is never changed");
+  }
+  const auto members = laps::ListAdministrators();
+  const auto plan = laps::PlanAdminRemoval(members, LocalAdminKeepList(command.payloadJson));
+  if (plan.empty()) {
+    return L"{\"removed\":[],\"note\":\"Nothing to remove (or removing would leave no administrator).\"}";
+  }
+  if (!applyChanges) {
+    return L"{\"wouldRemove\":" + AdminMembersJson(members, &plan) + L"}";
+  }
+  // Remember who was removed so localadmin.rollback can put them back.
+  const auto stateFile = config_.runtimeDatabasePath.parent_path() / L"local-admins-removed.json";
+  std::vector<std::pair<std::wstring, std::wstring>> saved;  // sid, name
+  {
+    std::ifstream in(stateFile, std::ios::binary);
+    std::stringstream text;
+    text << in.rdbuf();
+    if (const auto parsed = json::Parse(text.str())) {
+      if (const auto* list = std::get_if<json::Array>(&parsed->v)) {
+        for (const auto& item : *list) {
+          const auto* sid = item.Get("sid");
+          const auto* name = item.Get("name");
+          if (sid && sid->String()) saved.emplace_back(Utf8ToWide(*sid->String()), name && name->String() ? Utf8ToWide(*name->String()) : L"");
+        }
+      }
+    }
+  }
+  std::vector<std::size_t> removed;
+  std::wstring failures;
+  for (const auto index : plan) {
+    const auto status = laps::RemoveAdministrator(members[index].sid);
+    if (status == 0) {
+      removed.push_back(index);
+      if (std::none_of(saved.begin(), saved.end(), [&](const auto& s) { return s.first == members[index].sid; })) {
+        saved.emplace_back(members[index].sid, members[index].name);
+      }
+    } else {
+      failures += (failures.empty() ? L"" : L", ") + members[index].name + L" (error " + std::to_wstring(status) + L")";
+    }
+  }
+  {
+    std::wstring body = L"[";
+    for (std::size_t i = 0; i < saved.size(); ++i) {
+      body += (i ? L"," : L"") + std::wstring(L"{\"sid\":\"") + saved[i].first + L"\",\"name\":\"" +
+              Utf8ToWide(EscapeJsonString(saved[i].second)) + L"\"}";
+    }
+    std::ofstream(stateFile, std::ios::binary | std::ios::trunc) << WideToUtf8(body + L"]");
+  }
+  if (!removed.empty()) {
+    QueueTelemetryEvent(L"localadmin.reduced", L"local-security",
+                        L"Removed local admin rights from " + std::to_wstring(removed.size()) + L" account(s).",
+                        L"{\"commandId\":\"" + command.commandId + L"\",\"removed\":" + AdminMembersJson(members, &removed) + L"}");
+  }
+  if (!failures.empty()) {
+    throw std::runtime_error("Could not remove: " + WideToUtf8(failures));
+  }
+  return L"{\"removed\":" + AdminMembersJson(members, &removed) + L"}";
+}
+
+std::wstring AgentService::ExecuteLocalAdminRollbackCommand(const RemoteCommand& command) {
+  const auto stateFile = config_.runtimeDatabasePath.parent_path() / L"local-admins-removed.json";
+  std::ifstream in(stateFile, std::ios::binary);
+  std::stringstream text;
+  text << in.rdbuf();
+  in.close();
+  const auto parsed = json::Parse(text.str());
+  const auto* list = parsed ? std::get_if<json::Array>(&parsed->v) : nullptr;
+  if (list == nullptr || list->empty()) {
+    return L"{\"restored\":0,\"note\":\"No removed administrators are recorded on this device.\"}";
+  }
+  int restored = 0;
+  std::wstring names, failures;
+  for (const auto& item : *list) {
+    const auto* sid = item.Get("sid");
+    const auto* name = item.Get("name");
+    if (!sid || !sid->String()) continue;
+    const auto label = name && name->String() ? Utf8ToWide(*name->String()) : Utf8ToWide(*sid->String());
+    const auto status = laps::AddAdministrator(Utf8ToWide(*sid->String()));
+    if (status == 0) {
+      ++restored;
+      names += (names.empty() ? L"" : L", ") + label;
+    } else {
+      failures += (failures.empty() ? L"" : L", ") + label + L" (error " + std::to_wstring(status) + L")";
+    }
+  }
+  if (failures.empty()) {
+    std::error_code ec;
+    std::filesystem::remove(stateFile, ec);
+  }
+  QueueTelemetryEvent(L"localadmin.restored", L"local-security",
+                      L"Restored local admin rights to " + std::to_wstring(restored) + L" account(s).",
+                      L"{\"commandId\":\"" + command.commandId + L"\",\"accounts\":\"" + Utf8ToWide(EscapeJsonString(names)) + L"\"}");
+  if (!failures.empty()) {
+    throw std::runtime_error("Could not restore: " + WideToUtf8(failures));
+  }
+  return L"{\"restored\":" + std::to_wstring(restored) + L"}";
 }
 
 std::wstring AgentService::ExecuteHouseholdRoleAuditCommand(const RemoteCommand&) {
@@ -3019,8 +3212,29 @@ void AgentService::ApplyProtectionPolicy() {
       if (bruteForceGuard_) {
         bruteForceGuard_->Apply(extended.bruteForceProtection);
       }
+      ApplyTamperPolicy(extended);
     }
   }
+}
+
+void AgentService::ApplyTamperPolicy(const ExtendedPolicy& extended) {
+  const std::wstring key = std::wstring(extended.tamperServiceLocked ? L"1" : L"0") + (extended.tamperUninstallToken ? L"1" : L"0");
+  if (key == appliedTamperPolicy_) {
+    return;
+  }
+  HardeningManager hardening(config_, ResolveInstallRootForConfig(config_));
+  std::wstring error;
+  const bool ok = hardening.ApplyTamperPolicy(extended.tamperServiceLocked, extended.tamperUninstallToken, &error);
+  if (ok) {
+    appliedTamperPolicy_ = key;
+  }
+  const auto flags = std::wstring(L"\"serviceLocked\":") + (extended.tamperServiceLocked ? L"true" : L"false") +
+                     L",\"uninstallRequiresToken\":" + (extended.tamperUninstallToken ? L"true" : L"false");
+  QueueTelemetryEvent(ok ? L"tamper.policy.applied" : L"tamper.policy.failed", L"hardening-manager",
+                      ok ? (extended.tamperServiceLocked ? L"Tamper protection on: the agent service cannot be stopped or removed"
+                                                         : L"Tamper protection relaxed by policy: administrators can stop the agent service")
+                         : L"Tamper protection policy could not be applied",
+                      L"{" + flags + (ok ? L"" : L",\"error\":" + Utf8ToWide("\"" + EscapeJsonString(error) + "\"")) + L"}");
 }
 
 // Publishes what the agent window may show (branding, support contact, which protections are on) to
@@ -3075,6 +3289,72 @@ std::wstring AgentService::RotateLocalAdminPassword(const bool force) {
   QueueTelemetryEvent(L"laps.rotated", L"laps", L"The local admin password was rotated and stored in the vault.",
                       L"{\"account\":\"" + Utf8ToWide(EscapeJsonString(account)) + L"\",\"version\":\"" + version + L"\"}");
   return L"{\"rotated\":true,\"account\":\"" + Utf8ToWide(EscapeJsonString(account)) + L"\",\"version\":\"" + version + L"\"}";
+}
+
+void AgentService::EnforceLocalAdminPolicy() {
+  const auto extended = policy_.modulesJson.empty() ? ExtendedPolicy{} : ExtendedPolicy::Parse(policy_.modulesJson);
+  if (!extended.removeLocalAdmins || state_.deviceId.empty() || laps::IsDomainController()) {
+    return;
+  }
+  try {
+    RemoteCommand command{};
+    command.commandId = L"policy";
+    command.payloadJson = L"{}";
+    ExecuteLocalAdminReductionCommand(command, true);
+  } catch (const std::exception& error) {
+    QueueTelemetryEvent(L"localadmin.reduce.failed", L"local-security", L"Standing local admin rights could not all be removed.",
+                        L"{\"error\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(error.what()))) + L"\"}");
+  }
+}
+
+std::wstring AgentService::ExecuteInventoryUninstall(const RemoteCommand& command) {
+  const auto softwareId =
+      !command.recordId.empty() ? command.recordId : ExtractPayloadString(command.payloadJson, "softwareId").value_or(L"");
+  if (softwareId.empty()) {
+    throw std::runtime_error("Software uninstall needs the application's record ID from the device's software list");
+  }
+  RuntimeDatabase database(config_.runtimeDatabasePath);
+  const auto software = database.ListSoftwarePatchRecords(5000);
+  const auto match = std::find_if(software.begin(), software.end(), [&](const auto& r) { return r.softwareId == softwareId; });
+  if (match == software.end()) {
+    throw std::runtime_error("That application is not in this device's software list; refresh the inventory and try again");
+  }
+  std::wstring commandLine = match->quietUninstallCommand;
+  if (commandLine.empty()) {
+    // MSI products uninstall silently through msiexec with their product code.
+    auto lower = match->uninstallCommand;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
+    const auto open = match->uninstallCommand.find(L'{');
+    const auto close = match->uninstallCommand.find(L'}', open == std::wstring::npos ? 0 : open);
+    if (lower.find(L"msiexec") != std::wstring::npos && open != std::wstring::npos && close != std::wstring::npos &&
+        close - open == 37) {
+      wchar_t systemDir[MAX_PATH]{};
+      GetSystemDirectoryW(systemDir, MAX_PATH);
+      commandLine = L"\"" + std::wstring(systemDir) + L"\\msiexec.exe\" /x " + match->uninstallCommand.substr(open, 38) +
+                    L" /qn /norestart";
+    }
+  }
+  if (commandLine.empty()) {
+    throw std::runtime_error("\"" + WideToUtf8(match->displayName) +
+                             "\" has no silent uninstaller. Add it to the software library with uninstall arguments, or "
+                             "remove it from a remote session.");
+  }
+  wchar_t systemDir[MAX_PATH]{};
+  GetSystemDirectoryW(systemDir, MAX_PATH);
+  const auto result = rmm::RunProcess(commandLine, systemDir, {}, 60 * 60 * 1000);
+  // 3010: done, restart needed. 1605: not installed any more. 1614: already uninstalled.
+  const bool ok = !result.timedOut && (result.exitCode == 0 || result.exitCode == 3010 || result.exitCode == 1605 ||
+                                       result.exitCode == 1614);
+  QueueTelemetryEvent(ok ? L"software.uninstalled" : L"software.uninstall.failed", L"command-executor",
+                      (ok ? L"Uninstalled " : L"Could not uninstall ") + match->displayName,
+                      L"{\"commandId\":\"" + command.commandId + L"\",\"softwareId\":\"" + Utf8ToWide(EscapeJsonString(softwareId)) +
+                          L"\",\"exitCode\":" + std::to_wstring(static_cast<long>(result.exitCode)) + L"}");
+  if (!ok) {
+    throw std::runtime_error(result.timedOut ? "The uninstaller did not finish within an hour"
+                                             : "The uninstaller exited with code " + std::to_string(static_cast<long>(result.exitCode)));
+  }
+  return L"{\"uninstalled\":\"" + Utf8ToWide(EscapeJsonString(match->displayName)) + L"\",\"exitCode\":" +
+         std::to_wstring(static_cast<long>(result.exitCode)) + L",\"rebootRequired\":" + (result.exitCode == 3010 ? L"true" : L"false") + L"}";
 }
 
 void AgentService::MaybeSelfUpdate(const int cycle) {
@@ -3769,7 +4049,7 @@ void AgentService::FlushTelemetryQueue() {
 std::wstring AgentService::ExecuteSoftwareCommand(const RemoteCommand& command, const bool uninstall,
                                                   const bool searchOnly) {
   if (uninstall) {
-    throw std::runtime_error("Software uninstall is not wired into the current service build");
+    return ExecuteInventoryUninstall(command);
   }
 
   const auto softwareId =

@@ -301,6 +301,35 @@ int main(int argc, char** argv) {
     CHECK(restored.Blocked(L"2001:db8::5") && restored.Clear().size() == 1 && restored.Blocks().empty());
     CHECK(ExtendedPolicy::Parse(R"({"firewall":{"bruteForceProtection":false}})").bruteForceProtection == false);
     CHECK(ExtendedPolicy::Parse(R"({"firewall":{}})").bruteForceProtection == true);
+    const auto tamperDefault = ExtendedPolicy::Parse(R"({"tamper":{}})");
+    CHECK(tamperDefault.tamperServiceLocked && tamperDefault.tamperUninstallToken);
+    const auto tamperOff = ExtendedPolicy::Parse(R"({"tamper":{"enabled":false,"protectServiceAndFiles":true}})");
+    CHECK(!tamperOff.tamperServiceLocked && !tamperOff.tamperUninstallToken);
+    const auto tamperMixed = ExtendedPolicy::Parse(R"({"tamper":{"protectServiceAndFiles":false}})");
+    CHECK(!tamperMixed.tamperServiceLocked && tamperMixed.tamperUninstallToken);
+  }
+  {  // Local admin removal plan
+    using laps::AdminMember;
+    std::vector<AdminMember> members = {
+        {L"PC1\\Administrator", L"S-1-5-21-1-2-3-500", false, false, true},  // built-in, disabled: kept
+        {L"CONTOSO\\Domain Admins", L"S-1-5-21-9-9-9-512", true, true, false},  // group: kept
+        {L"PC1\\alice", L"S-1-5-21-1-2-3-1001", false, true, false},
+        {L"CONTOSO\\bob", L"S-1-5-21-9-9-9-1105", false, true, false},
+        {L"PC1\\FenrirBreakGlass", L"S-1-5-21-1-2-3-1002", false, false, false},
+        {L"PC1\\itadmin", L"S-1-5-21-1-2-3-1003", false, true, false},
+    };
+    auto plan = laps::PlanAdminRemoval(members, {L"FenrirBreakGlass", L"itadmin"});
+    CHECK(plan.size() == 2 && plan[0] == 2 && plan[1] == 3);
+    plan = laps::PlanAdminRemoval(members, {L"contoso\\BOB", L"S-1-5-21-1-2-3-1001", L"fenrirbreakglass", L"itadmin"});
+    CHECK(plan.empty());  // names with or without domain, and SIDs, case-insensitive
+    // Never leave nobody: only a disabled built-in account would remain.
+    std::vector<AdminMember> lonely = {{L"PC1\\Administrator", L"S-1-5-21-1-2-3-500", false, false, true},
+                                       {L"PC1\\alice", L"S-1-5-21-1-2-3-1001", false, true, false}};
+    CHECK(laps::PlanAdminRemoval(lonely, {}).empty());
+    lonely[0].enabled = true;  // the built-in account is enabled (and managed by LAPS): alice can go
+    CHECK(laps::PlanAdminRemoval(lonely, {}).size() == 1);
+    CHECK(ExtendedPolicy::Parse(R"({"privilege":{"removeLocalAdmins":true}})").removeLocalAdmins == false);  // needs enabled
+    CHECK(ExtendedPolicy::Parse(R"({"privilege":{"enabled":true,"removeLocalAdmins":true}})").removeLocalAdmins);
   }
   CHECK(!ExtendedPolicy::Parse("not json").present);
   std::printf(failures ? "%d failure(s)\n" : "all policy/device-control tests passed\n", failures);

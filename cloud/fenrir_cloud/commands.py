@@ -76,10 +76,17 @@ CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("software.update", "Update application", "Software", needs=("recordId",)),
     CommandSpec("software.uninstall", "Uninstall application", "Software", needs=("recordId",), platforms=ALL, destructive=True),
     CommandSpec("software.block", "Block application", "Software", needs=("recordId",), permission="configure"),
-    CommandSpec("localadmin.audit", "Audit local admins", "Privilege"),
-    CommandSpec("localadmin.reduce", "Remove local admins", "Privilege", permission="configure", destructive=True),
-    CommandSpec("localadmin.rollback", "Restore local admins", "Privilege", permission="configure"),
-    CommandSpec("breakglass.enable", "Enable break-glass admin", "Privilege", permission="configure"),
+    CommandSpec("localadmin.audit", "Audit local admins", "Privilege",
+                description="Lists the members of the local Administrators group."),
+    CommandSpec("localadmin.reduce", "Remove local admins", "Privilege", permission="configure", destructive=True,
+                description="Removes user accounts from the local Administrators group. Groups, the built-in Administrator, "
+                            "the LAPS and break-glass accounts and any names in the payload's keep list stay. Never runs "
+                            "on domain controllers."),
+    CommandSpec("localadmin.rollback", "Restore local admins", "Privilege", permission="configure",
+                description="Puts back every account removed by Remove local admins."),
+    CommandSpec("breakglass.enable", "Enable break-glass admin", "Privilege", permission="configure",
+                description="Enables the FenrirBreakGlass local administrator for the payload's hours (default 4, max 24). "
+                            "Its password is stored first and shown in the device's Local admin tab."),
     CommandSpec("breakglass.disable", "Disable break-glass admin", "Privilege", permission="configure"),
     CommandSpec("update.apply", "Apply agent update", "Agent", permission="configure", platforms=ALL),
     CommandSpec("update.rollback", "Roll back agent update", "Agent", permission="configure"),

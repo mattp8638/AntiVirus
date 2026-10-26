@@ -84,6 +84,9 @@ struct ExtendedPolicy {
   bool canaryFiles{true};
   RansomwareSettings ransomware;
   bool bruteForceProtection{true};  // modules.firewall.bruteForceProtection
+  bool removeLocalAdmins{false};      // privilege.enabled && privilege.removeLocalAdmins
+  bool tamperServiceLocked{true};     // tamper.enabled && tamper.protectServiceAndFiles
+  bool tamperUninstallToken{true};    // tamper.enabled && tamper.uninstallRequiresToken
   bool scriptExecution{true};      // modules.response.scriptExecution
   bool remoteAccessEnabled{true};  // modules.remoteAccess.enabled
   // modules.edr collection switches: routine telemetry only; detections are always sent.

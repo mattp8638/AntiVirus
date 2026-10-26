@@ -35,6 +35,9 @@ class HardeningManager {
   bool ApplyProtectedServiceRegistration(const std::wstring& serviceName, SC_HANDLE serviceHandle,
                                          const std::filesystem::path& elamDriverPath,
                                          std::wstring* errorMessage = nullptr) const;
+  // Policy (modules.tamper): serviceLocked = tamper.enabled && protectServiceAndFiles;
+  // uninstallTokenRequired = tamper.enabled && uninstallRequiresToken.
+  bool ApplyTamperPolicy(bool serviceLocked, bool uninstallTokenRequired, std::wstring* errorMessage = nullptr) const;
   bool ValidateUninstallAuthorization(const std::wstring& uninstallToken, std::wstring* errorMessage = nullptr) const;
   HardeningStatus QueryStatus(const std::wstring& serviceName = L"FenrirAgent") const;
 

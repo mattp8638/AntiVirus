@@ -371,6 +371,7 @@ ExtendedPolicy ExtendedPolicy::Parse(const std::string& modulesJson) {
   policy.telemetryMinimal = WideString(edr, "telemetryLevel", L"standard") == L"minimal";
   policy.allowQuarantineRestore = BoolOr(root->Get("experience"), "allowQuarantineRestore", false);
   policy.breakGlassAllowed = BoolOr(root->Get("privilege"), "breakGlassAllowed", true);
+  policy.removeLocalAdmins = BoolOr(root->Get("privilege"), "enabled", false) && BoolOr(root->Get("privilege"), "removeLocalAdmins", false);
 
   policy.scriptExecution = BoolOr(root->Get("response"), "scriptExecution", true);
   policy.remoteAccessEnabled = BoolOr(root->Get("remoteAccess"), "enabled", true);
@@ -405,6 +406,10 @@ ExtendedPolicy ExtendedPolicy::Parse(const std::string& modulesJson) {
   }
 
   policy.bruteForceProtection = BoolOr(root->Get("firewall"), "bruteForceProtection", true);
+  const auto* tamper = root->Get("tamper");
+  const bool tamperOn = BoolOr(tamper, "enabled", true);
+  policy.tamperServiceLocked = tamperOn && BoolOr(tamper, "protectServiceAndFiles", true);
+  policy.tamperUninstallToken = tamperOn && BoolOr(tamper, "uninstallRequiresToken", true);
 
   const auto* app = root->Get("applicationControl");
   policy.behavior.appControlMode = WideString(app, "mode", L"off");

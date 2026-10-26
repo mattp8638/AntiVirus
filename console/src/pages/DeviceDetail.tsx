@@ -398,6 +398,11 @@ function LocalAdmin({ deviceId }: { deviceId: string }) {
         {" "}It never runs on domain controllers.
       </p>
       {can("respond") && <button disabled={busy} onClick={async () => { if (await run(() => api(`devices/${deviceId}/local-admin/rotate`, { method: "POST" }), "Rotation requested; it runs when the device next checks in")) reload(); }}>Rotate now</button>}
+      {can("configure") && <>{" "}
+        <button disabled={busy} title="Creates or enables the FenrirBreakGlass local administrator for 4 hours; its password appears in this list"
+          onClick={async () => { if (await run(() => api(`devices/${deviceId}/commands`, { body: { type: "breakglass.enable", reason: "break-glass from the Local admin tab", payload: { hours: 4 } } }), "Break-glass requested; the password appears here once the device has set it")) reload(); }}>Break-glass admin (4 h)</button>{" "}
+        <button disabled={busy} onClick={async () => { if (await run(() => api(`devices/${deviceId}/commands`, { body: { type: "breakglass.disable", reason: "break-glass ended from the Local admin tab", payload: {} } }), "Break-glass account will be disabled")) reload(); }}>End break-glass</button>
+      </>}
       {shown && <div className="card" style={{ marginTop: 12 }}>
         <div className="small muted">{shown.account}</div>
         <pre className="mono" style={{ fontSize: 16, userSelect: "all" }}>{shown.password}</pre>

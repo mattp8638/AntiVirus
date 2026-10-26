@@ -18,10 +18,14 @@ def test_local_admin_password_escrow_confirm_reveal(client, admin, device):
     failed = client.post(agent + "/escrow", headers=device["headers"], json={"account": "Administrator", "password": "Fenrir-Third-Pass-3!"}).json()["version"]
     client.post(agent + "/confirm", headers=device["headers"], json={"version": failed, "applied": False, "error": "access denied"})
 
+    # The break-glass account has its own current password; it does not replace the admin's.
+    glass = client.post(agent + "/escrow", headers=device["headers"], json={"account": "FenrirBreakGlass", "password": "Fenrir-Glass-Pass-4!"}).json()["version"]
+    client.post(agent + "/confirm", headers=device["headers"], json={"version": glass, "applied": True})
+
     listing = client.get(console, headers=admin).json()
     assert listing["enabled"] is False  # opt-in
     statuses = {i["id"]: i["status"] for i in listing["items"]}
-    assert statuses == {first: "superseded", second: "active", failed: "failed"}
+    assert statuses == {first: "superseded", second: "active", failed: "failed", glass: "active"}
     assert "Pass" not in str(listing)  # passwords never appear in listings
 
     assert client.post(f"{console}/{second}/reveal", headers=admin).status_code == 403  # needs re-authentication

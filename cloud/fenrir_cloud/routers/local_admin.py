@@ -44,7 +44,9 @@ def confirm(body: dict = Body(...), device: Device = Depends(current_device), db
     if row is None or row.device_id != device.id or row.status != "pending":
         raise HTTPException(404, "Unknown pending password")
     if body.get("applied"):
+        # Each account keeps its own current password (the managed admin and the break-glass account).
         for older in db.execute(select(LocalAdminPassword).where(LocalAdminPassword.device_id == device.id,
+                                                                 LocalAdminPassword.account == row.account,
                                                                  LocalAdminPassword.status == "active")).scalars():
             older.status = "superseded"
         row.status, row.confirmed_at = "active", utcnow()

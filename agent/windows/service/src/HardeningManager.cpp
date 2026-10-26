@@ -558,8 +558,10 @@ bool HardeningManager::ValidateUninstallAuthorization(const std::wstring& uninst
   }
 
   const auto expectedHash = ReadRegistryString(key, L"UninstallTokenSha256");
+  // The cloud policy can waive the token (tamper.uninstallRequiresToken off); absent means required.
+  const auto requiredByPolicy = ReadRegistryDword(key, L"UninstallTokenRequiredByPolicy", 1) != 0;
   RegCloseKey(key);
-  if (expectedHash.empty()) {
+  if (expectedHash.empty() || !requiredByPolicy) {
     return true;
   }
 
@@ -580,13 +582,23 @@ bool HardeningManager::ValidateUninstallAuthorization(const std::wstring& uninst
   return true;
 }
 
+bool HardeningManager::ApplyTamperPolicy(const bool serviceLocked, const bool uninstallTokenRequired,
+                                         std::wstring* errorMessage) const {
+  if (!PersistRegistryDwordValue(L"UninstallTokenRequiredByPolicy", uninstallTokenRequired ? 1 : 0)) {
+    if (errorMessage != nullptr) *errorMessage = L"Could not record the uninstall-token policy.";
+    return false;
+  }
+  return ApplyServiceControlProtection(L"FenrirAgent", nullptr, errorMessage, serviceLocked);
+}
+
 HardeningStatus HardeningManager::QueryStatus(const std::wstring& serviceName) const {
   HardeningStatus status;
   HKEY key = OpenHardeningRegistryKeyForRead();
   if (key != nullptr) {
     status.registryConfigured = true;
     status.uninstallTokenHash = ReadRegistryString(key, L"UninstallTokenSha256");
-    status.uninstallProtectionEnabled = !status.uninstallTokenHash.empty();
+    status.uninstallProtectionEnabled =
+        !status.uninstallTokenHash.empty() && ReadRegistryDword(key, L"UninstallTokenRequiredByPolicy", 1) != 0;
     status.serviceControlProtected = ReadRegistryDword(key, kServiceControlProtectedValueName, 0) != 0;
     status.elamDriverPath = ReadRegistryString(key, kElamDriverPathValueName);
     status.elamCertificateInstalled = ReadRegistryDword(key, kElamCertificateInstalledValueName, 0) != 0;
