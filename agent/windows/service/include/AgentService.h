@@ -139,6 +139,11 @@ class AgentService {
   void StartRealtimeChannel();
   void StopRealtimeChannel();
   void RealtimeLoop();
+  // Remote-session commands run on their own thread so a long patch scan or install on the main loop
+  // never keeps a technician waiting.
+  void InteractiveCommandLoop();
+  void ExecuteJournaledCommand(const RemoteCommand& command, const AgentState& identity);
+  static bool IsInteractiveCommand(const std::wstring& type);
 
   AgentConfig config_{};
   AgentState state_{};
@@ -178,6 +183,10 @@ class AgentService {
   // Set by the realtime channel when the cloud queues a command.
   HANDLE wakeEvent_{nullptr};
   std::thread realtimeThread_{};
+  std::thread interactiveThread_{};
+  HANDLE interactiveWakeEvent_{nullptr};
+  std::atomic<bool> interactiveLoopRunning_{false};
+  std::atomic<bool> realtimeConnected_{false};
   std::mutex remoteMutex_{};
   std::map<std::wstring, HANDLE> remoteHelpers_{};
   // The realtime thread starts remote sessions straight away, even while the main loop is busy

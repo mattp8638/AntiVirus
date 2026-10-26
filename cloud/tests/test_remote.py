@@ -208,3 +208,13 @@ def test_waiting_session_reports_where_the_start_request_is(client, admin, tenan
     detail = client.get(f"/api/console/remote/sessions/{session['id']}", headers=admin).json()
     assert detail["status"] == "failed" and detail["startCommand"]["status"] == "failed"
     assert "error 12029" in detail["events"][-1]["detail"]
+
+
+def test_pending_commands_can_be_filtered_by_type(client, admin, tenant, device):
+    client.post(f"/api/console/devices/{device['deviceId']}/commands", json={"type": "patch.scan"}, headers=admin)
+    start(client, admin, device)
+    url = f"/api/v1/devices/{device['deviceId']}/commands/pending"
+    everything = client.get(url, headers=device["headers"]).json()["items"]
+    assert [i["type"] for i in everything][:2] == ["patch.scan", "remote.session.start"]
+    only = client.get(url, params={"types": "remote.session.start,remote.session.end"}, headers=device["headers"]).json()["items"]
+    assert [i["type"] for i in only] == ["remote.session.start"]

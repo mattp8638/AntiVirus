@@ -1141,7 +1141,7 @@ TelemetryBatchResult ControlPlaneClient::SendTelemetryBatch(const AgentState& st
       .totalStored = ExtractJsonInt(response.body, "totalStored").value_or(0)};
 }
 
-CommandPollResult ControlPlaneClient::PollPendingCommands(const AgentState& state, const int limit) const {
+CommandPollResult ControlPlaneClient::PollPendingCommands(const AgentState& state, const int limit, const std::wstring& types) const {
   if (state.deviceId.empty()) {
     throw std::runtime_error("Cannot poll commands without a device identifier");
   }
@@ -1149,7 +1149,8 @@ CommandPollResult ControlPlaneClient::PollPendingCommands(const AgentState& stat
   const auto deviceApiKey = ExtractDeviceApiKeyFromCommandChannelUrl(state.commandChannelUrl);
 
   const auto response = RequestJson(
-      L"GET", JoinUrl(baseUrl_, L"/api/v1/devices/" + state.deviceId + L"/commands/pending?limit=" + std::to_wstring(limit)),
+      L"GET", JoinUrl(baseUrl_, L"/api/v1/devices/" + state.deviceId + L"/commands/pending?limit=" + std::to_wstring(limit) +
+                                      (types.empty() ? std::wstring() : L"&types=" + types)),
       {}, deviceApiKey);
 
   CommandPollResult result{

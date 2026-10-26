@@ -1783,85 +1783,10 @@ void AgentService::PollAndExecuteCommands(const int cycle) {
                           BuildCyclePayload(cycle, std::wstring(L"\"count\":") + std::to_wstring(pollResult.items.size())));
 
       for (const auto& command : pollResult.items) {
-        if (!commandJournalStore_) {
-          std::wcerr << L"Cannot execute remote command without its durable journal." << std::endl;
-          continue;
+        if (IsInteractiveCommand(command.type) && interactiveLoopRunning_) {
+          continue;  // the interactive thread runs these
         }
-        // Previously executed commands may be re-polled if the cloud did not
-        // receive the completion. Never perform their side effects again.
-        try {
-          std::wstring savedStatus;
-          std::wstring savedResult;
-          if (commandJournalStore_->LoadReceipt(command.commandId, savedStatus, savedResult)) {
-            if (savedStatus == L"started" || savedStatus == L"polled") {
-              savedStatus = L"failed";
-              savedResult = L"{\"outcomeUncertain\":true,\"error\":\"Agent stopped while command execution was in progress; manual review required. No automatic replay.\"}";
-              commandJournalStore_->RecordFailed(command, savedResult,
-                                                  L"Interrupted command; outcome uncertain");
-            }
-            if (savedStatus == L"completed" || savedStatus == L"failed") {
-              try {
-                controlPlaneClient_->CompleteCommand(state_, command.commandId, savedStatus, savedResult);
-              } catch (const std::exception& error) {
-                std::wcerr << L"Could not replay command outcome: " << Utf8ToWide(error.what()) << std::endl;
-              }
-              continue;
-            }
-            std::wcerr << L"Unrecognised prior command state; manual investigation needed." << std::endl;
-            continue;
-          }
-          // Atomic sqlite commit before any potentially irreversible action.
-          commandJournalStore_->RecordPolled(command);
-        } catch (const std::exception& error) {
-          std::wcerr << L"Cannot safely journal command before execution: " << Utf8ToWide(error.what()) << std::endl;
-          continue;
-        }
-
-        std::wstring resultJson;
-        std::wstring completionStatus = L"completed";
-        std::wstring failureReason;
-        try {
-          resultJson = ExecuteCommand(command);
-        } catch (const rmm::CommandFailed& failed) {
-          completionStatus = L"failed";
-          failureReason = Utf8ToWide(failed.what());
-          resultJson = Utf8ToWide(failed.resultJson);
-          if (!resultJson.empty() && resultJson.back() == L'}') {
-            resultJson.pop_back();
-            resultJson += std::wstring(resultJson.size() > 1 ? L"," : L"") + L"\"error\":\"" +
-                          Utf8ToWide(EscapeJsonString(failureReason)) + L"\"}";
-          }
-        } catch (const std::exception& error) {
-          completionStatus = L"failed";
-          failureReason = Utf8ToWide(error.what());
-          resultJson = std::wstring(L"{\"commandId\":\"") + command.commandId + L"\",\"error\":\"" +
-                       Utf8ToWide(EscapeJsonString(failureReason)) + L"\"}";
-        }
-
-        try {
-          if (completionStatus == L"completed") {
-            commandJournalStore_->RecordCompleted(command, resultJson);
-          } else {
-            commandJournalStore_->RecordFailed(command, resultJson, failureReason);
-          }
-        } catch (const std::exception& error) {
-          // Do not acknowledge work whose result cannot survive a process
-          // restart. The 'started' journal entry will require manual review.
-          std::wcerr << L"Remote command result persistence failed: " << Utf8ToWide(error.what()) << std::endl;
-          continue;
-        }
-
-        try {
-          controlPlaneClient_->CompleteCommand(state_, command.commandId, completionStatus, resultJson);
-        } catch (const std::exception& error) {
-          // The saved outcome will be re-sent on the next poll; never rerun.
-          std::wcerr << L"Command completion not delivered; saved for reconnect: " <<
-                        Utf8ToWide(error.what()) << std::endl;
-        }
-        if (completionStatus == L"failed") {
-          QueueTelemetryEvent(L"command.failed", L"command-executor",
-                              std::wstring(L"Remote command failed: ") + command.type + L".", resultJson);
-        }
+        ExecuteJournaledCommand(command, state_);
       }
 
       return;
@@ -1875,6 +1800,116 @@ void AgentService::PollAndExecuteCommands(const int cycle) {
                           L"The endpoint could not retrieve pending commands from the control plane.",
                           BuildCyclePayload(cycle));
       std::wcerr << L"Command polling failed: " << Utf8ToWide(error.what()) << std::endl;
+      return;
+    }
+  }
+}
+
+bool AgentService::IsInteractiveCommand(const std::wstring& type) {
+  return type == L"remote.session.start" || type == L"remote.session.end";
+}
+
+void AgentService::ExecuteJournaledCommand(const RemoteCommand& command, const AgentState& identity) {
+  if (!commandJournalStore_) {
+    std::wcerr << L"Cannot execute remote command without its durable journal." << std::endl;
+    return;
+  }
+  // Previously executed commands may be re-polled if the cloud did not
+  // receive the completion. Never perform their side effects again.
+  try {
+    std::wstring savedStatus;
+    std::wstring savedResult;
+    if (commandJournalStore_->LoadReceipt(command.commandId, savedStatus, savedResult)) {
+      if (savedStatus == L"started" || savedStatus == L"polled") {
+        savedStatus = L"failed";
+        savedResult = L"{\"outcomeUncertain\":true,\"error\":\"Agent stopped while command execution was in progress; manual review required. No automatic replay.\"}";
+        commandJournalStore_->RecordFailed(command, savedResult,
+                                            L"Interrupted command; outcome uncertain");
+      }
+      if (savedStatus == L"completed" || savedStatus == L"failed") {
+        try {
+          controlPlaneClient_->CompleteCommand(identity, command.commandId, savedStatus, savedResult);
+        } catch (const std::exception& error) {
+          std::wcerr << L"Could not replay command outcome: " << Utf8ToWide(error.what()) << std::endl;
+        }
+        return;
+      }
+      std::wcerr << L"Unrecognised prior command state; manual investigation needed." << std::endl;
+      return;
+    }
+    // Atomic sqlite commit before any potentially irreversible action.
+    commandJournalStore_->RecordPolled(command);
+  } catch (const std::exception& error) {
+    std::wcerr << L"Cannot safely journal command before execution: " << Utf8ToWide(error.what()) << std::endl;
+    return;
+  }
+
+  std::wstring resultJson;
+  std::wstring completionStatus = L"completed";
+  std::wstring failureReason;
+  try {
+    resultJson = ExecuteCommand(command);
+  } catch (const rmm::CommandFailed& failed) {
+    completionStatus = L"failed";
+    failureReason = Utf8ToWide(failed.what());
+    resultJson = Utf8ToWide(failed.resultJson);
+    if (!resultJson.empty() && resultJson.back() == L'}') {
+      resultJson.pop_back();
+      resultJson += std::wstring(resultJson.size() > 1 ? L"," : L"") + L"\"error\":\"" +
+                    Utf8ToWide(EscapeJsonString(failureReason)) + L"\"}";
+    }
+  } catch (const std::exception& error) {
+    completionStatus = L"failed";
+    failureReason = Utf8ToWide(error.what());
+    resultJson = std::wstring(L"{\"commandId\":\"") + command.commandId + L"\",\"error\":\"" +
+                 Utf8ToWide(EscapeJsonString(failureReason)) + L"\"}";
+  }
+
+  try {
+    if (completionStatus == L"completed") {
+      commandJournalStore_->RecordCompleted(command, resultJson);
+    } else {
+      commandJournalStore_->RecordFailed(command, resultJson, failureReason);
+    }
+  } catch (const std::exception& error) {
+    // Do not acknowledge work whose result cannot survive a process
+    // restart. The 'started' journal entry will require manual review.
+    std::wcerr << L"Remote command result persistence failed: " << Utf8ToWide(error.what()) << std::endl;
+    return;
+  }
+
+  try {
+    controlPlaneClient_->CompleteCommand(identity, command.commandId, completionStatus, resultJson);
+  } catch (const std::exception& error) {
+    // The saved outcome will be re-sent on the next poll; never rerun.
+    std::wcerr << L"Command completion not delivered; saved for reconnect: " <<
+                  Utf8ToWide(error.what()) << std::endl;
+  }
+  if (completionStatus == L"failed") {
+    QueueTelemetryEvent(L"command.failed", L"command-executor",
+                        std::wstring(L"Remote command failed: ") + command.type + L".", resultJson);
+  }
+}
+
+void AgentService::InteractiveCommandLoop() {
+  while (!ShouldStop()) {
+    const auto identity = IdentitySnapshot();
+    if (!identity.deviceId.empty() && !ControlPlaneClient::DeviceApiKey(identity).empty()) {
+      try {
+        const auto poll = controlPlaneClient_->PollPendingCommands(identity, 25, L"remote.session.start,remote.session.end");
+        for (const auto& command : poll.items) {
+          if (IsInteractiveCommand(command.type)) {
+            ExecuteJournaledCommand(command, identity);
+          }
+        }
+      } catch (const std::exception& error) {
+        std::wcerr << L"Interactive command polling failed: " << Utf8ToWide(error.what()) << std::endl;
+      }
+    }
+    // Woken at once by the realtime channel; without it, check every 15 seconds.
+    const DWORD wait = realtimeConnected_ ? 60000 : 15000;
+    HANDLE events[] = {stopEvent_, interactiveWakeEvent_};
+    if (WaitForMultipleObjects(2, events, FALSE, wait) == WAIT_OBJECT_0) {
       return;
     }
   }
@@ -2763,6 +2798,13 @@ void AgentService::StartRealtimeChannel() {
     return;
   }
   realtimeThread_ = std::thread([this] { RealtimeLoop(); });
+  if (!interactiveThread_.joinable()) {
+    interactiveWakeEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (interactiveWakeEvent_ != nullptr) {
+      interactiveLoopRunning_ = true;
+      interactiveThread_ = std::thread([this] { InteractiveCommandLoop(); });
+    }
+  }
 }
 
 void AgentService::StopRealtimeChannel() {
@@ -2771,6 +2813,14 @@ void AgentService::StopRealtimeChannel() {
   }
   if (realtimeThread_.joinable()) {
     realtimeThread_.join();
+  }
+  if (interactiveThread_.joinable()) {
+    interactiveThread_.join();
+  }
+  interactiveLoopRunning_ = false;
+  if (interactiveWakeEvent_ != nullptr) {
+    CloseHandle(interactiveWakeEvent_);
+    interactiveWakeEvent_ = nullptr;
   }
 }
 
@@ -2787,6 +2837,8 @@ void AgentService::RealtimeLoop() {
       WebSocketClient socket;
       socket.Connect(controlPlaneClient_->RealtimeUrl(identity), L"X-Device-Api-Key: " + ControlPlaneClient::DeviceApiKey(identity) + L"\r\n");
       SetEvent(wakeEvent_);  // Main loop owns execution and journal persistence.
+      if (interactiveWakeEvent_) SetEvent(interactiveWakeEvent_);
+      realtimeConnected_ = true;
       // A watcher closes the socket when the service stops, which unblocks Receive.
       std::atomic<bool> done{false};
       std::thread watcher([&] {
@@ -2803,12 +2855,24 @@ void AgentService::RealtimeLoop() {
       while (!ShouldStop() && socket.Receive(&message, &binary)) {
         if (message.find("\"commands\"") != std::string::npos || message.find("\"pollNow\":true") != std::string::npos) {
           SetEvent(wakeEvent_);
+          if (interactiveWakeEvent_) SetEvent(interactiveWakeEvent_);
         }
       }
+      realtimeConnected_ = false;
       done = true;
       socket.Close();
       watcher.join();
-    } catch (const std::exception&) {
+    } catch (const std::exception& error) {
+      realtimeConnected_ = false;
+      // Report why the live channel is down (once per distinct error) so it shows in the device's activity.
+      static std::string lastError;
+      if (lastError != error.what()) {
+        lastError = error.what();
+        QueueTelemetryEvent(L"realtime.connect_failed", L"agent-service",
+                            L"The agent could not open its live connection to the server; remote sessions start on the next poll instead.",
+                            L"{\"error\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(lastError))) + L"\",\"url\":\"" +
+                                Utf8ToWide(EscapeJsonString(controlPlaneClient_->RealtimeUrl(identity))) + L"\"}");
+      }
     }
     if (GetTickCount64() - started > 60000) {
       backoff = 5000;
