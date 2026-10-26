@@ -1,3 +1,6 @@
+//go:build legacy_ebpf
+
+// Legacy eBPF agent prototype (needs bpf2go-generated objects); the shipped agent is cmd/fenrir-agent.
 package main
 
 import (

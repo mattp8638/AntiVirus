@@ -3,6 +3,7 @@ package inventory
 import (
 	"log"
 	"path/filepath"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -57,7 +58,7 @@ func (fi *FileInventory) Run() {
 		}
 		var offset uint32
 		for offset+unix.SizeofInotifyEvent <= uint32(n) {
-			raw := (*unix.InotifyEvent)(pointer(buf[offset:]))
+			raw := (*unix.InotifyEvent)(unsafe.Pointer(&buf[offset]))
 			wd := int(raw.Wd)
 			mask := raw.Mask
 
@@ -82,11 +83,6 @@ func (fi *FileInventory) Run() {
 
 func (fi *FileInventory) Close() {
 	unix.Close(fi.fd)
-}
-
-func pointer(b []byte) interface{} {
-	// Unsafe cast helper inline
-	return nil // real implementation uses unsafe.Pointer
 }
 
 func nullTerminated(b []byte) string {

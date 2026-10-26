@@ -14,19 +14,19 @@ const tileSize = 128
 // screenStreamer captures the desktop, sends changed tiles as JPEG and keeps at most
 // two frames unacknowledged so a slow link lowers the frame rate instead of queueing.
 type screenStreamer struct {
-	s       *Session
-	desktop Desktop
-	mu      sync.Mutex
-	cond    *sync.Cond
-	quality int
-	fps     int
+	s        *Session
+	desktop  Desktop
+	mu       sync.Mutex
+	cond     *sync.Cond
+	quality  int
+	fps      int
 	inFlight int
-	full    bool
-	stopped bool
-	prev    []byte
-	prevW   int
-	prevH   int
-	seq     int
+	full     bool
+	stopped  bool
+	prev     []byte
+	prevW    int
+	prevH    int
+	seq      int
 }
 
 func newScreenStreamer(s *Session, d Desktop) *screenStreamer {

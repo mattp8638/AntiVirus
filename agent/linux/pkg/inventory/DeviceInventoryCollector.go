@@ -103,7 +103,8 @@ func readDistro() string {
 	return "unknown"
 }
 
-func charsToString(ca []int8) string {
+// charsToString reads a NUL-terminated utsname field ([]int8 or []uint8 depending on the architecture).
+func charsToString[T int8 | uint8](ca []T) string {
 	b := make([]byte, 0, len(ca))
 	for _, c := range ca {
 		if c == 0 {
