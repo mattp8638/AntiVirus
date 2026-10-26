@@ -15,6 +15,7 @@
 #include "AgentConfig.h"
 #include "AgentState.h"
 #include "ControlPlaneClient.h"
+#include "ExtendedPolicy.h"
 #include "CommandJournalStore.h"
 #include "DeviceInventoryCollector.h"
 #include "EventEnvelope.h"
@@ -125,7 +126,7 @@ class AgentService {
   void SyncMlModel(int cycle);
   void QueueTelemetryEvent(const std::wstring& eventType, const std::wstring& source, const std::wstring& summary,
                            const std::wstring& payloadJson);
-  void QueueTelemetryRecords(const std::vector<TelemetryRecord>& records);
+  void QueueTelemetryRecords(const std::vector<TelemetryRecord>& source);
   void FlushTelemetryQueue();
   ScanVerdict EvaluateEvent(const EventEnvelope& event) const;
   std::wstring ExecuteSoftwareCommand(const RemoteCommand& command, bool uninstall, bool searchOnly);
@@ -142,6 +143,9 @@ class AgentService {
   AgentConfig config_{};
   AgentState state_{};
   PolicySnapshot policy_{};
+  ExtendedPolicy telemetryFilter_{};  // parsed edr collection switches, refreshed when the policy revision changes
+  std::wstring telemetryFilterRevision_;
+  std::mutex telemetryFilterMutex_{};
   std::unique_ptr<LocalStateStore> stateStore_{};
   std::unique_ptr<ControlPlaneClient> controlPlaneClient_{};
   std::unique_ptr<CommandJournalStore> commandJournalStore_{};

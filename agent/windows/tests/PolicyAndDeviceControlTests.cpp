@@ -88,6 +88,20 @@ int main(int argc, char** argv) {
     CHECK(!ExtendedPolicy::Parse(R"({"antimalware":{}})").quickScanPlan.present);
     CHECK(!ExtendedPolicy::Parse(R"({"antimalware":{"quickScanPlan":{"days":[9]}}})").quickScanPlan.present);
   }
+  {  // EDR collection switches drop routine telemetry only
+    auto policy = ExtendedPolicy::Parse(R"({"edr":{"collectFileEvents":false,"collectScriptEvents":false},"experience":{"allowQuarantineRestore":true},"privilege":{"breakGlassAllowed":false}})");
+    CHECK(!RoutineTelemetryAllowed(policy, L"file.modified", L"{}"));
+    CHECK(RoutineTelemetryAllowed(policy, L"process.started", L"{}"));
+    CHECK(!RoutineTelemetryAllowed(policy, L"amsi.scan", L"{\"blocked\":false}"));
+    CHECK(RoutineTelemetryAllowed(policy, L"amsi.scan", L"{\"blocked\":true}"));
+    CHECK(RoutineTelemetryAllowed(policy, L"scan.finding", L"{}"));
+    CHECK(policy.allowQuarantineRestore && !policy.breakGlassAllowed);
+    policy = ExtendedPolicy::Parse(R"({"edr":{"telemetryLevel":"minimal"}})");
+    CHECK(!RoutineTelemetryAllowed(policy, L"process.started", L"{}"));
+    CHECK(!RoutineTelemetryAllowed(policy, L"destination.observed", L"{}"));
+    CHECK(RoutineTelemetryAllowed(policy, L"realtime.protection.action", L"{}"));
+    CHECK(!policy.allowQuarantineRestore && policy.breakGlassAllowed);  // defaults
+  }
   CHECK(!ExtendedPolicy::Parse("not json").present);
   std::printf(failures ? "%d failure(s)\n" : "all policy/device-control tests passed\n", failures);
   return failures ? 1 : 0;

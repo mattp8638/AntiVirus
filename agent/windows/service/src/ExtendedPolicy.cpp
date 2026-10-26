@@ -348,6 +348,15 @@ ExtendedPolicy ExtendedPolicy::Parse(const std::string& modulesJson) {
     }
   }
 
+  const auto* edr = root->Get("edr");
+  policy.collectProcessEvents = BoolOr(edr, "collectProcessEvents", true);
+  policy.collectFileEvents = BoolOr(edr, "collectFileEvents", true);
+  policy.collectScriptEvents = BoolOr(edr, "collectScriptEvents", true);
+  policy.collectDnsEvents = BoolOr(edr, "collectDnsEvents", true);
+  policy.telemetryMinimal = WideString(edr, "telemetryLevel", L"standard") == L"minimal";
+  policy.allowQuarantineRestore = BoolOr(root->Get("experience"), "allowQuarantineRestore", false);
+  policy.breakGlassAllowed = BoolOr(root->Get("privilege"), "breakGlassAllowed", true);
+
   policy.scriptExecution = BoolOr(root->Get("response"), "scriptExecution", true);
   policy.remoteAccessEnabled = BoolOr(root->Get("remoteAccess"), "enabled", true);
 
@@ -373,6 +382,25 @@ ExtendedPolicy ExtendedPolicy::Parse(const std::string& modulesJson) {
   policy.deviceControl.encryptedUsbOnly = BoolOr(dc, "encryptedUsbOnly", false);
   policy.deviceControl.usbAllowedIds = WideList(dc, "usbAllowedIds");
   return policy;
+}
+
+bool RoutineTelemetryAllowed(const ExtendedPolicy& policy, const std::wstring& eventType, const std::wstring& payloadJson) {
+  const auto starts = [&eventType](const wchar_t* prefix) { return eventType.rfind(prefix, 0) == 0; };
+  const bool* setting = nullptr;
+  if (eventType == L"process.started" || eventType == L"process.exited" || starts(L"process.snapshot")) {
+    setting = &policy.collectProcessEvents;
+  } else if (eventType == L"file.created" || eventType == L"file.modified" || eventType == L"file.deleted" ||
+             starts(L"file.snapshot")) {
+    setting = &policy.collectFileEvents;
+  } else if (eventType == L"amsi.scan" && payloadJson.find(L"\"blocked\":true") == std::wstring::npos) {
+    setting = &policy.collectScriptEvents;
+  } else if (eventType == L"destination.observed") {
+    setting = &policy.collectDnsEvents;
+  }
+  if (setting == nullptr) {
+    return true;
+  }
+  return !policy.telemetryMinimal && *setting;
 }
 
 }  // namespace antivirus::agent
