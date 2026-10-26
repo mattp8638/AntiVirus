@@ -143,6 +143,7 @@ add_library(antivirus-agent-core STATIC
   src/RansomwareShield.cpp
   src/BruteForceTracker.cpp
   src/BruteForceGuard.cpp
+  src/RegistryWatcher.cpp
 )
 
 target_include_directories(antivirus-agent-core PUBLIC include ../shared/include ../sensor/etw/include ../sensor/wfp/include)

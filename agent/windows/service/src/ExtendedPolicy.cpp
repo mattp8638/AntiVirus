@@ -369,6 +369,7 @@ ExtendedPolicy ExtendedPolicy::Parse(const std::string& modulesJson) {
   policy.collectFileEvents = BoolOr(edr, "collectFileEvents", true);
   policy.collectScriptEvents = BoolOr(edr, "collectScriptEvents", true);
   policy.collectDnsEvents = BoolOr(edr, "collectDnsEvents", true);
+  policy.collectRegistryEvents = BoolOr(edr, "enabled", true) && BoolOr(edr, "collectRegistryEvents", true);
   policy.telemetryMinimal = WideString(edr, "telemetryLevel", L"standard") == L"minimal";
   policy.allowQuarantineRestore = BoolOr(root->Get("experience"), "allowQuarantineRestore", false);
   policy.breakGlassAllowed = BoolOr(root->Get("privilege"), "breakGlassAllowed", true);

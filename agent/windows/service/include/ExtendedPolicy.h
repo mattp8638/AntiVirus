@@ -97,6 +97,7 @@ struct ExtendedPolicy {
   bool collectFileEvents{true};
   bool collectScriptEvents{true};
   bool collectDnsEvents{true};
+  bool collectRegistryEvents{true};  // edr.collectRegistryEvents: autostart registry changes (RegistryWatcher)
   bool telemetryMinimal{false};      // edr.telemetryLevel == "minimal"
   bool allowQuarantineRestore{false};  // modules.experience: end users may restore from quarantine
   bool breakGlassAllowed{true};        // modules.privilege.breakGlassAllowed

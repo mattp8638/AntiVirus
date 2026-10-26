@@ -11,6 +11,7 @@
 #include "LocalAdminRotation.h"
 #include "RansomwareDetector.h"
 #include "BruteForceTracker.h"
+#include "RegistryWatcher.h"
 
 #include <random>
 
@@ -333,6 +334,21 @@ int main(int argc, char** argv) {
     CHECK(laps::PlanAdminRemoval(lonely, {}).size() == 1);
     CHECK(ExtendedPolicy::Parse(R"({"privilege":{"removeLocalAdmins":true}})").removeLocalAdmins == false);  // needs enabled
     CHECK(ExtendedPolicy::Parse(R"({"privilege":{"enabled":true,"removeLocalAdmins":true}})").removeLocalAdmins);
+  }
+  {  // Registry autostart diff
+    std::map<std::wstring, std::wstring> before{{L"OneDrive", L"C:\\a.exe"}, {L"Old", L"x"}};
+    std::map<std::wstring, std::wstring> after{{L"OneDrive", L"C:\\b.exe"}, {L"Evil", L"powershell -w hidden"}};
+    const auto changes = registrywatch::Diff(before, after);
+    CHECK(changes.size() == 3);
+    int added = 0, modified = 0, removed = 0;
+    for (const auto& c : changes) {
+      if (c.kind == registrywatch::Change::Kind::Added) added += c.name == L"Evil" && c.data == L"powershell -w hidden";
+      if (c.kind == registrywatch::Change::Kind::Modified) modified += c.previous == L"C:\\a.exe" && c.data == L"C:\\b.exe";
+      if (c.kind == registrywatch::Change::Kind::Removed) removed += c.name == L"Old" && c.previous == L"x";
+    }
+    CHECK(added == 1 && modified == 1 && removed == 1);
+    CHECK(registrywatch::Diff(after, after).empty());
+    CHECK(ExtendedPolicy::Parse(R"({"edr":{"collectRegistryEvents":false}})").collectRegistryEvents == false);
   }
   CHECK(!ExtendedPolicy::Parse("not json").present);
   std::printf(failures ? "%d failure(s)\n" : "all policy/device-control tests passed\n", failures);

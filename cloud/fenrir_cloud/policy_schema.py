@@ -419,7 +419,7 @@ AGENT_SUPPORT: dict[str, tuple[str, ...]] = {
     "edr.credentialProtection": ('windows',),
     "edr.deceptionLures": (),
     "edr.collectNetworkEvents": ('linux', 'macos'),
-    "edr.collectRegistryEvents": (),
+    "edr.collectRegistryEvents": ('windows',),
     "edr.telemetryUploadSeconds": ('linux', 'macos'),
     "attackSurface.blockOfficeChildProcesses": ('windows',),
     "attackSurface.blockOfficeExecutableContent": ('windows',),

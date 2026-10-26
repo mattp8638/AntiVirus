@@ -1075,6 +1075,7 @@ int AgentService::Run(const AgentRunMode mode) {
       if (wakeEvent_ != nullptr) SetEvent(wakeEvent_);  // send a detection now, not at the next cycle
     });
     bruteForceGuard_ = std::make_unique<BruteForceGuard>(config_.runtimeDatabasePath.parent_path());
+    registryWatcher_ = std::make_unique<RegistryWatcher>();
     bruteForceGuard_->SetUrgentCallback([this] {
       if (wakeEvent_ != nullptr) SetEvent(wakeEvent_);
     });
@@ -1138,6 +1139,9 @@ int AgentService::Run(const AgentRunMode mode) {
     }
     if (bruteForceGuard_) {
       bruteForceGuard_->Stop();
+    }
+    if (registryWatcher_) {
+      registryWatcher_->Stop();
     }
     if (realtimeProtectionBroker_) {
       realtimeProtectionBroker_->Stop();
@@ -3258,6 +3262,9 @@ void AgentService::ApplyProtectionPolicy() {
       if (bruteForceGuard_) {
         bruteForceGuard_->Apply(extended.bruteForceProtection);
       }
+      if (registryWatcher_) {
+        registryWatcher_->Apply(extended.collectRegistryEvents);
+      }
       ApplyTamperPolicy(extended);
       ApplyCredentialHardening(extended.ransomware.credentialProtection);
     }
@@ -3839,6 +3846,10 @@ void AgentService::DrainRansomwareTelemetry() {
   auto telemetry = ransomwareShield_->DrainTelemetry();
   if (bruteForceGuard_) {
     auto more = bruteForceGuard_->DrainTelemetry();
+    telemetry.insert(telemetry.end(), more.begin(), more.end());
+  }
+  if (registryWatcher_) {
+    auto more = registryWatcher_->DrainTelemetry();
     telemetry.insert(telemetry.end(), more.begin(), more.end());
   }
   if (!telemetry.empty()) {

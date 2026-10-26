@@ -317,6 +317,10 @@ def test_windows_shield_and_brute_force_events_raise_alerts(client, admin, tenan
         event(5, "ransomware.snapshot.created", {"intervalHours": 4}),
         event(6, "asr.credential_store.blocked", {"rule": "edr.credentialProtection", "processImagePath": "C:\\Users\\jo\\x.exe",
                                                   "pid": 9, "action": "terminated"}),
+        event(8, "registry.value.set", {"targetObject": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run\\Updater",
+                                        "details": "C:\\Users\\Public\\evil.exe", "change": "added"}),
+        event(9, "registry.service.created", {"targetObject": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Upd",
+                                              "details": "C:\\Users\\jo\\AppData\\Local\\Temp\\svc.exe", "serviceName": "Upd"}),
         event(7, "asr.rule.blocked", {"rule": "attackSurface.blockOfficeExecutableContent", "mode": "block", "pid": 10,
                                       "processImagePath": "C:\\Program Files\\Microsoft Office\\WINWORD.EXE"}),
     ]
@@ -331,3 +335,37 @@ def test_windows_shield_and_brute_force_events_raise_alerts(client, admin, tenan
     assert by_rule["fenrir-cred-bruteforce-blocked"][0]["severity"] == "high"
     assert by_rule["fenrir-cred-browser-store-blocked"][0]["severity"] == "high"
     assert by_rule["fenrir-protection-asr-block"][0]["severity"] == "high"
+    assert "fenrir-persist-runkey" in by_rule and "fenrir-persist-service-userpath" in by_rule
+
+
+def test_sigma_values_ending_in_backslash_still_match():
+    from fenrir_cloud.sigma import parse_rule
+
+    rule = parse_rule(r"""
+title: t
+id: t
+logsource: {category: registry_set}
+detection:
+  sel:
+    Details|contains: '\Users\Public\'
+  start:
+    TargetObject|startswith: 'HKLM\SOFTWARE\'
+  end:
+    Image|endswith: '\Temp\'
+  condition: sel and start and end
+level: high
+""")
+    event = {"Details": r"C:\Users\Public\evil.exe", "TargetObject": r"HKLM\SOFTWARE\Microsoft\Run\x", "Image": r"C:\Win\Temp\\"[:-1]}
+    assert rule.matches(event, "registry")
+    assert not rule.matches({**event, "Details": r"C:\Users\Publicity.exe"}, "registry")
+    escaped = parse_rule(r"""
+title: t
+id: t2
+logsource: {category: registry_set}
+detection:
+  sel:
+    Details|contains: 'a\*b'
+  condition: sel
+level: low
+""")
+    assert escaped.matches({"Details": "xa*bx"}, "registry") and not escaped.matches({"Details": "xaZZbx"}, "registry")
