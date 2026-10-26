@@ -2154,6 +2154,13 @@ std::wstring AgentService::ExecuteQuarantineMutation(const RemoteCommand& comman
     throw std::runtime_error("Quarantine command is missing recordId");
   }
 
+  if (restore && command.issuedBy.rfind(L"local-dashboard:", 0) == 0) {
+    const auto extended = policy_.modulesJson.empty() ? ExtendedPolicy{} : ExtendedPolicy::Parse(policy_.modulesJson);
+    if (!extended.allowQuarantineRestore) {
+      throw std::runtime_error("Your administrator does not allow restoring files from quarantine on this device. "
+                               "Ask your IT provider to review the file.");
+    }
+  }
   QuarantineStore quarantineStore(config_.quarantineRootPath, config_.runtimeDatabasePath);
   const auto result = restore ? quarantineStore.RestoreFile(command.recordId) : quarantineStore.DeleteRecord(command.recordId);
   if (!result.success) {
@@ -2337,6 +2344,12 @@ std::wstring AgentService::ExecuteThreatIntelPackIngestCommand(const RemoteComma
 }
 
 std::wstring AgentService::ExecuteBreakGlassCommand(const RemoteCommand& command, const bool enable) {
+  if (enable) {
+    const auto extended = policy_.modulesJson.empty() ? ExtendedPolicy{} : ExtendedPolicy::Parse(policy_.modulesJson);
+    if (!extended.breakGlassAllowed) {
+      throw std::runtime_error("The break-glass admin account is turned off by this device's policy");
+    }
+  }
   QueueTelemetryEvent(enable ? L"breakglass.enabled" : L"breakglass.disabled", L"local-security",
                       enable ? L"The endpoint recorded a temporary break-glass enable request."
                              : L"The endpoint recorded a break-glass disable request.",
@@ -3154,7 +3167,27 @@ void AgentService::QueueTelemetryEvent(const std::wstring& eventType, const std:
       .payloadJson = payloadJson}});
 }
 
-void AgentService::QueueTelemetryRecords(const std::vector<TelemetryRecord>& records) {
+void AgentService::QueueTelemetryRecords(const std::vector<TelemetryRecord>& source) {
+  // The policy's EDR collection switches decide which routine activity events are kept.
+  ExtendedPolicy filter;
+  {
+    std::lock_guard guard(telemetryFilterMutex_);
+    if (policy_.revision != telemetryFilterRevision_) {
+      telemetryFilter_ = policy_.modulesJson.empty() ? ExtendedPolicy{} : ExtendedPolicy::Parse(policy_.modulesJson);
+      telemetryFilterRevision_ = policy_.revision;
+    }
+    filter = telemetryFilter_;
+  }
+  std::vector<TelemetryRecord> records;
+  records.reserve(source.size());
+  for (const auto& record : source) {
+    if (RoutineTelemetryAllowed(filter, record.eventType, record.payloadJson)) {
+      records.push_back(record);
+    }
+  }
+  if (records.empty()) {
+    return;
+  }
   // Append only: scans, the scanner CLI and the AMSI provider add rows to the same queue, and a
   // whole-queue rewrite from this in-memory copy would silently drop them.
   pendingTelemetry_.insert(pendingTelemetry_.end(), records.begin(), records.end());
