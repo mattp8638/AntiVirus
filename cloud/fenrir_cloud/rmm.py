@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from . import audit, services
 from .models import (Alert, Command, ConditionState, Device, DeviceGroup, DeviceMetric, DevicePatch, Job, MonitorCondition,
-                     PatchApproval, PatchPolicy, ScheduledTask, Script, SoftwarePackage, Ticket, utcnow)
+                     PatchApproval, PatchPolicy, ScheduledTask, Script, SoftwarePackage, Ticket, Vulnerability, utcnow)
 
 log = logging.getLogger("fenrir.rmm")
 
@@ -315,6 +315,7 @@ def ingest_patch_scan(db: Session, device: Device, result: dict) -> int:
     now = utcnow()
     existing = {p.patch_key: p for p in db.execute(select(DevicePatch).where(DevicePatch.device_id == device.id)).scalars()}
     seen: set[str] = set()
+    row_cves: dict[str, list[str]] = {}
     for item in patches[:5000]:
         if not isinstance(item, dict):
             continue
@@ -337,6 +338,10 @@ def ingest_patch_scan(db: Session, device: Device, result: dict) -> int:
         row.installed_version = str(item.get("installedVersion") or "")[:80]
         row.available_version = str(item.get("availableVersion") or "")[:80]
         row.reboot_required = bool(item.get("rebootRequired"))
+        cves = item.get("cves") or []
+        if isinstance(cves, str):
+            cves = [c.strip() for c in cves.split(",")]
+        row_cves[key] = [str(c)[:30] for c in cves if str(c).startswith("CVE-")][:200]
         released = item.get("releasedAt")
         if released:
             try:
@@ -351,12 +356,75 @@ def ingest_patch_scan(db: Session, device: Device, result: dict) -> int:
     for key, row in existing.items():
         if key not in seen and row.status in {"missing", "installing", "failed"}:
             row.status, row.installed_at = "installed", now
+    db.flush()
+    sync_update_vulnerabilities(db, device, now, row_cves)
     metrics = dict(device.metrics or {})
     metrics["patchScanAt"] = now.isoformat() + "Z"
     if "rebootPending" in result:
         metrics["rebootPending"] = bool(result["rebootPending"])
     device.metrics = metrics
     return len(seen)
+
+
+MSRC_SEVERITY = {"critical": "critical", "important": "high", "moderate": "medium", "low": "low"}
+UPDATE_VULN_SOURCE = "windows-update"
+
+
+def sync_update_vulnerabilities(db: Session, device: Device, scanned_at: datetime, cves: dict[str, list[str]]) -> int:
+    """Missing Windows security updates are this device's OS vulnerabilities (OSV has no Windows data).
+
+    One vulnerability per missing update, named by its KB; it is verified fixed once a patch scan no
+    longer reports the update. Returns how many new ones were found.
+    """
+    from . import vulnmgmt
+
+    if device.platform != "windows":
+        return 0
+    missing = db.execute(select(DevicePatch).where(
+        DevicePatch.device_id == device.id, DevicePatch.source == "windows-update",
+        DevicePatch.status.in_(("missing", "installing", "failed")),
+        DevicePatch.classification.in_(("critical", "security")))).scalars().all()
+    kev = _known_exploited_cves(db)
+    found = 0
+    for patch in missing:
+        ids = cves.get(patch.patch_key, [])
+        row = db.execute(select(Vulnerability).where(Vulnerability.device_id == device.id,
+                                                     Vulnerability.vuln_id == patch.patch_key[:80],
+                                                     Vulnerability.package == "Windows")).scalar_one_or_none()
+        is_new = row is None
+        if row is None:
+            row = Vulnerability(tenant_id=device.tenant_id, device_id=device.id, vuln_id=patch.patch_key[:80], package="Windows",
+                                source=UPDATE_VULN_SOURCE, first_seen=patch.first_seen_at or scanned_at)
+            db.add(row)
+            found += 1
+        row.source = UPDATE_VULN_SOURCE
+        row.installed_version = (device.os_version or "")[:100]
+        row.fixed_version = patch.patch_key[:100]
+        row.severity = MSRC_SEVERITY.get((patch.severity or "").lower(),
+                                         "critical" if patch.classification == "critical" else "high")
+        row.known_exploited = bool(set(ids) & kev)
+        if row.known_exploited:
+            row.severity = "critical"
+        summary = patch.title
+        if ids:
+            summary += "\nAddresses " + ", ".join(ids[:50]) + (f" and {len(ids) - 50} more" if len(ids) > 50 else "")
+        row.summary = summary[:2000]
+        row.last_seen = scanned_at
+        reopened = row.status == "fixed"
+        if reopened:
+            row.status, row.verified_at, row.status_changed_at = "open", None, utcnow()
+        if is_new or reopened:
+            db.flush()
+            vulnmgmt.record_detection(db, row, reopened)
+    vulnmgmt.verify_after_scan(db, device, scanned_at, source=UPDATE_VULN_SOURCE)
+    return found
+
+
+def _known_exploited_cves(db: Session) -> set[str]:
+    """CISA KEV CVE IDs from the catalogue the vulnerability scanner last fetched (no network call here)."""
+    from . import exposure
+
+    return exposure._KEV_CACHE[1]
 
 
 def apply_patch_install_result(db: Session, device: Device, command: Command, result: dict) -> None:

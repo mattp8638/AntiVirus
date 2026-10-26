@@ -329,16 +329,17 @@ def _protection_patch_settings(client, admin, tenant, **patch):
     assert response.status_code == 200, response.text
 
 
-def _report_patches(client, device, patches):
+def _report_patches(client, device, patches, released=None):
     from fenrir_cloud.models import DevicePatch
 
+    released = released or utcnow() - timedelta(days=2)
     session = database.session_factory()()
     try:
         row = session.get(Device, device["deviceId"])
         rmm.ingest_patch_scan(session, row, {"patches": patches})
         for patch in session.query(DevicePatch).filter_by(device_id=row.id):
-            patch.released_at = utcnow() - timedelta(days=2)
-            patch.first_seen_at = utcnow() - timedelta(days=2)
+            patch.released_at = released
+            patch.first_seen_at = released
         session.commit()
     finally:
         session.close()
@@ -355,14 +356,14 @@ def _window_run(at):
 
 
 def test_protection_policy_patch_settings_drive_patching(client, admin, tenant, device):
+    now = utcnow()
+    monday = (now + timedelta(days=(7 - now.weekday()) % 7 or 7)).replace(hour=0, minute=0, second=0, microsecond=0)
     _report_patches(client, device, [
         {"id": "KB5048685", "title": "Cumulative Update", "classification": "Security Updates", "severity": "Critical"},
         {"id": "winget:Mozilla.Firefox", "title": "Firefox", "source": "winget", "installedVersion": "131.0", "availableVersion": "132.0"},
         {"id": "KB890830", "title": "Malicious Software Removal Tool", "classification": "Updates"},
-    ])
+    ], released=monday - timedelta(days=2))
     # Defaults: automatic window installs are off, so nothing is queued even inside the window.
-    now = utcnow()
-    monday = (now + timedelta(days=(7 - now.weekday()) % 7 or 7)).replace(hour=0, minute=0, second=0, microsecond=0)
     monday_night, tuesday_night = monday.replace(hour=23), (monday + timedelta(days=1)).replace(hour=23)
     assert _window_run(monday_night) == 0
     detail = client.get(f"/api/console/rmm/devices/{device['deviceId']}/patches", headers=admin).json()
@@ -410,3 +411,36 @@ def test_rmm_patch_policy_still_wins_over_protection_policy(client, admin, tenan
         session.close()
     detail = client.get(f"/api/console/rmm/devices/{device['deviceId']}/patches", headers=admin).json()
     assert detail["policy"]["name"] == "Servers"
+
+
+def test_missing_windows_security_updates_become_vulnerabilities(client, admin, device):
+    from fenrir_cloud import exposure
+    from fenrir_cloud.models import Vulnerability
+
+    patches = [
+        {"id": "KB5040001", "title": "2030-01 Cumulative Update", "classification": "Security Updates", "severity": "Important",
+         "source": "windows-update", "cves": "CVE-2030-0001,CVE-2030-0002"},
+        {"id": "KB5040002", "title": "Feature pack", "classification": "Feature Packs", "severity": "", "source": "windows-update"},
+        {"id": "winget:Mozilla.Firefox", "title": "Firefox", "source": "winget", "availableVersion": "200"},
+    ]
+    old_cache = exposure._KEV_CACHE
+    exposure._KEV_CACHE = (0.0, {"CVE-2030-0002"})
+    session = database.session_factory()()
+    try:
+        row = session.get(Device, device["deviceId"])
+        rmm.ingest_patch_scan(session, row, {"patches": patches})
+        session.commit()
+        vulns = session.query(Vulnerability).filter_by(device_id=row.id).all()
+        assert [(v.vuln_id, v.package, v.source, v.status) for v in vulns] == [("KB5040001", "Windows", "windows-update", "open")]
+        assert vulns[0].known_exploited and vulns[0].severity == "critical"
+        assert "CVE-2030-0001" in vulns[0].summary and vulns[0].fixed_version == "KB5040001"
+        # An unrelated OSV rescan must not close update-based findings.
+        from fenrir_cloud import vulnmgmt
+        assert vulnmgmt.verify_after_scan(session, row, utcnow() + timedelta(seconds=5)) == 0
+        rmm.ingest_patch_scan(session, row, {"patches": patches[1:]})
+        session.commit()
+        fixed = session.query(Vulnerability).filter_by(device_id=row.id).one()
+        assert fixed.status == "fixed" and fixed.verified_at is not None
+    finally:
+        exposure._KEV_CACHE = old_cache
+        session.close()

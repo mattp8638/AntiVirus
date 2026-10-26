@@ -41,6 +41,9 @@ def risk_score(vuln: Vulnerability, criticality: str | None) -> float:
 
 
 def recommendation(vuln: Vulnerability) -> str:
+    if vuln.source == "windows-update":
+        return (f"Install Windows update {vuln.fixed_version} (approve it under Patching or run Install now). "
+                "It is verified fixed at the next patch scan.")
     if vuln.fixed_version:
         return f"Update {vuln.package} from {vuln.installed_version or 'the installed version'} to {vuln.fixed_version} or later, then rescan."
     return f"No fixed version is published for {vuln.package}. Apply vendor mitigations or remove the package, then rescan."
@@ -84,9 +87,10 @@ def record_detection(db: Session, vuln: Vulnerability, reopened: bool) -> None:
                    tenant_id=vuln.tenant_id, key=f"vuln.detected:{vuln.device_id}:{vuln.vuln_id}:{vuln.package}:{stamp}")
 
 
-def verify_after_scan(db: Session, device: Device, scan_started: datetime) -> int:
-    """After a complete rescan: anything not seen again is fixed (verified). Returns how many."""
+def verify_after_scan(db: Session, device: Device, scan_started: datetime, source: str = "osv") -> int:
+    """After a complete rescan by one source: anything it did not see again is fixed (verified). Returns how many."""
     stale = db.execute(select(Vulnerability).where(Vulnerability.device_id == device.id, Vulnerability.last_seen < scan_started,
+                                                   Vulnerability.source == source,
                                                    Vulnerability.status != "fixed")).scalars().all()
     now = utcnow()
     for vuln in stale:
