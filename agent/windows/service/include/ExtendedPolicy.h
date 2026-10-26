@@ -83,6 +83,7 @@ struct ExtendedPolicy {
   bool ransomwareEnabled{true};
   bool canaryFiles{true};
   RansomwareSettings ransomware;
+  bool bruteForceProtection{true};  // modules.firewall.bruteForceProtection
   bool scriptExecution{true};      // modules.response.scriptExecution
   bool remoteAccessEnabled{true};  // modules.remoteAccess.enabled
   // modules.edr collection switches: routine telemetry only; detections are always sent.

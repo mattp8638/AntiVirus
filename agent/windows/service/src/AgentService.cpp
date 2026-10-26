@@ -1074,6 +1074,10 @@ int AgentService::Run(const AgentRunMode mode) {
     ransomwareShield_->SetUrgentCallback([this] {
       if (wakeEvent_ != nullptr) SetEvent(wakeEvent_);  // send a detection now, not at the next cycle
     });
+    bruteForceGuard_ = std::make_unique<BruteForceGuard>(config_.runtimeDatabasePath.parent_path());
+    bruteForceGuard_->SetUrgentCallback([this] {
+      if (wakeEvent_ != nullptr) SetEvent(wakeEvent_);
+    });
 
     LoadLocalPolicyCache();
     PublishIdentitySnapshot();
@@ -1131,6 +1135,9 @@ int AgentService::Run(const AgentRunMode mode) {
     }
     if (ransomwareShield_) {
       ransomwareShield_->Stop();
+    }
+    if (bruteForceGuard_) {
+      bruteForceGuard_->Stop();
     }
     if (realtimeProtectionBroker_) {
       realtimeProtectionBroker_->Stop();
@@ -3009,6 +3016,9 @@ void AgentService::ApplyProtectionPolicy() {
     const auto extended = ExtendedPolicy::Parse(policy_.modulesJson);
     if (extended.present) {
       ransomwareShield_->Apply(extended.ransomware);
+      if (bruteForceGuard_) {
+        bruteForceGuard_->Apply(extended.bruteForceProtection);
+      }
     }
   }
 }
@@ -3478,7 +3488,11 @@ void AgentService::DrainRansomwareTelemetry() {
   if (!ransomwareShield_) {
     return;
   }
-  const auto telemetry = ransomwareShield_->DrainTelemetry();
+  auto telemetry = ransomwareShield_->DrainTelemetry();
+  if (bruteForceGuard_) {
+    auto more = bruteForceGuard_->DrainTelemetry();
+    telemetry.insert(telemetry.end(), more.begin(), more.end());
+  }
   if (!telemetry.empty()) {
     QueueTelemetryRecords(telemetry);
   }

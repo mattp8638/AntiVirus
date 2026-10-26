@@ -10,6 +10,7 @@
 #include "FirewallPolicy.h"
 #include "LocalAdminRotation.h"
 #include "RansomwareDetector.h"
+#include "BruteForceTracker.h"
 
 #include <random>
 
@@ -266,6 +267,40 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 12; ++i) CHECK(detector.OnWrite(kSystemPid, L"System", docs + L"\\n" + std::to_wstring(i), 500000 + i).empty());
     CHECK(detector.Watches(L"\\device\\harddiskvolume3\\users\\alice\\documents\\x"));
     CHECK(!detector.Watches(L"\\device\\harddiskvolume4\\shares\\finance\\x"));
+  }
+  {  // Brute-force blocking
+    using namespace bruteforce;
+    CHECK(NormaliseRemoteAddress(L"203.0.113.9") == L"203.0.113.9");
+    CHECK(NormaliseRemoteAddress(L"::ffff:198.51.100.7") == L"198.51.100.7");
+    CHECK(NormaliseRemoteAddress(L"2001:DB8::1") == L"2001:db8::1");
+    CHECK(NormaliseRemoteAddress(L"-").empty() && NormaliseRemoteAddress(L"").empty() && NormaliseRemoteAddress(L"127.0.0.1").empty());
+    CHECK(NormaliseRemoteAddress(L"::1").empty() && NormaliseRemoteAddress(L"1.2.3.256").empty() && NormaliseRemoteAddress(L"1.2.3").empty());
+    CHECK(NormaliseRemoteAddress(L"1.2.3.4 dir=out").empty());  // nothing but an address can reach the firewall command
+    Tracker tracker;
+    const unsigned long long t0 = 1'000'000;
+    for (int i = 0; i < kThreshold - 1; ++i) CHECK(!tracker.OnFailure(L"203.0.113.9", L"administrator", t0 + i));
+    auto block = tracker.OnFailure(L"203.0.113.9", L"admin", t0 + 20);
+    CHECK(block && block->address == L"203.0.113.9" && block->until == t0 + 20 + kBaseBlockSeconds && block->strikes == 1);
+    CHECK(block && block->failures == kThreshold && block->accounts.size() == 2);
+    CHECK(tracker.Blocked(L"203.0.113.9") && !tracker.OnFailure(L"203.0.113.9", L"x", t0 + 30));  // already blocked
+    // Failures spread over more than the window never add up.
+    for (int i = 0; i < 30; ++i) CHECK(!tracker.OnFailure(L"198.51.100.1", L"bob", t0 + i * 120));
+    // Loopback and "-" (no address in the event) are ignored.
+    for (int i = 0; i < 30; ++i) CHECK(!tracker.OnFailure(L"-", L"bob", t0 + i));
+    CHECK(tracker.Expire(t0 + 100).empty());
+    auto expired = tracker.Expire(t0 + 20 + kBaseBlockSeconds);
+    CHECK(expired.size() == 1 && expired[0] == L"203.0.113.9" && !tracker.Blocked(L"203.0.113.9"));
+    // A repeat offender is blocked four times longer.
+    const auto t1 = t0 + 2 * kBaseBlockSeconds;
+    std::optional<Block> again;
+    for (int i = 0; i < kThreshold; ++i) again = tracker.OnFailure(L"203.0.113.9", L"admin", t1 + i);
+    CHECK(again && again->strikes == 2 && again->until == t1 + kThreshold - 1 + 4 * kBaseBlockSeconds);
+    // Restored blocks (after a restart) are active and cleared together.
+    Tracker restored;
+    restored.Restore({L"2001:db8::5", t0 + 500, 1, 0, {}});
+    CHECK(restored.Blocked(L"2001:db8::5") && restored.Clear().size() == 1 && restored.Blocks().empty());
+    CHECK(ExtendedPolicy::Parse(R"({"firewall":{"bruteForceProtection":false}})").bruteForceProtection == false);
+    CHECK(ExtendedPolicy::Parse(R"({"firewall":{}})").bruteForceProtection == true);
   }
   CHECK(!ExtendedPolicy::Parse("not json").present);
   std::printf(failures ? "%d failure(s)\n" : "all policy/device-control tests passed\n", failures);

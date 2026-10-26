@@ -404,6 +404,8 @@ ExtendedPolicy ExtendedPolicy::Parse(const std::string& modulesJson) {
     r.networkShareProtection = BoolOr(ransomware, "networkShareProtection", true);
   }
 
+  policy.bruteForceProtection = BoolOr(root->Get("firewall"), "bruteForceProtection", true);
+
   const auto* app = root->Get("applicationControl");
   policy.behavior.appControlMode = WideString(app, "mode", L"off");
   policy.behavior.blockedApps = WideList(app, "blockedApps");

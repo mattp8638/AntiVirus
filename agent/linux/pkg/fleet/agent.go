@@ -79,6 +79,8 @@ type Agent struct {
 	// Policy firewall (firewall.go): the rules last loaded, so they are only reloaded on change.
 	firewallApplied string
 	firewallSet     bool
+	// SSH brute-force protection (bruteforce.go).
+	brute *bruteGuard
 }
 
 func New(cfg Config) *Agent {
@@ -478,7 +480,15 @@ func (a *Agent) Run() {
 	commands := time.NewTicker(15 * time.Second)
 	sigs := time.NewTicker(time.Duration(maxInt(5, a.state.Policy.ModuleInt("updates", "signatureIntervalMinutes", 60))) * time.Minute)
 	upload := time.NewTicker(time.Duration(maxInt(5, a.state.Policy.ModuleInt("edr", "telemetryUploadSeconds", 30))) * time.Second)
-	defer func() { sense.Stop(); beat.Stop(); commands.Stop(); sigs.Stop(); upload.Stop() }()
+	brute := time.NewTicker(20 * time.Second)
+	defer func() {
+		sense.Stop()
+		beat.Stop()
+		commands.Stop()
+		sigs.Stop()
+		upload.Stop()
+		brute.Stop()
+	}()
 	a.metrics.Collect() // prime the CPU counters so the first heartbeat has a real value
 	a.heartbeat()
 	go a.listenRealtime()
@@ -504,6 +514,8 @@ func (a *Agent) Run() {
 			a.maybeScheduledScans(time.Now())
 		case <-commands.C:
 			a.RunCommands()
+		case now := <-brute.C:
+			a.checkBruteForce(now)
 		case <-sigs.C:
 			a.refreshSignatures()
 			a.refreshModel()

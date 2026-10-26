@@ -461,7 +461,7 @@ AGENT_SUPPORT: dict[str, tuple[str, ...]] = {
     "web.destinationCacheTtlMinutes": ('windows',),
     "web.bankingProtection": (),
     "firewall.networkAttackProtection": (),
-    "firewall.bruteForceProtection": (),
+    "firewall.bruteForceProtection": ('windows', 'linux', 'macos'),
     "firewall.blockSmbV1": ('windows',),
     "firewall.blockLlmnrNetbios": ('windows',),
     "firewall.isolationAllowlist": ('linux', 'macos'),
