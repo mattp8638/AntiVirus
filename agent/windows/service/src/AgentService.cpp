@@ -2665,6 +2665,41 @@ std::wstring AgentService::LaunchRemoteHelper(const RemoteCommand& command) {
     throw std::runtime_error("Could not start the remote access helper (error " + std::to_string(GetLastError()) + ")");
   }
   CloseHandle(process.hThread);
+  // Wait until the helper reaches the relay (its log says so) or quits, so a helper that cannot connect
+  // fails the command with its reason instead of leaving the technician on "waiting" forever.
+  const auto logPath = std::filesystem::path(optionsPath).replace_extension(L".log");
+  const auto readLog = [&logPath]() {
+    std::ifstream in(logPath, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  };
+  bool reachedRelay = false;
+  for (int waited = 0; waited < 30000; waited += 250) {
+    if (readLog().find("Connected to the relay.") != std::string::npos) {
+      reachedRelay = true;
+      break;
+    }
+    if (WaitForSingleObject(process.hProcess, 250) == WAIT_OBJECT_0) {
+      break;
+    }
+  }
+  if (!reachedRelay && WaitForSingleObject(process.hProcess, 0) == WAIT_OBJECT_0) {
+    DWORD exitCode = 0;
+    GetExitCodeProcess(process.hProcess, &exitCode);
+    CloseHandle(process.hProcess);
+    std::filesystem::remove(optionsPath, ec);
+    auto log = readLog();
+    std::string last;
+    for (std::size_t end = log.size(); end > 0 && last.empty();) {
+      const auto start = log.rfind('\n', end - 1);
+      auto line = log.substr(start == std::string::npos ? 0 : start + 1, end - (start == std::string::npos ? 0 : start + 1));
+      while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
+      if (!line.empty() && line.find("Helper exiting") == std::string::npos) last = line.size() > 21 ? line.substr(21) : line;
+      if (start == std::string::npos) break;
+      end = start;
+    }
+    throw std::runtime_error("The remote helper stopped before reaching the relay (exit code " + std::to_string(exitCode) + ")" +
+                             (last.empty() ? std::string(".") : ": " + last) + " Log: " + WideToUtf8(logPath.wstring()));
+  }
   {
     std::lock_guard lock(remoteMutex_);
     if (auto it = remoteHelpers_.find(sessionId); it != remoteHelpers_.end()) {
@@ -2676,7 +2711,8 @@ std::wstring AgentService::LaunchRemoteHelper(const RemoteCommand& command) {
                       std::wstring(L"{\"sessionId\":\"") + sessionId + L"\",\"windowsSession\":" + std::to_wstring(windowsSession) +
                           L",\"technician\":\"" + Utf8ToWide(EscapeJsonString(ExtractPayloadString(command.payloadJson, "technician").value_or(L""))) + L"\"}");
   return std::wstring(L"{\"started\":true,\"consent\":\"pending\",\"helperPid\":") + std::to_wstring(process.dwProcessId) +
-         L",\"windowsSession\":" + std::to_wstring(windowsSession) + L"}";
+         L",\"windowsSession\":" + std::to_wstring(windowsSession) + L",\"reachedRelay\":" + (reachedRelay ? L"true" : L"false") +
+         L",\"logPath\":\"" + Utf8ToWide(EscapeJsonString(logPath.wstring())) + L"\"}";
 }
 
 std::wstring AgentService::EndRemoteHelper(const RemoteCommand& command) {
