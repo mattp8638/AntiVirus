@@ -20,6 +20,7 @@ import (
 type Scanner struct {
 	mu            sync.RWMutex
 	bad           map[string]string // sha256 -> family
+	pua           map[string]bool   // sha256 of potentially unwanted applications (subset of bad)
 	allow         map[string]bool
 	Version       string
 	QuarantineDir string
@@ -35,9 +36,13 @@ func NewScanner(quarantineDir string) *Scanner {
 
 func (s *Scanner) Load(b *Bundle) {
 	bad := make(map[string]string, len(b.Hashes))
+	pua := map[string]bool{}
 	for _, h := range b.Hashes {
 		if strings.EqualFold(h.Type, "sha256") && len(h.Value) == 64 {
 			bad[strings.ToLower(h.Value)] = h.MalwareFamily
+			if strings.EqualFold(h.Category, "pua") {
+				pua[strings.ToLower(h.Value)] = true
+			}
 		}
 	}
 	allow := map[string]bool{}
@@ -45,7 +50,7 @@ func (s *Scanner) Load(b *Bundle) {
 		allow[strings.ToLower(h)] = true
 	}
 	s.mu.Lock()
-	s.bad, s.allow, s.Version = bad, allow, b.SignatureVersion
+	s.bad, s.pua, s.allow, s.Version = bad, pua, allow, b.SignatureVersion
 	s.mu.Unlock()
 }
 
@@ -64,6 +69,13 @@ func (s *Scanner) Verdict(sha string) (bool, string) {
 	}
 	family, ok := s.bad[sha]
 	return ok, family
+}
+
+// IsPUA reports whether a malicious hash is a potentially unwanted application rather than malware.
+func (s *Scanner) IsPUA(sha string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.pua[sha]
 }
 
 func HashFile(path string, limit int64) (string, error) {
@@ -95,6 +107,9 @@ type Finding struct {
 	Family string `json:"family"`
 	Action string `json:"action"`
 	Record string `json:"recordId,omitempty"`
+	// Member is the file inside an archive that matched (archive!member); the archive itself is quarantined.
+	Member   string `json:"archiveMember,omitempty"`
+	Category string `json:"category,omitempty"` // "pua" for potentially unwanted applications
 }
 
 type QuarantineRecord struct {
@@ -163,16 +178,26 @@ func (s *Scanner) Delete(id string) error {
 	return os.Remove(filepath.Join(s.QuarantineDir, id+".json"))
 }
 
-// ScanPaths walks the given roots, hashing files and quarantining matches.
+// ScanPaths walks the given roots with default options (no archives, no throttling).
 func (s *Scanner) ScanPaths(roots []string, skip []string, quarantine bool, maxFiles int) (scanned int, findings []Finding) {
+	return s.ScanPathsWith(roots, skip, quarantine, maxFiles, ScanOptions{PUA: "block"})
+}
+
+// ScanPathsWith walks the given roots, hashing files (and archive members) and quarantining matches.
+func (s *Scanner) ScanPathsWith(roots []string, skip []string, quarantine bool, maxFiles int, opts ScanOptions) (scanned int, findings []Finding) {
+	skip = append(append([]string{}, skip...), "/proc", "/sys", "/dev", "/run", s.QuarantineDir)
+	if opts.SkipNetwork {
+		skip = append(skip, networkMounts()...)
+	}
 	skipped := func(path string) bool {
-		for _, prefix := range append(skip, "/proc", "/sys", "/dev", "/run", s.QuarantineDir) {
-			if prefix != "" && strings.HasPrefix(path, prefix) {
+		for _, prefix := range skip {
+			if prefix != "" && (path == prefix || strings.HasPrefix(path, strings.TrimSuffix(prefix, "/")+"/")) {
 				return true
 			}
 		}
 		return false
 	}
+	throttle := newCPUThrottle(opts.CPULimitPercent)
 	for _, root := range roots {
 		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -190,20 +215,29 @@ func (s *Scanner) ScanPaths(roots []string, skip []string, quarantine bool, maxF
 			if maxFiles > 0 && scanned >= maxFiles {
 				return filepath.SkipAll
 			}
+			start := time.Now()
+			defer func() { throttle.after(time.Since(start)) }()
 			sha, err := HashFile(path, s.MaxFileBytes)
 			if err != nil {
 				return nil
 			}
 			scanned++
-			bad, family := s.Verdict(sha)
-			if !bad {
-				if score, ok := s.MLScore(path); ok && score >= s.MLThreshold {
-					bad, family = true, fmt.Sprintf("ML.Static.PE (score %.2f)", score)
+			bad, family, pua := s.classify(sha, path)
+			inner := ""
+			if !bad && opts.Archives {
+				if hit := s.scanArchive(path, opts.MaxDepth); hit != nil {
+					bad, family, pua, inner = true, hit.family, hit.pua, hit.member
 				}
 			}
+			if bad && pua && opts.PUA == "off" {
+				return nil
+			}
 			if bad {
-				f := Finding{Path: path, SHA256: sha, Family: family, Action: "detected"}
-				if quarantine {
+				f := Finding{Path: path, SHA256: sha, Family: family, Action: "detected", Member: inner}
+				if pua {
+					f.Category = "pua"
+				}
+				if quarantine && !(pua && opts.PUA == "audit") {
 					if id, err := s.Quarantine(path, sha); err == nil {
 						f.Action, f.Record = "quarantined", id
 					} else {
@@ -216,6 +250,18 @@ func (s *Scanner) ScanPaths(roots []string, skip []string, quarantine bool, maxF
 		})
 	}
 	return scanned, findings
+}
+
+// classify looks a hash up and, failing that, scores Windows executables with the ML model.
+func (s *Scanner) classify(sha, path string) (bad bool, family string, pua bool) {
+	bad, family = s.Verdict(sha)
+	if bad {
+		return true, family, s.IsPUA(sha)
+	}
+	if score, ok := s.MLScore(path); ok && score >= s.MLThreshold {
+		return true, fmt.Sprintf("ML.Static.PE (score %.2f)", score), false
+	}
+	return false, "", false
 }
 
 func copyFile(src, dst string) error {

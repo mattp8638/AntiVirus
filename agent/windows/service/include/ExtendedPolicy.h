@@ -73,6 +73,8 @@ struct ExtendedPolicy {
   bool telemetryMinimal{false};      // edr.telemetryLevel == "minimal"
   bool allowQuarantineRestore{false};  // modules.experience: end users may restore from quarantine
   bool breakGlassAllowed{true};        // modules.privilege.breakGlassAllowed
+  bool scanNetworkDrives{false};   // modules.antimalware.scanNetworkDrives: full scans include mapped drives
+  int scanCpuLimitPercent{100};    // modules.antimalware.scanCpuLimitPercent: scheduled scans, share of one core
   ScanPlan quickScanPlan;          // modules.antimalware.quickScanPlan
   ScanPlan fullScanPlan;           // modules.antimalware.fullScanPlan
 
@@ -80,6 +82,9 @@ struct ExtendedPolicy {
 };
 
 std::wstring Utf8ToWideString(const std::string& value);
+
+// How long a throttled scan should rest after using cpuMs of processor time, to stay at limitPercent.
+unsigned long long ScanThrottleRestMs(int limitPercent, unsigned long long cpuMs);
 
 // Applies the edr collection switches to one telemetry record. Only routine activity (process starts and
 // exits, file changes, allowed script scans, observed destinations) can be dropped; detections, scans,

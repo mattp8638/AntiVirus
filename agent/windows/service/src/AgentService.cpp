@@ -1242,7 +1242,8 @@ void AgentService::RunScheduledQuickScan(const int cycle) {
     }
 
     // Runs in the background; skipped this cycle if another scan is still running.
-    StartBackgroundScan(L"scan.quick-scheduled", L"quick", kScheduledQuickScanSource, BuildQuickScanTargets());
+    StartBackgroundScan(L"scan.quick-scheduled", L"quick", kScheduledQuickScanSource, BuildQuickScanTargets(),
+                        ScheduledScanCpuLimit());
   } catch (const std::exception& error) {
     QueueTelemetryEvent(L"scan.quick-scheduled.failed", L"agent-service",
                         L"The endpoint failed to complete a scheduled quick scan.",
@@ -1276,7 +1277,8 @@ void AgentService::RunScheduledFullDriveScan(const int cycle) {
       }
     }
 
-    StartBackgroundScan(L"scan.scheduled", L"full", kScheduledFullDriveScanSource, BuildFullScanTargets());
+    StartBackgroundScan(L"scan.scheduled", L"full", kScheduledFullDriveScanSource, BuildFullScanTargets(ScanNetworkDrives()),
+                        ScheduledScanCpuLimit());
   } catch (const std::exception& error) {
     QueueTelemetryEvent(L"scan.scheduled.failed", L"agent-service",
                         L"The endpoint failed to complete a scheduled full C: drive scan.",
@@ -2016,7 +2018,7 @@ std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
 }
 
 bool AgentService::StartBackgroundScan(const std::wstring& eventPrefix, const std::wstring& scopeLabel, const std::wstring& source,
-                                       std::vector<std::filesystem::path> targets) {
+                                       std::vector<std::filesystem::path> targets, const int cpuLimitPercent) {
   bool expected = false;
   if (!backgroundScanBusy_->compare_exchange_strong(expected, true)) {
     return false;
@@ -2030,7 +2032,21 @@ bool AgentService::StartBackgroundScan(const std::wstring& eventPrefix, const st
   auto stopping = stopRequested_;
   const auto config = config_;
   const auto state = state_;
-  std::thread([busy, stopping, config, state, eventPrefix, scopeLabel, source, targets = std::move(targets)]() {
+  std::thread([busy, stopping, config, state, eventPrefix, scopeLabel, source, cpuLimitPercent, targets = std::move(targets)]() {
+    // CPU limit (scheduled scans): measure this thread's processor time between files and rest to match.
+    if (cpuLimitPercent < 100) {
+      SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    }
+    const auto threadCpuMs = []() -> unsigned long long {
+      FILETIME created{}, exited{}, kernel{}, user{};
+      if (!GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user)) {
+        return 0;
+      }
+      const auto ticks = [](const FILETIME& t) { return (static_cast<unsigned long long>(t.dwHighDateTime) << 32) | t.dwLowDateTime; };
+      return (ticks(kernel) + ticks(user)) / 10000;  // 100 ns units to ms
+    };
+    unsigned long long lastCpu = threadCpuMs();
+    unsigned long long restDebt = 0;
     const TelemetryQueueStore queue(config.runtimeDatabasePath, config.telemetryQueuePath);
     const auto record = [&](const std::wstring& type, const std::wstring& summary, const std::wstring& payload) {
       try {
@@ -2044,9 +2060,19 @@ bool AgentService::StartBackgroundScan(const std::wstring& eventPrefix, const st
       options.source = source;
       options.queueTelemetry = true;  // appended to the shared queue (findings + summary)
       options.applyRemediation = true;
-      const auto result = ExecuteLocalScan(config, state, targets, options, [stopping](const LocalScanProgressUpdate&) {
+      const auto result = ExecuteLocalScan(config, state, targets, options, [&](const LocalScanProgressUpdate&) {
         if (stopping->load()) {
           throw std::runtime_error("the service is stopping");
+        }
+        if (cpuLimitPercent < 100) {
+          const auto now = threadCpuMs();
+          restDebt += ScanThrottleRestMs(cpuLimitPercent, now - lastCpu);
+          lastCpu = now;
+          if (restDebt >= 20) {
+            Sleep(static_cast<DWORD>(std::min<unsigned long long>(restDebt, 2000)));
+            restDebt = 0;
+            lastCpu = threadCpuMs();
+          }
         }
       });
       record(eventPrefix + L".completed", L"The endpoint completed a " + scopeLabel + L" scan.",
@@ -2064,7 +2090,7 @@ bool AgentService::StartBackgroundScan(const std::wstring& eventPrefix, const st
 
 std::wstring AgentService::ExecuteOnDemandScan(const RemoteCommand& command, const bool full) {
   const auto scope = full ? std::wstring(L"full") : std::wstring(L"quick");
-  auto targets = full ? BuildFullScanTargets() : BuildQuickScanTargets();
+  auto targets = full ? BuildFullScanTargets(ScanNetworkDrives()) : BuildQuickScanTargets();
   const auto count = targets.size();
   if (!StartBackgroundScan(L"scan." + scope, scope, L"command." + command.commandId, std::move(targets))) {
     throw std::runtime_error("Another scan is already running on this device; try again when it finishes");
@@ -2821,6 +2847,14 @@ void AgentService::ApplyProtectionPolicy() {
     QueueTelemetryEvent(record.eventType, record.source, record.summary, record.payloadJson);
   }
   ApplyFirewallPolicy();
+}
+
+bool AgentService::ScanNetworkDrives() const {
+  return !policy_.modulesJson.empty() && ExtendedPolicy::Parse(policy_.modulesJson).scanNetworkDrives;
+}
+
+int AgentService::ScheduledScanCpuLimit() const {
+  return policy_.modulesJson.empty() ? 100 : ExtendedPolicy::Parse(policy_.modulesJson).scanCpuLimitPercent;
 }
 
 void AgentService::ApplyFirewallPolicy() {

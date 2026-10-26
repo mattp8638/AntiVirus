@@ -123,11 +123,27 @@ func (a *Agent) quickScanRoots() []string {
 }
 
 // runScan scans roots and reports every finding; shared by commands and scheduled scans.
-func (a *Agent) runScan(roots, skip []string, quarantine bool) (int, []Finding) {
-	scanned, findings := a.scanner.ScanPaths(roots, skip, quarantine, 0)
+// The policy's CPU limit applies to scheduled scans only; an analyst's scan runs at full speed.
+func (a *Agent) runScan(roots, skip []string, quarantine, scheduled bool) (int, []Finding) {
+	opts := ScanOptionsFromPolicy(a.state.Policy)
+	if !scheduled {
+		opts.CPULimitPercent = 100
+	}
+	scanned, findings := a.scanner.ScanPathsWith(roots, skip, quarantine, 0, opts)
 	for _, f := range findings {
-		a.emit("scan.threat."+strings.SplitN(f.Action, ":", 2)[0], "scanner", "Malware found: "+f.Family,
-			map[string]interface{}{"path": f.Path, "sha256": f.SHA256, "threatName": f.Family, "verdict": f.Action, "score": 95, "recordId": f.Record})
+		summary, score := "Malware found: "+f.Family, 95
+		if f.Category == "pua" {
+			summary, score = "Potentially unwanted application found: "+f.Family, 60
+		}
+		payload := map[string]interface{}{"path": f.Path, "sha256": f.SHA256, "threatName": f.Family, "verdict": f.Action, "score": score, "recordId": f.Record}
+		if f.Member != "" {
+			payload["archiveMember"] = f.Member
+			summary += " (inside the archive, as " + f.Member + ")"
+		}
+		if f.Category != "" {
+			payload["category"] = f.Category
+		}
+		a.emit("scan.threat."+strings.SplitN(f.Action, ":", 2)[0], "scanner", summary, payload)
 	}
 	return scanned, findings
 }
@@ -154,7 +170,7 @@ func (a *Agent) maybeScheduledScans(now time.Time) {
 		go func(kind string) {
 			defer a.schedule.busy.Store(false)
 			started := time.Now()
-			scanned, findings := a.runScan(roots, skip, quarantine)
+			scanned, findings := a.runScan(roots, skip, quarantine, true)
 			a.schedule.record(kind, started)
 			if kind == "full" {
 				a.schedule.record("quick", started)

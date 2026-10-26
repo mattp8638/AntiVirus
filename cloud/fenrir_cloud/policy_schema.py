@@ -390,11 +390,10 @@ SCHEMA: tuple[Section, ...] = (
 # wherever it applies, by the agents or by the cloud itself. Keep in step with the agents.
 AGENT_SUPPORT: dict[str, tuple[str, ...]] = {
     "antimalware.cloudLookupObserveOnly": ('windows',),
-    "antimalware.puaProtection": (),
-    "antimalware.scanArchives": (),
+    "antimalware.puaProtection": ('linux', 'macos'),
+    "antimalware.scanArchives": ('linux', 'macos'),
     "antimalware.archiveObserveOnly": ('windows',),
-    "antimalware.archiveMaxDepth": (),
-    "antimalware.scanNetworkDrives": (),
+    "antimalware.archiveMaxDepth": ('linux', 'macos'),
     "antimalware.scanMaliciousBlockThreshold": ('windows',),
     "antimalware.scanMaliciousQuarantineThreshold": ('windows',),
     "antimalware.scanBenignDampeningScore": ('windows',),
@@ -406,7 +405,6 @@ AGENT_SUPPORT: dict[str, tuple[str, ...]] = {
     "antimalware.realtimeObserveOnlyForNonExecute": ('windows',),
     "antimalware.enableCleanwareSignerDampening": ('windows',),
     "antimalware.enableKnownGoodHashDampening": ('windows',),
-    "antimalware.scanCpuLimitPercent": (),
     "antimalware.exclusionSigners": ('windows',),
     "antimalware.requireSignerForSuppression": ('windows',),
     "antimalware.allowUnsignedSuppressionPathExecutables": ('windows',),

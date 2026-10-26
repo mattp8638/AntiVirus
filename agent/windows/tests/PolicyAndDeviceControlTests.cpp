@@ -103,6 +103,14 @@ int main(int argc, char** argv) {
     CHECK(RoutineTelemetryAllowed(policy, L"realtime.protection.action", L"{}"));
     CHECK(!policy.allowQuarantineRestore && policy.breakGlassAllowed);  // defaults
   }
+  {  // Scan options
+    const auto policy = ExtendedPolicy::Parse(R"({"antimalware":{"scanNetworkDrives":true,"scanCpuLimitPercent":2}})");
+    CHECK(policy.scanNetworkDrives && policy.scanCpuLimitPercent == 5);
+    CHECK(!ExtendedPolicy::Parse(R"({"antimalware":{}})").scanNetworkDrives);
+    CHECK(ExtendedPolicy::Parse(R"({"antimalware":{}})").scanCpuLimitPercent == 100);
+    CHECK(ScanThrottleRestMs(25, 100) == 300 && ScanThrottleRestMs(50, 40) == 40);
+    CHECK(ScanThrottleRestMs(100, 1000) == 0 && ScanThrottleRestMs(0, 1000) == 0);
+  }
   {  // Firewall and network hardening
     CHECK(firewall::ValidAddress("10.0.0.0/8") && firewall::ValidAddress("192.168.1.10") && firewall::ValidAddress("fd00::/8"));
     CHECK(!firewall::ValidAddress("10.0.0.256") && !firewall::ValidAddress("10.0.0.0/33") && !firewall::ValidAddress("a';calc;'"));

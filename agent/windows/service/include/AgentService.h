@@ -83,7 +83,7 @@ class AgentService {
   std::wstring ExecuteTargetedScan(const RemoteCommand& command);
   // Quick/full scans run on a background thread so commands and check-ins continue meanwhile.
   bool StartBackgroundScan(const std::wstring& eventPrefix, const std::wstring& scopeLabel, const std::wstring& source,
-                           std::vector<std::filesystem::path> targets);
+                           std::vector<std::filesystem::path> targets, int cpuLimitPercent = 100);
   std::wstring ExecuteOnDemandScan(const RemoteCommand& command, bool full);
   std::wstring ExecuteInventoryRefreshCommand(const RemoteCommand& command);
   std::wstring ExecutePolicyRefreshCommand(const RemoteCommand& command);
@@ -154,6 +154,8 @@ class AgentService {
   bool firewallWorkerBusy_{false};
   std::thread firewallThread_{};
   void ApplyFirewallPolicy();
+  bool ScanNetworkDrives() const;
+  int ScheduledScanCpuLimit() const;
   void FirewallWorker();
   bool RunFirewallScript(const std::string& script, const std::wstring& summary);
   std::unique_ptr<LocalStateStore> stateStore_{};

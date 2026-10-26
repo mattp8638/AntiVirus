@@ -120,6 +120,7 @@ type Bundle struct {
 		Type          string `json:"type"`
 		Value         string `json:"value"`
 		MalwareFamily string `json:"malwareFamily"`
+		Category      string `json:"category"` // "pua" for potentially unwanted applications
 	} `json:"hashes"`
 	AllowSha256 []string `json:"allowSha256"`
 }

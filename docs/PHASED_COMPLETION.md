@@ -60,9 +60,20 @@ Later additions (enforcing settings that were previously ignored):
     macOS" is turned on, so upgrading never cuts off services a server offers; custom rules apply regardless.
   - Safeguards on Linux and macOS: loopback, replies, DHCP, ICMP and DNS always pass; the Fenrir Cloud address
     stays reachable when outbound is blocked; inbound SSH stays open unless a custom rule blocks port 22.
+- Batch 3, scanning:
+  - Scheduled scans keep to `scanCpuLimitPercent` of one core (Windows measures the scan thread's processor time
+    and lowers its priority; Linux/macOS rest between files). Scans an analyst starts run at full speed.
+  - `scanNetworkDrives`: Windows full scans add network drive letters; Linux/macOS skip NFS, SMB, AFP, sshfs and
+    similar mounts unless it is on. On Windows, drives mapped in a user's session are not visible to the
+    service, so only drives mapped for the system account are scanned.
+  - Linux/macOS look inside zip (and jar/apk/docx), tar, gzip and tar.gz archives, nested up to `archiveMaxDepth`,
+    with limits against archive bombs; a match quarantines the whole archive and names the member.
+  - PUA: the cloud tags signatures for potentially unwanted applications (indicator category, or names such as
+    `PUA:`, `Adware.`, `not-a-virus:`). Linux/macOS ignore them when `puaProtection` is off and report without
+    quarantining or stopping the process when it is audit. Windows does not separate PUA yet.
 
 Open:
-- About 40 policy settings are still not enforced by any agent (marked in the editor; see
+- About 35 policy settings are still not enforced by any agent (marked in the editor; see
   `AGENT_SUPPORT` in `cloud/fenrir_cloud/policy_schema.py`).
 - Ransomware rollback is withdrawn: no agent keeps file snapshots.
 

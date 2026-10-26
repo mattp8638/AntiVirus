@@ -258,7 +258,14 @@ func (a *Agent) SenseOnce() {
 			if sha, err := HashFile(proc.Exe, a.scanner.MaxFileBytes); err == nil {
 				payload["sha256"] = sha
 				if bad, family := a.scanner.Verdict(sha); bad {
-					a.blockProcess(proc, sha, family)
+					switch mode := ScanOptionsFromPolicy(p).PUA; {
+					case !a.scanner.IsPUA(sha) || mode == "block":
+						a.blockProcess(proc, sha, family)
+					case mode == "audit":
+						a.emit("threat.pua.detected", "realtime", "Potentially unwanted application running: "+filepath.Base(proc.Exe),
+							map[string]interface{}{"processImagePath": proc.Exe, "pid": proc.PID, "sha256": sha, "threatName": family,
+								"verdict": "audit", "score": 60, "category": "pua"})
+					}
 				}
 			}
 		}
@@ -631,7 +638,7 @@ func (a *Agent) Execute(cmd Command) (map[string]interface{}, error) {
 		if cmd.TargetPath == "" && cmd.Type == "scan.targeted" {
 			return nil, errors.New("targetPath is required")
 		}
-		scanned, findings := a.runScan(roots, a.state.Policy.SuppressionPathRoots, a.state.Policy.QuarantineOnMalicious)
+		scanned, findings := a.runScan(roots, a.state.Policy.SuppressionPathRoots, a.state.Policy.QuarantineOnMalicious, false)
 		return map[string]interface{}{"scanned": scanned, "findings": findings}, nil
 	case "remediate.path":
 		sha, err := HashFile(cmd.TargetPath, 0)
