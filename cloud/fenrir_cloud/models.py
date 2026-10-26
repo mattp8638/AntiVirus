@@ -180,6 +180,22 @@ class Command(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class DeviceArtifact(Base):
+    """A forensic or support bundle an agent uploaded for a command."""
+
+    __tablename__ = "device_artifacts"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("art"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    command_id: Mapped[str] = mapped_column(String(32), index=True)
+    kind: Mapped[str] = mapped_column(String(40))  # the command type that produced it
+    filename: Mapped[str] = mapped_column(String(200))
+    size: Mapped[int] = mapped_column(BigInteger, default=0)
+    sha256: Mapped[str] = mapped_column(String(64))
+    storage_name: Mapped[str] = mapped_column(String(80))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class AgentRelease(Base):
     __tablename__ = "agent_releases"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("rel"))

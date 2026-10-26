@@ -42,7 +42,10 @@ services:
       FENRIR_IMAP_USER: ${FENRIR_IMAP_USER:-}
       FENRIR_IMAP_PASSWORD: ${FENRIR_IMAP_PASSWORD:-}
       FENRIR_IMAP_FOLDER: ${FENRIR_IMAP_FOLDER:-INBOX}
+      FENRIR_ARTIFACT_DIR: /data/artifacts
+    volumes: [artifacts:/data]
     ports: ["8080:8080"]
 
 volumes:
   db: {}
+  artifacts: {}

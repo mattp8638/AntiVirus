@@ -111,7 +111,7 @@ def migrate(bind: Engine) -> list[int]:
             conn.execute(text("CREATE TABLE IF NOT EXISTS schema_migrations "
                               "(version INTEGER PRIMARY KEY, applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"))
             versions = set(conn.execute(text("SELECT version FROM schema_migrations")).scalars())
-            if versions - {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}:
+            if versions - {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}:
                 raise RuntimeError("Database schema is newer than this application")
             if 1 not in versions:
                 Base.metadata.create_all(conn)
@@ -164,6 +164,11 @@ def migrate(bind: Engine) -> list[int]:
                 ensure_columns(Base, conn)  # backup_plans.ingest_token_hash
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (10)"))
                 applied.append(10)
+            if 11 not in versions:
+                from .models import DeviceArtifact
+                DeviceArtifact.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (11)"))
+                applied.append(11)
             conn.commit()
         except Exception:
             conn.rollback()

@@ -1,6 +1,7 @@
 #include "AgentService.h"
 #include "ExtendedPolicy.h"
 #include "NetworkProbe.h"
+#include "BundleArchive.h"
 
 #include <wtsapi32.h>
 
@@ -2258,9 +2259,25 @@ std::wstring AgentService::ExecuteSupportBundleCommand(const RemoteCommand& comm
                       std::wstring(L"{\"commandId\":\"") + command.commandId + L"\",\"manifestPath\":\"" +
                           Utf8ToWide(EscapeJsonString(result.manifestPath.wstring())) + L"\"}");
 
+  // Send the bundle to the cloud so responders can download it; the local copy stays as before.
+  std::wstring upload;
+  try {
+    std::vector<std::string> skipped;
+    const auto archive = BuildTarArchive(result.bundleRoot, 150u * 1024u * 1024u, &skipped);
+    if (!controlPlaneClient_ || state_.deviceId.empty()) {
+      throw std::runtime_error("the device is not enrolled");
+    }
+    const auto name = std::wstring(sanitized ? L"support-bundle-sanitized" : L"support-bundle") + L".tar";
+    const auto artifactId = controlPlaneClient_->UploadCommandArtifact(state_, command.commandId, name, archive);
+    upload = L",\"artifactId\":\"" + artifactId + L"\",\"bundleBytes\":" + std::to_wstring(archive.size()) +
+             L",\"skippedFiles\":" + std::to_wstring(skipped.size());
+  } catch (const std::exception& error) {
+    upload = L",\"uploadError\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(error.what()))) + L"\"";
+  }
+
   return std::wstring(L"{\"commandId\":\"") + command.commandId + L"\",\"manifestPath\":\"" +
          Utf8ToWide(EscapeJsonString(result.manifestPath.wstring())) + L"\",\"copiedFileCount\":" +
-         std::to_wstring(result.copiedFileCount) + L"}";
+         std::to_wstring(result.copiedFileCount) + upload + L"}";
 }
 
 std::wstring AgentService::ExecuteStorageMaintenanceCommand(const RemoteCommand& command) {

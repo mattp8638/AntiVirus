@@ -635,7 +635,7 @@ func (a *Agent) Execute(cmd Command) (map[string]interface{}, error) {
 		a.refreshSignatures()
 		return map[string]interface{}{"revision": a.state.Policy.Revision, "signatures": a.scanner.Version}, nil
 	case "support.bundle", "forensics.collect":
-		return a.triage(), nil
+		return a.collectBundle(cmd), nil
 	case "update.apply":
 		var p struct {
 			Force bool `json:"force"`

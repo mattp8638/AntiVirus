@@ -1,4 +1,5 @@
 #include "ControlPlaneClient.h"
+#include "CryptoUtils.h"
 
 #include <windows.h>
 #include <winhttp.h>
@@ -1183,6 +1184,24 @@ void ControlPlaneClient::CompleteCommand(const AgentState& state, const std::wst
   static_cast<void>(RequestJson(
       L"POST", JoinUrl(baseUrl_, L"/api/v1/devices/" + state.deviceId + L"/commands/" + commandId + L"/complete"),
       body.str(), deviceApiKey));
+}
+
+std::wstring ControlPlaneClient::UploadCommandArtifact(const AgentState& state, const std::wstring& commandId,
+                                                     const std::wstring& filename, const std::string& data) const {
+  if (state.deviceId.empty()) {
+    throw std::runtime_error("Cannot upload a bundle without a device identifier");
+  }
+  std::wstring safeName;
+  for (const auto ch : filename) {
+    safeName += (std::iswalnum(ch) || ch == L'.' || ch == L'-' || ch == L'_') ? ch : L'_';
+  }
+  const auto sha256 = ComputeBufferSha256(reinterpret_cast<const unsigned char*>(data.data()), data.size());
+  const auto response = RequestJson(
+      L"POST",
+      JoinUrl(baseUrl_, L"/api/v1/devices/" + state.deviceId + L"/commands/" + commandId + L"/artifact?filename=" + safeName +
+                            L"&sha256=" + sha256),
+      data, ExtractDeviceApiKeyFromCommandChannelUrl(state.commandChannelUrl));
+  return RequireString(ExtractJsonString(response.body, "artifactId"), "artifactId");
 }
 
 UpdateCheckResult ControlPlaneClient::CheckForUpdates(const AgentState& state, const std::wstring& signaturesVersion,
