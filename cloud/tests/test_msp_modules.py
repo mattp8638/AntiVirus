@@ -167,3 +167,20 @@ def test_backup_stale_and_future_completion(client, admin, tenant):
     assert client.get("/api/console/backup/plans", headers=admin).json()[0]["health"] == "stale"
     body.update(externalId="future", completedAt=(datetime.now(timezone.utc)+timedelta(hours=2)).isoformat())
     assert client.post("/api/console/backup/plans/"+plan["id"]+"/runs",headers=admin,json=body).status_code == 400
+
+
+def test_grc_controls_combine_automatic_checks_and_register_evidence(client, admin, tenant):
+    library = client.get(f"/api/console/grc/controls?tenant_id={tenant['id']}", headers=admin).json()["frameworks"]
+    ce = next(f for f in library if f["framework"] == "cyber-essentials")
+    access = next(c for c in ce["controls"] if c["id"] == "CE-3")
+    assert access["status"] in ("met", "gap") and access["records"] == []
+    gap = next(c for c in ce["controls"] if c["status"] == "gap")
+    record = post(client, admin, "grc/records", {"tenantId": tenant["id"], "kind": "evidence", "title": "Signed access policy",
+                                                 "framework": "Cyber Essentials", "control": f"{gap['id']} {gap['title']}"})
+    library = client.get(f"/api/console/grc/controls?tenant_id={tenant['id']}", headers=admin).json()["frameworks"]
+    linked = next(c for f in library if f["framework"] == "cyber-essentials" for c in f["controls"] if c["id"] == gap["id"])
+    assert [r["id"] for r in linked["records"]] == [record["id"]] and linked["status"] == "gap"  # draft is not evidence yet
+    # Unenforced policy switches never count as passing evidence.
+    nist = next(f for f in library if f["framework"] == "nist-csf-2")
+    recovery = next(c for c in nist["controls"] if c["id"] == "RC.RP")
+    assert not recovery["passed"] and "not enforced" in recovery["evidence"][0]

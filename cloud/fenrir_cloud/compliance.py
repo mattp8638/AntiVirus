@@ -39,6 +39,9 @@ def _s(path: str) -> Check:
     def check(ctx: Context) -> tuple[bool, str]:
         value = ctx.settings[section][key]
         ok = value not in (False, "off", "none", "allow", "audit") if spec.kind in {"bool", "enum"} else bool(value)
+        if ok and not policy_schema.enforced_on(path, spec):
+            # A switch no agent acts on is not evidence of a control.
+            return False, f"{spec.label}: {value} (set in policy, but not enforced by any agent yet)"
         return ok, f"{spec.label}: {value}"
 
     return check
