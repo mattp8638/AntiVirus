@@ -1222,6 +1222,7 @@ void AgentService::RunSyncLoop(const AgentRunMode mode) {
       PublishHeartbeat(cycle);
       MaybeSelfUpdate(cycle);
       ExpireBreakGlassAccount();
+      ExpireElevations();
       if (GetTickCount64() - lastLocalAdminCheck_ > 60ULL * 60 * 1000 || lastLocalAdminCheck_ == 0) {
         lastLocalAdminCheck_ = GetTickCount64();
         EnforceLocalAdminPolicy();
@@ -2115,6 +2116,19 @@ std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
   if (command.type == L"localadmin.rotate") {
     return RotateLocalAdminPassword(true);
   }
+  if (command.type == L"elevation.request" || command.type == L"elevation.status") {
+    // Only the signed-in user, from the agent window (the local pipe), asks for their own elevation.
+    if (command.issuedBy.rfind(L"local-dashboard:", 0) != 0 || command.callerSid.empty()) {
+      throw std::runtime_error("Admin access is requested from the agent window on the device");
+    }
+    return command.type == L"elevation.request" ? RequestElevation(command) : ElevationStatus(command);
+  }
+  if (command.type == L"elevation.grant" || command.type == L"elevation.revoke") {
+    if (command.issuedBy.rfind(L"local-dashboard:", 0) == 0) {
+      throw std::runtime_error("Admin access is granted from the Fenrir console");
+    }
+    return command.type == L"elevation.grant" ? GrantElevation(command) : RevokeElevation(command);
+  }
   if (command.type == L"ransomware.rollback") {
     if (command.issuedBy.rfind(L"local-dashboard:", 0) == 0) {
       throw std::runtime_error("Ransomware rollback can only be started from the Fenrir console.");
@@ -2680,6 +2694,19 @@ std::wstring AgentService::ExecuteLocalAdminAuditCommand(const RemoteCommand& co
 std::vector<std::wstring> AgentService::LocalAdminKeepList(const std::wstring& payloadJson) const {
   auto keep = ExtractPayloadStringArray(payloadJson, "keep");
   keep.push_back(laps::kBreakGlassAccount);
+  // Users with temporary admin rights keep them until they expire.
+  {
+    std::ifstream in(config_.runtimeDatabasePath.parent_path() / L"elevations.json", std::ios::binary);
+    std::stringstream text;
+    text << in.rdbuf();
+    if (const auto parsed = json::Parse(text.str())) {
+      if (const auto* grants = parsed->Get("grants"); grants && std::get_if<json::Array>(&grants->v)) {
+        for (const auto& grant : std::get<json::Array>(grants->v)) {
+          if (const auto* sid = grant.Get("sid"); sid && sid->String()) keep.push_back(Utf8ToWide(*sid->String()));
+        }
+      }
+    }
+  }
   // The account LAPS manages stays an administrator.
   if (const auto root = policy_.modulesJson.empty() ? std::optional<json::Value>{} : json::Parse(policy_.modulesJson)) {
     if (const auto* privilege = root->Get("privilege")) {
@@ -3369,6 +3396,218 @@ std::wstring AgentService::RotateLocalAdminPassword(const bool force) {
   return L"{\"rotated\":true,\"account\":\"" + Utf8ToWide(EscapeJsonString(account)) + L"\",\"version\":\"" + version + L"\"}";
 }
 
+namespace {
+
+struct ElevationGrant {
+  std::wstring sid, user, requestId;
+  long long until{0};
+  bool wasAdmin{false};
+};
+struct ElevationPending {
+  std::wstring sid, requestId;
+  long long at{0};
+};
+struct ElevationState {
+  std::vector<ElevationGrant> grants;
+  std::vector<ElevationPending> pending;
+};
+
+ElevationState LoadElevations(const std::filesystem::path& file) {
+  ElevationState state;
+  std::ifstream in(file, std::ios::binary);
+  std::stringstream text;
+  text << in.rdbuf();
+  const auto parsed = json::Parse(text.str());
+  if (!parsed || !parsed->IsObject()) return state;
+  const auto str = [](const json::Value& v, const char* key) {
+    const auto* f = v.Get(key);
+    return f && f->String() ? Utf8ToWide(*f->String()) : std::wstring{};
+  };
+  const auto num = [](const json::Value& v, const char* key) {
+    const auto* f = v.Get(key);
+    return f && f->Number() ? static_cast<long long>(*f->Number()) : 0LL;
+  };
+  if (const auto* grants = parsed->Get("grants"); grants && std::get_if<json::Array>(&grants->v)) {
+    for (const auto& g : std::get<json::Array>(grants->v)) {
+      const auto* was = g.Get("wasAdmin");
+      state.grants.push_back({str(g, "sid"), str(g, "user"), str(g, "requestId"), num(g, "until"), was && was->Bool().value_or(false)});
+    }
+  }
+  if (const auto* pending = parsed->Get("pending"); pending && std::get_if<json::Array>(&pending->v)) {
+    for (const auto& p : std::get<json::Array>(pending->v)) state.pending.push_back({str(p, "sid"), str(p, "requestId"), num(p, "at")});
+  }
+  return state;
+}
+
+void SaveElevations(const std::filesystem::path& file, const ElevationState& state) {
+  const auto q = [](const std::wstring& v) { return L"\"" + Utf8ToWide(EscapeJsonString(v)) + L"\""; };
+  std::wstring body = L"{\"grants\":[";
+  for (std::size_t i = 0; i < state.grants.size(); ++i) {
+    const auto& g = state.grants[i];
+    body += (i ? L"," : L"") + std::wstring(L"{\"sid\":") + q(g.sid) + L",\"user\":" + q(g.user) + L",\"requestId\":" +
+            q(g.requestId) + L",\"until\":" + std::to_wstring(g.until) + L",\"wasAdmin\":" + (g.wasAdmin ? L"true" : L"false") + L"}";
+  }
+  body += L"],\"pending\":[";
+  for (std::size_t i = 0; i < state.pending.size(); ++i) {
+    const auto& p = state.pending[i];
+    body += (i ? L"," : L"") + std::wstring(L"{\"sid\":") + q(p.sid) + L",\"requestId\":" + q(p.requestId) + L",\"at\":" +
+            std::to_wstring(p.at) + L"}";
+  }
+  body += L"]}";
+  std::ofstream(file, std::ios::binary | std::ios::trunc) << WideToUtf8(body);
+}
+
+bool PlausibleUserSid(const std::wstring& sid) {
+  if (sid.size() > 120 || (sid.rfind(L"S-1-5-21-", 0) != 0 && sid.rfind(L"S-1-12-1-", 0) != 0)) return false;
+  return std::all_of(sid.begin() + 2, sid.end(), [](wchar_t c) { return (c >= L'0' && c <= L'9') || c == L'-'; });
+}
+
+std::wstring UnixToIso(const long long seconds) {
+  const std::time_t t = static_cast<std::time_t>(seconds);
+  std::tm utc{};
+  gmtime_s(&utc, &t);
+  wchar_t buffer[32]{};
+  wcsftime(buffer, 32, L"%Y-%m-%dT%H:%M:%SZ", &utc);
+  return buffer;
+}
+
+}  // namespace
+
+std::wstring AgentService::RequestElevation(const RemoteCommand& command) {
+  const auto root = policy_.modulesJson.empty() ? std::optional<json::Value>{} : json::Parse(policy_.modulesJson);
+  const auto* privilege = root && root->IsObject() ? root->Get("privilege") : nullptr;
+  const auto* enabled = privilege ? privilege->Get("enabled") : nullptr;
+  const auto* mode = privilege ? privilege->Get("elevationRequests") : nullptr;
+  if (!enabled || !enabled->Bool().value_or(false) || (mode && mode->String().value_or("approval") == "off")) {
+    throw std::runtime_error("Admin access requests are turned off on this device.");
+  }
+  const auto user = command.issuedBy.substr(std::wstring(L"local-dashboard:").size());
+  const auto reason = ExtractPayloadString(command.payloadJson, "reason").value_or(L"");
+  const std::string body = "{\"user\":\"" + EscapeJsonString(user.substr(0, 200)) + "\",\"userSid\":\"" +
+                           EscapeJsonString(command.callerSid) + "\",\"reason\":\"" + EscapeJsonString(reason.substr(0, 1000)) + "\"}";
+  const auto response = controlPlaneClient_->RequestElevation(IdentitySnapshot(), body);
+  const auto parsed = json::Parse(response);
+  const auto* id = parsed ? parsed->Get("id") : nullptr;
+  if (id && id->String()) {
+    const std::lock_guard lock(elevationMutex_);
+    const auto file = config_.runtimeDatabasePath.parent_path() / L"elevations.json";
+    auto state = LoadElevations(file);
+    std::erase_if(state.pending, [&](const ElevationPending& p) { return p.sid == command.callerSid; });
+    state.pending.push_back({command.callerSid, Utf8ToWide(*id->String()), static_cast<long long>(std::time(nullptr))});
+    SaveElevations(file, state);
+  }
+  QueueTelemetryEvent(L"elevation.requested", L"endpoint-client", user + L" asked for temporary admin access.",
+                      L"{\"user\":\"" + Utf8ToWide(EscapeJsonString(user)) + L"\"}");
+  return Utf8ToWide(response);
+}
+
+std::wstring AgentService::ElevationStatus(const RemoteCommand& command) {
+  const std::lock_guard lock(elevationMutex_);
+  const auto state = LoadElevations(config_.runtimeDatabasePath.parent_path() / L"elevations.json");
+  const auto now = static_cast<long long>(std::time(nullptr));
+  for (const auto& grant : state.grants) {
+    if (grant.sid == command.callerSid && grant.until > now) {
+      return L"{\"state\":\"granted\",\"until\":\"" + UnixToIso(grant.until) + L"\"}";
+    }
+  }
+  for (const auto& pending : state.pending) {
+    if (pending.sid == command.callerSid && now - pending.at < 24 * 3600) return L"{\"state\":\"pending\"}";
+  }
+  return L"{\"state\":\"none\"}";
+}
+
+std::wstring AgentService::GrantElevation(const RemoteCommand& command) {
+  const auto sid = ExtractPayloadString(command.payloadJson, "userSid").value_or(L"");
+  const auto user = ExtractPayloadString(command.payloadJson, "user").value_or(sid);
+  const auto requestId = ExtractPayloadString(command.payloadJson, "requestId").value_or(L"");
+  long long minutes = 30;
+  if (const auto pos = command.payloadJson.find(L"\"minutes\""); pos != std::wstring::npos) {
+    const auto digits = command.payloadJson.find_first_of(L"0123456789", pos + 9);
+    if (digits != std::wstring::npos) minutes = std::wcstoll(command.payloadJson.c_str() + digits, nullptr, 10);
+  }
+  minutes = std::clamp(minutes, 5LL, 480LL);
+  if (!PlausibleUserSid(sid)) {
+    throw std::runtime_error("The request does not name a valid user account");
+  }
+  if (laps::IsDomainController()) {
+    throw std::runtime_error("This is a domain controller; temporary admin rights are never granted on one");
+  }
+  const auto members = laps::ListAdministrators();
+  const bool wasAdmin = std::any_of(members.begin(), members.end(), [&](const laps::AdminMember& m) { return _wcsicmp(m.sid.c_str(), sid.c_str()) == 0; });
+  if (!wasAdmin) {
+    if (const auto status = laps::AddAdministrator(sid); status != 0) {
+      throw std::runtime_error("The user could not be added to the Administrators group (error " + std::to_string(status) + ")");
+    }
+  }
+  const auto until = static_cast<long long>(std::time(nullptr)) + minutes * 60;
+  {
+    const std::lock_guard lock(elevationMutex_);
+    const auto file = config_.runtimeDatabasePath.parent_path() / L"elevations.json";
+    auto state = LoadElevations(file);
+    bool keepWasAdmin = wasAdmin;
+    for (const auto& existing : state.grants) {
+      if (existing.sid == sid) keepWasAdmin = existing.wasAdmin;  // extending a grant keeps the original state
+    }
+    std::erase_if(state.grants, [&](const ElevationGrant& g) { return g.sid == sid; });
+    std::erase_if(state.pending, [&](const ElevationPending& p) { return p.sid == sid; });
+    state.grants.push_back({sid, user, requestId, until, keepWasAdmin});
+    SaveElevations(file, state);
+  }
+  QueueTelemetryEvent(L"elevation.granted", L"local-security",
+                      user + L" has temporary admin rights for " + std::to_wstring(minutes) + L" minutes.",
+                      L"{\"commandId\":\"" + command.commandId + L"\",\"user\":\"" + Utf8ToWide(EscapeJsonString(user)) +
+                          L"\",\"minutes\":" + std::to_wstring(minutes) + L",\"alreadyAdmin\":" + (wasAdmin ? L"true" : L"false") + L"}");
+  return L"{\"granted\":true,\"until\":\"" + UnixToIso(until) + L"\",\"alreadyAdmin\":" + (wasAdmin ? L"true" : L"false") + L"}";
+}
+
+std::wstring AgentService::RevokeElevation(const RemoteCommand& command) {
+  const auto sid = ExtractPayloadString(command.payloadJson, "userSid").value_or(L"");
+  const std::lock_guard lock(elevationMutex_);
+  const auto file = config_.runtimeDatabasePath.parent_path() / L"elevations.json";
+  auto state = LoadElevations(file);
+  bool removed = false;
+  for (const auto& grant : state.grants) {
+    if (grant.sid == sid && !grant.wasAdmin) removed = laps::RemoveAdministrator(sid) == 0;
+  }
+  std::erase_if(state.grants, [&](const ElevationGrant& g) { return g.sid == sid; });
+  std::erase_if(state.pending, [&](const ElevationPending& p) { return p.sid == sid; });
+  SaveElevations(file, state);
+  QueueTelemetryEvent(L"elevation.revoked", L"local-security", L"Temporary admin rights were revoked.",
+                      L"{\"commandId\":\"" + command.commandId + L"\",\"removed\":" + (removed ? L"true" : L"false") + L"}");
+  return L"{\"revoked\":true}";
+}
+
+void AgentService::ExpireElevations() {
+  const std::lock_guard lock(elevationMutex_);
+  const auto file = config_.runtimeDatabasePath.parent_path() / L"elevations.json";
+  std::error_code ec;
+  if (!std::filesystem::exists(file, ec)) return;
+  auto state = LoadElevations(file);
+  const auto now = static_cast<long long>(std::time(nullptr));
+  bool changed = false;
+  for (auto it = state.grants.begin(); it != state.grants.end();) {
+    if (it->until > now) {
+      ++it;
+      continue;
+    }
+    const auto status = it->wasAdmin ? 0UL : laps::RemoveAdministrator(it->sid);
+    QueueTelemetryEvent(status == 0 ? L"elevation.expired" : L"elevation.expiry.failed", L"local-security",
+                        status == 0 ? it->user + L"'s temporary admin rights ended."
+                                    : it->user + L"'s temporary admin rights ended but could not be removed.",
+                        L"{\"user\":\"" + Utf8ToWide(EscapeJsonString(it->user)) + L"\",\"error\":" + std::to_wstring(status) + L"}");
+    if (status == 0) {
+      it = state.grants.erase(it);
+      changed = true;
+    } else {
+      ++it;
+    }
+  }
+  const auto before = state.pending.size();
+  std::erase_if(state.pending, [now](const ElevationPending& p) { return now - p.at > 24 * 3600; });
+  changed = changed || before != state.pending.size();
+  if (changed) SaveElevations(file, state);
+}
+
 void AgentService::EnforceLocalAdminPolicy() {
   const auto extended = policy_.modulesJson.empty() ? ExtendedPolicy{} : ExtendedPolicy::Parse(policy_.modulesJson);
   if (!extended.removeLocalAdmins || state_.deviceId.empty() || laps::IsDomainController()) {
@@ -3570,6 +3809,11 @@ void AgentService::WriteExperienceFile() {
   out += ",\"firewallManaged\":" + b(flag(firewallSection, "enabled", false));
   out += ",\"ransomwareProtection\":" + b(flag(ransomware, "enabled", true));
   out += ",\"quickScanSchedule\":" + q(text(section("antimalware"), "quickScanSchedule", ""));
+  {
+    const auto* privilege = section("privilege");
+    const auto mode = flag(privilege, "enabled", false) ? text(privilege, "elevationRequests", "approval") : std::string("off");
+    out += ",\"elevationRequests\":" + q(mode == "auto-approve" || mode == "approval" ? mode : "off");
+  }
   out += "}";
   try {
     const auto path = config_.installRootPath / L"experience.json";

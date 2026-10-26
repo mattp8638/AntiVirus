@@ -88,6 +88,10 @@ CATALOG: tuple[CommandSpec, ...] = (
                 description="Enables the FenrirBreakGlass local administrator for the payload's hours (default 4, max 24). "
                             "Its password is stored first and shown in the device's Local admin tab."),
     CommandSpec("breakglass.disable", "Disable break-glass admin", "Privilege", permission="configure"),
+    CommandSpec("elevation.grant", "Grant temporary admin rights", "Privilege", permission="configure",
+                description="Sent when an elevation request is approved: adds the user to the local Administrators group "
+                            "for the request's minutes."),
+    CommandSpec("elevation.revoke", "Revoke temporary admin rights", "Privilege", permission="configure"),
     CommandSpec("update.apply", "Apply agent update", "Agent", permission="configure", platforms=ALL),
     CommandSpec("update.rollback", "Roll back agent update", "Agent", permission="configure"),
     CommandSpec("agent.repair", "Repair agent", "Agent", platforms=ALL),

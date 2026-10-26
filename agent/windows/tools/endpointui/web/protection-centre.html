@@ -203,6 +203,7 @@ let localPage = null;          // pages that live only in this window ("help")
 const sel = Object.create(null);
 let updFilter = 'available', updSearch = '', updPage = 0, exclTab = 'current', exclSearch = '';
 let supportDraft = { summary: '', details: '', contact: '' }, supportBusy = false;
+let elevationReason = '', elevationBusy = false;
 
 /* ---------- helpers ---------- */
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -263,6 +264,7 @@ function when(text) {
   const days = Math.floor((new Date(now.toDateString()) - new Date(d.toDateString())) / 86400000);
   if (days === 0) return `Today, ${time}`;
   if (days === 1) return `Yesterday, ${time}`;
+  if (days === -1) return `Tomorrow, ${time}`;
   if (days > 1 && days < 7) return `${d.toLocaleDateString([], { weekday: 'long' })}, ${time}`;
   return `${d.toLocaleDateString([], { day: 'numeric', month: 'short', year: d.getFullYear() === now.getFullYear() ? undefined : 'numeric' })}, ${time}`;
 }
@@ -629,6 +631,7 @@ function pageHelp() {
         <div class="actions" style="margin-top:4px"><button class="btn primary" data-act="supportRequest" ${supportBusy ? 'disabled' : ''}>${icon('chat')}${supportBusy ? 'Sending\u2026' : 'Send request'}</button></div>
       </div></div>
       <div class="stack">
+        ${elevationCard()}
         <div class="card"><div class="card-head"><h3>Contact</h3></div><div class="card-body">
           ${lines.length ? `<div class="contact">${lines.map(([ic, text]) => `<div>${icon(ic)}${esc(text)}</div>`).join('')}</div>` : '<p class="muted" style="margin:0">Your IT provider has not added contact details. Use the form to reach them.</p>'}</div></div>
         <div class="card"><div class="card-head"><h3>This device</h3></div><div class="card-body"><div class="kv">
@@ -638,6 +641,26 @@ function pageHelp() {
           ${S.agentVersion ? `<div class="k">Agent version</div><div class="v">${esc(S.agentVersion)}</div>` : ''}</div></div></div>
       </div>
     </div>`;
+}
+
+/* Temporary admin rights (privilege.elevationRequests): shown only when the policy allows requests. */
+function elevationCard() {
+  const mode = exp().elevationRequests || 'off';
+  if (mode === 'off') return '';
+  const st = S.elevation || {};
+  if (st.state === 'granted') {
+    return `<div class="card"><div class="card-head"><h3>Admin access</h3><span class="badge good">Active</span></div><div class="card-body">
+      <p style="margin:0 0 8px">You have administrator rights until <b>${esc(when(st.until))}</b>.</p>
+      <p class="muted small" style="margin:0">When Windows asks for an administrator, enter your own user name and password.</p></div></div>`;
+  }
+  if (st.state === 'pending') {
+    return `<div class="card"><div class="card-head"><h3>Admin access</h3><span class="badge">Waiting</span></div><div class="card-body">
+      <p class="muted" style="margin:0">Your request is waiting for ${esc(isFenrir() ? 'your IT team' : brand())} to approve it.</p></div></div>`;
+  }
+  return `<div class="card"><div class="card-head"><h3>Need admin access?</h3></div><div class="card-body">
+    <label class="f">What do you need it for?<input class="text" id="elvReason" maxlength="300" placeholder="For example: install the printer driver" value="${esc(elevationReason)}"></label>
+    <div class="actions"><button class="btn" data-act="elevationRequest" ${elevationBusy ? 'disabled' : ''}>${icon('shield')}${elevationBusy ? 'Sending\u2026' : (mode === 'auto-approve' ? 'Get admin access' : 'Ask for admin access')}</button></div>
+    <p class="muted small" style="margin:8px 0 0">Access is temporary and recorded.</p></div></div>`;
 }
 
 /* ---------- settings ---------- */
@@ -775,6 +798,14 @@ document.addEventListener('click', (ev) => {
     setTimeout(() => { if (supportBusy) { supportBusy = false; render(); } }, 20000);
     return;
   }
+  if (act === 'elevationRequest') {
+    elevationReason = document.getElementById('elvReason')?.value || elevationReason;
+    if (!elevationReason.trim()) { toast('warning', 'Say what you need admin access for first.'); document.getElementById('elvReason')?.focus(); return; }
+    elevationBusy = true; render();
+    send('elevationRequest', { reason: elevationReason.trim() });
+    setTimeout(() => { if (elevationBusy) { elevationBusy = false; render(); } }, 20000);
+    return;
+  }
   if (act === 'quarantineDelete' && !window.confirm('Delete this file permanently? It cannot be restored afterwards.')) return;
   const fields = {};
   if (t.dataset.preset) fields.preset = t.dataset.preset;
@@ -787,6 +818,7 @@ document.addEventListener('click', (ev) => {
 
 document.addEventListener('input', (ev) => {
   if (['supSummary', 'supDetails', 'supContact'].includes(ev.target.id)) { saveDraft(); return; }
+  if (ev.target.id === 'elvReason') { elevationReason = ev.target.value; return; }
   if (ev.target.id === 'updSearch') { updSearch = ev.target.value; updPage = 0; render(); }
   else if (ev.target.id === 'exclSearch') { exclSearch = ev.target.value; render(); }
 });
@@ -794,9 +826,10 @@ document.addEventListener('input', (ev) => {
 function onMessage(data) {
   if (data && data.notice) {
     toast(data.notice.tone, data.notice.text);
-    if (supportBusy) {
-      supportBusy = false;
-      if (data.notice.supportSent) supportDraft = { summary: '', details: '', contact: '' };
+    if (supportBusy || elevationBusy) {
+      if (elevationBusy && data.notice.supportSent) elevationReason = '';
+      if (supportBusy && data.notice.supportSent) supportDraft = { summary: '', details: '', contact: '' };
+      supportBusy = elevationBusy = false;
       render();
     }
     return;

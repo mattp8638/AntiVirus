@@ -259,6 +259,8 @@ struct UiContext {
   std::wstring webViewLogoDataUri;
   // experience.json written by the service: branding, support contact and what the user may do.
   std::string experienceJson{"{}"};
+  // The signed-in user's temporary admin status from the service (elevation.status), when requests are allowed.
+  std::wstring elevationJson{L"{}"};
   std::wstring brandName{L"Fenrir"};
   bool allowUserScans{true};
   bool trayIconAllowed{true};
@@ -2485,6 +2487,7 @@ std::wstring BuildWebViewStateJson(const UiContext& context) {
   json << L"{";
   json << L"\"pageKey\":\"" << JsonEscape(PageKey(context.currentPage)) << L"\",";
   json << L"\"experience\":" << antivirus::agent::Utf8ToWide(context.experienceJson) << L",";
+  json << L"\"elevation\":" << (context.elevationJson.empty() ? std::wstring(L"{}") : context.elevationJson) << L",";
   json << L"\"openThreatCount\":" << context.snapshot.openThreatCount << L",";
   json << L"\"quarantineCount\":" << context.snapshot.activeQuarantineCount << L",";
   json << L"\"agentVersion\":\"" << JsonEscape(NullableText(context.snapshot.agentState.agentVersion, L"")) << L"\",";
@@ -3638,6 +3641,13 @@ void OfferWebViewRuntime(UiContext& context) {
 
 void RefreshSnapshot(UiContext& context) {
   LoadExperience(context);
+  if (context.experienceJson.find("\"elevationRequests\":\"off\"") == std::string::npos &&
+      context.experienceJson.find("\"elevationRequests\"") != std::string::npos) {
+    const auto status = antivirus::agent::SendLocalBrokerCommand(context.config, L"elevation.status", L"", L"{}", L"", L"");
+    context.elevationJson = status.success && !status.responseJson.empty() && status.responseJson.front() == L'{' ? status.responseJson : L"{}";
+  } else {
+    context.elevationJson = L"{}";
+  }
   try {
     const auto refreshedSnapshot = antivirus::agent::LoadEndpointClientSnapshot(context.config);
     context.snapshot = refreshedSnapshot;
@@ -4334,6 +4344,27 @@ void HandleWebViewMessage(UiContext& context, const std::wstring& message) {
                                                 (result.errorMessage.empty() ? std::wstring(L"the protection service did not answer.")
                                                                              : result.errorMessage));
     }
+    return;
+  }
+
+  if (_wcsicmp(action.c_str(), L"elevationRequest") == 0) {
+    const auto reason = GetQueryValue(pairs, L"reason");
+    const auto payload = L"{\"reason\":\"" + JsonEscape(reason.substr(0, 300)) + L"\"}";
+    const auto result = antivirus::agent::SendLocalBrokerCommand(context.config, L"elevation.request", L"", payload, L"", L"");
+    if (result.success) {
+      const bool granted = result.responseJson.find(L"\"status\":\"approved\"") != std::wstring::npos;
+      PostWebViewNotice(context, L"good",
+                        granted ? L"Approved. Admin access will be ready in a moment; when Windows asks for an administrator, "
+                                  L"enter your own user name and password."
+                                : L"Your request was sent. You will get admin access once it is approved.",
+                        true);
+    } else {
+      PostWebViewNotice(context, L"danger", L"Your request could not be sent: " +
+                                                (result.errorMessage.empty() ? std::wstring(L"the protection service did not answer.")
+                                                                             : result.errorMessage));
+    }
+    RefreshSnapshot(context);
+    PublishWebViewState(context);
     return;
   }
 

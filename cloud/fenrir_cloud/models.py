@@ -196,6 +196,30 @@ class DeviceArtifact(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class ElevationRequest(Base):
+    """A signed-in user asking for temporary local admin rights (privilege.elevationRequests).
+
+    pending -> approved (a technician or the auto-approve policy; elevation.grant is queued) -> granted (the
+    agent added the user) -> expired; or denied / failed / revoked.
+    """
+
+    __tablename__ = "elevation_requests"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("elv"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    user: Mapped[str] = mapped_column(String(200))
+    user_sid: Mapped[str] = mapped_column(String(200))
+    reason: Mapped[str] = mapped_column(String(1000), default="")
+    minutes: Mapped[int] = mapped_column(Integer, default=30)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    decided_by: Mapped[str] = mapped_column(String(200), default="")
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    note: Mapped[str] = mapped_column(String(500), default="")
+    command_id: Mapped[str] = mapped_column(String(32), default="")
+    granted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class LocalAdminPassword(Base):
     """A local administrator password the Windows agent set (LAPS-style), stored encrypted with the vault key.
 

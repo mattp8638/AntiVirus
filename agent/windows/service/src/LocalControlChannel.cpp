@@ -258,9 +258,11 @@ LocalAction ResolveActionForCommandType(const std::wstring& type) {
 }
 
 bool IsSupportedLocalCommand(const std::wstring& type) {
-  static const std::array<const wchar_t*, 26> kSupportedTypes = {
+  static const std::array<const wchar_t*, 28> kSupportedTypes = {
       L"local.auth.session.begin",
       L"support.request",
+      L"elevation.request",
+      L"elevation.status",
       L"amsi.telemetry.submit",
       L"quarantine.restore",
       L"quarantine.delete",
@@ -783,6 +785,7 @@ void LocalControlChannel::Run() {
       command.recordId = request.recordId;
       command.targetPath = request.targetPath;
       command.payloadJson = request.payloadJson;
+      command.callerSid = callerSid;
 
       const auto resultJson = executor_(command);
       WritePipeMessage(pipe, BuildResponseJson(true, 200, resultJson, L"", LocalUserRoleToString(authorization.role),

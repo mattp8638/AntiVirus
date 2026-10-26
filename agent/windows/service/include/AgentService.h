@@ -174,6 +174,13 @@ class AgentService {
   // Local admin password rotation (privilege.rotateLocalAdminPassword); force = the localadmin.rotate command.
   std::wstring RotateLocalAdminPassword(bool force);
   void ExpireBreakGlassAccount();
+  // Temporary admin rights (privilege.elevationRequests).
+  std::wstring RequestElevation(const RemoteCommand& command);
+  std::wstring ElevationStatus(const RemoteCommand& command);
+  std::wstring GrantElevation(const RemoteCommand& command);
+  std::wstring RevokeElevation(const RemoteCommand& command);
+  void ExpireElevations();
+  std::mutex elevationMutex_{};
   void CheckRemovableMedia();  // antimalware.scanRemovableMedia
   unsigned long knownDrives_{0};
   unsigned long pendingRemovable_{0};
