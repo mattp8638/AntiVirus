@@ -190,6 +190,58 @@ class Peer:
                 return False
 
 
+class Recorder:
+    """Writes a session's screen tiles and terminal output to a playback file.
+
+    Format: b"FENREC1\n", then records of [uint32 ms since start][uint8 kind][uint32 length][payload]
+    (kind 1 = binary screen tile as relayed, kind 0 = JSON text message from the screen or terminal channel).
+    Viewer input is never recorded.
+    """
+
+    MAGIC = b"FENREC1\n"
+
+    def __init__(self, path, limit: int) -> None:
+        import hashlib
+        import time
+
+        self.path, self.limit = path, limit
+        self.file = open(path, "wb")
+        self.digest = hashlib.sha256()
+        self.started = time.monotonic()
+        self.size = 0
+        self.records = 0
+        self._write(self.MAGIC)
+
+    def _write(self, data: bytes) -> None:
+        self.file.write(data)
+        self.digest.update(data)
+        self.size += len(data)
+
+    def add(self, data: str | bytes) -> None:
+        import struct
+        import time
+
+        if self.file is None or self.size >= self.limit:
+            return
+        if isinstance(data, bytes):
+            if not data or data[0] != 0x01:  # screen tiles only (file transfers are not recorded)
+                return
+            kind, payload = 1, data
+        else:
+            if '"ch":"screen"' not in data and '"ch":"term"' not in data:
+                return
+            kind, payload = 0, data.encode()
+        elapsed = int((time.monotonic() - self.started) * 1000)
+        self._write(struct.pack(">IBI", elapsed, kind, len(payload)) + payload)
+        self.records += 1
+
+    def close(self) -> tuple[int, str, int]:
+        if self.file is not None:
+            self.file.close()
+            self.file = None
+        return self.size, self.digest.hexdigest(), self.records
+
+
 @dataclass
 class Room:
     session_id: str
@@ -200,6 +252,7 @@ class Room:
     bytes_relayed: int = 0
     events: list[dict] = field(default_factory=list)
     agent_ready: asyncio.Event = field(default_factory=asyncio.Event)
+    recorder: "Recorder | None" = None
 
 
 class RelayHub:
