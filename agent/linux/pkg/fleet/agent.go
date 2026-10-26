@@ -81,6 +81,8 @@ type Agent struct {
 	firewallSet     bool
 	// SSH brute-force protection (bruteforce.go).
 	brute *bruteGuard
+	// New USB drives and memory cards (removable.go).
+	media *removableWatch
 }
 
 func New(cfg Config) *Agent {
@@ -481,6 +483,7 @@ func (a *Agent) Run() {
 	sigs := time.NewTicker(time.Duration(maxInt(5, a.state.Policy.ModuleInt("updates", "signatureIntervalMinutes", 60))) * time.Minute)
 	upload := time.NewTicker(time.Duration(maxInt(5, a.state.Policy.ModuleInt("edr", "telemetryUploadSeconds", 30))) * time.Second)
 	brute := time.NewTicker(20 * time.Second)
+	media := time.NewTicker(5 * time.Second)
 	defer func() {
 		sense.Stop()
 		beat.Stop()
@@ -488,6 +491,7 @@ func (a *Agent) Run() {
 		sigs.Stop()
 		upload.Stop()
 		brute.Stop()
+		media.Stop()
 	}()
 	a.metrics.Collect() // prime the CPU counters so the first heartbeat has a real value
 	a.heartbeat()
@@ -516,6 +520,8 @@ func (a *Agent) Run() {
 			a.RunCommands()
 		case now := <-brute.C:
 			a.checkBruteForce(now)
+		case now := <-media.C:
+			a.checkRemovableMedia(now)
 		case <-sigs.C:
 			a.refreshSignatures()
 			a.refreshModel()

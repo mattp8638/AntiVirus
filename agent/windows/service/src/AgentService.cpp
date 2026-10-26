@@ -1468,9 +1468,15 @@ bool AgentService::WaitForNextCycle(const AgentRunMode mode, const int nextCycle
     if (now >= deadline) {
       return true;
     }
+    CheckRemovableMedia();
     HANDLE events[2] = {stopEvent_, wakeEvent_};
     const DWORD count = wakeEvent_ != nullptr ? 2 : 1;
-    const auto signalled = WaitForMultipleObjects(count, events, FALSE, static_cast<DWORD>(deadline - now));
+    // Wake every few seconds to notice USB drives being plugged in.
+    const auto signalled =
+        WaitForMultipleObjects(count, events, FALSE, static_cast<DWORD>(std::min<ULONGLONG>(deadline - now, 3000)));
+    if (signalled == WAIT_TIMEOUT) {
+      continue;
+    }
     if (signalled == WAIT_OBJECT_0) {
       return false;
     }
@@ -1480,6 +1486,11 @@ bool AgentService::WaitForNextCycle(const AgentRunMode mode, const int nextCycle
         DrainDeferredTelemetry();
         PollAndExecuteCommands(nextCycle);
         DrainProcessTelemetry();
+        // Detections (ransomware, brute force) also wake the loop: send them now.
+        DrainRansomwareTelemetry();
+        if (config_.managedMode) {
+          FlushTelemetryQueue();
+        }
       } catch (const std::exception& error) {
         std::wcerr << L"Handling a wake-up failed, continuing: " << Utf8ToWide(error.what()) << std::endl;
       } catch (...) {
@@ -1487,6 +1498,41 @@ bool AgentService::WaitForNextCycle(const AgentRunMode mode, const int nextCycle
       continue;
     }
     return true;
+  }
+}
+
+void AgentService::CheckRemovableMedia() {
+  const auto drives = GetLogicalDrives();
+  unsigned long removable = 0;
+  for (int i = 2; i < 26; ++i) {  // C: onwards; A: and B: are floppy letters
+    if ((drives & (1UL << i)) == 0) continue;
+    const wchar_t root[4] = {static_cast<wchar_t>(L'A' + i), L':', L'\\', 0};
+    if (GetDriveTypeW(root) == DRIVE_REMOVABLE) removable |= 1UL << i;
+  }
+  if (!drivesPrimed_) {
+    // Drives already attached when the service starts are not rescanned on every restart.
+    drivesPrimed_ = true;
+    knownDrives_ = removable;
+    return;
+  }
+  pendingRemovable_ |= removable & ~knownDrives_;
+  pendingRemovable_ &= removable;  // unplugged before its scan started
+  knownDrives_ = removable;
+  if (pendingRemovable_ == 0) return;
+  const auto extended = policy_.modulesJson.empty() ? ExtendedPolicy{} : ExtendedPolicy::Parse(policy_.modulesJson);
+  if (!extended.scanRemovableMedia) {
+    pendingRemovable_ = 0;
+    return;
+  }
+  for (int i = 2; i < 26; ++i) {
+    if ((pendingRemovable_ & (1UL << i)) == 0) continue;
+    const std::wstring root = std::wstring(1, static_cast<wchar_t>(L'A' + i)) + L":\\";
+    // One scan at a time: if another is running, try again on the next tick.
+    if (StartBackgroundScan(L"scan.removable", L"removable drive " + root.substr(0, 2), L"removable:" + root.substr(0, 2),
+                            {std::filesystem::path(root)})) {
+      pendingRemovable_ &= ~(1UL << i);
+    }
+    break;
   }
 }
 

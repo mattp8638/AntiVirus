@@ -97,6 +97,7 @@ struct ExtendedPolicy {
   bool telemetryMinimal{false};      // edr.telemetryLevel == "minimal"
   bool allowQuarantineRestore{false};  // modules.experience: end users may restore from quarantine
   bool breakGlassAllowed{true};        // modules.privilege.breakGlassAllowed
+  bool scanRemovableMedia{true};  // modules.antimalware.scanRemovableMedia: scan USB drives when inserted
   bool scanNetworkDrives{false};   // modules.antimalware.scanNetworkDrives: full scans include mapped drives
   int scanCpuLimitPercent{100};    // modules.antimalware.scanCpuLimitPercent: scheduled scans, share of one core
   ScanPlan quickScanPlan;          // modules.antimalware.quickScanPlan

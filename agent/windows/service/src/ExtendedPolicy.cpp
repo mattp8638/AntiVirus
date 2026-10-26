@@ -346,6 +346,7 @@ ExtendedPolicy ExtendedPolicy::Parse(const std::string& modulesJson) {
   policy.behavior.excludedProcesses = WideList(antimalware, "exclusionProcesses");
   policy.quickScanPlan = ParseScanPlan(antimalware, "quickScanPlan");
   policy.scanNetworkDrives = BoolOr(antimalware, "scanNetworkDrives", false);
+  policy.scanRemovableMedia = BoolOr(antimalware, "scanRemovableMedia", true);
   if (antimalware) {
     if (const auto* limit = antimalware->Get("scanCpuLimitPercent"); limit && limit->Number()) {
       policy.scanCpuLimitPercent = std::clamp(static_cast<int>(*limit->Number()), 5, 100);

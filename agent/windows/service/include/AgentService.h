@@ -171,6 +171,10 @@ class AgentService {
   // Local admin password rotation (privilege.rotateLocalAdminPassword); force = the localadmin.rotate command.
   std::wstring RotateLocalAdminPassword(bool force);
   void ExpireBreakGlassAccount();
+  void CheckRemovableMedia();  // antimalware.scanRemovableMedia
+  unsigned long knownDrives_{0};
+  unsigned long pendingRemovable_{0};
+  bool drivesPrimed_{false};
   void EnforceLocalAdminPolicy();  // privilege.removeLocalAdmins
   std::vector<std::wstring> LocalAdminKeepList(const std::wstring& payloadJson) const;
   std::wstring ExecuteInventoryUninstall(const RemoteCommand& command);

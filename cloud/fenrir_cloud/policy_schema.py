@@ -468,7 +468,6 @@ AGENT_SUPPORT: dict[str, tuple[str, ...]] = {
     "applicationControl.allowedPublishers": ('windows',),
     "applicationControl.blockNewlySeenExecutables": (),
     "privilege.removeLocalAdmins": ('windows',),
-    "antimalware.scanRemovableMedia": (),
     "privilege.elevationRequests": (),
     "privilege.elevationMinutes": (),
     "privilege.autoApprovePublishers": (),
