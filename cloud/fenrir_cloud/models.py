@@ -560,6 +560,20 @@ class Ticket(Base):
     responded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     respond_due_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     sla_warned: Mapped[bool | None] = mapped_column(Boolean, default=False, nullable=True)
+    # ITIL record type and problem/change management (all optional; plain tickets are incidents).
+    record_type: Mapped[str | None] = mapped_column(String(20), default="incident", nullable=True)  # incident|service_request|problem|change
+    problem_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)  # incident -> its problem
+    root_cause: Mapped[str | None] = mapped_column(Text, default="", nullable=True)
+    workaround: Mapped[str | None] = mapped_column(Text, default="", nullable=True)
+    known_error: Mapped[bool | None] = mapped_column(Boolean, default=False, nullable=True)
+    change_risk: Mapped[str | None] = mapped_column(String(10), default="", nullable=True)  # Low|Medium|High
+    change_state: Mapped[str | None] = mapped_column(String(20), default="", nullable=True)
+    planned_start: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    planned_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    implementation_plan: Mapped[str | None] = mapped_column(Text, default="", nullable=True)
+    backout_plan: Mapped[str | None] = mapped_column(Text, default="", nullable=True)
+    test_plan: Mapped[str | None] = mapped_column(Text, default="", nullable=True)
+    change_approvals: Mapped[list | None] = mapped_column(JSON, default=list, nullable=True)  # [{by, decision, comment, at}]
     status_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     email_thread_id: Mapped[str | None] = mapped_column(String(300), default="", nullable=True)
     workflow_fired: Mapped[list | None] = mapped_column(JSON, default=list, nullable=True)  # markers so timed rules fire once

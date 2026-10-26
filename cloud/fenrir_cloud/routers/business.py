@@ -436,8 +436,6 @@ def _report_data(db: Session, tenant: Tenant, days: int) -> dict:
                             .group_by(Vulnerability.severity)).all())
     frameworks = compliance.evaluate(db, tenant)
     tickets = db.execute(select(Ticket).where(Ticket.account_tenant_id == tenant.id, Ticket.created_at >= since)).scalars().all()
-    resolved = [t for t in tickets if t.resolved_at]
-    within_sla = [t for t in resolved if t.sla_due_at and t.resolved_at <= t.sla_due_at]
     return {
         "tenant": tenant.name, "periodDays": days, "generatedAt": utcnow().isoformat() + "Z",
         "devices": {"total": len(devices), "isolatedNow": sum(d.isolated for d in devices),
@@ -445,8 +443,47 @@ def _report_data(db: Session, tenant: Tenant, days: int) -> dict:
         "alerts": alerts, "incidents": {"total": len(incidents), "resolved": sum(i.status in ("resolved", "closed") for i in incidents)},
         "threatEvents": threats, "dnsBlocked": dns_blocked, "openVulnerabilities": vulns,
         "compliance": [{"name": f["name"], "score": f["score"]} for f in frameworks],
-        "service": {"tickets": len(tickets), "resolved": len(resolved),
-                    "slaMet": round(100 * len(within_sla) / len(resolved)) if resolved else None},
+        "service": _service_summary(db, tenant, tickets, since),
+    }
+
+
+def _hours(deltas: list[timedelta]) -> float | None:
+    return round(sum(d.total_seconds() for d in deltas) / 3600 / len(deltas), 1) if deltas else None
+
+
+def _service_summary(db: Session, tenant: Tenant, tickets: list[Ticket], since) -> dict:
+    """Service-desk section of the customer report: volume, SLA, speed, effort and change activity."""
+    from collections import Counter
+
+    resolved = [t for t in tickets if t.resolved_at]
+    within_sla = [t for t in resolved if t.sla_due_at and t.resolved_at <= t.sla_due_at]
+    by_priority = {}
+    for priority in ("P1", "P2", "P3", "P4"):
+        group = [t for t in tickets if t.priority == priority]
+        done = [t for t in group if t.resolved_at]
+        met = [t for t in done if t.sla_due_at and t.resolved_at <= t.sla_due_at]
+        if group:
+            by_priority[priority] = {"tickets": len(group), "resolved": len(done),
+                                     "slaMet": round(100 * len(met) / len(done)) if done else None}
+    hours = db.execute(select(func.sum(TimeEntry.hours)).where(TimeEntry.account_tenant_id == tenant.id,
+                                                               TimeEntry.started_at >= since)).scalar() or 0
+    changes = db.execute(select(Ticket).where(Ticket.account_tenant_id == tenant.id, Ticket.record_type == "change",
+                                              Ticket.updated_at >= since)).scalars().all()
+    open_now = db.execute(select(func.count()).select_from(Ticket).where(
+        Ticket.account_tenant_id == tenant.id, Ticket.resolved_at.is_(None))).scalar() or 0
+    return {
+        "tickets": len(tickets), "resolved": len(resolved), "openNow": open_now,
+        "slaMet": round(100 * len(within_sla) / len(resolved)) if resolved else None,
+        "byPriority": by_priority,
+        "avgFirstResponseHours": _hours([t.responded_at - t.created_at for t in tickets if t.responded_at]),
+        "avgResolutionHours": _hours([t.resolved_at - t.created_at for t in resolved]),
+        "hoursWorked": round(hours, 1),
+        "topCategories": [{"name": name, "tickets": count} for name, count in
+                          Counter(t.type or t.queue or "General" for t in tickets).most_common(5)],
+        "changesImplemented": sum(1 for c in changes if c.change_state in ("Implemented", "Closed")),
+        "changesFailed": sum(1 for c in changes if c.change_state == "Failed"),
+        "problemsOpen": db.execute(select(func.count()).select_from(Ticket).where(
+            Ticket.account_tenant_id == tenant.id, Ticket.record_type == "problem", Ticket.resolved_at.is_(None))).scalar() or 0,
     }
 
 
@@ -471,6 +508,16 @@ def executive_report_html(tenant_id: str | None = None, days: int = 30, principa
 
     compliance_rows = "".join(f"<tr><td>{e(c['name'])}</td><td>{c['score']}%</td></tr>" for c in data["compliance"])
     sla = "n/a" if data["service"]["slaMet"] is None else f"{data['service']['slaMet']}%"
+    svc = data["service"]
+
+    def hours(value) -> str:
+        return "n/a" if value is None else f"{value} h"
+
+    priority_rows = "".join(
+        f"<tr><td>{p}</td><td>{v['tickets']}</td><td>{v['resolved']}</td><td>{'n/a' if v['slaMet'] is None else str(v['slaMet']) + '%'}</td></tr>"
+        for p, v in svc["byPriority"].items()) or "<tr><td colspan=4>No tickets</td></tr>"
+    category_rows = "".join(f"<tr><td>{e(c['name'])}</td><td>{c['tickets']}</td></tr>" for c in svc["topCategories"]) \
+        or "<tr><td colspan=2>No tickets</td></tr>"
     body = f"""<!doctype html><html><head><meta charset="utf-8"><title>Security report - {e(data['tenant'])}</title>
 <style>body{{font-family:system-ui,sans-serif;max-width:860px;margin:32px auto;color:#1b2430;padding:0 16px}}
 h1{{margin-bottom:4px}}.sub{{color:#5b6675}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:24px 0}}
@@ -484,6 +531,13 @@ table{{width:100%;border-collapse:collapse;margin:8px 0 24px}}td{{border-bottom:
 <h2>Alerts by severity</h2><table>{rows(data['alerts'])}</table>
 <h2>Open vulnerabilities</h2><table>{rows(data['openVulnerabilities'])}</table>
 <h2>Compliance posture</h2><table>{compliance_rows}</table>
-<h2>Service desk</h2><table><tr><td>Tickets</td><td>{data['service']['tickets']}</td></tr>
-<tr><td>Resolved within SLA</td><td>{sla}</td></tr></table></body></html>"""
+<h2>Service desk</h2><table><tr><td>Tickets raised</td><td>{svc['tickets']} ({svc['resolved']} resolved, {svc['openNow']} open now)</td></tr>
+<tr><td>Resolved within SLA</td><td>{sla}</td></tr>
+<tr><td>Average first response</td><td>{hours(svc['avgFirstResponseHours'])}</td></tr>
+<tr><td>Average time to resolve</td><td>{hours(svc['avgResolutionHours'])}</td></tr>
+<tr><td>Engineer time</td><td>{svc['hoursWorked']} hours</td></tr>
+<tr><td>Changes implemented</td><td>{svc['changesImplemented']} ({svc['changesFailed']} failed)</td></tr>
+<tr><td>Open problems under investigation</td><td>{svc['problemsOpen']}</td></tr></table>
+<h3>By priority</h3><table><tr><td><b>Priority</b></td><td><b>Tickets</b></td><td><b>Resolved</b></td><td><b>Within SLA</b></td></tr>{priority_rows}</table>
+<h3>Top categories</h3><table>{category_rows}</table></body></html>"""
     return HTMLResponse(body)

@@ -41,6 +41,7 @@ import ServiceBoard from "./pages/psa/ServiceBoard";
 import TicketDetail from "./pages/psa/TicketDetail";
 import Time from "./pages/psa/Time";
 import Dispatch from "./pages/psa/Dispatch";
+import Workload from "./pages/psa/Workload";
 import Companies, { CompanyDetail, Configurations } from "./pages/psa/Companies";
 import Catalog, { Knowledge } from "./pages/psa/Catalog";
 import PsaSettings, { ProjectDetail } from "./pages/psa/PsaSettings";
@@ -88,6 +89,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string }[]
     items: [
       { to: "/service-board", label: "Service board", icon: "✉" },
       { to: "/dispatch", label: "Dispatch", icon: "▦" },
+      { to: "/workload", label: "Workload & changes", icon: "⚖" },
       { to: "/time", label: "Time & timesheets", icon: "◷" },
       { to: "/companies", label: "Companies", icon: "⌂" },
       { to: "/configurations", label: "Configurations", icon: "⚿" },
@@ -202,6 +204,7 @@ function Shell() {
             <Route path="/service-board" element={<ServiceBoard />} />
             <Route path="/tickets/:id" element={<TicketDetail />} />
             <Route path="/dispatch" element={<Dispatch />} />
+            <Route path="/workload" element={<Workload />} />
             <Route path="/time" element={<Time />} />
             <Route path="/companies" element={<Companies />} />
             <Route path="/companies/:id" element={<CompanyDetail />} />
