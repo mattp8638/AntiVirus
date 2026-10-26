@@ -1079,7 +1079,24 @@ bool ExtractResourceToFile(HINSTANCE instance, const int resourceId, const std::
     return true;
   }
 
-  const auto replaceError = GetLastError();
+  auto replaceError = GetLastError();
+  if (replaceError == ERROR_ACCESS_DENIED || replaceError == ERROR_SHARING_VIOLATION) {
+    // A DLL loaded by other programs (the AMSI provider is loaded into PowerShell, Office and every other
+    // script host) cannot be overwritten, but it can be renamed. Move it aside, put the new file in place
+    // (new processes load it at once; running ones keep the old copy until they exit), and delete the old
+    // copy now if possible or at the next restart. The replacement itself is complete, not deferred.
+    const auto asidePath = targetPath.wstring() + L".old-" + std::to_wstring(GetTickCount64());
+    if (MoveFileExW(targetPath.c_str(), asidePath.c_str(), MOVEFILE_WRITE_THROUGH) != FALSE) {
+      if (MoveFileExW(temporaryPath.c_str(), targetPath.c_str(), MOVEFILE_WRITE_THROUGH) != FALSE) {
+        if (DeleteFileW(asidePath.c_str()) == FALSE) {
+          MoveFileExW(asidePath.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
+        }
+        return true;
+      }
+      replaceError = GetLastError();
+      MoveFileExW(asidePath.c_str(), targetPath.c_str(), MOVEFILE_WRITE_THROUGH);  // put the original back
+    }
+  }
   // A half-upgraded service whose files are replaced at the NEXT reboot is
   // difficult to recover and can explain apparent uninstall/startup failures.
   // Never claim success for a deferred file replacement. Stop protected
@@ -2299,6 +2316,16 @@ bool LaunchInstalledEndpointClient(const std::filesystem::path& installRoot, con
 
 bool InstallPayloadFiles(HWND hwnd, UiContext* context, const bool repair, std::wstring* errorMessage) {
   const auto installRoot = context->installRoot;
+  {
+    // Remove copies set aside by an earlier upgrade once nothing has them loaded any more.
+    std::error_code listError;
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(
+             installRoot, std::filesystem::directory_options::skip_permission_denied, listError)) {
+      if (entry.path().filename().wstring().find(L".old-") != std::wstring::npos) {
+        DeleteFileW(entry.path().c_str());
+      }
+    }
+  }
   PostStatus(hwnd, repair ? L"Preparing repair..." : L"Preparing install...", 5);
   PostLog(hwnd, L"Using install path " + installRoot.wstring());
 
