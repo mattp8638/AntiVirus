@@ -1,4 +1,5 @@
 #include "AgentService.h"
+#include "ExtendedPolicy.h"
 
 #include <wtsapi32.h>
 
@@ -15,6 +16,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <ctime>
 #include <cctype>
 #include <cwctype>
 #include <filesystem>
@@ -923,6 +925,53 @@ bool ShouldRunScheduledTask(const RuntimeDatabase& database, const std::wstring&
   return elapsed >= std::chrono::minutes(intervalMinutes);
 }
 
+// Most recent slot of a calendar scan plan at or before now, in device local time (looks back a week).
+std::optional<std::chrono::system_clock::time_point> LatestPlannedSlot(const ScanPlan& plan) {
+  const std::time_t nowT = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+  for (int back = 0; back <= 7; ++back) {
+    std::time_t dayT = nowT - static_cast<std::time_t>(back) * 24 * 60 * 60;
+    std::tm local{};
+    if (localtime_s(&local, &dayT) != 0) {
+      return std::nullopt;
+    }
+    const int weekday = (local.tm_wday + 6) % 7;  // tm_wday: 0 = Sunday
+    if (std::find(plan.days.begin(), plan.days.end(), weekday) == plan.days.end()) {
+      continue;
+    }
+    local.tm_hour = plan.minuteOfDay / 60;
+    local.tm_min = plan.minuteOfDay % 60;
+    local.tm_sec = 0;
+    local.tm_isdst = -1;
+    const std::time_t slot = std::mktime(&local);
+    if (slot != static_cast<std::time_t>(-1) && slot <= nowT) {
+      return std::chrono::system_clock::from_time_t(slot);
+    }
+  }
+  return std::nullopt;
+}
+
+// With a cloud schedule: run once per slot, catching up a slot missed while the device was off.
+// Without one: the agent's built-in interval.
+bool ShouldRunPlannedScan(const RuntimeDatabase& database, const std::wstring& source, const ScanPlan& plan,
+                          const int fallbackIntervalMinutes) {
+  if (!plan.present) {
+    return ShouldRunScheduledTask(database, source, fallbackIntervalMinutes);
+  }
+  if (plan.off) {
+    return false;
+  }
+  const auto slot = LatestPlannedSlot(plan);
+  if (!slot.has_value()) {
+    return false;
+  }
+  const auto lastRecordedAt = FindLatestScanSessionTimestamp(database, source);
+  if (!lastRecordedAt.has_value()) {
+    return true;
+  }
+  const auto lastRecordedTime = ParseUtcTimestamp(*lastRecordedAt);
+  return !lastRecordedTime.has_value() || *lastRecordedTime < *slot;
+}
+
 bool IsPendingWindowsVulnerability(const WindowsUpdateRecord& record) {
   const auto lowerStatus = ToLowerCopy(record.status);
   if (lowerStatus != L"available") {
@@ -1181,7 +1230,8 @@ void AgentService::RunAutomatedRiskAssessments(const int cycle) {
 void AgentService::RunScheduledQuickScan(const int cycle) {
   try {
     RuntimeDatabase database(config_.runtimeDatabasePath);
-    if (!ShouldRunScheduledTask(database, kScheduledQuickScanSource, config_.scheduledQuickScanIntervalMinutes)) {
+    const auto plan = policy_.modulesJson.empty() ? ScanPlan{} : ExtendedPolicy::Parse(policy_.modulesJson).quickScanPlan;
+    if (!ShouldRunPlannedScan(database, kScheduledQuickScanSource, plan, config_.scheduledQuickScanIntervalMinutes)) {
       return;
     }
 
@@ -1198,8 +1248,9 @@ void AgentService::RunScheduledQuickScan(const int cycle) {
 void AgentService::RunScheduledFullDriveScan(const int cycle) {
   try {
     RuntimeDatabase database(config_.runtimeDatabasePath);
-    if (!ShouldRunScheduledTask(database, kScheduledFullDriveScanSource,
-                                config_.scheduledFullDriveScanIntervalMinutes)) {
+    const auto plan = policy_.modulesJson.empty() ? ScanPlan{} : ExtendedPolicy::Parse(policy_.modulesJson).fullScanPlan;
+    if (!ShouldRunPlannedScan(database, kScheduledFullDriveScanSource, plan,
+                              config_.scheduledFullDriveScanIntervalMinutes)) {
       return;
     }
     // A fresh install waits a day before its first full-drive scan (it can take hours and holds up

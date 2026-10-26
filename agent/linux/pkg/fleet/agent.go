@@ -71,6 +71,7 @@ type Agent struct {
 	remote  *remote.Manager
 	cmdMu   sync.Mutex
 	// Self-update (selfupdate.go); exePath/exit/restartDelay are overridable in tests.
+	schedule        *scanSchedule
 	lastUpdateCheck time.Time
 	exePath         string
 	exit            func(int)
@@ -82,7 +83,8 @@ func New(cfg Config) *Agent {
 		cfg.ProcRoot = "/proc"
 	}
 	a := &Agent{cfg: cfg, client: NewClient(cfg.Server), scanner: NewScanner(filepath.Join(cfg.StateDir, "quarantine")),
-		stop: make(chan struct{}), wake: make(chan struct{}, 1), metrics: &MetricsCollector{ProcRoot: cfg.ProcRoot},
+		schedule: loadScanSchedule(cfg.StateDir),
+		stop:     make(chan struct{}), wake: make(chan struct{}, 1), metrics: &MetricsCollector{ProcRoot: cfg.ProcRoot},
 		remote: remote.NewManager(), exit: os.Exit, restartDelay: 5 * time.Second}
 	a.remote.OnEvent = func(eventType, summary string, payload map[string]interface{}) {
 		a.emit(eventType, "remote-access", summary, payload)
@@ -464,6 +466,7 @@ func (a *Agent) Run() {
 				a.sendInventory()
 			}
 			a.maybeAutoUpdate()
+			a.maybeScheduledScans(time.Now())
 		case <-commands.C:
 			a.RunCommands()
 		case <-sigs.C:
@@ -593,22 +596,14 @@ func (a *Agent) Execute(cmd Command) (map[string]interface{}, error) {
 		roots := []string{cmd.TargetPath}
 		switch cmd.Type {
 		case "scan.quick":
-			if IsMacOS {
-				roots = macQuickScanRoots()
-			} else {
-				roots = append([]string{"/tmp", "/var/tmp", "/dev/shm"}, homeDirs()...)
-			}
+			roots = a.quickScanRoots()
 		case "scan.full":
 			roots = []string{"/"}
 		}
 		if cmd.TargetPath == "" && cmd.Type == "scan.targeted" {
 			return nil, errors.New("targetPath is required")
 		}
-		scanned, findings := a.scanner.ScanPaths(roots, a.state.Policy.SuppressionPathRoots, a.state.Policy.QuarantineOnMalicious, 0)
-		for _, f := range findings {
-			a.emit("scan.threat."+strings.SplitN(f.Action, ":", 2)[0], "scanner", "Malware found: "+f.Family,
-				map[string]interface{}{"path": f.Path, "sha256": f.SHA256, "threatName": f.Family, "verdict": f.Action, "score": 95, "recordId": f.Record})
-		}
+		scanned, findings := a.runScan(roots, a.state.Policy.SuppressionPathRoots, a.state.Policy.QuarantineOnMalicious)
 		return map[string]interface{}{"scanned": scanned, "findings": findings}, nil
 	case "remediate.path":
 		sha, err := HashFile(cmd.TargetPath, 0)
