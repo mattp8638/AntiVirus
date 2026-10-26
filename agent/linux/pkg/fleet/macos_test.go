@@ -137,3 +137,39 @@ func TestPlatformName(t *testing.T) {
 		t.Fatal("linux platform name")
 	}
 }
+
+func TestParseBrewOutdated(t *testing.T) {
+	out := ParseBrewOutdated([]byte(`{"formulae":[{"name":"openssl@3","installed_versions":["3.3.1"],"current_version":"3.3.2","pinned":false},
+		{"name":"node","installed_versions":["20.1.0"],"current_version":"22.0.0","pinned":true}],
+		"casks":[{"name":"google-chrome","installed_versions":["129.0"],"current_version":"130.0"},
+		{"name":"zoom","installed_versions":"6.1","current_version":"6.2"}]}`))
+	if len(out) != 3 {
+		t.Fatalf("pinned formulae are skipped: %+v", out)
+	}
+	if out[0]["id"] != "brew:formula:openssl@3" || out[0]["installedVersion"] != "3.3.1" || out[0]["classification"] != "third-party" {
+		t.Fatalf("formula: %+v", out[0])
+	}
+	if out[1]["id"] != "brew:cask:google-chrome" || out[2]["installedVersion"] != "6.1" {
+		t.Fatalf("casks: %+v %+v", out[1], out[2])
+	}
+	if ParseBrewOutdated([]byte("not json")) != nil {
+		t.Fatal("bad json")
+	}
+	if err := brewUpgrade("brew:formula:bad name"); err == nil {
+		t.Fatal("names are validated")
+	}
+}
+
+func TestParseLsofConnections(t *testing.T) {
+	out := "p412\ncSafari\nn192.168.1.5:52344->17.253.144.10:443\nn[2001:db8::5]:50000->[2606:4700::1111]:443\np99\ncsshd\nn10.0.0.2:22\n"
+	events := ParseLsofConnections(out)
+	if len(events) != 2 {
+		t.Fatalf("listening sockets have no remote end: %+v", events)
+	}
+	if events[0].PID != 412 || events[0].RemoteIP != "17.253.144.10" || events[0].RemotePort != 443 || events[0].LocalPort != 52344 || events[0].Exe != "Safari" {
+		t.Fatalf("ipv4: %+v", events[0])
+	}
+	if events[1].RemoteIP != "2606:4700::1111" || events[1].LocalPort != 50000 {
+		t.Fatalf("ipv6: %+v", events[1])
+	}
+}

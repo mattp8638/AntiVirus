@@ -81,8 +81,8 @@ def available() -> dict:
                                 "full antivirus protection." if windows_mode == "unsigned-hobby" else "")},
         "macos": {"ready": macos, "extension": ".sh",
                   "reason": "" if macos else "macOS Intel and Apple Silicon agent binaries must be built in the cloud image.",
-                  "warning": ("Unsigned build installed as a LaunchDaemon. Grant Full Disk Access for complete "
-                              "scanning; screen sharing is not available on macOS yet." if macos else "")},
+                  "warning": ("Unsigned build installed as a LaunchDaemon. Allow the agent Full Disk Access for complete "
+                              "scanning, and Screen Recording plus Accessibility for remote control." if macos else "")},
     }
 
 
@@ -244,7 +244,9 @@ EOF
 /bin/launchctl enable system/com.fenrir.agent
 /bin/launchctl kickstart -k system/com.fenrir.agent
 echo "Fenrir agent installed as a LaunchDaemon. Confirm the device checks in to your tenant."
-echo "Grant /usr/local/bin/fenrir-agent Full Disk Access (System Settings > Privacy & Security) for complete scanning."
+echo "In System Settings > Privacy & Security, allow /usr/local/bin/fenrir-agent under:"
+echo "  - Full Disk Access (complete scanning)"
+echo "  - Screen Recording and Accessibility (remote screen view and control)"
 """
     return script.encode("utf-8")
 

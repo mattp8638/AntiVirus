@@ -370,7 +370,64 @@ func macPatchScan() (map[string]interface{}, error) {
 	if patches == nil {
 		patches = []map[string]interface{}{}
 	}
-	return map[string]interface{}{"patches": patches, "rebootPending": false, "packageManager": "softwareupdate"}, nil
+	manager := "softwareupdate"
+	if brew, owner, err := brewCommand(); err == nil {
+		if out, err := run(10*time.Minute, "sudo", "-u", owner, "-H", brew, "outdated", "--json=v2"); err == nil {
+			patches = append(patches, ParseBrewOutdated([]byte(out))...)
+			manager = "softwareupdate+brew"
+		}
+	}
+	return map[string]interface{}{"patches": patches, "rebootPending": false, "packageManager": manager}, nil
+}
+
+// ParseBrewOutdated turns `brew outdated --json=v2` into third-party patches (brew:formula:<name>, brew:cask:<name>).
+func ParseBrewOutdated(data []byte) []map[string]interface{} {
+	var doc struct {
+		Formulae []struct {
+			Name              string   `json:"name"`
+			InstalledVersions []string `json:"installed_versions"`
+			CurrentVersion    string   `json:"current_version"`
+			Pinned            bool     `json:"pinned"`
+		} `json:"formulae"`
+		Casks []struct {
+			Name              string          `json:"name"`
+			InstalledVersions json.RawMessage `json:"installed_versions"`
+			CurrentVersion    string          `json:"current_version"`
+		} `json:"casks"`
+	}
+	if json.Unmarshal(data, &doc) != nil {
+		return nil
+	}
+	var out []map[string]interface{}
+	for _, f := range doc.Formulae {
+		if f.Pinned || !packageName.MatchString(f.Name) {
+			continue
+		}
+		installed := ""
+		if len(f.InstalledVersions) > 0 {
+			installed = f.InstalledVersions[len(f.InstalledVersions)-1]
+		}
+		out = append(out, map[string]interface{}{"id": "brew:formula:" + f.Name, "title": f.Name + " " + f.CurrentVersion,
+			"source": "brew", "product": f.Name, "installedVersion": installed, "availableVersion": f.CurrentVersion,
+			"classification": "third-party"})
+	}
+	for _, c := range doc.Casks {
+		if !packageName.MatchString(c.Name) {
+			continue
+		}
+		// Casks report installed_versions as a list in newer Homebrew and a string in older releases.
+		var installed string
+		var list []string
+		if json.Unmarshal(c.InstalledVersions, &list) == nil && len(list) > 0 {
+			installed = list[len(list)-1]
+		} else {
+			_ = json.Unmarshal(c.InstalledVersions, &installed)
+		}
+		out = append(out, map[string]interface{}{"id": "brew:cask:" + c.Name, "title": c.Name + " " + c.CurrentVersion,
+			"source": "brew", "product": c.Name, "installedVersion": installed, "availableVersion": c.CurrentVersion,
+			"classification": "third-party"})
+	}
+	return out
 }
 
 var softwareUpdateLabel = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 ._()+-]{0,199}$`)
@@ -380,6 +437,15 @@ func macPatchInstall(p installPayload) (map[string]interface{}, error) {
 	var failures []string
 	restart := false
 	for _, id := range p.PatchIDs {
+		if strings.HasPrefix(id, "brew:") {
+			entry := map[string]interface{}{"id": id, "success": true}
+			if err := brewUpgrade(id); err != nil {
+				entry["success"], entry["error"] = false, err.Error()
+				failures = append(failures, id)
+			}
+			results = append(results, entry)
+			continue
+		}
 		label := strings.TrimPrefix(id, "macos:")
 		if !strings.HasPrefix(id, "macos:") || !softwareUpdateLabel.MatchString(label) {
 			results = append(results, map[string]interface{}{"id": id, "success": false, "error": "not a macOS software update"})
@@ -410,6 +476,27 @@ func macPatchInstall(p installPayload) (map[string]interface{}, error) {
 		return result, fmt.Errorf("could not install: %s", strings.Join(failures, ", "))
 	}
 	return result, nil
+}
+
+// brewUpgrade upgrades one formula or cask (brew:formula:<name> / brew:cask:<name>) as the Homebrew owner.
+func brewUpgrade(id string) error {
+	parts := strings.SplitN(id, ":", 3)
+	if len(parts) != 3 || (parts[1] != "formula" && parts[1] != "cask") || !packageName.MatchString(parts[2]) {
+		return errors.New("not a Homebrew package")
+	}
+	brew, owner, err := brewCommand()
+	if err != nil {
+		return err
+	}
+	args := []string{"-u", owner, "-H", brew, "upgrade"}
+	if parts[1] == "cask" {
+		args = append(args, "--cask")
+	}
+	out, err := run(60*time.Minute, "sudo", append(args, "--", parts[2])...)
+	if err != nil {
+		return fmt.Errorf("brew upgrade %s: %s", parts[2], lastLines(out, 2))
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -595,4 +682,85 @@ func macQuickScanRoots() []string {
 			filepath.Join(home, "Library", "LaunchAgents"))
 	}
 	return roots
+}
+
+// ---------------------------------------------------------------------------
+// Network connections (lsof)
+// ---------------------------------------------------------------------------
+
+// ParseLsofConnections reads `lsof -nP -iTCP -sTCP:ESTABLISHED -F pcn` field output.
+func ParseLsofConnections(out string) []ConnEvent {
+	var events []ConnEvent
+	pid, name := 0, ""
+	for _, line := range strings.Split(out, "\n") {
+		if len(line) < 2 {
+			continue
+		}
+		value := line[1:]
+		switch line[0] {
+		case 'p':
+			pid, _ = strconv.Atoi(value)
+			name = ""
+		case 'c':
+			name = value
+		case 'n':
+			arrow := strings.Index(value, "->")
+			if arrow < 0 || pid == 0 {
+				continue
+			}
+			_, localPort := splitHostPort(value[:arrow])
+			remoteIP, remotePort := splitHostPort(value[arrow+2:])
+			if remoteIP == "" {
+				continue
+			}
+			events = append(events, ConnEvent{Conn: Conn{RemoteIP: remoteIP, RemotePort: remotePort, LocalPort: localPort},
+				PID: pid, Exe: name})
+		}
+	}
+	return events
+}
+
+func splitHostPort(text string) (string, int) {
+	i := strings.LastIndex(text, ":")
+	if i < 0 {
+		return "", 0
+	}
+	port, err := strconv.Atoi(text[i+1:])
+	if err != nil {
+		return "", 0
+	}
+	return strings.Trim(text[:i], "[]"), port
+}
+
+func (s *NetworkSensor) pollMac() []ConnEvent {
+	if time.Since(s.last) < 10*time.Second {
+		return nil
+	}
+	s.last = time.Now()
+	out, err := run(20*time.Second, "lsof", "-nP", "-iTCP", "-sTCP:ESTABLISHED", "-F", "pcn")
+	if err != nil && out == "" {
+		return nil
+	}
+	current := map[string]bool{}
+	var fresh []ConnEvent
+	var procs map[int]ProcInfo
+	for _, c := range ParseLsofConnections(out) {
+		key := fmt.Sprintf("%s:%d:%d", c.RemoteIP, c.RemotePort, c.LocalPort)
+		if current[key] {
+			continue
+		}
+		current[key] = true
+		if s.seen[key] || c.RemoteIP == "127.0.0.1" || c.RemoteIP == "::1" {
+			continue
+		}
+		if procs == nil {
+			procs = macProcessTable()
+		}
+		if p, ok := procs[c.PID]; ok && p.Exe != "" {
+			c.Exe = p.Exe
+		}
+		fresh = append(fresh, c)
+	}
+	s.seen = current
+	return fresh
 }

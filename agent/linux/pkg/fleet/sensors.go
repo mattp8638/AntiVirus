@@ -209,6 +209,7 @@ func readConns(path string) []Conn {
 type NetworkSensor struct {
 	Root string
 	seen map[string]bool
+	last time.Time // macOS: lsof is costly, so poll at most every 10 s
 }
 
 func NewNetworkSensor(root string) *NetworkSensor {
@@ -224,6 +225,9 @@ type ConnEvent struct {
 }
 
 func (s *NetworkSensor) Poll() []ConnEvent {
+	if IsMacOS {
+		return s.pollMac()
+	}
 	conns := append(readConns(filepath.Join(s.Root, "net/tcp")), readConns(filepath.Join(s.Root, "net/tcp6"))...)
 	fresh := map[string]Conn{}
 	current := map[string]bool{}
