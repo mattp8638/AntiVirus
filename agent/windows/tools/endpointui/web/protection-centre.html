@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Protection</title>
 <!--
-  The agent window (fenrir-endpoint-client). The native host fills __FENRIR_INITIAL_STATE__ and
-  __FENRIR_LOGO_URI__, posts new state objects as messages, and receives actions as URL-encoded strings
+  The agent window (fenrir-endpoint-client). The native host fills in the initial-state and logo placeholders
+  in the script below (never name them in comments: every occurrence is replaced), posts new state objects as messages, and receives actions as URL-encoded strings
   (action=scan&preset=quick). Notices arrive as {"notice":{tone,text}}; {"openPage":"help"} opens a page.
 -->
 <style>
@@ -709,7 +709,20 @@ function pageExclusions() {
 /* ---------- render & events ---------- */
 const VIEWS = { dashboard: pageOverview, threats: pageThreats, quarantine: pageQuarantine, scans: pageScans, updates: pageUpdates, history: pageActivity, help: pageHelp, settings: pageSettings };
 
+// Script errors are shown on screen (and logged by the window) instead of leaving a blank page.
+function showError(message) {
+  try { send('clientError', { message: String(message).slice(0, 2000) }); } catch (e) {}
+  const main = document.getElementById('main');
+  if (main) main.innerHTML = `<div class="banner tone-bad"><span class="ic bad">${icon('alert')}</span><div class="grow"><div class="t">This page hit a problem</div>
+    <div class="m selectable">${esc(message)}</div></div><button class="btn" data-act="refresh">Reload</button></div>`;
+}
+window.addEventListener('error', (ev) => showError(`${ev.message} (line ${ev.lineno})`));
+
 function render() {
+  try { renderPage(); } catch (e) { showError(`${e.message}${e.stack ? ' | ' + String(e.stack).split('\n')[1]?.trim() : ''}`); }
+}
+
+function renderPage() {
   renderShell();
   const main = document.getElementById('main');
   const focused = document.activeElement && document.activeElement.id;

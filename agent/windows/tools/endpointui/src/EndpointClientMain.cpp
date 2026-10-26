@@ -398,11 +398,51 @@ class WebViewMessageReceivedHandler final : public ICoreWebView2WebMessageReceiv
   CallbackType callback_;
 };
 
+class WebViewNavigationCompletedHandler final : public ICoreWebView2NavigationCompletedEventHandler {
+ public:
+  using CallbackType = std::function<HRESULT(ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs*)>;
+
+  explicit WebViewNavigationCompletedHandler(CallbackType callback) : callback_(std::move(callback)) {}
+
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject) override {
+    if (ppvObject == nullptr) {
+      return E_POINTER;
+    }
+    if (IsEqualIID(riid, IID_IUnknown) || IsEqualIID(riid, IID_ICoreWebView2NavigationCompletedEventHandler)) {
+      *ppvObject = static_cast<ICoreWebView2NavigationCompletedEventHandler*>(this);
+      AddRef();
+      return S_OK;
+    }
+    *ppvObject = nullptr;
+    return E_NOINTERFACE;
+  }
+
+  ULONG STDMETHODCALLTYPE AddRef() override { return ++refCount_; }
+
+  ULONG STDMETHODCALLTYPE Release() override {
+    const auto count = --refCount_;
+    if (count == 0) {
+      delete this;
+    }
+    return count;
+  }
+
+  HRESULT STDMETHODCALLTYPE Invoke(ICoreWebView2* sender, ICoreWebView2NavigationCompletedEventArgs* args) override {
+    return callback_ ? callback_(sender, args) : S_OK;
+  }
+
+ private:
+  std::atomic<ULONG> refCount_{1};
+  CallbackType callback_;
+};
+
 void UpdateTrayIcon(UiContext& context);
 void PublishWebViewState(UiContext& context);
 void PostWebViewNotice(UiContext& context, const std::wstring& tone, const std::wstring& text, bool supportSent = false);
 void ResizeWebView(UiContext& context);
 void HideNativeShellControls(UiContext& context, bool visible);
+void LayoutControls(UiContext& context);
+void RefreshSnapshot(UiContext& context);
 bool InitializeWebViewHost(UiContext& context);
 void DestroyWebViewHost(UiContext& context);
 void HandleWebViewMessage(UiContext& context, const std::wstring& message);
@@ -2468,7 +2508,8 @@ std::wstring BuildWebViewStateJson(const UiContext& context) {
       << L",\"status\":\"" << JsonEscape(context.patchActionStatus) << L"\",\"target\":\""
       << JsonEscape(context.patchActionTarget) << L"\",\"mode\":\""
       << JsonEscape(context.patchActionSearchOnly ? L"check" : L"update") << L"\"},";
-  json << L"\"brand\":{\"logo\":\"" << JsonEscape(context.webViewLogoDataUri) << L"\",\"device\":\""
+  // The logo is placed in the page once (__FENRIR_LOGO_URI__); repeating it here doubled the page size.
+  json << L"\"brand\":{\"device\":\""
        << JsonEscape(NullableText(context.snapshot.agentState.hostname, L"Local device")) << L"\",\"status\":\""
        << JsonEscape(OverallStatusChip(context.snapshot)) << L"\",\"policy\":\""
        << JsonEscape(L"Policy " + NullableText(context.snapshot.agentState.policy.revision, L"n/a")) << L"\"},";
@@ -2905,6 +2946,35 @@ bool InitializeWebViewHost(UiContext& context) {
               controllerContext->webViewReady = true;
               HideNativeShellControls(*controllerContext, false);
               ResizeWebView(*controllerContext);
+              // If the page cannot load, go back to the basic view and say why rather than showing a blank window.
+              ComPtr<WebViewNavigationCompletedHandler> navigationHandler = new WebViewNavigationCompletedHandler(
+                  [hwnd](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs* args) -> HRESULT {
+                    auto* navContext = GetContext(hwnd);
+                    if (navContext == nullptr || args == nullptr) {
+                      return S_OK;
+                    }
+                    BOOL success = FALSE;
+                    args->get_IsSuccess(&success);
+                    if (success) {
+                      PublishWebViewState(*navContext);  // the state posted during loading may have been missed
+                      return S_OK;
+                    }
+                    COREWEBVIEW2_WEB_ERROR_STATUS status = COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
+                    args->get_WebErrorStatus(&status);
+                    navContext->webViewReady = false;
+                    navContext->webViewFallbackActive = true;
+                    navContext->webViewFailureReason =
+                        L"The full window could not load its page (WebView2 error " + std::to_wstring(static_cast<int>(status)) + L").";
+                    if (navContext->webViewController != nullptr) {
+                      navContext->webViewController->put_IsVisible(FALSE);
+                    }
+                    HideNativeShellControls(*navContext, true);
+                    LayoutControls(*navContext);
+                    RefreshSnapshot(*navContext);
+                    return S_OK;
+                  });
+              EventRegistrationToken navigationToken{};
+              controllerContext->webView->add_NavigationCompleted(navigationHandler.Get(), &navigationToken);
               controllerContext->webView->NavigateToString(BuildWebViewHtml(*controllerContext).c_str());
               PublishWebViewState(*controllerContext);
               return S_OK;
@@ -3554,6 +3624,9 @@ void LoadExperience(UiContext& context) {
 void OfferWebViewRuntime(UiContext& context) {
   if (!context.webViewFallbackActive || context.webViewFallbackPrompted || context.hwnd == nullptr || !IsWindowVisible(context.hwnd)) {
     return;
+  }
+  if (BuildWebViewFallbackStatus(context).find(L"WebView2 Runtime") == std::wstring::npos) {
+    return;  // the runtime is present; installing it again would not help
   }
   context.webViewFallbackPrompted = true;
   const auto text = L"This window is showing its basic view.\r\n\r\n" + BuildWebViewFallbackStatus(context) +
@@ -4221,6 +4294,18 @@ void HandleWebViewMessage(UiContext& context, const std::wstring& message) {
     SubmitNetworkResetPamRequest(context.hwnd, context);
     RefreshSnapshot(context);
     PublishWebViewState(context);
+    return;
+  }
+
+  if (_wcsicmp(action.c_str(), L"clientError") == 0) {
+    // A script error in the page: keep a log the user or support can send us.
+    const auto message = GetQueryValue(pairs, L"message").substr(0, 2000);
+    OutputDebugStringW((L"Fenrir window script error: " + message + L"\n").c_str());
+    const auto folder = GetWebViewUserDataFolder();
+    if (!folder.empty()) {
+      std::ofstream log(std::filesystem::path(folder) / L"window-errors.log", std::ios::app | std::ios::binary);
+      log << antivirus::agent::WideToUtf8(message) << "\r\n";
+    }
     return;
   }
 

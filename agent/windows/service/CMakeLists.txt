@@ -203,6 +203,15 @@ target_include_directories(antivirus-endpoint-client PRIVATE ../tools/endpointui
 set(ENDPOINT_UI_PAGE "${CMAKE_CURRENT_SOURCE_DIR}/../tools/endpointui/web/protection-centre.html")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ENDPOINT_UI_PAGE}")
 file(READ "${ENDPOINT_UI_PAGE}" ENDPOINT_UI_PAGE_CONTENT)
+# Every occurrence of a placeholder is filled in at runtime, so each must appear exactly once (a copy in a
+# comment once doubled the page past WebView2's 2 MB NavigateToString limit and left the window blank).
+foreach(placeholder __FENRIR_LOGO_URI__ __FENRIR_INITIAL_STATE__)
+  string(REGEX MATCHALL "${placeholder}" placeholder_hits "${ENDPOINT_UI_PAGE_CONTENT}")
+  list(LENGTH placeholder_hits placeholder_count)
+  if(NOT placeholder_count EQUAL 1)
+    message(FATAL_ERROR "protection-centre.html must contain ${placeholder} exactly once (found ${placeholder_count})")
+  endif()
+endforeach()
 string(LENGTH "${ENDPOINT_UI_PAGE_CONTENT}" ENDPOINT_UI_PAGE_LENGTH)
 set(ENDPOINT_UI_PAGE_CHUNKS "")
 set(ENDPOINT_UI_PAGE_OFFSET 0)
