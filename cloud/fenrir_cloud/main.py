@@ -251,6 +251,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     downloads = Path(__file__).resolve().parents[1] / "downloads"
 
+    @app.get("/downloads/fenrir-codesign.cer", include_in_schema=False)
+    def codesign_certificate():
+        # The public half of the Windows code-signing certificate, for Group Policy / Intune trust deployment.
+        target = downloads / "windows" / "fenrir-codesign.cer"
+        if not target.is_file():
+            return JSONResponse({"detail": "The Windows build is not code-signed"}, status_code=404)
+        return FileResponse(target, media_type="application/pkix-cert", filename="fenrir-codesign.cer")
+
     @app.get("/downloads/{name}", include_in_schema=False)
     def download(name: str):
         target = (downloads / name).resolve()

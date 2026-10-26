@@ -149,3 +149,50 @@ def test_windows_manifest_malformed_or_symlink_refuses_download(monkeypatch, tmp
     manifest.unlink()
     manifest.symlink_to(tmp_path / "elsewhere")
     assert not installers.available()["windows"]["ready"]
+
+
+def _fake_pe(signature: bytes = b"") -> bytes:
+    """A minimal PE32+ file, optionally with a certificate table at the end (as Authenticode leaves it)."""
+    import struct
+
+    pe = 0x80
+    data = bytearray(0x200)
+    data[:2] = b"MZ"
+    struct.pack_into("<I", data, 0x3C, pe)
+    data[pe:pe + 4] = b"PE\0\0"
+    struct.pack_into("<H", data, pe + 24, 0x20B)  # PE32+ optional header
+    if signature:
+        table = bytearray(struct.pack("<IHH", 8 + len(signature), 0x0200, 0x0002) + signature)
+        table += b"\0" * ((-len(table)) % 8)
+        struct.pack_into("<I", table, 0, len(table))
+        struct.pack_into("<II", data, pe + 24 + 112 + 4 * 8, len(data), len(table))
+        data += table
+    return bytes(data)
+
+
+def test_enrolment_overlay_keeps_authenticode_signature_valid():
+    import struct
+
+    import pytest
+    from fenrir_cloud.deployment_installers import WINDOWS_CONFIG_MAGIC, attach_windows_overlay
+
+    payload = b"https://fenrir.example\nfet_abcdefghijklmnop\n" + b"0" * 32
+    overlay = payload + struct.pack("<I", len(payload)) + WINDOWS_CONFIG_MAGIC
+    unsigned = _fake_pe()
+    assert attach_windows_overlay(unsigned, overlay) == unsigned + overlay
+
+    signed = _fake_pe(b"PKCS7-SIGNATURE-BLOB")
+    tagged = attach_windows_overlay(signed, overlay)
+    security = 0x80 + 24 + 112 + 32
+    offset, size = struct.unpack_from("<II", tagged, security)
+    # The certificate table now covers the overlay, so the signed hash is unchanged...
+    assert offset + size == len(tagged) and size % 8 == 0
+    assert struct.unpack_from("<I", tagged, offset)[0] == size
+    assert tagged[:security] == signed[:security] and tagged[security + 8:offset] == signed[security + 8:offset]
+    # ...and setup still finds the overlay at the very end of the file.
+    assert tagged.endswith(overlay)
+    assert attach_windows_overlay(b"not a pe at all" * 10, overlay).endswith(overlay)
+    broken = bytearray(signed)
+    struct.pack_into("<I", broken, security, 0x10)  # certificate table not at the end
+    with pytest.raises(ValueError):
+        attach_windows_overlay(bytes(broken), overlay)

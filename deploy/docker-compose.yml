@@ -15,7 +15,12 @@ services:
       interval: 10s
 
   cloud:
-    build: { context: .., dockerfile: deploy/Dockerfile }
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      # Windows code signing: put the certificate at deploy/signing/codesign.pfx (and its password, if any, in
+      # deploy/signing/codesign.password). Without them the Windows build is unsigned. See docs/CODE_SIGNING.md.
+      secrets: [codesign_pfx, codesign_password]
     restart: unless-stopped
     depends_on: { db: { condition: service_healthy } }
     environment:
@@ -45,6 +50,12 @@ services:
       FENRIR_ARTIFACT_DIR: /data/artifacts
     volumes: [artifacts:/data]
     ports: ["8080:8080"]
+
+secrets:
+  codesign_pfx:
+    file: ${FENRIR_CODESIGN_PFX:-./signing/codesign.pfx}
+  codesign_password:
+    file: ${FENRIR_CODESIGN_PASSWORD_FILE:-./signing/codesign.password}
 
 volumes:
   db: {}

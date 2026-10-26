@@ -41,6 +41,8 @@ healthy() {
 }
 
 deploy() {  # build first so the running server keeps serving during the (slow) image build
+  # Compose needs the signing secret files to exist; empty files mean "build the Windows agent unsigned".
+  (umask 077; mkdir -p "$DEPLOY_DIR/signing"; touch "$DEPLOY_DIR/signing/codesign.pfx" "$DEPLOY_DIR/signing/codesign.password")
   compose build && compose up -d && healthy
 }
 
