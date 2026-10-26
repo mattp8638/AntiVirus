@@ -136,6 +136,9 @@ def _scheduler_loop(stop: threading.Event, interval: float = 30.0) -> None:
                     db.commit()
                     from . import network
                     network.tick(db)
+                    if passes % 10 == 0:
+                        from .routers import backup as backup_health
+                        backup_health.health_tick(db)
                     if passes % 4 == 0:
                         msp = db.execute(select(Tenant).where(Tenant.kind == "msp")).scalars().first()
                         if msp is not None:
@@ -228,6 +231,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.include_router(module.router)
     app.include_router(documentation_router.router)
     app.include_router(psa_router.inbound)
+    app.include_router(backup_router.ingest)
     app.include_router(remote_router.sockets)
     app.include_router(protection.router)
     app.include_router(protection.console)

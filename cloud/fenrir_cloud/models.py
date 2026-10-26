@@ -1196,6 +1196,7 @@ class BackupPlan(Base):
     rpo_hours: Mapped[int] = mapped_column(Integer, default=24)
     rto_minutes: Mapped[int] = mapped_column(Integer, default=240)
     runbook_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    ingest_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)  # backup tools push results with it
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
