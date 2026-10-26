@@ -258,8 +258,9 @@ LocalAction ResolveActionForCommandType(const std::wstring& type) {
 }
 
 bool IsSupportedLocalCommand(const std::wstring& type) {
-  static const std::array<const wchar_t*, 25> kSupportedTypes = {
+  static const std::array<const wchar_t*, 26> kSupportedTypes = {
       L"local.auth.session.begin",
+      L"support.request",
       L"amsi.telemetry.submit",
       L"quarantine.restore",
       L"quarantine.delete",

@@ -1043,6 +1043,27 @@ std::wstring ControlPlaneClient::RealtimeUrl(const AgentState& state) const {
   return base + L"/api/v1/devices/" + state.deviceId + L"/realtime";
 }
 
+std::wstring ControlPlaneClient::SubmitSupportRequest(const AgentState& state, const std::string& bodyJson) const {
+  if (state.deviceId.empty()) {
+    throw std::runtime_error("This device is not enrolled with your IT provider yet");
+  }
+  const auto deviceApiKey = ExtractDeviceApiKeyFromCommandChannelUrl(state.commandChannelUrl);
+  try {
+    const auto response =
+        RequestJson(L"POST", JoinUrl(baseUrl_, L"/api/v1/devices/" + state.deviceId + L"/support-requests"), bodyJson, deviceApiKey);
+    return std::to_wstring(ExtractJsonInt(response.body, "number").value_or(0));
+  } catch (const std::exception& error) {
+    // Pass the server's explanation ("detail") through instead of the raw HTTP error.
+    const std::string text = error.what();
+    if (const auto at = text.find('{'); at != std::string::npos) {
+      if (const auto detail = ExtractJsonString(text.substr(at), "detail"); detail.has_value()) {
+        throw std::runtime_error(*detail);
+      }
+    }
+    throw;
+  }
+}
+
 HeartbeatResult ControlPlaneClient::SendHeartbeat(const AgentState& state, const std::string& metricsJson) const {
   if (state.deviceId.empty()) {
     throw std::runtime_error("Cannot send heartbeat without a device identifier");

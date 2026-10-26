@@ -198,6 +198,24 @@ add_executable(antivirus-endpoint-client WIN32
 )
 
 target_include_directories(antivirus-endpoint-client PRIVATE ../tools/endpointui/src include ../third_party/webview2/include)
+# The agent window's page lives in tools/endpointui/web/protection-centre.html (plain ASCII). It is embedded as
+# short raw-string chunks because MSVC limits a single string literal to about 64 KB.
+set(ENDPOINT_UI_PAGE "${CMAKE_CURRENT_SOURCE_DIR}/../tools/endpointui/web/protection-centre.html")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ENDPOINT_UI_PAGE}")
+file(READ "${ENDPOINT_UI_PAGE}" ENDPOINT_UI_PAGE_CONTENT)
+string(LENGTH "${ENDPOINT_UI_PAGE_CONTENT}" ENDPOINT_UI_PAGE_LENGTH)
+set(ENDPOINT_UI_PAGE_CHUNKS "")
+set(ENDPOINT_UI_PAGE_OFFSET 0)
+while(ENDPOINT_UI_PAGE_OFFSET LESS ENDPOINT_UI_PAGE_LENGTH)
+  string(SUBSTRING "${ENDPOINT_UI_PAGE_CONTENT}" ${ENDPOINT_UI_PAGE_OFFSET} 6000 ENDPOINT_UI_PAGE_PART)
+  string(APPEND ENDPOINT_UI_PAGE_CHUNKS "    LR\"FENRIRPAGE(${ENDPOINT_UI_PAGE_PART})FENRIRPAGE\",\n")
+  math(EXPR ENDPOINT_UI_PAGE_OFFSET "${ENDPOINT_UI_PAGE_OFFSET} + 6000")
+endwhile()
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/EndpointUiPage.h.tmp"
+  "#pragma once\n// Generated from tools/endpointui/web/protection-centre.html by CMake. Do not edit.\n"
+  "inline const wchar_t* const kEndpointUiPageParts[] = {\n${ENDPOINT_UI_PAGE_CHUNKS}};\n")
+configure_file("${CMAKE_CURRENT_BINARY_DIR}/generated/EndpointUiPage.h.tmp" "${CMAKE_CURRENT_BINARY_DIR}/generated/EndpointUiPage.h" COPYONLY)
+target_include_directories(antivirus-endpoint-client PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_link_libraries(antivirus-endpoint-client PRIVATE antivirus-agent-core comctl32 ole32 uxtheme dwmapi)
 target_compile_definitions(antivirus-endpoint-client PRIVATE UNICODE _UNICODE)
 if(MINGW)

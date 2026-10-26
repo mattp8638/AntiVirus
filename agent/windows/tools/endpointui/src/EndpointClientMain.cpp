@@ -30,6 +30,7 @@
 #include "AgentConfig.h"
 #include "DeviceInventoryCollector.h"
 #include "EndpointClient.h"
+#include "ExtendedPolicy.h"
 #include "LocalSecurity.h"
 #include "ProcessInventory.h"
 #include "LocalScanRunner.h"
@@ -38,6 +39,7 @@
 #include "ServiceInventory.h"
 #include "StringUtils.h"
 #include "WebView2.h"
+#include "EndpointUiPage.h"
 
 namespace {
 
@@ -104,7 +106,8 @@ enum : int {
   IDM_TRAY_PAM_WINDOWSUPDATE = 2009,
   IDM_TRAY_PAM_NETWORKRESET = 2010,
   IDM_TRAY_QUARANTINE = 2011,
-  IDM_TRAY_EXIT = 2012
+  IDM_TRAY_EXIT = 2012,
+  IDM_TRAY_SUPPORT = 2013
 };
 
 enum class ScanPreset {
@@ -254,6 +257,13 @@ struct UiContext {
   bool webViewFallbackActive{false};
   std::wstring webViewFailureReason;
   std::wstring webViewLogoDataUri;
+  // experience.json written by the service: branding, support contact and what the user may do.
+  std::string experienceJson{"{}"};
+  std::wstring brandName{L"Fenrir"};
+  bool allowUserScans{true};
+  bool trayIconAllowed{true};
+  std::wstring notificationLevel{L"important"};  // none | important | all
+  bool webViewFallbackPrompted{false};
   HMODULE webViewLoaderModule{};
   ComPtr<ICoreWebView2Environment> webViewEnvironment;
   ComPtr<ICoreWebView2Controller> webViewController;
@@ -390,6 +400,7 @@ class WebViewMessageReceivedHandler final : public ICoreWebView2WebMessageReceiv
 
 void UpdateTrayIcon(UiContext& context);
 void PublishWebViewState(UiContext& context);
+void PostWebViewNotice(UiContext& context, const std::wstring& tone, const std::wstring& text, bool supportSent = false);
 void ResizeWebView(UiContext& context);
 void HideNativeShellControls(UiContext& context, bool visible);
 bool InitializeWebViewHost(UiContext& context);
@@ -2433,6 +2444,11 @@ std::wstring BuildWebViewStateJson(const UiContext& context) {
   std::wstringstream json;
   json << L"{";
   json << L"\"pageKey\":\"" << JsonEscape(PageKey(context.currentPage)) << L"\",";
+  json << L"\"experience\":" << antivirus::agent::Utf8ToWide(context.experienceJson) << L",";
+  json << L"\"openThreatCount\":" << context.snapshot.openThreatCount << L",";
+  json << L"\"quarantineCount\":" << context.snapshot.activeQuarantineCount << L",";
+  json << L"\"agentVersion\":\"" << JsonEscape(NullableText(context.snapshot.agentState.agentVersion, L"")) << L"\",";
+  json << L"\"policyName\":\"" << JsonEscape(NullableText(context.snapshot.agentState.policy.policyName, L"")) << L"\",";
   json << L"\"pageTitle\":\"" << JsonEscape(pageTitle) << L"\",";
   json << L"\"pageSubtitle\":\"" << JsonEscape(pageSubtitle) << L"\",";
   json << L"\"statusChip\":\"" << JsonEscape(OverallStatusChip(context.snapshot)) << L"\",";
@@ -2651,1373 +2667,11 @@ std::wstring BuildWebViewStateJson(const UiContext& context) {
 }
 
 std::wstring BuildWebViewHtml(const UiContext& context) {
-  std::wstring html = LR"HTML(
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Fenrir Protection Centre</title>
-  <style>
-    :root {
-      color-scheme: dark;
-      --bg: #070b11;
-      --surface: rgba(12, 17, 25, 0.9);
-      --surface-soft: rgba(15, 21, 31, 0.88);
-      --border: rgba(255,255,255,0.06);
-      --text: #edf3ff;
-      --muted: #90a0b7;
-      --accent: #7aa7ff;
-      --good: #52c98f;
-      --warning: #e4a450;
-      --danger: #e36f7b;
-      --shadow: none;
-      --radius: 18px;
-    }
-    * { box-sizing: border-box; }
-    html, body { margin: 0; width: 100%; height: 100%; }
-    body {
-      overflow: hidden;
-      font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif;
-      color: var(--text);
-      background:
-        radial-gradient(900px 420px at 18% 0%, rgba(116,167,255,.11), transparent 52%),
-        radial-gradient(780px 360px at 92% 16%, rgba(76,195,138,.08), transparent 48%),
-        linear-gradient(180deg, #05080d 0%, #070b11 100%);
-    }
-    button { font: inherit; }
-    .layout {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-      padding: 16px;
-      height: 100%;
-    }
-    .rail, .card, .panel {
-      background: linear-gradient(180deg, rgba(16, 21, 31, .92), rgba(9, 13, 20, .96));
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-    }
-    .rail {
-      display: flex;
-      flex-direction: row;
-      align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-      min-height: 0;
-      padding: 12px 16px;
-    }
-    .brand { padding: 0; display: flex; flex-direction: row; align-items: center; gap: 12px; min-width: 0; }
-    .brand img { width: 42px; height: 42px; object-fit: contain; border-radius: 12px; flex: 0 0 auto; }
-    .brand .name { display: none; }
-    .brand .device { font-size: 15px; font-weight: 700; letter-spacing: -.01em; }
-    .brand .meta, .foot { color: var(--muted); font-size: 12px; line-height: 1.45; white-space: pre-line; }
-    .nav { display: none; }
-    .nav button, .tabs button, .actions button {
-      border: 1px solid transparent;
-      border-radius: 999px;
-      background: rgba(255,255,255,.02);
-      color: var(--text);
-      cursor: pointer;
-      transition: transform .12s ease, background .12s ease, border-color .12s ease;
-    }
-    .nav button { text-align: left; padding: 12px 14px; color: var(--muted); }
-    .nav button.active { color: var(--text); background: rgba(122,167,255,.11); border-color: rgba(122,167,255,.2); }
-    .tabs, .actions { display: flex; flex-wrap: wrap; gap: 8px; }
-    .tabs { padding-top: 2px; }
-    .tabs button, .actions button { padding: 10px 16px; font-size: 12px; letter-spacing: .01em; }
-    .tabs button.active { background: rgba(122,167,255,.11); border-color: rgba(122,167,255,.2); }
-    .actions button.primary { background: rgba(122,167,255,.12); border-color: rgba(122,167,255,.2); }
-    .actions button.good { background: rgba(82,201,143,.12); border-color: rgba(82,201,143,.2); }
-    .actions button.warning { background: rgba(228,164,80,.12); border-color: rgba(228,164,80,.2); }
-    .actions button.danger { background: rgba(227,111,123,.12); border-color: rgba(227,111,123,.2); }
-    .nav button:disabled,
-    .tabs button:disabled,
-    .actions button:disabled,
-    .inline-actions button:disabled {
-      opacity: .45;
-      cursor: not-allowed;
-      transform: none;
-    }
-    .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; gap: 12px; }
-    .header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-    .eyebrow { text-transform: uppercase; letter-spacing: .16em; color: var(--muted); font-size: 10px; }
-    h1 { margin: 4px 0 8px; font-size: 34px; line-height: 1.02; letter-spacing: -.035em; }
-    .subtitle { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; max-width: 920px; }
-    .chip {
-      display: inline-flex; align-items: center; justify-content: center;
-      min-height: 30px; padding: 0 12px; border-radius: 999px;
-      font-size: 12px; font-weight: 700; border: 1px solid rgba(255,255,255,.11);
-      background: rgba(255,255,255,.03); white-space: nowrap;
-    }
-    .chip.good { background: rgba(76,195,138,.12); color: #9de3bf; }
-    .chip.warning { background: rgba(224,163,79,.12); color: #ffd48a; }
-    .chip.danger { background: rgba(228,109,122,.14); color: #ffbcc4; }
-    .chip.info { background: rgba(116,167,255,.12); color: #b9d0ff; }
-    .hero { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.95fr); gap: 12px; }
-    .card { padding: 18px; min-width: 0; overflow: hidden; }
-    .card h2 { margin: 8px 0 10px; font-size: 24px; line-height: 1.06; letter-spacing: -.03em; }
-    .kv { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 8px 12px; margin-top: 8px; }
-    .kv .key { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .12em; padding-top: 7px; }
-    .kv .value { color: var(--text); font-size: 13px; line-height: 1.45; padding-top: 5px; word-break: break-word; }
-    .metrics { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 10px; }
-    .metric {
-      border: 1px solid var(--border); border-radius: 16px; padding: 14px 15px;
-      background: rgba(255,255,255,.015);
-    }
-    .metric .label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .14em; }
-    .metric .value { margin: 8px 0 4px; font-size: 24px; font-weight: 700; letter-spacing: -.03em; }
-    .metric .detail { color: var(--muted); font-size: 13px; line-height: 1.35; }
-    .page-body { display: flex; flex-direction: column; gap: 12px; min-height: 0; flex: 1; overflow: auto; padding-bottom: 4px; }
-    .section {
-      border: 1px solid rgba(255,255,255,.05);
-      border-radius: 18px;
-      background: rgba(255,255,255,.015);
-      padding: 16px;
-    }
-    .section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-    .section-title { margin: 0; font-size: 18px; line-height: 1.08; letter-spacing: -.02em; }
-    .section-text { margin-top: 6px; color: var(--muted); font-size: 13px; line-height: 1.5; max-width: 76ch; }
-    .hero-status { margin-top: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
-    .hero-chip {
-      display: flex; flex-direction: column; gap: 5px;
-      border: 1px solid rgba(255,255,255,.05);
-      border-radius: 16px;
-      padding: 12px 13px;
-      background: rgba(255,255,255,.015);
-    }
-    .hero-chip .label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .14em; }
-    .hero-chip .value { font-size: 20px; font-weight: 700; letter-spacing: -.03em; }
-    .hero-chip .detail { color: var(--muted); font-size: 12px; line-height: 1.4; }
-    .record-list { display: flex; flex-direction: column; gap: 8px; }
-    .record {
-      width: 100%;
-      appearance: none;
-      border: 1px solid rgba(255,255,255,.05);
-      border-radius: 14px;
-      background: rgba(255,255,255,.015);
-      color: inherit;
-      cursor: pointer;
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 12px;
-      padding: 14px 15px;
-      text-align: left;
-    }
-    .record:hover { background: rgba(122,167,255,.06); }
-    .record.selected { background: rgba(122,167,255,.10); border-color: rgba(122,167,255,.18); }
-    .record-title { font-size: 13px; font-weight: 700; line-height: 1.3; }
-    .record-meta { margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.4; white-space: pre-line; }
-    .record-badges { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-start; justify-content: flex-end; max-width: 48%; }
-    .record-badges .chip { min-height: 26px; padding: 0 10px; }
-    .subtabs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
-    .subtabs button {
-      padding: 10px 14px;
-      border-radius: 999px;
-      border: 1px solid rgba(255,255,255,.05);
-      background: rgba(255,255,255,.015);
-      color: var(--muted);
-    }
-    .subtabs button.active { color: var(--text); background: rgba(122,167,255,.11); border-color: rgba(122,167,255,.2); }
-    .exclusion-shell { display: grid; grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr); gap: 12px; align-items: start; }
-    .filter-row { display: flex; gap: 10px; align-items: center; margin-top: 12px; }
-    .filter-row input {
-      flex: 1;
-      min-width: 0;
-      padding: 12px 14px;
-      border-radius: 14px;
-      border: 1px solid rgba(255,255,255,.08);
-      background: rgba(255,255,255,.02);
-      color: var(--text);
-      outline: none;
-    }
-    .source-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
-    .source-card {
-      width: 100%;
-      appearance: none;
-      border: 1px solid rgba(255,255,255,.05);
-      border-radius: 14px;
-      background: rgba(255,255,255,.015);
-      color: inherit;
-      cursor: pointer;
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 12px;
-      padding: 14px 15px;
-      text-align: left;
-    }
-    .source-card:hover { background: rgba(122,167,255,.06); }
-    .source-title { font-size: 13px; font-weight: 700; line-height: 1.3; }
-    .source-meta { margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.4; white-space: pre-line; }
-    .source-badges { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-start; justify-content: flex-end; max-width: 48%; }
-    .source-badges .chip { min-height: 26px; padding: 0 10px; }
-    .inline-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
-    .inline-actions button { padding: 8px 12px; border-radius: 999px; font-size: 12px; }
-    .pager { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; }
-    .pager .meta { color: var(--muted); font-size: 12px; }
-    .pager .actions { margin: 0; }
-    .status-row { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-    .detail-card { border: 1px solid rgba(255,255,255,.05); border-radius: 18px; background: rgba(255,255,255,.015); padding: 14px; }
-    .detail-card .title { font-size: 14px; font-weight: 700; margin-bottom: 6px; }
-    .detail-card .text { color: var(--muted); font-size: 13px; line-height: 1.45; white-space: pre-wrap; }
-    .detail-grid { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 8px 12px; margin-top: 8px; }
-    .detail-grid .key { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .12em; padding-top: 6px; }
-    .detail-grid .value { color: var(--text); font-size: 13px; line-height: 1.45; padding-top: 4px; word-break: break-word; }
-    .empty { color: var(--muted); font-size: 13px; line-height: 1.55; padding: 18px 14px; }
-    progress { width: 100%; height: 8px; border: 0; border-radius: 999px; overflow: hidden; background: rgba(255,255,255,.05); }
-    progress::-webkit-progress-bar { background: rgba(255,255,255,.05); }
-    progress::-webkit-progress-value { background: linear-gradient(90deg, rgba(116,167,255,.95), rgba(76,195,138,.95)); }
-    @media (max-width: 1280px) {
-      body { overflow: auto; }
-      .layout { height: auto; }
-      .rail { flex-direction: column; align-items: flex-start; }
-      .hero, .metrics { grid-template-columns: 1fr; }
-    }
-  </style>
-</head>
-<body>
-  <div class="layout">
-    <aside class="rail">
-      <div class="brand">
-        <img src="__FENRIR_LOGO_URI__" alt="Fenrir" />
-        <div class="device" id="brandDevice"></div>
-        <div class="meta" id="brandMeta"></div>
-      </div>
-      <div class="nav" id="nav"></div>
-      <div class="foot" id="foot"></div>
-    </aside>
-    <main class="main">
-      <header class="header">
-        <div>
-          <div class="eyebrow">Protection Centre</div>
-          <h1 id="pageTitle"></h1>
-          <p class="subtitle" id="pageSubtitle"></p>
-        </div>
-        <div class="chip info" id="statusChip"></div>
-      </header>
-      <div class="tabs" id="tabs"></div>
-      <div class="actions" id="actions"></div>
-      <section id="pageBody" class="page-body"></section>
-    </main>
-  </div>
-  <script>
-    const initialState = __FENRIR_INITIAL_STATE__;
-    let appState = initialState;
-    const selection = Object.create(null);
-    let exclusionMode = 'current';
-    let exclusionSearch = '';
-    let updateFilter = 'actionable';
-    let updateSort = 'priority';
-    let updateSearch = '';
-    let updatePageIndex = 0;
-    const updatesPageSize = 8;
-    const pages = [
-      { key: 'dashboard', label: 'Home' },
-      { key: 'threats', label: 'Findings' },
-      { key: 'quarantine', label: 'Quarantine' },
-      { key: 'scans', label: 'Scans' },
-      { key: 'updates', label: 'Updates' },
-      { key: 'history', label: 'History' },
-      { key: 'settings', label: 'Settings' }
-    ];
-
-    function esc(value) {
-      return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-    }
-
-    function send(message) {
-      if (window.chrome && window.chrome.webview) {
-        window.chrome.webview.postMessage(message);
-      }
-    }
-
-    function actionMessage(action, fields = {}) {
-      return new URLSearchParams({ action, ...fields }).toString();
-    }
-
-    function rowsFor(pageKey) {
-      if (pageKey === 'dashboard' || pageKey === 'history') return appState.history || [];
-      if (pageKey === 'threats') return appState.threats || [];
-      if (pageKey === 'quarantine') return appState.quarantine || [];
-      if (pageKey === 'scans') return (appState.history || []).filter((item) => item.kind === 'scan-session');
-      if (pageKey === 'updates') return appState.softwareUpdates || [];
-      return appState.settings || [];
-    }
-
-    function activeItem(pageKey) {
-      const rows = rowsFor(pageKey);
-      const index = Number.isInteger(selection[pageKey]) ? selection[pageKey] : -1;
-      return index >= 0 && index < rows.length ? rows[index] : (rows[0] || null);
-    }
-
-    function buildNav() {
-      const nav = document.getElementById('nav');
-      nav.innerHTML = pages.map((page) =>
-        `<button class="${page.key === appState.pageKey ? 'active' : ''}" data-nav="${page.key}">${esc(page.label)}</button>`
-      ).join('');
-    }
-
-    function buildTabs() {
-      const tabs = document.getElementById('tabs');
-      tabs.innerHTML = pages.map((page) =>
-        `<button class="${page.key === appState.pageKey ? 'active' : ''}" data-nav="${page.key}">${esc(page.label)}</button>`
-      ).join('');
-    }
-
-    function buildActions() {
-      const page = appState.pageKey;
-      const patchBusy = Boolean(appState.patchAction && appState.patchAction.running);
-      const patchDisabled = patchBusy ? ' disabled' : '';
-      const actions = [];
-      if (page === 'dashboard') {
-        actions.push(`<button class="primary" data-action="scan" data-preset="quick">Quick scan</button>`);
-        actions.push(`<button data-action="softwareUpdatesRefresh"${patchDisabled}>Refresh updates</button>`);
-        actions.push(`<button data-action="requestWindowsUpdatePam">Windows Update (PAM)</button>`);
-        actions.push(`<button data-action="openQuarantine">Review quarantine</button>`);
-        actions.push(`<button data-action="refresh">Refresh</button>`);
-      } else if (page === 'threats') {
-        actions.push(`<button data-action="refresh">Refresh</button>`);
-        actions.push(`<button data-action="openQuarantine">Review quarantine</button>`);
-      } else if (page === 'quarantine') {
-        actions.push(`<button data-action="refresh">Refresh</button>`);
-      } else if (page === 'scans') {
-        actions.push(`<button class="primary" data-action="scan" data-preset="quick">Quick scan</button>`);
-        actions.push(`<button data-action="scan" data-preset="full">Full scan</button>`);
-        actions.push(`<button data-action="scan" data-preset="folder">Scan folder</button>`);
-        actions.push(`<button data-action="refresh">Refresh</button>`);
-      } else if (page === 'updates') {
-        actions.push(`<button class="primary" data-action="softwareUpdatesRefresh"${patchDisabled}>Refresh updates</button>`);
-        actions.push(`<button data-action="requestWindowsUpdatePam">Request Windows Update (PAM)</button>`);
-        actions.push(`<button data-action="requestNetworkResetPam">Request network reset (PAM)</button>`);
-        actions.push(`<button data-nav="dashboard">Back to dashboard</button>`);
-      } else if (page === 'history') {
-        actions.push(`<button data-action="refresh">Refresh</button>`);
-      } else if (page === 'settings') {
-        if (appState.manageExclusionsMode) {
-          actions.push(`<button class="warning" data-action="exclusionsDone">Back to settings</button>`);
-          actions.push(`<button class="primary" data-action="exclusionsAddFile">Add file</button>`);
-          actions.push(`<button class="primary" data-action="exclusionsAddFolder">Add folder</button>`);
-          actions.push(`<button data-exclusion-mode="process">Process</button>`);
-          actions.push(`<button data-exclusion-mode="application">Application</button>`);
-          actions.push(`<button data-action="refresh">Refresh</button>`);
-        } else {
-          actions.push(`<button data-action="setQuickScanInterval">Quick scan schedule</button>`);
-          actions.push(`<button data-action="setFullScanInterval">Full scan schedule</button>`);
-          actions.push(`<button class="warning" data-action="openExclusions">Manage exclusions</button>`);
-          actions.push(`<button data-action="refresh">Refresh</button>`);
-        }
-      }
-      if (appState.runtime && (appState.runtime.serviceState === 'not installed' || appState.runtime.serviceState === 'stopped')) {
-        actions.push(`<button class="good" data-action="startService">Start protection</button>`);
-      }
-      const current = page === 'quarantine' ? selectedItem('quarantine') : null;
-      if (current) {
-        actions.push(`<button class="good" data-action="quarantineRestore" data-id="${esc(current.id)}">Restore selected</button>`);
-        actions.push(`<button class="danger" data-action="quarantineDelete" data-id="${esc(current.id)}">Delete selected</button>`);
-      }
-      return actions.join('');
-    }
-
-    function buildHeroActions() {
-      const page = appState.pageKey;
-      const patchBusy = Boolean(appState.patchAction && appState.patchAction.running);
-      const patchDisabled = patchBusy ? ' disabled' : '';
-      if (page === 'dashboard') {
-        return [
-          `<button class="primary" data-nav="updates">Open updates workspace</button>`,
-          `<button data-action="softwareUpdatesRefresh"${patchDisabled}>Refresh software inventory</button>`,
-          `<button class="primary" data-action="navigate" data-page="threats">Review findings</button>`,
-          `<button data-action="navigate" data-page="quarantine">Open quarantine</button>`,
-          `<button data-action="scan" data-preset="quick">Run quick scan</button>`
-        ].join('');
-      }
-      if (page === 'quarantine') {
-        const current = activeItem('quarantine');
-        return current ? [
-          `<button class="good" data-action="quarantineRestore" data-id="${esc(current.id)}">Restore</button>`,
-          `<button class="danger" data-action="quarantineDelete" data-id="${esc(current.id)}">Delete</button>`
-        ].join('') : '';
-      }
-      if (page === 'settings') {
-        return `<button class="warning" data-action="openExclusions">Edit exclusions</button>`;
-      }
-      return `<button class="primary" data-action="refresh">Refresh status</button>`;
-    }
-
-    function buildMetrics() {
-      return (appState.cards || []).map((card) => `
-        <div class="metric">
-          <div class="label">${esc(card.label)}</div>
-          <div class="value">${esc(card.value)}</div>
-          <div class="detail">${esc(card.detail)}</div>
-        </div>
-      `).join('');
-    }
-
-    function softwareUpdateTone(item) {
-      const state = String(item?.state || '').toLowerCase();
-      if (item?.blocked) return 'danger';
-      if (state === 'available') return 'warning';
-      if (state === 'failed' || state === 'missing_recipe') return 'danger';
-      if (state === 'provider_ready' || state === 'completed' || state === 'current') return 'good';
-      return 'info';
-    }
-
-    function softwareUpdatePriority(item) {
-      const state = String(item?.state || '').toLowerCase();
-      if (item?.blocked) return 0;
-      if (state === 'available') return 1;
-      if (state === 'provider_ready') return 2;
-      if (item?.highRisk) return 3;
-      if (item?.manualOnly) return 4;
-      if (state === 'failed' || state === 'missing_recipe') return 5;
-      return 6;
-    }
-
-    function sortSoftwareUpdates(updates, mode) {
-      return [...updates].sort((left, right) => {
-        const leftName = String(left?.name || '').toLowerCase();
-        const rightName = String(right?.name || '').toLowerCase();
-        const leftState = String(left?.state || '').toLowerCase();
-        const rightState = String(right?.state || '').toLowerCase();
-        const leftPublisher = String(left?.publisher || '').toLowerCase();
-        const rightPublisher = String(right?.publisher || '').toLowerCase();
-
-        if (mode === 'name') {
-          return leftName.localeCompare(rightName);
-        }
-        if (mode === 'state') {
-          const stateCompare = leftState.localeCompare(rightState);
-          return stateCompare !== 0 ? stateCompare : leftName.localeCompare(rightName);
-        }
-        if (mode === 'publisher') {
-          const publisherCompare = leftPublisher.localeCompare(rightPublisher);
-          return publisherCompare !== 0 ? publisherCompare : leftName.localeCompare(rightName);
-        }
-        if (mode === 'risk') {
-          if (Boolean(left?.highRisk) !== Boolean(right?.highRisk)) {
-            return left?.highRisk ? -1 : 1;
-          }
-        }
-
-        const priorityCompare = softwareUpdatePriority(left) - softwareUpdatePriority(right);
-        return priorityCompare !== 0 ? priorityCompare : leftName.localeCompare(rightName);
-      });
-    }
-
-    function matchesUpdateFilter(item, mode) {
-      const state = String(item?.state || '').toLowerCase();
-      if (mode === 'actionable') return Boolean(item?.canInstall) || state === 'available' || state === 'provider_ready';
-      if (mode === 'manual') return Boolean(item?.manualOnly) || state === 'manual';
-      if (mode === 'blocked') return Boolean(item?.blocked);
-      if (mode === 'unsupported') return !Boolean(item?.supported) || state === 'unsupported';
-      if (mode === 'highrisk') return Boolean(item?.highRisk);
-      return true;
-    }
-
-    function buildUpdatesDataset() {
-      const query = updateSearch.trim().toLowerCase();
-      const all = appState.softwareUpdates || [];
-      const filtered = all.filter((item) => {
-        if (!matchesUpdateFilter(item, updateFilter)) {
-          return false;
-        }
-        if (!query) {
-          return true;
-        }
-        return String(item.name || '').toLowerCase().includes(query) ||
-               String(item.publisher || '').toLowerCase().includes(query) ||
-               String(item.provider || '').toLowerCase().includes(query) ||
-               String(item.state || '').toLowerCase().includes(query) ||
-               String(item.summary || '').toLowerCase().includes(query);
-      });
-
-      const sorted = sortSoftwareUpdates(filtered, updateSort);
-      const pageCount = Math.max(1, Math.ceil(sorted.length / updatesPageSize));
-      if (updatePageIndex >= pageCount) {
-        updatePageIndex = pageCount - 1;
-      }
-      const startIndex = updatePageIndex * updatesPageSize;
-      const items = sorted.slice(startIndex, startIndex + updatesPageSize);
-      return {
-        totalCount: sorted.length,
-        pageCount,
-        pageIndex: updatePageIndex,
-        startIndex,
-        endIndex: startIndex + items.length,
-        items
-      };
-    }
-
-    function buildSoftwareUpdateCards(items = null, options = {}) {
-      const updates = Array.isArray(items) ? items : (appState.softwareUpdates || []);
-      const ordered = options.keepOrder ? [...updates] : sortSoftwareUpdates(updates, 'priority');
-      const limit = Number.isInteger(options.limit) ? options.limit : 0;
-      const visible = limit > 0 ? ordered.slice(0, limit) : ordered;
-      if (!visible.length) {
-        return `<div class="empty">No software update inventory is available yet. Select Refresh updates to build a local patch view.</div>`;
-      }
-
-      const patchBusy = Boolean(appState.patchAction && appState.patchAction.running);
-      const patchDisabled = patchBusy ? ' disabled' : '';
-      return `${visible.map((item) => {
-        const fromVersion = item.version || '(unknown)';
-        const toVersion = item.availableVersion || '';
-        const state = item.state || 'unknown';
-        const stateTone = softwareUpdateTone(item);
-        const canInstall = Boolean(item.canInstall);
-        const primaryAction = canInstall
-          ? `<button class="primary" data-action="softwareUpdate" data-software-id="${esc(item.id)}"${patchDisabled}>Update now</button>`
-          : '';
-
-        return `<div class="record">
-          <div>
-            <div class="record-title">${esc(item.name || 'Unknown software')}</div>
-            <div class="record-meta">${esc(item.publisher || '(unknown publisher)')}\n${esc(toVersion ? `${fromVersion} -> ${toVersion}` : fromVersion)}\n${esc(item.summary || '')}</div>
-          </div>
-          <div class="record-badges">
-            ${badgeForTone(stateTone, state)}
-            ${badgeForTone(item.highRisk ? 'warning' : 'info', item.highRisk ? 'High risk' : 'Standard risk')}
-            ${badgeForTone(item.manualOnly ? 'warning' : 'info', item.manualOnly ? 'Manual workflow' : (item.provider || 'provider'))}
-          </div>
-          <div class="inline-actions" style="margin-top: 10px; grid-column: 1 / -1; justify-content: flex-start;">
-            <button data-action="softwareCheck" data-software-id="${esc(item.id)}"${patchDisabled}>Check</button>
-            ${primaryAction}
-          </div>
-        </div>`;
-      }).join('')}${limit > 0 && updates.length > visible.length ? `<div class="empty">Showing ${visible.length} of ${updates.length} software entries. Open the Updates page for full inventory controls.</div>` : ''}`;
-    }
-
-    function buildWindowsUpdateSummary(limit = 3) {
-      const updates = appState.windowsUpdates || [];
-      const top = updates.slice(0, limit);
-      if (!top.length) {
-        return `Windows Update inventory is currently empty for this device.`;
-      }
-
-      return top.map((item) => {
-        const kb = item.kb ? ` (${item.kb})` : '';
-        const reboot = item.rebootRequired ? 'reboot required' : 'no reboot';
-        return `${item.title}${kb} - ${item.classification || 'update'} / ${item.status || 'unknown'} / ${reboot}`;
-      }).join('\n');
-    }
-
-    function buildSoftwareUpdatesBody() {
-      const posture = appState.updates || {};
-      const patchAction = appState.patchAction || {};
-      const patchBusy = Boolean(patchAction.running);
-      const patchDisabled = patchBusy ? ' disabled' : '';
-      return `
-        <section class="section">
-          <div class="section-head">
-            <div>
-              <div class="eyebrow">Software updates</div>
-              <div class="section-title">Patch posture and per-app actions</div>
-              <div class="section-text">Review available updates, manual-only software, and reboot posture directly from the endpoint dashboard.</div>
-            </div>
-            <div class="chip ${posture.rebootRequired ? 'warning' : 'info'}">${posture.rebootRequired ? 'Reboot pending' : 'No reboot pending'}</div>
-          </div>
-          <div class="status-row">
-            <div class="chip ${patchBusy ? 'warning' : 'info'}">${patchBusy ? 'Update task running' : 'Update task idle'}</div>
-            ${patchBusy ? `<div class="chip info">${esc(patchAction.status || '')}</div>` : ''}
-            <button data-nav="updates">Open full updates page</button>
-          </div>
-          <div class="hero-status" style="margin-top: 14px;">
-            <div class="hero-chip"><div class="label">Windows updates</div><div class="value">${esc(posture.windowsCount ?? 0)}</div><div class="detail">Queued from local Windows Update inventory</div></div>
-            <div class="hero-chip"><div class="label">Software available</div><div class="value">${esc(posture.availableSoftwareCount ?? 0)}</div><div class="detail">Auto-capable updates ready to run</div></div>
-            <div class="hero-chip"><div class="label">Manual workflows</div><div class="value">${esc(posture.manualSoftwareCount ?? 0)}</div><div class="detail">Require analyst or user-guided steps</div></div>
-            <div class="hero-chip"><div class="label">Unsupported / blocked</div><div class="value">${esc((posture.unsupportedSoftwareCount ?? 0) + (posture.blockedSoftwareCount ?? 0))}</div><div class="detail">Coverage gaps and blocked software posture</div></div>
-          </div>
-          <div class="actions" style="margin-top: 14px;">
-            <button data-action="softwareUpdatesRefresh"${patchDisabled}>Refresh updates</button>
-            <button data-action="requestWindowsUpdatePam">Request Windows Update (PAM)</button>
-            <button data-action="requestNetworkResetPam">Request network reset (PAM)</button>
-          </div>
-          <div class="source-list" style="margin-top: 14px;">${buildSoftwareUpdateCards(null, { limit: 6 })}</div>
-          <div class="detail-card" style="margin-top: 14px;">
-            <div class="title">Windows update highlights</div>
-            <div class="text">${esc(buildWindowsUpdateSummary())}</div>
-          </div>
-        </section>`;
-    }
-
-    function buildUpdatesPageBody() {
-      const posture = appState.updates || {};
-      const patchAction = appState.patchAction || {};
-      const patchBusy = Boolean(patchAction.running);
-      const patchDisabled = patchBusy ? ' disabled' : '';
-      const data = buildUpdatesDataset();
-      const rangeLabel = data.totalCount === 0 ? '0 of 0' : `${data.startIndex + 1}-${data.endIndex} of ${data.totalCount}`;
-      const prevDisabled = data.pageIndex <= 0 ? ' disabled' : '';
-      const nextDisabled = data.pageIndex >= data.pageCount - 1 ? ' disabled' : '';
-
-      return `
-        <section class="section">
-          <div class="section-head">
-            <div>
-              <div class="eyebrow">Updates</div>
-              <div class="section-title">Software update command center</div>
-              <div class="section-text">Filter, sort, and execute software update checks or installs from a single workspace.</div>
-            </div>
-            <div class="chip ${patchBusy ? 'warning' : 'info'}">${patchBusy ? 'Task running' : 'Ready'}</div>
-          </div>
-          <div class="status-row">
-            <div class="chip ${posture.rebootRequired ? 'warning' : 'info'}">${posture.rebootRequired ? 'Reboot pending' : 'No reboot pending'}</div>
-            ${patchAction.status ? `<div class="chip info">${esc(patchAction.status)}</div>` : ''}
-          </div>
-          <div class="filter-row">
-            <input id="updateSearch" value="${esc(updateSearch)}" placeholder="Search software, publisher, provider, or state..." />
-          </div>
-          <div class="subtabs">
-            <button class="${updateFilter === 'actionable' ? 'active' : ''}" data-update-filter="actionable">Actionable</button>
-            <button class="${updateFilter === 'manual' ? 'active' : ''}" data-update-filter="manual">Manual</button>
-            <button class="${updateFilter === 'highrisk' ? 'active' : ''}" data-update-filter="highrisk">High risk</button>
-            <button class="${updateFilter === 'blocked' ? 'active' : ''}" data-update-filter="blocked">Blocked</button>
-            <button class="${updateFilter === 'unsupported' ? 'active' : ''}" data-update-filter="unsupported">Unsupported</button>
-            <button class="${updateFilter === 'all' ? 'active' : ''}" data-update-filter="all">All</button>
-          </div>
-          <div class="subtabs">
-            <button class="${updateSort === 'priority' ? 'active' : ''}" data-update-sort="priority">Sort: Priority</button>
-            <button class="${updateSort === 'name' ? 'active' : ''}" data-update-sort="name">Sort: Name</button>
-            <button class="${updateSort === 'state' ? 'active' : ''}" data-update-sort="state">Sort: State</button>
-            <button class="${updateSort === 'publisher' ? 'active' : ''}" data-update-sort="publisher">Sort: Publisher</button>
-            <button class="${updateSort === 'risk' ? 'active' : ''}" data-update-sort="risk">Sort: Risk</button>
-          </div>
-          <div class="actions" style="margin-top: 10px;">
-            <button class="primary" data-action="softwareUpdatesRefresh"${patchDisabled}>Refresh updates</button>
-            <button data-action="requestWindowsUpdatePam">Request Windows Update (PAM)</button>
-            <button data-action="requestNetworkResetPam">Request network reset (PAM)</button>
-          </div>
-          <div class="source-list" style="margin-top: 12px;">${buildSoftwareUpdateCards(data.items, { keepOrder: true })}</div>
-          <div class="pager">
-            <div class="meta">Showing ${esc(rangeLabel)}${data.totalCount > 0 ? ` - page ${data.pageIndex + 1} of ${data.pageCount}` : ''}</div>
-            <div class="actions">
-              <button data-update-page="prev"${prevDisabled}>Previous</button>
-              <button data-update-page="next"${nextDisabled}>Next</button>
-            </div>
-          </div>
-        </section>
-        <section class="section">
-          <div class="section-head">
-            <div>
-              <div class="eyebrow">Windows updates</div>
-              <div class="section-title">Local Windows Update queue</div>
-              <div class="section-text">A condensed view of current Windows Update inventory and reboot impact.</div>
-            </div>
-            <div class="chip info">${esc(posture.windowsCount ?? 0)} record(s)</div>
-          </div>
-          <div class="detail-card" style="margin-top: 14px;">
-            <div class="title">Windows update summary</div>
-            <div class="text">${esc(buildWindowsUpdateSummary(8))}</div>
-          </div>
-        </section>`;
-    }
-
-    function buildRuntimeKv() {
-      const runtime = appState.runtime || {};
-      const updates = appState.updates || {};
-      const patchAction = appState.patchAction || {};
-      const pairs = [
-        ['Device ID', runtime.deviceId],
-        ['Service state', runtime.serviceState],
-        ['Health state', runtime.healthState],
-        ['Policy', appState.brand ? appState.brand.policy : ''],
-        ['Last heartbeat', runtime.lastHeartbeat],
-        ['Last policy sync', runtime.lastPolicySync],
-        ['Queued telemetry', runtime.queuedTelemetry],
-        ['Windows updates', updates.windowsCount ?? 0],
-        ['Software updates available', updates.availableSoftwareCount ?? 0],
-        ['Update job', patchAction.running ? (patchAction.status || 'running') : 'idle'],
-        ['Patch history records', updates.historyCount ?? 0],
-        ['Last scan', runtime.lastScan],
-        ['Control plane', runtime.controlPlane]
-      ];
-      return pairs.map(([key, value]) => `<div class="key">${esc(key)}</div><div class="value">${esc(value)}</div>`).join('');
-    }
-
-    function selectedItem(pageKey) {
-      const rows = rowsFor(pageKey);
-      const index = Number.isInteger(selection[pageKey]) ? selection[pageKey] : -1;
-      return index >= 0 && index < rows.length ? rows[index] : (rows[0] || null);
-    }
-
-    function badgeForTone(tone, text) {
-      if (!String(text ?? '').trim()) {
-        return '';
-      }
-      return `<span class="chip ${esc(tone || 'info')}">${esc(text)}</span>`;
-    }
-
-    function buildRecordCards(pageKey) {
-      const rows = rowsFor(pageKey);
-      if (!rows.length) {
-        return `<div class="empty">No items are currently recorded for this view.</div>`;
-      }
-
-      return `<div class="record-list">${
-        rows.map((item, index) => {
-          const selected = Number.isInteger(selection[pageKey]) && selection[pageKey] === index;
-          if (pageKey === 'threats') {
-            return `<button type="button" class="record ${selected ? 'selected' : ''}" data-select="${index}">
-              <div>
-                <div class="record-title">${esc(item.item)}</div>
-                <div class="record-meta">${esc(item.time)}\n${esc(item.source)}</div>
-              </div>
-              <div class="record-badges">
-                ${badgeForTone(item.action === 'block' ? 'danger' : 'warning', item.action)}
-                ${badgeForTone('info', `Confidence ${item.confidence}`)}
-              </div>
-            </button>`;
-          }
-          if (pageKey === 'quarantine') {
-            return `<button type="button" class="record ${selected ? 'selected' : ''}" data-select="${index}">
-              <div>
-              <div class="record-title">${esc(item.item)}</div>
-                <div class="record-meta">${esc(item.time)}\n${esc(item.status)} · ${esc(item.technique)}</div>
-              </div>
-              <div class="record-badges">
-                ${badgeForTone(item.status === 'restored' ? 'good' : 'warning', item.status)}
-                ${badgeForTone('info', `${String(item.sha256 || '').slice(0, 12)}…`)}
-              </div>
-            </button>`;
-          }
-          const label = item.result || item.kind || 'event';
-          return `<button type="button" class="record ${selected ? 'selected' : ''}" data-select="${index}">
-            <div>
-              <div class="record-title">${esc(item.item || item.result || 'Selected item')}</div>
-              <div class="record-meta">${esc(item.time)}\n${esc(item.source || item.detail || '')}</div>
-            </div>
-            <div class="record-badges">
-              ${badgeForTone(item.result === 'blocked' || item.result === 'block' ? 'danger' : 'info', label)}
-              ${badgeForTone('info', item.technique || item.kind || '')}
-            </div>
-          </button>`;
-        }).join('')
-      }</div>`;
-    }
-
-    function buildSelectedDetail(pageKey) {
-      if (pageKey === 'settings') {
-        return `
-          <div class="detail-card">
-            <div class="title">${esc(appState.detailTitle)}</div>
-            <div class="text">${esc(appState.detailText)}</div>
-          </div>
-          <div class="detail-card">
-            <div class="title">Local configuration</div>
-            <div class="detail-grid">${
-              (appState.settings || []).map((item) => `
-                <div class="key">${esc(item.label)}</div><div class="value">${esc(item.value)}</div>
-              `).join('')
-            }</div>
-            <div class="actions" style="margin-top: 14px;">
-              <button class="warning" data-action="openExclusions">Manage exclusions</button>
-            </div>
-          </div>`;
-      }
-
-      const current = selectedItem(pageKey);
-      if (!current) {
-        return `<div class="detail-card"><div class="title">${esc(appState.detailTitle)}</div><div class="text">${esc(appState.detailText)}</div></div>`;
-      }
-
-      const rows = [];
-      if (pageKey === 'quarantine') {
-        rows.push(['Captured', current.time], ['Original path', current.item], ['Status', current.status], ['Technique', current.technique], ['SHA-256', current.sha256]);
-      } else if (pageKey === 'threats') {
-        rows.push(['Detected', current.time], ['Item', current.item], ['Action', current.action], ['Confidence', current.confidence], ['ATT&CK', current.attack], ['Remediation', current.remediation], ['Source', current.source], ['SHA-256', current.sha256]);
-      } else {
-        rows.push(['Recorded', current.time], ['Result', current.result], ['Item', current.item], ['Source', current.source], ['Technique', current.technique], ['Remediation', current.remediation], ['Kind', current.kind]);
-      }
-
-      const buttons = pageKey === 'quarantine' ? `
-        <div class="actions" style="margin-top: 14px;">
-          <button class="good" data-action="quarantineRestore" data-id="${esc(current.id)}">Restore</button>
-          <button class="danger" data-action="quarantineDelete" data-id="${esc(current.id)}">Delete</button>
-        </div>` : '';
-
-      return `
-        <div class="detail-card">
-          <div class="title">${esc(current.item || current.result || 'Selected item')}</div>
-          <div class="text">${esc(current.detail || appState.detailText)}</div>
-        </div>
-        <div class="detail-card">
-          <div class="detail-grid">${rows.map(([key, value]) => `<div class="key">${esc(key)}</div><div class="value">${esc(value)}</div>`).join('')}</div>
-          ${buttons}
-        </div>`;
-    }
-
-    function buildSettingsOverviewBody() {
-      return `
-        <section class="section">
-          <div class="section-head">
-            <div>
-              <div class="eyebrow">Settings</div>
-              <div class="section-title">Local configuration</div>
-              <div class="section-text">Control plane, runtime paths, exclusions, and endpoint preferences.</div>
-            </div>
-            <div class="chip info">Protected</div>
-          </div>
-          <div style="margin-top: 14px;">${buildSelectedDetail('settings')}</div>
-        </section>`;
-    }
-
-    function buildExclusionEntryCard(item) {
-      return `
-        <div class="record">
-          <div>
-            <div class="record-title">${esc(item.path)}</div>
-            <div class="record-meta">${esc(item.kind || 'Path')} exclusion</div>
-          </div>
-          <div class="inline-actions">
-            <button class="danger" data-action="exclusionsRemove" data-path="${esc(item.path)}">Remove</button>
-          </div>
-        </div>`;
-    }
-
-    function buildProcessCard(item) {
-      return `
-        <button type="button" class="source-card" data-action="exclusionsAddProcess" data-pid="${esc(item.pid)}">
-          <div>
-            <div class="source-title">${esc(item.name || 'Process')}</div>
-            <div class="source-meta">${esc(item.path || '(path unavailable)')}\nPID ${esc(item.pid)}</div>
-          </div>
-          <div class="source-badges">
-            ${badgeForTone(item.prioritized ? 'warning' : 'info', item.prioritized ? 'Prioritized' : 'Process')}
-          </div>
-        </button>`;
-    }
-
-    function buildSoftwareCard(item) {
-      return `
-        <button type="button" class="source-card" data-action="exclusionsAddApplication" data-software-id="${esc(item.id)}">
-          <div>
-            <div class="source-title">${esc(item.name || 'Application')}</div>
-            <div class="source-meta">${esc(item.publisher || '(unknown publisher)')}\n${esc(item.version || '')}\n${esc(item.location || '(no install location)')}</div>
-          </div>
-          <div class="source-badges">
-            ${badgeForTone(item.blocked ? 'danger' : 'info', item.blocked ? 'Blocked' : 'Installed')}
-          </div>
-        </button>`;
-    }
-
-    function buildExclusionsBody() {
-      const exclusions = appState.exclusions || [];
-      const query = exclusionSearch.trim().toLowerCase();
-      const filteredExclusions = exclusions.filter((item) => {
-        if (!query) return true;
-        return String(item.path || '').toLowerCase().includes(query) ||
-               String(item.kind || '').toLowerCase().includes(query);
-      });
-      const processes = (appState.processes || []).filter((item) => {
-        if (!query) return true;
-        return String(item.name || '').toLowerCase().includes(query) ||
-               String(item.path || '').toLowerCase().includes(query) ||
-               String(item.pid || '').includes(query);
-      });
-      const software = (appState.software || []).filter((item) => {
-        if (!query) return true;
-        return String(item.name || '').toLowerCase().includes(query) ||
-               String(item.publisher || '').toLowerCase().includes(query) ||
-               String(item.location || '').toLowerCase().includes(query) ||
-               String(item.version || '').toLowerCase().includes(query);
-      });
-
-      let rightPanel = '';
-      if (exclusionMode === 'current') {
-        rightPanel = `
-          <div class="detail-card">
-            <div class="title">Current exclusions</div>
-            <div class="text">These paths are trusted by Fenrir and are skipped during scans.</div>
-            <div class="source-list" style="margin-top: 12px;">${
-              filteredExclusions.length ? filteredExclusions.map((item) => buildExclusionEntryCard(item)).join('') :
-                `<div class="empty">No exclusions are configured yet.</div>`
-            }</div>
-          </div>`;
-      } else if (exclusionMode === 'file') {
-        rightPanel = `
-          <div class="detail-card">
-            <div class="title">File exclusion</div>
-            <div class="text">Choose a single file to trust. Fenrir will store its full path and skip it in scans.</div>
-            <div class="inline-actions" style="margin-top: 12px;">
-              <button class="primary" data-action="exclusionsAddFile">Choose file</button>
-            </div>
-          </div>`;
-      } else if (exclusionMode === 'folder') {
-        rightPanel = `
-          <div class="detail-card">
-            <div class="title">Folder exclusion</div>
-            <div class="text">Choose a folder to trust. Everything under that path will be skipped by scanning.</div>
-            <div class="inline-actions" style="margin-top: 12px;">
-              <button class="primary" data-action="exclusionsAddFolder">Choose folder</button>
-            </div>
-          </div>`;
-      } else if (exclusionMode === 'process') {
-        rightPanel = `
-          <div class="detail-card">
-            <div class="title">Process exclusion</div>
-            <div class="text">Pick from the current running processes Fenrir sees on this device.</div>
-            <div class="filter-row"><input id="exclusionSearch" value="${esc(exclusionSearch)}" placeholder="Search running processes..." /></div>
-            <div class="source-list">${
-              processes.length ? processes.map((item) => buildProcessCard(item)).join('') :
-                `<div class="empty">No matching processes were found.</div>`
-            }</div>
-          </div>`;
-      } else if (exclusionMode === 'application') {
-        rightPanel = `
-          <div class="detail-card">
-            <div class="title">Application exclusion</div>
-            <div class="text">Pick from the installed software list collected on this endpoint.</div>
-            <div class="filter-row"><input id="exclusionSearch" value="${esc(exclusionSearch)}" placeholder="Search installed software..." /></div>
-            <div class="source-list">${
-              software.length ? software.map((item) => buildSoftwareCard(item)).join('') :
-                `<div class="empty">No matching software was found.</div>`
-            }</div>
-          </div>`;
-      }
-
-      const currentCount = exclusions.length;
-      return `
-        <section class="section">
-          <div class="section-head">
-            <div>
-              <div class="eyebrow">Exclusions</div>
-              <div class="section-title">Trusted paths and application targets</div>
-              <div class="section-text">Use file, folder, process, and application sources to build exclusions without leaving Fenrir.</div>
-            </div>
-            <div class="chip ${currentCount === 0 ? 'info' : 'warning'}">${currentCount} trusted path(s)</div>
-          </div>
-          <div class="subtabs">
-            <button class="${exclusionMode === 'current' ? 'active' : ''}" data-exclusion-mode="current">Current list</button>
-            <button class="${exclusionMode === 'file' ? 'active' : ''}" data-exclusion-mode="file">File</button>
-            <button class="${exclusionMode === 'folder' ? 'active' : ''}" data-exclusion-mode="folder">Folder</button>
-            <button class="${exclusionMode === 'process' ? 'active' : ''}" data-exclusion-mode="process">Process</button>
-            <button class="${exclusionMode === 'application' ? 'active' : ''}" data-exclusion-mode="application">Application</button>
-          </div>
-          <div class="exclusion-shell" style="margin-top: 14px;">
-            <div class="detail-card">
-              <div class="title">Configured exclusions</div>
-              <div class="text">These exclusions are stored for the Fenrir service and applied at system level.</div>
-              <div class="source-list" style="margin-top: 12px;">${
-                filteredExclusions.length ? filteredExclusions.map((item) => buildExclusionEntryCard(item)).join('') :
-                  `<div class="empty">No exclusions are configured yet.</div>`
-              }</div>
-            </div>
-            ${rightPanel}
-          </div>
-        </section>`;
-    }
-
-    function buildDashboardBody() {
-      const recent = (appState.history || []).slice(0, 5);
-      return `
-        <section class="section">
-          <div class="section-head">
-            <div>
-              <div class="eyebrow">Protection status</div>
-              <div class="section-title">${esc(appState.headline || '')}</div>
-              <div class="section-text">${esc(appState.guidance || '')}</div>
-            </div>
-            <div class="chip ${esc(appState.statusTone || 'info')}">${esc(appState.statusChip || '')}</div>
-          </div>
-          <div class="actions" style="margin-top: 14px;">${buildHeroActions()}</div>
-          <div class="hero-status" style="margin-top: 14px;">${buildMetrics()}</div>
-        </section>
-        ${buildSoftwareUpdatesBody()}
-        <section class="section">
-          <div class="section-head">
-            <div>
-              <div class="eyebrow">Recent activity</div>
-              <div class="section-title">What changed recently</div>
-              <div class="section-text">Only the most important actions and detections are shown here.</div>
-            </div>
-            <div class="chip info">${recent.length} items</div>
-          </div>
-          <div class="record-list" style="margin-top: 14px;">${
-            recent.map((item, index) => {
-              const title = item.item || item.result || 'Event';
-              return `<button type="button" class="record ${index === 0 ? 'selected' : ''}" data-select="${index}">
-                <div>
-                  <div class="record-title">${esc(title)}</div>
-                  <div class="record-meta">${esc(item.time)}\n${esc(item.source || item.kind || '')}</div>
-                </div>
-                <div class="record-badges">
-                  ${badgeForTone(item.result === 'blocked' || item.result === 'block' ? 'danger' : 'info', item.result || 'event')}
-                  ${badgeForTone('info', item.technique || item.remediation || '')}
-                </div>
-              </button>`;
-            }).join('')
-          }</div>
-        </section>
-        <section class="section">
-          <div class="section-head">
-            <div>
-              <div class="eyebrow">Runtime snapshot</div>
-              <div class="section-title">Local protection state</div>
-              <div class="section-text">Service, policy, telemetry, and sync status for this endpoint.</div>
-            </div>
-          </div>
-          <div class="kv" style="margin-top: 12px;">${buildRuntimeKv()}</div>
-        </section>`;
-    }
-
-    function buildPageBody(pageKey) {
-      if (pageKey === 'dashboard') {
-        return buildDashboardBody();
-      }
-
-      if (pageKey === 'threats') {
-        return `
-          <section class="section">
-            <div class="section-head">
-              <div>
-                <div class="eyebrow">Findings</div>
-                <div class="section-title">Active detections</div>
-                <div class="section-text">Keep this page focused on items that still need a decision.</div>
-              </div>
-              <div class="chip ${esc(appState.statusTone || 'info')}">${esc(appState.threats?.length ? `${appState.threats.length} detected` : 'No current detections')}</div>
-            </div>
-            <div style="margin-top: 14px;">${buildRecordCards('threats')}</div>
-          </section>
-          <section class="section">
-            <div class="section-head">
-              <div>
-                <div class="eyebrow">Selected finding</div>
-                <div class="section-title">Why Fenrir flagged it</div>
-                <div class="section-text">Selected item details, ATT&CK mapping, and recommended next steps.</div>
-              </div>
-            </div>
-            <div style="margin-top: 14px;">${buildSelectedDetail('threats')}</div>
-          </section>`;
-      }
-
-      if (pageKey === 'quarantine') {
-        return `
-          <section class="section">
-            <div class="section-head">
-              <div>
-                <div class="eyebrow">Quarantine</div>
-                <div class="section-title">Contained items</div>
-                <div class="section-text">Restore only when you are confident the file is safe.</div>
-              </div>
-              <div class="chip info">${esc(appState.quarantine?.length ? `${appState.quarantine.length} contained` : 'Empty')}</div>
-            </div>
-            <div style="margin-top: 14px;">${buildRecordCards('quarantine')}</div>
-          </section>
-          <section class="section">
-            <div class="section-head">
-              <div>
-                <div class="eyebrow">Selected item</div>
-                <div class="section-title">Original path and remediation</div>
-                <div class="section-text">Use the actions below to restore or delete the selected entry.</div>
-              </div>
-            </div>
-            <div style="margin-top: 14px;">${buildSelectedDetail('quarantine')}</div>
-          </section>`;
-      }
-
-      if (pageKey === 'scans') {
-        const currentScan = appState.scan || {};
-        return `
-          <section class="section">
-            <div class="section-head">
-              <div>
-                <div class="eyebrow">Scans</div>
-                <div class="section-title">Launch and track scans</div>
-                <div class="section-text">Quick, full, and folder scans all report progress here.</div>
-              </div>
-              <div class="chip ${currentScan.running ? 'warning' : 'info'}">${currentScan.running ? 'Scan running' : 'Idle'}</div>
-            </div>
-            <div class="actions" style="margin-top: 14px;">${buildActions()}</div>
-            <div class="detail-card" style="margin-top: 14px;">
-              <div class="title">${esc(currentScan.label || 'No active scan')}</div>
-              <div class="text">${esc(currentScan.status || appState.detailText || 'Ready.')}</div>
-              <div style="margin-top: 12px;"><progress value="${Number(currentScan.completed || 0)}" max="${Math.max(Number(currentScan.total || 100), 1)}"></progress></div>
-            </div>
-          </section>
-          <section class="section">
-            <div class="section-head">
-              <div>
-                <div class="eyebrow">Recent scan history</div>
-                <div class="section-title">Latest sessions</div>
-                <div class="section-text">Recent scans are recorded as a simple activity stream.</div>
-              </div>
-            </div>
-            <div style="margin-top: 14px;">${buildRecordCards('scans')}</div>
-          </section>`;
-      }
-
-      if (pageKey === 'updates') {
-        return buildUpdatesPageBody();
-      }
-
-      if (pageKey === 'history') {
-        return `
-          <section class="section">
-            <div class="section-head">
-              <div>
-                <div class="eyebrow">History</div>
-                <div class="section-title">Activity timeline</div>
-                <div class="section-text">Important protection and response events, ordered by recency.</div>
-              </div>
-              <div class="chip info">${esc((appState.history || []).length)} events</div>
-            </div>
-            <div style="margin-top: 14px;">${buildRecordCards('history')}</div>
-          </section>
-          <section class="section">
-            <div class="section-head">
-              <div>
-                <div class="eyebrow">Selected event</div>
-                <div class="section-title">Evidence and remediation</div>
-                <div class="section-text">The selected event’s context is shown below.</div>
-              </div>
-            </div>
-            <div style="margin-top: 14px;">${buildSelectedDetail('history')}</div>
-          </section>`;
-      }
-
-      if (pageKey === 'settings') {
-        if (appState.manageExclusionsMode) {
-          return buildExclusionsBody();
-        }
-        return buildSettingsOverviewBody();
-      }
-
-      return buildDashboardBody();
-    }
-
-    function listColumns(pageKey) {
-      if (pageKey === 'threats') return ['Time', 'Item', 'Action', 'Confidence', 'ATT&CK', 'Remediation'];
-      if (pageKey === 'quarantine') return ['Captured', 'Original path', 'Status', 'Technique', 'SHA-256'];
-      if (pageKey === 'scans' || pageKey === 'history' || pageKey === 'dashboard') return ['Time', 'Result', 'Item', 'Source', 'Technique', 'Remediation'];
-      return ['Label', 'Value'];
-    }
-
-    function buildList(pageKey) {
-      const rows = rowsFor(pageKey);
-      if (pageKey === 'settings') {
-        return `<div class="list-grid">${
-          (appState.settings || []).map((item) => `
-            <div class="list-card">
-              <div class="title">${esc(item.label)}</div>
-              <div class="meta">${esc(item.value)}</div>
-            </div>`).join('')
-        }</div>`;
-      }
-
-      if (!rows.length) {
-        return `<div class="empty">No items are currently recorded for this view.</div>`;
-      }
-
-      const header = listColumns(pageKey).map((column) => `<th>${esc(column)}</th>`).join('');
-      const body = rows.map((item, index) => {
-        const selected = Number.isInteger(selection[pageKey]) && selection[pageKey] === index;
-        if (pageKey === 'threats') {
-          return `<tr class="${selected ? 'selected' : ''}" data-select="${index}">
-            <td>${esc(item.time)}</td>
-            <td>${esc(item.item)}<span class="secondary">${esc(item.source)}</span></td>
-            <td>${esc(item.action)}</td>
-            <td>${esc(item.confidence)}</td>
-            <td>${esc(item.attack)}</td>
-            <td>${esc(item.remediation)}</td>
-          </tr>`;
-        }
-        if (pageKey === 'quarantine') {
-          return `<tr class="${selected ? 'selected' : ''}" data-select="${index}">
-            <td>${esc(item.time)}</td>
-            <td>${esc(item.item)}<span class="secondary">${esc(item.detail)}</span></td>
-            <td>${esc(item.status)}</td>
-            <td>${esc(item.technique)}</td>
-            <td>${esc(item.sha256)}</td>
-          </tr>`;
-        }
-        return `<tr class="${selected ? 'selected' : ''}" data-select="${index}">
-          <td>${esc(item.time)}</td>
-          <td>${esc(item.result)}</td>
-          <td>${esc(item.item)}<span class="secondary">${esc(item.kind || item.detail || '')}</span></td>
-          <td>${esc(item.source)}</td>
-          <td>${esc(item.technique)}</td>
-          <td>${esc(item.remediation)}</td>
-        </tr>`;
-      }).join('');
-
-      return `<table><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>`;
-    }
-
-    function buildDetail(pageKey) {
-      if (pageKey === 'settings') {
-        return `
-          <div class="detail-card">
-            <div class="title">${esc(appState.detailTitle)}</div>
-            <div class="text">${esc(appState.detailText)}</div>
-          </div>
-          <div class="detail-card">
-            <div class="title">Local configuration</div>
-            <div class="kv">${
-              (appState.settings || []).map((item) => `
-                <div class="key">${esc(item.label)}</div><div class="value">${esc(item.value)}</div>
-              `).join('')
-            }</div>
-            <div class="actions" style="margin-top: 14px;">
-              <button class="warning" data-action="openExclusions">Edit exclusions</button>
-            </div>
-          </div>`;
-      }
-
-      const current = activeItem(pageKey);
-      if (!current) {
-        return `<div class="detail-card"><div class="title">${esc(appState.detailTitle)}</div><div class="text">${esc(appState.detailText)}</div></div>`;
-      }
-
-      const rows = [];
-      if (pageKey === 'quarantine') {
-        rows.push(['Captured', current.time], ['Original path', current.item], ['Status', current.status], ['Technique', current.technique], ['SHA-256', current.sha256]);
-      } else if (pageKey === 'threats') {
-        rows.push(['Detected', current.time], ['Item', current.item], ['Action', current.action], ['Confidence', current.confidence], ['ATT&CK', current.attack], ['Remediation', current.remediation], ['Source', current.source], ['SHA-256', current.sha256]);
-      } else {
-        rows.push(['Recorded', current.time], ['Result', current.result], ['Item', current.item], ['Source', current.source], ['Technique', current.technique], ['Remediation', current.remediation], ['Kind', current.kind]);
-      }
-
-      const buttons = pageKey === 'quarantine' ? `
-        <div class="actions" style="margin-top: 14px;">
-          <button class="good" data-action="quarantineRestore" data-id="${esc(current.id)}">Restore</button>
-          <button class="danger" data-action="quarantineDelete" data-id="${esc(current.id)}">Delete</button>
-        </div>` : '';
-
-      return `
-        <div class="detail-card">
-          <div class="title">${esc(current.item || current.result || 'Selected item')}</div>
-          <div class="text">${esc(current.detail || appState.detailText)}</div>
-        </div>
-        <div class="detail-card">
-          <div class="kv">${rows.map(([key, value]) => `<div class="key">${esc(key)}</div><div class="value">${esc(value)}</div>`).join('')}</div>
-          ${buttons}
-        </div>`;
-    }
-
-    function render(pageState) {
-      appState = pageState;
-      if (!pageState.manageExclusionsMode || pageState.pageKey !== 'settings') {
-        exclusionMode = 'current';
-        exclusionSearch = '';
-      }
-      document.getElementById('brandDevice').textContent = pageState.brand?.device || '';
-      document.getElementById('brandMeta').textContent = `${pageState.brand?.status || ''}\n${pageState.brand?.policy || ''}`;
-      document.getElementById('pageTitle').textContent = pageState.pageTitle || '';
-      document.getElementById('pageSubtitle').textContent = pageState.pageSubtitle || '';
-      const chip = document.getElementById('statusChip');
-      chip.className = `chip ${pageState.statusTone || 'info'}`;
-      chip.textContent = pageState.statusChip || '';
-      document.getElementById('actions').innerHTML = buildActions();
-      buildNav();
-      buildTabs();
-      document.getElementById('foot').textContent = `${pageState.runtime?.queuedTelemetry || ''} queued upload(s) • ${pageState.runtime?.controlPlane || ''}`;
-      const pageBody = document.getElementById('pageBody');
-      if (pageBody) {
-        pageBody.innerHTML = buildPageBody(pageState.pageKey || 'dashboard');
-      }
-    }
-
-    document.addEventListener('click', (event) => {
-      const target = event.target.closest('[data-nav], [data-action], [data-select], [data-exclusion-mode], [data-update-filter], [data-update-sort], [data-update-page]');
-      if (!target) return;
-      if (target.dataset.exclusionMode) {
-        exclusionMode = target.dataset.exclusionMode;
-        if (exclusionMode === 'current') {
-          exclusionSearch = '';
-        }
-        render(appState);
-        return;
-      }
-      if (target.dataset.updateFilter) {
-        updateFilter = target.dataset.updateFilter;
-        updatePageIndex = 0;
-        render(appState);
-        return;
-      }
-      if (target.dataset.updateSort) {
-        updateSort = target.dataset.updateSort;
-        updatePageIndex = 0;
-        render(appState);
-        return;
-      }
-      if (target.dataset.updatePage) {
-        const data = buildUpdatesDataset();
-        if (target.dataset.updatePage === 'prev' && data.pageIndex > 0) {
-          updatePageIndex = data.pageIndex - 1;
-        }
-        if (target.dataset.updatePage === 'next' && data.pageIndex < data.pageCount - 1) {
-          updatePageIndex = data.pageIndex + 1;
-        }
-        render(appState);
-        return;
-      }
-      if (target.dataset.nav) {
-        send(actionMessage('navigate', { page: target.dataset.nav }));
-        return;
-      }
-      if (target.dataset.select) {
-        selection[appState.pageKey] = Number(target.dataset.select);
-        render(appState);
-        return;
-      }
-      if (target.dataset.action) {
-        if (target.dataset.action === 'setQuickScanInterval' || target.dataset.action === 'setFullScanInterval') {
-          const isQuick = target.dataset.action === 'setQuickScanInterval';
-          const currentValue = Number(isQuick ? appState.runtime?.quickScanIntervalMinutes : appState.runtime?.fullScanIntervalMinutes);
-          const fallbackValue = isQuick ? 1440 : 10080;
-          const minValue = isQuick ? 15 : 60;
-          const maxValue = isQuick ? 10080 : 43200;
-          const promptTitle = isQuick
-            ? 'Set quick scan interval (minutes). 1440 = once every 24 hours.'
-            : 'Set full scan interval (minutes). 10080 = once every 7 days.';
-          const input = window.prompt(promptTitle, String(Number.isFinite(currentValue) ? currentValue : fallbackValue));
-          if (input === null) return;
-          const minutes = Number.parseInt(input, 10);
-          if (!Number.isFinite(minutes) || minutes < minValue || minutes > maxValue) {
-            window.alert(`Enter a whole number between ${minValue} and ${maxValue} minutes.`);
-            return;
-          }
-          const payload = { action: target.dataset.action, minutes: String(minutes) };
-          send(new URLSearchParams(payload).toString());
-          return;
-        }
-
-        const payload = { action: target.dataset.action };
-        if (target.dataset.preset) payload.preset = target.dataset.preset;
-        if (target.dataset.page) payload.page = target.dataset.page;
-        if (target.dataset.id) payload.id = target.dataset.id;
-        if (target.dataset.softwareId) payload['software-id'] = target.dataset.softwareId;
-        if (target.dataset.path) payload.path = target.dataset.path;
-        send(new URLSearchParams(payload).toString());
-      }
-    });
-
-    document.addEventListener('input', (event) => {
-      const target = event.target;
-      if (target && target.id === 'exclusionSearch') {
-        exclusionSearch = target.value || '';
-        render(appState);
-        return;
-      }
-      if (target && target.id === 'updateSearch') {
-        updateSearch = target.value || '';
-        updatePageIndex = 0;
-        render(appState);
-      }
-    });
-
-    if (window.chrome && window.chrome.webview) {
-      window.chrome.webview.addEventListener('message', (event) => render(event.data));
-    }
-
-    render(initialState);
-  </script>
-</body>
-</html>
-)HTML";
+  // The page itself is tools/endpointui/web/protection-centre.html, embedded at build time.
+  std::wstring html;
+  for (const auto* part : kEndpointUiPageParts) {
+    html += part;
+  }
 
   html = ReplaceAll(std::move(html), L"__FENRIR_LOGO_URI__", context.webViewLogoDataUri);
   html = ReplaceAll(std::move(html), L"__FENRIR_INITIAL_STATE__", BuildWebViewStateJson(context));
@@ -4036,7 +2690,7 @@ std::wstring BuildWebViewFallbackStatus(const UiContext& context) {
     return context.webViewFailureReason;
   }
 
-  return L"Modern Fenrir UI is unavailable because Microsoft Edge WebView2 Runtime is missing. Install WebView2 Runtime and restart Fenrir Protection Centre.";
+  return L"The full window could not load because Microsoft Edge WebView2 Runtime is missing. Install Microsoft Edge WebView2 Runtime, then reopen this window.";
 }
 
 void HideNativeShellControls(UiContext& context, const bool visible) {
@@ -4067,6 +2721,17 @@ void ResizeWebView(UiContext& context) {
   RECT client{};
   GetClientRect(context.hwnd, &client);
   context.webViewController->put_Bounds(client);
+}
+
+// A short message for the page's toast area; supportSent clears the support form.
+void PostWebViewNotice(UiContext& context, const std::wstring& tone, const std::wstring& text, const bool supportSent) {
+  if (!context.webViewReady || context.webView == nullptr) {
+    MessageBoxW(context.hwnd, text.c_str(), kWindowTitle, MB_OK | (tone == L"danger" ? MB_ICONERROR : MB_ICONINFORMATION));
+    return;
+  }
+  const auto json = L"{\"notice\":{\"tone\":\"" + JsonEscape(tone) + L"\",\"text\":\"" + JsonEscape(text) +
+                    L"\",\"supportSent\":" + (supportSent ? L"true" : L"false") + L"}}";
+  context.webView->PostWebMessageAsJson(json.c_str());
 }
 
 void PublishWebViewState(UiContext& context) {
@@ -4104,7 +2769,7 @@ bool InitializeWebViewHost(UiContext& context) {
   const auto currentExecutable = GetCurrentExecutablePath();
   if (currentExecutable.empty()) {
     context.webViewFallbackActive = true;
-    context.webViewFailureReason = L"Modern Fenrir UI is unavailable because the client executable path could not be resolved.";
+    context.webViewFailureReason = L"The full window could not load because the client executable path could not be resolved.";
     return false;
   }
 
@@ -4112,14 +2777,14 @@ bool InitializeWebViewHost(UiContext& context) {
   if (!std::filesystem::exists(loaderPath)) {
     context.webViewFallbackActive = true;
     context.webViewFailureReason =
-        L"Modern Fenrir UI is unavailable because WebView2Loader.dll is missing from the install directory.";
+        L"The full window could not load because WebView2Loader.dll is missing from the install directory.";
     return false;
   }
 
   context.webViewLoaderModule = LoadLibraryW(loaderPath.c_str());
   if (context.webViewLoaderModule == nullptr) {
     context.webViewFallbackActive = true;
-    context.webViewFailureReason = L"Modern Fenrir UI is unavailable because WebView2Loader.dll could not be loaded.";
+    context.webViewFailureReason = L"The full window could not load because WebView2Loader.dll could not be loaded.";
     return false;
   }
 
@@ -4130,7 +2795,7 @@ bool InitializeWebViewHost(UiContext& context) {
   if (createEnvironment == nullptr) {
     context.webViewFallbackActive = true;
     context.webViewFailureReason =
-        L"Modern Fenrir UI is unavailable because the WebView2 loader export could not be resolved.";
+        L"The full window could not load because the WebView2 loader export could not be resolved.";
     DestroyWebViewHost(context);
     return false;
   }
@@ -4141,7 +2806,7 @@ bool InitializeWebViewHost(UiContext& context) {
   if (userDataFolder.empty()) {
     context.webViewFallbackActive = true;
     context.webViewFailureReason =
-        L"Modern Fenrir UI is unavailable because the WebView2 user-data location could not be prepared.";
+        L"The full window could not load because the WebView2 user-data location could not be prepared.";
     DestroyWebViewHost(context);
     return false;
   }
@@ -4159,9 +2824,9 @@ bool InitializeWebViewHost(UiContext& context) {
         if (FAILED(errorCode) || environment == nullptr) {
           callbackContext->webViewFallbackActive = true;
           callbackContext->webViewFailureReason =
-              L"Modern Fenrir UI is unavailable because WebView2 runtime initialization failed (" +
+              L"The full window could not load because WebView2 runtime initialization failed (" +
               HresultToHex(errorCode) +
-              L"). Install Microsoft Edge WebView2 Runtime and restart Fenrir Protection Centre.";
+              L"). Install Microsoft Edge WebView2 Runtime, then reopen this window.";
           callbackContext->webViewEnabled = false;
           DestroyWebViewHost(*callbackContext);
           return S_OK;
@@ -4178,9 +2843,9 @@ bool InitializeWebViewHost(UiContext& context) {
               if (FAILED(controllerError) || controller == nullptr) {
                 controllerContext->webViewFallbackActive = true;
                 controllerContext->webViewFailureReason =
-                    L"Modern Fenrir UI is unavailable because WebView2 controller creation failed (" +
+                    L"The full window could not load because WebView2 controller creation failed (" +
                     HresultToHex(controllerError) +
-                    L"). Install Microsoft Edge WebView2 Runtime and restart Fenrir Protection Centre.";
+                    L"). Install Microsoft Edge WebView2 Runtime, then reopen this window.";
                 controllerContext->webViewEnabled = false;
                 DestroyWebViewHost(*controllerContext);
                 return S_OK;
@@ -4192,7 +2857,7 @@ bool InitializeWebViewHost(UiContext& context) {
               if (controllerContext->webView == nullptr) {
                 controllerContext->webViewFallbackActive = true;
                 controllerContext->webViewFailureReason =
-                    L"Modern Fenrir UI is unavailable because the WebView2 runtime host did not return a browser instance.";
+                    L"The full window could not load because the WebView2 runtime host did not return a browser instance.";
                 controllerContext->webViewEnabled = false;
                 DestroyWebViewHost(*controllerContext);
                 return S_OK;
@@ -4254,9 +2919,9 @@ bool InitializeWebViewHost(UiContext& context) {
   if (FAILED(result)) {
     context.webViewFallbackActive = true;
     context.webViewFailureReason =
-        L"Modern Fenrir UI is unavailable because WebView2 runtime startup failed (" +
+        L"The full window could not load because WebView2 runtime startup failed (" +
         HresultToHex(result) +
-        L"). Install Microsoft Edge WebView2 Runtime and restart Fenrir Protection Centre.";
+        L"). Install Microsoft Edge WebView2 Runtime, then reopen this window.";
     DestroyWebViewHost(context);
     return false;
   }
@@ -4370,6 +3035,11 @@ std::wstring BuildServiceNotificationBody(const EndpointClientSnapshot& snapshot
 
 void ShowTrayNotification(UiContext& context, const std::wstring& title, const std::wstring& body,
                           const DWORD infoFlags) {
+  // Policy: "none" shows nothing; "important" shows warnings and errors only; "all" shows everything.
+  if (!context.trayIconAllowed || _wcsicmp(context.notificationLevel.c_str(), L"none") == 0 ||
+      (_wcsicmp(context.notificationLevel.c_str(), L"important") == 0 && (infoFlags & (NIIF_WARNING | NIIF_ERROR)) == 0)) {
+    return;
+  }
   UpdateTrayIcon(context);
   context.trayIcon.uFlags = NIF_MESSAGE | NIF_TIP | NIF_ICON | NIF_INFO;
   wcsncpy_s(context.trayIcon.szInfoTitle, title.c_str(), _TRUNCATE);
@@ -4403,6 +3073,9 @@ void EvaluateNotifications(UiContext& context, const EndpointClientSnapshot& sna
                     ServiceStateNeedsNotification(snapshot.serviceState);
   }
 
+  if (_wcsicmp(context.notificationLevel.c_str(), L"none") == 0) {
+    notifyThreats = notifyService = false;
+  }
   if (notifyThreats) {
     ShowTrayNotification(context,
                          snapshot.openThreatCount == 1 ? L"Finding detected on this device" : L"Multiple findings detected",
@@ -4416,6 +3089,13 @@ void EvaluateNotifications(UiContext& context, const EndpointClientSnapshot& sna
 }
 
 void UpdateTrayIcon(UiContext& context) {
+  if (!context.trayIconAllowed) {
+    if (context.trayAdded) {
+      Shell_NotifyIconW(NIM_DELETE, &context.trayIcon);
+      context.trayAdded = false;
+    }
+    return;
+  }
   context.trayIcon.cbSize = sizeof(context.trayIcon);
   context.trayIcon.hWnd = context.hwnd;
   context.trayIcon.uID = 1;
@@ -4423,7 +3103,7 @@ void UpdateTrayIcon(UiContext& context) {
   context.trayIcon.uCallbackMessage = kTrayMessage;
   context.trayIcon.hIcon = SelectTrayIcon(context);
 
-  const auto tooltip = ProtectionHeadline(context.snapshot) + L" | " + NullableText(context.snapshot.agentState.hostname);
+  const auto tooltip = context.brandName + L": " + ProtectionHeadline(context.snapshot);
   wcsncpy_s(context.trayIcon.szTip, tooltip.c_str(), _TRUNCATE);
 
   Shell_NotifyIconW(context.trayAdded ? NIM_MODIFY : NIM_ADD, &context.trayIcon);
@@ -4436,11 +3116,22 @@ void UpdateTrayIcon(UiContext& context) {
   SendMessageW(context.hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(SelectWindowIcon(context, true)));
 }
 
+bool WindowsUsesLightTheme() {
+  DWORD value = 0, size = sizeof(value);
+  return RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", L"AppsUseLightTheme",
+                      RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS && value != 0;
+}
+
 void ApplyDarkWindowChrome(HWND hwnd) {
-  const BOOL darkMode = TRUE;
+  // The page follows the Windows app theme, so the title bar does too.
+  const bool light = WindowsUsesLightTheme();
+  const BOOL darkMode = light ? FALSE : TRUE;
   DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkMode, sizeof(darkMode));
+  if (light) {
+    return;  // default light caption
+  }
 #if defined(DWMWA_CAPTION_COLOR)
-  const COLORREF captionColor = WindowBackgroundColor();
+  const COLORREF captionColor = RGB(0x0d, 0x12, 0x1b);
   DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &captionColor, sizeof(captionColor));
 #endif
 #if defined(DWMWA_TEXT_COLOR)
@@ -4831,7 +3522,49 @@ void UpdateVisibleList(UiContext& context) {
   UpdateDetailPane(context);
 }
 
+void LoadExperience(UiContext& context) {
+  std::ifstream in(GetCurrentExecutableDirectory() / L"experience.json", std::ios::binary);
+  std::stringstream text;
+  text << in.rdbuf();
+  const auto parsed = antivirus::agent::json::Parse(text.str());
+  if (!parsed || !parsed->IsObject()) {
+    return;  // keep the defaults (older service, or not written yet)
+  }
+  context.experienceJson = text.str();
+  const auto str = [&parsed](const char* key, const std::string& fallback) {
+    const auto* value = parsed->Get(key);
+    const auto result = value ? value->String() : std::nullopt;
+    return result.has_value() && !result->empty() ? *result : fallback;
+  };
+  const auto flag = [&parsed](const char* key, bool fallback) {
+    const auto* value = parsed->Get(key);
+    return value ? value->Bool().value_or(fallback) : fallback;
+  };
+  context.brandName = antivirus::agent::Utf8ToWide(str("brandName", "Fenrir"));
+  context.allowUserScans = flag("allowUserScans", true);
+  context.trayIconAllowed = flag("trayIcon", true);
+  context.notificationLevel = antivirus::agent::Utf8ToWide(str("notifications", "important"));
+  if (context.hwnd != nullptr) {
+    const auto title = _wcsicmp(context.brandName.c_str(), L"Fenrir") == 0 ? std::wstring(L"Fenrir Protection") : context.brandName;
+    SetWindowTextW(context.hwnd, title.c_str());
+  }
+}
+
+// Once per run, when the WebView2 page could not load, offer the fix instead of leaving the basic view unexplained.
+void OfferWebViewRuntime(UiContext& context) {
+  if (!context.webViewFallbackActive || context.webViewFallbackPrompted || context.hwnd == nullptr || !IsWindowVisible(context.hwnd)) {
+    return;
+  }
+  context.webViewFallbackPrompted = true;
+  const auto text = L"This window is showing its basic view.\r\n\r\n" + BuildWebViewFallbackStatus(context) +
+                    L"\r\n\r\nProtection is not affected. Open the Microsoft download page for WebView2 Runtime now?";
+  if (MessageBoxW(context.hwnd, text.c_str(), context.brandName.c_str(), MB_YESNO | MB_ICONINFORMATION) == IDYES) {
+    ShellExecuteW(context.hwnd, L"open", L"https://go.microsoft.com/fwlink/p/?LinkId=2124703", nullptr, nullptr, SW_SHOWNORMAL);
+  }
+}
+
 void RefreshSnapshot(UiContext& context) {
+  LoadExperience(context);
   try {
     const auto refreshedSnapshot = antivirus::agent::LoadEndpointClientSnapshot(context.config);
     context.snapshot = refreshedSnapshot;
@@ -4844,6 +3577,7 @@ void RefreshSnapshot(UiContext& context) {
       detailsText += BuildWebViewFallbackStatus(context);
     }
     SetWindowTextSafe(context.detailsCard, detailsText);
+    OfferWebViewRuntime(context);
     SetWindowTextSafe(context.metricThreats,
                       BuildMetricCardText(L"Open findings", std::to_wstring(context.snapshot.openThreatCount),
                                           context.snapshot.openThreatCount == 1 ? L"1 unresolved detection"
@@ -5134,10 +3868,11 @@ void ShowTrayMenu(UiContext& context) {
     return;
   }
 
-  AppendMenuW(menu, MF_STRING, IDM_TRAY_OPEN, L"Open Fenrir dashboard");
+  AppendMenuW(menu, MF_STRING | MF_DEFAULT, IDM_TRAY_OPEN, (L"Open " + context.brandName).c_str());
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(menu, MF_STRING, IDM_TRAY_FULLSCAN, L"Run full scan");
-  AppendMenuW(menu, MF_STRING, IDM_TRAY_QUICKSCAN, L"Run quick scan");
+  const UINT scanFlags = MF_STRING | (context.allowUserScans ? 0 : MF_GRAYED);
+  AppendMenuW(menu, scanFlags, IDM_TRAY_QUICKSCAN, L"Quick scan");
+  AppendMenuW(menu, scanFlags, IDM_TRAY_FULLSCAN, L"Full scan");
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(pamMenu, MF_STRING, IDM_TRAY_PAM_POWERSHELL, L"PowerShell");
   AppendMenuW(pamMenu, MF_STRING, IDM_TRAY_PAM_CMD, L"Command Prompt");
@@ -5146,12 +3881,14 @@ void ShowTrayMenu(UiContext& context) {
   AppendMenuW(pamMenu, MF_STRING, IDM_TRAY_PAM_NETWORKRESET, L"Network stack reset");
   AppendMenuW(pamMenu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(pamMenu, MF_STRING, IDM_TRAY_PAM_APP, L"Run application as admin...");
-  AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(pamMenu), L"Run as admin");
-  AppendMenuW(menu, MF_STRING, IDM_TRAY_PAM_ELEVATE_2M, L"Elevate as admin (2 minutes)");
+  AppendMenuW(menu, MF_STRING, IDM_TRAY_QUARANTINE, L"Quarantine");
+  AppendMenuW(menu, MF_STRING, IDM_TRAY_SUPPORT, L"Get help...");
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(menu, MF_STRING, IDM_TRAY_QUARANTINE, L"Open quarantine");
+  AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(pamMenu), L"Administrator tools");
+  AppendMenuW(pamMenu, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(pamMenu, MF_STRING, IDM_TRAY_PAM_ELEVATE_2M, L"Request admin rights (2 minutes)");
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(menu, MF_STRING, IDM_TRAY_EXIT, L"Exit Fenrir");
+  AppendMenuW(menu, MF_STRING, IDM_TRAY_EXIT, L"Close this window and tray icon");
 
   POINT cursor{};
   GetCursorPos(&cursor);
@@ -5487,7 +4224,39 @@ void HandleWebViewMessage(UiContext& context, const std::wstring& message) {
     return;
   }
 
+  if (_wcsicmp(action.c_str(), L"supportRequest") == 0) {
+    const auto summary = GetQueryValue(pairs, L"summary");
+    if (summary.empty()) {
+      PostWebViewNotice(context, L"warning", L"Describe the problem in a few words first.");
+      return;
+    }
+    const auto payload = L"{\"summary\":\"" + JsonEscape(summary.substr(0, 200)) + L"\",\"details\":\"" +
+                         JsonEscape(GetQueryValue(pairs, L"details").substr(0, 4000)) + L"\",\"contact\":\"" +
+                         JsonEscape(GetQueryValue(pairs, L"contact").substr(0, 200)) + L"\"}";
+    const auto result = antivirus::agent::SendLocalBrokerCommand(context.config, L"support.request", L"", payload, L"", L"");
+    if (result.success) {
+      std::wstring number;
+      if (const auto at = result.responseJson.find(L"\"ticketNumber\":\""); at != std::wstring::npos) {
+        const auto start = at + 16;
+        number = result.responseJson.substr(start, result.responseJson.find(L'"', start) - start);
+      }
+      PostWebViewNotice(context, L"good", number.empty() || number == L"0"
+                                              ? L"Your request was sent. A technician will be in touch."
+                                              : L"Request #" + number + L" was sent. A technician will be in touch.",
+                        true);
+    } else {
+      PostWebViewNotice(context, L"danger", L"Your request could not be sent: " +
+                                                (result.errorMessage.empty() ? std::wstring(L"the protection service did not answer.")
+                                                                             : result.errorMessage));
+    }
+    return;
+  }
+
   if (_wcsicmp(action.c_str(), L"scan") == 0) {
+    if (!context.allowUserScans) {
+      PostWebViewNotice(context, L"warning", L"Scans on this device are managed by your IT provider.");
+      return;
+    }
     const auto preset = GetQueryValue(pairs, L"preset");
     if (_wcsicmp(preset.c_str(), L"quick") == 0) {
       RunScanAsync(context.hwnd, context, ScanPreset::Quick, std::nullopt);
@@ -6221,9 +4990,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
           LayoutControls(*context);
           return 0;
         case IDM_TRAY_QUICKSCAN:
+          if (!context->allowUserScans) return 0;
           RunScanAsync(hwnd, *context, ScanPreset::Quick, std::nullopt);
           return 0;
         case IDM_TRAY_FULLSCAN:
+          if (!context->allowUserScans) return 0;
           RunScanAsync(hwnd, *context, ScanPreset::Full, std::nullopt);
           return 0;
         case IDM_TRAY_PAM_POWERSHELL:
@@ -6246,6 +5017,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
           return 0;
         case IDM_TRAY_PAM_ELEVATE_2M:
           SubmitTimedPamRequest(hwnd, *context);
+          return 0;
+        case IDM_TRAY_SUPPORT:
+          RestoreFromTray(hwnd);
+          if (context->webViewReady && context->webView != nullptr) {
+            context->webView->PostWebMessageAsJson(L"{\"openPage\":\"help\"}");
+          }
           return 0;
         case IDM_TRAY_QUARANTINE:
           RestoreFromTray(hwnd);

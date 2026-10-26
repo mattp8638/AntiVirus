@@ -1,0 +1,803 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Protection</title>
+<!--
+  The agent window (fenrir-endpoint-client). The native host fills __FENRIR_INITIAL_STATE__ and
+  __FENRIR_LOGO_URI__, posts new state objects as messages, and receives actions as URL-encoded strings
+  (action=scan&preset=quick). Notices arrive as {"notice":{tone,text}}; {"openPage":"help"} opens a page.
+-->
+<style>
+  :root {
+    --bg: #0b0f16; --side: #0d121b; --card: #121925; --card-2: #182131; --line: #1f2a3b; --line-2: #2a3850;
+    --text: #e8eef8; --muted: #8d9aae; --faint: #5f6c80;
+    --brand: #4f8cff; --brand-2: #3b74e0; --good: #34c27a; --warn: #f0a540; --bad: #ef5b6a;
+    --radius: 12px; --shadow: 0 1px 2px rgba(0,0,0,.25);
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f4f6fa; --side: #ffffff; --card: #ffffff; --card-2: #f4f7fb; --line: #e3e8f0; --line-2: #d3dae6;
+      --text: #172033; --muted: #5b6678; --faint: #8b95a5; --shadow: 0 1px 2px rgba(16,24,40,.05);
+      color-scheme: light;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { font: 13px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; color: var(--text); background: var(--bg);
+         display: grid; grid-template-columns: 232px minmax(0, 1fr); overflow: hidden; user-select: none; }
+  input, textarea, .selectable { user-select: text; }
+  button, input, textarea { font: inherit; color: inherit; }
+  svg.i { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+  .good-t { color: var(--good); } .warn-t { color: var(--warn); } .bad-t { color: var(--bad); } .muted { color: var(--muted); }
+
+  /* Sidebar */
+  aside { background: var(--side); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 18px 12px 14px; min-height: 0; }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 0 8px 18px; min-width: 0; }
+  .brand .mark { width: 36px; height: 36px; border-radius: 10px; flex: none; display: grid; place-items: center; overflow: hidden;
+                 background: linear-gradient(135deg, var(--brand), #7b5cff); color: #fff; font-weight: 800; font-size: 16px; }
+  .brand .mark img { width: 100%; height: 100%; object-fit: cover; }
+  .brand .name { font-weight: 700; font-size: 15px; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .brand .by { color: var(--muted); font-size: 11px; }
+  nav { display: flex; flex-direction: column; gap: 2px; }
+  nav button { display: flex; align-items: center; gap: 11px; padding: 9px 10px; border-radius: 8px; color: var(--muted); background: none;
+               border: 0; font-weight: 500; cursor: pointer; position: relative; text-align: left; }
+  nav button:hover { background: var(--card-2); color: var(--text); }
+  nav button.active { background: color-mix(in srgb, var(--brand) 14%, transparent); color: var(--text); }
+  nav button.active::before { content: ""; position: absolute; left: -12px; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: var(--brand); }
+  nav .count { margin-left: auto; color: #fff; font-size: 11px; font-weight: 700; border-radius: 10px; padding: 0 7px; line-height: 18px; background: var(--bad); }
+  nav .count.warn { background: var(--warn); } nav .count.info { background: var(--line-2); color: var(--text); }
+  .side-foot { margin-top: auto; border-top: 1px solid var(--line); padding: 12px 8px 0; color: var(--muted); font-size: 12px; display: grid; gap: 3px; }
+  .side-foot .frow { display: flex; justify-content: space-between; gap: 10px; }
+  .side-foot b { color: var(--text); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--good); margin-right: 6px; vertical-align: 1px; }
+  .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
+
+  /* Main */
+  main { overflow: auto; padding: 22px 28px 28px; min-width: 0; }
+  .top { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+  .top h1 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: -.01em; }
+  .top .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .top .tools { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 34px; padding: 0 14px; border-radius: 8px;
+         border: 1px solid var(--line); background: var(--card); font-weight: 600; cursor: pointer; white-space: nowrap; box-shadow: var(--shadow); }
+  .btn:hover { border-color: var(--line-2); background: var(--card-2); }
+  .btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+  .btn.primary:hover { background: var(--brand-2); }
+  .btn.danger { color: var(--bad); }
+  .btn.ghost { background: transparent; box-shadow: none; }
+  .btn.small { height: 28px; padding: 0 10px; font-size: 12px; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .btn svg.i { width: 16px; height: 16px; }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); min-width: 0; }
+  .card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+  .card-head h3 { margin: 0; font-size: 14px; font-weight: 650; }
+  .card-head .hint { color: var(--muted); font-size: 12px; }
+  .card-body { padding: 16px; }
+  .link { color: var(--brand); background: none; border: 0; padding: 0; font-weight: 600; font-size: 12px; cursor: pointer; }
+  .stack { display: grid; gap: 14px; }
+  .cols { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 14px; }
+  .split { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(300px, 1fr); gap: 14px; align-items: start; }
+  .grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+
+  /* Hero */
+  .hero { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 24px; align-items: center; padding: 22px 24px; position: relative; overflow: hidden; }
+  .hero::after { content: ""; position: absolute; inset: 0; pointer-events: none;
+                 background: radial-gradient(520px 200px at 0% 0%, color-mix(in srgb, var(--tone) 15%, transparent), transparent 70%); }
+  .shield { width: 84px; height: 84px; border-radius: 50%; display: grid; place-items: center; color: var(--tone);
+            background: color-mix(in srgb, var(--tone) 14%, transparent); box-shadow: 0 0 0 8px color-mix(in srgb, var(--tone) 7%, transparent); }
+  .shield svg.i { width: 42px; height: 42px; stroke-width: 1.6; }
+  .hero h2 { margin: 0 0 4px; font-size: 22px; font-weight: 700; letter-spacing: -.02em; }
+  .hero p { margin: 0; color: var(--muted); max-width: 64ch; }
+  .facts { display: flex; flex-wrap: wrap; gap: 6px 22px; margin-top: 12px; color: var(--muted); font-size: 12px; }
+  .facts b { color: var(--text); font-weight: 600; }
+  .hero .cta { display: flex; flex-direction: column; gap: 8px; z-index: 1; min-width: 150px; }
+  .tone-good { --tone: var(--good); } .tone-warn { --tone: var(--warn); } .tone-bad { --tone: var(--bad); } .tone-info { --tone: var(--brand); }
+
+  .tile { padding: 14px 16px; }
+  .tile .head { display: flex; align-items: center; gap: 9px; color: var(--muted); font-weight: 600; font-size: 12px; }
+  .ic { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; background: var(--card-2); color: var(--brand); flex: none; }
+  .ic svg.i { width: 16px; height: 16px; }
+  .ic.good { color: var(--good); } .ic.warn { color: var(--warn); } .ic.bad { color: var(--bad); }
+  .tile .val { margin-top: 10px; font-size: 15px; font-weight: 650; }
+  .tile .note { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+  /* Lists */
+  .list { display: flex; flex-direction: column; }
+  .row { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 11px 16px; border-bottom: 1px solid var(--line);
+         background: none; border-left: 0; border-right: 0; border-top: 0; text-align: left; width: 100%; cursor: default; }
+  .row:last-child { border-bottom: 0; }
+  button.row { cursor: pointer; }
+  button.row:hover { background: var(--card-2); }
+  .row.selected { background: color-mix(in srgb, var(--brand) 10%, transparent); }
+  .row .t { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .m { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .side { text-align: right; display: grid; gap: 3px; justify-items: end; }
+  .row .when { color: var(--faint); font-size: 12px; white-space: nowrap; }
+  .badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: var(--card-2); color: var(--muted); white-space: nowrap; }
+  .badge.bad { background: color-mix(in srgb, var(--bad) 16%, transparent); color: var(--bad); }
+  .badge.good { background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good); }
+  .badge.warn { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+  .badge.info { background: color-mix(in srgb, var(--brand) 16%, transparent); color: var(--brand); }
+  .day { padding: 10px 16px 6px; color: var(--faint); font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; border-bottom: 1px solid var(--line); }
+
+  .empty { padding: 34px 20px; text-align: center; color: var(--muted); }
+  .empty .ic { width: 44px; height: 44px; border-radius: 12px; margin: 0 auto 10px; }
+  .empty .ic svg.i { width: 22px; height: 22px; }
+  .empty b { display: block; color: var(--text); margin-bottom: 2px; font-size: 14px; }
+
+  /* Detail panel */
+  .detail h4 { margin: 0 0 4px; font-size: 15px; font-weight: 650; word-break: break-word; }
+  .detail .lead { color: var(--muted); margin: 0 0 14px; }
+  .kv { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 7px 12px; font-size: 12px; }
+  .kv .k { color: var(--muted); }
+  .kv .v { word-break: break-all; user-select: text; }
+  details { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+  summary { cursor: pointer; color: var(--muted); font-weight: 600; font-size: 12px; }
+  pre { white-space: pre-wrap; word-break: break-word; font: 12px/1.5 "Cascadia Mono", Consolas, monospace; color: var(--muted); margin: 10px 0 0; user-select: text; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+
+  /* Forms */
+  label.f { display: grid; gap: 6px; font-weight: 600; font-size: 12px; margin-bottom: 12px; }
+  label.f span { color: var(--muted); font-weight: 400; }
+  input.text, textarea { width: 100%; padding: 9px 11px; border-radius: 8px; border: 1px solid var(--line); background: var(--card-2); outline: none; }
+  input.text:focus, textarea:focus { border-color: var(--brand); }
+  textarea { min-height: 110px; resize: vertical; }
+  .search { position: relative; }
+  .search svg.i { position: absolute; left: 10px; top: 9px; width: 16px; height: 16px; color: var(--faint); }
+  .search input { padding-left: 34px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; background: none; padding: 6px 12px; font-weight: 600; font-size: 12px; color: var(--muted); cursor: pointer; }
+  .seg button.on { background: var(--card-2); color: var(--text); }
+
+  .progress { height: 6px; border-radius: 4px; background: var(--card-2); overflow: hidden; }
+  .progress i { display: block; height: 100%; background: var(--brand); border-radius: 4px; transition: width .3s ease; }
+  .progress.indeterminate i { width: 35% !important; animation: slide 1.2s ease-in-out infinite; }
+  @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
+  .banner { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: var(--radius); border: 1px solid var(--line);
+            background: color-mix(in srgb, var(--tone) 10%, var(--card)); margin-bottom: 14px; }
+  .banner .grow { flex: 1; min-width: 0; }
+  .banner .t { font-weight: 650; }
+  .banner .m { color: var(--muted); font-size: 12px; }
+
+  .scanopt { padding: 16px; display: grid; gap: 10px; align-content: start; }
+  .scanopt h4 { margin: 0; font-size: 14px; }
+  .scanopt p { margin: 0; color: var(--muted); min-height: 38px; }
+
+  .contact { display: grid; gap: 8px; color: var(--muted); }
+  .contact div { display: flex; gap: 8px; align-items: center; user-select: text; }
+  .contact svg.i { width: 15px; height: 15px; }
+
+  .toast { position: fixed; right: 22px; bottom: 22px; max-width: 420px; display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px;
+           border-radius: 10px; border: 1px solid var(--line); background: var(--card); box-shadow: 0 10px 30px rgba(0,0,0,.3);
+           transform: translateY(20px); opacity: 0; transition: all .2s ease; pointer-events: none; z-index: 10; }
+  .toast.show { transform: none; opacity: 1; pointer-events: auto; }
+  .toast .x { margin-left: auto; background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 16px; line-height: 1; }
+
+  @media (max-width: 1100px) {
+    .grid4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .cols, .split { grid-template-columns: minmax(0, 1fr); }
+    .hero { grid-template-columns: auto minmax(0, 1fr); }
+    .hero .cta { grid-column: 1 / -1; flex-direction: row; }
+  }
+</style>
+</head>
+<body>
+  <aside>
+    <div class="brand"><div class="mark" id="brandMark"></div><div style="min-width:0"><div class="name" id="brandName"></div><div class="by" id="brandBy"></div></div></div>
+    <nav id="nav"></nav>
+    <div class="side-foot" id="sideFoot"></div>
+  </aside>
+  <main id="main"></main>
+  <div class="toast" id="toast"></div>
+
+<script>
+const initialState = __FENRIR_INITIAL_STATE__;
+const logoUri = "__FENRIR_LOGO_URI__";
+let S = initialState;          // latest state from the agent
+let localPage = null;          // pages that live only in this window ("help")
+const sel = Object.create(null);
+let updFilter = 'available', updSearch = '', updPage = 0, exclTab = 'current', exclSearch = '';
+let supportDraft = { summary: '', details: '', contact: '' }, supportBusy = false;
+
+/* ---------- helpers ---------- */
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const send = (action, fields = {}) => { if (window.chrome && window.chrome.webview) window.chrome.webview.postMessage(new URLSearchParams({ action, ...fields }).toString()); };
+const exp = () => S.experience || {};
+const brand = () => (exp().brandName || 'Fenrir').trim() || 'Fenrir';
+const isFenrir = () => brand().toLowerCase() === 'fenrir';
+const plural = (n, one, many) => `${n} ${n === 1 ? one : (many || one + 's')}`;
+const cap = (v) => { const t = String(v ?? '').replace(/[-_]+/g, ' ').trim(); return t ? t.charAt(0).toUpperCase() + t.slice(1) : t; };
+const basename = (p) => String(p || '').split(/[\\/]/).filter(Boolean).pop() || String(p || '');
+
+const ICONS = {
+  home: '<path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
+  shield: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/>',
+  shieldOk: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/>',
+  shieldAlert: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M12 8v5M12 16h.01"/>',
+  shieldOff: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M4 4l16 16"/>',
+  box: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 14h6"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',
+  refresh: '<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
+  pulse: '<path d="M3 12h4l3 8 4-16 3 8h4"/>',
+  chat: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.8 1.2V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3.1 14H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 10 3.1V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 20.9 10H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>',
+  wall: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M9 4v6M15 10v5M9 15v5"/>',
+  folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  disk: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 15h.01M11 15h6"/>',
+  bolt: '<path d="M13 2L4 14h7l-1 8 9-12h-7z"/>',
+  phone: '<path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2z"/>',
+  mail: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="M22 6l-10 7L2 6"/>',
+  link: '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
+  trash: '<path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/>',
+  undo: '<path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>',
+  check: '<path d="M5 12l5 5 9-10"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
+  alert: '<path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>',
+  play: '<path d="M6 4l14 8-14 8z"/>',
+  key: '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M16 7l3 3"/>',
+  restart: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  x: '<path d="M6 6l12 12M18 6L6 18"/>'
+};
+const icon = (name) => `<svg class="i" viewBox="0 0 24 24">${ICONS[name] || ''}</svg>`;
+
+function parseWhen(text) {
+  if (!text) return null;
+  const d = new Date(String(text).replace(' ', 'T'));
+  return isNaN(d) ? null : d;
+}
+function when(text) {
+  const d = parseWhen(text);
+  if (!d) return text && !/never|n\/a|\(/.test(text) ? text : 'Never';
+  const now = new Date();
+  const mins = Math.round((now - d) / 60000);
+  if (mins >= 0 && mins < 1) return 'Just now';
+  if (mins >= 0 && mins < 60) return `${mins} min ago`;
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const days = Math.floor((new Date(now.toDateString()) - new Date(d.toDateString())) / 86400000);
+  if (days === 0) return `Today, ${time}`;
+  if (days === 1) return `Yesterday, ${time}`;
+  if (days > 1 && days < 7) return `${d.toLocaleDateString([], { weekday: 'long' })}, ${time}`;
+  return `${d.toLocaleDateString([], { day: 'numeric', month: 'short', year: d.getFullYear() === now.getFullYear() ? undefined : 'numeric' })}, ${time}`;
+}
+function dayLabel(text) {
+  const d = parseWhen(text);
+  if (!d) return 'Earlier';
+  const days = Math.floor((new Date(new Date().toDateString()) - new Date(d.toDateString())) / 86400000);
+  return days === 0 ? 'Today' : days === 1 ? 'Yesterday' : d.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' });
+}
+function minutesLabel(m) {
+  m = Number(m);
+  if (!Number.isFinite(m) || m <= 0) return 'Not scheduled';
+  if (m % 10080 === 0) return m === 10080 ? 'Every week' : `Every ${m / 10080} weeks`;
+  if (m % 1440 === 0) return m === 1440 ? 'Every day' : `Every ${m / 1440} days`;
+  if (m % 60 === 0) return m === 60 ? 'Every hour' : `Every ${m / 60} hours`;
+  return `Every ${m} minutes`;
+}
+
+/* ---------- derived status ---------- */
+function serviceState() { return String(S.runtime?.serviceState || '').toLowerCase(); }
+function serviceDown() { return ['stopped', 'not installed', 'paused'].includes(serviceState()); }
+function status() {
+  const threats = Number(S.openThreatCount || 0);
+  if (serviceState() === 'not installed') return { tone: 'bad', icon: 'shieldOff', title: 'Protection is not installed', text: 'The background protection service is missing, so this device is not protected in real time.' };
+  if (serviceDown()) return { tone: 'bad', icon: 'shieldOff', title: 'Protection is turned off', text: 'The background protection service has stopped. Start it to protect this device again.' };
+  if (threats > 0) return { tone: 'warn', icon: 'shieldAlert', title: plural(threats, 'threat needs', 'threats need') + ' your attention', text: 'Review what was found and decide whether anything should be removed or restored.' };
+  if (S.statusTone === 'warning') return { tone: 'warn', icon: 'shieldAlert', title: 'Protection needs attention', text: S.guidance || 'Something is not working as expected.' };
+  if (S.scan?.running) return { tone: 'info', icon: 'shieldOk', title: 'Scanning your device', text: 'Protection stays on while the scan runs.' };
+  return { tone: 'good', icon: 'shieldOk', title: 'Your device is protected', text: protectedSummary() };
+}
+function protectedSummary() {
+  const on = [];
+  const e = exp();
+  if (e.realtime !== false) on.push('real-time protection');
+  if (e.webProtection !== false) on.push('web protection');
+  if (e.firewallManaged) on.push('the firewall');
+  const list = on.length > 1 ? on.slice(0, -1).join(', ') + ' and ' + on[on.length - 1] : on[0] || 'protection';
+  const q = Number(S.quarantineCount || 0);
+  return `${list.charAt(0).toUpperCase() + list.slice(1)} ${on.length > 1 ? 'are' : 'is'} on.` + (q ? ` ${plural(q, 'item is', 'items are')} safely held in quarantine.` : ' Nothing needs your attention.');
+}
+function updateCounts() {
+  const u = S.updates || {};
+  const apps = Number(u.availableSoftwareCount || 0), win = Number(u.windowsCount || 0);
+  return { apps, win, total: apps + win, reboot: !!Number(u.rebootRequired || 0) };
+}
+function lastScan() { return S.runtime?.lastScan || ''; }
+
+/* ---------- shell ---------- */
+const PAGES = [
+  { key: 'dashboard', label: 'Overview', icon: 'home' },
+  { key: 'threats', label: 'Threats', icon: 'shield' },
+  { key: 'quarantine', label: 'Quarantine', icon: 'box' },
+  { key: 'scans', label: 'Scans', icon: 'search' },
+  { key: 'updates', label: 'Updates', icon: 'refresh' },
+  { key: 'history', label: 'Activity', icon: 'pulse' },
+  { key: 'help', label: 'Get help', icon: 'chat', local: true },
+  { key: 'settings', label: 'Settings', icon: 'gear' }
+];
+const currentPage = () => localPage || S.pageKey || 'dashboard';
+
+function go(page) {
+  const def = PAGES.find((p) => p.key === page);
+  if (def && def.local) { localPage = page; render(); return; }
+  localPage = null;
+  if (page === S.pageKey) { render(); return; }
+  send('navigate', { page });
+}
+
+function renderShell() {
+  const name = brand();
+  document.title = name;
+  document.getElementById('brandName').textContent = isFenrir() ? 'Fenrir Protection' : name;
+  document.getElementById('brandBy').textContent = isFenrir() ? 'Endpoint security' : 'Powered by Fenrir';
+  document.getElementById('brandMark').innerHTML = isFenrir() && logoUri.startsWith('data:') ? `<img src="${logoUri}" alt="">` : esc(name.charAt(0).toUpperCase());
+  const uc = updateCounts();
+  const counts = { threats: [Number(S.openThreatCount || 0), ''], quarantine: [Number(S.quarantineCount || 0), 'info'], updates: [uc.total, 'warn'] };
+  const page = currentPage();
+  document.getElementById('nav').innerHTML = PAGES.map((p) => {
+    const [n, tone] = counts[p.key] || [0, ''];
+    return `<button class="${p.key === page ? 'active' : ''}" data-go="${p.key}">${icon(p.icon)}${esc(p.label)}${n ? `<span class="count ${tone}">${n}</span>` : ''}</button>`;
+  }).join('');
+  const down = serviceDown();
+  const managed = exp().managed !== false && !/not enrolled/.test(S.runtime?.deviceId || '');
+  document.getElementById('sideFoot').innerHTML = `
+    <div class="frow"><span><span class="dot ${down ? 'bad' : ''}"></span>${down ? 'Protection off' : managed ? 'Connected' : 'Protected'}</span><b title="${esc(S.brand?.device)}">${esc(S.brand?.device || '')}</b></div>
+    ${S.agentVersion || exp().agentVersion ? `<div class="frow"><span>Version</span><b>${esc(S.agentVersion || exp().agentVersion)}</b></div>` : ''}
+    ${S.policyName || exp().policyName ? `<div class="frow"><span>Policy</span><b title="${esc(S.policyName || exp().policyName)}">${esc(S.policyName || exp().policyName)}</b></div>` : ''}`;
+}
+
+function pageTop(title, sub, tools = '') {
+  return `<div class="top"><div><h1>${esc(title)}</h1>${sub ? `<div class="sub">${sub}</div>` : ''}</div><div class="tools">${tools}
+    <button class="btn ghost" data-act="refresh" title="Refresh">${icon('refresh')}Refresh</button></div></div>`;
+}
+
+function scanBanner() {
+  const sc = S.scan || {};
+  if (!sc.running) return '';
+  const total = Number(sc.total || 0), done = Number(sc.completed || 0);
+  const pct = total > 0 ? Math.min(100, Math.round(done * 100 / total)) : 0;
+  return `<div class="banner tone-info"><span class="ic">${icon('search')}</span><div class="grow">
+    <div class="t">${esc(sc.label || 'Scan')} in progress${total ? ` \u00b7 ${pct}%` : ''}</div>
+    <div class="m">${esc(sc.status || 'Checking files\u2026')}</div>
+    <div class="progress ${total ? '' : 'indeterminate'}" style="margin-top:8px"><i style="width:${pct}%"></i></div></div></div>`;
+}
+
+function serviceBanner() {
+  if (!serviceDown()) return '';
+  return `<div class="banner tone-bad"><span class="ic bad">${icon('alert')}</span><div class="grow"><div class="t">Background protection is not running</div>
+    <div class="m">Files and websites are not being checked in real time.</div></div>
+    <button class="btn primary" data-act="startService">${icon('play')}Start protection</button></div>`;
+}
+
+const emptyState = (ic, title, text) => `<div class="empty"><div class="ic good">${icon(ic)}</div><b>${esc(title)}</b>${esc(text)}</div>`;
+
+/* ---------- overview ---------- */
+function activityIcon(item) {
+  const r = String(item.result || item.action || '').toLowerCase(), k = String(item.kind || '').toLowerCase();
+  if (k === 'scan-session') return /finding/.test(r) ? ['search', 'warn'] : ['search', 'good'];
+  if (/web|destination|url/.test(k + ' ' + String(item.source || '').toLowerCase())) return ['globe', /block|malicious/.test(r) ? 'bad' : ''];
+  if (/quarant|block|malicious|detect|finding|threat/.test(r)) return ['shieldAlert', 'bad'];
+  return ['info', ''];
+}
+function activityTitle(item) {
+  if (String(item.kind).toLowerCase() === 'scan-session') {
+    const r = String(item.result || '').toLowerCase();
+    return `${item.source || 'Scan'} ${/finding/.test(r) ? 'found threats' : 'finished'}`;
+  }
+  const r = String(item.result || '').toLowerCase();
+  const name = basename(item.item);
+  if (/quarant/.test(r)) return `Threat quarantined: ${name}`;
+  if (/block/.test(r)) return `Blocked: ${name}`;
+  if (/clean|allow/.test(r)) return `Checked: ${name}`;
+  return `${item.result ? item.result.charAt(0).toUpperCase() + item.result.slice(1) : 'Event'}: ${name}`;
+}
+function activityBadge(item) {
+  const r = String(item.result || '').toLowerCase();
+  if (String(item.kind).toLowerCase() === 'scan-session') return /finding/.test(r) ? '<span class="badge warn">Threats found</span>' : '<span class="badge good">Clean</span>';
+  if (/quarant/.test(r)) return '<span class="badge bad">Quarantined</span>';
+  if (/block/.test(r)) return '<span class="badge bad">Blocked</span>';
+  if (/clean|allow/.test(r)) return '<span class="badge good">Clean</span>';
+  return `<span class="badge">${esc(cap(item.result) || 'Event')}</span>`;
+}
+function activityRow(item, index, page) {
+  const [ic, tone] = activityIcon(item);
+  const meta = String(item.kind).toLowerCase() === 'scan-session' ? (item.item || '') : item.item;
+  return `<button class="row ${page && sel[page] === index ? 'selected' : ''}" ${page ? `data-sel="${page}:${index}"` : 'data-go="history"'}>
+    <span class="ic ${tone}">${icon(ic)}</span>
+    <div style="min-width:0"><div class="t">${esc(activityTitle(item))}</div><div class="m" title="${esc(meta)}">${esc(meta)}</div></div>
+    <div class="side">${activityBadge(item)}<div class="when">${esc(when(item.time))}</div></div></button>`;
+}
+
+function contactLines() {
+  const raw = String(exp().supportContact || '').trim();
+  if (!raw) return [];
+  return raw.split(/\s*[\n;,|]\s*/).filter(Boolean).map((part) => {
+    if (/@/.test(part)) return ['mail', part];
+    if (/^https?:\/\//i.test(part) || /\.[a-z]{2,}\/?/i.test(part)) return ['link', part];
+    if (/^[+\d][\d\s()-]{5,}$/.test(part)) return ['phone', part];
+    return ['info', part];
+  });
+}
+function helpCard(compact) {
+  const lines = contactLines();
+  const who = isFenrir() ? 'Your IT support team' : `${brand()} support`;
+  return `<div class="card"><div class="card-head"><h3>Need help?</h3></div><div class="card-body">
+    <div style="display:flex;gap:12px;align-items:center"><span class="ic" style="width:40px;height:40px;border-radius:10px;font-weight:800">${isFenrir() ? icon('chat') : esc(brand().charAt(0))}</span>
+      <div><b>${esc(who)}</b><div class="muted" style="font-size:12px">${lines.length ? 'Contact details from your IT provider' : 'Send a request from this window'}</div></div></div>
+    <p class="muted" style="margin:12px 0">Something not working, or worried about a message or website? Send a request and a technician will get back to you.</p>
+    ${lines.length ? `<div class="contact" style="margin-bottom:14px">${lines.map(([ic, text]) => `<div>${icon(ic)}${esc(text)}</div>`).join('')}</div>` : ''}
+    <button class="btn primary" style="width:100%" data-go="help">${icon('chat')}Request support</button></div></div>`;
+}
+
+function pageOverview() {
+  const st = status(), uc = updateCounts(), e = exp();
+  const allowScans = e.allowUserScans !== false;
+  const tile = (ic, label, value, tone, note) => `<div class="card tile"><div class="head"><span class="ic ${tone === 'warn-t' ? 'warn' : tone === 'bad-t' ? 'bad' : ''}">${icon(ic)}</span>${esc(label)}</div>
+    <div class="val ${tone}">${esc(value)}</div><div class="note">${esc(note)}</div></div>`;
+  const rt = serviceDown() ? ['Off', 'bad-t', 'Service is not running'] : e.realtime === false ? ['Off by policy', 'warn-t', 'Turned off by your IT provider'] : ['On', 'good-t', 'Files, processes and scripts'];
+  const web = serviceDown() ? ['Off', 'bad-t', 'Service is not running'] : e.webProtection === false ? ['Off by policy', 'warn-t', 'Turned off by your IT provider'] : ['On', 'good-t', 'Unsafe and phishing sites blocked'];
+  const fw = e.firewallManaged ? ['On', 'good-t', isFenrir() ? 'Managed by your IT provider' : `Managed by ${brand()}`] : ['Windows default', '', 'Not managed by policy'];
+  const up = uc.reboot ? ['Restart needed', 'warn-t', 'Restart to finish installing updates'] : uc.total ? [`${uc.total} available`, 'warn-t', `${plural(uc.win, 'Windows update')}, ${plural(uc.apps, 'app update')}`] : ['Up to date', 'good-t', 'No updates waiting'];
+  const history = (S.history || []).slice(0, 6);
+  const cta = serviceDown()
+    ? `<button class="btn primary" data-act="startService">${icon('play')}Start protection</button>`
+    : Number(S.openThreatCount || 0) > 0
+      ? `<button class="btn primary" data-go="threats">${icon('shieldAlert')}Review threats</button><button class="btn" data-go="quarantine">Open quarantine</button>`
+      : allowScans ? `<button class="btn primary" data-act="scan" data-preset="quick" ${S.scan?.running ? 'disabled' : ''}>${icon('search')}Quick scan</button><button class="btn" data-go="scans">Scan options</button>` : '';
+  return pageTop('Overview', `Last checked in ${esc(when(S.runtime?.lastHeartbeat).toLowerCase())}`) + scanBanner() + `
+    <section class="card hero tone-${st.tone}">
+      <div class="shield">${icon(st.icon)}</div>
+      <div><h2>${esc(st.title)}</h2><p>${esc(st.text)}</p>
+        <div class="facts"><span>Last scan <b>${esc(when(lastScan()))}</b></span><span>Quick scans <b>${esc(minutesLabel(S.runtime?.quickScanIntervalMinutes))}</b></span>
+        <span>Quarantine <b>${esc(plural(Number(S.quarantineCount || 0), 'item'))}</b></span></div></div>
+      <div class="cta">${cta}</div>
+    </section>
+    <div class="grid4" style="margin-top:14px">
+      ${tile('shield', 'Real-time protection', rt[0], rt[1], rt[2])}
+      ${tile('globe', 'Web protection', web[0], web[1], web[2])}
+      ${tile('wall', 'Firewall', fw[0], fw[1], fw[2])}
+      ${tile('refresh', 'Updates', up[0], up[1], up[2])}
+    </div>
+    <div class="cols" style="margin-top:14px">
+      <div class="card"><div class="card-head"><h3>Recent activity</h3><button class="link" data-go="history">View all</button></div>
+        <div class="list">${history.length ? history.map((h) => activityRow(h)).join('') : emptyState('pulse', 'Nothing yet', 'Scans, blocked threats and other events will appear here.')}</div></div>
+      ${helpCard()}
+    </div>`;
+}
+
+/* ---------- threats & quarantine ---------- */
+function threatTone(item) {
+  const a = String(item.action || item.status || '').toLowerCase();
+  return /quarant|block|delet|remov/.test(a) ? ['good', 'Stopped'] : /allow|ignor/.test(a) ? ['', 'Allowed'] : ['bad', 'Needs review'];
+}
+function pickIndex(page, rows) { const i = sel[page]; return Number.isInteger(i) && i < rows.length ? i : 0; }
+
+function pageThreats() {
+  const rows = S.threats || [];
+  const i = pickIndex('threats', rows), cur = rows[i];
+  const list = rows.length ? rows.map((t, n) => {
+    const [tone, label] = threatTone(t);
+    return `<button class="row ${n === i ? 'selected' : ''}" data-sel="threats:${n}"><span class="ic ${tone || 'bad'}">${icon('shieldAlert')}</span>
+      <div style="min-width:0"><div class="t">${esc(basename(t.item))}</div><div class="m" title="${esc(t.item)}">${esc(t.item)}</div></div>
+      <div class="side"><span class="badge ${tone === 'good' ? 'good' : tone === '' ? '' : 'bad'}">${label}</span><div class="when">${esc(when(t.time))}</div></div></button>`;
+  }).join('') : emptyState('shieldOk', 'No threats found', 'Nothing harmful has been detected on this device.');
+  const detail = cur ? `<div class="card detail"><div class="card-body">
+      <h4>${esc(basename(cur.item))}</h4><p class="lead">${esc(threatExplain(cur))}</p>
+      <div class="kv"><div class="k">Detected</div><div class="v">${esc(when(cur.time))}</div>
+        <div class="k">Location</div><div class="v">${esc(cur.item)}</div>
+        <div class="k">Action taken</div><div class="v">${esc(cap(cur.action) || '\u2014')}</div>
+        <div class="k">Clean-up</div><div class="v">${esc(cap(cur.remediation) || '\u2014')}</div>
+        <div class="k">Found by</div><div class="v">${esc(cap(cur.source) || '\u2014')}</div></div>
+      <div class="actions"><button class="btn" data-go="quarantine">${icon('box')}Open quarantine</button><button class="btn ghost" data-go="help">${icon('chat')}Ask for help</button></div>
+      <details><summary>Technical details</summary><div class="kv" style="margin-top:10px"><div class="k">Confidence</div><div class="v">${esc(cur.confidence)}</div>
+        <div class="k">MITRE ATT&amp;CK</div><div class="v">${esc(cur.attack)}</div><div class="k">SHA-256</div><div class="v">${esc(cur.sha256)}</div></div>
+        <pre>${esc(cur.detail)}</pre></details></div></div>` : '';
+  return pageTop('Threats', rows.length ? `${plural(rows.length, 'detection')} recorded on this device` : 'Detections on this device') + `
+    <div class="${cur ? 'split' : ''}"><div class="card"><div class="list">${list}</div></div>${detail}</div>`;
+}
+function threatExplain(t) {
+  const [tone] = threatTone(t);
+  if (tone === 'good') return 'This item was stopped before it could do any harm. No action is needed unless you believe it is safe.';
+  if (tone === '') return 'This item was allowed to run. Ask your IT provider if you are unsure about it.';
+  return 'This item was detected but may still be present. Ask your IT provider for help if you are unsure what to do.';
+}
+
+function pageQuarantine() {
+  const rows = S.quarantine || [];
+  const i = pickIndex('quarantine', rows), cur = rows[i];
+  const list = rows.length ? rows.map((q, n) => `<button class="row ${n === i ? 'selected' : ''}" data-sel="quarantine:${n}"><span class="ic">${icon('box')}</span>
+      <div style="min-width:0"><div class="t">${esc(basename(q.item))}</div><div class="m" title="${esc(q.item)}">${esc(q.item)}</div></div>
+      <div class="side"><span class="badge info">${esc(cap(q.status) || 'Held')}</span><div class="when">${esc(when(q.time))}</div></div></button>`).join('')
+    : emptyState('box', 'Quarantine is empty', 'Harmful files are moved here so they cannot run. Nothing is being held right now.');
+  const detail = cur ? `<div class="card detail"><div class="card-body">
+      <h4>${esc(basename(cur.item))}</h4><p class="lead">This file is locked away and cannot run. Restore it only if you are sure it is safe.</p>
+      <div class="kv"><div class="k">Quarantined</div><div class="v">${esc(when(cur.time))}</div><div class="k">Original location</div><div class="v">${esc(cur.item)}</div>
+        <div class="k">Status</div><div class="v">${esc(cap(cur.status))}</div></div>
+      <div class="actions"><button class="btn" data-act="quarantineRestore" data-id="${esc(cur.id)}">${icon('undo')}Restore</button>
+        <button class="btn danger" data-act="quarantineDelete" data-id="${esc(cur.id)}">${icon('trash')}Delete permanently</button></div>
+      <p class="muted" style="font-size:12px;margin:10px 0 0">Restoring or deleting needs administrator approval.</p>
+      <details><summary>Technical details</summary><div class="kv" style="margin-top:10px"><div class="k">Technique</div><div class="v">${esc(cur.technique)}</div>
+        <div class="k">SHA-256</div><div class="v">${esc(cur.sha256)}</div><div class="k">Record</div><div class="v">${esc(cur.id)}</div></div><pre>${esc(cur.detail)}</pre></details></div></div>` : '';
+  return pageTop('Quarantine', rows.length ? `${plural(rows.length, 'item')} held safely` : 'Files that were stopped and locked away') + `
+    <div class="${cur ? 'split' : ''}"><div class="card"><div class="list">${list}</div></div>${detail}</div>`;
+}
+
+/* ---------- scans ---------- */
+function pageScans() {
+  const allow = exp().allowUserScans !== false, running = !!S.scan?.running;
+  const opt = (ic, title, text, preset, label) => `<div class="card scanopt"><span class="ic">${icon(ic)}</span><h4>${title}</h4><p>${text}</p>
+    <button class="btn ${preset === 'quick' ? 'primary' : ''}" data-act="scan" data-preset="${preset}" ${!allow || running ? 'disabled' : ''}>${label}</button></div>`;
+  const sessions = (S.history || []).filter((h) => String(h.kind).toLowerCase() === 'scan-session');
+  return pageTop('Scans', `Last scan ${esc(when(lastScan()).toLowerCase())}`) + scanBanner() + `
+    ${allow ? '' : `<div class="banner tone-info"><span class="ic">${icon('info')}</span><div class="grow"><div class="t">Scans are managed by your IT provider</div><div class="m">Scheduled scans still run automatically.</div></div></div>`}
+    <div class="grid3">
+      ${opt('bolt', 'Quick scan', 'Checks the places threats usually hide, such as downloads and start-up items. Takes a few minutes.', 'quick', 'Run quick scan')}
+      ${opt('disk', 'Full scan', 'Checks every file on every drive. Can take an hour or more; you can keep working.', 'full', 'Run full scan')}
+      ${opt('folder', 'Custom scan', 'Choose a folder or USB drive to check, for example something you just downloaded.', 'folder', 'Choose folder\u2026')}
+    </div>
+    <div class="cols" style="margin-top:14px">
+      <div class="card"><div class="card-head"><h3>Recent scans</h3></div><div class="list">${sessions.length ? sessions.slice(0, 12).map((h) => activityRow(h)).join('') : emptyState('search', 'No scans yet', 'Run a quick scan to check this device now.')}</div></div>
+      <div class="card"><div class="card-head"><h3>Schedule</h3></div><div class="card-body"><div class="kv">
+        <div class="k">Quick scan</div><div class="v">${esc(minutesLabel(S.runtime?.quickScanIntervalMinutes))}</div>
+        <div class="k">Full scan</div><div class="v">${esc(minutesLabel(S.runtime?.fullScanIntervalMinutes))}</div></div>
+        <p class="muted" style="font-size:12px;margin:12px 0 0">Your IT provider sets the schedule. Administrators can change it in Settings.</p></div></div>
+    </div>`;
+}
+
+/* ---------- updates ---------- */
+function pageUpdates() {
+  const uc = updateCounts(), u = S.updates || {}, busy = !!S.patchAction?.running;
+  const apps = (S.softwareUpdates || []).filter((a) => {
+    const st = String(a.state || '').toLowerCase();
+    if (updFilter === 'available' && !(st === 'available' || st === 'provider_ready')) return false;
+    if (updFilter === 'manual' && !(a.manualOnly || st === 'manual')) return false;
+    const q = updSearch.trim().toLowerCase();
+    return !q || `${a.name} ${a.publisher}`.toLowerCase().includes(q);
+  });
+  const pageSize = 10, pages = Math.max(1, Math.ceil(apps.length / pageSize));
+  updPage = Math.min(updPage, pages - 1);
+  const shown = apps.slice(updPage * pageSize, updPage * pageSize + pageSize);
+  const appRow = (a) => {
+    const st = String(a.state || '').toLowerCase();
+    const avail = st === 'available' || st === 'provider_ready';
+    const badge = a.blocked ? '<span class="badge bad">Blocked</span>' : avail ? `<span class="badge warn">${esc(a.availableVersion ? 'Update to ' + a.availableVersion : 'Update available')}</span>`
+      : a.manualOnly || st === 'manual' ? '<span class="badge">Manual update</span>' : !Number(a.supported) ? '<span class="badge">Not supported</span>' : '<span class="badge good">Up to date</span>';
+    return `<div class="row"><span class="ic">${icon('box')}</span><div style="min-width:0"><div class="t">${esc(a.name)}</div><div class="m">${esc([a.publisher, a.version && 'Version ' + a.version].filter(Boolean).join(' \u00b7 '))}</div></div>
+      <div class="side" style="grid-auto-flow:column;align-items:center;gap:8px">${badge}
+        <button class="btn small" data-act="softwareCheck" data-software-id="${esc(a.id)}" ${busy ? 'disabled' : ''}>Check</button>
+        ${Number(a.canInstall) && avail ? `<button class="btn small primary" data-act="softwareUpdate" data-software-id="${esc(a.id)}" ${busy ? 'disabled' : ''}>Update</button>` : ''}</div></div>`;
+  };
+  const win = (S.windowsUpdates || []);
+  return pageTop('Updates', uc.total ? `${plural(uc.total, 'update')} waiting` : 'Everything is up to date',
+      `<button class="btn" data-act="softwareUpdatesRefresh" ${busy ? 'disabled' : ''}>${icon('search')}Check for updates</button>`) + `
+    ${busy ? `<div class="banner tone-info"><span class="ic">${icon('refresh')}</span><div class="grow"><div class="t">${esc(S.patchAction?.mode === 'check' ? 'Checking' : 'Updating')} ${esc(S.patchAction?.target || '')}</div><div class="m">${esc(S.patchAction?.status || '')}</div><div class="progress indeterminate" style="margin-top:8px"><i></i></div></div></div>` : ''}
+    ${uc.reboot ? `<div class="banner tone-warn"><span class="ic warn">${icon('restart')}</span><div class="grow"><div class="t">Restart needed</div><div class="m">${esc(u.rebootReasons && u.rebootReasons !== 'none' ? u.rebootReasons : 'Restart your computer to finish installing updates.')}</div></div></div>` : ''}
+    <div class="grid3">
+      <div class="card tile"><div class="head"><span class="ic">${icon('restart')}</span>Windows updates</div><div class="val ${uc.win ? 'warn-t' : 'good-t'}">${uc.win ? plural(uc.win, 'update') : 'Up to date'}</div><div class="note">Installed in your maintenance window</div></div>
+      <div class="card tile"><div class="head"><span class="ic">${icon('box')}</span>App updates</div><div class="val ${uc.apps ? 'warn-t' : 'good-t'}">${uc.apps ? plural(uc.apps, 'update') : 'Up to date'}</div><div class="note">${esc(plural(Number(u.softwareCount || 0), 'app'))} tracked</div></div>
+      <div class="card tile"><div class="head"><span class="ic">${icon('info')}</span>Needs a hand</div><div class="val">${Number(u.manualSoftwareCount || 0)}</div><div class="note">Apps that update themselves or need a technician</div></div>
+    </div>
+    ${win.length ? `<div class="card" style="margin-top:14px"><div class="card-head"><h3>Windows updates</h3><span class="hint">${esc(plural(win.length, 'update'))}</span></div><div class="list">
+      ${win.slice(0, 20).map((w) => `<div class="row"><span class="ic">${icon('restart')}</span><div style="min-width:0"><div class="t">${esc(w.title)}</div><div class="m">${esc([w.kb, w.classification, w.severity].filter(Boolean).join(' \u00b7 '))}</div></div>
+        <div class="side"><span class="badge ${String(w.severity).toLowerCase() === 'critical' ? 'bad' : 'warn'}">${esc(cap(w.status) || 'Pending')}</span>${Number(w.rebootRequired) ? '<div class="when">Needs restart</div>' : ''}</div></div>`).join('')}</div></div>` : ''}
+    <div class="card" style="margin-top:14px"><div class="card-head" style="flex-wrap:wrap"><h3>Apps</h3>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <div class="seg">${[['available', 'Updates'], ['manual', 'Manual'], ['all', 'All apps']].map(([k, l]) => `<button class="${updFilter === k ? 'on' : ''}" data-upd-filter="${k}">${l}</button>`).join('')}</div>
+        <div class="search" style="width:220px">${icon('search')}<input class="text" id="updSearch" placeholder="Search apps" value="${esc(updSearch)}"></div></div></div>
+      <div class="list">${shown.length ? shown.map(appRow).join('') : emptyState('check', updFilter === 'available' ? 'No app updates waiting' : 'No apps match', updFilter === 'available' ? 'Every tracked app is on its latest version.' : 'Try a different search.')}</div>
+      ${pages > 1 ? `<div class="card-head" style="border-top:1px solid var(--line);border-bottom:0"><span class="hint">Page ${updPage + 1} of ${pages}</span><div style="display:flex;gap:6px">
+        <button class="btn small" data-upd-page="-1" ${updPage === 0 ? 'disabled' : ''}>Previous</button><button class="btn small" data-upd-page="1" ${updPage >= pages - 1 ? 'disabled' : ''}>Next</button></div></div>` : ''}</div>
+    <div class="card" style="margin-top:14px"><div class="card-head"><h3>Administrator tools</h3><span class="hint">Need administrator approval</span></div><div class="card-body" style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn" data-act="requestWindowsUpdatePam">${icon('key')}Open Windows Update as admin</button>
+      <button class="btn" data-act="requestNetworkResetPam">${icon('key')}Reset network settings</button></div></div>`;
+}
+
+/* ---------- activity ---------- */
+function pageActivity() {
+  const rows = S.history || [];
+  const i = pickIndex('history', rows), cur = rows[i];
+  let lastDay = '', html = '';
+  rows.forEach((h, n) => {
+    const d = dayLabel(h.time);
+    if (d !== lastDay) { html += `<div class="day">${esc(d)}</div>`; lastDay = d; }
+    html += activityRow(h, n, 'history');
+  });
+  const detail = cur ? `<div class="card detail"><div class="card-body"><h4>${esc(activityTitle(cur))}</h4><p class="lead">${esc(when(cur.time))}</p>
+      <div class="kv"><div class="k">Result</div><div class="v">${esc(cap(cur.result))}</div><div class="k">Item</div><div class="v">${esc(cur.item)}</div>
+        <div class="k">Source</div><div class="v">${esc(cap(cur.source))}</div><div class="k">Clean-up</div><div class="v">${esc(cap(cur.remediation))}</div></div>
+      <details><summary>Technical details</summary><div class="kv" style="margin-top:10px"><div class="k">Technique</div><div class="v">${esc(cur.technique)}</div><div class="k">Type</div><div class="v">${esc(cur.kind)}</div></div><pre>${esc(cur.detail)}</pre></details></div></div>` : '';
+  return pageTop('Activity', 'Scans, detections and protection events on this device') + `
+    <div class="${cur ? 'split' : ''}"><div class="card"><div class="list">${html || emptyState('pulse', 'No activity yet', 'Events will appear here as protection runs.')}</div></div>${detail}</div>`;
+}
+
+/* ---------- help ---------- */
+function pageHelp() {
+  const lines = contactLines();
+  const who = isFenrir() ? 'your IT support team' : `${brand()} support`;
+  return `<div class="top"><div><h1>Get help</h1><div class="sub">Send a request to ${esc(who)}</div></div></div>
+    <div class="split">
+      <div class="card"><div class="card-head"><h3>Request support</h3><span class="hint">Your device details are included automatically</span></div><div class="card-body">
+        <label class="f">What do you need help with?<input class="text" id="supSummary" maxlength="200" placeholder="For example: Outlook keeps crashing" value="${esc(supportDraft.summary)}"></label>
+        <label class="f">Details <span>(optional) What happened, any error messages, when it started</span><textarea id="supDetails" maxlength="4000">${esc(supportDraft.details)}</textarea></label>
+        <label class="f">Best way to reach you <span>(optional) phone number or email</span><input class="text" id="supContact" maxlength="200" value="${esc(supportDraft.contact)}"></label>
+        <div class="actions" style="margin-top:4px"><button class="btn primary" data-act="supportRequest" ${supportBusy ? 'disabled' : ''}>${icon('chat')}${supportBusy ? 'Sending\u2026' : 'Send request'}</button></div>
+      </div></div>
+      <div class="stack">
+        <div class="card"><div class="card-head"><h3>Contact</h3></div><div class="card-body">
+          ${lines.length ? `<div class="contact">${lines.map(([ic, text]) => `<div>${icon(ic)}${esc(text)}</div>`).join('')}</div>` : '<p class="muted" style="margin:0">Your IT provider has not added contact details. Use the form to reach them.</p>'}</div></div>
+        <div class="card"><div class="card-head"><h3>This device</h3></div><div class="card-body"><div class="kv">
+          <div class="k">Computer name</div><div class="v">${esc(S.brand?.device)}</div>
+          <div class="k">Protection</div><div class="v">${esc(status().title)}</div>
+          <div class="k">Last check-in</div><div class="v">${esc(when(S.runtime?.lastHeartbeat))}</div>
+          ${S.agentVersion ? `<div class="k">Agent version</div><div class="v">${esc(S.agentVersion)}</div>` : ''}</div></div></div>
+      </div>
+    </div>`;
+}
+
+/* ---------- settings ---------- */
+function pageSettings() {
+  if (S.manageExclusionsMode) return pageExclusions();
+  const e = exp();
+  const yes = (v, on = 'On', off = 'Off') => v === false ? `<span class="badge">${off}</span>` : `<span class="badge good">${on}</span>`;
+  const tech = (S.settings || []).map((s) => `<div class="k">${esc(s.label)}</div><div class="v">${esc(s.value)}</div>`).join('');
+  return pageTop('Settings', isFenrir() ? 'Protection is managed by your IT provider' : `Protection is managed by ${esc(brand())}`) + `
+    <div class="cols">
+      <div class="stack">
+        <div class="card"><div class="card-head"><h3>Protection</h3><span class="hint">Set by policy${e.policyName ? ': ' + esc(e.policyName) : ''}</span></div><div class="list">
+          ${[['shield', 'Real-time protection', 'Checks files, programs and scripts as they are used', yes(e.realtime)],
+             ['globe', 'Web protection', 'Blocks dangerous and phishing websites', yes(e.webProtection)],
+             ['bolt', 'Script inspection', 'Checks PowerShell and other scripts before they run', yes(e.scriptInspection)],
+             ['box', 'Ransomware protection', 'Watches for files being encrypted in bulk', yes(e.ransomwareProtection)],
+             ['wall', 'Managed firewall', 'Firewall rules from your IT provider', yes(e.firewallManaged, 'On', 'Windows default')]]
+            .map(([ic, t, m, b]) => `<div class="row"><span class="ic">${icon(ic)}</span><div style="min-width:0"><div class="t">${t}</div><div class="m">${m}</div></div><div class="side">${b}</div></div>`).join('')}
+        </div></div>
+        <div class="card"><div class="card-head"><h3>Scan schedule</h3><span class="hint">Administrator approval needed to change</span></div><div class="list">
+          <div class="row"><span class="ic">${icon('bolt')}</span><div><div class="t">Quick scan</div><div class="m">${esc(minutesLabel(S.runtime?.quickScanIntervalMinutes))}</div></div><div class="side"><button class="btn small" data-act="setQuickScanInterval">Change</button></div></div>
+          <div class="row"><span class="ic">${icon('disk')}</span><div><div class="t">Full scan</div><div class="m">${esc(minutesLabel(S.runtime?.fullScanIntervalMinutes))}</div></div><div class="side"><button class="btn small" data-act="setFullScanInterval">Change</button></div></div>
+        </div></div>
+      </div>
+      <div class="stack">
+        <div class="card"><div class="card-head"><h3>Exclusions</h3><span class="hint">${esc(plural((S.exclusions || []).length, 'item'))}</span></div><div class="card-body">
+          <p class="muted" style="margin:0 0 12px">Files, folders and apps you trust that scans should skip. Adding exclusions lowers protection, so only exclude things you are sure about.</p>
+          <button class="btn" data-act="openExclusions">${icon('key')}Manage exclusions</button></div></div>
+        <div class="card"><div class="card-head"><h3>About</h3></div><div class="card-body"><div class="kv">
+          <div class="k">Device</div><div class="v">${esc(S.brand?.device)}</div>
+          <div class="k">Service</div><div class="v">${esc(cap(S.runtime?.serviceState))}</div>
+          <div class="k">Last check-in</div><div class="v">${esc(when(S.runtime?.lastHeartbeat))}</div>
+          <div class="k">Last policy update</div><div class="v">${esc(when(S.runtime?.lastPolicySync))}</div>
+          ${S.agentVersion ? `<div class="k">Version</div><div class="v">${esc(S.agentVersion)}</div>` : ''}</div>
+          <details><summary>Technical details</summary><div class="kv" style="margin-top:10px">${tech}
+            <div class="k">Device ID</div><div class="v">${esc(S.runtime?.deviceId)}</div></div></details></div></div>
+      </div>
+    </div>`;
+}
+
+function pageExclusions() {
+  const q = exclSearch.trim().toLowerCase();
+  const match = (...parts) => !q || parts.join(' ').toLowerCase().includes(q);
+  let body = '';
+  if (exclTab === 'current') {
+    const rows = (S.exclusions || []).filter((x) => match(x.path));
+    body = rows.length ? rows.map((x) => `<div class="row"><span class="ic">${icon(x.kind === 'Folder' ? 'folder' : 'box')}</span><div style="min-width:0"><div class="t">${esc(basename(x.path))}</div><div class="m">${esc(x.path)}</div></div>
+      <div class="side"><button class="btn small danger" data-act="exclusionsRemove" data-path="${esc(x.path)}">Remove</button></div></div>`).join('')
+      : emptyState('check', 'No exclusions', 'Everything on this device is scanned.');
+  } else if (exclTab === 'process') {
+    const rows = (S.processes || []).filter((p) => p.path && match(p.name, p.path));
+    body = rows.length ? rows.map((p) => `<div class="row"><span class="ic">${icon('bolt')}</span><div style="min-width:0"><div class="t">${esc(p.name)} <span class="muted">\u00b7 PID ${esc(p.pid)}</span></div><div class="m">${esc(p.path)}</div></div>
+      <div class="side"><button class="btn small" data-act="exclusionsAddProcess" data-pid="${esc(p.pid)}">Exclude</button></div></div>`).join('') : emptyState('search', 'No programs match', 'Try a different search.');
+  } else {
+    const rows = (S.software || []).filter((a) => match(a.name, a.publisher, a.location));
+    body = rows.length ? rows.map((a) => `<div class="row"><span class="ic">${icon('box')}</span><div style="min-width:0"><div class="t">${esc(a.name)}</div><div class="m">${esc([a.publisher, a.version, a.location].filter(Boolean).join(' \u00b7 '))}</div></div>
+      <div class="side"><button class="btn small" data-act="exclusionsAddApplication" data-software-id="${esc(a.id)}" ${a.location ? '' : 'disabled title="No install folder recorded"'}>Exclude</button></div></div>`).join('') : emptyState('search', 'No apps match', 'Try a different search.');
+  }
+  return pageTop('Exclusions', 'Items scans and real-time protection will skip',
+      `<button class="btn" data-act="exclusionsAddFile">${icon('plus')}Add file</button><button class="btn" data-act="exclusionsAddFolder">${icon('plus')}Add folder</button>
+       <button class="btn primary" data-act="exclusionsDone">Done</button>`) + `
+    <div class="banner tone-warn"><span class="ic warn">${icon('alert')}</span><div class="grow"><div class="t">Exclusions reduce protection</div><div class="m">Malware inside an excluded file or folder will not be detected. Only exclude items you trust.</div></div></div>
+    <div class="card"><div class="card-head" style="flex-wrap:wrap">
+      <div class="seg">${[['current', 'Current exclusions'], ['process', 'Running programs'], ['application', 'Installed apps']].map(([k, l]) => `<button class="${exclTab === k ? 'on' : ''}" data-excl-tab="${k}">${l}</button>`).join('')}</div>
+      <div class="search" style="width:240px">${icon('search')}<input class="text" id="exclSearch" placeholder="Search" value="${esc(exclSearch)}"></div></div>
+      <div class="list">${body}</div></div>`;
+}
+
+/* ---------- render & events ---------- */
+const VIEWS = { dashboard: pageOverview, threats: pageThreats, quarantine: pageQuarantine, scans: pageScans, updates: pageUpdates, history: pageActivity, help: pageHelp, settings: pageSettings };
+
+function render() {
+  renderShell();
+  const main = document.getElementById('main');
+  const focused = document.activeElement && document.activeElement.id;
+  const caret = focused && document.activeElement.selectionStart;
+  main.innerHTML = (currentPage() === 'dashboard' ? '' : serviceBanner()) + (VIEWS[currentPage()] || pageOverview)();
+  if (focused) { const el = document.getElementById(focused); if (el) { el.focus(); try { el.setSelectionRange(caret, caret); } catch (e) {} } }
+}
+
+function saveDraft() {
+  const g = (id) => document.getElementById(id);
+  if (g('supSummary')) supportDraft = { summary: g('supSummary').value, details: g('supDetails').value, contact: g('supContact').value };
+}
+
+let toastTimer = 0;
+function toast(tone, text) {
+  const el = document.getElementById('toast');
+  const ic = tone === 'good' ? ['check', 'good'] : tone === 'danger' ? ['alert', 'bad'] : ['info', 'warn'];
+  el.innerHTML = `<span class="ic ${ic[1]}">${icon(ic[0])}</span><div style="padding-top:4px">${esc(text)}</div><button class="x" data-toast-close>&times;</button>`;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 7000);
+}
+
+document.addEventListener('click', (ev) => {
+  const t = ev.target.closest('[data-go],[data-act],[data-sel],[data-upd-filter],[data-upd-page],[data-excl-tab],[data-toast-close]');
+  if (!t || t.disabled) return;
+  if (t.dataset.toastClose !== undefined) { document.getElementById('toast').classList.remove('show'); return; }
+  if (t.dataset.go) { go(t.dataset.go); return; }
+  if (t.dataset.sel) { const [page, n] = t.dataset.sel.split(':'); sel[page] = Number(n); render(); return; }
+  if (t.dataset.updFilter) { updFilter = t.dataset.updFilter; updPage = 0; render(); return; }
+  if (t.dataset.updPage) { updPage = Math.max(0, updPage + Number(t.dataset.updPage)); render(); return; }
+  if (t.dataset.exclTab) { exclTab = t.dataset.exclTab; exclSearch = ''; render(); return; }
+  const act = t.dataset.act;
+  if (act === 'setQuickScanInterval' || act === 'setFullScanInterval') {
+    const quick = act === 'setQuickScanInterval';
+    const cur = Number(quick ? S.runtime?.quickScanIntervalMinutes : S.runtime?.fullScanIntervalMinutes) || (quick ? 1440 : 10080);
+    const [min, max] = quick ? [15, 10080] : [60, 43200];
+    const input = window.prompt(`How often should the ${quick ? 'quick' : 'full'} scan run, in minutes? (${min}\u2013${max}; 1440 = daily, 10080 = weekly)`, String(cur));
+    if (input === null) return;
+    const minutes = Number.parseInt(input, 10);
+    if (!Number.isFinite(minutes) || minutes < min || minutes > max) { toast('warning', `Enter a whole number of minutes between ${min} and ${max}.`); return; }
+    send(act, { minutes: String(minutes) });
+    return;
+  }
+  if (act === 'supportRequest') {
+    saveDraft();
+    if (!supportDraft.summary.trim()) { toast('warning', 'Describe the problem in a few words first.'); document.getElementById('supSummary')?.focus(); return; }
+    supportBusy = true; render();
+    send('supportRequest', { summary: supportDraft.summary.trim(), details: supportDraft.details.trim(), contact: supportDraft.contact.trim() });
+    setTimeout(() => { if (supportBusy) { supportBusy = false; render(); } }, 20000);
+    return;
+  }
+  if (act === 'quarantineDelete' && !window.confirm('Delete this file permanently? It cannot be restored afterwards.')) return;
+  const fields = {};
+  if (t.dataset.preset) fields.preset = t.dataset.preset;
+  if (t.dataset.id) fields.id = t.dataset.id;
+  if (t.dataset.softwareId) fields['software-id'] = t.dataset.softwareId;
+  if (t.dataset.path) fields.path = t.dataset.path;
+  if (t.dataset.pid) fields.pid = t.dataset.pid;
+  send(act, fields);
+});
+
+document.addEventListener('input', (ev) => {
+  if (['supSummary', 'supDetails', 'supContact'].includes(ev.target.id)) { saveDraft(); return; }
+  if (ev.target.id === 'updSearch') { updSearch = ev.target.value; updPage = 0; render(); }
+  else if (ev.target.id === 'exclSearch') { exclSearch = ev.target.value; render(); }
+});
+
+function onMessage(data) {
+  if (data && data.notice) {
+    toast(data.notice.tone, data.notice.text);
+    if (supportBusy) {
+      supportBusy = false;
+      if (data.notice.supportSent) supportDraft = { summary: '', details: '', contact: '' };
+      render();
+    }
+    return;
+  }
+  if (data && data.openPage) { go(data.openPage); return; }
+  if (data && typeof data === 'object' && data.pageKey) {
+    // A native page change ends any local-only page.
+    if (localPage && S.pageKey !== data.pageKey) localPage = null;
+    S = data;
+    render();
+  }
+}
+if (window.chrome && window.chrome.webview) window.chrome.webview.addEventListener('message', (ev) => onMessage(ev.data));
+render();
+</script>
+</body>
+</html>

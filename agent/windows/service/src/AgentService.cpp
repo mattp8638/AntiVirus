@@ -2027,6 +2027,24 @@ std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
       command.type == L"device.shutdown" || command.type == L"device.message") {
     return ExecuteRmmCommand(command);
   }
+  if (command.type == L"support.request") {
+    // Only from the agent window on this PC (the local pipe); the cloud never asks a device to file a ticket.
+    if (command.issuedBy.rfind(L"local-dashboard:", 0) != 0) {
+      throw std::runtime_error("Support requests can only be sent from the agent window");
+    }
+    const auto field = [&command](const char* key, std::size_t limit) {
+      auto value = WideToUtf8(ExtractPayloadString(command.payloadJson, key).value_or(L""));
+      return EscapeJsonString(Utf8ToWide(value.substr(0, limit)));
+    };
+    const auto user = WideToUtf8(command.issuedBy.substr(std::wstring(L"local-dashboard:").size()));
+    const std::string body = "{\"summary\":\"" + field("summary", 200) + "\",\"details\":\"" + field("details", 4000) +
+                             "\",\"contact\":\"" + field("contact", 200) + "\",\"user\":\"" +
+                             EscapeJsonString(Utf8ToWide(user.substr(0, 120))) + "\"}";
+    const auto number = controlPlaneClient_->SubmitSupportRequest(IdentitySnapshot(), body);
+    QueueTelemetryEvent(L"support.requested", L"endpoint-client", L"The user asked their IT provider for help (ticket " + number + L").",
+                        L"{\"ticketNumber\":\"" + number + L"\"}");
+    return L"{\"ticketNumber\":\"" + number + L"\"}";
+  }
   if (command.type == L"remote.session.start") {
     return LaunchRemoteHelper(command);
   }
@@ -2947,6 +2965,55 @@ void AgentService::ApplyProtectionPolicy() {
     QueueTelemetryEvent(record.eventType, record.source, record.summary, record.payloadJson);
   }
   ApplyFirewallPolicy();
+  WriteExperienceFile();
+}
+
+// Publishes what the agent window may show (branding, support contact, which protections are on) to
+// experience.json in the install folder, which signed-in users can read. Nothing sensitive goes in it.
+void AgentService::WriteExperienceFile() {
+  const auto root = policy_.modulesJson.empty() ? std::optional<json::Value>{} : json::Parse(policy_.modulesJson);
+  const auto section = [&root](const char* name) -> const json::Value* { return root && root->IsObject() ? root->Get(name) : nullptr; };
+  const auto text = [](const json::Value* s, const char* key, const std::string& fallback) {
+    const auto* v = s ? s->Get(key) : nullptr;
+    const auto value = v ? v->String() : std::nullopt;
+    return value.has_value() && !value->empty() ? *value : fallback;
+  };
+  const auto flag = [](const json::Value* s, const char* key, bool fallback) {
+    const auto* v = s ? s->Get(key) : nullptr;
+    return v ? v->Bool().value_or(fallback) : fallback;
+  };
+  const auto* experience = section("experience");
+  const auto* firewallSection = section("firewall");
+  const auto* ransomware = section("ransomware");
+  const auto q = [](const std::string& v) { return "\"" + EscapeJsonString(Utf8ToWide(v.substr(0, 300))) + "\""; };
+  const auto b = [](bool v) { return std::string(v ? "true" : "false"); };
+  std::string out = "{";
+  out += "\"brandName\":" + q(text(experience, "brandName", "Fenrir"));
+  out += ",\"supportContact\":" + q(text(experience, "supportContact", ""));
+  out += ",\"notifications\":" + q(text(experience, "notifications", "important"));
+  out += ",\"trayIcon\":" + b(flag(experience, "trayIcon", true));
+  out += ",\"allowUserScans\":" + b(flag(experience, "allowUserScans", true));
+  out += ",\"policyName\":" + q(WideToUtf8(policy_.policyName));
+  out += ",\"agentVersion\":" + q(WideToUtf8(config_.agentVersion));
+  out += ",\"managed\":" + b(!state_.deviceId.empty());
+  out += ",\"realtime\":" + b(policy_.realtimeProtectionEnabled);
+  out += ",\"webProtection\":" + b(policy_.webProtectionEnabled || policy_.destinationProtectionEnabled);
+  out += ",\"scriptInspection\":" + b(policy_.scriptInspectionEnabled);
+  out += ",\"firewallManaged\":" + b(flag(firewallSection, "enabled", false));
+  out += ",\"ransomwareProtection\":" + b(flag(ransomware, "enabled", true));
+  out += ",\"quickScanSchedule\":" + q(text(section("antimalware"), "quickScanSchedule", ""));
+  out += "}";
+  try {
+    const auto path = config_.installRootPath / L"experience.json";
+    const auto temp = config_.installRootPath / L"experience.json.tmp";
+    {
+      std::ofstream file(temp, std::ios::binary | std::ios::trunc);
+      file << out;
+    }
+    std::error_code ec;
+    std::filesystem::rename(temp, path, ec);
+  } catch (...) {
+  }
 }
 
 bool AgentService::ScanNetworkDrives() const {
