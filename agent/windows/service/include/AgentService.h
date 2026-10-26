@@ -174,6 +174,16 @@ class AgentService {
   // Local admin password rotation (privilege.rotateLocalAdminPassword); force = the localadmin.rotate command.
   std::wstring RotateLocalAdminPassword(bool force);
   void ExpireBreakGlassAccount();
+  // experience.allowUserPause
+  PolicySnapshot EnforcedPolicy() const;
+  std::string ModulesJsonCopy() const;
+  std::wstring PauseProtection(const RemoteCommand& command);
+  std::wstring ResumeProtection(const RemoteCommand& command);
+  void ApplyPauseState();
+  std::atomic<long long> pausedUntil_{0};
+  bool appliedPaused_{false};
+  mutable std::mutex modulesCopyMutex_{};
+  std::string modulesCopy_;
   // Temporary admin rights (privilege.elevationRequests).
   std::wstring RequestElevation(const RemoteCommand& command);
   std::wstring ElevationStatus(const RemoteCommand& command);

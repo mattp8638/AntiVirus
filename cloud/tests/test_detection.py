@@ -321,6 +321,7 @@ def test_windows_shield_and_brute_force_events_raise_alerts(client, admin, tenan
                                         "details": "C:\\Users\\Public\\evil.exe", "change": "added"}),
         event(9, "registry.service.created", {"targetObject": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Upd",
                                               "details": "C:\\Users\\jo\\AppData\\Local\\Temp\\svc.exe", "serviceName": "Upd"}),
+        event(0, "protection.paused", {"user": "PC1\\jo", "minutes": 15}),
         event(7, "asr.rule.blocked", {"rule": "attackSurface.blockOfficeExecutableContent", "mode": "block", "pid": 10,
                                       "processImagePath": "C:\\Program Files\\Microsoft Office\\WINWORD.EXE"}),
     ]
@@ -336,6 +337,7 @@ def test_windows_shield_and_brute_force_events_raise_alerts(client, admin, tenan
     assert by_rule["fenrir-cred-browser-store-blocked"][0]["severity"] == "high"
     assert by_rule["fenrir-protection-asr-block"][0]["severity"] == "high"
     assert "fenrir-persist-runkey" in by_rule and "fenrir-persist-service-userpath" in by_rule
+    assert by_rule["fenrir-protection-user-paused"][0]["severity"] == "medium"
 
 
 def test_sigma_values_ending_in_backslash_still_match():

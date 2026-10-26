@@ -1087,7 +1087,7 @@ int AgentService::Run(const AgentRunMode mode) {
     PublishIdentitySnapshot();
     ApplyProtectionPolicy();
     RelaunchClientAfterUpgrade();
-    realtimeProtectionBroker_->SetPolicy(policy_);
+    realtimeProtectionBroker_->SetPolicy(EnforcedPolicy());
     realtimeProtectionBroker_->SetDeviceId(state_.deviceId);
     processEtwSensor_->SetDeviceId(state_.deviceId);
     networkIsolationManager_->SetDeviceId(state_.deviceId);
@@ -1477,6 +1477,7 @@ bool AgentService::WaitForNextCycle(const AgentRunMode mode, const int nextCycle
       return true;
     }
     CheckRemovableMedia();
+    ApplyPauseState();
     HANDLE events[2] = {stopEvent_, wakeEvent_};
     const DWORD count = wakeEvent_ != nullptr ? 2 : 1;
     // Wake every few seconds to notice USB drives being plugged in.
@@ -1775,7 +1776,7 @@ void AgentService::EnsureEnrollment() {
 
   if (realtimeProtectionBroker_) {
     realtimeProtectionBroker_->SetDeviceId(state_.deviceId);
-    realtimeProtectionBroker_->SetPolicy(policy_);
+    realtimeProtectionBroker_->SetPolicy(EnforcedPolicy());
   }
   if (processEtwSensor_) {
     processEtwSensor_->SetDeviceId(state_.deviceId);
@@ -1841,7 +1842,7 @@ void AgentService::RefreshPolicy(const int cycle) {
   policy_ = policyCheckIn.policy;
   ApplyProtectionPolicy();
   if (realtimeProtectionBroker_) {
-    realtimeProtectionBroker_->SetPolicy(policy_);
+    realtimeProtectionBroker_->SetPolicy(EnforcedPolicy());
   }
 
   QueueTelemetryEvent(L"policy.checked-in", L"control-plane-client",
@@ -2115,6 +2116,12 @@ std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
   }
   if (command.type == L"localadmin.rotate") {
     return RotateLocalAdminPassword(true);
+  }
+  if (command.type == L"protection.pause" || command.type == L"protection.resume") {
+    if (command.issuedBy.rfind(L"local-dashboard:", 0) != 0) {
+      throw std::runtime_error("Protection is paused from the agent window on the device");
+    }
+    return command.type == L"protection.pause" ? PauseProtection(command) : ResumeProtection(command);
   }
   if (command.type == L"elevation.request" || command.type == L"elevation.status") {
     // Only the signed-in user, from the agent window (the local pipe), asks for their own elevation.
@@ -3279,7 +3286,11 @@ void AgentService::ApplyProtectionPolicy() {
   if (!processGuard_) {
     return;
   }
-  processGuard_->UpdatePolicy(policy_);
+  processGuard_->UpdatePolicy(EnforcedPolicy());
+  {
+    const std::lock_guard lock(modulesCopyMutex_);
+    modulesCopy_ = policy_.modulesJson;
+  }
   for (const auto& record : processGuard_->ApplyDeviceControl()) {
     QueueTelemetryEvent(record.eventType, record.source, record.summary, record.payloadJson);
   }
@@ -3474,7 +3485,8 @@ std::wstring UnixToIso(const long long seconds) {
 }  // namespace
 
 std::wstring AgentService::RequestElevation(const RemoteCommand& command) {
-  const auto root = policy_.modulesJson.empty() ? std::optional<json::Value>{} : json::Parse(policy_.modulesJson);
+  const auto modules = ModulesJsonCopy();  // the local pipe runs on its own thread
+  const auto root = modules.empty() ? std::optional<json::Value>{} : json::Parse(modules);
   const auto* privilege = root && root->IsObject() ? root->Get("privilege") : nullptr;
   const auto* enabled = privilege ? privilege->Get("enabled") : nullptr;
   const auto* mode = privilege ? privilege->Get("elevationRequests") : nullptr;
@@ -3606,6 +3618,68 @@ void AgentService::ExpireElevations() {
   std::erase_if(state.pending, [now](const ElevationPending& p) { return now - p.at > 24 * 3600; });
   changed = changed || before != state.pending.size();
   if (changed) SaveElevations(file, state);
+}
+
+PolicySnapshot AgentService::EnforcedPolicy() const {
+  auto policy = policy_;
+  if (pausedUntil_.load() > static_cast<long long>(std::time(nullptr))) {
+    // experience.allowUserPause: real-time file scanning and process-start blocking are off for a while.
+    policy.realtimeProtectionEnabled = false;
+  }
+  return policy;
+}
+
+std::string AgentService::ModulesJsonCopy() const {
+  const std::lock_guard lock(modulesCopyMutex_);
+  return modulesCopy_;
+}
+
+std::wstring AgentService::PauseProtection(const RemoteCommand& command) {
+  const auto modules = ModulesJsonCopy();
+  const auto root = modules.empty() ? std::optional<json::Value>{} : json::Parse(modules);
+  const auto* experience = root && root->IsObject() ? root->Get("experience") : nullptr;
+  const auto* allowed = experience ? experience->Get("allowUserPause") : nullptr;
+  if (!allowed || !allowed->Bool().value_or(false)) {
+    throw std::runtime_error("Your IT provider does not allow pausing protection on this device.");
+  }
+  long long minutes = 15;
+  if (const auto pos = command.payloadJson.find(L"\"minutes\""); pos != std::wstring::npos) {
+    const auto digits = command.payloadJson.find_first_of(L"0123456789", pos + 9);
+    if (digits != std::wstring::npos) minutes = std::wcstoll(command.payloadJson.c_str() + digits, nullptr, 10);
+  }
+  minutes = std::clamp(minutes, 5LL, 60LL);
+  const auto until = static_cast<long long>(std::time(nullptr)) + minutes * 60;
+  pausedUntil_.store(until);
+  const auto user = command.issuedBy.substr(std::wstring(L"local-dashboard:").size());
+  QueueTelemetryEvent(L"protection.paused", L"endpoint-client",
+                      user + L" paused real-time protection for " + std::to_wstring(minutes) + L" minutes.",
+                      L"{\"user\":\"" + Utf8ToWide(EscapeJsonString(user)) + L"\",\"minutes\":" + std::to_wstring(minutes) + L"}");
+  if (wakeEvent_ != nullptr) SetEvent(wakeEvent_);  // the main loop applies it
+  return L"{\"pausedUntil\":\"" + UnixToIso(until) + L"\"}";
+}
+
+std::wstring AgentService::ResumeProtection(const RemoteCommand& command) {
+  pausedUntil_.store(0);
+  const auto user = command.issuedBy.substr(std::wstring(L"local-dashboard:").size());
+  QueueTelemetryEvent(L"protection.resumed", L"endpoint-client", user + L" turned real-time protection back on.",
+                      L"{\"user\":\"" + Utf8ToWide(EscapeJsonString(user)) + L"\"}");
+  if (wakeEvent_ != nullptr) SetEvent(wakeEvent_);
+  return L"{\"resumed\":true}";
+}
+
+// Applies a pause, resume or expiry to the real-time components (main thread only).
+void AgentService::ApplyPauseState() {
+  const bool paused = pausedUntil_.load() > static_cast<long long>(std::time(nullptr));
+  if (paused == appliedPaused_) return;
+  if (appliedPaused_ && !paused && pausedUntil_.load() != 0) {
+    QueueTelemetryEvent(L"protection.resumed", L"agent-service", L"The protection pause ended; real-time protection is back on.", L"{}");
+  }
+  appliedPaused_ = paused;
+  if (!paused) pausedUntil_.store(0);
+  const auto policy = EnforcedPolicy();
+  if (realtimeProtectionBroker_) realtimeProtectionBroker_->SetPolicy(policy);
+  if (processGuard_) processGuard_->UpdatePolicy(policy);
+  WriteExperienceFile();
 }
 
 void AgentService::EnforceLocalAdminPolicy() {
@@ -3809,6 +3883,11 @@ void AgentService::WriteExperienceFile() {
   out += ",\"firewallManaged\":" + b(flag(firewallSection, "enabled", false));
   out += ",\"ransomwareProtection\":" + b(flag(ransomware, "enabled", true));
   out += ",\"quickScanSchedule\":" + q(text(section("antimalware"), "quickScanSchedule", ""));
+  out += ",\"allowUserPause\":" + b(flag(experience, "allowUserPause", false));
+  {
+    const auto until = pausedUntil_.load();
+    out += ",\"pausedUntil\":" + q(until > static_cast<long long>(std::time(nullptr)) ? WideToUtf8(UnixToIso(until)) : std::string());
+  }
   {
     const auto* privilege = section("privilege");
     const auto mode = flag(privilege, "enabled", false) ? text(privilege, "elevationRequests", "approval") : std::string("off");

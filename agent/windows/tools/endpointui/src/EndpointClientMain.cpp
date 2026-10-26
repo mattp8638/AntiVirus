@@ -4343,6 +4343,25 @@ void HandleWebViewMessage(UiContext& context, const std::wstring& message) {
     return;
   }
 
+  if (_wcsicmp(action.c_str(), L"pauseProtection") == 0 || _wcsicmp(action.c_str(), L"resumeProtection") == 0) {
+    const bool pause = _wcsicmp(action.c_str(), L"pauseProtection") == 0;
+    const auto minutes = GetQueryValue(pairs, L"minutes");
+    const auto payload = pause ? L"{\"minutes\":" + std::to_wstring(std::clamp(_wtoi(minutes.c_str()), 5, 60)) + L"}" : std::wstring(L"{}");
+    const auto result =
+        antivirus::agent::SendLocalBrokerCommand(context.config, pause ? L"protection.pause" : L"protection.resume", L"", payload, L"", L"");
+    if (result.success) {
+      PostWebViewNotice(context, pause ? L"warning" : L"good",
+                        pause ? L"Real-time protection is paused. It comes back on by itself." : L"Real-time protection is back on.");
+    } else {
+      PostWebViewNotice(context, L"danger", result.errorMessage.empty() ? std::wstring(L"The protection service did not answer.")
+                                                                        : result.errorMessage);
+    }
+    Sleep(500);  // let the service rewrite experience.json
+    RefreshSnapshot(context);
+    PublishWebViewState(context);
+    return;
+  }
+
   if (_wcsicmp(action.c_str(), L"elevationRequest") == 0) {
     const auto reason = GetQueryValue(pairs, L"reason");
     const auto payload = L"{\"reason\":\"" + JsonEscape(reason.substr(0, 300)) + L"\"}";

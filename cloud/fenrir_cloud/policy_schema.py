@@ -478,7 +478,7 @@ AGENT_SUPPORT: dict[str, tuple[str, ...]] = {
     "experience.trayIcon": ('windows',),
     "experience.notifications": ('windows',),
     "experience.allowUserScans": ('windows',),
-    "experience.allowUserPause": (),
+    "experience.allowUserPause": ('windows',),
     "experience.allowQuarantineRestore": ('windows',),
     "experience.brandName": ('windows',),
     "experience.supportContact": ('windows',),

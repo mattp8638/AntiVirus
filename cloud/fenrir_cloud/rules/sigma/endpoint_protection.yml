@@ -39,3 +39,14 @@ detection:
     EventType: 'devicecontrol.apply_failed'
   condition: selection
 level: medium
+---
+title: User paused real-time protection
+id: fenrir-protection-user-paused
+description: A signed-in user paused real-time protection from the agent window (allowed by the experience.allowUserPause policy setting). It turns back on by itself.
+tags: [attack.defense_evasion, attack.t1562.001]
+logsource: {product: windows}
+detection:
+  selection:
+    EventType: 'protection.paused'
+  condition: selection
+level: medium

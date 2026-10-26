@@ -290,10 +290,19 @@ function status() {
   const threats = Number(S.openThreatCount || 0);
   if (serviceState() === 'not installed') return { tone: 'bad', icon: 'shieldOff', title: 'Protection is not installed', text: 'The background protection service is missing, so this device is not protected in real time.' };
   if (serviceDown()) return { tone: 'bad', icon: 'shieldOff', title: 'Protection is turned off', text: 'The background protection service has stopped. Start it to protect this device again.' };
+  if (pausedUntil()) return { tone: 'warn', icon: 'shieldAlert', title: 'Protection is paused', text: `Real-time protection comes back on by itself ${resumeLabel()}. Ransomware protection, the firewall and web protection stay on.` };
   if (threats > 0) return { tone: 'warn', icon: 'shieldAlert', title: plural(threats, 'threat needs', 'threats need') + ' your attention', text: 'Review what was found and decide whether anything should be removed or restored.' };
   if (S.statusTone === 'warning') return { tone: 'warn', icon: 'shieldAlert', title: 'Protection needs attention', text: S.guidance || 'Something is not working as expected.' };
   if (S.scan?.running) return { tone: 'info', icon: 'shieldOk', title: 'Scanning your device', text: 'Protection stays on while the scan runs.' };
   return { tone: 'good', icon: 'shieldOk', title: 'Your device is protected', text: protectedSummary() };
+}
+function resumeLabel() {
+  const label = when(pausedUntil());
+  return label.startsWith('Today, ') ? 'at ' + label.slice(7) : label.charAt(0).toLowerCase() + label.slice(1);
+}
+function pausedUntil() {
+  const until = exp().pausedUntil;
+  return until && parseWhen(until) && parseWhen(until) > new Date() ? until : '';
 }
 function protectedSummary() {
   const on = [];
@@ -680,6 +689,12 @@ function pageSettings() {
              ['wall', 'Managed firewall', 'Firewall rules from your IT provider', yes(e.firewallManaged, 'On', 'Windows default')]]
             .map(([ic, t, m, b]) => `<div class="row"><span class="ic">${icon(ic)}</span><div style="min-width:0"><div class="t">${t}</div><div class="m">${m}</div></div><div class="side">${b}</div></div>`).join('')}
         </div></div>
+        ${e.allowUserPause ? `<div class="card"><div class="card-head"><h3>Pause protection</h3>${pausedUntil() ? '<span class="badge warn">Paused</span>' : ''}</div><div class="card-body">
+          ${pausedUntil()
+            ? `<p style="margin:0 0 12px">Real-time protection is paused until <b>${esc(when(pausedUntil()))}</b>.</p><button class="btn primary" data-act="resumeProtection">${icon('shield')}Turn back on now</button>`
+            : `<p class="muted" style="margin:0 0 12px">Turns off real-time file and program checks for a short time, for example while installing trusted software. Ransomware protection, the firewall and web protection stay on. Your IT provider is told.</p>
+               <div class="actions"><button class="btn" data-act="pauseProtection" data-minutes="15">Pause 15 minutes</button><button class="btn" data-act="pauseProtection" data-minutes="60">Pause 1 hour</button></div>`}
+        </div></div>` : ''}
         <div class="card"><div class="card-head"><h3>Scan schedule</h3><span class="hint">Administrator approval needed to change</span></div><div class="list">
           <div class="row"><span class="ic">${icon('bolt')}</span><div><div class="t">Quick scan</div><div class="m">${esc(minutesLabel(S.runtime?.quickScanIntervalMinutes))}</div></div><div class="side"><button class="btn small" data-act="setQuickScanInterval">Change</button></div></div>
           <div class="row"><span class="ic">${icon('disk')}</span><div><div class="t">Full scan</div><div class="m">${esc(minutesLabel(S.runtime?.fullScanIntervalMinutes))}</div></div><div class="side"><button class="btn small" data-act="setFullScanInterval">Change</button></div></div>
@@ -813,6 +828,7 @@ document.addEventListener('click', (ev) => {
   if (t.dataset.softwareId) fields['software-id'] = t.dataset.softwareId;
   if (t.dataset.path) fields.path = t.dataset.path;
   if (t.dataset.pid) fields.pid = t.dataset.pid;
+  if (t.dataset.minutes) fields.minutes = t.dataset.minutes;
   send(act, fields);
 });
 
