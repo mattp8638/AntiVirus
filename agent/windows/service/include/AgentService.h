@@ -163,6 +163,8 @@ class AgentService {
   std::thread firewallThread_{};
   void ApplyFirewallPolicy();
   void ApplyTamperPolicy(const ExtendedPolicy& extended);
+  void ApplyCredentialHardening(bool enable);
+  int appliedCredentialHardening_{-1};
   std::wstring appliedTamperPolicy_;
   void WriteExperienceFile();
   // Self-update (Windows): compare this build's id with the server's and run its installer silently.

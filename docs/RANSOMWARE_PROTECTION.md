@@ -52,3 +52,21 @@ device:
 | `ransomware.snapshot.created` / `.failed`, `ransomware.shield.*` | Stored as events |
 
 Detections wake the agent's main loop, so they reach the cloud straight away rather than at the next sync.
+
+## Other checks on the same file feed
+
+The same ETW session also enforces two settings outside the ransomware section:
+
+* **`edr.credentialProtection`**: watches the files where Chrome, Edge, Brave, Vivaldi, Opera and Firefox keep
+  saved passwords, cookies, cards and their encryption key (`Login Data`, `Cookies`, `Web Data`,
+  `Local State`, `logins.json`, `key4.db`, `cookies.sqlite`). When a program other than the browser opens one:
+  * unsigned programs (the typical infostealer) are stopped, and `asr.credential_store.blocked` raises a high alert;
+  * signed programs (password managers, backup tools) are reported once a day as `asr.credential_store.access`;
+  * Windows components are ignored.
+
+  The setting also turns on LSA protection (`RunAsPPL`, after the next restart) and turns off cleartext
+  WDigest credentials. Only values Fenrir set are reverted when the setting is turned off.
+* **`attackSurface.blockOfficeExecutableContent`**: Word, Excel, PowerPoint, Outlook, Access, Publisher, Visio,
+  OneNote or the Equation Editor creating a program or script (`.exe`, `.dll`, `.js`, `.vbs`, `.ps1`, `.hta`,
+  `.bat`, …). In audit mode this is reported. In block mode the file is deleted as soon as Office lets go of it
+  (within a minute). Both report through the usual `asr.rule.*` events.

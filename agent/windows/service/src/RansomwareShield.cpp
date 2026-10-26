@@ -214,12 +214,65 @@ std::wstring ModuleDirectoryLower() {
   return slash == std::wstring::npos ? value : value.substr(0, slash + 1);
 }
 
+// Files where browsers keep saved passwords, cookies, cards and the key that decrypts them.
+bool IsCredentialStoreName(const wchar_t* name, std::size_t length) {
+  static const wchar_t* kNames[] = {L"login data", L"login data for account", L"cookies", L"web data", L"local state",
+                                    L"logins.json", L"key4.db", L"cookies.sqlite", L"signons.sqlite"};
+  for (const auto* candidate : kNames) {
+    const auto size = std::wcslen(candidate);
+    if (length == size && _wcsnicmp(name, candidate, size) == 0) return true;
+  }
+  return false;
+}
+
+bool HasExecutableExtension(const wchar_t* path, std::size_t length) {
+  static const wchar_t* kExtensions[] = {L".exe", L".dll", L".scr", L".com", L".pif", L".cpl", L".hta", L".js",  L".jse",
+                                         L".vbs", L".vbe", L".wsf", L".wsh", L".ps1", L".psm1", L".bat", L".cmd", L".msi", L".jar"};
+  for (const auto* extension : kExtensions) {
+    const auto size = std::wcslen(extension);
+    if (length > size && _wcsnicmp(path + length - size, extension, size) == 0) return true;
+  }
+  return false;
+}
+
+std::wstring BaseNameLower(const std::wstring& path) {
+  const auto slash = path.find_last_of(L"\\/");
+  return ransomware::Lower(slash == std::wstring::npos ? path : path.substr(slash + 1));
+}
+
+bool IsBrowserImage(const std::wstring& image) {
+  const auto lowered = ransomware::Lower(image);
+  static const wchar_t* kNames[] = {L"chrome.exe", L"msedge.exe", L"brave.exe", L"vivaldi.exe", L"opera.exe", L"firefox.exe"};
+  const auto name = BaseNameLower(image);
+  for (const auto* candidate : kNames) {
+    if (name == candidate) return true;
+  }
+  static const wchar_t* kFolders[] = {L"\\google\\chrome\\", L"\\microsoft\\edge\\", L"\\bravesoftware\\", L"\\vivaldi\\",
+                                      L"\\opera\\", L"\\mozilla firefox\\", L"\\mozilla maintenance service\\",
+                                      L"\\google\\update\\", L"\\microsoft\\edgeupdate\\"};
+  for (const auto* folder : kFolders) {
+    if (lowered.find(folder) != std::wstring::npos) return true;
+  }
+  return false;
+}
+
+bool IsOfficeImage(const std::wstring& image) {
+  static const wchar_t* kNames[] = {L"winword.exe", L"excel.exe",  L"powerpnt.exe", L"msaccess.exe", L"mspub.exe",
+                                    L"visio.exe",   L"onenote.exe", L"outlook.exe", L"eqnedt32.exe"};
+  const auto name = BaseNameLower(image);
+  for (const auto* candidate : kNames) {
+    if (name == candidate) return true;
+  }
+  return false;
+}
+
 bool SameSettings(const RansomwareSettings& a, const RansomwareSettings& b) {
   return a.enabled == b.enabled && a.mode == b.mode && a.filesPerMinute == b.filesPerMinute &&
          a.entropyDetection == b.entropyDetection && a.canaryFiles == b.canaryFiles && a.protectedFolders == b.protectedFolders &&
          a.protectedFoldersMode == b.protectedFoldersMode && a.allowedApps == b.allowedApps &&
          a.rollbackSnapshots == b.rollbackSnapshots && a.snapshotIntervalHours == b.snapshotIntervalHours &&
-         a.networkShareProtection == b.networkShareProtection;
+         a.networkShareProtection == b.networkShareProtection && a.credentialProtection == b.credentialProtection &&
+         a.officeExecutableContent == b.officeExecutableContent;
 }
 
 }  // namespace
@@ -297,6 +350,7 @@ void RansomwareShield::Reconfigure() {
 
   profiles_ = UserProfiles();
   lastProfileRefreshMs_ = GetTickCount64();
+  lastFullReconfigureMs_ = lastProfileRefreshMs_;
   std::vector<std::wstring> roots, canaryRoots;
   std::set<std::wstring> seen;
   auto add = [&](const std::wstring& path, bool canary) {
@@ -351,11 +405,26 @@ void RansomwareShield::Reconfigure() {
   config.protectedFoldersWatch = settings.enabled && settings.protectedFoldersMode != L"off";
   for (const auto& app : settings.allowedApps) config.allowedApps.push_back(ExpandVariables(app));
   config.selfPid = GetCurrentProcessId();
+  std::vector<std::wstring> credentialRoots;
+  if (settings.credentialProtection) {
+    static const wchar_t* kBrowserData[] = {
+        L"\\AppData\\Local\\Google\\Chrome\\User Data",        L"\\AppData\\Local\\Microsoft\\Edge\\User Data",
+        L"\\AppData\\Local\\BraveSoftware\\Brave-Browser\\User Data", L"\\AppData\\Local\\Vivaldi\\User Data",
+        L"\\AppData\\Roaming\\Opera Software\\Opera Stable",      L"\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles"};
+    for (const auto& profile : profiles_) {
+      for (const auto* suffix : kBrowserData) {
+        const auto folder = profile + suffix;
+        if (IsDirectory(folder)) credentialRoots.push_back(toDevice(folder));
+      }
+    }
+  }
   {
     const std::scoped_lock lock(filterMutex_);
     deviceRoots_.clear();
     for (const auto& root : config.roots) deviceRoots_.push_back(root);
     for (const auto& root : config.shareRoots) deviceRoots_.push_back(root);
+    credentialRoots_ = credentialRoots;
+    watchExecutableCreates_ = settings.officeExecutableContent != behavior::RuleMode::Off;
   }
   detector_.Configure(config);
   {
@@ -366,7 +435,9 @@ void RansomwareShield::Reconfigure() {
   }
   lastCanaryCheckMs_ = 0;  // place canaries straight away
 
-  if (settings.enabled && !roots.empty()) {
+  const bool feedNeeded = (settings.enabled && !roots.empty()) || !credentialRoots.empty() ||
+                          settings.officeExecutableContent != behavior::RuleMode::Off;
+  if (feedNeeded) {
     if (!etwActive_.load() && !StartEtw() && !degradedReported_) {
       degradedReported_ = true;
       Queue(L"ransomware.shield.degraded", L"The ransomware file watcher could not start; canaries and snapshots still run.",
@@ -379,7 +450,9 @@ void RansomwareShield::Reconfigure() {
     Queue(L"ransomware.shield.configured", L"Ransomware shield watching " + std::to_wstring(roots.size()) + L" folders",
           L"{\"folders\":" + JList(roots, 50) + L",\"shares\":" + JList(shares, 50) + L",\"canaries\":" +
               std::to_wstring(canaries.size()) + L",\"mode\":" + J(settings.mode) + L",\"protectedFoldersMode\":" +
-              J(settings.protectedFoldersMode) + L",\"filesPerMinute\":" + std::to_wstring(settings.filesPerMinute) + L"}",
+              J(settings.protectedFoldersMode) + L",\"filesPerMinute\":" + std::to_wstring(settings.filesPerMinute) +
+              L",\"browserStores\":" + std::to_wstring(credentialRoots.size()) + L",\"officeExecutableContent\":" +
+              J(behavior::RuleModeName(settings.officeExecutableContent)) + L"}",
           false);
   }
 }
@@ -566,13 +639,13 @@ void RansomwareShield::OnEtwEvent(const EVENT_RECORD& record) {
   const auto pid = record.EventHeader.ProcessId;
   const auto nowMs = GetTickCount64();
 
-  auto push = [this](unsigned long processId, const std::wstring& path) {
+  auto push = [this](unsigned long processId, const std::wstring& path, PendingKind kind = PendingKind::Write) {
     const std::scoped_lock lock(pendingMutex_);
     if (pending_.size() >= kMaxPending) {
       ++dropped_;
       return;
     }
-    pending_.push_back({processId, path});
+    pending_.push_back({processId, path, kind});
   };
 
   if (id == kEventCreate) {
@@ -583,7 +656,9 @@ void RansomwareShield::OnEtwEvent(const EVENT_RECORD& record) {
     const auto* name = reinterpret_cast<const wchar_t*>(data + nameOffset);
     const auto maxChars = (size - nameOffset) / sizeof(wchar_t);
     const auto length = wcsnlen(name, maxChars);
-    bool watched = false;
+    const auto disposition = options >> 24;  // FILE_SUPERSEDE, FILE_CREATE, FILE_OVERWRITE, FILE_OVERWRITE_IF write
+    const bool creates = disposition == 0 || disposition == 2 || disposition == 4 || disposition == 5;
+    bool watched = false, credential = false, executable = false;
     {
       const std::scoped_lock lock(filterMutex_);
       for (const auto& root : deviceRoots_) {
@@ -592,7 +667,22 @@ void RansomwareShield::OnEtwEvent(const EVENT_RECORD& record) {
           break;
         }
       }
+      if (!credentialRoots_.empty()) {
+        const auto* slash = std::wcsrchr(name, L'\\');
+        const auto* base = slash ? slash + 1 : name;
+        if (IsCredentialStoreName(base, length - static_cast<std::size_t>(base - name))) {
+          for (const auto& root : credentialRoots_) {
+            if (UnderI(name, length, root)) {
+              credential = true;
+              break;
+            }
+          }
+        }
+      }
+      executable = watchExecutableCreates_ && creates && HasExecutableExtension(name, length);
     }
+    if (credential && pid != GetCurrentProcessId()) push(pid, std::wstring(name, length), PendingKind::CredentialRead);
+    if (executable) push(pid, std::wstring(name, length), PendingKind::ExecutableCreate);
     if (!watched) {
       fileObjects_.erase(fileObject);  // file objects are reused; drop any stale mapping
       return;
@@ -602,8 +692,7 @@ void RansomwareShield::OnEtwEvent(const EVENT_RECORD& record) {
     entry.path.assign(name, length);
     entry.lastPid = 0;
     entry.lastQueuedMs = 0;
-    const auto disposition = options >> 24;  // FILE_SUPERSEDE, FILE_CREATE, FILE_OVERWRITE, FILE_OVERWRITE_IF write
-    if (disposition == 0 || disposition == 2 || disposition == 4 || disposition == 5) {
+    if (creates) {
       entry.lastPid = pid;
       entry.lastQueuedMs = nowMs;
       push(pid, entry.path);
@@ -638,7 +727,12 @@ void RansomwareShield::WorkerLoop() {
     try {
       if (reconfigure) Reconfigure();
       const auto now = GetTickCount64();
-      if (enabled && now - lastProfileRefreshMs_ > 10 * 60'000 && UserProfiles() != profiles_) Reconfigure();
+      // New users and newly installed browsers: re-read profiles every 10 minutes, rebuild every 6 hours.
+      if (now - lastProfileRefreshMs_ > 10 * 60'000 &&
+          (UserProfiles() != profiles_ || now - lastFullReconfigureMs_ > 6ULL * 3600'000)) {
+        lastFullReconfigureMs_ = now;
+        Reconfigure();
+      }
       // Restart the watcher if its session died (another tool stopped it, low resources) or never started.
       bool haveRoots = false;
       {
@@ -650,6 +744,7 @@ void RansomwareShield::WorkerLoop() {
         StartEtw();
       }
       ProcessPending();
+      RetryDeletes();
       if (now - lastCanaryCheckMs_ >= 60'000 || lastCanaryCheckMs_ == 0) {
         lastCanaryCheckMs_ = now;
         MaintainCanaries();
@@ -696,6 +791,14 @@ void RansomwareShield::ProcessPending() {
   }
   const auto now = GetTickCount64();
   for (const auto& write : batch) {
+    if (write.kind == PendingKind::CredentialRead) {
+      HandleCredentialRead(write.pid, write.devicePath);
+      continue;
+    }
+    if (write.kind == PendingKind::ExecutableCreate) {
+      HandleExecutableCreate(write.pid, write.devicePath);
+      continue;
+    }
     const auto image = ImageFor(write.pid);
     for (const auto& observation : detector_.OnWrite(write.pid, image, write.devicePath, now)) {
       Handle(observation);
@@ -752,13 +855,7 @@ void RansomwareShield::Handle(const ransomware::Observation& observation) {
 
   if (observation.kind == ransomware::ObservationKind::ProtectedFolderWrite) {
     if (settings.protectedFoldersMode == L"off" || observation.image.empty()) return;
-    static std::map<std::wstring, bool> signedCache;
-    auto signedIt = signedCache.find(observation.image);
-    if (signedIt == signedCache.end()) {
-      if (signedCache.size() > 2000) signedCache.clear();
-      signedIt = signedCache.emplace(observation.image, VerifyFileAuthenticodeSignature(observation.image)).first;
-    }
-    if (signedIt->second) return;  // signed software is trusted, like Windows Controlled Folder Access
+    if (IsSigned(observation.image)) return;  // signed software is trusted, like Windows Controlled Folder Access
     const bool block = settings.protectedFoldersMode == L"block";
     const bool killed = block && Killable(observation.pid, observation.image) && Terminate(observation.pid, observation.image);
     Queue(killed ? L"ransomware.protected_folder.blocked" : L"ransomware.protected_folder.write",
@@ -812,6 +909,101 @@ void RansomwareShield::Handle(const ransomware::Observation& observation) {
   if (killed && settings.RollsBack()) {
     RollbackLastIncident(L"automatic (block-and-rollback)");
   }
+}
+
+bool RansomwareShield::IsSigned(const std::wstring& image) {
+  auto it = signedCache_.find(image);
+  if (it == signedCache_.end()) {
+    if (signedCache_.size() > 2000) signedCache_.clear();
+    it = signedCache_.emplace(image, VerifyFileAuthenticodeSignature(image)).first;
+  }
+  return it->second;
+}
+
+// edr.credentialProtection: a program other than the browser opening saved passwords, cookies or the key that
+// decrypts them is how infostealers work. Unsigned programs are stopped; signed ones are reported once a day.
+void RansomwareShield::HandleCredentialRead(const unsigned long pid, const std::wstring& devicePath) {
+  if (pid <= ransomware::kSystemPid) return;
+  const auto image = ImageFor(pid);
+  if (image.empty() || IsBrowserImage(image)) return;
+  static const auto windows = SystemRootLower();
+  if (ransomware::Lower(image).rfind(windows, 0) == 0) return;  // Windows components (search, backup) only read
+  const auto now = GetTickCount64();
+  auto& last = credentialReportedMs_[pid];
+  if (last != 0 && now - last < 10 * 60'000) return;
+  last = now;
+  if (credentialReportedMs_.size() > 4096) credentialReportedMs_.clear();
+  const bool trusted = IsSigned(image);
+  if (trusted) {
+    static std::map<std::wstring, unsigned long long> signedReported;
+    auto& seen = signedReported[ransomware::Lower(image)];
+    if (seen != 0 && now - seen < 24ULL * 3600'000) return;
+    seen = now;
+  }
+  const bool killed = !trusted && Killable(pid, image) && Terminate(pid, image);
+  const auto path = ToDosPath(devicePath);
+  Queue(killed ? L"asr.credential_store.blocked" : L"asr.credential_store.access",
+        (killed ? L"Stopped " : L"A program read browser credentials: ") + BaseNameLower(image) +
+            (killed ? L", an unsigned program reading saved browser passwords or cookies" : L""),
+        L"{\"rule\":\"edr.credentialProtection\",\"path\":" + J(path) + L",\"processImagePath\":" + J(image) + L",\"pid\":" +
+            std::to_wstring(pid) + L",\"signed\":" + (trusted ? L"true" : L"false") + L",\"action\":" +
+            J(killed ? L"terminated" : L"reported") + L",\"technique\":\"T1555.003\"}",
+        killed);
+}
+
+// attackSurface.blockOfficeExecutableContent: Office writing a program or script to disk.
+void RansomwareShield::HandleExecutableCreate(const unsigned long pid, const std::wstring& devicePath) {
+  const auto image = ImageFor(pid);
+  if (image.empty() || !IsOfficeImage(image)) return;
+  RansomwareSettings settings;
+  {
+    const std::scoped_lock lock(mutex_);
+    settings = settings_;
+  }
+  const auto path = ToDosPath(devicePath);
+  if (settings.officeExecutableContent == behavior::RuleMode::Block) {
+    // Office still holds the file open; delete it as soon as Windows allows (up to a minute).
+    deletes_.push_back({path, pid, image, GetTickCount64() + 60'000});
+    return;
+  }
+  Queue(L"asr.rule.audited", L"Detected " + BaseNameLower(image) + L": Office wrote executable content",
+        L"{\"rule\":\"attackSurface.blockOfficeExecutableContent\",\"mode\":\"audit\",\"pid\":" + std::to_wstring(pid) +
+            L",\"processImagePath\":" + J(image) + L",\"path\":" + J(path) +
+            L",\"reason\":\"Office wrote executable content\",\"technique\":\"T1204.002\"}",
+        false);
+}
+
+void RansomwareShield::RetryDeletes() {
+  if (deletes_.empty()) return;
+  const auto now = GetTickCount64();
+  std::vector<PendingDelete> keep;
+  for (const auto& item : deletes_) {
+    bool done = false, removed = false;
+    if (DeleteFileW(item.dosPath.c_str())) {
+      done = removed = true;
+    } else {
+      const auto error = GetLastError();
+      if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) {
+        done = true;  // renamed or removed already
+      } else if (now >= item.untilMs) {
+        done = true;
+      }
+    }
+    if (!done) {
+      keep.push_back(item);
+      continue;
+    }
+    if (removed || now >= item.untilMs) {
+      Queue(removed ? L"asr.rule.blocked" : L"asr.rule.block_failed",
+            (removed ? L"Blocked " : L"Could not block ") + BaseNameLower(item.image) + L": Office wrote executable content",
+            L"{\"rule\":\"attackSurface.blockOfficeExecutableContent\",\"mode\":\"block\",\"pid\":" +
+                std::to_wstring(item.pid) + L",\"processImagePath\":" + J(item.image) + L",\"path\":" + J(item.dosPath) +
+                L",\"reason\":\"Office wrote executable content; the file was " + (removed ? L"deleted" : L"left in place") +
+                L"\",\"technique\":\"T1204.002\"}",
+            true);
+    }
+  }
+  deletes_ = std::move(keep);
 }
 
 // ---------------------------------------------------------------------------------------------------------------

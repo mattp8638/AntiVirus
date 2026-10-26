@@ -38,6 +38,10 @@ class HardeningManager {
   // Policy (modules.tamper): serviceLocked = tamper.enabled && protectServiceAndFiles;
   // uninstallTokenRequired = tamper.enabled && uninstallRequiresToken.
   bool ApplyTamperPolicy(bool serviceLocked, bool uninstallTokenRequired, std::wstring* errorMessage = nullptr) const;
+  // edr.credentialProtection: LSA protection (RunAsPPL, needs a restart) and no cleartext WDigest credentials.
+  // Only values Fenrir set are reverted when the setting is turned off. rebootRequired is set when LSA
+  // protection changes.
+  bool ApplyCredentialHardening(bool enable, bool* rebootRequired, std::wstring* errorMessage = nullptr) const;
   bool ValidateUninstallAuthorization(const std::wstring& uninstallToken, std::wstring* errorMessage = nullptr) const;
   HardeningStatus QueryStatus(const std::wstring& serviceName = L"FenrirAgent") const;
 

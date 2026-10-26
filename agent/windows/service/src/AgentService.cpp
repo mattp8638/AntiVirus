@@ -3259,7 +3259,29 @@ void AgentService::ApplyProtectionPolicy() {
         bruteForceGuard_->Apply(extended.bruteForceProtection);
       }
       ApplyTamperPolicy(extended);
+      ApplyCredentialHardening(extended.ransomware.credentialProtection);
     }
+  }
+}
+
+void AgentService::ApplyCredentialHardening(const bool enable) {
+  if (appliedCredentialHardening_ == (enable ? 1 : 0)) {
+    return;
+  }
+  HardeningManager hardening(config_, ResolveInstallRootForConfig(config_));
+  bool reboot = false;
+  std::wstring error;
+  const bool ok = hardening.ApplyCredentialHardening(enable, &reboot, &error);
+  if (ok) {
+    appliedCredentialHardening_ = enable ? 1 : 0;
+  }
+  if (!ok || reboot) {
+    QueueTelemetryEvent(ok ? L"credential.hardening.applied" : L"credential.hardening.failed", L"hardening-manager",
+                        ok ? (enable ? L"LSA protection turned on; it takes effect after the next restart"
+                                     : L"LSA protection set by Fenrir was removed; this takes effect after the next restart")
+                           : L"Credential protection settings could not all be applied",
+                        L"{\"enabled\":" + std::wstring(enable ? L"true" : L"false") + L",\"rebootRequired\":" +
+                            (reboot ? L"true" : L"false") + L",\"error\":\"" + Utf8ToWide(EscapeJsonString(error)) + L"\"}");
   }
 }
 

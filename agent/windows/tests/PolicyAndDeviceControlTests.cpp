@@ -166,6 +166,9 @@ int main(int argc, char** argv) {
     CHECK(defaults.ransomware.protectedFoldersMode == L"audit" && defaults.ransomware.filesPerMinute == 40);
     const auto audit = ExtendedPolicy::Parse(R"({"ransomware":{"mode":"audit"}})");
     CHECK(!audit.ransomware.Blocks());
+    CHECK(audit.ransomware.credentialProtection && audit.ransomware.officeExecutableContent == behavior::RuleMode::Off);
+    const auto cred = ExtendedPolicy::Parse(R"({"edr":{"enabled":false,"credentialProtection":true},"attackSurface":{"blockOfficeExecutableContent":"block"}})");
+    CHECK(!cred.ransomware.credentialProtection && cred.ransomware.officeExecutableContent == behavior::RuleMode::Block);
   }
   {  // Ransomware detector: entropy and format checks
     using namespace ransomware;

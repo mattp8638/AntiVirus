@@ -51,9 +51,17 @@ class RansomwareShield {
   static constexpr const wchar_t* kCanaryName = L"$fenrir-canary-budget-2024.docx";
 
  private:
+  enum class PendingKind { Write, CredentialRead, ExecutableCreate };
   struct PendingWrite {
     unsigned long pid;
     std::wstring devicePath;
+    PendingKind kind{PendingKind::Write};
+  };
+  struct PendingDelete {
+    std::wstring dosPath;
+    unsigned long pid;
+    std::wstring image;
+    unsigned long long untilMs;
   };
   struct Incident {
     unsigned long long startedUnix{0};
@@ -72,6 +80,13 @@ class RansomwareShield {
   void Reconfigure();
   void ProcessPending();
   void Handle(const ransomware::Observation& observation);
+  void HandleCredentialRead(unsigned long pid, const std::wstring& devicePath);
+  void HandleExecutableCreate(unsigned long pid, const std::wstring& devicePath);
+  void RetryDeletes();
+  bool IsSigned(const std::wstring& image);
+  std::map<std::wstring, bool> signedCache_;
+  std::map<unsigned long, unsigned long long> credentialReportedMs_;
+  std::vector<PendingDelete> deletes_;
   void MaintainCanaries();
   void MaybeSnapshot();
   void Queue(const std::wstring& eventType, const std::wstring& summary, const std::wstring& payloadJson, bool urgent);
@@ -99,6 +114,8 @@ class RansomwareShield {
   // ETW thread state. The filter is swapped under filterMutex_; the file-object map is ETW-thread only.
   std::mutex filterMutex_;
   std::vector<std::wstring> deviceRoots_;  // device form, used to pre-filter Create events
+  std::vector<std::wstring> credentialRoots_;  // browser profile folders (device form)
+  bool watchExecutableCreates_{false};
   struct FileObjectEntry {
     std::wstring path;
     unsigned long lastPid{0};
@@ -126,6 +143,7 @@ class RansomwareShield {
   unsigned long long lastSnapshotCheckMs_{0};
   unsigned long long lastProfileRefreshMs_{0};
   unsigned long long lastEtwAttemptMs_{0};
+  unsigned long long lastFullReconfigureMs_{0};
   bool degradedReported_{false};
 };
 

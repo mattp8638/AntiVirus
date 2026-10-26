@@ -69,6 +69,9 @@ struct RansomwareSettings {
   bool rollbackSnapshots{true};
   int snapshotIntervalHours{4};
   bool networkShareProtection{true};
+  // Other checks that use the same live file-activity feed:
+  bool credentialProtection{true};  // edr.enabled && edr.credentialProtection: browser password/cookie stores
+  behavior::RuleMode officeExecutableContent{behavior::RuleMode::Off};  // attackSurface.blockOfficeExecutableContent
 
   bool Blocks() const { return mode == L"block" || mode == L"block-and-rollback"; }
   // response.autoRollbackRansomware is handled by the cloud, which queues the ransomware.rollback command.

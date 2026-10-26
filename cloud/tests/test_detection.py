@@ -315,6 +315,10 @@ def test_windows_shield_and_brute_force_events_raise_alerts(client, admin, tenan
                                              "action": "blocked", "mitre": "T1110"}),
         event(4, "ransomware.restore.completed", {"restored": 57}),
         event(5, "ransomware.snapshot.created", {"intervalHours": 4}),
+        event(6, "asr.credential_store.blocked", {"rule": "edr.credentialProtection", "processImagePath": "C:\\Users\\jo\\x.exe",
+                                                  "pid": 9, "action": "terminated"}),
+        event(7, "asr.rule.blocked", {"rule": "attackSurface.blockOfficeExecutableContent", "mode": "block", "pid": 10,
+                                      "processImagePath": "C:\\Program Files\\Microsoft Office\\WINWORD.EXE"}),
     ]
     response = client.post(f"/api/v1/devices/{dev['deviceId']}/telemetry", headers=dev["headers"], json={"events": events})
     assert response.status_code == 200, response.text
@@ -325,3 +329,5 @@ def test_windows_shield_and_brute_force_events_raise_alerts(client, admin, tenan
     assert len(by_rule["fenrir-ransom-agent-verdict"][0]["eventIds"]) == 1  # restore/snapshot events are not verdicts
     assert by_rule["fenrir-ransom-protected-folder"][0]["severity"] == "medium"
     assert by_rule["fenrir-cred-bruteforce-blocked"][0]["severity"] == "high"
+    assert by_rule["fenrir-cred-browser-store-blocked"][0]["severity"] == "high"
+    assert by_rule["fenrir-protection-asr-block"][0]["severity"] == "high"

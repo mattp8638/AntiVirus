@@ -412,6 +412,12 @@ ExtendedPolicy ExtendedPolicy::Parse(const std::string& modulesJson) {
   policy.tamperServiceLocked = tamperOn && BoolOr(tamper, "protectServiceAndFiles", true);
   policy.tamperUninstallToken = tamperOn && BoolOr(tamper, "uninstallRequiresToken", true);
 
+  policy.ransomware.credentialProtection =
+      BoolOr(root->Get("edr"), "enabled", true) && BoolOr(root->Get("edr"), "credentialProtection", true);
+  if (const auto it = policy.behavior.asr.find(L"blockOfficeExecutableContent"); it != policy.behavior.asr.end()) {
+    policy.ransomware.officeExecutableContent = it->second;
+  }
+
   const auto* app = root->Get("applicationControl");
   policy.behavior.appControlMode = WideString(app, "mode", L"off");
   policy.behavior.blockedApps = WideList(app, "blockedApps");
