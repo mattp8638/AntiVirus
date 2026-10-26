@@ -86,6 +86,7 @@ class AgentService {
   std::wstring ExecuteOnDemandScan(const RemoteCommand& command, bool full);
   std::wstring ExecuteInventoryRefreshCommand(const RemoteCommand& command);
   std::wstring ExecutePolicyRefreshCommand(const RemoteCommand& command);
+  std::wstring ExecuteAmsiTelemetrySubmitCommand(const RemoteCommand& command);
   std::wstring ExecuteIsolationCommand(const RemoteCommand& command, bool isolate);
   std::wstring ExecuteQuarantineMutation(const RemoteCommand& command, bool restore);
   std::wstring ExecuteUpdateCommand(const RemoteCommand& command, bool rollback);

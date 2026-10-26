@@ -111,7 +111,7 @@ def migrate(bind: Engine) -> list[int]:
             conn.execute(text("CREATE TABLE IF NOT EXISTS schema_migrations "
                               "(version INTEGER PRIMARY KEY, applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"))
             versions = set(conn.execute(text("SELECT version FROM schema_migrations")).scalars())
-            if versions - {1, 2, 3, 4, 5}:
+            if versions - {1, 2, 3, 4, 5, 6}:
                 raise RuntimeError("Database schema is newer than this application")
             if 1 not in versions:
                 Base.metadata.create_all(conn)
@@ -140,6 +140,11 @@ def migrate(bind: Engine) -> list[int]:
                 M365Action.__table__.create(conn, checkfirst=True)
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (5)"))
                 applied.append(5)
+            if 6 not in versions:
+                # Nullable columns added to existing tables (e.g. devices.patch_window_run).
+                ensure_columns(Base, conn)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (6)"))
+                applied.append(6)
             conn.commit()
         except Exception:
             conn.rollback()

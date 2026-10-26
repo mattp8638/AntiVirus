@@ -431,6 +431,7 @@ AGENT_SUPPORT: dict[str, tuple[str, ...]] = {
     "ransomware.protectedFoldersMode": (),
     "ransomware.allowedApps": (),
     "ransomware.rollbackSnapshots": (),
+    "response.autoRollbackRansomware": (),
     "ransomware.snapshotIntervalHours": (),
     "ransomware.networkShareProtection": (),
     "web.destinationProtectionEnabled": ('windows',),

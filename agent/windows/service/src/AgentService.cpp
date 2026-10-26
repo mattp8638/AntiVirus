@@ -1888,6 +1888,9 @@ std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
   if (command.type == L"inventory.refresh") {
     return ExecuteInventoryRefreshCommand(command);
   }
+  if (command.type == L"amsi.telemetry.submit") {
+    return ExecuteAmsiTelemetrySubmitCommand(command);
+  }
   if (command.type == L"policy.refresh") {
     return ExecutePolicyRefreshCommand(command);
   }
@@ -2318,6 +2321,45 @@ std::wstring AgentService::ExecuteBreakGlassCommand(const RemoteCommand& command
                              : L"The endpoint recorded a break-glass disable request.",
                       std::wstring(L"{\"commandId\":\"") + command.commandId + L"\"}");
   throw std::runtime_error("Break-glass execution is not wired into the current service build");
+}
+
+// AMSI runs inside user processes that cannot write the protected runtime database, so the provider
+// hands findings to the service over the local control pipe. Only AMSI event types are accepted, the
+// source is fixed and the submitting user is recorded, so a local user cannot forge other telemetry.
+std::wstring AgentService::ExecuteAmsiTelemetrySubmitCommand(const RemoteCommand& command) {
+  if (command.recordId != L"scan.finding" && command.recordId != L"amsi.scan") {
+    throw std::runtime_error("Only AMSI telemetry can be submitted through local control.");
+  }
+  const auto parsed = json::Parse(WideToUtf8(command.payloadJson));
+  const auto* members = parsed ? std::get_if<json::Object>(&parsed->v) : nullptr;
+  if (members == nullptr) {
+    throw std::runtime_error("AMSI telemetry payload must be a JSON object.");
+  }
+  {
+    static std::mutex rateLock;
+    static auto windowStart = std::chrono::steady_clock::now();
+    static int submitted = 0;
+    std::lock_guard guard(rateLock);
+    const auto now = std::chrono::steady_clock::now();
+    if (now - windowStart > std::chrono::minutes(1)) {
+      windowStart = now;
+      submitted = 0;
+    }
+    if (++submitted > 120) {
+      throw std::runtime_error("AMSI telemetry rate limit reached; try again shortly.");
+    }
+  }
+  auto payload = command.payloadJson;
+  const auto open = payload.find(L'{');
+  payload.insert(open + 1, L"\"reportedBy\":\"" + Utf8ToWide(EscapeJsonString(command.issuedBy)) + L"\"" +
+                               (members->empty() ? L"" : L","));
+  QueueTelemetryRecords({TelemetryRecord{.eventId = GenerateGuidString(),
+                                         .eventType = command.recordId,
+                                         .source = L"amsi-provider",
+                                         .summary = command.targetPath.substr(0, 1000),
+                                         .occurredAt = CurrentUtcTimestamp(),
+                                         .payloadJson = payload}});
+  return L"{\"queued\":1}";
 }
 
 std::wstring AgentService::ExecuteLocalApprovalCommand(const RemoteCommand&) {

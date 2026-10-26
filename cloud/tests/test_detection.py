@@ -240,6 +240,10 @@ def test_antimalware_findings_raise_alerts(client, admin, tenant):
          "occurredAt": "2030-01-01T00:00:01Z",
          "payloadJson": _json.dumps({"path": "C:\\locked.exe", "remediationStatus": "failed", "disposition": "quarantine"})},
     ])
+    send(win, [{"eventId": "av-amsi", "eventType": "scan.finding", "source": "amsi-provider", "summary": "AMSI block",
+                "occurredAt": "2030-01-01T00:10:00Z",
+                "payloadJson": _json.dumps({"appName": "PowerShell", "contentName": "x.ps1", "disposition": "block",
+                                            "remediationStatus": "none"})}])
     lin = enroll(client, admin, tenant, hostname="AV-LIN", os_version="Ubuntu 24.04", serial="AV-2")
     send(lin, [
         {"eventId": "av-3", "eventType": "ransomware.canary.touched", "timestamp": "2030-01-01T00:00:02Z",
@@ -251,7 +255,8 @@ def test_antimalware_findings_raise_alerts(client, admin, tenant):
     by_rule = {}
     for alert in alerts:
         by_rule.setdefault(alert["ruleId"], []).append(alert)
-    assert len(by_rule["fenrir-av-threat-remediated"]) == 1
+    remediated = by_rule["fenrir-av-threat-remediated"]
+    assert len(remediated) == 1 and len(remediated[0]["eventIds"]) == 2  # EICAR + AMSI block, deduplicated
     assert len(by_rule["fenrir-av-threat-unremediated"]) == 2
     assert by_rule["fenrir-av-ransomware-canary"][0]["severity"] == "critical"
 
