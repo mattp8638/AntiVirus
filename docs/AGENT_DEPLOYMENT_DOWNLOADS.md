@@ -8,7 +8,7 @@ The **Deploy agents** page now selects a target OS and customer/group **before**
 |---|---|---|---|
 | Linux amd64 / arm64 | `Install-Fenrir-Linux.sh` | systemd, curl, SHA-256 tooling, sudo | Fully provisions the managed Go agent and automatic-start systemd service. Confirm cloud check-in and test a reboot. |
 | Windows x64 | `Fenrir-Windows-Enrollment.zip` | Signed staged Setup, **or explicitly enabled SHA-256-pinned unsigned hobby build**; Administrator PowerShell | Both modes verify SHA-256. Signed mode additionally validates Authenticode signer. Unsigned hobby mode is for user-mode lab testing only; it does not disable Windows security or provide kernel minifilter protection. |
-| macOS | Not offered | Signed/entitled package, device enrollment support and launchd | **Not implemented:** current Swift prototype lacks an installable enrollment daemon. The UI deliberately disables downloads. |
+| macOS (Intel / Apple Silicon) | `Install-Fenrir-macOS.sh` | sudo; macOS with launchd | Installs the managed Go agent as a LaunchDaemon (`com.fenrir.agent`) with both architectures embedded and SHA-256 checked. Unsigned: grant `/usr/local/bin/fenrir-agent` Full Disk Access for complete scanning. No screen sharing on macOS yet; not yet tested on a real Mac. |
 
 ### No-cost unsigned hobby / lab mode
 
@@ -47,6 +47,6 @@ Both files contain a **customer enrollment secret**. Do not email unencrypted fi
 
 ### Acceptance requirements
 
-Before commercial deployment verify Linux amd64 and arm64 clean installations, first enrollment, service startup after two reboots, repeated install without data loss, duplicate enrollment behavior and token revocation. On Windows also verify certificate trust, setup handling of `--server` and `--enroll-token`, service recovery after crashes, the specific Windows build, cloud check-in to the selected tenant, and compatibility with existing endpoint security. macOS support requires a separately implemented signed PKG, entitlements, real enrollment logic and launchd service.
+Before commercial deployment verify Linux amd64 and arm64 clean installations, first enrollment, service startup after two reboots, repeated install without data loss, duplicate enrollment behavior and token revocation. On Windows also verify certificate trust, setup handling of `--server` and `--enroll-token`, service recovery after crashes, the specific Windows build, cloud check-in to the selected tenant, and compatibility with existing endpoint security. On macOS verify the LaunchDaemon starts after a reboot, the device checks in, Full Disk Access is granted, and `softwareupdate`/Homebrew patching works on a real Mac. A signed and notarised package is still needed for commercial distribution.
 
 **Current status:** functionality committed on a development branch. Passing unit tests and container builds are necessary but not sufficient proof of persistent endpoint operation. Do not merge or deploy until platform-specific acceptance tests pass.

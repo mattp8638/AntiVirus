@@ -12,7 +12,7 @@ git pull
 sudo docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d --build cloud
 ```
 
-Select the OS/customer/group in Deploy agents and generate the download. Double-click the Windows EXE and approve administrator elevation. Linux requires sudo and systemd. macOS remains unavailable because its installable agent is unfinished. Windows is unsigned user-mode software; no kernel driver is included.
+Select the OS/customer/group in Deploy agents and generate the download. Double-click the Windows EXE and approve administrator elevation. Linux requires sudo and systemd. macOS uses `sudo sh Install-Fenrir-macOS.sh` and installs a LaunchDaemon; grant the agent Full Disk Access afterwards. Windows is unsigned user-mode software; no kernel driver is included.
 
 The first image build takes longer while the Windows payload compiles. Subsequent installer requests only package the already-built payload and enrollment settings. Existing FENRIR_WINDOWS_* staging settings are obsolete. Configure FENRIR_PUBLIC_URL to the HTTPS origin reachable by endpoints.
 

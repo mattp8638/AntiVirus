@@ -110,7 +110,7 @@ New tables are created on start-up. New columns on existing tables (tickets, agr
 ## Known limits
 
 - The Windows remote helper is compile-checked with MinGW and was exercised under Wine against the real relay: screen capture, the banner, files, processes and services all worked. It has **not** been run on a real Windows PC yet. Under Wine the ConPTY terminal started but its shell exited at once; Wine's console emulation can't settle whether that also happens on Windows. Test on Windows 10 1809 or later before relying on it.
-- The Windows agent runs scans on the same thread as its cloud check-ins. While a long scan runs, new commands and remote sessions wait until it finishes. A fresh install therefore waits a day before its first full-drive scan.
+- Windows scans run in the background, so commands and remote sessions are not held up; one scan runs at a time. A fresh install still waits a day before its first full-drive scan. Scheduled quick/full scans follow the protection policy's schedule.
 - Automatic quarantine never touches files under `C:\Windows`, `Program Files` or Fenrir's own folders; findings there are reported for review instead. Windows system files signed through catalog (`.cat`) files are now recognised as Microsoft-signed. That check runs only on real Windows, because Wine has no catalogs.
 - The relay keeps sessions in one server process. If you run several cloud instances, route `/ws/remote/<session>` by session id (sticky sessions).
 - Not built yet:
