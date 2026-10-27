@@ -74,6 +74,17 @@ class AuditLog(Base):
     at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     prev_hash: Mapped[str] = mapped_column(String(64), default="")
     hash: Mapped[str] = mapped_column(String(64), default="")
+    # Position in the chain, allocated under the chain head's lock (ids can interleave between transactions).
+    seq: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+
+
+class AuditChainHead(Base):
+    """The single row every audit append advances (compare-and-swap), so concurrent writers form one chain."""
+
+    __tablename__ = "audit_chain_head"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    seq: Mapped[int] = mapped_column(Integer, default=0)
+    last_hash: Mapped[str] = mapped_column(String(64), default="")
 
 
 # --------------------------------------------------------------------------

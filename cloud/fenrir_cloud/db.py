@@ -111,7 +111,7 @@ def migrate(bind: Engine) -> list[int]:
             conn.execute(text("CREATE TABLE IF NOT EXISTS schema_migrations "
                               "(version INTEGER PRIMARY KEY, applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"))
             versions = set(conn.execute(text("SELECT version FROM schema_migrations")).scalars())
-            if versions - {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21}:
+            if versions - {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22}:
                 raise RuntimeError("Database schema is newer than this application")
             if 1 not in versions:
                 Base.metadata.create_all(conn)
@@ -221,6 +221,18 @@ def migrate(bind: Engine) -> list[int]:
                 UserSession.__table__.create(conn, checkfirst=True)
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (21)"))
                 applied.append(21)
+            if 22 not in versions:
+                # Audit chain head (FIX-05). Existing rows keep their order: seq = id, and the head points at the last.
+                from .models import AuditChainHead
+                AuditChainHead.__table__.create(conn, checkfirst=True)
+                ensure_columns(Base, conn)  # audit_log.seq
+                conn.execute(text("UPDATE audit_log SET seq = id WHERE seq IS NULL"))
+                last = conn.execute(text("SELECT seq, hash FROM audit_log ORDER BY seq DESC LIMIT 1")).first()
+                conn.execute(text("DELETE FROM audit_chain_head"))
+                conn.execute(text("INSERT INTO audit_chain_head (id, seq, last_hash) VALUES (1, :seq, :hash)"),
+                             {"seq": last[0] if last else 0, "hash": last[1] if last else ""})
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (22)"))
+                applied.append(22)
             conn.commit()
         except Exception:
             conn.rollback()
