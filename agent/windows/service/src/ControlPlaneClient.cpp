@@ -1066,6 +1066,14 @@ std::wstring ControlPlaneClient::SubmitSupportRequest(const AgentState& state, c
   }
 }
 
+void ControlPlaneClient::SendSystemProfile(const AgentState& state, const std::string& bodyJson) const {
+  if (state.deviceId.empty()) {
+    throw std::runtime_error("This device is not enrolled yet");
+  }
+  const auto deviceApiKey = ExtractDeviceApiKeyFromCommandChannelUrl(state.commandChannelUrl);
+  RequestJson(L"POST", JoinUrl(baseUrl_, L"/api/v1/devices/" + state.deviceId + L"/profile"), bodyJson, deviceApiKey);
+}
+
 std::string ControlPlaneClient::RequestElevation(const AgentState& state, const std::string& bodyJson) const {
   if (state.deviceId.empty()) {
     throw std::runtime_error("This device is not enrolled with your IT provider yet");

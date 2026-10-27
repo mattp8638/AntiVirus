@@ -118,6 +118,8 @@ class ControlPlaneClient {
   std::wstring SubmitSupportRequest(const AgentState& state, const std::string& bodyJson) const;
   // POST /elevation-requests; returns the response body ({"id","status","minutes"}).
   std::string RequestElevation(const AgentState& state, const std::string& bodyJson) const;
+  // POST /profile with the system profile document ({"profile":..., "recoveryKeys":[...]}).
+  void SendSystemProfile(const AgentState& state, const std::string& bodyJson) const;
   // ws(s)://.../api/v1/devices/<id>/realtime and the device key that authenticates it.
   std::wstring RealtimeUrl(const AgentState& state) const;
   static std::wstring DeviceApiKey(const AgentState& state);

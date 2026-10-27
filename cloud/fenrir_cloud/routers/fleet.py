@@ -180,8 +180,8 @@ def purge_device(device_id: str, request: Request, body: dict = Body(default={})
     Tickets and CMDB configurations are service and billing history: they stay, unlinked from the device.
     The audit log keeps a record of the deletion.
     """
-    from ..models import (Alert, ConditionState, DeviceArtifact, DeviceMetric, DevicePatch, DnsQueryLog, EnrollmentToken,
-                          Incident, IncidentEvidence, NetworkMonitor, RuleMatch, Ticket)
+    from ..models import (Alert, ConditionState, DeviceArtifact, DeviceMetric, DevicePatch, DeviceProfile, DnsQueryLog,
+                          EnrollmentToken, Incident, IncidentEvidence, NetworkMonitor, RecoveryKey, RuleMatch, Ticket)
 
     principal.require("configure")
     require_reauth(request, principal)
@@ -199,7 +199,7 @@ def purge_device(device_id: str, request: Request, body: dict = Body(default={})
         removed["incident_evidence"] = db.execute(delete(IncidentEvidence).where(
             IncidentEvidence.incident_id.in_(incident_ids))).rowcount or 0
     for model in (Event, RuleMatch, Alert, Incident, Command, ConditionState, DeviceMetric, DevicePatch, SoftwareItem,
-                  Vulnerability, DnsQueryLog, RemoteSession, DeviceArtifact):
+                  Vulnerability, DnsQueryLog, RemoteSession, DeviceArtifact, DeviceProfile, RecoveryKey):
         removed[model.__tablename__] = db.execute(delete(model).where(model.device_id == device.id)).rowcount or 0
     db.execute(update(Ticket).where(Ticket.device_id == device.id).values(device_id=None))
     db.execute(update(Configuration).where(Configuration.device_id == device.id).values(device_id=None))

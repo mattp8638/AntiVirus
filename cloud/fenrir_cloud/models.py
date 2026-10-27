@@ -196,6 +196,34 @@ class DeviceArtifact(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class DeviceProfile(Base):
+    """The agent's full system profile (hardware, disks and SMART, volumes, users, network, battery, security
+    posture, event-log problems...), replaced each time the agent reports it (every 6 hours or on demand)."""
+
+    __tablename__ = "device_profiles"
+    device_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    profile: Mapped[dict] = mapped_column(JSON, default=dict)
+    collected_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class RecoveryKey(Base):
+    """A disk-encryption recovery key (BitLocker recovery password) escrowed by the agent, encrypted with the
+    vault key. Revealing one needs re-authentication and is audited, like local admin passwords."""
+
+    __tablename__ = "recovery_keys"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("rk"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    volume: Mapped[str] = mapped_column(String(64))
+    key_id: Mapped[str] = mapped_column(String(64))  # protector id, e.g. {8B1C...}
+    kind: Mapped[str] = mapped_column(String(32), default="bitlocker")
+    ciphertext: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(16), default="active")  # active | removed
+    first_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class ElevationRequest(Base):
     """A signed-in user asking for temporary local admin rights (privilege.elevationRequests).
 

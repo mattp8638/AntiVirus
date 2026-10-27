@@ -474,11 +474,19 @@ def device_metrics(device_id: str, hours: int = Query(default=24, ge=1, le=720),
     since = utcnow() - timedelta(hours=hours)
     rows = db.execute(select(DeviceMetric).where(DeviceMetric.device_id == device_id, DeviceMetric.at >= since)
                       .order_by(DeviceMetric.at)).scalars().all()
-    step = max(1, len(rows) // 300)
+    # Average into at most ~300 buckets so a week of one-minute samples stays a light chart; keep the peaks too.
+    size = max(1, -(-len(rows) // 300))
+    series = []
+    for start in range(0, len(rows), size):
+        bucket = rows[start:start + size]
+        series.append({"at": to_dict(bucket[-1])["at"],
+                       "cpu": round(sum(r.cpu for r in bucket) / len(bucket), 1), "cpuMax": round(max(r.cpu for r in bucket), 1),
+                       "memory": round(sum(r.memory for r in bucket) / len(bucket), 1), "memoryMax": round(max(r.memory for r in bucket), 1),
+                       "diskFree": round(min(r.disk_free_percent for r in bucket), 1)})
     states = db.execute(select(ConditionState).where(ConditionState.device_id == device_id)).scalars().all()
     conditions = {c.id: c.name for c in db.execute(select(MonitorCondition)).scalars()}
-    return {"current": device.metrics or {},
-            "series": [{"at": to_dict(r)["at"], "cpu": r.cpu, "memory": r.memory, "diskFree": r.disk_free_percent} for r in rows[::step]],
+    return {"current": device.metrics or {}, "hours": hours,
+            "series": series,
             "monitors": [{"condition": conditions.get(s.condition_id, s.condition_id), "triggered": s.triggered, "value": s.last_value,
                           "message": s.message} for s in states]}
 

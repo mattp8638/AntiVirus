@@ -3,8 +3,10 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { ago, api, fmtTime, getToken } from "../api";
 import { useApp } from "../app-context";
 import { ErrorNote, Modal, PageHead, Pill, Sev, Table, Tabs, useAction, useData } from "../components/ui";
-import { ConnectButtons, JobDetail, JobStatus, pct, Sparkline } from "../components/rmm";
+import { ConnectButtons, JobDetail, JobStatus, pct } from "../components/rmm";
+import { TimeChart } from "../components/TimeChart";
 import { RunScript } from "./rmm/Scripts";
+import { SystemTab } from "./DeviceSystem";
 
 export default function DeviceDetail() {
   const { id } = useParams();
@@ -92,8 +94,9 @@ export default function DeviceDetail() {
         <label className="field">Type {d.hostname} to confirm<input value={retireName} onChange={e=>setRetireName(e.target.value)}/></label>
         <button className="danger" disabled={busy||retireName!==d.hostname} onClick={async()=>{const result=await run(()=>api(`devices/${d.id}`,{method:"DELETE"}),"Device decommissioned; history retained");if(result){setRetiring(false);reload();}}}>Decommission and retain history</button>
       </Modal>}
-      <Tabs tabs={["Overview", "Health", "Patches", "Scripts & jobs", "Remote sessions", "Effective policy", "Alerts", "Actions", "Bundles & recordings", "Software", "Vulnerabilities", ...(String(d.platform || "windows").toLowerCase() === "windows" ? ["Local admin"] : [])]} active={tab} onChange={setTab} />
+      <Tabs tabs={["Overview", "Health", "System", "Patches", "Scripts & jobs", "Remote sessions", "Effective policy", "Alerts", "Actions", "Bundles & recordings", "Software", "Vulnerabilities", ...(String(d.platform || "windows").toLowerCase() === "windows" ? ["Local admin"] : [])]} active={tab} onChange={setTab} />
       {tab === "Health" && <HealthTab deviceId={d.id} />}
+      {tab === "System" && <SystemTab deviceId={d.id} />}
       {tab === "Patches" && <PatchesTab device={d} />}
       {tab === "Scripts & jobs" && <JobsTab deviceId={d.id} onOpen={setJobId} />}
       {tab === "Remote sessions" && <SessionsTab deviceId={d.id} />}
@@ -144,7 +147,12 @@ export default function DeviceDetail() {
               <p className="small">{data.policy.overridesBlocked.length} override(s) blocked by locks — see Effective policy.</p>
             )}
             {Object.keys(d.inventory || {}).length > 0 && (
-              <><h3 style={{ marginTop: 16 }}>Inventory</h3><pre>{JSON.stringify(d.inventory, null, 2)}</pre></>
+              <><h3 style={{ marginTop: 16 }}>Inventory</h3>
+                <dl className="kv">
+                  {Object.entries(d.inventory).filter(([, v]) => v !== null && v !== "" && typeof v !== "object").slice(0, 16).map(([k, v]) =>
+                    <Fragment key={k}><dt>{k.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase())}</dt><dd>{String(v)}</dd></Fragment>)}
+                </dl>
+                <button className="small" onClick={() => setTab("System")}>Full system profile</button></>
             )}
           </div>
         </div>
@@ -277,11 +285,32 @@ export function CommandModal({ device, initial, onClose, incidentId }: { device:
 
 
 function HealthTab({ deviceId }: { deviceId: string }) {
-  const { data } = useData<any>(`rmm/devices/${deviceId}/metrics`, { hours: 24 });
+  const [hours, setHours] = useState(24);
+  const { data } = useData<any>(`rmm/devices/${deviceId}/metrics`, { hours }, [hours]);
   if (!data) return <div className="empty">Loading…</div>;
   const c = data.current || {};
   const series = data.series || [];
+  const times = series.map((p: any) => p.at);
   return (
+    <>
+    <div className="card" style={{ marginBottom: 14 }}>
+      <div className="row" style={{ marginBottom: 6 }}>
+        <h3 style={{ margin: 0 }}>CPU and memory</h3>
+        <span style={{ flex: 1 }} />
+        {[24, 168].map((h) => <button key={h} className={`small ${hours === h ? "primary" : ""}`} onClick={() => setHours(h)}>{h === 24 ? "24 hours" : "7 days"}</button>)}
+      </div>
+      <TimeChart times={times} series={[
+        { label: "CPU", color: "#38bdf8", values: series.map((p: any) => p.cpu) },
+        { label: "CPU peak", color: "rgba(56,189,248,0.35)", values: series.map((p: any) => p.cpuMax) },
+        { label: "Memory", color: "#a855f7", values: series.map((p: any) => p.memory) },
+      ]} />
+      <div className="small muted" style={{ marginTop: 10 }}>Lowest disk free space</div>
+      <TimeChart height={90} times={times} series={[{ label: "Disk free", color: "#22c55e", values: series.map((p: any) => p.diskFree) }]} />
+    </div>
+    {renderHealthCards()}
+    </>
+  );
+  function renderHealthCards() { return (
     <div className="grid k2">
       <div className="card">
         <h3>Now</h3>
@@ -300,16 +329,12 @@ function HealthTab({ deviceId }: { deviceId: string }) {
         )}
       </div>
       <div className="card">
-        <h3>Last 24 hours</h3>
-        <div className="small muted">CPU %</div><Sparkline points={series.map((p: any) => p.cpu)} color="#38bdf8" />
-        <div className="small muted" style={{ marginTop: 8 }}>Memory %</div><Sparkline points={series.map((p: any) => p.memory)} color="#a855f7" />
-        <div className="small muted" style={{ marginTop: 8 }}>Lowest disk free %</div><Sparkline points={series.map((p: any) => p.diskFree)} color="#22c55e" />
-        <h3 style={{ marginTop: 14 }}>Monitors</h3>
+        <h3>Monitors</h3>
         {(data.monitors || []).length === 0 ? <p className="muted small">No monitor has evaluated this device yet.</p> :
           data.monitors.map((m: any, i: number) => <div key={i} className="row small"><Pill value={m.triggered ? "triggered" : "ok"} tone={m.triggered ? "bad" : "good"} /> {m.condition} <span className="muted">{m.message}</span></div>)}
       </div>
     </div>
-  );
+  ); }
 }
 
 function PatchesTab({ device }: { device: any }) {

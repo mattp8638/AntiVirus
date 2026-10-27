@@ -174,6 +174,12 @@ class AgentService {
   // Local admin password rotation (privilege.rotateLocalAdminPassword); force = the localadmin.rotate command.
   std::wstring RotateLocalAdminPassword(bool force);
   void ExpireBreakGlassAccount();
+  // System profile (SystemProfile.h).
+  void MaybeCollectSystemProfile();
+  std::atomic<bool> profileRequested_{false};
+  std::shared_ptr<std::atomic<bool>> profileBusy_{std::make_shared<std::atomic<bool>>(false)};
+  unsigned long long lastProfileMs_{0};
+  unsigned long long profileFirstDueMs_{0};
   // experience.allowUserPause
   PolicySnapshot EnforcedPolicy() const;
   std::string ModulesJsonCopy() const;
