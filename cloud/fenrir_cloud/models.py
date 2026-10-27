@@ -481,6 +481,21 @@ class SoftwareItem(Base):
     executable_paths: Mapped[list | None] = mapped_column(JSON, nullable=True, default=list)
 
 
+class UserSession(Base):
+    """A console/portal sign-in. Every request checks it, so revoking it (logout, password or MFA change, account
+    disabled, an administrator's revoke) ends the session immediately rather than when its token expires."""
+    __tablename__ = "user_sessions"
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)  # the token's jti
+    user_id: Mapped[str] = mapped_column(String(32), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_reason: Mapped[str] = mapped_column(String(80), default="")
+    ip: Mapped[str] = mapped_column(String(64), default="")
+    user_agent: Mapped[str] = mapped_column(String(300), default="")
+
+
 class VulnScan(Base):
     """One vulnerability assessment run of one source on one device: what was assessed and whether it finished.
     Only a complete assessment of a package can verify that package's findings fixed."""

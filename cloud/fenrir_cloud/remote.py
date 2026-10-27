@@ -50,8 +50,9 @@ def agent_token(session: RemoteSession) -> str:
     return issue_token(get_settings().secret_key, session.id, AGENT_CONNECT_MINUTES, aud="remote-agent", dev=session.device_id)
 
 
-def viewer_token(session: RemoteSession, actor: str) -> str:
-    return issue_token(get_settings().secret_key, session.id, VIEWER_TOKEN_MINUTES, aud="remote-viewer", act=actor)
+def viewer_token(session: RemoteSession, actor: str, console_session: str | None = None) -> str:
+    return issue_token(get_settings().secret_key, session.id, VIEWER_TOKEN_MINUTES, aud="remote-viewer", act=actor,
+                       ses=console_session or "")
 
 
 def check_token(token: str | None, session_id: str, audience: str) -> dict | None:
@@ -177,6 +178,7 @@ class Peer:
     websocket: object
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     actor: str = ""
+    console_session: str = ""  # the technician's console session this viewer was opened from
 
     async def send(self, message: str | bytes) -> bool:
         async with self.lock:
@@ -260,6 +262,16 @@ class RelayHub:
         self.rooms: dict[str, Room] = {}
         self.devices: dict[str, set[Peer]] = {}
         self.loop: asyncio.AbstractEventLoop | None = None
+        self.revoked_sessions: set[str] = set()
+
+    # -- console session revocation -----------------------------------------
+    def revoke_console_sessions(self, session_ids: list[str]) -> None:
+        """Called (from any thread) when console sessions are revoked: their remote viewers are disconnected at
+        the next frame they would receive or send."""
+        self.revoked_sessions.update(i for i in session_ids if i)
+
+    def viewer_revoked(self, peer: "Peer") -> bool:
+        return bool(peer.console_session) and peer.console_session in self.revoked_sessions
 
     # -- device wake channel ------------------------------------------------
     def register_device(self, device_id: str, peer: Peer) -> None:

@@ -21,6 +21,7 @@ bearer = HTTPBearer(auto_error=False)
 class Principal:
     user: User
     tenant_ids: frozenset[str]
+    session_id: str | None = None
 
     @property
     def actor(self) -> str:
@@ -71,6 +72,11 @@ def current_principal(
     user = db.get(User, payload.get("sub"))
     if user is None or not user.active:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Account disabled")
+    from . import sessions
+
+    # The token is only good while its server-side session is: logout, password/MFA changes and revokes end it.
+    if sessions.active(db, payload.get("jti"), user.id) is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Session ended. Sign in again.", headers={"WWW-Authenticate": "Bearer"})
     path = request.url.path
     if user.role == "client" and not (path.startswith("/api/portal") or path.startswith("/api/console/auth")):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Client accounts can only use the client portal")
@@ -78,7 +84,7 @@ def current_principal(
         scope = {tid for (tid,) in db.execute(select(Tenant.id)).all()}
     else:
         scope = tenant_subtree(db, user.tenant_id)
-    return Principal(user=user, tenant_ids=frozenset(scope))
+    return Principal(user=user, tenant_ids=frozenset(scope), session_id=payload.get("jti"))
 
 
 def scoped_tenant(principal: Principal, tenant_id: str | None) -> list[str]:

@@ -120,7 +120,7 @@ def mint_viewer_token(session_id: str, principal: Principal = Depends(current_pr
     session = _owned_session(db, principal, session_id)
     if session.status in {"ended", "failed", "denied"}:
         raise HTTPException(409, f"Session {session.status}")
-    return {"token": remote.viewer_token(session, principal.actor), "path": f"/ws/remote/{session.id}/viewer"}
+    return {"token": remote.viewer_token(session, principal.actor, principal.session_id), "path": f"/ws/remote/{session.id}/viewer"}
 
 
 @router.post("/sessions/{session_id}/end")
@@ -177,6 +177,13 @@ def _agent_join(db: Session, session_id: str, device_id: str) -> dict | None:
     device = db.get(Device, device_id)
     policy = remote.remote_policy(db, device) if device else {}
     return {"viewOnly": session.view_only, "allow": policy}
+
+
+def _console_session_active(db: Session, console_session: str) -> bool:
+    from ..models import UserSession
+
+    row = db.get(UserSession, console_session)
+    return row is not None and row.revoked_at is None and row.expires_at > utcnow()
 
 
 def _viewer_join(db: Session, session_id: str, actor: str) -> dict | None:
@@ -252,6 +259,10 @@ async def agent_socket(websocket: WebSocket, session_id: str, token: str | None 
             if isinstance(data, str) and _is_end(data):
                 reason = "ended by device"
             for viewer in list(room.viewers):
+                if remote.hub.viewer_revoked(viewer):  # the technician signed out or was signed out
+                    room.viewers.remove(viewer)
+                    await _close(viewer.websocket, 4401, "session ended")
+                    continue
                 if not await viewer.send(data):
                     room.viewers.remove(viewer)
     finally:
@@ -298,13 +309,18 @@ async def viewer_socket(websocket: WebSocket, session_id: str, token: str | None
         await _close(websocket, 4401, "invalid token")
         return
     actor = str(claims.get("act") or "technician")
+    console_session = str(claims.get("ses") or "")
+    if not console_session or remote.hub.viewer_revoked(remote.Peer(None, console_session=console_session)) \
+            or not await run_in_threadpool(_db_call, _console_session_active, console_session):
+        await _close(websocket, 4401, "session ended")
+        return
     info = await run_in_threadpool(_db_call, _viewer_join, session_id, actor)
     if info is None:
         await _close(websocket, 4404, "session not available")
         return
     await websocket.accept()
     room = remote.hub.room(session_id, info["viewOnly"], info["allow"])
-    peer = remote.Peer(websocket, actor=actor)
+    peer = remote.Peer(websocket, actor=actor, console_session=console_session)
     room.viewers.append(peer)
     await peer.send(json.dumps({"ch": "sys", "t": "hello", "sessionId": session_id, "mode": info["mode"],
                                 "agentConnected": room.agent is not None, "viewOnly": room.view_only,
@@ -321,11 +337,17 @@ async def viewer_socket(websocket: WebSocket, session_id: str, token: str | None
                 break
             if message.get("bytes") is not None:
                 # Binary from the viewer is only ever file-upload data.
+                if remote.hub.viewer_revoked(peer):
+                    await _close(websocket, 4401, "session ended")
+                    break
                 if not room.allow.get("allowFileTransfer", True) or room.agent is None:
                     continue
                 room.bytes_relayed += len(message["bytes"])
                 await room.agent.send(message["bytes"])
                 continue
+            if remote.hub.viewer_revoked(peer):
+                await _close(websocket, 4401, "session ended")
+                break
             text = message.get("text") or ""
             forward, audit_event = remote.hub.filter_viewer_message(room, text)
             if audit_event:

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api, fmtTime } from "../api";
+import { ago, api, fmtTime, setToken } from "../api";
 import { useApp } from "../app-context";
 import { Modal, PageHead, Pill, Table, Tabs, TenantSelect, useAction, useData } from "../components/ui";
 
@@ -260,9 +260,31 @@ function AccountTab() {
       <label className="field">Current password<input type="password" value={current} onChange={(e) => setCurrent(e.target.value)} /></label>
       <label className="field" style={{ marginTop: 10 }}>New password (12+ characters)<input type="password" value={next} onChange={(e) => setNext(e.target.value)} /></label>
       <button className="primary" style={{ marginTop: 12 }} disabled={busy || next.length < 12}
-              onClick={async () => { if (await run(() => api("auth/password", { body: { currentPassword: current, newPassword: next } }), "Password changed")) { setCurrent(""); setNext(""); } }}>Change password</button>
+              onClick={async () => { const result = await run(() => api<any>("auth/password", { body: { currentPassword: current, newPassword: next } }), "Password changed. Your other sessions were signed out.");
+                if (result) { if (result.token) setToken(result.token); setCurrent(""); setNext(""); } }}>Change password</button>
     </div>
     <MfaCard />
+    <SessionsCard />
     </>
+  );
+}
+
+function SessionsCard() {
+  const { data, reload } = useData<any[]>("auth/sessions");
+  const { run, busy } = useAction();
+  return (
+    <div className="card" style={{ maxWidth: 720, marginTop: 16 }}>
+      <div className="row" style={{ justifyContent: "space-between" }}>
+        <h3 style={{ margin: 0 }}>Where you're signed in</h3>
+        {(data || []).length > 1 && <button className="small" disabled={busy} onClick={async () => { if (await run(() => api("auth/sessions/revoke-others", { method: "POST" }), "Signed out everywhere else")) reload(); }}>Sign out everywhere else</button>}
+      </div>
+      {(data || []).map((s) => (
+        <div key={s.id} className="row small" style={{ padding: "6px 0", borderBottom: "1px solid var(--line)" }}>
+          <span style={{ flex: 1 }}><b>{s.current ? "This browser" : s.userAgent.split(")")[0].replace("(", "· ") || "Unknown browser"}</b>
+            <div className="muted">{s.ip || "unknown address"} · signed in {fmtTime(s.createdAt)} · active {ago(s.lastSeenAt)}</div></span>
+          {!s.current && <button className="small" disabled={busy} onClick={async () => { if (await run(() => api(`auth/sessions/${s.id}`, { method: "DELETE" }), "Signed out")) reload(); }}>Sign out</button>}
+        </div>
+      ))}
+    </div>
   );
 }
