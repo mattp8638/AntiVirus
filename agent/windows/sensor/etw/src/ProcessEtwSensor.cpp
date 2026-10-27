@@ -183,6 +183,14 @@ std::wstring QuerySignerSubject(const std::wstring& path) {
                        &cryptMessage, nullptr) == FALSE) {
     return {};
   }
+  // CryptQueryObject can succeed without returning a message (e.g. for a CTL). CryptMsgGetParam dereferences its
+  // handle, so a null message crashes CRYPT32 and, because this runs for every process start, the whole service.
+  if (cryptMessage == nullptr) {
+    if (certStore != nullptr) {
+      CertCloseStore(certStore, 0);
+    }
+    return {};
+  }
 
   DWORD signerInfoSize = 0;
   if (CryptMsgGetParam(cryptMessage, CMSG_SIGNER_INFO_PARAM, 0, nullptr, &signerInfoSize) == FALSE) {

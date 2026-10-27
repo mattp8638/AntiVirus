@@ -535,6 +535,11 @@ bool ResolveSignerCertificateFromSignedFile(const std::filesystem::path& signedF
     }
     return false;
   }
+  if (cryptMessage == nullptr) {  // CryptMsgGetParam would crash on a null message (e.g. a CTL)
+    if (certificateStore != nullptr) CertCloseStore(certificateStore, 0);
+    if (errorMessage != nullptr) *errorMessage = L"The file has no signer information.";
+    return false;
+  }
 
   DWORD signerInfoBytes = 0;
   if (CryptMsgGetParam(cryptMessage, CMSG_SIGNER_INFO_PARAM, 0, nullptr, &signerInfoBytes) == FALSE ||
