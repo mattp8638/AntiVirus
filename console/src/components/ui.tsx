@@ -239,7 +239,26 @@ export function InstallAppButton() {
     installListeners.add(fn);
     return () => { installListeners.delete(fn); };
   }, []);
-  if (!deferredInstall) return null;
+  const [iosHelp, setIosHelp] = useState(false);
+  if (!deferredInstall) {
+    // iPhone and iPad Safari have no install prompt: explain "Add to Home Screen" instead.
+    const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    const standalone = window.matchMedia?.("(display-mode: standalone)").matches || (navigator as any).standalone;
+    if (!ios || standalone) return null;
+    return (
+      <>
+        <button className="small" onClick={() => setIosHelp(true)}>Install app</button>
+        {iosHelp && <Modal title="Install Fenrir on this iPhone" onClose={() => setIosHelp(false)}>
+          <ol style={{ lineHeight: 1.9, paddingLeft: 20 }}>
+            <li>Tap the <b>Share</b> button <span aria-hidden>⎋</span> in Safari's toolbar.</li>
+            <li>Scroll down and tap <b>Add to Home Screen</b>.</li>
+            <li>Tap <b>Add</b>. Fenrir opens from its icon like an app, without Safari's bars.</li>
+          </ol>
+          <p className="small muted">Open this page in Safari to do this; other iPhone browsers can't add apps to the Home Screen.</p>
+        </Modal>}
+      </>
+    );
+  }
   return (
     <button className="small" title="Install the console as an app: it opens in its own window, and remote sessions open without browser bars"
             onClick={async () => { const prompt = deferredInstall; deferredInstall = null; refresh((n) => n + 1); await prompt.prompt(); }}>

@@ -18,6 +18,8 @@ from ..models import (AgentRelease, Alert, Command, Configuration, Device, Devic
 from ..serialize import apply_fields, to_dict
 
 router = APIRouter(prefix="/api/console", tags=["Fleet"])
+# Irreversible actions that need the technician's password again.
+REAUTH_COMMANDS = {"device.wipe"}
 
 ONLINE_WINDOW = timedelta(minutes=10)
 
@@ -181,7 +183,7 @@ def purge_device(device_id: str, request: Request, body: dict = Body(default={})
     The audit log keeps a record of the deletion.
     """
     from ..models import (Alert, ConditionState, DeviceArtifact, DeviceMetric, DevicePatch, DeviceProfile, DnsQueryLog,
-                          EnrollmentToken, Incident, IncidentEvidence, NetworkMonitor, RecoveryKey, RuleMatch, Ticket)
+                          EnrollmentToken, Incident, IncidentEvidence, NetworkMonitor, RecoveryKey, DeviceLocation, RuleMatch, Ticket)
 
     principal.require("configure")
     require_reauth(request, principal)
@@ -199,7 +201,7 @@ def purge_device(device_id: str, request: Request, body: dict = Body(default={})
         removed["incident_evidence"] = db.execute(delete(IncidentEvidence).where(
             IncidentEvidence.incident_id.in_(incident_ids))).rowcount or 0
     for model in (Event, RuleMatch, Alert, Incident, Command, ConditionState, DeviceMetric, DevicePatch, SoftwareItem,
-                  Vulnerability, DnsQueryLog, RemoteSession, DeviceArtifact, DeviceProfile, RecoveryKey):
+                  Vulnerability, DnsQueryLog, RemoteSession, DeviceArtifact, DeviceProfile, RecoveryKey, DeviceLocation):
         removed[model.__tablename__] = db.execute(delete(model).where(model.device_id == device.id)).rowcount or 0
     db.execute(update(Ticket).where(Ticket.device_id == device.id).values(device_id=None))
     db.execute(update(Configuration).where(Configuration.device_id == device.id).values(device_id=None))
@@ -309,7 +311,7 @@ def _command_arguments(body: dict) -> dict:
 
 
 @router.post("/devices/{device_id}/commands")
-def issue_command(device_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+def issue_command(device_id: str, request: Request, body: dict = Body(...), principal: Principal = Depends(current_principal),
                   db: Session = Depends(get_db)):
     device = _get_device(db, principal, device_id)
     command_type = str(body.get("type") or "")
@@ -317,6 +319,10 @@ def issue_command(device_id: str, body: dict = Body(...), principal: Principal =
     if spec is None:
         raise HTTPException(400, "Unknown command type")
     principal.require(spec.permission)
+    if command_type in REAUTH_COMMANDS:
+        require_reauth(request, principal)
+    if command_type == "device.lostmode":
+        raise HTTPException(400, "Turn lost mode on or off from the device's Location tab")
     arguments = _command_arguments(body)
     try:
         command = services.enqueue_command(db, device, command_type, principal.actor,
@@ -335,6 +341,8 @@ def bulk_command(body: dict = Body(...), principal: Principal = Depends(current_
     if spec is None:
         raise HTTPException(400, "Unknown command type")
     principal.require(spec.permission)
+    if command_type in REAUTH_COMMANDS or command_type == "device.lostmode":
+        raise HTTPException(400, f"{spec.label} is sent to one device at a time")
     ids = body.get("deviceIds")
     if not isinstance(ids, list) or not ids or any(not isinstance(i, str) or not i.strip() for i in ids):
         raise HTTPException(422, "deviceIds must be a non-empty list of device IDs")

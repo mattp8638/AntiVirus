@@ -22,10 +22,11 @@ export function useCommandLabels() {
 
 export interface GoTo { (section: string, sub?: string): void }
 
-export function DeviceOverview({ data, profile, patches, go, management }: { data: any; profile: any; patches: any; go: GoTo; management: React.ReactNode }) {
+export function DeviceOverview({ data, profile, patches, go, management, whereabouts }: { data: any; profile: any; patches: any; go: GoTo; management: React.ReactNode; whereabouts?: any }) {
   const d = data.device;
+  const isPhone = d.platform === "android";
   const { can } = useApp();
-  const { data: metrics } = useData<any>(`rmm/devices/${d.id}/metrics`, { hours: 24 });
+  const { data: metrics } = useData<any>(isPhone ? null : `rmm/devices/${d.id}/metrics`, { hours: 24 });
   const commandLabel = useCommandLabels();
   const p = profile?.profile || {};
   const hw = p.hardware || {}, os = p.os || {};
@@ -53,6 +54,19 @@ export function DeviceOverview({ data, profile, patches, go, management }: { dat
   for (const x of lowDisk) if (!findingTitles.includes(`${x.mount} is`)) attention.push({ severity: x.freePercent < 5 ? "high" : "medium",
     title: `${x.mount} is ${x.freePercent < 5 ? "nearly full" : "running low on space"}`, detail: `${Number(x.freeGb).toFixed(1)} GB free (${Math.round(x.freePercent)}%)`, action: () => go("system"), actionLabel: "Details" });
   if (m.uptimeSeconds > 30 * 86400 && !/Not restarted/.test(findingTitles)) attention.push({ severity: "medium", title: `Not restarted for ${Math.floor(m.uptimeSeconds / 86400)} days`, detail: "Updates may be waiting on a restart." });
+  if (isPhone) {
+    const lost = whereabouts?.lostMode;
+    if (lost?.enabled) attention.push({ severity: "high", title: "Lost mode is on", detail: lost.message, action: () => go("location"), actionLabel: "Map" });
+    if (m.screenLockSecure === false) attention.push({ severity: "high", title: "No screen lock", detail: "Anyone who picks the phone up can use it. Set a PIN, pattern or password." });
+    if (m.rooted) attention.push({ severity: "high", title: "The phone is rooted", detail: "Apps can bypass Android's protections." });
+    if (m.encrypted === false) attention.push({ severity: "high", title: "Storage is not encrypted" });
+    if (m.deviceAdmin === false) attention.push({ severity: "medium", title: "Fenrir is not a device administrator", detail: "Lock and erase won't work until it is turned back on in the Fenrir app." });
+    if (m.locationEnabled === false) attention.push({ severity: "medium", title: "Location is turned off on the phone", detail: "It can't be found on the map." });
+    if (typeof m.batteryPercent === "number" && m.batteryPercent < 15 && !m.charging) attention.push({ severity: "low", title: `Battery at ${m.batteryPercent}%` });
+    if (m.developerMode) attention.push({ severity: "low", title: "Developer options are on" });
+    if (m.securityPatch && Date.now() - new Date(m.securityPatch).getTime() > 120 * 86400e3) attention.push({ severity: "medium", title: `Security patch from ${m.securityPatch}`, detail: "More than four months old; check for a system update." });
+    if (!whereabouts?.latest && whereabouts) attention.push({ severity: "low", title: "No location reported yet", action: () => go("location"), actionLabel: "Locate" });
+  }
   for (const f of profile?.findings || []) attention.push({ severity: f.severity, title: f.title, detail: f.detail, action: () => go("system"), actionLabel: "Details" });
   const order: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
   attention.sort((a, b) => (order[a.severity] ?? 4) - (order[b.severity] ?? 4));
@@ -88,7 +102,20 @@ export function DeviceOverview({ data, profile, patches, go, management }: { dat
             </div>}
         </div>
 
-        <div className="card">
+        {isPhone && <div className="card">
+          <div className="row" style={{ marginBottom: 6 }}>
+            <h3 style={{ margin: 0 }}>Where it is</h3>
+            <span style={{ flex: 1 }} />
+            <button className="ghost small" onClick={() => go("location")}>Open map →</button>
+          </div>
+          {!whereabouts?.latest ? <p className="muted small">No location yet. Use Locate to ask the phone where it is.</p> : <p style={{ margin: 0 }}>
+            Last located <b>{ago(whereabouts.latest.at)}</b>{whereabouts.latest.accuracy ? ` to within ${Math.round(whereabouts.latest.accuracy)} m` : ""}
+            <span className="muted small"> · {whereabouts.latest.lat.toFixed(4)}, {whereabouts.latest.lon.toFixed(4)}</span>
+            {whereabouts.travelledMeters > 0 && <span className="muted small"> · moved {(whereabouts.travelledMeters / 1000).toFixed(1)} km today</span>}
+          </p>}
+        </div>}
+
+        {!isPhone && <div className="card">
           <div className="row" style={{ marginBottom: 6 }}>
             <h3 style={{ margin: 0 }}>Last 24 hours</h3>
             <span style={{ flex: 1 }} />
@@ -99,7 +126,7 @@ export function DeviceOverview({ data, profile, patches, go, management }: { dat
               { label: "CPU", color: "#38bdf8", values: series.map((x: any) => x.cpu) },
               { label: "Memory", color: "#a855f7", values: series.map((x: any) => x.memory) },
             ]} />}
-        </div>
+        </div>}
 
         <div className="card">
           <div className="row" style={{ marginBottom: 6 }}>
@@ -124,7 +151,11 @@ export function DeviceOverview({ data, profile, patches, go, management }: { dat
         <div className="card">
           <h3>At a glance</h3>
           <dl className="kv compact">
-            <dt>Signed in</dt><dd>{m.loggedOnUser || d.inventory?.loggedOnUser || "nobody"}</dd>
+            {!isPhone && <><dt>Signed in</dt><dd>{m.loggedOnUser || d.inventory?.loggedOnUser || "nobody"}</dd></>}
+            {isPhone && m.phoneNumber && <><dt>Number</dt><dd>{m.phoneNumber}</dd></>}
+            {isPhone && <><dt>Battery</dt><dd>{typeof m.batteryPercent === "number" ? `${m.batteryPercent}%${m.charging ? " · charging" : ""}` : "—"}</dd></>}
+            {isPhone && m.network && <><dt>Network</dt><dd>{m.network}{m.wifiSsid ? ` · ${m.wifiSsid}` : ""}{m.carrier ? ` · ${m.carrier}` : ""}</dd></>}
+            {isPhone && m.securityPatch && <><dt>Security patch</dt><dd>{m.securityPatch}</dd></>}
             <dt>Model</dt><dd>{makeModel(hw.manufacturer || m.manufacturer, hw.model || m.model)}{hw.chassis ? <span className="muted"> · {hw.chassis}</span> : null}</dd>
             <dt>Serial</dt><dd className="mono">{hw.serial || d.serialNumber || "—"}</dd>
             <dt>OS</dt><dd>{os.name ? <>{os.name}{os.displayVersion ? ` ${os.displayVersion}` : ""} <span className="muted small">build {os.build || os.version}</span></> : d.osVersion}</dd>
@@ -135,7 +166,7 @@ export function DeviceOverview({ data, profile, patches, go, management }: { dat
             <dt>Up for</dt><dd>{days(m.uptimeSeconds)}{m.lastBootAt ? <span className="muted small"> since {fmtTime(m.lastBootAt)}</span> : null}</dd>
             <dt>Agent</dt><dd>{d.agentVersion || "—"}</dd>
           </dl>
-          <button className="small" style={{ marginTop: 10 }} onClick={() => go("system")}>Full system profile →</button>
+          {!isPhone && <button className="small" style={{ marginTop: 10 }} onClick={() => go("system")}>Full system profile →</button>}
         </div>
 
         <div className="card">

@@ -3,7 +3,7 @@ import Network from "./pages/Network";
 import Governance from "./pages/Governance";
 import Backup from "./pages/Backup";
 import SocWorkflows from "./pages/SocWorkflows";
-import { FormEvent, lazy, Suspense, useState } from "react";
+import { FormEvent, lazy, Suspense, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AppProvider, useApp } from "./app-context";
@@ -48,6 +48,7 @@ import PsaSettings, { ProjectDetail } from "./pages/psa/PsaSettings";
 import Reports from "./pages/Reports";
 import Settings from "./pages/Settings";
 import Deploy from "./pages/Deploy";
+import { EnrollPhonePage } from "./pages/AddPhone";
 import Vault from "./pages/Vault";
 import ProtectionHealth from "./pages/ProtectionHealth";
 import Quarantine from "./pages/Quarantine";
@@ -153,13 +154,38 @@ function Login() {
   );
 }
 
+// Phones get a bottom tab bar for the pages a technician opens most; everything else is in the menu.
+const BOTTOM_NAV = [
+  { to: "/", label: "Home", icon: "◎" },
+  { to: "/devices", label: "Devices", icon: "▣" },
+  { to: "/alerts", label: "Alerts", icon: "△" },
+  { to: "/service-board", label: "Tickets", icon: "✉" },
+];
+
 function Shell() {
   const { me, tenantId, setTenantId, logout } = useApp();
+  const location = useLocation();
+  const [navOpen, setNavOpen] = useState(false);
+  // Close the phone menu whenever a page is opened from it.
+  useEffect(() => { setNavOpen(false); }, [location.pathname]);
+  useEffect(() => {
+    if (!navOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setNavOpen(false); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [navOpen]);
   if (!me) return null;
   return (
-    <div className="shell">
-      <aside className="sidebar">
-        <div className="brand"><div className="brand-mark">F</div><div><b>Fenrir</b><small>Unified security platform</small></div></div>
+    <div className={`shell ${navOpen ? "nav-open" : ""}`}>
+      <div className="nav-backdrop" onClick={() => setNavOpen(false)} aria-hidden />
+      <aside className="sidebar" aria-label="Main menu">
+        <div className="brand"><div className="brand-mark">F</div><div><b>Fenrir</b><small>Unified security platform</small></div>
+          <button className="ghost nav-close" aria-label="Close menu" onClick={() => setNavOpen(false)}>✕</button></div>
+        <div className="nav-account">
+          <div className="small">{me.user.email}</div>
+          <div className="small muted">{me.user.role.replace(/_/g, " ")}</div>
+          <button className="small" onClick={logout}>Sign out</button>
+        </div>
         {NAV.map((group) => (
           <div key={group.group}>
             <div className="nav-group">{group.group}</div>
@@ -173,12 +199,13 @@ function Shell() {
       </aside>
       <div className="main">
         <header className="topbar">
-          <span className="muted small">Viewing</span>
+          <button className="ghost nav-toggle" aria-label="Open menu" aria-expanded={navOpen} onClick={() => setNavOpen(true)}>☰</button>
+          <span className="muted small hide-phone">Viewing</span>
           <TenantSelect value={tenantId} onChange={setTenantId} />
           <span className="spacer" />
           <InstallAppButton />
-          <span className="small muted">{me.user.email} · {me.user.role.replace(/_/g, " ")}</span>
-          <button className="small" onClick={logout}>Sign out</button>
+          <span className="small muted hide-phone">{me.user.email} · {me.user.role.replace(/_/g, " ")}</span>
+          <button className="small hide-phone" onClick={logout}>Sign out</button>
         </header>
         <main className="content">
           <Routes>
@@ -235,6 +262,14 @@ function Shell() {
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>
+        <nav className="bottom-nav" aria-label="Quick navigation">
+          {BOTTOM_NAV.map((item) => (
+            <NavLink key={item.to} to={item.to} end={item.to === "/"} className={({ isActive }) => isActive ? "active" : ""}>
+              <span aria-hidden>{item.icon}</span>{item.label}
+            </NavLink>
+          ))}
+          <button onClick={() => setNavOpen(true)} className={navOpen ? "active" : ""}><span aria-hidden>☰</span>More</button>
+        </nav>
       </div>
     </div>
   );
@@ -243,6 +278,8 @@ function Shell() {
 function Root() {
   const { me, loading } = useApp();
   const location = useLocation();
+  // Opened from a phone's camera when it scans an enrolment code: no sign-in.
+  if (location.pathname === "/enroll-phone") return <EnrollPhonePage />;
   if (loading) return <div className="empty">Loading…</div>;
   if (!me) return <Login />;
   // The remote viewer is a pop-out window without the console chrome.
@@ -251,6 +288,11 @@ function Root() {
   }
   if (me.user.role === "client" || location.pathname.startsWith("/portal")) return <Portal />;
   return <Shell />;
+}
+
+// Installable app and instant start-up; see public/sw.js. Not in the Vite dev server.
+if ("serviceWorker" in navigator && import.meta.env.PROD) {
+  window.addEventListener("load", () => { navigator.serviceWorker.register("/sw.js").catch(() => undefined); });
 }
 
 createRoot(document.getElementById("root")!).render(

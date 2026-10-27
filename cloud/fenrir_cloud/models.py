@@ -138,6 +138,8 @@ class Device(Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # Business criticality (low|medium|high|critical) used to rank vulnerabilities and alerts.
     criticality: Mapped[str | None] = mapped_column(String(16), nullable=True, default="medium")
+    # Phones: lost mode ({"enabled", "message", "phone", "since", "by"}); the agent re-reads it on every heartbeat.
+    lost_mode: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     # Last maintenance window in which protection-policy patching ran on this device ("2026-10-25T22:00").
     patch_window_run: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
@@ -194,6 +196,25 @@ class DeviceArtifact(Base):
     sha256: Mapped[str] = mapped_column(String(64))
     storage_name: Mapped[str] = mapped_column(String(80))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class DeviceLocation(Base):
+    """A location fix reported by a phone agent (GPS, network or fused), kept for 90 days."""
+
+    __tablename__ = "device_locations"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("loc"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    latitude: Mapped[float] = mapped_column(Float)
+    longitude: Mapped[float] = mapped_column(Float)
+    accuracy_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    altitude_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    speed_mps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source: Mapped[str] = mapped_column(String(20), default="fused")  # gps | network | fused | passive
+    reason: Mapped[str] = mapped_column(String(20), default="periodic")  # periodic | locate | lostmode | boot | sim
+    battery_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class DeviceProfile(Base):

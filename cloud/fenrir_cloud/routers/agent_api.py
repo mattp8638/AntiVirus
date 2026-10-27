@@ -45,9 +45,11 @@ def reinstatement_target(raw_token: str | None) -> str | None:
 
 
 def _platform(os_version: str, hint: str | None) -> str:
-    if hint in {"windows", "linux", "macos"}:
+    if hint in {"windows", "linux", "macos", "android"}:
         return hint
     lowered = os_version.lower()
+    if "android" in lowered:
+        return "android"
     if "mac" in lowered or "darwin" in lowered:
         return "macos"
     if any(word in lowered for word in ("linux", "ubuntu", "debian", "centos", "rhel", "fedora", "suse", "alpine", "rocky")):
@@ -184,8 +186,13 @@ def heartbeat(body: dict = Body(default={}), device: Device = Depends(current_de
     _, policy_doc = services.effective_policy(db, device)
     pending = db.execute(select(func.count()).where(Command.device_id == device.id, Command.status == "pending")).scalar() or 0
     db.commit()
-    return {"receivedAt": _iso(utcnow()), "effectivePolicyRevision": policy_doc["revision"], "commandsPending": pending,
-            "approved": device.approved, "realtimePath": f"/api/v1/devices/{device.id}/realtime"}
+    reply = {"receivedAt": _iso(utcnow()), "effectivePolicyRevision": policy_doc["revision"], "commandsPending": pending,
+             "approved": device.approved, "realtimePath": f"/api/v1/devices/{device.id}/realtime"}
+    if device.platform == "android":
+        # Phones re-sync lost mode from every heartbeat, so a missed command cannot leave it stuck on or off.
+        lost = device.lost_mode or {}
+        reply["lostMode"] = {"enabled": bool(lost.get("enabled")), "message": lost.get("message", ""), "phone": lost.get("phone", "")}
+    return reply
 
 
 SUPPORT_REQUESTS_PER_HOUR = 5

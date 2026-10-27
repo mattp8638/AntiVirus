@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ago, api, fmtTime, getToken } from "../api";
 import { useApp } from "../app-context";
@@ -8,6 +8,9 @@ import { TimeChart } from "../components/TimeChart";
 import { RunScript } from "./rmm/Scripts";
 import { SystemTab } from "./DeviceSystem";
 import { DeviceDetails, DeviceOverview, useCommandLabels } from "./DeviceOverview";
+
+// The map (Leaflet) is only downloaded when a phone's Location tab is opened.
+const LocationTab = lazy(() => import("./DeviceLocation"));
 
 // Seven sections instead of thirteen tabs; the section and sub-page live in the URL (?tab=&sub=) so a link,
 // a refresh or the back button lands on the same place.
@@ -20,8 +23,17 @@ const SECTIONS: { key: string; label: string; subs?: string[] }[] = [
   { key: "activity", label: "Activity", subs: ["Scripts & jobs", "Remote actions", "Remote sessions", "Bundles & recordings"] },
   { key: "settings", label: "Settings", subs: ["Effective policy", "Device details"] },
 ];
+// Phones have no patches, scripts, remote desktop or local admin; they get Location instead.
+const PHONE_SECTIONS: { key: string; label: string; subs?: string[] }[] = [
+  { key: "overview", label: "Overview" },
+  { key: "location", label: "Location" },
+  { key: "security", label: "Security", subs: ["Alerts"] },
+  { key: "software", label: "Apps", subs: ["Installed"] },
+  { key: "activity", label: "Activity", subs: ["Remote actions"] },
+  { key: "settings", label: "Settings", subs: ["Effective policy", "Device details"] },
+];
 const OPEN_ALERT = (a: any) => !["resolved", "closed", "false_positive"].includes(a.status);
-const PLATFORM_GLYPH: Record<string, string> = { windows: "⊞", macos: "⌘", linux: "🐧" };
+const PLATFORM_GLYPH: Record<string, string> = { windows: "⊞", macos: "⌘", linux: "🐧", android: "📱" };
 
 // A small drop-down menu: closes on outside click or Escape.
 function Menu({ label, children }: { label: React.ReactNode; children: (close: () => void) => React.ReactNode }) {
@@ -66,7 +78,9 @@ export default function DeviceDetail() {
   const { data: policies } = useData<any[]>("policies", { tenant_id: data?.device.tenantId }, [data?.device.tenantId]);
   const { data: groups } = useData<any[]>("groups", { tenant_id: data?.device.tenantId }, [data?.device.tenantId]);
   const { data: profile } = useData<any>(id ? `devices/${id}/profile` : null);
-  const { data: patches } = useData<any>(id ? `rmm/devices/${id}/patches` : null);
+  const isPhone = data?.device.platform === "android";
+  const { data: patches } = useData<any>(id && data && !isPhone ? `rmm/devices/${id}/patches` : null, {}, [isPhone]);
+  const { data: whereabouts, reload: reloadWhere } = useData<any>(id && isPhone ? `devices/${id}/locations` : null, { hours: 24 }, [isPhone]);
   const [reinstating, setReinstating] = useState(false);
   const [installerReady, setInstallerReady] = useState(false);
   const [retiring, setRetiring] = useState(false);
@@ -91,7 +105,7 @@ export default function DeviceDetail() {
   if (!data) return <div className="empty">Loading…</div>;
   const d = data.device;
   const isWindows = String(d.platform || "windows").toLowerCase() === "windows";
-  const sections = SECTIONS.map((s) => s.key === "security" && !isWindows ? { ...s, subs: s.subs!.filter((x) => x !== "Local admin") } : s);
+  const sections = isPhone ? PHONE_SECTIONS : SECTIONS.map((s) => s.key === "security" && !isWindows ? { ...s, subs: s.subs!.filter((x) => x !== "Local admin") } : s);
   const section = sections.find((s) => s.key === params.get("tab")) ?? sections[0];
   const sub = section.subs ? (section.subs.find((s) => s === params.get("sub")) ?? section.subs[0]) : undefined;
   const go = (tab: string, subPage?: string) => {
@@ -156,6 +170,7 @@ export default function DeviceDetail() {
               <span className={`status-chip ${d.online ? "on" : "off"}`}><span className={`dot ${d.online ? "on" : "off"}`} />{d.online ? "Online" : `Offline · ${ago(d.lastSeenAt)}`}</span>}
             {!d.approved && !d.retired && <Pill value="needs approval" tone="warn" />}
             {d.isolated && <Pill value="isolated" tone="bad" />}
+            {d.lostMode?.enabled && <Pill value="lost mode" tone="bad" />}
             {m.rebootPending && <Pill value="restart pending" tone="warn" />}
             {d.healthState && d.healthState !== "healthy" && <Pill value={d.healthState} tone="warn" />}
           </div>
@@ -166,7 +181,21 @@ export default function DeviceDetail() {
             {d.ipAddress && <span className="mono">{d.ipAddress}</span>}
           </div>
         </div>
-        {!d.retired && can("respond") && <div className="device-actions">
+        {!d.retired && can("respond") && isPhone && <div className="device-actions">
+          {!d.approved && can("configure") && <button className="primary" onClick={() => patch({ approved: true }, "Device approved")}>Approve</button>}
+          <button className="primary" onClick={() => { queue("device.locate", "Locate now"); go("location"); setTimeout(reloadWhere, 8000); }}>⌖ Locate</button>
+          <button onClick={() => queue("device.alarm", "Play alarm", { seconds: 60 })}>🔊 Alarm</button>
+          <button onClick={() => queue("device.lock", "Lock")}>🔒 Lock</button>
+          <Menu label="More">{(close) => <>
+            <button role="menuitem" onClick={() => { close(); go("location"); }}>Lost mode, message, erase…</button>
+            <button role="menuitem" onClick={() => { close(); run(() => api(`devices/${d.id}/profile/refresh`, { method: "POST" }), "Inventory refresh queued"); }}>Refresh inventory</button>
+            <button role="menuitem" onClick={() => { close(); queue("policy.refresh", "Policy refresh"); }}>Refresh policy now</button>
+            <button role="menuitem" onClick={() => { close(); navigator.clipboard?.writeText(d.id); }}>Copy device ID</button>
+            {can("configure") && <><div className="menu-sep" />
+              <button role="menuitem" className="danger-text" onClick={() => { close(); setRetireName(""); setRetiring(true); }}>Decommission device…</button></>}
+          </>}</Menu>
+        </div>}
+        {!d.retired && can("respond") && !isPhone && <div className="device-actions">
           {!d.approved && can("configure") && <button className="primary" onClick={() => patch({ approved: true }, "Device approved")}>Approve</button>}
           <ConnectButtons device={d} />
           {can("configure") && <button onClick={() => setScriptPicker(true)}>Run script</button>}
@@ -212,7 +241,16 @@ export default function DeviceDetail() {
         </div>
       </div>}
 
-      {!d.retired && <div className="stat-strip">
+      {!d.retired && isPhone && <div className="stat-strip">
+        <StatTile label="Battery" value={typeof m.batteryPercent === "number" ? `${m.batteryPercent}%` : "—"} tone={typeof m.batteryPercent === "number" ? (m.batteryPercent < 15 ? "bad" : m.batteryPercent < 30 ? "warn" : "good") : undefined} sub={m.charging ? "charging" : m.reportedAt ? `reported ${ago(m.reportedAt)}` : "no data yet"} />
+        <StatTile label="Last located" value={whereabouts?.latest ? ago(whereabouts.latest.at) : "—"} tone={whereabouts?.latest ? undefined : "warn"} sub={whereabouts?.latest?.accuracy ? `± ${Math.round(whereabouts.latest.accuracy)} m` : "open the map"} onClick={() => go("location")} />
+        <StatTile label="Lost mode" value={whereabouts?.lostMode?.enabled ? "On" : "Off"} tone={whereabouts?.lostMode?.enabled ? "bad" : "good"} sub={whereabouts?.lostMode?.enabled ? "reporting every 5 min" : "phone is not lost"} onClick={() => go("location")} />
+        <StatTile label="Storage free" value={diskFree === undefined ? "—" : `${Math.round(diskFree)}%`} tone={diskFree === undefined ? undefined : diskFree < 5 ? "bad" : diskFree < 15 ? "warn" : "good"} sub="internal storage" />
+        <StatTile label="Network" value={m.network ? String(m.network) : "—"} sub={m.wifiSsid || m.carrier || "connection"} />
+        <StatTile label="Screen lock" value={m.screenLockSecure === undefined ? "—" : m.screenLockSecure ? "Set" : "None"} tone={m.screenLockSecure === undefined ? undefined : m.screenLockSecure ? "good" : "bad"} sub={m.securityPatch ? `patch ${m.securityPatch}` : "PIN, pattern or password"} />
+        <StatTile label="Open alerts" value={openAlerts.length} tone={openAlerts.length ? "warn" : "good"} sub={`risk score ${d.riskScore}`} onClick={() => go("security", "Alerts")} />
+      </div>}
+      {!d.retired && !isPhone && <div className="stat-strip">
         <StatTile label="CPU" value={pct(m.cpuPercent)} tone={levelTone(m.cpuPercent, 70, 90)} sub={m.reportedAt ? `reported ${ago(m.reportedAt)}` : "no data yet"} onClick={() => go("health")} />
         <StatTile label="Memory" value={pct(m.memoryPercent)} tone={levelTone(m.memoryPercent, 80, 92)} sub={m.memoryTotalGb ? `of ${Math.round(m.memoryTotalGb)} GB` : undefined} onClick={() => go("health")} />
         <StatTile label="Disk free" value={diskFree === undefined ? "—" : `${Math.round(diskFree)}%`} tone={diskFree === undefined ? undefined : diskFree < 5 ? "bad" : diskFree < 15 ? "warn" : "good"} sub="lowest volume" onClick={() => go("system")} />
@@ -230,8 +268,9 @@ export default function DeviceDetail() {
         {section.subs.map((s) => <button key={s} className={s === sub ? "active" : ""} onClick={() => go(section.key, s)}>{s}{subCounts[s] ? <span className="sub-count">{subCounts[s]}</span> : null}</button>)}
       </div>}
 
-      {section.key === "overview" && <DeviceOverview data={data} profile={profile} patches={patches} go={go} management={management} />}
+      {section.key === "overview" && <DeviceOverview data={data} profile={profile} patches={patches} go={go} management={management} whereabouts={whereabouts} />}
       {section.key === "health" && <HealthTab deviceId={d.id} />}
+      {section.key === "location" && <Suspense fallback={<div className="empty">Loading map…</div>}><LocationTab device={d} onChanged={() => { reload(); reloadWhere(); }} /></Suspense>}
       {section.key === "system" && <SystemTab deviceId={d.id} />}
 
       {sub === "Alerts" && (
