@@ -247,6 +247,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     for module in (m365_admin_router, m365_router, network_router, grc_router, backup_router, soc_workflows, ad_router):
         app.include_router(module.router)
     app.include_router(documentation_router.router)
+    app.include_router(m365_router.oauth)
     app.include_router(psa_router.inbound)
     app.include_router(backup_router.ingest)
     from .routers import local_admin as local_admin_router

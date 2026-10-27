@@ -32,6 +32,12 @@ class Settings:
     secret_key: str = field(default_factory=lambda: os.getenv("FENRIR_SECRET_KEY") or secrets.token_hex(32))
     token_ttl_minutes: int = field(default_factory=lambda: int(os.getenv("FENRIR_TOKEN_TTL_MINUTES", "720")))
     public_base_url: str = field(default_factory=lambda: os.getenv("FENRIR_PUBLIC_URL", "http://localhost:8080"))
+    # Microsoft 365 sign-in. The MSP's own multi-tenant Entra app ("Sign in with Microsoft"); leave empty to use only
+    # "Sign in with a code", which creates a Fenrir app registration inside each customer tenant instead.
+    m365_client_id: str = field(default_factory=lambda: os.getenv("FENRIR_M365_CLIENT_ID", ""))
+    m365_client_secret: str = field(default_factory=lambda: os.getenv("FENRIR_M365_CLIENT_SECRET", ""))
+    # Public client used for the device-code sign-in (default: Microsoft Graph Command Line Tools).
+    m365_public_client_id: str = field(default_factory=lambda: os.getenv("FENRIR_M365_PUBLIC_CLIENT_ID", "14d82eec-204b-4c2f-b7e8-296a70dab67e"))
 
     bootstrap_admin_email: str = field(default_factory=lambda: os.getenv("FENRIR_ADMIN_EMAIL", "admin@fenrir.local"))
     bootstrap_admin_password: str | None = field(default_factory=lambda: os.getenv("FENRIR_ADMIN_PASSWORD"))

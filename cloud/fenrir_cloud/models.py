@@ -1295,7 +1295,38 @@ class M365Connection(Base):
     last_error: Mapped[str] = mapped_column(String(300), default="")
     synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # app = app registration typed in by hand; provisioned = created in the customer's tenant by an admin sign-in;
+    # platform = the MSP's own multi-tenant Fenrir app, consented by the customer's admin.
+    auth_mode: Mapped[str | None] = mapped_column(String(20), nullable=True, default="app")
+    tenant_name: Mapped[str | None] = mapped_column(String(200), nullable=True, default="")
+    consented_by: Mapped[str | None] = mapped_column(String(320), nullable=True, default="")
+    consented_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    secret_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    granted_permissions: Mapped[list | None] = mapped_column(JSON, nullable=True, default=list)
     __table_args__ = (UniqueConstraint("tenant_id", "directory_id", name="uq_m365_tenant_directory"),)
+
+
+class M365SignIn(Base):
+    """An admin sign-in in progress: a device code being entered, or a browser redirect awaiting consent."""
+    __tablename__ = "m365_signins"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("m365si"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    created_by: Mapped[str] = mapped_column(String(32))
+    mode: Mapped[str] = mapped_column(String(20))  # device | redirect
+    name: Mapped[str] = mapped_column(String(200), default="")
+    state_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
+    secret_envelope: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # device code (encrypted)
+    user_code: Mapped[str] = mapped_column(String(32), default="")
+    verification_uri: Mapped[str] = mapped_column(String(300), default="")
+    interval: Mapped[int] = mapped_column(Integer, default=5)
+    directory_id: Mapped[str] = mapped_column(String(36), default="")
+    signed_in_as: Mapped[str] = mapped_column(String(320), default="")
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | provisioning | completed | failed | expired
+    error: Mapped[str] = mapped_column(String(500), default="")
+    connection_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_polled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class NetworkMonitor(Base):

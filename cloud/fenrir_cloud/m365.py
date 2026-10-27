@@ -82,9 +82,19 @@ def insights(snapshot: dict) -> dict:
 
 
 def access_token(client, connection):
-    secret = crypto.decrypt(connection.credentials_envelope, f"m365:{connection.tenant_id}:{connection.id}")
+    if (connection.auth_mode or "app") == "platform":
+        # The MSP's multi-tenant Fenrir app, consented by this tenant's admin.
+        from .config import get_settings
+
+        settings = get_settings()
+        if not settings.m365_client_id or not settings.m365_client_secret:
+            raise ValueError("The platform Microsoft 365 app is not configured")
+        client_id, secret = settings.m365_client_id, settings.m365_client_secret
+    else:
+        client_id = connection.client_id
+        secret = crypto.decrypt(connection.credentials_envelope, f"m365:{connection.tenant_id}:{connection.id}")
     response = client.post(f"https://login.microsoftonline.com/{connection.directory_id}/oauth2/v2.0/token",
-        data={"client_id": connection.client_id, "client_secret": secret,
+        data={"client_id": client_id, "client_secret": secret,
               "grant_type": "client_credentials", "scope": "https://graph.microsoft.com/.default"})
     response.raise_for_status()
     return response.json()["access_token"]

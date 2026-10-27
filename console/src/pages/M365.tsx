@@ -1,4 +1,6 @@
 import { M365Administration } from "./M365Administration";
+import { M365Connect } from "../components/M365Connect";
+import { useSearchParams } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
@@ -23,6 +25,23 @@ export default function M365() {
   const { tenantId, can } = useApp();
   const { data, error, reload } = useListData<any>(can("configure") ? "m365/connections" : null, {tenant_id:tenantId});
   const [create, setCreate] = useState(false);
+  const [connect, setConnect] = useState(false);
+  const [params, setParams] = useSearchParams();
+  const { toast } = useApp();
+  useEffect(() => {
+    const outcome = params.get("signin");
+    if (!outcome) return;
+    const messages: Record<string, [string, boolean]> = {
+      connected: ["Microsoft 365 connected. Sync it now, or wait for the next scheduled sync.", false],
+      failed: ["Microsoft sign-in did not complete. Try again, and approve the permissions when Microsoft asks.", true],
+      expired: ["That sign-in link expired. Start again.", true],
+      duplicate: ["That Microsoft tenant is already connected for this customer.", true],
+    };
+    const [text, isError] = messages[outcome] || ["Sign-in finished.", false];
+    toast(text, isError);
+    setParams({}, { replace: true });
+    reload();
+  }, [params]);
   const [selected, setSelected] = useState<any>(null);
   const [secret, setSecret] = useState(false);
   const { run, busy } = useAction();
@@ -30,13 +49,14 @@ export default function M365() {
   if (!can("configure")) return <PageHead title="Microsoft 365" subtitle="Configuration access is required." />;
   return <>
     <PageHead title="Microsoft 365" subtitle="Customer directory administration, licences and security snapshots."
-      actions={<button className="primary" onClick={() => setCreate(true)}>Connect directory</button>} />
+      actions={<button className="primary" onClick={() => setConnect(true)}>Connect Microsoft 365</button>} />
     <ErrorNote error={error} />
-    <div className="card"><p>Register an application in the customer's directory and grant application permissions: User.Read.All, LicenseAssignment.Read.All and SecurityEvents.Read.All, with admin consent. Add AuditLog.Read.All to see MFA registration (needs Entra ID P1/P2). Snapshot sync is read-only. Select a connection below for live administration and access checks. New-user creation additionally requires User.ReadWrite.All and Domain.Read.All with admin consent; other actions list their required permissions before execution.</p></div>
-    <Table rows={data} onRow={setSelected} columns={[{key:"name",label:"Connection"},{key:"directoryId",label:"Directory"},{key:"status",label:"Status",render:r=><Pill value={r.status}/>},{key:"syncedAt",label:"Last successful sync",render:r=>fmtTime(r.syncedAt)}]} />
+    <div className="card"><p className="small muted">Connect a customer by signing in as their Microsoft 365 administrator. If you prefer, register an application yourself and enter its details. Manual setup: register an application in the customer's directory and grant application permissions: User.Read.All, LicenseAssignment.Read.All and SecurityEvents.Read.All, with admin consent. Add AuditLog.Read.All to see MFA registration (needs Entra ID P1/P2). Snapshot sync is read-only. Select a connection below for live administration and access checks. New-user creation additionally requires User.ReadWrite.All and Domain.Read.All with admin consent; other actions list their required permissions before execution.</p></div>
+    <Table rows={data} onRow={setSelected} columns={[{key:"name",label:"Connection"},{key:"tenantName",label:"Microsoft tenant",render:r=><>{r.tenantName||"—"}<div className="small muted mono">{r.directoryId}</div></>},{key:"authMode",label:"Connected by",render:r=><span className="small">{r.authMode==="platform"?"Fenrir app (admin consent)":r.authMode==="provisioned"?"Admin sign-in":"Manual app"}{r.consentedBy?<div className="muted">{r.consentedBy}</div>:null}</span>},{key:"status",label:"Status",render:r=><Pill value={r.status}/>},{key:"syncedAt",label:"Last successful sync",render:r=>fmtTime(r.syncedAt)}]} />
+    {connect && <M365Connect onClose={()=>{setConnect(false);reload();}} onManual={()=>{setConnect(false);setCreate(true);}} />}
     {create && <RecordEditor title="Connect Microsoft 365" fields={[{key:"name",label:"Name",required:true},{key:"directoryId",label:"Directory (tenant) UUID",required:true},{key:"clientId",label:"Application (client) UUID",required:true},{key:"clientSecret",label:"Client secret",type:"password",required:true}]}
       onSave={body=>api("m365/connections",{body})} onClose={()=>{setCreate(false);reload();}} />}
-    {selected && <Modal title={selected.name} onClose={()=>setSelected(null)} footer={<><button onClick={()=>setSecret(true)}>Replace application secret</button><button className="primary" disabled={busy} onClick={async()=>{const row=await run(()=>api("m365/connections/"+selected.id+"/sync",{method:"POST"}),"Directory synchronised");if(row)setSelected(row);reload();}}>Sync now</button></>}>
+    {selected && <Modal title={selected.name} onClose={()=>setSelected(null)} footer={<>{selected.authMode!=="platform"&&<button onClick={()=>setSecret(true)}>Replace application secret</button>}<button className="primary" disabled={busy} onClick={async()=>{const row=await run(()=>api("m365/connections/"+selected.id+"/sync",{method:"POST"}),"Directory synchronised");if(row)setSelected(row);reload();}}>Sync now</button></>}>
       <ErrorNote error={selected.lastError || null}/>
       {selected.snapshot?.insights&&<Insights data={selected.snapshot.insights}/>}
       <M365Administration key={selected.id} connection={selected}/>

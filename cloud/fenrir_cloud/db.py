@@ -111,7 +111,7 @@ def migrate(bind: Engine) -> list[int]:
             conn.execute(text("CREATE TABLE IF NOT EXISTS schema_migrations "
                               "(version INTEGER PRIMARY KEY, applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"))
             versions = set(conn.execute(text("SELECT version FROM schema_migrations")).scalars())
-            if versions - {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}:
+            if versions - {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19}:
                 raise RuntimeError("Database schema is newer than this application")
             if 1 not in versions:
                 Base.metadata.create_all(conn)
@@ -199,6 +199,12 @@ def migrate(bind: Engine) -> list[int]:
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (16)"))
                 applied.append(16)
             # 17 is recorded by bootstrap (main.py) once the tuned detection rules have re-checked open alerts.
+            if 18 not in versions:
+                from .models import M365SignIn
+                M365SignIn.__table__.create(conn, checkfirst=True)
+                ensure_columns(Base, conn)  # m365_connections auth_mode, tenant_name, consent and secret expiry
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (18)"))
+                applied.append(18)
             conn.commit()
         except Exception:
             conn.rollback()

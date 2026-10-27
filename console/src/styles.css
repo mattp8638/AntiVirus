@@ -318,3 +318,4 @@ button.warn { background: rgba(245,158,11,.12); border-color: rgba(245,158,11,.4
 .risk-bar > span { display: block; height: 100%; background: linear-gradient(90deg, var(--green), var(--amber) 55%, var(--red)); }
 .domain-card { color: inherit; font: inherit; width: 100%; }
 .domain-card.active { border-color: var(--accent, #38bdf8); box-shadow: 0 0 0 1px var(--accent, #38bdf8) inset; }
+button.link { background: none; border: none; padding: 0; color: var(--accent, #38bdf8); cursor: pointer; text-decoration: underline; font: inherit; }
