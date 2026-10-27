@@ -26,7 +26,28 @@ How the certificate is kept safe:
 - The build reads it as a BuildKit secret, so it is not stored in the image.
 - The extracted key is deleted as soon as signing finishes.
 
-Without a certificate, the build is unsigned, as before.
+## Build profiles
+
+`FENRIR_BUILD_PROFILE` in `deploy/.env` chooses how the Windows agent is built.
+
+| Profile | Certificate | Result |
+|---|---|---|
+| `production` (the default for `docker compose`) | required | Everything signed. With no certificate, or a wrong password, the build stops before compiling and says what to fix. |
+| `lab` | not used | Agents built unsigned and recorded as `unsigned-lab` in `build.json`. Customers cannot download them unless `FENRIR_ALLOW_UNSIGNED_WINDOWS_INSTALLERS=true` and `FENRIR_WINDOWS_SETUP_SHA256` are set. |
+
+Build the lab profile by hand with the override file, which needs no signing files at all:
+
+```
+docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.lab.yml --env-file deploy/.env up -d --build
+```
+
+Automatic updates (`deploy/auto-update.sh`) follow `FENRIR_BUILD_PROFILE`. When it is not set, a server with a
+certificate builds `production` and one without builds `lab`, logging a warning on every run. Set
+`FENRIR_BUILD_PROFILE=production` once the certificate is in place, so a missing certificate stops the update
+instead of quietly producing unsigned agents.
+
+Signing the user-mode programs does not sign a kernel driver. The real-time protection minifilter needs
+Microsoft's driver signing (attestation or WHQL) and is not part of this image yet; see docs/parity/decisions.md.
 
 ## Timestamps
 

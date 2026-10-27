@@ -16,9 +16,24 @@ PASSWORD_FILE=${CODESIGN_PASSWORD_FILE:-/run/secrets/codesign_password}
 OUT=${SIGN_OUT:-/out/windows}
 mkdir -p "$OUT"
 
+PROFILE=${FENRIR_BUILD_PROFILE:-production}
+case "$PROFILE" in production|lab) ;; *) echo "sign-windows: FENRIR_BUILD_PROFILE must be 'production' or 'lab' (got '$PROFILE')" >&2; exit 2 ;; esac
+
 if [ ! -s "$PFX" ]; then
-  echo "sign-windows: no code-signing certificate supplied; the Windows build stays unsigned."
-  [ -f "$OUT/signing.json" ] || echo '{"signed": false}' > "$OUT/signing.json"
+  if [ "$PROFILE" = "production" ]; then
+    cat >&2 <<'MSG'
+sign-windows: ERROR: the production build profile needs a Windows code-signing certificate, and none was supplied.
+  Fix one of:
+    - put the certificate at deploy/signing/codesign.pfx (and its password in deploy/signing/codesign.password), or
+    - point FENRIR_CODESIGN_PFX / FENRIR_CODESIGN_PASSWORD_FILE at them, or
+    - for a test/lab server only, set FENRIR_BUILD_PROFILE=lab in deploy/.env (or add -f deploy/docker-compose.lab.yml)
+      to build clearly-labelled unsigned agents.
+  See docs/CODE_SIGNING.md.
+MSG
+    exit 3
+  fi
+  echo "sign-windows: lab profile: no code-signing certificate; the Windows build is UNSIGNED (unsigned-lab)."
+  [ -f "$OUT/signing.json" ] || echo '{"signed": false, "profile": "lab"}' > "$OUT/signing.json"
   exit 0
 fi
 
@@ -72,5 +87,5 @@ for target in "$@"; do
     ts_json=false
   fi
 done
-printf '{"signed": true, "signer": "%s", "signerSha1": "%s", "expires": "%s", "timestamped": %s}\n' \
-  "$SUBJECT" "$SHA1" "$EXPIRES" "$ts_json" > "$OUT/signing.json"
+printf '{"signed": true, "profile": "%s", "signer": "%s", "signerSha1": "%s", "expires": "%s", "timestamped": %s}\n' \
+  "$PROFILE" "$SUBJECT" "$SHA1" "$EXPIRES" "$ts_json" > "$OUT/signing.json"

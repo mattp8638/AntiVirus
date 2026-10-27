@@ -40,10 +40,40 @@ healthy() {
   return 1
 }
 
+# Build profile: FENRIR_BUILD_PROFILE in the env file. production requires deploy/signing/codesign.pfx; lab builds
+# unsigned agents. When it is not set, a server with a certificate builds production and one without builds lab
+# (and says so every run), so an existing unsigned test server keeps updating.
+build_profile() {
+  local profile
+  profile="$(sed -n 's/^FENRIR_BUILD_PROFILE=//p' "$ENV_FILE" 2>/dev/null | tail -1 | tr -d '"'"'"' \r')"
+  if [ -z "$profile" ]; then
+    if [ -s "$DEPLOY_DIR/signing/codesign.pfx" ]; then profile=production; else
+      profile=lab
+      log "WARNING: no code-signing certificate and FENRIR_BUILD_PROFILE is not set: building UNSIGNED lab agents." \
+          "Set FENRIR_BUILD_PROFILE=production in $ENV_FILE once deploy/signing/codesign.pfx is in place."
+    fi
+  fi
+  echo "$profile"
+}
+
 deploy() {  # build first so the running server keeps serving during the (slow) image build
-  # Compose needs the signing secret files to exist; empty files mean "build the Windows agent unsigned".
-  (umask 077; mkdir -p "$DEPLOY_DIR/signing"; touch "$DEPLOY_DIR/signing/codesign.pfx" "$DEPLOY_DIR/signing/codesign.password")
-  compose build && compose up -d && healthy
+  local profile
+  profile="$(build_profile)"
+  case "$profile" in
+    production)
+      if [ ! -s "$DEPLOY_DIR/signing/codesign.pfx" ]; then
+        log "ERROR: FENRIR_BUILD_PROFILE=production but deploy/signing/codesign.pfx is missing or empty; not building." \
+            "Add the certificate, or set FENRIR_BUILD_PROFILE=lab for a test server. See docs/CODE_SIGNING.md."
+        return 1
+      fi
+      [ -f "$DEPLOY_DIR/signing/codesign.password" ] || (umask 077; : > "$DEPLOY_DIR/signing/codesign.password")
+      FENRIR_BUILD_PROFILE=production compose build && compose up -d && healthy ;;
+    lab)
+      # The lab override swaps the signing secrets for an empty placeholder, so every compose command needs it.
+      case " ${compose_args[*]} " in *docker-compose.lab.yml*) ;; *) compose_args+=(-f "$DEPLOY_DIR/docker-compose.lab.yml") ;; esac
+      FENRIR_BUILD_PROFILE=lab compose build && compose up -d && healthy ;;
+    *) log "ERROR: FENRIR_BUILD_PROFILE must be production or lab (got '$profile')"; return 1 ;;
+  esac
 }
 
 # Run git as the repository's owner: that account has the GitHub credentials and keeps file ownership intact.

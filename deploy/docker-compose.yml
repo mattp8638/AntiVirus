@@ -19,8 +19,11 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
       # Windows code signing: put the certificate at deploy/signing/codesign.pfx (and its password, if any, in
-      # deploy/signing/codesign.password). Without them the Windows build is unsigned. See docs/CODE_SIGNING.md.
+      # deploy/signing/codesign.password). The production profile refuses to build without it. See docs/CODE_SIGNING.md.
       secrets: [codesign_pfx, codesign_password]
+      # production needs the certificate above; lab builds unsigned agents (see docker-compose.lab.yml).
+      args:
+        FENRIR_BUILD_PROFILE: ${FENRIR_BUILD_PROFILE:-production}
     restart: unless-stopped
     depends_on: { db: { condition: service_healthy } }
     environment:
