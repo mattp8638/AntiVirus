@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { ago, api, fmtTime } from "../api";
 import { useApp } from "../app-context";
 import { Modal, PageHead, Pill, Sev, Table, useAction, useData } from "../components/ui";
+import { EvidenceList } from "../components/Evidence";
 
 export default function Alerts() {
   const { tenantId, tenantName } = useApp();
@@ -61,11 +62,15 @@ function AlertDrawer({ id, onClose }: { id: string; onClose: () => void }) {
         <dt>Rule</dt><dd>{data.rule?.title} <span className="muted small mono">{a.ruleId}</span></dd>
         <dt>MITRE ATT&CK</dt><dd>{a.mitre.map((m: string) => <span key={m} className="chip">{m}</span>)}</dd>
         <dt>First seen</dt><dd>{fmtTime(a.createdAt)}</dd>
-        {Object.entries(a.details || {}).filter(([k]) => k !== "description").map(([k, v]) => <Fragment key={k}><dt>{k}</dt><dd className="mono small">{typeof v === "string" ? v : JSON.stringify(v)}</dd></Fragment>)}
+        {Object.entries(a.details || {}).filter(([k, v]) => !["description", "evidence", "falsePositives"].includes(k) && (typeof v !== "object" || v === null)).map(([k, v]) =>
+          <Fragment key={k}><dt>{k}</dt><dd className="mono small" style={{ wordBreak: "break-all" }}>{String(v)}</dd></Fragment>)}
       </dl>
       {a.details?.description && <p className="muted">{a.details.description}</p>}
-      <h3 style={{ marginTop: 16 }}>Matched events ({data.events.length})</h3>
-      <pre>{JSON.stringify(data.events.slice(0, 5).map((e: any) => ({ at: e.occurredAt, type: e.eventType, ...e.fields })), null, 2)}</pre>
+      <h3 style={{ marginTop: 16 }}>Evidence</h3>
+      <EvidenceList details={a.details} />
+      <details style={{ marginTop: 14 }}><summary className="small">Raw events ({data.events.length})</summary>
+        <pre>{JSON.stringify(data.events.slice(0, 5).map((e: any) => ({ at: e.occurredAt, type: e.eventType, ...e.fields })), null, 2)}</pre>
+      </details>
       {data.processContext.length > 0 && (
         <>
           <h3 style={{ marginTop: 16 }}>Process context (±5 minutes)</h3>

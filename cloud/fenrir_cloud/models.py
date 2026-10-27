@@ -475,6 +475,10 @@ class SoftwareItem(Base):
     vendor: Mapped[str] = mapped_column(String(200), default="")
     ecosystem: Mapped[str] = mapped_column(String(40), default="")  # e.g. Debian:12, Ubuntu:22.04, windows
     seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # Where it is on the device (Windows uninstall registry data), shown as vulnerability evidence.
+    install_location: Mapped[str | None] = mapped_column(String(500), nullable=True, default="")
+    install_date: Mapped[str | None] = mapped_column(String(20), nullable=True, default="")
+    executable_paths: Mapped[list | None] = mapped_column(JSON, nullable=True, default=list)
 
 
 class Vulnerability(Base):
@@ -503,8 +507,48 @@ class Vulnerability(Base):
     exception_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     exception_approved_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
     exception_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Exploit likelihood (FIRST EPSS, 0-1), the CVSS vector, why we think the device is affected (the program and
+    # where it is installed, or the missing update) and how to fix it ({kind: kb|update|package, ref, title, url}).
+    epss: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cvss_vector: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=dict)
+    fix: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=dict)
 
     __table_args__ = (UniqueConstraint("device_id", "vuln_id", "package", name="uq_vuln_device"),)
+
+
+class CveRecord(Base):
+    """What is known about a CVE: NVD (description, CVSS, CWE, references), FIRST EPSS and CISA KEV. Shared by all
+    tenants; refreshed in the background (cveintel.py)."""
+
+    __tablename__ = "cve_records"
+    cve_id: Mapped[str] = mapped_column(String(30), primary_key=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    cvss: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cvss_vector: Mapped[str] = mapped_column(String(200), default="")
+    cvss_version: Mapped[str] = mapped_column(String(8), default="")
+    severity: Mapped[str] = mapped_column(String(16), default="")
+    cwe: Mapped[list] = mapped_column(JSON, default=list)
+    references: Mapped[list] = mapped_column(JSON, default=list)
+    published: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    epss: Mapped[float | None] = mapped_column(Float, nullable=True)
+    epss_percentile: Mapped[float | None] = mapped_column(Float, nullable=True)
+    kev: Mapped[bool] = mapped_column(Boolean, default=False)
+    kev_added: Mapped[str] = mapped_column(String(12), default="")
+    kev_due: Mapped[str] = mapped_column(String(12), default="")
+    kev_ransomware: Mapped[bool] = mapped_column(Boolean, default=False)
+    kev_action: Mapped[str] = mapped_column(Text, default="")
+    nvd_fetched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    epss_fetched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class CpeMatchCache(Base):
+    """NVD's answer for one product version (vendor:product:version), kept for a day so a fleet costs one query."""
+
+    __tablename__ = "cpe_match_cache"
+    key: Mapped[str] = mapped_column(String(300), primary_key=True)
+    matches: Mapped[list] = mapped_column(JSON, default=list)  # [{"cve", "fixed", "range"}]
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class ExternalAsset(Base):

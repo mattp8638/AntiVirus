@@ -3,6 +3,7 @@ import { ago, fmtTime } from "../api";
 import { useApp } from "../app-context";
 import { Pill, Sev, useData } from "../components/ui";
 import { TimeChart } from "../components/TimeChart";
+import { RiskBreakdown } from "../components/Vuln";
 
 // The device landing page: what needs attention first, then the last 24 hours, recent activity and the
 // facts a technician asks for on the phone (who is signed in, model, serial, Windows build, storage).
@@ -44,6 +45,15 @@ export function DeviceOverview({ data, profile, patches, go, management, whereab
     const worst = ["critical", "high", "medium", "low"].find((s) => openAlerts.some((a: any) => a.severity === s)) || "low";
     attention.push({ severity: worst === "low" ? "medium" : worst, title: `${openAlerts.length} open alert${openAlerts.length === 1 ? "" : "s"}`,
                      detail: openAlerts.slice(0, 2).map((a: any) => a.title).join(" · "), action: () => go("security", "Alerts"), actionLabel: "Review" });
+  }
+  const openVulns = (data.vulnerabilities || []).filter((v: any) => ["open", "patching"].includes(v.status));
+  if (openVulns.length) {
+    const kev = openVulns.filter((v: any) => v.knownExploited);
+    const worst = openVulns[0];
+    attention.push({ severity: kev.length ? "critical" : worst.riskScore >= 7 ? "high" : "medium",
+                     title: kev.length ? `${kev.length} vulnerabilit${kev.length === 1 ? "y" : "ies"} exploited in the wild` : `${openVulns.length} open vulnerabilit${openVulns.length === 1 ? "y" : "ies"}`,
+                     detail: `Worst: ${worst.vulnId} in ${worst.package}${worst.fix?.ref ? `, fixed by ${worst.fix.ref}` : ""}`,
+                     action: () => go("security", "Vulnerabilities"), actionLabel: "Fix" });
   }
   if (!data.policy.applied) attention.push({ severity: "low", title: "Policy change not applied yet", detail: "The agent picks it up at its next check-in." });
   if (pendingPatches.length) attention.push({ severity: pendingPatches.some((x: any) => ["critical", "security"].includes(x.classification)) ? "medium" : "low",
@@ -148,6 +158,10 @@ export function DeviceOverview({ data, profile, patches, go, management, whereab
       </div>
 
       <div className="stack">
+        {data.risk && <div className="card">
+          <h3>Risk score</h3>
+          <RiskBreakdown risk={data.risk} onOpenVulns={() => go("security", "Vulnerabilities")} />
+        </div>}
         <div className="card">
           <h3>At a glance</h3>
           <dl className="kv compact">

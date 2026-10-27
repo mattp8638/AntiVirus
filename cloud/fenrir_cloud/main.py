@@ -209,6 +209,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         worker.start()
         if settings.scheduler_enabled:
             threading.Thread(target=_scheduler_loop, args=(stop,), daemon=True).start()
+        if settings.scheduler_enabled and settings.vuln_intel_enabled:
+            from . import cveintel
+
+            threading.Thread(target=cveintel.loop, args=(stop,), daemon=True, name="vuln-intel").start()
         yield
         stop.set()
 

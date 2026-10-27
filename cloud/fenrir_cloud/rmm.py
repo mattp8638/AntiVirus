@@ -342,10 +342,11 @@ def ingest_patch_scan(db: Session, device: Device, result: dict) -> int:
         row.installed_version = str(item.get("installedVersion") or "")[:80]
         row.available_version = str(item.get("availableVersion") or "")[:80]
         row.reboot_required = bool(item.get("rebootRequired"))
-        cves = item.get("cves") or []
-        if isinstance(cves, str):
-            cves = [c.strip() for c in cves.split(",")]
-        row_cves[key] = [str(c)[:30] for c in cves if str(c).startswith("CVE-")][:200]
+        if "cves" in item:  # absent = not reported this time (keep what we know); empty = the update lists none
+            cves = item.get("cves") or []
+            if isinstance(cves, str):
+                cves = [c.strip() for c in cves.split(",")]
+            row_cves[key] = [str(c)[:30] for c in cves if str(c).startswith("CVE-")][:200]
         released = item.get("releasedAt")
         if released:
             try:
@@ -362,6 +363,9 @@ def ingest_patch_scan(db: Session, device: Device, result: dict) -> int:
             row.status, row.installed_at = "installed", now
     db.flush()
     sync_update_vulnerabilities(db, device, now, row_cves)
+    from .detection import refresh_risk_scores
+
+    refresh_risk_scores(db, [device.id])
     metrics = dict(device.metrics or {})
     metrics["patchScanAt"] = now.isoformat() + "Z"
     if "rebootPending" in result:
@@ -374,11 +378,39 @@ MSRC_SEVERITY = {"critical": "critical", "important": "high", "moderate": "mediu
 UPDATE_VULN_SOURCE = "windows-update"
 
 
-def sync_update_vulnerabilities(db: Session, device: Device, scanned_at: datetime, cves: dict[str, list[str]]) -> int:
-    """Missing Windows security updates are this device's OS vulnerabilities (OSV has no Windows data).
+def update_product(title: str) -> str:
+    """Which Microsoft product a Windows Update title is for (the "package" of its vulnerabilities)."""
+    t = title.lower()
+    for needle, name in ((".net", ".NET"), ("office", "Microsoft Office"), ("microsoft 365", "Microsoft 365 Apps"),
+                         ("sql server", "SQL Server"), ("exchange", "Exchange Server"), ("edge", "Microsoft Edge"),
+                         ("visual studio", "Visual Studio"), ("defender", "Microsoft Defender")):
+        if needle in t:
+            return name
+    return "Windows"
 
-    One vulnerability per missing update, named by its KB; it is verified fixed once a patch scan no
-    longer reports the update. Returns how many new ones were found.
+
+def _kb_fix(patch: DevicePatch) -> dict:
+    kb = patch.patch_key if patch.patch_key.upper().startswith("KB") else ""
+    number = kb[2:] if kb else ""
+    return {"kind": "kb", "ref": patch.patch_key, "title": patch.title, "patchKey": patch.patch_key,
+            "url": f"https://support.microsoft.com/help/{number}" if number else "",
+            "catalog": f"https://www.catalog.update.microsoft.com/Search.aspx?q={kb}" if kb else "",
+            "rebootRequired": bool(patch.reboot_required)}
+
+
+def _kb_evidence(device: Device, patch: DevicePatch, scanned_at: datetime) -> dict:
+    return {"kind": "missing-update", "update": patch.patch_key, "title": patch.title, "classification": patch.classification,
+            "msrcSeverity": patch.severity, "releasedAt": patch.released_at.isoformat() + "Z" if patch.released_at else None,
+            "missingSince": patch.first_seen_at.isoformat() + "Z" if patch.first_seen_at else None,
+            "rebootRequired": bool(patch.reboot_required), "os": device.os_version,
+            "detectedBy": "Windows Update scan on the device", "checkedAt": scanned_at.isoformat() + "Z"}
+
+
+def sync_update_vulnerabilities(db: Session, device: Device, scanned_at: datetime, cves: dict[str, list[str]]) -> int:
+    """Missing Windows security updates are this device's Microsoft vulnerabilities (OSV has no Windows data).
+
+    One vulnerability per CVE an update fixes (named by the CVE, fixed by the KB), or one named by the KB when the
+    update lists no CVEs. Verified fixed once a patch scan no longer reports the update. Returns how many are new.
     """
     from . import vulnmgmt
 
@@ -391,36 +423,51 @@ def sync_update_vulnerabilities(db: Session, device: Device, scanned_at: datetim
     kev = _known_exploited_cves(db)
     found = 0
     for patch in missing:
-        ids = cves.get(patch.patch_key, [])
-        row = db.execute(select(Vulnerability).where(Vulnerability.device_id == device.id,
-                                                     Vulnerability.vuln_id == patch.patch_key[:80],
-                                                     Vulnerability.package == "Windows")).scalar_one_or_none()
-        is_new = row is None
-        if row is None:
-            row = Vulnerability(tenant_id=device.tenant_id, device_id=device.id, vuln_id=patch.patch_key[:80], package="Windows",
-                                source=UPDATE_VULN_SOURCE, first_seen=patch.first_seen_at or scanned_at)
-            db.add(row)
-            found += 1
-        row.source = UPDATE_VULN_SOURCE
-        row.installed_version = (device.os_version or "")[:100]
-        row.fixed_version = patch.patch_key[:100]
-        row.severity = MSRC_SEVERITY.get((patch.severity or "").lower(),
-                                         "critical" if patch.classification == "critical" else "high")
-        row.known_exploited = bool(set(ids) & kev)
-        if row.known_exploited:
-            row.severity = "critical"
-        summary = patch.title
+        ids = cves.get(patch.patch_key)
+        if ids is None:  # this scan didn't list CVEs for it: keep what an earlier scan stored
+            ids = [v.vuln_id for v in db.execute(select(Vulnerability).where(
+                Vulnerability.device_id == device.id, Vulnerability.source == UPDATE_VULN_SOURCE,
+                Vulnerability.fixed_version == patch.patch_key[:100], Vulnerability.vuln_id.like("CVE-%"))).scalars()]
+        product = update_product(patch.title)
+        names = ids or [patch.patch_key[:80]]
         if ids:
-            summary += "\nAddresses " + ", ".join(ids[:50]) + (f" and {len(ids) - 50} more" if len(ids) > 50 else "")
-        row.summary = summary[:2000]
-        row.last_seen = scanned_at
-        reopened = row.status == "fixed"
-        if reopened:
-            row.status, row.verified_at, row.status_changed_at = "open", None, utcnow()
-        if is_new or reopened:
-            db.flush()
-            vulnmgmt.record_detection(db, row, reopened)
+            # The update now lists its CVEs: the older KB-named entry is superseded, not fixed.
+            for stale in db.execute(select(Vulnerability).where(Vulnerability.device_id == device.id, Vulnerability.vuln_id == patch.patch_key[:80],
+                                                                Vulnerability.source == UPDATE_VULN_SOURCE)).scalars():
+                db.delete(stale)
+        fix, evidence = _kb_fix(patch), _kb_evidence(device, patch, scanned_at)
+        severity = MSRC_SEVERITY.get((patch.severity or "").lower(), "critical" if patch.classification == "critical" else "high")
+        for name in names:
+            row = db.execute(select(Vulnerability).where(Vulnerability.device_id == device.id, Vulnerability.vuln_id == name,
+                                                         Vulnerability.package == product)).scalar_one_or_none()
+            is_new = row is None
+            if row is None:
+                row = Vulnerability(tenant_id=device.tenant_id, device_id=device.id, vuln_id=name, package=product,
+                                    source=UPDATE_VULN_SOURCE, first_seen=patch.first_seen_at or scanned_at, severity=severity)
+                db.add(row)
+                found += 1
+            row.source = UPDATE_VULN_SOURCE
+            row.installed_version = (device.os_version or "")[:100]
+            row.fixed_version = patch.patch_key[:100]
+            row.fix, row.evidence = fix, evidence
+            if row.cvss is None:  # until NVD has scored it, the update's own rating
+                row.severity = severity
+            if name in kev:
+                row.known_exploited, row.severity = True, "critical"
+            if not row.summary or row.summary.startswith(patch.title[:20]):
+                row.summary = patch.title[:2000]
+            row.last_seen = scanned_at
+            reopened = row.status == "fixed"
+            if reopened:
+                row.status, row.verified_at, row.status_changed_at = "open", None, utcnow()
+            if is_new or reopened:
+                db.flush()
+                vulnmgmt.record_detection(db, row, reopened)
+    db.flush()
     vulnmgmt.verify_after_scan(db, device, scanned_at, source=UPDATE_VULN_SOURCE)
+    from . import cveintel
+
+    cveintel.apply(db, [i for p in missing for i in cves.get(p.patch_key, [])])
     return found
 
 

@@ -263,12 +263,17 @@ def list_vulnerabilities(tenant_id: str | None = None, status: str | None = "ope
         entry = by_cve.setdefault(v.vuln_id, {"vulnId": v.vuln_id, "severity": v.severity, "cvss": v.cvss,
                                               "knownExploited": v.known_exploited, "summary": v.summary, "packages": set(),
                                               "fixedVersion": v.fixed_version, "devices": [], "riskScore": 0.0,
-                                              "recommendation": vulnmgmt.recommendation(v), "overdue": 0})
+                                              "recommendation": vulnmgmt.recommendation(v), "overdue": 0,
+                                              "epss": v.epss, "cvssVector": v.cvss_vector, "fix": v.fix or {}, "sources": set()})
         entry["packages"].add(v.package)
+        entry["sources"].add(v.source)
+        if v.epss is not None and (entry["epss"] is None or v.epss > entry["epss"]):
+            entry["epss"] = v.epss
         entry["riskScore"] = max(entry["riskScore"], risk)
         overdue = bool(v.due_at and v.due_at < now and v.status in {"open", "patching"})
         entry["overdue"] += int(overdue)
         entry["devices"].append({"deviceId": v.device_id, "hostname": device.hostname if device else "", "installed": v.installed_version,
+                                 "package": v.package, "evidence": v.evidence or {}, "fix": v.fix or {}, "platform": device.platform if device else "",
                                  "id": v.id, "status": v.status, "criticality": criticality, "riskScore": risk,
                                  "assignee": v.assignee or "", "ticketId": v.ticket_id, "overdue": overdue,
                                  "dueAt": v.due_at.isoformat(timespec="seconds") + "Z" if v.due_at else None,
@@ -279,9 +284,31 @@ def list_vulnerabilities(tenant_id: str | None = None, status: str | None = "ope
     out = sorted(by_cve.values(), key=lambda e: (-e["riskScore"], -len(e["devices"])))
     for entry in out:
         entry["packages"] = sorted(entry["packages"])
+        entry["sources"] = sorted(entry["sources"])
         entry["priority"] = ("P1" if entry["knownExploited"] else "P2" if entry["severity"] == "critical"
                              else "P3" if entry["severity"] == "high" else "P4")
     return out
+
+
+@console.get("/vulnerabilities/cve/{cve_id}")
+def cve_detail(cve_id: str, tenant_id: str | None = None, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Everything about one CVE: NVD/EPSS/KEV intelligence and every device in scope it affects, with evidence and fix."""
+    from .. import cveintel
+    from ..models import CveRecord
+
+    rows = db.execute(select(Vulnerability).where(Vulnerability.vuln_id == cve_id,
+                                                  Vulnerability.tenant_id.in_(scoped_tenant(principal, tenant_id)))).scalars().all()
+    intel = cveintel.record_view(db.get(CveRecord, cve_id))
+    if not rows and intel is None:
+        raise HTTPException(404, "Not found")
+    devices = {d.id: d for d in db.execute(select(Device).where(Device.id.in_({v.device_id for v in rows}))).scalars()}
+    affected = []
+    for v in sorted(rows, key=lambda r: (r.status == "fixed", r.device_id)):
+        device = devices.get(v.device_id)
+        affected.append({**to_dict(v), "hostname": device.hostname if device else "", "platform": device.platform if device else "",
+                         "riskScore": vulnmgmt.risk_score(v, device.criticality if device else None),
+                         "reasons": vulnmgmt.risk_reasons(v), "recommendation": vulnmgmt.recommendation(v)})
+    return {"cve": cve_id, "intel": intel, "affected": affected}
 
 
 @console.get("/vulnerabilities/trends")

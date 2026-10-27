@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from . import vulnmgmt
 
-from .models import Device, ExternalAsset, SoftwareItem, Vulnerability, utcnow
+from .models import CveRecord, Device, ExternalAsset, SoftwareItem, Vulnerability, utcnow
 
 log = logging.getLogger("fenrir.exposure")
 
@@ -73,18 +73,28 @@ def record_inventory(db: Session, device: Device, fields: dict) -> int:
     ecosystem = ecosystem_for(device)
     count = 0
     for item in software[:5000]:
+        location, installed_on, executables = "", "", []
         if isinstance(item, str):
             name, version, vendor = item, "", ""
         elif isinstance(item, dict):
             name = str(item.get("name") or item.get("displayName") or "")
             version = str(item.get("version") or item.get("displayVersion") or "")
             vendor = str(item.get("vendor") or item.get("publisher") or "")
+            location = str(item.get("installLocation") or item.get("path") or "")
+            installed_on = str(item.get("installDate") or "")
+            paths = item.get("executablePaths")
+            executables = [str(p)[:400] for p in paths[:10] if p] if isinstance(paths, list) else []
         else:
             continue
         if not name:
             continue
+        if version.lower() == "unknown":
+            version = ""
+        if vendor.lower() == "unknown":
+            vendor = ""
         db.add(SoftwareItem(tenant_id=device.tenant_id, device_id=device.id, name=name[:300], version=version[:100],
-                            vendor=vendor[:200], ecosystem=ecosystem))
+                            vendor=vendor[:200], ecosystem=ecosystem, install_location=location[:500],
+                            install_date=installed_on[:20], executable_paths=executables))
         count += 1
     return count
 
@@ -174,7 +184,8 @@ def scan_device(db: Session, device: Device, client: httpx.Client | None = None,
                     aliases = set(detail.get("aliases") or []) | {vuln_id}
                     cve = next((a for a in sorted(aliases) if a.startswith("CVE-")), vuln_id)
                     severity, score = _severity_from_osv(detail)
-                    exploited = bool(aliases & kev)
+                    exploited = bool(aliases & kev) or bool(db.execute(select(CveRecord.cve_id).where(
+                        CveRecord.cve_id.in_([a for a in aliases if a.startswith("CVE-")]), CveRecord.kev.is_(True))).first())
                     if exploited:
                         severity = "critical"
                     row = db.execute(select(Vulnerability).where(Vulnerability.device_id == device.id,
@@ -188,6 +199,14 @@ def scan_device(db: Session, device: Device, client: httpx.Client | None = None,
                         found += 1
                     row.installed_version = item.version
                     row.fixed_version = _fixed_version(detail, item.name)
+                    row.evidence = {"kind": "package", "program": item.name, "version": item.version, "ecosystem": item.ecosystem,
+                                    "publisher": item.vendor or "", "installLocation": item.install_location or "",
+                                    "advisory": vuln_id, "detectedBy": "OSV.dev package and version match",
+                                    "checkedAt": utcnow().isoformat() + "Z"}
+                    row.fix = {"kind": "package", "ref": row.fixed_version,
+                               "title": (f"Upgrade {item.name} to {row.fixed_version} or later" if row.fixed_version
+                                         else f"No fixed version of {item.name} is published yet"),
+                               "url": f"https://osv.dev/vulnerability/{vuln_id}"}
                     row.severity, row.cvss, row.known_exploited = severity, score, exploited
                     row.summary = str(detail.get("summary") or detail.get("details") or "")[:2000]
                     row.last_seen = utcnow()
@@ -199,6 +218,9 @@ def scan_device(db: Session, device: Device, client: httpx.Client | None = None,
                         vulnmgmt.record_detection(db, row, reopened)
         # Every query completed: whatever was not seen again is verified as fixed.
         verified = vulnmgmt.verify_after_scan(db, device, scan_started)
+        from .detection import refresh_risk_scores
+
+        refresh_risk_scores(db, [device.id])
         return {"device": device.id, "queried": len(queryable), "found": found, "verifiedFixed": verified}
     finally:
         if own_client:

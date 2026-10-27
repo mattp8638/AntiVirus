@@ -430,17 +430,26 @@ def test_missing_windows_security_updates_become_vulnerabilities(client, admin, 
         row = session.get(Device, device["deviceId"])
         rmm.ingest_patch_scan(session, row, {"patches": patches})
         session.commit()
-        vulns = session.query(Vulnerability).filter_by(device_id=row.id).all()
-        assert [(v.vuln_id, v.package, v.source, v.status) for v in vulns] == [("KB5040001", "Windows", "windows-update", "open")]
-        assert vulns[0].known_exploited and vulns[0].severity == "critical"
-        assert "CVE-2030-0001" in vulns[0].summary and vulns[0].fixed_version == "KB5040001"
+        vulns = sorted(session.query(Vulnerability).filter_by(device_id=row.id).all(), key=lambda v: v.vuln_id)
+        # One vulnerability per CVE, each fixed by the KB, with the missing update as evidence.
+        assert [(v.vuln_id, v.package, v.source, v.status) for v in vulns] == [
+            ("CVE-2030-0001", "Windows", "windows-update", "open"), ("CVE-2030-0002", "Windows", "windows-update", "open")]
+        assert not vulns[0].known_exploited and vulns[0].severity == "high"
+        assert vulns[1].known_exploited and vulns[1].severity == "critical"
+        assert all(v.fixed_version == "KB5040001" and v.fix["ref"] == "KB5040001" for v in vulns)
+        assert vulns[0].fix["url"] == "https://support.microsoft.com/help/5040001" and "catalog.update.microsoft.com" in vulns[0].fix["catalog"]
+        assert vulns[0].evidence["kind"] == "missing-update" and vulns[0].evidence["update"] == "KB5040001"
         # An unrelated OSV rescan must not close update-based findings.
         from fenrir_cloud import vulnmgmt
         assert vulnmgmt.verify_after_scan(session, row, utcnow() + timedelta(seconds=5)) == 0
+        # A later scan that doesn't repeat the CVE list keeps the per-CVE entries.
+        rmm.ingest_patch_scan(session, row, {"patches": [{k: v for k, v in patches[0].items() if k != "cves"}] + patches[1:]})
+        session.commit()
+        assert sorted(v.vuln_id for v in session.query(Vulnerability).filter_by(device_id=row.id, status="open")) == ["CVE-2030-0001", "CVE-2030-0002"]
         rmm.ingest_patch_scan(session, row, {"patches": patches[1:]})
         session.commit()
-        fixed = session.query(Vulnerability).filter_by(device_id=row.id).one()
-        assert fixed.status == "fixed" and fixed.verified_at is not None
+        fixed = session.query(Vulnerability).filter_by(device_id=row.id).all()
+        assert len(fixed) == 2 and all(v.status == "fixed" and v.verified_at is not None for v in fixed)
     finally:
         exposure._KEV_CACHE = old_cache
         session.close()

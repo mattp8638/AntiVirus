@@ -143,10 +143,10 @@ export function Table<T extends Record<string, any>>({ rows, columns, onRow, emp
   );
 }
 
-export function Modal({ title, onClose, children, footer }: { title: string; onClose: () => void; children: ReactNode; footer?: ReactNode }) {
+export function Modal({ title, onClose, children, footer, wide }: { title: string; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean }) {
   return (
     <div className="modal-back" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-label={title}>
+      <div className={`modal${wide ? " wide" : ""}`} onClick={(e) => e.stopPropagation()} role="dialog" aria-label={title}>
         <div className="row" style={{ marginBottom: 12 }}>
           <h2 style={{ margin: 0 }}>{title}</h2>
           <span style={{ flex: 1 }} />

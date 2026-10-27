@@ -33,14 +33,48 @@ def priority(vuln: Vulnerability) -> str:
 
 
 def risk_score(vuln: Vulnerability, criticality: str | None) -> float:
-    base = vuln.cvss if vuln.cvss is not None else SEVERITY_BASE.get(vuln.severity, 5.0)
-    score = base * CRITICALITY_FACTOR.get(criticality or "medium", 1.0)
+    """0-10: how urgently this vulnerability on this device needs fixing.
+
+    CVSS (or the severity) says how bad it is; CISA KEV and FIRST EPSS say how likely it is to be used against
+    us; the device's business criticality says how much it matters here.
+    """
+    score = vuln.cvss if vuln.cvss is not None else SEVERITY_BASE.get(vuln.severity, 5.0)
+    epss = vuln.epss
     if vuln.known_exploited:
-        score = max(score, 9.0) + 1.5
-    return round(min(score, 15.0), 1)
+        score = max(score, 9.0) + 1.0
+    elif epss is not None:
+        if epss >= 0.5:
+            score += 1.5
+        elif epss >= 0.1:
+            score += 0.75
+        elif epss >= 0.01:
+            score += 0.25
+        else:
+            score -= 1.0  # scored, and very unlikely to be exploited
+    score *= CRITICALITY_FACTOR.get(criticality or "medium", 1.0)
+    return round(max(0.0, min(score, 10.0)), 1)
+
+
+def risk_reasons(vuln: Vulnerability) -> list[str]:
+    reasons = []
+    if vuln.known_exploited:
+        reasons.append("exploited in the wild (CISA KEV)")
+    if vuln.epss is not None:
+        reasons.append(f"{vuln.epss * 100:.1f}% chance of exploitation in 30 days (EPSS)")
+    if vuln.cvss is not None:
+        reasons.append(f"CVSS {vuln.cvss}")
+    return reasons
 
 
 def recommendation(vuln: Vulnerability) -> str:
+    fix = vuln.fix or {}
+    if vuln.source == "nvd-cpe":
+        text = fix.get("title") or f"Update {vuln.package}"
+        if fix.get("patchKey"):
+            text += f". The device already offers this update ({fix.get('available') or 'newer version'}): use Install fix"
+        elif fix.get("winget"):
+            text += f" (winget upgrade --id {fix['winget']})"
+        return text + ". It is verified fixed once the device reports the new version."
     if vuln.source == "windows-update":
         return (f"Install Windows update {vuln.fixed_version} (approve it under Patching or run Install now). "
                 "It is verified fixed at the next patch scan.")

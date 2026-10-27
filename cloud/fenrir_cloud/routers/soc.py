@@ -11,7 +11,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from .. import audit, services
+from .. import audit, evidence, services
 from ..db import get_db
 from ..deps import Principal, current_principal, scoped_tenant
 from ..detection import RULES, playbooks
@@ -222,8 +222,28 @@ def alert_detail(alert_id: str, principal: Principal = Depends(current_principal
                                                 Event.occurred_at.between(first - timedelta(minutes=5), first + timedelta(minutes=5)))
                             .order_by(Event.occurred_at).limit(2000)).scalars().all()
         context = [to_dict(e) for e in window if str(lookup(e.fields, "ProcessId")) in pids or str(lookup(e.fields, "ParentProcessId")) in pids]
-    return {"alert": to_dict(alert), "events": [to_dict(e) for e in events], "rule": to_dict(rule) if rule else None,
+    view = to_dict(alert)
+    view["details"] = _with_evidence(alert, events)
+    return {"alert": view, "events": [to_dict(e) for e in events], "rule": to_dict(rule) if rule else None,
             "processContext": context[:300]}
+
+
+def _with_evidence(alert: Alert, events: list[Event] | None = None, db: Session | None = None) -> dict:
+    """The alert's details, with evidence rebuilt from its events for alerts raised before evidence was stored."""
+    details = dict(alert.details or {})
+    if details.get("evidence"):
+        return details
+    if events is None and db is not None:
+        events = db.execute(select(Event).where(Event.id.in_((alert.event_ids or [])[:25]))).scalars().all()
+    for event in sorted(events or [], key=lambda e: e.occurred_at)[:25]:
+        details = evidence.add_occurrence(details, evidence.extract(
+            event.fields or {}, event.event_type, event.summary or "", event.occurred_at.isoformat() + "Z", event.source, event.id))
+    head = evidence.headline((details.get("evidence") or [{}])[-1])
+    for key, value in head.items():
+        details.setdefault(key, value)
+    if not details.get("process") and head.get("process"):
+        details["process"] = head["process"]
+    return details
 
 
 @router.patch("/alerts/{alert_id}")
@@ -307,7 +327,13 @@ def incident_detail(incident_id: str, principal: Principal = Depends(current_pri
     device = db.get(Device, incident.device_id) if incident.device_id else None
     ticket = db.get(Ticket, incident.ticket_id) if incident.ticket_id else None
     book = next((b for b in playbooks() if b.get("id") == incident.playbook), None)
-    return {"incident": to_dict(incident), "alerts": [to_dict(a) for a in alerts], "commands": [to_dict(c) for c in commands],
+    alert_views = []
+    for a in alerts:
+        view = to_dict(a)
+        view["details"] = _with_evidence(a, db=db)
+        alert_views.append(view)
+    return {"incident": to_dict(incident), "alerts": alert_views, "commands": [to_dict(c) for c in commands],
+            "indicators": evidence.indicators([a["details"] for a in alert_views]),
             "device": to_dict(device, exclude={"dns_token"}) if device else None, "ticket": to_dict(ticket) if ticket else None,
             "playbook": book}
 

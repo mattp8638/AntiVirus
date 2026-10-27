@@ -8,7 +8,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
-from .. import audit, policy_schema, rmm, services
+from .. import audit, detection, policy_schema, rmm, services
 from ..commands import BY_TYPE, catalog_document
 from ..config import get_settings
 from ..db import get_db
@@ -36,6 +36,25 @@ def _device_view(device: Device, summary: bool = False) -> dict:
         if disks:
             data["metrics"]["diskFreePercent"] = min(d.get("freePercent", 100) for d in disks)
     return data
+
+
+def _vuln_views(db: Session, device: Device, vulns: list[Vulnerability]) -> list[dict]:
+    """Device vulnerabilities, worst first, each with its risk on this device and the CVE's NVD/EPSS/KEV record."""
+    from .. import cveintel, vulnmgmt
+    from ..models import CveRecord
+
+    records = {r.cve_id: r for r in db.execute(select(CveRecord).where(CveRecord.cve_id.in_({v.vuln_id for v in vulns}))).scalars()}
+    out = []
+    for v in vulns:
+        view = to_dict(v)
+        view["riskScore"] = vulnmgmt.risk_score(v, device.criticality)
+        view["reasons"] = vulnmgmt.risk_reasons(v)
+        view["priority"] = vulnmgmt.priority(v)
+        view["recommendation"] = vulnmgmt.recommendation(v)
+        view["intel"] = cveintel.record_view(records.get(v.vuln_id))
+        out.append(view)
+    order = {"open": 0, "patching": 1, "mitigated": 2, "accepted": 3}
+    return sorted(out, key=lambda x: (order.get(x["status"], 4), -x["riskScore"]))
 
 
 def _get_device(db: Session, principal: Principal, device_id: str) -> Device:
@@ -104,7 +123,8 @@ def device_detail(device_id: str, principal: Principal = Depends(current_princip
         "alerts": [to_dict(a) for a in alerts],
         "commands": [to_dict(c) for c in commands],
         "software": [to_dict(s) for s in software],
-        "vulnerabilities": [to_dict(v) for v in vulns],
+        "vulnerabilities": _vuln_views(db, device, vulns),
+        "risk": detection.risk_breakdown(db, device),
         "eventCount": events,
     }
 

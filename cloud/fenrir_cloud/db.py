@@ -111,7 +111,7 @@ def migrate(bind: Engine) -> list[int]:
             conn.execute(text("CREATE TABLE IF NOT EXISTS schema_migrations "
                               "(version INTEGER PRIMARY KEY, applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"))
             versions = set(conn.execute(text("SELECT version FROM schema_migrations")).scalars())
-            if versions - {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}:
+            if versions - {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}:
                 raise RuntimeError("Database schema is newer than this application")
             if 1 not in versions:
                 Base.metadata.create_all(conn)
@@ -191,6 +191,13 @@ def migrate(bind: Engine) -> list[int]:
                 ensure_columns(Base, conn)  # devices.lost_mode
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (15)"))
                 applied.append(15)
+            if 16 not in versions:
+                from .models import CpeMatchCache, CveRecord
+                for model in (CveRecord, CpeMatchCache):
+                    model.__table__.create(conn, checkfirst=True)
+                ensure_columns(Base, conn)  # vulnerabilities evidence/fix/epss/cvss_vector, software_items install data
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (16)"))
+                applied.append(16)
             conn.commit()
         except Exception:
             conn.rollback()

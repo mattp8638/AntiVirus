@@ -299,3 +299,20 @@ button.warn { background: rgba(245,158,11,.12); border-color: rgba(245,158,11,.4
 .add-phone { display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-start; }
 .add-phone ol { flex: 1; min-width: 240px; line-height: 1.8; margin: 0; padding-left: 20px; }
 .add-phone details, .add-phone .row { flex-basis: 100%; }
+
+/* Alert evidence */
+.evidence-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 10px; }
+.evidence-section { background: #0b1222; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; min-width: 0; }
+.evidence-title { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: 6px; }
+.evidence-card { margin-top: 12px; border-color: var(--line-2); }
+.ioc { padding: 2px 0; word-break: break-all; }
+@media (max-width: 760px) { .evidence-grid { grid-template-columns: 1fr; } }
+
+/* Vulnerabilities */
+.modal.wide { width: min(1100px, 100%); }
+.intel-facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
+.intel-facts > div { background: #0b1222; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; min-width: 0; }
+.kev-banner { padding: 10px 12px; border-radius: 10px; margin-bottom: 10px; background: rgba(239,68,68,.12); border: 1px solid rgba(239,68,68,.45); color: #fecaca; }
+.fix { background: #0b1222; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.risk-bar { height: 8px; border-radius: 999px; background: #1a2540; overflow: hidden; margin-top: 6px; }
+.risk-bar > span { display: block; height: 100%; background: linear-gradient(90deg, var(--green), var(--amber) 55%, var(--red)); }
