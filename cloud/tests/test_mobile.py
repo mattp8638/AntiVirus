@@ -78,3 +78,13 @@ def test_phone_actions(client, admin, tenant, device):
     assert client.post("/api/console/commands/bulk", headers=admin, json={"type": "device.wipe", "deviceIds": [phone["deviceId"]]}).status_code == 400
     assert client.post(f"/api/console/devices/{device['deviceId']}/commands", headers=admin, json={"type": "device.lock"}).status_code == 400
     assert client.post("/api/console/rmm/jobs", headers=admin, json={"commandType": "device.wipe", "targets": {"deviceIds": [phone["deviceId"]]}}).status_code == 400
+
+
+def test_phone_tamper_raises_alert(client, admin, tenant):
+    phone = _phone(client, admin, tenant)
+    event = {"eventId": "evt-admin-off-1", "eventType": "agent.admin.removed", "source": "android",
+             "summary": "Fenrir's device administrator rights were turned off on the phone", "occurredAt": _iso(1), "payloadJson": "{}"}
+    reply = client.post(f"/api/v1/devices/{phone['deviceId']}/telemetry", headers=phone["headers"], json={"events": [event]}).json()
+    assert reply["accepted"] == 1
+    alerts = client.get(f"/api/console/devices/{phone['deviceId']}", headers=admin).json()["alerts"]
+    assert any(a["title"] == "Phone protection turned off" for a in alerts)

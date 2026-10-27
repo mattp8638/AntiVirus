@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="fenrir_bg">#060A14</color>
+    <color name="fenrir_blue">#3B82F6</color>
+    <color name="fenrir_lost">#7F1D1D</color>
+    <style name="Theme.Fenrir" parent="android:Theme.Material.NoActionBar">
+        <item name="android:colorPrimary">@color/fenrir_blue</item>
+        <item name="android:colorAccent">@color/fenrir_blue</item>
+        <item name="android:windowBackground">@color/fenrir_bg</item>
+        <item name="android:statusBarColor">@color/fenrir_bg</item>
+        <item name="android:navigationBarColor">@color/fenrir_bg</item>
+    </style>
+    <style name="Theme.Fenrir.Lost">
+        <item name="android:windowBackground">@color/fenrir_lost</item>
+        <item name="android:statusBarColor">@color/fenrir_lost</item>
+        <item name="android:navigationBarColor">@color/fenrir_lost</item>
+    </style>
+</resources>

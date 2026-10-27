@@ -1,0 +1,21 @@
+title: Phone protection turned off
+id: fenrir-android-admin-removed
+description: Someone turned off Fenrir's device administrator rights on the phone, so it can no longer be locked or erased remotely. Check with the user; a thief often does this first.
+tags: [attack.defense_evasion, attack.t1629]
+logsource: {product: android}
+detection:
+  selection:
+    EventType: 'agent.admin.removed'
+  condition: selection
+level: high
+---
+title: Phone erase failed
+id: fenrir-android-wipe-failed
+description: An Erase the phone action reached the phone but Android refused it. The payload says why; Android 14+ only lets a managed (device-owner) agent erase.
+tags: [attack.impact]
+logsource: {product: android}
+detection:
+  selection:
+    EventType: 'agent.wipe.failed'
+  condition: selection
+level: high

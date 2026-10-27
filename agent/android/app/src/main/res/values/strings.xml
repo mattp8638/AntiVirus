@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Fenrir</string>
+    <string name="admin_label">Fenrir anti-theft</string>
+    <string name="admin_description">Lets your IT team lock or erase this phone if it is lost or stolen.</string>
+</resources>
