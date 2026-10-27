@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { fmtTime, getToken } from "../api";
 import { useApp } from "../app-context";
 import { ErrorNote, PageHead, Pill, Table, TenantSelect, useData, useListData } from "../components/ui";
+import { AddPhone } from "./AddPhone";
 
 type OsName = "windows" | "linux" | "macos";
 type InstallerStatus = Record<OsName, { ready: boolean; reason: string; extension: string; mode?: string; warning?: string; certificateUrl?: string }>;
@@ -122,6 +123,7 @@ export default function Deploy() {
           <p style={{ marginTop: 12 }}>Every download creates a new customer-bound enrollment token. Treat downloaded files as credentials. Windows components are built automatically on the server; each request creates a self-contained customer installer; macOS stays unavailable until its installable agent is complete.</p>
         </div>
       )}
+      <AddPhone />
       <div className="card">
         <h3>Enrollment tokens</h3>
         <ErrorNote error={tokensError} />

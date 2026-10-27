@@ -271,6 +271,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return JSONResponse({"detail": "The Windows build is not code-signed"}, status_code=404)
         return FileResponse(target, media_type="application/pkix-cert", filename="fenrir-codesign.cer")
 
+    @app.get("/downloads/fenrir-android.apk", include_in_schema=False)
+    def android_app():
+        # Built by agent/android (./gradlew assembleRelease) and copied here by the deploy script.
+        target = downloads / "fenrir-android.apk"
+        if not target.is_file():
+            return JSONResponse({"detail": "The Android app has not been published on this server yet"}, status_code=404)
+        return FileResponse(target, media_type="application/vnd.android.package-archive", filename="fenrir-android.apk",
+                            headers={"Cache-Control": "no-cache"})
+
     @app.get("/downloads/{name}", include_in_schema=False)
     def download(name: str):
         target = (downloads / name).resolve()
@@ -291,8 +300,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         def spa(path: str):
             candidate = (console_dir / path).resolve()
             if path and console_dir.resolve() in candidate.parents and candidate.is_file():
-                return FileResponse(candidate)
-            return FileResponse(console_dir / "index.html")
+                # The service worker and manifest must always be re-checked, or installed apps never update.
+                fresh = {"Cache-Control": "no-cache"} if path in {"sw.js", "manifest.webmanifest"} else None
+                return FileResponse(candidate, headers=fresh)
+            return FileResponse(console_dir / "index.html", headers={"Cache-Control": "no-cache"})
 
     return app
 

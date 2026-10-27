@@ -1060,6 +1060,15 @@ def record_heartbeat_metrics(db: Session, device: Device, metrics: dict) -> None
             clean[key] = [str(x)[:120] for x in metrics[key][:400]]
     if "rebootPending" in metrics:
         clean["rebootPending"] = bool(metrics["rebootPending"])
+    # Phones (Android agent): battery, connection and how the device is protected.
+    if isinstance(metrics.get("batteryPercent"), (int, float)) and not isinstance(metrics.get("batteryPercent"), bool):
+        clean["batteryPercent"] = max(0, min(100, int(metrics["batteryPercent"])))
+    for key in ("charging", "screenLockSecure", "encrypted", "deviceAdmin", "developerMode", "rooted", "locationEnabled"):
+        if isinstance(metrics.get(key), bool):
+            clean[key] = metrics[key]
+    for key in ("network", "wifiSsid", "carrier", "securityPatch", "phoneNumber"):
+        if metrics.get(key):
+            clean[key] = str(metrics[key])[:120]
     if isinstance(metrics.get("remoteCapabilities"), list):
         clean["remoteCapabilities"] = [str(x)[:20] for x in metrics["remoteCapabilities"][:10]]
     previous = device.metrics or {}
