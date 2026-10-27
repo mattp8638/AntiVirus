@@ -2,6 +2,7 @@
 #include "BuildInfo.h"
 #include "LocalAdminRotation.h"
 #include "CrashReporter.h"
+#include "SystemProfile.h"
 #include "ExtendedPolicy.h"
 #include "FirewallPolicy.h"
 #include "NetworkProbe.h"
@@ -1224,6 +1225,7 @@ void AgentService::RunSyncLoop(const AgentRunMode mode) {
       MaybeSelfUpdate(cycle);
       ExpireBreakGlassAccount();
       ExpireElevations();
+      MaybeCollectSystemProfile();
       if (GetTickCount64() - lastLocalAdminCheck_ > 60ULL * 60 * 1000 || lastLocalAdminCheck_ == 0) {
         lastLocalAdminCheck_ = GetTickCount64();
         EnforceLocalAdminPolicy();
@@ -2017,6 +2019,7 @@ std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
     return ExecuteOnDemandScan(command, command.type == L"scan.full");
   }
   if (command.type == L"inventory.refresh") {
+    profileRequested_ = true;  // the system profile is collected again too (in the background)
     return ExecuteInventoryRefreshCommand(command);
   }
   if (command.type == L"network.probe") {
@@ -3681,6 +3684,49 @@ void AgentService::ApplyPauseState() {
   if (realtimeProtectionBroker_) realtimeProtectionBroker_->SetPolicy(policy);
   if (processGuard_) processGuard_->UpdatePolicy(policy);
   WriteExperienceFile();
+}
+
+// The system profile (SystemProfile.h): every 6 hours, a few minutes after start-up, and when the console asks
+// (inventory.refresh). PowerShell can take a minute, so it runs on its own thread and never holds up the main loop.
+void AgentService::MaybeCollectSystemProfile() {
+  if (state_.deviceId.empty() || profileBusy_->load()) {
+    return;
+  }
+  const auto now = GetTickCount64();
+  if (profileFirstDueMs_ == 0) {
+    profileFirstDueMs_ = now + 3ULL * 60 * 1000;  // let start-up settle first
+  }
+  const bool due = profileRequested_.exchange(false) ||
+                   (lastProfileMs_ == 0 ? now >= profileFirstDueMs_ : now - lastProfileMs_ >= 6ULL * 3600 * 1000);
+  if (!due) {
+    return;
+  }
+  lastProfileMs_ = now;
+  profileBusy_->store(true);
+  auto busy = profileBusy_;
+  const auto identity = IdentitySnapshot();
+  const auto workRoot = config_.runtimeDatabasePath.parent_path() / L"rmm" / L"profile";
+  const auto config = config_;
+  // Like background scans, the thread works only on copies (never on `this`), so it is safe during shutdown.
+  std::thread([busy, identity, workRoot, config]() {
+    const auto record = [&config](const std::wstring& type, const std::wstring& summary, const std::wstring& payload) {
+      try {
+        TelemetryQueueStore(config.runtimeDatabasePath, config.telemetryQueuePath)
+            .Append({TelemetryRecord{.eventId = GenerateGuidString(), .eventType = type, .source = L"rmm", .summary = summary,
+                                     .occurredAt = CurrentUtcTimestamp(), .payloadJson = payload}});
+      } catch (...) {
+      }
+    };
+    try {
+      const auto body = CollectSystemProfileJson(workRoot);
+      ControlPlaneClient(config.controlPlaneBaseUrl).SendSystemProfile(identity, body);
+      record(L"inventory.profile.sent", L"The system profile was updated.", L"{\"bytes\":" + std::to_wstring(body.size()) + L"}");
+    } catch (const std::exception& error) {
+      record(L"inventory.profile.failed", L"The system profile could not be collected or sent.",
+             L"{\"error\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(error.what()))) + L"\"}");
+    }
+    busy->store(false);
+  }).detach();
 }
 
 void AgentService::EnforceLocalAdminPolicy() {

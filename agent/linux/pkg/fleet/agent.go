@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -67,9 +68,12 @@ type Agent struct {
 	stop    chan struct{}
 	wake    chan struct{}
 	lastInv time.Time
-	metrics *MetricsCollector
-	remote  *remote.Manager
-	cmdMu   sync.Mutex
+	// System profile (profile.go): last upload and whether one is being collected.
+	lastProfile time.Time
+	profileBusy atomic.Bool
+	metrics     *MetricsCollector
+	remote      *remote.Manager
+	cmdMu       sync.Mutex
 	// Self-update (selfupdate.go); exePath/exit/restartDelay are overridable in tests.
 	schedule        *scanSchedule
 	lastUpdateCheck time.Time
@@ -516,6 +520,9 @@ func (a *Agent) Run() {
 			}
 			a.maybeAutoUpdate()
 			a.maybeScheduledScans(time.Now())
+			if time.Since(a.lastProfile) > profileInterval {
+				a.startProfile()
+			}
 		case <-commands.C:
 			a.RunCommands()
 		case now := <-brute.C:
@@ -682,6 +689,7 @@ func (a *Agent) Execute(cmd Command) (map[string]interface{}, error) {
 		return NetworkProbe(cmd.PayloadJSON, nil)
 	case "inventory.refresh":
 		a.sendInventory()
+		a.startProfile()
 		return map[string]interface{}{"ok": true}, nil
 	case "policy.refresh":
 		a.refreshPolicy()

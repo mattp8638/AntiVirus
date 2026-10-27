@@ -145,9 +145,29 @@ add_library(antivirus-agent-core STATIC
   src/BruteForceGuard.cpp
   src/RegistryWatcher.cpp
   src/CrashReporter.cpp
+  src/SystemProfile.cpp
 )
 
 target_include_directories(antivirus-agent-core PUBLIC include ../shared/include ../sensor/etw/include ../sensor/wfp/include)
+
+# The Windows system-profile collector (src/SystemProfileScript.ps1) is embedded like the agent window's page:
+# short raw-string chunks, so it ships inside the service binary and cannot be swapped on disk.
+set(SYSTEM_PROFILE_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/src/SystemProfileScript.ps1")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${SYSTEM_PROFILE_SCRIPT}")
+file(READ "${SYSTEM_PROFILE_SCRIPT}" SYSTEM_PROFILE_CONTENT)
+string(LENGTH "${SYSTEM_PROFILE_CONTENT}" SYSTEM_PROFILE_LENGTH)
+set(SYSTEM_PROFILE_CHUNKS "")
+set(SYSTEM_PROFILE_OFFSET 0)
+while(SYSTEM_PROFILE_OFFSET LESS SYSTEM_PROFILE_LENGTH)
+  string(SUBSTRING "${SYSTEM_PROFILE_CONTENT}" ${SYSTEM_PROFILE_OFFSET} 6000 SYSTEM_PROFILE_PART)
+  string(APPEND SYSTEM_PROFILE_CHUNKS "    R\"FENRIRPS(${SYSTEM_PROFILE_PART})FENRIRPS\",\n")
+  math(EXPR SYSTEM_PROFILE_OFFSET "${SYSTEM_PROFILE_OFFSET} + 6000")
+endwhile()
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/SystemProfileScript.h.tmp"
+  "#pragma once\n// Generated from src/SystemProfileScript.ps1 by CMake. Do not edit.\n"
+  "inline const char* const kSystemProfileScriptParts[] = {\n${SYSTEM_PROFILE_CHUNKS}};\n")
+configure_file("${CMAKE_CURRENT_BINARY_DIR}/generated/SystemProfileScript.h.tmp" "${CMAKE_CURRENT_BINARY_DIR}/generated/SystemProfileScript.h" COPYONLY)
+target_include_directories(antivirus-agent-core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_link_libraries(antivirus-agent-core PUBLIC antivirus-sqlite3 winhttp ole32 oleaut32 bcrypt advapi32 tdh crypt32 wintrust fwpuclnt iphlpapi shell32 ws2_32 wtsapi32 userenv netapi32 urlmon wevtapi)
 antivirus_apply_portable_runtime(antivirus-agent-core)
 
