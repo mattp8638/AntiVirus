@@ -87,7 +87,9 @@ std::vector<std::wstring> UserProfiles() {
     if (sid.rfind(L"S-1-5-21-", 0) != 0 && sid.rfind(L"S-1-12-1-", 0) != 0) continue;
     wchar_t path[MAX_PATH * 2]{};
     DWORD size = sizeof(path);
-    if (RegGetValueW(key, sid.c_str(), L"ProfileImagePath", RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ, nullptr, path,
+    // RRF_RT_REG_SZ also returns REG_EXPAND_SZ values, expanded. (Adding RRF_RT_REG_EXPAND_SZ without
+    // RRF_NOEXPAND makes the call fail, which left the shield with no profiles to watch.)
+    if (RegGetValueW(key, sid.c_str(), L"ProfileImagePath", RRF_RT_REG_SZ, nullptr, path,
                      &size) == ERROR_SUCCESS &&
         IsDirectory(path)) {
       profiles.emplace_back(path);

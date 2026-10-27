@@ -3821,6 +3821,33 @@ void AgentService::MaybeSelfUpdate(const int cycle) {
 void AgentService::RelaunchClientAfterUpgrade() {
   const auto flag = config_.installRootPath / L"runtime" / L"relaunch-client.flag";
   std::error_code ec;
+  // Report how the last install, repair or upgrade went (written by FenrirSetup), with the end of its log
+  // when it failed, so a silent upgrade problem shows up in the console.
+  const auto resultFile = config_.installRootPath / L"runtime" / L"setup-result.json";
+  if (std::filesystem::exists(resultFile, ec)) {
+    std::wifstream in(resultFile);
+    std::wstringstream text;
+    text << in.rdbuf();
+    in.close();
+    std::filesystem::remove(resultFile, ec);
+    const auto body = text.str();
+    const bool ok = body.find(L"\"ok\":true") != std::wstring::npos;
+    std::wstring logTail;
+    if (!ok) {
+      std::wifstream log(config_.installRootPath / L"runtime" / L"setup-last.log");
+      std::vector<std::wstring> lines;
+      for (std::wstring line; std::getline(log, line);) {
+        lines.push_back(line);
+        if (lines.size() > 30) lines.erase(lines.begin());
+      }
+      for (const auto& line : lines) logTail += line + L"\n";
+    }
+    if (!body.empty() && body.front() == L'{') {
+      QueueTelemetryEvent(ok ? L"agent.setup.completed" : L"agent.update.failed", L"updater",
+                          ok ? L"The last agent install or upgrade completed." : L"The last agent upgrade failed; the agent restarted the previous version.",
+                          body.substr(0, body.size() - 1) + L",\"log\":\"" + Utf8ToWide(EscapeJsonString(logTail)) + L"\"}");
+    }
+  }
   if (!std::filesystem::exists(flag, ec)) {
     return;
   }
