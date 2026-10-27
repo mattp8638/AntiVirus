@@ -4,6 +4,7 @@
 #include <tlhelp32.h>
 
 #include <fstream>
+#include <algorithm>
 #include <iterator>
 #include <sstream>
 
@@ -227,6 +228,51 @@ std::vector<TelemetryRecord> ProcessGuard::OnProcessStart(const EtwProcessContex
     out.push_back(Record(type, (blocked ? L"Blocked " : L"Detected ") + process.imageName + L": " + d.reason, payload.str()));
   }
   return out;
+}
+
+std::vector<TelemetryRecord> ProcessGuard::OnRemoteThread(const EtwProcessContext& source, const unsigned long targetPid) {
+  static const wchar_t* kOffice[] = {L"winword.exe", L"excel.exe",  L"powerpnt.exe", L"msaccess.exe", L"mspub.exe",
+                                     L"visio.exe",   L"onenote.exe", L"outlook.exe", L"eqnedt32.exe"};
+  const auto name = LowerCopy(source.imageName.empty() ? source.imagePath.substr(source.imagePath.find_last_of(L'\\') + 1)
+                                                       : source.imageName);
+  if (std::none_of(std::begin(kOffice), std::end(kOffice), [&](const wchar_t* office) { return name == office; })) return {};
+  behavior::RuleMode mode = behavior::RuleMode::Off;
+  {
+    std::lock_guard lock(mutex_);
+    const auto it = extended_.behavior.asr.find(L"blockOfficeCodeInjection");
+    if (it != extended_.behavior.asr.end()) mode = it->second;
+  }
+  if (mode == behavior::RuleMode::Off) return {};
+  std::wstring targetImage;
+  if (HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, targetPid)) {
+    wchar_t buffer[MAX_PATH * 2];
+    DWORD size = static_cast<DWORD>(std::size(buffer));
+    if (QueryFullProcessImageNameW(process, 0, buffer, &size)) targetImage.assign(buffer, size);
+    CloseHandle(process);
+  }
+  // Office never needs to start threads in other programs; console and debugging helpers aside.
+  const auto targetName = LowerCopy(targetImage.substr(targetImage.find_last_of(L'\\') + 1));
+  if (targetName == L"conhost.exe" || targetName == L"werfault.exe" || targetName == L"dwwin.exe") return {};
+  int killed = 0;
+  bool blocked = false;
+  if (mode == behavior::RuleMode::Block) {
+    // Stop the Office process that did it, and the program it injected into unless that is part of Windows.
+    blocked = Terminate(source.pid);
+    killed += blocked ? 1 : 0;
+    wchar_t windows[MAX_PATH]{};
+    GetWindowsDirectoryW(windows, MAX_PATH);
+    if (!targetImage.empty() && LowerCopy(targetImage).rfind(LowerCopy(windows) + L"\\", 0) != 0 && Terminate(targetPid)) ++killed;
+  }
+  const auto type = mode == behavior::RuleMode::Block ? (blocked ? L"asr.rule.blocked" : L"asr.rule.block_failed") : L"asr.rule.audited";
+  std::wstringstream payload;
+  payload << L"{\"rule\":\"attackSurface.blockOfficeCodeInjection\",\"mode\":\"" << behavior::RuleModeName(mode)
+          << L"\",\"pid\":" << source.pid << L",\"processImagePath\":\"" << J(source.imagePath) << L"\",\"targetPid\":"
+          << targetPid << L",\"targetImagePath\":\"" << J(targetImage)
+          << L"\",\"reason\":\"Office started a thread in another process\",\"technique\":\"T1055\",\"terminatedCount\":" << killed
+          << L"}";
+  return {Record(type, (blocked ? L"Blocked " : L"Detected ") + name + L": code injection into " +
+                           (targetName.empty() ? std::to_wstring(targetPid) : targetName),
+                 payload.str())};
 }
 
 std::vector<TelemetryRecord> ProcessGuard::ApplyDeviceControl() {

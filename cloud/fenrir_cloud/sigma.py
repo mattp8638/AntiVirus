@@ -66,9 +66,11 @@ class SigmaError(ValueError):
 # ---------------------------------------------------------------------------
 
 
-def _wildcard_regex(pattern: str) -> re.Pattern:
+def _wildcard_regex(pattern: str, any_before: bool = False, any_after: bool = False) -> re.Pattern:
     # Sigma: * and ? are wildcards, backslash escapes them. Matching is case-insensitive.
-    out = []
+    # contains/startswith/endswith add their wildcards here, outside the value, so a value ending in a
+    # backslash ('\\Users\\Public\\') stays a literal backslash instead of escaping the added '*'.
+    out = [".*"] if any_before else []
     i = 0
     while i < len(pattern):
         ch = pattern[i]
@@ -83,6 +85,8 @@ def _wildcard_regex(pattern: str) -> re.Pattern:
         else:
             out.append(re.escape(ch))
         i += 1
+    if any_after:
+        out.append(".*")
     return re.compile("^" + "".join(out) + "$", re.IGNORECASE | re.DOTALL)
 
 
@@ -146,14 +150,10 @@ def _value_matcher(raw: Any, modifiers: list[str]) -> Callable[[Any], bool]:
     text = _to_text(raw)
     patterns = _windash_variants(text) if "windash" in modifiers else [text]
     regexes = []
+    contains, starts, ends = "contains" in modifiers, "startswith" in modifiers, "endswith" in modifiers
     for pattern in patterns:
-        if "contains" in modifiers:
-            pattern = f"*{pattern}*"
-        elif "startswith" in modifiers:
-            pattern = f"{pattern}*"
-        elif "endswith" in modifiers:
-            pattern = f"*{pattern}"
-        regexes.append(_wildcard_regex(pattern))
+        regexes.append(_wildcard_regex(pattern, any_before=contains or (ends and not starts),
+                                       any_after=contains or (starts and not ends)))
 
     def match(actual: Any) -> bool:
         if actual is None:

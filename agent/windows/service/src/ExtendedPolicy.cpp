@@ -290,6 +290,15 @@ std::wstring WideString(const json::Value* section, const char* key, const wchar
   return fallback;
 }
 
+int IntOr(const json::Value* section, const char* key, int fallback) {
+  if (section != nullptr) {
+    if (const auto* v = section->Get(key)) {
+      if (auto n = v->Number(); n && std::isfinite(*n)) return static_cast<int>(std::clamp(*n, -1e9, 1e9));
+    }
+  }
+  return fallback;
+}
+
 bool BoolOr(const json::Value* section, const char* key, bool fallback) {
   if (section != nullptr) {
     if (const auto* v = section->Get(key)) {
@@ -337,6 +346,7 @@ ExtendedPolicy ExtendedPolicy::Parse(const std::string& modulesJson) {
   policy.behavior.excludedProcesses = WideList(antimalware, "exclusionProcesses");
   policy.quickScanPlan = ParseScanPlan(antimalware, "quickScanPlan");
   policy.scanNetworkDrives = BoolOr(antimalware, "scanNetworkDrives", false);
+  policy.scanRemovableMedia = BoolOr(antimalware, "scanRemovableMedia", true);
   if (antimalware) {
     if (const auto* limit = antimalware->Get("scanCpuLimitPercent"); limit && limit->Number()) {
       policy.scanCpuLimitPercent = std::clamp(static_cast<int>(*limit->Number()), 5, 100);
@@ -359,9 +369,11 @@ ExtendedPolicy ExtendedPolicy::Parse(const std::string& modulesJson) {
   policy.collectFileEvents = BoolOr(edr, "collectFileEvents", true);
   policy.collectScriptEvents = BoolOr(edr, "collectScriptEvents", true);
   policy.collectDnsEvents = BoolOr(edr, "collectDnsEvents", true);
+  policy.collectRegistryEvents = BoolOr(edr, "enabled", true) && BoolOr(edr, "collectRegistryEvents", true);
   policy.telemetryMinimal = WideString(edr, "telemetryLevel", L"standard") == L"minimal";
   policy.allowQuarantineRestore = BoolOr(root->Get("experience"), "allowQuarantineRestore", false);
   policy.breakGlassAllowed = BoolOr(root->Get("privilege"), "breakGlassAllowed", true);
+  policy.removeLocalAdmins = BoolOr(root->Get("privilege"), "enabled", false) && BoolOr(root->Get("privilege"), "removeLocalAdmins", false);
 
   policy.scriptExecution = BoolOr(root->Get("response"), "scriptExecution", true);
   policy.remoteAccessEnabled = BoolOr(root->Get("remoteAccess"), "enabled", true);
@@ -370,6 +382,42 @@ ExtendedPolicy ExtendedPolicy::Parse(const std::string& modulesJson) {
   policy.ransomwareEnabled = BoolOr(ransomware, "enabled", true);
   policy.behavior.blockShadowCopyDeletion = policy.ransomwareEnabled && BoolOr(ransomware, "blockShadowCopyDeletion", true);
   policy.canaryFiles = policy.ransomwareEnabled && BoolOr(ransomware, "canaryFiles", true);
+  {
+    auto& r = policy.ransomware;
+    r.enabled = policy.ransomwareEnabled;
+    r.mode = WideString(ransomware, "mode", L"block");
+    if (r.mode != L"audit" && r.mode != L"block" && r.mode != L"block-and-rollback") {
+      r.mode = L"block";
+    }
+    r.filesPerMinute = std::clamp(IntOr(ransomware, "massEncryptionFilesPerMinute", 40), 5, 1000);
+    r.entropyDetection = BoolOr(ransomware, "entropyDetection", true);
+    r.canaryFiles = policy.canaryFiles;
+    if (ransomware != nullptr && ransomware->Get("protectedFolders") != nullptr) {
+      r.protectedFolders = WideList(ransomware, "protectedFolders");
+    } else {
+      r.protectedFolders = {L"%USERPROFILE%\\Documents", L"%USERPROFILE%\\Desktop", L"%USERPROFILE%\\Pictures"};
+    }
+    r.protectedFoldersMode = WideString(ransomware, "protectedFoldersMode", L"audit");
+    if (r.protectedFoldersMode != L"off" && r.protectedFoldersMode != L"audit" && r.protectedFoldersMode != L"block") {
+      r.protectedFoldersMode = L"audit";
+    }
+    r.allowedApps = WideList(ransomware, "allowedApps");
+    r.rollbackSnapshots = BoolOr(ransomware, "rollbackSnapshots", true);
+    r.snapshotIntervalHours = std::clamp(IntOr(ransomware, "snapshotIntervalHours", 4), 1, 72);
+    r.networkShareProtection = BoolOr(ransomware, "networkShareProtection", true);
+  }
+
+  policy.bruteForceProtection = BoolOr(root->Get("firewall"), "bruteForceProtection", true);
+  const auto* tamper = root->Get("tamper");
+  const bool tamperOn = BoolOr(tamper, "enabled", true);
+  policy.tamperServiceLocked = tamperOn && BoolOr(tamper, "protectServiceAndFiles", true);
+  policy.tamperUninstallToken = tamperOn && BoolOr(tamper, "uninstallRequiresToken", true);
+
+  policy.ransomware.credentialProtection =
+      BoolOr(root->Get("edr"), "enabled", true) && BoolOr(root->Get("edr"), "credentialProtection", true);
+  if (const auto it = policy.behavior.asr.find(L"blockOfficeExecutableContent"); it != policy.behavior.asr.end()) {
+    policy.ransomware.officeExecutableContent = it->second;
+  }
 
   const auto* app = root->Get("applicationControl");
   policy.behavior.appControlMode = WideString(app, "mode", L"off");

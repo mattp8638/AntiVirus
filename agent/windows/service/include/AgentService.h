@@ -16,6 +16,9 @@
 #include "AgentState.h"
 #include "ControlPlaneClient.h"
 #include "ExtendedPolicy.h"
+#include "RansomwareShield.h"
+#include "BruteForceGuard.h"
+#include "RegistryWatcher.h"
 #include "CommandJournalStore.h"
 #include "DeviceInventoryCollector.h"
 #include "EventEnvelope.h"
@@ -120,6 +123,7 @@ class AgentService {
   void QueuePatchTelemetry(int cycle);
   void DrainProcessTelemetry();
   void DrainRealtimeProtectionTelemetry();
+  void DrainRansomwareTelemetry();
   void DrainNetworkTelemetry();
   void QueueCycleTelemetry(int cycle);
   void ApplyProtectionPolicy();
@@ -159,10 +163,42 @@ class AgentService {
   bool firewallWorkerBusy_{false};
   std::thread firewallThread_{};
   void ApplyFirewallPolicy();
+  void ApplyTamperPolicy(const ExtendedPolicy& extended);
+  void ApplyCredentialHardening(bool enable);
+  int appliedCredentialHardening_{-1};
+  std::wstring appliedTamperPolicy_;
   void WriteExperienceFile();
   // Self-update (Windows): compare this build's id with the server's and run its installer silently.
   void MaybeSelfUpdate(int cycle);
   void RelaunchClientAfterUpgrade();
+  // Local admin password rotation (privilege.rotateLocalAdminPassword); force = the localadmin.rotate command.
+  std::wstring RotateLocalAdminPassword(bool force);
+  void ExpireBreakGlassAccount();
+  // experience.allowUserPause
+  PolicySnapshot EnforcedPolicy() const;
+  std::string ModulesJsonCopy() const;
+  std::wstring PauseProtection(const RemoteCommand& command);
+  std::wstring ResumeProtection(const RemoteCommand& command);
+  void ApplyPauseState();
+  std::atomic<long long> pausedUntil_{0};
+  bool appliedPaused_{false};
+  mutable std::mutex modulesCopyMutex_{};
+  std::string modulesCopy_;
+  // Temporary admin rights (privilege.elevationRequests).
+  std::wstring RequestElevation(const RemoteCommand& command);
+  std::wstring ElevationStatus(const RemoteCommand& command);
+  std::wstring GrantElevation(const RemoteCommand& command);
+  std::wstring RevokeElevation(const RemoteCommand& command);
+  void ExpireElevations();
+  std::mutex elevationMutex_{};
+  void CheckRemovableMedia();  // antimalware.scanRemovableMedia
+  unsigned long knownDrives_{0};
+  unsigned long pendingRemovable_{0};
+  bool drivesPrimed_{false};
+  void EnforceLocalAdminPolicy();  // privilege.removeLocalAdmins
+  std::vector<std::wstring> LocalAdminKeepList(const std::wstring& payloadJson) const;
+  std::wstring ExecuteInventoryUninstall(const RemoteCommand& command);
+  unsigned long long lastLocalAdminCheck_{0};
   unsigned long long lastSelfUpdateCheck_{0};
   bool ScanNetworkDrives() const;
   int ScheduledScanCpuLimit() const;
@@ -179,6 +215,9 @@ class AgentService {
   std::unique_ptr<LocalControlChannel> localControlChannel_{};
   std::unique_ptr<ProcessGuard> processGuard_{};
   std::unique_ptr<ProcessEtwSensor> processEtwSensor_{};
+  std::unique_ptr<RansomwareShield> ransomwareShield_{};
+  std::unique_ptr<BruteForceGuard> bruteForceGuard_{};
+  std::unique_ptr<RegistryWatcher> registryWatcher_{};
   std::unique_ptr<NetworkIsolationManager> networkIsolationManager_{};
   bool lastControlPlaneSyncFailed_{false};
   bool lastHardeningCheckFailed_{false};

@@ -103,3 +103,28 @@ detection:
     EventType: ['tamper.protection.degraded', 'agent.repair.failed', 'device.identity.rejected']
   condition: selection
 level: high
+---
+title: Service installed from a user-writable folder
+id: fenrir-persist-service-userpath
+description: A new Windows service whose program lives in a temporary, public or user folder.
+tags: [attack.persistence, attack.t1543.003]
+logsource: {category: registry_add, product: windows}
+detection:
+  selection:
+    EventType: 'registry.service.created'
+  suspicious:
+    Details|contains: ['\AppData\', '\Temp\', '\Users\Public\', '\ProgramData\', 'powershell', 'cmd /c', 'cmd.exe /c']
+  condition: selection and suspicious
+level: high
+---
+title: Debugger set for a program (IFEO hijack)
+id: fenrir-persist-ifeo-debugger
+description: An Image File Execution Options Debugger or silent-exit monitor redirects a program to another one.
+tags: [attack.persistence, attack.t1546.012]
+logsource: {category: registry_set, product: windows}
+detection:
+  selection:
+    TargetObject|contains: '\Image File Execution Options\'
+    EventType: 'registry.value.set'
+  condition: selection
+level: high

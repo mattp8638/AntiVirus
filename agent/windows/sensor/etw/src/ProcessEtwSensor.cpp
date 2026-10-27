@@ -36,6 +36,8 @@ constexpr GUID kKernelProcessProviderGuid = {
 
 constexpr ULONGLONG kKernelProcessKeyword = 0x10ULL;
 constexpr ULONGLONG kKernelImageKeyword = 0x40ULL;
+constexpr ULONGLONG kKernelThreadKeyword = 0x20ULL;
+constexpr USHORT kThreadStartEventId = 3;
 constexpr USHORT kProcessStartEventId = 1;
 constexpr USHORT kProcessStopEventId = 2;
 constexpr USHORT kImageLoadEventId = 5;
@@ -372,6 +374,24 @@ std::wstring FormatEtwPropertyValue(const BYTE* data, const ULONG dataSize, cons
   }
 }
 
+std::vector<std::wstring> ExtractEtwPropertyNames(const EVENT_RECORD& eventRecord) {
+  auto* mutableRecord = const_cast<EVENT_RECORD*>(&eventRecord);
+  ULONG bufferSize = 0;
+  if (TdhGetEventInformation(mutableRecord, 0, nullptr, nullptr, &bufferSize) != ERROR_INSUFFICIENT_BUFFER || bufferSize == 0) {
+    return {};
+  }
+  std::vector<BYTE> buffer(bufferSize);
+  auto* info = reinterpret_cast<PTRACE_EVENT_INFO>(buffer.data());
+  if (TdhGetEventInformation(mutableRecord, 0, nullptr, info, &bufferSize) != ERROR_SUCCESS) {
+    return {};
+  }
+  std::vector<std::wstring> names;
+  for (ULONG index = 0; index < info->TopLevelPropertyCount; ++index) {
+    names.emplace_back(reinterpret_cast<const wchar_t*>(buffer.data() + info->EventPropertyInfoArray[index].NameOffset));
+  }
+  return names;
+}
+
 PropertyMap ExtractEtwProperties(const EVENT_RECORD& eventRecord) {
   auto* mutableRecord = const_cast<EVENT_RECORD*>(&eventRecord);
   ULONG bufferSize = 0;
@@ -610,7 +630,8 @@ void ProcessEtwSensor::Start() {
   enableParameters.Version = ENABLE_TRACE_PARAMETERS_VERSION;
 
   status = EnableTraceEx2(sessionHandle_, &kKernelProcessProviderGuid, EVENT_CONTROL_CODE_ENABLE_PROVIDER,
-                          TRACE_LEVEL_INFORMATION, kKernelProcessKeyword | kKernelImageKeyword, 0, 0,
+                          TRACE_LEVEL_INFORMATION,
+                          kKernelProcessKeyword | kKernelImageKeyword | (remoteThreadHandler_ ? kKernelThreadKeyword : 0ULL), 0, 0,
                           &enableParameters);
   if (status != ERROR_SUCCESS) {
     QueueStateEvent(L"process.etw.failed",
@@ -729,12 +750,51 @@ void ProcessEtwSensor::RunTraceLoop() {
                       Utf8ToWide(EscapeJsonString(sessionName_)) + L"\"}");
 }
 
+// ThreadStart is logged in the context of the thread that created the new thread, so a header process ID that
+// differs from the payload's ProcessID means one process started a thread inside another (code injection).
+// This runs for every thread start, so the common path reads four bytes and returns.
+void ProcessEtwSensor::HandleThreadStart(const EVENT_RECORD& eventRecord) {
+  if (!remoteThreadHandler_ || eventRecord.UserDataLength < 8) return;
+  if (threadLayout_ == 0) {
+    const auto properties = ExtractEtwPropertyNames(eventRecord);
+    threadLayout_ = properties.size() >= 2 && _wcsicmp(properties[0].c_str(), L"ProcessID") == 0 &&
+                            _wcsicmp(properties[1].c_str(), L"ThreadID") == 0
+                        ? 1
+                        : -1;
+  }
+  if (threadLayout_ != 1) return;
+  DWORD target = 0;
+  memcpy(&target, eventRecord.UserData, sizeof(target));
+  const DWORD source = eventRecord.EventHeader.ProcessId;
+  if (source == target || source <= 4 || target <= 4) return;
+  EtwProcessContext creator;
+  {
+    const std::scoped_lock lock(stateMutex_);
+    const auto it = activeProcesses_.find(source);
+    if (it == activeProcesses_.end()) return;
+    creator = it->second;
+  }
+  try {
+    for (const auto& record : remoteThreadHandler_(creator, target)) QueueTelemetry(record);
+  } catch (...) {
+  }
+}
+
+void ProcessEtwSensor::SetRemoteThreadHandler(RemoteThreadHandler handler) {
+  const std::scoped_lock lock(stateMutex_);
+  remoteThreadHandler_ = std::move(handler);
+}
+
 void ProcessEtwSensor::HandleEventRecord(const EVENT_RECORD& eventRecord) {
   if (eventRecord.EventHeader.ProviderId != kKernelProcessProviderGuid) {
     return;
   }
 
   const auto eventId = eventRecord.EventHeader.EventDescriptor.Id;
+  if (eventId == kThreadStartEventId) {
+    HandleThreadStart(eventRecord);
+    return;
+  }
   if (eventId != kProcessStartEventId && eventId != kProcessStopEventId && eventId != kImageLoadEventId) {
     return;
   }

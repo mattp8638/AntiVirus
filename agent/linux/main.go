@@ -1,3 +1,7 @@
+//go:build legacy_ebpf
+
+// Legacy eBPF + YARA prototype, superseded by cmd/fenrir-agent. Build with -tags legacy_ebpf (needs libyara and
+// bpf2go output). Excluded by default so `go build ./...` and `go vet ./...` cover the shipped agent.
 package main
 
 import (
@@ -23,9 +27,9 @@ import (
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target bpfel -cc clang bpf ebpf/sensor.c -- -I/usr/include/bpf
 
 const (
-	EventProcessStart  = 4
+	EventProcessStart   = 4
 	EventNetworkConnect = 6
-	EventFileWrite     = 2
+	EventFileWrite      = 2
 )
 
 // These structs must match the C structs

@@ -51,6 +51,7 @@ import Deploy from "./pages/Deploy";
 import Vault from "./pages/Vault";
 import ProtectionHealth from "./pages/ProtectionHealth";
 import Quarantine from "./pages/Quarantine";
+import Elevation from "./pages/Elevation";
 import RecordingPlayer from "./pages/RecordingPlayer";
 
 const NAV: { group: string; items: { to: string; label: string; icon: string }[] }[] = [
@@ -72,6 +73,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string }[]
     items: [
       { to: "/protection-health", label: "Protection health", icon: "⛨" },
       { to: "/quarantine", label: "Quarantine", icon: "⊘" },
+      { to: "/admin-requests", label: "Admin requests", icon: "⇡" },
       { to: "/incidents", label: "Incidents", icon: "⚑" },
       { to: "/alerts", label: "Alerts", icon: "△" },
       { to: "/policies", label: "Policies", icon: "⚙" },
@@ -189,6 +191,7 @@ function Shell() {
             <Route path="/alerts" element={<Alerts />} />
             <Route path="/protection-health" element={<ProtectionHealth />} />
             <Route path="/quarantine" element={<Quarantine />} />
+            <Route path="/admin-requests" element={<Elevation />} />
             <Route path="/recordings/:id" element={<RecordingPlayer />} />
             <Route path="/incidents" element={<Incidents />} />
             <Route path="/incidents/:id" element={<IncidentDetail />} />

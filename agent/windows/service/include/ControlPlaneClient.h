@@ -46,6 +46,7 @@ struct RemoteCommand {
   std::wstring targetPath;
   std::wstring recordId;
   std::wstring payloadJson;
+  std::wstring callerSid;  // local pipe only: the signed-in user who sent the command
 };
 
 struct CommandPollResult {
@@ -115,6 +116,8 @@ class ControlPlaneClient {
   HeartbeatResult SendHeartbeat(const AgentState& state, const std::string& metricsJson = "") const;
   // 'Request support' from the agent window; returns the ticket number. bodyJson: {summary, details, user, contact}.
   std::wstring SubmitSupportRequest(const AgentState& state, const std::string& bodyJson) const;
+  // POST /elevation-requests; returns the response body ({"id","status","minutes"}).
+  std::string RequestElevation(const AgentState& state, const std::string& bodyJson) const;
   // ws(s)://.../api/v1/devices/<id>/realtime and the device key that authenticates it.
   std::wstring RealtimeUrl(const AgentState& state) const;
   static std::wstring DeviceApiKey(const AgentState& state);
@@ -136,6 +139,9 @@ class ControlPlaneClient {
   MlModelManifest FetchMlModelManifest(const AgentState& state) const;
   std::vector<unsigned char> DownloadMlModel(const AgentState& state) const;
   AgentPackageInfo CheckWindowsAgentUpdate(const AgentState& state) const;
+  // Local admin password rotation: escrow returns the version id; confirm reports whether it was applied.
+  std::wstring EscrowLocalAdminPassword(const AgentState& state, const std::wstring& account, const std::wstring& password) const;
+  void ConfirmLocalAdminPassword(const AgentState& state, const std::wstring& version, bool applied, const std::wstring& error) const;
   // Downloads a server-relative /api/v1/ path with the device key into target.
   void DownloadToFile(const AgentState& state, const std::wstring& path, const std::filesystem::path& target) const;
 

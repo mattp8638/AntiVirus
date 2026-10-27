@@ -30,6 +30,8 @@ class ProcessGuard {
   ExtendedPolicy CurrentExtendedPolicy() const;
 
   std::vector<TelemetryRecord> OnProcessStart(const EtwProcessContext& process);
+  // attackSurface.blockOfficeCodeInjection: an Office process started a thread inside another process.
+  std::vector<TelemetryRecord> OnRemoteThread(const EtwProcessContext& source, unsigned long targetPid);
 
   // Applies device control settings; returns telemetry describing the result.
   std::vector<TelemetryRecord> ApplyDeviceControl();

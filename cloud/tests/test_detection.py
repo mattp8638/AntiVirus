@@ -293,3 +293,81 @@ def test_quarantine_view_tracks_restore_and_delete(client, admin, tenant):
     everything = client.get("/api/console/protection/quarantine?include_released=true", headers=admin).json()
     assert {i["recordId"]: i["status"] for i in everything}["rec-0"] == "restored"
     assert deleting
+
+
+def test_windows_shield_and_brute_force_events_raise_alerts(client, admin, tenant):
+    import json as _json
+
+    from conftest import enroll
+
+    dev = enroll(client, admin, tenant, hostname="SHIELD-WIN", serial="SH-1")
+
+    def event(i, kind, payload):
+        return {"eventId": f"sh-{i}", "eventType": kind, "source": "ransomware-shield", "summary": kind,
+                "occurredAt": f"2030-01-01T00:00:0{i}Z", "payloadJson": _json.dumps(payload)}
+
+    events = [
+        event(1, "ransomware.blocked", {"processImagePath": "C:\\Users\\jo\\AppData\\Local\\Temp\\enc.exe", "pid": 4242,
+                                        "filesChanged": 57, "action": "terminated", "mitre": "T1486"}),
+        event(2, "ransomware.protected_folder.write", {"processImagePath": "C:\\Tools\\portable.exe", "pid": 77,
+                                                       "path": "C:\\Users\\jo\\Documents\\a.txt", "action": "reported"}),
+        event(3, "auth.bruteforce.blocked", {"remoteAddress": "203.0.113.9", "failures": 10, "accounts": ["administrator"],
+                                             "action": "blocked", "mitre": "T1110"}),
+        event(4, "ransomware.restore.completed", {"restored": 57}),
+        event(5, "ransomware.snapshot.created", {"intervalHours": 4}),
+        event(6, "asr.credential_store.blocked", {"rule": "edr.credentialProtection", "processImagePath": "C:\\Users\\jo\\x.exe",
+                                                  "pid": 9, "action": "terminated"}),
+        event(8, "registry.value.set", {"targetObject": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run\\Updater",
+                                        "details": "C:\\Users\\Public\\evil.exe", "change": "added"}),
+        event(9, "registry.service.created", {"targetObject": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Upd",
+                                              "details": "C:\\Users\\jo\\AppData\\Local\\Temp\\svc.exe", "serviceName": "Upd"}),
+        event(0, "protection.paused", {"user": "PC1\\jo", "minutes": 15}),
+        event(7, "asr.rule.blocked", {"rule": "attackSurface.blockOfficeExecutableContent", "mode": "block", "pid": 10,
+                                      "processImagePath": "C:\\Program Files\\Microsoft Office\\WINWORD.EXE"}),
+    ]
+    response = client.post(f"/api/v1/devices/{dev['deviceId']}/telemetry", headers=dev["headers"], json={"events": events})
+    assert response.status_code == 200, response.text
+    by_rule = {}
+    for alert in client.get("/api/console/alerts", headers=admin).json():
+        by_rule.setdefault(alert["ruleId"], []).append(alert)
+    assert by_rule["fenrir-ransom-agent-verdict"][0]["severity"] == "critical"
+    assert len(by_rule["fenrir-ransom-agent-verdict"][0]["eventIds"]) == 1  # restore/snapshot events are not verdicts
+    assert by_rule["fenrir-ransom-protected-folder"][0]["severity"] == "medium"
+    assert by_rule["fenrir-cred-bruteforce-blocked"][0]["severity"] == "high"
+    assert by_rule["fenrir-cred-browser-store-blocked"][0]["severity"] == "high"
+    assert by_rule["fenrir-protection-asr-block"][0]["severity"] == "high"
+    assert "fenrir-persist-runkey" in by_rule and "fenrir-persist-service-userpath" in by_rule
+    assert by_rule["fenrir-protection-user-paused"][0]["severity"] == "medium"
+
+
+def test_sigma_values_ending_in_backslash_still_match():
+    from fenrir_cloud.sigma import parse_rule
+
+    rule = parse_rule(r"""
+title: t
+id: t
+logsource: {category: registry_set}
+detection:
+  sel:
+    Details|contains: '\Users\Public\'
+  start:
+    TargetObject|startswith: 'HKLM\SOFTWARE\'
+  end:
+    Image|endswith: '\Temp\'
+  condition: sel and start and end
+level: high
+""")
+    event = {"Details": r"C:\Users\Public\evil.exe", "TargetObject": r"HKLM\SOFTWARE\Microsoft\Run\x", "Image": r"C:\Win\Temp\\"[:-1]}
+    assert rule.matches(event, "registry")
+    assert not rule.matches({**event, "Details": r"C:\Users\Publicity.exe"}, "registry")
+    escaped = parse_rule(r"""
+title: t
+id: t2
+logsource: {category: registry_set}
+detection:
+  sel:
+    Details|contains: 'a\*b'
+  condition: sel
+level: low
+""")
+    assert escaped.matches({"Details": "xa*bx"}, "registry") and not escaped.matches({"Details": "xaZZbx"}, "registry")

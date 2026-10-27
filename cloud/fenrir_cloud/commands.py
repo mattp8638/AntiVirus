@@ -37,9 +37,10 @@ CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("persistence.cleanup", "Remove persistence", "Remediation", destructive=True),
     CommandSpec("quarantine.restore", "Restore from quarantine", "Remediation", needs=("recordId",), platforms=ALL),
     CommandSpec("quarantine.delete", "Delete quarantined file", "Remediation", needs=("recordId",), platforms=ALL, destructive=True),
-    # No agent keeps file snapshots yet, so rollback is not offered on any platform.
-    CommandSpec("ransomware.rollback", "Roll back ransomware changes", "Remediation", platforms=(), destructive=True,
-                description="Not available yet: agents do not keep rollback snapshots."),
+    # Windows keeps Volume Shadow Copy snapshots (ransomware.rollbackSnapshots) and records the files an attack changed.
+    CommandSpec("ransomware.rollback", "Roll back ransomware changes", "Remediation", platforms=("windows",), destructive=True,
+                description="Restores the files changed in the device's last ransomware incident (within 24 hours) from the "
+                            "newest snapshot taken before it. Current versions are kept as <name>.fenrir-pre-restore."),
     CommandSpec("threatintel.lookup", "Threat-intel lookup", "Investigation", needs=("targetPath",)),
     CommandSpec("threatintel.pack.ingest", "Push intel pack", "Investigation", permission="configure"),
     CommandSpec("support.bundle", "Collect support bundle", "Investigation", platforms=ALL),
@@ -58,6 +59,8 @@ CATALOG: tuple[CommandSpec, ...] = (
                 description="Show a message box to the signed-in user."),
     CommandSpec("service.control", "Start/stop/restart a service", "Administration", needs=("targetPath",), platforms=ALL,
                 description="targetPath is the service name; payload action is start, stop or restart."),
+    CommandSpec("localadmin.rotate", "Rotate local admin password", "Administration",
+                description="Sets a new random local Administrator password; the old one stays in the history."),
     CommandSpec("remote.session.start", "Start remote session", "Remote access", platforms=ALL,
                 description="Opened from the Connect button; connects the device to the cloud relay."),
     CommandSpec("remote.session.end", "End remote session", "Remote access", platforms=ALL),
@@ -73,11 +76,22 @@ CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("software.update", "Update application", "Software", needs=("recordId",)),
     CommandSpec("software.uninstall", "Uninstall application", "Software", needs=("recordId",), platforms=ALL, destructive=True),
     CommandSpec("software.block", "Block application", "Software", needs=("recordId",), permission="configure"),
-    CommandSpec("localadmin.audit", "Audit local admins", "Privilege"),
-    CommandSpec("localadmin.reduce", "Remove local admins", "Privilege", permission="configure", destructive=True),
-    CommandSpec("localadmin.rollback", "Restore local admins", "Privilege", permission="configure"),
-    CommandSpec("breakglass.enable", "Enable break-glass admin", "Privilege", permission="configure"),
+    CommandSpec("localadmin.audit", "Audit local admins", "Privilege",
+                description="Lists the members of the local Administrators group."),
+    CommandSpec("localadmin.reduce", "Remove local admins", "Privilege", permission="configure", destructive=True,
+                description="Removes user accounts from the local Administrators group. Groups, the built-in Administrator, "
+                            "the LAPS and break-glass accounts and any names in the payload's keep list stay. Never runs "
+                            "on domain controllers."),
+    CommandSpec("localadmin.rollback", "Restore local admins", "Privilege", permission="configure",
+                description="Puts back every account removed by Remove local admins."),
+    CommandSpec("breakglass.enable", "Enable break-glass admin", "Privilege", permission="configure",
+                description="Enables the FenrirBreakGlass local administrator for the payload's hours (default 4, max 24). "
+                            "Its password is stored first and shown in the device's Local admin tab."),
     CommandSpec("breakglass.disable", "Disable break-glass admin", "Privilege", permission="configure"),
+    CommandSpec("elevation.grant", "Grant temporary admin rights", "Privilege", permission="configure",
+                description="Sent when an elevation request is approved: adds the user to the local Administrators group "
+                            "for the request's minutes."),
+    CommandSpec("elevation.revoke", "Revoke temporary admin rights", "Privilege", permission="configure"),
     CommandSpec("update.apply", "Apply agent update", "Agent", permission="configure", platforms=ALL),
     CommandSpec("update.rollback", "Roll back agent update", "Agent", permission="configure"),
     CommandSpec("agent.repair", "Repair agent", "Agent", platforms=ALL),

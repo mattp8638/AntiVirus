@@ -56,6 +56,28 @@ struct ScanPlan {
   int minuteOfDay{0};
 };
 
+// modules.ransomware (plus response.autoRollbackRansomware), used by RansomwareShield.
+struct RansomwareSettings {
+  bool enabled{true};
+  std::wstring mode{L"block"};  // audit | block | block-and-rollback
+  int filesPerMinute{40};
+  bool entropyDetection{true};
+  bool canaryFiles{true};
+  std::vector<std::wstring> protectedFolders;  // may contain %USERPROFILE% and other variables
+  std::wstring protectedFoldersMode{L"audit"};  // off | audit | block
+  std::vector<std::wstring> allowedApps;
+  bool rollbackSnapshots{true};
+  int snapshotIntervalHours{4};
+  bool networkShareProtection{true};
+  // Other checks that use the same live file-activity feed:
+  bool credentialProtection{true};  // edr.enabled && edr.credentialProtection: browser password/cookie stores
+  behavior::RuleMode officeExecutableContent{behavior::RuleMode::Off};  // attackSurface.blockOfficeExecutableContent
+
+  bool Blocks() const { return mode == L"block" || mode == L"block-and-rollback"; }
+  // response.autoRollbackRansomware is handled by the cloud, which queues the ransomware.rollback command.
+  bool RollsBack() const { return mode == L"block-and-rollback"; }
+};
+
 struct ExtendedPolicy {
   bool present{false};  // false until a cloud policy with modules has been received
   std::wstring mlSensitivity{L"balanced"};
@@ -63,6 +85,11 @@ struct ExtendedPolicy {
   DeviceControlSettings deviceControl;
   bool ransomwareEnabled{true};
   bool canaryFiles{true};
+  RansomwareSettings ransomware;
+  bool bruteForceProtection{true};  // modules.firewall.bruteForceProtection
+  bool removeLocalAdmins{false};      // privilege.enabled && privilege.removeLocalAdmins
+  bool tamperServiceLocked{true};     // tamper.enabled && tamper.protectServiceAndFiles
+  bool tamperUninstallToken{true};    // tamper.enabled && tamper.uninstallRequiresToken
   bool scriptExecution{true};      // modules.response.scriptExecution
   bool remoteAccessEnabled{true};  // modules.remoteAccess.enabled
   // modules.edr collection switches: routine telemetry only; detections are always sent.
@@ -70,9 +97,11 @@ struct ExtendedPolicy {
   bool collectFileEvents{true};
   bool collectScriptEvents{true};
   bool collectDnsEvents{true};
+  bool collectRegistryEvents{true};  // edr.collectRegistryEvents: autostart registry changes (RegistryWatcher)
   bool telemetryMinimal{false};      // edr.telemetryLevel == "minimal"
   bool allowQuarantineRestore{false};  // modules.experience: end users may restore from quarantine
   bool breakGlassAllowed{true};        // modules.privilege.breakGlassAllowed
+  bool scanRemovableMedia{true};  // modules.antimalware.scanRemovableMedia: scan USB drives when inserted
   bool scanNetworkDrives{false};   // modules.antimalware.scanNetworkDrives: full scans include mapped drives
   int scanCpuLimitPercent{100};    // modules.antimalware.scanCpuLimitPercent: scheduled scans, share of one core
   ScanPlan quickScanPlan;          // modules.antimalware.quickScanPlan

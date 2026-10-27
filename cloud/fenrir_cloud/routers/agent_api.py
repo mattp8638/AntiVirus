@@ -312,6 +312,9 @@ def complete_command(command_id: str, body: dict = Body(...), device: Device = D
     audit.record(db, f"device:{device.hostname}", "command.completed", command.id, device.tenant_id,
                  type=command.type, status=command.status)
     rmm.on_command_complete(db, device, command)
+    from . import elevation
+
+    elevation.on_command_complete(db, device, command)
     db.commit()
     return {"id": command.id, "status": command.status}
 

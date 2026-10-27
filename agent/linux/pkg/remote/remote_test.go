@@ -75,7 +75,9 @@ func newRelay(t *testing.T) *relay {
 	return r
 }
 
-func (r *relay) url() string { return "ws" + strings.TrimPrefix(r.server.URL, "http") + "/ws/remote/rs_1/agent" }
+func (r *relay) url() string {
+	return "ws" + strings.TrimPrefix(r.server.URL, "http") + "/ws/remote/rs_1/agent"
+}
 
 func readJSON(t *testing.T, conn *websocket.Conn, want func(Message) bool) Message {
 	t.Helper()
@@ -208,7 +210,9 @@ func TestTerminalFilesProcessesAndPolicy(t *testing.T) {
 	readJSON(t, conn, func(m Message) bool { return m.str("t") == "info" })
 
 	send(t, conn, Message{"ch": "term", "t": "open", "cols": 80, "rows": 24, "shell": "/bin/sh"})
-	opened := readJSON(t, conn, func(m Message) bool { return m.str("ch") == "term" && (m.str("t") == "opened" || m.str("t") == "error") })
+	opened := readJSON(t, conn, func(m Message) bool {
+		return m.str("ch") == "term" && (m.str("t") == "opened" || m.str("t") == "error")
+	})
 	if opened.str("t") != "opened" {
 		t.Fatalf("terminal failed to open: %v", opened)
 	}

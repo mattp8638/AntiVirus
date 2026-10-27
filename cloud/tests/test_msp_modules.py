@@ -220,5 +220,5 @@ def test_grc_controls_combine_automatic_checks_and_register_evidence(client, adm
     assert [r["id"] for r in linked["records"]] == [record["id"]] and linked["status"] == "gap"  # draft is not evidence yet
     # Unenforced policy switches never count as passing evidence.
     nist = next(f for f in library if f["framework"] == "nist-csf-2")
-    recovery = next(c for c in nist["controls"] if c["id"] == "RC.RP")
-    assert not recovery["passed"] and "not enforced" in recovery["evidence"][0]
+    monitoring = next(c for c in nist["controls"] if c["id"] == "DE.CM")  # firewall.networkAttackProtection: no agent yet
+    assert not monitoring["passed"] and any("not enforced" in e for e in monitoring["evidence"])

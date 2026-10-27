@@ -253,7 +253,7 @@ func (s *Scanner) scanStream(r *bufio.Reader, kind, prefix string, depth int, bu
 		if err != nil {
 			return nil
 		}
-		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA {
+		if hdr.Typeflag != tar.TypeReg { // the reader reports old-style regular files as TypeReg too
 			continue
 		}
 		hit, err := s.scanMember(tr, prefix+hdr.Name, depth, budget)

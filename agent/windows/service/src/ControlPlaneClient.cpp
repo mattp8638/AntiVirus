@@ -1066,6 +1066,26 @@ std::wstring ControlPlaneClient::SubmitSupportRequest(const AgentState& state, c
   }
 }
 
+std::string ControlPlaneClient::RequestElevation(const AgentState& state, const std::string& bodyJson) const {
+  if (state.deviceId.empty()) {
+    throw std::runtime_error("This device is not enrolled with your IT provider yet");
+  }
+  const auto deviceApiKey = ExtractDeviceApiKeyFromCommandChannelUrl(state.commandChannelUrl);
+  try {
+    return RequestJson(L"POST", JoinUrl(baseUrl_, L"/api/v1/devices/" + state.deviceId + L"/elevation-requests"), bodyJson,
+                       deviceApiKey)
+        .body;
+  } catch (const std::exception& error) {
+    const std::string text = error.what();
+    if (const auto at = text.find('{'); at != std::string::npos) {
+      if (const auto detail = ExtractJsonString(text.substr(at), "detail"); detail.has_value()) {
+        throw std::runtime_error(*detail);
+      }
+    }
+    throw;
+  }
+}
+
 HeartbeatResult ControlPlaneClient::SendHeartbeat(const AgentState& state, const std::string& metricsJson) const {
   if (state.deviceId.empty()) {
     throw std::runtime_error("Cannot send heartbeat without a device identifier");
@@ -1266,6 +1286,28 @@ MlModelManifest ControlPlaneClient::FetchMlModelManifest(const AgentState& state
   return MlModelManifest{.version = Utf8ToWide(ExtractJsonString(response.body, "version").value_or("")),
                          .sha256 = Utf8ToWide(ExtractJsonString(response.body, "sha256").value_or("")),
                          .size = ExtractJsonInt(response.body, "size").value_or(0)};
+}
+
+std::wstring ControlPlaneClient::EscrowLocalAdminPassword(const AgentState& state, const std::wstring& account,
+                                                          const std::wstring& password) const {
+  const auto deviceApiKey = ExtractDeviceApiKeyFromCommandChannelUrl(state.commandChannelUrl);
+  std::string body = "{\"account\":\"" + EscapeJsonString(account) + "\",\"password\":\"" + EscapeJsonString(password) + "\"}";
+  const auto response =
+      RequestJson(L"POST", JoinUrl(baseUrl_, L"/api/v1/devices/" + state.deviceId + L"/local-admin/escrow"), body, deviceApiKey);
+  SecureZeroMemory(body.data(), body.size());
+  const auto version = Utf8ToWide(ExtractJsonString(response.body, "version").value_or(""));
+  if (version.empty()) {
+    throw std::runtime_error("The server did not confirm it stored the new password");
+  }
+  return version;
+}
+
+void ControlPlaneClient::ConfirmLocalAdminPassword(const AgentState& state, const std::wstring& version, const bool applied,
+                                                   const std::wstring& error) const {
+  const auto deviceApiKey = ExtractDeviceApiKeyFromCommandChannelUrl(state.commandChannelUrl);
+  const std::string body = "{\"version\":\"" + EscapeJsonString(version) + "\",\"applied\":" + (applied ? "true" : "false") +
+                           ",\"error\":\"" + EscapeJsonString(error) + "\"}";
+  RequestJson(L"POST", JoinUrl(baseUrl_, L"/api/v1/devices/" + state.deviceId + L"/local-admin/confirm"), body, deviceApiKey);
 }
 
 AgentPackageInfo ControlPlaneClient::CheckWindowsAgentUpdate(const AgentState& state) const {

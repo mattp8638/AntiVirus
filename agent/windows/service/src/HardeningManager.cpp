@@ -558,8 +558,10 @@ bool HardeningManager::ValidateUninstallAuthorization(const std::wstring& uninst
   }
 
   const auto expectedHash = ReadRegistryString(key, L"UninstallTokenSha256");
+  // The cloud policy can waive the token (tamper.uninstallRequiresToken off); absent means required.
+  const auto requiredByPolicy = ReadRegistryDword(key, L"UninstallTokenRequiredByPolicy", 1) != 0;
   RegCloseKey(key);
-  if (expectedHash.empty()) {
+  if (expectedHash.empty() || !requiredByPolicy) {
     return true;
   }
 
@@ -580,13 +582,82 @@ bool HardeningManager::ValidateUninstallAuthorization(const std::wstring& uninst
   return true;
 }
 
+bool HardeningManager::ApplyCredentialHardening(const bool enable, bool* rebootRequired, std::wstring* errorMessage) const {
+  if (rebootRequired != nullptr) *rebootRequired = false;
+  HKEY ours = nullptr;
+  if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, kRegistryRoot, 0, nullptr, REG_OPTION_NON_VOLATILE, KEY_READ | KEY_WRITE, nullptr,
+                      &ours, nullptr) != ERROR_SUCCESS) {
+    if (errorMessage != nullptr) *errorMessage = L"Could not open the Fenrir registry key";
+    return false;
+  }
+  struct Setting {
+    const wchar_t* key;
+    const wchar_t* value;
+    DWORD wanted;
+    const wchar_t* marker;  // records that Fenrir made the change
+    bool reboot;
+  };
+  const Setting settings[] = {
+      {L"SYSTEM\\CurrentControlSet\\Control\\Lsa", L"RunAsPPL", 1, L"CredentialHardeningSetRunAsPPL", true},
+      {L"SYSTEM\\CurrentControlSet\\Control\\SecurityProviders\\WDigest", L"UseLogonCredential", 0,
+       L"CredentialHardeningSetWDigest", false},
+  };
+  bool ok = true;
+  for (const auto& setting : settings) {
+    HKEY key = nullptr;
+    if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, setting.key, 0, nullptr, REG_OPTION_NON_VOLATILE, KEY_READ | KEY_WRITE, nullptr, &key,
+                        nullptr) != ERROR_SUCCESS) {
+      ok = false;
+      continue;
+    }
+    DWORD current = 0, size = sizeof(current), type = 0;
+    const bool present = RegQueryValueExW(key, setting.value, nullptr, &type, reinterpret_cast<LPBYTE>(&current), &size) ==
+                             ERROR_SUCCESS && type == REG_DWORD;
+    const bool setByUs = ReadRegistryDword(ours, setting.marker, 0) != 0;
+    if (enable) {
+      // An administrator's stronger choice (e.g. RunAsPPL=2, UEFI-locked) is left alone.
+      const bool satisfied = present && (setting.wanted == 0 ? current == 0 : current >= setting.wanted);
+      if (!satisfied) {
+        if (RegSetValueExW(key, setting.value, 0, REG_DWORD, reinterpret_cast<const BYTE*>(&setting.wanted), sizeof(DWORD)) ==
+            ERROR_SUCCESS) {
+          WriteRegistryDword(ours, setting.marker, 1);
+          if (setting.reboot && rebootRequired != nullptr) *rebootRequired = true;
+        } else {
+          ok = false;
+        }
+      }
+    } else if (setByUs) {
+      if (RegDeleteValueW(key, setting.value) == ERROR_SUCCESS || !present) {
+        RegDeleteValueW(ours, setting.marker);
+        if (setting.reboot && rebootRequired != nullptr) *rebootRequired = true;
+      } else {
+        ok = false;
+      }
+    }
+    RegCloseKey(key);
+  }
+  RegCloseKey(ours);
+  if (!ok && errorMessage != nullptr) *errorMessage = L"Some credential protection settings could not be written";
+  return ok;
+}
+
+bool HardeningManager::ApplyTamperPolicy(const bool serviceLocked, const bool uninstallTokenRequired,
+                                         std::wstring* errorMessage) const {
+  if (!PersistRegistryDwordValue(L"UninstallTokenRequiredByPolicy", uninstallTokenRequired ? 1 : 0)) {
+    if (errorMessage != nullptr) *errorMessage = L"Could not record the uninstall-token policy.";
+    return false;
+  }
+  return ApplyServiceControlProtection(L"FenrirAgent", nullptr, errorMessage, serviceLocked);
+}
+
 HardeningStatus HardeningManager::QueryStatus(const std::wstring& serviceName) const {
   HardeningStatus status;
   HKEY key = OpenHardeningRegistryKeyForRead();
   if (key != nullptr) {
     status.registryConfigured = true;
     status.uninstallTokenHash = ReadRegistryString(key, L"UninstallTokenSha256");
-    status.uninstallProtectionEnabled = !status.uninstallTokenHash.empty();
+    status.uninstallProtectionEnabled =
+        !status.uninstallTokenHash.empty() && ReadRegistryDword(key, L"UninstallTokenRequiredByPolicy", 1) != 0;
     status.serviceControlProtected = ReadRegistryDword(key, kServiceControlProtectedValueName, 0) != 0;
     status.elamDriverPath = ReadRegistryString(key, kElamDriverPathValueName);
     status.elamCertificateInstalled = ReadRegistryDword(key, kElamCertificateInstalledValueName, 0) != 0;
