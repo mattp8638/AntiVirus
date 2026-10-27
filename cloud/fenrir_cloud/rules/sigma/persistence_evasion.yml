@@ -7,7 +7,7 @@ detection:
     Image|endswith: '\schtasks.exe'
     CommandLine|contains: '/create'
   path:
-    CommandLine|contains: ['\AppData\', '\Temp\', '\Users\Public\', '\ProgramData\', 'powershell', 'mshta', 'http']
+    CommandLine|contains: ['\AppData\Local\Temp\', '\Windows\Temp\', '\Users\Public\', '\Downloads\', 'powershell', 'mshta', 'http://', 'https://']
   condition: selection and path
 level: medium
 ---
@@ -19,7 +19,7 @@ detection:
   selection:
     TargetObject|contains: ['\Software\Microsoft\Windows\CurrentVersion\Run', '\Software\Microsoft\Windows\CurrentVersion\RunOnce', '\Winlogon\Userinit', '\Winlogon\Shell']
   suspicious:
-    Details|contains: ['\AppData\', '\Temp\', '\Users\Public\', 'powershell', 'mshta', 'rundll32', 'regsvr32', 'cmd /c']
+    Details|contains: ['\AppData\Local\Temp\', '\Windows\Temp\', '\Users\Public\', powershell, mshta, 'wscript', 'cscript', 'regsvr32', 'cmd /c', 'cmd.exe /c']
   condition: selection and suspicious
 level: high
 ---
@@ -77,7 +77,9 @@ detection:
     CommandLine|contains: ['systemctl stop auditd', 'systemctl disable auditd', 'setenforce 0', 'systemctl stop fenrir', 'systemctl disable fenrir']
   fenrir:
     CommandLine|contains: ['sc stop Fenrir', 'sc delete Fenrir', 'taskkill /im fenrir']
-  condition: 1 of them
+  fenrir_setup:  # the Fenrir installer adds and removes its own Defender exclusions
+    ParentImage|contains: '\FenrirSetup'
+  condition: 1 of them and not fenrir_setup
 level: high
 ---
 title: Event logs or shell history cleared
@@ -113,7 +115,7 @@ detection:
   selection:
     EventType: 'registry.service.created'
   suspicious:
-    Details|contains: ['\AppData\', '\Temp\', '\Users\Public\', '\ProgramData\', 'powershell', 'cmd /c', 'cmd.exe /c']
+    Details|contains: ['\AppData\Local\Temp\', '\Windows\Temp\', '\Users\Public\', '\Downloads\', 'powershell', 'cmd /c', 'cmd.exe /c']
   condition: selection and suspicious
 level: high
 ---

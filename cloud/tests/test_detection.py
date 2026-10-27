@@ -141,10 +141,10 @@ def test_mass_encryption_correlation(client, admin, device):
     send(client, device, events)
     titles = {a["title"] for a in client.get("/api/console/alerts", headers=admin).json()}
     assert "Mass file encryption (ransomware behaviour)" in titles
-    # Deduplicated: one extension alert for the burst, not thirty.
+    # The per-file extension rule only records (low); the burst raises the one mass-encryption alert, not thirty.
     extension_alerts = [a for a in client.get("/api/console/alerts", headers=admin).json()
                         if a["title"] == "File renamed to a ransomware extension"]
-    assert len(extension_alerts) == 1 and len(extension_alerts[0]["eventIds"]) == 30
+    assert extension_alerts == []
 
 
 def test_audit_policy_blocks_nothing(client, admin, tenant, device):

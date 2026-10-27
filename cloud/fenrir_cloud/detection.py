@@ -24,6 +24,7 @@ log = logging.getLogger("fenrir.detection")
 ALERT_LEVELS = {"medium", "high", "critical"}
 LEVEL_TO_SEVERITY = {"informational": "info", "low": "low", "medium": "medium", "high": "high", "critical": "critical"}
 ALERT_DEDUP_WINDOW = timedelta(minutes=10)
+REPEAT_FOLD_WINDOW = timedelta(days=30)
 INCIDENT_GROUP_WINDOW = timedelta(hours=2)
 
 
@@ -54,9 +55,39 @@ def sync_builtin_rules(db: Session, rules_dir: Path) -> int:
             row.title, row.kind, row.source, row.level, row.mitre = rule.title, kind, text.strip(), rule.level, rule.mitre
             row.updated_at = utcnow()
             count += 1
+    _rebuild_tuned_copies(db)
     db.commit()
     RULES.invalidate()
     return count
+
+
+def _rebuild_tuned_copies(db: Session) -> None:
+    """A tenant's tuned copy (an analyst's false-positive exclusions) follows the shipped rule: rebuilt from the new
+    version with the same exclusions, so fixing a built-in rule also fixes every customer's copy."""
+    import yaml
+
+    for row in db.execute(select(DetectionRule).where(DetectionRule.builtin.is_(False), DetectionRule.kind == "sigma",
+                                                      DetectionRule.id.contains("--"))).scalars().all():
+        base = db.get(DetectionRule, row.id.split("--")[0])
+        if base is None or not base.builtin or base.kind != "sigma":
+            continue
+        try:
+            current = yaml.safe_load(row.source)
+            doc = yaml.safe_load(base.source)
+        except yaml.YAMLError:
+            continue
+        exclusion = (current.get("detection") or {}).get("fenrir_fp_exclusion")
+        if not exclusion:
+            continue
+        detection = doc["detection"]
+        condition = detection["condition"] if isinstance(detection["condition"], str) else detection["condition"][0]
+        detection["fenrir_fp_exclusion"] = exclusion
+        detection["condition"] = f"({condition}) and not fenrir_fp_exclusion"
+        doc["id"], doc["title"] = row.id, f"{base.title} (tuned)"
+        source = yaml.safe_dump(doc, sort_keys=False)
+        if source != row.source:
+            row.source, row.level, row.mitre, row.title = source, base.level, base.mitre, doc["title"]
+            row.updated_at = utcnow()
 
 
 @dataclass
@@ -253,6 +284,24 @@ def _raise_alert(db: Session, device: Device, rule_id: str, title: str, level: s
     # What the alert is about (file, hash, threat, process, origin, service, registry, network...), for the console.
     found = evidence.extract(event.fields or {}, event.event_type, event.summary or "",
                              event.occurred_at.isoformat() + "Z" if event.occurred_at else None, event.source, event.id)
+    # A file an analyst marked as a false positive (a tenant or global "allow" indicator) never alerts again.
+    sha256 = str((found.get("file") or {}).get("sha256") or "").lower()
+    if sha256 and is_trusted_hash(db, device.tenant_id, sha256):
+        return None
+    mitre = attack_for(rule_id, mitre, found, event.fields or {}, event.event_type)
+    # The same file/process on the same device folds into its open alert for 30 days (daily scans repeat it).
+    if evidence.headline(found):
+        for open_alert in db.execute(select(Alert).where(
+                Alert.device_id == device.id, Alert.rule_id == rule_id, Alert.status.in_(("new", "triaged")),
+                Alert.created_at >= event.occurred_at - REPEAT_FOLD_WINDOW).order_by(Alert.created_at.desc()).limit(50)).scalars():
+            if any(evidence.same_occurrence(e, found) for e in (open_alert.details or {}).get("evidence") or []):
+                ids = list(open_alert.event_ids or [])
+                if event.id not in ids and len(ids) < 500:
+                    open_alert.event_ids = ids + [event.id]
+                open_alert.updated_at = utcnow()
+                open_alert.details = evidence.add_occurrence(open_alert.details or {}, found)
+                open_alert.mitre = list(dict.fromkeys([*(open_alert.mitre or []), *mitre]))
+                return None
     recent = db.execute(
         select(Alert).where(Alert.device_id == device.id, Alert.rule_id == rule_id, Alert.created_at >= since,
                             Alert.status.in_(("new", "triaged")))
@@ -264,6 +313,7 @@ def _raise_alert(db: Session, device: Device, rule_id: str, title: str, level: s
             recent.event_ids = ids
             recent.updated_at = utcnow()
             recent.details = evidence.add_occurrence(recent.details or {}, found)
+            recent.mitre = list(dict.fromkeys([*(recent.mitre or []), *mitre]))
         return None
     head = evidence.headline(found)
     details = {**{k: v for k, v in head.items() if k in {"file", "sha256", "threat", "user"}}, **details}
@@ -545,3 +595,138 @@ def refresh_risk_scores(db: Session, device_ids: list[str] | None = None) -> int
             device.risk_score = score
             changed += 1
     return changed
+
+
+
+# ---------------------------------------------------------------------------
+# Precision: ATT&CK from evidence, trusted files, re-checking open alerts
+# ---------------------------------------------------------------------------
+
+ANTIMALWARE_RULES = ("fenrir-av-threat-remediated", "fenrir-av-threat-unremediated", "fenrir-malware-verdict")
+# Parents that mean a person launched the file (User Execution, T1204.002), not a service or scheduled task.
+USER_LAUNCHERS = ("\\explorer.exe", "\\chrome.exe", "\\msedge.exe", "\\firefox.exe", "\\brave.exe", "\\opera.exe",
+                  "\\iexplore.exe", "\\outlook.exe", "\\olk.exe", "\\winword.exe", "\\excel.exe", "\\powerpnt.exe",
+                  "\\7zfm.exe", "\\winrar.exe", "\\thunderbird.exe", "\\ms-teams.exe", "\\teams.exe")
+
+
+def attack_for(rule_id: str, static: list[str], found: dict, fields: dict, event_type: str = "") -> list[str]:
+    """ATT&CK for a malware alert from what actually happened, not a blanket tag.
+
+    A file found at rest by a scan is not "User Execution": it gets no technique unless it arrived as an email
+    attachment (T1566.001). Execution techniques are only claimed when the agent saw it run: a person launching it
+    from Explorer, a browser or Office is T1204.002; scripts keep the agent's interpreter technique (T1059.x).
+    """
+    if rule_id.split("--")[0] not in ANTIMALWARE_RULES:
+        return static
+    tags: list[str] = []
+    origin, process = found.get("origin") or {}, found.get("process") or {}
+    if origin.get("emailAttachment"):
+        tags += ["initial_access", "T1566.001"]
+    operation = str(fields.get("operation") or "").lower()
+    technique = str(fields.get("techniqueId") or "")
+    executed = (event_type.startswith(("threat.ml", "threat.process.")) or operation in {"execute", "section-map"}
+                or (event_type == "realtime.protection.action" and bool(process.get("pid"))))
+    script = bool(fields.get("appName"))  # AMSI: script content in memory
+    if (executed or script) and technique.startswith(("T1059", "T1218")):
+        tags += ["execution", technique]
+    elif executed:
+        parent = str(process.get("parentImage") or "").lower()
+        tags += ["execution", "T1204.002"] if parent.endswith(USER_LAUNCHERS) else ["execution"]
+    return list(dict.fromkeys(tags))
+
+
+def is_trusted_hash(db: Session, tenant_id: str, sha256: str) -> bool:
+    from sqlalchemy import or_
+
+    from .intel import _not_expired
+    from .models import Indicator
+
+    return db.execute(select(Indicator.id).where(
+        Indicator.type == "sha256", Indicator.verdict == "allow", func.lower(Indicator.value) == sha256.lower(),
+        or_(Indicator.tenant_id.is_(None), Indicator.tenant_id == tenant_id), _not_expired()).limit(1)).first() is not None
+
+
+def _why_not_alerting(fields: dict, event_type: str) -> str:
+    """Plain-language reason an old alert no longer meets the tuned rules."""
+    disposition = str(fields.get("disposition") or "").lower()
+    reputation = str(fields.get("reputation") or "").lower()
+    if disposition == "allow" or str(fields.get("action") or "").lower() == "allow":
+        return "the agent checked the file and allowed it (trusted signer, known-good hash or an exclusion)"
+    if "trusted-signed" in reputation or "intel-known-good" in reputation:
+        return "the file is signed by a trusted publisher or has a known-good hash"
+    if event_type.endswith(".audited"):
+        return "an audit-only machine-learning score; nothing was blocked and a score alone is not proof"
+    score = fields.get("heuristicScore")
+    if isinstance(score, (int, float)) and score < 70:
+        return f"a moderate heuristic score ({score}) with no malicious hash, signature or cloud verdict; now recorded for review"
+    return "a routine event, not a malware verdict"
+
+
+def retune_open_alerts(db: Session) -> dict:
+    """Re-check open antimalware alerts against the current rules (after tuning). Alerts none of whose events still
+    qualify are closed as false positives with the reason; kept ones get evidence-based ATT&CK. Incidents left
+    with no open alert are resolved. Returns counts."""
+    from .normalize import _repair, normalize
+
+    compiled = RULES.get(db)
+    alerting = [(row, rule) for row, rule in compiled.sigma
+                if row.id.split("--")[0] in ANTIMALWARE_RULES and rule.level in ALERT_LEVELS]
+    rows = db.execute(select(Alert).where(Alert.status.in_(("new", "triaged")))).scalars().all()
+    rows = [a for a in rows if a.rule_id.split("--")[0] in ANTIMALWARE_RULES]
+    closed, kept, incidents = 0, 0, set()
+    reasons: dict[str, int] = {}
+    for alert in rows:
+        device = db.get(Device, alert.device_id) if alert.device_id else None
+        events = db.execute(select(Event).where(Event.id.in_((alert.event_ids or [])[:500]))).scalars().all()
+        still: list[tuple[Event, str]] = []
+        last_reason = "no stored events still qualify"
+        for event in events:
+            fields = event.fields or {}
+            if set(fields) <= {"raw"} and isinstance(fields.get("raw"), str):
+                repaired = _repair(fields["raw"])
+                if set(repaired) != {"raw"}:  # fix the stored event too
+                    fields = normalize({"eventType": event.event_type, "payload": repaired}, device.platform if device else "")["fields"]
+                    event.fields = fields
+            sha = str(fields.get("sha256") or "").lower()
+            if sha and device is not None and is_trusted_hash(db, device.tenant_id, sha):
+                last_reason = "the file was marked trusted"
+                continue
+            match = next((row.id for row, rule in alerting
+                          if device is not None and _rule_visible(row, device.tenant_id, compiled.suppressed)
+                          and rule.matches(fields, event.category, device.platform)), None)
+            if match:
+                still.append((event, match))
+            else:
+                last_reason = _why_not_alerting(fields, event.event_type)
+        if still:
+            event, _ = still[0]
+            found = evidence.extract(event.fields or {}, event.event_type, event.summary or "")
+            alert.mitre = attack_for(alert.rule_id, alert.mitre, found, event.fields or {}, event.event_type)
+            kept += 1
+            continue
+        alert.status = "false_positive"
+        alert.updated_at = utcnow()
+        alert.details = {**(alert.details or {}), "autoResolved": f"Closed by detection tuning: {last_reason}."}
+        reasons[last_reason] = reasons.get(last_reason, 0) + 1
+        closed += 1
+        if alert.incident_id:
+            incidents.add(alert.incident_id)
+    db.flush()
+    resolved = 0
+    for incident_id in incidents:
+        incident = db.get(Incident, incident_id)
+        if incident is None or incident.status not in {"open", "investigating"}:
+            continue
+        open_left = db.execute(select(func.count()).where(Alert.incident_id == incident_id,
+                                                          Alert.status.in_(("new", "triaged")))).scalar() or 0
+        if open_left == 0:
+            incident.status = "resolved"
+            incident.timeline = (incident.timeline or []) + [{"at": utcnow().isoformat(), "kind": "update",
+                                                              "text": "Resolved by detection tuning: every alert in it was a false positive."}]
+            incident.updated_at = utcnow()
+            resolved += 1
+    for device_id in {a.device_id for a in rows if a.device_id}:
+        device = db.get(Device, device_id)
+        if device is not None:
+            device.risk_score = _risk_score(db, device)
+    return {"checked": len(rows), "closed": closed, "kept": kept, "incidentsResolved": resolved, "reasons": reasons}

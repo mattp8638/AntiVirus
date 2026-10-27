@@ -1646,6 +1646,13 @@ std::optional<ScanFinding> ScanFile(const std::filesystem::path& path, const Pol
       netPressure < (quarantineThreshold + 8)) {
     disposition = VerdictDisposition::Allow;
   }
+  // Quarantine only at the policy's quarantine score or on hard evidence (a known-malicious hash or signature, or a
+  // malicious cloud verdict). A moderate heuristic score is reported for review and the file is left alone: on clean
+  // machines those are mostly unsigned installers, admin tools and scripts.
+  if (disposition == VerdictDisposition::Block && quarantineCandidate &&
+      (netPressure >= quarantineThreshold || exactIndicatorMatch || maliciousCloudSignal)) {
+    disposition = VerdictDisposition::Quarantine;
+  }
 
   ScanFinding finding{
       .path = file.path,
@@ -1709,9 +1716,13 @@ std::optional<ScanFinding> ScanFile(const std::filesystem::path& path, const Pol
     finding.verdict.reasons.push_back(
         {L"ARCHIVE_OBSERVE_ONLY", L"Archive policy is observe-only for this confidence tier."});
   }
-  if (finding.verdict.disposition == VerdictDisposition::Block && quarantineCandidate) {
+  if (finding.verdict.disposition == VerdictDisposition::Quarantine) {
     finding.verdict.reasons.push_back({L"BLOCK_FIRST",
                                        L"Fenrir blocked this item immediately and can quarantine it during remediation."});
+  } else if (finding.verdict.disposition == VerdictDisposition::Block) {
+    finding.verdict.reasons.push_back({L"REPORT_ONLY_SCORE",
+                                       L"The score is below the quarantine threshold and nothing known-malicious matched, so "
+                                       L"Fenrir reports this file for review and leaves it in place."});
   }
   finding.alertTitle = BuildAlertTitle(finding);
   finding.alertSummary = BuildAlertSummary(finding);

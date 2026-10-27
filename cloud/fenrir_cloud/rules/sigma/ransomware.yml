@@ -72,7 +72,8 @@ detection:
   selection:
     TargetFilename|endswith: ['.locked', '.encrypted', '.crypt', '.lockbit', '.akira', '.blackcat', '.royal', '.conti', '.ryk', '.basta', '.play', '.8base', '.medusa']
   condition: selection
-level: medium
+falsepositives: [Encryption and archive tools using these extensions; mass encryption and canary rules cover real attacks]
+level: low
 ---
 title: Mass file encryption (ransomware behaviour)
 id: fenrir-ransom-mass-encryption

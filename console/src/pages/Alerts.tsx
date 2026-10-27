@@ -47,8 +47,14 @@ function AlertDrawer({ id, onClose }: { id: string; onClose: () => void }) {
     await run(() => api(`alerts/${id}`, { method: "PATCH", body: { status, suppress } }), suppress ? "Marked false positive and tuned the rule for this tenant" : "Alert updated");
     reload();
   };
+  const trust = async () => {
+    await run(() => api(`alerts/${id}`, { method: "PATCH", body: { status: "false_positive", trust: true } }),
+      "File trusted: its other alerts are closed, and agents stop flagging it at their next policy check-in");
+    reload();
+  };
   if (!data) return null;
   const a = data.alert;
+  const fileSha = a.details?.sha256 || (a.details?.evidence || []).map((e: any) => e.file?.sha256).find(Boolean);
   return (
     <Modal title={a.title} onClose={onClose}
            footer={can("respond") && <>
@@ -56,6 +62,7 @@ function AlertDrawer({ id, onClose }: { id: string; onClose: () => void }) {
              <button onClick={() => setStatus("resolved")}>Resolve</button>
              <button onClick={() => setStatus("false_positive")}>False positive</button>
              {a.details?.process && <button className="primary" onClick={() => setStatus("false_positive", true)}>False positive + suppress this process</button>}
+             {fileSha && <button className="primary" title={`Adds ${fileSha} to the tenant's allow list`} onClick={trust}>Not malware: trust this file</button>}
            </>}>
       <div className="row"><Sev level={a.severity} /><Pill value={a.status} />{a.incidentId && <Link to={`/incidents/${a.incidentId}`}>Open incident →</Link>}</div>
       <dl className="kv" style={{ marginTop: 12 }}>

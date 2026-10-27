@@ -62,6 +62,15 @@ def bootstrap(settings: Settings) -> None:
         psa.ensure_default_boards(db, msp.id)
         db.commit()
         sync_builtin_rules(db, settings.rules_dir)
+        # Once, after the antimalware precision update: close open alerts the tuned rules no longer raise.
+        from sqlalchemy import text
+
+        if 17 not in set(db.execute(text("SELECT version FROM schema_migrations")).scalars()):
+            from .detection import retune_open_alerts
+
+            log.info("detection tuning: %s", retune_open_alerts(db))
+            db.execute(text("INSERT INTO schema_migrations (version) VALUES (17)"))
+            db.commit()
     finally:
         db.close()
 

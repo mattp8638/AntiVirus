@@ -56,7 +56,7 @@ def test_alert_and_incident_carry_evidence(client, admin, device):
     reply = client.post(f"/api/v1/devices/{device['deviceId']}/telemetry", headers=device["headers"], json={"events": events}).json()
     assert reply["alerts"] >= 1
     alerts = client.get("/api/console/alerts", headers=admin, params={"device_id": device["deviceId"]}).json()
-    alert = next(a for a in alerts if a["title"] == "Malware found but not remediated")
+    alert = next(a for a in alerts if a["title"] == "Malware found but not removed")
     assert alert["details"]["process"].endswith("invoice.pdf.exe") and alert["details"]["sha256"] == "a" * 64
     detail = client.get(f"/api/console/alerts/{alert['id']}", headers=admin).json()["alert"]["details"]
     occurrence = detail["evidence"][0]
