@@ -370,7 +370,8 @@ std::wstring FormatEtwPropertyValue(const BYTE* data, const ULONG dataSize, cons
       return stream.str();
     }
     case kInTypeBoolean:
-      return (*reinterpret_cast<const uint32_t*>(data) == 0U) ? L"false" : L"true";
+      // Read only the bytes the event supplied (a short property must not over-read the buffer).
+      return ReadLittleEndian<uint32_t>(data, dataSize).value_or(dataSize > 0 && data[0] != 0 ? 1U : 0U) == 0U ? L"false" : L"true";
     case kInTypeFileTime: {
       const auto fileTimeValue = ReadLittleEndian<ULONGLONG>(data, dataSize);
       return fileTimeValue.has_value() ? FileTimeToUtcString(*fileTimeValue) : std::wstring{};
