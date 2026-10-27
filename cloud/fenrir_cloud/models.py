@@ -481,6 +481,25 @@ class SoftwareItem(Base):
     executable_paths: Mapped[list | None] = mapped_column(JSON, nullable=True, default=list)
 
 
+class VulnScan(Base):
+    """One vulnerability assessment run of one source on one device: what was assessed and whether it finished.
+    Only a complete assessment of a package can verify that package's findings fixed."""
+    __tablename__ = "vuln_scans"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("vscan"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    source: Mapped[str] = mapped_column(String(40))  # osv | nvd-cpe | windows-update
+    status: Mapped[str] = mapped_column(String(20), default="running")  # running | complete | partial | failed
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    packages_total: Mapped[int] = mapped_column(Integer, default=0)
+    packages_assessed: Mapped[int] = mapped_column(Integer, default=0)
+    findings: Mapped[int] = mapped_column(Integer, default=0)
+    verified_fixed: Mapped[int] = mapped_column(Integer, default=0)
+    errors: Mapped[list] = mapped_column(JSON, default=list)
+    warnings: Mapped[list] = mapped_column(JSON, default=list)
+
+
 class Vulnerability(Base):
     __tablename__ = "vulnerabilities"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
