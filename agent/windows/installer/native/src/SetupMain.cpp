@@ -7,6 +7,8 @@
 #include <strsafe.h>
 #include <tlhelp32.h>
 #include <wincrypt.h>
+#include <softpub.h>
+#include <wintrust.h>
 #include <wrl/client.h>
 
 #include <array>
@@ -650,6 +652,98 @@ bool BootstrapMinifilterSigningTrust(const std::filesystem::path& driverCatPath,
     *signerSubject = resolvedSignerSubject;
   }
   return true;
+}
+
+// Trusts the certificate that signed this installer, so Windows (SmartScreen, UAC, application control)
+// recognises Fenrir's programs as coming from a known publisher. Only a code-signing certificate that
+// cannot issue other certificates is accepted. It always goes into Trusted Publishers. A self-signed
+// certificate also goes into Trusted Root, which lets only that one certificate validate. With remove,
+// the same certificate is taken out of both stores (full uninstall).
+std::wstring TrustOwnCodeSigningCertificate(const std::filesystem::path& setupPath, const bool remove) {
+  WINTRUST_FILE_INFO fileInfo{};
+  fileInfo.cbStruct = sizeof(fileInfo);
+  fileInfo.pcwszFilePath = setupPath.c_str();
+  WINTRUST_DATA trustData{};
+  trustData.cbStruct = sizeof(trustData);
+  trustData.dwUIChoice = WTD_UI_NONE;
+  trustData.fdwRevocationChecks = WTD_REVOKE_NONE;
+  trustData.dwUnionChoice = WTD_CHOICE_FILE;
+  trustData.pFile = &fileInfo;
+  trustData.dwStateAction = WTD_STATEACTION_VERIFY;
+  trustData.dwProvFlags = WTD_CACHE_ONLY_URL_RETRIEVAL;
+  GUID policy = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+  const auto status = static_cast<HRESULT>(WinVerifyTrust(nullptr, &policy, &trustData));
+  trustData.dwStateAction = WTD_STATEACTION_CLOSE;
+  WinVerifyTrust(nullptr, &policy, &trustData);
+  if (status == TRUST_E_NOSIGNATURE || status == TRUST_E_SUBJECT_FORM_UNKNOWN) {
+    return L"This installer is not code-signed; no certificate to trust.";
+  }
+  // Untrusted root / chaining errors are expected before the certificate is trusted; anything else
+  // (a changed file, a bad signature) means the certificate must not be trusted.
+  if (status != ERROR_SUCCESS && status != CERT_E_UNTRUSTEDROOT && status != CERT_E_CHAINING &&
+      status != CERT_E_UNTRUSTEDTESTROOT) {
+    return L"Warning: the installer's signature did not verify (" + HresultToHexString(status) +
+           L"); its certificate was not trusted.";
+  }
+
+  PCCERT_CONTEXT certificate = nullptr;
+  std::wstring subject, error;
+  if (!ResolveSignerCertificateFromSignedFile(setupPath, &certificate, &subject, &error)) {
+    return L"Warning: could not read the installer's signing certificate. " + error;
+  }
+
+  bool codeSigning = false;
+  DWORD usageSize = 0;
+  if (CertGetEnhancedKeyUsage(certificate, 0, nullptr, &usageSize) && usageSize > 0) {
+    std::vector<BYTE> usageBuffer(usageSize);
+    auto* usage = reinterpret_cast<PCERT_ENHKEY_USAGE>(usageBuffer.data());
+    if (CertGetEnhancedKeyUsage(certificate, 0, usage, &usageSize)) {
+      for (DWORD i = 0; i < usage->cUsageIdentifier; ++i) {
+        if (std::string(usage->rgpszUsageIdentifier[i]) == szOID_PKIX_KP_CODE_SIGNING) codeSigning = true;
+      }
+    }
+  }
+  bool certificateAuthority = false;
+  if (const auto* extension = CertFindExtension(szOID_BASIC_CONSTRAINTS2, certificate->pCertInfo->cExtension,
+                                                certificate->pCertInfo->rgExtension)) {
+    CERT_BASIC_CONSTRAINTS2_INFO constraints{};
+    DWORD size = sizeof(constraints);
+    if (CryptDecodeObjectEx(X509_ASN_ENCODING, X509_BASIC_CONSTRAINTS2, extension->Value.pbData, extension->Value.cbData, 0,
+                            nullptr, &constraints, &size)) {
+      certificateAuthority = constraints.fCA != FALSE;
+    }
+  }
+  if (!codeSigning || certificateAuthority) {
+    CertFreeCertificateContext(certificate);
+    return L"The installer's certificate (" + subject + L") is not a plain code-signing certificate; it was not trusted.";
+  }
+  const bool selfSigned = CertCompareCertificateName(X509_ASN_ENCODING, &certificate->pCertInfo->Subject,
+                                                     &certificate->pCertInfo->Issuer) != FALSE;
+
+  std::wstring result;
+  if (remove) {
+    for (const wchar_t* storeName : {L"TrustedPublisher", L"ROOT"}) {
+      if (const auto store = CertOpenStore(CERT_STORE_PROV_SYSTEM_W, 0, static_cast<HCRYPTPROV_LEGACY>(0),
+                                           CERT_SYSTEM_STORE_LOCAL_MACHINE, storeName)) {
+        if (const auto found = CertFindCertificateInStore(store, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, 0,
+                                                          CERT_FIND_EXISTING, certificate, nullptr)) {
+          CertDeleteCertificateFromStore(found);  // frees the context
+        }
+        CertCloseStore(store, 0);
+      }
+    }
+    result = L"Removed the Fenrir code-signing certificate (" + subject + L") from the trusted stores.";
+  } else {
+    std::wstring storeError;
+    const bool publisher = EnsureCertificateInMachineStore(certificate, L"TrustedPublisher", &storeError);
+    const bool root = !selfSigned || EnsureCertificateInMachineStore(certificate, L"ROOT", &storeError);
+    result = publisher && root
+                 ? L"Trusted the Fenrir code-signing certificate (" + subject + L")" +
+                       (selfSigned ? L" as a trusted root and publisher." : L" as a trusted publisher.")
+                 : L"Warning: could not add the code-signing certificate to the machine stores. " + storeError;
+  }
+  CertFreeCertificateContext(certificate);
+  return result;
 }
 
 bool HasEmbeddedPayloadResource(HINSTANCE instance, const int resourceId) {
@@ -2427,6 +2521,7 @@ bool InstallPayloadFiles(HWND hwnd, UiContext* context, const bool repair, std::
   if (!CopySelfToInstallRoot(context->setupPath, installRoot, errorMessage)) {
     return false;
   }
+  PostLog(hwnd, TrustOwnCodeSigningCertificate(context->setupPath, false));
 
   return true;
 }
@@ -2649,6 +2744,7 @@ void RunUninstall(HWND hwnd, UiContext* context) {
   RemoveEndpointAutoStart();
   PostLog(hwnd, L"Removing Start menu shortcuts");
   RemoveStartMenuShortcuts();
+  PostLog(hwnd, TrustOwnCodeSigningCertificate(context->setupPath, true));
 
   PostStatus(hwnd, L"Removing installation registry entries...", 75);
   DeleteRegistryTree(HKEY_LOCAL_MACHINE, kArpRegistryRoot);

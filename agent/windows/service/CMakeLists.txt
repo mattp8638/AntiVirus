@@ -510,7 +510,7 @@ target_include_directories(antivirus-setup PRIVATE
   ${INSTALLER_NATIVE_DIR}/include
   ${INSTALLER_NATIVE_DIR}/src
 )
-target_link_libraries(antivirus-setup PRIVATE comctl32 ole32 shell32 advapi32 crypt32 dwmapi)
+target_link_libraries(antivirus-setup PRIVATE comctl32 ole32 shell32 advapi32 crypt32 wintrust dwmapi)
 # Keep the runtime fully static. A trailing -Bdynamic here overrides -static
 # for implicit runtime libraries and makes setup require libwinpthread-1.dll
 # before it can extract any embedded payload.
