@@ -490,21 +490,58 @@ def _ticket_for(db: Session, device: Device, incident: Incident, alert: Alert) -
     incident.ticket_id = ticket.id
 
 
-def _risk_score(db: Session, device: Device) -> int:
+ALERT_WEIGHTS = {"critical": 40, "high": 20, "medium": 8, "low": 2}
+VULN_WEIGHTS = (3.0, 1.5, 1.0, 0.75, 0.5)  # the worst vulnerability counts most; the long tail a little each
+
+
+def risk_breakdown(db: Session, device: Device) -> dict:
+    """The device's 0-100 risk score and what makes it up: open alerts in the last 7 days (up to 60 points),
+    open vulnerabilities weighted by their own risk, worst first (up to 45), and isolation (5)."""
+    from . import vulnmgmt
+    from .models import Vulnerability
+
     since = utcnow() - timedelta(days=7)
     rows = db.execute(
         select(Alert.severity, func.count()).where(Alert.device_id == device.id, Alert.created_at >= since,
                                                    Alert.status.in_(("new", "triaged"))).group_by(Alert.severity)
     ).all()
-    weights = {"critical": 40, "high": 20, "medium": 8, "low": 2}
-    score = sum(weights.get(sev, 0) * count for sev, count in rows)
-    from .models import Vulnerability
-
-    vulns = db.execute(
-        select(func.count()).where(Vulnerability.device_id == device.id, Vulnerability.status == "open",
-                                   Vulnerability.severity.in_(("critical", "high")))
-    ).scalar() or 0
-    score += min(vulns * 2, 30)
+    alert_points = min(sum(ALERT_WEIGHTS.get(sev, 0) * count for sev, count in rows), 60)
+    vulns = db.execute(select(Vulnerability).where(Vulnerability.device_id == device.id,
+                                                   Vulnerability.status.in_(("open", "patching")))).scalars().all()
+    scored = sorted(((vulnmgmt.risk_score(v, device.criticality), v) for v in vulns), key=lambda x: -x[0])
+    vuln_points = 0.0
+    for index, (risk, _) in enumerate(scored):
+        vuln_points += risk * (VULN_WEIGHTS[index] if index < len(VULN_WEIGHTS) else 0.2)
+    vuln_points = min(round(vuln_points), 45)
+    parts = []
+    if alert_points:
+        parts.append({"kind": "alerts", "points": alert_points,
+                      "detail": ", ".join(f"{count} {sev}" for sev, count in sorted(rows, key=lambda r: -ALERT_WEIGHTS.get(r[0], 0)))
+                      + " open alert(s) in the last 7 days"})
+    if vuln_points:
+        kev = sum(1 for _, v in scored if v.known_exploited)
+        parts.append({"kind": "vulnerabilities", "points": vuln_points,
+                      "detail": f"{len(scored)} open vulnerabilit{'y' if len(scored) == 1 else 'ies'}" + (f", {kev} known exploited" if kev else ""),
+                      "top": [{"vulnId": v.vuln_id, "package": v.package, "risk": risk, "fix": (v.fix or {}).get("ref") or v.fixed_version,
+                               "reasons": vulnmgmt.risk_reasons(v)} for risk, v in scored[:5]]})
     if device.isolated:
-        score += 5
-    return min(score, 100)
+        parts.append({"kind": "isolated", "points": 5, "detail": "isolated from the network"})
+    return {"score": min(sum(p["points"] for p in parts), 100), "parts": parts}
+
+
+def _risk_score(db: Session, device: Device) -> int:
+    return risk_breakdown(db, device)["score"]
+
+
+def refresh_risk_scores(db: Session, device_ids: list[str] | None = None) -> int:
+    """Recompute stored risk scores (after vulnerability scans and intelligence updates). Returns how many changed."""
+    query = select(Device)
+    if device_ids is not None:
+        query = query.where(Device.id.in_(device_ids))
+    changed = 0
+    for device in db.execute(query).scalars():
+        score = _risk_score(db, device)
+        if score != device.risk_score:
+            device.risk_score = score
+            changed += 1
+    return changed

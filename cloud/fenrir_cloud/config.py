@@ -63,6 +63,10 @@ class Settings:
     artifact_retention_days: int = field(default_factory=lambda: int(os.getenv("FENRIR_ARTIFACT_RETENTION_DAYS", "30")))
     # The 30-second RMM/PSA scheduler (scheduled tasks, monitors, patch windows, workflows).
     scheduler_enabled: bool = field(default_factory=lambda: _bool("FENRIR_SCHEDULER", True))
+    # Background CVE intelligence: NVD (CVSS, descriptions, app version matching), FIRST EPSS and CISA KEV.
+    # An NVD API key (free, https://nvd.nist.gov/developers/request-an-api-key) raises NVD's limit tenfold.
+    vuln_intel_enabled: bool = field(default_factory=lambda: _bool("FENRIR_VULN_INTEL", True))
+    nvd_api_key: str = field(default_factory=lambda: os.getenv("FENRIR_NVD_API_KEY", ""))
     rules_dir: Path = field(default_factory=lambda: Path(__file__).resolve().parent / "rules" / "sigma")
 
     # Mount the vendored Sentinel investigation API under /legacy/sentinel.

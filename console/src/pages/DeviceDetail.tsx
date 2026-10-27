@@ -7,6 +7,7 @@ import { ConnectButtons, JobDetail, JobStatus, pct } from "../components/rmm";
 import { TimeChart } from "../components/TimeChart";
 import { RunScript } from "./rmm/Scripts";
 import { SystemTab } from "./DeviceSystem";
+import { DeviceVulns } from "./DeviceVulns";
 import { DeviceDetails, DeviceOverview, useCommandLabels } from "./DeviceOverview";
 
 // The map (Leaflet) is only downloaded when a phone's Location tab is opened.
@@ -128,7 +129,7 @@ export default function DeviceDetail() {
   const m = d.metrics || {};
   const openAlerts = (data.alerts || []).filter(OPEN_ALERT);
   const pendingPatches = (patches?.patches || []).filter((x: any) => x.status !== "installed");
-  const openVulns = (data.vulnerabilities || []).filter((v: any) => v.status === "open");
+  const openVulns = (data.vulnerabilities || []).filter((v: any) => ["open", "patching"].includes(v.status));
   const diskFree = (m.disks || []).length ? Math.min(...m.disks.map((x: any) => x.freePercent ?? 100)) : undefined;
   const counts: Record<string, number> = { security: openAlerts.length, software: pendingPatches.length };
   const subCounts: Record<string, number> = { Alerts: openAlerts.length, Vulnerabilities: openVulns.length, Patches: pendingPatches.length, Installed: (data.software || []).length };
@@ -283,19 +284,7 @@ export default function DeviceDetail() {
                            { key: "createdAt", label: "When", render: (r) => <span title={fmtTime(r.createdAt)}>{ago(r.createdAt)}</span> }]} />
         </div>
       )}
-      {sub === "Vulnerabilities" && (
-        <div className="card">
-          <div className="row" style={{ marginBottom: 10 }}>
-            <span className="small muted" style={{ flex: 1 }}>Known vulnerabilities in installed software, matched against OSV.</span>
-            <button onClick={() => run(() => api("vulnerabilities/scan", { body: { deviceId: d.id } }), "Vulnerability scan queued")}>Scan now</button>
-          </div>
-          <Table rows={data.vulnerabilities} empty="No open vulnerabilities."
-                 columns={[{ key: "vulnId", label: "ID", render: (r) => <a href={`https://osv.dev/vulnerability/${r.vulnId}`} target="_blank" rel="noreferrer">{r.vulnId}</a> },
-                           { key: "severity", label: "Sev", render: (r) => <><Sev level={r.severity} /> {r.knownExploited && <Pill value="exploited" tone="bad" />}</> },
-                           { key: "package", label: "Package" }, { key: "installedVersion", label: "Installed" }, { key: "fixedVersion", label: "Fixed in" },
-                           { key: "status", label: "Status", render: (r) => <Pill value={r.status} /> }]} />
-        </div>
-      )}
+      {sub === "Vulnerabilities" && <DeviceVulns device={d} vulnerabilities={data.vulnerabilities} risk={data.risk} onChanged={reload} />}
       {sub === "Local admin" && <LocalAdmin deviceId={d.id} />}
       {sub === "Patches" && <PatchesTab device={d} />}
       {sub === "Installed" && <SoftwareList rows={data.software} />}
