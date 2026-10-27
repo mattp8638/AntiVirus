@@ -214,7 +214,7 @@ def findings(profile: dict, now: datetime | None = None) -> list[dict]:
         add("high" if disk_errors >= 10 else "medium", "disks", f"{disk_errors:.0f} disk errors in the event log (7 days)", "")
     stopped = (profile.get("services") or {}).get("autoStopped") or []
     if stopped:
-        add("low", "os", f"{len(stopped)} automatic services are not running", ", ".join(stopped[:6]))
+        add("low", "os", f"{len(stopped)} automatic service{'s are' if len(stopped) != 1 else ' is'} not running", ", ".join(stopped[:6]))
     order = {"high": 0, "medium": 1, "low": 2}
     out.sort(key=lambda f: order.get(f["severity"], 3))
     return out

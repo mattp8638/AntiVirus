@@ -2,6 +2,7 @@ import { Fragment, useEffect, useState } from "react";
 import { ago, api, fmtTime } from "../api";
 import { useApp } from "../app-context";
 import { ErrorNote, Pill, Sev, Table, useAction, useData } from "../components/ui";
+import { makeModel } from "./DeviceOverview";
 
 // Everything a technician usually asks the user for: hardware, Windows build, disk health, BitLocker,
 // who uses the machine, network, battery, security posture and recent problems. The agent collects it
@@ -64,7 +65,7 @@ export function SystemTab({ deviceId }: { deviceId: string }) {
         <div className="card">
           <h3>Hardware</h3>
           <Kv rows={[
-            ["Make and model", [hw.manufacturer, hw.model].filter(Boolean).join(" ") || "—"],
+            ["Make and model", makeModel(hw.manufacturer, hw.model)],
             ["Serial", hw.serial && <span className="mono">{hw.serial}</span>],
             ["Type", hw.chassis],
             ["Processor", hw.cpu?.name && `${hw.cpu.name} (${hw.cpu.cores ?? "?"} cores, ${hw.cpu.threads ?? "?"} threads)`],

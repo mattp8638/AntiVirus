@@ -1,12 +1,63 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ago, api, fmtTime, getToken } from "../api";
 import { useApp } from "../app-context";
-import { ErrorNote, Modal, PageHead, Pill, Sev, Table, Tabs, useAction, useData } from "../components/ui";
+import { ErrorNote, Modal, Pill, Sev, Table, useAction, useData } from "../components/ui";
 import { ConnectButtons, JobDetail, JobStatus, pct } from "../components/rmm";
 import { TimeChart } from "../components/TimeChart";
 import { RunScript } from "./rmm/Scripts";
 import { SystemTab } from "./DeviceSystem";
+import { DeviceDetails, DeviceOverview, useCommandLabels } from "./DeviceOverview";
+
+// Seven sections instead of thirteen tabs; the section and sub-page live in the URL (?tab=&sub=) so a link,
+// a refresh or the back button lands on the same place.
+const SECTIONS: { key: string; label: string; subs?: string[] }[] = [
+  { key: "overview", label: "Overview" },
+  { key: "health", label: "Health" },
+  { key: "system", label: "System" },
+  { key: "security", label: "Security", subs: ["Alerts", "Vulnerabilities", "Local admin"] },
+  { key: "software", label: "Software", subs: ["Patches", "Installed"] },
+  { key: "activity", label: "Activity", subs: ["Scripts & jobs", "Remote actions", "Remote sessions", "Bundles & recordings"] },
+  { key: "settings", label: "Settings", subs: ["Effective policy", "Device details"] },
+];
+const OPEN_ALERT = (a: any) => !["resolved", "closed", "false_positive"].includes(a.status);
+const PLATFORM_GLYPH: Record<string, string> = { windows: "⊞", macos: "⌘", linux: "🐧" };
+
+// A small drop-down menu: closes on outside click or Escape.
+function Menu({ label, children }: { label: React.ReactNode; children: (close: () => void) => React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
+  }, [open]);
+  return (
+    <div className="menu-wrap" ref={ref}>
+      <button onClick={() => setOpen(!open)} aria-haspopup="menu" aria-expanded={open}>{label} ▾</button>
+      {open && <div className="menu" role="menu">{children(() => setOpen(false))}</div>}
+    </div>
+  );
+}
+
+function StatTile({ label, value, sub, tone, onClick }: { label: string; value: React.ReactNode; sub?: React.ReactNode; tone?: string; onClick?: () => void }) {
+  return (
+    <button className={`stat-tile ${tone ? `tone-edge-${tone}` : ""}`} onClick={onClick} disabled={!onClick}>
+      <span className="stat-label">{label}</span>
+      <span className="stat-value">{value}</span>
+      {sub && <span className="stat-sub">{sub}</span>}
+    </button>
+  );
+}
+
+const levelTone = (v: number | undefined, warn: number, bad: number, invert = false) => {
+  if (v === undefined || v === null || Number.isNaN(v)) return undefined;
+  const x = invert ? -v : v;
+  return x >= (invert ? -bad : bad) ? "bad" : x >= (invert ? -warn : warn) ? "warn" : "good";
+};
 
 export default function DeviceDetail() {
   const { id } = useParams();
@@ -14,6 +65,8 @@ export default function DeviceDetail() {
   const { data, error, reload } = useData<any>(`devices/${id}`);
   const { data: policies } = useData<any[]>("policies", { tenant_id: data?.device.tenantId }, [data?.device.tenantId]);
   const { data: groups } = useData<any[]>("groups", { tenant_id: data?.device.tenantId }, [data?.device.tenantId]);
+  const { data: profile } = useData<any>(id ? `devices/${id}/profile` : null);
+  const { data: patches } = useData<any>(id ? `rmm/devices/${id}/patches` : null);
   const [reinstating, setReinstating] = useState(false);
   const [installerReady, setInstallerReady] = useState(false);
   const [retiring, setRetiring] = useState(false);
@@ -21,44 +74,223 @@ export default function DeviceDetail() {
   const [purging, setPurging] = useState(false);
   const [purgeName, setPurgeName] = useState("");
   const goTo = useNavigate();
-  const [tab, setTab] = useState("Overview");
+  const [params, setParams] = useSearchParams();
   const [action, setAction] = useState<string | null>(null);
   const [scriptPicker, setScriptPicker] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const { run, busy } = useAction();
+  const commandLabel = useCommandLabels();
+
+  // Keep the header live (online state, CPU, memory) without a manual refresh.
+  useEffect(() => {
+    const timer = setInterval(() => { if (document.visibilityState === "visible") reload(); }, 30000);
+    return () => clearInterval(timer);
+  }, [reload]);
 
   if (error) return <ErrorNote error={error} />;
   if (!data) return <div className="empty">Loading…</div>;
   const d = data.device;
+  const isWindows = String(d.platform || "windows").toLowerCase() === "windows";
+  const sections = SECTIONS.map((s) => s.key === "security" && !isWindows ? { ...s, subs: s.subs!.filter((x) => x !== "Local admin") } : s);
+  const section = sections.find((s) => s.key === params.get("tab")) ?? sections[0];
+  const sub = section.subs ? (section.subs.find((s) => s === params.get("sub")) ?? section.subs[0]) : undefined;
+  const go = (tab: string, subPage?: string) => {
+    const next = new URLSearchParams(params);
+    next.set("tab", tab);
+    if (subPage) next.set("sub", subPage); else next.delete("sub");
+    if (tab === "overview") { next.delete("tab"); next.delete("sub"); }
+    setParams(next);
+  };
 
   const patch = async (body: any, message: string) => {
     await run(() => api(`devices/${d.id}`, { method: "PATCH", body }), message);
     reload();
   };
+  const queue = async (type: string, label: string, payload: any = {}) => {
+    await run(() => api(`devices/${d.id}/commands`, { body: { type, reason: `${label} from the device page`, payload } }), `${label} queued`);
+    reload();
+  };
+
+  const m = d.metrics || {};
+  const openAlerts = (data.alerts || []).filter(OPEN_ALERT);
+  const pendingPatches = (patches?.patches || []).filter((x: any) => x.status !== "installed");
+  const openVulns = (data.vulnerabilities || []).filter((v: any) => v.status === "open");
+  const diskFree = (m.disks || []).length ? Math.min(...m.disks.map((x: any) => x.freePercent ?? 100)) : undefined;
+  const counts: Record<string, number> = { security: openAlerts.length, software: pendingPatches.length };
+  const subCounts: Record<string, number> = { Alerts: openAlerts.length, Vulnerabilities: openVulns.length, Patches: pendingPatches.length, Installed: (data.software || []).length };
+  const user = m.loggedOnUser || d.inventory?.loggedOnUser;
+  const groupName = groups?.find((g) => g.id === d.groupId)?.name;
+
+  const management = (
+    <div className="form-grid compact">
+      <label className="field">Group
+        <select value={d.groupId ?? ""} disabled={!can("configure")} onChange={(e) => patch({ groupId: e.target.value || null }, "Group updated")}>
+          <option value="">No group</option>
+          {groups?.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+        </select>
+      </label>
+      <label className="field">Policy override
+        <select value={d.policyId ?? ""} disabled={!can("configure")} onChange={(e) => patch({ policyId: e.target.value || null }, "Policy override updated")}>
+          <option value="">Inherit from group/customer</option>
+          {policies?.filter((p) => p.tenantId).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+      </label>
+      <label className="field">Business criticality
+        <select value={d.criticality ?? "medium"} disabled={!can("configure")} onChange={(e) => patch({ criticality: e.target.value }, "Criticality updated")}>
+          {["low", "medium", "high", "critical"].map((c) => <option key={c}>{c}</option>)}
+        </select>
+      </label>
+    </div>
+  );
 
   return (
     <>
-      <PageHead title={d.hostname}
-                subtitle={<>{d.osVersion} · {tenantName(d.tenantId)} · <span className={`dot ${d.online ? "on" : "off"}`} /> {d.online ? "online" : `last seen ${ago(d.lastSeenAt)}`}</>}
-                actions={!d.retired && can("respond") && <>
-                  {!d.approved && can("configure") && <button className="primary" onClick={() => patch({ approved: true }, "Device approved")}>Approve</button>}
-                  <ConnectButtons device={d} />
-                  {can("configure") && <button onClick={() => setScriptPicker(true)}>Run script</button>}
-                  <button onClick={() => setAction("scan.quick")}>Scan</button>
-                  {d.isolated ? <button onClick={() => setAction("device.release")}>Release isolation</button>
-                              : <button className="danger" onClick={() => setAction("device.isolate")}>Isolate</button>}
-                  <button onClick={() => setAction("")}>More actions…</button>
-                </>} />
+      <div className="crumbs small"><Link to="/devices">Devices</Link> <span className="muted">›</span> <span className="muted">{tenantName(d.tenantId)}</span> <span className="muted">›</span> <span>{d.hostname}</span></div>
+
+      <div className="device-hero">
+        <div className={`device-glyph ${d.online ? "on" : ""}`} aria-hidden>{PLATFORM_GLYPH[String(d.platform).toLowerCase()] ?? "▣"}</div>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div className="row" style={{ gap: 10 }}>
+            <h1 style={{ margin: 0 }}>{d.hostname}</h1>
+            {d.retired ? <Pill value="decommissioned" tone="muted" /> :
+              <span className={`status-chip ${d.online ? "on" : "off"}`}><span className={`dot ${d.online ? "on" : "off"}`} />{d.online ? "Online" : `Offline · ${ago(d.lastSeenAt)}`}</span>}
+            {!d.approved && !d.retired && <Pill value="needs approval" tone="warn" />}
+            {d.isolated && <Pill value="isolated" tone="bad" />}
+            {m.rebootPending && <Pill value="restart pending" tone="warn" />}
+            {d.healthState && d.healthState !== "healthy" && <Pill value={d.healthState} tone="warn" />}
+          </div>
+          <div className="device-meta">
+            <span>{d.osVersion}</span>
+            <span>{tenantName(d.tenantId)}{groupName ? ` · ${groupName}` : ""}</span>
+            {user && <span title="Signed-in user">👤 {user}</span>}
+            {d.ipAddress && <span className="mono">{d.ipAddress}</span>}
+          </div>
+        </div>
+        {!d.retired && can("respond") && <div className="device-actions">
+          {!d.approved && can("configure") && <button className="primary" onClick={() => patch({ approved: true }, "Device approved")}>Approve</button>}
+          <ConnectButtons device={d} />
+          {can("configure") && <button onClick={() => setScriptPicker(true)}>Run script</button>}
+          <Menu label="Scan">{(close) => <>
+            <button role="menuitem" onClick={() => { close(); queue("scan.quick", "Quick scan"); }}>Quick scan</button>
+            <button role="menuitem" onClick={() => { close(); queue("scan.full", "Full scan"); }}>Full scan</button>
+            <button role="menuitem" onClick={() => { close(); setAction("scan.targeted"); }}>Scan a path…</button>
+            <button role="menuitem" onClick={() => { close(); run(() => api("vulnerabilities/scan", { body: { deviceId: d.id } }), "Vulnerability scan queued"); }}>Vulnerability scan</button>
+            <button role="menuitem" onClick={() => { close(); queue("patch.scan", "Patch scan"); }}>Patch scan</button>
+          </>}</Menu>
+          {d.isolated ? <button onClick={() => setAction("device.release")}>Release isolation</button>
+                      : <button className="danger" onClick={() => setAction("device.isolate")}>Isolate</button>}
+          <Menu label="More">{(close) => <>
+            <div className="menu-label">Device</div>
+            <button role="menuitem" onClick={() => { close(); setAction("device.reboot"); }}>Restart…</button>
+            <button role="menuitem" onClick={() => { close(); setAction("device.message"); }}>Message the user…</button>
+            <button role="menuitem" onClick={() => { close(); setAction("service.control"); }}>Start / stop a service…</button>
+            <button role="menuitem" onClick={() => { close(); run(() => api(`devices/${d.id}/profile/refresh`, { method: "POST" }), "Inventory refresh queued"); }}>Refresh inventory</button>
+            <button role="menuitem" onClick={() => { close(); queue("policy.refresh", "Policy refresh"); }}>Refresh policy now</button>
+            <div className="menu-label">Collect</div>
+            <button role="menuitem" onClick={() => { close(); queue("support.bundle", "Support bundle"); }}>Support bundle</button>
+            <button role="menuitem" onClick={() => { close(); queue("forensics.collect", "Forensic bundle"); }}>Forensic bundle</button>
+            <div className="menu-label">Other</div>
+            <button role="menuitem" onClick={() => { close(); setAction(""); }}>All remote actions…</button>
+            <button role="menuitem" onClick={() => { close(); navigator.clipboard?.writeText(d.id); }}>Copy device ID</button>
+            {can("configure") && <><div className="menu-sep" />
+              <button role="menuitem" className="danger-text" onClick={() => { close(); setRetireName(""); setRetiring(true); }}>Decommission device…</button></>}
+          </>}</Menu>
+        </div>}
+      </div>
+
       {d.platform === "macos" && d.inventory?.permissions?.fullDiskAccess === false && (
         <div className="card" role="alert" style={{ borderColor: "rgba(251,191,36,.5)", marginBottom: 12 }}>
           <b>Full Disk Access is not granted on this Mac.</b> Scans and forensic collection cannot read protected folders
           (Mail, Messages, Safari, other users' files). On the Mac, open System Settings › Privacy &amp; Security › Full Disk Access
           and allow <span className="mono">/usr/local/bin/fenrir-agent</span>, or push the permission with an MDM profile.
         </div>)}
-      {d.retired ? <p role="status">Decommissioned — agent access is revoked. Historical records remain available. Use Reinstate device to reconnect the endpoint to this record.</p> : can("configure") && <button className="danger" onClick={()=>{setRetireName("");setRetiring(true);}}>Decommission device</button>}
-      {d.retired && can("configure") && <span style={{ display: "inline-flex", gap: 8 }}>
-        <button className="primary" onClick={()=>{setInstallerReady(false);setReinstating(true);}}>Reinstate device</button>
-        <button className="danger" onClick={()=>{setPurgeName("");setPurging(true);}}>Delete permanently</button></span>}
+      {d.retired && <div className="card" role="status" style={{ marginBottom: 12, borderColor: "rgba(100,116,139,.6)" }}>
+        <div className="row">
+          <span style={{ flex: 1 }}>Decommissioned: agent access is revoked. History stays available. Reinstate to reconnect the endpoint to this record.</span>
+          {can("configure") && <><button className="primary" onClick={() => { setInstallerReady(false); setReinstating(true); }}>Reinstate device</button>
+            <button className="danger" onClick={() => { setPurgeName(""); setPurging(true); }}>Delete permanently</button></>}
+        </div>
+      </div>}
+
+      {!d.retired && <div className="stat-strip">
+        <StatTile label="CPU" value={pct(m.cpuPercent)} tone={levelTone(m.cpuPercent, 70, 90)} sub={m.reportedAt ? `reported ${ago(m.reportedAt)}` : "no data yet"} onClick={() => go("health")} />
+        <StatTile label="Memory" value={pct(m.memoryPercent)} tone={levelTone(m.memoryPercent, 80, 92)} sub={m.memoryTotalGb ? `of ${Math.round(m.memoryTotalGb)} GB` : undefined} onClick={() => go("health")} />
+        <StatTile label="Disk free" value={diskFree === undefined ? "—" : `${Math.round(diskFree)}%`} tone={diskFree === undefined ? undefined : diskFree < 5 ? "bad" : diskFree < 15 ? "warn" : "good"} sub="lowest volume" onClick={() => go("system")} />
+        <StatTile label="Up for" value={m.uptimeSeconds ? `${Math.floor(m.uptimeSeconds / 86400)}d ${Math.floor((m.uptimeSeconds % 86400) / 3600)}h` : "—"} tone={m.uptimeSeconds > 30 * 86400 ? "warn" : undefined} sub={m.rebootPending ? "restart pending" : "since last restart"} onClick={() => go("health")} />
+        <StatTile label="Open alerts" value={openAlerts.length} tone={openAlerts.length ? (openAlerts.some((a: any) => ["critical", "high"].includes(a.severity)) ? "bad" : "warn") : "good"} sub={`risk score ${d.riskScore}`} onClick={() => go("security", "Alerts")} />
+        <StatTile label="Patches" value={patches ? pendingPatches.length : "—"} tone={patches ? (pendingPatches.length ? "warn" : "good") : undefined} sub={patches?.lastScan ? `scanned ${ago(patches.lastScan)}` : "not scanned"} onClick={() => go("software", "Patches")} />
+        <StatTile label="Vulnerabilities" value={openVulns.length} tone={openVulns.some((v: any) => v.knownExploited || v.severity === "critical") ? "bad" : openVulns.length ? "warn" : "good"} sub="open" onClick={() => go("security", "Vulnerabilities")} />
+      </div>}
+
+      <div className="tabs device-tabs" role="tablist">
+        {sections.map((s) => <button key={s.key} role="tab" aria-selected={s.key === section.key} className={s.key === section.key ? "active" : ""} onClick={() => go(s.key)}>
+          {s.label}{counts[s.key] ? <span className="tab-count">{counts[s.key]}</span> : null}</button>)}
+      </div>
+      {section.subs && <div className="subtabs">
+        {section.subs.map((s) => <button key={s} className={s === sub ? "active" : ""} onClick={() => go(section.key, s)}>{s}{subCounts[s] ? <span className="sub-count">{subCounts[s]}</span> : null}</button>)}
+      </div>}
+
+      {section.key === "overview" && <DeviceOverview data={data} profile={profile} patches={patches} go={go} management={management} />}
+      {section.key === "health" && <HealthTab deviceId={d.id} />}
+      {section.key === "system" && <SystemTab deviceId={d.id} />}
+
+      {sub === "Alerts" && (
+        <div className="card">
+          <Table rows={data.alerts} empty="No alerts for this device."
+                 columns={[{ key: "severity", label: "Sev", render: (r) => <Sev level={r.severity} /> }, { key: "title", label: "Alert" },
+                           { key: "status", label: "Status", render: (r) => <Pill value={r.status} /> },
+                           { key: "mitre", label: "MITRE", render: (r) => r.mitre.filter((x: string) => x.startsWith("T")).join(", ") },
+                           { key: "incidentId", label: "Incident", render: (r) => r.incidentId ? <Link to={`/incidents/${r.incidentId}`}>open</Link> : "—" },
+                           { key: "createdAt", label: "When", render: (r) => <span title={fmtTime(r.createdAt)}>{ago(r.createdAt)}</span> }]} />
+        </div>
+      )}
+      {sub === "Vulnerabilities" && (
+        <div className="card">
+          <div className="row" style={{ marginBottom: 10 }}>
+            <span className="small muted" style={{ flex: 1 }}>Known vulnerabilities in installed software, matched against OSV.</span>
+            <button onClick={() => run(() => api("vulnerabilities/scan", { body: { deviceId: d.id } }), "Vulnerability scan queued")}>Scan now</button>
+          </div>
+          <Table rows={data.vulnerabilities} empty="No open vulnerabilities."
+                 columns={[{ key: "vulnId", label: "ID", render: (r) => <a href={`https://osv.dev/vulnerability/${r.vulnId}`} target="_blank" rel="noreferrer">{r.vulnId}</a> },
+                           { key: "severity", label: "Sev", render: (r) => <><Sev level={r.severity} /> {r.knownExploited && <Pill value="exploited" tone="bad" />}</> },
+                           { key: "package", label: "Package" }, { key: "installedVersion", label: "Installed" }, { key: "fixedVersion", label: "Fixed in" },
+                           { key: "status", label: "Status", render: (r) => <Pill value={r.status} /> }]} />
+        </div>
+      )}
+      {sub === "Local admin" && <LocalAdmin deviceId={d.id} />}
+      {sub === "Patches" && <PatchesTab device={d} />}
+      {sub === "Installed" && <SoftwareList rows={data.software} />}
+      {sub === "Scripts & jobs" && <JobsTab deviceId={d.id} onOpen={setJobId} onRun={can("configure") ? () => setScriptPicker(true) : undefined} />}
+      {sub === "Remote actions" && (
+        <div className="card">
+          <div className="row" style={{ marginBottom: 10 }}>
+            <span className="small muted" style={{ flex: 1 }}>The last 25 commands sent to this device.</span>
+            {can("respond") && !d.retired && <button onClick={() => setAction("")}>New remote action…</button>}
+          </div>
+          <Table rows={data.commands} empty="No remote actions yet."
+                 columns={[{ key: "type", label: "Action", render: (r) => <span title={r.type}>{commandLabel(r.type)}</span> }, { key: "status", label: "Status", render: (r) => <Pill value={r.status} /> },
+                           { key: "issuedBy", label: "By" }, { key: "targetPath", label: "Target", render: (r) => <span className="mono small">{r.targetPath || r.recordId || "—"}</span> },
+                           { key: "reason", label: "Reason" }, { key: "createdAt", label: "Queued", render: (r) => <span title={fmtTime(r.createdAt)}>{ago(r.createdAt)}</span> },
+                           { key: "result", label: "Result", render: (r) => Object.keys(r.result || {}).length ? <span className="mono small" title={JSON.stringify(r.result)}>{JSON.stringify(r.result).slice(0, 80)}</span> : "—" }]} />
+        </div>
+      )}
+      {sub === "Remote sessions" && <SessionsTab deviceId={d.id} />}
+      {sub === "Bundles & recordings" && <Bundles deviceId={d.id} />}
+      {sub === "Effective policy" && <EffectivePolicy policy={data.policy} />}
+      {sub === "Device details" && (
+        <div className="grid k2">
+          <div className="card"><h3>Device</h3><DeviceDetails data={data} /></div>
+          <div className="stack">
+            <div className="card"><h3>Management</h3>{management}</div>
+            {can("configure") && !d.retired && <div className="card danger-zone">
+              <h3>Danger zone</h3>
+              <p className="small muted">Decommissioning revokes the agent's access and cancels pending commands. History is kept, and the device can be reinstated later.</p>
+              <button className="danger" onClick={() => { setRetireName(""); setRetiring(true); }}>Decommission device…</button>
+            </div>}
+          </div>
+        </div>
+      )}
+
       {purging && <Modal title={`Delete ${d.hostname} permanently`} onClose={()=>{if(!busy)setPurging(false);}}>
         <p>This deletes the device record and everything recorded about it: telemetry, alerts and incidents, commands, inventory, patches, vulnerabilities, remote sessions, bundles and recordings. It cannot be undone.</p>
         <p>Tickets and CMDB configurations are kept but no longer linked to the device. The audit log records the deletion. To use this endpoint again later, install the agent with a new installer.</p>
@@ -94,119 +326,27 @@ export default function DeviceDetail() {
         <label className="field">Type {d.hostname} to confirm<input value={retireName} onChange={e=>setRetireName(e.target.value)}/></label>
         <button className="danger" disabled={busy||retireName!==d.hostname} onClick={async()=>{const result=await run(()=>api(`devices/${d.id}`,{method:"DELETE"}),"Device decommissioned; history retained");if(result){setRetiring(false);reload();}}}>Decommission and retain history</button>
       </Modal>}
-      <Tabs tabs={["Overview", "Health", "System", "Patches", "Scripts & jobs", "Remote sessions", "Effective policy", "Alerts", "Actions", "Bundles & recordings", "Software", "Vulnerabilities", ...(String(d.platform || "windows").toLowerCase() === "windows" ? ["Local admin"] : [])]} active={tab} onChange={setTab} />
-      {tab === "Health" && <HealthTab deviceId={d.id} />}
-      {tab === "System" && <SystemTab deviceId={d.id} />}
-      {tab === "Patches" && <PatchesTab device={d} />}
-      {tab === "Scripts & jobs" && <JobsTab deviceId={d.id} onOpen={setJobId} />}
-      {tab === "Remote sessions" && <SessionsTab deviceId={d.id} />}
-
-      {tab === "Overview" && (
-        <div className="grid k2">
-          <div className="card">
-            <h3>Device</h3>
-            <dl className="kv">
-              <dt>Device ID</dt><dd className="mono">{d.id}</dd>
-              <dt>Platform</dt><dd>{d.platform}</dd>
-              <dt>Agent</dt><dd>{d.agentVersion || "—"} (platform {d.platformVersion || "—"})</dd>
-              <dt>Health</dt><dd><Pill value={d.healthState} tone={d.healthState === "healthy" ? "good" : "warn"} /></dd>
-              <dt>Isolated</dt><dd>{d.isolated ? <Pill value="isolated" tone="bad" /> : "No"}</dd>
-              <dt>Risk score</dt><dd>{d.riskScore}</dd>
-              <dt>IP address</dt><dd>{d.ipAddress || "—"}</dd>
-              <dt>Serial</dt><dd>{d.serialNumber || "—"}</dd>
-              <dt>Enrolled</dt><dd>{fmtTime(d.enrolledAt)}</dd>
-              <dt>Events stored</dt><dd>{data.eventCount}</dd>
-              <dt>Encrypted DNS</dt><dd className="mono small">{data.dnsOverHttpsUrl}</dd>
-            </dl>
-          </div>
-          <div className="card">
-            <h3>Management</h3>
-            <div className="form-grid">
-              <label className="field">Group
-                <select value={d.groupId ?? ""} disabled={!can("configure")} onChange={(e) => patch({ groupId: e.target.value || null }, "Group updated")}>
-                  <option value="">No group</option>
-                  {groups?.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
-                </select>
-              </label>
-              <label className="field">Device policy override
-                <select value={d.policyId ?? ""} disabled={!can("configure")} onChange={(e) => patch({ policyId: e.target.value || null }, "Policy override updated")}>
-                  <option value="">Inherit from group/tenant</option>
-                  {policies?.filter((p) => p.tenantId).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
-              </label>
-              <label className="field">Business criticality
-                <select value={d.criticality ?? "medium"} disabled={!can("configure")} onChange={(e) => patch({ criticality: e.target.value }, "Criticality updated")}>
-                  {["low", "medium", "high", "critical"].map((c) => <option key={c}>{c}</option>)}
-                </select>
-              </label>
-            </div>
-            <p className="small muted" style={{ marginTop: 12 }}>
-              Policy revision {data.policy.revision} · {data.policy.applied ? <Pill value="applied" tone="good" /> : <Pill value="waiting for agent" tone="warn" />}
-            </p>
-            {data.policy.overridesBlocked.length > 0 && (
-              <p className="small">{data.policy.overridesBlocked.length} override(s) blocked by locks — see Effective policy.</p>
-            )}
-            {Object.keys(d.inventory || {}).length > 0 && (
-              <><h3 style={{ marginTop: 16 }}>Inventory</h3>
-                <dl className="kv">
-                  {Object.entries(d.inventory).filter(([, v]) => v !== null && v !== "" && typeof v !== "object").slice(0, 16).map(([k, v]) =>
-                    <Fragment key={k}><dt>{k.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase())}</dt><dd>{String(v)}</dd></Fragment>)}
-                </dl>
-                <button className="small" onClick={() => setTab("System")}>Full system profile</button></>
-            )}
-          </div>
-        </div>
-      )}
-
-      {tab === "Effective policy" && <EffectivePolicy policy={data.policy} />}
-
-      {tab === "Alerts" && (
-        <div className="card">
-          <Table rows={data.alerts} empty="No alerts for this device."
-                 columns={[{ key: "severity", label: "Sev", render: (r) => <Sev level={r.severity} /> }, { key: "title", label: "Alert" },
-                           { key: "status", label: "Status", render: (r) => <Pill value={r.status} /> },
-                           { key: "mitre", label: "MITRE", render: (r) => r.mitre.filter((m: string) => m.startsWith("T")).join(", ") },
-                           { key: "incidentId", label: "Incident", render: (r) => r.incidentId ? <Link to={`/incidents/${r.incidentId}`}>open</Link> : "—" },
-                           { key: "createdAt", label: "When", render: (r) => ago(r.createdAt) }]} />
-        </div>
-      )}
-
-      {tab === "Bundles & recordings" && <Bundles deviceId={data.device?.id ?? id ?? ""} />}
-      {tab === "Local admin" && <LocalAdmin deviceId={data.device?.id ?? id ?? ""} />}
-      {tab === "Actions" && (
-        <div className="card">
-          <Table rows={data.commands} empty="No remote actions yet."
-                 columns={[{ key: "type", label: "Action" }, { key: "status", label: "Status", render: (r) => <Pill value={r.status} /> },
-                           { key: "issuedBy", label: "By" }, { key: "targetPath", label: "Target", render: (r) => <span className="mono small">{r.targetPath || r.recordId || "—"}</span> },
-                           { key: "reason", label: "Reason" }, { key: "createdAt", label: "Queued", render: (r) => ago(r.createdAt) },
-                           { key: "result", label: "Result", render: (r) => Object.keys(r.result || {}).length ? <span className="mono small">{JSON.stringify(r.result).slice(0, 80)}</span> : "—" }]} />
-        </div>
-      )}
-
-      {tab === "Software" && (
-        <div className="card">
-          <Table rows={data.software} empty="No inventory yet. The agent reports software on its inventory cycle."
-                 columns={[{ key: "name", label: "Name" }, { key: "version", label: "Version" }, { key: "vendor", label: "Vendor" }, { key: "ecosystem", label: "Source" }]} />
-        </div>
-      )}
-
-      {tab === "Vulnerabilities" && (
-        <div className="card">
-          <div className="row" style={{ marginBottom: 10 }}>
-            <button onClick={() => run(() => api("vulnerabilities/scan", { body: { deviceId: d.id } }), "Vulnerability scan queued")}>Scan now</button>
-          </div>
-          <Table rows={data.vulnerabilities} empty="No open vulnerabilities."
-                 columns={[{ key: "vulnId", label: "ID", render: (r) => <a href={`https://osv.dev/vulnerability/${r.vulnId}`} target="_blank" rel="noreferrer">{r.vulnId}</a> },
-                           { key: "severity", label: "Sev", render: (r) => <><Sev level={r.severity} /> {r.knownExploited && <Pill value="exploited" tone="bad" />}</> },
-                           { key: "package", label: "Package" }, { key: "installedVersion", label: "Installed" }, { key: "fixedVersion", label: "Fixed in" },
-                           { key: "status", label: "Status", render: (r) => <Pill value={r.status} /> }]} />
-        </div>
-      )}
 
       {action !== null && <CommandModal device={d} initial={action} onClose={() => { setAction(null); reload(); }} />}
-      {scriptPicker && <ScriptPicker device={d} onClose={() => setScriptPicker(false)} onStarted={(id) => { setScriptPicker(false); setJobId(id); setTab("Scripts & jobs"); }} />}
+      {scriptPicker && <ScriptPicker device={d} onClose={() => setScriptPicker(false)} onStarted={(jid) => { setScriptPicker(false); setJobId(jid); go("activity", "Scripts & jobs"); }} />}
       {jobId && <JobDetail jobId={jobId} onClose={() => setJobId(null)} />}
     </>
+  );
+}
+
+// Installed software with a search box (a device can have hundreds of entries).
+function SoftwareList({ rows }: { rows: any[] }) {
+  const [q, setQ] = useState("");
+  const filtered = useMemo(() => (rows || []).filter((r) => !q || `${r.name} ${r.vendor} ${r.version}`.toLowerCase().includes(q.toLowerCase())), [rows, q]);
+  return (
+    <div className="card">
+      <div className="row" style={{ marginBottom: 10 }}>
+        <input placeholder="Search installed software" value={q} onChange={(e) => setQ(e.target.value)} style={{ minWidth: 260 }} />
+        <span className="small muted">{filtered.length} of {(rows || []).length}</span>
+      </div>
+      <Table rows={filtered} empty={q ? "Nothing matches." : "No inventory yet. The agent reports software on its inventory cycle."}
+             columns={[{ key: "name", label: "Name" }, { key: "version", label: "Version" }, { key: "vendor", label: "Vendor" }, { key: "ecosystem", label: "Source" }]} />
+    </div>
   );
 }
 
@@ -362,10 +502,14 @@ function PatchesTab({ device }: { device: any }) {
   );
 }
 
-function JobsTab({ deviceId, onOpen }: { deviceId: string; onOpen: (id: string) => void }) {
+function JobsTab({ deviceId, onOpen, onRun }: { deviceId: string; onOpen: (id: string) => void; onRun?: () => void }) {
   const { data } = useData<any[]>("rmm/jobs", { deviceId });
   return (
     <div className="card">
+      <div className="row" style={{ marginBottom: 10 }}>
+        <span className="small muted" style={{ flex: 1 }}>Scripts and jobs that included this device. Click one for its output.</span>
+        {onRun && <button onClick={onRun}>Run script…</button>}
+      </div>
       <Table rows={data} onRow={(j) => onOpen(j.id)} empty="No scripts or jobs have run on this device."
              columns={[{ key: "name", label: "Job" }, { key: "status", label: "Status", render: (j) => <JobStatus job={j} /> },
                        { key: "createdBy", label: "By" }, { key: "createdAt", label: "When", render: (j) => ago(j.createdAt) }]} />
