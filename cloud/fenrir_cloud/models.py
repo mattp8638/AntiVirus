@@ -1370,6 +1370,121 @@ class GovernanceRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class GrcFramework(Base):
+    """An imported question set or framework (for example the exact IASME Cyber Essentials booklet). tenant_id None
+    = available to every customer. A key that matches a built-in framework replaces it for that scope."""
+    __tablename__ = "grc_frameworks"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("grcf"))
+    tenant_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    key: Mapped[str] = mapped_column(String(80))
+    name: Mapped[str] = mapped_column(String(200))
+    short: Mapped[str] = mapped_column(String(80), default="")
+    version: Mapped[str] = mapped_column(String(80), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    question_set: Mapped[bool] = mapped_column(Boolean, default=False)
+    sections: Mapped[list] = mapped_column(JSON, default=list)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    __table_args__ = (UniqueConstraint("tenant_id", "key", name="uq_grc_framework_scope_key"),)
+
+
+class GrcAdoption(Base):
+    """A framework a customer is working towards."""
+    __tablename__ = "grc_adoptions"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("grca"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    framework_key: Mapped[str] = mapped_column(String(80))
+    status: Mapped[str] = mapped_column(String(20), default="active")  # active | paused
+    target_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    scope: Mapped[str] = mapped_column(Text, default="")
+    adopted_by: Mapped[str] = mapped_column(String(200), default="")
+    adopted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    __table_args__ = (UniqueConstraint("tenant_id", "framework_key", name="uq_grc_adoption"),)
+
+
+class GrcRequirementState(Base):
+    """A customer's status, answer and notes for one requirement or question."""
+    __tablename__ = "grc_requirement_states"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("grcr"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    framework_key: Mapped[str] = mapped_column(String(80))
+    requirement_id: Mapped[str] = mapped_column(String(80))
+    status: Mapped[str] = mapped_column(String(20), default="not_started")  # not_started | in_progress | implemented | not_applicable
+    answer: Mapped[str] = mapped_column(Text, default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    na_reason: Mapped[str] = mapped_column(Text, default="")
+    owner: Mapped[str] = mapped_column(String(200), default="")
+    due_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_by: Mapped[str] = mapped_column(String(200), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    __table_args__ = (UniqueConstraint("tenant_id", "framework_key", "requirement_id", name="uq_grc_requirement_state"),)
+
+
+class GrcPolicy(Base):
+    """A customer's policy, adopted from a template or written from scratch, with an approval workflow."""
+    __tablename__ = "grc_policies"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("grcp"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    template_key: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    title: Mapped[str] = mapped_column(String(300))
+    summary: Mapped[str] = mapped_column(Text, default="")
+    body: Mapped[str] = mapped_column(Text, default="")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(20), default="draft")  # draft | in_review | approved | retired
+    approved_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    owner: Mapped[str] = mapped_column(String(200), default="")
+    approved_by: Mapped[str] = mapped_column(String(200), default="")
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    review_due: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    maps: Mapped[dict] = mapped_column(JSON, default=dict)  # extra requirement links added by the customer
+    updated_by: Mapped[str] = mapped_column(String(200), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class GrcPolicyVersion(Base):
+    """An approved (published) version of a policy, kept for the audit trail."""
+    __tablename__ = "grc_policy_versions"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("grcv"))
+    policy_id: Mapped[str] = mapped_column(String(32), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    title: Mapped[str] = mapped_column(String(300))
+    body: Mapped[str] = mapped_column(Text)
+    approved_by: Mapped[str] = mapped_column(String(200), default="")
+    approved_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    note: Mapped[str] = mapped_column(Text, default="")
+
+
+class GrcEvidence(Base):
+    """A file, link or note proving a requirement is met. Files are stored encrypted."""
+    __tablename__ = "grc_evidence"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("grce"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    title: Mapped[str] = mapped_column(String(300))
+    kind: Mapped[str] = mapped_column(String(20), default="file")  # file | link | note
+    description: Mapped[str] = mapped_column(Text, default="")
+    filename: Mapped[str] = mapped_column(String(255), default="")
+    content_type: Mapped[str] = mapped_column(String(120), default="")
+    size: Mapped[int] = mapped_column(BigInteger, default=0)
+    sha256: Mapped[str] = mapped_column(String(64), default="")
+    storage_name: Mapped[str] = mapped_column(String(80), default="")
+    url: Mapped[str] = mapped_column(String(2000), default="")
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    uploaded_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class GrcEvidenceLink(Base):
+    __tablename__ = "grc_evidence_links"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("grcl"))
+    evidence_id: Mapped[str] = mapped_column(String(32), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    framework_key: Mapped[str] = mapped_column(String(80))
+    requirement_id: Mapped[str] = mapped_column(String(80))
+    __table_args__ = (UniqueConstraint("evidence_id", "framework_key", "requirement_id", name="uq_grc_evidence_link"),)
+
+
 class BackupPlan(Base):
     __tablename__ = "backup_plans"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("bkp"))

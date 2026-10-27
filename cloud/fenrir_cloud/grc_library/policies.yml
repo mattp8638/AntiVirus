@@ -1,0 +1,743 @@
+# Policy templates. {{organisation}}, {{owner}}, {{securityContact}}, {{reviewMonths}} and {{effectiveDate}} are filled
+# in when a customer adopts a template; everything stays editable. "maps" says which requirements each policy
+# answers, per framework, so a requirement shows its policy and whether that policy is approved.
+- key: information-security
+  title: Information Security Policy
+  summary: The top-level policy - commitment, scope, objectives, roles and how the other policies fit together.
+  maps:
+    iso-27001: ["5.1", "5.2", "5.3", "6.2", "7.3", "A.5.1", "A.5.2", "A.5.4", "A.5.36"]
+    soc2: ["CC1.1", "CC1.3", "CC2.2", "CC5.3"]
+    nist-csf-2: ["GV.PO", "GV.RR"]
+    ncsc-caf: ["A1.a", "A1.b", "B1.a", "B1.b"]
+    uk-gdpr: ["Art.5(2)"]
+  body: |
+    # Information Security Policy
+
+    **Organisation:** {{organisation}}  **Owner:** {{owner}}  **Effective:** {{effectiveDate}}  **Review:** every {{reviewMonths}} months
+
+    ## 1. Purpose
+    {{organisation}} protects the confidentiality, integrity and availability of the information it holds for its customers, staff and partners. This policy sets out our commitment and the framework of policies, roles and controls that deliver it.
+
+    ## 2. Scope
+    All staff, contractors and third parties who use {{organisation}}'s information, systems, devices, premises and cloud services.
+
+    ## 3. Commitment
+    Senior management approves this policy, provides the resources needed, and reviews information security performance at least annually. We meet applicable legal, regulatory and contractual requirements and continually improve our controls.
+
+    ## 4. Objectives
+    - No unauthorised disclosure of customer or personal data.
+    - Every device protected by malware protection, a firewall and current security updates.
+    - Every user with their own account and multi-factor authentication on cloud services.
+    - Incidents reported, contained and learned from.
+
+    Objectives are measured and reported to management.
+
+    ## 5. Roles and responsibilities
+    - **{{owner}}** owns this policy and the information security programme.
+    - **Managers** make sure their teams follow these policies.
+    - **Everyone** protects information, follows these policies and reports suspected incidents to {{securityContact}} immediately.
+
+    ## 6. Supporting policies
+    Acceptable Use, Access Control, Passwords and Authentication, Asset Management, Patch and Vulnerability Management, Malware Protection, Network Security, Secure Configuration, Backup, Incident Response, Business Continuity, Supplier Security, Data Protection, Data Retention, Remote Working and Mobile Devices, Cryptography, Logging and Monitoring, Change Management, Risk Management, HR Security, Physical Security and Secure Development.
+
+    ## 7. Compliance
+    Breaches of this policy may lead to disciplinary action. Exceptions must be approved in writing by {{owner}} and recorded with a review date.
+- key: acceptable-use
+  title: Acceptable Use Policy
+  summary: What staff may and may not do with company devices, accounts, email, internet and data.
+  maps:
+    iso-27001: ["A.5.10", "A.6.2", "A.7.7"]
+    soc2: ["CC1.1"]
+    cis-v8-ig1: ["14.1"]
+  body: |
+    # Acceptable Use Policy
+
+    **Organisation:** {{organisation}}  **Owner:** {{owner}}  **Review:** every {{reviewMonths}} months
+
+    ## Using company systems
+    - Company devices, accounts and data are for business use. Limited personal use is allowed if it does not interfere with work, break the law or put data at risk.
+    - Use only your own account. Never share passwords or MFA codes, and never let anyone use a device while you are signed in.
+    - Lock your screen when you step away (Windows+L / Ctrl+Cmd+Q). Devices lock automatically after 15 minutes.
+
+    ## Software and settings
+    - Install software only from the company software catalogue or with IT approval.
+    - Do not disable or bypass malware protection, firewalls, updates or other security settings.
+
+    ## Email, web and messaging
+    - Treat unexpected links and attachments with suspicion; report suspicious messages with the Report button or to {{securityContact}}.
+    - Do not use personal email or file-sharing services for company data.
+    - Do not access illegal, offensive or malicious content.
+
+    ## Data
+    - Store company data only in approved locations (for example OneDrive/SharePoint), never on personal devices or USB drives unless approved and encrypted.
+    - Share data only with people who need it, using approved methods.
+
+    ## Monitoring
+    {{organisation}} monitors its systems for security purposes, in line with the law and our privacy notice.
+
+    ## Breaches
+    Report lost devices, suspected compromise or mistakes immediately. Misuse may lead to disciplinary action.
+- key: access-control
+  title: Access Control Policy
+  summary: Joiners, movers and leavers; least privilege; admin accounts; access reviews.
+  maps:
+    iso-27001: ["A.5.15", "A.5.16", "A.5.18", "A.8.2", "A.8.3", "A.8.18"]
+    cyber-essentials: ["A7.1", "A7.2", "A7.3", "A7.4", "A7.5", "A7.6", "A7.7", "A7.8", "A7.9", "A5.2"]
+    cis-v8-ig1: ["5.1", "5.3", "5.4", "6.1", "6.2"]
+    soc2: ["CC6.1", "CC6.2", "CC6.3"]
+    nist-csf-2: ["PR.AA"]
+    essential-eight: ["E8-RAP-1", "E8-RAP-2", "E8-RAP-3"]
+    ncsc-caf: ["B2.a", "B2.c", "B2.d"]
+  body: |
+    # Access Control Policy
+
+    **Organisation:** {{organisation}}  **Owner:** {{owner}}  **Review:** every {{reviewMonths}} months
+
+    ## Principles
+    Access is granted on a need-to-know, least-privilege basis and removed as soon as it is no longer needed.
+
+    ## Joiners
+    - Accounts are created only after a manager's approval, recorded in the service desk.
+    - Each person gets their own account. Shared accounts are not allowed except documented service accounts.
+
+    ## Movers
+    Access is reviewed when someone changes role; access no longer needed is removed within 5 working days.
+
+    ## Leavers
+    Accounts are disabled on or before the last working day, sessions revoked, MFA methods removed, and company devices returned. Accounts are deleted after 30 days unless retained for a legal reason.
+
+    ## Administrator access
+    - Admin rights are given only to named people who need them, using a **separate admin account** that is never used for email or web browsing.
+    - Standard user accounts do not have local administrator rights. Software installation and elevation go through Fenrir's admin request approval.
+    - Admin accounts use MFA.
+    - The list of admin accounts is reviewed every quarter and unused accounts are removed.
+
+    ## Reviews
+    Managers review their team's access every 6 months. Dormant accounts (45 days unused) are disabled.
+- key: authentication
+  title: Password and Authentication Policy
+  summary: Password length, MFA everywhere, lockout, password managers and compromised credentials.
+  maps:
+    iso-27001: ["A.5.17", "A.8.5"]
+    cyber-essentials: ["A4.2", "A4.3", "A4.4", "A5.3", "A5.5", "A5.6", "A5.7", "A5.9", "A5.10", "A7.10", "A7.11", "A7.12"]
+    cis-v8-ig1: ["5.2", "6.3", "6.4", "6.5", "14.3"]
+    essential-eight: ["E8-MFA-1", "E8-MFA-2", "E8-MFA-3"]
+    ncsc-caf: ["B2.a"]
+  body: |
+    # Password and Authentication Policy
+
+    **Organisation:** {{organisation}}  **Owner:** {{owner}}  **Review:** every {{reviewMonths}} months
+
+    ## Multi-factor authentication
+    MFA is required on every cloud service that supports it, for every user, and always for administrators, remote access and internet-facing applications. Authenticator apps, passkeys or security keys are preferred to SMS.
+
+    ## Passwords
+    - At least **12 characters**; a passphrase of three or more random words is recommended.
+    - Common and breached passwords are blocked.
+    - Never reuse a work password anywhere else, and never share it.
+    - Use the company password manager to generate and store passwords.
+    - Passwords are not forced to expire on a schedule; they are changed immediately if they may be compromised.
+
+    ## Default passwords
+    Default and vendor passwords on every device, router, firewall and application are changed before use.
+
+    ## Brute-force protection
+    Accounts lock or throttle after no more than 10 failed attempts. Device unlocking uses a PIN of at least 6 digits, a password or biometrics, with lockout after repeated failures.
+
+    ## Compromised credentials
+    If you think a password or MFA method is compromised, change it and tell {{securityContact}} straight away. IT will reset it, revoke sessions and review activity.
+- key: asset-management
+  title: Asset Management Policy
+  summary: Inventory of devices, software, data and cloud services; owners; return and disposal.
+  maps:
+    iso-27001: ["A.5.9", "A.5.11", "A.5.12", "A.5.13", "A.7.10", "A.7.14"]
+    cyber-essentials: ["A2.4", "A2.5", "A2.6", "A2.8", "A2.9"]
+    cis-v8-ig1: ["1.1", "1.2", "2.1", "2.2", "2.3", "15.1"]
+    nist-csf-2: ["ID.AM"]
+    soc2: ["CC6.5"]
+    ncsc-caf: ["A3.a", "B3.e"]
+  body: |
+    # Asset Management Policy
+
+    **Organisation:** {{organisation}}  **Owner:** {{owner}}  **Review:** every {{reviewMonths}} months
+
+    ## Inventory
+    {{organisation}} keeps an up-to-date inventory of:
+    - end-user devices, servers, mobile devices and network equipment (maintained automatically by the Fenrir agent);
+    - installed software and its version;
+    - cloud services and the data they hold;
+    - key information assets and their owners.
+
+    The inventory is reviewed at least every 6 months. Unknown or unauthorised devices are removed from the network or quarantined.
+
+    ## Ownership and classification
+    Every information asset has an owner. Information is classified as **Public**, **Internal**, **Confidential** or **Restricted**, and handled according to the Data Protection Policy.
+
+    ## Software
+    Only licensed, vendor-supported software is allowed. Unauthorised or unsupported software is removed.
+
+    ## Return and disposal
+    Leavers return all company equipment. Devices and media are securely wiped (or physically destroyed) before reuse or disposal, using a certified provider where needed, and the disposal is recorded.
+- key: patch-vulnerability
+  title: Patch and Vulnerability Management Policy
+  summary: Supported software only, critical patches within 14 days, scanning and risk-based remediation.
+  maps:
+    iso-27001: ["A.8.8", "A.8.19"]
+    cyber-essentials: ["A6.1", "A6.2", "A6.3", "A6.4", "A6.4.1", "A6.5", "A6.5.1", "A6.6"]
+    cis-v8-ig1: ["7.1", "7.2", "7.3", "7.4", "12.1", "9.1"]
+    essential-eight: ["E8-PA-1", "E8-PA-2", "E8-PA-3", "E8-PA-4", "E8-PO-1", "E8-PO-2", "E8-PO-3"]
+    nist-csf-2: ["ID.RA", "PR.PS"]
+    soc2: ["CC7.1"]
+    ncsc-caf: ["B4.d"]
+  body: |
+    # Patch and Vulnerability Management Policy
+
+    **Organisation:** {{organisation}}  **Owner:** {{owner}}  **Review:** every {{reviewMonths}} months
+
+    ## Supported software only
+    Operating systems, firmware and applications must be licensed and supported by their vendor. Software that reaches end of support is upgraded or removed before that date, or isolated and excluded from scope with written approval.
+
+    ## Update timescales
+    | Severity | Target |
+    |---|---|
+    | Critical or high (CVSS 7.0+), or vendor "critical"/"high" | **within 14 days** of release |
+    | Known exploited in the wild (CISA KEV) or internet-facing with a working exploit | within 48 hours |
+    | Medium | within 30 days |
+    | Low | next scheduled cycle |
+
+    Automatic updates are enabled wherever possible. Fenrir applies Windows and third-party updates on the agreed schedule and reports compliance.
+
+    ## Vulnerability scanning
+    Fenrir continuously identifies missing updates and vulnerable software on every device, using CVE, EPSS and CISA KEV data to prioritise. Internet-facing services are scanned at least monthly.
+
+    ## Exceptions
+    A vulnerability that cannot be fixed in time is risk-assessed, mitigated where possible, and accepted in writing by {{owner}} with a review date.
+- key: malware-protection
+  title: Malware Protection Policy
+  summary: Anti-malware on every device, kept current, scanning on access, web protection and application control.
+  maps:
+    iso-27001: ["A.8.7", "A.8.23"]
+    cyber-essentials: ["A8.1", "A8.2", "A8.3", "A8.4", "A8.5", "A5.8"]
+    cis-v8-ig1: ["10.1", "10.2", "10.3", "9.2"]
+    essential-eight: ["E8-AC-1", "E8-AC-2", "E8-AC-3", "E8-MAC-1", "E8-MAC-2", "E8-MAC-3", "E8-UAH-1", "E8-UAH-2", "E8-UAH-3", "E8-UAH-4"]
+    soc2: ["CC6.8"]
+    nist-csf-2: ["DE.CM"]
+  body: |
+    # Malware Protection Policy
+
+    **Organisation:** {{organisation}}  **Owner:** {{owner}}  **Review:** every {{reviewMonths}} months
+
+    ## Protection on every device
+    Every desktop, laptop and server runs Fenrir Endpoint with real-time protection, behaviour monitoring and ransomware protection. Mobile devices install apps only from the official app stores.
+
+    ## Configuration
+    - Signatures and detection models update automatically, at least daily.
+    - Files are scanned when opened, downloaded or written; web pages and downloads are checked and known malicious websites are blocked (web and DNS protection).
+    - Auto-run and auto-play are disabled for removable media.
+    - Office macros from the internet are blocked; Office applications cannot launch scripting tools.
+    - Users cannot disable protection (tamper protection is on).
+
+    ## Application control
+    Where enabled, only approved, signed applications may run, and software cannot run from user-writable folders.
+
+    ## Response
+    Detections are reviewed by the security team. Infected devices are isolated, cleaned or rebuilt, and the incident process is followed.
+- key: network-security
+  title: Firewall and Network Security Policy
+  summary: Boundary and host firewalls, inbound rules with business justification, remote admin, segregation, Wi-Fi.
+  maps:
+    iso-27001: ["A.8.20", "A.8.21", "A.8.22"]
+    cyber-essentials: ["A4.1", "A4.5", "A4.6", "A4.7", "A4.8", "A4.9", "A2.7"]
+    cis-v8-ig1: ["4.4", "4.5", "4.2"]
+    soc2: ["CC6.6"]
+    nist-csf-2: ["PR.IR"]
+    ncsc-caf: ["B4.c", "B5.b", "B3.b"]
+  body: |
+    # Firewall and Network Security Policy
+
+    **Organisation:** {{organisation}}  **Owner:** {{owner}}  **Review:** every {{reviewMonths}} months
+
+    ## Firewalls
+    - Every network connected to the internet is protected by a boundary firewall.
+    - Every laptop and desktop runs a host firewall that blocks unsolicited inbound connections, so devices stay protected on home and public networks.
+    - Firewall default passwords are changed to strong unique passwords before use.
+
+    ## Rules
+    - Inbound access from the internet is denied by default. Each open service has a documented business reason, owner and approval, and is reviewed at least every 6 months.
+    - Rules no longer needed are removed immediately.
+
+    ## Administration
+    Firewall and router management interfaces are not reachable from the internet, or are protected by MFA and an IP allow list.
+
+    ## Segregation and Wi-Fi
+    Guest Wi-Fi is separated from the business network. Wi-Fi uses WPA2-Enterprise or WPA3, or WPA2/3-Personal with a strong key changed when staff with access leave. Servers and sensitive systems are segregated where practical.
+
+    ## Remote working
+    Staff connect through secure, MFA-protected cloud services or VPN.
+- key: secure-configuration
+  title: Secure Configuration Policy
+  summary: Hardened baselines, removal of unnecessary software and accounts, session locking, configuration management.
+  maps:
+    iso-27001: ["A.8.9", "A.8.1"]
+    cyber-essentials: ["A5.1", "A5.2", "A5.3", "A5.4", "A5.8", "A5.9"]
+    cis-v8-ig1: ["4.1", "4.3", "4.6", "4.7"]
+    nist-csf-2: ["PR.PS"]
+    soc2: ["CC5.2", "CC7.1"]
+    ncsc-caf: ["B4.b", "B2.b"]
+  body: |
+    # Secure Configuration Policy
+
+    **Organisation:** {{organisation}}  **Owner:** {{owner}}  **Review:** every {{reviewMonths}} months
+
+    ## Baselines
+    Devices are built from a documented secure baseline (Fenrir security policy plus CIS-aligned settings) before they are issued, and configuration drift is monitored.
+
+    ## Minimise what is installed
+    Software, services, accounts and features that are not needed are removed or disabled, including guest accounts and sample applications.
+
+    ## Defaults
+    Default passwords are changed and default accounts disabled before devices or software are used.
+
+    ## Locking and encryption
+    Screens lock after 15 minutes (2 minutes on mobiles). Laptops and mobiles are encrypted (BitLocker, FileVault, device encryption) with recovery keys escrowed.
+
+    ## Internet-facing services
+    Any service reachable from the internet requires authentication and is protected by MFA or brute-force protection.
+
+    ## Changes
+    Configuration changes follow the Change Management Policy.
+- key: backup-recovery
+  title: Backup and Recovery Policy
+  summary: What is backed up, how often, isolation, encryption and restore testing.
+  maps:
+    iso-27001: ["A.8.13", "A.8.14"]
+    cis-v8-ig1: ["11.1", "11.2", "11.3", "11.4"]
+    essential-eight: ["E8-RB-1", "E8-RB-2", "E8-RB-3"]
+    nist-csf-2: ["PR.DS", "RC.RP"]
+    ncsc-caf: ["B5.c"]
+    soc2: ["CC9.1"]
+  body: |
+    # Backup and Recovery Policy
+
+    **Organisation:** {{organisation}}  **Owner:** {{owner}}  **Review:** every {{reviewMonths}} months
+
+    ## Scope and frequency
+    | Data | Frequency | Retention |
+    |---|---|---|
+    | Servers and line-of-business systems | daily | 30 days daily, 12 months monthly |
+    | Microsoft 365 (mail, OneDrive, SharePoint, Teams) | daily | 12 months |
+    | Device configuration | on change | current + previous |
+
+    ## Protection
+    Backups are encrypted in transit and at rest. At least one copy is **isolated** (immutable, offline or in a separate account) so ransomware or an attacker with admin access cannot delete it. Standard users cannot modify or delete backups.
+
+    ## Monitoring and testing
+    Backup jobs are monitored daily and failures fixed within one working day. A restore test is performed at least every quarter and a full recovery exercise at least yearly; results are recorded.
+
+    ## Recovery objectives
+    Recovery time and recovery point objectives for each system are agreed with the business and recorded in the Business Continuity Plan.
+- key: incident-response
+  title: Incident Response Policy and Plan
+  summary: Reporting, triage, roles, containment, communication, breach notification and lessons learned.
+  maps:
+    iso-27001: ["A.5.24", "A.5.25", "A.5.26", "A.5.27", "A.5.28", "A.6.8", "A.5.5"]
+    cis-v8-ig1: ["17.1", "17.2", "17.3", "14.6"]
+    nist-csf-2: ["RS.MA", "RS.AN", "RS.CO", "RS.MI", "ID.IM", "DE.AE"]
+    soc2: ["CC7.3", "CC7.4", "CC7.5"]
+    uk-gdpr: ["Art.33-34"]
+    ncsc-caf: ["D1.a", "D1.b", "D1.c", "D2.a", "D2.b", "C1.d"]
+  body: |
+    # Incident Response Policy and Plan
+
+    **Organisation:** {{organisation}}  **Owner:** {{owner}}  **Review:** every {{reviewMonths}} months
+
+    ## Reporting
+    Anyone who suspects an incident - a phishing click, a lost device, unusual account activity, a ransomware note - reports it **immediately** to {{securityContact}}. Do not try to investigate yourself or turn the device off.
+
+    ## Roles
+    - **Incident lead:** {{owner}} (deputy named in the contact list)
+    - **Technical response:** IT / managed service provider (Fenrir SOC)
+    - **Communications and legal:** senior management, DPO, insurer
+
+    ## Process
+    1. **Detect and triage** - confirm the incident, assign a severity (low/medium/high/critical) and an incident lead.
+    2. **Contain** - isolate affected devices (Fenrir network isolation), disable compromised accounts, revoke sessions, block indicators.
+    3. **Eradicate and recover** - remove the cause, rebuild or restore from clean backups, reset credentials.
+    4. **Communicate** - keep management informed; notify customers, the insurer and authorities as required.
+    5. **Learn** - within 10 working days, a review records the root cause and improvement actions.
+
+    ## Personal data breaches
+    If personal data is involved, the DPO assesses the risk. Notifiable breaches are reported to the ICO **within 72 hours** of becoming aware, and affected people are told without undue delay when the risk to them is high. All breaches are logged.
+
+    ## Evidence
+    Logs, forensic bundles and records are preserved and access to them is controlled.
+
+    ## Testing
+    The plan is tested at least yearly with a tabletop exercise.
+- key: business-continuity
+  title: Business Continuity and Disaster Recovery Policy
+  summary: Business impact, recovery objectives, continuity plans and exercising.
+  maps:
+    iso-27001: ["A.5.29", "A.5.30", "A.7.11"]
+    soc2: ["CC9.1", "CC7.5"]
+    nist-csf-2: ["RC.RP", "RC.CO"]
+    ncsc-caf: ["B5.a", "B5.b"]
+  body: |
+    # Business Continuity and Disaster Recovery Policy
+
+    **Organisation:** {{organisation}}  **Owner:** {{owner}}  **Review:** every {{reviewMonths}} months
+
+    ## Business impact
+    Critical activities, the systems and suppliers they depend on, and how long the business can tolerate their loss are recorded in a business impact analysis, reviewed yearly.
+
+    ## Recovery objectives
+    Each critical system has a recovery time objective (RTO) and recovery point objective (RPO). Backups and redundancy are designed to meet them.
+
+    ## Plans
+    Continuity plans cover loss of premises, loss of key systems or suppliers, cyber attack (including ransomware) and loss of key staff, with contact lists and step-by-step recovery.
+
+    ## Security during disruption
+    Security controls are maintained during a disruption; any temporary relaxation is approved and reversed afterwards.
+
+    ## Exercising
+    Plans are exercised at least yearly and updated with the lessons learned.
+- key: supplier-security
+  title: Supplier and Cloud Security Policy
+  summary: Supplier due diligence, contract terms, cloud services, monitoring and offboarding.
+  maps:
+    iso-27001: ["A.5.19", "A.5.20", "A.5.21", "A.5.22", "A.5.23"]
+    nist-csf-2: ["GV.SC"]
+    soc2: ["CC9.2"]
+    cis-v8-ig1: ["15.1"]
+    uk-gdpr: ["Art.28"]
+    ncsc-caf: ["A4.a"]
+  body: |
+    # Supplier and Cloud Security Policy
+
+    **Organisation:** {{organisation}}  **Owner:** {{owner}}  **Review:** every {{reviewMonths}} months
+
+    ## Due diligence
+    Before engaging a supplier that will access our systems or data, we assess its security (certifications such as ISO 27001, SOC 2 or Cyber Essentials, or a security questionnaire) in proportion to the risk.
+
+    ## Contracts
+    Contracts include confidentiality, security requirements, breach notification, right to audit, sub-processor controls, data return and deletion, and the UK GDPR Article 28 terms where the supplier processes personal data.
+
+    ## Cloud services
+    Cloud services are approved before use, configured securely (MFA, least privilege, logging) and listed in the asset inventory. Data location and exit arrangements are known.
+
+    ## Monitoring
+    Critical suppliers are reviewed at least yearly; changes to their services are assessed.
+
+    ## Offboarding
+    When a supplier relationship ends, access is removed and data is returned or certified deleted.
+- key: data-protection
+  title: Data Protection and Privacy Policy
+  summary: UK GDPR principles, lawful basis, rights requests, ROPA, DPIAs, transfers and DPO.
+  maps:
+    iso-27001: ["A.5.34", "A.5.31"]
+    uk-gdpr: ["Art.5(1)(a)", "Art.5(1)(b)", "Art.5(1)(c)", "Art.5(1)(d)", "Art.5(1)(f)", "Art.5(2)", "Art.6", "Art.7", "Art.9", "Art.13-14", "Art.15", "Art.16-17", "Art.18-21", "Art.22", "Art.25", "Art.30", "Art.35", "Art.37-39", "Art.44-49", "ICO-FEE"]
+    cis-v8-ig1: ["3.1", "3.2", "3.3", "14.4", "14.5"]
+    ncsc-caf: ["B3.a"]
+  body: |
+    # Data Protection and Privacy Policy
+
+    **Organisation:** {{organisation}}  **Owner:** {{owner}}  **Review:** every {{reviewMonths}} months
+
+    ## Principles
+    {{organisation}} processes personal data lawfully, fairly and transparently; for specified purposes; limited to what is necessary; accurately; for no longer than needed; and securely. We can demonstrate how we comply.
+
+    ## Accountability
+    - We keep a **record of processing activities** with the lawful basis for each.
+    - We publish privacy notices explaining how we use personal data.
+    - We pay the ICO data protection fee.
+    - A data protection lead (or DPO, where required) advises and monitors compliance.
+
+    ## Individuals' rights
+    Requests (access, rectification, erasure, restriction, portability, objection) are logged and answered within one month. Staff forward any request to the data protection lead the same day.
+
+    ## By design
+    New systems and processes consider data protection from the start. A **DPIA** is completed before high-risk processing.
+
+    ## Sharing and transfers
+    Personal data is shared only with authorised parties under contract. Transfers outside the UK use adequacy regulations or approved safeguards (IDTA or the UK Addendum).
+
+    ## Security and breaches
+    Personal data is protected by the controls in our information security policies. Breaches are handled under the Incident Response Policy, including the 72-hour ICO notification.
+- key: data-retention
+  title: Data Retention and Disposal Policy
+  summary: How long each kind of data is kept and how it is securely deleted.
+  maps:
+    iso-27001: ["A.5.33", "A.8.10"]
+    uk-gdpr: ["Art.5(1)(e)"]
+    cis-v8-ig1: ["3.4", "3.5"]
+  body: |
+    # Data Retention and Disposal Policy
+
+    **Organisation:** {{organisation}}  **Owner:** {{owner}}  **Review:** every {{reviewMonths}} months
+
+    ## Retention schedule
+    | Record | Retention | Basis |
+    |---|---|---|
+    | Customer contracts and invoices | 6 years after the end of the contract | Limitation Act / HMRC |
+    | Employee records | 6 years after employment ends | Employment law |
+    | Recruitment records (unsuccessful) | 6 months | Equality Act claims period |
+    | Marketing consent records | while consent is valid + 2 years | Accountability |
+    | Security logs | 12 months | Incident investigation |
+    | Backups | per Backup Policy | Recovery |
+
+    Records are kept no longer than the schedule allows unless a legal hold applies.
+
+    ## Disposal
+    Electronic data is deleted from systems and backups by the end of the retention period. Paper is cross-cut shredded or securely destroyed. Devices and media are wiped or destroyed as set out in the Asset Management Policy, and disposals are recorded.
+- key: remote-mobile
+  title: Remote Working and Mobile Device Policy
+  summary: Working from home and on the move, BYOD, lost devices and public networks.
+  maps:
+    iso-27001: ["A.6.7", "A.7.9", "A.8.1"]
+    cyber-essentials: ["A2.6", "A2.7"]
+    cis-v8-ig1: ["3.6", "14.8"]
+    ncsc-caf: ["B3.d", "B2.b"]
+  body: |
+    # Remote Working and Mobile Device Policy
+
+    **Organisation:** {{organisation}}  **Owner:** {{owner}}  **Review:** every {{reviewMonths}} months
+
+    ## Working remotely
+    - Use company devices with Fenrir Endpoint installed. Keep them updated and locked when unattended.
+    - Work where others cannot see your screen or overhear confidential calls.
+    - Home Wi-Fi uses WPA2 or WPA3 with a strong password; the router's default admin password has been changed.
+    - On public Wi-Fi, use only HTTPS services and the company VPN where provided.
+
+    ## Mobile phones and tablets
+    - Devices that access company email or data are enrolled with Fenrir, run a supported OS, use a PIN of at least 6 digits or biometrics, and are encrypted.
+    - Apps are installed only from the official app stores.
+    - Personal devices (BYOD) may access company data only through approved apps and must allow the company data to be wiped.
+
+    ## Lost or stolen devices
+    Report a lost or stolen device to {{securityContact}} **immediately**. IT will lock, locate or wipe it and revoke its sessions.
+- key: cryptography
+  title: Cryptography Policy
+  summary: Encryption at rest and in transit, approved algorithms and key management.
+  maps:
+    iso-27001: ["A.8.24"]
+    cis-v8-ig1: ["3.6"]
+    ncsc-caf: ["B3.b", "B3.c"]
+  body: |
+    # Cryptography Policy
+
+    **Organisation:** {{organisation}}  **Owner:** {{owner}}  **Review:** every {{reviewMonths}} months
+
+    ## In transit
+    Data crossing untrusted networks is encrypted with TLS 1.2 or later. Insecure protocols (Telnet, FTP, SMBv1, SSLv3/TLS 1.0) are disabled.
+
+    ## At rest
+    Laptops, mobile devices and removable media holding company data are encrypted (BitLocker, FileVault, device encryption). Backups and sensitive databases are encrypted.
+
+    ## Algorithms
+    Use current, vendor-supported algorithms (for example AES-256, RSA 3072+/ECDSA P-256+, SHA-256+). Do not create custom cryptography.
+
+    ## Keys and certificates
+    Keys and recovery keys are stored in approved vaults (Fenrir credential vault, Entra ID/Intune escrow), access is limited and logged, and certificates are renewed before expiry. Keys are rotated or revoked if compromise is suspected.
+- key: logging-monitoring
+  title: Logging and Monitoring Policy
+  summary: What is logged, protection and retention of logs, monitoring, alerting and clock sync.
+  maps:
+    iso-27001: ["A.8.15", "A.8.16", "A.8.17", "A.5.7"]
+    cis-v8-ig1: ["8.1", "8.2", "8.3"]
+    nist-csf-2: ["DE.CM", "DE.AE"]
+    soc2: ["CC7.2", "CC4.1"]
+    ncsc-caf: ["C1.a", "C1.b", "C1.c", "C1.e", "C2.a", "C2.b"]
+  body: |
+    # Logging and Monitoring Policy
+
+    **Organisation:** {{organisation}}  **Owner:** {{owner}}  **Review:** every {{reviewMonths}} months
+
+    ## What is logged
+    Security-relevant events from endpoints (process, network, file and registry activity collected by Fenrir EDR), servers, domain controllers (account, group and Kerberos events), firewalls and cloud services (Microsoft 365 sign-in and audit logs).
+
+    ## Protection and retention
+    Logs are sent to a central system, protected from alteration and deletion, and retained for at least 12 months (90 days readily searchable). Access to logs is restricted.
+
+    ## Monitoring
+    Detection rules mapped to MITRE ATT&CK run continuously. Alerts are triaged by the security team; high and critical alerts are investigated the same working day. Rules are tuned to keep false positives low.
+
+    ## Time
+    All systems synchronise their clocks with a trusted time source so events can be correlated.
+
+    ## Threat intelligence
+    Threat intelligence (indicators, known-exploited vulnerabilities) is used to improve detection and patching priorities.
+- key: change-management
+  title: Change Management Policy
+  summary: Requesting, assessing, approving, testing and recording changes; emergency changes.
+  maps:
+    iso-27001: ["A.8.32", "6.3", "A.8.31"]
+    soc2: ["CC8.1", "CC3.4"]
+    ncsc-caf: ["B4.c"]
+  body: |
+    # Change Management Policy
+
+    **Organisation:** {{organisation}}  **Owner:** {{owner}}  **Review:** every {{reviewMonths}} months
+
+    ## Standard changes
+    Pre-approved, low-risk, repeatable changes (for example routine patching through Fenrir) follow their documented procedure.
+
+    ## Normal changes
+    Other changes to systems, networks and cloud services are requested in the service desk with: description, reason, risk and security impact, test plan, back-out plan and timing. They are approved by the system owner (and the change board for significant changes) before implementation.
+
+    ## Emergency changes
+    Urgent changes (for example to contain an incident) may be made with verbal approval from {{owner}} and are recorded and reviewed within two working days.
+
+    ## Testing and environments
+    Changes are tested before production where possible. Development, test and production are separated.
+
+    ## Records
+    Every change is recorded with who made it, when and the result.
+- key: risk-management
+  title: Risk Management Policy
+  summary: Risk assessment method, risk register, treatment, acceptance and review.
+  maps:
+    iso-27001: ["6.1.1", "6.1.2", "6.1.3", "8.2", "8.3"]
+    soc2: ["CC3.1", "CC3.2", "CC3.3", "CC9.1"]
+    nist-csf-2: ["GV.RM", "ID.RA", "GV.OV"]
+    ncsc-caf: ["A2.a", "A1.c"]
+  body: |
+    # Risk Management Policy
+
+    **Organisation:** {{organisation}}  **Owner:** {{owner}}  **Review:** every {{reviewMonths}} months
+
+    ## Method
+    Risks to information are identified (threats, vulnerabilities, assets) and scored on **likelihood (1-5) x impact (1-5)**. Scores of 15 or more are high, 8-14 medium, below 8 low.
+
+    ## Risk register
+    Every risk has an owner, a score, existing controls, a treatment decision and a review date, recorded in the Fenrir risk register.
+
+    ## Treatment
+    Risks are treated by reducing (adding controls), avoiding, transferring (insurance, contracts) or accepting them. Risks above our appetite (medium) need a treatment plan.
+
+    ## Acceptance
+    Only the risk owner, with {{owner}}'s agreement, may accept a risk, in writing, with a review date no more than 12 months away.
+
+    ## Review
+    The register is reviewed at least quarterly, after significant changes and after incidents, and summarised for management review.
+- key: hr-security
+  title: People Security Policy (joiners, training and leavers)
+  summary: Screening, contracts and NDAs, awareness training, disciplinary process and leavers.
+  maps:
+    iso-27001: ["A.6.1", "A.6.2", "A.6.3", "A.6.4", "A.6.5", "A.6.6", "7.2", "7.3"]
+    cis-v8-ig1: ["14.1", "14.2", "14.3", "14.4", "14.5", "14.6", "14.7", "14.8"]
+    nist-csf-2: ["PR.AT"]
+    soc2: ["CC1.4", "CC1.5"]
+    ncsc-caf: ["B6.a", "B6.b"]
+  body: |
+    # People Security Policy
+
+    **Organisation:** {{organisation}}  **Owner:** {{owner}}  **Review:** every {{reviewMonths}} months
+
+    ## Before joining
+    Identity, right to work and references are checked for every new starter; roles with access to sensitive data have checks in proportion to the risk.
+
+    ## Terms
+    Contracts and contractor agreements include confidentiality and information security responsibilities. Third parties sign a non-disclosure agreement before receiving confidential information.
+
+    ## Training
+    Everyone completes security awareness training when they join and at least yearly, covering phishing and social engineering, passwords and MFA, data handling, reporting incidents, updates and safe use of networks. Simulated phishing exercises are run periodically. Completion is recorded.
+
+    ## Disciplinary process
+    Breaches of security policy are handled through the disciplinary process.
+
+    ## Leaving or changing role
+    Access is removed and equipment returned as set out in the Access Control Policy. Confidentiality obligations continue after employment ends.
+- key: physical-security
+  title: Physical Security Policy
+  summary: Premises, entry control, visitors, clear desk and screen, equipment protection.
+  maps:
+    iso-27001: ["A.7.1", "A.7.2", "A.7.3", "A.7.4", "A.7.5", "A.7.6", "A.7.7", "A.7.8", "A.7.12", "A.7.13"]
+    soc2: ["CC6.4"]
+  body: |
+    # Physical Security Policy
+
+    **Organisation:** {{organisation}}  **Owner:** {{owner}}  **Review:** every {{reviewMonths}} months
+
+    ## Premises
+    Offices are protected by locked doors and an access control or key system. Server and network equipment is kept in a locked room or cabinet with access limited to authorised staff.
+
+    ## Visitors
+    Visitors sign in, are accompanied in non-public areas and return visitor badges when they leave.
+
+    ## Clear desk and clear screen
+    Confidential papers and removable media are locked away when not in use and at the end of the day. Screens are locked when unattended and positioned so they cannot be overlooked.
+
+    ## Equipment
+    Equipment is protected from theft, power loss (UPS for key systems), heat and water. Maintenance is done by authorised people and recorded.
+- key: secure-development
+  title: Secure Development Policy
+  summary: For organisations that build software - secure SDLC, code review, testing, environments and source code access.
+  maps:
+    iso-27001: ["A.8.4", "A.8.25", "A.8.26", "A.8.27", "A.8.28", "A.8.29", "A.8.30", "A.8.31", "A.8.33", "A.5.8"]
+    nist-csf-2: ["PR.PS"]
+    ncsc-caf: ["B4.a"]
+  body: |
+    # Secure Development Policy
+
+    **Organisation:** {{organisation}}  **Owner:** {{owner}}  **Review:** every {{reviewMonths}} months
+
+    ## Requirements and design
+    Security and privacy requirements are defined for every project, and designs follow secure engineering principles (least privilege, defence in depth, secure defaults). Threat modelling is used for significant features.
+
+    ## Coding and review
+    Developers follow secure coding guidance (for example OWASP Top 10). Every change is peer-reviewed before merge; secrets are never committed to source control.
+
+    ## Testing
+    Automated tests, dependency and vulnerability scanning and static analysis run in the build pipeline. Significant releases receive security testing before go-live.
+
+    ## Environments and data
+    Development, test and production are separated. Production personal data is not used for testing unless masked or approved.
+
+    ## Source code
+    Access to source code repositories is limited to authorised people, uses MFA and is logged.
+
+    ## Outsourced development
+    Outsourced developers follow this policy through contract terms, and their work is reviewed.
+- key: isms-manual
+  title: ISMS Manual (scope, internal audit and management review)
+  summary: How the management system runs - context and scope, documents, objectives, internal audit, management review and corrective action.
+  maps:
+    iso-27001: ["4.1", "4.2", "4.3", "4.4", "7.1", "7.4", "7.5", "8.1", "9.1", "9.2", "9.3", "10.1", "10.2", "A.5.3", "A.5.5", "A.5.6", "A.5.14", "A.5.31", "A.5.32", "A.5.35", "A.5.37"]
+    soc2: ["CC1.2", "CC2.1", "CC2.3", "CC4.1", "CC4.2", "CC5.1"]
+    nist-csf-2: ["GV.OC", "GV.OV"]
+    ncsc-caf: ["A2.b"]
+    uk-gdpr: ["Art.32"]
+  body: |
+    # ISMS Manual
+
+    **Organisation:** {{organisation}}  **Owner:** {{owner}}  **Review:** every {{reviewMonths}} months
+
+    ## 1. Context and interested parties
+    {{organisation}} records the internal and external issues that affect information security (business strategy, technology, legal and regulatory change, threat landscape) and the requirements of interested parties (customers, staff, regulators, insurers, suppliers). Both are reviewed at each management review.
+
+    ## 2. Scope
+    The ISMS covers all people, locations, devices, networks and cloud services used to deliver {{organisation}}'s services, except as documented in the scope statement.
+
+    ## 3. Documented information
+    Policies, procedures and records are kept in Fenrir with a version history, owner, approval and review date. Approved policies are published to staff; superseded versions are retained. Records are protected from unauthorised change.
+
+    ## 4. Objectives and measurement
+    Security objectives are set each year with measurable targets (for example patch compliance, MFA coverage, training completion, time to resolve high alerts) and reported monthly.
+
+    ## 5. Operating procedures
+    Operating procedures for IT administration, backups, patching and incident handling are documented and available to those who need them.
+
+    ## 6. Contacts and information transfer
+    {{organisation}} keeps contacts with relevant authorities (ICO, NCSC, Action Fraud, police) and security interest groups. Information is transferred only through approved, secure methods under agreed terms.
+
+    ## 7. Legal and contractual requirements
+    Applicable laws, regulations and contractual obligations (including data protection, intellectual property and software licensing) are recorded with how each is met.
+
+    ## 8. Internal audit
+    An internal audit programme covers the whole ISMS at least every year, carried out by people independent of the area audited. Findings are reported to management.
+
+    ## 9. Management review
+    Top management reviews the ISMS at least yearly, considering: actions from previous reviews, changes in context, performance and objectives, audit results, incidents, risk assessment results and opportunities for improvement. Decisions are minuted.
+
+    ## 10. Nonconformity and improvement
+    Nonconformities are recorded, their root cause found, and corrective actions tracked to completion. Independent reviews of the ISMS take place at planned intervals or after significant change.

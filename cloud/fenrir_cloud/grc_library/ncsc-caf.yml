@@ -1,0 +1,57 @@
+key: ncsc-caf
+name: NCSC Cyber Assessment Framework
+short: NCSC CAF
+version: "3.2"
+description: The UK NCSC's outcome-based framework (objectives A-D, 14 principles, 39 contributing outcomes), used for NIS regulation and GovAssure. Outcome wording is paraphrased.
+sections:
+  - id: A
+    title: "Objective A: Managing security risk"
+    requirements:
+      - [ "A1.a", "Board direction", "The board leads on security and owns the policy, with a clear link to essential functions." ]
+      - [ "A1.b", "Roles and responsibilities", "Roles for network and information system security are defined and staffed." ]
+      - [ "A1.c", "Decision-making", "Security decisions are made with appropriate authority and risk understanding." ]
+      - [ "A2.a", "Risk management process", "A tested risk management process identifies, assesses and manages risks to essential functions." ]
+      - [ "A2.b", "Assurance", "You have gained confidence that your security measures work, through testing and audit." ]
+      - [ "A3.a", "Asset management", "Everything supporting essential functions is known, understood and managed.", [], ["nist-csf-2/ID.AM"] ]
+      - [ "A4.a", "Supply chain", "Risks from dependencies on third parties are understood and managed." ]
+  - id: B
+    title: "Objective B: Protecting against cyber attack"
+    requirements:
+      - [ "B1.a", "Policy and process development", "Security policies and processes are developed and kept current." ]
+      - [ "B1.b", "Policy and process implementation", "Policies and processes are implemented effectively." ]
+      - [ "B2.a", "Identity verification, authentication and authorisation", "Users and devices are verified, authenticated and authorised before access." ]
+      - [ "B2.b", "Device management", "Only known, managed devices access systems.", [], ["nist-csf-2/PR.PS"] ]
+      - [ "B2.c", "Privileged user management", "Privileged access is closely managed.", [], ["nist-csf-2/PR.AA"] ]
+      - [ "B2.d", "Identity and access management", "Access is managed through its whole life cycle." ]
+      - [ "B3.a", "Understanding data", "Data important to essential functions is understood." ]
+      - [ "B3.b", "Data in transit", "Data in transit is protected." ]
+      - [ "B3.c", "Stored data", "Stored data is protected.", [], ["nist-csf-2/PR.DS"] ]
+      - [ "B3.d", "Mobile data", "Data on mobile devices is protected." ]
+      - [ "B3.e", "Media and equipment sanitisation", "Media and equipment are sanitised before reuse or disposal." ]
+      - [ "B4.a", "Secure by design", "Systems are designed securely." ]
+      - [ "B4.b", "Secure configuration", "Systems are securely configured.", [], ["nist-csf-2/PR.PS"] ]
+      - [ "B4.c", "Secure management", "Systems are managed securely." ]
+      - [ "B4.d", "Vulnerability management", "Vulnerabilities are found and fixed.", [], ["nist-csf-2/ID.RA"] ]
+      - [ "B5.a", "Resilience preparation", "You are prepared to restore essential functions after disruption." ]
+      - [ "B5.b", "Design for resilience", "Systems are designed to be resilient to attack and failure." ]
+      - [ "B5.c", "Backups", "Backups are maintained, tested and protected.", [], ["nist-csf-2/RC.RP"] ]
+      - [ "B6.a", "Cyber security culture", "A positive security culture is developed." ]
+      - [ "B6.b", "Cyber security training", "Staff receive appropriate security training." ]
+  - id: C
+    title: "Objective C: Detecting cyber security events"
+    requirements:
+      - [ "C1.a", "Monitoring coverage", "Monitoring covers the data sources needed to detect attacks.", [], ["nist-csf-2/DE.CM"] ]
+      - [ "C1.b", "Securing logs", "Logs are protected from tampering and retained." ]
+      - [ "C1.c", "Generating alerts", "Security alerts are generated from monitoring.", [], ["nist-csf-2/DE.CM"] ]
+      - [ "C1.d", "Identifying security incidents", "Alerts are triaged to identify incidents." ]
+      - [ "C1.e", "Monitoring tools and skills", "Monitoring staff have the tools and skills they need." ]
+      - [ "C2.a", "System abnormalities for attack detection", "Abnormal system behaviour is used to detect attacks." ]
+      - [ "C2.b", "Proactive attack discovery", "You search proactively for attacks (threat hunting)." ]
+  - id: D
+    title: "Objective D: Minimising the impact of incidents"
+    requirements:
+      - [ "D1.a", "Response plan", "An incident response plan exists for essential functions." ]
+      - [ "D1.b", "Response and recovery capability", "You have the capability to carry out the plan.", [], ["nist-csf-2/RS.MI"] ]
+      - [ "D1.c", "Testing and exercising", "The response plan is tested and exercised." ]
+      - [ "D2.a", "Incident root cause analysis", "Root causes of incidents are identified." ]
+      - [ "D2.b", "Using incidents to drive improvements", "Lessons from incidents improve security." ]

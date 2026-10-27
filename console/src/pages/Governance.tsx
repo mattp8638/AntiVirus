@@ -4,6 +4,9 @@ import { useApp } from "../app-context";
 import { RecordEditor } from "../components/RecordEditor";
 import { safeArray } from "../data-shapes";
 import { ErrorNote, Modal, PageHead, Pill, Table, Tabs, useAction, useData, useListData } from "../components/ui";
+import { useSearchParams } from "react-router-dom";
+import { EvidenceTab, ProgrammesTab } from "./grc/Programmes";
+import { PoliciesTab } from "./grc/Policies";
 
 const CONTROL_TONE:Record<string,string>={met:"good",evidenced:"good",exception:"warn",gap:"bad"};
 
@@ -36,16 +39,21 @@ export default function Governance() {
   const {data,error,reload}=useListData<any>("grc/records",{tenant_id:tenantId});
   const {data:frameworks}=useData<{frameworks:string[]}>("grc/frameworks");
   const [create,setCreate]=useState<false|{framework?:string;control?:string}>(false),[selected,setSelected]=useState<any>(null),[status,setStatus]=useState("in_review"),[due,setDue]=useState("");
-  const [tab,setTab]=useState("Register");
+  const [params,setParams]=useSearchParams();
+  const tab=params.get("tab")||"Programmes";
+  const setTab=(next:string)=>setParams(next==="Programmes"?{}:{tab:next},{replace:true});
   const {run,busy}=useAction();
   useEffect(()=>{setCreate(false);setSelected(null);},[tenantId]);
   return <>
-    <PageHead title="GRC & ISMS" subtitle="Risk register, policy and evidence tracking, audit preparation and time-limited exceptions."
-      actions={can("grc")&&<button className="primary" onClick={()=>setCreate({})}>New record</button>}/>
+    <PageHead title="GRC & compliance" subtitle="Per-customer compliance programmes (ISO 27001, Cyber Essentials, NIST CSF, GDPR, SOC 2, CIS, Essential Eight, NCSC CAF) with requirements, answers, policies and evidence, plus the risk register."
+      actions={can("grc")&&tab==="Risk register"&&<button className="primary" onClick={()=>setCreate({})}>New record</button>}/>
     <ErrorNote error={error}/>
-    <Tabs tabs={["Register","Controls"]} active={tab} onChange={setTab}/>
+    <Tabs tabs={["Programmes","Policies","Evidence","Risk register","Controls"]} active={tab} onChange={setTab}/>
+    {tab==="Programmes"&&<ProgrammesTab/>}
+    {tab==="Policies"&&<PoliciesTab/>}
+    {tab==="Evidence"&&<EvidenceTab/>}
     {tab==="Controls"&&<Controls tenantId={tenantId} onAddEvidence={(framework,control)=>setCreate({framework,control})}/>}
-    {tab==="Register"&&<Table rows={data} onRow={r=>{setSelected(r);setStatus(r.status);setDue(r.reviewDue||"");}} columns={[{key:"title",label:"Record"},{key:"kind",label:"Type"},{key:"framework",label:"Framework"},{key:"owner",label:"Owner"},{key:"riskScore",label:"Risk (1–25)",render:r=>r.kind==="risk"?r.riskScore:"—"},{key:"status",label:"Review",render:r=><Pill value={r.reviewOverdue?"overdue":r.status} tone={r.reviewOverdue?"bad":undefined}/>} ]}/>}
+    {tab==="Risk register"&&<Table rows={data} onRow={r=>{setSelected(r);setStatus(r.status);setDue(r.reviewDue||"");}} columns={[{key:"title",label:"Record"},{key:"kind",label:"Type"},{key:"framework",label:"Framework"},{key:"owner",label:"Owner"},{key:"riskScore",label:"Risk (1–25)",render:r=>r.kind==="risk"?r.riskScore:"—"},{key:"status",label:"Review",render:r=><Pill value={r.reviewOverdue?"overdue":r.status} tone={r.reviewOverdue?"bad":undefined}/>} ]}/>}
     {create&&<RecordEditor title="New governance record" fields={[{key:"kind",label:"Record type",type:"select",options:["risk","policy","evidence","audit","exception"],required:true,value:create.control?"evidence":"risk"},{key:"title",label:"Title",required:true},{key:"description",label:"Description / treatment / evidence notes",type:"textarea"},{key:"framework",label:"Framework reference",type:"select",options:safeArray<string>(frameworks?.frameworks),value:create.framework},{key:"control",label:"Control reference (start with the control ID, e.g. CE-3)",value:create.control},{key:"owner",label:"Owner"},{key:"likelihood",label:"Likelihood (1–5)",type:"number",value:1},{key:"impact",label:"Impact (1–5)",type:"number",value:1},{key:"reviewDue",label:"Review due (ISO date/time, optional)"},{key:"documentId",label:"Knowledge-base document (optional)",type:"select",source:"documents"},{key:"evidenceUrl",label:"HTTPS evidence link (optional)"}]}
       onSave={body=>api("grc/records",{body:{...body,reviewDue:body.reviewDue||null,documentId:body.documentId||null}})} onClose={()=>{setCreate(false);reload();}}/>}
     {selected&&<Modal title={selected.title} onClose={()=>setSelected(null)} footer={can("grc")&&<button className="primary" disabled={busy} onClick={async()=>{const row=await run(()=>api("grc/records/"+selected.id+"/review",{method:"PATCH",body:{status,reviewDue:due||null}}),"Review saved");if(row)setSelected(row);reload();}}>Save review</button>}>

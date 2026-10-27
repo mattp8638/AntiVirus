@@ -205,6 +205,12 @@ def migrate(bind: Engine) -> list[int]:
                 ensure_columns(Base, conn)  # m365_connections auth_mode, tenant_name, consent and secret expiry
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (18)"))
                 applied.append(18)
+            if 19 not in versions:
+                from .models import GrcAdoption, GrcEvidence, GrcEvidenceLink, GrcFramework, GrcPolicy, GrcPolicyVersion, GrcRequirementState
+                for model in (GrcFramework, GrcAdoption, GrcRequirementState, GrcPolicy, GrcPolicyVersion, GrcEvidence, GrcEvidenceLink):
+                    model.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (19)"))
+                applied.append(19)
             conn.commit()
         except Exception:
             conn.rollback()

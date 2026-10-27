@@ -1,0 +1,46 @@
+key: nist-csf-2
+name: NIST Cybersecurity Framework 2.0
+short: NIST CSF 2.0
+version: "2.0"
+description: The six functions (Govern, Identify, Protect, Detect, Respond, Recover) and their 22 categories, with the outcomes each expects.
+sections:
+  - id: GV
+    title: "Govern"
+    requirements:
+      - [ "GV.OC", "Organizational context", "Understand the mission, stakeholder expectations, dependencies and legal, regulatory and contractual requirements around cybersecurity (GV.OC-01 to -05)." ]
+      - [ "GV.RM", "Risk management strategy", "Establish, communicate and use priorities, constraints, risk tolerance and appetite statements (GV.RM-01 to -07)." ]
+      - [ "GV.RR", "Roles, responsibilities and authorities", "Leadership is accountable; roles, resources and HR practices for cybersecurity are established (GV.RR-01 to -04)." ]
+      - [ "GV.PO", "Policy", "Establish, communicate, enforce, review and update cybersecurity policy (GV.PO-01, -02)." ]
+      - [ "GV.OV", "Oversight", "Use the results of risk management activities to inform, improve and adjust the strategy (GV.OV-01 to -03)." ]
+      - [ "GV.SC", "Cybersecurity supply chain risk management", "Identify, assess and manage supply chain risks, including supplier due diligence, contracts and offboarding (GV.SC-01 to -10)." ]
+  - id: ID
+    title: "Identify"
+    requirements:
+      - [ "ID.AM", "Asset management", "Inventory hardware, software, services, data and their flows, managed by criticality (ID.AM-01 to -08).", [], ["nist-csf-2/ID.AM"] ]
+      - [ "ID.RA", "Risk assessment", "Identify vulnerabilities, threat intelligence, impacts and likelihoods; prioritise and respond to risk (ID.RA-01 to -10).", [], ["nist-csf-2/ID.RA"] ]
+      - [ "ID.IM", "Improvement", "Identify improvements from evaluations, tests, exercises and operations; maintain incident response plans (ID.IM-01 to -04)." ]
+  - id: PR
+    title: "Protect"
+    requirements:
+      - [ "PR.AA", "Identity management, authentication and access control", "Manage identities and credentials, authenticate users, services and hardware, and enforce least privilege (PR.AA-01 to -06).", [], ["nist-csf-2/PR.AA"] ]
+      - [ "PR.AT", "Awareness and training", "Give personnel awareness and training so they can perform cybersecurity tasks with risks in mind (PR.AT-01, -02)." ]
+      - [ "PR.DS", "Data security", "Protect the confidentiality, integrity and availability of data at rest, in transit and in use; keep backups (PR.DS-01, -02, -10, -11).", [], ["nist-csf-2/PR.DS"] ]
+      - [ "PR.PS", "Platform security", "Manage configuration, software maintenance and removal, logging and secure development of platforms (PR.PS-01 to -06).", [], ["nist-csf-2/PR.PS"] ]
+      - [ "PR.IR", "Technology infrastructure resilience", "Protect networks from unauthorised access, environmental threats, and plan capacity and resilience (PR.IR-01 to -04)." ]
+  - id: DE
+    title: "Detect"
+    requirements:
+      - [ "DE.CM", "Continuous monitoring", "Monitor networks, physical environment, personnel activity, external services and computing for adverse events (DE.CM-01 to -09).", [], ["nist-csf-2/DE.CM"] ]
+      - [ "DE.AE", "Adverse event analysis", "Analyse anomalies, correlate information, estimate impact and declare incidents (DE.AE-02 to -08)." ]
+  - id: RS
+    title: "Respond"
+    requirements:
+      - [ "RS.MA", "Incident management", "Execute the incident response plan; triage, categorise, prioritise and escalate incidents (RS.MA-01 to -05)." ]
+      - [ "RS.AN", "Incident analysis", "Investigate incidents, establish root cause, preserve evidence and estimate magnitude (RS.AN-03 to -08)." ]
+      - [ "RS.CO", "Incident response reporting and communication", "Notify internal and external stakeholders and share information as required (RS.CO-02, -03)." ]
+      - [ "RS.MI", "Incident mitigation", "Contain and eradicate incidents (RS.MI-01, -02).", [], ["nist-csf-2/RS.MI"] ]
+  - id: RC
+    title: "Recover"
+    requirements:
+      - [ "RC.RP", "Incident recovery plan execution", "Execute recovery, verify backups and restored assets, and declare the end of recovery (RC.RP-01 to -06).", [], ["nist-csf-2/RC.RP"] ]
+      - [ "RC.CO", "Incident recovery communication", "Coordinate restoration activities and communicate with stakeholders (RC.CO-03, -04)." ]
