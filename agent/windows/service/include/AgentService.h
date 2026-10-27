@@ -17,6 +17,7 @@
 #include "ControlPlaneClient.h"
 #include "ExtendedPolicy.h"
 #include "RansomwareShield.h"
+#include "AdMonitor.h"
 #include "BruteForceGuard.h"
 #include "RegistryWatcher.h"
 #include "CommandJournalStore.h"
@@ -223,6 +224,7 @@ class AgentService {
   std::unique_ptr<ProcessEtwSensor> processEtwSensor_{};
   std::unique_ptr<RansomwareShield> ransomwareShield_{};
   std::unique_ptr<BruteForceGuard> bruteForceGuard_{};
+  std::unique_ptr<AdMonitor> adMonitor_{};
   std::unique_ptr<RegistryWatcher> registryWatcher_{};
   std::unique_ptr<NetworkIsolationManager> networkIsolationManager_{};
   bool lastControlPlaneSyncFailed_{false};

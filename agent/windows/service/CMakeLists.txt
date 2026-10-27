@@ -143,6 +143,8 @@ add_library(antivirus-agent-core STATIC
   src/RansomwareShield.cpp
   src/BruteForceTracker.cpp
   src/BruteForceGuard.cpp
+  src/AdMonitor.cpp
+  src/AdEventRules.cpp
   src/RegistryWatcher.cpp
   src/CrashReporter.cpp
   src/SystemProfile.cpp
@@ -583,6 +585,8 @@ add_executable(fenrir-behavior-tests ../tests/BehaviorRulesTests.cpp src/Behavio
 target_include_directories(fenrir-behavior-tests PRIVATE include)
 add_executable(fenrir-policy-tests ../tests/PolicyAndDeviceControlTests.cpp src/ExtendedPolicy.cpp src/BehaviorRules.cpp src/DeviceControl.cpp src/FirewallPolicy.cpp src/LocalAdminRotation.cpp src/RansomwareDetector.cpp src/BruteForceTracker.cpp)
 target_link_libraries(fenrir-policy-tests PRIVATE bcrypt netapi32 advapi32)
+add_executable(fenrir-admonitor-tests ../tests/AdMonitorTests.cpp src/AdEventRules.cpp)
+target_include_directories(fenrir-admonitor-tests PRIVATE include)
 add_executable(fenrir-rmm-tests ../tests/RmmExecutorTests.cpp src/RmmExecutors.cpp src/ExtendedPolicy.cpp src/BehaviorRules.cpp src/StringUtils.cpp src/CryptoUtils.cpp)
 target_include_directories(fenrir-rmm-tests PRIVATE include ../shared/include)
 target_link_libraries(fenrir-rmm-tests PRIVATE wtsapi32 userenv urlmon advapi32 bcrypt crypt32 wintrust)

@@ -76,6 +76,7 @@ jobs:
           g++ -std=c++20 -Iservice/include service/src/BehaviorRules.cpp tests/BehaviorRulesTests.cpp -o /tmp/brtest && /tmp/brtest
           g++ -std=c++20 -Iservice/include service/src/ExtendedPolicy.cpp service/src/BehaviorRules.cpp service/src/DeviceControl.cpp tests/PolicyAndDeviceControlTests.cpp -o /tmp/pdtest && /tmp/pdtest tests
           g++ -std=c++20 -Iservice/include tests/EnrollmentPersistenceTests.cpp -o /tmp/enrollmenttest && /tmp/enrollmenttest
+          g++ -std=c++20 -Iservice/include service/src/AdEventRules.cpp tests/AdMonitorTests.cpp -o /tmp/adtest && /tmp/adtest
           g++ -std=c++20 -O2 -Iservice/include service/src/MlStaticModel.cpp tools/mltestcli/src/MlTestCliMain.cpp -o /tmp/mltest
           /tmp/mltest score ../../ml/models/fenrir-pe-v1.fgbt ../../ml/testdata/hello64.exe
       - name: Cross-compile service and scanner

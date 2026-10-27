@@ -93,6 +93,8 @@ _TYPE_RULES: list[tuple[tuple[str, ...], str]] = [
 
 def categorize(event_type: str) -> str:
     lowered = event_type.lower()
+    if lowered.startswith("ad."):  # Active Directory events from domain controllers (prefix only: "thread." contains "ad.")
+        return "identity"
     for needles, category in _TYPE_RULES:
         if any(lowered == needle or lowered.startswith(needle) or needle in lowered for needle in needles):
             return category

@@ -35,6 +35,11 @@ def _device_view(device: Device, summary: bool = False) -> dict:
                                                    "reportedAt", "patchScanAt") if k in metrics}
         if disks:
             data["metrics"]["diskFreePercent"] = min(d.get("freePercent", 100) for d in disks)
+        inventory = device.inventory or {}
+        # Workstation / server / domain controller, for list badges and filters.
+        data["role"] = inventory.get("role") or ("phone" if device.platform == "android" else None)
+        data["roleLabel"] = inventory.get("roleLabel")
+        data["workloads"] = (inventory.get("workloads") or [])[:6]
     return data
 
 
@@ -74,6 +79,7 @@ def list_devices(
     q: str | None = None,
     platform: str | None = None,
     group_id: str | None = None,
+    role: str | None = Query(default=None, description="workstation | server | domain-controller"),
     status: str | None = Query(default=None, description="online | offline | isolated | pending | at-risk | retired"),
     principal: Principal = Depends(current_principal),
     db: Session = Depends(get_db),
@@ -100,6 +106,8 @@ def list_devices(
     elif status == "at-risk":
         query = query.where(Device.risk_score >= 40)
     rows = db.execute(query.order_by(Device.risk_score.desc(), Device.hostname).limit(2000)).scalars().all()
+    if role:
+        rows = [d for d in rows if (d.inventory or {}).get("role") == role]
     return [_device_view(d, summary=True) for d in rows]
 
 

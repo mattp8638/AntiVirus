@@ -50,6 +50,7 @@ import Settings from "./pages/Settings";
 import Deploy from "./pages/Deploy";
 import { EnrollPhonePage } from "./pages/AddPhone";
 import Vault from "./pages/Vault";
+import ActiveDirectory from "./pages/ActiveDirectory";
 import ProtectionHealth from "./pages/ProtectionHealth";
 import Quarantine from "./pages/Quarantine";
 import Elevation from "./pages/Elevation";
@@ -84,6 +85,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string }[]
       { to: "/dns", label: "DNS protection", icon: "◈" },
       { to: "/intel", label: "Threat intel", icon: "✦" },
       { to: "/vulnerabilities", label: "Vulnerabilities", icon: "⚠" },
+      { to: "/active-directory", label: "Active Directory", icon: "⌘" },
       { to: "/attack-surface", label: "Attack surface", icon: "◍" },
       { to: "/compliance", label: "Compliance", icon: "✓" },
     ],
@@ -228,6 +230,7 @@ function Shell() {
             <Route path="/dns" element={<Dns />} />
             <Route path="/intel" element={<Intel />} />
             <Route path="/vulnerabilities" element={<Vulnerabilities />} />
+            <Route path="/active-directory" element={<ActiveDirectory />} />
             <Route path="/attack-surface" element={<AttackSurface />} />
             <Route path="/compliance" element={<Compliance />} />
             <Route path="/crm" element={<Crm />} />

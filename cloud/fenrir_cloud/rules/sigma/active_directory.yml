@@ -1,0 +1,304 @@
+title: Member added to a privileged AD group
+id: fenrir-ad-privileged-group-add
+description: >-
+  Someone was added to Domain Admins, Administrators, Account/Server/Backup/Print Operators, Group Policy Creator
+  Owners, Key Admins or DnsAdmins on a domain controller. Confirm the change was requested and who made it.
+tags: [attack.persistence, attack.privilege_escalation, attack.t1098]
+logsource: {category: identity, product: windows}
+detection:
+  selection:
+    EventType: ad.group.member_added
+    privilegedGroup|exists: true
+  forest_level:
+    privilegedGroup: [Enterprise Admins, Schema Admins, Enterprise Key Admins, Domain Controllers]
+  condition: selection and not forest_level
+falsepositives: [Planned admin onboarding - resolve with a note]
+level: high
+---
+title: Member added to a forest-level privileged group
+id: fenrir-ad-forest-group-add
+description: >-
+  An account was added to Enterprise Admins, Schema Admins, Enterprise Key Admins or Domain Controllers. These
+  groups are almost always empty or fixed; an addition is a likely domain takeover.
+tags: [attack.persistence, attack.privilege_escalation, attack.t1098]
+logsource: {category: identity, product: windows}
+detection:
+  selection:
+    EventType: ad.group.member_added
+    privilegedGroup: [Enterprise Admins, Schema Admins, Enterprise Key Admins, Domain Controllers]
+  condition: selection
+level: critical
+---
+title: AD group membership changed (record)
+id: fenrir-ad-group-change
+description: Ordinary group membership changes and removals from privileged groups, recorded for the audit trail.
+tags: [attack.t1098]
+logsource: {category: identity, product: windows}
+detection:
+  added:
+    EventType: ad.group.member_added
+  removed:
+    EventType: ad.group.member_removed
+  privileged:
+    privilegedGroup|exists: true
+  condition: (added and not privileged) or removed
+level: low
+---
+title: AD account lifecycle change (record)
+id: fenrir-ad-account-change
+description: Users and computers created, enabled, disabled, deleted or changed; groups created or deleted.
+tags: [attack.persistence, attack.t1136.002]
+logsource: {category: identity, product: windows}
+detection:
+  selection:
+    EventType: [ad.user.created, ad.user.enabled, ad.user.disabled, ad.user.deleted, ad.user.changed, ad.user.unlocked,
+                ad.user.password_reset, ad.computer.created, ad.computer.deleted, ad.group.created, ad.group.deleted,
+                ad.gpo.changed, ad.policy.domain_changed, ad.trust.removed, ad.trust.changed]
+  condition: selection
+level: low
+---
+title: Account locked out
+id: fenrir-ad-lockout
+tags: [attack.credential_access, attack.t1110]
+logsource: {category: identity, product: windows}
+detection:
+  selection:
+    EventType: ad.user.locked_out
+  condition: selection
+level: low
+---
+title: Many AD accounts locked out
+id: fenrir-ad-lockout-burst
+description: Ten or more accounts locked out within 10 minutes across the domain - usually password spraying.
+tags: [attack.credential_access, attack.t1110.003]
+correlation:
+  type: value_count
+  rules: [fenrir-ad-lockout]
+  group-by: [domainController]
+  timespan: 10m
+  condition: {gte: 10, field: TargetUserName}
+level: high
+---
+title: Kerberos or NTLM sign-in failure (record)
+id: fenrir-ad-auth-failure
+tags: [attack.credential_access, attack.t1110]
+logsource: {category: identity, product: windows}
+detection:
+  selection:
+    EventType: [ad.kerberos.preauth_failed, ad.kerberos.tgt_failed]
+  condition: selection
+level: low
+---
+title: Password spraying against Active Directory (Kerberos)
+id: fenrir-ad-password-spray
+description: >-
+  One address failed Kerberos pre-authentication for 10 or more different accounts within 10 minutes. A user with a
+  stale password fails for one account; spraying tries one password across many.
+tags: [attack.credential_access, attack.t1110.003]
+correlation:
+  type: value_count
+  rules: [fenrir-ad-auth-failure]
+  group-by: [IpAddress]
+  timespan: 10m
+  condition: {gte: 10, field: TargetUserName}
+level: high
+---
+title: NTLM sign-in failure (record)
+id: fenrir-ad-ntlm-failure
+tags: [attack.credential_access, attack.t1110]
+logsource: {category: identity, product: windows}
+detection:
+  selection:
+    EventType: ad.ntlm.failed
+  condition: selection
+level: low
+---
+title: Password spraying against Active Directory (NTLM)
+id: fenrir-ad-password-spray-ntlm
+description: One workstation failed NTLM sign-in for 10 or more different accounts within 10 minutes.
+tags: [attack.credential_access, attack.t1110.003]
+correlation:
+  type: value_count
+  rules: [fenrir-ad-ntlm-failure]
+  group-by: [Workstation]
+  timespan: 10m
+  condition: {gte: 10, field: TargetUserName}
+level: high
+---
+title: RC4 Kerberos service ticket (record)
+id: fenrir-ad-rc4-ticket
+description: A user requested an RC4-encrypted service ticket for a user service account. Old clients still do this occasionally.
+tags: [attack.credential_access, attack.t1558.003]
+logsource: {category: identity, product: windows}
+detection:
+  selection:
+    EventType: ad.kerberos.rc4_service_ticket
+  condition: selection
+level: low
+---
+title: Kerberoasting
+id: fenrir-ad-kerberoasting
+description: >-
+  One account requested RC4 service tickets for five or more different service accounts within 10 minutes. This is
+  how tools like Rubeus and GetUserSPNs collect crackable hashes. Reset the passwords of the targeted service
+  accounts to long random values and move them to AES or gMSA.
+tags: [attack.credential_access, attack.t1558.003]
+correlation:
+  type: value_count
+  rules: [fenrir-ad-rc4-ticket]
+  group-by: [TargetUserName]
+  timespan: 10m
+  condition: {gte: 5, field: ServiceName}
+level: high
+---
+title: Kerberos ticket without pre-authentication (record)
+id: fenrir-ad-asrep
+description: An account with "Do not require Kerberos pre-authentication" was issued a ticket. Its password hash can be cracked offline.
+tags: [attack.credential_access, attack.t1558.004]
+logsource: {category: identity, product: windows}
+detection:
+  selection:
+    EventType: ad.kerberos.asrep
+  condition: selection
+level: low
+---
+title: AS-REP roasting
+id: fenrir-ad-asrep-roasting
+description: One address requested tickets without pre-authentication for three or more accounts within 10 minutes.
+tags: [attack.credential_access, attack.t1558.004]
+correlation:
+  type: value_count
+  rules: [fenrir-ad-asrep]
+  group-by: [IpAddress]
+  timespan: 10m
+  condition: {gte: 3, field: TargetUserName}
+level: high
+---
+title: DCSync - directory replication requested by a non-DC account
+id: fenrir-ad-dcsync
+description: >-
+  An account that is not a domain controller used the "Replicate Directory Changes All" right. That retrieves every
+  password hash in the domain (Mimikatz lsadump::dcsync). Disable the account, reset krbtgt twice and investigate.
+tags: [attack.credential_access, attack.t1003.006]
+logsource: {category: identity, product: windows}
+detection:
+  selection:
+    EventType: ad.replication.requested
+    knownSyncAccount: false
+  condition: selection
+falsepositives: [A directory sync tool other than Entra Connect - confirm and tune for this tenant]
+level: critical
+---
+title: Directory replication by Entra Connect (record)
+id: fenrir-ad-replication-sync
+tags: [attack.t1003.006]
+logsource: {category: identity, product: windows}
+detection:
+  selection:
+    EventType: ad.replication.requested
+    knownSyncAccount: true
+  condition: selection
+level: low
+---
+title: AdminSDHolder modified
+id: fenrir-ad-adminsdholder
+description: >-
+  The AdminSDHolder object's permissions were changed. Its ACL is copied onto every privileged account hourly, so
+  this is a classic way to keep admin rights. Review the ACL and revert unexpected entries.
+tags: [attack.persistence, attack.t1484, attack.t1098]
+logsource: {category: identity, product: windows}
+detection:
+  selection:
+    EventType: ad.adminsdholder.modified
+  condition: selection
+level: high
+---
+title: Resource-based constrained delegation or SID history set
+id: fenrir-ad-delegation-abuse
+description: >-
+  msDS-AllowedToActOnBehalfOfOtherIdentity (RBCD) or sIDHistory was written on an object, or the domain root's
+  permissions changed. These let an attacker impersonate any user to a machine or grant themselves DCSync rights.
+tags: [attack.privilege_escalation, attack.t1134.005, attack.t1484]
+logsource: {category: identity, product: windows}
+detection:
+  sensitive:
+    EventType: ad.object.sensitive_change
+  attacks:
+    - AttributeLDAPDisplayName: [msDS-AllowedToActOnBehalfOfOtherIdentity, sIDHistory]
+    - ObjectClass: domainDNS
+  history:
+    EventType: ad.sidhistory.added
+  condition: (sensitive and attacks) or history
+level: high
+---
+title: Sensitive AD attribute changed
+id: fenrir-ad-sensitive-attribute
+description: >-
+  Shadow credentials (msDS-KeyCredentialLink), constrained delegation, a logon script or an SPN on a user account
+  changed. Windows Hello for Business and admins change some of these legitimately; check who made the change.
+tags: [attack.persistence, attack.credential_access, attack.t1556, attack.t1558.003]
+logsource: {category: identity, product: windows}
+detection:
+  sensitive:
+    EventType: ad.object.sensitive_change
+  medium:
+    - AttributeLDAPDisplayName: [msDS-KeyCredentialLink, msDS-AllowedToDelegateTo, scriptPath]
+    - AttributeLDAPDisplayName: servicePrincipalName
+      ObjectClass: user
+  machine_self:  # computers renew their own Windows Hello keys
+    SubjectUserName|endswith: '$'
+  condition: sensitive and medium and not machine_self
+level: medium
+---
+title: Computer delegation settings changed
+id: fenrir-ad-computer-delegation
+tags: [attack.privilege_escalation, attack.t1134]
+logsource: {category: identity, product: windows}
+detection:
+  selection:
+    EventType: ad.computer.changed
+  unchanged:
+    AllowedToDelegateTo: '-'
+  condition: selection and not unchanged
+level: medium
+---
+title: DSRM administrator password set
+id: fenrir-ad-dsrm
+description: The Directory Services Restore Mode password was set. Attackers set it to keep a backdoor administrator on the DC.
+tags: [attack.persistence, attack.t1098]
+logsource: {category: identity, product: windows}
+detection:
+  selection:
+    EventType: ad.dsrm.password_set
+  condition: selection
+level: high
+---
+title: Domain trust created or Kerberos policy changed
+id: fenrir-ad-trust-policy
+tags: [attack.defense_evasion, attack.t1484.002]
+logsource: {category: identity, product: windows}
+detection:
+  selection:
+    EventType: [ad.trust.created, ad.policy.kerberos_changed]
+  condition: selection
+level: medium
+---
+title: Security log cleared on a domain controller
+id: fenrir-ad-log-cleared
+tags: [attack.defense_evasion, attack.t1070.001]
+logsource: {category: identity, product: windows}
+detection:
+  selection:
+    EventType: ad.log.cleared
+  condition: selection
+level: high
+---
+title: Active Directory monitoring status (record)
+id: fenrir-ad-monitor-status
+tags: []
+logsource: {category: identity, product: windows}
+detection:
+  selection:
+    EventType|startswith: 'ad.monitor.'
+  condition: selection
+level: low

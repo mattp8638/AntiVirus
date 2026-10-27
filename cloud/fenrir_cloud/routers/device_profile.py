@@ -22,6 +22,9 @@ console = APIRouter(prefix="/api/console/devices/{device_id}", tags=["Devices"])
 
 MAX_PROFILE_BYTES = 2_000_000
 _SECRET_WORDS = ("password", "recoverykey", "secret")
+# Keys that describe passwords (age, policy, flags) rather than hold one; the AD snapshot uses these.
+_SAFE_PASSWORD_KEYS = {"passwordlastset", "passwordexpires", "passwordrequired", "passwordneverexpires", "passwordagedays",
+                       "passwordpolicy", "passwordnotrequired", "privilegedpasswordneverexpires", "privilegedoldpassword"}
 
 
 def _scrub(value, depth: int = 0):
@@ -31,7 +34,7 @@ def _scrub(value, depth: int = 0):
     if isinstance(value, dict):
         return {str(k)[:80]: _scrub(v, depth + 1) for k, v in value.items()
                 if not any(word in str(k).lower().replace("_", "") for word in _SECRET_WORDS)
-                or str(k).lower() in {"passwordlastset", "passwordexpires", "passwordrequired", "passwordneverexpires"}}
+                or str(k).lower().replace("_", "") in _SAFE_PASSWORD_KEYS}
     if isinstance(value, list):
         return [_scrub(v, depth + 1) for v in value[:2000]]
     if isinstance(value, str):
@@ -67,8 +70,13 @@ def report_profile(request: Request, body: dict = Body(...), device: Device = De
                                  "serial": hardware.get("serial"), "cpu": (hardware.get("cpu") or {}).get("name"),
                                  "osName": os_info.get("name"), "osBuild": os_info.get("build"),
                                  "domain": os_info.get("domain")}.items() if v}
+    # Workstation / server / domain controller and server roles, detected on every profile run.
+    from ..activedirectory import role_from_profile
+
+    summary.update(role_from_profile(clean))
     if summary:
-        device.inventory = {**(device.inventory or {}), **summary}
+        inventory = {k: v for k, v in (device.inventory or {}).items() if k not in ("serverRoles", "workloads", "domainRole")}
+        device.inventory = {**inventory, **summary}
     if hardware.get("serial") and not device.serial_number:
         device.serial_number = str(hardware["serial"])[:255]
 
