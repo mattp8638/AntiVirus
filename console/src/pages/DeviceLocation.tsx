@@ -21,6 +21,9 @@ function TrackMap({ points, latest }: { points: any[]; latest: any }) {
     map.current = L.map(box.current, { zoomControl: true, attributionControl: true }).setView([51.5, -0.12], 5);
     L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      // OpenStreetMap blocks tile requests without a Referer, and the console sends none by default
+      // (Referrer-Policy: no-referrer). Send just this site's origin for the tiles, never the page path.
+      referrerPolicy: "strict-origin-when-cross-origin",
     }).addTo(map.current);
     layer.current = L.layerGroup().addTo(map.current);
     const resize = new ResizeObserver(() => map.current?.invalidateSize());
