@@ -512,6 +512,7 @@ set_source_files_properties(${SETUP_PAYLOAD_RC} PROPERTIES
 add_executable(antivirus-setup WIN32
   ${INSTALLER_NATIVE_DIR}/src/setup.rc
   ${INSTALLER_NATIVE_DIR}/src/SetupMain.cpp
+  ${INSTALLER_NATIVE_DIR}/src/FullRemoval.cpp
   ${SETUP_PAYLOAD_RC}
 )
 
@@ -531,7 +532,7 @@ target_include_directories(antivirus-setup PRIVATE
   ${INSTALLER_NATIVE_DIR}/include
   ${INSTALLER_NATIVE_DIR}/src
 )
-target_link_libraries(antivirus-setup PRIVATE comctl32 ole32 shell32 advapi32 crypt32 wintrust dwmapi)
+target_link_libraries(antivirus-setup PRIVATE comctl32 ole32 shell32 advapi32 crypt32 wintrust dwmapi fwpuclnt netapi32 setupapi)
 # Keep the runtime fully static. A trailing -Bdynamic here overrides -static
 # for implicit runtime libraries and makes setup require libwinpthread-1.dll
 # before it can extract any embedded payload.
