@@ -83,8 +83,20 @@ def effective_policy(db: Session, device: Device) -> tuple[dict, dict]:
     resolution = policy_schema.resolve(layers)
     name = layers[-1].name if layers else "Fenrir baseline"
     doc = policy_schema.to_agent_policy(policy_id=device.policy_id or (tenant.default_policy_id if tenant else None) or GLOBAL_POLICY_ID,
-                                        name=name, settings=resolution["settings"], botnet_ips=botnet_ips(db, device.tenant_id))
+                                        name=name, settings=resolution["settings"], botnet_ips=botnet_ips(db, device.tenant_id),
+                                        trusted_sha256=trusted_hashes(db, device.tenant_id))
     return resolution, doc
+
+
+def trusted_hashes(db: Session, tenant_id: str | None, limit: int = 5000) -> list[str]:
+    """SHA-256 allow indicators (global and the tenant's): files analysts confirmed are not malware."""
+    from .intel import _not_expired
+    from .models import Indicator
+
+    scope = or_(Indicator.tenant_id.is_(None), Indicator.tenant_id == tenant_id) if tenant_id else Indicator.tenant_id.is_(None)
+    rows = db.execute(select(Indicator.value).where(scope, Indicator.type == "sha256", Indicator.verdict == "allow", _not_expired())
+                      .order_by(Indicator.created_at.desc()).limit(limit)).scalars().all()
+    return sorted({r.lower() for r in rows})
 
 
 def botnet_ips(db: Session, tenant_id: str | None) -> list[str]:

@@ -1518,7 +1518,7 @@ TelemetryRecord BuildRealtimeProtectionTelemetry(const ScanFinding& finding, con
   payload += dispositionValue;
   payload += L"\",\"confidence\":";
   payload += std::to_wstring(finding.verdict.confidence);
-  payload += L"\",\"tacticId\":\"";
+  payload += L",\"tacticId\":\"";
   payload += finding.verdict.tacticId;
   payload += L"\",\"techniqueId\":\"";
   payload += techniqueId;

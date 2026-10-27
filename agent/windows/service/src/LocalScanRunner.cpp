@@ -57,7 +57,8 @@ void ApplyLocalRemediation(const AgentConfig& config, std::vector<ScanFinding>& 
   QuarantineStore quarantineStore(config.quarantineRootPath, config.runtimeDatabasePath);
   RemediationEngine remediationEngine(config);
   for (auto& finding : findings) {
-    if (finding.verdict.disposition == VerdictDisposition::Allow || finding.path.empty()) {
+    // Only quarantine-level verdicts are acted on; Block is a moderate score, reported for review.
+    if (finding.verdict.disposition != VerdictDisposition::Quarantine || finding.path.empty()) {
       continue;
     }
 

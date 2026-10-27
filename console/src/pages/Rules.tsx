@@ -42,6 +42,8 @@ export default function Rules() {
                            { key: "scope", label: "Scope", render: (r) => r.tenantId ? tenantName(r.tenantId) : r.builtin ? "Built-in" : "Global" },
                            { key: "mitre", label: "MITRE", render: (r) => r.mitre.filter((m: string) => m.startsWith("T")).join(", ") },
                            { key: "hits", label: "Hits", className: "right" },
+                           { key: "fp", label: "False positives", render: (r) => r.quality?.alerts ? <span title={r.quality.advice || ""}>
+                               <Pill value={`${r.quality.falsePositive}/${r.quality.alerts}`} tone={(r.quality.fpRate ?? 0) >= 0.5 ? "bad" : (r.quality.fpRate ?? 0) >= 0.2 ? "warn" : "muted"} /></span> : <span className="muted">—</span> },
                            { key: "enabled", label: "On", render: (r) => <input type="checkbox" checked={r.enabled} disabled={!can("configure")}
                                onClick={(e) => e.stopPropagation()}
                                onChange={async () => { await run(() => api(`rules/${r.id}`, { method: "PATCH", body: { enabled: !r.enabled } }), "Rule updated"); reload(); }} /> }]} />

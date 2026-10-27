@@ -257,14 +257,43 @@ def update_alert(alert_id: str, body: dict = Body(...), principal: Principal = D
         raise HTTPException(400, "invalid status")
     apply_fields(alert, body, {"status"})
     alert.updated_at = utcnow()
+    learned = None
+    if body.get("status") == "false_positive" and body.get("trust"):
+        # Learn from the analyst: this exact file (SHA-256) is not malware. The cloud stops alerting on it and the
+        # agents stop flagging it (it joins their policy's suppression list). Platform admins can trust it globally.
+        details = _with_evidence(alert, db=db)
+        sha256 = str(details.get("sha256") or next((((e.get("file") or {}).get("sha256")) for e in reversed(details.get("evidence") or [])
+                                                    if (e.get("file") or {}).get("sha256")), "") or "").lower()
+        if len(sha256) != 64:
+            raise HTTPException(400, "This alert has no file hash to trust; use the process exclusion instead")
+        scope = None if body.get("global") else alert.tenant_id
+        if scope is None:
+            principal.require("platform")
+        from ..models import Indicator
+
+        existing = db.execute(select(Indicator).where(Indicator.type == "sha256", func.lower(Indicator.value) == sha256,
+                                                      Indicator.verdict == "allow",
+                                                      Indicator.tenant_id.is_(None) if scope is None else Indicator.tenant_id == scope)).scalars().first()
+        if existing is None:
+            path = str(details.get("file") or "")
+            db.add(Indicator(tenant_id=scope, type="sha256", value=sha256, verdict="allow", category="false-positive",
+                             source=f"false positive: {principal.actor}", confidence=100,
+                             description=f"Marked not malware from alert {alert.id} ({alert.title}): {path}"[:2000]))
+        # Close the other open alerts about the same file in scope.
+        for other in db.execute(select(Alert).where(Alert.status.in_(("new", "triaged")), Alert.id != alert.id,
+                                                    *(() if scope is None else (Alert.tenant_id == scope,)))).scalars():
+            if str((other.details or {}).get("sha256") or "").lower() == sha256:
+                other.status, other.updated_at = "false_positive", utcnow()
+                other.details = {**(other.details or {}), "autoResolved": f"Closed: the file was marked trusted by {principal.actor}."}
+        learned = {"trustedSha256": sha256, "scope": "global" if scope is None else "tenant"}
     if body.get("status") == "false_positive" and body.get("suppress"):
         # Learn from the analyst: exclude this exact process image for this rule in this tenant.
         image = (alert.details or {}).get("process")
         if image:
             _add_rule_exclusion(db, alert.rule_id, alert.tenant_id, str(image), principal.actor)
-    audit.record(db, principal.actor, "alert.updated", alert.id, alert.tenant_id, status=alert.status)
+    audit.record(db, principal.actor, "alert.updated", alert.id, alert.tenant_id, status=alert.status, learned=learned)
     db.commit()
-    return to_dict(alert)
+    return {**to_dict(alert), "learned": learned}
 
 
 def _add_rule_exclusion(db: Session, rule_id: str, tenant_id: str, image: str, actor: str) -> None:
@@ -395,7 +424,45 @@ def list_rules(principal: Principal = Depends(current_principal), db: Session = 
     rows = db.execute(select(DetectionRule).where(DetectionRule.kind != "marker",
                                                   or_(DetectionRule.tenant_id.is_(None), DetectionRule.tenant_id.in_(principal.tenant_ids)))
                       .order_by(DetectionRule.title)).scalars().all()
-    return [to_dict(r) for r in rows]
+    quality = _rule_quality(db, principal)
+    return [{**to_dict(r), "quality": quality.get(r.id.split("--")[0])} for r in rows]
+
+
+def _rule_quality(db: Session, principal: Principal, days: int = 30) -> dict[str, dict]:
+    """Per base rule over the last 30 days: alerts raised, how analysts closed them, the false-positive rate, and
+    a recommendation when a rule is noisy. This is the feedback loop for tuning."""
+    since = utcnow() - timedelta(days=days)
+    rows = db.execute(select(Alert.rule_id, Alert.status, func.count()).where(
+        Alert.created_at >= since, Alert.tenant_id.in_(principal.tenant_ids)).group_by(Alert.rule_id, Alert.status)).all()
+    out: dict[str, dict] = {}
+    for rule_id, status, count in rows:
+        entry = out.setdefault(rule_id.split("--")[0], {"alerts": 0, "falsePositive": 0, "resolved": 0, "open": 0})
+        entry["alerts"] += count
+        if status == "false_positive":
+            entry["falsePositive"] += count
+        elif status == "resolved":
+            entry["resolved"] += count
+        else:
+            entry["open"] += count
+    for entry in out.values():
+        judged = entry["falsePositive"] + entry["resolved"]
+        entry["fpRate"] = round(entry["falsePositive"] / judged, 2) if judged else None
+        entry["advice"] = ("Noisy: most alerts are false positives. Add an exclusion, raise the threshold or lower its level."
+                           if judged >= 5 and entry["fpRate"] >= 0.5 else
+                           "High volume: check it is tuned for this environment." if entry["alerts"] >= 50 else None)
+    return out
+
+
+@router.post("/rules/retune")
+def retune(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Re-check open malware alerts against the current rules and close the ones they no longer raise."""
+    principal.require("platform")
+    from ..detection import retune_open_alerts
+
+    result = retune_open_alerts(db)
+    audit.record(db, principal.actor, "rules.retuned", f"{result['closed']} alerts closed", principal.user.tenant_id, **result)
+    db.commit()
+    return result
 
 
 @router.post("/rules/test")

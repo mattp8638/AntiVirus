@@ -34,24 +34,41 @@ detection:
   condition: 1 of them
 level: medium
 ---
-title: Remote desktop tunnelling tool
+title: Network tunnelling tool started
 id: fenrir-c2-tunnel
-tags: [attack.command_and_control, attack.t1572, attack.t1219]
+description: >-
+  A tool that exposes the device through a reverse tunnel (ngrok, chisel, frp). Rarely legitimate on office devices.
+  Remote-support and backup tools (AnyDesk, Atera, ScreenConnect, rclone, cloudflared, PuTTY plink) are recorded by
+  fenrir-c2-remote-tool instead, without an alert.
+tags: [attack.command_and_control, attack.t1572]
 logsource: {category: process_creation}
 detection:
   selection:
-    ProcessName|contains: ['ngrok', 'chisel', 'plink', 'frpc', 'cloudflared', 'rclone', 'anydesk', 'atera', 'screenconnect']
+    ProcessName|contains: ['ngrok', 'chisel', 'frpc']
   condition: selection
-falsepositives: [Approved remote support tooling - add an exclusion per tenant]
+falsepositives: [Developers sharing a local web server - add an exclusion per tenant]
 level: medium
 ---
-title: Script host or Office making outbound network connections
+title: Remote access or sync tool started (review)
+id: fenrir-c2-remote-tool
+description: >-
+  Remote-support, tunnelling or cloud-sync software that MSPs and admins use every day but attackers also abuse.
+  Recorded for hunting, not alerted.
+tags: [attack.command_and_control, attack.t1219]
+logsource: {category: process_creation}
+detection:
+  selection:
+    ProcessName|contains: ['plink', 'cloudflared', 'rclone', 'anydesk', 'atera', 'screenconnect']
+  condition: selection
+level: low
+---
+title: Script host making outbound network connections
 id: fenrir-c2-script-network
 tags: [attack.command_and_control, attack.t1071.001]
 logsource: {category: network_connection, product: windows}
 detection:
   selection:
-    Image|endswith: ['\wscript.exe', '\cscript.exe', '\mshta.exe', '\regsvr32.exe', '\rundll32.exe', '\winword.exe', '\excel.exe']
+    Image|endswith: ['\wscript.exe', '\cscript.exe', '\mshta.exe', '\regsvr32.exe']
   filter:
     DestinationIp|cidr: ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '127.0.0.0/8']
   condition: selection and not filter
@@ -67,15 +84,15 @@ detection:
   condition: selection
 level: low
 ---
-title: Agent malware verdict
+title: Agent malware verdict (other agents)
 id: fenrir-malware-verdict
-description: The endpoint engine blocked or quarantined malware. Promoted to an alert for triage and reporting.
-tags: [attack.execution, attack.t1204]
-logsource: {category: antivirus}
+description: >-
+  A malware verdict from an agent or integration that does not use Fenrir's scanner events (those are handled by
+  the antimalware rules, so one detection raises one alert). Only explicit "detected" verdicts: routine events such
+  as a file being quarantined, a website being blocked or signatures updating are not alerts.
+tags: []
 detection:
   selection:
-    EventType|contains: ['threat.', 'quarantine', 'malware', 'detection', 'blocked']
-  noise:
-    EventType|contains: ['quarantine.restored', 'quarantine.deleted', 'signatures.']
-  condition: selection and not noise
+    EventType: [threat.detected, malware.detected, detection.malware, antivirus.detection, defender.threat.detected]
+  condition: selection
 level: high

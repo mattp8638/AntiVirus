@@ -7,7 +7,9 @@ detection:
     Image|endswith: ['\powershell.exe', '\pwsh.exe']
   encoded:
     CommandLine|windash|contains: [' -enc ', ' -encodedcommand ', ' -ec ']
-  condition: image and encoded
+  management:  # Intune, SCCM and Fenrir itself run encoded scripts by design
+    ParentImage|endswith: ['\AgentExecutor.exe', '\Microsoft.Management.Services.IntuneWindowsAgent.exe', '\CcmExec.exe', '\fenrir-agent-service.exe']
+  condition: image and encoded and not management
 level: high
 ---
 title: PowerShell download cradle
@@ -31,7 +33,9 @@ detection:
     ParentImage|endswith: ['\winword.exe', '\excel.exe', '\powerpnt.exe', '\outlook.exe', '\msaccess.exe', '\mspub.exe', '\onenote.exe']
   child:
     Image|endswith: ['\cmd.exe', '\powershell.exe', '\pwsh.exe', '\wscript.exe', '\cscript.exe', '\mshta.exe', '\rundll32.exe', '\regsvr32.exe', '\certutil.exe', '\bitsadmin.exe']
-  condition: parent and child
+  benign:  # "Open with…", Control Panel and print dialogs Office opens through rundll32
+    CommandLine|contains: ['shell32.dll,OpenAs_RunDLL', 'shell32.dll,Control_RunDLL', 'shell32.dll,SHCreateLocalServerRunDll', 'printui.dll']
+  condition: parent and child and not benign
 level: high
 ---
 title: LOLBin used to download or execute remote content
@@ -65,7 +69,7 @@ detection:
   host:
     Image|endswith: ['\wscript.exe', '\cscript.exe']
   location:
-    CommandLine|contains: ['\AppData\Local\Temp\', '\Downloads\', '\Users\Public\', '\ProgramData\']
+    CommandLine|contains: ['\AppData\Local\Temp\', '\Downloads\', '\Users\Public\']
   condition: host and location
 level: medium
 ---
@@ -108,7 +112,8 @@ detection:
   selection:
     Image|startswith: ['/tmp/', '/dev/shm/', '/var/tmp/']
   condition: selection
-level: medium
+falsepositives: [Installers and build tools unpack and run helpers in /tmp]
+level: low
 ---
 title: AppleScript credential prompt
 id: fenrir-exec-macos-osascript-prompt

@@ -15,6 +15,7 @@ DestinationIp, QueryName ...) because that is what public Sigma rules expect.
 from __future__ import annotations
 
 import json
+import re
 import ntpath
 import posixpath
 from datetime import datetime, timezone
@@ -129,6 +130,19 @@ def _basename(path: str) -> str:
 SEVERITY_BY_SCORE = ((90, "critical"), (70, "high"), (45, "medium"), (20, "low"))
 
 
+# Windows agents before this fix wrote `"confidence":87","tacticId"` (a stray quote after a number) in real-time
+# protection events. Without the repair the whole payload, including the agent's allow/block verdict, is lost.
+_STRAY_QUOTE = re.compile(r'(":\s*-?\d+(?:\.\d+)?)"(?=\s*,\s*")')
+
+
+def _repair(text: str) -> dict:
+    try:
+        repaired = json.loads(_STRAY_QUOTE.sub(r"\1", text))
+        return repaired if isinstance(repaired, dict) else {"raw": text}
+    except json.JSONDecodeError:
+        return {"raw": text}
+
+
 def normalize(raw: dict, platform: str = "") -> dict:
     """Return ``{event_id, event_type, category, source, summary, occurred_at, severity, fields}``."""
     payload: Any = raw.get("payload")
@@ -136,7 +150,7 @@ def normalize(raw: dict, platform: str = "") -> dict:
         try:
             payload = json.loads(raw["payloadJson"])
         except json.JSONDecodeError:
-            payload = {"raw": raw["payloadJson"]}
+            payload = _repair(raw["payloadJson"])
     if not isinstance(payload, dict):
         payload = {} if payload is None else {"value": payload}
 

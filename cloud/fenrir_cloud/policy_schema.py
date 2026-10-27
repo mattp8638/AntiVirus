@@ -816,7 +816,8 @@ def managed_firewall_rules(settings: dict, botnet_ips: list[str] | None = None) 
     return rules
 
 
-def to_agent_policy(policy_id: str, name: str, settings: dict, botnet_ips: list[str] | None = None) -> dict:
+def to_agent_policy(policy_id: str, name: str, settings: dict, botnet_ips: list[str] | None = None,
+                    trusted_sha256: list[str] | None = None) -> dict:
     """Translate effective settings into the document agents parse.
 
     The top-level keys are exactly what the Windows service's
@@ -834,7 +835,8 @@ def to_agent_policy(policy_id: str, name: str, settings: dict, botnet_ips: list[
         "networkContainment": fw["networkContainment"],
         "quarantineOnMalicious": am["quarantineOnMalicious"],
         "suppressionPathRoots": am["exclusionPaths"],
-        "suppressionSha256": [value.lower() for value in am["exclusionSha256"]],
+        # Policy exclusions plus files analysts marked as false positives (allow indicators).
+        "suppressionSha256": sorted({value.lower() for value in [*am["exclusionSha256"], *(trusted_sha256 or [])]}),
         "suppressionSignerNames": am["exclusionSigners"],
     }
     for key in (
@@ -874,6 +876,8 @@ def to_agent_policy(policy_id: str, name: str, settings: dict, botnet_ips: list[
     if botnet_ips and settings.get("firewall", {}).get("botnetProtection"):
         # The block list changes without the settings changing: fold it into the revision so agents refresh.
         doc["revision"] = hashlib.sha256((doc["revision"] + "|" + ",".join(botnet_ips)).encode()).hexdigest()[:16]
+    if trusted_sha256:
+        doc["revision"] = hashlib.sha256((doc["revision"] + "|trusted|" + ",".join(sorted(trusted_sha256))).encode()).hexdigest()[:16]
     for key, plan_key in (("quickScanSchedule", "quickScanPlan"), ("fullScanSchedule", "fullScanPlan")):
         plan = parse_scan_schedule(str(am.get(key) or ""))
         if plan is not None:
