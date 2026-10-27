@@ -1,0 +1,56 @@
+key: essential-eight
+name: ACSC Essential Eight (Maturity Level One)
+short: Essential Eight
+version: "November 2023"
+description: The Australian Cyber Security Centre's eight mitigation strategies at Maturity Level One. Requirement wording is paraphrased.
+sections:
+  - id: PA
+    title: "Patch applications"
+    requirements:
+      - [ "E8-PA-1", "Asset discovery and vulnerability scanning", "Use automated asset discovery at least fortnightly and a vulnerability scanner at least daily for internet-facing services and weekly for office productivity suites, browsers, email clients, PDF software and security products.", [], ["essential-eight/E8-2"] ]
+      - [ "E8-PA-2", "Patch internet-facing services quickly", "Apply patches for internet-facing services within two weeks, or 48 hours if a working exploit exists." ]
+      - [ "E8-PA-3", "Patch common applications", "Apply patches for office suites, browsers, email clients, PDF software and security products within two weeks.", [], ["essential-eight/E8-2"] ]
+      - [ "E8-PA-4", "Remove unsupported applications", "Remove internet-facing services and common applications no longer supported by vendors." ]
+  - id: PO
+    title: "Patch operating systems"
+    requirements:
+      - [ "E8-PO-1", "Patch internet-facing OS quickly", "Apply OS patches for internet-facing services within two weeks, or 48 hours if an exploit exists.", [], ["essential-eight/E8-6"] ]
+      - [ "E8-PO-2", "Patch workstations, servers and network devices", "Apply OS patches within one month.", [], ["essential-eight/E8-6"] ]
+      - [ "E8-PO-3", "Supported operating systems only", "Replace operating systems no longer supported by vendors." ]
+  - id: MFA
+    title: "Multi-factor authentication"
+    requirements:
+      - [ "E8-MFA-1", "MFA for online services with sensitive data", "Use MFA for users of internet-facing services and third-party online services that process sensitive data." ]
+      - [ "E8-MFA-2", "MFA for other online services", "Use MFA for third-party online services that process non-sensitive data where available." ]
+      - [ "E8-MFA-3", "MFA factors", "Use something users have and something they know or are, or a phishing-resistant method." ]
+  - id: RAP
+    title: "Restrict administrative privileges"
+    requirements:
+      - [ "E8-RAP-1", "Validate privileged access requests", "Validate requests for privileged access when first requested.", [], ["essential-eight/E8-5"] ]
+      - [ "E8-RAP-2", "Privileged accounts cannot use the internet", "Prevent privileged accounts (except where explicitly authorised) from accessing the internet, email and web services." ]
+      - [ "E8-RAP-3", "Separate privileged environments", "Use separate privileged and unprivileged operating environments; unprivileged accounts cannot log on to privileged environments.", [], ["essential-eight/E8-5"] ]
+  - id: AC
+    title: "Application control"
+    requirements:
+      - [ "E8-AC-1", "Application control on workstations", "Implement application control on workstations.", [], ["essential-eight/E8-1"] ]
+      - [ "E8-AC-2", "Restrict user-writable locations", "Apply application control to user profiles and temporary folders used by the OS, browsers and email clients." ]
+      - [ "E8-AC-3", "Approved sets only", "Restrict execution of executables, libraries, scripts, installers, compiled HTML, HTA and control panel applets to an approved set." ]
+  - id: MAC
+    title: "Restrict Microsoft Office macros"
+    requirements:
+      - [ "E8-MAC-1", "Macros disabled for most users", "Disable macros for users without a demonstrated business need.", [], ["essential-eight/E8-3"] ]
+      - [ "E8-MAC-2", "Block macros from the internet", "Block macros in files originating from the internet." ]
+      - [ "E8-MAC-3", "Macro scanning and settings locked", "Enable antivirus scanning of macros and stop users changing macro security settings." ]
+  - id: UAH
+    title: "User application hardening"
+    requirements:
+      - [ "E8-UAH-1", "Browsers do not process Java", "Web browsers do not process Java from the internet." ]
+      - [ "E8-UAH-2", "Browsers do not process web ads", "Web browsers do not process web advertisements from the internet." ]
+      - [ "E8-UAH-3", "No Internet Explorer 11", "Internet Explorer 11 does not process content from the internet." ]
+      - [ "E8-UAH-4", "Settings cannot be changed", "Users cannot change browser security settings.", [], ["essential-eight/E8-4"] ]
+  - id: RB
+    title: "Regular backups"
+    requirements:
+      - [ "E8-RB-1", "Backups performed and retained", "Back up data, applications and settings in line with business continuity requirements, and keep them in a synchronised, secure and resilient way.", [], ["essential-eight/E8-8"] ]
+      - [ "E8-RB-2", "Restore tested", "Test restoration of systems, applications and data as part of disaster recovery exercises." ]
+      - [ "E8-RB-3", "Backups protected from users", "Unprivileged accounts cannot access, modify or delete backups other than their own." ]

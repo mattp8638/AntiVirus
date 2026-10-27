@@ -53,7 +53,7 @@ export default function Devices() {
         <Table rows={data} onRow={(r) => navigate(`/devices/${r.id}`)} empty="No devices match. Deploy the agent to get started."
                columns={[
                  { key: "sel", label: "", render: (r) => <input type="checkbox" disabled={r.retired} checked={selected.has(r.id)} onClick={(e) => e.stopPropagation()} onChange={() => toggle(r.id)} aria-label={`Select ${r.hostname}`} /> },
-                 { key: "hostname", label: "Device", render: (r) => <><span className={`dot ${r.online ? "on" : "off"}`} /> <b>{r.hostname}</b>{(r.role === "server" || r.role === "domain-controller") && <> <RoleBadge role={r.role} /></>}<div className="small muted">{r.osVersion}{r.workloads?.length ? ` · ${r.workloads.filter((w: string) => !["File sharing", "Print spooler", "Remote Desktop"].includes(w)).slice(0, 3).join(", ")}` : ""}</div></> },
+                 { key: "hostname", label: "Device", render: (r) => <><span className={`dot ${r.online ? "on" : "off"}`} /> <b>{r.hostname}</b>{(r.role === "server" || r.role === "domain-controller") && <> <RoleBadge role={r.role} /></>}<div className="small muted">{r.osVersion}{shownWorkloads(r).length ? ` · ${shownWorkloads(r).join(", ")}` : ""}</div></> },
                  { key: "tenantId", label: "Tenant", render: (r) => tenantName(r.tenantId) },
                  { key: "platform", label: "Platform" },
                  { key: "agentVersion", label: "Agent", render: (r) => r.agentVersion || "—" },
@@ -117,6 +117,8 @@ function BulkAction({ ids, onClose }: { ids: string[]; onClose: () => void }) {
     </Modal>
   );
 }
+
+const shownWorkloads = (r: any): string[] => (r.workloads || []).filter((w: string) => !["File sharing", "Print spooler", "Remote Desktop"].includes(w)).slice(0, 3);
 
 export function RoleBadge({ role }: { role?: string }) {
   if (role === "domain-controller") return <span title="Active Directory domain controller"><Pill value="Domain controller" tone="blue" /></span>;

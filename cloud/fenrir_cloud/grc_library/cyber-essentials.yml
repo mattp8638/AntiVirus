@@ -1,0 +1,106 @@
+key: cyber-essentials
+name: Cyber Essentials (IASME question set)
+short: Cyber Essentials
+version: "v3.2 (Willow)"
+questionSet: true
+description: >-
+  The UK government-backed certification. The self-assessment is a question set in sections A1-A8; every answer is
+  reviewed by an IASME certification body. Questions here follow the official sections and intent, paraphrased; use
+  "Import question set" to load the exact wording and numbering from the current IASME booklet, and Fenrir keeps
+  your answers, policies and evidence against each question.
+sections:
+  - id: A1
+    title: "A1 Your organisation"
+    requirements:
+      - {id: A1.1, title: "Organisation name", text: "The legal name of the organisation applying.", type: text}
+      - {id: A1.2, title: "Type of organisation", text: "Limited company, LLP, charity, public body, sole trader, partnership or other.", type: text}
+      - {id: A1.3, title: "Registration number", text: "Companies House or charity number, if registered.", type: text}
+      - {id: A1.4, title: "Registered address", text: "The organisation's registered address.", type: text}
+      - {id: A1.5, title: "Main business", text: "What the organisation mainly does.", type: text}
+      - {id: A1.6, title: "Website", text: "The organisation's website address.", type: text}
+      - {id: A1.7, title: "Number of employees", text: "How many people work for the organisation, including part-time staff.", type: text}
+      - {id: A1.8, title: "Point of contact", text: "Who is responsible for this application and for information security.", type: text}
+      - {id: A1.9, title: "Renewal or first application", text: "Is this a renewal of an existing certificate?", type: yesno}
+  - id: A2
+    title: "A2 Scope of assessment"
+    requirements:
+      - {id: A2.1, title: "Whole organisation in scope", text: "Does the assessment cover the whole organisation? If not, describe the sub-set and how it is segregated from the rest.", type: yesno, evidence: ["Scope statement", "Network diagram"]}
+      - {id: A2.2, title: "Scope description", text: "Describe the scope: business units, sites and services included.", type: text}
+      - {id: A2.3, title: "Locations", text: "Which offices and locations are in scope (including home workers)?", type: text}
+      - {id: A2.4, title: "End-user devices", text: "List laptops, desktops and thin clients in scope with their operating system and version (for example Windows 11 23H2, macOS 15).", type: text, evidence: ["Device inventory export"], auto: ["cis-v8-ig1/CIS-1"]}
+      - {id: A2.5, title: "Servers", text: "List servers, including virtual and cloud-hosted servers you manage, with operating systems.", type: text, evidence: ["Server inventory"]}
+      - {id: A2.6, title: "Mobile devices", text: "List tablets and mobile phones that access organisational data or services, with OS versions.", type: text}
+      - {id: A2.7, title: "Networks", text: "Describe the networks in scope (office, guest, home working) and how home workers connect.", type: text}
+      - {id: A2.8, title: "Network equipment", text: "List firewalls, routers and other boundary devices with make, model and firmware version.", type: text}
+      - {id: A2.9, title: "Cloud services", text: "List the cloud services you use (for example Microsoft 365, Google Workspace, Xero, AWS).", type: text}
+      - {id: A2.10, title: "Who manages your IT", text: "Is IT managed in-house, by a managed service provider, or both?", type: text}
+  - id: A3
+    title: "A3 Insurance"
+    requirements:
+      - {id: A3.1, title: "Eligibility for included cyber insurance", text: "Is the head office UK-based with annual turnover under £20 million (eligible for the included cyber liability insurance)?", type: yesno}
+      - {id: A3.2, title: "Opt in to cyber insurance", text: "Do you want the included cyber insurance if eligible?", type: yesno}
+      - {id: A3.3, title: "Gross annual revenue", text: "Total gross revenue, for the insurer.", type: text}
+      - {id: A3.4, title: "Insurance contact", text: "Email address for the insurance documents.", type: text}
+  - id: A4
+    title: "A4 Firewalls"
+    requirements:
+      - {id: A4.1, title: "Firewall protects every device", text: "Do you have firewalls at the boundaries of your networks, and a software firewall on every device used outside them?", type: yesno, evidence: ["Firewall model and configuration", "Endpoint firewall policy"], auto: ["cyber-essentials/CE-1"]}
+      - {id: A4.2, title: "Default firewall passwords changed", text: "Have the default administrator passwords on all firewalls and routers been changed to strong, unique ones?", type: yesno}
+      - {id: A4.3, title: "How the firewall password was changed", text: "Describe how the administrative password was changed and how it meets the password requirements.", type: text}
+      - {id: A4.4, title: "Compromised firewall password process", text: "Do you have a process to change the firewall password immediately if you think it is compromised?", type: yesno}
+      - {id: A4.5, title: "Inbound services open", text: "Do you have any services enabled that can be accessed from the internet through the firewall (open ports)?", type: yesno, evidence: ["Inbound rules export"]}
+      - {id: A4.6, title: "Justification for open services", text: "If yes, list each one and the business reason; each must be approved and documented.", type: text}
+      - {id: A4.7, title: "Unneeded rules removed", text: "Do you remove or disable firewall rules as soon as they are no longer needed?", type: yesno}
+      - {id: A4.8, title: "Remote administration of the firewall", text: "Is the firewall's admin interface blocked from the internet, or protected by MFA or an IP allow list?", type: yesno}
+      - {id: A4.9, title: "Software firewalls configured", text: "Are software firewalls enabled and configured on all desktops and laptops, blocking unapproved inbound connections?", type: yesno, auto: ["cyber-essentials/CE-1"]}
+  - id: A5
+    title: "A5 Secure configuration"
+    requirements:
+      - {id: A5.1, title: "Unnecessary software removed", text: "Have you removed or disabled software and services you do not need, on every device?", type: yesno, auto: ["cyber-essentials/CE-2"]}
+      - {id: A5.2, title: "Unnecessary accounts removed", text: "Have you removed or disabled user and guest accounts that are not needed?", type: yesno}
+      - {id: A5.3, title: "Default passwords changed", text: "Have you changed all default and guessable passwords on devices and software?", type: yesno}
+      - {id: A5.4, title: "Internet-facing services require authentication", text: "Do internet-accessible services that hold data or provide access (remote desktop, VPN, web apps) require users to authenticate?", type: yesno}
+      - {id: A5.5, title: "Password-based authentication protections", text: "Where passwords are used, which protection applies: MFA, throttling or lockout after 10 failed attempts, and a minimum length of 12 characters (or 8 with a deny list of common passwords)?", type: text, evidence: ["Password policy", "Lockout policy screenshot"]}
+      - {id: A5.6, title: "Guidance on passwords", text: "How do you help users create strong passwords (for example password managers, passphrases, no reuse)?", type: text}
+      - {id: A5.7, title: "Compromised password process", text: "Do you have a process to change passwords promptly when you believe they are compromised?", type: yesno}
+      - {id: A5.8, title: "Auto-run disabled", text: "Is auto-run (auto-play) disabled for removable media and network shares on all devices?", type: yesno}
+      - {id: A5.9, title: "Device unlocking", text: "Do users unlock devices with a password, PIN or biometric, protected against brute force (lockout or throttling)?", type: yesno}
+      - {id: A5.10, title: "Device unlocking settings", text: "Describe the unlock settings (for example PIN length, attempts before lockout).", type: text}
+  - id: A6
+    title: "A6 Security update management"
+    requirements:
+      - {id: A6.1, title: "Operating systems are supported", text: "Is every operating system and firmware in scope licensed and still supported by its vendor with security updates?", type: yesno, auto: ["cyber-essentials/CE-5"]}
+      - {id: A6.2, title: "Applications are supported", text: "Are all applications (browsers, office, email, malware protection, PDF readers, plug-ins) licensed and supported?", type: yesno}
+      - {id: A6.2.1, title: "Browsers", text: "List the web browsers in use and their versions.", type: text}
+      - {id: A6.2.2, title: "Malware protection software", text: "List the malware protection software in use and its version.", type: text}
+      - {id: A6.2.3, title: "Email applications", text: "List the email applications in use and their versions.", type: text}
+      - {id: A6.2.4, title: "Office applications", text: "List the office applications in use and their versions.", type: text}
+      - {id: A6.3, title: "Software licensed", text: "Is all software in scope properly licensed?", type: yesno}
+      - {id: A6.4, title: "OS and firmware updates within 14 days", text: "Are high-risk and critical security updates (CVSS 7+ or vendor 'critical'/'high') for operating systems and firmware installed within 14 days of release?", type: yesno, evidence: ["Patch compliance report"], auto: ["cyber-essentials/CE-5"]}
+      - {id: A6.4.1, title: "Automatic updates for operating systems", text: "Are automatic updates enabled for operating systems and firmware where possible?", type: yesno, auto: ["cyber-essentials/CE-5"]}
+      - {id: A6.5, title: "Application updates within 14 days", text: "Are high-risk and critical updates for applications installed within 14 days of release?", type: yesno, auto: ["cyber-essentials/CE-5"]}
+      - {id: A6.5.1, title: "Automatic updates for applications", text: "Are automatic updates enabled for applications where possible?", type: yesno}
+      - {id: A6.6, title: "Unsupported software removed", text: "Have you removed unsupported software from devices in scope, or moved it to a segregated sub-set excluded from scope?", type: yesno}
+  - id: A7
+    title: "A7 User access control"
+    requirements:
+      - {id: A7.1, title: "Account creation and approval", text: "Do you have a process to create and approve user accounts before access is granted?", type: yesno, evidence: ["Joiners/leavers procedure"]}
+      - {id: A7.2, title: "Unique accounts", text: "Does every user have their own account, with no shared logins?", type: yesno}
+      - {id: A7.3, title: "Leavers' accounts removed", text: "Do you remove or disable accounts when staff leave or no longer need them?", type: yesno}
+      - {id: A7.4, title: "Least privilege", text: "Do users only have the access to software, settings and data they need for their role?", type: yesno, auto: ["cyber-essentials/CE-3"]}
+      - {id: A7.5, title: "Separate administrator accounts", text: "Are administrative tasks done with separate admin accounts, used only for those tasks?", type: yesno, auto: ["cyber-essentials/CE-3"]}
+      - {id: A7.6, title: "Admin accounts not used for email or web", text: "Do you prevent admin accounts being used for email and web browsing?", type: yesno}
+      - {id: A7.7, title: "Admin accounts tracked", text: "How do you track and review who has administrative access?", type: text}
+      - {id: A7.8, title: "Software installation controlled", text: "How do you stop users installing software or changing settings without approval?", type: text}
+      - {id: A7.9, title: "Admin accounts reviewed and removed", text: "Do you regularly review admin accounts and remove or disable those no longer needed?", type: yesno}
+      - {id: A7.10, title: "Admin passwords", text: "Do admin accounts use strong passwords meeting the A5.5 requirements?", type: yesno}
+      - {id: A7.11, title: "MFA for cloud services (all users)", text: "Is multi-factor authentication enabled for every user on every cloud service that supports it?", type: yesno, evidence: ["Conditional Access / MFA report"]}
+      - {id: A7.12, title: "MFA for cloud administrators", text: "Is MFA enforced for all administrator accounts on cloud services?", type: yesno}
+  - id: A8
+    title: "A8 Malware protection"
+    requirements:
+      - {id: A8.1, title: "Malware protection on every device", text: "Is malware protection (anti-malware software or application allow-listing) installed and active on every in-scope device?", type: yesno, evidence: ["Fenrir protection status report"], auto: ["cyber-essentials/CE-4"]}
+      - {id: A8.2, title: "Kept up to date", text: "Is anti-malware software and its signature database updated in line with the vendor's recommendations (at least daily)?", type: yesno, auto: ["cyber-essentials/CE-4"]}
+      - {id: A8.3, title: "Scans on access and web pages", text: "Is it configured to scan files automatically when opened, accessed or downloaded, and to scan web pages?", type: yesno, auto: ["cyber-essentials/CE-4"]}
+      - {id: A8.4, title: "Blocks malicious websites", text: "Does it (or web filtering) prevent connections to known malicious websites?", type: yesno, auto: ["cyber-essentials/CE-4"]}
+      - {id: A8.5, title: "Application allow-listing", text: "Where allow-listing is used: are only approved, code-signed applications able to run, and do mobile devices install apps only from manufacturer app stores?", type: yesno}

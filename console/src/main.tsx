@@ -51,6 +51,8 @@ import Deploy from "./pages/Deploy";
 import { EnrollPhonePage } from "./pages/AddPhone";
 import Vault from "./pages/Vault";
 import ActiveDirectory from "./pages/ActiveDirectory";
+import { ProgrammeDetail } from "./pages/grc/Programmes";
+import { PolicyEditor as GrcPolicyEditor } from "./pages/grc/Policies";
 import ProtectionHealth from "./pages/ProtectionHealth";
 import Quarantine from "./pages/Quarantine";
 import Elevation from "./pages/Elevation";
@@ -111,7 +113,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string }[]
       { to: "/billing", label: "Agreements & billing", icon: "£" },
     ],
   },
-  { group: "MSP operations", items: [{to:"/m365",label:"Microsoft 365",icon:"▦"},{to:"/network",label:"Network monitoring",icon:"⌁"},{to:"/governance",label:"GRC & ISMS",icon:"✓"},{to:"/backup",label:"Backup & recovery",icon:"⟳"},{to:"/soc-workflows",label:"SOC maintenance",icon:"◷"}] },
+  { group: "MSP operations", items: [{to:"/m365",label:"Microsoft 365",icon:"▦"},{to:"/network",label:"Network monitoring",icon:"⌁"},{to:"/governance",label:"GRC & compliance",icon:"✓"},{to:"/backup",label:"Backup & recovery",icon:"⟳"},{to:"/soc-workflows",label:"SOC maintenance",icon:"◷"}] },
   { group: "Administration", items: [{ to: "/service-settings", label: "Service settings", icon: "⚙" }, { to: "/settings", label: "Settings", icon: "⚒" }] },
 ];
 
@@ -260,6 +262,8 @@ function Shell() {
             <Route path="/m365" element={<M365 />} />
             <Route path="/network" element={<Network />} />
             <Route path="/governance" element={<Governance />} />
+            <Route path="/governance/policies/:id" element={<GrcPolicyEditor />} />
+            <Route path="/governance/:tenantId/:framework" element={<ProgrammeDetail />} />
             <Route path="/backup" element={<Backup />} />
             <Route path="/soc-workflows" element={<SocWorkflows />} />
             <Route path="*" element={<Navigate to="/" replace />} />

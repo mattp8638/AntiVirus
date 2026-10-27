@@ -1,0 +1,107 @@
+key: cis-v8-ig1
+name: CIS Critical Security Controls v8 - Implementation Group 1
+short: CIS IG1
+version: "8.1"
+description: The 56 IG1 safeguards ("essential cyber hygiene"). Safeguard titles are from the CIS Controls (CC BY-SA 4.0, Center for Internet Security).
+sections:
+  - id: "1"
+    title: "1 Inventory and control of enterprise assets"
+    requirements:
+      - [ "1.1", "Establish and maintain a detailed enterprise asset inventory", "Keep an accurate inventory of all enterprise assets that store or process data, reviewed at least twice a year.", [], ["cis-v8-ig1/CIS-1"] ]
+      - [ "1.2", "Address unauthorized assets", "Remove, deny network access to or quarantine unauthorised assets, weekly." ]
+  - id: "2"
+    title: "2 Inventory and control of software assets"
+    requirements:
+      - [ "2.1", "Establish and maintain a software inventory", "Inventory all licensed software, reviewed twice a year." ]
+      - [ "2.2", "Ensure authorized software is currently supported", "Only supported software is designated authorised; document exceptions." ]
+      - [ "2.3", "Address unauthorized software", "Remove unauthorised software or document an exception, monthly.", [], ["cis-v8-ig1/CIS-2"] ]
+  - id: "3"
+    title: "3 Data protection"
+    requirements:
+      - [ "3.1", "Establish and maintain a data management process", "Document how data is handled: sensitivity, owners, retention and disposal." ]
+      - [ "3.2", "Establish and maintain a data inventory", "Inventory sensitive data, reviewed yearly." ]
+      - [ "3.3", "Configure data access control lists", "Restrict access to data by need to know." ]
+      - [ "3.4", "Enforce data retention", "Keep data according to the retention process." ]
+      - [ "3.5", "Securely dispose of data", "Dispose of data securely, appropriate to its sensitivity." ]
+      - [ "3.6", "Encrypt data on end-user devices", "Encrypt end-user devices that hold sensitive data (BitLocker, FileVault, dm-crypt)." ]
+  - id: "4"
+    title: "4 Secure configuration of enterprise assets and software"
+    requirements:
+      - [ "4.1", "Establish and maintain a secure configuration process", "Document secure baseline configurations for assets and software.", [], ["cis-v8-ig1/CIS-4"] ]
+      - [ "4.2", "Establish and maintain a secure configuration process for network infrastructure", "Document secure configurations for network devices." ]
+      - [ "4.3", "Configure automatic session locking on enterprise assets", "Lock sessions after inactivity (15 minutes for computers, 2 for mobile)." ]
+      - [ "4.4", "Implement and manage a firewall on servers", "Run a firewall on servers." ]
+      - [ "4.5", "Implement and manage a firewall on end-user devices", "Run a host firewall with default-deny inbound on end-user devices." ]
+      - [ "4.6", "Securely manage enterprise assets and software", "Manage assets through version-controlled infrastructure-as-code and secure protocols (SSH, HTTPS)." ]
+      - [ "4.7", "Manage default accounts on enterprise assets and software", "Disable default accounts or change their passwords." ]
+  - id: "5"
+    title: "5 Account management"
+    requirements:
+      - [ "5.1", "Establish and maintain an inventory of accounts", "Inventory all accounts, validated quarterly." ]
+      - [ "5.2", "Use unique passwords", "Use unique passwords: 8+ characters with MFA, 14+ without." ]
+      - [ "5.3", "Disable dormant accounts", "Delete or disable accounts inactive for 45 days." ]
+      - [ "5.4", "Restrict administrator privileges to dedicated administrator accounts", "Use separate admin accounts; do everyday work as a standard user.", [], ["cis-v8-ig1/CIS-5"] ]
+  - id: "6"
+    title: "6 Access control management"
+    requirements:
+      - [ "6.1", "Establish an access granting process", "Document how access is granted on hire or role change." ]
+      - [ "6.2", "Establish an access revoking process", "Revoke access promptly on termination or role change." ]
+      - [ "6.3", "Require MFA for externally-exposed applications", "Enforce MFA on internet-facing applications." ]
+      - [ "6.4", "Require MFA for remote network access", "Enforce MFA for VPN and remote access." ]
+      - [ "6.5", "Require MFA for administrative access", "Enforce MFA for all administrative access." ]
+  - id: "7"
+    title: "7 Continuous vulnerability management"
+    requirements:
+      - [ "7.1", "Establish and maintain a vulnerability management process", "Document how vulnerabilities are found and handled.", [], ["cis-v8-ig1/CIS-7"] ]
+      - [ "7.2", "Establish and maintain a remediation process", "Document remediation with risk-based prioritisation, reviewed monthly." ]
+      - [ "7.3", "Perform automated operating system patch management", "Patch operating systems automatically, at least monthly.", [], ["cis-v8-ig1/CIS-7"] ]
+      - [ "7.4", "Perform automated application patch management", "Patch applications automatically, at least monthly." ]
+  - id: "8"
+    title: "8 Audit log management"
+    requirements:
+      - [ "8.1", "Establish and maintain an audit log management process", "Define collection, review and retention of audit logs.", [], ["cis-v8-ig1/CIS-8"] ]
+      - [ "8.2", "Collect audit logs", "Collect audit logs on enterprise assets.", [], ["cis-v8-ig1/CIS-8"] ]
+      - [ "8.3", "Ensure adequate audit log storage", "Ensure logging destinations have enough storage." ]
+  - id: "9"
+    title: "9 Email and web browser protections"
+    requirements:
+      - [ "9.1", "Ensure use of only fully supported browsers and email clients", "Allow only current, supported browsers and email clients." ]
+      - [ "9.2", "Use DNS filtering services", "Block known malicious domains with DNS filtering.", [], ["cis-v8-ig1/CIS-9"] ]
+  - id: "10"
+    title: "10 Malware defenses"
+    requirements:
+      - [ "10.1", "Deploy and maintain anti-malware software", "Run anti-malware on all enterprise assets.", [], ["cis-v8-ig1/CIS-10"] ]
+      - [ "10.2", "Configure automatic anti-malware signature updates", "Update signatures automatically." ]
+      - [ "10.3", "Disable autorun and autoplay for removable media", "Turn off autorun and autoplay." ]
+  - id: "11"
+    title: "11 Data recovery"
+    requirements:
+      - [ "11.1", "Establish and maintain a data recovery process", "Document backup scope, priorities and recovery.", [], ["cis-v8-ig1/CIS-11"] ]
+      - [ "11.2", "Perform automated backups", "Back up in-scope assets automatically, weekly or more often." ]
+      - [ "11.3", "Protect recovery data", "Protect backups as you protect the original data (encryption, separation)." ]
+      - [ "11.4", "Establish and maintain an isolated instance of recovery data", "Keep an isolated (offline, cloud or off-site) copy of backups." ]
+  - id: "12"
+    title: "12 Network infrastructure management"
+    requirements:
+      - [ "12.1", "Ensure network infrastructure is up-to-date", "Run the latest stable, supported firmware on network devices, reviewed monthly." ]
+  - id: "14"
+    title: "14 Security awareness and skills training"
+    requirements:
+      - [ "14.1", "Establish and maintain a security awareness program", "Run an awareness programme, at hire and at least yearly." ]
+      - [ "14.2", "Train workforce members to recognize social engineering attacks", "Train staff to spot phishing, pretexting and tailgating." ]
+      - [ "14.3", "Train workforce members on authentication best practices", "Train on MFA, password composition and credential management." ]
+      - [ "14.4", "Train workforce on data handling best practices", "Train staff to identify, store, transfer, archive and destroy sensitive data." ]
+      - [ "14.5", "Train workforce members on causes of unintentional data exposure", "Train on mis-delivery, lost devices and unintended publication." ]
+      - [ "14.6", "Train workforce members on recognizing and reporting security incidents", "Train staff to recognise and report incidents." ]
+      - [ "14.7", "Train workforce on how to identify and report if their enterprise assets are missing security updates", "Train staff to report devices missing updates." ]
+      - [ "14.8", "Train workforce on the dangers of connecting to and transmitting enterprise data over insecure networks", "Train staff on insecure networks, including home networks." ]
+  - id: "15"
+    title: "15 Service provider management"
+    requirements:
+      - [ "15.1", "Establish and maintain an inventory of service providers", "Inventory service providers with classification and contacts." ]
+  - id: "17"
+    title: "17 Incident response management"
+    requirements:
+      - [ "17.1", "Designate personnel to manage incident handling", "Name a primary and backup incident handler.", [], ["cis-v8-ig1/CIS-17"] ]
+      - [ "17.2", "Establish and maintain contact information for reporting security incidents", "Keep contacts for law enforcement, insurers, regulators and vendors." ]
+      - [ "17.3", "Establish and maintain an enterprise process for reporting incidents", "Document how staff report incidents, to whom and how fast." ]

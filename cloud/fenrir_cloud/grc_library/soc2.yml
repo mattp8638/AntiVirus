@@ -1,0 +1,66 @@
+key: soc2
+name: SOC 2 (Trust Services Criteria - Security)
+short: SOC 2
+version: "2017 TSC (revised 2022)"
+description: The Common Criteria (CC1-CC9) every SOC 2 report covers. Criteria wording is paraphrased; the criteria are published by the AICPA.
+sections:
+  - id: CC1
+    title: "CC1 Control environment"
+    requirements:
+      - [ "CC1.1", "Integrity and ethical values", "Demonstrate commitment to integrity and ethical values (code of conduct, acknowledgement)." ]
+      - [ "CC1.2", "Board oversight", "The board is independent of management and oversees internal control." ]
+      - [ "CC1.3", "Structure, authority and responsibility", "Management establishes structures, reporting lines and responsibilities." ]
+      - [ "CC1.4", "Commitment to competence", "Attract, develop and retain competent people." ]
+      - [ "CC1.5", "Accountability", "Hold people accountable for their internal control responsibilities." ]
+  - id: CC2
+    title: "CC2 Communication and information"
+    requirements:
+      - [ "CC2.1", "Quality information", "Obtain or generate relevant, quality information to support internal control." ]
+      - [ "CC2.2", "Internal communication", "Communicate control objectives and responsibilities internally." ]
+      - [ "CC2.3", "External communication", "Communicate with external parties about matters affecting internal control." ]
+  - id: CC3
+    title: "CC3 Risk assessment"
+    requirements:
+      - [ "CC3.1", "Objectives", "Specify objectives clearly enough to identify and assess risks." ]
+      - [ "CC3.2", "Risk identification and analysis", "Identify and analyse risks to the achievement of objectives." ]
+      - [ "CC3.3", "Fraud risk", "Consider the potential for fraud when assessing risks." ]
+      - [ "CC3.4", "Changes that affect controls", "Identify and assess changes that could significantly affect internal control." ]
+  - id: CC4
+    title: "CC4 Monitoring activities"
+    requirements:
+      - [ "CC4.1", "Ongoing and separate evaluations", "Evaluate whether controls are present and functioning." ]
+      - [ "CC4.2", "Communicating deficiencies", "Evaluate and communicate control deficiencies in a timely way." ]
+  - id: CC5
+    title: "CC5 Control activities"
+    requirements:
+      - [ "CC5.1", "Control activities selected", "Select and develop control activities that mitigate risks." ]
+      - [ "CC5.2", "Technology general controls", "Select and develop general controls over technology." ]
+      - [ "CC5.3", "Policies and procedures", "Deploy control activities through policies and procedures." ]
+  - id: CC6
+    title: "CC6 Logical and physical access"
+    requirements:
+      - [ "CC6.1", "Logical access security", "Implement logical access security software, infrastructure and architecture over protected assets.", [], ["iso-27001/A.8.2"] ]
+      - [ "CC6.2", "User registration and authorisation", "Register and authorise users before granting access; remove access when no longer needed." ]
+      - [ "CC6.3", "Role-based access", "Authorise, modify or remove access based on roles and least privilege." ]
+      - [ "CC6.4", "Physical access", "Restrict physical access to facilities and protected assets." ]
+      - [ "CC6.5", "Asset disposal", "Discontinue logical and physical protections only after data is removed from disposed assets." ]
+      - [ "CC6.6", "External threats", "Implement controls against threats from outside the system boundary.", [], ["iso-27001/A.8.20"] ]
+      - [ "CC6.7", "Data transmission and movement", "Restrict and protect the transmission and movement of information.", [], ["iso-27001/A.8.12"] ]
+      - [ "CC6.8", "Malicious software", "Prevent or detect and act on unauthorised or malicious software.", [], ["iso-27001/A.8.7"] ]
+  - id: CC7
+    title: "CC7 System operations"
+    requirements:
+      - [ "CC7.1", "Vulnerability and configuration monitoring", "Detect configuration changes and newly discovered vulnerabilities.", [], ["iso-27001/A.8.8"] ]
+      - [ "CC7.2", "Anomaly monitoring", "Monitor components for anomalies indicating malicious acts or errors.", [], ["iso-27001/A.8.16"] ]
+      - [ "CC7.3", "Security event evaluation", "Evaluate security events to decide whether they are incidents." ]
+      - [ "CC7.4", "Incident response", "Respond to identified incidents with a defined programme." ]
+      - [ "CC7.5", "Incident recovery", "Identify, develop and implement activities to recover from incidents." ]
+  - id: CC8
+    title: "CC8 Change management"
+    requirements:
+      - [ "CC8.1", "Change management", "Authorise, design, develop, configure, document, test, approve and implement changes." ]
+  - id: CC9
+    title: "CC9 Risk mitigation"
+    requirements:
+      - [ "CC9.1", "Business disruption", "Identify and develop risk mitigation for business disruption." ]
+      - [ "CC9.2", "Vendor and partner risk", "Assess and manage risks associated with vendors and business partners." ]

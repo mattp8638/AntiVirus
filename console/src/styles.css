@@ -316,6 +316,18 @@ button.warn { background: rgba(245,158,11,.12); border-color: rgba(245,158,11,.4
 .fix { background: #0b1222; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
 .risk-bar { height: 8px; border-radius: 999px; background: #1a2540; overflow: hidden; margin-top: 6px; }
 .risk-bar > span { display: block; height: 100%; background: linear-gradient(90deg, var(--green), var(--amber) 55%, var(--red)); }
-.domain-card { color: inherit; font: inherit; width: 100%; }
+.domain-card { color: inherit; font: inherit; width: 100%; display: block; }
 .domain-card.active { border-color: var(--accent, #38bdf8); box-shadow: 0 0 0 1px var(--accent, #38bdf8) inset; }
 button.link { background: none; border: none; padding: 0; color: var(--accent, #38bdf8); cursor: pointer; text-decoration: underline; font: inherit; }
+.markdown h2 { margin: 0 0 10px; } .markdown h3 { margin: 18px 0 8px; } .markdown h4 { margin: 14px 0 6px; }
+.markdown p, .markdown li { line-height: 1.55; }
+.md-table { border-collapse: collapse; margin: 8px 0; width: 100%; }
+.md-table th, .md-table td { border: 1px solid var(--line-2); padding: 6px 8px; text-align: left; vertical-align: top; }
+.progress-bar { height: 8px; border-radius: 999px; background: #15203a; overflow: hidden; }
+.progress-bar > span { display: block; height: 100%; background: linear-gradient(90deg, #22c55e, #4ade80); }
+.req-row { display: flex; gap: 10px; align-items: center; padding: 8px 6px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.req-row:hover { background: rgba(56, 189, 248, .05); }
+.req-signals { display: flex; gap: 6px; font-size: 12px; }
+.req-signals span { padding: 1px 6px; border-radius: 6px; background: #15203a; }
+.req-signals .ok { color: #4ade80; } .req-signals .bad { color: #fca5a5; }
+.policy-editor { width: 100%; min-height: 520px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }

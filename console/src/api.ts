@@ -108,3 +108,41 @@ export function ago(value?: string | null): string {
 export function money(value: number, currency = "GBP"): string {
   return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(value || 0);
 }
+
+/** Upload a file as the raw request body (the server reads metadata from the query string). */
+export async function uploadFile<T = any>(path: string, file: Blob, query: Record<string, unknown> = {}): Promise<T> {
+  const url = new URL(`/api/console/${path}`, window.location.origin);
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, String(value));
+  }
+  const headers: Record<string, string> = { "Content-Type": file.type || "application/octet-stream" };
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const response = await fetch(url.toString(), { method: "POST", headers, body: file });
+  const text = await response.text();
+  const data = text ? safeJson(text) : null;
+  if (!response.ok) {
+    const detail = data && typeof data === "object" && "detail" in data ? (data as any).detail : text;
+    throw new ApiError(response.status, typeof detail === "string" ? detail : JSON.stringify(detail));
+  }
+  return data as T;
+}
+
+/** Download an authenticated file and save it with the server's (or the given) file name. */
+export async function downloadFile(path: string, fallbackName = "download") {
+  const headers: Record<string, string> = {};
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const response = await fetch(new URL(`/api/console/${path}`, window.location.origin).toString(), { headers });
+  if (!response.ok) throw new ApiError(response.status, (await response.text()) || "Download failed");
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const name = /filename="?([^";]+)"?/.exec(disposition)?.[1] || fallbackName;
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
