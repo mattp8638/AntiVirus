@@ -20,13 +20,14 @@ import httpx
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from . import vulnmgmt
+from . import audit, vulnmgmt
 
 from .models import CveRecord, Device, ExternalAsset, SoftwareItem, Vulnerability, utcnow
 
 log = logging.getLogger("fenrir.exposure")
 
 OSV_BATCH_URL = "https://api.osv.dev/v1/querybatch"
+OSV_QUERY_URL = "https://api.osv.dev/v1/query"
 OSV_VULN_URL = "https://api.osv.dev/v1/vulns/{id}"
 KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 
@@ -151,38 +152,117 @@ def _fixed_version(vuln: dict, package: str) -> str:
     return ""
 
 
+class OsvError(Exception):
+    """OSV did not give a complete, well-formed answer."""
+
+
+def _osv_json(response: httpx.Response, what: str) -> dict:
+    if response.status_code != 200:
+        raise OsvError(f"{what}: HTTP {response.status_code}")
+    try:
+        data = response.json()
+    except ValueError:
+        raise OsvError(f"{what}: response is not JSON")
+    if not isinstance(data, dict):
+        raise OsvError(f"{what}: unexpected response shape")
+    if "error" in data or "code" in data and "results" not in data and "vulns" not in data:
+        raise OsvError(f"{what}: OSV returned an error ({str(data.get('message') or data.get('error'))[:120]})")
+    return data
+
+
+def _osv_hits(client: httpx.Client, items: list[SoftwareItem]) -> list[list[dict]]:
+    """Vulnerability hits per item, in order. Raises OsvError unless every item got a complete answer
+    (right number of results, every page followed)."""
+    body = {"queries": [{"package": {"name": i.name, "ecosystem": i.ecosystem}, "version": i.version} for i in items]}
+    data = _osv_json(client.post(OSV_BATCH_URL, json=body), "OSV batch query")
+    results = data.get("results")
+    if not isinstance(results, list) or len(results) != len(items):
+        raise OsvError(f"OSV batch query: expected {len(items)} results, got {len(results) if isinstance(results, list) else 'none'}")
+    out = []
+    for item, result in zip(items, results):
+        if not isinstance(result, dict):
+            raise OsvError("OSV batch query: malformed result")
+        hits = result.get("vulns") or []
+        if not isinstance(hits, list):
+            raise OsvError("OSV batch query: malformed vulnerability list")
+        token, pages = result.get("next_page_token"), 0
+        while token:  # more results than one page: follow them all, or the item is not fully assessed
+            pages += 1
+            if pages > 50:
+                raise OsvError(f"OSV query for {item.name}: too many pages")
+            page = _osv_json(client.post(OSV_QUERY_URL, json={"package": {"name": item.name, "ecosystem": item.ecosystem},
+                                                              "version": item.version, "page_token": token}), f"OSV query for {item.name}")
+            more = page.get("vulns") or []
+            if not isinstance(more, list):
+                raise OsvError(f"OSV query for {item.name}: malformed vulnerability list")
+            hits = hits + more
+            token = page.get("next_page_token")
+        out.append([h for h in hits if isinstance(h, dict)])
+    return out
+
+
 def scan_device(db: Session, device: Device, client: httpx.Client | None = None, max_details: int = 200) -> dict:
-    """Match a device's packages against OSV. Returns counts."""
+    """Match a device's packages against OSV and record the run (VulnScan). Returns counts.
+
+    Findings are only verified fixed for packages OSV fully answered for. A failed, truncated or malformed response
+    leaves every existing finding as it was and marks the scan partial or failed."""
+    from .models import VulnScan
+
     items = db.execute(select(SoftwareItem).where(SoftwareItem.device_id == device.id)).scalars().all()
     queryable = [item for item in items
                  if item.version and (":" in item.ecosystem or item.ecosystem in {"PyPI", "npm", "Go", "Maven", "NuGet"})]
     if not queryable:
-        return {"device": device.id, "queried": 0, "found": 0, "note": "No packages in an OSV-supported ecosystem."}
+        return {"device": device.id, "queried": 0, "found": 0, "status": "nothing-to-assess",
+                "note": "No packages in an OSV-supported ecosystem."}
     own_client = client is None
     client = client or httpx.Client(timeout=30)
     scan_started = utcnow()
+    scan = VulnScan(tenant_id=device.tenant_id, device_id=device.id, source="osv", started_at=scan_started,
+                    packages_total=len(queryable))
+    db.add(scan)
+    errors: list[str] = []
+    warnings: list[str] = []
+    assessed: set[str] = set()
+    uncertain: set[str] = set()
     try:
         found = 0
-        details_fetched = 0
+        details_fetched = details_failed = 0
         kev = known_exploited(client)
+        if not kev:
+            warnings.append("CISA KEV catalogue unavailable: known-exploited flags come only from stored CVE records")
         for start in range(0, len(queryable), 500):
             chunk = queryable[start:start + 500]
-            body = {"queries": [{"package": {"name": i.name, "ecosystem": i.ecosystem}, "version": i.version} for i in chunk]}
-            results = client.post(OSV_BATCH_URL, json=body).json().get("results", [])
-            for item, result in zip(chunk, results):
-                for hit in result.get("vulns") or []:
+            try:
+                chunk_hits = _osv_hits(client, chunk)
+            except (OsvError, httpx.HTTPError) as exc:
+                errors.append(f"packages {start + 1}-{start + len(chunk)}: {exc}"[:300])
+                continue
+            for item, hits in zip(chunk, chunk_hits):
+                assessed.add(item.name)
+                for hit in hits:
                     vuln_id = hit.get("id")
                     if not vuln_id:
                         continue
                     detail: dict = {}
                     if details_fetched < max_details:
                         try:
-                            detail = client.get(OSV_VULN_URL.format(id=vuln_id)).json()
+                            response = client.get(OSV_VULN_URL.format(id=vuln_id))
+                            detail = response.json() if response.status_code == 200 else {}
+                            if response.status_code != 200 or not isinstance(detail, dict):
+                                detail, details_failed = {}, details_failed + 1
                             details_fetched += 1
                         except (httpx.HTTPError, ValueError):
-                            detail = {}
+                            detail, details_failed = {}, details_failed + 1
                     aliases = set(detail.get("aliases") or []) | {vuln_id}
-                    cve = next((a for a in sorted(aliases) if a.startswith("CVE-")), vuln_id)
+                    cve = next((a for a in sorted(aliases) if a.startswith("CVE-")), None)
+                    if cve is None and not detail:
+                        # Without the advisory we cannot map it to its CVE: reuse the finding an earlier scan made from
+                        # this advisory, and never verify this package's other findings on this run.
+                        uncertain.add(item.name)
+                        cve = next((v.vuln_id for v in db.execute(select(Vulnerability).where(
+                            Vulnerability.device_id == device.id, Vulnerability.package == item.name)).scalars()
+                            if (v.evidence or {}).get("advisory") == vuln_id), vuln_id)
+                    cve = cve or vuln_id
                     severity, score = _severity_from_osv(detail)
                     exploited = bool(aliases & kev) or bool(db.execute(select(CveRecord.cve_id).where(
                         CveRecord.cve_id.in_([a for a in aliases if a.startswith("CVE-")]), CveRecord.kev.is_(True))).first())
@@ -198,7 +278,8 @@ def scan_device(db: Session, device: Device, client: httpx.Client | None = None,
                         db.add(row)
                         found += 1
                     row.installed_version = item.version
-                    row.fixed_version = _fixed_version(detail, item.name)
+                    if detail or not row.fixed_version:
+                        row.fixed_version = _fixed_version(detail, item.name)
                     row.evidence = {"kind": "package", "program": item.name, "version": item.version, "ecosystem": item.ecosystem,
                                     "publisher": item.vendor or "", "installLocation": item.install_location or "",
                                     "advisory": vuln_id, "detectedBy": "OSV.dev package and version match",
@@ -207,8 +288,13 @@ def scan_device(db: Session, device: Device, client: httpx.Client | None = None,
                                "title": (f"Upgrade {item.name} to {row.fixed_version} or later" if row.fixed_version
                                          else f"No fixed version of {item.name} is published yet"),
                                "url": f"https://osv.dev/vulnerability/{vuln_id}"}
-                    row.severity, row.cvss, row.known_exploited = severity, score, exploited
-                    row.summary = str(detail.get("summary") or detail.get("details") or "")[:2000]
+                    if detail or row.severity is None:  # a failed detail lookup must not downgrade what we knew
+                        row.severity, row.cvss = severity, score
+                    row.known_exploited = exploited or bool(row.known_exploited)
+                    if row.known_exploited:
+                        row.severity = "critical"
+                    if detail:
+                        row.summary = str(detail.get("summary") or detail.get("details") or "")[:2000]
                     row.last_seen = utcnow()
                     reopened = row.status == "fixed"
                     if reopened:
@@ -216,12 +302,22 @@ def scan_device(db: Session, device: Device, client: httpx.Client | None = None,
                     if is_new or reopened:
                         db.flush()
                         vulnmgmt.record_detection(db, row, reopened)
-        # Every query completed: whatever was not seen again is verified as fixed.
-        verified = vulnmgmt.verify_after_scan(db, device, scan_started)
+        if details_failed:
+            warnings.append(f"{details_failed} advisory detail lookup(s) failed: severity and fix kept from earlier scans")
+        # Only what OSV fully answered for can be verified fixed.
+        verified = vulnmgmt.verify_after_scan(db, device, scan_started, assessed=assessed - uncertain)
+        status = "failed" if not assessed else "partial" if errors or len(assessed) < len(queryable) else "complete"
+        scan.status, scan.finished_at = status, utcnow()
+        scan.packages_assessed, scan.findings, scan.verified_fixed = len(assessed), found, verified
+        scan.errors, scan.warnings = errors[:50], warnings[:50]
+        if status != "complete":
+            audit.record(db, "system:scan", f"vulnerability.scan_{status}", device.hostname, device.tenant_id,
+                         assessed=len(assessed), total=len(queryable), errors=errors[:5])
         from .detection import refresh_risk_scores
 
         refresh_risk_scores(db, [device.id])
-        return {"device": device.id, "queried": len(queryable), "found": found, "verifiedFixed": verified}
+        return {"device": device.id, "scanId": scan.id, "status": status, "queried": len(queryable), "assessed": len(assessed),
+                "found": found, "verifiedFixed": verified, "errors": errors, "warnings": warnings}
     finally:
         if own_client:
             client.close()

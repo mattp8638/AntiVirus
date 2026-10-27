@@ -11,7 +11,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import audit, crypto, deployment_installers, policy_schema, ratelimit
+from .. import sessions, audit, crypto, deployment_installers, policy_schema, ratelimit
 from ..config import get_settings
 from ..db import get_db
 from ..deps import REAUTH_MINUTES, Principal, current_principal, require_reauth, scoped_tenant
@@ -59,11 +59,65 @@ def login(request: Request, body: dict = Body(...), db: Session = Depends(get_db
         raise HTTPException(401, "Email or password is incorrect")
     _check_mfa(user, body.get("code"))
     user.last_login_at = utcnow()
-    audit.record(db, user.email, "auth.login", user.id, user.tenant_id)
+    token, session = sessions.create(db, user, _client_ip(request), request.headers.get("user-agent", ""))
+    audit.record(db, user.email, "auth.login", user.id, user.tenant_id, session=session.id[-8:])
     db.commit()
-    settings = get_settings()
-    token = issue_token(settings.secret_key, user.id, settings.token_ttl_minutes, role=user.role, jti=new_secret("session"))
     return {"token": token, "user": to_dict(user)}
+
+
+@router.post("/auth/logout")
+def logout(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    sessions.revoke(db, principal.session_id, "logout")
+    audit.record(db, principal.actor, "auth.logout", principal.user.id, principal.user.tenant_id)
+    db.commit()
+    return {"ok": True}
+
+
+def _session_view(row, current: str | None) -> dict:
+    return {"id": row.id[-12:], "current": row.id == current, "createdAt": row.created_at.isoformat() + "Z",
+            "lastSeenAt": row.last_seen_at.isoformat() + "Z", "expiresAt": row.expires_at.isoformat() + "Z",
+            "ip": row.ip, "userAgent": row.user_agent}
+
+
+@router.get("/auth/sessions")
+def my_sessions(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    return [_session_view(r, principal.session_id) for r in sessions.list_for(db, principal.user.id)]
+
+
+@router.delete("/auth/sessions/{short_id}")
+def end_my_session(short_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    match = next((r for r in sessions.list_for(db, principal.user.id) if r.id.endswith(short_id) and len(short_id) >= 8), None)
+    if match is None:
+        raise HTTPException(404, "Not found")
+    sessions.revoke(db, match.id, "revoked by user")
+    audit.record(db, principal.actor, "auth.session_revoked", principal.user.id, principal.user.tenant_id)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/auth/sessions/revoke-others")
+def end_other_sessions(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    count = sessions.revoke_user(db, principal.user.id, "revoked by user", keep=principal.session_id)
+    audit.record(db, principal.actor, "auth.sessions_revoked", principal.user.id, principal.user.tenant_id, count=count)
+    db.commit()
+    return {"revoked": count}
+
+
+@router.post("/users/{user_id}/sessions/revoke")
+def revoke_user_sessions(user_id: str, request: Request, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Sign a user out everywhere (lost laptop, suspected compromise)."""
+    principal.require("configure")
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(404, "Not found")
+    principal.check_tenant(user.tenant_id)
+    if user.role == "platform_admin" and not principal.can("platform"):
+        raise HTTPException(403, "Only platform admins can sign out a platform admin")
+    require_reauth(request, principal)
+    count = sessions.revoke_user(db, user.id, f"revoked by {principal.actor}")
+    audit.record(db, principal.actor, "auth.sessions_revoked", user.email, user.tenant_id, count=count)
+    db.commit()
+    return {"revoked": count}
 
 
 @router.get("/auth/me")
@@ -76,7 +130,7 @@ def me(principal: Principal = Depends(current_principal), db: Session = Depends(
 
 
 @router.post("/auth/password")
-def change_password(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+def change_password(request: Request, body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     ratelimit.check(f"password:{principal.user.id}", 10, 300)
     if not verify_password(str(body.get("currentPassword") or ""), principal.user.password_hash):
         raise HTTPException(400, "Current password is incorrect")
@@ -85,9 +139,12 @@ def change_password(body: dict = Body(...), principal: Principal = Depends(curre
         raise HTTPException(400, "Use at least 12 characters")
     user = db.get(User, principal.user.id)
     user.password_hash = hash_password(new)
-    audit.record(db, principal.actor, "auth.password_changed", user.id, user.tenant_id)
+    # Every session, this one included, signed in with the old password: end them all and hand this client a new one.
+    revoked = sessions.revoke_user(db, user.id, "password changed")
+    token, _ = sessions.create(db, user, _client_ip(request), request.headers.get("user-agent", ""))
+    audit.record(db, principal.actor, "auth.password_changed", user.id, user.tenant_id, sessionsRevoked=revoked)
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "token": token, "sessionsRevoked": revoked}
 
 
 @router.post("/auth/reauth")
@@ -130,7 +187,8 @@ def mfa_enable(body: dict = Body(...), principal: Principal = Depends(current_pr
     if not verify_totp(secret, str(body.get("code") or "")):
         raise HTTPException(400, "That code is not correct. Check the time on your phone and try again.")
     user.mfa_enabled = True
-    audit.record(db, principal.actor, "auth.mfa_enabled", user.id, user.tenant_id)
+    revoked = sessions.revoke_user(db, user.id, "MFA enabled", keep=principal.session_id)  # older sign-ins had no second factor
+    audit.record(db, principal.actor, "auth.mfa_enabled", user.id, user.tenant_id, sessionsRevoked=revoked)
     db.commit()
     return {"mfaEnabled": True}
 
@@ -143,7 +201,8 @@ def mfa_disable(body: dict = Body(...), principal: Principal = Depends(current_p
         raise HTTPException(401, "Password is incorrect")
     _check_mfa(user, body.get("code"))
     user.mfa_enabled, user.mfa_secret = False, None
-    audit.record(db, principal.actor, "auth.mfa_disabled", user.id, user.tenant_id)
+    revoked = sessions.revoke_user(db, user.id, "MFA disabled", keep=principal.session_id)
+    audit.record(db, principal.actor, "auth.mfa_disabled", user.id, user.tenant_id, sessionsRevoked=revoked)
     db.commit()
     return {"mfaEnabled": False}
 
@@ -160,7 +219,8 @@ def mfa_reset(user_id: str, request: Request, principal: Principal = Depends(cur
     if user.role == "platform_admin" and not principal.can("platform"):
         raise HTTPException(403, "Only platform admins can reset platform admin MFA")
     user.mfa_enabled, user.mfa_secret = False, None
-    audit.record(db, principal.actor, "auth.mfa_reset", user.id, user.tenant_id, user=user.email)
+    revoked = sessions.revoke_user(db, user.id, f"MFA reset by {principal.actor}")
+    audit.record(db, principal.actor, "auth.mfa_reset", user.id, user.tenant_id, user=user.email, sessionsRevoked=revoked)
     db.commit()
     return {"mfaEnabled": False}
 
@@ -322,6 +382,8 @@ def update_user(user_id: str, body: dict = Body(...), principal: Principal = Dep
             raise HTTPException(400, "Use at least 12 characters")
         user.password_hash = hash_password(body["password"])
         changed.append("password")
+    if "password" in changed or ("active" in changed and not user.active) or "role" in changed:
+        sessions.revoke_user(db, user.id, "account changed by " + principal.actor)
     audit.record(db, principal.actor, "user.updated", user.email, user.tenant_id, fields=changed)
     db.commit()
     return to_dict(user)

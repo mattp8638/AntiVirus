@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { api } from "../api";
+import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
 import { Pill, Sev, Table, useAction } from "../components/ui";
 import { EpssPill, FixBlock, IntelCard, RiskBadge, RiskBreakdown, VulnEvidence } from "../components/Vuln";
@@ -8,7 +8,7 @@ const SOURCE_LABEL: Record<string, string> = { "windows-update": "Missing Window
 
 // A device's vulnerabilities, worst first: what's affected (missing KB or program and where it's installed),
 // the CVE facts, and the fix with Install when the device already offers it.
-export function DeviceVulns({ device, vulnerabilities, risk, onChanged }: { device: any; vulnerabilities: any[]; risk: any; onChanged: () => void }) {
+export function DeviceVulns({ device, vulnerabilities, risk, scans, onChanged }: { device: any; vulnerabilities: any[]; risk: any; scans?: any[]; onChanged: () => void }) {
   const { can } = useApp();
   const { run, busy } = useAction();
   const [show, setShow] = useState("open");
@@ -34,6 +34,11 @@ export function DeviceVulns({ device, vulnerabilities, risk, onChanged }: { devi
             {can("respond") && <button disabled={busy} onClick={() => run(() => api("vulnerabilities/scan", { body: { deviceId: device.id } }), "Vulnerability scan queued")}>Scan programs now</button>}
             {can("respond") && device.platform === "windows" && <button disabled={busy} onClick={() => run(() => api(`devices/${device.id}/commands`, { body: { type: "patch.scan", reason: "Patch scan from Vulnerabilities" } }), "Patch scan queued")}>Check Windows updates</button>}
           </div>
+          {(scans || []).filter((s) => s.status !== "complete").map((s) => (
+            <div key={s.id} className="small" style={{ marginBottom: 8, color: s.status === "failed" ? "#fca5a5" : "#fcd34d" }}>
+              Last {SOURCE_LABEL[s.source] || s.source} scan was <b>{s.status}</b> ({s.packagesAssessed} of {s.packagesTotal} packages assessed, {fmtTime(s.startedAt)}).
+              Findings outside what was assessed are kept as they were, not marked fixed.{s.errors?.length ? ` ${s.errors[0]}` : ""}
+            </div>))}
           <Table rows={rows} onRow={(v) => setExpanded(expanded === v.id ? null : v.id)} empty={show === "open" ? "No open vulnerabilities on this device." : "Nothing here."}
                  columns={[{ key: "riskScore", label: "Risk", render: (v) => <RiskBadge score={v.riskScore} /> },
                            { key: "vulnId", label: "Vulnerability", render: (v) => <><b className="mono">{v.vulnId}</b> {v.knownExploited && <Pill value="exploited in the wild" tone="bad" />} <EpssPill epss={v.epss} />

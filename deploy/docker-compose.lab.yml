@@ -1,0 +1,15 @@
+# Lab / CI profile: builds unsigned Windows agents without any private signing material.
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.lab.yml --env-file deploy/.env up -d --build
+# The image records mode "unsigned-lab"; the server still refuses to hand out unsigned Windows installers unless
+# FENRIR_ALLOW_UNSIGNED_WINDOWS_INSTALLERS=true and FENRIR_WINDOWS_SETUP_SHA256 are set. Never use for customers.
+services:
+  cloud:
+    build:
+      args:
+        FENRIR_BUILD_PROFILE: lab
+
+secrets:
+  codesign_pfx:
+    file: ./lab/no-certificate
+  codesign_password:
+    file: ./lab/no-certificate

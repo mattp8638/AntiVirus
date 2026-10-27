@@ -43,6 +43,17 @@ def _device_view(device: Device, summary: bool = False) -> dict:
     return data
 
 
+def _latest_scans(db: Session, device: Device) -> list[dict]:
+    """The most recent assessment per source, so a failed or partial scan is visible next to its findings."""
+    from ..models import VulnScan
+
+    rows = db.execute(select(VulnScan).where(VulnScan.device_id == device.id).order_by(VulnScan.started_at.desc()).limit(50)).scalars()
+    latest: dict[str, VulnScan] = {}
+    for row in rows:
+        latest.setdefault(row.source, row)
+    return [to_dict(r) for r in latest.values()]
+
+
 def _vuln_views(db: Session, device: Device, vulns: list[Vulnerability]) -> list[dict]:
     """Device vulnerabilities, worst first, each with its risk on this device and the CVE's NVD/EPSS/KEV record."""
     from .. import cveintel, vulnmgmt
@@ -133,6 +144,7 @@ def device_detail(device_id: str, principal: Principal = Depends(current_princip
         "software": [to_dict(s) for s in software],
         "vulnerabilities": _vuln_views(db, device, vulns),
         "risk": detection.risk_breakdown(db, device),
+        "vulnScans": _latest_scans(db, device),
         "eventCount": events,
     }
 

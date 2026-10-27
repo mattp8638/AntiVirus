@@ -287,7 +287,7 @@ export default function DeviceDetail() {
                            { key: "createdAt", label: "When", render: (r) => <span title={fmtTime(r.createdAt)}>{ago(r.createdAt)}</span> }]} />
         </div>
       )}
-      {sub === "Vulnerabilities" && <DeviceVulns device={d} vulnerabilities={data.vulnerabilities} risk={data.risk} onChanged={reload} />}
+      {sub === "Vulnerabilities" && <DeviceVulns device={d} vulnerabilities={data.vulnerabilities} risk={data.risk} scans={data.vulnScans} onChanged={reload} />}
       {sub === "Local admin" && <LocalAdmin deviceId={d.id} />}
       {sub === "Patches" && <PatchesTab device={d} />}
       {sub === "Installed" && <SoftwareList rows={data.software} />}

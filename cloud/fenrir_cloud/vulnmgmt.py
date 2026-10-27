@@ -19,6 +19,11 @@ from sqlalchemy.orm import Session
 from . import audit, events, services
 from .models import Device, Ticket, Vulnerability, utcnow
 
+# Exposure is still present in every state except a verified fix. Starting remediation ("patching"), a compensating
+# control ("mitigated") or a signed-off exception ("accepted") are treatments, not fixes: posture, compliance and risk
+# keep counting them, and show the treatment alongside.
+UNRESOLVED = ("open", "patching", "mitigated", "accepted")
+
 SEVERITY_BASE = {"critical": 9.5, "high": 7.5, "medium": 5.0, "low": 2.5}
 CRITICALITY_FACTOR = {"low": 0.8, "medium": 1.0, "high": 1.2, "critical": 1.4}
 DUE_DAYS = {"P1": 14, "P2": 15, "P3": 30, "P4": 90}
@@ -121,11 +126,33 @@ def record_detection(db: Session, vuln: Vulnerability, reopened: bool) -> None:
                    tenant_id=vuln.tenant_id, key=f"vuln.detected:{vuln.device_id}:{vuln.vuln_id}:{vuln.package}:{stamp}")
 
 
-def verify_after_scan(db: Session, device: Device, scan_started: datetime, source: str = "osv") -> int:
-    """After a complete rescan by one source: anything it did not see again is fixed (verified). Returns how many."""
+def verify_after_scan(db: Session, device: Device, scan_started: datetime, source: str = "osv",
+                      assessed: set[str] | None = None) -> int:
+    """After a rescan by one source, mark what it did not see again as fixed (verified). Returns how many.
+
+    ``assessed`` is the coverage the scan actually completed: the package names it got a full answer for. A finding
+    is only verified when its package was assessed and not matched again, or when the package is no longer installed
+    according to a software inventory newer than the finding. Anything outside that coverage (a failed or truncated
+    response, a package the source cannot assess, a stale inventory) stays as it is. ``assessed=None`` is for sources
+    whose scan always covers everything they report (the device's own Windows Update scan).
+    """
+    from .models import SoftwareItem
+
     stale = db.execute(select(Vulnerability).where(Vulnerability.device_id == device.id, Vulnerability.last_seen < scan_started,
                                                    Vulnerability.source == source,
                                                    Vulnerability.status != "fixed")).scalars().all()
+    if assessed is not None and stale:
+        inventory = {name: seen for name, seen in db.execute(select(SoftwareItem.name, SoftwareItem.seen_at)
+                                                            .where(SoftwareItem.device_id == device.id)).all()}
+        newest = max(inventory.values(), default=None)
+
+        def covered(vuln: Vulnerability) -> bool:
+            if vuln.package in assessed:
+                return True
+            # Removed software fixes its vulnerabilities, but only a fresh inventory can show it is gone.
+            return vuln.package not in inventory and newest is not None and vuln.last_seen is not None and newest > vuln.last_seen
+
+        stale = [v for v in stale if covered(v)]
     now = utcnow()
     for vuln in stale:
         vuln.status, vuln.verified_at, vuln.status_changed_at = "fixed", now, now

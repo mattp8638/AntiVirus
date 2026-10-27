@@ -74,6 +74,17 @@ class AuditLog(Base):
     at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     prev_hash: Mapped[str] = mapped_column(String(64), default="")
     hash: Mapped[str] = mapped_column(String(64), default="")
+    # Position in the chain, allocated under the chain head's lock (ids can interleave between transactions).
+    seq: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+
+
+class AuditChainHead(Base):
+    """The single row every audit append advances (compare-and-swap), so concurrent writers form one chain."""
+
+    __tablename__ = "audit_chain_head"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    seq: Mapped[int] = mapped_column(Integer, default=0)
+    last_hash: Mapped[str] = mapped_column(String(64), default="")
 
 
 # --------------------------------------------------------------------------
@@ -479,6 +490,40 @@ class SoftwareItem(Base):
     install_location: Mapped[str | None] = mapped_column(String(500), nullable=True, default="")
     install_date: Mapped[str | None] = mapped_column(String(20), nullable=True, default="")
     executable_paths: Mapped[list | None] = mapped_column(JSON, nullable=True, default=list)
+
+
+class UserSession(Base):
+    """A console/portal sign-in. Every request checks it, so revoking it (logout, password or MFA change, account
+    disabled, an administrator's revoke) ends the session immediately rather than when its token expires."""
+    __tablename__ = "user_sessions"
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)  # the token's jti
+    user_id: Mapped[str] = mapped_column(String(32), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_reason: Mapped[str] = mapped_column(String(80), default="")
+    ip: Mapped[str] = mapped_column(String(64), default="")
+    user_agent: Mapped[str] = mapped_column(String(300), default="")
+
+
+class VulnScan(Base):
+    """One vulnerability assessment run of one source on one device: what was assessed and whether it finished.
+    Only a complete assessment of a package can verify that package's findings fixed."""
+    __tablename__ = "vuln_scans"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("vscan"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    source: Mapped[str] = mapped_column(String(40))  # osv | nvd-cpe | windows-update
+    status: Mapped[str] = mapped_column(String(20), default="running")  # running | complete | partial | failed
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    packages_total: Mapped[int] = mapped_column(Integer, default=0)
+    packages_assessed: Mapped[int] = mapped_column(Integer, default=0)
+    findings: Mapped[int] = mapped_column(Integer, default=0)
+    verified_fixed: Mapped[int] = mapped_column(Integer, default=0)
+    errors: Mapped[list] = mapped_column(JSON, default=list)
+    warnings: Mapped[list] = mapped_column(JSON, default=list)
 
 
 class Vulnerability(Base):

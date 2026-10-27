@@ -6,7 +6,7 @@ state. Scores are evidence-backed: every result says what was checked.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Callable
 
@@ -27,6 +27,8 @@ class Context:
     critical_vulns: int
     kev_vulns: int
     isolated: int
+    critical_states: dict = field(default_factory=dict)
+    kev_states: dict = field(default_factory=dict)
 
 
 Check = Callable[[Context], tuple[bool, str]]
@@ -54,12 +56,18 @@ def _fleet_reporting(ctx: Context) -> tuple[bool, str]:
     return ratio >= 0.95, f"{ctx.devices - ctx.stale}/{ctx.devices} devices reported in the last 7 days"
 
 
+def _treatment(states: dict) -> str:
+    parts = [f"{states[s]} {label}" for s, label in (("patching", "being patched"), ("mitigated", "mitigated, not fixed"),
+                                                      ("accepted", "risk-accepted, not fixed")) if states.get(s)]
+    return f" ({', '.join(parts)})" if parts else ""
+
+
 def _no_kev(ctx: Context) -> tuple[bool, str]:
-    return ctx.kev_vulns == 0, f"{ctx.kev_vulns} known-exploited vulnerabilities open"
+    return ctx.kev_vulns == 0, f"{ctx.kev_vulns} known-exploited vulnerabilities not yet verified fixed{_treatment(ctx.kev_states)}"
 
 
 def _no_critical(ctx: Context) -> tuple[bool, str]:
-    return ctx.critical_vulns == 0, f"{ctx.critical_vulns} critical vulnerabilities open"
+    return ctx.critical_vulns == 0, f"{ctx.critical_vulns} critical vulnerabilities not yet verified fixed{_treatment(ctx.critical_states)}"
 
 
 def _patch_auto(ctx: Context) -> tuple[bool, str]:
@@ -167,16 +175,22 @@ def _context(db: Session, tenant: Tenant) -> Context:
     devices = db.execute(select(Device).where(Device.tenant_id == tenant.id)).scalars().all()
     versions = sorted({d.agent_version for d in devices if d.agent_version})
     newest = versions[-1] if versions else ""
-    crit = db.execute(select(func.count()).where(Vulnerability.tenant_id == tenant.id, Vulnerability.status == "open",
-                                                 Vulnerability.severity == "critical")).scalar() or 0
-    kev = db.execute(select(func.count()).where(Vulnerability.tenant_id == tenant.id, Vulnerability.status == "open",
-                                                Vulnerability.known_exploited.is_(True))).scalar() or 0
+    from .vulnmgmt import UNRESOLVED
+
+    def by_status(*conditions) -> dict[str, int]:
+        return dict(db.execute(select(Vulnerability.status, func.count()).where(
+            Vulnerability.tenant_id == tenant.id, Vulnerability.status.in_(UNRESOLVED), *conditions).group_by(Vulnerability.status)).all())
+
+    crit_states = by_status(Vulnerability.severity == "critical")
+    kev_states = by_status(Vulnerability.known_exploited.is_(True))
+    crit, kev = sum(crit_states.values()), sum(kev_states.values())
     return Context(
         settings=resolution["settings"], devices=len(devices),
         online=sum(1 for d in devices if d.last_seen_at and d.last_seen_at >= utcnow() - timedelta(minutes=15)),
         stale=sum(1 for d in devices if not d.last_seen_at or d.last_seen_at < week_ago),
         outdated_agents=sum(1 for d in devices if d.agent_version and d.agent_version != newest),
         critical_vulns=crit, kev_vulns=kev, isolated=sum(1 for d in devices if d.isolated),
+        critical_states=crit_states, kev_states=kev_states,
     )
 
 

@@ -114,8 +114,11 @@ def test_mfa_enrolment_login_and_reset(client, admin):
     proof = client.post("/api/console/auth/reauth", headers=admin,
                         json={"password": ADMIN_PASSWORD, "code": totp_code(setup["secret"])}).json()["reauthToken"]
     assert client.post(reset_url, headers={**admin, "X-Fenrir-Reauth": proof}).json()["mfaEnabled"] is False
-    # Resetting the authentication state invalidates the old proof.
-    assert client.post(reset_url, headers={**admin, "X-Fenrir-Reauth": proof}).status_code == 403
+    # Resetting the authentication state signs that account out everywhere (FIX-03), so the old session and its
+    # proof are both dead.
+    assert client.post(reset_url, headers={**admin, "X-Fenrir-Reauth": proof}).status_code == 401
+    assert client.get("/api/console/auth/me", headers=admin).status_code == 401
+    admin = login(client)
     assert client.post("/api/console/auth/login", json={"email": "admin@fenrir.local", "password": ADMIN_PASSWORD}).status_code == 200
 
 
@@ -168,9 +171,15 @@ def test_reauth_proof_is_bound_to_session_and_password(client, admin):
     rotate_url = "/api/console/platform/vault/rotate"
     assert client.post(rotate_url, headers={**other_session, "X-Fenrir-Reauth": proof}).status_code == 403
     assert client.post(rotate_url, headers={**admin, "X-Fenrir-Reauth": proof}).status_code == 200
-    assert client.post("/api/console/auth/password", headers=admin,
-                       json={"currentPassword": ADMIN_PASSWORD, "newPassword": "a-new-long-password"}).status_code == 200
-    assert client.post(rotate_url, headers={**admin, "X-Fenrir-Reauth": proof}).status_code == 403
+    changed = client.post("/api/console/auth/password", headers=admin,
+                          json={"currentPassword": ADMIN_PASSWORD, "newPassword": "a-new-long-password"})
+    assert changed.status_code == 200
+    # The old session (and the other one) ended with the password; the client gets a fresh session.
+    assert client.post(rotate_url, headers={**admin, "X-Fenrir-Reauth": proof}).status_code == 401
+    assert client.get("/api/console/auth/me", headers=other_session).status_code == 401
+    fresh = {"Authorization": "Bearer " + changed.json()["token"]}
+    assert client.get("/api/console/auth/me", headers=fresh).status_code == 200
+    assert client.post(rotate_url, headers={**fresh, "X-Fenrir-Reauth": proof}).status_code == 403  # proof bound to the old session
 
 
 @pytest.mark.parametrize("claims", [{"exp": "invalid"}, {"exp": None}, {"exp": True}, {"exp": float("inf")}])

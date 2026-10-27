@@ -44,10 +44,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
   });
   const [toastState, setToastState] = useState<{ message: string; error: boolean } | null>(null);
 
-  const logout = useCallback(() => {
+  const clearSession = useCallback(() => {
     setToken(null);
     setMe(null);
   }, []);
+  // Signing out ends the session on the server too, so the token is dead even if it was copied.
+  const logout = useCallback(() => {
+    const token = getToken();
+    if (token) {
+      fetch("/api/console/auth/logout", { method: "POST", headers: { Authorization: `Bearer ${token}` } }).catch(() => {});
+    }
+    clearSession();
+  }, [clearSession]);
 
   const refreshMe = useCallback(async () => {
     if (!getToken()) {
@@ -65,9 +73,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    setUnauthorizedHandler(logout);
+    setUnauthorizedHandler(clearSession);
     refreshMe();
-  }, [logout, refreshMe]);
+  }, [clearSession, refreshMe]);
 
   const login = async (email: string, password: string, code?: string) => {
     const result = await api<{ token: string }>("auth/login", { body: { email, password, ...(code ? { code } : {}) } });

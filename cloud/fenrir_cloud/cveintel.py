@@ -399,6 +399,7 @@ def scan_windows_software(db: Session, client: httpx.Client, budget: int, pause:
             tracked.setdefault((mapped[0], mapped[1], item.version), []).append(item)
     queried = found = 0
     complete_devices: dict[str, bool] = {}
+    assessed_names: dict[str, set[str]] = {}
     scan_started = utcnow()
     for (vendor, product, version), installs in tracked.items():
         cached = db.get(CpeMatchCache, f"{vendor}:{product}:{version}"[:300])
@@ -417,6 +418,7 @@ def scan_windows_software(db: Session, client: httpx.Client, budget: int, pause:
         winget = product_for(installs[0].name)[2]
         for install in installs:
             complete_devices.setdefault(install.device_id, True)
+            assessed_names.setdefault(install.device_id, set()).add(install.name[:300])
             device = db.get(Device, install.device_id)
             if device is None:
                 continue
@@ -452,16 +454,16 @@ def scan_windows_software(db: Session, client: httpx.Client, budget: int, pause:
                 if is_new or reopened:
                     db.flush()
                     vulnmgmt.record_detection(db, row, reopened)
-    # A device whose every tracked program was checked: anything no longer matched has been updated or removed.
+    # Verify only what was assessed: programs NVD answered for that no longer match, and programs a fresh inventory
+    # shows were removed. Products that could not be looked up this run keep their findings.
     verified = 0
-    for device_id, complete in complete_devices.items():
+    for device_id, names in assessed_names.items():
         device = db.get(Device, device_id)
-        if complete and device is not None:
-            verified += vulnmgmt.verify_after_scan(db, device, scan_started, source=NVD_SOURCE)
-    # Devices with no tracked programs left at all (everything uninstalled) are verified too.
+        if device is not None:
+            verified += vulnmgmt.verify_after_scan(db, device, scan_started, source=NVD_SOURCE, assessed=names)
     for device in db.execute(select(Device).where(Device.platform == "windows")).scalars():
-        if device.id not in complete_devices:
-            verified += vulnmgmt.verify_after_scan(db, device, scan_started, source=NVD_SOURCE)
+        if device.id not in complete_devices:  # no tracked programs left: only removals shown by a fresh inventory
+            verified += vulnmgmt.verify_after_scan(db, device, scan_started, source=NVD_SOURCE, assessed=set())
     return {"products": len(tracked), "queried": queried, "found": found, "verifiedFixed": verified}
 
 

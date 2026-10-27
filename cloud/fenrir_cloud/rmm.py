@@ -594,7 +594,7 @@ def _known_exploited_products(db: Session, device: Device) -> set[str]:
     from .models import Vulnerability
 
     rows = db.execute(select(Vulnerability.package).where(Vulnerability.device_id == device.id, Vulnerability.known_exploited.is_(True),
-                                                          Vulnerability.status.in_(("open", "patching")))).all()
+                                                          Vulnerability.status.in_(("open", "patching", "mitigated", "accepted")))).all()
     return {name.lower() for (name,) in rows}
 
 
