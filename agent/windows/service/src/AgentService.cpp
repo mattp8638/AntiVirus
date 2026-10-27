@@ -1084,6 +1084,11 @@ int AgentService::Run(const AgentRunMode mode) {
     bruteForceGuard_->SetUrgentCallback([this] {
       if (wakeEvent_ != nullptr) SetEvent(wakeEvent_);
     });
+    adMonitor_ = std::make_unique<AdMonitor>(config_.runtimeDatabasePath.parent_path());
+    adMonitor_->SetUrgentCallback([this] {
+      if (wakeEvent_ != nullptr) SetEvent(wakeEvent_);
+    });
+    adMonitor_->Start();  // decides for itself whether this machine is a domain controller
 
     LoadLocalPolicyCache();
     PublishIdentitySnapshot();
@@ -1144,6 +1149,9 @@ int AgentService::Run(const AgentRunMode mode) {
     }
     if (bruteForceGuard_) {
       bruteForceGuard_->Stop();
+    }
+    if (adMonitor_) {
+      adMonitor_->Stop();
     }
     if (registryWatcher_) {
       registryWatcher_->Stop();
@@ -4250,6 +4258,10 @@ void AgentService::DrainRansomwareTelemetry() {
   auto telemetry = ransomwareShield_->DrainTelemetry();
   if (bruteForceGuard_) {
     auto more = bruteForceGuard_->DrainTelemetry();
+    telemetry.insert(telemetry.end(), more.begin(), more.end());
+  }
+  if (adMonitor_) {
+    auto more = adMonitor_->DrainTelemetry();
     telemetry.insert(telemetry.end(), more.begin(), more.end());
   }
   if (registryWatcher_) {

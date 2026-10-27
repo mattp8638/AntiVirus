@@ -174,9 +174,12 @@ export default function DeviceDetail() {
             {d.lostMode?.enabled && <Pill value="lost mode" tone="bad" />}
             {m.rebootPending && <Pill value="restart pending" tone="warn" />}
             {d.healthState && d.healthState !== "healthy" && <Pill value={d.healthState} tone="warn" />}
+            {d.inventory?.role === "domain-controller" && <Link to="/active-directory"><Pill value="Domain controller" tone="blue" /></Link>}
+            {d.inventory?.role === "server" && <Pill value="Server" tone="muted" />}
           </div>
           <div className="device-meta">
             <span>{d.osVersion}</span>
+            {d.inventory?.serverRoles?.length > 0 && <span title="Installed server roles">{d.inventory.serverRoles.slice(0, 4).join(", ")}</span>}
             <span>{tenantName(d.tenantId)}{groupName ? ` · ${groupName}` : ""}</span>
             {user && <span title="Signed-in user">👤 {user}</span>}
             {d.ipAddress && <span className="mono">{d.ipAddress}</span>}

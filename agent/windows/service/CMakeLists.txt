@@ -143,6 +143,8 @@ add_library(antivirus-agent-core STATIC
   src/RansomwareShield.cpp
   src/BruteForceTracker.cpp
   src/BruteForceGuard.cpp
+  src/AdMonitor.cpp
+  src/AdEventRules.cpp
   src/RegistryWatcher.cpp
   src/CrashReporter.cpp
   src/SystemProfile.cpp
@@ -512,6 +514,7 @@ set_source_files_properties(${SETUP_PAYLOAD_RC} PROPERTIES
 add_executable(antivirus-setup WIN32
   ${INSTALLER_NATIVE_DIR}/src/setup.rc
   ${INSTALLER_NATIVE_DIR}/src/SetupMain.cpp
+  ${INSTALLER_NATIVE_DIR}/src/FullRemoval.cpp
   ${SETUP_PAYLOAD_RC}
 )
 
@@ -531,7 +534,7 @@ target_include_directories(antivirus-setup PRIVATE
   ${INSTALLER_NATIVE_DIR}/include
   ${INSTALLER_NATIVE_DIR}/src
 )
-target_link_libraries(antivirus-setup PRIVATE comctl32 ole32 shell32 advapi32 crypt32 wintrust dwmapi)
+target_link_libraries(antivirus-setup PRIVATE comctl32 ole32 shell32 advapi32 crypt32 wintrust dwmapi fwpuclnt netapi32 setupapi)
 # Keep the runtime fully static. A trailing -Bdynamic here overrides -static
 # for implicit runtime libraries and makes setup require libwinpthread-1.dll
 # before it can extract any embedded payload.
@@ -582,6 +585,8 @@ add_executable(fenrir-behavior-tests ../tests/BehaviorRulesTests.cpp src/Behavio
 target_include_directories(fenrir-behavior-tests PRIVATE include)
 add_executable(fenrir-policy-tests ../tests/PolicyAndDeviceControlTests.cpp src/ExtendedPolicy.cpp src/BehaviorRules.cpp src/DeviceControl.cpp src/FirewallPolicy.cpp src/LocalAdminRotation.cpp src/RansomwareDetector.cpp src/BruteForceTracker.cpp)
 target_link_libraries(fenrir-policy-tests PRIVATE bcrypt netapi32 advapi32)
+add_executable(fenrir-admonitor-tests ../tests/AdMonitorTests.cpp src/AdEventRules.cpp)
+target_include_directories(fenrir-admonitor-tests PRIVATE include)
 add_executable(fenrir-rmm-tests ../tests/RmmExecutorTests.cpp src/RmmExecutors.cpp src/ExtendedPolicy.cpp src/BehaviorRules.cpp src/StringUtils.cpp src/CryptoUtils.cpp)
 target_include_directories(fenrir-rmm-tests PRIVATE include ../shared/include)
 target_link_libraries(fenrir-rmm-tests PRIVATE wtsapi32 userenv urlmon advapi32 bcrypt crypt32 wintrust)

@@ -192,4 +192,130 @@ $profile.monitors = Section {
 }
 $profile.shares = Section { @(Get-SmbShare | Where-Object { -not $_.Special } | ForEach-Object { [ordered]@{ name = $_.Name; path = $_.Path; description = $_.Description } }) }
 
+# --- Role: workstation, server or domain controller (re-detected every run, so promotions show up) ----------------
+$profile.role = Section {
+  $os = Get-CimInstance Win32_OperatingSystem
+  $cs = Get-CimInstance Win32_ComputerSystem
+  $domainRoles = @{ 0='Standalone workstation'; 1='Member workstation'; 2='Standalone server'; 3='Member server'; 4='Backup domain controller'; 5='Primary domain controller' }
+  $kind = switch ([int]$os.ProductType) { 2 { 'domain-controller' } 3 { 'server' } default { 'workstation' } }
+  $features = @()
+  if ($kind -ne 'workstation') {
+    $features = @(Section { Get-WindowsFeature | Where-Object { $_.Installed -and $_.FeatureType -eq 'Role' } | ForEach-Object { $_.DisplayName } })
+  }
+  # Workloads recognised from their services, so roles show up on workstations and when Get-WindowsFeature is missing.
+  $known = [ordered]@{ NTDS='Active Directory Domain Services'; DNS='DNS Server'; DHCPServer='DHCP Server'; CertSvc='Certificate Services';
+    W3SVC='IIS web server'; MSSQLSERVER='SQL Server'; MSExchangeIS='Exchange Server'; vmms='Hyper-V'; LanmanServer='File sharing';
+    TermService='Remote Desktop'; Spooler='Print spooler'; WSUSService='WSUS'; ADSync='Entra Connect (Azure AD Connect)'; ADFSSrv='AD FS' }
+  $running = @{}
+  Get-Service | Where-Object { $_.Status -eq 'Running' } | ForEach-Object { $running[$_.Name] = $true }
+  $workloads = @($known.Keys | Where-Object { $running[$_] -or ($_ -eq 'MSSQLSERVER' -and ($running.Keys -match '^MSSQL\$')) } | ForEach-Object { $known[$_] })
+  [ordered]@{ kind = $kind; productType = [int]$os.ProductType; domainRole = $domainRoles[[int]$cs.DomainRole]; domainRoleId = [int]$cs.DomainRole
+    partOfDomain = [bool]$cs.PartOfDomain; domain = $cs.Domain; serverRoles = $features; workloads = $workloads }
+}
+
+# --- Audit policy that Active Directory and sign-in detections depend on ---------------------------------------------
+$profile.auditPolicy = Section {
+  $wanted = @{ '{0CCE923B-69AE-11D9-BED3-505054503030}'='Directory Service Access'; '{0CCE923C-69AE-11D9-BED3-505054503030}'='Directory Service Changes';
+    '{0CCE9237-69AE-11D9-BED3-505054503030}'='Security Group Management'; '{0CCE9235-69AE-11D9-BED3-505054503030}'='User Account Management';
+    '{0CCE9236-69AE-11D9-BED3-505054503030}'='Computer Account Management'; '{0CCE9242-69AE-11D9-BED3-505054503030}'='Kerberos Authentication Service';
+    '{0CCE9240-69AE-11D9-BED3-505054503030}'='Kerberos Service Ticket Operations'; '{0CCE923F-69AE-11D9-BED3-505054503030}'='Credential Validation';
+    '{0CCE9215-69AE-11D9-BED3-505054503030}'='Logon' }
+  $rows = auditpol /get /category:* /r | ConvertFrom-Csv
+  @($rows | Where-Object { $wanted.ContainsKey("$($_.'Subcategory GUID')".ToUpper()) } | ForEach-Object {
+    $value = "$($_.'Setting Value')"
+    if (-not $value) { $text = "$($_.'Inclusion Setting')"; $value = "$([int]($text -match 'Success') + 2 * [int]($text -match 'Failure'))" }
+    [ordered]@{ guid = "$($_.'Subcategory GUID')".ToUpper(); name = $wanted["$($_.'Subcategory GUID')".ToUpper()]
+      success = ($value -eq '1' -or $value -eq '3'); failure = ($value -eq '2' -or $value -eq '3'); setting = $_.'Inclusion Setting' } })
+}
+
+# --- Active Directory (domain controllers only) ------------------------------------------------------------------------
+if ($profile.role -and $profile.role.kind -eq 'domain-controller') {
+  $profile.activeDirectory = Section {
+    Import-Module ActiveDirectory -ErrorAction Stop
+    $now = Get-Date
+    $domain = Get-ADDomain; $forest = Get-ADForest
+    $ageDays = { param($when) if ($when -is [datetime] -and $when.Year -gt 1601) { [int]($now - $when).TotalDays } else { $null } }
+    $userProps = 'Enabled','LastLogonDate','PasswordLastSet','PasswordNeverExpires','PasswordNotRequired','AllowReversiblePasswordEncryption','DoesNotRequirePreAuth','ServicePrincipalName','AdminCount','TrustedForDelegation','TrustedToAuthForDelegation','SIDHistory','Description','whenCreated','UserPrincipalName','msDS-SupportedEncryptionTypes'
+    $users = @(Get-ADUser -Filter * -Properties $userProps -ResultSetSize 100000)
+    $computers = @(Get-ADComputer -Filter * -Properties Enabled,LastLogonDate,OperatingSystem,OperatingSystemVersion,TrustedForDelegation,TrustedToAuthForDelegation,PrimaryGroupID,'msDS-AllowedToActOnBehalfOfOtherIdentity','ms-Mcs-AdmPwdExpirationTime','msLAPS-PasswordExpirationTime' -ResultSetSize 100000)
+    $brief = { param($u) [ordered]@{ sam = $u.SamAccountName; name = $u.Name; enabled = [bool]$u.Enabled; lastLogon = Iso $u.LastLogonDate
+      passwordLastSet = Iso $u.PasswordLastSet; passwordAgeDays = & $ageDays $u.PasswordLastSet; passwordNeverExpires = [bool]$u.PasswordNeverExpires
+      spn = @($u.ServicePrincipalName | Select-Object -First 5); dn = $u.DistinguishedName } }
+    # Privileged groups by well-known SID so renamed or localised groups are still found. Enterprise and Schema
+    # Admins live in the forest root domain.
+    $rootSid = Section { (Get-ADDomain -Identity $forest.RootDomain).DomainSID.Value }
+    if (-not $rootSid) { $rootSid = $sid }
+    $privileged = [ordered]@{ 'Domain Admins'="$sid-512"; 'Enterprise Admins'="$rootSid-519"; 'Schema Admins'="$rootSid-518"
+      'Administrators'='S-1-5-32-544'; 'Account Operators'='S-1-5-32-548'; 'Server Operators'='S-1-5-32-549'; 'Backup Operators'='S-1-5-32-551'
+      'Print Operators'='S-1-5-32-550'; 'Group Policy Creator Owners'="$sid-520"; 'Cert Publishers'="$sid-517"; 'Key Admins'="$sid-526"; 'Enterprise Key Admins'="$rootSid-527" }
+    $groups = @()
+    foreach ($label in @($privileged.Keys)) {
+      $server = $domain.DNSRoot
+      if ($privileged[$label].StartsWith("$rootSid-") -and $rootSid -ne $sid) { $server = $forest.RootDomain }
+      $g = Section { Get-ADGroup -Identity $privileged[$label] -Server $server }
+      if (-not $g) { continue }
+      $members = @(Section { Get-ADGroupMember -Identity $g -Recursive -Server $server })
+      $groups += [ordered]@{ name = $g.Name; label = $label; sid = $g.SID.Value; memberCount = $members.Count
+        members = @($members | Select-Object -First 100 | ForEach-Object { [ordered]@{ sam = $_.SamAccountName; name = $_.Name; type = $_.objectClass } }) }
+    }
+    $dnsAdmins = Section { Get-ADGroup -Filter "Name -eq 'DnsAdmins'" }
+    if ($dnsAdmins) { $m = @(Section { Get-ADGroupMember $dnsAdmins -Recursive }); $groups += [ordered]@{ name = $dnsAdmins.Name; label = 'DnsAdmins'; sid = $dnsAdmins.SID.Value; memberCount = $m.Count; members = @($m | Select-Object -First 100 | ForEach-Object { [ordered]@{ sam = $_.SamAccountName; name = $_.Name; type = $_.objectClass } }) } }
+    $protectedUsers = Section { @(Get-ADGroupMember -Identity "$sid-525").Count }
+    $privilegedSams = @{}
+    foreach ($g in $groups) { foreach ($m in $g.members) { if ($m.type -eq 'user') { $privilegedSams[$m.sam] = $true } } }
+    $enabledUsers = @($users | Where-Object { $_.Enabled })
+    $staleCutoff = $now.AddDays(-90)
+    $isStale = { param($u) (-not $u.LastLogonDate -and $u.whenCreated -lt $staleCutoff) -or ($u.LastLogonDate -and $u.LastLogonDate -lt $staleCutoff) }
+    $krbtgt = $users | Where-Object { $_.SamAccountName -eq 'krbtgt' } | Select-Object -First 1
+    $builtinAdmin = $users | Where-Object { $_.SID.Value -eq "$sid-500" } | Select-Object -First 1
+    $guest = $users | Where-Object { $_.SID.Value -eq "$sid-501" } | Select-Object -First 1
+    $policy = Get-ADDefaultDomainPasswordPolicy
+    $dcs = @(Get-ADDomainController -Filter * | ForEach-Object { [ordered]@{ name = $_.HostName; site = $_.Site; os = $_.OperatingSystem; osVersion = $_.OperatingSystemVersion
+      ipv4 = $_.IPv4Address; globalCatalog = [bool]$_.IsGlobalCatalog; readOnly = [bool]$_.IsReadOnly; roles = @($_.OperationMasterRoles | ForEach-Object { "$_" }) } })
+    $dcNames = @{}; foreach ($dc in $dcs) { $dcNames[("$($dc.name)".Split('.')[0]).ToUpper()] = $true }
+    $recycleBin = Section { [bool]((Get-ADOptionalFeature -Filter "Name -eq 'Recycle Bin Feature'").EnabledScopes.Count -gt 0) }
+    $schemaAttrs = Section { $schema = (Get-ADRootDSE).schemaNamingContext
+      [ordered]@{ legacyLaps = [bool](Get-ADObject -SearchBase $schema -LDAPFilter '(lDAPDisplayName=ms-Mcs-AdmPwd)'); windowsLaps = [bool](Get-ADObject -SearchBase $schema -LDAPFilter '(lDAPDisplayName=msLAPS-Password)') } }
+    $lapsCovered = @($computers | Where-Object { $_.Enabled -and $_.PrimaryGroupID -ne 516 -and ($_.'ms-Mcs-AdmPwdExpirationTime' -or $_.'msLAPS-PasswordExpirationTime') }).Count
+    $gpos = Section { @(Get-GPO -All | Sort-Object ModificationTime -Descending | ForEach-Object { [ordered]@{ name = $_.DisplayName; id = "$($_.Id)"; modified = Iso $_.ModificationTime; status = "$($_.GpoStatus)" } }) }
+    $trusts = Section { @(Get-ADTrust -Filter * | ForEach-Object { [ordered]@{ name = $_.Name; direction = "$($_.Direction)"; type = "$($_.TrustType)"; sidFilteringQuarantined = [bool]$_.SIDFilteringQuarantined; sidFilteringForestAware = [bool]$_.SIDFilteringForestAware; selectiveAuth = [bool]$_.SelectiveAuthentication; forestTransitive = [bool]$_.ForestTransitive } }) }
+    $fgpp = Section { @(Get-ADFineGrainedPasswordPolicy -Filter *).Count }
+    [ordered]@{
+      domain = [ordered]@{ dnsName = $domain.DNSRoot; netbios = $domain.NetBIOSName; dn = $domain.DistinguishedName; sid = $sid; mode = "$($domain.DomainMode)"
+        forest = $forest.Name; forestMode = "$($forest.ForestMode)"; pdcEmulator = $domain.PDCEmulator; ridMaster = $domain.RIDMaster; infrastructureMaster = $domain.InfrastructureMaster
+        schemaMaster = $forest.SchemaMaster; domainNamingMaster = $forest.DomainNamingMaster; sites = @($forest.Sites); domains = @($forest.Domains) }
+      domainControllers = $dcs
+      counts = [ordered]@{ users = $users.Count; enabledUsers = $enabledUsers.Count; computers = $computers.Count; enabledComputers = @($computers | Where-Object { $_.Enabled }).Count
+        groups = Section { @(Get-ADGroup -Filter * -ResultSetSize 100000).Count }; gpos = @($gpos).Count; protectedUsers = $protectedUsers; fineGrainedPolicies = $fgpp }
+      privilegedGroups = $groups
+      passwordPolicy = [ordered]@{ minLength = $policy.MinPasswordLength; complexity = [bool]$policy.ComplexityEnabled; maxAgeDays = [int]$policy.MaxPasswordAge.TotalDays
+        historyCount = $policy.PasswordHistoryCount; lockoutThreshold = $policy.LockoutThreshold; lockoutMinutes = [int]$policy.LockoutDuration.TotalMinutes; reversibleEncryption = [bool]$policy.ReversibleEncryptionEnabled }
+      krbtgt = [ordered]@{ passwordLastSet = Iso $krbtgt.PasswordLastSet; passwordAgeDays = & $ageDays $krbtgt.PasswordLastSet }
+      builtinAdministrator = $(if ($builtinAdmin) { [ordered]@{ sam = $builtinAdmin.SamAccountName; enabled = [bool]$builtinAdmin.Enabled; lastLogon = Iso $builtinAdmin.LastLogonDate; passwordAgeDays = & $ageDays $builtinAdmin.PasswordLastSet } })
+      guestEnabled = [bool]$guest.Enabled
+      risky = [ordered]@{
+        kerberoastable = @($enabledUsers | Where-Object { $_.ServicePrincipalName -and $_.SamAccountName -ne 'krbtgt' } | Select-Object -First 200 | ForEach-Object { $b = & $brief $_; $b.privileged = [bool]$privilegedSams[$_.SamAccountName]; $b })
+        asrepRoastable = @($enabledUsers | Where-Object { $_.DoesNotRequirePreAuth } | Select-Object -First 200 | ForEach-Object { & $brief $_ })
+        passwordNotRequired = @($enabledUsers | Where-Object { $_.PasswordNotRequired } | Select-Object -First 200 | ForEach-Object { & $brief $_ })
+        reversibleEncryption = @($enabledUsers | Where-Object { $_.AllowReversiblePasswordEncryption } | Select-Object -First 200 | ForEach-Object { & $brief $_ })
+        privilegedPasswordNeverExpires = @($enabledUsers | Where-Object { $_.PasswordNeverExpires -and $privilegedSams[$_.SamAccountName] } | Select-Object -First 200 | ForEach-Object { & $brief $_ })
+        privilegedStale = @($enabledUsers | Where-Object { $privilegedSams[$_.SamAccountName] -and (& $isStale $_) } | Select-Object -First 200 | ForEach-Object { & $brief $_ })
+        privilegedOldPassword = @($enabledUsers | Where-Object { $privilegedSams[$_.SamAccountName] -and $_.PasswordLastSet -and $_.PasswordLastSet -lt $now.AddDays(-365) } | Select-Object -First 200 | ForEach-Object { & $brief $_ })
+        sidHistory = @($users | Where-Object { $_.SIDHistory.Count -gt 0 } | Select-Object -First 200 | ForEach-Object { & $brief $_ })
+        adminCountOrphans = @($enabledUsers | Where-Object { $_.AdminCount -eq 1 -and -not $privilegedSams[$_.SamAccountName] -and $_.SamAccountName -ne 'krbtgt' } | Select-Object -First 200 | ForEach-Object { & $brief $_ })
+        staleUsers = @($enabledUsers | Where-Object { & $isStale $_ }).Count
+        staleComputers = @($computers | Where-Object { $_.Enabled -and $_.LastLogonDate -and $_.LastLogonDate -lt $staleCutoff }).Count
+        unconstrainedDelegation = @($computers | Where-Object { $_.Enabled -and $_.TrustedForDelegation -and -not $dcNames[("$($_.Name)").ToUpper()] } | Select-Object -First 200 | ForEach-Object { [ordered]@{ sam = $_.SamAccountName; name = $_.Name; os = $_.OperatingSystem; dn = $_.DistinguishedName } }) + @($enabledUsers | Where-Object { $_.TrustedForDelegation } | Select-Object -First 50 | ForEach-Object { & $brief $_ })
+        resourceBasedDelegation = @($computers | Where-Object { $_.'msDS-AllowedToActOnBehalfOfOtherIdentity' } | Select-Object -First 200 | ForEach-Object { [ordered]@{ sam = $_.SamAccountName; name = $_.Name; dn = $_.DistinguishedName } })
+        unsupportedOs = @($computers | Where-Object { $_.Enabled -and $_.OperatingSystem -match 'Windows (XP|Vista|7|8 |8\.1|Server 2003|Server 2008|Server 2012)' } | Select-Object -First 200 | ForEach-Object { [ordered]@{ name = $_.Name; os = $_.OperatingSystem; lastLogon = Iso $_.LastLogonDate } })
+      }
+      laps = [ordered]@{ legacySchema = $schemaAttrs.legacyLaps; windowsSchema = $schemaAttrs.windowsLaps; coveredComputers = $lapsCovered
+        eligibleComputers = @($computers | Where-Object { $_.Enabled -and $_.PrimaryGroupID -ne 516 }).Count }
+      recycleBin = $recycleBin
+      gpos = @($gpos | Select-Object -First 300)
+      trusts = $trusts
+    }
+  }
+}
+
 [ordered]@{ profile = $profile; recoveryKeys = @($recoveryKeys) } | ConvertTo-Json -Depth 8 -Compress

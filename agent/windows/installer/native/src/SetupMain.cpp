@@ -25,6 +25,7 @@
 #include <string>
 #include <vector>
 
+#include "FullRemoval.h"
 #include "SetupResourceIds.h"
 
 namespace {
@@ -146,6 +147,8 @@ struct UiContext {
   std::filesystem::path setupPath;
   std::wstring controlPlaneBaseUrl;
   std::wstring enrollmentToken;  // supplied only by a tenant-specific deployment package
+  std::wstring uninstallToken;   // --token: needed when the policy turns on uninstall protection
+  bool quietUninstall{false};    // --uninstall --quiet: no prompts (RMM scripts, remote removal)
   bool installed{false};
   bool busy{false};
 };
@@ -2879,24 +2882,28 @@ void RunUninstall(HWND hwnd, UiContext* context) {
   const auto serviceExe = installRoot / kServiceExeName;
 
   RemoveAgentWatchdog(installRoot);
-  StopMatchingProcess(endpointClientPath);
+  for (const auto* exe : {kEndpointExeName, kPamExeName, kRemoteHelperExeName}) StopMatchingProcess(installRoot / exe);
+  (void)endpointClientPath;
 
   std::wstring errorMessage;
   DWORD exitCode = 0;
   if (std::filesystem::exists(serviceExe)) {
-    PostStatus(hwnd, L"Removing protection service...", 30);
+    PostStatus(hwnd, L"Removing protection service...", 20);
     PostLog(hwnd, L"Uninstalling the protection service");
-    if (!RunProcessHidden(serviceExe, L"--uninstall", installRoot, &exitCode, &errorMessage)) {
-      PostComplete(hwnd, false, true, false, errorMessage);
+    const auto args = context->uninstallToken.empty() ? std::wstring(L"--uninstall") : L"--uninstall --token " + context->uninstallToken;
+    if (!RunProcessHidden(serviceExe, args, installRoot, &exitCode, &errorMessage) || exitCode != 0) {
+      PostComplete(hwnd, false, true, false,
+                   errorMessage.empty() ? L"The protection service refused to uninstall. If uninstall protection is on, run "
+                                          L"FenrirSetup.exe --uninstall --token <token> (the token is in the device's policy)."
+                                        : errorMessage);
       return;
     }
   }
 
-  PostStatus(hwnd, L"Removing minifilter registration...", 45);
+  PostStatus(hwnd, L"Removing the real-time protection driver...", 35);
   PostLog(hwnd, L"Uninstalling AntivirusMinifilter driver package and service registration");
-  if (!true) {
-    PostComplete(hwnd, false, true, false, errorMessage);
-    return;
+  if (!UninstallMinifilterDriver(installRoot, &errorMessage)) {
+    PostLog(hwnd, L"Warning: " + errorMessage + L" Continuing; the driver store is cleaned below.");
   }
 
   PostStatus(hwnd, L"Removing startup and shortcuts...", 55);
@@ -2907,13 +2914,20 @@ void RunUninstall(HWND hwnd, UiContext* context) {
   PostLog(hwnd, TrustOwnCodeSigningCertificate(context->setupPath, true));
   ConfigureDefenderExclusions(hwnd, installRoot, false);
 
-  PostStatus(hwnd, L"Removing installation registry entries...", 75);
+  PostStatus(hwnd, L"Removing data, quarantine, registry and system changes...", 70);
+  fenrir::setup::RemovalReport report;
+  fenrir::setup::PurgeMachineState(installRoot, report, [hwnd](const std::wstring& line) { PostLog(hwnd, line); });
   DeleteRegistryTree(HKEY_LOCAL_MACHINE, kArpRegistryRoot);
   DeleteRegistryTree(HKEY_LOCAL_MACHINE, kAgentRegistryRoot);
 
   PostStatus(hwnd, L"Finalizing removal...", 100);
   LaunchCleanupHelper(context->setupPath, installRoot);
-  PostComplete(hwnd, true, false, true, L"Fenrir Endpoint was removed. The setup window will close to finish cleanup.");
+  std::wstring summary = L"Fenrir Endpoint was removed (" + std::to_wstring(report.removed) + L" items cleaned).";
+  if (report.pendingReboot > 0) {
+    summary += L" " + std::to_wstring(report.pendingReboot) + L" files in use will be deleted when Windows restarts.";
+  }
+  if (report.warnings > 0) summary += L" " + std::to_wstring(report.warnings) + L" item(s) could not be removed; see the log.";
+  PostComplete(hwnd, true, false, true, summary + L" The setup window will close to finish cleanup.");
 }
 
 DWORD WINAPI InstallWorkerThread(LPVOID parameter) {
@@ -2977,8 +2991,10 @@ int RunCleanupMode(int argc, wchar_t* argv[]) {
   WaitForProcessExit(waitPid);
 
   std::error_code error;
-  std::filesystem::remove_all(*cleanupRoot, error);
-  if (error) {
+  fenrir::setup::RemovalReport report;
+  fenrir::setup::EnableRemovalPrivileges();
+  fenrir::setup::ForceDeleteTree(*cleanupRoot, report, [](const std::wstring&) {});
+  if (std::filesystem::exists(*cleanupRoot, error)) {
     for (std::filesystem::recursive_directory_iterator it(
              *cleanupRoot, std::filesystem::directory_options::skip_permission_denied, error);
          it != std::filesystem::recursive_directory_iterator(); it.increment(error)) {
@@ -3229,8 +3245,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
           return 0;
         case IDC_UNINSTALL_BUTTON:
           if (!context->busy &&
-              MessageBoxW(hwnd, L"Remove Fenrir Endpoint from this device?", kWindowTitle,
-                          MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES) {
+              (context->quietUninstall ||
+               MessageBoxW(hwnd, L"Remove Fenrir Endpoint and all of its data, quarantine and settings from this device?",
+                           kWindowTitle, MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES)) {
             context->busy = true;
             RefreshUi(*context);
             AppendLog(context->logEdit, L"Starting uninstall...");
@@ -3446,12 +3463,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     }
     context->silent = true;
     PostMessageW(hwnd, WM_COMMAND, IDC_PRIMARY_BUTTON, 0);
-  } else {
+  } else if (!(argv != nullptr && HasArgument(argc, argv, L"--uninstall") && HasArgument(argc, argv, L"--quiet"))) {
     ShowWindow(hwnd, showCommand == 0 ? SW_SHOWDEFAULT : showCommand);
     UpdateWindow(hwnd);
   }
 
   if (argv != nullptr && HasArgument(argc, argv, L"--uninstall")) {
+    if (auto* context = GetContext(hwnd)) {
+      context->uninstallToken = InstallerArgument(argc, argv, L"--token");
+      if (context->uninstallToken.find_first_of(L" \t\r\n\"") != std::wstring::npos) context->uninstallToken.clear();
+      context->quietUninstall = HasArgument(argc, argv, L"--quiet");
+      if (context->quietUninstall) context->silent = true;
+    }
     PostMessageW(hwnd, WM_COMMAND, IDC_UNINSTALL_BUTTON, 0);
   }
 
