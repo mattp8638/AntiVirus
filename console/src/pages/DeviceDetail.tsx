@@ -97,9 +97,9 @@ export default function DeviceDetail() {
 
   // Keep the header live (online state, CPU, memory) without a manual refresh.
   useEffect(() => {
-    const timer = setInterval(() => { if (document.visibilityState === "visible") reload(); }, 30000);
+    const timer = setInterval(() => { if (document.visibilityState === "visible") { reload(); reloadWhere(); } }, 30000);
     return () => clearInterval(timer);
-  }, [reload]);
+  }, [reload, reloadWhere]);
 
   if (error) return <ErrorNote error={error} />;
   if (!data) return <div className="empty">Loading…</div>;
