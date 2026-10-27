@@ -2612,6 +2612,49 @@ void RemoveAgentWatchdog(const std::filesystem::path& installRoot) {
                    &exitCode, &error);
 }
 
+// Microsoft Defender stays active next to Fenrir (only Microsoft-approved products can take over from it), and
+// an agent that watches shadow copies and mass file changes can look like ransomware to it. With the owner's
+// approval, Fenrir's own folders and programs are excluded so Defender never quarantines the agent; the
+// exclusions are removed again on uninstall. Nothing outside Fenrir's install and data folders is excluded.
+void ConfigureDefenderExclusions(HWND hwnd, const std::filesystem::path& installRoot, const bool add) {
+  const auto quote = [](const std::wstring& value) {
+    std::wstring out = L"'";
+    for (const auto c : value) {
+      out += c;
+      if (c == L'\'') out += L'\'';
+    }
+    return out + L"'";
+  };
+  std::wstring paths = quote(installRoot.wstring());
+  wchar_t programData[MAX_PATH]{};
+  if (GetEnvironmentVariableW(L"ProgramData", programData, MAX_PATH) > 0) {
+    paths += L"," + quote((std::filesystem::path(programData) / L"FenrirAgent").wstring());
+  }
+  std::wstring processes;
+  for (const wchar_t* name : {kServiceExeName, kEndpointExeName, kPamExeName, kRemoteHelperExeName, L"FenrirSetup.exe"}) {
+    processes += (processes.empty() ? L"" : L",") + quote((installRoot / name).wstring());
+  }
+  const std::wstring verb = add ? L"Add-MpPreference" : L"Remove-MpPreference";
+  const std::wstring script = L"$ErrorActionPreference='Stop'; if (-not (Get-Command " + verb + L" -ErrorAction SilentlyContinue)) { exit 3 }; " +
+                              verb + L" -ExclusionPath " + paths + L" -ExclusionProcess " + processes + L"; exit 0";
+  wchar_t systemDir[MAX_PATH]{};
+  GetSystemDirectoryW(systemDir, MAX_PATH);
+  const auto powershell = std::filesystem::path(systemDir) / L"WindowsPowerShell" / L"v1.0" / L"powershell.exe";
+  DWORD exitCode = 0;
+  std::wstring error;
+  const bool ran = RunProcessHidden(powershell, L"-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"" + script + L"\"",
+                                    installRoot.parent_path(), &exitCode, &error);
+  if (ran && exitCode == 0) {
+    PostLog(hwnd, add ? L"Added Microsoft Defender exclusions for Fenrir's folders and programs."
+                      : L"Removed Fenrir's Microsoft Defender exclusions.");
+  } else if (ran && exitCode == 3) {
+    PostLog(hwnd, L"Microsoft Defender is not available on this PC; no exclusions needed.");
+  } else {
+    PostLog(hwnd, L"Warning: could not update Microsoft Defender exclusions (exit " + std::to_wstring(exitCode) + L"). " + error +
+                      (add ? L" If Defender quarantines the agent, exclude " + installRoot.wstring() + L" manually." : L""));
+  }
+}
+
 void RunInstallOrRepairSteps(HWND hwnd, UiContext* context, bool repair);
 
 void RunInstallOrRepair(HWND hwnd, UiContext* context, const bool repair) {
@@ -2622,6 +2665,9 @@ void RunInstallOrRepair(HWND hwnd, UiContext* context, const bool repair) {
   // Tells the watchdog not to start the service while files are being replaced.
   std::ofstream(MaintenanceFlagPath(context->installRoot)) << "1";
   PostLog(hwnd, std::wstring(context->silent ? L"Silent upgrade" : (repair ? L"Repair" : L"Install")) + L" started.");
+  if (IsProcessElevated()) {
+    ConfigureDefenderExclusions(hwnd, context->installRoot, true);  // before any agent file is written
+  }
   RunInstallOrRepairSteps(hwnd, context, repair);
   std::filesystem::remove(MaintenanceFlagPath(context->installRoot), ec);
   g_setupLogPath.clear();
@@ -2859,6 +2905,7 @@ void RunUninstall(HWND hwnd, UiContext* context) {
   PostLog(hwnd, L"Removing Start menu shortcuts");
   RemoveStartMenuShortcuts();
   PostLog(hwnd, TrustOwnCodeSigningCertificate(context->setupPath, true));
+  ConfigureDefenderExclusions(hwnd, installRoot, false);
 
   PostStatus(hwnd, L"Removing installation registry entries...", 75);
   DeleteRegistryTree(HKEY_LOCAL_MACHINE, kArpRegistryRoot);
