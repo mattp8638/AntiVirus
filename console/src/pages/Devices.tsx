@@ -41,7 +41,7 @@ export default function Devices() {
           <option value="isolated">Isolated</option><option value="pending">Awaiting approval</option><option value="at-risk">At risk</option>
         </select>
         <select value={platform} onChange={(e) => setPlatform(e.target.value)} aria-label="Platform">
-          <option value="">All platforms</option><option value="windows">Windows</option><option value="linux">Linux</option><option value="macos">macOS</option>
+          <option value="">All platforms</option><option value="windows">Windows</option><option value="linux">Linux</option><option value="macos">macOS</option><option value="android">Android</option>
         </select>
       </div>
       <ErrorNote error={error} />
