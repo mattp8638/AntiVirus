@@ -7,6 +7,7 @@
 #include <system_error>
 #include <vector>
 
+#include "CrashReporter.h"
 #include "AgentService.h"
 #include "AgentConfig.h"
 #include "EnrollmentPersistence.h"
@@ -718,6 +719,7 @@ void PrintUsage() {
 }  // namespace
 
 int wmain(int argc, wchar_t* argv[]) {
+  antivirus::agent::crash::Install();
   const auto token = GetArgumentValue(argc, argv, L"--token");
   const auto elamDriver = GetArgumentValue(argc, argv, L"--elam-driver");
   if (!elamDriver.empty()) {

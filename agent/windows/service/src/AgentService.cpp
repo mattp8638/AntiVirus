@@ -1,6 +1,7 @@
 #include "AgentService.h"
 #include "BuildInfo.h"
 #include "LocalAdminRotation.h"
+#include "CrashReporter.h"
 #include "ExtendedPolicy.h"
 #include "FirewallPolicy.h"
 #include "NetworkProbe.h"
@@ -3821,6 +3822,10 @@ void AgentService::MaybeSelfUpdate(const int cycle) {
 void AgentService::RelaunchClientAfterUpgrade() {
   const auto flag = config_.installRootPath / L"runtime" / L"relaunch-client.flag";
   std::error_code ec;
+  // A crash in the previous run: where it happened (module+offset frames), so it shows up in the console.
+  if (const auto report = crash::TakeLastReport(); !report.empty()) {
+    QueueTelemetryEvent(L"agent.crashed", L"agent-service", L"The agent crashed and was restarted by Windows.", report);
+  }
   // Report how the last install, repair or upgrade went (written by FenrirSetup), with the end of its log
   // when it failed, so a silent upgrade problem shows up in the console.
   const auto resultFile = config_.installRootPath / L"runtime" / L"setup-result.json";
