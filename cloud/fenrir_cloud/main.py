@@ -241,6 +241,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from .routers import device_profile as device_profile_router
     app.include_router(device_profile_router.agent)
     app.include_router(device_profile_router.console)
+    from .routers import mobile as mobile_router
+    app.include_router(mobile_router.agent)
+    app.include_router(mobile_router.console)
     from .routers import elevation as elevation_router
     app.include_router(elevation_router.agent)
     app.include_router(elevation_router.console)

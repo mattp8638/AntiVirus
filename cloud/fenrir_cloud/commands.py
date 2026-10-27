@@ -23,6 +23,7 @@ class CommandSpec:
 
 
 ALL = ("windows", "linux", "macos")
+MOBILE = ("android",)
 
 CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("device.isolate", "Isolate from network", "Containment", platforms=ALL,
@@ -55,7 +56,7 @@ CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("device.reboot", "Restart device", "Administration", platforms=ALL, destructive=True,
                 description="Restart now, or after the delay in the payload (minutes)."),
     CommandSpec("device.shutdown", "Shut down device", "Administration", platforms=ALL, destructive=True),
-    CommandSpec("device.message", "Message logged-on user", "Administration", platforms=("windows",),
+    CommandSpec("device.message", "Message logged-on user", "Administration", platforms=("windows", "android"),
                 description="Show a message box to the signed-in user."),
     CommandSpec("service.control", "Start/stop/restart a service", "Administration", needs=("targetPath",), platforms=ALL,
                 description="targetPath is the service name; payload action is start, stop or restart."),
@@ -96,10 +97,25 @@ CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("update.rollback", "Roll back agent update", "Agent", permission="configure"),
     CommandSpec("agent.repair", "Repair agent", "Agent", platforms=ALL),
     CommandSpec("storage.maintenance", "Run storage maintenance", "Agent"),
-    CommandSpec("policy.refresh", "Refresh policy now", "Agent", platforms=ALL),
+    CommandSpec("policy.refresh", "Refresh policy now", "Agent", platforms=ALL + MOBILE),
+    # Phones (the Android agent). Lost mode is set from the Location tab, which records it on the device too.
+    CommandSpec("device.locate", "Locate now", "Phone", platforms=MOBILE,
+                description="Asks the phone for a fresh location fix; it appears on the Location tab within a minute."),
+    CommandSpec("device.lock", "Lock the phone", "Phone", platforms=MOBILE,
+                description="Locks the screen now; the user needs their PIN, pattern or fingerprint to get back in."),
+    CommandSpec("device.alarm", "Play alarm", "Phone", platforms=MOBILE,
+                description="Plays a loud alarm at full volume, even in silent mode, for the payload's seconds (default 60)."),
+    CommandSpec("device.lostmode", "Lost mode", "Phone", platforms=MOBILE,
+                description="Locks the phone, shows your message and phone number on the screen and reports its "
+                            "location every 5 minutes until lost mode is turned off. Use the Location tab."),
+    CommandSpec("device.wipe", "Erase the phone", "Phone", permission="configure", platforms=MOBILE, destructive=True,
+                description="Factory-resets the phone. Everything on it is deleted and it stops reporting. Asks for your "
+                            "password again."),
 )
 
 BY_TYPE = {spec.type: spec for spec in CATALOG}
+# Sent by a person from the device page only: never from automations, monitors, bulk actions or the API's batch paths.
+INTERACTIVE_ONLY = {"device.wipe", "device.lostmode"}
 
 
 def catalog_document() -> list[dict]:

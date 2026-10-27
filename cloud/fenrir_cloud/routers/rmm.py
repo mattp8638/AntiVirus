@@ -9,7 +9,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from .. import audit, rmm, services
-from ..commands import BY_TYPE
+from ..commands import BY_TYPE, INTERACTIVE_ONLY
 from ..db import get_db
 from ..deps import Principal, current_principal, scoped_tenant
 from ..models import (Alert, Command, ConditionState, Device, DeviceMetric, DevicePatch, Job, MonitorCondition, PatchApproval,
@@ -221,7 +221,7 @@ def create_command_job(body: dict = Body(...), principal: Principal = Depends(cu
     """Bulk action: queue one command (restart, patch scan, isolate...) on many devices."""
     command_type = str(body.get("commandType") or "")
     spec = BY_TYPE.get(command_type)
-    if spec is None or command_type in {"remote.session.start", "remote.session.end", "script.run"}:
+    if spec is None or command_type in {"remote.session.start", "remote.session.end", "script.run"} | INTERACTIVE_ONLY:
         raise HTTPException(400, "unknown or unsupported command for a bulk job")
     principal.require("configure" if spec.permission == "configure" else "respond")
     devices = _targets(principal, db, body.get("targets") or {})
@@ -289,8 +289,8 @@ def _validate_task(task: ScheduledTask) -> None:
     for action in task.actions:
         if action.get("type") not in {"script", "command", "software"}:
             raise HTTPException(400, "actions are script, command or software")
-        if action.get("type") == "command" and action.get("command") not in BY_TYPE:
-            raise HTTPException(400, f"unknown command {action.get('command')}")
+        if action.get("type") == "command" and (action.get("command") not in BY_TYPE or action.get("command") in INTERACTIVE_ONLY):
+            raise HTTPException(400, f"unknown or unsupported command {action.get('command')}")
 
 
 @router.post("/tasks")
@@ -394,7 +394,7 @@ def _check_condition(cond: MonitorCondition, db: Session, principal: Principal) 
                 raise HTTPException(400, str(exc)) from exc
         if kind == "command":
             spec = BY_TYPE.get(action.get("command"))
-            if spec is None or action.get("command") in {"script.run", "remote.session.start", "remote.session.end"}:
+            if spec is None or action.get("command") in {"script.run", "remote.session.start", "remote.session.end"} | INTERACTIVE_ONLY:
                 raise HTTPException(400, "invalid command in monitor action")
             if "targetPath" in spec.needs and not (action.get("targetPath") or cond.target):
                 raise HTTPException(400, "monitor command needs a target path")
