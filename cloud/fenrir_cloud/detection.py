@@ -557,8 +557,10 @@ def risk_breakdown(db: Session, device: Device) -> dict:
     ).all()
     alert_points = min(sum(ALERT_WEIGHTS.get(sev, 0) * count for sev, count in rows), 60)
     vulns = db.execute(select(Vulnerability).where(Vulnerability.device_id == device.id,
-                                                   Vulnerability.status.in_(("open", "patching")))).scalars().all()
-    scored = sorted(((vulnmgmt.risk_score(v, device.criticality), v) for v in vulns), key=lambda x: -x[0])
+                                                   Vulnerability.status.in_(vulnmgmt.UNRESOLVED))).scalars().all()
+    # A compensating control halves a vulnerability's weight; an accepted risk is still the full exposure.
+    scored = sorted(((vulnmgmt.risk_score(v, device.criticality) * (0.5 if v.status == "mitigated" else 1), v) for v in vulns),
+                    key=lambda x: -x[0])
     vuln_points = 0.0
     for index, (risk, _) in enumerate(scored):
         vuln_points += risk * (VULN_WEIGHTS[index] if index < len(VULN_WEIGHTS) else 0.2)

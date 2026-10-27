@@ -19,6 +19,11 @@ from sqlalchemy.orm import Session
 from . import audit, events, services
 from .models import Device, Ticket, Vulnerability, utcnow
 
+# Exposure is still present in every state except a verified fix. Starting remediation ("patching"), a compensating
+# control ("mitigated") or a signed-off exception ("accepted") are treatments, not fixes: posture, compliance and risk
+# keep counting them, and show the treatment alongside.
+UNRESOLVED = ("open", "patching", "mitigated", "accepted")
+
 SEVERITY_BASE = {"critical": 9.5, "high": 7.5, "medium": 5.0, "low": 2.5}
 CRITICALITY_FACTOR = {"low": 0.8, "medium": 1.0, "high": 1.2, "critical": 1.4}
 DUE_DAYS = {"P1": 14, "P2": 15, "P3": 30, "P4": 90}

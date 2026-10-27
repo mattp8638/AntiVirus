@@ -48,10 +48,12 @@ def dashboard(tenant_id: str | None = None, days: int = Query(default=7, ge=1, l
                                                         DnsQueryLog.action == "block")).scalar() or 0
     threats_blocked = db.execute(select(func.count()).where(Event.tenant_id.in_(scope), Event.occurred_at >= since,
                                                             Event.category == "malware")).scalar() or 0
+    from ..vulnmgmt import UNRESOLVED
+
     vulns = db.execute(select(Vulnerability.severity, func.count()).where(Vulnerability.tenant_id.in_(scope),
-                                                                          Vulnerability.status == "open")
+                                                                          Vulnerability.status.in_(UNRESOLVED))
                        .group_by(Vulnerability.severity)).all()
-    kev = db.execute(select(func.count()).where(Vulnerability.tenant_id.in_(scope), Vulnerability.status == "open",
+    kev = db.execute(select(func.count()).where(Vulnerability.tenant_id.in_(scope), Vulnerability.status.in_(UNRESOLVED),
                                                 Vulnerability.known_exploited.is_(True))).scalar() or 0
     open_tickets = db.execute(select(func.count()).where(or_(Ticket.account_tenant_id.in_(scope), Ticket.tenant_id.in_(scope)),
                                                          Ticket.status.notin_(("Resolved", "Closed")))).scalar() or 0

@@ -431,9 +431,14 @@ def _report_data(db: Session, tenant: Tenant, days: int) -> dict:
                                                     Event.category == "malware")).scalar() or 0
     dns_blocked = db.execute(select(func.count()).where(DnsQueryLog.tenant_id == tenant.id, DnsQueryLog.at >= since,
                                                         DnsQueryLog.action == "block")).scalar() or 0
+    from ..vulnmgmt import UNRESOLVED
+
     vulns = dict(db.execute(select(Vulnerability.severity, func.count()).where(Vulnerability.tenant_id == tenant.id,
-                                                                               Vulnerability.status == "open")
+                                                                               Vulnerability.status.in_(UNRESOLVED))
                             .group_by(Vulnerability.severity)).all())
+    treatment = dict(db.execute(select(Vulnerability.status, func.count()).where(Vulnerability.tenant_id == tenant.id,
+                                                                                 Vulnerability.status.in_(UNRESOLVED))
+                                .group_by(Vulnerability.status)).all())
     frameworks = compliance.evaluate(db, tenant)
     tickets = db.execute(select(Ticket).where(Ticket.account_tenant_id == tenant.id, Ticket.created_at >= since)).scalars().all()
     return {
@@ -441,7 +446,7 @@ def _report_data(db: Session, tenant: Tenant, days: int) -> dict:
         "devices": {"total": len(devices), "isolatedNow": sum(d.isolated for d in devices),
                     "highRisk": sum(1 for d in devices if d.risk_score >= 40)},
         "alerts": alerts, "incidents": {"total": len(incidents), "resolved": sum(i.status in ("resolved", "closed") for i in incidents)},
-        "threatEvents": threats, "dnsBlocked": dns_blocked, "openVulnerabilities": vulns,
+        "threatEvents": threats, "dnsBlocked": dns_blocked, "openVulnerabilities": vulns, "vulnerabilityTreatment": treatment,
         "compliance": [{"name": f["name"], "score": f["score"]} for f in frameworks],
         "service": _service_summary(db, tenant, tickets, since),
     }
