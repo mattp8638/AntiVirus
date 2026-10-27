@@ -5,6 +5,7 @@ import { ago, api, fmtTime } from "../api";
 import { useApp } from "../app-context";
 import { ErrorNote, PageHead, Pill, Sev, Table, useAction, useData } from "../components/ui";
 import { CommandModal } from "./DeviceDetail";
+import { EvidenceList, Indicators } from "../components/Evidence";
 
 export default function IncidentDetail() {
   const { id } = useParams();
@@ -12,6 +13,7 @@ export default function IncidentDetail() {
   const { data, error, reload } = useData<any>(`incidents/${id}`);
   const [note, setNote] = useState("");
   const [action, setAction] = useState<string | null>(null);
+  const [openAlert, setOpenAlert] = useState<string | null>(null);
   const { run, busy } = useAction();
 
   if (error) return <ErrorNote error={error} />;
@@ -45,10 +47,18 @@ export default function IncidentDetail() {
         <div>
           <div className="card">
             <h3>Alerts ({data.alerts.length})</h3>
-            <Table rows={data.alerts} columns={[{ key: "severity", label: "Sev", render: (a) => <Sev level={a.severity} /> },
-              { key: "title", label: "Alert" }, { key: "mitre", label: "MITRE", render: (a) => a.mitre.join(", ") },
-              { key: "process", label: "Process", render: (a) => <span className="mono small">{a.details?.process ?? ""}</span> },
+            <p className="small muted" style={{ marginTop: 0 }}>Click an alert to see its evidence: the file, hash, process, user and where it came from.</p>
+            <Table rows={data.alerts} onRow={(a) => setOpenAlert(openAlert === a.id ? null : a.id)} columns={[{ key: "severity", label: "Sev", render: (a) => <Sev level={a.severity} /> },
+              { key: "title", label: "Alert", render: (a) => <><b>{a.title}</b>{a.details?.threat && <div className="small muted">{a.details.threat}</div>}</> },
+              { key: "process", label: "File / process", render: (a) => <span className="mono small" style={{ wordBreak: "break-all" }}>{a.details?.file || a.details?.process || ""}</span> },
+              { key: "mitre", label: "MITRE", render: (a) => a.mitre.join(", ") },
               { key: "createdAt", label: "When", render: (a) => ago(a.createdAt) }]} />
+            {openAlert && (() => { const a = data.alerts.find((x: any) => x.id === openAlert); return a && (
+              <div className="card evidence-card">
+                <div className="row"><Sev level={a.severity} /><b style={{ flex: 1 }}>{a.title}</b><button className="ghost small" onClick={() => setOpenAlert(null)}>Close</button></div>
+                {a.details?.description && <p className="small muted">{a.details.description}</p>}
+                <EvidenceList details={a.details} />
+              </div>); })()}
           </div>
           <div className="card">
             <h3>Response actions</h3>
@@ -85,6 +95,10 @@ export default function IncidentDetail() {
               <dt>Ticket</dt><dd>{data.ticket ? <Link to="/service-desk">#{data.ticket.number} · {data.ticket.status}</Link>
                 : can("respond") && <button className="small" onClick={() => run(() => api(`incidents/${inc.id}/ticket`, { body: {} }), "Ticket opened").then(reload)}>Open ticket</button>}</dd>
             </dl>
+          </div>
+          <div className="card">
+            <h3>Indicators</h3>
+            <Indicators indicators={data.indicators || {}} />
           </div>
           <div className="card">
             <h3>Playbook: {data.playbook?.name ?? "none"} ({done}/{inc.checklist.length})</h3>

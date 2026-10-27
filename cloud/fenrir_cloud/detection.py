@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from . import services
+from . import evidence, services
 from .models import Alert, AutomationRule, DetectionRule, Device, Event, Incident, RuleMatch, Tenant, utcnow
 from .normalize import normalize
 from .sigma import CorrelationRule, SigmaError, SigmaRule, parse_rule
@@ -250,6 +250,9 @@ def _raise_alert(db: Session, device: Device, rule_id: str, title: str, level: s
             AlertSuppression.rule_id == rule_id, AlertSuppression.expires_at > utcnow()).limit(1)):
         return None
     since = event.occurred_at - ALERT_DEDUP_WINDOW
+    # What the alert is about (file, hash, threat, process, origin, service, registry, network...), for the console.
+    found = evidence.extract(event.fields or {}, event.event_type, event.summary or "",
+                             event.occurred_at.isoformat() + "Z" if event.occurred_at else None, event.source, event.id)
     recent = db.execute(
         select(Alert).where(Alert.device_id == device.id, Alert.rule_id == rule_id, Alert.created_at >= since,
                             Alert.status.in_(("new", "triaged")))
@@ -260,10 +263,17 @@ def _raise_alert(db: Session, device: Device, rule_id: str, title: str, level: s
             ids.append(event.id)
             recent.event_ids = ids
             recent.updated_at = utcnow()
+            recent.details = evidence.add_occurrence(recent.details or {}, found)
         return None
+    head = evidence.headline(found)
+    details = {**{k: v for k, v in head.items() if k in {"file", "sha256", "threat", "user"}}, **details}
+    for key in ("process", "file"):
+        if not details.get(key) and head.get(key):
+            details[key] = head[key]
+    details = evidence.add_occurrence({k: v for k, v in details.items() if v not in (None, "", [])}, found)
     alert = Alert(tenant_id=device.tenant_id, device_id=device.id, rule_id=rule_id, title=title,
                   severity=LEVEL_TO_SEVERITY.get(level, "medium"), mitre=mitre, event_ids=[event.id],
-                  details={k: v for k, v in details.items() if v not in (None, "", [])}, created_at=event.occurred_at)
+                  details=details, created_at=event.occurred_at)
     db.add(alert)
     db.flush()
     return alert
