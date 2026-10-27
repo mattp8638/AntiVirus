@@ -50,3 +50,25 @@ detection:
     EventType: 'protection.paused'
   condition: selection
 level: medium
+---
+title: Agent upgrade failed
+id: fenrir-agent-upgrade-failed
+description: A silent agent upgrade failed. The agent restarted the version that was installed; the payload includes the end of the installer log.
+tags: [attack.defense_evasion]
+logsource: {product: windows}
+detection:
+  selection:
+    EventType: 'agent.update.failed'
+  condition: selection
+level: medium
+---
+title: Agent crashed
+id: fenrir-agent-crashed
+description: The endpoint agent crashed and Windows restarted it. The payload names the faulting code (module+offset frames) for the build that crashed.
+tags: [attack.defense_evasion]
+logsource: {product: windows}
+detection:
+  selection:
+    EventType: 'agent.crashed'
+  condition: selection
+level: high

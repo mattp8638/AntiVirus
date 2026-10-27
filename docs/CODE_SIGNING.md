@@ -34,6 +34,17 @@ Each file is timestamped (DigiCert, then Sectigo) so its signature stays valid a
 
 ## Self-signed certificates: making Windows trust them
 
+**The installer does this for you.** On every install, repair and automatic upgrade, `FenrirSetup.exe`
+checks its own signature and adds the certificate that signed it to the local computer's **Trusted
+Publishers** store. A self-signed certificate also goes into **Trusted Root Certification Authorities**.
+* Only a code-signing certificate that cannot issue other certificates is accepted.
+* A changed or badly signed installer adds nothing.
+* A full uninstall removes the certificate again.
+* Devices installed before this change get it at their next automatic upgrade.
+
+The installer log shows what happened. The steps below are only needed for PCs that should trust Fenrir's
+files before the agent is installed, for example to stop the first download being flagged.
+
 A self-signed certificate is only trusted on devices that have it installed. Download it from:
 - Deploy agents → Windows → "Download the code-signing certificate";
 - or directly at `https://<your server>/downloads/fenrir-codesign.cer`.
@@ -52,7 +63,7 @@ certutil -addstore -f TrustedPublisher fenrir-codesign.cer
 **Intune:** Devices → Configuration → Create profile → Windows 10 and later → Templates → *Trusted certificate*. Create one profile per store.
 
 **Limits:**
-- Until the certificate is trusted, Windows shows the file as signed by an untrusted publisher.
+- Until the certificate is trusted (before the first install), Windows shows the file as signed by an untrusted publisher.
 - SmartScreen can still warn about new downloads. Its reputation comes from publicly trusted (CA-issued) certificates, especially EV ones.
 - A self-signed certificate cannot sign the kernel driver; that needs Microsoft's driver-signing process (see `DRIVER_SIGNING.md`).
 

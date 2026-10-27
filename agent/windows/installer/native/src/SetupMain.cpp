@@ -7,6 +7,8 @@
 #include <strsafe.h>
 #include <tlhelp32.h>
 #include <wincrypt.h>
+#include <softpub.h>
+#include <wintrust.h>
 #include <wrl/client.h>
 
 #include <array>
@@ -533,6 +535,11 @@ bool ResolveSignerCertificateFromSignedFile(const std::filesystem::path& signedF
     }
     return false;
   }
+  if (cryptMessage == nullptr) {  // CryptMsgGetParam would crash on a null message (e.g. a CTL)
+    if (certificateStore != nullptr) CertCloseStore(certificateStore, 0);
+    if (errorMessage != nullptr) *errorMessage = L"The file has no signer information.";
+    return false;
+  }
 
   DWORD signerInfoBytes = 0;
   if (CryptMsgGetParam(cryptMessage, CMSG_SIGNER_INFO_PARAM, 0, nullptr, &signerInfoBytes) == FALSE ||
@@ -650,6 +657,98 @@ bool BootstrapMinifilterSigningTrust(const std::filesystem::path& driverCatPath,
     *signerSubject = resolvedSignerSubject;
   }
   return true;
+}
+
+// Trusts the certificate that signed this installer, so Windows (SmartScreen, UAC, application control)
+// recognises Fenrir's programs as coming from a known publisher. Only a code-signing certificate that
+// cannot issue other certificates is accepted. It always goes into Trusted Publishers. A self-signed
+// certificate also goes into Trusted Root, which lets only that one certificate validate. With remove,
+// the same certificate is taken out of both stores (full uninstall).
+std::wstring TrustOwnCodeSigningCertificate(const std::filesystem::path& setupPath, const bool remove) {
+  WINTRUST_FILE_INFO fileInfo{};
+  fileInfo.cbStruct = sizeof(fileInfo);
+  fileInfo.pcwszFilePath = setupPath.c_str();
+  WINTRUST_DATA trustData{};
+  trustData.cbStruct = sizeof(trustData);
+  trustData.dwUIChoice = WTD_UI_NONE;
+  trustData.fdwRevocationChecks = WTD_REVOKE_NONE;
+  trustData.dwUnionChoice = WTD_CHOICE_FILE;
+  trustData.pFile = &fileInfo;
+  trustData.dwStateAction = WTD_STATEACTION_VERIFY;
+  trustData.dwProvFlags = WTD_CACHE_ONLY_URL_RETRIEVAL;
+  GUID policy = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+  const auto status = static_cast<HRESULT>(WinVerifyTrust(nullptr, &policy, &trustData));
+  trustData.dwStateAction = WTD_STATEACTION_CLOSE;
+  WinVerifyTrust(nullptr, &policy, &trustData);
+  if (status == TRUST_E_NOSIGNATURE || status == TRUST_E_SUBJECT_FORM_UNKNOWN) {
+    return L"This installer is not code-signed; no certificate to trust.";
+  }
+  // Untrusted root / chaining errors are expected before the certificate is trusted; anything else
+  // (a changed file, a bad signature) means the certificate must not be trusted.
+  if (status != ERROR_SUCCESS && status != CERT_E_UNTRUSTEDROOT && status != CERT_E_CHAINING &&
+      status != CERT_E_UNTRUSTEDTESTROOT) {
+    return L"Warning: the installer's signature did not verify (" + HresultToHexString(status) +
+           L"); its certificate was not trusted.";
+  }
+
+  PCCERT_CONTEXT certificate = nullptr;
+  std::wstring subject, error;
+  if (!ResolveSignerCertificateFromSignedFile(setupPath, &certificate, &subject, &error)) {
+    return L"Warning: could not read the installer's signing certificate. " + error;
+  }
+
+  bool codeSigning = false;
+  DWORD usageSize = 0;
+  if (CertGetEnhancedKeyUsage(certificate, 0, nullptr, &usageSize) && usageSize > 0) {
+    std::vector<BYTE> usageBuffer(usageSize);
+    auto* usage = reinterpret_cast<PCERT_ENHKEY_USAGE>(usageBuffer.data());
+    if (CertGetEnhancedKeyUsage(certificate, 0, usage, &usageSize)) {
+      for (DWORD i = 0; i < usage->cUsageIdentifier; ++i) {
+        if (std::string(usage->rgpszUsageIdentifier[i]) == szOID_PKIX_KP_CODE_SIGNING) codeSigning = true;
+      }
+    }
+  }
+  bool certificateAuthority = false;
+  if (const auto* extension = CertFindExtension(szOID_BASIC_CONSTRAINTS2, certificate->pCertInfo->cExtension,
+                                                certificate->pCertInfo->rgExtension)) {
+    CERT_BASIC_CONSTRAINTS2_INFO constraints{};
+    DWORD size = sizeof(constraints);
+    if (CryptDecodeObjectEx(X509_ASN_ENCODING, X509_BASIC_CONSTRAINTS2, extension->Value.pbData, extension->Value.cbData, 0,
+                            nullptr, &constraints, &size)) {
+      certificateAuthority = constraints.fCA != FALSE;
+    }
+  }
+  if (!codeSigning || certificateAuthority) {
+    CertFreeCertificateContext(certificate);
+    return L"The installer's certificate (" + subject + L") is not a plain code-signing certificate; it was not trusted.";
+  }
+  const bool selfSigned = CertCompareCertificateName(X509_ASN_ENCODING, &certificate->pCertInfo->Subject,
+                                                     &certificate->pCertInfo->Issuer) != FALSE;
+
+  std::wstring result;
+  if (remove) {
+    for (const wchar_t* storeName : {L"TrustedPublisher", L"ROOT"}) {
+      if (const auto store = CertOpenStore(CERT_STORE_PROV_SYSTEM_W, 0, static_cast<HCRYPTPROV_LEGACY>(0),
+                                           CERT_SYSTEM_STORE_LOCAL_MACHINE, storeName)) {
+        if (const auto found = CertFindCertificateInStore(store, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, 0,
+                                                          CERT_FIND_EXISTING, certificate, nullptr)) {
+          CertDeleteCertificateFromStore(found);  // frees the context
+        }
+        CertCloseStore(store, 0);
+      }
+    }
+    result = L"Removed the Fenrir code-signing certificate (" + subject + L") from the trusted stores.";
+  } else {
+    std::wstring storeError;
+    const bool publisher = EnsureCertificateInMachineStore(certificate, L"TrustedPublisher", &storeError);
+    const bool root = !selfSigned || EnsureCertificateInMachineStore(certificate, L"ROOT", &storeError);
+    result = publisher && root
+                 ? L"Trusted the Fenrir code-signing certificate (" + subject + L")" +
+                       (selfSigned ? L" as a trusted root and publisher." : L" as a trusted publisher.")
+                 : L"Warning: could not add the code-signing certificate to the machine stores. " + storeError;
+  }
+  CertFreeCertificateContext(certificate);
+  return result;
 }
 
 bool HasEmbeddedPayloadResource(HINSTANCE instance, const int resourceId) {
@@ -2265,7 +2364,19 @@ bool WriteArpEntry(const std::filesystem::path& installRoot) {
         WriteRegistryDword(HKEY_LOCAL_MACHINE, kArpRegistryRoot, L"NoRemove", 1);
 }
 
+// While an install, repair or upgrade runs, every log line also goes to <install>\runtime\setup-last.log, so a
+// silent upgrade that went wrong can be diagnosed (and reported by the agent afterwards).
+std::filesystem::path g_setupLogPath;
+
 void PostLog(HWND hwnd, const std::wstring& text) {
+  if (!g_setupLogPath.empty()) {
+    SYSTEMTIME now{};
+    GetSystemTime(&now);
+    wchar_t stamp[32]{};
+    swprintf_s(stamp, L"%04u-%02u-%02uT%02u:%02u:%02uZ ", now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
+    std::wofstream log(g_setupLogPath, std::ios::app);
+    log << stamp << text << L"\n";
+  }
   if (!IsWindow(hwnd)) {
     return;
   }
@@ -2427,20 +2538,159 @@ bool InstallPayloadFiles(HWND hwnd, UiContext* context, const bool repair, std::
   if (!CopySelfToInstallRoot(context->setupPath, installRoot, errorMessage)) {
     return false;
   }
+  PostLog(hwnd, TrustOwnCodeSigningCertificate(context->setupPath, false));
 
   return true;
 }
 
+std::filesystem::path MaintenanceFlagPath(const std::filesystem::path& installRoot) {
+  return installRoot / L"runtime" / L"maintenance.flag";
+}
+
+// The result of the last install, repair or upgrade, read (and deleted) by the agent when it next starts so it can
+// tell the console whether a silent upgrade worked.
+void WriteSetupResult(const std::filesystem::path& installRoot, const bool ok, const bool silent, const std::wstring& message) {
+  std::error_code ec;
+  std::filesystem::create_directories(installRoot / L"runtime", ec);
+  std::wstring escaped;
+  for (const auto c : message.substr(0, 1500)) {
+    if (c == L'"' || c == L'\\') escaped += L'\\';
+    if (c == L'\r' || c == L'\n') { escaped += L' '; continue; }
+    escaped += c;
+  }
+  std::wofstream out(installRoot / L"runtime" / L"setup-result.json", std::ios::trunc);
+  out << L"{\"ok\":" << (ok ? L"true" : L"false") << L",\"silent\":" << (silent ? L"true" : L"false") << L",\"message\":\""
+      << escaped << L"\"}";
+}
+
+// Never leave the agent stopped: if anything failed after the service was stopped for the upgrade, start
+// whatever is installed again.
+void RecoverServiceAfterFailure(HWND hwnd) {
+  if (!ServiceExists() || QueryServiceStateByName(kServiceName) == L"running") return;
+  std::wstring startError;
+  if (StartInstalledService(&startError)) {
+    PostLog(hwnd, L"Restarted the protection service after the failed step.");
+  } else {
+    PostLog(hwnd, L"Warning: the protection service could not be restarted: " + startError);
+  }
+}
+
+// A scheduled task (as SYSTEM, every 5 minutes) that starts the agent if it has stopped, unless an install or
+// upgrade is in progress (maintenance.flag younger than 30 minutes).
+void RegisterAgentWatchdog(HWND hwnd, const std::filesystem::path& installRoot) {
+  const auto script = installRoot / L"tools" / L"fenrir-watchdog.ps1";
+  {
+    std::wofstream out(script, std::ios::trunc);
+    out << L"# Fenrir agent watchdog: starts the protection service if it has stopped.\r\n"
+        << L"$flag = '" << MaintenanceFlagPath(installRoot).wstring() << L"'\r\n"
+        << L"if ((Test-Path $flag) -and (((Get-Date) - (Get-Item $flag).LastWriteTime).TotalMinutes -lt 30)) { exit 0 }\r\n"
+        << L"$service = Get-Service -Name 'FenrirAgent' -ErrorAction SilentlyContinue\r\n"
+        << L"if ($service -and $service.Status -eq 'Stopped') { Start-Service -Name 'FenrirAgent' -ErrorAction SilentlyContinue }\r\n";
+  }
+  wchar_t systemDir[MAX_PATH]{};
+  GetSystemDirectoryW(systemDir, MAX_PATH);
+  const std::filesystem::path schtasks = std::filesystem::path(systemDir) / L"schtasks.exe";
+  const auto powershell = std::filesystem::path(systemDir) / L"WindowsPowerShell" / L"v1.0" / L"powershell.exe";
+  const std::wstring action = L"\\\"" + powershell.wstring() + L"\\\" -NoProfile -NonInteractive -ExecutionPolicy Bypass "
+                              L"-WindowStyle Hidden -File \\\"" + script.wstring() + L"\\\"";
+  DWORD exitCode = 0;
+  std::wstring error;
+  const bool ok = RunProcessHidden(schtasks, L"/Create /F /TN \"Fenrir\\Agent watchdog\" /SC MINUTE /MO 5 /RU SYSTEM /RL HIGHEST /TR \"" +
+                                       action + L"\"",
+                                   installRoot, &exitCode, &error) &&
+                  exitCode == 0;
+  PostLog(hwnd, ok ? L"Registered the agent watchdog task (restarts the agent if it stops)."
+                   : L"Warning: could not register the agent watchdog task. " + error);
+}
+
+void RemoveAgentWatchdog(const std::filesystem::path& installRoot) {
+  wchar_t systemDir[MAX_PATH]{};
+  GetSystemDirectoryW(systemDir, MAX_PATH);
+  DWORD exitCode = 0;
+  std::wstring error;
+  RunProcessHidden(std::filesystem::path(systemDir) / L"schtasks.exe", L"/Delete /F /TN \"Fenrir\\Agent watchdog\"", installRoot,
+                   &exitCode, &error);
+}
+
+// Microsoft Defender stays active next to Fenrir (only Microsoft-approved products can take over from it), and
+// an agent that watches shadow copies and mass file changes can look like ransomware to it. With the owner's
+// approval, Fenrir's own folders and programs are excluded so Defender never quarantines the agent; the
+// exclusions are removed again on uninstall. Nothing outside Fenrir's install and data folders is excluded.
+void ConfigureDefenderExclusions(HWND hwnd, const std::filesystem::path& installRoot, const bool add) {
+  const auto quote = [](const std::wstring& value) {
+    std::wstring out = L"'";
+    for (const auto c : value) {
+      out += c;
+      if (c == L'\'') out += L'\'';
+    }
+    return out + L"'";
+  };
+  std::wstring paths = quote(installRoot.wstring());
+  wchar_t programData[MAX_PATH]{};
+  if (GetEnvironmentVariableW(L"ProgramData", programData, MAX_PATH) > 0) {
+    paths += L"," + quote((std::filesystem::path(programData) / L"FenrirAgent").wstring());
+  }
+  std::wstring processes;
+  for (const wchar_t* name : {kServiceExeName, kEndpointExeName, kPamExeName, kRemoteHelperExeName, L"FenrirSetup.exe"}) {
+    processes += (processes.empty() ? L"" : L",") + quote((installRoot / name).wstring());
+  }
+  const std::wstring verb = add ? L"Add-MpPreference" : L"Remove-MpPreference";
+  const std::wstring script = L"$ErrorActionPreference='Stop'; if (-not (Get-Command " + verb + L" -ErrorAction SilentlyContinue)) { exit 3 }; " +
+                              verb + L" -ExclusionPath " + paths + L" -ExclusionProcess " + processes + L"; exit 0";
+  wchar_t systemDir[MAX_PATH]{};
+  GetSystemDirectoryW(systemDir, MAX_PATH);
+  const auto powershell = std::filesystem::path(systemDir) / L"WindowsPowerShell" / L"v1.0" / L"powershell.exe";
+  DWORD exitCode = 0;
+  std::wstring error;
+  const bool ran = RunProcessHidden(powershell, L"-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"" + script + L"\"",
+                                    installRoot.parent_path(), &exitCode, &error);
+  if (ran && exitCode == 0) {
+    PostLog(hwnd, add ? L"Added Microsoft Defender exclusions for Fenrir's folders and programs."
+                      : L"Removed Fenrir's Microsoft Defender exclusions.");
+  } else if (ran && exitCode == 3) {
+    PostLog(hwnd, L"Microsoft Defender is not available on this PC; no exclusions needed.");
+  } else {
+    PostLog(hwnd, L"Warning: could not update Microsoft Defender exclusions (exit " + std::to_wstring(exitCode) + L"). " + error +
+                      (add ? L" If Defender quarantines the agent, exclude " + installRoot.wstring() + L" manually." : L""));
+  }
+}
+
+void RunInstallOrRepairSteps(HWND hwnd, UiContext* context, bool repair);
+
 void RunInstallOrRepair(HWND hwnd, UiContext* context, const bool repair) {
+  std::error_code ec;
+  std::filesystem::create_directories(context->installRoot / L"runtime", ec);
+  g_setupLogPath = context->installRoot / L"runtime" / L"setup-last.log";
+  std::filesystem::remove(g_setupLogPath, ec);
+  // Tells the watchdog not to start the service while files are being replaced.
+  std::ofstream(MaintenanceFlagPath(context->installRoot)) << "1";
+  PostLog(hwnd, std::wstring(context->silent ? L"Silent upgrade" : (repair ? L"Repair" : L"Install")) + L" started.");
+  if (IsProcessElevated()) {
+    ConfigureDefenderExclusions(hwnd, context->installRoot, true);  // before any agent file is written
+  }
+  RunInstallOrRepairSteps(hwnd, context, repair);
+  std::filesystem::remove(MaintenanceFlagPath(context->installRoot), ec);
+  g_setupLogPath.clear();
+}
+
+// Every failure path: restart the agent if it was left stopped, record the result, then report it.
+void FailInstall(HWND hwnd, UiContext* context, const bool installed, const std::wstring& message) {
+  PostLog(hwnd, L"Failed: " + message);
+  RecoverServiceAfterFailure(hwnd);
+  WriteSetupResult(context->installRoot, false, context->silent, message);
+  PostComplete(hwnd, false, installed, false, message);
+}
+
+void RunInstallOrRepairSteps(HWND hwnd, UiContext* context, const bool repair) {
   std::wstring errorMessage;
   if (!IsProcessElevated()) {
-    PostComplete(hwnd, false, false, false,
+    FailInstall(hwnd, context, false,
                  L"Administrator rights are required to register the Fenrir Agent service. Restart the installer with elevation.");
     return;
   }
 
   if (!InstallPayloadFiles(hwnd, context, repair, &errorMessage)) {
-    PostComplete(hwnd, false, false, false, errorMessage);
+    FailInstall(hwnd, context, false, errorMessage);
     return;
   }
 
@@ -2495,7 +2745,7 @@ void RunInstallOrRepair(HWND hwnd, UiContext* context, const bool repair) {
     PostLog(hwnd, L"Preparing customer-managed enrollment for the selected cloud server.");
   }
   if (!PersistControlPlaneUrl(context->controlPlaneBaseUrl, &errorMessage)) {
-    PostComplete(hwnd, false, false, false, errorMessage);
+    FailInstall(hwnd, context, false, errorMessage);
     return;
   }
 
@@ -2511,7 +2761,7 @@ void RunInstallOrRepair(HWND hwnd, UiContext* context, const bool repair) {
                   L"\" --enroll-token \"" + context->enrollmentToken + L"\"";
   }
   if (!RunProcessHidden(serviceExe, serviceArgs, context->installRoot, &exitCode, &errorMessage)) {
-    PostComplete(hwnd, false, false, false, errorMessage);
+    FailInstall(hwnd, context, false, errorMessage);
     return;
   }
 
@@ -2533,7 +2783,7 @@ void RunInstallOrRepair(HWND hwnd, UiContext* context, const bool repair) {
   PostLog(hwnd, L"Starting the installed protection service");
   if (!StartInstalledService(&errorMessage) ||
       !VerifyInstalledServicePersistence(context->installRoot, &errorMessage)) {
-    PostComplete(hwnd, false, IsInstalledAt(context->installRoot), false, errorMessage);
+    FailInstall(hwnd, context, IsInstalledAt(context->installRoot), errorMessage);
     return;
   }
 
@@ -2541,7 +2791,7 @@ void RunInstallOrRepair(HWND hwnd, UiContext* context, const bool repair) {
     PostStatus(hwnd, L"Running post-install health checks...", 90);
     PostLog(hwnd, L"Validating minifilter runtime state, broker enforcement probe, and strict self-test");
     if (!RunPostInstallHealthChecks(context->installRoot, &errorMessage)) {
-      PostComplete(hwnd, false, false, false, errorMessage);
+      FailInstall(hwnd, context, false, errorMessage);
       return;
     }
   } else {
@@ -2552,22 +2802,24 @@ void RunInstallOrRepair(HWND hwnd, UiContext* context, const bool repair) {
   PostStatus(hwnd, L"Configuring startup and shortcuts...", 93);
   PostLog(hwnd, L"Registering endpoint client auto-start");
   if (!RegisterEndpointAutoStart(context->installRoot)) {
-    PostComplete(hwnd, false, false, false, L"Could not register endpoint auto-start.");
+    FailInstall(hwnd, context, false, L"Could not register endpoint auto-start.");
     return;
   }
 
   PostLog(hwnd, L"Creating Start menu shortcuts");
   if (!CreateStartMenuShortcuts(context->installRoot)) {
-    PostComplete(hwnd, false, false, false, L"Could not create Start menu shortcuts.");
+    FailInstall(hwnd, context, false, L"Could not create Start menu shortcuts.");
     return;
   }
 
   PostStatus(hwnd, L"Writing Add/Remove Programs entry...", 97);
   PostLog(hwnd, L"Registering the uninstall entry");
   if (!WriteArpEntry(context->installRoot)) {
-    PostComplete(hwnd, false, false, false, L"Could not register the Add/Remove Programs entry.");
+    FailInstall(hwnd, context, false, L"Could not register the Add/Remove Programs entry.");
     return;
   }
+
+  RegisterAgentWatchdog(hwnd, context->installRoot);
 
   PostStatus(hwnd, L"Launching background companion...", 100);
   if (context->silent) {
@@ -2590,6 +2842,8 @@ void RunInstallOrRepair(HWND hwnd, UiContext* context, const bool repair) {
                              ? L" Fenrir attempted to install the bundled WebView2 runtime dependency, but modern dashboard rendering is still unavailable on this host. The endpoint client will stay on the legacy native view until Microsoft Edge WebView2 Runtime is available."
                              : L" Modern dashboard rendering requires Microsoft Edge WebView2 Runtime; this host will use the legacy native view until WebView2 Runtime is installed.";
   }
+  PostLog(hwnd, completionMessage);
+  WriteSetupResult(context->installRoot, true, context->silent, completionMessage);
   PostComplete(hwnd, true, true, false, completionMessage);
 }
 
@@ -2624,6 +2878,7 @@ void RunUninstall(HWND hwnd, UiContext* context) {
   const auto endpointClientPath = installRoot / kEndpointExeName;
   const auto serviceExe = installRoot / kServiceExeName;
 
+  RemoveAgentWatchdog(installRoot);
   StopMatchingProcess(endpointClientPath);
 
   std::wstring errorMessage;
@@ -2649,6 +2904,8 @@ void RunUninstall(HWND hwnd, UiContext* context) {
   RemoveEndpointAutoStart();
   PostLog(hwnd, L"Removing Start menu shortcuts");
   RemoveStartMenuShortcuts();
+  PostLog(hwnd, TrustOwnCodeSigningCertificate(context->setupPath, true));
+  ConfigureDefenderExclusions(hwnd, installRoot, false);
 
   PostStatus(hwnd, L"Removing installation registry entries...", 75);
   DeleteRegistryTree(HKEY_LOCAL_MACHINE, kArpRegistryRoot);

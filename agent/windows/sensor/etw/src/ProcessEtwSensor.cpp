@@ -183,6 +183,14 @@ std::wstring QuerySignerSubject(const std::wstring& path) {
                        &cryptMessage, nullptr) == FALSE) {
     return {};
   }
+  // CryptQueryObject can succeed without returning a message (e.g. for a CTL). CryptMsgGetParam dereferences its
+  // handle, so a null message crashes CRYPT32 and, because this runs for every process start, the whole service.
+  if (cryptMessage == nullptr) {
+    if (certStore != nullptr) {
+      CertCloseStore(certStore, 0);
+    }
+    return {};
+  }
 
   DWORD signerInfoSize = 0;
   if (CryptMsgGetParam(cryptMessage, CMSG_SIGNER_INFO_PARAM, 0, nullptr, &signerInfoSize) == FALSE) {
@@ -362,7 +370,8 @@ std::wstring FormatEtwPropertyValue(const BYTE* data, const ULONG dataSize, cons
       return stream.str();
     }
     case kInTypeBoolean:
-      return (*reinterpret_cast<const uint32_t*>(data) == 0U) ? L"false" : L"true";
+      // Read only the bytes the event supplied (a short property must not over-read the buffer).
+      return ReadLittleEndian<uint32_t>(data, dataSize).value_or(dataSize > 0 && data[0] != 0 ? 1U : 0U) == 0U ? L"false" : L"true";
     case kInTypeFileTime: {
       const auto fileTimeValue = ReadLittleEndian<ULONGLONG>(data, dataSize);
       return fileTimeValue.has_value() ? FileTimeToUtcString(*fileTimeValue) : std::wstring{};
