@@ -149,6 +149,11 @@ jobs:
           echo "PASS: production refuses unsigned; lab builds unsigned and says so"
       - name: Build the actual Docker image and start PostgreSQL + cloud
         shell: bash
+        env:
+          # Keep the throwaway release key outside the checkout. Use Compose's
+          # BuildKit path; Bake requires a separate filesystem entitlement for
+          # that runner-temp secret before it will start any image build.
+          COMPOSE_BAKE: "false"
         run: |
           set -euo pipefail
           docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.lab.yml --env-file deploy/.env up -d --build --wait --wait-timeout 180
