@@ -11,17 +11,34 @@ RUN npm run build
 FROM golang:1.24-bookworm AS agents
 WORKDIR /src/agent/linux
 COPY agent/linux/ ./
+# Release signing (FIX-07/AGT-03). The Ed25519 release key arrives as a BuildKit secret (never in a layer); its
+# public key, plus any FENRIR_RELEASE_PUBLIC_KEYS (a key that signs offline, or the next key during a rotation),
+# is pinned into the agents, which then install only releases those keys signed. FENRIR_RELEASE_SEQ numbers the
+# release (auto-update.sh passes the git time of the last agent change); releases only move forwards.
+# With no key (CI, lab without one) the agents keep the older hash-only update check.
+ARG FENRIR_RELEASE_PUBLIC_KEYS=""
+ARG FENRIR_RELEASE_SEQ=""
 # BUILD_ID fingerprints the agent source: agents compare it with their own and upgrade themselves when it
 # differs, so every server rebuild with agent changes rolls out without version bumps.
-RUN BUILD_ID=$(find . -type f \( -name '*.go' -o -name 'go.mod' -o -name 'go.sum' \) -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16) \
- && LDFLAGS="-s -w -X github.com/AntiVirus/agent/linux/pkg/fleet.BuildID=$BUILD_ID" \
+RUN --mount=type=secret,id=release_key \
+    BUILD_ID=$(find . -type f \( -name '*.go' -o -name 'go.mod' -o -name 'go.sum' \) -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16) \
+ && go build -trimpath -o /tmp/fenrir-release-sign ./cmd/fenrir-release-sign \
+ && KEY=/run/secrets/release_key && PUBS="$FENRIR_RELEASE_PUBLIC_KEYS" && SIGNED=false \
+ && if [ -s "$KEY" ]; then PUBS="$(/tmp/fenrir-release-sign -key "$KEY" -public)${PUBS:+,$PUBS}"; SIGNED=true; fi \
+ && SEQ="${FENRIR_RELEASE_SEQ:-$(date +%s)}" \
+ && PKG=github.com/AntiVirus/agent/linux/pkg/fleet \
+ && LDFLAGS="-s -w -X $PKG.BuildID=$BUILD_ID -X $PKG.ReleaseSeq=$SEQ -X $PKG.ReleasePublicKeys=$PUBS" \
  && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" -o /out/fenrir-agent-linux-amd64 ./cmd/fenrir-agent \
  && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" -o /out/fenrir-agent-linux-arm64 ./cmd/fenrir-agent \
  && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" -o /out/fenrir-agent-darwin-amd64 ./cmd/fenrir-agent \
  && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" -o /out/fenrir-agent-darwin-arm64 ./cmd/fenrir-agent \
  && VERSION=$(sed -n 's/^const Version = "\(.*\)"/\1/p' pkg/fleet/agent.go) \
+ && if [ "$SIGNED" = true ]; then /tmp/fenrir-release-sign -key "$KEY" -out /out -release "$SEQ" -version "$VERSION" -build-id "$BUILD_ID" \
+      linux:amd64:/out/fenrir-agent-linux-amd64 linux:arm64:/out/fenrir-agent-linux-arm64 \
+      macos:amd64:/out/fenrir-agent-darwin-amd64 macos:arm64:/out/fenrir-agent-darwin-arm64; fi \
  && sum() { sha256sum "$1" | cut -d' ' -f1; } \
- && printf '{"version":"%s","buildId":"%s","sha256":{"amd64":"%s","arm64":"%s"},"darwinSha256":{"amd64":"%s","arm64":"%s"}}\n' "$VERSION" "$BUILD_ID" \
+ && printf '{"version":"%s","buildId":"%s","release":%s,"releaseSigned":%s,"pinnedReleaseKeys":%s,"sha256":{"amd64":"%s","arm64":"%s"},"darwinSha256":{"amd64":"%s","arm64":"%s"}}\n' \
+      "$VERSION" "$BUILD_ID" "$SEQ" "$SIGNED" "$(echo "$PUBS" | awk -F, '{print (NF && $1 != "") ? NF : 0}')" \
       "$(sum /out/fenrir-agent-linux-amd64)" "$(sum /out/fenrir-agent-linux-arm64)" \
       "$(sum /out/fenrir-agent-darwin-amd64)" "$(sum /out/fenrir-agent-darwin-arm64)" \
       > /out/linux-build.json

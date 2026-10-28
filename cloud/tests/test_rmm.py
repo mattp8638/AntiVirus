@@ -293,7 +293,24 @@ def test_linux_agent_update_metadata(client, device, tmp_path, monkeypatch):
                                                                                           "arm64": "0" * 64}}))
     info = client.get("/api/v1/agent/update/linux?arch=amd64", headers=device["headers"]).json()
     assert info == {"available": True, "version": "1.2.0", "buildId": "", "sha256": _hashlib.sha256(binary).hexdigest(),
-                    "url": "/downloads/fenrir-agent-linux-amd64", "autoUpdate": True}
+                    "url": "/downloads/fenrir-agent-linux-amd64", "autoUpdate": True, "manifest": "", "signature": ""}
+    # A signed manifest, when the release has one, is passed through byte for byte with its signature.
+    manifest = _json.dumps({"schema": 1, "platform": "linux", "arch": "amd64", "release": 5, "version": "1.2.1",
+                            "sha256": _hashlib.sha256(binary).hexdigest(), "size": len(binary)})
+    (tmp_path / "linux-amd64.manifest.json").write_text(manifest)
+    (tmp_path / "linux-amd64.manifest.sig").write_text("c2lnbmF0dXJl\n")
+    info = client.get("/api/v1/agent/update/linux?arch=amd64", headers=device["headers"]).json()
+    assert info["manifest"] == manifest and info["signature"] == "c2lnbmF0dXJl" and info["version"] == "1.2.1"
+    # A manifest signed off the server (deploy/releases, mounted read-only) takes precedence over the image's own.
+    offline = tmp_path / "offline"
+    offline.mkdir()
+    monkeypatch.setattr(deployment_installers, "SIGNED_RELEASES", offline)
+    (offline / "linux-amd64.manifest.json").write_text(manifest.replace('"release": 5', '"release": 6'))
+    (offline / "linux-amd64.manifest.sig").write_text("b2ZmbGluZQ==")
+    info = client.get("/api/v1/agent/update/linux?arch=amd64", headers=device["headers"]).json()
+    assert '"release": 6' in info["manifest"] and info["signature"] == "b2ZmbGluZQ=="
+    (offline / "linux-amd64.manifest.sig").unlink()  # a manifest without its signature is not served
+    assert client.get("/api/v1/agent/update/linux?arch=amd64", headers=device["headers"]).json()["manifest"] == ""
     assert client.get("/api/v1/agent/update/linux?arch=mips", headers=device["headers"]).status_code == 422
 
 
@@ -311,7 +328,7 @@ def test_macos_agent_update_metadata(client, device, tmp_path, monkeypatch):
         "darwinSha256": {"amd64": "3" * 64, "arm64": _hashlib.sha256(binary).hexdigest()}}))
     info = client.get("/api/v1/agent/update/macos?arch=arm64", headers=device["headers"]).json()
     assert info == {"available": True, "version": "1.3.0", "buildId": "", "sha256": _hashlib.sha256(binary).hexdigest(),
-                    "url": "/downloads/fenrir-agent-darwin-arm64", "autoUpdate": True}
+                    "url": "/downloads/fenrir-agent-darwin-arm64", "autoUpdate": True, "manifest": "", "signature": ""}
     assert client.get("/api/v1/agent/update/macos?arch=amd64", headers=device["headers"]).json()["available"] is False
     assert client.get("/api/v1/agent/update/beos?arch=amd64", headers=device["headers"]).status_code == 422
 

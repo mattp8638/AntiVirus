@@ -47,6 +47,61 @@
   - Rollout uses rings with health gates and an emergency stop.
 - Dependency: the owner performs a release-key ceremony and decides where the private key lives.
 
+### D-07 status (Phase 1)
+
+Implemented as designed, with one change: the release number is the git commit time of the last change under `agent/linux`. That number only increases, and rebuilding the same code doesn't create a new release. There are two ways to hold the key:
+
+- **On the server (default):** `auto-update.sh` creates the key in `deploy/signing`, and the Docker build reads it as a BuildKit secret.
+- **Off the server:** set `FENRIR_RELEASE_PUBLIC_KEYS`, sign the binaries elsewhere with `fenrir-release-sign`, and copy the manifests into `deploy/releases`, which is mounted read-only.
+
+A missing key falls back to the hash-only check rather than failing the build. Otherwise a server still running the old `auto-update.sh` could never deploy the change that introduced the key.
+
+### D-09: Customer users and tickets
+
+Every signed-in customer user may raise a ticket, including read-only viewers, because asking for help is not a configuration change. For callers without service permissions, the server keeps only subject, description, impact/urgency/priority and device. Assignee, board, status and record type are dropped. Changing a ticket after it is created requires service permissions; customers comment through the portal. Boards and devices named in a ticket must belong to the caller's scope.
+
+### D-10: MSP-level settings
+
+Boards, workflow rules, unattached quotes, the inbound email token and other service-desk records with no customer account belong to the MSP. Only users whose scope includes the MSP tenant may create or change them; customer-side users and customer-scoped staff get 403. Records about a customer (tickets, configurations, contracts) stay MSP-owned with `account_tenant_id` set to the customer.
+
+### D-11: Staged agent rollouts
+
+Rollout rings reuse the existing `updates.channel` policy (canary, beta, stable, lts), so rings follow customer and group policy inheritance. Soak times are 2 hours for canary, 24 for beta and 72 for stable. A stage with no devices advances at once, so fleets that use no rings behave as before.
+
+A device counts as failed when:
+
+- it is still reporting the old build 60 minutes after it was offered the update, while it is online; or
+- it stops checking in after being offered the update; or
+- it sends `agent.update.rejected`.
+
+The first failure pauses the rollout. Only platform administrators can pause, resume, advance or stop a rollout.
+
+### D-12: API credentials
+
+Integrations use `fsk_…` bearer tokens. Each token signs in as its own service user, with role `service`, which has no permissions of its own. The token's scope list decides what it may do:
+
+- **Which permissions:** `read`, `respond`, `configure`, `crm`, `grc` or `billing`, and only ones its creator holds. Platform, tenant management, vault and Microsoft 365 administration can never be granted.
+- **Where:** one customer subtree.
+- **Never:** sign-in, the portal, or anything that needs a password re-check. So it cannot reveal secrets, approve sensitive actions, or create or rotate credentials.
+
+Creating or rotating a credential requires a recent password check, and the token is shown once. The server keeps only a hash of the token.
+
+### D-13: Audit assurance
+
+**Checkpoints.** A checkpoint records the chain head (its position and hash). One is taken daily by the scheduler and more can be taken on demand. Each is published as an `audit.checkpoint` outbox event, so subscribed webhooks or a SIEM keep a copy outside the database. That copy is what catches an attacker who edits rows and then recomputes every hash after them.
+
+**Verification.** Every break is reported, not just the first, and each one is classified:
+
+- `modified`: the stored hash no longer matches the row's content.
+- `deleted`: chain positions are missing.
+- `relinked`: the row is intact but points somewhere unexpected.
+- `checkpoint`: the chain no longer has the hash a checkpoint recorded.
+- `legacy-race`: an intact row that chains onto a sibling and was written before migration 22. This is a software race, not tampering.
+
+**Exports.** An export is JSON Lines. In a customer's export, other customers' rows keep only their chain fields. `scripts/verify_audit_export.py` checks an export offline, using only the Python standard library.
+
+**Retention.** Retention is 365 to 3650 days, or keep everything. Rows are pruned only up to a checkpoint whose hash still matches; that checkpoint becomes the anchor verification starts from. A legal hold stops all pruning and needs a reason. Changing the policy needs a platform administrator and a fresh password check.
+
 ### Other external dependencies (owner action needed when reached)
 
 | Dependency | Needed for |

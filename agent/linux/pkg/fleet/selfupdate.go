@@ -28,6 +28,9 @@ type AgentUpdate struct {
 	BuildID   string `json:"buildId"`
 	SHA256    string `json:"sha256"`
 	URL       string `json:"url"`
+	// Signed release manifest (exact bytes) and its base64 Ed25519 signature; see release.go.
+	Manifest  string `json:"manifest"`
+	Signature string `json:"signature"`
 }
 
 func (c *Client) FetchAgentUpdate(arch string) (*AgentUpdate, error) {
@@ -114,7 +117,21 @@ func (a *Agent) selfUpdate(force bool) (map[string]interface{}, error) {
 	if !info.Available {
 		return nil, errors.New("the Fenrir server has no Linux agent build for " + runtime.GOARCH)
 	}
-	if !force && !NeedsUpdate(info.Version, info.BuildID, Version, BuildID) {
+	expectedSHA, expectedSize := info.SHA256, int64(-1)
+	if keys := PinnedReleaseKeys(); len(keys) > 0 {
+		// This build trusts only releases signed with its release key, and only ones that move forwards.
+		m, err := VerifyRelease([]byte(info.Manifest), info.Signature, keys, platformName(), runtime.GOARCH, currentRelease(), time.Now(), force)
+		var older *downgradeError
+		if errors.As(err, &older) && older.offered == older.current {
+			return map[string]interface{}{"updated": false, "current": Version, "available": info.Version, "reason": "already up to date"}, nil
+		}
+		if err != nil {
+			a.emit("agent.update.rejected", "updater", "Agent update refused: "+err.Error(),
+				map[string]interface{}{"offeredVersion": info.Version, "currentRelease": currentRelease(), "reason": err.Error()})
+			return nil, fmt.Errorf("update refused: %w", err)
+		}
+		info.Version, expectedSHA, expectedSize = m.Version, m.SHA256, m.Size
+	} else if !force && !NeedsUpdate(info.Version, info.BuildID, Version, BuildID) {
 		return map[string]interface{}{"updated": false, "current": Version, "available": info.Version, "reason": "already up to date"}, nil
 	}
 	data, err := a.client.DownloadFile(info.URL, maxAgentBinary)
@@ -122,8 +139,11 @@ func (a *Agent) selfUpdate(force bool) (map[string]interface{}, error) {
 		return nil, fmt.Errorf("download failed: %w", err)
 	}
 	sum := sha256.Sum256(data)
-	if got := hex.EncodeToString(sum[:]); !strings.EqualFold(got, info.SHA256) || info.SHA256 == "" {
-		return nil, fmt.Errorf("checksum mismatch (expected %s, got %s); update not applied", info.SHA256, got)
+	if got := hex.EncodeToString(sum[:]); !strings.EqualFold(got, expectedSHA) || expectedSHA == "" {
+		return nil, fmt.Errorf("checksum mismatch (expected %s, got %s); update not applied", expectedSHA, got)
+	}
+	if expectedSize >= 0 && int64(len(data)) != expectedSize {
+		return nil, fmt.Errorf("size mismatch (expected %d bytes, got %d); update not applied", expectedSize, len(data))
 	}
 	exe, err := a.executablePath()
 	if err != nil {
@@ -138,7 +158,7 @@ func (a *Agent) selfUpdate(force bool) (map[string]interface{}, error) {
 		return nil, fmt.Errorf("could not replace the agent binary: %w", err)
 	}
 	a.emit("agent.updated", "updater", "Agent updated from "+Version+" to "+info.Version,
-		map[string]interface{}{"from": Version, "to": info.Version, "sha256": info.SHA256})
+		map[string]interface{}{"from": Version, "to": info.Version, "sha256": expectedSHA, "release": currentRelease()})
 	go func() {
 		// Leave time for the command result and the event above to reach the cloud.
 		time.Sleep(a.restartDelay)

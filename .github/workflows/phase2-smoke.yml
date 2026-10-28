@@ -122,6 +122,10 @@ jobs:
             printf 'FENRIR_FEED_SYNC=false\n'
             printf 'FENRIR_ALLOW_UNSIGNED_WINDOWS_INSTALLERS=false\n'
           } > deploy/.env
+          # Throwaway agent release key for this run only, outside the checkout: exercises the signed-release path.
+          openssl genpkey -algorithm ed25519 -out "$RUNNER_TEMP/release-ed25519.pem"
+          echo "FENRIR_RELEASE_KEY=$RUNNER_TEMP/release-ed25519.pem" >> "$GITHUB_ENV"
+          echo "FENRIR_RELEASE_SEQ=$(git log -1 --format=%ct -- agent/linux)" >> "$GITHUB_ENV"
       - name: Production profile refuses to build without a signing certificate
         shell: bash
         run: |
@@ -171,8 +175,25 @@ jobs:
           for arch, digest in linux["darwinSha256"].items():
               data = (root / f"fenrir-agent-darwin-{arch}").read_bytes()
               assert data[:4] in (b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe") and hashlib.sha256(data).hexdigest() == digest, arch
-          print("PASS: unsigned-lab Windows installer and Linux/macOS agents match their build metadata")
+          assert linux["releaseSigned"] is True and linux["pinnedReleaseKeys"] == 1, linux
+          for platform, prefix in (("linux", "linux"), ("macos", "darwin")):
+              for arch in ("amd64", "arm64"):
+                  manifest = json.loads((root / f"{platform}-{arch}.manifest.json").read_text())
+                  data = (root / f"fenrir-agent-{prefix}-{arch}").read_bytes()
+                  assert manifest["platform"] == platform and manifest["arch"] == arch and manifest["release"] == linux["release"], manifest
+                  assert manifest["sha256"] == hashlib.sha256(data).hexdigest() and manifest["size"] == len(data), (platform, arch)
+          print("PASS: unsigned-lab Windows installer and Linux/macOS agents match their build metadata and signed manifests")
           PY
+          # Signatures checked independently of Fenrir's code, with OpenSSL and the run's public key.
+          openssl pkey -in "$FENRIR_RELEASE_KEY" -pubout -out /tmp/release-pub.pem
+          pub=$(openssl pkey -in "$FENRIR_RELEASE_KEY" -pubout -outform DER | tail -c 32 | base64)
+          for m in linux-amd64 linux-arm64 macos-amd64 macos-arm64; do
+            docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.lab.yml --env-file deploy/.env exec -T cloud cat "/app/cloud/downloads/$m.manifest.json" > "/tmp/$m.json"
+            docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.lab.yml --env-file deploy/.env exec -T cloud cat "/app/cloud/downloads/$m.manifest.sig" | base64 -d > "/tmp/$m.sig"
+            openssl pkeyutl -verify -pubin -inkey /tmp/release-pub.pem -rawin -in "/tmp/$m.json" -sigfile "/tmp/$m.sig"
+          done
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.lab.yml --env-file deploy/.env exec -T cloud grep -c "$pub" /app/cloud/downloads/fenrir-agent-linux-amd64
+          echo "PASS: agent release manifests verify with OpenSSL and the release key is pinned in the agent"
       - name: Verify complete monitoring-to-ticket-to-RMM outcome using real HTTP/PostgreSQL
         shell: bash
         run: |

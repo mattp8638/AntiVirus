@@ -128,6 +128,7 @@ class Device(Base):
     os_version: Mapped[str] = mapped_column(String(255), default="")
     serial_number: Mapped[str] = mapped_column(String(255), default="")
     agent_version: Mapped[str] = mapped_column(String(64), default="")
+    agent_build: Mapped[str] = mapped_column(String(64), default="")  # source fingerprint the agent reports (AGT-04)
     platform_version: Mapped[str] = mapped_column(String(64), default="")
     health_state: Mapped[str] = mapped_column(String(40), default="unknown")
     isolated: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -1631,3 +1632,82 @@ class M365Action(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     __table_args__ = (UniqueConstraint("connection_id", "request_id", name="uq_m365_action_request"),)
+
+
+class AgentRollout(Base):
+    """Staged rollout of one agent build for one platform (AGT-04): canary -> beta -> stable -> lts rings, by the
+    devices' updates.channel policy. A failure in the current stage pauses it before the next ring sees the build."""
+    __tablename__ = "agent_rollouts"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("rol"))
+    platform: Mapped[str] = mapped_column(String(20), index=True)
+    build: Mapped[str] = mapped_column(String(80))
+    version: Mapped[str] = mapped_column(String(64), default="")
+    stage: Mapped[int] = mapped_column(Integer, default=0)  # index into rollouts.STAGES
+    state: Mapped[str] = mapped_column(String(20), default="active")  # active | paused | stopped | complete | superseded
+    reason: Mapped[str] = mapped_column(String(500), default="")
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    stage_started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    history: Mapped[list] = mapped_column(JSON, default=list)
+    __table_args__ = (UniqueConstraint("platform", "build", name="uq_agent_rollout_build"),)
+
+
+class AgentRolloutDevice(Base):
+    """A device that was offered a rollout's build, and what happened."""
+    __tablename__ = "agent_rollout_devices"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("rod"))
+    rollout_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    stage: Mapped[int] = mapped_column(Integer, default=0)
+    offered_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    outcome: Mapped[str] = mapped_column(String(20), default="pending")  # pending | updated | failed
+    detail: Mapped[str] = mapped_column(String(500), default="")
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    __table_args__ = (UniqueConstraint("rollout_id", "device_id", name="uq_agent_rollout_device"),)
+
+
+class ApiCredential(Base):
+    """A scoped API credential for an integration (CORE-04). It acts as its own service user - never as the person
+    who created it - with an explicit permission list, one customer subtree, an expiry and usage tracking."""
+    __tablename__ = "api_credentials"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("apc"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    scopes: Mapped[list] = mapped_column(JSON, default=list)
+    secret_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    prefix: Mapped[str] = mapped_column(String(16), default="")
+    service_user_id: Mapped[str] = mapped_column(String(32))
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    rotated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_by: Mapped[str] = mapped_column(String(200), default="")
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_used_ip: Mapped[str] = mapped_column(String(64), default="")
+    use_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class AuditCheckpoint(Base):
+    """The audit chain head (position and hash) at a moment in time (CORE-06). Published as an outbox event so a copy
+    lives outside this database; "anchor" rows mark where retention pruned the chain, so verification starts there."""
+    __tablename__ = "audit_checkpoints"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ack"))
+    kind: Mapped[str] = mapped_column(String(20), default="checkpoint")  # checkpoint | anchor
+    seq: Mapped[int] = mapped_column(Integer, index=True)
+    hash: Mapped[str] = mapped_column(String(64))
+    rows: Mapped[int] = mapped_column(Integer, default=0)
+    reason: Mapped[str] = mapped_column(String(300), default="")
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AuditPolicy(Base):
+    """Audit retention and legal hold (single row, id 1)."""
+    __tablename__ = "audit_policy"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True)  # None: keep everything
+    legal_hold: Mapped[bool] = mapped_column(Boolean, default=False)
+    hold_reason: Mapped[str] = mapped_column(String(500), default="")
+    updated_by: Mapped[str] = mapped_column(String(200), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

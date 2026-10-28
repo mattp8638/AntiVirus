@@ -8,9 +8,9 @@ Baseline of the review: `main` at `790e364`. Work branch: `claude/jolly-goodall-
 
 | State | Count |
 |---|---|
-| verified | 5 (FIX-01 to FIX-05) |
-| implemented-unverified | 8 (FIX-08 and 7 requirements the brief marked U) |
-| partial | 98 |
+| verified | 6 (FIX-01 to FIX-05, FIX-08) |
+| implemented-unverified | 9 (FIX-07, AGT-04 and 7 requirements the brief marked U) |
+| partial | 96 |
 | missing | 66 |
 | externally-blocked | 1 (FIX-06) |
 
@@ -25,12 +25,17 @@ Overall parity: **not passed**. MVP: **not yet declared**.
 | FIX-03 | `2eb277a` | Server-side revocable sessions, remote viewer cut-off; `test_sessions.py` |
 | FIX-04 | `d07687c` | Unresolved exposure counted regardless of workflow state; `test_exposure_counts.py` |
 | FIX-05 | `d87ca95` | Compare-and-swap audit chain head; `test_audit_concurrency.py` (failure reproduced on PostgreSQL 16 before the fix) |
-| FIX-08 | `8fda3b7` | Framework revisions: reworded requirements need review, dry-run diff, snapshots, historical export; `test_grc_revisions.py`. Passes locally (321 tests, SQLite and PostgreSQL); waiting for CI. |
+| FIX-08 | `8fda3b7` | Framework revisions: reworded requirements need review, dry-run diff, snapshots, historical export; `test_grc_revisions.py`. Verified in CI ([run 78](https://github.com/mattp8638/AntiVirus/actions/runs/40649462515)). |
 | (owner request) | `473eb80` | Remote desktop Ctrl+Alt+Del is now sent by the agent service. Cross-compiled only; not yet tested on a real server (RMM-09/RMM-10). |
+| FIX-07 / AGT-03 / AGT-04 | (this milestone) | Signed Linux/macOS agent releases; staged rollouts with automatic pause. See `release_test.go` and `test_rollouts.py`. |
+| CORE-01 (API) | (this milestone) | Cross-customer matrix over every API operation. Fixed: customer users could change MSP-wide PSA settings (including the inbound email token); a read-only viewer could edit tickets; non-staff could set staff ticket fields; foreign board/device IDs were accepted on tickets; the portal matched contacts across customers. |
+| CORE-04 (API credentials) | (this milestone) | Scoped service identities for integrations: expiry, rotation, revocation and usage tracking; `test_api_credentials.py`. Device key rotation is still open. |
+| CORE-06 (audit assurance) | (this milestone) | Checkpoints published outside the database, classified verification, redacted verifiable export, retention to an anchor, legal hold; `test_audit_assurance.py`. |
+| CI | `b5cf672` | Removed the placeholder signing files that the merge brought back. [Run 78](https://github.com/mattp8638/AntiVirus/actions/runs/40649462515) passed, which also verifies FIX-08 in CI. |
 
 ## In progress
 
-- Phase 0 records: this file, `catalogue.csv`, `acceptance.md`, `decisions.md`, `release-gates.md`.
+- Phase 1 (CORE and AGT).
 
 ## Externally blocked
 
@@ -40,14 +45,12 @@ Overall parity: **not passed**. MVP: **not yet declared**.
 
 ## Failed / known failing
 
-- **AT-13 for the Go agent:** releases are not independently signed and downgrades are accepted (FIX-07). Scheduled with AGT-03/AGT-04.
+- None known. AT-13 now passes in automated tests.
 
 ## Next actions (Phase 1, in dependency order)
 
-1. CORE-01: a customer-scope test matrix across APIs, jobs, files and websockets (AT-03), and fixes for any leaks it finds.
-2. FIX-07 / AGT-03 / AGT-04: signed release manifests for the Go agent, release ordering, rings, pause and rollback. Remove the unused `agent/linux/pkg/updater`.
-3. CORE-04: API key and device key lifecycle (rotate, expire, scope, usage).
-4. CORE-02: custom roles with customer/site assignments.
-5. CORE-06: audit checkpoints, protected export, retention.
-6. CORE-07 / AGT-05: command reconciliation after disconnect (AT-05).
-7. CORE-08, CORE-09, CORE-14: health and metrics, backup and restore, production-mode hardening.
+1. CORE-01, remainder: background jobs/automations and file paths.
+2. CORE-04 remainder: device API key rotation and expiry (needs an agent rotate command).
+3. CORE-02: custom roles with customer/site assignments.
+4. CORE-07 / AGT-05: command reconciliation after disconnect (AT-05).
+5. CORE-08, CORE-09, CORE-14: health and metrics, backup and restore, production-mode hardening.

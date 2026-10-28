@@ -27,6 +27,15 @@ def _msp(principal: Principal, db: Session) -> str:
     return services.msp_tenant_id(db, principal.user.tenant_id)
 
 
+def _msp_owned(principal: Principal, db: Session) -> str:
+    """The MSP tenant, for creating MSP-level records (boards, workflows, quotes, the inbound email token). Staff
+    scoped to a customer, and customer-side users, are refused: the MSP's settings are shared by every customer."""
+    owner = _msp(principal, db)
+    if owner not in principal.tenant_ids:
+        raise HTTPException(403, "Only MSP staff can change the MSP's service desk settings")
+    return owner
+
+
 def _owned(db: Session, principal: Principal, model, obj_id: str):
     obj = db.get(model, obj_id)
     if obj is None or (obj.tenant_id not in principal.tenant_ids
@@ -83,7 +92,7 @@ def list_boards(principal: Principal = Depends(current_principal), db: Session =
 @router.post("/psa/boards")
 def create_board(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("configure")
-    board = Board(tenant_id=_msp(principal, db), name=str(body.get("name") or "New board"),
+    board = Board(tenant_id=_msp_owned(principal, db), name=str(body.get("name") or "New board"),
                   statuses=[dict(s) for s in psa.DEFAULT_STATUSES], types=[dict(t) for t in psa.DEFAULT_TYPES])
     apply_fields(board, body, BOARD_FIELDS)
     db.add(board)
@@ -170,6 +179,15 @@ def create_ticket(body: dict = Body(...), principal: Principal = Depends(current
     principal.check_tenant(account)
     if not body.get("subject"):
         raise HTTPException(400, "subject is required")
+    if not (principal.can("crm") or principal.can("respond")):
+        # Anyone signed in may ask for help, but only staff route, assign or classify the ticket.
+        body = {k: body[k] for k in ("subject", "description", "impact", "urgency", "priority", "deviceId", "accountTenantId") if k in body}
+    if body.get("boardId"):
+        _owned(db, principal, Board, body["boardId"])
+    if body.get("deviceId"):
+        device = db.get(Device, body["deviceId"])
+        if device is None or device.tenant_id != account:
+            raise HTTPException(404, "Device not found for this customer")
     priority = psa.priority_for(body.get("impact"), body.get("urgency")) or str(body.get("priority") or "P3")
     if priority not in services.DEFAULT_SLA_HOURS:
         raise HTTPException(400, "priority must be P1-P4")
@@ -225,8 +243,7 @@ def get_ticket(ticket_id: str, principal: Principal = Depends(current_principal)
 def update_ticket(ticket_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
                   db: Session = Depends(get_db)):
     ticket = _owned(db, principal, Ticket, ticket_id)
-    if set(body) - {"comment", "internal"} and not (principal.can("crm") or principal.can("respond")):
-        raise HTTPException(403, "Your role can only comment on tickets")
+    _require_service(principal)  # read-only roles change nothing; customers comment through the portal
     changed: list[str] = []
     if body.get("boardId") and body["boardId"] != ticket.board_id:
         board = _owned(db, principal, Board, body["boardId"])
@@ -264,6 +281,8 @@ def update_ticket(ticket_id: str, body: dict = Body(...), principal: Principal =
         psa.add_note(db, ticket, principal.actor, str(body["comment"]), kind, email_contact=bool(body.get("emailContact")),
                      staff=principal.can("crm") or principal.can("respond"))
         changed.append("note")
+    if not changed:  # nothing to do: don't touch the ticket or fire "ticket.updated" workflows
+        return to_dict(ticket)
     ticket.updated_at = utcnow()
     psa.run_workflows(db, ticket, "ticket.updated")
     audit.record(db, principal.actor, "ticket.updated", f"#{ticket.number}", ticket.account_tenant_id, fields=changed)
@@ -611,10 +630,11 @@ def _crud(model, prefix: str, fields: set[str], required: str, permission: str =
         owner = body.get("tenantId") if model is KbArticle else None
         if owner:
             principal.check_tenant(owner)
-        obj = model(tenant_id=owner or _msp(principal, db))
         if hasattr(model, "account_tenant_id"):
             account = body.get("accountTenantId")
             principal.check_tenant(account)
+        obj = model(tenant_id=owner or (_msp(principal, db) if hasattr(model, "account_tenant_id") else _msp_owned(principal, db)))
+        if hasattr(model, "account_tenant_id"):
             obj.account_tenant_id = account
         if model is Configuration:
             _validate_configuration_links(db, obj.account_tenant_id, {
@@ -715,7 +735,8 @@ def _quote_totals(quote: Quote) -> dict:
 @router.post("/psa/quotes")
 def create_quote(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("crm")
-    owner = _msp(principal, db)
+    # A quote for one of the caller's customers is fine; an unattached quote is MSP-level.
+    owner = _msp(principal, db) if body.get("accountTenantId") else _msp_owned(principal, db)
     count = db.execute(select(func.count()).select_from(Quote).where(Quote.tenant_id == owner)).scalar() or 0
     lines = []
     for line in body.get("lines") or []:
@@ -784,7 +805,7 @@ def create_workflow(body: dict = Body(...), principal: Principal = Depends(curre
     principal.require("configure")
     if body.get("trigger", "ticket.created") not in TRIGGERS:
         raise HTTPException(400, f"trigger must be one of {sorted(TRIGGERS)}")
-    rule = WorkflowRule(tenant_id=_msp(principal, db), name=str(body.get("name") or "Workflow rule"))
+    rule = WorkflowRule(tenant_id=_msp_owned(principal, db), name=str(body.get("name") or "Workflow rule"))
     apply_fields(rule, body, WORKFLOW_FIELDS)
     db.add(rule)
     audit.record(db, principal.actor, "psa.workflow.created", rule.name, rule.tenant_id)
@@ -863,7 +884,7 @@ def rotate_inbound_token(principal: Principal = Depends(current_principal), db: 
     principal.require("configure")
     from ..security import new_secret
 
-    tenant = db.get(Tenant, _msp(principal, db))
+    tenant = db.get(Tenant, _msp_owned(principal, db))
     token = new_secret("inb", 24)
     tenant.settings = {**(tenant.settings or {}), "inboundEmailToken": token}
     audit.record(db, principal.actor, "psa.inbound_token.rotated", tenant.name, tenant.id)

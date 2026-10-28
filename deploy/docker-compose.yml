@@ -20,10 +20,14 @@ services:
       dockerfile: deploy/Dockerfile
       # Windows code signing: put the certificate at deploy/signing/codesign.pfx (and its password, if any, in
       # deploy/signing/codesign.password). The production profile refuses to build without it. See docs/CODE_SIGNING.md.
-      secrets: [codesign_pfx, codesign_password]
+      # Linux/macOS agent release signing: an Ed25519 key at deploy/signing/release-ed25519.pem (auto-update.sh
+      # creates one). See docs/AUTO_UPDATE.md, "Signed agent releases".
+      secrets: [codesign_pfx, codesign_password, release_key]
       # production needs the certificate above; lab builds unsigned agents (see docker-compose.lab.yml).
       args:
         FENRIR_BUILD_PROFILE: ${FENRIR_BUILD_PROFILE:-production}
+        FENRIR_RELEASE_PUBLIC_KEYS: ${FENRIR_RELEASE_PUBLIC_KEYS:-}
+        FENRIR_RELEASE_SEQ: ${FENRIR_RELEASE_SEQ:-}
     restart: unless-stopped
     depends_on: { db: { condition: service_healthy } }
     environment:
@@ -51,7 +55,8 @@ services:
       FENRIR_IMAP_PASSWORD: ${FENRIR_IMAP_PASSWORD:-}
       FENRIR_IMAP_FOLDER: ${FENRIR_IMAP_FOLDER:-INBOX}
       FENRIR_ARTIFACT_DIR: /data/artifacts
-    volumes: [artifacts:/data]
+    # deploy/releases: agent release manifests signed off the server (docs/AUTO_UPDATE.md); read-only.
+    volumes: [artifacts:/data, ./releases:/app/cloud/releases:ro]
     ports: ["8080:8080"]
 
 secrets:
@@ -59,6 +64,8 @@ secrets:
     file: ${FENRIR_CODESIGN_PFX:-./signing/codesign.pfx}
   codesign_password:
     file: ${FENRIR_CODESIGN_PASSWORD_FILE:-./signing/codesign.password}
+  release_key:  # unset: no key, so agents keep the hash-only check (auto-update.sh creates a key and sets this)
+    file: ${FENRIR_RELEASE_KEY:-./lab/no-certificate}
 
 volumes:
   db: {}

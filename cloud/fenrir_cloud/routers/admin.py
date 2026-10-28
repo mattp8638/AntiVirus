@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import secrets
 
 import re
@@ -108,7 +110,7 @@ def revoke_user_sessions(user_id: str, request: Request, principal: Principal = 
     """Sign a user out everywhere (lost laptop, suspected compromise)."""
     principal.require("configure")
     user = db.get(User, user_id)
-    if user is None:
+    if user is None or user.role == "service":  # API credentials' service users are managed only as credentials
         raise HTTPException(404, "Not found")
     principal.check_tenant(user.tenant_id)
     if user.role == "platform_admin" and not principal.can("platform"):
@@ -212,7 +214,7 @@ def mfa_reset(user_id: str, request: Request, principal: Principal = Depends(cur
     """For a user who lost their phone: an administrator clears their MFA so they can enrol again."""
     principal.require("manage_tenants")
     user = db.get(User, user_id)
-    if user is None:
+    if user is None or user.role == "service":  # API credentials' service users are managed only as credentials
         raise HTTPException(404, "Not found")
     principal.check_tenant(user.tenant_id)
     require_reauth(request, principal)
@@ -338,7 +340,8 @@ def update_tenant(tenant_id: str, body: dict = Body(...), principal: Principal =
 
 @router.get("/users")
 def list_users(tenant_id: str | None = None, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    rows = db.execute(select(User).where(User.tenant_id.in_(scoped_tenant(principal, tenant_id))).order_by(User.email)).scalars().all()
+    rows = db.execute(select(User).where(User.tenant_id.in_(scoped_tenant(principal, tenant_id)), User.role != "service")
+                      .order_by(User.email)).scalars().all()  # API credentials' service users are listed with the credentials
     return [to_dict(u) for u in rows]
 
 
@@ -371,7 +374,7 @@ def create_user(body: dict = Body(...), principal: Principal = Depends(current_p
 def update_user(user_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("configure")
     user = db.get(User, user_id)
-    if user is None:
+    if user is None or user.role == "service":  # API credentials' service users are managed only as credentials
         raise HTTPException(404, "Not found")
     principal.check_tenant(user.tenant_id)
     if "role" in body and (body["role"] not in ROLES or (body["role"] == "platform_admin" and not principal.can("platform"))):
@@ -569,3 +572,88 @@ def audit_log(tenant_id: str | None = None, limit: int = 200, principal: Princip
 def audit_verify(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("manage_tenants")
     return audit.verify_chain(db)
+
+
+@router.get("/audit/checkpoints")
+def audit_checkpoints(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("manage_tenants")
+    from ..models import AuditCheckpoint
+
+    rows = db.execute(select(AuditCheckpoint).order_by(AuditCheckpoint.created_at.desc()).limit(200)).scalars().all()
+    return [to_dict(r) for r in rows]
+
+
+@router.post("/audit/checkpoints")
+def audit_checkpoint(body: dict = Body(default={}), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Record the chain head now (also published to webhooks, so a copy is kept outside this database)."""
+    principal.require("manage_tenants")
+    cp = audit.checkpoint(db, principal.actor, str(body.get("reason") or "manual")[:300])
+    db.commit()
+    return to_dict(cp)
+
+
+@router.get("/audit/export")
+def audit_export(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """JSON Lines: a header, then every row from the retention anchor on. Outside the platform administrator's view,
+    other customers' rows keep only their chain fields. Check it offline with scripts/verify_audit_export.py."""
+    principal.require("configure")
+    from fastapi.responses import Response
+
+    from ..models import AuditCheckpoint
+
+    full = principal.can("platform")
+    rows = audit.export_rows(db, None if full else set(principal.tenant_ids))
+    anchor = audit._anchor(db)
+    checkpoints = db.execute(select(AuditCheckpoint).where(AuditCheckpoint.kind == "checkpoint").order_by(AuditCheckpoint.seq)).scalars().all()
+    header = {"format": "fenrir-audit-export/1", "exportedAt": utcnow().isoformat() + "Z", "exportedBy": principal.actor,
+              "scope": "all" if full else sorted(principal.tenant_ids),
+              "anchor": {"seq": anchor.seq, "hash": anchor.hash} if anchor else None,
+              "checkpoints": [{"seq": c.seq, "hash": c.hash, "at": c.created_at.isoformat() + "Z"} for c in checkpoints]}
+    audit.record(db, principal.actor, "audit.exported", f"{len(rows)} rows", principal.user.tenant_id, scope=header["scope"] if not full else "all")
+    db.commit()
+    body = "\n".join(json.dumps(line, sort_keys=True, default=str) for line in [header, *rows]) + "\n"
+    return Response(body, media_type="application/x-ndjson",
+                    headers={"Content-Disposition": f'attachment; filename="fenrir-audit-{utcnow():%Y%m%d%H%M}.jsonl"'})
+
+
+@router.get("/audit/policy")
+def audit_policy(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("manage_tenants")
+    from ..models import AuditPolicy
+
+    policy = db.get(AuditPolicy, 1)
+    return {"retentionDays": policy.retention_days if policy else None, "legalHold": bool(policy and policy.legal_hold),
+            "holdReason": policy.hold_reason if policy else "", "updatedBy": policy.updated_by if policy else "",
+            "updatedAt": policy.updated_at.isoformat() + "Z" if policy else None}
+
+
+@router.put("/audit/policy")
+def set_audit_policy(request: Request, body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Retention (days, or null to keep everything; at least 365) and legal hold. Platform administrators, with a
+    fresh password check."""
+    principal.require("platform")
+    require_reauth(request, principal)
+    from ..models import AuditPolicy
+
+    days = body.get("retentionDays")
+    if days is not None and (not isinstance(days, int) or days < 365 or days > 3650):
+        raise HTTPException(400, "retentionDays must be between 365 and 3650, or null to keep everything")
+    hold = bool(body.get("legalHold"))
+    reason = str(body.get("holdReason") or "").strip()[:500]
+    if hold and not reason:
+        raise HTTPException(400, "Say why the audit trail is on legal hold")
+    policy = db.get(AuditPolicy, 1) or AuditPolicy(id=1)
+    db.add(policy)
+    policy.retention_days, policy.legal_hold, policy.hold_reason = days, hold, reason
+    policy.updated_by, policy.updated_at = principal.actor, utcnow()
+    audit.record(db, principal.actor, "audit.policy_changed", "audit", None, retentionDays=days, legalHold=hold, reason=reason)
+    db.commit()
+    return audit_policy(principal, db)
+
+
+@router.post("/audit/retention/apply")
+def apply_audit_retention(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("platform")
+    pruned = audit.apply_retention(db, principal.actor)
+    db.commit()
+    return {"pruned": pruned}

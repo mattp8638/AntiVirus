@@ -193,7 +193,8 @@ type HeartbeatResponse struct {
 
 func (c *Client) Heartbeat(agentVersion, health string, isolated bool, metrics map[string]interface{}) (*HeartbeatResponse, error) {
 	var out HeartbeatResponse
-	body := map[string]interface{}{"agentVersion": agentVersion, "platformVersion": agentVersion, "healthState": health, "isolated": isolated}
+	body := map[string]interface{}{"agentVersion": agentVersion, "platformVersion": agentVersion, "healthState": health, "isolated": isolated,
+		"buildId": BuildID, "release": currentRelease()}
 	if metrics != nil {
 		body["metrics"] = metrics
 	}

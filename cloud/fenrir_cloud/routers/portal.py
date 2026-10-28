@@ -58,7 +58,8 @@ def portal_create(body: dict = Body(...), principal: Principal = Depends(_portal
     urgency = str(body.get("urgency") or "Medium").title()
     impact = str(body.get("impact") or "Low").title()
     priority = psa.priority_for(impact, urgency) or "P3"
-    contact = db.execute(select(Contact).where(Contact.email == principal.user.email)).scalars().first()
+    contact = db.execute(select(Contact).where(Contact.email == principal.user.email,
+                                               Contact.account_tenant_id == _account(principal))).scalars().first()
     ticket = services.open_ticket(db, _account(principal), subject, str(body.get("description") or ""), priority, "portal",
                                   principal.user.name or principal.user.email, impact=impact, urgency=urgency,
                                   contact_email=principal.user.email, contact_id=contact.id if contact else None)
