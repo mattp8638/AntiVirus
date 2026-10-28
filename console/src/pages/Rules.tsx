@@ -1,7 +1,8 @@
+import { displayValue } from "../components/DisplayValue";
 import { useState } from "react";
 import { api } from "../api";
 import { useApp } from "../app-context";
-import { Modal, PageHead, Pill, Sev, Table, Tabs, useAction, useData } from "../components/ui";
+import { Modal, PageHead, Pill, Sev, Table, Tabs, useAction, useData, useListData } from "../components/ui";
 
 const NEW_RULE = `title: My custom detection
 id: custom-${Math.random().toString(36).slice(2, 8)}
@@ -22,7 +23,7 @@ export default function Rules() {
   const { can, tenantName } = useApp();
   const [tab, setTab] = useState("Rules");
   const [q, setQ] = useState("");
-  const { data, reload } = useData<any[]>("rules");
+  const { data, reload } = useListData<any>("rules");
   const { data: mitre } = useData<any>("mitre");
   const [editing, setEditing] = useState<any>(null);
   const { run } = useAction();
@@ -37,7 +38,7 @@ export default function Rules() {
           <input placeholder="Filter by title, technique or id" value={q} onChange={(e) => setQ(e.target.value)} style={{ marginBottom: 10, minWidth: 300 }} />
           <Table rows={rows} onRow={(r) => setEditing(r)}
                  columns={[{ key: "level", label: "Level", render: (r) => <Sev level={r.level} /> },
-                           { key: "title", label: "Rule", render: (r) => <><b>{r.title}</b><div className="small muted mono">{r.id}</div></> },
+                           { key: "title", label: "Rule", render: (r) => <><b>{displayValue(r.title)}</b><div className="small muted mono">{displayValue(r.id)}</div></> },
                            { key: "kind", label: "Type", render: (r) => <Pill value={r.kind} tone={r.kind === "correlation" ? "blue" : "muted"} /> },
                            { key: "scope", label: "Scope", render: (r) => r.tenantId ? tenantName(r.tenantId) : r.builtin ? "Built-in" : "Global" },
                            { key: "mitre", label: "MITRE", render: (r) => r.mitre.filter((m: string) => m.startsWith("T")).join(", ") },
@@ -50,11 +51,11 @@ export default function Rules() {
         </div>
       ) : (
         <div className="card">
-          <p className="muted">{mitre?.techniques.length ?? 0} ATT&CK techniques covered by enabled rules.</p>
+          <p className="muted">{displayValue(mitre?.techniques.length ?? 0)} ATT&CK techniques covered by enabled rules.</p>
           <div className="heat">
             {mitre?.techniques.map((t: any) => (
               <div key={t.technique} title={t.rules.join("\n")} style={{ background: `rgba(34,197,94,${Math.min(0.55, 0.12 + t.rules.length * 0.1)})` }}>
-                <b>{t.technique}</b> <span className="muted">{t.rules.length} rule(s) · {t.hits} hits</span>
+                <b>{displayValue(t.technique)}</b> <span className="muted">{displayValue(t.rules.length)} rule(s) · {displayValue(t.hits)} hits</span>
               </div>
             ))}
           </div>
@@ -100,8 +101,8 @@ function RuleEditor({ rule, onClose }: { rule: any; onClose: () => void }) {
       </label>
       <label className="field" style={{ marginTop: 10 }}>Sample event (agent JSON)<textarea style={{ minHeight: 80 }} value={sample} onChange={(e) => setSample(e.target.value)} /></label>
       {result && (result.valid
-        ? <p>Valid {result.kind} rule. {result.results?.map((r: any, i: number) => <span key={i}>{r.matched ? <Pill value="sample matched" tone="good" /> : <Pill value="sample did not match" tone="warn" />}</span>)}</p>
-        : <p style={{ color: "#fecaca" }}>{result.error}</p>)}
+        ? <p>Valid {displayValue(result.kind)} rule. {result.results?.map((r: any, i: number) => <span key={i}>{r.matched ? <Pill value="sample matched" tone="good" /> : <Pill value="sample did not match" tone="warn" />}</span>)}</p>
+        : <p style={{ color: "#fecaca" }}>{displayValue(result.error)}</p>)}
     </Modal>
   );
 }

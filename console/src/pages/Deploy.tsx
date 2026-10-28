@@ -1,3 +1,4 @@
+import { displayValue } from "../components/DisplayValue";
 import { useEffect, useState } from "react";
 import { fmtTime, getToken } from "../api";
 import { useApp } from "../app-context";
@@ -95,7 +96,7 @@ export default function Deploy() {
             <label className="field">Place devices in group
               <select value={groupId} onChange={(e) => setGroupId(e.target.value)}>
                 <option value="">None</option>
-                {groups?.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+                {groups?.map((g) => <option key={g.id} value={g.id}>{displayValue(g.name)}</option>)}
               </select>
             </label>
             <label className="field">Token expiry (days, 1–365)
@@ -129,7 +130,7 @@ export default function Deploy() {
         <ErrorNote error={tokensError} />
         <Table rows={tokens} empty="No enrollment tokens yet."
                columns={[{ key: "label", label: "Label" }, { key: "tenantId", label: "Tenant", render: (r) => tenantName(r.tenantId) },
-                         { key: "tokenHint", label: "Ends with", render: (r) => <span className="mono">…{r.tokenHint}</span> },
+                         { key: "tokenHint", label: "Ends with", render: (r) => <span className="mono">…{displayValue(r.tokenHint)}</span> },
                          { key: "uses", label: "Used", render: (r) => `${r.uses}${r.maxUses ? ` / ${r.maxUses}` : ""}` },
                          { key: "expiresAt", label: "Expires", render: (r) => fmtTime(r.expiresAt) },
                          { key: "revoked", label: "", render: (r) => r.revoked ? <Pill value="revoked" tone="muted" /> :

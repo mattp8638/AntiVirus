@@ -1,14 +1,15 @@
+import { displayValue } from "../../components/DisplayValue";
 import { useState } from "react";
 import { api } from "../../api";
 import { useApp } from "../../app-context";
 import { emptyTargets, JobDetail, TargetPicker } from "../../components/rmm";
-import { Modal, PageHead, Pill, Table, useAction, useData } from "../../components/ui";
+import { Modal, PageHead, Pill, Table, useAction, useListData } from "../../components/ui";
 
 const INSTALLERS: Record<string, string[]> = { windows: ["winget", "choco", "msi", "exe"], linux: ["apt", "dnf", "snap"], macos: ["brew", "pkg"] };
 
 export default function Software() {
   const { can } = useApp();
-  const { data, reload } = useData<any[]>("rmm/software");
+  const { data, reload } = useListData<any>("rmm/software");
   const [deploying, setDeploying] = useState<any>(null);
   const [editing, setEditing] = useState<any>(null);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -22,10 +23,10 @@ export default function Software() {
       </div>
       <div className="card">
         <Table rows={data?.filter((p) => !platform || p.platform === platform)} onRow={(p) => !p.builtin && setEditing(p)} empty="No packages."
-               columns={[{ key: "name", label: "Application", render: (p) => <><b>{p.name}</b><div className="small muted">{p.publisher}</div></> },
+               columns={[{ key: "name", label: "Application", render: (p) => <><b>{displayValue(p.name)}</b><div className="small muted">{displayValue(p.publisher)}</div></> },
                          { key: "platform", label: "Platform" },
-                         { key: "installer", label: "Installer", render: (p) => <span className="mono small">{p.installer}</span> },
-                         { key: "identifier", label: "Package", render: (p) => <span className="mono small">{p.identifier}</span> },
+                         { key: "installer", label: "Installer", render: (p) => <span className="mono small">{displayValue(p.installer)}</span> },
+                         { key: "identifier", label: "Package", render: (p) => <span className="mono small">{displayValue(p.identifier)}</span> },
                          { key: "keepUpdated", label: "", render: (p) => <>{p.builtin && <Pill value="built-in" tone="blue" />} {p.keepUpdated && <Pill value="kept updated" tone="good" />}</> },
                          { key: "deploy", label: "", render: (p) => can("configure") && <span className="row">
                              <button className="small primary" onClick={(e) => { e.stopPropagation(); setDeploying({ pkg: p, action: "install" }); }}>Deploy</button>
@@ -48,7 +49,7 @@ function Deploy({ pkg, action, onClose, onStarted }: { pkg: any; action: string;
              if (job) onStarted(job.id);
            }}>{action === "install" ? "Deploy" : "Remove"}</button></>}>
       <TargetPicker value={targets} onChange={setTargets} platforms={[pkg.platform]} />
-      <p className="small muted">Only {pkg.platform} devices receive it.</p>
+      <p className="small muted">Only {displayValue(pkg.platform)} devices receive it.</p>
     </Modal>
   );
 }

@@ -1,8 +1,9 @@
+import { displayValue } from "../components/DisplayValue";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ago, api } from "../api";
 import { useApp } from "../app-context";
-import { ErrorNote, Meter, Modal, PageHead, Pill, Table, useAction, useData } from "../components/ui";
+import { ErrorNote, Meter, Modal, PageHead, Pill, Table, useAction, useListData } from "../components/ui";
 import { ConnectButtons, pct } from "../components/rmm";
 
 export default function Devices() {
@@ -14,7 +15,7 @@ export default function Devices() {
   const [role, setRole] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulk, setBulk] = useState(false);
-  const { data, error, reload } = useData<any[]>("devices", { tenant_id: tenantId, q, status, platform, role });
+  const { data, error, reload } = useListData<any>("devices", { tenant_id: tenantId, q, status, platform, role });
 
   useEffect(() => {
     setSelected(new Set());
@@ -53,7 +54,7 @@ export default function Devices() {
         <Table rows={data} onRow={(r) => navigate(`/devices/${r.id}`)} empty="No devices match. Deploy the agent to get started."
                columns={[
                  { key: "sel", label: "", render: (r) => <input type="checkbox" disabled={r.retired} checked={selected.has(r.id)} onClick={(e) => e.stopPropagation()} onChange={() => toggle(r.id)} aria-label={`Select ${r.hostname}`} /> },
-                 { key: "hostname", label: "Device", render: (r) => <><span className={`dot ${r.online ? "on" : "off"}`} /> <b>{r.hostname}</b>{(r.role === "server" || r.role === "domain-controller") && <> <RoleBadge role={r.role} /></>}<div className="small muted">{r.osVersion}{shownWorkloads(r).length ? ` · ${shownWorkloads(r).join(", ")}` : ""}</div></> },
+                 { key: "hostname", label: "Device", render: (r) => <><span className={`dot ${r.online ? "on" : "off"}`} /> <b>{displayValue(r.hostname)}</b>{(r.role === "server" || r.role === "domain-controller") && <> <RoleBadge role={r.role} /></>}<div className="small muted">{displayValue(r.osVersion)}{shownWorkloads(r).length ? ` · ${shownWorkloads(r).join(", ")}` : ""}</div></> },
                  { key: "tenantId", label: "Tenant", render: (r) => tenantName(r.tenantId) },
                  { key: "platform", label: "Platform" },
                  { key: "agentVersion", label: "Agent", render: (r) => r.agentVersion || "—" },
@@ -64,8 +65,8 @@ export default function Devices() {
                      <Pill value={r.healthState || "unknown"} tone={r.healthState === "healthy" ? "good" : "muted"} />
                    </div> },
                  { key: "health", label: "CPU · Mem · Disk free", render: (r) => r.metrics?.reportedAt ? <span className="small mono">{pct(r.metrics.cpuPercent)} · {pct(r.metrics.memoryPercent)} · <span style={{ color: r.metrics.diskFreePercent < 10 ? "#fecaca" : undefined }}>{pct(r.metrics.diskFreePercent)}</span></span> : <span className="muted small">—</span> },
-                 { key: "user", label: "User", render: (r) => <span className="small">{r.metrics?.loggedOnUser || "—"}{r.metrics?.rebootPending && <> <Pill value="restart" tone="warn" /></>}</span> },
-                 { key: "riskScore", label: "Risk", render: (r) => <div style={{ minWidth: 90 }}><Meter value={r.riskScore} /><span className="small muted">{r.riskScore}</span></div> },
+                 { key: "user", label: "User", render: (r) => <span className="small">{displayValue(r.metrics?.loggedOnUser || "—")}{r.metrics?.rebootPending && <> <Pill value="restart" tone="warn" /></>}</span> },
+                 { key: "riskScore", label: "Risk", render: (r) => <div style={{ minWidth: 90 }}><Meter value={r.riskScore} /><span className="small muted">{displayValue(r.riskScore)}</span></div> },
                  { key: "lastSeenAt", label: "Last seen", render: (r) => ago(r.lastSeenAt) },
                  { key: "connect", label: "", render: (r) => r.online && <ConnectButtons device={r} compact /> },
                ]} />
@@ -77,7 +78,7 @@ export default function Devices() {
 
 function BulkAction({ ids, onClose }: { ids: string[]; onClose: () => void }) {
   const { can } = useApp();
-  const { data: catalog, error: catalogError } = useData<any[]>("commands/catalog");
+  const { data: catalog, error: catalogError } = useListData<any>("commands/catalog");
   const [type, setType] = useState("scan.quick");
   const [targetPath, setTargetPath] = useState("");
   const [reason, setReason] = useState("");
@@ -105,14 +106,14 @@ function BulkAction({ ids, onClose }: { ids: string[]; onClose: () => void }) {
       <div className="form-grid">
         <label className="field">Action
           <select value={type} onChange={(e) => setType(e.target.value)}>
-            {available.map((c) => <option key={c.type} value={c.type}>{c.group}: {c.label}</option>)}
+            {available.map((c) => <option key={c.type} value={c.type}>{displayValue(c.group)}: {displayValue(c.label)}</option>)}
           </select>
         </label>
         {spec?.needs.includes("targetPath") && <label className="field">Target path<input value={targetPath} onChange={(e) => setTargetPath(e.target.value)} /></label>}
         {spec?.needs.includes("recordId") && <label className="field">Record ID<input value={recordId} onChange={(e) => setRecordId(e.target.value)} /></label>}
         <label className="field">Reason<input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Shown in the audit log" /></label>
       </div>
-      {spec?.description && <p className="muted">{spec.description}</p>}
+      {spec?.description && <p className="muted">{displayValue(spec.description)}</p>}
       </>}
     </Modal>
   );

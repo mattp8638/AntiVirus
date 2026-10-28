@@ -1,8 +1,9 @@
+import { displayValue } from "../../components/DisplayValue";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, fmtTime } from "../../api";
 import { useApp } from "../../app-context";
-import { Pill, useAction, useData } from "../../components/ui";
+import { Pill, useAction, useData, useListData } from "../../components/ui";
 
 export const RECORD_TYPES: Record<string, string> = { incident: "Incident", service_request: "Service request", problem: "Problem", change: "Change" };
 export const CHANGE_TONE: Record<string, string> = { Draft: "muted", Submitted: "warn", Approved: "blue", Rejected: "bad", Implemented: "good",
@@ -14,7 +15,7 @@ const toLocal = (value?: string | null) => (value ? String(value).slice(0, 16) :
 export default function ServiceRecord({ ticket, onChange }: { ticket: any; onChange: () => void }) {
   const { can } = useApp();
   const { data: links, reload: reloadLinks } = useData<any>(`tickets/${ticket.id}/links`, {}, [ticket.updatedAt]);
-  const { data: problems } = useData<any[]>(ticket.recordType === "incident" || !ticket.recordType ? "psa/problems" : null);
+  const { data: problems } = useListData<any>(ticket.recordType === "incident" || !ticket.recordType ? "psa/problems" : null);
   const { run, busy } = useAction();
   const [draft, setDraft] = useState<any>({});
   useEffect(() => setDraft({ rootCause: ticket.rootCause || "", workaround: ticket.workaround || "", implementationPlan: ticket.implementationPlan || "",
@@ -50,13 +51,13 @@ export default function ServiceRecord({ ticket, onChange }: { ticket: any; onCha
         <label className="field" style={{ marginTop: 8 }}>Linked problem
           <select value={ticket.problemId || ""} disabled={!editable} onChange={(e) => save({ problemId: e.target.value || null }, "Problem link updated")}>
             <option value="">None</option>
-            {problems?.map((p) => <option key={p.id} value={p.id}>#{p.number} {p.subject}</option>)}
-            {links?.problem && !problems?.some((p) => p.id === links.problem.id) && <option value={links.problem.id}>#{links.problem.number} {links.problem.subject}</option>}
+            {problems?.map((p) => <option key={p.id} value={p.id}>#{displayValue(p.number)} {displayValue(p.subject)}</option>)}
+            {links?.problem && !problems?.some((p) => p.id === links.problem.id) && <option value={links.problem.id}>#{displayValue(links.problem.number)} {displayValue(links.problem.subject)}</option>}
           </select>
         </label>
         {links?.problem && <div className="small" style={{ marginTop: 6 }}>
-          <Link to={`/tickets/${links.problem.id}`}>Problem #{links.problem.number}</Link> {links.problem.knownError && <Pill value="known error" tone="warn" />}
-          {links.problem.workaround && <div className="muted" style={{ marginTop: 4 }}>Workaround: {links.problem.workaround}</div>}
+          <Link to={`/tickets/${links.problem.id}`}>Problem #{displayValue(links.problem.number)}</Link> {links.problem.knownError && <Pill value="known error" tone="warn" />}
+          {links.problem.workaround && <div className="muted" style={{ marginTop: 4 }}>Workaround: {displayValue(links.problem.workaround)}</div>}
         </div>}
       </>}
 
@@ -73,15 +74,15 @@ export default function ServiceRecord({ ticket, onChange }: { ticket: any; onCha
           }}>Resolve linked incidents</button>}
         </div>}
         <div style={{ marginTop: 10 }}>
-          <b className="small">Linked incidents ({links?.incidents.length ?? 0})</b>
-          {links?.incidents.map((i: any) => <div key={i.id} className="small"><Link to={`/tickets/${i.id}`}>#{i.number}</Link> {i.subject} <Pill value={i.status} tone={i.closed ? "muted" : "warn"} /></div>)}
+          <b className="small">Linked incidents ({displayValue(links?.incidents.length ?? 0)})</b>
+          {links?.incidents.map((i: any) => <div key={i.id} className="small"><Link to={`/tickets/${i.id}`}>#{displayValue(i.number)}</Link> {displayValue(i.subject)} <Pill value={i.status} tone={i.closed ? "muted" : "warn"} /></div>)}
         </div>
       </>}
 
       {type === "change" && <>
         <div className="row" style={{ marginTop: 8, gap: 6 }}>
           <Pill value={ticket.changeState || "Draft"} tone={CHANGE_TONE[ticket.changeState || "Draft"]} />
-          <span className="small muted">{(ticket.changeApprovals || []).filter((a: any) => a.decision === "approve").length} of {ticket.changeRisk === "High" ? 2 : 1} approvals</span>
+          <span className="small muted">{displayValue((ticket.changeApprovals || []).filter((a: any) => a.decision === "approve").length)} of {ticket.changeRisk === "High" ? 2 : 1} approvals</span>
         </div>
         <label className="field" style={{ marginTop: 8 }}>Risk
           <select value={ticket.changeRisk || ""} disabled={!editable} onChange={(e) => save({ changeRisk: e.target.value })}>
@@ -107,15 +108,15 @@ export default function ServiceRecord({ ticket, onChange }: { ticket: any; onCha
         </div>}
         {(ticket.changeApprovals || []).length > 0 && <div style={{ marginTop: 10 }}>
           {ticket.changeApprovals.map((a: any, i: number) => <div key={i} className="small">
-            <Pill value={a.decision === "approve" ? "approved" : "rejected"} tone={a.decision === "approve" ? "good" : "bad"} /> {a.by} · {fmtTime(a.at)}
-            {a.comment && <div className="muted">{a.comment}</div>}</div>)}
+            <Pill value={a.decision === "approve" ? "approved" : "rejected"} tone={a.decision === "approve" ? "good" : "bad"} /> {displayValue(a.by)} · {fmtTime(a.at)}
+            {a.comment && <div className="muted">{displayValue(a.comment)}</div>}</div>)}
         </div>}
       </>}
 
       {links?.vulnerabilities.length > 0 && <div style={{ marginTop: 12 }}>
-        <b className="small">Vulnerabilities this ticket remediates ({links.vulnerabilities.length})</b>
+        <b className="small">Vulnerabilities this ticket remediates ({displayValue(links.vulnerabilities.length)})</b>
         {links.vulnerabilities.map((v: any) => <div key={v.id} className="small" style={{ marginTop: 4 }}>
-          <Link to="/vulnerabilities">{v.vulnId}</Link> {v.package} <Pill value={v.severity} /> <Pill value={v.status} tone={v.status === "fixed" ? "good" : "warn"} />
+          <Link to="/vulnerabilities">{displayValue(v.vulnId)}</Link> {displayValue(v.package)} <Pill value={v.severity} /> <Pill value={v.status} tone={v.status === "fixed" ? "good" : "warn"} />
           {v.knownExploited && <> <Pill value="known exploited" tone="bad" /></>}
         </div>)}
       </div>}

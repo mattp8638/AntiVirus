@@ -1,3 +1,4 @@
+import { displayValue } from "../components/DisplayValue";
 import { useEffect, useState } from "react";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
@@ -26,7 +27,7 @@ export function IncidentEvidence({incidentId}:{incidentId:string}) {
   const [create,setCreate]=useState(false);
   return <section className="card"><h2>Evidence</h2><p>Text evidence is immutable after submission and recorded with its SHA-256 fingerprint.</p>
     <ErrorNote error={error}/>{can("respond")&&<button onClick={()=>setCreate(true)}>Attach text evidence</button>}
-    <Table rows={data} columns={[{key:"name",label:"Evidence",render:r=><details><summary>{r.name}</summary><pre style={{whiteSpace:"pre-wrap"}}>{r.content}</pre></details>},{key:"sha256",label:"SHA-256",render:r=><span className="mono" style={{overflowWrap:"anywhere"}}>{r.sha256}</span>},{key:"author",label:"Added by"},{key:"createdAt",label:"Added",render:r=>fmtTime(r.createdAt)}]}/>
+    <Table rows={data} columns={[{key:"name",label:"Evidence",render:r=><details><summary>{displayValue(r.name)}</summary><pre style={{whiteSpace:"pre-wrap"}}>{displayValue(r.content)}</pre></details>},{key:"sha256",label:"SHA-256",render:r=><span className="mono" style={{overflowWrap:"anywhere"}}>{displayValue(r.sha256)}</span>},{key:"author",label:"Added by"},{key:"createdAt",label:"Added",render:r=>fmtTime(r.createdAt)}]}/>
     {create&&<RecordEditor title="Attach evidence" tenant={false} fields={[{key:"name",label:"Name",required:true},{key:"content",label:"Evidence text (up to 100,000 characters)",type:"textarea",required:true}]}
       onSave={({name,content})=>api("soc/incidents/"+incidentId+"/evidence",{body:{name,content}})} onClose={()=>{setCreate(false);reload();}}/>}
   </section>;

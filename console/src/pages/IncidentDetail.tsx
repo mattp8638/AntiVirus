@@ -1,3 +1,4 @@
+import { displayValue } from "../components/DisplayValue";
 import { IncidentEvidence } from "./SocWorkflows";
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
@@ -46,17 +47,17 @@ export default function IncidentDetail() {
       <div className="grid side">
         <div>
           <div className="card">
-            <h3>Alerts ({data.alerts.length})</h3>
+            <h3>Alerts ({displayValue(data.alerts.length)})</h3>
             <p className="small muted" style={{ marginTop: 0 }}>Click an alert to see its evidence: the file, hash, process, user and where it came from.</p>
             <Table rows={data.alerts} onRow={(a) => setOpenAlert(openAlert === a.id ? null : a.id)} columns={[{ key: "severity", label: "Sev", render: (a) => <Sev level={a.severity} /> },
-              { key: "title", label: "Alert", render: (a) => <><b>{a.title}</b>{a.details?.threat && <div className="small muted">{a.details.threat}</div>}</> },
-              { key: "process", label: "File / process", render: (a) => <span className="mono small" style={{ wordBreak: "break-all" }}>{a.details?.file || a.details?.process || ""}</span> },
+              { key: "title", label: "Alert", render: (a) => <><b>{displayValue(a.title)}</b>{a.details?.threat && <div className="small muted">{displayValue(a.details.threat)}</div>}</> },
+              { key: "process", label: "File / process", render: (a) => <span className="mono small" style={{ wordBreak: "break-all" }}>{displayValue(a.details?.file || a.details?.process || "")}</span> },
               { key: "mitre", label: "MITRE", render: (a) => a.mitre.join(", ") },
               { key: "createdAt", label: "When", render: (a) => ago(a.createdAt) }]} />
             {openAlert && (() => { const a = data.alerts.find((x: any) => x.id === openAlert); return a && (
               <div className="card evidence-card">
-                <div className="row"><Sev level={a.severity} /><b style={{ flex: 1 }}>{a.title}</b><button className="ghost small" onClick={() => setOpenAlert(null)}>Close</button></div>
-                {a.details?.description && <p className="small muted">{a.details.description}</p>}
+                <div className="row"><Sev level={a.severity} /><b style={{ flex: 1 }}>{displayValue(a.title)}</b><button className="ghost small" onClick={() => setOpenAlert(null)}>Close</button></div>
+                {a.details?.description && <p className="small muted">{displayValue(a.details.description)}</p>}
                 <EvidenceList details={a.details} />
               </div>); })()}
           </div>
@@ -64,7 +65,7 @@ export default function IncidentDetail() {
             <h3>Response actions</h3>
             <Table rows={data.commands} empty="No actions taken yet." columns={[{ key: "type", label: "Action" },
               { key: "status", label: "Status", render: (c) => <Pill value={c.status} /> }, { key: "issuedBy", label: "By" },
-              { key: "targetPath", label: "Target", render: (c) => <span className="mono small">{c.targetPath}</span> },
+              { key: "targetPath", label: "Target", render: (c) => <span className="mono small">{displayValue(c.targetPath)}</span> },
               { key: "createdAt", label: "When", render: (c) => ago(c.createdAt) }]} />
           </div>
           <div className="card">
@@ -72,8 +73,8 @@ export default function IncidentDetail() {
             <div className="timeline">
               {[...inc.timeline].reverse().map((item: any, i: number) => (
                 <div key={i} className={`item ${item.kind}`}>
-                  <div className="small muted">{fmtTime(item.at)} · {item.kind}{item.by ? ` · ${item.by}` : ""}</div>
-                  <div>{item.text}</div>
+                  <div className="small muted">{fmtTime(item.at)} · {displayValue(item.kind)}{item.by ? ` · ${item.by}` : ""}</div>
+                  <div>{displayValue(item.text)}</div>
                 </div>
               ))}
             </div>
@@ -89,10 +90,10 @@ export default function IncidentDetail() {
           <div className="card">
             <h3>Context</h3>
             <dl className="kv">
-              <dt>Device</dt><dd>{data.device ? <Link to={`/devices/${data.device.id}`}>{data.device.hostname}</Link> : "—"}</dd>
-              <dt>Owner</dt><dd>{inc.assignee || "Unassigned"}</dd>
+              <dt>Device</dt><dd>{data.device ? <Link to={`/devices/${data.device.id}`}>{displayValue(data.device.hostname)}</Link> : "—"}</dd>
+              <dt>Owner</dt><dd>{displayValue(inc.assignee || "Unassigned")}</dd>
               <dt>MITRE</dt><dd>{inc.mitre.map((m: string) => <span key={m} className="chip">{m}</span>)}</dd>
-              <dt>Ticket</dt><dd>{data.ticket ? <Link to="/service-desk">#{data.ticket.number} · {data.ticket.status}</Link>
+              <dt>Ticket</dt><dd>{data.ticket ? <Link to="/service-desk">#{displayValue(data.ticket.number)} · {displayValue(data.ticket.status)}</Link>
                 : can("respond") && <button className="small" onClick={() => run(() => api(`incidents/${inc.id}/ticket`, { body: {} }), "Ticket opened").then(reload)}>Open ticket</button>}</dd>
             </dl>
           </div>
@@ -101,11 +102,11 @@ export default function IncidentDetail() {
             <Indicators indicators={data.indicators || {}} />
           </div>
           <div className="card">
-            <h3>Playbook: {data.playbook?.name ?? "none"} ({done}/{inc.checklist.length})</h3>
+            <h3>Playbook: {displayValue(data.playbook?.name ?? "none")} ({displayValue(done)}/{displayValue(inc.checklist.length)})</h3>
             {inc.checklist.map((item: any, i: number) => (
               <label key={i} className="row" style={{ alignItems: "flex-start", flexWrap: "nowrap", padding: "6px 0", borderBottom: "1px solid #172138" }}>
                 <input type="checkbox" checked={item.done} disabled={!can("respond")} onChange={() => toggleItem(i)} />
-                <span><span className={`badge ${item.stage === "closure_gate" ? "tone-warn" : "tone-blue"}`}>{item.stage.replace(/_/g, " ")}</span> {item.task}</span>
+                <span><span className={`badge ${item.stage === "closure_gate" ? "tone-warn" : "tone-blue"}`}>{displayValue(item.stage.replace(/_/g, " "))}</span> {displayValue(item.task)}</span>
               </label>
             ))}
             {data.playbook?.key_questions && (

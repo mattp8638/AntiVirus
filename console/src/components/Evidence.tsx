@@ -1,3 +1,4 @@
+import { displayValue } from "./DisplayValue";
 import { Fragment, ReactNode, useState } from "react";
 import { fmtTime } from "../api";
 import { Pill } from "./ui";
@@ -29,7 +30,7 @@ function value(section: string, key: string, v: any): ReactNode {
   if (v === true) return "Yes";
   if (v === false) return "No";
   if (Array.isArray(v)) return v.map((x) => <span key={String(x)} className="chip">{String(x)}</span>);
-  if (key === "sha256") return <span className="mono small">{v} <a href={`https://www.virustotal.com/gui/file/${v}`} target="_blank" rel="noreferrer">VirusTotal</a> · <button className="ghost small" onClick={() => navigator.clipboard?.writeText(String(v))}>Copy</button></span>;
+  if (key === "sha256") return <span className="mono small">{displayValue(v)} <a href={`https://www.virustotal.com/gui/file/${v}`} target="_blank" rel="noreferrer">VirusTotal</a> · <button className="ghost small" onClick={() => navigator.clipboard?.writeText(String(v))}>Copy</button></span>;
   if (key === "sizeBytes") return bytes(Number(v));
   if (key === "remediation") return <Pill value={String(v)} tone={/fail|none/i.test(String(v)) ? "bad" : "good"} />;
   if (key === "reputation") return <Pill value={String(v)} tone={/malic|bad/i.test(String(v)) ? "bad" : /suspic|unknown/i.test(String(v)) ? "warn" : "good"} />;
@@ -45,10 +46,10 @@ export function EvidenceOccurrence({ ev }: { ev: any }) {
   return (
     <div className="evidence">
       <div className="small muted" style={{ marginBottom: 6 }}>
-        {ev.event?.type && <span className="chip">{ev.event.type}</span>} {ev.event?.at && fmtTime(ev.event.at)}
-        {ev.count > 1 && <> · seen {ev.count} times{ev.lastAt ? `, last ${fmtTime(ev.lastAt)}` : ""}</>}
+        {ev.event?.type && <span className="chip">{displayValue(ev.event.type)}</span>} {displayValue(ev.event?.at && fmtTime(ev.event.at))}
+        {ev.count > 1 && <> · seen {displayValue(ev.count)} times{ev.lastAt ? `, last ${fmtTime(ev.lastAt)}` : ""}</>}
       </div>
-      {ev.event?.summary && <div style={{ marginBottom: 8 }}>{ev.event.summary}</div>}
+      {ev.event?.summary && <div style={{ marginBottom: 8 }}>{displayValue(ev.event.summary)}</div>}
       <div className="evidence-grid">
         {sections.map((s) => (
           <div key={s} className="evidence-section">

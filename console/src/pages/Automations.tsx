@@ -1,12 +1,13 @@
+import { displayValue } from "../components/DisplayValue";
 import { useState } from "react";
 import { api } from "../api";
 import { useApp } from "../app-context";
-import { Modal, PageHead, Pill, Table, TenantSelect, useAction, useData } from "../components/ui";
+import { Modal, PageHead, Pill, Table, TenantSelect, useAction, useListData } from "../components/ui";
 
 export default function Automations() {
   const { can, tenantName } = useApp();
-  const { data, reload } = useData<any[]>("automations");
-  const { data: books } = useData<any[]>("playbooks");
+  const { data, reload } = useListData<any>("automations");
+  const { data: books } = useListData<any>("playbooks");
   const [creating, setCreating] = useState(false);
   const { run } = useAction();
   return (
@@ -17,7 +18,7 @@ export default function Automations() {
         <Table rows={data} empty="No automations yet. Policy-level auto-response (kill, isolate, rollback, ticket) still applies."
                columns={[{ key: "name", label: "Automation" }, { key: "tenantId", label: "Scope", render: (r) => r.tenantId ? tenantName(r.tenantId) : "Global" },
                          { key: "conditions", label: "When", render: (r) => <span className="mono small">{JSON.stringify(r.conditions)}</span> },
-                         { key: "actions", label: "Then", render: (r) => r.actions.map((a: any, i: number) => <span key={i} className="chip">{a.type}{a.command ? `: ${a.command}` : ""}</span>) },
+                         { key: "actions", label: "Then", render: (r) => r.actions.map((a: any, i: number) => <span key={i} className="chip">{displayValue(a.type)}{a.command ? `: ${a.command}` : ""}</span>) },
                          { key: "runs", label: "Runs", className: "right" },
                          { key: "enabled", label: "On", render: (r) => <input type="checkbox" checked={r.enabled} disabled={!can("configure")}
                              onChange={async () => { await run(() => api(`automations/${r.id}`, { method: "PATCH", body: { enabled: !r.enabled } })); reload(); }} /> }]} />
@@ -37,7 +38,7 @@ export default function Automations() {
 
 function NewAutomation({ onClose }: { onClose: () => void }) {
   const { tenantId } = useApp();
-  const { data: catalog } = useData<any[]>("commands/catalog");
+  const { data: catalog } = useListData<any>("commands/catalog");
   const [tenant, setTenant] = useState(tenantId);
   const [name, setName] = useState("Isolate on ransomware");
   const [minSeverity, setMinSeverity] = useState("critical");
@@ -68,7 +69,7 @@ function NewAutomation({ onClose }: { onClose: () => void }) {
         <label className="field">Title contains<input value={titleContains} onChange={(e) => setTitleContains(e.target.value)} /></label>
         <label className="field">Run action
           <select value={command} onChange={(e) => setCommand(e.target.value)}>
-            <option value="">None</option>{catalog?.map((c) => <option key={c.type} value={c.type}>{c.label}</option>)}
+            <option value="">None</option>{catalog?.map((c) => <option key={c.type} value={c.type}>{displayValue(c.label)}</option>)}
           </select>
         </label>
       </div>

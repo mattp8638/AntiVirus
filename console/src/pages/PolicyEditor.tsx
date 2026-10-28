@@ -1,3 +1,4 @@
+import { displayValue } from "../components/DisplayValue";
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { api } from "../api";
@@ -67,7 +68,7 @@ export default function PolicyEditor() {
   return (
     <>
       <PageHead title={data.policy.name}
-                subtitle={<>{data.policy.tenantId ? tenantName(data.policy.tenantId) : "Global"} · v{data.policy.version} · {overrideCount} settings set here · {locks.length} locked</>}
+                subtitle={<>{data.policy.tenantId ? tenantName(data.policy.tenantId) : "Global"} · v{displayValue(data.policy.version)} · {overrideCount} settings set here · {locks.length} locked</>}
                 actions={editable && <button className="primary" disabled={!dirty || busy} onClick={save}>{dirty ? "Save changes" : "Saved"}</button>} />
       <div className="grid" style={{ gridTemplateColumns: "220px minmax(0,1fr)" }}>
         <div className="card" style={{ padding: 8, alignSelf: "start" }}>
@@ -78,13 +79,13 @@ export default function PolicyEditor() {
               <button key={s.key} className={`ghost ${section === s.key && !filter ? "active" : ""}`}
                       style={{ width: "100%", justifyContent: "space-between", textAlign: "left", color: section === s.key && !filter ? "#fff" : undefined }}
                       onClick={() => { setSection(s.key); setFilter(""); }}>
-                <span>{s.title}</span>{count > 0 && <span className="badge tone-blue">{count}</span>}
+                <span>{displayValue(s.title)}</span>{count > 0 && <span className="badge tone-blue">{count}</span>}
               </button>
             );
           })}
         </div>
         <div className="card">
-          {!filter && <><h2>{current.title}</h2><p className="muted" style={{ marginTop: -6 }}>{current.description}</p></>}
+          {!filter && <><h2>{displayValue(current.title)}</h2><p className="muted" style={{ marginTop: -6 }}>{displayValue(current.description)}</p></>}
           <div className="policy-field" style={{ borderBottom: "1px solid var(--line-2)" }}>
             <span className="small muted">Setting</span><span className="small muted">Value in this policy</span><span className="small muted right">Lock</span>
           </div>
@@ -96,11 +97,11 @@ export default function PolicyEditor() {
             return (
               <div key={f.path} className={`policy-field ${isSet ? "overridden" : ""}`}>
                 <div className="meta">
-                  <b>{f.label}</b> {f.platforms.length < 3 && <span className="chip">{f.platforms.join(", ")}</span>}
+                  <b>{displayValue(f.label)}</b> {f.platforms.length < 3 && <span className="chip">{displayValue(f.platforms.join(", "))}</span>}
                   {f.enforcedOn && f.enforcedOn.length === 0 && <Pill value="not enforced by agents yet" tone="warn" />}
                   {f.enforcedOn && f.enforcedOn.length > 0 && f.enforcedOn.length < f.platforms.length &&
                     <Pill value={`enforced on ${f.enforcedOn.join(", ")} only`} tone="muted" />}
-                  {f.help && <small>{f.help}</small>}
+                  {f.help && <small>{displayValue(f.help)}</small>}
                   <small>Inherited: <span className="mono">{JSON.stringify(inheritedValue)}</span> from {inheritedOrigin[f.path] ?? "default"}</small>
                   {lockedAbove && <Pill value={`locked by ${lockedAbove}`} tone="blue" />}
                 </div>

@@ -1,3 +1,4 @@
+import { displayValue } from "../components/DisplayValue";
 // Pop-out remote session window: desktop, terminal, files, processes, services and chat.
 // Protocol: docs/REMOTE_PROTOCOL.md. Opened with window.open("/remote/<sessionId>").
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -406,8 +407,8 @@ export default function RemoteViewer() {
       <header className="rv-bar">
         <div className="rv-title">
           <span className={`dot ${state === "live" ? "on" : "off"}`} />
-          <b>{session?.hostname || "Remote session"}</b>
-          <span className="muted small">{info?.user ? `${info.user} · ` : ""}{session?.tenantName}</span>
+          <b>{displayValue(session?.hostname || "Remote session")}</b>
+          <span className="muted small">{info?.user ? `${info.user} · ` : ""}{displayValue(session?.tenantName)}</span>
           {session?.recorded && <span className="badge tone-bad" title="Screen and terminal output are recorded by policy">● recording</span>}
         </div>
         <nav className="rv-tabs">
@@ -423,7 +424,7 @@ export default function RemoteViewer() {
             <button title="Paste your clipboard as keystrokes" disabled={viewOnly} onClick={sendClipboard}>Send clipboard</button>
             <select title="Monitor" value={monitor} onChange={(e) => changeScreen({ monitor: Number(e.target.value) })}>
               {(info?.monitors?.length ? info.monitors : [{ index: 0 }]).map((m: any) => (
-                <option key={m.index} value={m.index}>Screen {m.index + 1}{m.primary ? " (primary)" : ""}</option>
+                <option key={m.index} value={m.index}>Screen {displayValue(m.index + 1)}{m.primary ? " (primary)" : ""}</option>
               ))}
               {info?.monitors?.length > 1 && String(info?.os).startsWith("windows") && <option value={-1}>All screens</option>}
             </select>
@@ -671,7 +672,7 @@ function FilesPane({ send, sendBinary, on, binaryListeners, home }: {
               <tbody>
                 {entries.map((entry) => (
                   <tr key={entry.name} className="clickable" onDoubleClick={() => (entry.dir ? list(join(entry.name)) : download(entry))}>
-                    <td>{entry.dir ? "📁" : "📄"} {entry.name}</td>
+                    <td>{entry.dir ? "📁" : "📄"} {displayValue(entry.name)}</td>
                     <td>{entry.dir ? "" : fmtSize(entry.size)}</td>
                     <td className="small muted">{entry.mtime ? new Date(entry.mtime * 1000).toLocaleString() : ""}</td>
                     <td style={{ whiteSpace: "nowrap" }}>
@@ -746,7 +747,7 @@ function ProcessesPane({ send, on }: { send: (m: Msg) => void; on: (k: string, f
           <tbody>
             {rows.map((p) => (
               <tr key={p.pid}>
-                <td title={p.path}>{p.name}</td><td className="mono">{p.pid}</td><td className="small">{p.user}</td>
+                <td title={p.path}>{displayValue(p.name)}</td><td className="mono">{displayValue(p.pid)}</td><td className="small">{displayValue(p.user)}</td>
                 <td>{Number(p.cpu).toFixed(1)}</td><td>{Number(p.memMb).toFixed(0)} MB</td>
                 <td><button className="small danger" onClick={() => kill(p)}>End</button></td>
               </tr>
@@ -780,9 +781,9 @@ function ServicesPane({ send, on }: { send: (m: Msg) => void; on: (k: string, fn
           <tbody>
             {rows.map((s) => (
               <tr key={s.name}>
-                <td>{s.display || s.name}</td><td className="mono small">{s.name}</td>
-                <td><span className={`badge tone-${s.status === "running" ? "good" : s.status === "failed" ? "bad" : "muted"}`}>{s.status}</span></td>
-                <td className="small">{s.startType}</td>
+                <td>{displayValue(s.display || s.name)}</td><td className="mono small">{displayValue(s.name)}</td>
+                <td><span className={`badge tone-${s.status === "running" ? "good" : s.status === "failed" ? "bad" : "muted"}`}>{displayValue(s.status)}</span></td>
+                <td className="small">{displayValue(s.startType)}</td>
                 <td style={{ whiteSpace: "nowrap" }}>
                   <button className="small" onClick={() => control(s, "start")} disabled={s.status === "running"}>Start</button>{" "}
                   <button className="small" onClick={() => control(s, "stop")} disabled={s.status !== "running"}>Stop</button>{" "}

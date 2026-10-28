@@ -1,9 +1,10 @@
+import { displayValue } from "../../components/DisplayValue";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { ago, api } from "../../api";
 import { useApp } from "../../app-context";
 import { emptyTargets, JobDetail, TargetPicker } from "../../components/rmm";
-import { Modal, PageHead, Pill, Stat, Table, Tabs, TenantSelect, useAction, useData } from "../../components/ui";
+import { Modal, PageHead, Pill, Stat, Table, Tabs, TenantSelect, useAction, useData, useListData } from "../../components/ui";
 
 const APPROVAL_TONE: Record<string, string> = { approved: "good", rejected: "muted", pending: "warn" };
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -14,7 +15,7 @@ export default function Patching() {
   const { data: compliance, reload: reloadCompliance } = useData<any>("rmm/patches/compliance", { tenant_id: tenantId });
   const [classification, setClassification] = useState("");
   const [onlyMissing, setOnlyMissing] = useState(true);
-  const { data: catalogue, reload } = useData<any[]>("rmm/patches", { tenant_id: tenantId, classification, status: onlyMissing ? "missing" : "" });
+  const { data: catalogue, reload } = useListData<any>("rmm/patches", { tenant_id: tenantId, classification, status: onlyMissing ? "missing" : "" });
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [installing, setInstalling] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -45,7 +46,7 @@ export default function Patching() {
       {tab === "Overview" && (
         <div className="card">
           <Table rows={compliance?.devices_detail} empty="No devices yet."
-                 columns={[{ key: "hostname", label: "Device", render: (d) => <Link to={`/devices/${d.id}`}>{d.hostname}</Link> },
+                 columns={[{ key: "hostname", label: "Device", render: (d) => <Link to={`/devices/${d.id}`}>{displayValue(d.hostname)}</Link> },
                            { key: "account", label: "Customer" }, { key: "platform", label: "Platform" },
                            { key: "missing", label: "Missing", render: (d) => Object.keys(d.missing).length ? Object.entries(d.missing).map(([k, v]) => <span key={k} className="chip">{k} {String(v)}</span>) : d.lastScan ? <Pill value="up to date" tone="good" /> : <span className="muted small">not scanned</span> },
                            { key: "rebootPending", label: "Restart", render: (d) => d.rebootPending ? <Pill value="pending" tone="warn" /> : "—" },
@@ -67,10 +68,10 @@ export default function Patching() {
           </div>
           <Table rows={catalogue?.map((p) => ({ ...p, id: p.patchKey }))} empty="No patches reported. Run a scan."
                  columns={[{ key: "sel", label: "", render: (p) => <input type="checkbox" checked={selected.has(p.patchKey)} onChange={() => { const s = new Set(selected); s.has(p.patchKey) ? s.delete(p.patchKey) : s.add(p.patchKey); setSelected(s); }} /> },
-                           { key: "title", label: "Patch", render: (p) => <><b>{p.title}</b><div className="small muted mono">{p.patchKey}{p.availableVersion ? ` → ${p.availableVersion}` : ""}</div></> },
+                           { key: "title", label: "Patch", render: (p) => <><b>{displayValue(p.title)}</b><div className="small muted mono">{displayValue(p.patchKey)}{p.availableVersion ? ` → ${p.availableVersion}` : ""}</div></> },
                            { key: "classification", label: "Class", render: (p) => <Pill value={p.classification} tone={["critical", "security"].includes(p.classification) ? "bad" : "muted"} /> },
-                           { key: "source", label: "Source", render: (p) => <span className="small">{p.source}</span> },
-                           { key: "missing", label: "Needed on", render: (p) => <span>{p.missing + p.failed}{p.failed ? <span className="small" style={{ color: "#fecaca" }}> ({p.failed} failed)</span> : ""}</span> },
+                           { key: "source", label: "Source", render: (p) => <span className="small">{displayValue(p.source)}</span> },
+                           { key: "missing", label: "Needed on", render: (p) => <span>{displayValue(p.missing + p.failed)}{p.failed ? <span className="small" style={{ color: "#fecaca" }}> ({displayValue(p.failed)} failed)</span> : ""}</span> },
                            { key: "installed", label: "Installed on" },
                            { key: "approvalState", label: "Approval", render: (p) => <Pill value={p.approvalState} tone={APPROVAL_TONE[p.approvalState]} /> }]} />
         </div>
@@ -114,10 +115,10 @@ function PatchPolicies() {
       </div>
       <div className="card">
         <Table rows={data?.policies} onRow={setEditing} empty="No patch policies yet."
-               columns={[{ key: "name", label: "Policy", render: (p) => <b>{p.name}</b> }, { key: "account", label: "Customer" },
+               columns={[{ key: "name", label: "Policy", render: (p) => <b>{displayValue(p.name)}</b> }, { key: "account", label: "Customer" },
                          { key: "window", label: "Window", render: (p) => `${(p.window.days || []).map((d: number) => DAYS[d]).join(", ")} ${p.window.start} for ${p.window.durationMinutes / 60}h` },
                          { key: "approvals", label: "Auto-approve", render: (p) => <span className="small">{Object.entries(p.approvals).filter(([, v]) => v === "auto").map(([k]) => k).join(", ")}</span> },
-                         { key: "rings", label: "Rings", render: (p) => <span className="small">{p.rings.map((r: any) => `${r.name} +${r.delayDays}d`).join(" → ")}</span> },
+                         { key: "rings", label: "Rings", render: (p) => <span className="small">{displayValue(p.rings.map((r: any) => `${r.name} +${r.delayDays}d`).join(" → "))}</span> },
                          { key: "reboot", label: "Restart", render: (p) => p.reboot.mode.replace("_", " ") },
                          { key: "enabled", label: "", render: (p) => <Pill value={p.enabled ? "on" : "off"} tone={p.enabled ? "good" : "muted"} /> }]} />
       </div>
@@ -128,7 +129,7 @@ function PatchPolicies() {
 
 function PolicyEditor({ policy, classifications, onClose }: { policy: any; classifications: string[]; onClose: () => void }) {
   const [form, setForm] = useState<any>({ ...policy, tenantId: policy.tenantId || "" });
-  const { data: groups } = useData<any[]>("groups", { tenant_id: form.tenantId });
+  const { data: groups } = useListData<any>("groups", { tenant_id: form.tenantId });
   const { run, busy } = useAction();
   const save = async () => {
     const body = { name: form.name, groupId: form.groupId || null, enabled: form.enabled, approvals: form.approvals, window: form.window, reboot: form.reboot,
@@ -143,7 +144,7 @@ function PolicyEditor({ policy, classifications, onClose }: { policy: any; class
       <div className="form-grid">
         <label className="field">Name<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
         {!form.id && <label className="field">Customer<TenantSelect value={form.tenantId} onChange={(id) => setForm({ ...form, tenantId: id })} allowAll={false} /></label>}
-        <label className="field">Only for group<select value={form.groupId || ""} onChange={(e) => setForm({ ...form, groupId: e.target.value })}><option value="">Whole customer</option>{groups?.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}</select></label>
+        <label className="field">Only for group<select value={form.groupId || ""} onChange={(e) => setForm({ ...form, groupId: e.target.value })}><option value="">Whole customer</option>{groups?.map((g) => <option key={g.id} value={g.id}>{displayValue(g.name)}</option>)}</select></label>
         <label className="field">Scan every (hours)<input type="number" value={form.scanIntervalHours} onChange={(e) => setForm({ ...form, scanIntervalHours: e.target.value })} /></label>
       </div>
       <h3 style={{ marginTop: 14 }}>Approval rules</h3>
@@ -172,7 +173,7 @@ function PolicyEditor({ policy, classifications, onClose }: { policy: any; class
         <div key={i} className="row" style={{ marginBottom: 6 }}>
           <input value={ring.name} onChange={(e) => setForm({ ...form, rings: form.rings.map((r: any, j: number) => (j === i ? { ...r, name: e.target.value } : r)) })} style={{ width: 140 }} />
           <select value={(ring.groupIds || [])[0] || ""} onChange={(e) => setForm({ ...form, rings: form.rings.map((r: any, j: number) => (j === i ? { ...r, groupIds: e.target.value ? [e.target.value] : [] } : r)) })}>
-            <option value="">Everyone else</option>{groups?.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}</select>
+            <option value="">Everyone else</option>{groups?.map((g) => <option key={g.id} value={g.id}>{displayValue(g.name)}</option>)}</select>
           <span className="small">+</span><input type="number" value={ring.delayDays} style={{ width: 70 }} onChange={(e) => setForm({ ...form, rings: form.rings.map((r: any, j: number) => (j === i ? { ...r, delayDays: Number(e.target.value) } : r)) })} /><span className="small">days</span>
           <button className="small ghost" onClick={() => setForm({ ...form, rings: form.rings.filter((_: any, j: number) => j !== i) })}>✕</button>
         </div>

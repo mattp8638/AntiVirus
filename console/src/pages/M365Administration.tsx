@@ -1,3 +1,4 @@
+import { displayValue } from "../components/DisplayValue";
 import { useEffect, useState } from "react";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
@@ -38,7 +39,7 @@ export function M365Administration({connection}:{connection:any}) {
     if(result){setJob(result);setConfirmed(false);reloadUsers();reloadHistory();}
   };
   return <section>
-    <h2>Tenant administration · {connection.name}</h2>
+    <h2>Tenant administration · {displayValue(connection.name)}</h2>
     <p>Live directory views. Administrative changes require a reviewed action and fresh authentication.</p>
     <Tabs tabs={["Users","Groups","Licences","Actions","Access checks"]} active={tab} onChange={setTab}/>
     <ErrorNote error={userError||groupError||licenseError||historyError}/>
@@ -72,21 +73,21 @@ export function M365Administration({connection}:{connection:any}) {
         {operation==="user.update"?<input value={value} onChange={e=>{setValue(e.target.value);setRequestId(crypto.randomUUID());}}/>:
         <select value={value} onChange={e=>{setValue(e.target.value);setRequestId(crypto.randomUUID());}}><option value="">Choose…</option>
           {operation==="user.signin"?<><option value="true">Allow sign-in</option><option value="false">Block sign-in</option></>:
-          operation.startsWith("license.")?licenses?.map(r=><option key={r.skuId} value={r.skuId}>{r.skuPartNumber}</option>):
-          groups?.map(r=><option key={r.id} value={r.id}>{r.displayName}</option>)}
+          operation.startsWith("license.")?licenses?.map(r=><option key={r.skuId} value={r.skuId}>{displayValue(r.skuPartNumber)}</option>):
+          groups?.map(r=><option key={r.id} value={r.id}>{displayValue(r.displayName)}</option>)}
         </select>}
       </label>}
       {operation==="user.revoke_sessions"&&<p>Invalidate this user’s refresh tokens and browser sessions. This can take a few minutes and does not block future sign-ins. External users must be managed in their home tenant.</p>}
       <button className="primary" disabled={busy||(operation!=="user.revoke_sessions"&&!value)} onClick={prepare}>Review change</button>
     </Modal>}
     {job&&<Modal title="Review Microsoft action" onClose={()=>{setJob(null);setSelected(null);setTemporaryPassword("");}}>
-      <p><b>Customer connection:</b> {connection.name}</p><p><b>Directory:</b> {connection.directoryId}</p>
-      <p><b>User:</b> {job.preview?.user?.userPrincipalName}</p><p><b>Action:</b> {job.operation} · <b>Status:</b> {job.status}</p>
-      {job.preview?.group&&<p><b>Group:</b> {job.preview.group.displayName}</p>}
-      {job.preview?.license&&<p><b>Licence:</b> {job.preview.license.name}</p>}
+      <p><b>Customer connection:</b> {displayValue(connection.name)}</p><p><b>Directory:</b> {displayValue(connection.directoryId)}</p>
+      <p><b>User:</b> {displayValue(job.preview?.user?.userPrincipalName)}</p><p><b>Action:</b> {displayValue(job.operation)} · <b>Status:</b> {displayValue(job.status)}</p>
+      {job.preview?.group&&<p><b>Group:</b> {displayValue(job.preview.group.displayName)}</p>}
+      {job.preview?.license&&<p><b>Licence:</b> {displayValue(job.preview.license.name)}</p>}
       <p><b>Change:</b> {job.operation==="user.create"?`Create ${job.parameters.displayName} (${job.parameters.userPrincipalName}) in ${job.parameters.usageLocation}`:job.operation==="user.revoke_sessions"?"Revoke this user’s sign-in sessions; future sign-ins remain allowed":job.operation==="user.update"?Object.entries(job.parameters).map(([key,value])=>`${key}: ${job.preview?.user?.[key]||"(empty)"} → ${value||"(empty)"}`).join("; "):job.operation==="user.signin"?`${job.preview?.user?.accountEnabled?"Sign-in allowed":"Sign-in blocked"} → ${job.parameters.accountEnabled?"Allow sign-in":"Block sign-in"}`:job.operation==="license.add"?"Assign the selected licence":job.operation==="license.remove"?"Remove the selected licence":job.operation==="group.add_member"?"Add this user to the selected group":"Remove this user from the selected group"}</p>
-      <p>Required application permissions: {job.preview?.requiredPermissions?.join(", ")}</p>
-      {job.result?.message&&<p>{job.result.message}</p>}
+      <p>Required application permissions: {displayValue(job.preview?.requiredPermissions?.join(", "))}</p>
+      {job.result?.message&&<p>{displayValue(job.result.message)}</p>}
       {job.status==="prepared"&&can("m365_admin")&&<><p>This changes the selected tenant. Removing licences or blocking sign-in can interrupt service. The preview expires after ten minutes.</p>
         {job.operation==="user.create"&&<label className="field">Temporary password<input type="password" autoComplete="new-password" minLength={12} maxLength={128} value={temporaryPassword} onChange={e=>setTemporaryPassword(e.target.value)}/><span>12–128 characters, meeting your tenant’s password policy. Keep it securely for delivery to the user; Fenrir does not store it. A password change is required at first sign-in.</span></label>}
         <label><input type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/> I have reviewed this customer, user and change.</label>

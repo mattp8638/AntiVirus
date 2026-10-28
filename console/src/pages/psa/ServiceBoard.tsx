@@ -1,8 +1,9 @@
+import { displayValue } from "../../components/DisplayValue";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ago, api, fmtTime } from "../../api";
 import { useApp } from "../../app-context";
-import { Modal, PageHead, Pill, Stat, Table, TenantSelect, useAction, useData } from "../../components/ui";
+import { Modal, PageHead, Pill, Stat, Table, TenantSelect, useAction, useData, useListData } from "../../components/ui";
 
 export const PRIORITY_TONE: Record<string, string> = { P1: "bad", P2: "warn", P3: "blue", P4: "muted" };
 
@@ -25,7 +26,7 @@ export default function ServiceBoard() {
   const [assignee, setAssignee] = useState(() => new URLSearchParams(window.location.search).get("assignee") ?? "");
   const [q, setQ] = useState("");
   const [creating, setCreating] = useState(false);
-  const { data, reload } = useData<any[]>("tickets", { tenant_id: tenantId, board_id: boardId, status, assignee, q });
+  const { data, reload } = useListData<any>("tickets", { tenant_id: tenantId, board_id: boardId, status, assignee, q });
   const board = meta?.boards.find((b: any) => b.id === boardId);
   useEffect(() => { try { localStorage.setItem("fenrir.board", boardId); } catch { /* ignore */ } }, [boardId]);
   useEffect(() => { const t = window.setInterval(reload, 20000); return () => window.clearInterval(t); }, [reload]);
@@ -43,13 +44,13 @@ export default function ServiceBoard() {
       </div>
       <div className="row" style={{ margin: "16px 0 12px" }}>
         <select value={boardId} onChange={(e) => setBoardId(e.target.value)} aria-label="Board">
-          <option value="">All boards</option>{meta?.boards.map((b: any) => <option key={b.id} value={b.id}>{b.name}</option>)}</select>
+          <option value="">All boards</option>{meta?.boards.map((b: any) => <option key={b.id} value={b.id}>{displayValue(b.name)}</option>)}</select>
         <select value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Status">
           <option value="active">Open tickets</option><option value="closed">Closed</option><option value="">Everything</option>
-          {(board?.statuses || []).map((s: any) => <option key={s.name} value={s.name}>{s.name}</option>)}</select>
+          {(board?.statuses || []).map((s: any) => <option key={s.name} value={s.name}>{displayValue(s.name)}</option>)}</select>
         <select value={assignee} onChange={(e) => setAssignee(e.target.value)} aria-label="Assignee">
           <option value="">Anyone</option><option value="me">My tickets</option><option value="unassigned">Unassigned</option>
-          {meta?.members.map((m: any) => <option key={m.email} value={m.email}>{m.name}</option>)}</select>
+          {meta?.members.map((m: any) => <option key={m.email} value={m.email}>{displayValue(m.name)}</option>)}</select>
         <input placeholder="Search # or text" value={q} onChange={(e) => setQ(e.target.value)} />
         <span style={{ flex: 1 }} />
         <button className={view === "list" ? "primary small" : "small"} onClick={() => setView("list")}>List</button>
@@ -58,9 +59,9 @@ export default function ServiceBoard() {
       {view === "list" || !board ? (
         <div className="card">
           <Table rows={data} onRow={(t) => navigate(`/tickets/${t.id}`)} empty="No tickets."
-                 columns={[{ key: "number", label: "#", render: (t) => <b>#{t.number}</b> },
+                 columns={[{ key: "number", label: "#", render: (t) => <b>#{displayValue(t.number)}</b> },
                            { key: "priority", label: "Pri", render: (t) => <Pill value={t.priority} tone={PRIORITY_TONE[t.priority]} /> },
-                           { key: "subject", label: "Summary", render: (t) => <><b>{t.subject}</b><div className="small muted">{t.board}{t.type ? ` · ${t.type}${t.subtype ? ` / ${t.subtype}` : ""}` : ""} · {t.source}</div></> },
+                           { key: "subject", label: "Summary", render: (t) => <><b>{displayValue(t.subject)}</b><div className="small muted">{displayValue(t.board)}{t.type ? ` · ${t.type}${t.subtype ? ` / ${t.subtype}` : ""}` : ""} · {displayValue(t.source)}</div></> },
                            { key: "account", label: "Company" },
                            { key: "assignee", label: "Resource", render: (t) => t.assignee || <span className="muted">unassigned</span> },
                            { key: "status", label: "Status", render: (t) => <Pill value={t.status} tone={t.closed ? "muted" : t.status === "New" ? "warn" : "blue"} /> },
@@ -86,12 +87,12 @@ function Kanban({ board, tickets, onMoved }: { board: any; tickets: any[]; onMov
     <div className="kanban" style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(210px, 1fr))` }}>
       {columns.map((col: any) => (
         <div key={col.name} className="col" onDragOver={(e) => e.preventDefault()} onDrop={(e) => move(e.dataTransfer.getData("text/plain"), col.name)}>
-          <div className="row"><b>{col.name}</b><span className="muted small">{tickets.filter((t) => t.status === col.name).length}</span></div>
+          <div className="row"><b>{displayValue(col.name)}</b><span className="muted small">{tickets.filter((t) => t.status === col.name).length}</span></div>
           {tickets.filter((t) => t.status === col.name).map((t) => (
             <div key={t.id} className="lead" draggable onDragStart={(e) => e.dataTransfer.setData("text/plain", t.id)} onClick={() => navigate(`/tickets/${t.id}`)} style={{ cursor: "pointer" }}>
-              <div className="row"><Pill value={t.priority} tone={PRIORITY_TONE[t.priority]} /><span className="small muted">#{t.number}</span><span style={{ flex: 1 }} />{slaCell(t)}</div>
-              <div style={{ marginTop: 4 }}><b>{t.subject}</b></div>
-              <div className="small muted">{t.account} · {t.assignee || "unassigned"}</div>
+              <div className="row"><Pill value={t.priority} tone={PRIORITY_TONE[t.priority]} /><span className="small muted">#{displayValue(t.number)}</span><span style={{ flex: 1 }} />{slaCell(t)}</div>
+              <div style={{ marginTop: 4 }}><b>{displayValue(t.subject)}</b></div>
+              <div className="small muted">{displayValue(t.account)} · {displayValue(t.assignee || "unassigned")}</div>
             </div>
           ))}
         </div>
@@ -104,7 +105,7 @@ export function NewTicket({ meta, defaultBoard, onClose, preset }: { meta: any; 
   const { tenantId, me } = useApp();
   const [form, setForm] = useState<any>({ accountTenantId: tenantId || me?.user.tenantId || "", boardId: defaultBoard || "", subject: "", description: "",
                                           impact: "Medium", urgency: "Medium", type: "", subtype: "", item: "", contactId: "", ...preset });
-  const { data: contacts } = useData<any[]>("crm/contacts");
+  const { data: contacts } = useListData<any>("crm/contacts");
   const board = meta?.boards.find((b: any) => b.id === form.boardId) || meta?.boards.find((b: any) => b.name === "Service Desk");
   const types = board?.types || [];
   const subtypes = types.find((t: any) => t.name === form.type)?.subtypes || [];
@@ -121,11 +122,11 @@ export function NewTicket({ meta, defaultBoard, onClose, preset }: { meta: any; 
       <div className="form-grid">
         <label className="field">Company<TenantSelect value={form.accountTenantId} onChange={(id) => setForm({ ...form, accountTenantId: id, contactId: "" })} allowAll={false} /></label>
         <label className="field">Contact<select value={form.contactId} onChange={(e) => setForm({ ...form, contactId: e.target.value })}>
-          <option value="">—</option>{contacts?.filter((c) => c.accountTenantId === form.accountTenantId).map((c) => <option key={c.id} value={c.id}>{c.name} ({c.email})</option>)}</select></label>
+          <option value="">—</option>{contacts?.filter((c) => c.accountTenantId === form.accountTenantId).map((c) => <option key={c.id} value={c.id}>{displayValue(c.name)} ({displayValue(c.email)})</option>)}</select></label>
         <label className="field">Board<select value={form.boardId || board?.id || ""} onChange={(e) => setForm({ ...form, boardId: e.target.value, type: "", subtype: "", item: "" })}>
-          {meta?.boards.map((b: any) => <option key={b.id} value={b.id}>{b.name}</option>)}</select></label>
-        <label className="field">Type<select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value, subtype: "", item: "" })}><option value="">—</option>{types.map((t: any) => <option key={t.name}>{t.name}</option>)}</select></label>
-        <label className="field">Subtype<select value={form.subtype} onChange={(e) => setForm({ ...form, subtype: e.target.value, item: "" })}><option value="">—</option>{subtypes.map((s: any) => <option key={s.name}>{s.name}</option>)}</select></label>
+          {meta?.boards.map((b: any) => <option key={b.id} value={b.id}>{displayValue(b.name)}</option>)}</select></label>
+        <label className="field">Type<select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value, subtype: "", item: "" })}><option value="">—</option>{types.map((t: any) => <option key={t.name}>{displayValue(t.name)}</option>)}</select></label>
+        <label className="field">Subtype<select value={form.subtype} onChange={(e) => setForm({ ...form, subtype: e.target.value, item: "" })}><option value="">—</option>{subtypes.map((s: any) => <option key={s.name}>{displayValue(s.name)}</option>)}</select></label>
         <label className="field">Item<select value={form.item} onChange={(e) => setForm({ ...form, item: e.target.value })}><option value="">—</option>{items.map((i: string) => <option key={i}>{i}</option>)}</select></label>
         <label className="field">Impact<select value={form.impact} onChange={(e) => setForm({ ...form, impact: e.target.value })}>{["High", "Medium", "Low"].map((x) => <option key={x}>{x}</option>)}</select></label>
         <label className="field">Urgency<select value={form.urgency} onChange={(e) => setForm({ ...form, urgency: e.target.value })}>{["High", "Medium", "Low"].map((x) => <option key={x}>{x}</option>)}</select></label>

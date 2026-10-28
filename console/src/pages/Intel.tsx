@@ -1,7 +1,8 @@
+import { displayValue } from "../components/DisplayValue";
 import { useState } from "react";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
-import { Modal, PageHead, Pill, Table, Tabs, TenantSelect, useAction, useData } from "../components/ui";
+import { Modal, PageHead, Pill, Table, Tabs, TenantSelect, useAction, useData, useListData } from "../components/ui";
 
 export default function Intel() {
   const { tenantId, can, tenantName } = useApp();
@@ -10,7 +11,7 @@ export default function Intel() {
   const [result, setResult] = useState<any>(null);
   const [q, setQ] = useState("");
   const { data, reload } = useData<any>("intel/indicators", { tenant_id: tenantId, q, limit: 500 });
-  const { data: yara, reload: reloadYara } = useData<any[]>("intel/yara");
+  const { data: yara, reload: reloadYara } = useListData<any>("intel/yara");
   const [adding, setAdding] = useState(false);
   const [addingYara, setAddingYara] = useState(false);
   const { run, busy } = useAction();
@@ -32,14 +33,14 @@ export default function Intel() {
           </div>
           {result && (
             <div style={{ marginTop: 16 }}>
-              <div className="row"><Pill value={result.verdict} /> <span className="muted">{result.type} · score {result.score} {result.source && `· ${result.source}`}</span></div>
+              <div className="row"><Pill value={result.verdict} /> <span className="muted">{displayValue(result.type)} · score {displayValue(result.score)} {displayValue(result.source && `· ${result.source}`)}</span></div>
               <h3 style={{ marginTop: 12 }}>Matches</h3>
               <Table rows={result.matches.map((m: any, i: number) => ({ ...m, id: i }))} empty="No intel match."
-                     columns={[{ key: "value", label: "Indicator", render: (m) => <span className="mono">{m.value}</span> }, { key: "verdict", label: "Verdict", render: (m) => <Pill value={m.verdict} /> },
+                     columns={[{ key: "value", label: "Indicator", render: (m) => <span className="mono">{displayValue(m.value)}</span> }, { key: "verdict", label: "Verdict", render: (m) => <Pill value={m.verdict} /> },
                                { key: "category", label: "Category" }, { key: "source", label: "Source" }, { key: "scope", label: "Scope" }]} />
               <h3 style={{ marginTop: 12 }}>Seen in your telemetry</h3>
               <Table rows={result.sightings.map((s: any) => ({ ...s, id: s.deviceId }))} empty="Not seen on any device."
-                     columns={[{ key: "deviceId", label: "Device", render: (s) => <a href={`/devices/${s.deviceId}`}>{s.deviceId}</a> }, { key: "events", label: "Events" }]} />
+                     columns={[{ key: "deviceId", label: "Device", render: (s) => <a href={`/devices/${s.deviceId}`}>{displayValue(s.deviceId)}</a> }, { key: "events", label: "Events" }]} />
             </div>
           )}
         </div>
@@ -48,10 +49,10 @@ export default function Intel() {
         <div className="card">
           <div className="row" style={{ marginBottom: 10 }}>
             <input placeholder="Filter" value={q} onChange={(e) => setQ(e.target.value)} />
-            <span className="muted small">{data?.stats.indicators.map((s: any) => `${s.count} ${s.type} (${s.verdict})`).join(" · ")}</span>
+            <span className="muted small">{displayValue(data?.stats.indicators.map((s: any) => `${s.count} ${s.type} (${s.verdict})`).join(" · "))}</span>
           </div>
           <Table rows={data?.items}
-                 columns={[{ key: "type", label: "Type" }, { key: "value", label: "Indicator", render: (r) => <span className="mono small">{r.value}</span> },
+                 columns={[{ key: "type", label: "Type" }, { key: "value", label: "Indicator", render: (r) => <span className="mono small">{displayValue(r.value)}</span> },
                            { key: "verdict", label: "Verdict", render: (r) => <Pill value={r.verdict} /> }, { key: "category", label: "Category" },
                            { key: "source", label: "Source" }, { key: "tenantId", label: "Scope", render: (r) => r.tenantId ? tenantName(r.tenantId) : "Global" },
                            { key: "createdAt", label: "Added", render: (r) => fmtTime(r.createdAt) },

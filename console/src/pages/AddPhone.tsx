@@ -1,3 +1,4 @@
+import { displayValue } from "../components/DisplayValue";
 import { useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
 import { api } from "../api";
@@ -50,7 +51,7 @@ export function AddPhone() {
           <label className="field">Group
             <select value={groupId} onChange={(e) => setGroupId(e.target.value)}>
               <option value="">None</option>
-              {groups?.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+              {groups?.map((g) => <option key={g.id} value={g.id}>{displayValue(g.name)}</option>)}
             </select>
           </label>
           <label className="field">Who it's for (optional)<input value={owner} onChange={(e) => setOwner(e.target.value)} maxLength={80} placeholder="Jo Bloggs" /></label>
