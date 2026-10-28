@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from .. import audit
+from ..grccatalogue import CATALOGUE, framework_labels, retired_framework
 from ..db import get_db
 from ..deps import Principal, current_principal, require_reauth, scoped_tenant
 from ..models import GovernanceRecord, KbArticle, Tenant, utcnow
@@ -13,10 +14,7 @@ from ..serialize import to_dict
 from .documentation import owned
 
 router = APIRouter(prefix="/api/console/grc", tags=["GRC and ISMS"])
-FRAMEWORKS = ["ISO 27001:2022", "Cyber Essentials", "NCSC CAF", "UK GDPR", "NIST CSF", "CIS Controls", "Essential Eight"]
-# Built-in control libraries (compliance.FRAMEWORKS) -> the framework label register records use.
-LIBRARY_LABELS = {"iso-27001": "ISO 27001:2022", "cyber-essentials": "Cyber Essentials", "nist-csf-2": "NIST CSF",
-                  "cis-v8-ig1": "CIS Controls", "essential-eight": "Essential Eight"}
+FRAMEWORKS = [f["name"] for f in CATALOGUE.values()]
 
 class RecordInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -55,6 +53,8 @@ def records(tenant_id: str | None = None, principal: Principal = Depends(current
 def create(body: RecordInput, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("grc")
     principal.check_tenant(body.tenantId)
+    if retired_framework("", body.framework):
+        raise HTTPException(422, "This framework is retired from the UK governance catalogue")
     if body.documentId:
         doc = owned(db, KbArticle, body.documentId, principal)
         if doc.tenant_id != body.tenantId:
@@ -113,10 +113,11 @@ def controls(tenant_id: str, principal: Principal = Depends(current_principal), 
     records = list(db.scalars(select(GovernanceRecord).where(GovernanceRecord.tenant_id == tenant_id)))
     out = []
     for framework in compliance.evaluate(db, tenant):
-        label = LIBRARY_LABELS.get(framework["framework"], framework["name"])
+        label = CATALOGUE.get(framework["framework"], {}).get("name", framework["name"])
+        labels = framework_labels(framework["framework"])
         rows, counts = [], {"met": 0, "evidenced": 0, "exception": 0, "gap": 0}
         for control in framework["controls"]:
-            linked = [r for r in records if r.framework == label and _control_matches(r.control, control["id"])]
+            linked = [r for r in records if r.framework in labels and _control_matches(r.control, control["id"])]
             approved = [r for r in linked if r.kind in ("policy", "evidence", "audit") and r.status == "approved"]
             excepted = [r for r in linked if r.kind == "exception" and r.status in ("approved", "accepted")]
             status = "met" if control["passed"] else "evidenced" if approved else "exception" if excepted else "gap"

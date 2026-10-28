@@ -26,7 +26,7 @@ export function ProgrammesTab() {
   return (
     <>
       <div className="row" style={{ justifyContent: "space-between", marginBottom: 12 }}>
-        <p className="muted small" style={{ margin: 0 }}>Each framework lists its requirements (or questions) for the customer to answer, evidence, and the policies that cover them.</p>
+        <p className="muted small" style={{ margin: 0 }}>Choose UK and UK-targeted frameworks, confirm the customer’s scope, then record answers, owners, policies and evidence.</p>
         {can("grc") && <button className="primary" onClick={() => setAdopt(true)}>Add framework</button>}
       </div>
       {data && data.length === 0 && <div className="card"><p className="muted">No frameworks yet. Add one (for example Cyber Essentials or ISO 27001) to start a programme; the matching policies are created as drafts for you.</p></div>}
@@ -62,6 +62,7 @@ function AdoptModal({ onClose }: { onClose: () => void }) {
   const { run, busy } = useAction();
   const navigate = useNavigate();
   const chosen = library?.frameworks.find((f: any) => f.key === key);
+  useEffect(() => { setKey(""); }, [customer]);
   const save = async () => {
     const result = await run(() => api<any>("grc/programmes", { body: { tenantId: customer, frameworkKey: key, owner, securityContact: contact,
       targetDate: target ? new Date(target).toISOString() : null, createPolicies } }));
@@ -73,18 +74,23 @@ function AdoptModal({ onClose }: { onClose: () => void }) {
   };
   return (
     <Modal title="Add a framework" onClose={onClose} wide
-           footer={<button className="primary" disabled={busy || !customer || !key} onClick={save}>Add framework</button>}>
+           footer={<button className="primary" disabled={busy || !customer || !chosen} onClick={save}>Add framework</button>}>
       <label className="field">Customer<TenantSelect value={customer} onChange={setCustomer} allowAll={false} /></label>
+      <p className="small muted">The catalogue covers UK schemes and international frameworks used by UK organisations. Confirm applicability for each customer, including EU activity where relevant.</p>
       <div className="grid k2" style={{ margin: "10px 0" }}>
         {(library?.frameworks || []).map((f: any) => (
           <button key={f.key} className={`card domain-card ${key === f.key ? "active" : ""}`} style={{ textAlign: "left", cursor: "pointer" }} onClick={() => setKey(f.key)}>
             <b>{displayValue(f.name)}</b> {f.source !== "built-in" && <Pill value={f.source} tone="blue" />}
             <div className="small muted" style={{ margin: "4px 0" }}>{displayValue(f.requirements)} {f.questionSet ? "questions" : "requirements"} · {displayValue(f.policies)} matching policies{f.version ? ` · ${f.version}` : ""}</div>
             <div className="small">{displayValue(f.description)}</div>
+            {f.owner && <div className="small" style={{ marginTop: 6 }}><b>Owner:</b> {displayValue(f.owner)}</div>}
+            {f.assessmentStyle && <div className="small"><b>Assessment:</b> {displayValue(f.assessmentStyle)}</div>}
+            {f.targetScope && <div className="small"><b>UK scope:</b> {displayValue(f.targetScope)}</div>}
           </button>
         ))}
       </div>
-      {key && <div className="grid k2">
+      {chosen?.sourceUrl && <p className="small"><a href={chosen.sourceUrl} target="_blank" rel="noopener noreferrer">Official framework guidance</a> · {displayValue(chosen.jurisdiction)}</p>}
+      {chosen && <div className="grid k2">
         <label className="field">Policy owner (named in the policies)<input value={owner} onChange={(e) => setOwner(e.target.value)} placeholder="e.g. Jo Bloggs, Operations Director" /></label>
         <label className="field">Who staff report incidents to<input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="e.g. it@customer.co.uk or 01234 567890" /></label>
         <label className="field">Target date (optional)<input type="date" value={target} onChange={(e) => setTarget(e.target.value)} /></label>
@@ -122,9 +128,11 @@ export function ProgrammeDetail() {
                 actions={<div className="row">
                   <button onClick={() => run(() => downloadFile(`grc/programmes/${tid}/${framework}/export`, `${framework}.csv`))}>Export answers (CSV)</button>
                   <button onClick={() => setHistory(true)}>History</button>
-                  {can("grc") && <button onClick={() => setImporting(true)}>Import exact question set</button>}
+                  {can("grc") && !data.retired && <button onClick={() => setImporting(true)}>Import exact question set</button>}
                   {can("grc") && data.adopted && <button className="danger" onClick={async () => { if (confirm("Stop tracking this framework? Answers, evidence and policies are kept.") && await run(() => api(`grc/programmes/${tid}/${framework}`, { method: "DELETE" }), "Framework paused")) navigate("/governance"); }}>Pause</button>}
                 </div>} />
+      {data.retired && <p className="card">This framework has been removed from the UK catalogue. Existing answers, evidence and exports remain available as a read-only record.</p>}
+      {data.owner && <p className="small muted">{displayValue(data.owner)} · {displayValue(data.assessmentStyle)}<br />{displayValue(data.targetScope)} {data.sourceUrl && <a href={data.sourceUrl} target="_blank" rel="noopener noreferrer">Official guidance</a>}</p>}
       <div className="grid k4" style={{ marginBottom: 14 }}>
         <Stat label="Complete" value={`${data.progress}%`} hint={<Progress value={data.progress} />} />
         <Stat label="Done" value={data.counts.implemented} hint={`${data.counts.not_applicable} not applicable${data.counts.needs_review ? ` · ${data.counts.needs_review} need review after a wording change` : ""}`} />
@@ -174,7 +182,7 @@ function RequirementDrawer({ tenantId, framework, requirement: r, onClose, onCha
   const [adding, setAdding] = useState(false);
   const { run, busy } = useAction();
   useEffect(() => setForm({ status: r.recordedStatus ?? r.status, answer: r.answer, notes: r.notes, naReason: r.naReason, owner: r.owner, dueDate: r.dueDate ? r.dueDate.slice(0, 10) : "" }), [r.id]);
-  const editable = can("grc");
+  const editable = can("grc") && !framework.retired;
   const save = async () => {
     const body: any = { status: form.status, answer: form.answer, notes: form.notes, naReason: form.naReason, owner: form.owner };
     if (form.dueDate) body.dueDate = new Date(form.dueDate).toISOString(); else body.clearDueDate = true;

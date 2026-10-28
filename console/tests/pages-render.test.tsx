@@ -45,9 +45,9 @@ class DesktopPeer extends EventTarget {
   close() { this.readyState = 3; }
 }
 
-const context = vi.hoisted(() => ({ me: null as any }));
+const context = vi.hoisted(() => ({ me: null as any, tenantId: "" }));
 vi.mock("../src/app-context", () => ({
-  useApp: () => ({ me: context.me, loading: false, tenantId: "", can: () => true,
+  useApp: () => ({ me: context.me, loading: false, tenantId: context.tenantId, can: () => true,
     tenantName: (id: string) => context.me?.tenants.find((t: any) => t.id === id)?.name ?? "Customer",
     setTenantId: vi.fn(), toast: vi.fn(), login: vi.fn(), logout: vi.fn(), refreshMe: vi.fn() }),
 }));
@@ -93,7 +93,7 @@ beforeAll(async () => {
   });
 }, 30000);
 
-afterEach(() => { cleanup(); failures.length = 0; renderErrors.length = 0; });
+afterEach(() => { context.tenantId = ""; cleanup(); failures.length = 0; renderErrors.length = 0; });
 afterAll(() => {
   child?.stdin.end();
   child?.kill();
@@ -184,3 +184,27 @@ test("renders Android device pages including Location", async () => {
   assertView(route);
   await checkTabs(route);
 }, 20000);
+
+test("UK governance catalogue shows scope and adopts a working DORA programme", async () => {
+  context.tenantId = ids.tenant;
+  render(<MemoryRouter initialEntries={["/governance"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Root /></MemoryRouter>);
+  await settled();
+  fireEvent.click(screen.getByRole("button", { name: "Add framework", exact: true }));
+  await settled();
+  const cards = [...document.querySelectorAll<HTMLButtonElement>("button.domain-card")].filter(b => b.textContent?.includes("matching policies"));
+  expect(cards).toHaveLength(15);
+  expect(cards.some(b => /ACSC|Essential Eight/.test(b.textContent || ""))).toBe(false);
+  expect(cards.every(b => b.textContent?.includes("Owner:") && b.textContent?.includes("Assessment:") && b.textContent?.includes("UK scope:"))).toBe(true);
+  fireEvent.click(cards.find(b => b.textContent?.startsWith("DORA"))!);
+  const source = screen.getByRole("link", { name: "Official framework guidance" });
+  expect(source.getAttribute("href")).toBe("https://eur-lex.europa.eu/eli/reg/2022/2554/oj");
+  const add = screen.getAllByRole<HTMLButtonElement>("button", { name: "Add framework", exact: true }).find(b => b.closest(".modal"));
+  expect(add).toBeTruthy();
+  expect(add!.disabled).toBe(false);
+  fireEvent.click(add!);
+  await settled();
+  assertView("UK governance › DORA adoption");
+  expect(screen.getByRole("heading", { name: "DORA", exact: true })).toBeTruthy();
+  expect(screen.getByText("Entity and supplier applicability", { exact: true })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Export answers (CSV)" })).toBeTruthy();
+}, 30000);

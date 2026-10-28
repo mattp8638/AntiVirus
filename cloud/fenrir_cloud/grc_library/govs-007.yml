@@ -1,0 +1,88 @@
+{
+  "key": "govs-007",
+  "name": "GovS 007: Security",
+  "short": "GovS 007",
+  "version": "2.0",
+  "questionSet": true,
+  "description": "UK-relevant readiness and evidence guide. Record applicability before assessment; use the official framework and any required independent assessment or submission process. Security governance and operations across UK government organisations.",
+  "sections": [
+    {
+      "id": "readiness",
+      "title": "Scope, implementation and assurance",
+      "requirements": [
+        {
+          "id": "G007-GOV",
+          "title": "Security accountabilities",
+          "text": "Assign accountable leadership, security ownership and reporting routes.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "G007-RISK",
+          "title": "Risk and assurance",
+          "text": "Maintain the security risk register, risk decisions and assurance schedule.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "G007-PEOPLE",
+          "title": "People security",
+          "text": "Record proportionate screening, responsibilities, training and joiner/mover/leaver controls.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "G007-PHYSICAL",
+          "title": "Physical and asset protection",
+          "text": "Evidence protection of locations, equipment and sensitive government assets.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "G007-TECH",
+          "title": "Technical security",
+          "text": "Maintain technical baselines, access controls and assurance evidence.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "G007-INCIDENT",
+          "title": "Incident arrangements",
+          "text": "Document escalation, response, recovery and lessons from exercises.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "G007-SUPPLIERS",
+          "title": "Third-party responsibilities",
+          "text": "Track supplier security requirements and assurance.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "G007-REVIEW",
+          "title": "Capability and review",
+          "text": "Review capability, performance and improvement commitments.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        }
+      ]
+    }
+  ]
+}
