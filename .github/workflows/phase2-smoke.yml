@@ -103,10 +103,6 @@ jobs:
           set -euo pipefail
           umask 077
           mkdir -p deploy/releases
-          # No code-signing certificate in CI: empty files make the image build the Windows agent unsigned.
-          mkdir -p deploy/signing
-          : > deploy/signing/codesign.pfx
-          : > deploy/signing/codesign.password
           {
             printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 20)"
             printf 'FENRIR_SECRET_KEY=%s\n' "$(openssl rand -hex 32)"
