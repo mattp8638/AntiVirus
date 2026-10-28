@@ -405,7 +405,11 @@ if ($wu.Count -gt 0) {
 $winget = $env:FENRIR_WINGET
 foreach ($pkg in $wg) {
   if (-not $winget -or -not (Test-Path $winget)) { Add-Result "winget:$pkg" $false 'WinGet/App Installer is unavailable to the service'; continue }
+  $LASTEXITCODE = $null
+  $output = ''
   $output = (& $winget upgrade --id $pkg --exact --source winget --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1 | Out-String)
+  $output = [string]$output
+  if ($null -eq $LASTEXITCODE) { Add-Result "winget:$pkg" $false ('WinGet could not start: ' + $output.Trim()); continue }
   $code = [uint32]([int64]$LASTEXITCODE -band 4294967295L)
   $ok = $code -eq 0 -or $code -eq 0x8A15002B -or $code -eq 3010 -or $code -eq 1641
   if ($code -eq 3010 -or $code -eq 1641) { $rebootRequired = $true }
