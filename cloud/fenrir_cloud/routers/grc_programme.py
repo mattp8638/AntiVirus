@@ -21,7 +21,7 @@ from .. import audit, crypto, grcprogramme as gp
 from ..config import get_settings
 from ..db import get_db
 from ..deps import Principal, current_principal, require_reauth, scoped_tenant
-from ..models import (GrcAdoption, GrcEvidence, GrcEvidenceLink, GrcFramework, GrcPolicy, GrcPolicyVersion, GrcRequirementState,
+from ..models import (GrcAdoption, GrcAssessmentSnapshot, GrcEvidence, GrcEvidenceLink, GrcFramework, GrcPolicy, GrcPolicyVersion, GrcRequirementState,
                       Tenant, utcnow)
 from ..serialize import to_dict
 
@@ -53,7 +53,8 @@ def library(tenant_id: str | None = None, principal: Principal = Depends(current
         principal.check_tenant(tenant_id)
     frameworks = gp.frameworks_for(db, tenant_id)
     return {"frameworks": [{"key": f["key"], "name": f["name"], "short": f["short"], "version": f["version"], "description": f["description"],
-                            "questionSet": f["questionSet"], "source": f["source"], "requirements": len(gp.requirements(f)),
+                            "questionSet": f["questionSet"], "source": f["source"], "importedId": f.get("importedId"),
+                            "requirements": len(gp.requirements(f)),
                             "policies": len(gp.templates_for(f["key"]))} for f in frameworks.values()],
             "policies": [{"key": t["key"], "title": t["title"], "summary": t["summary"],
                           "frameworks": {k: len(v) for k, v in t["maps"].items()}} for t in gp.policy_templates().values()]}
@@ -79,6 +80,7 @@ class ImportInput(BaseModel):
     questionSet: bool = False
     format: Literal["json", "yaml", "csv"] = "json"
     content: str = Field(min_length=2, max_length=5_000_000)
+    dryRun: bool = False  # only report what would change
 
 
 @router.post("/library/frameworks/import")
@@ -99,6 +101,14 @@ def import_framework(body: ImportInput, principal: Principal = Depends(current_p
         raise HTTPException(400, f"Could not read the framework: {exc}")
     except Exception:  # yaml.YAMLError and friends
         raise HTTPException(400, "Could not read the framework: not valid JSON, YAML or CSV")
+    current = gp.frameworks_for(db, body.tenantId).get(body.key)
+    diff = gp.diff_frameworks(current, normalised)
+    affected = gp.tenants_using(db, body.key, body.tenantId)
+    if body.dryRun:
+        return {"key": body.key, "dryRun": True, "requirements": len(gp.requirements(normalised)),
+                "replacesBuiltIn": body.key in gp.builtin_frameworks(), "diff": diff, "affectedCustomers": len(affected)}
+    gp.freeze_before_change(db, body.key, body.tenantId, principal.actor,
+                            f"Before import of {body.name} {body.version}".strip())
     row = db.execute(select(GrcFramework).where(GrcFramework.key == body.key, GrcFramework.tenant_id.is_(None) if body.tenantId is None
                                                 else GrcFramework.tenant_id == body.tenantId)).scalar_one_or_none()
     if row is None:
@@ -109,9 +119,11 @@ def import_framework(body: ImportInput, principal: Principal = Depends(current_p
     row.sections = [{"id": s["id"], "title": s["title"], "requirements": s["requirements"]} for s in normalised["sections"]]
     db.flush()
     audit.record(db, principal.actor, "grc.framework_imported", body.key, body.tenantId,
-                 requirements=len(gp.requirements(normalised)), replacesBuiltIn=body.key in gp.builtin_frameworks())
+                 requirements=len(gp.requirements(normalised)), replacesBuiltIn=body.key in gp.builtin_frameworks(),
+                 added=len(diff["added"]), removed=len(diff["removed"]), changed=len(diff["changed"]), affectedCustomers=len(affected))
     db.commit()
-    return {"key": body.key, "requirements": len(gp.requirements(normalised)), "replacesBuiltIn": body.key in gp.builtin_frameworks()}
+    return {"key": body.key, "requirements": len(gp.requirements(normalised)), "replacesBuiltIn": body.key in gp.builtin_frameworks(),
+            "diff": diff, "affectedCustomers": len(affected)}
 
 
 @router.delete("/library/frameworks/imported/{framework_id}")
@@ -120,6 +132,7 @@ def delete_import(framework_id: str, principal: Principal = Depends(current_prin
     row = db.get(GrcFramework, framework_id)
     if row is None or (row.tenant_id and row.tenant_id not in principal.tenant_ids) or (row.tenant_id is None and principal.user.role != "platform_admin"):
         raise HTTPException(404, "Not found")
+    gp.freeze_before_change(db, row.key, row.tenant_id, principal.actor, f"Before removing the imported {row.name} {row.version}".strip())
     audit.record(db, principal.actor, "grc.framework_import_deleted", row.key, row.tenant_id)
     db.delete(row)
     db.commit()
@@ -229,7 +242,8 @@ def update_requirement(tenant_id: str, framework_key: str, requirement_id: str, 
     principal.require("grc")
     tenant = _tenant(db, principal, tenant_id)
     framework = gp.frameworks_for(db, tenant.id).get(framework_key)
-    if framework is None or requirement_id not in {r["id"] for r in gp.requirements(framework)}:
+    req = next((r for r in gp.requirements(framework) if r["id"] == requirement_id), None) if framework else None
+    if req is None:
         raise HTTPException(404, "Unknown requirement")
     state = db.execute(select(GrcRequirementState).where(GrcRequirementState.tenant_id == tenant.id, GrcRequirementState.framework_key == framework_key,
                                                          GrcRequirementState.requirement_id == requirement_id)).scalar_one_or_none()
@@ -246,35 +260,85 @@ def update_requirement(tenant_id: str, framework_key: str, requirement_id: str, 
         state.due_date = _naive(body.dueDate)
     if body.clearDueDate:
         state.due_date = None
+    reviewed = bool(state.requirement_hash and state.requirement_hash != gp.requirement_hash(req))
+    # Saving an answer confirms it against the wording shown now.
+    state.requirement_hash, state.requirement_text = gp.requirement_hash(req), gp.requirement_wording(req)
     state.updated_by, state.updated_at = principal.actor, utcnow()
-    audit.record(db, principal.actor, "grc.requirement_updated", f"{framework_key}:{requirement_id}", tenant.id, status=state.status)
+    audit.record(db, principal.actor, "grc.requirement_updated", f"{framework_key}:{requirement_id}", tenant.id, status=state.status,
+                 reviewedRevision=reviewed)
     db.commit()
     return {"requirementId": requirement_id, "status": state.status, "answer": state.answer, "updatedAt": state.updated_at.isoformat() + "Z"}
 
 
-@router.get("/programmes/{tenant_id}/{framework_key}/export")
-def export_answers(tenant_id: str, framework_key: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    """CSV of every requirement with status, answer, notes, policies and evidence - for the assessor or the
-    certification body's portal."""
+def _snapshot_view(row: GrcAssessmentSnapshot) -> dict:
+    data = row.data or {}
+    return {"id": row.id, "frameworkKey": row.framework_key, "label": row.label, "reason": row.reason, "createdBy": row.created_by,
+            "createdAt": row.created_at.isoformat() + "Z", "version": data.get("version", ""), "progress": data.get("progress", 0),
+            "counts": data.get("counts", {}), "total": data.get("total", 0)}
+
+
+@router.get("/programmes/{tenant_id}/{framework_key}/snapshots")
+def list_snapshots(tenant_id: str, framework_key: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("read")
     tenant = _tenant(db, principal, tenant_id)
-    try:
-        view = gp.programme(db, tenant, framework_key)
-    except KeyError:
+    rows = db.execute(select(GrcAssessmentSnapshot).where(GrcAssessmentSnapshot.tenant_id == tenant.id,
+                                                          GrcAssessmentSnapshot.framework_key == framework_key)
+                      .order_by(GrcAssessmentSnapshot.created_at.desc())).scalars().all()
+    return [_snapshot_view(r) for r in rows]
+
+
+class SnapshotInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str = Field(min_length=1, max_length=200)
+
+
+@router.post("/programmes/{tenant_id}/{framework_key}/snapshots")
+def create_snapshot(tenant_id: str, framework_key: str, body: SnapshotInput, principal: Principal = Depends(current_principal),
+                    db: Session = Depends(get_db)):
+    """Freeze the assessment as it stands (for example when it is submitted to the certification body)."""
+    principal.require("grc")
+    tenant = _tenant(db, principal, tenant_id)
+    row = gp.snapshot(db, tenant, framework_key, principal.actor, "Saved by hand", label=body.label.strip())
+    if row is None:
         raise HTTPException(404, "Unknown framework")
+    db.flush()
+    audit.record(db, principal.actor, "grc.snapshot_created", f"{framework_key}:{row.id}", tenant.id, label=row.label)
+    db.commit()
+    return _snapshot_view(row)
+
+
+@router.get("/programmes/{tenant_id}/{framework_key}/export")
+def export_answers(tenant_id: str, framework_key: str, snapshot: str | None = Query(None, max_length=32),
+                   principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """CSV of every requirement with status, answer, notes, policies and evidence - for the assessor or the
+    certification body's portal. With snapshot=, the assessment exactly as it was frozen."""
+    principal.require("read")
+    tenant = _tenant(db, principal, tenant_id)
+    if snapshot:
+        row = db.get(GrcAssessmentSnapshot, snapshot)
+        if row is None or row.tenant_id != tenant.id or row.framework_key != framework_key:
+            raise HTTPException(404, "Snapshot not found")
+        view = row.data
+    else:
+        try:
+            view = gp.programme(db, tenant, framework_key)
+        except KeyError:
+            raise HTTPException(404, "Unknown framework")
     out = io.StringIO()
     writer = csv.writer(out)
     writer.writerow(["Section", "ID", "Requirement", "Question", "Status", "Answer", "Not applicable because", "Notes", "Owner",
-                     "Policies", "Evidence", "Automatic checks"])
+                     "Policies", "Evidence", "Automatic checks", "Answered wording (if changed since)"])
     for section in view["sections"]:
         for r in section["requirements"]:
             writer.writerow([section["title"], r["id"], r["title"], r["text"], r["status"].replace("_", " "), r["answer"], r["naReason"],
                              r["notes"], r["owner"], "; ".join(f"{p['title']} ({p['status']})" for p in r["policies"]),
                              "; ".join(e["title"] for e in r["evidence"]),
-                             "; ".join(f"{c['title']}: {'pass' if c['passed'] else 'fail'}" for c in r["checks"])])
-    audit.record(db, principal.actor, "grc.exported", framework_key, tenant.id)
+                             "; ".join(f"{c['title']}: {'pass' if c['passed'] else 'fail'}" for c in r["checks"]),
+                             r.get("previousWording") or ""])
+    audit.record(db, principal.actor, "grc.exported", framework_key, tenant.id, snapshot=snapshot)
     db.commit()
-    name = f"{tenant.slug or tenant.id}-{framework_key}-{utcnow():%Y%m%d}.csv"
+    stamp = f"snapshot-{snapshot}" if snapshot else f"{utcnow():%Y%m%d}"
+    name = f"{tenant.slug or tenant.id}-{framework_key}-{stamp}.csv"
     return Response(out.getvalue(), media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 

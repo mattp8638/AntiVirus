@@ -108,7 +108,7 @@ def test_import_exact_question_set_replaces_builtin_for_customer(client, admin, 
                         json={"tenantId": tid, "key": "cyber-essentials", "name": "Cyber Essentials (IASME booklet)", "version": "Willow",
                               "questionSet": True, "format": "csv", "content": content})
     assert reply.status_code == 200, reply.text
-    assert reply.json() == {"key": "cyber-essentials", "requirements": 2, "replacesBuiltIn": True}
+    assert {k: reply.json()[k] for k in ("key", "requirements", "replacesBuiltIn")} == {"key": "cyber-essentials", "requirements": 2, "replacesBuiltIn": True}
     client.post("/api/console/grc/programmes", headers=admin, json={"tenantId": tid, "frameworkKey": "cyber-essentials", "createPolicies": False})
     view = client.get(f"/api/console/grc/programmes/{tid}/cyber-essentials", headers=admin).json()
     assert view["total"] == 2 and view["source"] == "imported" and view["version"] == "Willow"

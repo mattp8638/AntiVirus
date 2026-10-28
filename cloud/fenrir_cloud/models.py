@@ -1462,7 +1462,24 @@ class GrcRequirementState(Base):
     due_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     updated_by: Mapped[str] = mapped_column(String(200), default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # What the requirement said when this answer/status was given (FIX-08): a later wording change needs a review.
+    requirement_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    requirement_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     __table_args__ = (UniqueConstraint("tenant_id", "framework_key", "requirement_id", name="uq_grc_requirement_state"),)
+
+
+class GrcAssessmentSnapshot(Base):
+    """A customer's whole assessment of a framework (definition + answers) frozen before the framework changed,
+    so earlier assessments can still be exported exactly as they were."""
+    __tablename__ = "grc_assessment_snapshots"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("grcs"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    framework_key: Mapped[str] = mapped_column(String(80))
+    label: Mapped[str] = mapped_column(String(200), default="")
+    reason: Mapped[str] = mapped_column(String(300), default="")
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class GrcPolicy(Base):

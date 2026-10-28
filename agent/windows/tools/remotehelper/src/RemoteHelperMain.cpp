@@ -547,9 +547,11 @@ void TypeText(const std::wstring& text) {
   }
 }
 
-bool SendCtrlAltDel() {
+// Direct SendSAS from this process. Windows ignores it unless the caller counts as a service, so this is only the
+// fallback for an older agent service that does not offer the pipe below.
+bool SendSasDirect() {
   using SendSasFn = VOID(WINAPI*)(BOOL);
-  HMODULE sas = LoadLibraryW(L"sas.dll");
+  HMODULE sas = LoadLibraryExW(L"sas.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
   if (!sas) {
     return false;
   }
@@ -558,7 +560,6 @@ bool SendCtrlAltDel() {
     FreeLibrary(sas);
     return false;
   }
-  // SendSAS needs the SoftwareSASGeneration policy to allow services (1) or services and apps (3).
   HKEY key = nullptr;
   if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System", 0, nullptr, 0,
                       KEY_READ | KEY_WRITE | KEY_WOW64_64KEY, nullptr, &key, nullptr) == ERROR_SUCCESS) {
@@ -572,6 +573,43 @@ bool SendCtrlAltDel() {
   fn(FALSE);
   FreeLibrary(sas);
   return true;
+}
+
+// Asks the Fenrir service (a real service in session 0, where SendSAS is honoured) to send Ctrl+Alt+Del.
+// Returns "ok", "error: <reason>", or "" when the service does not offer the pipe.
+std::string RequestSasFromService(const std::string& sessionId) {
+  const auto name = L"\\\\.\\pipe\\fenrir-remote-sas-" + Utf8ToWide(sessionId);
+  if (!WaitNamedPipeW(name.c_str(), 3000)) {
+    return "";
+  }
+  HANDLE pipe = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+  if (pipe == INVALID_HANDLE_VALUE) {
+    return "";
+  }
+  DWORD mode = PIPE_READMODE_MESSAGE;
+  SetNamedPipeHandleState(pipe, &mode, nullptr, nullptr);
+  DWORD written = 0, read = 0;
+  char reply[512] = {};
+  std::string result;
+  if (WriteFile(pipe, "sas", 3, &written, nullptr) && ReadFile(pipe, reply, sizeof(reply) - 1, &read, nullptr)) {
+    result.assign(reply, read);
+  } else {
+    result = "error: no reply from the Fenrir service";
+  }
+  CloseHandle(pipe);
+  return result;
+}
+
+// Returns "" on success, otherwise the reason for the technician.
+std::string SendCtrlAltDel(const std::string& sessionId) {
+  const auto reply = RequestSasFromService(sessionId);
+  if (reply == "ok") {
+    return "";
+  }
+  if (!reply.empty()) {
+    return reply.rfind("error: ", 0) == 0 ? reply.substr(7) : reply;
+  }
+  return SendSasDirect() ? "" : "SendSAS is not available on this device";
 }
 
 void Session::HandleInput(const std::string& type, const json::Value& m) {
@@ -636,8 +674,13 @@ void Session::HandleInput(const std::string& type, const json::Value& m) {
       CloseClipboard();
     }
   } else if (type == "cad") {
-    if (!SendCtrlAltDel()) {
-      SendJson("{\"ch\":\"sys\",\"t\":\"error\",\"message\":\"Ctrl+Alt+Del could not be sent\"}");
+    const auto failure = SendCtrlAltDel(options_.sessionId);
+    if (failure.empty()) {
+      HelperLog("Ctrl+Alt+Del sent.");
+      SendJson("{\"ch\":\"sys\",\"t\":\"notice\",\"message\":\"Ctrl+Alt+Del sent\"}");
+    } else {
+      HelperLog("Ctrl+Alt+Del failed: " + failure);
+      SendJson("{\"ch\":\"sys\",\"t\":\"error\",\"message\":\"Ctrl+Alt+Del could not be sent: " + EscapeJsonString(Utf8ToWide(failure)) + "\"}");
     }
   } else if (type == "lock") {
     LockWorkStation();

@@ -8,7 +8,9 @@ import { Modal, PageHead, Pill, Stat, Table, TenantSelect, useAction, useData } 
 // answer, status, owner and due date, attach evidence, and see which policies cover it.
 
 export const STATUS_LABEL: Record<string, string> = { not_started: "Not started", in_progress: "In progress", implemented: "Done", not_applicable: "Not applicable" };
-const STATUS_TONE: Record<string, string> = { not_started: "muted", in_progress: "warn", implemented: "good", not_applicable: "blue" };
+const STATUS_TONE: Record<string, string> = { not_started: "muted", in_progress: "warn", implemented: "good", not_applicable: "blue", needs_review: "bad" };
+// "Needs review" is shown, never set: the requirement's wording changed since it was marked done.
+const SHOWN_LABEL: Record<string, string> = { ...STATUS_LABEL, needs_review: "Needs review" };
 const POLICY_TONE: Record<string, string> = { draft: "muted", in_review: "warn", approved: "good", retired: "muted" };
 
 export function Progress({ value }: { value: number }) {
@@ -100,6 +102,7 @@ export function ProgrammeDetail() {
   const [filter, setFilter] = useState("");
   const [q, setQ] = useState("");
   const [importing, setImporting] = useState(false);
+  const [history, setHistory] = useState(false);
   const { run } = useAction();
   const navigate = useNavigate();
   const matches = (r: any) => (!filter || (filter === "overdue" ? r.dueDate && new Date(r.dueDate) < new Date() && !["implemented", "not_applicable"].includes(r.status)
@@ -117,12 +120,13 @@ export function ProgrammeDetail() {
       <PageHead title={data.name} subtitle={<>{tenantName(tid)} · <Link to="/governance">All programmes</Link>{data.source !== "built-in" && <> · <Pill value={data.source} tone="blue" /></>}</>}
                 actions={<div className="row">
                   <button onClick={() => run(() => downloadFile(`grc/programmes/${tid}/${framework}/export`, `${framework}.csv`))}>Export answers (CSV)</button>
+                  <button onClick={() => setHistory(true)}>History</button>
                   {can("grc") && <button onClick={() => setImporting(true)}>Import exact question set</button>}
                   {can("grc") && data.adopted && <button className="danger" onClick={async () => { if (confirm("Stop tracking this framework? Answers, evidence and policies are kept.") && await run(() => api(`grc/programmes/${tid}/${framework}`, { method: "DELETE" }), "Framework paused")) navigate("/governance"); }}>Pause</button>}
                 </div>} />
       <div className="grid k4" style={{ marginBottom: 14 }}>
         <Stat label="Complete" value={`${data.progress}%`} hint={<Progress value={data.progress} />} />
-        <Stat label="Done" value={data.counts.implemented} hint={`${data.counts.not_applicable} not applicable`} />
+        <Stat label="Done" value={data.counts.implemented} hint={`${data.counts.not_applicable} not applicable${data.counts.needs_review ? ` · ${data.counts.needs_review} need review after a wording change` : ""}`} />
         <Stat label="In progress" value={data.counts.in_progress} hint={`${data.counts.not_started} not started`} />
         <Stat label="With evidence" value={data.signals.withEvidence} hint={`${data.signals.withApprovedPolicy} covered by an approved policy${data.signals.overdue ? ` · ${data.signals.overdue} overdue` : ""}`} />
       </div>
@@ -130,7 +134,7 @@ export function ProgrammeDetail() {
       <div className="row" style={{ marginBottom: 10 }}>
         <input placeholder="Search requirements and answers" value={q} onChange={(e) => setQ(e.target.value)} style={{ minWidth: 260 }} />
         <select value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Filter">
-          <option value="">Everything</option>{Object.entries(STATUS_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          <option value="">Everything</option>{Object.entries(SHOWN_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
           <option value="no-evidence">No evidence yet</option><option value="overdue">Overdue</option>
         </select>
       </div>
@@ -150,7 +154,7 @@ export function ProgrammeDetail() {
                   {r.evidence.length > 0 && <span className={r.evidence.some((e: any) => !e.expired) ? "ok" : "bad"} title="Evidence">📎 {r.evidence.length}</span>}
                   {r.checks.length > 0 && <span className={r.checks.every((c: any) => c.passed) ? "ok" : "bad"} title="Fenrir's automatic check">⚙ {r.checks.every((c: any) => c.passed) ? "pass" : "fail"}</span>}
                 </span>
-                <Pill value={STATUS_LABEL[r.status]} tone={STATUS_TONE[r.status]} />
+                <Pill value={SHOWN_LABEL[r.status]} tone={STATUS_TONE[r.status]} />
               </div>
             ))}
           </details>
@@ -158,16 +162,17 @@ export function ProgrammeDetail() {
       })}
       {open && <RequirementDrawer tenantId={tid} framework={data} requirement={open} onClose={() => setOpen(null)} onChanged={reload} />}
       {importing && <ImportModal tenantId={tid} framework={data} onClose={() => { setImporting(false); reload(); }} />}
+      {history && <HistoryModal tenantId={tid} framework={data} onClose={() => setHistory(false)} />}
     </>
   );
 }
 
 function RequirementDrawer({ tenantId, framework, requirement: r, onClose, onChanged }: { tenantId: string; framework: any; requirement: any; onClose: () => void; onChanged: () => void }) {
   const { can, toast } = useApp();
-  const [form, setForm] = useState({ status: r.status, answer: r.answer, notes: r.notes, naReason: r.naReason, owner: r.owner, dueDate: r.dueDate ? r.dueDate.slice(0, 10) : "" });
+  const [form, setForm] = useState({ status: r.recordedStatus ?? r.status, answer: r.answer, notes: r.notes, naReason: r.naReason, owner: r.owner, dueDate: r.dueDate ? r.dueDate.slice(0, 10) : "" });
   const [adding, setAdding] = useState(false);
   const { run, busy } = useAction();
-  useEffect(() => setForm({ status: r.status, answer: r.answer, notes: r.notes, naReason: r.naReason, owner: r.owner, dueDate: r.dueDate ? r.dueDate.slice(0, 10) : "" }), [r.id]);
+  useEffect(() => setForm({ status: r.recordedStatus ?? r.status, answer: r.answer, notes: r.notes, naReason: r.naReason, owner: r.owner, dueDate: r.dueDate ? r.dueDate.slice(0, 10) : "" }), [r.id]);
   const editable = can("grc");
   const save = async () => {
     const body: any = { status: form.status, answer: form.answer, notes: form.notes, naReason: form.naReason, owner: form.owner };
@@ -179,7 +184,12 @@ function RequirementDrawer({ tenantId, framework, requirement: r, onClose, onCha
   };
   return (
     <Modal title={`${r.id} ${r.title}`} onClose={onClose} wide
-           footer={editable && <button className="primary" disabled={busy} onClick={save}>Save</button>}>
+           footer={editable && <button className="primary" disabled={busy} onClick={save}>{r.needsReview ? "Confirm against the new wording" : "Save"}</button>}>
+      {r.needsReview && <div className="card" style={{ borderColor: "var(--bad)", marginBottom: 10 }}>
+        <b>The wording of this requirement changed after it was answered.</b> It no longer counts as done until someone checks the
+        answer still holds and saves it again.
+        {r.previousWording && <details><summary className="small">Wording that was answered</summary><p className="small" style={{ whiteSpace: "pre-wrap" }}>{r.previousWording}</p></details>}
+      </div>}
       <p style={{ marginTop: 0 }}>{r.text}</p>
       {r.guidance && <p className="small muted">{r.guidance}</p>}
       <div className="grid k2">
@@ -267,15 +277,19 @@ function ImportModal({ tenantId, framework, onClose }: { tenantId: string; frame
   const [name, setName] = useState(framework.name);
   const [version, setVersion] = useState(framework.version);
   const [everyone, setEveryone] = useState(false);
+  const [preview, setPreview] = useState<any>(null);
   const { run, busy } = useAction();
+  const body = (dryRun: boolean) => ({ body: { tenantId: everyone ? null : tenantId, key: framework.key, name, version, questionSet: framework.questionSet, format, content, dryRun } });
+  useEffect(() => setPreview(null), [content, format, everyone]);
+  const check = async () => setPreview(await run(() => api<any>("grc/library/frameworks/import", body(true))));
   const save = async () => {
-    const result = await run(() => api<any>("grc/library/frameworks/import", { body: { tenantId: everyone ? null : tenantId, key: framework.key, name, version,
-      questionSet: framework.questionSet, format, content } }), "Question set imported");
+    const result = await run(() => api<any>("grc/library/frameworks/import", body(false)), "Question set imported");
     if (result) onClose();
   };
   return (
     <Modal title="Import the exact question set" onClose={onClose} wide
-           footer={<button className="primary" disabled={busy || !content} onClick={save}>Import</button>}>
+           footer={<div className="row"><button disabled={busy || !content} onClick={check}>Preview changes</button>
+             <button className="primary" disabled={busy || !preview} onClick={save}>Import</button></div>}>
       <p className="small">Paste the official questions (for example from the current IASME Cyber Essentials booklet) to replace Fenrir's
         paraphrased set for {everyone ? "every customer" : "this customer"}. Answers, evidence and policy links carry over wherever the
         question IDs match (A4.1, A7.11…).</p>
@@ -288,6 +302,35 @@ function ImportModal({ tenantId, framework, onClose }: { tenantId: string; frame
         placeholder={"section,id,title,text,type\nA4 Firewalls,A4.1,Do you have firewalls at the boundaries...,,yesno"} /></label>
       <label className="field"><input type="file" accept=".csv,.json,.yml,.yaml,.txt" onChange={async (e) => { const f = e.target.files?.[0]; if (f) { setContent(await f.text()); if (f.name.endsWith(".json")) setFormat("json"); else if (/\.ya?ml$/.test(f.name)) setFormat("yaml"); } }} /></label>
       {me?.user.role === "platform_admin" && <label className="field row" style={{ gap: 8 }}><input type="checkbox" checked={everyone} onChange={(e) => setEveryone(e.target.checked)} />Use for every customer</label>}
+      {preview && <div className="card">
+        <b>{preview.requirements} requirements</b> · {preview.diff.added.length} new · {preview.diff.changed.length} reworded · {preview.diff.removed.length} removed · {preview.diff.unchanged} unchanged
+        {preview.affectedCustomers > 0 && <> · affects {preview.affectedCustomers} customer{preview.affectedCustomers === 1 ? "" : "s"}</>}
+        <p className="small muted">Each affected assessment is saved to its history first. Reworded requirements that were done are marked for review; removed ones stay in the saved history.</p>
+        {preview.diff.changedDetail.map((c: any) => <details key={c.id}><summary className="small mono">{c.id} reworded</summary>
+          <div className="grid k2 small"><div><b>Before</b><p style={{ whiteSpace: "pre-wrap" }}>{c.before}</p></div><div><b>After</b><p style={{ whiteSpace: "pre-wrap" }}>{c.after}</p></div></div></details>)}
+        {preview.diff.removed.length > 0 && <p className="small">Removed: <span className="mono">{preview.diff.removed.join(", ")}</span></p>}
+      </div>}
+    </Modal>
+  );
+}
+
+function HistoryModal({ tenantId, framework, onClose }: { tenantId: string; framework: any; onClose: () => void }) {
+  const { can } = useApp();
+  const { data, reload } = useData<any[]>(`grc/programmes/${tenantId}/${framework.key}/snapshots`, {}, [tenantId, framework.key], true);
+  const [label, setLabel] = useState("");
+  const { run, busy } = useAction();
+  const save = async () => { if (await run(() => api(`grc/programmes/${tenantId}/${framework.key}/snapshots`, { body: { label } }), "Saved to history")) { setLabel(""); reload(); } };
+  return (
+    <Modal title={`${framework.short || framework.name} history`} onClose={onClose} wide>
+      <p className="small muted">The assessment is saved here automatically before the framework is replaced, and whenever you save it (for example on submission).</p>
+      {can("grc") && <div className="row" style={{ marginBottom: 10 }}><input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Submitted to IASME, March 2026" style={{ flex: 1 }} />
+        <button disabled={busy || !label.trim()} onClick={save}>Save current assessment</button></div>}
+      <Table rows={data ?? []} empty="Nothing saved yet" columns={[
+        { key: "createdAt", label: "Saved", render: (s: any) => fmtTime(s.createdAt) },
+        { key: "label", label: "Label", render: (s: any) => <>{s.label}<div className="small muted">{s.reason} · {s.createdBy}</div></> },
+        { key: "progress", label: "Complete", render: (s: any) => `${s.progress}%` },
+        { key: "export", label: "", render: (s: any) => <button onClick={() => run(() => downloadFile(`grc/programmes/${tenantId}/${framework.key}/export?snapshot=${s.id}`, `${framework.key}-${s.id}.csv`))}>Export</button> },
+      ]} />
     </Modal>
   );
 }

@@ -7,7 +7,9 @@ key matches a built-in framework replaces it, which is how an MSP loads the exac
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
+import json
 import re
 from datetime import timedelta
 from functools import lru_cache
@@ -17,7 +19,8 @@ import yaml
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from .models import (GrcAdoption, GrcEvidence, GrcEvidenceLink, GrcFramework, GrcPolicy, GrcRequirementState, Tenant, utcnow)
+from .models import (GrcAdoption, GrcAssessmentSnapshot, GrcEvidence, GrcEvidenceLink, GrcFramework, GrcPolicy, GrcRequirementState,
+                     Tenant, utcnow)
 
 LIBRARY = Path(__file__).parent / "grc_library"
 STATUSES = ("not_started", "in_progress", "implemented", "not_applicable")
@@ -76,6 +79,71 @@ def frameworks_for(db: Session, tenant_id: str | None) -> dict[str, dict]:
 
 def requirements(framework: dict) -> list[dict]:
     return [r for s in framework["sections"] for r in s["requirements"]]
+
+
+# --- revisions (FIX-08) --------------------------------------------------------------------------------------------
+# A requirement is identified by its id, but its meaning is its wording. Every answer records a hash of the wording it
+# answered; when a framework revision changes that wording, an "implemented" or "not applicable" answer no longer
+# counts as done until someone reviews it against the new text.
+
+def requirement_hash(req: dict) -> str:
+    return hashlib.sha256(json.dumps([req["title"], req["text"], req["type"]], ensure_ascii=False).encode()).hexdigest()
+
+
+def requirement_wording(req: dict) -> str:
+    return f"{req['title']}\n\n{req['text']}".strip()
+
+
+def diff_frameworks(old: dict | None, new: dict) -> dict:
+    before = {r["id"]: r for r in requirements(old)} if old else {}
+    after = {r["id"]: r for r in requirements(new)}
+    changed = [rid for rid in after if rid in before and requirement_hash(before[rid]) != requirement_hash(after[rid])]
+    return {"added": [rid for rid in after if rid not in before], "removed": [rid for rid in before if rid not in after],
+            "changed": changed, "unchanged": sum(1 for rid in after if rid in before and rid not in changed),
+            "changedDetail": [{"id": rid, "before": requirement_wording(before[rid]), "after": requirement_wording(after[rid])} for rid in changed[:200]]}
+
+
+def tenants_using(db: Session, framework_key: str, import_tenant_id: str | None) -> list[Tenant]:
+    """Customers whose effective definition of framework_key changes when the import at this scope changes:
+    the one customer for a customer import; for an all-customer import, those without their own import of it."""
+    ids = set(db.execute(select(GrcRequirementState.tenant_id).where(GrcRequirementState.framework_key == framework_key)).scalars())
+    ids |= set(db.execute(select(GrcAdoption.tenant_id).where(GrcAdoption.framework_key == framework_key)).scalars())
+    if import_tenant_id is not None:
+        ids &= {import_tenant_id}
+    else:
+        ids -= set(db.execute(select(GrcFramework.tenant_id).where(GrcFramework.key == framework_key, GrcFramework.tenant_id.is_not(None))).scalars())
+    return [t for t in (db.get(Tenant, i) for i in sorted(ids)) if t is not None]
+
+
+def snapshot(db: Session, tenant: Tenant, framework_key: str, actor: str, reason: str, label: str = "") -> GrcAssessmentSnapshot | None:
+    try:
+        view = programme(db, tenant, framework_key)
+    except KeyError:
+        return None
+    row = GrcAssessmentSnapshot(tenant_id=tenant.id, framework_key=framework_key, label=label or f"{view['name']} {view['version']}".strip(),
+                                reason=reason, data=json.loads(json.dumps(view, default=str)), created_by=actor)
+    db.add(row)
+    return row
+
+
+def freeze_before_change(db: Session, framework_key: str, import_tenant_id: str | None, actor: str, reason: str) -> int:
+    """Before a framework definition changes: snapshot each affected customer's assessment, and record on every answer
+    which wording it answered (answers given before FIX-08 have none), so a changed requirement is flagged."""
+    affected = tenants_using(db, framework_key, import_tenant_id)
+    for tenant in affected:
+        current = frameworks_for(db, tenant.id).get(framework_key)
+        if current is None:
+            continue
+        snapshot(db, tenant, framework_key, actor, reason)
+        by_id = {r["id"]: r for r in requirements(current)}
+        for state in db.execute(select(GrcRequirementState).where(GrcRequirementState.tenant_id == tenant.id,
+                                                                  GrcRequirementState.framework_key == framework_key,
+                                                                  GrcRequirementState.requirement_hash.is_(None))).scalars():
+            req = by_id.get(state.requirement_id)
+            if req is not None:
+                state.requirement_hash, state.requirement_text = requirement_hash(req), requirement_wording(req)
+    db.flush()
+    return len(affected)
 
 
 # --- import ------------------------------------------------------------------------------------------------------
@@ -174,14 +242,18 @@ def programme(db: Session, tenant: Tenant, framework_key: str, include_requireme
         evidence.setdefault(link.requirement_id, []).append(item)
     auto = _auto_results(db, tenant) if any(r["auto"] for r in requirements(framework)) else {}
     now = utcnow()
-    counts = {s: 0 for s in STATUSES}
+    counts = {s: 0 for s in STATUSES} | {"needs_review": 0}
     signals = {"withEvidence": 0, "withApprovedPolicy": 0, "autoPassing": 0, "answered": 0, "overdue": 0}
     sections_out = []
     for section in framework["sections"]:
         rows = []
         for req in section["requirements"]:
             state = states.get(req["id"])
-            status = state.status if state else "not_started"
+            recorded = state.status if state else "not_started"
+            wording_changed = bool(state and state.requirement_hash and state.requirement_hash != requirement_hash(req))
+            needs_review = wording_changed and (recorded in ("implemented", "not_applicable") or bool(state.answer.strip()))
+            # An approval of different wording is not an approval of this wording.
+            status = "needs_review" if needs_review and recorded in ("implemented", "not_applicable") else recorded
             counts[status] += 1
             pols = by_requirement.get(req["id"], [])
             valid_evidence = [e for e in evidence.get(req["id"], []) if not e.valid_until or e.valid_until >= now]
@@ -195,7 +267,8 @@ def programme(db: Session, tenant: Tenant, framework_key: str, include_requireme
             due = state.due_date if state else None
             signals["overdue"] += bool(due and due < now and status not in ("implemented", "not_applicable"))
             if include_requirements:
-                rows.append({**req, "evidenceHints": req["evidence"], "status": status, "answer": state.answer if state else "", "notes": state.notes if state else "",
+                rows.append({**req, "evidenceHints": req["evidence"], "status": status, "recordedStatus": recorded,
+                             "needsReview": needs_review, "previousWording": state.requirement_text if needs_review else None, "answer": state.answer if state else "", "notes": state.notes if state else "",
                              "naReason": state.na_reason if state else "", "owner": state.owner if state else "",
                              "dueDate": due.isoformat() + "Z" if due else None,
                              "updatedAt": state.updated_at.isoformat() + "Z" if state else None,

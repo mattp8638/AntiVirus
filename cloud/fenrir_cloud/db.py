@@ -111,7 +111,7 @@ def migrate(bind: Engine) -> list[int]:
             conn.execute(text("CREATE TABLE IF NOT EXISTS schema_migrations "
                               "(version INTEGER PRIMARY KEY, applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"))
             versions = set(conn.execute(text("SELECT version FROM schema_migrations")).scalars())
-            if versions - {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22}:
+            if versions - {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23}:
                 raise RuntimeError("Database schema is newer than this application")
             if 1 not in versions:
                 Base.metadata.create_all(conn)
@@ -233,6 +233,12 @@ def migrate(bind: Engine) -> list[int]:
                              {"seq": last[0] if last else 0, "hash": last[1] if last else ""})
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (22)"))
                 applied.append(22)
+            if 23 not in versions:
+                from .models import GrcAssessmentSnapshot
+                GrcAssessmentSnapshot.__table__.create(conn, checkfirst=True)
+                ensure_columns(Base, conn)  # grc_requirement_states.requirement_hash / requirement_text
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (23)"))
+                applied.append(23)
             conn.commit()
         except Exception:
             conn.rollback()
