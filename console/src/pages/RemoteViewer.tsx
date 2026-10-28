@@ -207,6 +207,9 @@ export default function RemoteViewer() {
         case "error":
           setStatus(`Device: ${m.message}`);
           return;
+        case "notice":
+          setStatus(m.message);
+          return;
         case "agent.disconnected":
         case "end":
           setState("ended");
