@@ -144,6 +144,7 @@ def delete_script(script_id: str, principal: Principal = Depends(current_princip
 @router.post("/scripts/{script_id}/run")
 def run_script(script_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("configure")
+    principal.require("scripts")
     script = db.get(Script, script_id)
     if not _visible(principal, script):
         raise HTTPException(404, "Not found")
@@ -224,6 +225,8 @@ def create_command_job(body: dict = Body(...), principal: Principal = Depends(cu
     if spec is None or command_type in {"remote.session.start", "remote.session.end", "script.run"} | INTERACTIVE_ONLY:
         raise HTTPException(400, "unknown or unsupported command for a bulk job")
     principal.require("configure" if spec.permission == "configure" else "respond")
+    if spec.destructive:
+        principal.require("destructive")
     devices = _targets(principal, db, body.get("targets") or {})
     job = rmm.create_job(db, tenant_id=_job_tenant(principal, devices), actor=principal.actor,
                          name=str(body.get("name") or spec.label), devices=devices, command_type=command_type,
@@ -339,6 +342,7 @@ def delete_task(task_id: str, principal: Principal = Depends(current_principal),
 @router.post("/tasks/{task_id}/run")
 def run_task_now(task_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("configure")
+    principal.require("scripts")
     task = db.get(ScheduledTask, task_id)
     if task is None or task.tenant_id not in principal.tenant_ids:
         raise HTTPException(404, "Not found")
@@ -546,6 +550,7 @@ def patches_compliance(tenant_id: str | None = None, principal: Principal = Depe
 @router.post("/patches/approve")
 def approve_patches(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("configure")
+    principal.require("approve")
     decision = str(body.get("decision") or "approved")
     if decision not in {"approved", "rejected", "reset"}:
         raise HTTPException(400, "decision must be approved, rejected or reset")
@@ -585,6 +590,7 @@ def scan_patches(body: dict = Body(...), principal: Principal = Depends(current_
 def install_patches_now(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     """Install approved (or the listed) patches now, outside the maintenance window."""
     principal.require("configure")
+    principal.require("scripts")
     devices = _targets(principal, db, body.get("targets") or {})
     only = set(body.get("patchKeys") or [])
     reboot = {**rmm.DEFAULT_REBOOT, **(body.get("reboot") or {})}
@@ -773,6 +779,7 @@ def delete_package(package_id: str, principal: Principal = Depends(current_princ
 @router.post("/software/{package_id}/deploy")
 def deploy_package(package_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("configure")
+    principal.require("scripts")
     package = db.get(SoftwarePackage, package_id)
     if not _visible(principal, package):
         raise HTTPException(404, "Not found")

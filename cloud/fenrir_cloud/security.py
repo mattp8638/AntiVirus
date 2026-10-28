@@ -30,6 +30,35 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
     "client": {"portal"},
 }
 # "vault": reveal and copy stored credentials (always with recent re-authentication and an audit record).
+
+# Finer powers (CORE-02), required on top of the broader permission for the actions they name. Built-in roles get
+# them wherever they already had the broader one, so their behaviour is unchanged; custom roles can grant them
+# separately (e.g. remote support without running scripts).
+FINE_PERMISSIONS = {
+    "remote": "respond",       # start remote desktop / terminal / file sessions
+    "scripts": "configure",    # run scripts, jobs, scheduled tasks, software and patch installs
+    "destructive": "configure",  # wipe, remove local admins and other irreversible device actions
+    "approve": "configure",    # approve patches, elevation and other requests
+}
+for _perms in ROLE_PERMISSIONS.values():
+    _perms.update(fine for fine, broad in FINE_PERMISSIONS.items() if broad in _perms)
+
+PERMISSIONS: dict[str, str] = {
+    "read": "See devices, alerts, tickets and reports",
+    "respond": "Handle alerts and incidents, isolate and scan devices",
+    "remote": "Start remote desktop, terminal and file sessions",
+    "scripts": "Run scripts, jobs, tasks, software and patch installs",
+    "destructive": "Wipe devices and other irreversible actions",
+    "approve": "Approve patches, elevation and other requests",
+    "configure": "Change policies, settings, users and integrations",
+    "manage_tenants": "Create and manage customers",
+    "billing": "Contracts, invoices and billing",
+    "crm": "CRM and service desk administration",
+    "vault": "Reveal stored credentials",
+    "grc": "Compliance programmes, policies and evidence",
+    "m365_admin": "Microsoft 365 administration",
+    "platform": "Platform-wide administration",
+}
 ROLES = tuple(ROLE_PERMISSIONS)
 
 

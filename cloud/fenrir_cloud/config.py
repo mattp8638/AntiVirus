@@ -26,6 +26,8 @@ def _list(name: str, default: str = "") -> list[str]:
 
 @dataclass(frozen=True)
 class Settings:
+    # production (the Docker Compose default) refuses to start on unsafe settings; see production.py.
+    environment: str = field(default_factory=lambda: os.getenv("FENRIR_ENV", "development").strip().lower())
     database_url: str = field(default_factory=lambda: os.getenv("FENRIR_DATABASE_URL", "sqlite:///./fenrir.db"))
     # Signs console session tokens. Generated per process when unset, which logs
     # everyone out on restart: set it in any real deployment.

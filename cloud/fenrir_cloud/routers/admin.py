@@ -10,13 +10,13 @@ import re
 from datetime import timedelta
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
-from sqlalchemy import select
+from sqlalchemy import text, select
 from sqlalchemy.orm import Session
 
-from .. import sessions, audit, crypto, deployment_installers, policy_schema, ratelimit
+from .. import roles, sessions, audit, crypto, deployment_installers, policy_schema, ratelimit
 from ..config import get_settings
 from ..db import get_db
-from ..deps import REAUTH_MINUTES, Principal, current_principal, require_reauth, scoped_tenant
+from ..deps import REAUTH_MINUTES, Principal, current_principal, require_reauth, scoped_tenant, tenant_subtree
 from ..models import AuditLog, Device, DeviceGroup, EnrollmentToken, Policy, Tenant, User, utcnow
 from ..security import ROLES, digest, hash_password, issue_token, new_secret, new_totp_secret, totp_uri, verify_password, verify_totp, reauth_state
 from ..serialize import apply_fields, to_dict
@@ -115,6 +115,7 @@ def revoke_user_sessions(user_id: str, request: Request, principal: Principal = 
     principal.check_tenant(user.tenant_id)
     if user.role == "platform_admin" and not principal.can("platform"):
         raise HTTPException(403, "Only platform admins can sign out a platform admin")
+    roles.check_manageable(db, principal, user)
     require_reauth(request, principal)
     count = sessions.revoke_user(db, user.id, f"revoked by {principal.actor}")
     audit.record(db, principal.actor, "auth.sessions_revoked", user.email, user.tenant_id, count=count)
@@ -124,10 +125,8 @@ def revoke_user_sessions(user_id: str, request: Request, principal: Principal = 
 
 @router.get("/auth/me")
 def me(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    from ..security import ROLE_PERMISSIONS
-
     tenants = db.execute(select(Tenant).where(Tenant.id.in_(principal.tenant_ids)).order_by(Tenant.name)).scalars().all()
-    return {"user": to_dict(principal.user), "permissions": sorted(ROLE_PERMISSIONS.get(principal.user.role, set())),
+    return {"user": to_dict(principal.user), "permissions": sorted(roles.held(principal)),
             "tenants": [to_dict(t) for t in tenants]}
 
 
@@ -217,9 +216,10 @@ def mfa_reset(user_id: str, request: Request, principal: Principal = Depends(cur
     if user is None or user.role == "service":  # API credentials' service users are managed only as credentials
         raise HTTPException(404, "Not found")
     principal.check_tenant(user.tenant_id)
-    require_reauth(request, principal)
     if user.role == "platform_admin" and not principal.can("platform"):
         raise HTTPException(403, "Only platform admins can reset platform admin MFA")
+    roles.check_manageable(db, principal, user)
+    require_reauth(request, principal)
     user.mfa_enabled, user.mfa_secret = False, None
     revoked = sessions.revoke_user(db, user.id, f"MFA reset by {principal.actor}")
     audit.record(db, principal.actor, "auth.mfa_reset", user.id, user.tenant_id, user=user.email, sessionsRevoked=revoked)
@@ -351,23 +351,35 @@ def create_user(body: dict = Body(...), principal: Principal = Depends(current_p
     tenant_id = body.get("tenantId") or principal.user.tenant_id
     principal.check_tenant(tenant_id)
     role = str(body.get("role") or "viewer")
-    if role not in ROLES:
-        raise HTTPException(400, f"role must be one of {', '.join(ROLES)}")
-    if role in {"platform_admin"} and not principal.can("platform"):
-        raise HTTPException(403, "Only platform admins can create platform admins")
+    roles.check_assignable(db, principal, role, tenant_id)
     if role in {"msp_admin", "soc_analyst", "technician", "billing"} and not principal.can("manage_tenants"):
         raise HTTPException(403, "Only MSP admins can create MSP roles")
+    assigned = _assignments(db, principal, tenant_id, body.get("assignedTenantIds"))
     email = str(body.get("email") or "").strip().lower()
     password = str(body.get("password") or "")
     if "@" not in email or len(password) < 12:
         raise HTTPException(400, "A valid email and a password of 12+ characters are required")
     if db.execute(select(User).where(User.email == email)).scalar_one_or_none():
         raise HTTPException(409, "That email already has an account")
-    user = User(tenant_id=tenant_id, email=email, name=str(body.get("name") or ""), role=role, password_hash=hash_password(password))
+    user = User(tenant_id=tenant_id, email=email, name=str(body.get("name") or ""), role=role, password_hash=hash_password(password),
+                assigned_tenant_ids=assigned)
     db.add(user)
     audit.record(db, principal.actor, "user.created", email, tenant_id, role=role)
     db.commit()
     return to_dict(user)
+
+
+def _assignments(db: Session, principal: Principal, user_tenant_id: str, value) -> list[str] | None:
+    """CORE-02: customers a user is limited to - each visible to the caller and inside the user's own tenant."""
+    if value in (None, []):
+        return None
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value) or len(value) > 500:
+        raise HTTPException(422, "assignedTenantIds must be a list of customer ids")
+    allowed = tenant_subtree(db, user_tenant_id)
+    for tid in value:
+        if tid not in principal.tenant_ids or tid not in allowed:
+            raise HTTPException(400, f"{tid} is not a customer this user can be assigned to")
+    return sorted(set(value))
 
 
 @router.patch("/users/{user_id}")
@@ -377,9 +389,15 @@ def update_user(user_id: str, body: dict = Body(...), principal: Principal = Dep
     if user is None or user.role == "service":  # API credentials' service users are managed only as credentials
         raise HTTPException(404, "Not found")
     principal.check_tenant(user.tenant_id)
-    if "role" in body and (body["role"] not in ROLES or (body["role"] == "platform_admin" and not principal.can("platform"))):
-        raise HTTPException(400, "invalid role")
+    roles.check_manageable(db, principal, user)
+    if "role" in body and body["role"] != user.role:
+        roles.check_assignable(db, principal, str(body["role"]), user.tenant_id)
+        if body["role"] in {"msp_admin", "soc_analyst", "technician", "billing"} and not principal.can("manage_tenants"):
+            raise HTTPException(403, "Only MSP admins can give MSP roles")
     changed = apply_fields(user, body, {"name", "role", "active"})
+    if "assignedTenantIds" in body:
+        user.assigned_tenant_ids = _assignments(db, principal, user.tenant_id, body["assignedTenantIds"])
+        changed.append("assignedTenantIds")
     if body.get("password"):
         if len(body["password"]) < 12:
             raise HTTPException(400, "Use at least 12 characters")
@@ -566,6 +584,21 @@ def audit_log(tenant_id: str | None = None, limit: int = 200, principal: Princip
     if not principal.can("platform"):
         query = query.where(AuditLog.tenant_id.in_(scope))
     return [to_dict(row) for row in db.execute(query).scalars()]
+
+
+@router.get("/platform/readiness")
+def platform_readiness(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """CORE-14: production safety warnings for platform administrators (errors stop the server from starting)."""
+    principal.require("platform")
+    from .. import production
+    from ..config import get_settings
+    from ..db import LATEST_MIGRATION
+
+    settings = get_settings()
+    users = db.execute(select(User.id)).all()
+    _, warnings = production.check(settings, len(users))
+    schema = db.execute(text("SELECT MAX(version) FROM schema_migrations")).scalar()
+    return {"environment": settings.environment, "warnings": warnings, "schemaVersion": schema, "expectedSchemaVersion": LATEST_MIGRATION}
 
 
 @router.get("/audit/verify")

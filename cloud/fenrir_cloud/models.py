@@ -59,6 +59,8 @@ class User(Base):
     # TOTP multi-factor authentication. The seed is stored encrypted (crypto.encrypt envelope).
     mfa_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
     mfa_secret: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # CORE-02: limit the user to these customers (each within their own tenant's subtree); None = the whole subtree.
+    assigned_tenant_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
 class AuditLog(Base):
@@ -1710,4 +1712,18 @@ class AuditPolicy(Base):
     legal_hold: Mapped[bool] = mapped_column(Boolean, default=False)
     hold_reason: Mapped[str] = mapped_column(String(500), default="")
     updated_by: Mapped[str] = mapped_column(String(200), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class CustomRole(Base):
+    """A role with an explicit permission set (CORE-02), owned by a customer or the MSP. Users get it as
+    role "custom:<id>"; it can be assigned within the owning tenant's subtree."""
+    __tablename__ = "custom_roles"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("crl"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    description: Mapped[str] = mapped_column(String(500), default="")
+    permissions: Mapped[list] = mapped_column(JSON, default=list)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

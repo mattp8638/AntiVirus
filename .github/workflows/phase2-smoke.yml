@@ -113,9 +113,11 @@ jobs:
             printf 'FENRIR_FEED_SYNC=false\n'
             printf 'FENRIR_ALLOW_UNSIGNED_WINDOWS_INSTALLERS=false\n'
           } > deploy/.env
-          # Throwaway agent release key for this run only, outside the checkout: exercises the signed-release path.
-          openssl genpkey -algorithm ed25519 -out "$RUNNER_TEMP/release-ed25519.pem"
-          echo "FENRIR_RELEASE_KEY=$RUNNER_TEMP/release-ed25519.pem" >> "$GITHUB_ENV"
+          # Throwaway agent release key for this run only (deploy/signing is git-ignored; Compose only reads build
+          # secrets from inside the project, which is where auto-update.sh keeps the real key too).
+          mkdir -p deploy/signing
+          openssl genpkey -algorithm ed25519 -out deploy/signing/release-ed25519.pem
+          echo "FENRIR_RELEASE_KEY=$PWD/deploy/signing/release-ed25519.pem" >> "$GITHUB_ENV"
           echo "FENRIR_RELEASE_SEQ=$(git log -1 --format=%ct -- agent/linux)" >> "$GITHUB_ENV"
       - name: Production profile refuses to build without a signing certificate
         shell: bash

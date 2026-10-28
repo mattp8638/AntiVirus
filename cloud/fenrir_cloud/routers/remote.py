@@ -51,6 +51,7 @@ def _session_view(db: Session, session: RemoteSession) -> dict:
 @router.post("/sessions")
 def create_session(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("respond")
+    principal.require("remote")
     device = db.get(Device, str(body.get("deviceId") or ""))
     if device is None or device.tenant_id not in principal.tenant_ids:
         raise HTTPException(404, "Device not found")
