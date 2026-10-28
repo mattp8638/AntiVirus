@@ -817,3 +817,90 @@ def monitoring_alerts(principal: Principal = Depends(current_principal), db: Ses
     rows = db.execute(select(Alert).where(Alert.tenant_id.in_(principal.tenant_ids), Alert.rule_id.like("monitor:%"))
                       .order_by(Alert.created_at.desc()).limit(500)).scalars()
     return [to_dict(r) for r in rows]
+
+
+# --------------------------------------------------------------------------- Predictive Analytics & Anomaly Endpoints
+
+
+@router.get("/analytics/storage-exhaustion")
+def storage_exhaustion_predictions(
+    status: str | None = Query(default=None),
+    principal: Principal = Depends(current_principal),
+    db: Session = Depends(get_db)
+):
+    """List predictive storage exhaustion analytics across managed devices."""
+    devices = db.execute(select(Device.id).where(Device.tenant_id.in_(principal.tenant_ids))).scalars().all()
+    if not devices:
+        return []
+
+    from ..models import DiskExhaustionPrediction
+    query = select(DiskExhaustionPrediction).where(DiskExhaustionPrediction.device_id.in_(devices))
+    if status:
+        query = query.where(DiskExhaustionPrediction.status == status)
+
+    rows = db.execute(query.order_by(DiskExhaustionPrediction.predicted_at.desc())).scalars().all()
+    return [to_dict(r) for r in rows]
+
+
+@router.get("/devices/{device_id}/analytics/disk-predictions")
+def device_disk_predictions(
+    device_id: str,
+    principal: Principal = Depends(current_principal),
+    db: Session = Depends(get_db)
+):
+    """Get predictive storage exhaustion predictions for a specific device."""
+    dev = db.get(Device, device_id)
+    if not dev or dev.tenant_id not in principal.tenant_ids:
+        raise HTTPException(404, "Device not found")
+
+    from ..models import DiskExhaustionPrediction
+    rows = db.execute(
+        select(DiskExhaustionPrediction)
+        .where(DiskExhaustionPrediction.device_id == device_id)
+        .order_by(DiskExhaustionPrediction.predicted_at.desc())
+    ).scalars().all()
+    return [to_dict(r) for r in rows]
+
+
+@router.get("/analytics/resource-anomalies")
+def resource_anomalies(
+    metric: str | None = Query(default=None),
+    sustained_only: bool = Query(default=False),
+    principal: Principal = Depends(current_principal),
+    db: Session = Depends(get_db)
+):
+    """List detected CPU and RAM resource anomalies across managed devices."""
+    devices = db.execute(select(Device.id).where(Device.tenant_id.in_(principal.tenant_ids))).scalars().all()
+    if not devices:
+        return []
+
+    from ..models import ResourceAnomaly
+    query = select(ResourceAnomaly).where(ResourceAnomaly.device_id.in_(devices))
+    if metric:
+        query = query.where(ResourceAnomaly.metric == metric)
+    if sustained_only:
+        query = query.where(ResourceAnomaly.is_sustained.is_(True))
+
+    rows = db.execute(query.order_by(ResourceAnomaly.at.desc()).limit(200)).scalars().all()
+    return [to_dict(r) for r in rows]
+
+
+@router.get("/devices/{device_id}/analytics/anomalies")
+def device_resource_anomalies(
+    device_id: str,
+    principal: Principal = Depends(current_principal),
+    db: Session = Depends(get_db)
+):
+    """Get detected CPU and RAM resource anomalies for a specific device."""
+    dev = db.get(Device, device_id)
+    if not dev or dev.tenant_id not in principal.tenant_ids:
+        raise HTTPException(404, "Device not found")
+
+    from ..models import ResourceAnomaly
+    rows = db.execute(
+        select(ResourceAnomaly)
+        .where(ResourceAnomaly.device_id == device_id)
+        .order_by(ResourceAnomaly.at.desc())
+        .limit(100)
+    ).scalars().all()
+    return [to_dict(r) for r in rows]
