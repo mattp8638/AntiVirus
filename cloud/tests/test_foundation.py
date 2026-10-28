@@ -193,3 +193,28 @@ def test_malformed_signed_expiry_is_rejected(claims):
 def test_malformed_bearer_tokens_are_rejected(token):
     from fenrir_cloud.security import read_token
     assert read_token("secret", token) is None
+
+
+def test_vault_verify_all_detects_wrong_key_and_tampering(client, admin, monkeypatch):
+    """CORE-09: the restore check decrypts every stored secret without changing anything."""
+    from fenrir_cloud import crypto
+    from fenrir_cloud.db import session_factory
+    from fenrir_cloud.models import User
+
+    setup = client.post("/api/console/auth/mfa/setup", headers=admin).json()
+    client.post("/api/console/auth/mfa/enable", headers=admin, json={"code": totp_code(setup["secret"])})
+    db = session_factory()()
+    try:
+        assert crypto.verify_all(db)["failed"] == 0 and crypto.verify_all(db)["checked"] >= 1
+        monkeypatch.setenv("FENRIR_VAULT_KEY", base64.b64encode(os.urandom(32)).decode())  # restored with the wrong key
+        monkeypatch.setenv("FENRIR_VAULT_ALLOW_DERIVED_LEGACY", "false")
+        assert crypto.verify_all(db)["failed"] >= 1
+        monkeypatch.undo()
+        user = db.query(User).filter(User.mfa_secret.isnot(None)).first()
+        envelope = dict(user.mfa_secret)
+        envelope["ct"] = envelope["ct"][:-4] + ("AAAA" if not envelope["ct"].endswith("AAAA") else "BBBB")
+        user.mfa_secret = envelope
+        db.commit()
+        assert crypto.verify_all(db)["failed"] == 1
+    finally:
+        db.close()

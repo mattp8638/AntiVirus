@@ -163,6 +163,24 @@ def register_encrypted(model: type, column: str, aad) -> None:
         _ENCRYPTED.append((model, column, aad))
 
 
+def verify_all(db) -> dict:
+    """Try to decrypt every stored envelope without changing anything (restore checks, CORE-09)."""
+    from sqlalchemy import select
+
+    checked = failed = 0
+    for model, column, aad in _ENCRYPTED:
+        for row in db.execute(select(model)).scalars():
+            envelope = getattr(row, column)
+            if not envelope:
+                continue
+            checked += 1
+            try:
+                decrypt_bytes(envelope, aad(row))
+            except Exception:  # noqa: BLE001 - wrong key, damaged or tampered value
+                failed += 1
+    return {"checked": checked, "failed": failed, "keyId": _keys()[0].kid}
+
+
 def rotate(db) -> dict:
     """Re-encrypt every stored envelope under the active key. Safe to run repeatedly."""
     from sqlalchemy import select

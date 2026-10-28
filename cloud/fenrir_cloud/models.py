@@ -1727,3 +1727,24 @@ class CustomRole(Base):
     created_by: Mapped[str] = mapped_column(String(200), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ApprovalRequest(Base):
+    """A held high-impact request awaiting a second person (CORE-15). Bound to a fingerprint of the exact request:
+    any change to it - including the resolved set of target devices - needs a new approval."""
+    __tablename__ = "approval_requests"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("apr"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    kind: Mapped[str] = mapped_column(String(40))
+    summary: Mapped[str] = mapped_column(String(500), default="")
+    fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    request: Mapped[dict] = mapped_column(JSON, default=dict)
+    device_ids: Mapped[list] = mapped_column(JSON, default=list)
+    requested_by: Mapped[str] = mapped_column(String(200))
+    requested_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | approved | rejected | executed | expired
+    decided_by: Mapped[str] = mapped_column(String(200), default="")
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reason: Mapped[str] = mapped_column(String(500), default="")
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

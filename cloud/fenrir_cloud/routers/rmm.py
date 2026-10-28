@@ -8,7 +8,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from .. import audit, rmm, services
+from .. import approvals, audit, rmm, services
 from ..commands import BY_TYPE, INTERACTIVE_ONLY
 from ..db import get_db
 from ..deps import Principal, current_principal, scoped_tenant
@@ -157,6 +157,8 @@ def run_script(script_id: str, body: dict = Body(...), principal: Principal = De
     if blocked and len(blocked) == len(devices):
         raise HTTPException(403, "Script execution is turned off by policy on the selected devices")
     allowed = [d for d in devices if d.hostname not in blocked]
+    approvals.gate(db, principal, "script.run", f"Run {script.name} on {len(allowed)} devices", {"scriptId": script_id, **body}, allowed,
+                   route=f"rmm/scripts/{script_id}/run")
     try:
         job = rmm.run_script(db, script=script, devices=allowed, actor=principal.actor, tenant_id=_job_tenant(principal, allowed),
                              parameters=body.get("parameters") or {}, targets=body.get("targets"), ticket_id=body.get("ticketId"))
@@ -228,6 +230,7 @@ def create_command_job(body: dict = Body(...), principal: Principal = Depends(cu
     if spec.destructive:
         principal.require("destructive")
     devices = _targets(principal, db, body.get("targets") or {})
+    approvals.gate(db, principal, "command.job", f"{spec.label} on {len(devices)} devices", body, devices, destructive=spec.destructive, route="rmm/jobs")
     job = rmm.create_job(db, tenant_id=_job_tenant(principal, devices), actor=principal.actor,
                          name=str(body.get("name") or spec.label), devices=devices, command_type=command_type,
                          payload=body.get("payload") or {}, targets=body.get("targets"), target_path=str(body.get("targetPath") or ""),

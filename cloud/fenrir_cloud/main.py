@@ -29,6 +29,7 @@ from .routers import grc_programme as grc_programme_router
 from .routers import rollouts as rollouts_router
 from .routers import apikeys as apikeys_router
 from .routers import roles as roles_router
+from .routers import approvals as approvals_router
 from .routers import admin, agent_api, artifacts as artifacts_router, business, crm as crm_router, fleet, portal, protection, service_mgmt, soc
 from .routers import psa as psa_router, remote as remote_router, rmm as rmm_router
 from .security import hash_password
@@ -262,11 +263,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         return response
 
+    from . import approvals as approval_gate
+
+    @app.exception_handler(approval_gate.ApprovalRequired)
+    async def approval_required(_request: Request, exc: approval_gate.ApprovalRequired):
+        return exc.response()
+
     remote.install_wake_hook()
     for module in (agent_api, admin, fleet, soc, crm_router, business, rmm_router, service_mgmt, psa_router, remote_router, portal):
         app.include_router(module.router)
     for module in (m365_admin_router, m365_router, network_router, grc_router, backup_router, soc_workflows, ad_router, grc_programme_router,
-                   rollouts_router, apikeys_router, roles_router):
+                   rollouts_router, apikeys_router, roles_router, approvals_router):
         app.include_router(module.router)
     app.include_router(documentation_router.router)
     app.include_router(m365_router.oauth)

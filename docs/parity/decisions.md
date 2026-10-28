@@ -122,6 +122,20 @@ Creating or rotating a credential requires a recent password check, and the toke
 
 Softer risks are logged and shown to platform administrators (Settings > Platform) without blocking: a non-HTTPS public URL, open enrolment, and legacy vault keys. On a deployed server, a refused start fails the health check and `auto-update.sh` rolls back, leaving the previous version running.
 
+### D-16: Two-person approval
+
+Two-person approval is off by default and set per customer or MSP. The nearest ancestor with it switched on decides.
+
+**What is held.** Destructive device commands are always held. Scripts, bulk commands and bulk jobs are held when they reach the configured number of devices (25 by default).
+
+**How it works.**
+
+1. The first request returns 202 with an approval ID. It is stored with a SHA-256 fingerprint of the request body and the resolved device IDs.
+2. Someone other than the requester approves. They need the `approve` permission, scope over every target, and a fresh password check.
+3. The requester resends the request with the approval ID. It runs only if the fingerprint still matches, within one hour of approval, and once.
+
+Pending requests expire after 24 hours. Changing the approval policy needs `configure`, `approve` and a fresh password check.
+
 ### Other external dependencies (owner action needed when reached)
 
 | Dependency | Needed for |
