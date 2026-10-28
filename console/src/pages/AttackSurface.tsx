@@ -1,11 +1,12 @@
+import { displayValue } from "../components/DisplayValue";
 import { useState } from "react";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
-import { Modal, PageHead, Sev, Table, TenantSelect, useAction, useData } from "../components/ui";
+import { Modal, PageHead, Sev, Table, TenantSelect, useAction, useListData } from "../components/ui";
 
 export default function AttackSurface() {
   const { tenantId, tenantName, can } = useApp();
-  const { data, reload } = useData<any[]>("exposure/assets", { tenant_id: tenantId });
+  const { data, reload } = useListData<any>("exposure/assets", { tenant_id: tenantId });
   const [adding, setAdding] = useState(false);
   const [open, setOpen] = useState<any>(null);
   const { run } = useAction();
@@ -15,7 +16,7 @@ export default function AttackSurface() {
                 actions={can("configure") && <button className="primary" onClick={() => setAdding(true)}>Add asset</button>} />
       <div className="card">
         <Table rows={data} onRow={(r) => r.lastResult?.findings && setOpen(r)} empty="No external assets yet."
-               columns={[{ key: "target", label: "Asset", render: (r) => <><b className="mono">{r.target}</b><div className="small muted">{r.label}</div></> },
+               columns={[{ key: "target", label: "Asset", render: (r) => <><b className="mono">{displayValue(r.target)}</b><div className="small muted">{displayValue(r.label)}</div></> },
                          { key: "tenantId", label: "Tenant", render: (r) => tenantName(r.tenantId) },
                          { key: "open", label: "Open ports", render: (r) => r.lastResult?.openPorts?.map((p: any) => p.port).join(", ") || "—" },
                          { key: "worst", label: "Worst finding", render: (r) => r.lastResult?.findings?.[0] ? <Sev level={r.lastResult.findings[0].risk} /> : "—" },
@@ -24,10 +25,10 @@ export default function AttackSurface() {
       </div>
       {open && (
         <Modal title={`Findings · ${open.target}`} onClose={() => setOpen(null)}>
-          <p className="muted">{open.lastResult.address} · {open.lastResult.scannedPorts} ports checked · {fmtTime(open.lastResult.scannedAt)}</p>
+          <p className="muted">{displayValue(open.lastResult.address)} · {displayValue(open.lastResult.scannedPorts)} ports checked · {fmtTime(open.lastResult.scannedAt)}</p>
           <Table rows={open.lastResult.findings.map((f: any, i: number) => ({ ...f, id: i }))} empty="No risky exposure found."
                  columns={[{ key: "risk", label: "Risk", render: (f) => <Sev level={f.risk} /> }, { key: "port", label: "Port" }, { key: "service", label: "Service" },
-                           { key: "advice", label: "What to do" }, { key: "banner", label: "Banner", render: (f) => <span className="mono small">{f.banner}</span> }]} />
+                           { key: "advice", label: "What to do" }, { key: "banner", label: "Banner", render: (f) => <span className="mono small">{displayValue(f.banner)}</span> }]} />
         </Modal>
       )}
       {adding && <AddAsset onClose={() => { setAdding(false); reload(); }} />}

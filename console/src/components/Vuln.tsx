@@ -1,3 +1,4 @@
+import { displayValue } from "./DisplayValue";
 import { Fragment, ReactNode } from "react";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
@@ -25,13 +26,13 @@ export function IntelCard({ intel, cve }: { intel: any; cve: string }) {
   return (
     <div className="intel">
       {intel.kev && <div className="kev-banner">
-        <b>Known exploited in the wild</b> (CISA KEV, added {intel.kevAdded || "—"}{intel.kevDue ? `, federal due date ${intel.kevDue}` : ""}){intel.kevRansomware && <> · <b>used by ransomware</b></>}
-        {intel.kevAction && <div className="small">{intel.kevAction}</div>}
+        <b>Known exploited in the wild</b> (CISA KEV, added {displayValue(intel.kevAdded || "—")}{intel.kevDue ? `, federal due date ${intel.kevDue}` : ""}){intel.kevRansomware && <> · <b>used by ransomware</b></>}
+        {intel.kevAction && <div className="small">{displayValue(intel.kevAction)}</div>}
       </div>}
-      {intel.description && <p style={{ marginTop: 0 }}>{intel.description}</p>}
+      {intel.description && <p style={{ marginTop: 0 }}>{displayValue(intel.description)}</p>}
       <div className="intel-facts">
-        <div><div className="evidence-title">CVSS</div><b style={{ fontSize: 20 }}>{intel.cvss ?? "—"}</b> {intel.severity && <Sev level={intel.severity} />}
-          {intel.vector && <div className="mono small muted" style={{ wordBreak: "break-all" }}>{intel.vector}</div>}</div>
+        <div><div className="evidence-title">CVSS</div><b style={{ fontSize: 20 }}>{displayValue(intel.cvss ?? "—")}</b> {intel.severity && <Sev level={intel.severity} />}
+          {intel.vector && <div className="mono small muted" style={{ wordBreak: "break-all" }}>{displayValue(intel.vector)}</div>}</div>
         <div><div className="evidence-title">Exploit probability (EPSS)</div><b style={{ fontSize: 20 }}>{pctText(intel.epss)}</b>
           {intel.epssPercentile !== null && intel.epssPercentile !== undefined && <div className="small muted">higher than {Math.round(intel.epssPercentile * 100)}% of CVEs</div>}</div>
         <div><div className="evidence-title">Weakness</div>{(intel.cwe || []).length ? intel.cwe.map((c: string) => <a key={c} className="chip" href={`https://cwe.mitre.org/data/definitions/${c.replace("CWE-", "")}.html`} target="_blank" rel="noreferrer">{c}</a>) : "—"}</div>
@@ -47,24 +48,24 @@ export function IntelCard({ intel, cve }: { intel: any; cve: string }) {
 }
 
 const kv = (rows: [string, ReactNode][]) => (
-  <dl className="kv compact">{rows.filter(([, v]) => v !== undefined && v !== null && v !== "" && !(Array.isArray(v) && !v.length)).map(([k, v]) => <Fragment key={k}><dt>{k}</dt><dd>{v}</dd></Fragment>)}</dl>
+  <dl className="kv compact">{rows.filter(([, v]) => v !== undefined && v !== null && v !== "" && !(Array.isArray(v) && !v.length)).map(([k, v]) => <Fragment key={k}><dt>{k}</dt><dd>{displayValue(v)}</dd></Fragment>)}</dl>
 );
 
 /** Why we believe the device is affected. */
 export function VulnEvidence({ evidence, installed }: { evidence: any; installed?: string }) {
   if (!evidence || !evidence.kind) return <p className="muted small">Detected on {installed || "this device"}. Rescan for full evidence.</p>;
   if (evidence.kind === "missing-update") return kv([
-    ["Missing update", <><b>{evidence.update}</b> <span className="muted">{evidence.title}</span></>],
+    ["Missing update", <><b>{displayValue(evidence.update)}</b> <span className="muted">{displayValue(evidence.title)}</span></>],
     ["Microsoft rating", evidence.msrcSeverity], ["Released", evidence.releasedAt && fmtTime(evidence.releasedAt).split(",")[0]],
     ["Missing since", evidence.missingSince && fmtTime(evidence.missingSince)], ["Operating system", evidence.os],
     ["Needs restart", evidence.rebootRequired ? "Yes" : undefined], ["Found by", `${evidence.detectedBy}, ${fmtTime(evidence.checkedAt)}`],
   ]);
   return kv([
-    ["Program", <><b>{evidence.program}</b> <span className="muted">{evidence.version}</span></>],
-    ["Publisher", evidence.publisher], ["Installed in", evidence.installLocation && <span className="mono small">{evidence.installLocation}</span>],
-    ["Executables", (evidence.executables || []).length > 0 && <span className="mono small" style={{ whiteSpace: "pre-wrap" }}>{evidence.executables.join("\n")}</span>],
+    ["Program", <><b>{displayValue(evidence.program)}</b> <span className="muted">{displayValue(evidence.version)}</span></>],
+    ["Publisher", evidence.publisher], ["Installed in", evidence.installLocation && <span className="mono small">{displayValue(evidence.installLocation)}</span>],
+    ["Executables", (evidence.executables || []).length > 0 && <span className="mono small" style={{ whiteSpace: "pre-wrap" }}>{displayValue(evidence.executables.join("\n"))}</span>],
     ["Installed on", evidence.installDate], ["Package source", evidence.ecosystem],
-    ["Affected versions", evidence.affectedRange], ["Matched as", evidence.matchedAs && <span className="mono small">{evidence.matchedAs}</span>],
+    ["Affected versions", evidence.affectedRange], ["Matched as", evidence.matchedAs && <span className="mono small">{displayValue(evidence.matchedAs)}</span>],
     ["Advisory", evidence.advisory], ["Found by", `${evidence.detectedBy}${evidence.checkedAt ? `, ${fmtTime(evidence.checkedAt)}` : ""}`],
   ]);
 }
@@ -80,13 +81,13 @@ export function FixBlock({ fix, deviceId, status, onQueued }: { fix: any; device
   };
   return (
     <div className="fix">
-      <div><b>{fix.kind === "kb" ? `Install ${fix.ref}` : fix.title || `Update to ${fix.ref}`}</b>{fix.kind === "kb" && fix.title && <div className="small muted">{fix.title}</div>}</div>
+      <div><b>{displayValue(fix.kind === "kb" ? `Install ${fix.ref}` : fix.title || `Update to ${fix.ref}`)}</b>{fix.kind === "kb" && fix.title && <div className="small muted">{displayValue(fix.title)}</div>}</div>
       <div className="row small" style={{ marginTop: 4 }}>
         {fix.url && <a href={fix.url} target="_blank" rel="noreferrer">{fix.kind === "kb" ? "KB article" : "Advisory"}</a>}
         {fix.catalog && <a href={fix.catalog} target="_blank" rel="noreferrer">Microsoft Update Catalog</a>}
-        {fix.winget && <span className="mono">winget upgrade --id {fix.winget}</span>}
+        {fix.winget && <span className="mono">winget upgrade --id {displayValue(fix.winget)}</span>}
         {fix.rebootRequired && <Pill value="restart needed" tone="warn" />}
-        {fix.available && <span className="muted">device offers {fix.available}</span>}
+        {fix.available && <span className="muted">device offers {displayValue(fix.available)}</span>}
         {fix.patchKey && can("configure") && status !== "fixed" && <button className="small primary" disabled={busy} onClick={install}>Install fix</button>}
       </div>
     </div>
@@ -99,17 +100,17 @@ export function RiskBreakdown({ risk, onOpenVulns }: { risk: any; onOpenVulns?: 
   return (
     <div>
       <div className="row" style={{ alignItems: "baseline" }}>
-        <b style={{ fontSize: 26 }}>{risk.score}</b><span className="muted">/ 100</span>
+        <b style={{ fontSize: 26 }}>{displayValue(risk.score)}</b><span className="muted">/ 100</span>
         <span className="small muted" style={{ flex: 1 }}>{risk.score >= 70 ? "High: act now" : risk.score >= 40 ? "Elevated" : risk.score > 0 ? "Low" : "Nothing open"}</span>
       </div>
       <div className="risk-bar"><span style={{ width: `${risk.score}%` }} /></div>
       {(risk.parts || []).map((part: any) => (
         <div key={part.kind} style={{ marginTop: 10 }}>
-          <div className="row small"><b style={{ textTransform: "capitalize" }}>{part.kind}</b><span className="muted" style={{ flex: 1 }}>{part.detail}</span><b>+{part.points}</b></div>
+          <div className="row small"><b style={{ textTransform: "capitalize" }}>{displayValue(part.kind)}</b><span className="muted" style={{ flex: 1 }}>{displayValue(part.detail)}</span><b>+{displayValue(part.points)}</b></div>
           {(part.top || []).map((t: any) => (
             <div key={t.vulnId + t.package} className="row small" style={{ paddingLeft: 10, flexWrap: "nowrap" }}>
-              <RiskBadge score={t.risk} /><span className="mono">{t.vulnId}</span><span className="muted ellipsis" style={{ flex: 1 }}>{t.package}{t.reasons?.length ? ` · ${t.reasons[0]}` : ""}</span>
-              {t.fix && <span className="small">fix: {t.fix}</span>}
+              <RiskBadge score={t.risk} /><span className="mono">{displayValue(t.vulnId)}</span><span className="muted ellipsis" style={{ flex: 1 }}>{displayValue(t.package)}{t.reasons?.length ? ` · ${t.reasons[0]}` : ""}</span>
+              {t.fix && <span className="small">fix: {displayValue(t.fix)}</span>}
             </div>
           ))}
         </div>

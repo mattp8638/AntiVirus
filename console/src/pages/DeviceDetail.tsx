@@ -1,8 +1,9 @@
+import { displayValue } from "../components/DisplayValue";
 import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ago, api, fmtTime, getToken } from "../api";
 import { useApp } from "../app-context";
-import { ErrorNote, Modal, Pill, Sev, Table, useAction, useData } from "../components/ui";
+import { ErrorNote, Modal, Pill, Sev, Table, useAction, useData, useListData } from "../components/ui";
 import { ConnectButtons, JobDetail, JobStatus, pct } from "../components/rmm";
 import { TimeChart } from "../components/TimeChart";
 import { RunScript } from "./rmm/Scripts";
@@ -60,8 +61,8 @@ function StatTile({ label, value, sub, tone, onClick }: { label: string; value: 
   return (
     <button className={`stat-tile ${tone ? `tone-edge-${tone}` : ""}`} onClick={onClick} disabled={!onClick}>
       <span className="stat-label">{label}</span>
-      <span className="stat-value">{value}</span>
-      {sub && <span className="stat-sub">{sub}</span>}
+      <span className="stat-value">{displayValue(value)}</span>
+      {sub && <span className="stat-sub">{displayValue(sub)}</span>}
     </button>
   );
 }
@@ -76,8 +77,8 @@ export default function DeviceDetail() {
   const { id } = useParams();
   const { tenantName, can } = useApp();
   const { data, error, reload } = useData<any>(`devices/${id}`);
-  const { data: policies } = useData<any[]>("policies", { tenant_id: data?.device.tenantId }, [data?.device.tenantId]);
-  const { data: groups } = useData<any[]>("groups", { tenant_id: data?.device.tenantId }, [data?.device.tenantId]);
+  const { data: policies } = useListData<any>("policies", { tenant_id: data?.device.tenantId }, [data?.device.tenantId]);
+  const { data: groups } = useListData<any>("groups", { tenant_id: data?.device.tenantId }, [data?.device.tenantId]);
   const { data: profile } = useData<any>(id ? `devices/${id}/profile` : null);
   const isPhone = data?.device.platform === "android";
   const { data: patches } = useData<any>(id && data && !isPhone ? `rmm/devices/${id}/patches` : null, {}, [isPhone]);
@@ -141,13 +142,13 @@ export default function DeviceDetail() {
       <label className="field">Group
         <select value={d.groupId ?? ""} disabled={!can("configure")} onChange={(e) => patch({ groupId: e.target.value || null }, "Group updated")}>
           <option value="">No group</option>
-          {groups?.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+          {groups?.map((g) => <option key={g.id} value={g.id}>{displayValue(g.name)}</option>)}
         </select>
       </label>
       <label className="field">Policy override
         <select value={d.policyId ?? ""} disabled={!can("configure")} onChange={(e) => patch({ policyId: e.target.value || null }, "Policy override updated")}>
           <option value="">Inherit from group/customer</option>
-          {policies?.filter((p) => p.tenantId).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          {policies?.filter((p) => p.tenantId).map((p) => <option key={p.id} value={p.id}>{displayValue(p.name)}</option>)}
         </select>
       </label>
       <label className="field">Business criticality
@@ -160,13 +161,13 @@ export default function DeviceDetail() {
 
   return (
     <>
-      <div className="crumbs small"><Link to="/devices">Devices</Link> <span className="muted">›</span> <span className="muted">{tenantName(d.tenantId)}</span> <span className="muted">›</span> <span>{d.hostname}</span></div>
+      <div className="crumbs small"><Link to="/devices">Devices</Link> <span className="muted">›</span> <span className="muted">{tenantName(d.tenantId)}</span> <span className="muted">›</span> <span>{displayValue(d.hostname)}</span></div>
 
       <div className="device-hero">
         <div className={`device-glyph ${d.online ? "on" : ""}`} aria-hidden>{PLATFORM_GLYPH[String(d.platform).toLowerCase()] ?? "▣"}</div>
         <div style={{ minWidth: 0, flex: 1 }}>
           <div className="row" style={{ gap: 10 }}>
-            <h1 style={{ margin: 0 }}>{d.hostname}</h1>
+            <h1 style={{ margin: 0 }}>{displayValue(d.hostname)}</h1>
             {d.retired ? <Pill value="decommissioned" tone="muted" /> :
               <span className={`status-chip ${d.online ? "on" : "off"}`}><span className={`dot ${d.online ? "on" : "off"}`} />{d.online ? "Online" : `Offline · ${ago(d.lastSeenAt)}`}</span>}
             {!d.approved && !d.retired && <Pill value="needs approval" tone="warn" />}
@@ -178,11 +179,11 @@ export default function DeviceDetail() {
             {d.inventory?.role === "server" && <Pill value="Server" tone="muted" />}
           </div>
           <div className="device-meta">
-            <span>{d.osVersion}</span>
-            {d.inventory?.serverRoles?.length > 0 && <span title="Installed server roles">{d.inventory.serverRoles.slice(0, 4).join(", ")}</span>}
+            <span>{displayValue(d.osVersion)}</span>
+            {d.inventory?.serverRoles?.length > 0 && <span title="Installed server roles">{displayValue(d.inventory.serverRoles.slice(0, 4).join(", "))}</span>}
             <span>{tenantName(d.tenantId)}{groupName ? ` · ${groupName}` : ""}</span>
-            {user && <span title="Signed-in user">👤 {user}</span>}
-            {d.ipAddress && <span className="mono">{d.ipAddress}</span>}
+            {user && <span title="Signed-in user">👤 {displayValue(user)}</span>}
+            {d.ipAddress && <span className="mono">{displayValue(d.ipAddress)}</span>}
           </div>
         </div>
         {!d.retired && can("respond") && isPhone && <div className="device-actions">
@@ -299,8 +300,8 @@ export default function DeviceDetail() {
             {can("respond") && !d.retired && <button onClick={() => setAction("")}>New remote action…</button>}
           </div>
           <Table rows={data.commands} empty="No remote actions yet."
-                 columns={[{ key: "type", label: "Action", render: (r) => <span title={r.type}>{commandLabel(r.type)}</span> }, { key: "status", label: "Status", render: (r) => <Pill value={r.status} /> },
-                           { key: "issuedBy", label: "By" }, { key: "targetPath", label: "Target", render: (r) => <span className="mono small">{r.targetPath || r.recordId || "—"}</span> },
+                 columns={[{ key: "type", label: "Action", render: (r) => <span title={r.type}>{displayValue(commandLabel(r.type))}</span> }, { key: "status", label: "Status", render: (r) => <Pill value={r.status} /> },
+                           { key: "issuedBy", label: "By" }, { key: "targetPath", label: "Target", render: (r) => <span className="mono small">{displayValue(r.targetPath || r.recordId || "—")}</span> },
                            { key: "reason", label: "Reason" }, { key: "createdAt", label: "Queued", render: (r) => <span title={fmtTime(r.createdAt)}>{ago(r.createdAt)}</span> },
                            { key: "result", label: "Result", render: (r) => Object.keys(r.result || {}).length ? <span className="mono small" title={JSON.stringify(r.result)}>{JSON.stringify(r.result).slice(0, 80)}</span> : "—" }]} />
         </div>
@@ -325,7 +326,7 @@ export default function DeviceDetail() {
       {purging && <Modal title={`Delete ${d.hostname} permanently`} onClose={()=>{if(!busy)setPurging(false);}}>
         <p>This deletes the device record and everything recorded about it: telemetry, alerts and incidents, commands, inventory, patches, vulnerabilities, remote sessions, bundles and recordings. It cannot be undone.</p>
         <p>Tickets and CMDB configurations are kept but no longer linked to the device. The audit log records the deletion. To use this endpoint again later, install the agent with a new installer.</p>
-        <label className="field">Type {d.hostname} to confirm<input value={purgeName} onChange={e=>setPurgeName(e.target.value)}/></label>
+        <label className="field">Type {displayValue(d.hostname)} to confirm<input value={purgeName} onChange={e=>setPurgeName(e.target.value)}/></label>
         <button className="danger" disabled={busy||purgeName!==d.hostname} onClick={async()=>{
           const result=await run(()=>api(`devices/${d.id}/purge`,{method:"POST",body:{confirmHostname:purgeName}}),`${d.hostname} deleted permanently`);
           if(result){setPurging(false);goTo("/devices");}
@@ -354,7 +355,7 @@ export default function DeviceDetail() {
       {retiring && <Modal title={`Decommission ${d.hostname}`} onClose={()=>{if(!busy)setRetiring(false);}}>
         <p>This removes the device from the active list, revokes its agent credentials and cancels pending commands. Logs, alerts, inventory and command history are retained under the existing retention policy. It does not uninstall the agent or remove network isolation.</p>
         <p>Active remote sessions must be ended and dispatched commands reconciled first.</p>
-        <label className="field">Type {d.hostname} to confirm<input value={retireName} onChange={e=>setRetireName(e.target.value)}/></label>
+        <label className="field">Type {displayValue(d.hostname)} to confirm<input value={retireName} onChange={e=>setRetireName(e.target.value)}/></label>
         <button className="danger" disabled={busy||retireName!==d.hostname} onClick={async()=>{const result=await run(()=>api(`devices/${d.id}`,{method:"DELETE"}),"Device decommissioned; history retained");if(result){setRetiring(false);reload();}}}>Decommission and retain history</button>
       </Modal>}
 
@@ -397,11 +398,11 @@ function EffectivePolicy({ policy }: { policy: any }) {
         if (!fields.length) return null;
         return (
           <div key={section.key} style={{ marginBottom: 18 }}>
-            <h3>{section.title}</h3>
+            <h3>{displayValue(section.title)}</h3>
             <Table rows={fields.map((f: any) => ({ ...f, id: f.path }))}
                    columns={[{ key: "label", label: "Setting" },
                              { key: "value", label: "Value", render: (f) => <span className="mono small">{JSON.stringify(policy.settings[section.key][f.key])}</span> },
-                             { key: "origin", label: "Set by", render: (f) => <span className="small">{policy.origin[f.path]}</span> },
+                             { key: "origin", label: "Set by", render: (f) => <span className="small">{displayValue(policy.origin[f.path])}</span> },
                              { key: "lock", label: "", render: (f) => <>
                                  {(policy.locked[f.path] || policy.locked[section.key]) && <Pill value={`locked by ${policy.locked[f.path] || policy.locked[section.key]}`} tone="blue" />}
                                  {blocked.has(f.path) && <Pill value="override blocked" tone="warn" />}
@@ -415,7 +416,7 @@ function EffectivePolicy({ policy }: { policy: any }) {
 
 export function CommandModal({ device, initial, onClose, incidentId }: { device: any; initial: string; onClose: () => void; incidentId?: string }) {
   const { can } = useApp();
-  const { data: catalog, error: catalogError } = useData<any[]>("commands/catalog");
+  const { data: catalog, error: catalogError } = useListData<any>("commands/catalog");
   const [type, setType] = useState(initial || "scan.quick");
   const [targetPath, setTargetPath] = useState("");
   const [recordId, setRecordId] = useState("");
@@ -439,7 +440,7 @@ export function CommandModal({ device, initial, onClose, incidentId }: { device:
       <div className="form-grid">
         <label className="field">Action
           <select value={type} onChange={(e) => setType(e.target.value)}>
-            {available.map((c) => <option key={c.type} value={c.type}>{c.group}: {c.label}</option>)}
+            {available.map((c) => <option key={c.type} value={c.type}>{displayValue(c.group)}: {displayValue(c.label)}</option>)}
           </select>
         </label>
         {spec?.needs.includes("targetPath") && <label className="field">Target path<input value={targetPath} onChange={(e) => setTargetPath(e.target.value)} placeholder="C:\\path\\file.exe" /></label>}
@@ -447,7 +448,7 @@ export function CommandModal({ device, initial, onClose, incidentId }: { device:
         {spec?.needs.includes("recordId") && <label className="field">Record ID<input value={recordId} onChange={(e) => setRecordId(e.target.value)} /></label>}
         <label className="field">Reason<input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Recorded in the audit log" /></label>
       </div>
-      {spec?.description && <p className="muted">{spec.description}</p>}
+      {spec?.description && <p className="muted">{displayValue(spec.description)}</p>}
       {isKill && !pid && <p style={{ color: "#fde68a" }}>No process ID: every running copy of this program on the device will be killed.</p>}
       {spec?.destructive && <p style={{ color: "#fecaca" }}>This action changes the device and cannot be undone automatically.</p>}
     </Modal>
@@ -489,11 +490,11 @@ function HealthTab({ deviceId }: { deviceId: string }) {
           <dl className="kv">
             <dt>CPU</dt><dd>{pct(c.cpuPercent)}</dd>
             <dt>Memory</dt><dd>{pct(c.memoryPercent)} of {c.memoryTotalGb ? `${Math.round(c.memoryTotalGb)} GB` : "?"}</dd>
-            {(c.disks || []).map((disk: any) => <Fragment key={disk.mount}><dt>Disk {disk.mount}</dt><dd>{disk.freeGb.toFixed(1)} GB free of {disk.totalGb.toFixed(0)} GB ({pct(disk.freePercent)})</dd></Fragment>)}
-            <dt>Signed in</dt><dd>{c.loggedOnUser || "nobody"}</dd>
+            {(c.disks || []).map((disk: any) => <Fragment key={disk.mount}><dt>Disk {displayValue(disk.mount)}</dt><dd>{displayValue(disk.freeGb.toFixed(1))} GB free of {displayValue(disk.totalGb.toFixed(0))} GB ({pct(disk.freePercent)})</dd></Fragment>)}
+            <dt>Signed in</dt><dd>{displayValue(c.loggedOnUser || "nobody")}</dd>
             <dt>Up since</dt><dd>{fmtTime(c.lastBootAt)} ({c.uptimeSeconds ? `${(c.uptimeSeconds / 86400).toFixed(1)} days` : "?"})</dd>
             <dt>Restart pending</dt><dd>{c.rebootPending ? <Pill value="yes" tone="warn" /> : "No"}</dd>
-            <dt>Stopped services</dt><dd className="small">{(c.stoppedServices || []).join(", ") || "None"}</dd>
+            <dt>Stopped services</dt><dd className="small">{displayValue((c.stoppedServices || []).join(", ") || "None")}</dd>
             <dt>Hardware</dt><dd>{[c.manufacturer, c.model].filter(Boolean).join(" ") || "—"}</dd>
             <dt>Reported</dt><dd>{ago(c.reportedAt)}</dd>
           </dl>
@@ -502,7 +503,7 @@ function HealthTab({ deviceId }: { deviceId: string }) {
       <div className="card">
         <h3>Monitors</h3>
         {(data.monitors || []).length === 0 ? <p className="muted small">No monitor has evaluated this device yet.</p> :
-          data.monitors.map((m: any, i: number) => <div key={i} className="row small"><Pill value={m.triggered ? "triggered" : "ok"} tone={m.triggered ? "bad" : "good"} /> {m.condition} <span className="muted">{m.message}</span></div>)}
+          data.monitors.map((m: any, i: number) => <div key={i} className="row small"><Pill value={m.triggered ? "triggered" : "ok"} tone={m.triggered ? "bad" : "good"} /> {displayValue(m.condition)} <span className="muted">{displayValue(m.message)}</span></div>)}
       </div>
     </div>
   ); }
@@ -517,24 +518,24 @@ function PatchesTab({ device }: { device: any }) {
   return (
     <div className="card">
       <div className="row" style={{ marginBottom: 10 }}>
-        <span className="small muted">Policy: {data.policy?.name || "defaults"} · ring {data.ring.name} (+{data.ring.delayDays} days) · last scan {ago(data.lastScan)}</span>
+        <span className="small muted">Policy: {displayValue(data.policy?.name || "defaults")} · ring {displayValue(data.ring.name)} (+{displayValue(data.ring.delayDays)} days) · last scan {ago(data.lastScan)}</span>
         {data.rebootPending && <Pill value="restart pending" tone="warn" />}
         <span style={{ flex: 1 }} />
         {can("respond") && <button disabled={busy} onClick={async () => { await run(() => api("rmm/patches/scan", { body: { targets } }), "Patch scan queued"); }}>Scan now</button>}
         {can("configure") && <button className="primary" disabled={busy} onClick={async () => { await run(() => api("rmm/patches/install", { body: { targets } }), "Approved patches queued"); reload(); }}>Install approved</button>}
       </div>
       <Table rows={data.patches} empty="No patches reported yet. Run a scan."
-             columns={[{ key: "title", label: "Patch", render: (p) => <><b>{p.title}</b><div className="small muted mono">{p.patchKey}</div></> },
+             columns={[{ key: "title", label: "Patch", render: (p) => <><b>{displayValue(p.title)}</b><div className="small muted mono">{displayValue(p.patchKey)}</div></> },
                        { key: "classification", label: "Class", render: (p) => <Pill value={p.classification} tone={["critical", "security"].includes(p.classification) ? "bad" : "muted"} /> },
                        { key: "approval", label: "Approval", render: (p) => <Pill value={p.approval} tone={p.approval === "approved" ? "good" : p.approval === "pending" ? "warn" : "muted"} /> },
-                       { key: "status", label: "Status", render: (p) => <><Pill value={p.status} tone={p.status === "installed" ? "good" : p.status === "failed" ? "bad" : p.status === "installing" ? "blue" : "warn"} />{p.error && <div className="small" style={{ color: "#fecaca" }}>{p.error}</div>}</> },
+                       { key: "status", label: "Status", render: (p) => <><Pill value={p.status} tone={p.status === "installed" ? "good" : p.status === "failed" ? "bad" : p.status === "installing" ? "blue" : "warn"} />{p.error && <div className="small" style={{ color: "#fecaca" }}>{displayValue(p.error)}</div>}</> },
                        { key: "firstSeenAt", label: "First seen", render: (p) => ago(p.firstSeenAt) }]} />
     </div>
   );
 }
 
 function JobsTab({ deviceId, onOpen, onRun }: { deviceId: string; onOpen: (id: string) => void; onRun?: () => void }) {
-  const { data } = useData<any[]>("rmm/jobs", { deviceId });
+  const { data } = useListData<any>("rmm/jobs", { deviceId });
   return (
     <div className="card">
       <div className="row" style={{ marginBottom: 10 }}>
@@ -549,7 +550,7 @@ function JobsTab({ deviceId, onOpen, onRun }: { deviceId: string; onOpen: (id: s
 }
 
 function SessionsTab({ deviceId }: { deviceId: string }) {
-  const { data } = useData<any[]>("remote/sessions", { deviceId });
+  const { data } = useListData<any>("remote/sessions", { deviceId });
   return (
     <div className="card">
       <Table rows={data} empty="Nobody has connected to this device yet."
@@ -557,13 +558,13 @@ function SessionsTab({ deviceId }: { deviceId: string }) {
                        { key: "status", label: "Status", render: (s) => <Pill value={s.status} tone={s.status === "connected" ? "good" : s.status === "denied" || s.status === "failed" ? "bad" : "muted"} /> },
                        { key: "createdAt", label: "Started", render: (s) => fmtTime(s.createdAt) },
                        { key: "connectedMinutes", label: "Duration", render: (s) => s.connectedMinutes ? `${s.connectedMinutes} min` : "—" },
-                       { key: "events", label: "Activity", render: (s) => <span className="small muted">{(s.events || []).filter((e: any) => !["requested", "viewer.connected", "agent.connected"].includes(e.type)).map((e: any) => e.type).join(", ") || "—"}</span> }]} />
+                       { key: "events", label: "Activity", render: (s) => <span className="small muted">{displayValue((s.events || []).filter((e: any) => !["requested", "viewer.connected", "agent.connected"].includes(e.type)).map((e: any) => e.type).join(", ") || "—")}</span> }]} />
     </div>
   );
 }
 
 function ScriptPicker({ device, onClose, onStarted }: { device: any; onClose: () => void; onStarted: (jobId: string) => void }) {
-  const { data } = useData<any[]>("rmm/scripts");
+  const { data } = useListData<any>("rmm/scripts");
   const [script, setScript] = useState<any>(null);
   const [q, setQ] = useState("");
   if (script) return <RunScript script={script} presetDeviceId={device.id} onClose={onClose} onStarted={onStarted} />;
@@ -572,7 +573,7 @@ function ScriptPicker({ device, onClose, onStarted }: { device: any; onClose: ()
     <Modal title={`Run a script on ${device.hostname}`} onClose={onClose}>
       <input placeholder="Search scripts" value={q} onChange={(e) => setQ(e.target.value)} style={{ width: "100%", marginBottom: 8 }} autoFocus />
       <Table rows={usable} onRow={setScript} empty="No scripts for this platform."
-             columns={[{ key: "name", label: "Script", render: (s) => <><b>{s.name}</b><div className="small muted">{s.description}</div></> }, { key: "category", label: "Category" }]} />
+             columns={[{ key: "name", label: "Script", render: (s) => <><b>{displayValue(s.name)}</b><div className="small muted">{displayValue(s.description)}</div></> }, { key: "category", label: "Category" }]} />
     </Modal>
   );
 }
@@ -621,7 +622,7 @@ function LocalAdmin({ deviceId }: { deviceId: string }) {
 function Bundles({ deviceId }: { deviceId: string }) {
   const { can } = useApp();
   const navigate = useNavigate();
-  const { data, error, reload } = useData<any[]>(`devices/${deviceId}/artifacts`);
+  const { data, error, reload } = useListData<any>(`devices/${deviceId}/artifacts`);
   const { run, busy } = useAction();
   const collect = async (type: string) => {
     if (await run(() => api(`devices/${deviceId}/commands`, { body: { type, reason: "Collected from the device page" } }),
@@ -650,7 +651,7 @@ function Bundles({ deviceId }: { deviceId: string }) {
           <button disabled={busy} onClick={() => collect("support.bundle")}>Collect support bundle</button></>}
       </div>
       <Table rows={data} empty="No bundles yet."
-             columns={[{ key: "filename", label: "Bundle", render: (r) => <><b>{r.filename}</b><div className="small muted mono" title={r.sha256}>SHA-256 {String(r.sha256).slice(0, 16)}…</div></> },
+             columns={[{ key: "filename", label: "Bundle", render: (r) => <><b>{displayValue(r.filename)}</b><div className="small muted mono" title={r.sha256}>SHA-256 {String(r.sha256).slice(0, 16)}…</div></> },
                        { key: "kind", label: "Type", render: (r) => ({ "remote.recording": "Remote session recording", "forensics.collect": "Forensic bundle",
                            "support.bundle": "Support bundle", "support.bundle.sanitized": "Support bundle (sanitised)" } as Record<string, string>)[r.kind] ?? r.kind },
                        { key: "size", label: "Size", className: "right", render: (r) => r.size >= 1048576 ? `${(r.size / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(r.size / 1024))} KB` },

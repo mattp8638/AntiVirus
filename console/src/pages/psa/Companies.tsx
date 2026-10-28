@@ -1,13 +1,14 @@
+import { displayValue } from "../../components/DisplayValue";
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ago, api, money } from "../../api";
 import { useApp } from "../../app-context";
-import { Modal, PageHead, Pill, Table, Tabs, useAction, useData } from "../../components/ui";
+import { Modal, PageHead, Pill, Table, Tabs, useAction, useData, useListData } from "../../components/ui";
 import { NewTicket, PRIORITY_TONE } from "./ServiceBoard";
 
 export default function Companies() {
   const navigate = useNavigate();
-  const { data } = useData<any[]>("psa/companies");
+  const { data } = useListData<any>("psa/companies");
   const [q, setQ] = useState("");
   return (
     <>
@@ -15,7 +16,7 @@ export default function Companies() {
       <input placeholder="Search companies" value={q} onChange={(e) => setQ(e.target.value)} style={{ minWidth: 280, marginBottom: 12 }} />
       <div className="card">
         <Table rows={data?.filter((c) => !q || c.name.toLowerCase().includes(q.toLowerCase()))} onRow={(c) => navigate(`/companies/${c.id}`)} empty="No companies."
-               columns={[{ key: "name", label: "Company", render: (c) => <><b>{c.name}</b><div className="small muted">{c.website}</div></> },
+               columns={[{ key: "name", label: "Company", render: (c) => <><b>{displayValue(c.name)}</b><div className="small muted">{displayValue(c.website)}</div></> },
                          { key: "companyType", label: "Type", render: (c) => <Pill value={c.companyType} tone={c.companyType === "Client" ? "good" : "muted"} /> },
                          { key: "phone", label: "Phone" }, { key: "openTickets", label: "Open tickets" }, { key: "devices", label: "Devices" },
                          { key: "contacts", label: "Contacts" }, { key: "agreements", label: "Agreements" }]} />
@@ -38,7 +39,7 @@ export function CompanyDetail() {
   const c = data.company;
   return (
     <>
-      <PageHead title={c.name} subtitle={<>{c.companyType || "Client"}{c.phone ? ` · ${c.phone}` : ""}{c.website ? ` · ${c.website}` : ""} · {data.devices} devices</>}
+      <PageHead title={c.name} subtitle={<>{displayValue(c.companyType || "Client")}{c.phone ? ` · ${c.phone}` : ""}{c.website ? ` · ${c.website}` : ""} · {displayValue(data.devices)} devices</>}
                 actions={<>
                   <button className="primary" onClick={() => setTicket(true)}>New ticket</button>
                   {can("crm") && <button onClick={() => setEditing(true)}>Edit company</button>}
@@ -51,11 +52,11 @@ export function CompanyDetail() {
                                                { key: "subject", label: "Summary" }, { key: "status", label: "Status", render: (t) => <Pill value={t.status} tone={t.closed ? "muted" : "blue"} /> },
                                                { key: "assignee", label: "Resource" }, { key: "updatedAt", label: "Updated", render: (t) => ago(t.updatedAt) }]} />}
         {tab === "Contacts" && <>
-          <Table rows={data.contacts} empty="No contacts." columns={[{ key: "name", label: "Name", render: (x) => <>{x.name}{x.isPrimary && <> <Pill value="primary" tone="blue" /></>}</> }, { key: "title", label: "Title" }, { key: "email", label: "Email" }, { key: "phone", label: "Phone" }]} />
+          <Table rows={data.contacts} empty="No contacts." columns={[{ key: "name", label: "Name", render: (x) => <>{displayValue(x.name)}{x.isPrimary && <> <Pill value="primary" tone="blue" /></>}</> }, { key: "title", label: "Title" }, { key: "email", label: "Email" }, { key: "phone", label: "Phone" }]} />
           {can("crm") && <button style={{ marginTop: 8 }} onClick={() => setAdding("contact")}>Add contact</button>}
         </>}
         {tab === "Sites" && <>
-          <Table rows={data.sites} empty="No sites." columns={[{ key: "name", label: "Site", render: (x) => <>{x.name}{x.primary && <> <Pill value="primary" tone="blue" /></>}</> }, { key: "address", label: "Address" }, { key: "city", label: "City" }, { key: "postcode", label: "Postcode" }, { key: "phone", label: "Phone" }]} />
+          <Table rows={data.sites} empty="No sites." columns={[{ key: "name", label: "Site", render: (x) => <>{displayValue(x.name)}{x.primary && <> <Pill value="primary" tone="blue" /></>}</> }, { key: "address", label: "Address" }, { key: "city", label: "City" }, { key: "postcode", label: "Postcode" }, { key: "phone", label: "Phone" }]} />
           {can("crm") && <button style={{ marginTop: 8 }} onClick={() => setAdding("site")}>Add site</button>}
         </>}
         {tab === "Agreements" && <Table rows={data.agreements} empty="No agreements. Create one on the Agreements page."
@@ -116,7 +117,7 @@ function AddChild({ kind, tenantId, onClose }: { kind: string; tenantId: string;
 
 export function Configurations() {
   const { tenantId, tenantName, can } = useApp();
-  const { data, reload } = useData<any[]>("psa/configurations", { accountTenantId: tenantId || undefined });
+  const { data, reload } = useListData<any>("psa/configurations", { accountTenantId: tenantId || undefined });
   const [editing, setEditing] = useState<any>(null);
   const { run, busy } = useAction();
   const [type, setType] = useState("");
@@ -127,14 +128,14 @@ export function Configurations() {
                   <button disabled={busy} onClick={async () => { const r = await run(() => api<any>("psa/configurations/sync", { body: { tenantId: tenantId || undefined } })); if (r) { window.alert(`${r.created} created, ${r.updated} updated from RMM`); reload(); } }}>Sync from RMM</button>
                   <button className="primary" onClick={() => setEditing({ type: "Firewall", status: "Active", accountTenantId: tenantId })}>New configuration</button>
                 </>} />
-      <select value={type} onChange={(e) => setType(e.target.value)} style={{ marginBottom: 12 }}><option value="">All types</option>{[...new Set((data || []).map((c) => c.type))].map((t) => <option key={t}>{t}</option>)}</select>
+      <select value={type} onChange={(e) => setType(e.target.value)} style={{ marginBottom: 12 }}><option value="">All types</option>{[...new Set((data || []).map((c) => c.type))].map((t) => <option key={t}>{displayValue(t)}</option>)}</select>
       <div className="card">
         <Table rows={data?.filter((c) => !type || c.type === type)} onRow={setEditing} empty="No configurations. Sync from RMM to import every managed device."
-               columns={[{ key: "name", label: "Name", render: (c) => <><b>{c.name}</b>{c.deviceId && <div className="small"><Link to={`/devices/${c.deviceId}`} onClick={(e) => e.stopPropagation()}>managed device</Link></div>}</> },
+               columns={[{ key: "name", label: "Name", render: (c) => <><b>{displayValue(c.name)}</b>{c.deviceId && <div className="small"><Link to={`/devices/${c.deviceId}`} onClick={(e) => e.stopPropagation()}>managed device</Link></div>}</> },
                          { key: "account", label: "Company", render: (c) => c.account || tenantName(c.accountTenantId) },
                          { key: "type", label: "Type" }, { key: "manufacturer", label: "Make / model", render: (c) => `${c.manufacturer} ${c.model}`.trim() || "—" },
                          { key: "serialNumber", label: "Serial" }, { key: "ipAddress", label: "IP" },
-                         { key: "warrantyExpires", label: "Warranty", render: (c) => c.warrantyExpires ? <span style={{ color: new Date(c.warrantyExpires) < new Date() ? "#fecaca" : undefined }}>{c.warrantyExpires}</span> : "—" },
+                         { key: "warrantyExpires", label: "Warranty", render: (c) => c.warrantyExpires ? <span style={{ color: new Date(c.warrantyExpires) < new Date() ? "#fecaca" : undefined }}>{displayValue(c.warrantyExpires)}</span> : "—" },
                          { key: "status", label: "Status", render: (c) => <Pill value={c.status} tone={c.status === "Active" ? "good" : "muted"} /> }]} />
       </div>
       {editing && <ConfigEditor config={editing} onClose={() => { setEditing(null); reload(); }} />}

@@ -1,15 +1,16 @@
+import { displayValue } from "../../components/DisplayValue";
 import { useState } from "react";
 import { ago, api } from "../../api";
 import { useApp } from "../../app-context";
 import { emptyTargets, JobDetail, TargetPicker, Targets } from "../../components/rmm";
-import { Modal, PageHead, Pill, Table, useAction, useData } from "../../components/ui";
+import { Modal, PageHead, Pill, Table, useAction, useListData } from "../../components/ui";
 
 const LANGS = ["powershell", "cmd", "bash", "sh", "python"];
 const LANG_PLATFORMS: Record<string, string[]> = { powershell: ["windows"], cmd: ["windows"], bash: ["linux", "macos"], sh: ["linux", "macos"], python: ["windows", "linux", "macos"] };
 
 export default function Scripts() {
   const { can } = useApp();
-  const { data, reload } = useData<any[]>("rmm/scripts");
+  const { data, reload } = useListData<any>("rmm/scripts");
   const [q, setQ] = useState("");
   const [category, setCategory] = useState("");
   const [editing, setEditing] = useState<any>(null);
@@ -24,16 +25,16 @@ export default function Scripts() {
                 actions={can("configure") && <button className="primary" onClick={() => setEditing({ language: "powershell", platforms: ["windows"], parameters: [], body: "", category: "General", timeoutSeconds: 600 })}>New script</button>} />
       <div className="row" style={{ marginBottom: 12 }}>
         <input placeholder="Search scripts" value={q} onChange={(e) => setQ(e.target.value)} style={{ minWidth: 260 }} />
-        <select value={category} onChange={(e) => setCategory(e.target.value)}><option value="">All categories</option>{categories.map((c) => <option key={c}>{c}</option>)}</select>
+        <select value={category} onChange={(e) => setCategory(e.target.value)}><option value="">All categories</option>{categories.map((c) => <option key={c}>{displayValue(c)}</option>)}</select>
       </div>
       <div className="card">
         <Table rows={rows} empty="No scripts." onRow={(s) => setEditing(s)}
-               columns={[{ key: "name", label: "Script", render: (s) => <><b>{s.name}</b><div className="small muted">{s.description}</div></> },
+               columns={[{ key: "name", label: "Script", render: (s) => <><b>{displayValue(s.name)}</b><div className="small muted">{displayValue(s.description)}</div></> },
                          { key: "category", label: "Category" },
-                         { key: "language", label: "Language", render: (s) => <span className="mono small">{s.language}</span> },
+                         { key: "language", label: "Language", render: (s) => <span className="mono small">{displayValue(s.language)}</span> },
                          { key: "platforms", label: "Runs on", render: (s) => s.platforms.join(", ") },
                          { key: "parameters", label: "Params", render: (s) => s.parameters.length || "—" },
-                         { key: "builtin", label: "", render: (s) => s.builtin ? <Pill value="built-in" tone="blue" /> : <span className="small muted">v{s.version} · {ago(s.updatedAt)}</span> },
+                         { key: "builtin", label: "", render: (s) => s.builtin ? <Pill value="built-in" tone="blue" /> : <span className="small muted">v{displayValue(s.version)} · {ago(s.updatedAt)}</span> },
                          { key: "run", label: "", render: (s) => can("configure") && <button className="small primary" onClick={(e) => { e.stopPropagation(); setRunning(s); }}>Run</button> }]} />
       </div>
       {editing && <ScriptEditor script={editing} onClose={() => { setEditing(null); reload(); }} onRun={(s) => { setEditing(null); setRunning(s); }} />}
@@ -106,7 +107,7 @@ export function RunScript({ script, onClose, onStarted, presetDeviceId }: { scri
            footer={<><button onClick={onClose}>Cancel</button><button className="primary" disabled={busy || !(targets.deviceIds.length || targets.groupIds.length || targets.tenantIds.length)} onClick={submit}>Run now</button></>}>
       {(script.parameters || []).length > 0 && <div className="form-grid" style={{ marginBottom: 12 }}>
         {script.parameters.map((p: any) => (
-          <label key={p.name} className="field">{p.label || p.name}{p.required ? " *" : ""}
+          <label key={p.name} className="field">{displayValue(p.label || p.name)}{p.required ? " *" : ""}
             {p.type === "choice" ? <select value={values[p.name]} onChange={(e) => setValues({ ...values, [p.name]: e.target.value })}>{(p.choices || []).map((c: string) => <option key={c}>{c}</option>)}</select>
              : p.type === "boolean" ? <select value={values[p.name] || "false"} onChange={(e) => setValues({ ...values, [p.name]: e.target.value })}><option>true</option><option>false</option></select>
              : <input type={p.type === "number" ? "number" : "text"} value={values[p.name]} onChange={(e) => setValues({ ...values, [p.name]: e.target.value })} />}
@@ -114,7 +115,7 @@ export function RunScript({ script, onClose, onStarted, presetDeviceId }: { scri
         ))}
       </div>}
       {!presetDeviceId && <TargetPicker value={targets} onChange={setTargets} platforms={script.platforms} />}
-      <p className="small muted" style={{ marginTop: 8 }}>Runs as {script.runAs === "user" ? "the signed-in user" : "SYSTEM/root"} on {script.platforms.join(", ")} devices. Others are skipped. Timeout {Math.round(script.timeoutSeconds / 60)} min.</p>
+      <p className="small muted" style={{ marginTop: 8 }}>Runs as {script.runAs === "user" ? "the signed-in user" : "SYSTEM/root"} on {displayValue(script.platforms.join(", "))} devices. Others are skipped. Timeout {Math.round(script.timeoutSeconds / 60)} min.</p>
     </Modal>
   );
 }

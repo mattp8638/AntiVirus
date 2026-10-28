@@ -1,13 +1,14 @@
+import { displayValue } from "../components/DisplayValue";
 import { useState } from "react";
 import { api, money } from "../api";
 import { useApp } from "../app-context";
-import { Modal, PageHead, Pill, Stat, Table, Tabs, TenantSelect, useAction, useData } from "../components/ui";
+import { Modal, PageHead, Pill, Stat, Table, Tabs, TenantSelect, useAction, useListData } from "../components/ui";
 
 export default function Billing() {
   const { can } = useApp();
   const [tab, setTab] = useState("Contracts");
-  const { data: contracts, reload } = useData<any[]>("billing/contracts");
-  const { data: invoices, reload: reloadInvoices } = useData<any[]>("billing/invoices");
+  const { data: contracts, reload } = useListData<any>("billing/contracts");
+  const { data: invoices, reload: reloadInvoices } = useListData<any>("billing/invoices");
   const [period, setPeriod] = useState(new Date().toISOString().slice(0, 7));
   const [creating, setCreating] = useState(false);
   const [invoice, setInvoice] = useState<any>(null);
@@ -32,7 +33,7 @@ export default function Billing() {
       {tab === "Contracts" ? (
         <div className="card">
           <Table rows={contracts} empty="No contracts. Converting a CRM lead creates one."
-                 columns={[{ key: "account", label: "Company" }, { key: "name", label: "Agreement", render: (c) => <><b>{c.name}</b><div className="small muted">{c.agreementType || "Managed Services"} · {c.billingCycle || "Monthly"}</div></> }, { key: "plan", label: "Plan" },
+                 columns={[{ key: "account", label: "Company" }, { key: "name", label: "Agreement", render: (c) => <><b>{displayValue(c.name)}</b><div className="small muted">{displayValue(c.agreementType || "Managed Services")} · {displayValue(c.billingCycle || "Monthly")}</div></> }, { key: "plan", label: "Plan" },
                            { key: "includedHours", label: "Hours incl." },
                            { key: "devices", label: "Devices", className: "right" }, { key: "pricePerDevice", label: "Per device", render: (c) => money(c.pricePerDevice, c.currency) },
                            { key: "monthlyFee", label: "Fee", render: (c) => money(c.monthlyFee, c.currency) },
@@ -98,7 +99,7 @@ function NewContract({ onClose }: { onClose: () => void }) {
       </div>
       <label className="field" style={{ marginTop: 10 }}>Covered work types (blank = everything)<input value={form.coveredWorkTypes} onChange={(e) => setForm({ ...form, coveredWorkTypes: e.target.value })} /></label>
       <label className="small" style={{ display: "block", marginTop: 6 }}><input type="checkbox" checked={form.coversAfterHours} onChange={(e) => setForm({ ...form, coversAfterHours: e.target.checked })} /> Covers after-hours work (otherwise billed at 1.5×)</label>
-      <h3 style={{ marginTop: 14 }}>SLA (hours, business hours {form.businessStart}:00–{form.businessEnd}:00; P1 runs 24×7)</h3>
+      <h3 style={{ marginTop: 14 }}>SLA (hours, business hours {displayValue(form.businessStart)}:00–{displayValue(form.businessEnd)}:00; P1 runs 24×7)</h3>
       <div className="form-grid">
         {["P1", "P2", "P3", "P4"].map((p) => num(`respond${p}`, `${p} respond`, "0.25"))}
         {["P1", "P2", "P3", "P4"].map((p) => num(`resolve${p}`, `${p} resolve`, "1"))}
@@ -122,7 +123,7 @@ function NewContract({ onClose }: { onClose: () => void }) {
 
 
 function Renewals() {
-  const { data } = useData<any[]>("billing/renewals", { days: 90 });
+  const { data } = useListData<any>("billing/renewals", { days: 90 });
   if (!data?.length) return null;
   return (
     <div className="card" style={{ marginTop: 14 }}>

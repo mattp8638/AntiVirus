@@ -1,13 +1,14 @@
+import { displayValue } from "../../components/DisplayValue";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { ago, api } from "../../api";
 import { useApp } from "../../app-context";
-import { PageHead, Modal, Pill, Sev, Stat, Table, Tabs, TenantSelect, useAction, useData } from "../../components/ui";
+import { PageHead, Modal, Pill, Sev, Stat, Table, Tabs, TenantSelect, useAction, useData, useListData } from "../../components/ui";
 
 export default function Monitoring() {
   const { tenantId, can } = useApp();
   const [tab, setTab] = useState("Triggered");
-  const { data: active, reload: reloadActive } = useData<any[]>("rmm/monitoring", { tenant_id: tenantId });
+  const { data: active, reload: reloadActive } = useListData<any>("rmm/monitoring", { tenant_id: tenantId });
   const { data: overview } = useData<any>("rmm/overview", { tenant_id: tenantId });
   const { data: conditions, reload } = useData<any>("rmm/conditions");
   const [editing, setEditing] = useState<any>(null);
@@ -26,9 +27,9 @@ export default function Monitoring() {
         <div className="card">
           <Table rows={active} empty="Everything is healthy."
                  columns={[{ key: "severity", label: "Sev", render: (r) => <Sev level={r.severity} /> },
-                           { key: "hostname", label: "Device", render: (r) => <Link to={`/devices/${r.deviceId}`}>{r.hostname}</Link> },
+                           { key: "hostname", label: "Device", render: (r) => <Link to={`/devices/${r.deviceId}`}>{displayValue(r.hostname)}</Link> },
                            { key: "account", label: "Customer" },
-                           { key: "condition", label: "Condition", render: (r) => <><b>{r.condition}</b><div className="small muted">{r.message}</div></> },
+                           { key: "condition", label: "Condition", render: (r) => <><b>{displayValue(r.condition)}</b><div className="small muted">{displayValue(r.message)}</div></> },
                            { key: "since", label: "Since", render: (r) => ago(r.since) },
                            { key: "ticketId", label: "Ticket", render: (r) => r.ticketId ? <Link to={`/tickets/${r.ticketId}`}>open</Link> : "—" }]} />
           <div className="row" style={{ marginTop: 8 }}><button className="small" onClick={reloadActive}>Refresh</button></div>
@@ -36,8 +37,8 @@ export default function Monitoring() {
       ) : (
         <div className="card">
           <Table rows={conditions?.conditions} onRow={setEditing} empty="No conditions."
-                 columns={[{ key: "name", label: "Condition", render: (c) => <b>{c.name}</b> },
-                           { key: "metric", label: "Rule", render: (c) => <span className="small">{conditions?.metrics[c.metric]} {c.operator} {c.threshold}{c.target ? ` (${c.target})` : ""} for {c.durationMinutes} min</span> },
+                 columns={[{ key: "name", label: "Condition", render: (c) => <b>{displayValue(c.name)}</b> },
+                           { key: "metric", label: "Rule", render: (c) => <span className="small">{displayValue(conditions?.metrics[c.metric])} {displayValue(c.operator)} {displayValue(c.threshold)}{c.target ? ` (${c.target})` : ""} for {displayValue(c.durationMinutes)} min</span> },
                            { key: "severity", label: "Sev", render: (c) => <Sev level={c.severity} /> },
                            { key: "actions", label: "Then", render: (c) => <span className="small">{["alert", ...c.actions.map((a: any) => a.type)].join(", ")}</span> },
                            { key: "scope", label: "Applies to", render: (c) => <span className="small">{c.tenantId ? "one customer" : "everyone"}{c.scope?.platforms?.length ? ` · ${c.scope.platforms.join("/")}` : ""}{c.scope?.tags?.length ? ` · tag ${c.scope.tags.join(",")}` : ""}</span> },
@@ -52,7 +53,7 @@ export default function Monitoring() {
 
 function ConditionEditor({ condition, metrics, onClose }: { condition: any; metrics: Record<string, string>; onClose: () => void }) {
   const [form, setForm] = useState<any>({ ...condition, scope: { ...condition.scope }, actions: [...condition.actions] });
-  const { data: scripts } = useData<any[]>("rmm/scripts");
+  const { data: scripts } = useListData<any>("rmm/scripts");
   const { run, busy } = useAction();
   const needsTarget = ["service_stopped", "process_missing", "disk_free_percent", "disk_free_gb", "pending_patches"].includes(form.metric);
   const save = async () => {
@@ -90,7 +91,7 @@ function ConditionEditor({ condition, metrics, onClose }: { condition: any; metr
           <select value={a.type} onChange={(e) => setAction(i, { type: e.target.value })}>
             <option value="ticket">Open a ticket</option><option value="script">Run a self-heal script</option><option value="email">Email someone</option><option value="webhook">Send webhooks</option></select>
           {a.type === "script" && <select value={a.scriptId || ""} onChange={(e) => setAction(i, { scriptId: e.target.value })} style={{ flex: 1 }}>
-            <option value="">Choose script</option>{scripts?.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.language})</option>)}</select>}
+            <option value="">Choose script</option>{scripts?.map((s) => <option key={s.id} value={s.id}>{displayValue(s.name)} ({displayValue(s.language)})</option>)}</select>}
           {a.type === "email" && <input placeholder="alerts@yourmsp.com" value={a.to || ""} onChange={(e) => setAction(i, { to: e.target.value })} style={{ flex: 1 }} />}
           {a.type === "ticket" && <input placeholder="Board (default Service Desk)" value={a.board || ""} onChange={(e) => setAction(i, { board: e.target.value })} style={{ flex: 1 }} />}
           <button className="small ghost" onClick={() => setForm({ ...form, actions: form.actions.filter((_: any, j: number) => j !== i) })}>✕</button>

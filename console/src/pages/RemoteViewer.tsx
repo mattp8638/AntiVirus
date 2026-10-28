@@ -1,3 +1,4 @@
+import { displayValue } from "../components/DisplayValue";
 // Pop-out remote session window: desktop, terminal, files, processes, services and chat.
 // Protocol: docs/REMOTE_PROTOCOL.md. Opened with window.open("/remote/<sessionId>").
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -6,6 +7,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { api } from "../api";
+import { cadResult, type RemoteFeedback } from "../remote-actions";
 
 type Tab = "Desktop" | "Terminal" | "Files" | "Processes" | "Services" | "Chat";
 type Msg = { ch: string; t: string; [key: string]: any };
@@ -72,6 +74,11 @@ export default function RemoteViewer() {
   const [viewOnly, setViewOnly] = useState(false);
   const [blank, setBlank] = useState(false);
   const [showEnd, setShowEnd] = useState(false);
+  const [feedback, setFeedback] = useState<RemoteFeedback | null>(null);
+  const [sendingCad, setSendingCad] = useState(false);
+  const cadPending = useRef<string | null>(null);
+  const cadTimer = useRef(0);
+  const cadSequence = useRef(0);
   const [chat, setChat] = useState<{ from: string; text: string; at: string }[]>([]);
   const [unreadChat, setUnreadChat] = useState(0);
   const ws = useRef<WebSocket | null>(null);
@@ -95,9 +102,20 @@ export default function RemoteViewer() {
     listeners.current.set(key, fn);
     return () => { listeners.current.delete(key); };
   }, []);
+  const finishCad = useCallback(() => {
+    window.clearTimeout(cadTimer.current);
+    cadPending.current = null;
+    setSendingCad(false);
+  }, []);
+  useEffect(() => () => {
+    window.clearTimeout(cadTimer.current);
+    cadPending.current = null;
+  }, []);
 
   // ------------------------------------------------------------------ connect
   useEffect(() => {
+    finishCad();
+    setFeedback(null);
     let closed = false;
     let pingTimer = 0;
     let fpsTimer = 0;
@@ -131,6 +149,7 @@ export default function RemoteViewer() {
         };
         socket.onclose = (event) => {
           if (closed) return;
+          finishCad();
           setState((s) => (s === "ended" ? s : "ended"));
           setStatus((s) => (event.reason ? `Disconnected: ${event.reason}` : s.startsWith("Session ended") ? s : "Disconnected from the relay."));
         };
@@ -146,6 +165,8 @@ export default function RemoteViewer() {
       closed = true;
       window.clearInterval(pingTimer);
       window.clearInterval(fpsTimer);
+      window.clearTimeout(cadTimer.current);
+      cadPending.current = null;
       ws.current?.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -178,6 +199,12 @@ export default function RemoteViewer() {
   const startScreen = useCallback(() => send({ ch: "screen", t: "start", quality, fps: maxFps, monitor }), [send, quality, maxFps, monitor]);
 
   const handleText = (m: Msg) => {
+    const result = cadResult(m, cadPending.current);
+    if (result) {
+      finishCad();
+      setFeedback(result);
+      return;
+    }
     if (m.ch === "sys") {
       switch (m.t) {
         case "hello":
@@ -206,9 +233,11 @@ export default function RemoteViewer() {
           return;
         case "error":
           setStatus(`Device: ${m.message}`);
+          setFeedback({ tone: "error", message: `Device: ${m.message}` });
           return;
         case "notice":
           setStatus(m.message);
+          setFeedback({ tone: "notice", message: m.message });
           return;
         case "agent.disconnected":
         case "end":
@@ -341,6 +370,24 @@ export default function RemoteViewer() {
   };
 
   const caps: string[] = info?.capabilities || [];
+  const requestCad = () => {
+    if (viewOnly || state !== "live" || cadPending.current) return;
+    if (ws.current?.readyState !== WebSocket.OPEN) {
+      setFeedback({ tone: "error", message: "The remote connection is unavailable. Reconnect before sending Ctrl+Alt+Del." });
+      return;
+    }
+    releaseAll();
+    const req = `cad-${Date.now()}-${++cadSequence.current}`;
+    cadPending.current = req;
+    setSendingCad(true);
+    setFeedback({ tone: "notice", message: "Requesting Ctrl+Alt+Del from the Windows service…" });
+    send({ ch: "input", t: "cad", req });
+    cadTimer.current = window.setTimeout(() => {
+      if (cadPending.current !== req) return;
+      finishCad();
+      setFeedback({ tone: "error", message: "The Windows agent did not acknowledge Ctrl+Alt+Del. Update the Windows agent, including its remote helper, and reconnect." });
+    }, 10000);
+  };
   const tabs: Tab[] = (["Desktop", "Terminal", "Files", "Processes", "Services", "Chat"] as Tab[]).filter((t) => {
     if (t === "Terminal") return hello?.allowTerminal !== false && (!info || caps.includes("terminal"));
     if (t === "Files") return hello?.allowFileTransfer !== false && (!info || caps.includes("files"));
@@ -360,8 +407,8 @@ export default function RemoteViewer() {
       <header className="rv-bar">
         <div className="rv-title">
           <span className={`dot ${state === "live" ? "on" : "off"}`} />
-          <b>{session?.hostname || "Remote session"}</b>
-          <span className="muted small">{info?.user ? `${info.user} · ` : ""}{session?.tenantName}</span>
+          <b>{displayValue(session?.hostname || "Remote session")}</b>
+          <span className="muted small">{info?.user ? `${info.user} · ` : ""}{displayValue(session?.tenantName)}</span>
           {session?.recorded && <span className="badge tone-bad" title="Screen and terminal output are recorded by policy">● recording</span>}
         </div>
         <nav className="rv-tabs">
@@ -373,11 +420,11 @@ export default function RemoteViewer() {
         </nav>
         {tab === "Desktop" && state === "live" && (
           <div className="rv-tools">
-            {caps.includes("cad") && <button title="Send Ctrl+Alt+Del" disabled={viewOnly} onClick={() => send({ ch: "input", t: "cad" })}>Ctrl+Alt+Del</button>}
+            {caps.includes("cad") && <button title="Send Ctrl+Alt+Del" disabled={viewOnly || sendingCad} onClick={requestCad}>{sendingCad ? "Requesting…" : "Ctrl+Alt+Del"}</button>}
             <button title="Paste your clipboard as keystrokes" disabled={viewOnly} onClick={sendClipboard}>Send clipboard</button>
             <select title="Monitor" value={monitor} onChange={(e) => changeScreen({ monitor: Number(e.target.value) })}>
               {(info?.monitors?.length ? info.monitors : [{ index: 0 }]).map((m: any) => (
-                <option key={m.index} value={m.index}>Screen {m.index + 1}{m.primary ? " (primary)" : ""}</option>
+                <option key={m.index} value={m.index}>Screen {displayValue(m.index + 1)}{m.primary ? " (primary)" : ""}</option>
               ))}
               {info?.monitors?.length > 1 && String(info?.os).startsWith("windows") && <option value={-1}>All screens</option>}
             </select>
@@ -403,6 +450,11 @@ export default function RemoteViewer() {
         {state !== "ended" ? <button className="danger" onClick={() => setShowEnd(true)}>End session</button>
                            : <button onClick={() => window.close()}>Close window</button>}
       </header>
+
+      {state === "live" && feedback && <div className={`rv-feedback ${feedback.tone}`} role={feedback.tone === "notice" ? "status" : "alert"}>
+        <span>{feedback.message}</span>
+        <button aria-label="Dismiss remote action message" onClick={() => setFeedback(null)}>Dismiss</button>
+      </div>}
 
       <main className="rv-body">
         {state !== "live" && (
@@ -620,7 +672,7 @@ function FilesPane({ send, sendBinary, on, binaryListeners, home }: {
               <tbody>
                 {entries.map((entry) => (
                   <tr key={entry.name} className="clickable" onDoubleClick={() => (entry.dir ? list(join(entry.name)) : download(entry))}>
-                    <td>{entry.dir ? "📁" : "📄"} {entry.name}</td>
+                    <td>{entry.dir ? "📁" : "📄"} {displayValue(entry.name)}</td>
                     <td>{entry.dir ? "" : fmtSize(entry.size)}</td>
                     <td className="small muted">{entry.mtime ? new Date(entry.mtime * 1000).toLocaleString() : ""}</td>
                     <td style={{ whiteSpace: "nowrap" }}>
@@ -695,7 +747,7 @@ function ProcessesPane({ send, on }: { send: (m: Msg) => void; on: (k: string, f
           <tbody>
             {rows.map((p) => (
               <tr key={p.pid}>
-                <td title={p.path}>{p.name}</td><td className="mono">{p.pid}</td><td className="small">{p.user}</td>
+                <td title={p.path}>{displayValue(p.name)}</td><td className="mono">{displayValue(p.pid)}</td><td className="small">{displayValue(p.user)}</td>
                 <td>{Number(p.cpu).toFixed(1)}</td><td>{Number(p.memMb).toFixed(0)} MB</td>
                 <td><button className="small danger" onClick={() => kill(p)}>End</button></td>
               </tr>
@@ -729,9 +781,9 @@ function ServicesPane({ send, on }: { send: (m: Msg) => void; on: (k: string, fn
           <tbody>
             {rows.map((s) => (
               <tr key={s.name}>
-                <td>{s.display || s.name}</td><td className="mono small">{s.name}</td>
-                <td><span className={`badge tone-${s.status === "running" ? "good" : s.status === "failed" ? "bad" : "muted"}`}>{s.status}</span></td>
-                <td className="small">{s.startType}</td>
+                <td>{displayValue(s.display || s.name)}</td><td className="mono small">{displayValue(s.name)}</td>
+                <td><span className={`badge tone-${s.status === "running" ? "good" : s.status === "failed" ? "bad" : "muted"}`}>{displayValue(s.status)}</span></td>
+                <td className="small">{displayValue(s.startType)}</td>
                 <td style={{ whiteSpace: "nowrap" }}>
                   <button className="small" onClick={() => control(s, "start")} disabled={s.status === "running"}>Start</button>{" "}
                   <button className="small" onClick={() => control(s, "stop")} disabled={s.status !== "running"}>Stop</button>{" "}

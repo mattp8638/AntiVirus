@@ -1,3 +1,4 @@
+import { displayValue } from "../components/DisplayValue";
 import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -90,7 +91,7 @@ export function LocationTab({ device, onChanged }: { device: any; onChanged: () 
     <>
       {lost?.enabled && <div className="lost-banner" role="status">
         <b>Lost mode is on</b> since {lost.since ? fmtTime(lost.since) : "now"}{lost.by ? ` (by ${lost.by})` : ""}. The phone is locked, shows
-        "{lost.message}"{lost.phone ? ` and ${lost.phone}` : ""}, and reports its location every 5 minutes.
+        "{displayValue(lost.message)}"{lost.phone ? ` and ${lost.phone}` : ""}, and reports its location every 5 minutes.
         {can("respond") && <button className="small" disabled={busy} onClick={() => setLost(false)}>Turn off</button>}
       </div>}
       <div className="grid side">
@@ -108,9 +109,9 @@ export function LocationTab({ device, onChanged }: { device: any; onChanged: () 
             <h3>Last known location</h3>
             {!latest ? <p className="muted small">Not reported yet.</p> : <dl className="kv compact">
               <dt>When</dt><dd>{ago(latest.at)} <span className="muted small">{fmtTime(latest.at)}</span></dd>
-              <dt>Accuracy</dt><dd>{latest.accuracy ? `± ${km(latest.accuracy)}` : "—"} <span className="muted small">{latest.source}</span></dd>
-              <dt>Coordinates</dt><dd className="mono small">{latest.lat.toFixed(5)}, {latest.lon.toFixed(5)}</dd>
-              {typeof latest.battery === "number" && <><dt>Battery</dt><dd>{latest.battery}%</dd></>}
+              <dt>Accuracy</dt><dd>{latest.accuracy ? `± ${km(latest.accuracy)}` : "—"} <span className="muted small">{displayValue(latest.source)}</span></dd>
+              <dt>Coordinates</dt><dd className="mono small">{displayValue(latest.lat.toFixed(5))}, {displayValue(latest.lon.toFixed(5))}</dd>
+              {typeof latest.battery === "number" && <><dt>Battery</dt><dd>{displayValue(latest.battery)}%</dd></>}
               {data.travelledMeters > 0 && <><dt>Moved</dt><dd>{km(data.travelledMeters)} in {RANGES.find((r) => r.hours === hours)?.label}</dd></>}
             </dl>}
             {latest && <a className="btn small" style={{ marginTop: 10 }} href={mapsLink} target="_blank" rel="noreferrer">Open in Maps / directions</a>}
@@ -144,7 +145,7 @@ export function LocationTab({ device, onChanged }: { device: any; onChanged: () 
       {erasing && <Modal title={`Erase ${device.hostname}`} onClose={() => { if (!busy) setErasing(false); }}>
         <p><b>This factory-resets the phone.</b> Every app, photo and file on it is deleted, and it stops reporting to Fenrir, so you can no longer locate it. It cannot be undone.</p>
         <p className="small muted">Use it when the phone is not coming back. You'll be asked for your password again.</p>
-        <label className="field">Type {device.hostname} to confirm<input value={eraseName} onChange={(e) => setEraseName(e.target.value)} /></label>
+        <label className="field">Type {displayValue(device.hostname)} to confirm<input value={eraseName} onChange={(e) => setEraseName(e.target.value)} /></label>
         <div className="foot"><button onClick={() => setErasing(false)}>Cancel</button>
           <button className="danger" disabled={busy || eraseName !== device.hostname} onClick={async () => { await send("device.wipe", "Erase"); setErasing(false); }}>Erase the phone</button></div>
       </Modal>}

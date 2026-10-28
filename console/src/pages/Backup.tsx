@@ -1,3 +1,4 @@
+import { displayValue } from "../components/DisplayValue";
 import { useEffect, useState } from "react";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
@@ -37,7 +38,7 @@ export default function Backup() {
       onSave={({tenantId:_,...body})=>api("backup/plans/"+selected.id+"/runs",{body})} onClose={close}/>}
     {mode==="exercise"&&selected&&<RecordEditor title="Request recovery exercise" tenant={false} fields={[{key:"target",label:"Isolated test target and scope",required:true}]}
       onSave={({target})=>api("backup/plans/"+selected.id+"/exercises",{body:{target}})} onClose={close}/>}
-    {mode==="review"&&exercise&&<Modal title="Recovery exercise" onClose={close}><p>{exercise.target}</p><p>Status: {exercise.status}</p><pre style={{whiteSpace:"pre-wrap"}}>{exercise.evidence}</pre>
+    {mode==="review"&&exercise&&<Modal title="Recovery exercise" onClose={close}><p>{displayValue(exercise.target)}</p><p>Status: {displayValue(exercise.status)}</p><pre style={{whiteSpace:"pre-wrap"}}>{displayValue(exercise.evidence)}</pre>
       {can("configure")&&["requested","approved"].includes(exercise.status)&&<button onClick={()=>setMode("transition")}>Record next step</button>}</Modal>}
     {mode==="transition"&&exercise&&<RecordEditor title="Update recovery exercise" tenant={false} fields={[{key:"status",label:"Next step",type:"select",options:exercise.status==="requested"?["approved","cancelled"]:["completed","failed","cancelled"],required:true},{key:"evidence",label:"Validation evidence (required when finished)",type:"textarea"},{key:"durationMinutes",label:"Actual duration in minutes",type:"number",value:0}]}
       onSave={({tenantId:_,...body})=>api("backup/exercises/"+exercise.id,{method:"PATCH",body})} onClose={close}/>}
