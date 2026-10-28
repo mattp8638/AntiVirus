@@ -37,3 +37,7 @@ deploy/auto-update.env
 # Code-signing certificate and password (server only)
 deploy/signing/*
 !deploy/signing/README.md
+.venv/
+
+.venv/
+.venv*
