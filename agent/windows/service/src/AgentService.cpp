@@ -43,6 +43,7 @@
 
 #include "EvidenceRecorder.h"
 #include "ContextAwareness.h"
+#include "CommandCancellation.h"
 #include "CryptoUtils.h"
 #include "DestinationEventRecorder.h"
 #include "DestinationRuntimeStore.h"
@@ -1868,6 +1869,17 @@ void AgentService::PollAndExecuteCommands(const int cycle) {
   if (state_.deviceId.empty()) {
     return;
   }
+  // Retirement revokes general polling credentials, so replay stop receipts
+  // through their command-scoped grant before asking for any more work.
+  try {
+    RuntimeDatabase database(config_.runtimeDatabasePath);
+    for (const auto& [id, result] : database.UnacknowledgedCancellations()) {
+      try {
+        controlPlaneClient_->CompleteCommand(state_, id, L"cancelled", result);
+        database.UpdateCommandJournalStatus(id, L"cancelled_ack", result, L"");
+      } catch (const std::exception&) { /* one unavailable receipt must not starve the rest */ }
+    }
+  } catch (const std::exception&) { /* durable receipts stay queued for reconnect */ }
 
   bool attemptedRecovery = false;
 
@@ -1920,13 +1932,14 @@ void AgentService::ExecuteJournaledCommand(const RemoteCommand& command, const A
     std::wstring savedStatus;
     std::wstring savedResult;
     if (commandJournalStore_->LoadReceipt(command.commandId, savedStatus, savedResult)) {
+      if (savedStatus == L"cancelled_ack") return;
       if (savedStatus == L"started" || savedStatus == L"polled") {
         savedStatus = L"failed";
         savedResult = L"{\"outcomeUncertain\":true,\"error\":\"Agent stopped while command execution was in progress; manual review required. No automatic replay.\"}";
         commandJournalStore_->RecordFailed(command, savedResult,
                                             L"Interrupted command; outcome uncertain");
       }
-      if (savedStatus == L"completed" || savedStatus == L"failed") {
+      if (savedStatus == L"completed" || savedStatus == L"failed" || savedStatus == L"cancelled") {
         try {
           controlPlaneClient_->CompleteCommand(identity, command.commandId, savedStatus, savedResult);
         } catch (const std::exception& error) {
@@ -1948,7 +1961,13 @@ void AgentService::ExecuteJournaledCommand(const RemoteCommand& command, const A
   std::wstring completionStatus = L"completed";
   std::wstring failureReason;
   try {
+    command_control::Monitor cancellation([&] { return controlPlaneClient_->CommandStopRequested(identity, command.commandId); });
+    command_control::Check();
     resultJson = ExecuteCommand(command);
+    command_control::Check();
+  } catch (const command_control::Cancelled& error) {
+    completionStatus = L"cancelled";
+    resultJson = L"{\"cancelled\":true,\"stopConfirmed\":true}";
   } catch (const rmm::CommandFailed& failed) {
     completionStatus = L"failed";
     failureReason = Utf8ToWide(failed.what());
@@ -1968,6 +1987,8 @@ void AgentService::ExecuteJournaledCommand(const RemoteCommand& command, const A
   try {
     if (completionStatus == L"completed") {
       commandJournalStore_->RecordCompleted(command, resultJson);
+    } else if (completionStatus == L"cancelled") {
+      commandJournalStore_->RecordCancelled(command, resultJson);
     } else {
       commandJournalStore_->RecordFailed(command, resultJson, failureReason);
     }
@@ -1980,6 +2001,8 @@ void AgentService::ExecuteJournaledCommand(const RemoteCommand& command, const A
 
   try {
     controlPlaneClient_->CompleteCommand(identity, command.commandId, completionStatus, resultJson);
+    if (completionStatus == L"cancelled")
+      RuntimeDatabase(config_.runtimeDatabasePath).UpdateCommandJournalStatus(command.commandId, L"cancelled_ack", resultJson, L"");
   } catch (const std::exception& error) {
     // The saved outcome will be re-sent on the next poll; never rerun.
     std::wcerr << L"Command completion not delivered; saved for reconnect: " <<
@@ -2016,6 +2039,7 @@ void AgentService::InteractiveCommandLoop() {
 }
 
 std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
+  command_control::Check();
   if (command.type == L"device.isolate") {
     return ExecuteIsolationCommand(command, true);
   }
@@ -2286,6 +2310,24 @@ std::wstring AgentService::ExecuteOnDemandScan(const RemoteCommand& command, con
   const auto scope = full ? std::wstring(L"full") : std::wstring(L"quick");
   auto targets = full ? BuildFullScanTargets(ScanNetworkDrives()) : BuildQuickScanTargets();
   const auto count = targets.size();
+  if (command_control::current) {
+    // Remote scans stay attached to their command until they finish, so the
+    // cancellation monitor remains alive. Local dashboard scans stay async.
+    bool expected = false;
+    if (!backgroundScanBusy_->compare_exchange_strong(expected, true))
+      throw std::runtime_error("Another scan is already running on this device");
+    struct BusyGuard { std::shared_ptr<std::atomic_bool> busy; ~BusyGuard() { busy->store(false); } } guard{backgroundScanBusy_};
+    LocalScanExecutionOptions options{};
+    options.source = L"command." + command.commandId;
+    options.queueTelemetry = true;
+    options.applyRemediation = true;
+    const auto result = ExecuteLocalScan(config_, state_, targets, options, [](const LocalScanProgressUpdate&) {
+      command_control::Check();
+    });
+    command_control::Check();
+    return L"{\"scope\":\"" + scope + L"\",\"targetsScanned\":" + std::to_wstring(result.targetCount) +
+           L",\"findingCount\":" + std::to_wstring(result.findings.size()) + L"}";
+  }
   if (!StartBackgroundScan(L"scan." + scope, scope, L"command." + command.commandId, std::move(targets))) {
     throw std::runtime_error("Another scan is already running on this device; try again when it finishes");
   }
@@ -2316,11 +2358,12 @@ std::wstring AgentService::ExecuteTargetedScan(const RemoteCommand& command) {
     throw std::runtime_error("Targeted scan path does not exist");
   }
 
-  auto findings = ScanTargets({targetPath}, policy_);
+  auto findings = ScanTargets({targetPath}, policy_, [](const auto&) { command_control::Check(); });
   QuarantineStore quarantineStore(config_.quarantineRootPath, config_.runtimeDatabasePath);
   EvidenceRecorder evidenceRecorder(config_.evidenceRootPath, config_.runtimeDatabasePath);
 
   for (auto& finding : findings) {
+    command_control::Check();
     if (finding.verdict.disposition == VerdictDisposition::Quarantine) {
       const auto quarantineResult = quarantineStore.QuarantineFile(finding);
       if (quarantineResult.success) {

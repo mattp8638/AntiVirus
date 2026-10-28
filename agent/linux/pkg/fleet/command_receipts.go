@@ -43,14 +43,14 @@ func (a *Agent) loadCommandReceipt(id string) (commandReceipt, bool, error) {
 	if err := json.Unmarshal(data, &r); err != nil {
 		return commandReceipt{}, false, err
 	}
-	if r.Status != "started" && r.Status != "completed" && r.Status != "failed" {
+	if r.Status != "started" && r.Status != "completed" && r.Status != "failed" && r.Status != "cancelled" && r.Status != "cancelled_ack" {
 		return commandReceipt{}, false, errors.New("invalid stored command state")
 	}
 	return r, true, nil
 }
 
 func (a *Agent) saveCommandReceipt(id, status string, result map[string]interface{}) error {
-	if status != "started" && status != "completed" && status != "failed" {
+	if status != "started" && status != "completed" && status != "failed" && status != "cancelled" && status != "cancelled_ack" {
 		return errors.New("invalid command receipt status")
 	}
 	path, err := a.receiptPath(id)

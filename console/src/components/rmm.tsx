@@ -125,30 +125,37 @@ export function JobStatus({ job }: { job: any }) {
   const s = job.summary || {};
   return (
     <span className="row" style={{ gap: 4 }}>
-      <Pill value={job.status} tone={job.status === "completed" ? "good" : job.status === "running" ? "blue" : job.status === "partial" ? "warn" : job.status === "cancelled" ? "muted" : "bad"} />
-      <span className="small muted">{displayValue(s.completed || 0)}✓ {displayValue(s.failed || 0)}✗ {displayValue((s.pending || 0) + (s.dispatched || 0))} waiting{s.skipped ? ` · ${s.skipped} skipped` : ""}</span>
+      <Pill value={job.status === "cancelling" ? "Stopping" : job.status} tone={job.status === "completed" ? "good" : job.status === "running" ? "blue" : ["partial", "cancelling"].includes(job.status) ? "warn" : job.status === "cancelled" ? "muted" : "bad"} />
+      <span className="small muted">{displayValue(s.completed || 0)}✓ {displayValue(s.failed || 0)}✗ {displayValue((s.pending || 0) + (s.dispatched || 0))} waiting{s.cancelling ? ` · ${s.cancelling} awaiting stop acknowledgement` : ""}{s.skipped ? ` · ${s.skipped} skipped` : ""}</span>
     </span>
   );
 }
 
 export function JobDetail({ jobId, onClose }: { jobId: string; onClose: () => void }) {
+  const { can } = useApp();
   const { data, reload } = useData<any>(`rmm/jobs/${jobId}`);
-  const running = data?.status === "running";
+  const running = ["running", "cancelling"].includes(data?.status);
   useEffect(() => {
     if (!running) return;
     const timer = window.setInterval(reload, 2000);
     return () => window.clearInterval(timer);
   }, [running, reload]);
   const [open, setOpen] = useState<string | null>(null);
-  const { run } = useAction();
+  const { run, busy } = useAction();
   if (!data) return null;
   return (
     <Modal title={data.name} onClose={onClose}
-           footer={<>{data.status === "running" && <button onClick={async () => { await run(() => api(`rmm/jobs/${jobId}/cancel`, { method: "POST" }), "Pending actions cancelled"); reload(); }}>Cancel pending</button>}
+           footer={<>{data.status === "running" && can("respond") && <button disabled={busy} onClick={async () => { await run(() => api(`rmm/jobs/${jobId}/cancel`, { method: "POST" }), "Queued actions cancelled; stop requested for running work"); reload(); }}>Stop job</button>}
+                     {can("respond") && <button className="danger" disabled={busy} onClick={async () => {
+                       if (confirm("Remove this job and stop its outstanding work? Completed changes and audit history are retained.")) {
+                         if (await run(() => api(`rmm/jobs/${jobId}`, { method: "DELETE" }), "Job removed; outstanding work cancelled or stopping")) onClose();
+                       }
+                     }}>Remove job</button>}
                      {["failed", "partial"].includes(data.status) && <button title="Run again on the devices where it failed" onClick={async () => { await run(() => api(`rmm/jobs/${jobId}/retry`, { method: "POST" }), "Retry queued"); reload(); }}>Retry failed devices</button>}
                    <button onClick={reload}>Refresh</button><button className="primary" onClick={onClose}>Close</button></>}>
       <p className="small muted">{displayValue(data.createdBy)} · {fmtTime(data.createdAt)} · {displayValue(data.commandType)}{data.script ? ` · ${data.script.language}` : ""}</p>
       <JobStatus job={data} />
+      {data.status === "cancelling" && <p className="small muted">Stop requested. The endpoint must acknowledge that its work has stopped. Offline endpoints and older agents may leave the stop unconfirmed.</p>}
       <div style={{ marginTop: 12 }}>
         {data.results.map((r: any) => (
           <div key={r.deviceId} className="card" style={{ padding: 10, marginTop: 8 }}>

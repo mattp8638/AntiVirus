@@ -239,11 +239,13 @@ def _maybe_close_recovered_monitor_ticket(db: Session, ticket: Ticket) -> None:
 
 def refresh_job(db: Session, job_id: str) -> None:
     job = db.get(Job, job_id)
-    if job is None or job.status not in {"running"}:
+    if job is None or job.status not in {"running", "cancelling"}:
         return
     summary = job_summary(db, job)
-    open_count = summary.get("pending", 0) + summary.get("dispatched", 0)
+    open_count = summary.get("pending", 0) + summary.get("dispatched", 0) + summary.get("cancelling", 0)
     if open_count:
+        if summary.get("cancelling", 0):
+            job.status = "cancelling"
         return
     failed = summary.get("failed", 0) + summary.get("expired", 0)
     done, cancelled = summary.get("completed", 0), summary.get("cancelled", 0)
@@ -838,6 +840,10 @@ def next_run(schedule: dict, after: datetime) -> datetime | None:
 def run_scheduled_task(db: Session, task: ScheduledTask, actor: str | None = None) -> list[Job]:
     from .deps import tenant_subtree
 
+    task = db.execute(select(ScheduledTask).where(ScheduledTask.id == task.id).with_for_update()
+                      .execution_options(populate_existing=True)).scalar_one_or_none()
+    if task is None:
+        return []  # deletion won the race with the scheduler
     allowed = tenant_subtree(db, task.tenant_id)
     devices = resolve_targets(db, allowed, task.targets or {})
     jobs: list[Job] = []
@@ -868,7 +874,8 @@ def run_scheduled_task(db: Session, task: ScheduledTask, actor: str | None = Non
 def run_due_tasks(db: Session, now: datetime | None = None) -> int:
     now = now or utcnow()
     count = 0
-    for task in db.execute(select(ScheduledTask).where(ScheduledTask.enabled.is_(True), ScheduledTask.next_run_at <= now)).scalars():
+    for task in db.execute(select(ScheduledTask).where(ScheduledTask.enabled.is_(True), ScheduledTask.next_run_at <= now)
+                            .with_for_update(skip_locked=True).execution_options(populate_existing=True)).scalars():
         run_scheduled_task(db, task)
         task.next_run_at = next_run(task.schedule or {}, now)
         if task.next_run_at is None:

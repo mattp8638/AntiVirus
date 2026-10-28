@@ -25,7 +25,7 @@ Hosting, domains, publicly trusted code-signing certificates and optional provid
 | Area | Included workflows |
 |---|---|
 | Endpoint security | Windows agent, AMSI integration, detection rules, static malware model, alerts, incidents, response, quarantine and DNS protection. Prevention/efficacy limits remain tracked in the parity documents. |
-| RMM | Inventory, metrics, monitoring, scripts, jobs, patching, software deployment, terminal, files and browser remote control. Capabilities differ by endpoint OS. |
+| RMM | Inventory, metrics, monitoring, scripts, jobs, patching, software deployment, terminal, files and browser remote control. Capabilities differ by endpoint OS. See [stopping commands and removing jobs](docs/COMMAND_CANCELLATION.md). |
 | Microsoft 365 | Customer connections, directory/licence views, security snapshots and reviewed administration. Graph permissions, admin consent and any necessary Microsoft licences are still required. |
 | Exposure | Vulnerability inventory, CVE/EPSS/KEV intelligence, scan ingestion, external assets and remediation tracking. |
 | MSP operations | Customers, service boards, tickets, dispatch, time, projects, CRM, quotes, agreements, billing and client portal. |

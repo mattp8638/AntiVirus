@@ -1,4 +1,5 @@
 #include "ScanEngine.h"
+#include "CommandCancellation.h"
 
 #include <windows.h>
 #include <softpub.h>
@@ -1805,6 +1806,7 @@ std::vector<ScanFinding> ScanTargets(const std::vector<std::filesystem::path>& t
                                      const std::vector<std::filesystem::path>& excludedPaths) {
   std::vector<std::filesystem::path> files;
   for (const auto& target : targets) {
+    command_control::Check();
     std::error_code error;
     if (IsExcludedPath(target, excludedPaths)) {
       continue;
@@ -1823,6 +1825,7 @@ std::vector<ScanFinding> ScanTargets(const std::vector<std::filesystem::path>& t
     for (std::filesystem::recursive_directory_iterator iterator(
              target, std::filesystem::directory_options::skip_permission_denied, error);
          iterator != std::filesystem::recursive_directory_iterator(); iterator.increment(error)) {
+      command_control::Check();
       if (error) {
         error.clear();
         continue;

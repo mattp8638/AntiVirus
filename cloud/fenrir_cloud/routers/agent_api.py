@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from .. import rollouts, audit, endpoint_health, intel, psa, rmm, services
 from ..config import get_settings
 from ..db import get_db
-from ..deps import current_device, current_device_by_key
+from ..deps import current_command_device, current_device, current_device_by_key
 from ..detection import ingest
 from ..models import AgentRelease, Command, Device, EnrollmentToken, Event, Tenant, Ticket, utcnow
 from ..security import digest, new_secret
@@ -184,6 +184,7 @@ def heartbeat(body: dict = Body(default={}), device: Device = Depends(current_de
     if isinstance(body.get("metrics"), dict):
         rmm.record_heartbeat_metrics(db, device, body["metrics"])
         rmm.evaluate_device(db, device)
+    device.metrics = {**(device.metrics or {}), "commandCancellation": body.get("commandCancellation") is True}
     _sync_cmdb_from_agent(db, device)
     _, policy_doc = services.effective_policy(db, device)
     pending = db.execute(select(func.count()).where(Command.device_id == device.id, Command.status == "pending")).scalar() or 0
@@ -253,13 +254,21 @@ def telemetry(body: dict = Body(...), device: Device = Depends(current_device), 
 
 @router.get("/devices/{device_id}/commands/pending")
 def pending_commands(limit: int = Query(default=20, ge=1, le=100), types: str | None = Query(default=None, max_length=500),
+                     include_cancelling: bool = False,
                      device: Device = Depends(current_device), db: Session = Depends(get_db)):
+    # Serialise dispatch with decommissioning. A credential check before this lock may have raced retirement.
+    device = db.execute(select(Device).where(Device.id == device.id).with_for_update()
+                        .execution_options(populate_existing=True)).scalar_one()
+    if device.api_key_hash == f"retired-{device.id}":
+        raise HTTPException(401, "Device has been decommissioned")
     # `types` lets an agent fetch only some commands (the Windows agent polls remote sessions on their own thread).
-    query = select(Command).where(Command.device_id == device.id, Command.status.in_(("pending", "dispatched")))
+    states = ("pending", "dispatched", "cancelling") if include_cancelling else ("pending", "dispatched")
+    query = select(Command).where(Command.device_id == device.id, Command.status.in_(states))
     wanted = [t.strip() for t in (types or "").split(",") if t.strip()]
     if wanted:
         query = query.where(Command.type.in_(wanted))
-    commands = db.execute(query.order_by(Command.created_at).limit(limit)).scalars().all()
+    commands = db.execute(query.order_by(Command.created_at).limit(limit).with_for_update()
+                          .execution_options(populate_existing=True)).scalars().all()
     now = utcnow()
     for command in commands:
         if command.status == "pending":
@@ -275,9 +284,23 @@ def pending_commands(limit: int = Query(default=20, ge=1, le=100), types: str | 
     }
 
 
+@router.get("/devices/{device_id}/commands/{command_id}/state")
+def command_state(command_id: str, device: Device = Depends(current_command_device), db: Session = Depends(get_db)):
+    command = db.get(Command, command_id)
+    if command is None or command.device_id != device.id or command.tenant_id != device.tenant_id:
+        raise HTTPException(404, "Unknown command")
+    db.commit()  # long-running commands retain presence while their independent monitor checks in
+    return {"id": command.id, "status": command.status,
+            "cancelRequested": command.status in {"cancelling", "cancelled", "expired"},
+            "cancelRequestedAt": _iso(command.cancel_requested_at)}
+
+
 @router.post("/devices/{device_id}/commands/{command_id}/complete")
-def complete_command(command_id: str, body: dict = Body(...), device: Device = Depends(current_device),
+def complete_command(command_id: str, body: dict = Body(...), device: Device = Depends(current_command_device),
                      db: Session = Depends(get_db)):
+    # Same lock order as polling/retirement; result callbacks may update the device too.
+    device = db.execute(select(Device).where(Device.id == device.id).with_for_update()
+                        .execution_options(populate_existing=True)).scalar_one()
     query = select(Command).where(Command.id == command_id)
     if db.bind is not None and db.bind.dialect.name == "postgresql":
         # Lock the command until commit: concurrent agent retries must not
@@ -287,9 +310,9 @@ def complete_command(command_id: str, body: dict = Body(...), device: Device = D
     if command is None or command.device_id != device.id or command.tenant_id != device.tenant_id:
         raise HTTPException(404, "Unknown command")
     status = str(body.get("status") or "completed").lower()
-    if status not in {"completed", "succeeded", "success", "ok", "failed", "error"}:
+    if status not in {"completed", "succeeded", "success", "ok", "failed", "error", "cancelled"}:
         raise HTTPException(422, "Invalid command completion status")
-    requested_status = "completed" if status in {"completed", "succeeded", "success", "ok"} else "failed"
+    requested_status = "cancelled" if status == "cancelled" else "completed" if status in {"completed", "succeeded", "success", "ok"} else "failed"
     raw = body.get("resultJson")
     if isinstance(raw, str) and len(raw) > 1_048_576:
         raise HTTPException(413, "Command result exceeds the maximum size")
@@ -301,17 +324,21 @@ def complete_command(command_id: str, body: dict = Body(...), device: Device = D
         raise HTTPException(422, "Command result must be a JSON object")
     # Derive the *effective* result before idempotency checks; a retry of the
     # same non-zero exit code must acknowledge the same failed outcome.
-    if isinstance(result.get("exitCode"), int) and result["exitCode"] != 0:
+    if requested_status != "cancelled" and isinstance(result.get("exitCode"), int) and result["exitCode"] != 0:
         requested_status = "failed"
-    if command.status in {"completed", "failed"}:
+    if command.status in {"completed", "failed", "cancelled"}:
         if command.status != requested_status:
             raise HTTPException(409, "Command was already completed with a different outcome")
         return {"id": command.id, "status": command.status, "duplicate": True}
-    if command.status in {"cancelled", "expired"}:
+    if command.status == "expired":
         raise HTTPException(409, "Command can no longer be completed")
-    if command.status not in {"pending", "dispatched"}:
+    if requested_status == "cancelled" and command.cancel_requested_at is None:
+        raise HTTPException(409, "Cancellation has not been requested")
+    if command.status not in {"pending", "dispatched", "cancelling"}:
         raise HTTPException(409, "Command is not active")
     command.status = requested_status
+    if requested_status == "cancelled":
+        result["stopConfirmed"] = True
     command.result = result
     command.completed_at = command.updated_at = utcnow()
     if command.type == "device.isolate" and command.status == "completed":

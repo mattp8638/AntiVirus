@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"os"
@@ -125,7 +126,12 @@ func (a *Agent) quickScanRoots() []string {
 // runScan scans roots and reports every finding; shared by commands and scheduled scans.
 // The policy's CPU limit applies to scheduled scans only; an analyst's scan runs at full speed.
 func (a *Agent) runScan(roots, skip []string, quarantine, scheduled bool) (int, []Finding) {
+	return a.runScanContext(context.Background(), roots, skip, quarantine, scheduled)
+}
+
+func (a *Agent) runScanContext(ctx context.Context, roots, skip []string, quarantine, scheduled bool) (int, []Finding) {
 	opts := ScanOptionsFromPolicy(a.state.Policy)
+	opts.Context = ctx
 	if !scheduled {
 		opts.CPULimitPercent = 100
 	}

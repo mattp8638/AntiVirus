@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
+import hmac
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -11,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .db import get_db
-from .models import Device, Tenant, User, utcnow
+from .models import Command, Device, Tenant, User, utcnow
 from .security import digest, has_permission, read_token, reauth_state
 
 bearer = HTTPBearer(auto_error=False)
@@ -132,6 +134,29 @@ def current_device(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unknown device credentials")
     device.last_seen_at = utcnow()
     return device
+
+
+def current_command_device(
+    device_id: str, command_id: str, x_device_api_key: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> Device:
+    """Only command state/completion may use a narrowly scoped retired cancellation key."""
+    if not x_device_api_key:
+        raise HTTPException(401, "Missing X-Device-Api-Key")
+    key_hash = digest(x_device_api_key)
+    device = db.get(Device, device_id)
+    if device is not None and hmac.compare_digest(device.api_key_hash, key_hash):
+        now = utcnow()
+        if device.last_seen_at is None or device.last_seen_at < now - timedelta(seconds=30):
+            device.last_seen_at = now
+        return device
+    command = db.get(Command, command_id)
+    if (device is not None
+            and command is not None and command.device_id == device.id and command.tenant_id == device.tenant_id
+            and command.cancel_requested_at is not None and command.cancel_requested_at >= utcnow() - timedelta(days=7)
+            and command.cancel_api_key_hash and hmac.compare_digest(command.cancel_api_key_hash, key_hash)):
+        return device
+    raise HTTPException(401, "Unknown device credentials")
 
 
 REAUTH_HEADER = "X-Fenrir-Reauth"

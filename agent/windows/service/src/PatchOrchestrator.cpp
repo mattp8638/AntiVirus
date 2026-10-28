@@ -186,58 +186,9 @@ std::wstring QuoteForPowerShellSingleQuoted(const std::wstring& value) {
 
 ProcessExecutionResult ExecuteHiddenProcessCapture(const std::wstring& commandLine,
                                                    const std::wstring& workingDirectory = {}) {
-  SECURITY_ATTRIBUTES securityAttributes{};
-  securityAttributes.nLength = sizeof(securityAttributes);
-  securityAttributes.bInheritHandle = TRUE;
-
-  HANDLE readHandle = nullptr;
-  HANDLE writeHandle = nullptr;
-  if (CreatePipe(&readHandle, &writeHandle, &securityAttributes, 0) == FALSE) {
-    throw std::runtime_error("CreatePipe failed");
-  }
-
-  SetHandleInformation(readHandle, HANDLE_FLAG_INHERIT, 0);
-
-  std::vector<wchar_t> mutableCommandLine(commandLine.begin(), commandLine.end());
-  mutableCommandLine.push_back(L'\0');
-
-  STARTUPINFOW startupInfo{};
-  startupInfo.cb = sizeof(startupInfo);
-  startupInfo.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
-  startupInfo.wShowWindow = SW_HIDE;
-  startupInfo.hStdOutput = writeHandle;
-  startupInfo.hStdError = writeHandle;
-  startupInfo.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-
-  PROCESS_INFORMATION processInfo{};
-  const auto created =
-      CreateProcessW(nullptr, mutableCommandLine.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr,
-                     workingDirectory.empty() ? nullptr : workingDirectory.c_str(), &startupInfo, &processInfo);
-  CloseHandle(writeHandle);
-  if (!created) {
-    CloseHandle(readHandle);
-    throw std::runtime_error("CreateProcessW failed");
-  }
-
-  std::string output;
-  std::array<char, 4096> buffer{};
-  DWORD bytesRead = 0;
-  while (ReadFile(readHandle, buffer.data(), static_cast<DWORD>(buffer.size()), &bytesRead, nullptr) != FALSE &&
-         bytesRead > 0) {
-    output.append(buffer.data(), bytesRead);
-  }
-
-  WaitForSingleObject(processInfo.hProcess, INFINITE);
-
-  DWORD exitCode = 0;
-  GetExitCodeProcess(processInfo.hProcess, &exitCode);
-  CloseHandle(readHandle);
-  CloseHandle(processInfo.hThread);
-  CloseHandle(processInfo.hProcess);
-
-  return ProcessExecutionResult{
-      .exitCode = exitCode,
-      .output = Utf8ToWide(output)};
+  const auto result = rmm::RunProcess(commandLine, workingDirectory, {}, 90 * 60 * 1000, 1024 * 1024);
+  return ProcessExecutionResult{.exitCode = result.exitCode,
+                                .output = Utf8ToWide(result.stdoutText + result.stderrText)};
 }
 
 std::filesystem::path WriteTempPowerShellScript(const AgentConfig& config, const std::wstring& scriptContent,

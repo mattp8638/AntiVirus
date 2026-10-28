@@ -69,6 +69,8 @@ func TestEnrollAndCommandProtocol(t *testing.T) {
 			w.WriteHeader(401)
 		case strings.HasSuffix(r.URL.Path, "/commands/pending"):
 			json.NewEncoder(w).Encode(map[string]interface{}{"items": []map[string]string{{"id": "c1", "type": "policy.refresh"}}})
+		case strings.HasSuffix(r.URL.Path, "/state"):
+			json.NewEncoder(w).Encode(map[string]interface{}{"status": "dispatched", "cancelRequested": false})
 		case strings.HasSuffix(r.URL.Path, "/complete"):
 			json.NewDecoder(r.Body).Decode(&completed)
 		default:

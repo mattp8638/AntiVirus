@@ -6,6 +6,7 @@ package fleet
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -135,6 +136,10 @@ func (e *APIError) Error() string {
 }
 
 func (c *Client) do(method, path string, body, out interface{}, headers map[string]string) error {
+	return c.doContext(context.Background(), method, path, body, out, headers)
+}
+
+func (c *Client) doContext(ctx context.Context, method, path string, body, out interface{}, headers map[string]string) error {
 	var reader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -143,7 +148,7 @@ func (c *Client) do(method, path string, body, out interface{}, headers map[stri
 		}
 		reader = bytes.NewReader(data)
 	}
-	req, err := http.NewRequest(method, c.BaseURL+path, reader)
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, reader)
 	if err != nil {
 		return err
 	}
@@ -194,7 +199,7 @@ type HeartbeatResponse struct {
 func (c *Client) Heartbeat(agentVersion, health string, isolated bool, metrics map[string]interface{}) (*HeartbeatResponse, error) {
 	var out HeartbeatResponse
 	body := map[string]interface{}{"agentVersion": agentVersion, "platformVersion": agentVersion, "healthState": health, "isolated": isolated,
-		"buildId": BuildID, "release": currentRelease()}
+		"buildId": BuildID, "release": currentRelease(), "commandCancellation": true}
 	if metrics != nil {
 		body["metrics"] = metrics
 	}
@@ -223,7 +228,7 @@ func (c *Client) PendingCommands(limit int) ([]Command, error) {
 	var out struct {
 		Items []Command `json:"items"`
 	}
-	err := c.do("GET", fmt.Sprintf("/api/v1/devices/%s/commands/pending?limit=%d", c.DeviceID, limit), nil, &out, nil)
+	err := c.do("GET", fmt.Sprintf("/api/v1/devices/%s/commands/pending?include_cancelling=true&limit=%d", c.DeviceID, limit), nil, &out, nil)
 	return out.Items, err
 }
 

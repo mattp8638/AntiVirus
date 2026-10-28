@@ -240,7 +240,9 @@ export default function DeviceDetail() {
         </div>)}
       {d.retired && <div className="card" role="status" style={{ marginBottom: 12, borderColor: "rgba(100,116,139,.6)" }}>
         <div className="row">
-          <span style={{ flex: 1 }}>Decommissioned: agent access is revoked. History stays available. Reinstate to reconnect the endpoint to this record.</span>
+          <span style={{ flex: 1 }}>Decommissioned: agent access is revoked. History stays available. Reinstate to reconnect the endpoint to this record.
+            {data.stoppingCommands > 0 && <div>{displayValue(data.stoppingCommands)} action(s) awaiting a stop acknowledgement.</div>}
+          </span>
           {can("configure") && <><button className="primary" onClick={() => { setInstallerReady(false); setReinstating(true); }}>Reinstate device</button>
             <button className="danger" onClick={() => { setPurgeName(""); setPurging(true); }}>Delete permanently</button></>}
         </div>
@@ -303,7 +305,8 @@ export default function DeviceDetail() {
                  columns={[{ key: "type", label: "Action", render: (r) => <span title={r.type}>{displayValue(commandLabel(r.type))}</span> }, { key: "status", label: "Status", render: (r) => <Pill value={r.status} /> },
                            { key: "issuedBy", label: "By" }, { key: "targetPath", label: "Target", render: (r) => <span className="mono small">{displayValue(r.targetPath || r.recordId || "—")}</span> },
                            { key: "reason", label: "Reason" }, { key: "createdAt", label: "Queued", render: (r) => <span title={fmtTime(r.createdAt)}>{ago(r.createdAt)}</span> },
-                           { key: "result", label: "Result", render: (r) => Object.keys(r.result || {}).length ? <span className="mono small" title={JSON.stringify(r.result)}>{JSON.stringify(r.result).slice(0, 80)}</span> : "—" }]} />
+                           { key: "result", label: "Result", render: (r) => Object.keys(r.result || {}).length ? <span className="mono small" title={JSON.stringify(r.result)}>{JSON.stringify(r.result).slice(0, 80)}</span> : "—" },
+                           { key: "stop", label: "", render: (r) => r.status === "cancelling" ? <span className="small muted">Awaiting stop</span> : can("respond") && ["pending", "dispatched"].includes(r.status) && <button className="small danger" disabled={busy} onClick={async () => { if (await run(() => api(`commands/${r.id}/cancel`, { method: "POST" }), "Cancellation requested")) reload(); }}>Stop action</button> }]} />
         </div>
       )}
       {sub === "Remote sessions" && <SessionsTab deviceId={d.id} />}
@@ -316,7 +319,7 @@ export default function DeviceDetail() {
             <div className="card"><h3>Management</h3>{management}</div>
             {can("configure") && !d.retired && <div className="card danger-zone">
               <h3>Danger zone</h3>
-              <p className="small muted">Decommissioning revokes the agent's access and cancels pending commands. History is kept, and the device can be reinstated later.</p>
+              <p className="small muted">Decommissioning revokes agent access, cancels queued commands, requests a stop for running work and ends remote sessions. History is kept, and the device can be reinstated later.</p>
               <button className="danger" onClick={() => { setRetireName(""); setRetiring(true); }}>Decommission device…</button>
             </div>}
           </div>
@@ -353,10 +356,11 @@ export default function DeviceDetail() {
         <button onClick={reload}>Refresh device status</button>
       </Modal>}
       {retiring && <Modal title={`Decommission ${d.hostname}`} onClose={()=>{if(!busy)setRetiring(false);}}>
-        <p>This removes the device from the active list, revokes its agent credentials and cancels pending commands. Logs, alerts, inventory and command history are retained under the existing retention policy. It does not uninstall the agent or remove network isolation.</p>
-        <p>Active remote sessions must be ended and dispatched commands reconciled first.</p>
+        <p>This removes the device from the active list, revokes its agent credentials, cancels queued commands and ends remote sessions. Logs, alerts, inventory and command history are retained under the existing retention policy. It does not uninstall the agent or remove network isolation.</p>
+        <p>Running work receives a stop request. Stop confirmation depends on the endpoint being reachable and running an agent that supports cancellation. Changes already applied are retained.</p>
+        {!d.metrics?.commandCancellation && <p className="small muted">This agent has not reported support for stopping running commands. Update the agent first if you need confirmed cancellation; you can still remove the device now.</p>}
         <label className="field">Type {displayValue(d.hostname)} to confirm<input value={retireName} onChange={e=>setRetireName(e.target.value)}/></label>
-        <button className="danger" disabled={busy||retireName!==d.hostname} onClick={async()=>{const result=await run(()=>api(`devices/${d.id}`,{method:"DELETE"}),"Device decommissioned; history retained");if(result){setRetiring(false);reload();}}}>Decommission and retain history</button>
+        <button className="danger" disabled={busy||retireName!==d.hostname} onClick={async()=>{const result=await run(()=>api(`devices/${d.id}`,{method:"DELETE"}),"Device decommissioned; outstanding work cancelled or stopping; history retained");if(result){setRetiring(false);reload();}}}>Decommission and retain history</button>
       </Modal>}
 
       {action !== null && <CommandModal device={d} initial={action} onClose={() => { setAction(null); reload(); }} />}

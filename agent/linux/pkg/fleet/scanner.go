@@ -199,7 +199,13 @@ func (s *Scanner) ScanPathsWith(roots []string, skip []string, quarantine bool, 
 	}
 	throttle := newCPUThrottle(opts.CPULimitPercent)
 	for _, root := range roots {
+		if opts.Context != nil && opts.Context.Err() != nil {
+			break
+		}
 		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if opts.Context != nil && opts.Context.Err() != nil {
+				return filepath.SkipAll
+			}
 			if err != nil {
 				return nil
 			}
@@ -231,6 +237,9 @@ func (s *Scanner) ScanPathsWith(roots []string, skip []string, quarantine bool, 
 			}
 			if bad && pua && opts.PUA == "off" {
 				return nil
+			}
+			if opts.Context != nil && opts.Context.Err() != nil {
+				return filepath.SkipAll
 			}
 			if bad {
 				f := Finding{Path: path, SHA256: sha, Family: family, Action: "detected", Member: inner}

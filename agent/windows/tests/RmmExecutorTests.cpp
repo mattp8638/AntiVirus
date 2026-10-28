@@ -1,8 +1,12 @@
 // Tests for the Windows RMM executors and remote-access key map. Windows-only (run natively or under Wine).
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <string>
+#include <thread>
+#include <windows.h>
 
+#include "CommandCancellation.h"
 #include "ExtendedPolicy.h"
 #include "RemoteKeymap.h"
 #include "RmmExecutors.h"
@@ -19,7 +23,19 @@ static int failures = 0;
     }                                                            \
   } while (0)
 
-int main() {
+int main(int argc, char** argv) {
+  // A real parent/child pair proves that cancelling a process stops its tree.
+  if (argc == 3 && std::string(argv[1]) == "--cancellation-leaf") {
+    { std::ofstream out(argv[2]); out << GetCurrentProcessId(); }
+    Sleep(30000); return 0;
+  }
+  if (argc == 3 && std::string(argv[1]) == "--cancellation-parent") {
+    wchar_t executable[32768]{}; GetModuleFileNameW(nullptr, executable, 32768);
+    auto command = L"\"" + std::wstring(executable) + L"\" --cancellation-leaf \"" + Utf8ToWide(argv[2]) + L"\"";
+    STARTUPINFOW startup{}; startup.cb = sizeof(startup); PROCESS_INFORMATION child{};
+    if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup, &child)) return 2;
+    CloseHandle(child.hThread); CloseHandle(child.hProcess); Sleep(30000); return 0;
+  }
   // Key map: physical keys become scan codes; navigation keys are extended.
   CHECK(remote::ScanCodeForKey("KeyA").code == 0x1E && !remote::ScanCodeForKey("KeyA").extended);
   CHECK(remote::ScanCodeForKey("Enter").code == 0x1C && !remote::ScanCodeForKey("Enter").extended);
@@ -42,6 +58,32 @@ int main() {
   CHECK(!echo.timedOut);
   const auto slow = rmm::RunProcess(L"cmd.exe /c ping -n 30 127.0.0.1", L"", {}, 1500);
   CHECK(slow.timedOut);
+
+  const auto leafFile = std::filesystem::temp_directory_path() / L"fenrir-cancellation-leaf.pid";
+  std::filesystem::remove(leafFile);
+  auto cancellation = std::make_shared<command_control::State>();
+  std::thread stop([&] {
+    for (int n = 0; n < 100 && !std::filesystem::exists(leafFile); ++n) Sleep(30);
+    cancellation->requested.store(true);
+  });
+  bool cancelled = false;
+  const auto start = std::chrono::steady_clock::now();
+  {
+    command_control::Scope scope(cancellation);
+    wchar_t executable[32768]{}; GetModuleFileNameW(nullptr, executable, 32768);
+    try {
+      rmm::RunProcess(L"\"" + std::wstring(executable) + L"\" --cancellation-parent \"" + leafFile.wstring() + L"\"", L"", {}, 30000);
+    } catch (const command_control::Cancelled&) { cancelled = true; }
+  }
+  stop.join();
+  CHECK(cancelled);
+  CHECK(std::chrono::steady_clock::now() - start < std::chrono::seconds(6));
+  DWORD childPid = 0; { std::ifstream file(leafFile); file >> childPid; }
+  CHECK(childPid != 0);
+  if (HANDLE child = OpenProcess(SYNCHRONIZE, FALSE, childPid)) {
+    CHECK(WaitForSingleObject(child, 5000) == WAIT_OBJECT_0); CloseHandle(child);
+  }
+  std::filesystem::remove(leafFile);
 
   // Script payloads from the cloud.
   const auto root = std::filesystem::temp_directory_path() / L"fenrir-rmm-test";
