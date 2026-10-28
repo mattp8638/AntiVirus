@@ -49,7 +49,7 @@ jobs:
           cache-dependency-path: console/package-lock.json
       - name: Compile and test the console
         working-directory: console
-        run: npm ci --no-audit --no-fund && npm run build && npm run test:shapes
+        run: npm ci --no-audit --no-fund && npm run build && npm run test:shapes && npm run test:remote
 
   linux-agent-regressions:
     name: Linux agent Go tests and both native architectures
@@ -73,6 +73,15 @@ jobs:
       - name: Configure Windows user-mode build
         shell: pwsh
         run: cmake -B build -S agent/windows/service -DANTIVIRUS_REQUIRE_MINIFILTER_PAYLOAD=OFF
+      - name: Test remote SAS caller isolation and bounded named-pipe I/O
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --target fenrir-remote-sas-tests fenrir-remote-pipe-tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./build/Release/fenrir-remote-sas-tests.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./build/Release/fenrir-remote-pipe-tests.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build Windows native installer and bundled service
         shell: pwsh
         run: cmake --build build --config Release --target antivirus-setup
