@@ -7,6 +7,8 @@
 #include "FirewallPolicy.h"
 #include "NetworkProbe.h"
 #include "BundleArchive.h"
+#include "RemotePipeIo.h"
+#include "RemoteSasRequest.h"
 
 #include <wtsapi32.h>
 
@@ -2974,7 +2976,7 @@ std::string AllowServiceSas() {
   return value == 1 || value == 3 ? "" : "blocked by the 'Disable or enable software Secure Attention Sequence' Group Policy";
 }
 
-std::string SendSasFromService() {
+std::string SendSasFromService(HANDLE pipe, DWORD helperPid, DWORD windowsSession) {
   using SendSasFn = VOID(WINAPI*)(BOOL);
   if (auto error = AllowServiceSas(); !error.empty()) {
     return error;
@@ -2988,9 +2990,34 @@ std::string SendSasFromService() {
     FreeLibrary(sas);
     return "SendSAS is not available on this version of Windows";
   }
-  fn(FALSE);  // FALSE: called by a service, not as the signed-in user
+  // SendSAS has no return value. Calling it in the service's own session 0 can
+  // silently do nothing on the desktop the technician is viewing. Microsoft
+  // supports targeting the caller's session by impersonating the pipe client.
+  if (!ImpersonateNamedPipeClient(pipe)) {
+    FreeLibrary(sas);
+    return "could not impersonate the remote helper for Ctrl+Alt+Del";
+  }
+  HANDLE token = nullptr;
+  DWORD tokenSession = 0, needed = 0;
+  SECURITY_IMPERSONATION_LEVEL level = SecurityAnonymous;
+  alignas(TOKEN_USER) BYTE user[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE]{};
+  ULONG callerPid = 0;
+  const bool identity = GetNamedPipeClientProcessId(pipe, &callerPid) &&
+      OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, TRUE, &token) &&
+      GetTokenInformation(token, TokenSessionId, &tokenSession, sizeof(tokenSession), &needed) &&
+      GetTokenInformation(token, TokenImpersonationLevel, &level, sizeof(level), &needed) &&
+      GetTokenInformation(token, TokenUser, user, sizeof(user), &needed);
+  const bool system = identity && IsWellKnownSid(reinterpret_cast<TOKEN_USER*>(user)->User.Sid, WinLocalSystemSid);
+  const auto denied = remote::ValidateSasCaller(helperPid, callerPid, windowsSession, tokenSession,
+                                               system, identity && level >= SecurityImpersonation);
+  if (token) CloseHandle(token);
+  if (denied.empty()) {
+    fn(FALSE);  // A real service, impersonating the SYSTEM helper in the target session.
+  }
+  const bool reverted = RevertToSelf() != FALSE;
   FreeLibrary(sas);
-  return "";
+  if (!reverted) return "could not restore the service security context after Ctrl+Alt+Del";
+  return std::string(denied);
 }
 
 std::wstring SasPipeName(const std::wstring& sessionId) {
@@ -2999,7 +3026,7 @@ std::wstring SasPipeName(const std::wstring& sessionId) {
 
 // Serves Ctrl+Alt+Del requests from one helper process until it exits. Only SYSTEM may open the pipe, and only
 // the helper this service launched (checked by process id) gets the SAS sent.
-void ServeSasRequests(std::wstring pipeName, DWORD helperPid, HANDLE helperProcess) {
+void ServeSasRequests(std::wstring pipeName, DWORD helperPid, DWORD windowsSession, HANDLE helperProcess) {
   PSECURITY_DESCRIPTOR descriptor = nullptr;
   if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:P(A;;GA;;;SY)", SDDL_REVISION_1, &descriptor, nullptr)) {
     CloseHandle(helperProcess);
@@ -3007,11 +3034,9 @@ void ServeSasRequests(std::wstring pipeName, DWORD helperPid, HANDLE helperProce
   }
   SECURITY_ATTRIBUTES attributes{sizeof(attributes), descriptor, FALSE};
   HANDLE event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-  bool first = true;
-  while (event) {
-    HANDLE pipe = CreateNamedPipeW(pipeName.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | (first ? FILE_FLAG_FIRST_PIPE_INSTANCE : 0),
+  while (event && WaitForSingleObject(helperProcess, 0) == WAIT_TIMEOUT) {
+    HANDLE pipe = CreateNamedPipeW(pipeName.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
                                    PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 1, 1024, 1024, 0, &attributes);
-    first = false;
     if (pipe == INVALID_HANDLE_VALUE) {
       break;
     }
@@ -3020,17 +3045,12 @@ void ServeSasRequests(std::wstring pipeName, DWORD helperPid, HANDLE helperProce
     overlapped.hEvent = event;
     ResetEvent(event);
     bool connected = ConnectNamedPipe(pipe, &overlapped) != FALSE;
-    DWORD error = GetLastError();
+    const DWORD error = GetLastError();
     if (!connected && error == ERROR_PIPE_CONNECTED) {
       connected = true;
     } else if (!connected && error == ERROR_IO_PENDING) {
-      HANDLE waits[2] = {event, helperProcess};
-      if (WaitForMultipleObjects(2, waits, FALSE, INFINITE) == WAIT_OBJECT_0) {
-        DWORD ignored = 0;
-        connected = GetOverlappedResult(pipe, &overlapped, &ignored, FALSE) != FALSE;
-      } else {
-        CancelIo(pipe);
-      }
+      DWORD ignored = 0;
+      connected = remote::FinishPipeIo(pipe, overlapped, FALSE, error, INFINITE, helperProcess, ignored);
     }
     if (!connected) {
       CloseHandle(pipe);
@@ -3038,38 +3058,36 @@ void ServeSasRequests(std::wstring pipeName, DWORD helperPid, HANDLE helperProce
     }
     char request[64] = {};
     DWORD read = 0;
+    overlapped = {};
+    overlapped.hEvent = event;
     ResetEvent(event);
-    if (!ReadFile(pipe, request, sizeof(request) - 1, nullptr, &overlapped) && GetLastError() != ERROR_IO_PENDING) {
-      read = 0;
-    } else {
-      HANDLE waits[2] = {event, helperProcess};
-      if (WaitForMultipleObjects(2, waits, FALSE, 5000) == WAIT_OBJECT_0) {
-        GetOverlappedResult(pipe, &overlapped, &read, FALSE);
-      } else {
-        CancelIo(pipe);
-      }
-    }
+    const BOOL reading = ReadFile(pipe, request, sizeof(request) - 1, nullptr, &overlapped);
+    const bool received = remote::FinishPipeIo(pipe, overlapped, reading, GetLastError(), 5000, helperProcess, read);
     ULONG clientPid = 0;
     GetNamedPipeClientProcessId(pipe, &clientPid);
     std::string reply;
     if (clientPid != helperPid) {
       reply = "error: only the remote session's helper may request Ctrl+Alt+Del";
-    } else if (std::string(request, read) != "sas") {
+    } else if (!received || std::string(request, read) != "sas") {
       reply = "error: unknown request";
     } else {
-      const auto failure = SendSasFromService();
+      const auto failure = SendSasFromService(pipe, helperPid, windowsSession);
       reply = failure.empty() ? "ok" : "error: " + failure;
     }
+    overlapped = {};
+    overlapped.hEvent = event;
     ResetEvent(event);
     DWORD written = 0;
-    if (WriteFile(pipe, reply.data(), static_cast<DWORD>(reply.size()), nullptr, &overlapped) || GetLastError() == ERROR_IO_PENDING) {
-      if (WaitForSingleObject(event, 5000) == WAIT_OBJECT_0) {
-        GetOverlappedResult(pipe, &overlapped, &written, FALSE);
-      } else {
-        CancelIo(pipe);
-      }
+    const BOOL writing = WriteFile(pipe, reply.data(), static_cast<DWORD>(reply.size()), nullptr, &overlapped);
+    if (remote::FinishPipeIo(pipe, overlapped, writing, GetLastError(), 5000, helperProcess, written)) {
+      // A bounded acknowledgement replaces FlushFileBuffers, which can wait
+      // forever for a stalled helper to consume the reply.
+      overlapped = {};
+      overlapped.hEvent = event;
+      ResetEvent(event);
+      const BOOL acknowledging = ReadFile(pipe, request, sizeof(request) - 1, nullptr, &overlapped);
+      remote::FinishPipeIo(pipe, overlapped, acknowledging, GetLastError(), 5000, helperProcess, read);
     }
-    FlushFileBuffers(pipe);
     DisconnectNamedPipe(pipe);
     CloseHandle(pipe);
   }
@@ -3161,6 +3179,10 @@ std::wstring AgentService::LaunchRemoteHelper(const RemoteCommand& command) {
     out << WideToUtf8(payload);
   }
   const auto windowsSession = InteractiveSessionId();
+  if (windowsSession == 0 || windowsSession == 0xFFFFFFFF) {
+    std::filesystem::remove(optionsPath, ec);
+    throw std::runtime_error("No interactive Windows session is available for remote access");
+  }
   HANDLE self = nullptr, primary = nullptr;
   if (!OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID, &self) ||
       !DuplicateTokenEx(self, MAXIMUM_ALLOWED, nullptr, SecurityImpersonation, TokenPrimary, &primary)) {
@@ -3170,8 +3192,11 @@ std::wstring AgentService::LaunchRemoteHelper(const RemoteCommand& command) {
   }
   CloseHandle(self);
   DWORD target = windowsSession;
-  if (target != 0xFFFFFFFF) {
-    SetTokenInformation(primary, TokenSessionId, &target, sizeof(target));
+  if (!SetTokenInformation(primary, TokenSessionId, &target, sizeof(target))) {
+    const DWORD error = GetLastError();
+    CloseHandle(primary);
+    std::filesystem::remove(optionsPath, ec);
+    throw std::runtime_error("Could not target the remote Windows session (error " + std::to_string(error) + ")");
   }
   std::wstring commandLine = L"\"" + helper.wstring() + L"\" --options \"" + optionsPath.wstring() + L"\"";
   std::vector<wchar_t> mutableCommand(commandLine.begin(), commandLine.end());
@@ -3189,6 +3214,24 @@ std::wstring AgentService::LaunchRemoteHelper(const RemoteCommand& command) {
     throw std::runtime_error("Could not start the remote access helper (error " + std::to_string(GetLastError()) + ")");
   }
   CloseHandle(process.hThread);
+  // Offer the service-side SAS broker before the helper reaches the relay, so
+  // the first click on the sign-in screen cannot race the 30-second start wait.
+  HANDLE watched = nullptr;
+  if (!DuplicateHandle(GetCurrentProcess(), process.hProcess, GetCurrentProcess(), &watched, SYNCHRONIZE, FALSE, 0)) {
+    TerminateProcess(process.hProcess, 1);
+    CloseHandle(process.hProcess);
+    std::filesystem::remove(optionsPath, ec);
+    throw std::runtime_error("Could not start the Ctrl+Alt+Del service channel");
+  }
+  try {
+    std::thread(ServeSasRequests, SasPipeName(sessionId), process.dwProcessId, windowsSession, watched).detach();
+  } catch (...) {
+    CloseHandle(watched);
+    TerminateProcess(process.hProcess, 1);
+    CloseHandle(process.hProcess);
+    std::filesystem::remove(optionsPath, ec);
+    throw;
+  }
   // Wait until the helper reaches the relay (its log says so) or quits, so a helper that cannot connect
   // fails the command with its reason instead of leaving the technician on "waiting" forever.
   const auto logPath = std::filesystem::path(optionsPath).replace_extension(L".log");
@@ -3230,11 +3273,6 @@ std::wstring AgentService::LaunchRemoteHelper(const RemoteCommand& command) {
       CloseHandle(it->second);
     }
     remoteHelpers_[sessionId] = process.hProcess;
-  }
-  // Ctrl+Alt+Del is sent by this service on the helper's behalf (see ServeSasRequests).
-  HANDLE watched = nullptr;
-  if (DuplicateHandle(GetCurrentProcess(), process.hProcess, GetCurrentProcess(), &watched, SYNCHRONIZE, FALSE, 0)) {
-    std::thread(ServeSasRequests, SasPipeName(sessionId), process.dwProcessId, watched).detach();
   }
   QueueTelemetryEvent(L"remote.session.started", L"remote-access", L"A remote access session was started.",
                       std::wstring(L"{\"sessionId\":\"") + sessionId + L"\",\"windowsSession\":" + std::to_wstring(windowsSession) +

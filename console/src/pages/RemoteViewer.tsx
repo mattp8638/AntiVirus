@@ -6,6 +6,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { api } from "../api";
+import { cadResult, type RemoteFeedback } from "../remote-actions";
 
 type Tab = "Desktop" | "Terminal" | "Files" | "Processes" | "Services" | "Chat";
 type Msg = { ch: string; t: string; [key: string]: any };
@@ -72,6 +73,11 @@ export default function RemoteViewer() {
   const [viewOnly, setViewOnly] = useState(false);
   const [blank, setBlank] = useState(false);
   const [showEnd, setShowEnd] = useState(false);
+  const [feedback, setFeedback] = useState<RemoteFeedback | null>(null);
+  const [sendingCad, setSendingCad] = useState(false);
+  const cadPending = useRef<string | null>(null);
+  const cadTimer = useRef(0);
+  const cadSequence = useRef(0);
   const [chat, setChat] = useState<{ from: string; text: string; at: string }[]>([]);
   const [unreadChat, setUnreadChat] = useState(0);
   const ws = useRef<WebSocket | null>(null);
@@ -95,9 +101,20 @@ export default function RemoteViewer() {
     listeners.current.set(key, fn);
     return () => { listeners.current.delete(key); };
   }, []);
+  const finishCad = useCallback(() => {
+    window.clearTimeout(cadTimer.current);
+    cadPending.current = null;
+    setSendingCad(false);
+  }, []);
+  useEffect(() => () => {
+    window.clearTimeout(cadTimer.current);
+    cadPending.current = null;
+  }, []);
 
   // ------------------------------------------------------------------ connect
   useEffect(() => {
+    finishCad();
+    setFeedback(null);
     let closed = false;
     let pingTimer = 0;
     let fpsTimer = 0;
@@ -131,6 +148,7 @@ export default function RemoteViewer() {
         };
         socket.onclose = (event) => {
           if (closed) return;
+          finishCad();
           setState((s) => (s === "ended" ? s : "ended"));
           setStatus((s) => (event.reason ? `Disconnected: ${event.reason}` : s.startsWith("Session ended") ? s : "Disconnected from the relay."));
         };
@@ -146,6 +164,8 @@ export default function RemoteViewer() {
       closed = true;
       window.clearInterval(pingTimer);
       window.clearInterval(fpsTimer);
+      window.clearTimeout(cadTimer.current);
+      cadPending.current = null;
       ws.current?.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -178,6 +198,12 @@ export default function RemoteViewer() {
   const startScreen = useCallback(() => send({ ch: "screen", t: "start", quality, fps: maxFps, monitor }), [send, quality, maxFps, monitor]);
 
   const handleText = (m: Msg) => {
+    const result = cadResult(m, cadPending.current);
+    if (result) {
+      finishCad();
+      setFeedback(result);
+      return;
+    }
     if (m.ch === "sys") {
       switch (m.t) {
         case "hello":
@@ -206,9 +232,11 @@ export default function RemoteViewer() {
           return;
         case "error":
           setStatus(`Device: ${m.message}`);
+          setFeedback({ tone: "error", message: `Device: ${m.message}` });
           return;
         case "notice":
           setStatus(m.message);
+          setFeedback({ tone: "notice", message: m.message });
           return;
         case "agent.disconnected":
         case "end":
@@ -341,6 +369,24 @@ export default function RemoteViewer() {
   };
 
   const caps: string[] = info?.capabilities || [];
+  const requestCad = () => {
+    if (viewOnly || state !== "live" || cadPending.current) return;
+    if (ws.current?.readyState !== WebSocket.OPEN) {
+      setFeedback({ tone: "error", message: "The remote connection is unavailable. Reconnect before sending Ctrl+Alt+Del." });
+      return;
+    }
+    releaseAll();
+    const req = `cad-${Date.now()}-${++cadSequence.current}`;
+    cadPending.current = req;
+    setSendingCad(true);
+    setFeedback({ tone: "notice", message: "Requesting Ctrl+Alt+Del from the Windows service…" });
+    send({ ch: "input", t: "cad", req });
+    cadTimer.current = window.setTimeout(() => {
+      if (cadPending.current !== req) return;
+      finishCad();
+      setFeedback({ tone: "error", message: "The Windows agent did not acknowledge Ctrl+Alt+Del. Update the Windows agent, including its remote helper, and reconnect." });
+    }, 10000);
+  };
   const tabs: Tab[] = (["Desktop", "Terminal", "Files", "Processes", "Services", "Chat"] as Tab[]).filter((t) => {
     if (t === "Terminal") return hello?.allowTerminal !== false && (!info || caps.includes("terminal"));
     if (t === "Files") return hello?.allowFileTransfer !== false && (!info || caps.includes("files"));
@@ -373,7 +419,7 @@ export default function RemoteViewer() {
         </nav>
         {tab === "Desktop" && state === "live" && (
           <div className="rv-tools">
-            {caps.includes("cad") && <button title="Send Ctrl+Alt+Del" disabled={viewOnly} onClick={() => send({ ch: "input", t: "cad" })}>Ctrl+Alt+Del</button>}
+            {caps.includes("cad") && <button title="Send Ctrl+Alt+Del" disabled={viewOnly || sendingCad} onClick={requestCad}>{sendingCad ? "Requesting…" : "Ctrl+Alt+Del"}</button>}
             <button title="Paste your clipboard as keystrokes" disabled={viewOnly} onClick={sendClipboard}>Send clipboard</button>
             <select title="Monitor" value={monitor} onChange={(e) => changeScreen({ monitor: Number(e.target.value) })}>
               {(info?.monitors?.length ? info.monitors : [{ index: 0 }]).map((m: any) => (
@@ -403,6 +449,11 @@ export default function RemoteViewer() {
         {state !== "ended" ? <button className="danger" onClick={() => setShowEnd(true)}>End session</button>
                            : <button onClick={() => window.close()}>Close window</button>}
       </header>
+
+      {state === "live" && feedback && <div className={`rv-feedback ${feedback.tone}`} role={feedback.tone === "notice" ? "status" : "alert"}>
+        <span>{feedback.message}</span>
+        <button aria-label="Dismiss remote action message" onClick={() => setFeedback(null)}>Dismiss</button>
+      </div>}
 
       <main className="rv-body">
         {state !== "live" && (

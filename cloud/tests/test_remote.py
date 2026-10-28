@@ -70,9 +70,32 @@ def test_view_only_drops_input_and_bad_tokens_are_refused(client, admin, tenant,
             assert json.loads(browser.receive_text())["viewOnly"] is True
             agent.receive_text()  # viewer.joined
             browser.send_text(json.dumps({"ch": "input", "t": "kd", "code": "KeyA"}))
+            browser.send_text(json.dumps({"ch": "input", "t": "cad", "req": "view-only-cad"}))
             browser.send_text(json.dumps({"ch": "screen", "t": "ack"}))
             # Input never arrives; the next thing the agent sees is the frame ack.
             assert json.loads(agent.receive_text())["t"] == "ack"
+
+
+@pytest.mark.parametrize("ok", [True, False])
+def test_ctrl_alt_del_request_and_result_reach_the_same_session(client, admin, tenant, device, ok):
+    session = start(client, admin, device)
+    payload = json.loads(agent_command(client, device)["payloadJson"])
+    viewer = client.post(f"/api/console/remote/sessions/{session['id']}/viewer-token", headers=admin).json()
+    with client.websocket_connect(f"/ws/remote/{session['id']}/agent?token={payload['token']}") as agent:
+        with client.websocket_connect(f"{viewer['path']}?token={viewer['token']}") as browser:
+            browser.receive_text()  # hello
+            agent.receive_text()  # viewer.joined
+            request = {"ch": "input", "t": "cad", "req": "cad-1"}
+            browser.send_json(request)
+            assert agent.receive_json() == request
+            result = {"ch": "sys", "t": "action.result", "action": "cad", "req": "cad-1", "ok": ok,
+                      "message": "Requested" if ok else "Blocked by Windows policy"}
+            agent.send_json(result)
+            assert browser.receive_json() == result
+            browser.send_json({"ch": "sys", "t": "end"})
+            agent.receive_text()
+    detail = client.get(f"/api/console/remote/sessions/{session['id']}", headers=admin).json()
+    assert "input.cad" in {event["type"] for event in detail["events"]}
 
 
 def test_policy_can_disable_remote_access_and_terminal(client, admin, tenant, device):
