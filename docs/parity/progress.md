@@ -33,6 +33,7 @@ Overall parity: **not passed**. MVP: **not yet declared**.
 | CORE-06 (audit assurance) | (this milestone) | Checkpoints published outside the database, classified verification, redacted verifiable export, retention to an anchor, legal hold; `test_audit_assurance.py`. |
 | CORE-02 (roles) | (this batch) | Custom roles, customer assignments, finer powers. Fixed: a tenant admin could promote anyone, including themselves, to msp_admin. `test_roles.py`. |
 | CORE-14 (production mode) | (this batch) | Unsafe production settings stop the server from starting; `/ready`; readiness warnings for platform admins. `test_production_mode.py`. |
+| CORE-15 (approvals) | (this batch) | Optional two-person approval bound to the exact request and its devices; `test_approvals.py`. |
 | CI | `b5cf672` | Removed the placeholder signing files that the merge brought back. [Run 78](https://github.com/mattp8638/AntiVirus/actions/runs/40649462515) passed, which also verifies FIX-08 in CI. |
 
 ## In progress
@@ -54,6 +55,5 @@ Overall parity: **not passed**. MVP: **not yet declared**.
 1. CORE-01, remainder: background jobs/automations and file paths.
 2. CORE-04 remainder: device API key rotation and expiry (needs an agent rotate command).
 3. CORE-07 remainder (fair capacity, poison jobs) and AGT-05 (proxy, offline buffering).
-4. CORE-15: approvals for fleet-wide scripts, mass isolation and destructive changes.
-5. CORE-08, CORE-09: health and metrics, backup and restore.
-6. AGT-01, AGT-02, AGT-06 to AGT-10: installers on clean VMs, final-package signature, identity, support matrix, SBOM, capability reporting.
+4. CORE-08, CORE-09: health and metrics, backup and restore.
+5. AGT-01, AGT-02, AGT-06 to AGT-10: installers on clean VMs, final-package signature, identity, support matrix, SBOM, capability reporting.

@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 27
+LATEST_MIGRATION = 28
 
 def init_engine(url: str) -> Engine:
     global _engine, _session_factory
@@ -266,6 +266,11 @@ def migrate(bind: Engine) -> list[int]:
                 ensure_columns(Base, conn)  # users.assigned_tenant_ids
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (27)"))
                 applied.append(27)
+            if 28 not in versions:
+                from .models import ApprovalRequest
+                ApprovalRequest.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (28)"))
+                applied.append(28)
             conn.commit()
         except Exception:
             conn.rollback()

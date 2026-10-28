@@ -8,7 +8,7 @@ const ROLES = ["platform_admin", "msp_admin", "soc_analyst", "technician", "bill
 
 export default function Settings() {
   const { can } = useApp();
-  const tabs = ["Tenants", "Users", "Groups", "Webhooks", ...(can("configure") ? ["API credentials"] : []), "Agent releases", "Audit log", ...(can("configure") ? ["Platform"] : []), "Account"];
+  const tabs = ["Tenants", "Users", "Groups", "Webhooks", ...(can("configure") ? ["API credentials"] : []), "Approvals", "Agent releases", "Audit log", ...(can("configure") ? ["Platform"] : []), "Account"];
   const [tab, setTab] = useState("Tenants");
   return (
     <>
@@ -19,6 +19,7 @@ export default function Settings() {
       {tab === "Groups" && <GroupsTab />}
       {tab === "Webhooks" && <WebhooksTab />}
       {tab === "API credentials" && <ApiCredentialsTab />}
+      {tab === "Approvals" && <ApprovalsTab />}
       {tab === "Agent releases" && <>{can("platform") && <RolloutsCard />}<ReleasesTab canPublish={can("platform")} /></>}
       {tab === "Audit log" && <AuditTab />}
       {tab === "Platform" && <PlatformTab />}
@@ -183,6 +184,56 @@ function WebhooksTab() {
         </Modal>
       )}
     </div>
+  );
+}
+
+const APPROVAL_TONE: Record<string, string> = { pending: "warn", approved: "good", executed: "muted", rejected: "bad", expired: "muted" };
+
+// Two-person approval (CORE-15): held requests, decisions, "Run now" for the requester, and the customer's policy.
+function ApprovalsTab() {
+  const { tenantId, tenantName, can } = useApp();
+  const { data, reload } = useData<any[]>("approvals", { tenant_id: tenantId });
+  const { data: policy, reload: reloadPolicy } = useData<any>(tenantId ? `tenants/${tenantId}/approval-policy` : null, {}, [tenantId]);
+  const { run, busy } = useAction();
+  const decide = async (id: string, verdict: "approve" | "reject") => {
+    const reason = verdict === "reject" ? prompt("Why reject it?") : "";
+    if (reason === null) return;
+    if (await run(() => api(`approvals/${id}/${verdict}`, { body: { reason } }), verdict === "approve" ? "Approved: the requester can now run it" : "Rejected")) reload();
+  };
+  const runNow = async (a: any) => {
+    const { _route, ...request } = a.request;
+    if (await run(() => api(_route, { body: { ...request, approvalId: a.id } }), "Started")) reload();
+  };
+  return (
+    <>
+      {tenantId && policy && (
+        <div className="card" style={{ marginBottom: 14 }}>
+          <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+            <b style={{ flex: 1 }}>Two-person approval for {tenantName(tenantId)}</b>
+            <Pill value={policy.effective.twoPerson ? `on${policy.effective.tenantId !== tenantId ? ` (from ${tenantName(policy.effective.tenantId)})` : ""}` : "off"} tone={policy.effective.twoPerson ? "good" : "muted"} />
+            {can("configure") && can("approve") && <button disabled={busy} onClick={async () => {
+              const threshold = policy.twoPerson ? null : prompt("Hold scripts and bulk actions that reach at least how many devices?", String(policy.bulkThreshold));
+              if (!policy.twoPerson && threshold === null) return;
+              if (await run(() => api(`tenants/${tenantId}/approval-policy`, { method: "PUT", body: { twoPerson: !policy.twoPerson, bulkThreshold: Number(threshold || policy.bulkThreshold) } }), "Approval policy saved")) reloadPolicy();
+            }}>{policy.twoPerson ? "Turn off" : "Turn on"}</button>}
+          </div>
+          <p className="small muted" style={{ marginBottom: 0 }}>When on, destructive device actions and scripts or bulk actions reaching {policy.bulkThreshold}+ devices wait for someone other than the
+            requester to approve. The approval covers exactly that request and those devices, for one hour, once.</p>
+        </div>
+      )}
+      <div className="card">
+        <Table rows={data} empty="Nothing waiting for approval."
+               columns={[{ key: "summary", label: "Request", render: (a: any) => <>{a.summary}<div className="small muted">{a.kind} · {a.devices} device(s) · {tenantName(a.tenantId)}</div></> },
+                         { key: "requestedBy", label: "Requested by", render: (a: any) => <>{a.requestedBy}<div className="small muted">{fmtTime(a.requestedAt)}</div></> },
+                         { key: "status", label: "Status", render: (a: any) => <><Pill value={a.status} tone={APPROVAL_TONE[a.status]} />{a.decidedBy && <div className="small muted">{a.decidedBy}{a.reason ? `: ${a.reason}` : ""}</div>}</> },
+                         { key: "expiresAt", label: "Valid until", render: (a: any) => ["pending", "approved"].includes(a.status) ? fmtTime(a.expiresAt) : "—" },
+                         { key: "act", label: "", render: (a: any) => <span className="row" style={{ gap: 6 }}>
+                           {a.status === "pending" && !a.mine && can("approve") && <><button className="small primary" disabled={busy} onClick={() => decide(a.id, "approve")}>Approve</button>
+                             <button className="small" disabled={busy} onClick={() => decide(a.id, "reject")}>Reject</button></>}
+                           {a.status === "approved" && a.mine && <button className="small primary" disabled={busy} onClick={() => runNow(a)}>Run now</button>}
+                         </span> }]} />
+      </div>
+    </>
   );
 }
 

@@ -74,6 +74,10 @@ async function rawApi<T>(path: string, options: { method?: string; body?: unknow
   }
   const text = await response.text();
   const data = text ? safeJson(text) : null;
+  if (response.status === 202 && data && typeof data === "object" && (data as any).approvalRequired) {
+    // CORE-15: held for a second person's approval - not a success. Settings > Approvals has "Run now" once approved.
+    throw new ApiError(202, "Sent for approval: a second person must approve this before it runs (Settings > Approvals).");
+  }
   if (!response.ok) {
     const detail = data && typeof data === "object" && "detail" in data ? (data as any).detail : text;
     throw new ApiError(response.status, typeof detail === "string" ? detail : JSON.stringify(detail));
@@ -121,6 +125,10 @@ export async function uploadFile<T = any>(path: string, file: Blob, query: Recor
   const response = await fetch(url.toString(), { method: "POST", headers, body: file });
   const text = await response.text();
   const data = text ? safeJson(text) : null;
+  if (response.status === 202 && data && typeof data === "object" && (data as any).approvalRequired) {
+    // CORE-15: held for a second person's approval - not a success. Settings > Approvals has "Run now" once approved.
+    throw new ApiError(202, "Sent for approval: a second person must approve this before it runs (Settings > Approvals).");
+  }
   if (!response.ok) {
     const detail = data && typeof data === "object" && "detail" in data ? (data as any).detail : text;
     throw new ApiError(response.status, typeof detail === "string" ? detail : JSON.stringify(detail));

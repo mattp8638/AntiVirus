@@ -8,7 +8,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
-from .. import audit, detection, policy_schema, rmm, services
+from .. import approvals, audit, detection, policy_schema, rmm, services
 from ..commands import BY_TYPE, catalog_document
 from ..config import get_settings
 from ..db import get_db
@@ -374,6 +374,9 @@ def issue_command(device_id: str, request: Request, body: dict = Body(...), prin
         require_reauth(request, principal)
     if command_type == "device.lostmode":
         raise HTTPException(400, "Turn lost mode on or off from the device's Location tab")
+    if spec.destructive:  # CORE-15: optional second-person approval
+        approvals.gate(db, principal, "device.command", f"{spec.label} on {device.hostname}", {"deviceId": device.id, **body}, [device],
+                       destructive=True, route=f"devices/{device.id}/commands")
     arguments = _command_arguments(body)
     try:
         command = services.enqueue_command(db, device, command_type, principal.actor,
@@ -402,6 +405,8 @@ def bulk_command(body: dict = Body(...), principal: Principal = Depends(current_
         raise HTTPException(422, "A bulk action supports at most 5000 device IDs")
     ids = list(dict.fromkeys(i.strip() for i in ids))
     arguments = _command_arguments(body)
+    in_scope = [d for d in (db.get(Device, i) for i in ids) if d is not None and d.tenant_id in principal.tenant_ids]
+    approvals.gate(db, principal, "command.bulk", f"{spec.label} on {len(in_scope)} devices", body, in_scope, destructive=spec.destructive, route="commands/bulk")
     queued, skipped = [], []
     for device_id in ids:
         device = db.get(Device, device_id)

@@ -216,6 +216,28 @@ jobs:
           source deploy/.env
           set +a
           python3 scripts/phase2_cloud_smoke.py
+      - name: Platform backup and full restore drill (AT-24)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export FENRIR_COMPOSE_FILES="$PWD/deploy/docker-compose.lab.yml"
+          c() { docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.lab.yml --env-file deploy/.env "$@"; }
+          count() { c exec -T db psql -U fenrir -d fenrir -tAc "SELECT (SELECT count(*) FROM devices) || ',' || (SELECT count(*) FROM psa_tickets) || ',' || (SELECT count(*) FROM audit_log) || ',' || (SELECT count(*) FROM commands)" | tr -d '[:space:]'; }
+          before="$(count)"
+          deploy/backup.sh /tmp/fenrir-backups
+          backup="$(ls -d /tmp/fenrir-backups/fenrir-backup-* | tail -1)"
+          # Lose data: delete tickets and devices behind the application's back.
+          c exec -T db psql -U fenrir -d fenrir -v ON_ERROR_STOP=1 -c "TRUNCATE psa_tickets, devices CASCADE" >/dev/null
+          test "$(count)" != "$before"
+          # A damaged backup is refused before anything is touched.
+          cp -r "$backup" /tmp/damaged && printf 'x' >> /tmp/damaged/db.dump
+          if deploy/restore.sh /tmp/damaged --yes; then echo "a damaged backup was accepted"; exit 1; fi
+          deploy/restore.sh "$backup" --yes
+          after="$(count)"
+          echo "before=$before after=$after"
+          test "$after" = "$before"
+          curl --fail --silent --show-error http://127.0.0.1:8080/ready
+          echo "PASS: backup restored devices, tickets, commands and the audit chain; secrets decrypt"
       - name: Diagnostics on failure
         if: failure()
         shell: bash

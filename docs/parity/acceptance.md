@@ -28,7 +28,7 @@ Test data is synthetic: tenants "Acme Dental" and "Other Customer", devices enro
 | AT-21 | Framework revision with same IDs, changed meaning | `cloud/tests/test_grc_revisions.py` | Cloud (SQLite, PostgreSQL 16) | **PASS** locally on `8fda3b7`: reworded requirement loses "done", unchanged keeps it, dry-run diff, legacy backfill, historical export, customer scope, import removal. CI pending. |
 | AT-22 | Approved policy edited, reapproved, assigned to staff | `cloud/tests/test_grc_programme.py` (versions only) | Cloud | **NOT RUN** for staff acknowledgement, which does not exist yet (GRC-08) |
 | AT-23 | Supplier risk; revoked auditor and trust access | — | Cloud | **NOT RUN** (GRC-06/GRC-14/GRC-19) |
-| AT-24 | Whole-platform restore | — | Deployment | **NOT RUN** (CORE-09) |
+| AT-24 | Whole-platform restore | CI step "Platform backup and full restore drill": `backup.sh`, then `TRUNCATE` devices and tickets, then a damaged backup refused, then `restore.sh`, then row counts compared plus audit chain and vault checks | Docker Compose (PostgreSQL 16) | **Pending CI** on the commit that adds it. Restore into a brand-new server and measured RTO are still to do. |
 | AT-25 | Decommission and reinstate with queued commands and billing | Partial: `docs/DEVICE_REINSTATEMENT.md` journeys | Cloud | **NOT RUN** as specified |
 | AT-26 | Secret rotation and disclosure inspection | — | Deployment | **NOT RUN** |
 | AT-27 | 10,000-endpoint load, burst, restarts, 24-hour soak | — | Declared hardware | **NOT RUN** (CORE-13) |
