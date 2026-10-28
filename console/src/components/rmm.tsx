@@ -107,7 +107,7 @@ export function useConnect() {
 export function ConnectButtons({ device, ticketId, compact }: { device: any; ticketId?: string; compact?: boolean }) {
   const { can } = useApp();
   const { connect, busy } = useConnect();
-  if (!can("respond") || !device?.approved) return null;
+  if (!can("respond") || !can("remote") || !device?.approved || device.retired || !["windows", "linux", "macos"].includes(device.platform)) return null;
   return (
     <span className="row" style={{ gap: 6 }} onClick={(e) => e.stopPropagation()}>
       <button className={compact ? "small primary" : "primary"} disabled={busy} title="Remote desktop in a new window" onClick={() => connect(device.id, "desktop", ticketId)}>

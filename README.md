@@ -350,6 +350,7 @@ curl --fail http://127.0.0.1:8080/health
 | Waiting for remote agent | Check online state, approval, policy, consent, helper installation and outbound HTTPS. Other proxies must pass WebSockets and suitable idle timeouts. Check the endpoint session log. |
 | Ctrl+Alt+Del does nothing | Update service/helper together, reconnect, inspect visible action errors and check service SAS policy. Keep Windows sign-in requirements enabled. |
 | Agent update rejected | Inspect manifest signature, platform/architecture, hash, sequence and rollout. Restore the original key or perform a controlled reinstall if it was lost. |
+| WinGet package not matched / local patch refresh cannot create a script | Update both the Windows service and desktop client. Checks/refreshes now use the service broker; provider readiness is distinct from a confirmed update. See [Windows patching diagnostics](docs/WINDOWS_PATCHING.md). |
 | Vault decryption fails | Restore the correct vault/old-key configuration. A freshly generated key cannot decrypt old secrets. |
 | Editing bootstrap password has no effect | Change an existing account through account management; bootstrap settings only create the initial administrator. |
 | Build exits/OOM | Check disk space and host memory/OOM logs. Native compilation needs headroom; use a larger build host if necessary. |

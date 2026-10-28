@@ -1232,8 +1232,7 @@ std::wstring BuildDetailsCardText(const EndpointClientSnapshot& snapshot) {
 
   const auto availableSoftwareUpdateCount = std::count_if(
       snapshot.softwarePatches.begin(), snapshot.softwarePatches.end(), [](const auto& patch) {
-        return _wcsicmp(patch.updateState.c_str(), L"available") == 0 ||
-               _wcsicmp(patch.updateState.c_str(), L"provider_ready") == 0;
+        return _wcsicmp(patch.updateState.c_str(), L"available") == 0;
       });
   stream << L"\r\n\r\nPatch posture\r\n"
          << snapshot.windowsUpdates.size() << L" Windows update(s), "
@@ -2003,8 +2002,7 @@ std::wstring BuildServiceOverviewText(const UiContext& context) {
   });
   const auto availableSoftwareUpdateCount = std::count_if(
       context.snapshot.softwarePatches.begin(), context.snapshot.softwarePatches.end(), [](const auto& patch) {
-        return _wcsicmp(patch.updateState.c_str(), L"available") == 0 ||
-               _wcsicmp(patch.updateState.c_str(), L"provider_ready") == 0;
+        return _wcsicmp(patch.updateState.c_str(), L"available") == 0;
       });
   const auto manualSoftwareUpdateCount = std::count_if(
       context.snapshot.softwarePatches.begin(), context.snapshot.softwarePatches.end(), [](const auto& patch) {
@@ -2076,8 +2074,7 @@ std::wstring BuildServiceOverviewText(const UiContext& context) {
 std::wstring BuildUpdatesOverviewText(const UiContext& context) {
   const auto availableSoftwareUpdateCount = std::count_if(
       context.snapshot.softwarePatches.begin(), context.snapshot.softwarePatches.end(), [](const auto& patch) {
-        return _wcsicmp(patch.updateState.c_str(), L"available") == 0 ||
-               _wcsicmp(patch.updateState.c_str(), L"provider_ready") == 0;
+        return _wcsicmp(patch.updateState.c_str(), L"available") == 0;
       });
   const auto manualSoftwareUpdateCount = std::count_if(
       context.snapshot.softwarePatches.begin(), context.snapshot.softwarePatches.end(), [](const auto& patch) {
@@ -2435,8 +2432,7 @@ std::wstring BuildWebViewStateJson(const UiContext& context) {
 
   const auto availableSoftwareUpdateCount = std::count_if(
       context.snapshot.softwarePatches.begin(), context.snapshot.softwarePatches.end(), [](const auto& patch) {
-        return _wcsicmp(patch.updateState.c_str(), L"available") == 0 ||
-               _wcsicmp(patch.updateState.c_str(), L"provider_ready") == 0;
+        return _wcsicmp(patch.updateState.c_str(), L"available") == 0;
       });
   const auto manualSoftwareUpdateCount = std::count_if(
       context.snapshot.softwarePatches.begin(), context.snapshot.softwarePatches.end(), [](const auto& patch) {
@@ -3875,8 +3871,8 @@ void RunScanAsync(HWND hwnd, UiContext& context, const ScanPreset preset, const 
   }).detach();
 }
 
-void RunSoftwarePatchActionAsync(HWND hwnd, UiContext& context, std::wstring softwareId, const bool searchOnly) {
-  if (softwareId.empty()) {
+void RunSoftwarePatchActionAsync(HWND hwnd, UiContext& context, std::wstring softwareId, const bool searchOnly, bool refreshInventory = false) {
+  if (softwareId.empty() && !refreshInventory) {
     return;
   }
 
@@ -3887,21 +3883,28 @@ void RunSoftwarePatchActionAsync(HWND hwnd, UiContext& context, std::wstring sof
   }
 
   const auto actionLabel = searchOnly ? std::wstring(L"Checking updates for ") : std::wstring(L"Installing updates for ");
-  SetPatchActionRunning(context, true, actionLabel + softwareId + L"...", softwareId, searchOnly);
+  SetPatchActionRunning(context, true, refreshInventory ? L"Refreshing patch inventory..." : actionLabel + softwareId + L"...", softwareId, searchOnly);
 
   const auto config = context.config;
-  std::thread([hwnd, config, softwareId = std::move(softwareId), searchOnly]() mutable {
+  std::thread([hwnd, config, softwareId = std::move(softwareId), searchOnly, refreshInventory]() mutable {
     auto* payload = new PatchActionCompletePayload{};
     payload->targetId = softwareId;
     payload->searchOnly = searchOnly;
     try {
-      const auto result = searchOnly ? antivirus::agent::PatchOrchestrator(config).UpdateSoftware(softwareId, true)
-                                     : antivirus::agent::ExecuteSoftwarePatchThroughService(config, softwareId);
+      if (refreshInventory) {
+        const auto result = antivirus::agent::SendLocalBrokerCommand(config, L"patch.posture.refresh");
+        payload->success = result.success;
+        payload->informational = result.success;
+        payload->summary = result.success ? L"Patch inventory refreshed." :
+            L"Fenrir could not refresh patch inventory through the protection service.\r\n" + result.errorMessage;
+      } else {
+      const auto result = antivirus::agent::ExecuteSoftwarePatchThroughService(config, softwareId, searchOnly);
       payload->summary = BuildPatchExecutionSummary(result, searchOnly);
       payload->success = result.success;
       payload->informational = IsPatchResultInformational(result);
       if (!result.targetId.empty()) {
         payload->targetId = result.targetId;
+      }
       }
     } catch (const std::exception& error) {
       payload->summary = std::wstring(L"Software update action failed: ") + antivirus::agent::Utf8ToWide(error.what());
@@ -4260,32 +4263,7 @@ void HandleWebViewMessage(UiContext& context, const std::wstring& message) {
   }
 
   if (_wcsicmp(action.c_str(), L"softwareUpdatesRefresh") == 0) {
-    if (context.patchActionRunning.load()) {
-      MessageBoxW(context.hwnd, L"A software update action is currently running. Wait for it to finish before refreshing inventory.",
-                  kWindowTitle, MB_OK | MB_ICONINFORMATION);
-      return;
-    }
-
-    try {
-      antivirus::agent::PatchOrchestrator orchestrator(context.config);
-      const auto summary = orchestrator.RefreshPatchState();
-      RefreshSnapshot(context);
-      PublishWebViewState(context);
-
-      std::wstringstream stream;
-      stream << L"Patch inventory refreshed.\r\n\r\n"
-             << L"Windows updates: " << summary.windowsUpdateCount << L"\r\n"
-             << L"Software entries: " << summary.softwareCount << L"\r\n"
-             << L"Recipe coverage: " << summary.recipeCount << L"\r\n"
-             << L"Reboot pending: " << (summary.rebootPending ? L"yes" : L"no");
-      MessageBoxW(context.hwnd, stream.str().c_str(), kWindowTitle, MB_OK | MB_ICONINFORMATION);
-    } catch (const std::exception& error) {
-      MessageBoxW(context.hwnd,
-                  (L"Fenrir could not refresh software update posture.\r\n\r\n" +
-                   antivirus::agent::Utf8ToWide(error.what()))
-                      .c_str(),
-                  kWindowTitle, MB_OK | MB_ICONERROR);
-    }
+    RunSoftwarePatchActionAsync(context.hwnd, context, L"", true, true);
     return;
   }
 

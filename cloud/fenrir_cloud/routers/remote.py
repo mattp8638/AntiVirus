@@ -10,7 +10,7 @@ from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import audit, psa, remote
+from .. import audit, psa, remote, services
 from ..db import get_db, session_factory
 from ..deps import Principal, current_principal, scoped_tenant
 from ..config import get_settings
@@ -35,7 +35,7 @@ def _session_view(db: Session, session: RemoteSession) -> dict:
     command = db.get(Command, session.command_id) if session.command_id else None
     start = None
     if command is not None:
-        result = command.result or {}
+        result = command.result if isinstance(command.result, dict) else {"error": "The agent returned an invalid command-result format; inspect the command output."}
         start = {"status": command.status, "updatedAt": to_dict(command).get("updatedAt"),
                  "reachedRelay": result.get("reachedRelay"), "logPath": result.get("logPath"), "error": result.get("error")}
     return {**to_dict(session), "startCommand": start,
@@ -55,6 +55,8 @@ def create_session(body: dict = Body(...), principal: Principal = Depends(curren
     device = db.get(Device, str(body.get("deviceId") or ""))
     if device is None or device.tenant_id not in principal.tenant_ids:
         raise HTTPException(404, "Device not found")
+    if device.api_key_hash == f"retired-{device.id}":
+        raise HTTPException(409, "This device is decommissioned. Enrol it again before starting remote support.")
     if not device.approved:
         raise HTTPException(409, "Approve the device before connecting to it")
     mode = str(body.get("mode") or "desktop")
@@ -70,7 +72,6 @@ def create_session(body: dict = Body(...), principal: Principal = Depends(curren
         if ticket.device_id and ticket.device_id != device.id:
             raise HTTPException(422, "The ticket is linked to a different managed device")
     if mode == "terminal" and principal.user.role in ANALYST_ROLES:
-        from .. import services
         settings, _ = services.effective_policy(db, device)
         if not settings["settings"]["response"].get("remoteShell", False):
             raise HTTPException(403, "Analysts need the policy's 'Allow remote shell for analysts' setting to open a terminal")
@@ -78,7 +79,11 @@ def create_session(body: dict = Body(...), principal: Principal = Depends(curren
         session = remote.start_session(db, device, principal.actor, mode, bool(body.get("viewOnly")), ticket_id,
                                        str(body.get("reason") or ""))
     except PermissionError as exc:
+        db.rollback()
         raise HTTPException(403, str(exc)) from exc
+    except services.CommandError as exc:
+        db.rollback()  # start_session may have flushed a session before enqueueing
+        raise HTTPException(422, str(exc)) from exc
     db.commit()
     return {**_session_view(db, session), "viewerPath": f"/remote/{session.id}"}
 

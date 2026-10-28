@@ -75,6 +75,6 @@ LocalBrokerCommandResult ExecuteQueuedLocalApproval(const AgentConfig& config, c
 LocalBrokerCommandResult SetBreakGlassMode(const AgentConfig& config, bool enable,
                                            const std::wstring& reason = L"", bool queuePamRecovery = true);
 LocalBrokerCommandResult ListPendingLocalApprovals(const AgentConfig& config, std::size_t limit = 50);
-PatchExecutionResult ExecuteSoftwarePatchThroughService(const AgentConfig& config, const std::wstring& softwareId);
+PatchExecutionResult ExecuteSoftwarePatchThroughService(const AgentConfig& config, const std::wstring& softwareId, bool searchOnly = false);
 
 }  // namespace antivirus::agent
