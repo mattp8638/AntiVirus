@@ -956,6 +956,75 @@ class ConditionState(Base):
     __table_args__ = (UniqueConstraint("condition_id", "device_id"),)
 
 
+class DiskTelemetryHistory(Base):
+    """Historical telemetry for disk usage per device and mount point."""
+
+    __tablename__ = "rmm_disk_telemetry_history"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    mount: Mapped[str] = mapped_column(String(120), index=True)
+    total_gb: Mapped[float] = mapped_column(Float, default=0.0)
+    used_gb: Mapped[float] = mapped_column(Float, default=0.0)
+    free_gb: Mapped[float] = mapped_column(Float, default=0.0)
+    free_percent: Mapped[float] = mapped_column(Float, default=100.0)
+
+
+class DiskExhaustionPrediction(Base):
+    """Predictive analytics for storage exhaustion per endpoint mount point."""
+
+    __tablename__ = "rmm_disk_exhaustion_predictions"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("dep"))
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    mount: Mapped[str] = mapped_column(String(120))
+    predicted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    total_gb: Mapped[float] = mapped_column(Float, default=0.0)
+    current_used_gb: Mapped[float] = mapped_column(Float, default=0.0)
+    baseline_os_gb: Mapped[float] = mapped_column(Float, default=0.0)
+    daily_growth_gb: Mapped[float] = mapped_column(Float, default=0.0)
+    capacity_threshold_gb: Mapped[float] = mapped_column(Float, default=0.0)
+    days_remaining: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="ok")
+    confidence_score: Mapped[float] = mapped_column(Float, default=1.0)
+    model_type: Mapped[str] = mapped_column(String(64), default="linear_regression")
+
+    __table_args__ = (UniqueConstraint("device_id", "mount", name="uq_disk_prediction_device_mount"),)
+
+
+class ResourceBaseline(Base):
+    """Rolling historical baseline for device operational metrics (CPU, RAM)."""
+
+    __tablename__ = "rmm_resource_baselines"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("rbl"))
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    metric: Mapped[str] = mapped_column(String(32))
+    rolling_mean: Mapped[float] = mapped_column(Float, default=0.0)
+    rolling_std: Mapped[float] = mapped_column(Float, default=1.0)
+    sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    window_days: Mapped[int] = mapped_column(Integer, default=7)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    __table_args__ = (UniqueConstraint("device_id", "metric", name="uq_resource_baseline_device_metric"),)
+
+
+class ResourceAnomaly(Base):
+    """Detected anomaly events for CPU or RAM usage exceeding statistical thresholds."""
+
+    __tablename__ = "rmm_resource_anomalies"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ran"))
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    metric: Mapped[str] = mapped_column(String(32))
+    current_value: Mapped[float] = mapped_column(Float, default=0.0)
+    baseline_mean: Mapped[float] = mapped_column(Float, default=0.0)
+    baseline_std: Mapped[float] = mapped_column(Float, default=0.0)
+    z_score: Mapped[float] = mapped_column(Float, default=0.0)
+    is_sustained: Mapped[bool] = mapped_column(Boolean, default=False)
+    consecutive_spikes: Mapped[int] = mapped_column(Integer, default=1)
+    top_processes: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
+    user_sessions: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+
+
 class DeviceMetric(Base):
     """Down-sampled health history for device charts (one row per heartbeat, kept 30 days)."""
 
@@ -1753,3 +1822,32 @@ class ApprovalRequest(Base):
     reason: Mapped[str] = mapped_column(String(500), default="")
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+# --------------------------------------------------------------------------
+# Analytics Data Ingestion Models (Pydantic Validation Schemas)
+# --------------------------------------------------------------------------
+
+from pydantic import BaseModel, Field
+
+
+class DiskMetricIngest(BaseModel):
+    mount: str = Field(..., max_length=120)
+    totalGb: float = Field(..., ge=0)
+    freeGb: float = Field(..., ge=0)
+    freePercent: float = Field(..., ge=0, le=100)
+
+
+class TopProcessIngest(BaseModel):
+    pid: int | None = None
+    name: str = Field(..., max_length=120)
+    cpuPercent: float | None = Field(default=None, ge=0)
+    memoryMb: float | None = Field(default=None, ge=0)
+
+
+class HeartbeatMetricsIngest(BaseModel):
+    cpuPercent: float | None = Field(default=None, ge=0, le=100)
+    memoryPercent: float | None = Field(default=None, ge=0, le=100)
+    disks: list[DiskMetricIngest] = Field(default_factory=list)
+    topProcesses: list[TopProcessIngest] = Field(default_factory=list)
+    users: list[str] = Field(default_factory=list)

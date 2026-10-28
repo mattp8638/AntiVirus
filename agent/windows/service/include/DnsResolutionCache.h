@@ -49,6 +49,51 @@ class DnsResolutionCache {
     }
   }
 
+  void CacheDomainVerdict(const std::wstring& domain,
+                          const std::wstring& verdict,
+                          const std::wstring& category = L"",
+                          int ttlSeconds = 300) const {
+    if (domain.empty()) {
+      return;
+    }
+
+    const auto db = OpenConnection();
+    const auto observedAt = CurrentUtcTimestamp();
+    auto statement = Prepare(db.get(),
+                             "INSERT INTO dns_verdict_cache("
+                             " domain, verdict, category, observed_at, ttl_seconds)"
+                             " VALUES(?, ?, ?, ?, ?)"
+                             " ON CONFLICT(domain) DO UPDATE SET"
+                             " verdict=excluded.verdict,"
+                             " category=excluded.category,"
+                             " observed_at=excluded.observed_at,"
+                             " ttl_seconds=excluded.ttl_seconds;");
+
+    BindText(statement.get(), 1, domain);
+    BindText(statement.get(), 2, verdict);
+    BindText(statement.get(), 3, category);
+    BindText(statement.get(), 4, observedAt);
+    sqlite3_bind_int(statement.get(), 5, ttlSeconds);
+    StepDone(db.get(), statement.get());
+  }
+
+  std::wstring LookupDomainVerdict(const std::wstring& domain) const {
+    if (domain.empty()) {
+      return {};
+    }
+
+    const auto db = OpenConnection();
+    auto statement = Prepare(db.get(),
+                             "SELECT verdict, category FROM dns_verdict_cache"
+                             " WHERE domain=?;");
+    BindText(statement.get(), 1, domain);
+    const auto step = sqlite3_step(statement.get());
+    if (step == SQLITE_DONE || step != SQLITE_ROW) {
+      return {};
+    }
+    return ColumnText(statement.get(), 0);
+  }
+
   std::wstring LookupHostForIp(const std::wstring& address) const {
     if (address.empty()) {
       return {};
@@ -116,7 +161,14 @@ class DnsResolutionCache {
          " observed_at TEXT NOT NULL,"
          " source TEXT"
          ");"
-         "CREATE INDEX IF NOT EXISTS idx_dns_resolution_host ON dns_resolution_cache(resolved_host, observed_at DESC);");
+         "CREATE INDEX IF NOT EXISTS idx_dns_resolution_host ON dns_resolution_cache(resolved_host, observed_at DESC);"
+         "CREATE TABLE IF NOT EXISTS dns_verdict_cache ("
+         " domain TEXT PRIMARY KEY,"
+         " verdict TEXT NOT NULL,"
+         " category TEXT,"
+         " observed_at TEXT NOT NULL,"
+         " ttl_seconds INTEGER NOT NULL DEFAULT 300"
+         ");");
   }
 
   static StatementHandle Prepare(sqlite3* db, const char* sql) {
