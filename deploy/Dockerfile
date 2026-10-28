@@ -92,5 +92,5 @@ COPY --from=windows-agents /out/windows/ /app/cloud/downloads/windows/
 RUN useradd --system --uid 10001 fenrir && mkdir -p /data && chown fenrir /data
 USER fenrir
 EXPOSE 8080
-HEALTHCHECK --interval=30s --timeout=5s CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/health')"
+HEALTHCHECK --interval=30s --timeout=5s CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=4)"
 CMD ["uvicorn", "--factory", "fenrir_cloud.main:create_app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers", "--workers", "1"]

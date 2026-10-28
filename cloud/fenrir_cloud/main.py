@@ -20,7 +20,7 @@ from . import __version__, crypto, audit, db as database, events, policy_schema,
 from . import vulnmgmt  # noqa: F401 - registers its event handlers
 from .config import Settings, get_settings, set_settings
 from .detection import sync_builtin_rules
-from .models import DnsQueryLog, Event, RateLimitBucket, Policy, RuleMatch, Tenant, User, utcnow
+from .models import Device, DnsQueryLog, Event, RateLimitBucket, Policy, RuleMatch, Tenant, User, utcnow
 from .routers import m365_admin as m365_admin_router
 from .routers import m365 as m365_router, network as network_router, grc as grc_router, backup as backup_router, soc_workflows
 from .routers import documentation as documentation_router
@@ -307,6 +307,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             with database.session_factory()() as db:
                 version = db.execute(text("SELECT MAX(version) FROM schema_migrations")).scalar()
+                if version == database.LATEST_MIGRATION:
+                    try:
+                        # Resolve all mapped columns without returning device data.
+                        # A current ledger alone did not catch the skipped build column.
+                        db.execute(select(Device).limit(0))
+                    except Exception:  # noqa: BLE001
+                        return JSONResponse({"ready": False, "reason": "device schema is incompatible"}, status_code=503)
         except Exception:  # noqa: BLE001
             return JSONResponse({"ready": False, "reason": "database unavailable"}, status_code=503)
         if version != database.LATEST_MIGRATION:

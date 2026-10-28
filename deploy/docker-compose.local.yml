@@ -1,0 +1,5 @@
+# Evaluation on this host only. Use with the base and lab Compose files.
+# Requires Docker Compose 2.24.4+ so the base public port is replaced, not appended.
+services:
+  cloud:
+    ports: !override ["127.0.0.1:8080:8080"]

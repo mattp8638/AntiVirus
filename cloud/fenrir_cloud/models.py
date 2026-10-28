@@ -130,7 +130,7 @@ class Device(Base):
     os_version: Mapped[str] = mapped_column(String(255), default="")
     serial_number: Mapped[str] = mapped_column(String(255), default="")
     agent_version: Mapped[str] = mapped_column(String(64), default="")
-    agent_build: Mapped[str] = mapped_column(String(64), default="")  # source fingerprint the agent reports (AGT-04)
+    agent_build: Mapped[str] = mapped_column(String(64), default="", server_default="")  # source fingerprint the agent reports (AGT-04)
     platform_version: Mapped[str] = mapped_column(String(64), default="")
     health_state: Mapped[str] = mapped_column(String(40), default="unknown")
     isolated: Mapped[bool] = mapped_column(Boolean, default=False)
