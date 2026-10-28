@@ -1,8 +1,9 @@
+import { displayValue } from "../components/DisplayValue";
 import { Fragment, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { ago, fmtTime } from "../api";
 import { useApp } from "../app-context";
-import { PageHead, Pill, Sev, Stat, Table, Tabs, useData } from "../components/ui";
+import { PageHead, Pill, Sev, Stat, Table, Tabs, useData, useListData } from "../components/ui";
 
 // Active Directory, per customer domain. Built from what the Fenrir agent on each domain controller reports:
 // a directory snapshot every 6 hours (system profile) and live Security-log events.
@@ -28,7 +29,7 @@ const RISKY_LABEL: Record<string, string> = {
 
 export default function ActiveDirectory() {
   const { tenantId, tenantName } = useApp();
-  const { data } = useData<any[]>("ad/domains", { tenant_id: tenantId });
+  const { data } = useListData<any>("ad/domains", { tenant_id: tenantId });
   const [selected, setSelected] = useState<{ tenantId: string; domain: string } | null>(null);
   useEffect(() => {
     if (!selected && data?.length) setSelected({ tenantId: data[0].tenantId, domain: data[0].domain });
@@ -52,13 +53,13 @@ export default function ActiveDirectory() {
               <button key={d.tenantId + d.domain} className={`card domain-card ${active ? "active" : ""}`} style={{ textAlign: "left", cursor: "pointer" }}
                       onClick={() => setSelected({ tenantId: d.tenantId, domain: d.domain })}>
                 <div className="row" style={{ alignItems: "baseline" }}>
-                  <b style={{ fontSize: 16, flex: 1 }}>{d.domain}</b>
-                  {d.score !== null && <span className={`badge tone-${d.score >= 80 ? "good" : d.score >= 50 ? "warn" : "bad"}`}>{d.score}/100</span>}
+                  <b style={{ fontSize: 16, flex: 1 }}>{displayValue(d.domain)}</b>
+                  {d.score !== null && <span className={`badge tone-${d.score >= 80 ? "good" : d.score >= 50 ? "warn" : "bad"}`}>{displayValue(d.score)}/100</span>}
                 </div>
                 <div className="small muted">{tenantName(d.tenantId)}{d.netbios ? ` · ${d.netbios}` : ""}{d.mode ? ` · ${d.mode}` : ""}</div>
                 <div className="row small" style={{ marginTop: 8 }}>
-                  {(["critical", "high", "medium"] as const).map((s) => d.findings[s] > 0 && <span key={s}><Sev level={s} /> {d.findings[s]}</span>)}
-                  <span className="muted">{d.agents.filter((a: any) => a.online).length}/{d.agents.length} DC agents online</span>
+                  {(["critical", "high", "medium"] as const).map((s) => d.findings[s] > 0 && <span key={s}><Sev level={s} /> {displayValue(d.findings[s])}</span>)}
+                  <span className="muted">{displayValue(d.agents.filter((a: any) => a.online).length)}/{displayValue(d.agents.length)} DC agents online</span>
                 </div>
               </button>
             );
@@ -102,7 +103,7 @@ function DomainDetail({ tenantId, domain }: { tenantId: string; domain: string }
           <h3 style={{ marginTop: 0 }}>Active Directory alerts</h3>
           {openAlerts.slice(0, 8).map((a: any) => (
             <div key={a.id} className="row small" style={{ padding: "4px 0" }}>
-              <Sev level={a.severity} /><Link to={`/alerts?focus=${a.id}`} style={{ flex: 1 }}>{a.title}</Link><span className="muted">{ago(a.createdAt)}</span>
+              <Sev level={a.severity} /><Link to={`/alerts?focus=${a.id}`} style={{ flex: 1 }}>{displayValue(a.title)}</Link><span className="muted">{ago(a.createdAt)}</span>
             </div>
           ))}
         </div>
@@ -114,9 +115,9 @@ function DomainDetail({ tenantId, domain }: { tenantId: string; domain: string }
           {data.findingsList.length === 0 && data.snapshotAt && <p className="muted">No findings. Nice work.</p>}
           {data.findingsList.map((f: any) => (
             <div key={f.id} className="finding" style={{ padding: "10px 0", borderBottom: "1px solid var(--line)" }}>
-              <div className="row"><Sev level={f.severity} /><b style={{ flex: 1 }}>{f.title}</b>{f.mitre?.map((m: string) => <span key={m} className="chip">{m}</span>)}</div>
-              <div className="small" style={{ marginTop: 4 }}>{f.detail}</div>
-              <div className="small" style={{ marginTop: 4 }}><b>Fix:</b> {f.fix}</div>
+              <div className="row"><Sev level={f.severity} /><b style={{ flex: 1 }}>{displayValue(f.title)}</b>{f.mitre?.map((m: string) => <span key={m} className="chip">{m}</span>)}</div>
+              <div className="small" style={{ marginTop: 4 }}>{displayValue(f.detail)}</div>
+              <div className="small" style={{ marginTop: 4 }}><b>Fix:</b> {displayValue(f.fix)}</div>
               <Names rows={f.affected} />
             </div>
           ))}
@@ -125,7 +126,7 @@ function DomainDetail({ tenantId, domain }: { tenantId: string; domain: string }
       {tab === "Privileged groups" && (
         <div className="card">
           <Table rows={data.privilegedGroups} empty="No privileged group data yet."
-                 columns={[{ key: "label", label: "Group", render: (g) => <><b>{g.name}</b>{g.name !== g.label && <div className="small muted">{g.label}</div>}</> },
+                 columns={[{ key: "label", label: "Group", render: (g) => <><b>{displayValue(g.name)}</b>{g.name !== g.label && <div className="small muted">{displayValue(g.label)}</div>}</> },
                            { key: "memberCount", label: "Members", className: "right" },
                            { key: "members", label: "Who", render: (g) => <Names rows={g.members} /> }]} />
           <p className="small muted">Members are listed recursively (nested groups expanded). Changes to these groups alert immediately.</p>
@@ -138,7 +139,7 @@ function DomainDetail({ tenantId, domain }: { tenantId: string; domain: string }
             if (!Array.isArray(value) || !value.length) return null;
             return <div key={key} style={{ marginBottom: 12 }}><b>{label}</b> <span className="muted">({value.length})</span><Names rows={value} /></div>;
           })}
-          <p className="small muted">Stale accounts: {data.risky?.staleUsers ?? "—"} users and {data.risky?.staleComputers ?? "—"} computers not used in 90 days.</p>
+          <p className="small muted">Stale accounts: {displayValue(data.risky?.staleUsers ?? "—")} users and {displayValue(data.risky?.staleComputers ?? "—")} computers not used in 90 days.</p>
         </div>
       )}
       {tab === "Activity" && (
@@ -146,15 +147,15 @@ function DomainDetail({ tenantId, domain }: { tenantId: string; domain: string }
           <Table rows={data.activity} empty="No directory changes or attacks recorded in the last 7 days."
                  columns={[{ key: "at", label: "When", render: (e) => <span className="small">{fmtTime(e.at)}</span> },
                            { key: "type", label: "What", render: (e) => <Pill value={TYPE_LABEL[e.type] || e.type} tone={e.fields.privilegedGroup || e.type === "ad.replication.requested" ? "bad" : "muted"} /> },
-                           { key: "summary", label: "Detail", render: (e) => <>{e.summary}{e.fields.privilegedGroup && <> <Pill value={e.fields.privilegedGroup} tone="warn" /></>}</> },
-                           { key: "dc", label: "Domain controller", render: (e) => <span className="small muted">{e.fields.domainController}</span> }]} />
+                           { key: "summary", label: "Detail", render: (e) => <>{displayValue(e.summary)}{e.fields.privilegedGroup && <> <Pill value={e.fields.privilegedGroup} tone="warn" /></>}</> },
+                           { key: "dc", label: "Domain controller", render: (e) => <span className="small muted">{displayValue(e.fields.domainController)}</span> }]} />
         </div>
       )}
       {tab === "Domain controllers" && (
         <div className="card">
           <Table rows={data.controllers} empty="No domain controllers listed yet."
-                 columns={[{ key: "name", label: "Domain controller", render: (dc) => <b>{dc.name}</b> },
-                           { key: "site", label: "Site" }, { key: "os", label: "OS", render: (dc) => <span className="small">{dc.os}</span> },
+                 columns={[{ key: "name", label: "Domain controller", render: (dc) => <b>{displayValue(dc.name)}</b> },
+                           { key: "site", label: "Site" }, { key: "os", label: "OS", render: (dc) => <span className="small">{displayValue(dc.os)}</span> },
                            { key: "roles", label: "FSMO roles", render: (dc) => (dc.roles || []).map((r: string) => <span key={r} className="chip">{r}</span>) },
                            { key: "gc", label: "GC", render: (dc) => dc.globalCatalog ? "Yes" : "—" },
                            { key: "agent", label: "Fenrir", render: (dc) => dc.agent ? <Link to={`/devices/${dc.agent.deviceId}`}><span className={`dot ${dc.agent.online ? "on" : "off"}`} /> {dc.agent.online ? "online" : `seen ${ago(dc.agent.lastSeen)}`}</Link> : <Pill value="not installed" tone="bad" /> }]} />
@@ -172,7 +173,7 @@ function DomainDetail({ tenantId, domain }: { tenantId: string; domain: string }
                 ["LAPS coverage", data.laps.eligibleComputers ? `${data.laps.coveredComputers}/${data.laps.eligibleComputers} computers` : undefined],
                 ["AD Recycle Bin", yes(data.recycleBin)], ["Forest", data.domainInfo.forest], ["PDC emulator", data.domainInfo.pdcEmulator]]
                 .filter(([, v]) => v !== undefined && v !== null && v !== "")
-                .map(([k, v]) => <Fragment key={k as string}><dt>{k}</dt><dd>{String(v)}</dd></Fragment>)}
+                .map(([k, v]) => <Fragment key={k as string}><dt>{displayValue(k)}</dt><dd>{String(v)}</dd></Fragment>)}
             </dl>
           </div>
           <div className="card">
@@ -186,7 +187,7 @@ function DomainDetail({ tenantId, domain }: { tenantId: string; domain: string }
             <h3 style={{ marginTop: 0 }}>Recently changed group policies</h3>
             <Table rows={(data.gpos || []).slice(0, 15)} empty="No group policy data."
                    columns={[{ key: "name", label: "GPO" }, { key: "modified", label: "Modified", render: (g) => <span className="small">{g.modified ? ago(g.modified) : "—"}</span> },
-                             { key: "status", label: "Status", render: (g) => <span className="small muted">{g.status}</span> }]} />
+                             { key: "status", label: "Status", render: (g) => <span className="small muted">{displayValue(g.status)}</span> }]} />
           </div>
           <div className="card">
             <h3 style={{ marginTop: 0 }}>Trusts</h3>

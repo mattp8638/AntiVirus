@@ -1,9 +1,10 @@
+import { displayValue } from "../../components/DisplayValue";
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ago, api, fmtTime } from "../../api";
 import { useApp } from "../../app-context";
 import { ConnectButtons } from "../../components/rmm";
-import { ErrorNote, Modal, Pill, Table, Tabs, useAction, useData } from "../../components/ui";
+import { ErrorNote, Modal, Pill, Table, Tabs, useAction, useData, useListData } from "../../components/ui";
 import ServiceRecord from "./ServiceRecord";
 import { PRIORITY_TONE } from "./ServiceBoard";
 
@@ -39,9 +40,9 @@ export default function TicketDetail() {
     <>
       <div className="page-head">
         <div>
-          <div className="small muted"><Link to="/service-board">Service board</Link> › {t.board}</div>
-          <h1>#{t.number} {t.subject}</h1>
-          <p>{t.account}{t.contact ? ` · ${t.contact.name}` : t.contactEmail ? ` · ${t.contactEmail}` : ""} · opened {fmtTime(t.createdAt)} via {t.source}</p>
+          <div className="small muted"><Link to="/service-board">Service board</Link> › {displayValue(t.board)}</div>
+          <h1>#{displayValue(t.number)} {displayValue(t.subject)}</h1>
+          <p>{displayValue(t.account)}{t.contact ? ` · ${t.contact.name}` : t.contactEmail ? ` · ${t.contactEmail}` : ""} · opened {fmtTime(t.createdAt)} via {displayValue(t.source)}</p>
         </div>
         <div className="actions">
           {t.device && <ConnectButtons device={t.device} ticketId={t.id} />}
@@ -56,20 +57,20 @@ export default function TicketDetail() {
           <div className="card">
             <div className="form-grid">
               <label className="field">Status<select value={t.status} onChange={(e) => update({ status: e.target.value }, `Status: ${e.target.value}`)}>
-                {(board?.statuses || [{ name: t.status }]).map((s: any) => <option key={s.name}>{s.name}</option>)}</select></label>
+                {(board?.statuses || [{ name: t.status }]).map((s: any) => <option key={s.name}>{displayValue(s.name)}</option>)}</select></label>
               <label className="field">Board<select value={t.boardId || ""} onChange={(e) => update({ boardId: e.target.value }, "Moved to another board")}>
-                {meta?.boards.map((b: any) => <option key={b.id} value={b.id}>{b.name}</option>)}</select></label>
+                {meta?.boards.map((b: any) => <option key={b.id} value={b.id}>{displayValue(b.name)}</option>)}</select></label>
               <label className="field">Resource<select value={t.assignee || ""} onChange={(e) => update({ assignee: e.target.value }, "Assigned")}>
-                <option value="">Unassigned</option>{meta?.members.map((m: any) => <option key={m.email} value={m.email}>{m.name}</option>)}
-                {t.assignee && !meta?.members.some((m: any) => m.email === t.assignee) && <option value={t.assignee}>{t.assignee}</option>}</select></label>
+                <option value="">Unassigned</option>{meta?.members.map((m: any) => <option key={m.email} value={m.email}>{displayValue(m.name)}</option>)}
+                {t.assignee && !meta?.members.some((m: any) => m.email === t.assignee) && <option value={t.assignee}>{displayValue(t.assignee)}</option>}</select></label>
               <label className="field">Impact<select value={t.impact || "Medium"} onChange={(e) => update({ impact: e.target.value }, "Priority recalculated")}>{["High", "Medium", "Low"].map((x) => <option key={x}>{x}</option>)}</select></label>
               <label className="field">Urgency<select value={t.urgency || "Medium"} onChange={(e) => update({ urgency: e.target.value }, "Priority recalculated")}>{["High", "Medium", "Low"].map((x) => <option key={x}>{x}</option>)}</select></label>
               <label className="field">Priority<select value={t.priority} onChange={(e) => update({ priority: e.target.value }, "Priority changed; SLA recalculated")}>{["P1", "P2", "P3", "P4"].map((x) => <option key={x}>{x}</option>)}</select></label>
-              <label className="field">Type<select value={t.type || ""} onChange={(e) => update({ type: e.target.value, subtype: "", item: "" })}><option value="">—</option>{types.map((x: any) => <option key={x.name}>{x.name}</option>)}</select></label>
-              <label className="field">Subtype<select value={t.subtype || ""} onChange={(e) => update({ subtype: e.target.value, item: "" })}><option value="">—</option>{subtypes.map((x: any) => <option key={x.name}>{x.name}</option>)}</select></label>
+              <label className="field">Type<select value={t.type || ""} onChange={(e) => update({ type: e.target.value, subtype: "", item: "" })}><option value="">—</option>{types.map((x: any) => <option key={x.name}>{displayValue(x.name)}</option>)}</select></label>
+              <label className="field">Subtype<select value={t.subtype || ""} onChange={(e) => update({ subtype: e.target.value, item: "" })}><option value="">—</option>{subtypes.map((x: any) => <option key={x.name}>{displayValue(x.name)}</option>)}</select></label>
               <label className="field">Item<select value={t.item || ""} onChange={(e) => update({ item: e.target.value })}><option value="">—</option>{items.map((x: string) => <option key={x}>{x}</option>)}</select></label>
             </div>
-            {t.description && <pre style={{ whiteSpace: "pre-wrap", marginTop: 12, fontFamily: "var(--font)", fontSize: 14 }}>{t.description}</pre>}
+            {t.description && <pre style={{ whiteSpace: "pre-wrap", marginTop: 12, fontFamily: "var(--font)", fontSize: 14 }}>{displayValue(t.description)}</pre>}
           </div>
 
           <div className="card">
@@ -80,8 +81,8 @@ export default function TicketDetail() {
               <div className="timeline">
                 {[...(t.comments || [])].reverse().map((c: any, i: number) => (
                   <div key={i} className="item" style={{ opacity: c.kind === "system" ? 0.7 : 1 }}>
-                    <div className="small muted"><Pill value={c.kind || (c.internal ? "internal" : "discussion")} tone={NOTE_TONE[c.kind || (c.internal ? "internal" : "discussion")]} /> {c.by} · {fmtTime(c.at)}</div>
-                    <div style={{ whiteSpace: "pre-wrap" }}>{c.text}</div>
+                    <div className="small muted"><Pill value={c.kind || (c.internal ? "internal" : "discussion")} tone={NOTE_TONE[c.kind || (c.internal ? "internal" : "discussion")]} /> {displayValue(c.by)} · {fmtTime(c.at)}</div>
+                    <div style={{ whiteSpace: "pre-wrap" }}>{displayValue(c.text)}</div>
                   </div>
                 ))}
                 {!t.comments?.length && <p className="muted">No notes yet.</p>}
@@ -90,7 +91,7 @@ export default function TicketDetail() {
                 <div className="row" style={{ marginBottom: 6 }}>
                   {["discussion", "internal", "resolution"].map((k) => <button key={k} className={kind === k ? "small primary" : "small"} onClick={() => setKind(k)}>{k[0].toUpperCase() + k.slice(1)}</button>)}
                   <span style={{ flex: 1 }} />
-                  {kind !== "internal" && t.contactEmail && <label className="small"><input type="checkbox" checked={emailContact} onChange={(e) => setEmailContact(e.target.checked)} /> Email {t.contactEmail}</label>}
+                  {kind !== "internal" && t.contactEmail && <label className="small"><input type="checkbox" checked={emailContact} onChange={(e) => setEmailContact(e.target.checked)} /> Email {displayValue(t.contactEmail)}</label>}
                 </div>
                 <textarea rows={4} value={note} onChange={(e) => setNote(e.target.value)} placeholder={kind === "internal" ? "Only your team sees internal notes" : "The customer sees this note"} style={{ width: "100%", fontFamily: "var(--font)" }} />
                 <div className="row" style={{ marginTop: 6 }}>
@@ -105,16 +106,16 @@ export default function TicketDetail() {
                      columns={[{ key: "member", label: "Member" }, { key: "startedAt", label: "Date", render: (e) => fmtTime(e.startedAt) },
                                { key: "workType", label: "Work type" }, { key: "hours", label: "Actual", render: (e) => e.hours.toFixed(2) },
                                { key: "hoursBilled", label: "Billed", render: (e) => e.hoursBilled.toFixed(2) },
-                               { key: "billable", label: "Billing", render: (e) => <>{e.billable}{e.covered && <> <Pill value="agreement" tone="good" /></>}</> },
-                               { key: "status", label: "Status", render: (e) => <Pill value={e.status} /> }, { key: "notes", label: "Notes", render: (e) => <span className="small">{e.notes}</span> }]} />
+                               { key: "billable", label: "Billing", render: (e) => <>{displayValue(e.billable)}{e.covered && <> <Pill value="agreement" tone="good" /></>}</> },
+                               { key: "status", label: "Status", render: (e) => <Pill value={e.status} /> }, { key: "notes", label: "Notes", render: (e) => <span className="small">{displayValue(e.notes)}</span> }]} />
               <button style={{ marginTop: 8 }} onClick={() => setTimeOpen(true)}>Add time</button>
             </>}
             {tab === "Tasks" && <>
               {(t.tasks || []).map((x: any, i: number) => (
                 <div key={i} className="row" style={{ padding: "4px 0" }}>
                   <input type="checkbox" checked={x.done} onChange={() => taskOp({ toggle: i })} />
-                  <span style={{ textDecoration: x.done ? "line-through" : undefined, flex: 1 }}>{x.text}</span>
-                  <span className="small muted">{x.done ? `done by ${x.doneBy}` : x.by}</span>
+                  <span style={{ textDecoration: x.done ? "line-through" : undefined, flex: 1 }}>{displayValue(x.text)}</span>
+                  <span className="small muted">{displayValue(x.done ? `done by ${x.doneBy}` : x.by)}</span>
                   <button className="small ghost" onClick={() => taskOp({ remove: i })}>✕</button>
                 </div>
               ))}
@@ -131,11 +132,11 @@ export default function TicketDetail() {
                                                            { key: "createdAt", label: "Started", render: (s) => fmtTime(s.createdAt) }]} />}
             {tab === "RMM jobs" && <Table rows={Array.isArray(t.rmmJobs) ? t.rmmJobs : []}
                         empty="No RMM remediation jobs are linked to this ticket."
-                        columns={[{ key: "name", label: "Action", render: (j) => <Link to={`/automation?job=${encodeURIComponent(j.id)}`}>{j.name}</Link> },
+                        columns={[{ key: "name", label: "Action", render: (j) => <Link to={`/automation?job=${encodeURIComponent(j.id)}`}>{displayValue(j.name)}</Link> },
                                   { key: "kind", label: "Kind" },
                                   { key: "status", label: "Outcome", render: (j) => <Pill value={j.status} /> },
                                   { key: "summary", label: "Results",
-                                    render: (j) => <span>{j.summary?.completed || 0} completed, {j.summary?.failed || 0} failed, {j.summary?.dispatched || 0} in progress</span> },
+                                    render: (j) => <span>{displayValue(j.summary?.completed || 0)} completed, {displayValue(j.summary?.failed || 0)} failed, {displayValue(j.summary?.dispatched || 0)} in progress</span> },
                                   { key: "createdAt", label: "Started", render: (j) => fmtTime(j.createdAt) }]} />}
           </div>
         </div>
@@ -148,24 +149,24 @@ export default function TicketDetail() {
               <dt>Priority</dt><dd><Pill value={t.priority} tone={PRIORITY_TONE[t.priority]} /></dd>
               <dt>Respond by</dt><dd>{t.respondedAt ? <>responded {ago(t.respondedAt)}</> : <span style={{ color: t.respondBreached ? "#fecaca" : undefined }}>{fmtTime(t.respondDueAt)}</span>}</dd>
               <dt>Resolve by</dt><dd style={{ color: t.slaBreached ? "#fecaca" : undefined }}>{t.closed ? `resolved ${ago(t.resolvedAt)}` : fmtTime(t.slaDueAt)}</dd>
-              <dt>Hours logged</dt><dd>{t.hours.toFixed(2)}{t.budgetHours ? ` of ${t.budgetHours} budget` : ""}</dd>
+              <dt>Hours logged</dt><dd>{displayValue(t.hours.toFixed(2))}{t.budgetHours ? ` of ${t.budgetHours} budget` : ""}</dd>
             </dl>
           </div>
           <div className="card">
             <h3>Company</h3>
             <dl className="kv">
-              <dt>Company</dt><dd><Link to={`/companies/${t.accountTenantId}`}>{t.account}</Link></dd>
-              <dt>Contact</dt><dd>{t.contact ? <>{t.contact.name}<div className="small muted">{t.contact.email} {t.contact.phone}</div></> : t.contactEmail || "—"}</dd>
-              <dt>Agreement</dt><dd>{t.agreement ? <>{t.agreement.name}<div className="small muted">{t.agreement.agreementType}</div></> : <span className="muted">none (time is billable)</span>}</dd>
+              <dt>Company</dt><dd><Link to={`/companies/${t.accountTenantId}`}>{displayValue(t.account)}</Link></dd>
+              <dt>Contact</dt><dd>{t.contact ? <>{displayValue(t.contact.name)}<div className="small muted">{displayValue(t.contact.email)} {displayValue(t.contact.phone)}</div></> : t.contactEmail || "—"}</dd>
+              <dt>Agreement</dt><dd>{t.agreement ? <>{displayValue(t.agreement.name)}<div className="small muted">{displayValue(t.agreement.agreementType)}</div></> : <span className="muted">none (time is billable)</span>}</dd>
             </dl>
           </div>
           {t.device && <div className="card">
             <h3>Device</h3>
-            <p><Link to={`/devices/${t.device.id}`}>{t.device.hostname}</Link><br /><span className="small muted">{t.device.osVersion}</span></p>
+            <p><Link to={`/devices/${t.device.id}`}>{displayValue(t.device.hostname)}</Link><br /><span className="small muted">{displayValue(t.device.osVersion)}</span></p>
             <ConnectButtons device={t.device} ticketId={t.id} />
           </div>}
           {t.incidentId && <div className="card"><h3>Security incident</h3><Link to={`/incidents/${t.incidentId}`}>Open the linked incident</Link></div>}
-          {t.children?.length > 0 && <div className="card"><h3>Merged tickets</h3>{t.children.map((c: any) => <div key={c.id}><Link to={`/tickets/${c.id}`}>#{c.number}</Link> {c.subject}</div>)}</div>}
+          {t.children?.length > 0 && <div className="card"><h3>Merged tickets</h3>{t.children.map((c: any) => <div key={c.id}><Link to={`/tickets/${c.id}`}>#{displayValue(c.number)}</Link> {displayValue(c.subject)}</div>)}</div>}
           {t.parentId && <div className="card"><h3>Merged into</h3><Link to={`/tickets/${t.parentId}`}>parent ticket</Link></div>}
         </div>
       </div>
@@ -177,7 +178,7 @@ export default function TicketDetail() {
 }
 
 function ConfigsTab({ ticket, onChange }: { ticket: any; onChange: () => void }) {
-  const { data } = useData<any[]>("psa/configurations", { accountTenantId: ticket.accountTenantId });
+  const { data } = useListData<any>("psa/configurations", { accountTenantId: ticket.accountTenantId });
   const { run } = useAction();
   const attached = new Set(ticket.configurationIds || []);
   const toggle = async (id: string) => {
@@ -230,7 +231,7 @@ function ScheduleModal({ ticket, meta, onClose }: { ticket: any; meta: any; onCl
              if (r) { if (r.conflict) window.alert(`${form.member} already has something booked at that time.`); onClose(); }
            }}>Schedule</button></>}>
       <div className="form-grid">
-        <label className="field">Member<select value={form.member} onChange={(e) => setForm({ ...form, member: e.target.value })}>{meta?.members.map((m: any) => <option key={m.email} value={m.email}>{m.name}</option>)}</select></label>
+        <label className="field">Member<select value={form.member} onChange={(e) => setForm({ ...form, member: e.target.value })}>{meta?.members.map((m: any) => <option key={m.email} value={m.email}>{displayValue(m.name)}</option>)}</select></label>
         <label className="field">Type<select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })}>{["Service", "Onsite", "Meeting", "Project"].map((k) => <option key={k}>{k}</option>)}</select></label>
         <label className="field">Start<input type="datetime-local" value={form.startAt} onChange={(e) => setForm({ ...form, startAt: e.target.value })} /></label>
         <label className="field">End<input type="datetime-local" value={form.endAt} onChange={(e) => setForm({ ...form, endAt: e.target.value })} /></label>
@@ -242,7 +243,7 @@ function ScheduleModal({ ticket, meta, onClose }: { ticket: any; meta: any; onCl
 
 function MergeModal({ ticket, onClose }: { ticket: any; onClose: (target?: string) => void }) {
   const [q, setQ] = useState("");
-  const { data } = useData<any[]>("tickets", { q, status: "active" });
+  const { data } = useListData<any>("tickets", { q, status: "active" });
   const { run } = useAction();
   return (
     <Modal title={`Merge #${ticket.number} into…`} onClose={() => onClose()}>

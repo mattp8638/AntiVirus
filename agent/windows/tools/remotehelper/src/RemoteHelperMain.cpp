@@ -37,6 +37,7 @@
 
 #include "ExtendedPolicy.h"
 #include "RemoteKeymap.h"
+#include "RemotePipeIo.h"
 #include "StringUtils.h"
 #include "WebSocketClient.h"
 
@@ -547,55 +548,69 @@ void TypeText(const std::wstring& text) {
   }
 }
 
-// Direct SendSAS from this process. Windows ignores it unless the caller counts as a service, so this is only the
-// fallback for an older agent service that does not offer the pipe below.
-bool SendSasDirect() {
-  using SendSasFn = VOID(WINAPI*)(BOOL);
-  HMODULE sas = LoadLibraryExW(L"sas.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
-  if (!sas) {
-    return false;
-  }
-  auto fn = reinterpret_cast<SendSasFn>(GetProcAddress(sas, "SendSAS"));
-  if (!fn) {
-    FreeLibrary(sas);
-    return false;
-  }
-  HKEY key = nullptr;
-  if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System", 0, nullptr, 0,
-                      KEY_READ | KEY_WRITE | KEY_WOW64_64KEY, nullptr, &key, nullptr) == ERROR_SUCCESS) {
-    DWORD value = 0, size = sizeof(value);
-    if (RegQueryValueExW(key, L"SoftwareSASGeneration", nullptr, nullptr, reinterpret_cast<BYTE*>(&value), &size) != ERROR_SUCCESS || value == 0) {
-      value = 1;
-      RegSetValueExW(key, L"SoftwareSASGeneration", 0, REG_DWORD, reinterpret_cast<BYTE*>(&value), sizeof(value));
-    }
-    RegCloseKey(key);
-  }
-  fn(FALSE);
-  FreeLibrary(sas);
-  return true;
-}
-
 // Asks the Fenrir service (a real service in session 0, where SendSAS is honoured) to send Ctrl+Alt+Del.
-// Returns "ok", "error: <reason>", or "" when the service does not offer the pipe.
+// Both reads and writes have a deadline; no direct helper fallback can claim a
+// successful SAS just because the void SendSAS function returned.
 std::string RequestSasFromService(const std::string& sessionId) {
-  const auto name = L"\\\\.\\pipe\\fenrir-remote-sas-" + Utf8ToWide(sessionId);
-  if (!WaitNamedPipeW(name.c_str(), 3000)) {
-    return "";
+  if (sessionId.empty() || sessionId.size() > 64 || sessionId.find_first_of("\\/:*?\"<>|") != std::string::npos) {
+    return "error: invalid remote session id";
   }
-  HANDLE pipe = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+  const auto name = L"\\\\.\\pipe\\fenrir-remote-sas-" + Utf8ToWide(sessionId);
+  // WaitNamedPipe returns immediately if the broker has not created its first
+  // instance yet. Retry that startup race within the same bounded deadline.
+  HANDLE pipe = INVALID_HANDLE_VALUE;
+  const ULONGLONG connectDeadline = GetTickCount64() + 3000;
+  do {
+    if (WaitNamedPipeW(name.c_str(), 100)) {
+      pipe = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                         FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IMPERSONATION, nullptr);
+      if (pipe != INVALID_HANDLE_VALUE) break;
+    }
+    const DWORD error = GetLastError();
+    if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PIPE_BUSY && error != ERROR_SEM_TIMEOUT) break;
+    Sleep(25);
+  } while (GetTickCount64() < connectDeadline);
   if (pipe == INVALID_HANDLE_VALUE) {
-    return "";
+    return "error: the Ctrl+Alt+Del service channel is unavailable; update the Windows agent and reconnect";
   }
   DWORD mode = PIPE_READMODE_MESSAGE;
-  SetNamedPipeHandleState(pipe, &mode, nullptr, nullptr);
+  HANDLE event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  if (!event || !SetNamedPipeHandleState(pipe, &mode, nullptr, nullptr)) {
+    if (event) CloseHandle(event);
+    CloseHandle(pipe);
+    return "error: could not prepare the Ctrl+Alt+Del service channel";
+  }
   DWORD written = 0, read = 0;
   char reply[512] = {};
-  std::string result;
-  if (WriteFile(pipe, "sas", 3, &written, nullptr) && ReadFile(pipe, reply, sizeof(reply) - 1, &read, nullptr)) {
-    result.assign(reply, read);
-  } else {
-    result = "error: no reply from the Fenrir service";
+  // One deadline for the exchange, not a fresh timeout for every operation.
+  const ULONGLONG deadline = GetTickCount64() + 5000;
+  const auto remaining = [&]() -> DWORD {
+    const auto now = GetTickCount64();
+    return now < deadline ? static_cast<DWORD>(deadline - now) : 0;
+  };
+  OVERLAPPED operation{};
+  operation.hEvent = event;
+  const BOOL writing = WriteFile(pipe, "sas", 3, nullptr, &operation);
+  const DWORD writeError = GetLastError();
+  bool ok = remote::FinishPipeIo(pipe, operation, writing, writeError, remaining(), nullptr, written) && written == 3;
+  if (ok) {
+    operation = {};
+    operation.hEvent = event;
+    ResetEvent(event);
+    const BOOL reading = ReadFile(pipe, reply, sizeof(reply) - 1, nullptr, &operation);
+    const DWORD readError = GetLastError();
+    ok = remote::FinishPipeIo(pipe, operation, reading, readError, remaining(), nullptr, read) && read > 0;
   }
+  const std::string result = ok ? std::string(reply, read) : "error: no reply from the Fenrir service within 5 seconds";
+  if (ok) {
+    operation = {};
+    operation.hEvent = event;
+    ResetEvent(event);
+    const BOOL acknowledging = WriteFile(pipe, "ack", 3, nullptr, &operation);
+    const DWORD ackError = GetLastError();
+    remote::FinishPipeIo(pipe, operation, acknowledging, ackError, remaining(), nullptr, written);
+  }
+  CloseHandle(event);
   CloseHandle(pipe);
   return result;
 }
@@ -606,10 +621,7 @@ std::string SendCtrlAltDel(const std::string& sessionId) {
   if (reply == "ok") {
     return "";
   }
-  if (!reply.empty()) {
-    return reply.rfind("error: ", 0) == 0 ? reply.substr(7) : reply;
-  }
-  return SendSasDirect() ? "" : "SendSAS is not available on this device";
+  return reply.rfind("error: ", 0) == 0 ? reply.substr(7) : "invalid reply from the Ctrl+Alt+Del service channel";
 }
 
 void Session::HandleInput(const std::string& type, const json::Value& m) {
@@ -675,13 +687,11 @@ void Session::HandleInput(const std::string& type, const json::Value& m) {
     }
   } else if (type == "cad") {
     const auto failure = SendCtrlAltDel(options_.sessionId);
-    if (failure.empty()) {
-      HelperLog("Ctrl+Alt+Del sent.");
-      SendJson("{\"ch\":\"sys\",\"t\":\"notice\",\"message\":\"Ctrl+Alt+Del sent\"}");
-    } else {
-      HelperLog("Ctrl+Alt+Del failed: " + failure);
-      SendJson("{\"ch\":\"sys\",\"t\":\"error\",\"message\":\"Ctrl+Alt+Del could not be sent: " + EscapeJsonString(Utf8ToWide(failure)) + "\"}");
-    }
+    HelperLog(failure.empty() ? "Ctrl+Alt+Del requested for this Windows session." : "Ctrl+Alt+Del failed: " + failure);
+    SendJson("{\"ch\":\"sys\",\"t\":\"action.result\",\"action\":\"cad\",\"req\":" + RawJson(m, "req") +
+             ",\"ok\":" + (failure.empty() ? "true" : "false") + ",\"message\":" +
+             Q(failure.empty() ? "Ctrl+Alt+Del requested for this Windows session. Enter your Windows credentials when prompted."
+                               : "Ctrl+Alt+Del could not be sent: " + failure) + "}");
   } else if (type == "lock") {
     LockWorkStation();
   }

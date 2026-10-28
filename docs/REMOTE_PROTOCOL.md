@@ -41,6 +41,7 @@ Both sockets close when either side sends `{"ch":"sys","t":"end"}` or disconnect
 | `consent` | agent → viewer | `state`: `pending`, `granted` or `denied` |
 | `ping` / `pong` | viewer ↔ agent | `ts` (echoed back) |
 | `error` | agent → viewer | `message` |
+| `action.result` | Windows helper → viewer | `action: "cad"`, `req` (echoed), `ok`, `message` |
 | `end` | either | `reason` |
 
 ### `screen`
@@ -56,7 +57,7 @@ Both sockets close when either side sends `{"ch":"sys","t":"end"}` or disconnect
 - `kd {code,key}` / `ku {code,key}`: key down/up. `code` is the browser's physical key code (`KeyA`, `ShiftLeft`, `F5`…). Agents map it to a scan code or keysym, so the remote keyboard layout applies.
 - `type {text}`: type a string as keystrokes.
 - `clip.set {text}`: set the remote clipboard.
-- `cad`: Ctrl+Alt+Del (Windows uses `SendSAS`).
+- `cad {req}`: Ctrl+Alt+Del. On Windows, the helper asks the Fenrir service to call `SendSAS(FALSE)` while impersonating that helper in its Windows session. The service validates the caller's process, session, SYSTEM identity and impersonation level. The helper replies with `sys/action.result {action:"cad", req, ok, message}`. `ok:true` means the service issued the request; Windows provides no API result proving that the sign-in screen changed. The viewer shows failures and a 10-second acknowledgement timeout. See [Windows Ctrl+Alt+Del](REMOTE_CTRL_ALT_DEL.md) for deployment and validation.
 - `lock`: lock the workstation.
 - `blank {on}`: blank the user's screen (Windows only, when policy allows).
 

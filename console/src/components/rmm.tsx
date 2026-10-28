@@ -1,8 +1,9 @@
+import { displayValue } from "./DisplayValue";
 // Shared RMM widgets: device/group/customer target picker, remote "Connect" buttons, job output and a sparkline.
 import { useEffect, useMemo, useState } from "react";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
-import { Modal, Pill, useAction, useData } from "./ui";
+import { Modal, Pill, useAction, useData, useListData } from "./ui";
 
 export interface Targets {
   deviceIds: string[];
@@ -28,8 +29,8 @@ export function TargetPicker({ value, onChange, platforms }: { value: Targets; o
   const { me, tenantId } = useApp();
   const [mode, setMode] = useState<"devices" | "groups" | "tenants">(value.tenantIds.length ? "tenants" : value.groupIds.length ? "groups" : "devices");
   const [q, setQ] = useState("");
-  const { data: devices } = useData<any[]>("devices", { tenant_id: tenantId, q });
-  const { data: groups } = useData<any[]>("groups", { tenant_id: tenantId });
+  const { data: devices } = useListData<any>("devices", { tenant_id: tenantId, q });
+  const { data: groups } = useListData<any>("groups", { tenant_id: tenantId });
   const toggle = (key: keyof Targets, id: string) => {
     const set = new Set(value[key]);
     if (set.has(id)) set.delete(id); else set.add(id);
@@ -57,7 +58,7 @@ export function TargetPicker({ value, onChange, platforms }: { value: Targets; o
           {visible.map((d) => (
             <label key={d.id} className="row small" style={{ padding: "3px 0" }}>
               <input type="checkbox" checked={value.deviceIds.includes(d.id)} onChange={() => toggle("deviceIds", d.id)} />
-              <span className={`dot ${d.online ? "on" : "off"}`} /> {d.hostname} <span className="muted">{d.platform}</span>
+              <span className={`dot ${d.online ? "on" : "off"}`} /> {displayValue(d.hostname)} <span className="muted">{displayValue(d.platform)}</span>
             </label>
           ))}
           {!visible.length && <div className="muted small">No matching devices.</div>}
@@ -67,7 +68,7 @@ export function TargetPicker({ value, onChange, platforms }: { value: Targets; o
         <div style={{ maxHeight: 220, overflow: "auto" }}>
           {(groups || []).map((g) => (
             <label key={g.id} className="row small" style={{ padding: "3px 0" }}>
-              <input type="checkbox" checked={value.groupIds.includes(g.id)} onChange={() => toggle("groupIds", g.id)} /> {g.name}
+              <input type="checkbox" checked={value.groupIds.includes(g.id)} onChange={() => toggle("groupIds", g.id)} /> {displayValue(g.name)}
             </label>
           ))}
           {!groups?.length && <div className="muted small">No device groups yet.</div>}
@@ -125,7 +126,7 @@ export function JobStatus({ job }: { job: any }) {
   return (
     <span className="row" style={{ gap: 4 }}>
       <Pill value={job.status} tone={job.status === "completed" ? "good" : job.status === "running" ? "blue" : job.status === "partial" ? "warn" : job.status === "cancelled" ? "muted" : "bad"} />
-      <span className="small muted">{s.completed || 0}✓ {s.failed || 0}✗ {(s.pending || 0) + (s.dispatched || 0)} waiting{s.skipped ? ` · ${s.skipped} skipped` : ""}</span>
+      <span className="small muted">{displayValue(s.completed || 0)}✓ {displayValue(s.failed || 0)}✗ {displayValue((s.pending || 0) + (s.dispatched || 0))} waiting{s.skipped ? ` · ${s.skipped} skipped` : ""}</span>
     </span>
   );
 }
@@ -146,20 +147,20 @@ export function JobDetail({ jobId, onClose }: { jobId: string; onClose: () => vo
            footer={<>{data.status === "running" && <button onClick={async () => { await run(() => api(`rmm/jobs/${jobId}/cancel`, { method: "POST" }), "Pending actions cancelled"); reload(); }}>Cancel pending</button>}
                      {["failed", "partial"].includes(data.status) && <button title="Run again on the devices where it failed" onClick={async () => { await run(() => api(`rmm/jobs/${jobId}/retry`, { method: "POST" }), "Retry queued"); reload(); }}>Retry failed devices</button>}
                    <button onClick={reload}>Refresh</button><button className="primary" onClick={onClose}>Close</button></>}>
-      <p className="small muted">{data.createdBy} · {fmtTime(data.createdAt)} · {data.commandType}{data.script ? ` · ${data.script.language}` : ""}</p>
+      <p className="small muted">{displayValue(data.createdBy)} · {fmtTime(data.createdAt)} · {displayValue(data.commandType)}{data.script ? ` · ${data.script.language}` : ""}</p>
       <JobStatus job={data} />
       <div style={{ marginTop: 12 }}>
         {data.results.map((r: any) => (
           <div key={r.deviceId} className="card" style={{ padding: 10, marginTop: 8 }}>
             <div className="row" style={{ cursor: "pointer" }} onClick={() => setOpen(open === r.deviceId ? null : r.deviceId)}>
-              <b>{r.hostname}</b><Pill value={r.status} />{r.exitCode !== undefined && r.exitCode !== null && <span className="small muted">exit {r.exitCode}</span>}
+              <b>{displayValue(r.hostname)}</b><Pill value={r.status} />{r.exitCode !== undefined && r.exitCode !== null && <span className="small muted">exit {displayValue(r.exitCode)}</span>}
               {r.durationMs && <span className="small muted">{(r.durationMs / 1000).toFixed(1)}s</span>}
               <span style={{ flex: 1 }} /><span className="small muted">{open === r.deviceId ? "▲" : "▼"}</span>
             </div>
             {open === r.deviceId && <div style={{ marginTop: 8 }}>
-              {r.error && <p style={{ color: "#fecaca" }}>{r.error}</p>}
-              {r.stdout && <><h3>Output</h3><pre style={{ whiteSpace: "pre-wrap" }}>{r.stdout}</pre></>}
-              {r.stderr && <><h3 style={{ marginTop: 8 }}>Errors</h3><pre style={{ whiteSpace: "pre-wrap", color: "#fecaca" }}>{r.stderr}</pre></>}
+              {r.error && <p style={{ color: "#fecaca" }}>{displayValue(r.error)}</p>}
+              {r.stdout && <><h3>Output</h3><pre style={{ whiteSpace: "pre-wrap" }}>{displayValue(r.stdout)}</pre></>}
+              {r.stderr && <><h3 style={{ marginTop: 8 }}>Errors</h3><pre style={{ whiteSpace: "pre-wrap", color: "#fecaca" }}>{displayValue(r.stderr)}</pre></>}
               {!r.stdout && !r.stderr && Object.keys(r.result || {}).length > 0 && <pre>{JSON.stringify(r.result, null, 2)}</pre>}
             </div>}
           </div>

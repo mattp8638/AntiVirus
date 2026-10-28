@@ -1,3 +1,4 @@
+import { displayValue } from "./DisplayValue";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { useApp } from "../app-context";
@@ -67,15 +68,15 @@ export function M365Connect({ onClose, onManual }: { onClose: () => void; onManu
       {signin && signin.mode === "device" && (
         <div style={{ textAlign: "center", padding: "12px 0" }}>
           {signin.status === "pending" && <>
-            <p>1. Open <a href={signin.verificationUri} target="_blank" rel="noreferrer"><b>{signin.verificationUri}</b></a></p>
+            <p>1. Open <a href={signin.verificationUri} target="_blank" rel="noreferrer"><b>{displayValue(signin.verificationUri)}</b></a></p>
             <p>2. Enter this code and sign in as the customer's administrator:</p>
-            <div className="mono" style={{ fontSize: 32, letterSpacing: 4, margin: "12px 0" }}>{signin.userCode}</div>
+            <div className="mono" style={{ fontSize: 32, letterSpacing: 4, margin: "12px 0" }}>{displayValue(signin.userCode)}</div>
             <button className="small" onClick={() => navigator.clipboard?.writeText(signin.userCode)}>Copy code</button>
             <p className="small muted" style={{ marginTop: 12 }}>Waiting for you to sign in… This window updates by itself.</p>
           </>}
           {signin.status === "provisioning" && <p>Signed in. Creating the Fenrir app in Microsoft 365 and granting its permissions…</p>}
           {["failed", "expired"].includes(signin.status) && <>
-            <p style={{ color: "#fca5a5" }}>{signin.error || "The sign-in did not complete."}</p>
+            <p style={{ color: "#fca5a5" }}>{displayValue(signin.error || "The sign-in did not complete.")}</p>
             <button className="primary" onClick={() => setSignin(null)}>Try again</button>
           </>}
         </div>

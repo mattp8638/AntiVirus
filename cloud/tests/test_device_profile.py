@@ -4,6 +4,7 @@ from conftest import ADMIN_PASSWORD
 
 from fenrir_cloud.models import utcnow
 from fenrir_cloud.routers.device_profile import findings
+from fenrir_cloud.profile_shapes import normalize_profile
 
 
 def _stepup(client, admin):
@@ -40,6 +41,37 @@ def test_profile_findings():
     severities = [f["severity"] for f in findings(PROFILE)]
     assert severities == sorted(severities, key=["high", "medium", "low"].index)
     assert findings({}) == []
+
+
+def test_legacy_singletons_and_unavailable_scalars():
+    source = {"hardware": {"serial": {}, "chassis": {}, "secureBoot": {}, "tpm": None},
+              "disks": {"model": "Only disk", "health": "Healthy"}, "volumes": {"mount": "C:", "sizeGb": 100, "freeGb": 1},
+              "startup": {"name": "Only startup item"}, "printers": None,
+              "os": {"architecture": {}, "name": "Windows Server", "rebootReasons": {}, "rebootPending": {}},
+              "users": {"local": [None, "bad", {"name": "Admin", "enabled": True}]},
+              "events": {"errorsLast24h": {}}, "ad": {"domain": {"name": "example.test"}}}
+    clean = normalize_profile(source)
+    assert clean["disks"] == [{"model": "Only disk", "health": "Healthy"}]
+    assert clean["startup"] == [{"name": "Only startup item"}] and clean["printers"] == []
+    assert clean["hardware"] == {"serial": None, "chassis": None, "secureBoot": None, "tpm": None}
+    assert clean["os"]["rebootPending"] is None and clean["os"]["rebootReasons"] == []
+    assert clean["events"]["errorsLast24h"] is None
+    assert clean["users"]["local"] == [{"name": "Admin", "enabled": True}]
+    assert clean["ad"] == source["ad"] and source["hardware"]["serial"] == {}  # no mutation or lost extension data
+    assert any("nearly full" in item["title"] for item in findings(source))
+
+
+def test_stored_legacy_profile_is_read_safely(client, admin, tenant, device):
+    from fenrir_cloud import db
+    from fenrir_cloud.models import DeviceProfile
+
+    with db.session_factory()() as session:
+        session.add(DeviceProfile(device_id=device["deviceId"], tenant_id=tenant["id"],
+                                  profile={"disks": {"name": "Only disk", "health": "Healthy"}, "os": {"name": {}}}))
+        session.commit()
+    response = client.get(f"/api/console/devices/{device['deviceId']}/profile", headers=admin)
+    assert response.status_code == 200
+    assert response.json()["profile"] == {"disks": [{"name": "Only disk", "health": "Healthy"}], "os": {"name": None}}
 
 
 def test_profile_and_recovery_keys(client, admin, device):

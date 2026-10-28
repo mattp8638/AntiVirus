@@ -1,3 +1,4 @@
+import { displayValue } from "../components/DisplayValue";
 import { useState } from "react";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
@@ -64,13 +65,13 @@ export default function Hunt() {
       )}
       {result && (
         <div className="card">
-          <h3>{"hits" in result ? `${result.hits} hits on ${Object.keys(result.devices).length} devices` : `${result.count} matches`} · {result.scanned} events scanned</h3>
+          <h3>{"hits" in result ? `${result.hits} hits on ${Object.keys(result.devices).length} devices` : `${result.count} matches`} · {displayValue(result.scanned)} events scanned</h3>
           <Table rows={result.events} empty="No matches."
                  columns={[{ key: "occurredAt", label: "Time", render: (e) => fmtTime(e.occurredAt) },
                            { key: "eventType", label: "Event" },
                            { key: "host", label: "Device", render: (e) => e.fields.Hostname },
                            { key: "proc", label: "Process", render: (e) => e.fields.ProcessName },
-                           { key: "detail", label: "Detail", render: (e) => <span className="mono small">{e.fields.CommandLine || e.fields.TargetFilename || e.fields.DestinationIp || e.fields.QueryName || e.summary}</span> }]} />
+                           { key: "detail", label: "Detail", render: (e) => <span className="mono small">{displayValue(e.fields.CommandLine || e.fields.TargetFilename || e.fields.DestinationIp || e.fields.QueryName || e.summary)}</span> }]} />
         </div>
       )}
     </>

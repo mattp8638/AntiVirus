@@ -1,15 +1,16 @@
+import { displayValue } from "../../components/DisplayValue";
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ago, api, fmtTime } from "../../api";
 import { useApp } from "../../app-context";
 import { describeTargets, emptyTargets, JobDetail, JobStatus, TargetPicker, Targets } from "../../components/rmm";
-import { Modal, PageHead, Pill, Table, Tabs, useAction, useData } from "../../components/ui";
+import { Modal, PageHead, Pill, Table, Tabs, useAction, useListData } from "../../components/ui";
 
 export default function Jobs() {
   const { tenantId, tenantName } = useApp();
   const [searchParams, setSearchParams] = useSearchParams();
   const [tab, setTab] = useState("Activity");
-  const { data, reload } = useData<any[]>("rmm/jobs", { tenant_id: tenantId });
+  const { data, reload } = useListData<any>("rmm/jobs", { tenant_id: tenantId });
   const [jobId, setJobId] = useState<string | null>(searchParams.get("job"));
   useEffect(() => { const linked = searchParams.get("job"); if (linked) { setTab("Activity"); setJobId(linked); } }, [searchParams]);
   useEffect(() => { const t = window.setInterval(reload, 8000); return () => window.clearInterval(t); }, [reload]);
@@ -20,10 +21,10 @@ export default function Jobs() {
       {tab === "Activity" ? (
         <div className="card">
           <Table rows={data} onRow={(j) => setJobId(j.id)} empty="No jobs yet. Run a script or deploy software to start one."
-                 columns={[{ key: "name", label: "Job", render: (j) => <><b>{j.name}</b><div className="small muted">{j.commandType}</div></> },
+                 columns={[{ key: "name", label: "Job", render: (j) => <><b>{displayValue(j.name)}</b><div className="small muted">{displayValue(j.commandType)}</div></> },
                            { key: "targets", label: "Targets", render: (j) => <span className="small">{describeTargets(j.targets, tenantName) !== "—" ? describeTargets(j.targets, tenantName) : `${j.summary.total} device(s)`}</span> },
                            { key: "status", label: "Status", render: (j) => <JobStatus job={j} /> },
-                           { key: "createdBy", label: "By", render: (j) => <span className="small">{j.createdBy}</span> },
+                           { key: "createdBy", label: "By", render: (j) => <span className="small">{displayValue(j.createdBy)}</span> },
                            { key: "createdAt", label: "Started", render: (j) => ago(j.createdAt) }]} />
         </div>
       ) : <ScheduledTasks />}
@@ -48,7 +49,7 @@ function describeSchedule(s: any) {
 
 function ScheduledTasks() {
   const { can, tenantName } = useApp();
-  const { data, reload } = useData<any[]>("rmm/tasks");
+  const { data, reload } = useListData<any>("rmm/tasks");
   const [editing, setEditing] = useState<any>(null);
   const { run } = useAction();
   return (
@@ -60,7 +61,7 @@ function ScheduledTasks() {
       </div>
       <div className="card">
         <Table rows={data} onRow={setEditing} empty="No scheduled tasks."
-               columns={[{ key: "name", label: "Task", render: (t) => <b>{t.name}</b> },
+               columns={[{ key: "name", label: "Task", render: (t) => <b>{displayValue(t.name)}</b> },
                          { key: "schedule", label: "When", render: (t) => describeSchedule(t.schedule) },
                          { key: "targets", label: "Targets", render: (t) => <span className="small">{describeTargets(t.targets, tenantName)}</span> },
                          { key: "actions", label: "Actions", render: (t) => t.actions.length },
@@ -75,8 +76,8 @@ function ScheduledTasks() {
 
 function TaskEditor({ task, onClose }: { task: any; onClose: () => void }) {
   const [form, setForm] = useState<any>({ ...task, targets: { ...emptyTargets(), ...task.targets } });
-  const { data: scripts } = useData<any[]>("rmm/scripts");
-  const { data: packages } = useData<any[]>("rmm/software");
+  const { data: scripts } = useListData<any>("rmm/scripts");
+  const { data: packages } = useListData<any>("rmm/software");
   const { run, busy } = useAction();
   const schedule = form.schedule || {};
   const setSchedule = (patch: any) => setForm({ ...form, schedule: { ...schedule, ...patch } });
@@ -109,12 +110,12 @@ function TaskEditor({ task, onClose }: { task: any; onClose: () => void }) {
         <div key={i} className="row" style={{ marginBottom: 6 }}>
           <select value={a.type} onChange={(e) => setAction(i, { type: e.target.value })}><option value="script">Run script</option><option value="command">Run action</option><option value="software">Install software</option></select>
           {a.type === "script" && <select value={a.scriptId || ""} onChange={(e) => setAction(i, { scriptId: e.target.value })} style={{ flex: 1 }}>
-            <option value="">Choose a script</option>{scripts?.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.language})</option>)}</select>}
+            <option value="">Choose a script</option>{scripts?.map((s) => <option key={s.id} value={s.id}>{displayValue(s.name)} ({displayValue(s.language)})</option>)}</select>}
           {a.type === "command" && <select value={a.command || ""} onChange={(e) => setAction(i, { command: e.target.value })} style={{ flex: 1 }}>
             <option value="">Choose an action</option>
             {["patch.scan", "patch.install", "scan.quick", "scan.full", "inventory.refresh", "device.reboot", "policy.refresh"].map((c) => <option key={c}>{c}</option>)}</select>}
           {a.type === "software" && <select value={a.packageId || ""} onChange={(e) => setAction(i, { packageId: e.target.value })} style={{ flex: 1 }}>
-            <option value="">Choose a package</option>{packages?.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.platform})</option>)}</select>}
+            <option value="">Choose a package</option>{packages?.map((p) => <option key={p.id} value={p.id}>{displayValue(p.name)} ({displayValue(p.platform)})</option>)}</select>}
           <button className="small ghost" onClick={() => setForm({ ...form, actions: form.actions.filter((_: any, j: number) => j !== i) })}>✕</button>
         </div>
       ))}

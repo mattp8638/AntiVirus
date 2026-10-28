@@ -1,8 +1,9 @@
+import { displayValue } from "../components/DisplayValue";
 import { Link } from "react-router-dom";
 import { useMemo, useState } from "react";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
-import { Bars, Modal, PageHead, Pill, Sev, Stat, Table, useAction, useData } from "../components/ui";
+import { Bars, Modal, PageHead, Pill, Sev, Stat, Table, useAction, useData, useListData } from "../components/ui";
 import { EpssPill, FixBlock, IntelCard, RiskBadge, VulnEvidence } from "../components/Vuln";
 
 // "fixed" is not offered: only a rescan that no longer finds the vulnerability marks it fixed.
@@ -15,8 +16,8 @@ export default function Vulnerabilities() {
   const [severity, setSeverity] = useState("");
   const [focus, setFocus] = useState("");
   const [q, setQ] = useState("");
-  const { data, reload } = useData<any[]>("vulnerabilities", { tenant_id: tenantId, status, severity });
-  const { data: trends } = useData<any[]>("vulnerabilities/trends", { tenant_id: tenantId, weeks: 12 });
+  const { data, reload } = useListData<any>("vulnerabilities", { tenant_id: tenantId, status, severity });
+  const { data: trends } = useListData<any>("vulnerabilities/trends", { tenant_id: tenantId, weeks: 12 });
   const [open, setOpen] = useState<string | null>(null);
   const { run, busy } = useAction();
   const rows = useMemo(() => (data || []).filter((v) =>
@@ -55,11 +56,11 @@ export default function Vulnerabilities() {
       <div className="card">
         <Table rows={rows.map((v) => ({ ...v, id: v.vulnId }))} onRow={(v) => setOpen(v.vulnId)} empty="No vulnerabilities in this view."
                columns={[{ key: "riskScore", label: "Risk", render: (v) => <RiskBadge score={v.riskScore} /> },
-                         { key: "vulnId", label: "Vulnerability", render: (v) => <><b className="mono">{v.vulnId}</b> {v.knownExploited && <Pill value="exploited in the wild" tone="bad" />} <EpssPill epss={v.epss} /> {v.overdue > 0 && <Pill value={`${v.overdue} overdue`} tone="bad" />}
-                           <div className="small muted">{v.summary.slice(0, 140)}</div></> },
-                         { key: "severity", label: "Severity", render: (v) => <><Sev level={v.severity} />{v.cvss !== null && v.cvss !== undefined && <div className="small muted">CVSS {v.cvss}</div>}</> },
-                         { key: "packages", label: "Affects", render: (v) => <><span className="small">{v.packages.join(", ")}</span><div className="small muted">{v.sources.map((s: string) => SOURCE_LABEL[s] || s).join(", ")}</div></> },
-                         { key: "fix", label: "Fix", render: (v) => <span className="small">{v.fix?.kind === "kb" ? <b>{v.fix.ref}</b> : v.fix?.ref || v.fixedVersion || "—"}</span> },
+                         { key: "vulnId", label: "Vulnerability", render: (v) => <><b className="mono">{displayValue(v.vulnId)}</b> {v.knownExploited && <Pill value="exploited in the wild" tone="bad" />} <EpssPill epss={v.epss} /> {v.overdue > 0 && <Pill value={`${v.overdue} overdue`} tone="bad" />}
+                           <div className="small muted">{displayValue(v.summary.slice(0, 140))}</div></> },
+                         { key: "severity", label: "Severity", render: (v) => <><Sev level={v.severity} />{v.cvss !== null && v.cvss !== undefined && <div className="small muted">CVSS {displayValue(v.cvss)}</div>}</> },
+                         { key: "packages", label: "Affects", render: (v) => <><span className="small">{displayValue(v.packages.join(", "))}</span><div className="small muted">{displayValue(v.sources.map((s: string) => SOURCE_LABEL[s] || s).join(", "))}</div></> },
+                         { key: "fix", label: "Fix", render: (v) => <span className="small">{v.fix?.kind === "kb" ? <b>{displayValue(v.fix.ref)}</b> : v.fix?.ref || v.fixedVersion || "—"}</span> },
                          { key: "devices", label: "Devices", render: (v) => v.devices.length, className: "right" }]} />
       </div>
       {open && <CveModal cve={open} onClose={(changed) => { setOpen(null); if (changed) reload(); }} />}
@@ -100,8 +101,8 @@ function CveModal({ cve, onClose }: { cve: string; onClose: (changed: boolean) =
         <h3 style={{ marginTop: 16 }}>Affected devices ({openRows.length} open{affected.length > openRows.length ? `, ${affected.length - openRows.length} fixed` : ""})</h3>
         <Table rows={affected} onRow={(d) => setExpanded(expanded === d.id ? null : d.id)} columns={[
           { key: "riskScore", label: "Risk", render: (d) => <RiskBadge score={d.riskScore} /> },
-          { key: "hostname", label: "Device", render: (d) => <><Link to={`/devices/${d.deviceId}?tab=security&sub=Vulnerabilities`} onClick={(e) => e.stopPropagation()}>{d.hostname}</Link><div className="small muted">{d.package} {d.installedVersion}</div></> },
-          { key: "fix", label: "Fix", render: (d) => <span className="small">{d.fix?.ref || d.fixedVersion || "—"}</span> },
+          { key: "hostname", label: "Device", render: (d) => <><Link to={`/devices/${d.deviceId}?tab=security&sub=Vulnerabilities`} onClick={(e) => e.stopPropagation()}>{displayValue(d.hostname)}</Link><div className="small muted">{displayValue(d.package)} {displayValue(d.installedVersion)}</div></> },
+          { key: "fix", label: "Fix", render: (d) => <span className="small">{displayValue(d.fix?.ref || d.fixedVersion || "—")}</span> },
           { key: "dueAt", label: "Due", render: (d) => d.dueAt ? fmtTime(d.dueAt).split(",")[0] : "—" },
           { key: "status", label: "Status", render: (d) => <>
               <Pill value={d.status} /> {d.ticketId && <Link to={`/tickets/${d.ticketId}`} onClick={(e) => e.stopPropagation()}><Pill value="ticket" tone="blue" /></Link>}
@@ -111,12 +112,12 @@ function CveModal({ cve, onClose }: { cve: string; onClose: (changed: boolean) =
               {MANUAL_STATUSES.filter((s) => s !== "accepted" || can("configure")).map((s) => <option key={s}>{s}</option>)}</select> }]} />
         {expanded !== null && (() => { const d = affected.find((x) => x.id === expanded); return d && (
           <div className="card evidence-card">
-            <div className="row"><b style={{ flex: 1 }}>{d.hostname}</b><button className="ghost small" onClick={() => setExpanded(null)}>Close</button></div>
+            <div className="row"><b style={{ flex: 1 }}>{displayValue(d.hostname)}</b><button className="ghost small" onClick={() => setExpanded(null)}>Close</button></div>
             <div className="grid k2" style={{ marginTop: 8 }}>
               <div><div className="evidence-title">Evidence</div><VulnEvidence evidence={d.evidence} installed={d.installedVersion} /></div>
               <div><div className="evidence-title">Fix</div><FixBlock fix={d.fix} deviceId={d.deviceId} status={d.status} onQueued={reload} />
-                <div className="small muted" style={{ marginTop: 8 }}>{d.recommendation}</div>
-                {d.reasons?.length > 0 && <div className="small" style={{ marginTop: 8 }}>Risk {d.riskScore}: {d.reasons.join(" · ")}</div>}</div>
+                <div className="small muted" style={{ marginTop: 8 }}>{displayValue(d.recommendation)}</div>
+                {d.reasons?.length > 0 && <div className="small" style={{ marginTop: 8 }}>Risk {displayValue(d.riskScore)}: {displayValue(d.reasons.join(" · "))}</div>}</div>
             </div>
           </div>); })()}
       </>}

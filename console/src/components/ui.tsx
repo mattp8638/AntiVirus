@@ -1,4 +1,5 @@
 import { ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { displayValue } from "./DisplayValue";
 import { expectArray, safeArray } from "../data-shapes";
 import { api, rememberReauth, setReauthPrompt } from "../api";
 import { useApp } from "../app-context";
@@ -69,8 +70,8 @@ export function PageHead({ title, subtitle, actions }: { title: string; subtitle
   return (
     <div className="page-head">
       <div>
-        <h1>{title}</h1>
-        {subtitle && <p>{subtitle}</p>}
+        <h1>{displayValue(title)}</h1>
+        {subtitle && <p>{displayValue(subtitle)}</p>}
       </div>
       {actions && <div className="actions">{actions}</div>}
     </div>
@@ -81,14 +82,14 @@ export function Stat({ label, value, hint, accent }: { label: string; value: Rea
   return (
     <div className={`card stat ${accent ? `accent-${accent}` : ""}`}>
       <div className="label">{label}</div>
-      <div className="value">{value}</div>
-      {hint && <div className="hint">{hint}</div>}
+      <div className="value">{displayValue(value)}</div>
+      {hint && <div className="hint">{displayValue(hint)}</div>}
     </div>
   );
 }
 
 export function Sev({ level }: { level?: string }) {
-  const value = (level || "info").toLowerCase();
+  const value = typeof level === "string" ? (level || "info").toLowerCase() : level == null ? "info" : "unknown";
   return <span className={`badge sev-${value === "informational" ? "info" : value}`}>{value}</span>;
 }
 
@@ -103,8 +104,9 @@ const TONES: Record<string, string> = {
 };
 
 export function Pill({ value, tone }: { value: ReactNode; tone?: string }) {
-  const resolved = tone ?? TONES[String(value)] ?? "muted";
-  return <span className={`badge tone-${resolved}`}>{String(value).replace(/_/g, " ")}</span>;
+  const scalar = typeof value === "string" || typeof value === "number" || typeof value === "boolean";
+  const resolved = scalar ? tone ?? TONES[String(value)] ?? "muted" : "muted";
+  return <span className={`badge tone-${resolved}`}>{scalar ? String(value).replace(/_/g, " ") : displayValue(value) ?? "unknown"}</span>;
 }
 
 export interface Column<T> {
@@ -124,17 +126,20 @@ export function Table<T extends Record<string, any>>({ rows, columns, onRow, emp
   if (!Array.isArray(rows)) {
     return <div role="alert" className="empty">Unable to display records: the server returned an unexpected response format. Please check the API response.</div>;
   }
+  if (rows.some((row) => !row || typeof row !== "object" || Array.isArray(row))) {
+    return <div role="alert" className="empty">Unable to display records: some records could not be read. Reload this page to try again.</div>;
+  }
   if (!rows.length) return <div className="empty">{empty}</div>;
   return (
     <div className="table-wrap">
       <table>
         <thead>
-          <tr>{columns.map((c) => <th key={c.key} className={c.className}>{c.label}</th>)}</tr>
+          <tr>{columns.map((c) => <th key={c.key} className={c.className}>{displayValue(c.label)}</th>)}</tr>
         </thead>
         <tbody>
           {rows.map((row, i) => (
             <tr key={row.id ?? i} className={onRow ? "clickable" : ""} onClick={onRow ? () => onRow(row) : undefined}>
-              {columns.map((c) => <td key={c.key} className={c.className}>{c.render ? c.render(row) : String(row[c.key] ?? "")}</td>)}
+              {columns.map((c) => <td key={c.key} className={c.className}>{displayValue(c.render ? c.render(row) : typeof row[c.key] === "boolean" ? String(row[c.key]) : row[c.key])}</td>)}
             </tr>
           ))}
         </tbody>
@@ -148,7 +153,7 @@ export function Modal({ title, onClose, children, footer, wide }: { title: strin
     <div className="modal-back" onClick={onClose}>
       <div className={`modal${wide ? " wide" : ""}`} onClick={(e) => e.stopPropagation()} role="dialog" aria-label={title}>
         <div className="row" style={{ marginBottom: 12 }}>
-          <h2 style={{ margin: 0 }}>{title}</h2>
+          <h2 style={{ margin: 0 }}>{displayValue(title)}</h2>
           <span style={{ flex: 1 }} />
           <button className="ghost" onClick={onClose} aria-label="Close">✕</button>
         </div>
@@ -168,7 +173,7 @@ export function Tabs({ tabs, active, onChange }: { tabs: string[]; active: strin
 }
 
 export function ErrorNote({ error }: { error: string | null }) {
-  return error ? <div className="card" style={{ borderColor: "rgba(239,68,68,.5)", color: "#fecaca" }}>{error}</div> : null;
+  return error ? <div role="alert" className="card" style={{ borderColor: "rgba(239,68,68,.5)", color: "#fecaca" }}>{displayValue(error)}</div> : null;
 }
 
 /** Simple bar chart in SVG; no chart library needed. */

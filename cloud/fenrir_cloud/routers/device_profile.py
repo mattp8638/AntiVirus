@@ -16,6 +16,7 @@ from .. import audit, crypto, ratelimit, services
 from ..db import get_db
 from ..deps import Principal, current_device, current_principal, require_reauth
 from ..models import Device, DeviceProfile, RecoveryKey, utcnow
+from ..profile_shapes import normalize_profile
 
 agent = APIRouter(prefix="/api/v1/devices/{device_id}", tags=["Agent"])
 console = APIRouter(prefix="/api/console/devices/{device_id}", tags=["Devices"])
@@ -58,7 +59,7 @@ def report_profile(request: Request, body: dict = Body(...), device: Device = De
     profile = body.get("profile")
     if not isinstance(profile, dict):
         raise HTTPException(422, "profile must be an object")
-    clean = _scrub(profile)
+    clean = normalize_profile(_scrub(profile))
     row = db.get(DeviceProfile, device.id)
     if row is None:
         row = DeviceProfile(device_id=device.id, tenant_id=device.tenant_id)
@@ -135,6 +136,7 @@ def _parse_time(value) -> datetime | None:
 
 def findings(profile: dict, now: datetime | None = None) -> list[dict]:
     """Things a technician should look at, worst first."""
+    profile = normalize_profile(profile)
     now = now or utcnow()
     out: list[dict] = []
 
@@ -235,7 +237,7 @@ def get_profile(device_id: str, principal: Principal = Depends(current_principal
     row = db.get(DeviceProfile, device.id)
     keys = db.execute(select(RecoveryKey).where(RecoveryKey.device_id == device.id)
                       .order_by(RecoveryKey.status, RecoveryKey.last_seen.desc())).scalars().all()
-    profile = row.profile if row else {}
+    profile = normalize_profile(row.profile if row else {})
     return {
         "collectedAt": row.collected_at.isoformat() + "Z" if row else None,
         "profile": profile,

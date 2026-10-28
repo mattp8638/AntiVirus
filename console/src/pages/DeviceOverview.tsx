@@ -1,7 +1,8 @@
+import { displayValue } from "../components/DisplayValue";
 import { Fragment } from "react";
 import { ago, fmtTime } from "../api";
 import { useApp } from "../app-context";
-import { Pill, Sev, useData } from "../components/ui";
+import { Pill, Sev, useData, useListData } from "../components/ui";
 import { TimeChart } from "../components/TimeChart";
 import { RiskBreakdown } from "../components/Vuln";
 
@@ -17,7 +18,7 @@ export const makeModel = (make?: string, model?: string) =>
 
 // Friendly names for command types ("process.tree.terminate" -> "Kill process tree").
 export function useCommandLabels() {
-  const { data } = useData<any[]>("commands/catalog");
+  const { data } = useListData<any>("commands/catalog");
   return (type: string) => data?.find((c) => c.type === type)?.label ?? type;
 }
 
@@ -120,7 +121,7 @@ export function DeviceOverview({ data, profile, patches, go, management, whereab
           </div>
           {!whereabouts?.latest ? <p className="muted small">No location yet. Use Locate to ask the phone where it is.</p> : <p style={{ margin: 0 }}>
             Last located <b>{ago(whereabouts.latest.at)}</b>{whereabouts.latest.accuracy ? ` to within ${Math.round(whereabouts.latest.accuracy)} m` : ""}
-            <span className="muted small"> · {whereabouts.latest.lat.toFixed(4)}, {whereabouts.latest.lon.toFixed(4)}</span>
+            <span className="muted small"> · {displayValue(whereabouts.latest.lat.toFixed(4))}, {displayValue(whereabouts.latest.lon.toFixed(4))}</span>
             {whereabouts.travelledMeters > 0 && <span className="muted small"> · moved {(whereabouts.travelledMeters / 1000).toFixed(1)} km today</span>}
           </p>}
         </div>}
@@ -150,7 +151,7 @@ export function DeviceOverview({ data, profile, patches, go, management, whereab
                 <div key={i} className="activity-item">
                   <span className={`activity-dot ${a.kind === "alert" ? `sev-dot-${a.tone}` : ""}`} />
                   <span className="small muted activity-when" title={fmtTime(a.at)}>{ago(a.at)}</span>
-                  <span className="ellipsis" style={{ flex: 1 }}>{a.kind === "alert" ? <Sev level={a.tone} /> : <span className="chip">action</span>} {a.text}</span>
+                  <span className="ellipsis" style={{ flex: 1 }}>{a.kind === "alert" ? <Sev level={a.tone} /> : <span className="chip">action</span>} {displayValue(a.text)}</span>
                   <Pill value={a.status} />
                 </div>))}
             </div>}
@@ -165,20 +166,20 @@ export function DeviceOverview({ data, profile, patches, go, management, whereab
         <div className="card">
           <h3>At a glance</h3>
           <dl className="kv compact">
-            {!isPhone && <><dt>Signed in</dt><dd>{m.loggedOnUser || d.inventory?.loggedOnUser || "nobody"}</dd></>}
-            {isPhone && m.phoneNumber && <><dt>Number</dt><dd>{m.phoneNumber}</dd></>}
+            {!isPhone && <><dt>Signed in</dt><dd>{displayValue(m.loggedOnUser || d.inventory?.loggedOnUser || "nobody")}</dd></>}
+            {isPhone && m.phoneNumber && <><dt>Number</dt><dd>{displayValue(m.phoneNumber)}</dd></>}
             {isPhone && <><dt>Battery</dt><dd>{typeof m.batteryPercent === "number" ? `${m.batteryPercent}%${m.charging ? " · charging" : ""}` : "—"}</dd></>}
-            {isPhone && m.network && <><dt>Network</dt><dd>{m.network}{m.wifiSsid ? ` · ${m.wifiSsid}` : ""}{m.carrier ? ` · ${m.carrier}` : ""}</dd></>}
-            {isPhone && m.securityPatch && <><dt>Security patch</dt><dd>{m.securityPatch}</dd></>}
-            <dt>Model</dt><dd>{makeModel(hw.manufacturer || m.manufacturer, hw.model || m.model)}{hw.chassis ? <span className="muted"> · {hw.chassis}</span> : null}</dd>
-            <dt>Serial</dt><dd className="mono">{hw.serial || d.serialNumber || "—"}</dd>
-            <dt>OS</dt><dd>{os.name ? <>{os.name}{os.displayVersion ? ` ${os.displayVersion}` : ""} <span className="muted small">build {os.build || os.version}</span></> : d.osVersion}</dd>
-            {hw.cpu?.name && <><dt>Processor</dt><dd className="small">{hw.cpu.name}</dd></>}
+            {isPhone && m.network && <><dt>Network</dt><dd>{displayValue(m.network)}{m.wifiSsid ? ` · ${m.wifiSsid}` : ""}{m.carrier ? ` · ${m.carrier}` : ""}</dd></>}
+            {isPhone && m.securityPatch && <><dt>Security patch</dt><dd>{displayValue(m.securityPatch)}</dd></>}
+            <dt>Model</dt><dd>{makeModel(hw.manufacturer || m.manufacturer, hw.model || m.model)}{hw.chassis ? <span className="muted"> · {displayValue(hw.chassis)}</span> : null}</dd>
+            <dt>Serial</dt><dd className="mono">{displayValue(hw.serial || d.serialNumber || "—")}</dd>
+            <dt>OS</dt><dd>{os.name ? <>{displayValue(os.name)}{os.displayVersion ? ` ${os.displayVersion}` : ""} <span className="muted small">build {displayValue(os.build || os.version)}</span></> : d.osVersion}</dd>
+            {hw.cpu?.name && <><dt>Processor</dt><dd className="small">{displayValue(hw.cpu.name)}</dd></>}
             {(hw.memory?.totalGb || m.memoryTotalGb) && <><dt>Memory</dt><dd>{Math.round(hw.memory?.totalGb || m.memoryTotalGb)} GB</dd></>}
-            <dt>IP address</dt><dd className="mono">{d.ipAddress || "—"}</dd>
+            <dt>IP address</dt><dd className="mono">{displayValue(d.ipAddress || "—")}</dd>
             {os.joinType && <><dt>Joined to</dt><dd>{[os.joinType, os.domain].filter(Boolean).join(" · ")}</dd></>}
             <dt>Up for</dt><dd>{days(m.uptimeSeconds)}{m.lastBootAt ? <span className="muted small"> since {fmtTime(m.lastBootAt)}</span> : null}</dd>
-            <dt>Agent</dt><dd>{d.agentVersion || "—"}</dd>
+            <dt>Agent</dt><dd>{displayValue(d.agentVersion || "—")}</dd>
           </dl>
           {!isPhone && <button className="small" style={{ marginTop: 10 }} onClick={() => go("system")}>Full system profile →</button>}
         </div>
@@ -194,7 +195,7 @@ export function DeviceOverview({ data, profile, patches, go, management, whereab
             return (
               <div key={v.mount} style={{ marginBottom: 10 }}>
                 <div className="row small" style={{ gap: 6 }}>
-                  <b>{v.mount}</b>{v.label && <span className="muted">{v.label}</span>}
+                  <b>{displayValue(v.mount)}</b>{v.label && <span className="muted">{displayValue(v.label)}</span>}
                   {enc && <Pill value={encrypted ? "BitLocker on" : "not encrypted"} tone={encrypted ? "good" : "warn"} />}
                   <span style={{ flex: 1 }} />
                   <span className="muted">{free.toFixed(free < 10 ? 1 : 0)} GB free of {Math.round(size)} GB</span>
@@ -211,7 +212,7 @@ export function DeviceOverview({ data, profile, patches, go, management, whereab
             Policy revision <span className="mono">{String(data.policy.revision).slice(0, 10)}</span> · {data.policy.applied ? <Pill value="applied" tone="good" /> : <Pill value="waiting for agent" tone="warn" />}
             {" "}<button className="ghost small" onClick={() => go("settings", "Effective policy")}>Effective policy →</button>
           </p>}
-          {data.policy.overridesBlocked.length > 0 && <p className="small">{data.policy.overridesBlocked.length} override(s) blocked by locks.</p>}
+          {data.policy.overridesBlocked.length > 0 && <p className="small">{displayValue(data.policy.overridesBlocked.length)} override(s) blocked by locks.</p>}
         </div>
       </div>
     </div>
@@ -223,16 +224,16 @@ export function DeviceDetails({ data }: { data: any }) {
   const copy = (text: string) => navigator.clipboard?.writeText(text);
   return (
     <dl className="kv">
-      <dt>Device ID</dt><dd className="mono">{d.id} <button className="ghost small" onClick={() => copy(d.id)}>Copy</button></dd>
-      <dt>Platform</dt><dd>{d.platform}</dd>
-      <dt>Agent</dt><dd>{d.agentVersion || "—"} (platform {d.platformVersion || "—"})</dd>
+      <dt>Device ID</dt><dd className="mono">{displayValue(d.id)} <button className="ghost small" onClick={() => copy(d.id)}>Copy</button></dd>
+      <dt>Platform</dt><dd>{displayValue(d.platform)}</dd>
+      <dt>Agent</dt><dd>{displayValue(d.agentVersion || "—")} (platform {displayValue(d.platformVersion || "—")})</dd>
       <dt>Health</dt><dd><Pill value={d.healthState} tone={d.healthState === "healthy" ? "good" : "warn"} /></dd>
-      <dt>Risk score</dt><dd>{d.riskScore} <span className="small muted">— from open alerts in the last 7 days and open critical/high vulnerabilities</span></dd>
+      <dt>Risk score</dt><dd>{displayValue(d.riskScore)} <span className="small muted">— from open alerts in the last 7 days and open critical/high vulnerabilities</span></dd>
       <dt>Approved</dt><dd>{d.approved ? "Yes" : <Pill value="waiting" tone="warn" />}</dd>
       <dt>Enrolled</dt><dd>{fmtTime(d.enrolledAt)}</dd>
       <dt>Last check-in</dt><dd>{fmtTime(d.lastSeenAt)} ({ago(d.lastSeenAt)})</dd>
-      <dt>Events stored</dt><dd>{data.eventCount}</dd>
-      <dt>Encrypted DNS</dt><dd className="mono small">{data.dnsOverHttpsUrl} <button className="ghost small" onClick={() => copy(data.dnsOverHttpsUrl)}>Copy</button></dd>
+      <dt>Events stored</dt><dd>{displayValue(data.eventCount)}</dd>
+      <dt>Encrypted DNS</dt><dd className="mono small">{displayValue(data.dnsOverHttpsUrl)} <button className="ghost small" onClick={() => copy(data.dnsOverHttpsUrl)}>Copy</button></dd>
       {Object.entries(d.inventory || {}).filter(([, v]) => v !== null && v !== "" && typeof v !== "object").map(([k, v]) =>
         <Fragment key={k}><dt>{k.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase())}</dt><dd>{String(v)}</dd></Fragment>)}
     </dl>

@@ -1,14 +1,15 @@
+import { displayValue } from "../components/DisplayValue";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ago } from "../api";
 import { useApp } from "../app-context";
-import { PageHead, Pill, Sev, Table, useData } from "../components/ui";
+import { PageHead, Pill, Sev, Table, useListData } from "../components/ui";
 
 export default function Incidents() {
   const { tenantId, tenantName } = useApp();
   const navigate = useNavigate();
   const [status, setStatus] = useState("");
-  const { data } = useData<any[]>("incidents", { tenant_id: tenantId, status });
+  const { data } = useListData<any>("incidents", { tenant_id: tenantId, status });
   return (
     <>
       <PageHead title="Incidents" subtitle="Correlated attacks with a guided response playbook, automated actions and a linked PSA ticket." />
@@ -20,7 +21,7 @@ export default function Incidents() {
       <div className="card">
         <Table rows={data} onRow={(r) => navigate(`/incidents/${r.id}`)} empty="No incidents."
                columns={[{ key: "severity", label: "Sev", render: (r) => <Sev level={r.severity} /> },
-                         { key: "title", label: "Incident", render: (r) => <><b>{r.title}</b><div className="small muted">{r.playbook || "no playbook"}</div></> },
+                         { key: "title", label: "Incident", render: (r) => <><b>{displayValue(r.title)}</b><div className="small muted">{displayValue(r.playbook || "no playbook")}</div></> },
                          { key: "tenantId", label: "Tenant", render: (r) => tenantName(r.tenantId) },
                          { key: "alertCount", label: "Alerts" },
                          { key: "mitre", label: "MITRE", render: (r) => r.mitre.filter((m: string) => m.startsWith("T")).slice(0, 4).join(", ") },

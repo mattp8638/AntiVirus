@@ -1,7 +1,8 @@
+import { displayValue } from "../components/DisplayValue";
 import { useState } from "react";
 import { ago, api, downloadFile, fmtTime, setToken } from "../api";
 import { useApp } from "../app-context";
-import { Modal, PageHead, Pill, Table, Tabs, TenantSelect, useAction, useData } from "../components/ui";
+import { Modal, PageHead, Pill, Table, Tabs, TenantSelect, useAction, useData, useListData } from "../components/ui";
 
 const ROLES = ["platform_admin", "msp_admin", "soc_analyst", "technician", "billing", "tenant_admin", "tenant_analyst", "viewer"];
 
@@ -28,7 +29,7 @@ export default function Settings() {
 
 function TenantsTab() {
   const { can, tenantName, refreshMe } = useApp();
-  const { data, reload } = useData<any[]>("tenants");
+  const { data, reload } = useListData<any>("tenants");
   const { data: schema } = useData<any>("policy-schema");
   const [form, setForm] = useState<any>(null);
   const { run, busy } = useAction();
@@ -43,7 +44,7 @@ function TenantsTab() {
           <div className="form-grid">
             <label className="field">Name<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
             <label className="field">Plan<select value={form.plan} onChange={(e) => setForm({ ...form, plan: e.target.value })}>{["essentials", "advanced", "complete", "mdr"].map((p) => <option key={p}>{p}</option>)}</select></label>
-            <label className="field">Protection template<select value={form.template} onChange={(e) => setForm({ ...form, template: e.target.value })}>{schema?.templates.map((t: any) => <option key={t.key} value={t.key}>{t.label}</option>)}</select></label>
+            <label className="field">Protection template<select value={form.template} onChange={(e) => setForm({ ...form, template: e.target.value })}>{schema?.templates.map((t: any) => <option key={t.key} value={t.key}>{displayValue(t.label)}</option>)}</select></label>
           </div>
         </Modal>
       )}
@@ -130,8 +131,8 @@ function UsersTab() {
 
 function GroupsTab() {
   const { tenantId, can, tenantName } = useApp();
-  const { data, reload } = useData<any[]>("groups", { tenant_id: tenantId });
-  const { data: policies } = useData<any[]>("policies", { tenant_id: tenantId });
+  const { data, reload } = useListData<any>("groups", { tenant_id: tenantId });
+  const { data: policies } = useListData<any>("policies", { tenant_id: tenantId });
   const [form, setForm] = useState<any>(null);
   const { run, busy } = useAction();
   return (
@@ -147,7 +148,7 @@ function GroupsTab() {
             <label className="field">Tenant<TenantSelect value={form.tenantId} onChange={(id) => setForm({ ...form, tenantId: id })} allowAll={false} /></label>
             <label className="field">Name<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
             <label className="field">Policy<select value={form.policyId} onChange={(e) => setForm({ ...form, policyId: e.target.value })}><option value="">Inherit from tenant</option>
-              {policies?.filter((p) => p.tenantId === form.tenantId).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+              {policies?.filter((p) => p.tenantId === form.tenantId).map((p) => <option key={p.id} value={p.id}>{displayValue(p.name)}</option>)}</select></label>
           </div>
         </Modal>
       )}
@@ -157,7 +158,7 @@ function GroupsTab() {
 
 function WebhooksTab() {
   const { can, tenantId } = useApp();
-  const { data, reload } = useData<any[]>("webhooks");
+  const { data, reload } = useListData<any>("webhooks");
   const [form, setForm] = useState<any>(null);
   const [secret, setSecret] = useState<string | null>(null);
   const { run, busy } = useAction();
@@ -166,7 +167,7 @@ function WebhooksTab() {
       {can("configure") && <button className="primary" style={{ marginBottom: 10 }} onClick={() => setForm({ name: "", url: "https://", kind: "slack", events: ["incident.created"], tenantId })}>Add webhook</button>}
       {secret && <p>Signing secret (shown once): <code>{secret}</code>. Verify the <code>X-Fenrir-Signature</code> header with HMAC-SHA256.</p>}
       <Table rows={data} empty="No webhooks. Send incidents to Slack, Teams or your own systems."
-             columns={[{ key: "name", label: "Name" }, { key: "kind", label: "Type" }, { key: "url", label: "URL", render: (w) => <span className="mono small">{w.url}</span> },
+             columns={[{ key: "name", label: "Name" }, { key: "kind", label: "Type" }, { key: "url", label: "URL", render: (w) => <span className="mono small">{displayValue(w.url)}</span> },
                        { key: "events", label: "Events", render: (w) => w.events.join(", ") },
                        { key: "del", label: "", render: (w) => can("configure") && <button className="small danger" onClick={async () => { await run(() => api(`webhooks/${w.id}`, { method: "DELETE" }), "Removed"); reload(); }}>Remove</button> }]} />
       {form && (
@@ -213,12 +214,12 @@ function ApiCredentialsTab() {
         permissions you choose, for one customer, until it expires. It can never reveal secrets, approve sensitive actions or manage the platform.</p>
       <button className="primary" style={{ marginBottom: 10 }} onClick={() => setForm({ tenantId, name: "", scopes: ["read"], expiresDays: 90 })}>New API credential</button>
       <Table rows={data?.credentials} empty="No API credentials."
-             columns={[{ key: "name", label: "Name", render: (c: any) => <>{c.name}<div className="small mono muted">{c.prefix}…</div></> },
+             columns={[{ key: "name", label: "Name", render: (c: any) => <>{displayValue(c.name)}<div className="small mono muted">{displayValue(c.prefix)}…</div></> },
                        { key: "tenantId", label: "Customer", render: (c: any) => tenantName(c.tenantId) },
                        { key: "scopes", label: "Permissions", render: (c: any) => c.scopes.join(", ") },
                        { key: "state", label: "State", render: (c: any) => <Pill value={c.state} tone={CREDENTIAL_TONE[c.state]} /> },
                        { key: "expiresAt", label: "Expires", render: (c: any) => fmtTime(c.expiresAt) },
-                       { key: "lastUsedAt", label: "Last used", render: (c: any) => c.lastUsedAt ? <>{ago(c.lastUsedAt)}<div className="small muted">{c.lastUsedIp} · {c.useCount} calls</div></> : "never" },
+                       { key: "lastUsedAt", label: "Last used", render: (c: any) => c.lastUsedAt ? <>{ago(c.lastUsedAt)}<div className="small muted">{displayValue(c.lastUsedIp)} · {displayValue(c.useCount)} calls</div></> : "never" },
                        { key: "actions", label: "", render: (c: any) => c.state !== "revoked" && <div className="row" style={{ gap: 4 }}>
                          <button disabled={busy} onClick={() => rotate(c.id)}>Rotate</button><button className="danger" disabled={busy} onClick={() => revoke(c.id)}>Revoke</button></div> }]} />
       {form && (
@@ -256,12 +257,12 @@ function RolloutsCard() {
   return (
     <div className="card" style={{ marginBottom: 14 }}>
       <h3 style={{ marginTop: 0 }}>Agent rollouts</h3>
-      <p className="small muted">New agent builds reach devices ring by ring ({(data?.stages || []).join(" → ")}), set by each device's
+      <p className="small muted">New agent builds reach devices ring by ring ({displayValue((data?.stages || []).join(" → "))}), set by each device's
         Release ring policy. A failure in the current ring pauses the rollout before the next ring gets the build.</p>
       <Table rows={data?.rollouts} empty="No agent build has been rolled out yet."
-             columns={[{ key: "platform", label: "Platform" }, { key: "version", label: "Build", render: (r: any) => <>{r.version || "—"} <span className="mono small muted">{r.build.slice(0, 10)}</span></> },
+             columns={[{ key: "platform", label: "Platform" }, { key: "version", label: "Build", render: (r: any) => <>{displayValue(r.version || "—")} <span className="mono small muted">{displayValue(r.build.slice(0, 10))}</span></> },
                        { key: "stage", label: "Ring reached" },
-                       { key: "state", label: "State", render: (r: any) => <><Pill value={r.state} tone={ROLLOUT_TONE[r.state]} />{r.reason && <div className="small muted">{r.reason}</div>}</> },
+                       { key: "state", label: "State", render: (r: any) => <><Pill value={r.state} tone={ROLLOUT_TONE[r.state]} />{r.reason && <div className="small muted">{displayValue(r.reason)}</div>}</> },
                        { key: "devices", label: "Devices", render: (r: any) => `${r.devices.updated} updated · ${r.devices.pending} pending · ${r.devices.failed} failed` },
                        { key: "startedAt", label: "Started", render: (r: any) => fmtTime(r.startedAt) },
                        { key: "actions", label: "", render: (r: any) => <div className="row" style={{ gap: 4 }}>
@@ -275,7 +276,7 @@ function RolloutsCard() {
 }
 
 function ReleasesTab({ canPublish }: { canPublish: boolean }) {
-  const { data, reload } = useData<any[]>("releases");
+  const { data, reload } = useListData<any>("releases");
   const [form, setForm] = useState<any>(null);
   const { run, busy } = useAction();
   return (
@@ -283,7 +284,7 @@ function ReleasesTab({ canPublish }: { canPublish: boolean }) {
       {canPublish && <button className="primary" style={{ marginBottom: 10 }} onClick={() => setForm({ platform: "windows", channel: "stable", component: "agent", version: "", url: "", sha256: "", notes: "" })}>Publish release</button>}
       <Table rows={data} empty="No releases published. Agents keep their current version."
              columns={[{ key: "platform", label: "Platform" }, { key: "component", label: "Component" }, { key: "version", label: "Version" }, { key: "channel", label: "Ring" },
-                       { key: "sha256", label: "SHA-256", render: (r) => <span className="mono small">{r.sha256.slice(0, 16)}…</span> }, { key: "publishedAt", label: "Published", render: (r) => fmtTime(r.publishedAt) }]} />
+                       { key: "sha256", label: "SHA-256", render: (r) => <span className="mono small">{displayValue(r.sha256.slice(0, 16))}…</span> }, { key: "publishedAt", label: "Published", render: (r) => fmtTime(r.publishedAt) }]} />
       {form && (
         <Modal title="Publish release" onClose={() => setForm(null)} footer={<button className="primary" disabled={busy}
                onClick={async () => { if (await run(() => api("releases", { body: form }), "Release published")) { setForm(null); reload(); } }}>Publish</button>}>
@@ -304,7 +305,7 @@ const BREAK_LABEL: Record<string, string> = { modified: "entry changed after it 
 
 function AuditTab() {
   const { tenantId, can } = useApp();
-  const { data, reload } = useData<any[]>("audit", { tenant_id: tenantId });
+  const { data, reload } = useListData<any>("audit", { tenant_id: tenantId });
   const [verify, setVerify] = useState<any>(null);
   const { run, busy } = useAction();
   return (
@@ -318,7 +319,7 @@ function AuditTab() {
             : <Pill value={verify.tampered ? "tampering detected" : "only old race breaks (not tampering)"} tone={verify.tampered ? "bad" : "warn"} />)}
         </div>
         {verify && !verify.valid && (
-          <ul className="small">{verify.breaks.slice(0, 20).map((b: any, i: number) => <li key={i}>Position {b.seq ?? "?"}: {BREAK_LABEL[b.kind] || b.kind}{b.at ? ` (${fmtTime(b.at)})` : ""}</li>)}</ul>
+          <ul className="small">{verify.breaks.slice(0, 20).map((b: any, i: number) => <li key={i}>Position {displayValue(b.seq ?? "?")}: {displayValue(BREAK_LABEL[b.kind] || b.kind)}{b.at ? ` (${fmtTime(b.at)})` : ""}</li>)}</ul>
         )}
         <p className="small muted" style={{ margin: 0 }}>Checkpoints record the chain's newest hash and are sent to your webhooks, so a copy lives outside Fenrir.
           Check an export offline with <span className="mono">scripts/verify_audit_export.py</span>; other customers' entries in it are reduced to their hashes.</p>
@@ -411,19 +412,19 @@ function ReadinessCard() {
 function PlatformTab() {
   const { can } = useApp();
   const { data, error, reload } = useData<any>("platform/status");
-  const { data: dead, reload: reloadDead } = useData<any[]>("platform/events", { status: "dead" });
+  const { data: dead, reload: reloadDead } = useListData<any>("platform/events", { status: "dead" });
   const { run } = useAction();
   return (
     <>
       {can("platform") && <ReadinessCard />}
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
         <div className="card"><div className="label muted small">Vault encryption</div>
-          <p><b>{data?.vault.algorithm ?? "…"}</b></p>
-          <p>Key {data?.vault.keyId} · {data?.vault.source === "derived" ? <Pill value="derived from FENRIR_SECRET_KEY" tone="warn" /> : <Pill value={`from ${data?.vault.source ?? "…"}`} tone="good" />}</p>
+          <p><b>{displayValue(data?.vault.algorithm ?? "…")}</b></p>
+          <p>Key {displayValue(data?.vault.keyId)} · {data?.vault.source === "derived" ? <Pill value="derived from FENRIR_SECRET_KEY" tone="warn" /> : <Pill value={`from ${data?.vault.source ?? "…"}`} tone="good" />}</p>
           {data && !data.vault.productionReady && <p className="small muted">Set FENRIR_VAULT_KEY (openssl rand -base64 32) before storing production secrets.</p>}
         </div>
         <div className="card"><div className="label muted small">Automation events</div>
-          <p>{data?.events.pending ?? 0} waiting · {data?.events.done ?? 0} done · <b>{data?.events.dead ?? 0} failed</b></p></div>
+          <p>{displayValue(data?.events.pending ?? 0)} waiting · {displayValue(data?.events.done ?? 0)} done · <b>{displayValue(data?.events.dead ?? 0)} failed</b></p></div>
         <div className="card"><div className="label muted small">Event handlers</div>
           <p className="small">{Object.entries(data?.handlers ?? {}).map(([k, v]: any) => `${k} (${v.length})`).join(", ") || "none"}</p></div>
       </div>
@@ -432,7 +433,7 @@ function PlatformTab() {
         <h3 style={{ marginTop: 0 }}>Failed automation events</h3>
         <Table rows={dead} empty="No failed events."
                columns={[{ key: "id", label: "#" }, { key: "type", label: "Type" }, { key: "attempts", label: "Attempts" },
-                         { key: "lastError", label: "Last error", render: (e) => <span className="small">{e.lastError}</span> },
+                         { key: "lastError", label: "Last error", render: (e) => <span className="small">{displayValue(e.lastError)}</span> },
                          { key: "createdAt", label: "Raised", render: (e) => fmtTime(e.createdAt) },
                          { key: "retry", label: "", render: (e) => <button className="small" onClick={async () => { await run(() => api(`platform/events/${e.id}/retry`, { method: "POST" }), "Queued for retry"); reload(); reloadDead(); }}>Retry</button> }]} />
       </div>
@@ -462,7 +463,7 @@ function AccountTab() {
 }
 
 function SessionsCard() {
-  const { data, reload } = useData<any[]>("auth/sessions");
+  const { data, reload } = useListData<any>("auth/sessions");
   const { run, busy } = useAction();
   return (
     <div className="card" style={{ maxWidth: 720, marginTop: 16 }}>
@@ -472,8 +473,8 @@ function SessionsCard() {
       </div>
       {(data || []).map((s) => (
         <div key={s.id} className="row small" style={{ padding: "6px 0", borderBottom: "1px solid var(--line)" }}>
-          <span style={{ flex: 1 }}><b>{s.current ? "This browser" : s.userAgent.split(")")[0].replace("(", "· ") || "Unknown browser"}</b>
-            <div className="muted">{s.ip || "unknown address"} · signed in {fmtTime(s.createdAt)} · active {ago(s.lastSeenAt)}</div></span>
+          <span style={{ flex: 1 }}><b>{displayValue(s.current ? "This browser" : s.userAgent.split(")")[0].replace("(", "· ") || "Unknown browser")}</b>
+            <div className="muted">{displayValue(s.ip || "unknown address")} · signed in {fmtTime(s.createdAt)} · active {ago(s.lastSeenAt)}</div></span>
           {!s.current && <button className="small" disabled={busy} onClick={async () => { if (await run(() => api(`auth/sessions/${s.id}`, { method: "DELETE" }), "Signed out")) reload(); }}>Sign out</button>}
         </div>
       ))}
