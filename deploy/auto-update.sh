@@ -32,7 +32,7 @@ compose() { docker compose "${compose_args[@]}" --env-file "$ENV_FILE" "$@"; }
 
 healthy() {
   for _ in $(seq 60); do
-    if compose exec -T cloud python -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8080/health", timeout=5)' >/dev/null 2>&1; then
+    if compose exec -T cloud python -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8080/ready", timeout=5)' >/dev/null 2>&1; then
       return 0
     fi
     sleep 5

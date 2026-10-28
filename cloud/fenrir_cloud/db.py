@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 28
+LATEST_MIGRATION = 29
 
 def init_engine(url: str) -> Engine:
     global _engine, _session_factory
@@ -68,9 +68,9 @@ def get_db() -> Iterator[Session]:
 def ensure_columns(base: type[DeclarativeBase], bind: Engine) -> list[str]:
     """Add columns that exist in the models but not yet in the database.
 
-    ``create_all`` creates new tables but never alters existing ones. New
-    columns on existing tables are declared nullable, so a plain
-    ``ALTER TABLE ... ADD COLUMN`` is safe on SQLite and PostgreSQL.
+    ``create_all`` creates new tables but never alters existing ones. This
+    helper adds nullable columns only. Required columns need an explicit
+    migration with a safe backfill; a Python ORM default does not add them.
     """
     from sqlalchemy import inspect, text
 
@@ -271,6 +271,18 @@ def migrate(bind: Engine) -> list[int]:
                 ApprovalRequest.__table__.create(conn, checkfirst=True)
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (28)"))
                 applied.append(28)
+            if 29 not in versions:
+                # Migration 24 used ensure_columns, which deliberately skips
+                # NOT NULL columns. A recorded 24 may still lack agent_build,
+                # making every Device query fail on an upgraded database.
+                # Empty means unknown until the next agent heartbeat.
+                from sqlalchemy import inspect
+                columns = {column["name"] for column in inspect(conn).get_columns("devices")}
+                if "agent_build" not in columns:
+                    conn.execute(text("ALTER TABLE devices ADD COLUMN agent_build VARCHAR(64) NOT NULL DEFAULT ''"))
+                conn.execute(text("UPDATE devices SET agent_build = '' WHERE agent_build IS NULL"))
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (29)"))
+                applied.append(29)
             conn.commit()
         except Exception:
             conn.rollback()
