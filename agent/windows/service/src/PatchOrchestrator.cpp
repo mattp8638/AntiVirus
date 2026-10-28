@@ -13,6 +13,9 @@
 #include <vector>
 
 #include "RuntimeDatabase.h"
+#include "RmmExecutors.h"
+#include "ExtendedPolicy.h"
+#include "WingetSupport.h"
 #include "StringUtils.h"
 
 namespace antivirus::agent {
@@ -47,7 +50,6 @@ struct SoftwareUpdateCandidate {
 };
 
 constexpr std::size_t kMaxSoftwareUpdatesPerCycle = 24;
-constexpr DWORD kWingetExitUpdateNotApplicable = 0x8A15002B;
 
 bool IsRunningOnBatteryPower() {
   SYSTEM_POWER_STATUS status{};
@@ -243,6 +245,7 @@ std::filesystem::path WriteTempPowerShellScript(const AgentConfig& config, const
   const auto jobsRoot = config.updateRootPath / L"patch-orchestrator";
   std::error_code error;
   std::filesystem::create_directories(jobsRoot, error);
+  if (error) throw std::runtime_error("Unable to create service patch directory: " + error.message());
   const auto scriptPath = jobsRoot / (prefix + L"-" + GenerateGuidString() + L".ps1");
 
   std::ofstream output(scriptPath, std::ios::binary | std::ios::trunc);
@@ -252,6 +255,8 @@ std::filesystem::path WriteTempPowerShellScript(const AgentConfig& config, const
 
   const auto utf8Content = WideToUtf8(scriptContent);
   output.write(utf8Content.data(), static_cast<std::streamsize>(utf8Content.size()));
+  output.close();
+  if (!output) throw std::runtime_error("Unable to write service patch script");
   return scriptPath;
 }
 
@@ -581,11 +586,6 @@ const PackageRecipeRecord* FindRecipeForSoftwareRecord(const SoftwarePatchRecord
       return &recipe;
     }
 
-    if (!recipe.publisher.empty() && !lowerPublisher.empty() &&
-        lowerPublisher.find(ToLowerCopy(recipe.publisher)) != std::wstring::npos) {
-      return &recipe;
-    }
-
     if (!recipe.displayName.empty() && lowerName.find(ToLowerCopy(recipe.displayName)) != std::wstring::npos) {
       return &recipe;
     }
@@ -698,15 +698,6 @@ std::filesystem::path FindNativeUpdaterExecutable(const InstalledSoftwareInvento
   }
 
   return {};
-}
-
-bool WingetAvailable() {
-  try {
-    const auto result = ExecuteHiddenProcessCapture(L"cmd.exe /c winget --version");
-    return result.exitCode == 0;
-  } catch (...) {
-    return false;
-  }
 }
 
 std::wstring BuildWindowsUpdateDiscoveryScript() {
@@ -889,71 +880,6 @@ std::wstring ClassifyWindowsUpdate(const std::wstring& title, const std::wstring
   return L"quality";
 }
 
-std::wstring ComputeUpdateStatusFromOutput(const ProcessExecutionResult& result) {
-  const auto lower = ToLowerCopy(result.output);
-  if (result.exitCode == kWingetExitUpdateNotApplicable) {
-    return L"current";
-  }
-  if (lower.find(L"no available upgrade found") != std::wstring::npos) {
-    return L"current";
-  }
-  if (lower.find(L"no installed package found") != std::wstring::npos) {
-    return L"unsupported";
-  }
-  if (lower.find(L"available") != std::wstring::npos || lower.find(L"upgrade") != std::wstring::npos) {
-    return L"available";
-  }
-  if (result.exitCode != 0) {
-    if (lower.find(L"source agreements") != std::wstring::npos ||
-        lower.find(L"accept-source-agreements") != std::wstring::npos) {
-      return L"provider_agreement_required";
-    }
-    if (lower.find(L"source") != std::wstring::npos &&
-        (lower.find(L"failed") != std::wstring::npos || lower.find(L"unavailable") != std::wstring::npos)) {
-      return L"provider_source_unavailable";
-    }
-    if (lower.find(L"requires user interaction") != std::wstring::npos ||
-        lower.find(L"interactivity") != std::wstring::npos) {
-      return L"manual";
-    }
-    return L"provider_failed";
-  }
-  return L"unknown";
-}
-
-bool IsInformationalWingetStatus(const std::wstring& status) {
-  return _wcsicmp(status.c_str(), L"current") == 0 || _wcsicmp(status.c_str(), L"available") == 0 ||
-         _wcsicmp(status.c_str(), L"unsupported") == 0 || _wcsicmp(status.c_str(), L"manual") == 0;
-}
-
-std::wstring FirstNonEmptyOutputLine(std::wstring output) {
-  std::replace(output.begin(), output.end(), L'\r', L'\n');
-  std::wstringstream stream(output);
-  std::wstring line;
-  while (std::getline(stream, line)) {
-    while (!line.empty() && std::iswspace(line.front())) {
-      line.erase(line.begin());
-    }
-    while (!line.empty() && std::iswspace(line.back())) {
-      line.pop_back();
-    }
-    if (!line.empty()) {
-      if (line.size() > 240) {
-        line.resize(240);
-        line += L"...";
-      }
-      return line;
-    }
-  }
-  return {};
-}
-
-std::wstring BuildProviderOutputJson(const ProcessExecutionResult& result) {
-  return std::wstring(L"{\"exitCode\":") + std::to_wstring(result.exitCode) + L",\"summary\":\"" +
-         EscapeWideForJson(FirstNonEmptyOutputLine(result.output)) + L"\",\"output\":\"" +
-         Utf8ToWide(EscapeJsonString(result.output)) + L"\"}";
-}
-
 PatchPolicyRecord LoadOrCreatePolicy(RuntimeDatabase& database) {
   PatchPolicyRecord policy;
   if (!database.LoadPatchPolicy(policy)) {
@@ -1030,44 +956,41 @@ SoftwareProviderResolution ResolveProvider(const InstalledSoftwareInventoryItem&
   return resolution;
 }
 
-std::optional<std::wstring> QueryWingetAvailableVersion(const std::wstring& wingetId) {
-  const auto result = ExecuteHiddenProcessCapture(
-      std::wstring(L"cmd.exe /c winget upgrade --id \"") + wingetId +
-      L"\" --accept-source-agreements --disable-interactivity");
-  if (result.exitCode != 0) {
-    return std::nullopt;
+winget::Result RunWingetOperation(const std::wstring& id, bool install) {
+  const auto exe = winget::FindExecutable();
+  auto run = [](const std::wstring& command) {
+    const bool installing = command.find(L" --silent ") != std::wstring::npos;
+    const auto process = rmm::RunProcess(command, L"", {}, installing ? 45 * 60 * 1000 : 2 * 60 * 1000,
+                                         4 * 1024 * 1024);
+    return winget::ProcessOutput{process.exitCode,
+        Utf8ToWide(process.stdoutText + "\n" + process.stderrText), process.timedOut};
+  };
+  try {
+    return install ? winget::Upgrade(exe, id, run) : winget::Query(exe, id, run);
+  } catch (const std::exception& error) {
+    auto result = winget::Failure({1, Utf8ToWide(error.what()), false});
+    result.summary = L"WinGet could not complete the request. " + result.process.output;
+    return result;
   }
-
-  const auto lower = ToLowerCopy(result.output);
-  if (lower.find(L"no available upgrade found") != std::wstring::npos ||
-      lower.find(L"no installed package found") != std::wstring::npos) {
-    return std::nullopt;
-  }
-
-  return L"available";
 }
 
 std::vector<SoftwarePatchRecord> BuildSoftwarePatchInventory(const DeviceInventorySnapshot& snapshot,
                                                              const PatchPolicyRecord& policy,
                                                              const std::vector<PackageRecipeRecord>& recipes) {
-  const auto wingetAvailable = WingetAvailable();
   std::vector<SoftwarePatchRecord> records;
   records.reserve(snapshot.installedSoftware.size());
 
   for (const auto& item : snapshot.installedSoftware) {
     const auto resolution = ResolveProvider(item, policy, recipes);
-    auto updateState = resolution.manualOnly ? std::wstring(L"manual") : (resolution.supported ? L"current" : L"unsupported");
+    auto updateState = resolution.manualOnly ? std::wstring(L"manual") : (resolution.supported ? L"not_checked" : L"unsupported");
     auto availableVersion = std::wstring{};
     auto summary = resolution.summary;
 
-    if (resolution.provider == PatchProviderKind::Winget && wingetAvailable) {
-      if (const auto version = QueryWingetAvailableVersion(resolution.providerId); version.has_value()) {
-        updateState = L"available";
-        availableVersion = *version;
-        summary = L"Fenrir found an available upgrade for this application through winget.";
-      } else if (resolution.supported) {
-        summary = L"Fenrir did not find a newer winget package for this application.";
-      }
+    if (resolution.provider == PatchProviderKind::Winget) {
+      const auto result = RunWingetOperation(resolution.providerId, false);
+      updateState = result.status;
+      availableVersion = result.availableVersion;
+      summary = result.summary;
     } else if (resolution.provider == PatchProviderKind::NativeUpdater && !resolution.providerId.empty()) {
       summary = L"Fenrir can invoke the product's native updater during a maintenance window.";
       updateState = L"provider_ready";
@@ -1173,24 +1096,17 @@ std::vector<WindowsUpdateRecord> DiscoverWindowsUpdates(const AgentConfig& confi
 }
 
 PatchExecutionResult ExecuteWingetOperation(const std::wstring& wingetId, const bool searchOnly) {
-  const auto command = searchOnly
-                           ? std::wstring(L"cmd.exe /c winget upgrade --id \"") + wingetId +
-                                 L"\" --accept-source-agreements --disable-interactivity"
-                           : std::wstring(L"cmd.exe /c winget upgrade --id \"") + wingetId +
-                                 L"\" --accept-package-agreements --accept-source-agreements --silent --disable-interactivity";
-  const auto result = ExecuteHiddenProcessCapture(command);
-  const auto status = searchOnly ? ComputeUpdateStatusFromOutput(result)
-                                 : (result.exitCode == 0 ? std::wstring(L"completed")
-                                                         : ComputeUpdateStatusFromOutput(result));
-  const auto success = searchOnly ? IsInformationalWingetStatus(status)
-                                  : (result.exitCode == 0 || result.exitCode == kWingetExitUpdateNotApplicable);
+  const auto result = RunWingetOperation(wingetId, !searchOnly);
   return PatchExecutionResult{
-      .success = success,
+      .success = result.success,
+      .rebootRequired = result.rebootRequired,
       .action = searchOnly ? L"search" : L"install",
       .provider = L"winget",
-      .status = status,
-      .errorCode = success ? std::wstring{} : std::wstring(L"WINGET_EXIT_") + std::to_wstring(result.exitCode),
-      .detailJson = BuildProviderOutputJson(result)};
+      .status = result.status,
+      .errorCode = result.success ? std::wstring{} : result.process.exitCode == 0 ? L"WINGET_UNVERIFIED_RESULT" : L"WINGET_" + winget::ExitCodeText(result.process.exitCode),
+      .detailJson = L"{\"summary\":\"" + EscapeWideForJson(result.summary) +
+          L"\",\"exitCode\":" + std::to_wstring(result.process.exitCode) +
+          L",\"output\":\"" + EscapeWideForJson(result.process.output) + L"\"}"};
 }
 
 PatchExecutionResult ExecuteNativeOperation(const std::wstring& providerId) {
@@ -1445,7 +1361,12 @@ std::wstring BuildPatchAttemptTrailJson(const std::vector<PatchExecutionResult>&
     json += attempt.success ? L"true" : L"false";
     json += L"}";
   }
-  json += L"]}";
+  json += L"]";
+  if (const auto detail = json::Parse(WideToUtf8(providerDetail)); detail) {
+    const auto* summary = detail->Get("summary");
+    if (summary && summary->String()) json += L",\"summary\":\"" + EscapeWideForJson(Utf8ToWide(*summary->String())) + L"\"";
+  }
+  json += L"}";
   return json;
 }
 

@@ -41,6 +41,7 @@ jobs:
       - run: python -m pip install -r cloud/requirements-dev.txt
       - working-directory: console
         run: npm install --no-audit --no-fund && npm run build && npm run test:shapes && npm run test:remote && npm run test:pages
+      - run: node agent/windows/tests/EndpointUpdateUiTests.mjs
 
   linux-agent:
     name: Linux agent (Go)
@@ -80,6 +81,7 @@ jobs:
           g++ -std=c++20 -Iservice/include service/src/ExtendedPolicy.cpp service/src/BehaviorRules.cpp service/src/DeviceControl.cpp tests/PolicyAndDeviceControlTests.cpp -o /tmp/pdtest && /tmp/pdtest tests
           g++ -std=c++20 -Iservice/include tests/EnrollmentPersistenceTests.cpp -o /tmp/enrollmenttest && /tmp/enrollmenttest
           g++ -std=c++20 -Iservice/include tests/RemoteSasRequestTests.cpp -o /tmp/sastest && /tmp/sastest
+          g++ -std=c++20 -Iservice/include tests/WingetSupportTests.cpp -o /tmp/wingettest && /tmp/wingettest
           g++ -std=c++20 -Iservice/include service/src/AdEventRules.cpp tests/AdMonitorTests.cpp -o /tmp/adtest && /tmp/adtest
           g++ -std=c++20 -O2 -Iservice/include service/src/MlStaticModel.cpp tools/mltestcli/src/MlTestCliMain.cpp -o /tmp/mltest
           /tmp/mltest score ../../ml/models/fenrir-pe-v1.fgbt ../../ml/testdata/hello64.exe

@@ -732,9 +732,9 @@ LocalBrokerCommandResult ListPendingLocalApprovals(const AgentConfig& config, co
   return SendLocalBrokerCommand(config, L"local.approval.list", L"", payloadJson, L"", *approvalToken);
 }
 
-PatchExecutionResult ExecuteSoftwarePatchThroughService(const AgentConfig& config, const std::wstring& softwareId) {
+PatchExecutionResult ExecuteSoftwarePatchThroughService(const AgentConfig& config, const std::wstring& softwareId, bool searchOnly) {
   const auto payloadJson = std::wstring(L"{\"softwareId\":\"") + EscapeJsonValue(softwareId) + L"\"}";
-  const auto brokerResult = SendLocalBrokerCommand(config, L"patch.software.install", L"", payloadJson);
+  const auto brokerResult = SendLocalBrokerCommand(config, searchOnly ? L"software.update.search" : L"patch.software.install", L"", payloadJson);
   if (!brokerResult.success) {
     return PatchExecutionResult{
         .success = false,

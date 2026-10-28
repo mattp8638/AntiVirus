@@ -566,7 +566,7 @@ function pageUpdates() {
   const uc = updateCounts(), u = S.updates || {}, busy = !!S.patchAction?.running;
   const apps = (S.softwareUpdates || []).filter((a) => {
     const st = String(a.state || '').toLowerCase();
-    if (updFilter === 'available' && !(st === 'available' || st === 'provider_ready')) return false;
+    if (updFilter === 'available' && st !== 'available') return false;
     if (updFilter === 'manual' && !(a.manualOnly || st === 'manual')) return false;
     const q = updSearch.trim().toLowerCase();
     return !q || `${a.name} ${a.publisher}`.toLowerCase().includes(q);
@@ -576,22 +576,27 @@ function pageUpdates() {
   const shown = apps.slice(updPage * pageSize, updPage * pageSize + pageSize);
   const appRow = (a) => {
     const st = String(a.state || '').toLowerCase();
-    const avail = st === 'available' || st === 'provider_ready';
+    const avail = st === 'available';
+    const ready = st === 'provider_ready';
     const badge = a.blocked ? '<span class="badge bad">Blocked</span>' : avail ? `<span class="badge warn">${esc(a.availableVersion ? 'Update to ' + a.availableVersion : 'Update available')}</span>`
-      : a.manualOnly || st === 'manual' ? '<span class="badge">Manual update</span>' : !Number(a.supported) ? '<span class="badge">Not supported</span>' : '<span class="badge good">Up to date</span>';
-    return `<div class="row"><span class="ic">${icon('box')}</span><div style="min-width:0"><div class="t">${esc(a.name)}</div><div class="m">${esc([a.publisher, a.version && 'Version ' + a.version].filter(Boolean).join(' \u00b7 '))}</div></div>
+      : ready ? '<span class="badge">Updater available</span>'
+      : a.manualOnly || st === 'manual' ? '<span class="badge">Manual update</span>'
+      : st === 'current' ? '<span class="badge good">Up to date</span>'
+      : st === 'package_not_found' ? '<span class="badge warn">Package not matched</span>'
+      : !Number(a.supported) ? '<span class="badge">Not supported</span>' : '<span class="badge warn">Check needed</span>';
+    return `<div class="row"><span class="ic">${icon('box')}</span><div style="min-width:0"><div class="t">${esc(a.name)}</div><div class="m">${esc([a.publisher, a.version && 'Version ' + a.version].filter(Boolean).join(' \u00b7 '))}</div>${a.summary && st !== 'current' ? `<div class="m">${esc(a.summary)}</div>` : ''}</div>
       <div class="side" style="grid-auto-flow:column;align-items:center;gap:8px">${badge}
         <button class="btn small" data-act="softwareCheck" data-software-id="${esc(a.id)}" ${busy ? 'disabled' : ''}>Check</button>
-        ${Number(a.canInstall) && avail ? `<button class="btn small primary" data-act="softwareUpdate" data-software-id="${esc(a.id)}" ${busy ? 'disabled' : ''}>Update</button>` : ''}</div></div>`;
+        ${Number(a.canInstall) && (avail || ready) ? `<button class="btn small primary" data-act="softwareUpdate" data-software-id="${esc(a.id)}" ${busy ? 'disabled' : ''}>${ready ? 'Run updater' : 'Update'}</button>` : ''}</div></div>`;
   };
   const win = (S.windowsUpdates || []);
-  return pageTop('Updates', uc.total ? `${plural(uc.total, 'update')} waiting` : 'Everything is up to date',
+  return pageTop('Updates', uc.total ? `${plural(uc.total, 'update')} waiting` : 'No confirmed updates',
       `<button class="btn" data-act="softwareUpdatesRefresh" ${busy ? 'disabled' : ''}>${icon('search')}Check for updates</button>`) + `
     ${busy ? `<div class="banner tone-info"><span class="ic">${icon('refresh')}</span><div class="grow"><div class="t">${esc(S.patchAction?.mode === 'check' ? 'Checking' : 'Updating')} ${esc(S.patchAction?.target || '')}</div><div class="m">${esc(S.patchAction?.status || '')}</div><div class="progress indeterminate" style="margin-top:8px"><i></i></div></div></div>` : ''}
     ${uc.reboot ? `<div class="banner tone-warn"><span class="ic warn">${icon('restart')}</span><div class="grow"><div class="t">Restart needed</div><div class="m">${esc(u.rebootReasons && u.rebootReasons !== 'none' ? u.rebootReasons : 'Restart your computer to finish installing updates.')}</div></div></div>` : ''}
     <div class="grid3">
       <div class="card tile"><div class="head"><span class="ic">${icon('restart')}</span>Windows updates</div><div class="val ${uc.win ? 'warn-t' : 'good-t'}">${uc.win ? plural(uc.win, 'update') : 'Up to date'}</div><div class="note">Installed in your maintenance window</div></div>
-      <div class="card tile"><div class="head"><span class="ic">${icon('box')}</span>App updates</div><div class="val ${uc.apps ? 'warn-t' : 'good-t'}">${uc.apps ? plural(uc.apps, 'update') : 'Up to date'}</div><div class="note">${esc(plural(Number(u.softwareCount || 0), 'app'))} tracked</div></div>
+      <div class="card tile"><div class="head"><span class="ic">${icon('box')}</span>App updates</div><div class="val ${uc.apps ? 'warn-t' : 'good-t'}">${uc.apps ? plural(uc.apps, 'update') : 'No confirmed updates'}</div><div class="note">${esc(plural(Number(u.softwareCount || 0), 'app'))} tracked</div></div>
       <div class="card tile"><div class="head"><span class="ic">${icon('info')}</span>Needs a hand</div><div class="val">${Number(u.manualSoftwareCount || 0)}</div><div class="note">Apps that update themselves or need a technician</div></div>
     </div>
     ${win.length ? `<div class="card" style="margin-top:14px"><div class="card-head"><h3>Windows updates</h3><span class="hint">${esc(plural(win.length, 'update'))}</span></div><div class="list">

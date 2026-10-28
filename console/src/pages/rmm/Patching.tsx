@@ -37,18 +37,20 @@ export default function Patching() {
                 actions={can("configure") && <><button onClick={scanAll} disabled={busy}>Scan now</button><button className="primary" onClick={() => setInstalling(true)}>Install now…</button></>} />
       <div className="grid k4">
         <Stat label="Patch compliance" value={compliance ? `${compliance.compliancePercent}%` : "—"} accent={compliance?.compliancePercent >= 90 ? "green" : "amber"}
-              hint={compliance && `${compliance.fullyPatched} of ${compliance.scanned} scanned devices fully patched`} />
+              hint={compliance && `${compliance.fullyPatched} of ${compliance.devices} devices verified fully patched`} />
         <Stat label="Missing critical/security" value={compliance?.missingCriticalOrSecurity ?? "—"} accent={compliance?.missingCriticalOrSecurity ? "red" : "green"} hint="devices" />
         <Stat label="Pending restart" value={compliance?.pendingReboot ?? "—"} hint="devices" />
         <Stat label="Failed installs" value={compliance?.failedPatches ?? "—"} accent={compliance?.failedPatches ? "red" : undefined} />
       </div>
+      {!!compliance?.incompleteScans && <p role="status" className="muted">{compliance.incompleteScans} device(s) have incomplete patch scans. Failed providers retain their outstanding patches and cannot be counted as fully patched.</p>}
       <div style={{ marginTop: 16 }}><Tabs tabs={["Overview", "Patches", "Policies"]} active={tab} onChange={setTab} /></div>
       {tab === "Overview" && (
         <div className="card">
           <Table rows={compliance?.devices_detail} empty="No devices yet."
                  columns={[{ key: "hostname", label: "Device", render: (d) => <Link to={`/devices/${d.id}`}>{displayValue(d.hostname)}</Link> },
                            { key: "account", label: "Customer" }, { key: "platform", label: "Platform" },
-                           { key: "missing", label: "Missing", render: (d) => Object.keys(d.missing).length ? Object.entries(d.missing).map(([k, v]) => <span key={k} className="chip">{k} {String(v)}</span>) : d.lastScan ? <Pill value="up to date" tone="good" /> : <span className="muted small">not scanned</span> },
+                           { key: "missing", label: "Missing", render: (d) => Object.keys(d.missing).length ? Object.entries(d.missing).map(([k, v]) => <span key={k} className="chip">{k} {String(v)}</span>) : ["partial", "failed"].includes(d.scanStatus) ? <Pill value="scan incomplete" tone="warn" /> : d.lastScan ? <Pill value="up to date" tone="good" /> : <span className="muted small">not scanned</span> },
+                           { key: "scanStatus", label: "Scan coverage", render: (d) => <span>{d.scanStatus || (d.lastScan ? "completed" : "not scanned")}{Object.entries(d.providers || {}).map(([name, provider]: [string, any]) => provider.success ? null : <div key={name} className="small muted">{name}: {displayValue(provider.error || "unavailable")}</div>)}</span> },
                            { key: "rebootPending", label: "Restart", render: (d) => d.rebootPending ? <Pill value="pending" tone="warn" /> : "—" },
                            { key: "lastScan", label: "Last scan", render: (d) => ago(d.lastScan) }]} />
           <div className="row" style={{ marginTop: 8 }}><button className="small" onClick={reloadCompliance}>Refresh</button></div>

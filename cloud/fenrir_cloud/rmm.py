@@ -357,9 +357,16 @@ def ingest_patch_scan(db: Session, device: Device, result: dict) -> int:
         if not (row.status == "installing" and now - row.last_seen_at < timedelta(hours=6)) and row.status != "failed":
             row.status = "missing"
         row.last_seen_at = now
-    # Anything previously missing that is no longer reported has been installed.
+    # A failed/partial provider must not resolve its missing patches merely
+    # because it returned no rows. Legacy agents do not report coverage.
+    has_coverage = "coverage" in result
+    raw_coverage = result.get("coverage")
+    coverage = {str(source)[:30]: {"success": value.get("success") is True,
+                                  "error": str(value.get("error") or "")[:1000]}
+                for source, value in raw_coverage.items() if isinstance(value, dict)} if isinstance(raw_coverage, dict) else {}
     for key, row in existing.items():
-        if key not in seen and row.status in {"missing", "installing", "failed"}:
+        source_complete = not has_coverage or coverage.get(row.source, {}).get("success", False)
+        if source_complete and key not in seen and row.status in {"missing", "installing", "failed"}:
             row.status, row.installed_at = "installed", now
     db.flush()
     sync_update_vulnerabilities(db, device, now, row_cves)
@@ -367,7 +374,16 @@ def ingest_patch_scan(db: Session, device: Device, result: dict) -> int:
 
     refresh_risk_scores(db, [device.id])
     metrics = dict(device.metrics or {})
-    metrics["patchScanAt"] = now.isoformat() + "Z"
+    complete = not has_coverage or (bool(coverage) and all(v["success"] for v in coverage.values())
+                                   and (device.platform != "windows" or {"windows-update", "winget"} <= coverage.keys()))
+    metrics["patchScanAttemptAt"] = now.isoformat() + "Z"
+    metrics["patchScanStatus"] = "completed" if complete else "partial" if any(v["success"] for v in coverage.values()) else "failed"
+    if has_coverage:
+        metrics["patchProviders"] = coverage
+    else:
+        metrics.pop("patchProviders", None)
+    if complete:
+        metrics["patchScanAt"] = now.isoformat() + "Z"
     if "rebootPending" in result:
         metrics["rebootPending"] = bool(result["rebootPending"])
     device.metrics = metrics
@@ -744,7 +760,10 @@ def queue_patch_scans(db: Session, now: datetime | None = None) -> int:
     for device in db.execute(select(Device).where(Device.approved.is_(True), Device.last_seen_at >= online_since)).scalars():
         policy = policy_for_device(db, device, [p for p in policies if p.tenant_id == device.tenant_id])
         interval = timedelta(hours=(policy.scan_interval_hours if policy else 24) or 24)
-        last = (device.metrics or {}).get("patchScanAt")
+        incomplete = (device.metrics or {}).get("patchScanStatus") in {"partial", "failed"}
+        if incomplete:
+            interval = min(interval, timedelta(minutes=15))
+        last = (device.metrics or {}).get("patchScanAttemptAt" if incomplete else "patchScanAt")
         last_at = datetime.fromisoformat(last.rstrip("Z")) if last else None
         if last_at and now - last_at < interval:
             continue
@@ -769,14 +788,16 @@ def patch_compliance(db: Session, tenant_ids: list[str]) -> dict:
             .group_by(DevicePatch.device_id, DevicePatch.classification)).all():
         missing_by_device.setdefault(device_id, {})[classification] = count
     failed = db.execute(select(func.count()).where(DevicePatch.tenant_id.in_(tenant_ids), DevicePatch.status == "failed")).scalar() or 0
-    scanned = [d for d in devices if (d.metrics or {}).get("patchScanAt")]
-    fully = [d for d in scanned if not missing_by_device.get(d.id)]
-    critical = [d for d in scanned if missing_by_device.get(d.id, {}).get("critical") or missing_by_device.get(d.id, {}).get("security")]
+    scanned = [d for d in devices if (d.metrics or {}).get("patchScanAt")
+               and (d.metrics or {}).get("patchScanStatus") not in {"partial", "failed"}]
+    incomplete = [d for d in devices if (d.metrics or {}).get("patchScanStatus") in {"partial", "failed"}]
+    fully = [d for d in scanned if not missing_by_device.get(d.id) and not (d.metrics or {}).get("rebootPending")]
+    critical = [d for d in devices if missing_by_device.get(d.id, {}).get("critical") or missing_by_device.get(d.id, {}).get("security")]
     reboot = [d for d in devices if (d.metrics or {}).get("rebootPending")]
     return {
-        "devices": len(devices), "scanned": len(scanned), "fullyPatched": len(fully),
+        "devices": len(devices), "scanned": len(scanned), "fullyPatched": len(fully), "incompleteScans": len(incomplete),
         "missingCriticalOrSecurity": len(critical), "pendingReboot": len(reboot), "failedPatches": failed,
-        "compliancePercent": round(100 * len(fully) / len(scanned), 1) if scanned else 0,
+        "compliancePercent": round(100 * len(fully) / len(devices), 1) if devices else 0,
         "byDevice": {d.id: missing_by_device.get(d.id, {}) for d in devices},
     }
 
@@ -1119,7 +1140,7 @@ def record_heartbeat_metrics(db: Session, device: Device, metrics: dict) -> None
     if isinstance(metrics.get("remoteCapabilities"), list):
         clean["remoteCapabilities"] = [str(x)[:20] for x in metrics["remoteCapabilities"][:10]]
     previous = device.metrics or {}
-    for key in ("patchScanAt",):
+    for key in ("patchScanAt", "patchScanAttemptAt", "patchScanStatus", "patchProviders"):
         if key in previous:
             clean[key] = previous[key]
     if "rebootPending" not in clean and "rebootPending" in previous:

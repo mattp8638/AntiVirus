@@ -17,6 +17,7 @@
 #include <thread>
 
 #include "CryptoUtils.h"
+#include "WingetSupport.h"
 #include "ExtendedPolicy.h"
 #include "StringUtils.h"
 
@@ -217,24 +218,7 @@ std::filesystem::path WriteScript(const std::filesystem::path& root, const std::
   return path;
 }
 
-std::wstring FindWinget() {
-  wchar_t programFiles[MAX_PATH]{};
-  GetEnvironmentVariableW(L"ProgramFiles", programFiles, MAX_PATH);
-  std::vector<std::filesystem::path> candidates;
-  std::error_code ec;
-  for (std::filesystem::directory_iterator it(std::filesystem::path(programFiles) / L"WindowsApps", ec), end; !ec && it != end; it.increment(ec)) {
-    const auto name = it->path().filename().wstring();
-    if (name.rfind(L"Microsoft.DesktopAppInstaller_", 0) == 0 && name.find(L"_x64__") != std::wstring::npos &&
-        std::filesystem::exists(it->path() / L"winget.exe")) {
-      candidates.push_back(it->path() / L"winget.exe");
-    }
-  }
-  if (!candidates.empty()) {
-    std::sort(candidates.begin(), candidates.end());
-    return candidates.back().wstring();
-  }
-  return L"winget.exe";
-}
+std::wstring FindWinget() { return winget::FindExecutable(); }
 
 std::string ResultJson(const ProcessResult& r) {
   std::ostringstream out;
@@ -289,7 +273,7 @@ bool RebootPending() {
 std::uint64_t FileTimeValue(const FILETIME& ft) { return (static_cast<std::uint64_t>(ft.dwHighDateTime) << 32) | ft.dwLowDateTime; }
 
 const char kPatchScanScript[] = R"PS(
-$ErrorActionPreference = 'Continue'
+$ErrorActionPreference = 'Stop'
 # Windows PowerShell 5.1's ConvertTo-Json throws "Argument types do not match" on some objects
 # (lists of custom objects built from COM data), so the output JSON is written by hand.
 function J($v) {
@@ -309,6 +293,7 @@ function J($v) {
 }
 function O($h) { return '{' + ((@($h.Keys) | ForEach-Object { (J ([string]$_)) + ':' + (J $h[$_]) }) -join ',') + '}' }
 $patches = New-Object System.Collections.ArrayList
+$wuOk = $false; $wuError = ''; $wgOk = $false; $wgError = 'WinGet/App Installer is unavailable to the service'
 try {
   $session = New-Object -ComObject Microsoft.Update.Session
   $searcher = $session.CreateUpdateSearcher()
@@ -323,28 +308,33 @@ try {
       severity = [string]$u.MsrcSeverity; source = 'windows-update'; rebootRequired = [bool]$u.RebootRequired;
       releasedAt = [string]$released; cves = [string](@($u.CveIDs) -join ',') })))
   }
-} catch { [Console]::Error.WriteLine("Windows Update search failed: $_") }
+  $wuOk = $true
+} catch { $wuError = [string]$_; [Console]::Error.WriteLine("Windows Update search failed: $_") }
 $winget = $env:FENRIR_WINGET
 if ($winget -and (Test-Path $winget)) {
-  $lines = & $winget upgrade --include-unknown --accept-source-agreements --disable-interactivity 2>$null
-  $header = $lines | Where-Object { $_ -match '\bId\b' -and $_ -match '\bVersion\b' } | Select-Object -First 1
-  if ($header) {
-    $header = $header -replace '^[^A-Za-z]+', ''
-    $idAt = $header.IndexOf('Id'); $verAt = $header.IndexOf('Version'); $availAt = $header.IndexOf('Available'); $srcAt = $header.IndexOf('Source')
-    $started = $false
-    foreach ($line in $lines) {
-      if ($line -match '^-{5,}') { $started = $true; continue }
-      if (-not $started -or $line.Length -lt $availAt -or $line -match 'upgrades available') { continue }
-      $name = $line.Substring(0, $idAt).Trim()
-      $pkg = $line.Substring($idAt, $verAt - $idAt).Trim()
-      $installed = $line.Substring($verAt, $availAt - $verAt).Trim()
-      $available = if ($srcAt -gt 0 -and $line.Length -ge $srcAt) { $line.Substring($availAt, $srcAt - $availAt).Trim() } else { $line.Substring($availAt).Trim() }
-      if ($pkg) { [void]$patches.Add((O ([ordered]@{ id = "winget:$pkg"; title = "$name $installed -> $available"; source = 'winget';
+  try {
+  $inventory = @(& $winget list --source winget --accept-source-agreements --disable-interactivity 2>&1)
+  $inventoryCode = [uint32]([int64]$LASTEXITCODE -band 4294967295L)
+  if ($inventoryCode -ne 0) { throw (('WinGet cannot inspect installed packages (0x{0:X8}): ' -f $inventoryCode) + ($inventory -join ' ')) }
+  $lines = @(& $winget list --upgrade-available --source winget --accept-source-agreements --disable-interactivity 2>&1)
+  $scanCode = [uint32]([int64]$LASTEXITCODE -band 4294967295L)
+  if ($scanCode -ne 0 -and $scanCode -ne 0x8A150014 -and $scanCode -ne 0x8A15002B) { throw (('WinGet scan failed (0x{0:X8}): ' -f $scanCode) + ($lines -join ' ')) }
+  $matched = 0
+  foreach ($line in $lines) {
+    # Match data rows, not translated column headings or status messages.
+    if ($line -match '^\s*(?<name>.+?)\s+(?<id>[A-Za-z0-9][A-Za-z0-9+_-]*\.[A-Za-z0-9.+_-]+)\s+(?<installed>\S+)\s+(?<available>\S+)(?:\s+winget)?\s*$') {
+      $pkg = $Matches.id; $name = $Matches.name.Trim(); $installed = $Matches.installed; $available = $Matches.available
+      if ($available -ne 'winget') { $matched++; [void]$patches.Add((O ([ordered]@{ id = "winget:$pkg"; title = "$name $installed -> $available"; source = 'winget';
         product = $name; installedVersion = $installed; availableVersion = $available; classification = 'third-party' }))) }
     }
   }
+  if ($scanCode -eq 0 -and $matched -eq 0) { throw 'WinGet returned an unreadable update table; coverage is unknown' }
+  $wgOk = $true; $wgError = ''
+  } catch { $wgError = [string]$_ }
 }
-[Console]::Out.Write('{"patches":[' + ($patches -join ',') + ']}')
+[Console]::Out.Write('{"patches":[' + ($patches -join ',') + '],"coverage":{"windows-update":' +
+  (O ([ordered]@{success=[bool]$wuOk;error=[string]$wuError})) + ',"winget":' +
+  (O ([ordered]@{success=[bool]$wgOk;error=[string]$wgError})) + '}}')
 )PS";
 
 const char kPatchInstallScript[] = R"PS(
@@ -414,11 +404,18 @@ if ($wu.Count -gt 0) {
 }
 $winget = $env:FENRIR_WINGET
 foreach ($pkg in $wg) {
-  & $winget upgrade --id $pkg --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1 | Out-Null
-  $code = $LASTEXITCODE
+  if (-not $winget -or -not (Test-Path $winget)) { Add-Result "winget:$pkg" $false 'WinGet/App Installer is unavailable to the service'; continue }
+  $LASTEXITCODE = $null
+  $output = ''
+  $output = (& $winget upgrade --id $pkg --exact --source winget --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1 | Out-String)
+  $output = [string]$output
+  if ($null -eq $LASTEXITCODE) { Add-Result "winget:$pkg" $false ('WinGet could not start: ' + $output.Trim()); continue }
+  $code = [uint32]([int64]$LASTEXITCODE -band 4294967295L)
+  $ok = $code -eq 0 -or $code -eq 0x8A15002B -or $code -eq 3010 -or $code -eq 1641
+  if ($code -eq 3010 -or $code -eq 1641) { $rebootRequired = $true }
   $err = ''
-  if ($code -ne 0) { $err = "winget exit code $code" }
-  Add-Result "winget:$pkg" ($code -eq 0) $err
+  if (-not $ok) { $err = ('WinGet failed (0x{0:X8}): ' -f $code) + $output.Trim() }
+  Add-Result "winget:$pkg" $ok $err
 }
 [Console]::Out.Write('{"results":[' + ($results -join ',') + '],"rebootRequired":' + (J ([bool]$rebootRequired)) + '}')
 )PS";
@@ -666,8 +663,8 @@ std::string PatchScan(const std::filesystem::path& workRoot) {
   std::error_code ec;
   std::filesystem::remove(file, ec);
   const auto parsed = json::Parse(result.stdoutText);
-  if (!parsed || !parsed->IsObject()) {
-    throw CommandFailed("The patch scan did not return a result", ResultJson(result));
+  if (result.timedOut || result.exitCode != 0 || !parsed || !parsed->IsObject()) {
+    throw CommandFailed("The patch scan did not complete successfully", ResultJson(result));
   }
   // Re-emit with the reboot state appended so the cloud can show "restart pending".
   auto body = result.stdoutText;
@@ -719,8 +716,10 @@ std::string Software(const std::wstring& payloadJson, const bool uninstall, cons
       throw std::runtime_error("Invalid package id");
     }
     if (installer == "winget") {
-      command = L"\"" + FindWinget() + L"\" " + (uninstall ? L"uninstall" : L"install") + L" --id " + Utf8ToWide(identifier) +
-                L" --exact --silent --accept-source-agreements --disable-interactivity" +
+      const auto winget = FindWinget();
+      if (winget.empty()) throw std::runtime_error("WinGet/App Installer is unavailable to the protection service");
+      command = L"\"" + winget + L"\" " + (uninstall ? L"uninstall" : L"install") + L" --id " + Utf8ToWide(identifier) +
+                L" --exact --source winget --silent --accept-source-agreements --disable-interactivity" +
                 (uninstall ? L"" : L" --accept-package-agreements --scope machine");
     } else {
       command = std::wstring(L"choco.exe ") + (uninstall ? L"uninstall " : L"install ") + Utf8ToWide(identifier) + L" -y --no-progress";

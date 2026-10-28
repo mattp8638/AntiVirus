@@ -545,6 +545,9 @@ def patches_compliance(tenant_id: str | None = None, principal: Principal = Depe
     devices = db.execute(select(Device).where(Device.tenant_id.in_(scope), Device.approved.is_(True))).scalars().all()
     result["devices_detail"] = [{"id": d.id, "hostname": d.hostname, "account": names.get(d.tenant_id, ""), "platform": d.platform,
                                  "missing": result["byDevice"].get(d.id, {}), "lastScan": (d.metrics or {}).get("patchScanAt"),
+                                 "scanStatus": (d.metrics or {}).get("patchScanStatus"),
+                                 "providers": (d.metrics or {}).get("patchProviders", {}),
+                                 "lastAttempt": (d.metrics or {}).get("patchScanAttemptAt"),
                                  "rebootPending": bool((d.metrics or {}).get("rebootPending"))} for d in devices]
     result.pop("byDevice")
     return result

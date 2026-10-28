@@ -2187,7 +2187,12 @@ std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
   if (command.type == L"remote.session.end") {
     return EndRemoteHelper(command);
   }
-  if (command.type == L"software.search") {
+  if (command.type == L"patch.posture.refresh") {
+    const auto summary = PatchOrchestrator(config_).RefreshPatchState();
+    return L"{\"success\":true,\"status\":\"refreshed\",\"summary\":\"Patch inventory refreshed.\",\"windowsUpdateCount\":" +
+           std::to_wstring(summary.windowsUpdateCount) + L",\"softwareCount\":" + std::to_wstring(summary.softwareCount) + L"}";
+  }
+  if (command.type == L"software.search" || command.type == L"software.update.search") {
     return ExecuteSoftwareCommand(command, false, true);
   }
   if (command.type == L"software.update") {
