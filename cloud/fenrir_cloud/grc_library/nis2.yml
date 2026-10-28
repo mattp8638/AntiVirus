@@ -1,0 +1,133 @@
+{
+  "key": "nis2",
+  "name": "NIS 2 Directive",
+  "short": "NIS 2",
+  "version": "Directive (EU) 2022/2555",
+  "questionSet": true,
+  "description": "UK-relevant readiness and evidence guide. Record applicability before assessment; use the official framework and any required independent assessment or submission process. UK organisations operating in an EU jurisdiction where the national implementing law brings them into scope.",
+  "sections": [
+    {
+      "id": "readiness",
+      "title": "Scope, implementation and assurance",
+      "requirements": [
+        {
+          "id": "NIS2-SCOPE",
+          "title": "National-law applicability",
+          "text": "Record entity classification, jurisdiction and the applicable national implementing law.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "NIS2-20",
+          "title": "Management accountability",
+          "text": "Document management oversight, approval and appropriate training.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "NIS2-21a",
+          "title": "Risk and information-system policies",
+          "text": "Maintain risk analysis and security policies.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "NIS2-21b",
+          "title": "Incident handling",
+          "text": "Maintain detection, escalation and incident handling capability.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "NIS2-21c",
+          "title": "Continuity and recovery",
+          "text": "Evidence backup, recovery and crisis-management arrangements.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "NIS2-21d",
+          "title": "Supply-chain security",
+          "text": "Assess and review relevant direct suppliers.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "NIS2-21e",
+          "title": "Lifecycle security",
+          "text": "Manage acquisition, development, maintenance and vulnerability disclosure.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "NIS2-21f",
+          "title": "Effectiveness assessment",
+          "text": "Review whether risk-management measures work.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "NIS2-21g",
+          "title": "Hygiene and training",
+          "text": "Maintain cyber-hygiene practices and training.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "NIS2-21h",
+          "title": "Cryptography",
+          "text": "Document appropriate cryptographic and encryption controls.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "NIS2-21i",
+          "title": "People, access and assets",
+          "text": "Maintain personnel, access and asset controls.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "NIS2-21j",
+          "title": "Stronger authentication and communications",
+          "text": "Assess applicable authentication and secure communication arrangements.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "NIS2-23",
+          "title": "Incident reporting",
+          "text": "Track the applicable early warning, notification and final reporting deadlines.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        }
+      ]
+    }
+  ]
+}

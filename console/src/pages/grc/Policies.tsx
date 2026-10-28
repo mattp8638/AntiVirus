@@ -8,7 +8,9 @@ import { Modal, PageHead, Pill, Table, TenantSelect, useAction, useData, useList
 
 const TONE: Record<string, string> = { draft: "muted", in_review: "warn", approved: "good", retired: "muted" };
 const FRAMEWORK_SHORT: Record<string, string> = { "iso-27001": "ISO 27001", "cyber-essentials": "CE", "nist-csf-2": "NIST", "uk-gdpr": "GDPR",
-  soc2: "SOC 2", "cis-v8-ig1": "CIS", "essential-eight": "E8", "ncsc-caf": "CAF" };
+  soc2: "SOC 2", "cis-v8-ig1": "CIS IG1", "ncsc-caf": "CAF", "cyber-essentials-plus": "CE+",
+  "def-stan-05-138": "MOD CSM", govassure: "GovAssure", "govs-007": "GovS 007", "eu-gdpr": "EU GDPR",
+  "pci-dss": "PCI DSS", nis2: "NIS 2", dora: "DORA" };
 
 export function PoliciesTab() {
   const { tenantId, tenantName, can } = useApp();

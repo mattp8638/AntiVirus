@@ -1,0 +1,97 @@
+{
+  "key": "def-stan-05-138",
+  "name": "Def Stan 05-138 / Cyber Security Model",
+  "short": "MOD CSM",
+  "version": "Issue 4 / CSMv4",
+  "questionSet": true,
+  "description": "UK-relevant readiness and evidence guide. Record applicability before assessment; use the official framework and any required independent assessment or submission process. MOD suppliers and subcontractors subject to the applicable defence contract.",
+  "sections": [
+    {
+      "id": "readiness",
+      "title": "Scope, implementation and assurance",
+      "requirements": [
+        {
+          "id": "CSM-SCOPE",
+          "title": "Contract and organisation scope",
+          "text": "Identify the defence contract, supplier boundary and applicable contractual requirements.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "CSM-PROFILE",
+          "title": "Assigned cyber risk level",
+          "text": "Record the CSMv4 level, 0 to 3, assigned through the official process.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "CSM-BASELINE",
+          "title": "Applicable control set",
+          "text": "Map the agreed Issue 4 controls to accountable owners and evidence.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "CSM-SAQ",
+          "title": "Supplier assurance questionnaire",
+          "text": "Maintain supporting answers and the official Supplier Cyber Protection Service submission reference.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "CSM-DCC",
+          "title": "Defence Cyber Certification",
+          "text": "Record the relevant DCC level, evidence and expiry where the contract requires certification.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "CSM-FLOWDOWN",
+          "title": "Subcontractor flow-down",
+          "text": "Track subcontractor risk assessments, required levels and assurance evidence.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "CSM-CIP",
+          "title": "Improvement commitments",
+          "text": "Record accepted improvement plans, milestones, accountable owners and approval references.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "CSM-INCIDENT",
+          "title": "Incident and contract obligations",
+          "text": "Maintain contractual reporting contacts, response plans and exercise evidence.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "CSM-REVIEW",
+          "title": "Supplier assurance review",
+          "text": "Review changes in scope, contracts and subcontractors against the assigned level.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        }
+      ]
+    }
+  ]
+}

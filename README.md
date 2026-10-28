@@ -29,7 +29,7 @@ Hosting, domains, publicly trusted code-signing certificates and optional provid
 | Microsoft 365 | Customer connections, directory/licence views, security snapshots and reviewed administration. Graph permissions, admin consent and any necessary Microsoft licences are still required. |
 | Exposure | Vulnerability inventory, CVE/EPSS/KEV intelligence, scan ingestion, external assets and remediation tracking. |
 | MSP operations | Customers, service boards, tickets, dispatch, time, projects, CRM, quotes, agreements, billing and client portal. |
-| GRC and operations | Programmes, policies, evidence, risks, credential vault, network monitoring, backup status and recovery exercises. Actual backup/restore requires a configured provider. |
+| GRC and operations | [UK and UK-targeted governance programmes](docs/GOVERNANCE.md), policies, evidence, risks, credential vault, network monitoring, backup status and recovery exercises. Actual backup/restore requires a configured provider. |
 
 Deployment consists of **PostgreSQL + Fenrir Cloud**, which serves the compiled React console, agent downloads and WebSocket relay. The HTTPS example adds **Caddy**.
 

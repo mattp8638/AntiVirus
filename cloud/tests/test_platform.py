@@ -192,7 +192,8 @@ def test_external_asset_requires_attestation(client, admin, tenant):
 def test_compliance_scores(client, admin, tenant, device):
     report = client.get(f"/api/console/compliance?tenant_id={tenant['id']}", headers=admin).json()
     names = {f["framework"] for f in report["frameworks"]}
-    assert {"cyber-essentials", "cis-v8-ig1", "nist-csf-2", "essential-eight", "iso-27001"} <= names
+    assert {"cyber-essentials", "cis-v8-ig1", "nist-csf-2", "iso-27001"} <= names
+    assert "essential-eight" not in names
     ce = next(f for f in report["frameworks"] if f["framework"] == "cyber-essentials")
     assert 0 <= ce["score"] <= 100 and all(c["evidence"] for c in ce["controls"])
 

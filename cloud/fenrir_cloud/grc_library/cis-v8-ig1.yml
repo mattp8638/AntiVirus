@@ -1,5 +1,5 @@
 key: cis-v8-ig1
-name: CIS Critical Security Controls v8 - Implementation Group 1
+name: CIS Critical Security Controls v8.1 - Implementation Group 1
 short: CIS IG1
 version: "8.1"
 description: The 56 IG1 safeguards ("essential cyber hygiene"). Safeguard titles are from the CIS Controls (CC BY-SA 4.0, Center for Internet Security).

@@ -1,0 +1,124 @@
+{
+  "key": "pci-dss",
+  "name": "PCI DSS v4.0.1",
+  "short": "PCI DSS",
+  "version": "4.0.1",
+  "questionSet": true,
+  "description": "UK-relevant readiness and evidence guide. Record applicability before assessment; use the official framework and any required independent assessment or submission process. UK organisations within payment-card data security scope; validation route depends on the payment programme.",
+  "sections": [
+    {
+      "id": "readiness",
+      "title": "Scope, implementation and assurance",
+      "requirements": [
+        {
+          "id": "PCI-1",
+          "title": "Network security controls",
+          "text": "Define and review boundaries and network security controls for the cardholder-data environment.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "PCI-2",
+          "title": "Secure configurations",
+          "text": "Evidence secure configuration and management of scoped components.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "PCI-3",
+          "title": "Stored account data",
+          "text": "Document protection and minimisation of stored account data.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "PCI-4",
+          "title": "Transmission protection",
+          "text": "Evidence appropriate cryptography for account-data transmission.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "PCI-5",
+          "title": "Malware protection",
+          "text": "Maintain and test anti-malware protections on applicable systems.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "PCI-6",
+          "title": "Secure systems and software",
+          "text": "Manage vulnerabilities, updates and secure development for scoped software.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "PCI-7",
+          "title": "Business-need access",
+          "text": "Review access authorisations against business need.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "PCI-8",
+          "title": "User identification and authentication",
+          "text": "Evidence user accountability and applicable authentication controls.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "PCI-9",
+          "title": "Physical access",
+          "text": "Protect physical access to scoped systems and data.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "PCI-10",
+          "title": "Logging and monitoring",
+          "text": "Retain, protect and review relevant security logs.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "PCI-11",
+          "title": "Security testing",
+          "text": "Record applicable scans, penetration tests and remediation.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "PCI-12",
+          "title": "Organisational policy and validation",
+          "text": "Maintain scope, responsibilities, supplier assurance and the applicable SAQ/QSA evidence.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        }
+      ]
+    }
+  ]
+}

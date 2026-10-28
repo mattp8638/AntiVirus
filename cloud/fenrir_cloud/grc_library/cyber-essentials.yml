@@ -1,13 +1,13 @@
 key: cyber-essentials
 name: Cyber Essentials (IASME question set)
 short: Cyber Essentials
-version: "v3.2 (Willow)"
+version: "Requirements v3.3 readiness guide"
 questionSet: true
 description: >-
-  The UK government-backed certification. The self-assessment is a question set in sections A1-A8; every answer is
-  reviewed by an IASME certification body. Questions here follow the official sections and intent, paraphrased; use
-  "Import question set" to load the exact wording and numbering from the current IASME booklet, and Fenrir keeps
-  your answers, policies and evidence against each question.
+  Readiness and evidence for the UK government-backed scheme under requirements v3.3, effective 27 April 2026.
+  This is a paraphrased preparation guide using stable A1-A8 identifiers, not the current official IASME question set.
+  Import the applicable official question set for your application before submission; its wording and numbering take precedence.
+  Certification and assessment are completed through an authorised certification body.
 sections:
   - id: A1
     title: "A1 Your organisation"

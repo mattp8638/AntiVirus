@@ -19,6 +19,7 @@ import yaml
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from .grccatalogue import CATALOGUE, retired_framework
 from .models import (GrcAdoption, GrcAssessmentSnapshot, GrcEvidence, GrcEvidenceLink, GrcFramework, GrcPolicy, GrcRequirementState,
                      Tenant, utcnow)
 
@@ -26,6 +27,7 @@ LIBRARY = Path(__file__).parent / "grc_library"
 STATUSES = ("not_started", "in_progress", "implemented", "not_applicable")
 ANSWER_TYPES = ("control", "yesno", "text")
 KEY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,78}$")
+CATALOGUE_FIELDS = ("owner", "assessmentStyle", "targetScope", "jurisdiction", "sourceUrl")
 
 
 def _requirement(raw, section_id: str) -> dict:
@@ -35,7 +37,8 @@ def _requirement(raw, section_id: str) -> dict:
     return {"id": str(raw["id"]).strip(), "section": section_id, "title": str(raw.get("title") or raw["id"]).strip(),
             "text": str(raw.get("text") or "").strip(), "guidance": str(raw.get("guidance") or "").strip(),
             "type": raw.get("type") if raw.get("type") in ANSWER_TYPES else "control",
-            "evidence": [str(e) for e in raw.get("evidence") or []], "auto": [str(a) for a in raw.get("auto") or []]}
+            "evidence": [str(e) for e in raw.get("evidence") or []], "auto": [str(a) for a in raw.get("auto") or []],
+            "reviewIfUnversioned": bool(raw.get("reviewIfUnversioned")), "legacyWording": str(raw.get("legacyWording") or "")}
 
 
 def _normalise(doc: dict, source: str) -> dict:
@@ -44,33 +47,49 @@ def _normalise(doc: dict, source: str) -> dict:
         sid = str(section.get("id") or len(sections) + 1)
         sections.append({"id": sid, "title": str(section.get("title") or sid),
                          "requirements": [_requirement(r, sid) for r in section.get("requirements") or []]})
-    return {"key": doc["key"], "name": doc.get("name") or doc["key"], "short": doc.get("short") or doc.get("name") or doc["key"],
+    metadata = CATALOGUE.get(doc["key"], {})
+    return {**{k: metadata.get(k, "") for k in CATALOGUE_FIELDS},
+            "currentVersion": metadata.get("version", ""), "retired": retired_framework(doc["key"], doc.get("name", "")),
+            "key": doc["key"], "name": doc.get("name") or doc["key"], "short": doc.get("short") or doc.get("name") or doc["key"],
             "version": str(doc.get("version") or ""), "description": str(doc.get("description") or "").strip(),
             "questionSet": bool(doc.get("questionSet") or doc.get("question_set")), "sections": sections, "source": source}
 
 
-@lru_cache(maxsize=1)
-def builtin_frameworks() -> dict[str, dict]:
+@lru_cache(maxsize=2)
+def builtin_frameworks(include_retired: bool = False) -> dict[str, dict]:
     out = {}
     for path in sorted(LIBRARY.glob("*.yml")):
         if path.name == "policies.yml":
             continue
         doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if not include_retired and retired_framework(doc["key"], doc.get("name", "")):
+            continue
+        # Catalogue names are consistent across the risk register and adoption picker.
+        if doc["key"] in CATALOGUE:
+            doc["name"] = CATALOGUE[doc["key"]]["name"]
         out[doc["key"]] = _normalise(doc, "built-in")
     return out
 
 
 @lru_cache(maxsize=1)
 def policy_templates() -> dict[str, dict]:
-    return {p["key"]: p for p in yaml.safe_load((LIBRARY / "policies.yml").read_text(encoding="utf-8"))}
+    out = {}
+    for template in yaml.safe_load((LIBRARY / "policies.yml").read_text(encoding="utf-8")):
+        template["maps"] = {k: ids for k, ids in template["maps"].items() if not retired_framework(k)}
+        out[template["key"]] = template
+    return out
 
 
-def frameworks_for(db: Session, tenant_id: str | None) -> dict[str, dict]:
+def frameworks_for(db: Session, tenant_id: str | None, include_retired: bool = False) -> dict[str, dict]:
     """Built-in frameworks, overridden by global imports, overridden by this customer's imports."""
-    result = dict(builtin_frameworks())
+    result = dict(builtin_frameworks(include_retired=include_retired))
     rows = db.execute(select(GrcFramework).where(or_(GrcFramework.tenant_id.is_(None), GrcFramework.tenant_id == tenant_id))
                       .order_by(GrcFramework.tenant_id.is_(None).desc())).scalars().all()
     for row in rows:  # global first, then tenant, so the tenant's wins
+        if not include_retired and retired_framework(row.key, row.name):
+            # An imported retired framework must not reappear under a different key.
+            result.pop(row.key, None)
+            continue
         result[row.key] = _normalise({"key": row.key, "name": row.name, "short": row.short, "version": row.version,
                                       "description": row.description, "questionSet": row.question_set, "sections": row.sections},
                                      "imported" if row.tenant_id else "imported (all customers)") | {"importedId": row.id}
@@ -200,7 +219,8 @@ def render_template(template: dict, tenant: Tenant, owner: str, security_contact
 def policy_maps(policy: GrcPolicy) -> dict[str, list[str]]:
     base = (policy_templates().get(policy.template_key or "") or {}).get("maps") or {}
     extra = policy.maps or {}
-    return {k: sorted(set(base.get(k, [])) | set(extra.get(k, []))) for k in set(base) | set(extra)}
+    return {k: sorted(set(base.get(k, [])) | set(extra.get(k, []))) for k in set(base) | set(extra)
+            if not retired_framework(k)}
 
 
 def templates_for(framework_key: str) -> list[dict]:
@@ -221,7 +241,8 @@ def _auto_results(db: Session, tenant: Tenant) -> dict[str, dict]:
 
 
 def programme(db: Session, tenant: Tenant, framework_key: str, include_requirements: bool = True) -> dict:
-    framework = frameworks_for(db, tenant.id).get(framework_key)
+    # Retired definitions remain readable for old answers, snapshots and exports.
+    framework = frameworks_for(db, tenant.id, include_retired=True).get(framework_key)
     if framework is None:
         raise KeyError(framework_key)
     states = {s.requirement_id: s for s in db.execute(select(GrcRequirementState).where(
@@ -250,7 +271,8 @@ def programme(db: Session, tenant: Tenant, framework_key: str, include_requireme
         for req in section["requirements"]:
             state = states.get(req["id"])
             recorded = state.status if state else "not_started"
-            wording_changed = bool(state and state.requirement_hash and state.requirement_hash != requirement_hash(req))
+            wording_changed = bool(state and ((state.requirement_hash and state.requirement_hash != requirement_hash(req))
+                                               or (not state.requirement_hash and req["reviewIfUnversioned"])))
             needs_review = wording_changed and (recorded in ("implemented", "not_applicable") or bool(state.answer.strip()))
             # An approval of different wording is not an approval of this wording.
             status = "needs_review" if needs_review and recorded in ("implemented", "not_applicable") else recorded
@@ -268,7 +290,7 @@ def programme(db: Session, tenant: Tenant, framework_key: str, include_requireme
             signals["overdue"] += bool(due and due < now and status not in ("implemented", "not_applicable"))
             if include_requirements:
                 rows.append({**req, "evidenceHints": req["evidence"], "status": status, "recordedStatus": recorded,
-                             "needsReview": needs_review, "previousWording": state.requirement_text if needs_review else None, "answer": state.answer if state else "", "notes": state.notes if state else "",
+                             "needsReview": needs_review, "previousWording": (state.requirement_text or req["legacyWording"]) if needs_review else None, "answer": state.answer if state else "", "notes": state.notes if state else "",
                              "naReason": state.na_reason if state else "", "owner": state.owner if state else "",
                              "dueDate": due.isoformat() + "Z" if due else None,
                              "updatedAt": state.updated_at.isoformat() + "Z" if state else None,
@@ -286,7 +308,8 @@ def programme(db: Session, tenant: Tenant, framework_key: str, include_requireme
     total = sum(counts.values())
     done = counts["implemented"] + counts["not_applicable"]
     adoption = db.execute(select(GrcAdoption).where(GrcAdoption.tenant_id == tenant.id, GrcAdoption.framework_key == framework_key)).scalar_one_or_none()
-    out = {"key": framework["key"], "name": framework["name"], "short": framework["short"], "version": framework["version"],
+    out = {**{k: framework.get(k, "") for k in (*CATALOGUE_FIELDS, "currentVersion")}, "retired": framework["retired"],
+           "key": framework["key"], "name": framework["name"], "short": framework["short"], "version": framework["version"],
            "description": framework["description"], "questionSet": framework["questionSet"], "source": framework["source"],
            "total": total, "counts": counts, "progress": round(100 * done / total) if total else 0, "signals": signals,
            "adopted": adoption is not None and adoption.status == "active",
