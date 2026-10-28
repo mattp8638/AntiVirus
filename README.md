@@ -76,12 +76,16 @@ Point a hostname such as `rmm.example.com` at the VPS. Remove incorrect AAAA/IPv
 ```bash
 git clone https://github.com/mattp8638/AntiVirus.git ~/AntiVirus
 cd ~/AntiVirus
+(
 umask 077
 mkdir -p deploy/signing deploy/releases
 chmod 700 deploy/signing
 cp deploy/.env.example deploy/.env
 chmod 600 deploy/.env
+)
 ```
+
+Keep restrictive umasks inside the shown subshells. Leaving `umask 077` active during a later Git pull can create source files/directories that a non-root container cannot read. If the current SSH shell already has that setting, run `umask 022` before updating code; existing private file permissions stay unchanged. The image also normalizes its packaged application's permissions before switching to the runtime user.
 
 Generate four **different** values and enter each in its matching `deploy/.env` setting:
 
@@ -112,9 +116,12 @@ Keep `FENRIR_SECRET_KEY` stable: it signs console sessions. The vault key protec
 Generate the Linux/macOS release key once, retaining any existing key:
 
 ```bash
+(
+umask 077
 test -s deploy/signing/release-ed25519.pem || \
   openssl genpkey -algorithm ed25519 -out deploy/signing/release-ed25519.pem
 chmod 600 deploy/signing/release-ed25519.pem
+)
 ```
 
 From your workstation, upload the Windows certificate using your SSH account/server:
@@ -126,11 +133,14 @@ scp "C:\path\Certificate.pfx" pmadmin@YOUR_SERVER:~/AntiVirus/deploy/signing/cod
 In the server's Bash terminal, enter its password without recording it in shell history:
 
 ```bash
+(
+umask 077
 read -r -s -p 'PFX password (empty if none): ' fenrir_pfx_password
 printf '\n'
 printf '%s' "$fenrir_pfx_password" > deploy/signing/codesign.password
 unset fenrir_pfx_password
 chmod 600 deploy/signing/codesign.pfx deploy/signing/codesign.password
+)
 ```
 
 Signing material is passed through BuildKit secrets. Never commit it, put it in a Dockerfile or attach it to an issue. Keep an offline backup of the PFX/password and release key. See [code signing](docs/CODE_SIGNING.md) and [release signing/key rotation](docs/AUTO_UPDATE.md).
@@ -281,6 +291,8 @@ Restore checks the manifest and vault-key fingerprint, asks for confirmation, re
 Example maintenance-window backup with the production `dc` helper:
 
 ```bash
+(
+set -e
 umask 077
 fenrir_backup_dir="$HOME/fenrir-backups/$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$fenrir_backup_dir"
@@ -291,6 +303,7 @@ dc run --rm --no-deps -T --entrypoint tar cloud -czf - -C /data . > "$fenrir_bac
 tar -czf "$fenrir_backup_dir/configuration.tgz" deploy/.env deploy/signing deploy/releases deploy/docker-compose.https.yml deploy/Caddyfile
 dc run --rm --no-deps -T --entrypoint tar caddy -czf - -C /data . > "$fenrir_backup_dir/caddy-data.tgz"
 dc start cloud
+)
 ```
 
 If installed, pause the timer with `sudo systemctl stop fenrir-auto-update.timer` before maintenance and resume it with `sudo systemctl start fenrir-auto-update.timer` afterwards. Check **every** command/archive and restart cloud if a backup command fails while it is stopped. Include any extra files such as `deploy/auto-update.env`. Archives contain secrets; never attach them to an issue.
@@ -340,6 +353,21 @@ curl --fail http://127.0.0.1:8080/health
 | Vault decryption fails | Restore the correct vault/old-key configuration. A freshly generated key cannot decrypt old secrets. |
 | Editing bootstrap password has no effect | Change an existing account through account management; bootstrap settings only create the initial administrator. |
 | Build exits/OOM | Check disk space and host memory/OOM logs. Native compilation needs headroom; use a larger build host if necessary. |
+| Cloud restart loop with `PermissionError` importing `/app/cloud/fenrir_cloud/*.py` | An owner-only checkout was copied into a root-owned image. Apply the image permission fix, or use the scoped source-permission recovery below, then rebuild. Startup must succeed before migrations can run. |
+
+### Unreadable packaged source recovery
+
+If cloud logs show `PermissionError: [Errno 13] Permission denied: '/app/cloud/fenrir_cloud/crypto.py'` (or another packaged module), make the tracked public application files readable and their directories traversable, then rebuild with the existing `dc` helper:
+
+```bash
+cd ~/AntiVirus
+umask 022
+git ls-files -z cloud ml/fenrir_ml ml/models | xargs -0 -r chmod a+r
+find cloud ml/fenrir_ml ml/models -type d -exec chmod a+rx {} +
+dc up -d --build --no-deps --force-recreate --wait --wait-timeout 180 cloud
+```
+
+This targets application source/assets, leaving `deploy/.env`, signing keys and database volumes untouched. Do not recursively change permissions on the whole checkout or run the service as root. New images normalize `/app` permissions and retain the non-root runtime user; CI builds from an owner-only application checkout to exercise this case.
 
 ### Missing build-column recovery
 
@@ -353,12 +381,15 @@ dc exec -T db psql -U fenrir -d fenrir -c "SELECT column_name FROM information_s
 Prefer deploying the repaired application, which applies migration 29. For urgent recovery while an image builds, **successfully back up first**, then apply the same narrow additive change:
 
 ```bash
+(
+set -e
 umask 077
 mkdir -p "$HOME/fenrir-backups"
 fenrir_repair_backup="$HOME/fenrir-backups/before-column-repair-$(date -u +%Y%m%dT%H%M%SZ).dump"
 dc exec -T db pg_dump -U fenrir -d fenrir -Fc > "$fenrir_repair_backup" && \
 dc exec -T db psql -U fenrir -d fenrir -v ON_ERROR_STOP=1 \
   -c "ALTER TABLE devices ADD COLUMN IF NOT EXISTS agent_build VARCHAR(64) NOT NULL DEFAULT '';"
+)
 ```
 
 Do not drop tables, delete volumes or falsify migration history. Deploy the migration afterwards to record the repair. Diagnose a different traceback on its own merits rather than applying unrelated SQL.

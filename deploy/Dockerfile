@@ -89,7 +89,13 @@ COPY ml/models /app/ml/models
 COPY --from=console /src/console/dist /app/console/dist
 COPY --from=agents /out/ /app/cloud/downloads/
 COPY --from=windows-agents /out/windows/ /app/cloud/downloads/windows/
-RUN useradd --system --uid 10001 fenrir && mkdir -p /data && chown fenrir /data
+# COPY preserves checkout permissions: a pull under umask 077 can leave source
+# root-owned and unreadable to fenrir. Keep packaged code/assets readable and
+# directories traversable, preserve executable agents, and remove group/other
+# write access. Build secrets are mounted separately and never copied here.
+RUN useradd --system --uid 10001 fenrir \
+ && chmod -R a+rX,go-w /app \
+ && mkdir -p /data && chown fenrir /data
 USER fenrir
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=4)"
