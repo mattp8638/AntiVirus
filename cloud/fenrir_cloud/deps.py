@@ -98,7 +98,18 @@ def current_principal(
         scope = {tid for (tid,) in db.execute(select(Tenant.id)).all()}
     else:
         scope = tenant_subtree(db, user.tenant_id)
-    return Principal(user=user, tenant_ids=frozenset(scope), session_id=payload.get("jti"))
+        if user.assigned_tenant_ids:  # CORE-02: limited to chosen customers inside their own tenant
+            assigned: set[str] = set()
+            for tid in user.assigned_tenant_ids:
+                if tid in scope:
+                    assigned |= tenant_subtree(db, tid)
+            scope = assigned & scope
+    scopes = None
+    if user.role.startswith("custom:"):
+        from . import roles
+
+        scopes = frozenset(roles.permissions_of(db, user.role))
+    return Principal(user=user, tenant_ids=frozenset(scope), session_id=payload.get("jti"), scopes=scopes)
 
 
 def scoped_tenant(principal: Principal, tenant_id: str | None) -> list[str]:

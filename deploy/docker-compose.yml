@@ -31,6 +31,8 @@ services:
     restart: unless-stopped
     depends_on: { db: { condition: service_healthy } }
     environment:
+      # production refuses to start on unsafe settings (placeholder secrets, SQLite); see cloud/fenrir_cloud/production.py.
+      FENRIR_ENV: ${FENRIR_ENV:-production}
       FENRIR_DATABASE_URL: postgresql+psycopg://fenrir:${POSTGRES_PASSWORD}@db:5432/fenrir
       FENRIR_SECRET_KEY: ${FENRIR_SECRET_KEY:?set FENRIR_SECRET_KEY}
       FENRIR_PUBLIC_URL: ${FENRIR_PUBLIC_URL:?set FENRIR_PUBLIC_URL}

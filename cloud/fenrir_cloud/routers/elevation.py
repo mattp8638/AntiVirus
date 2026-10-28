@@ -112,6 +112,7 @@ def _owned(db: Session, principal: Principal, request_id: str) -> tuple[Elevatio
 def approve(request_id: str, body: dict = Body(default={}), principal: Principal = Depends(current_principal),
             db: Session = Depends(get_db)):
     principal.require("configure")
+    principal.require("approve")
     row, device = _owned(db, principal, request_id)
     if row.status != "pending":
         raise HTTPException(409, f"This request is already {row.status}")

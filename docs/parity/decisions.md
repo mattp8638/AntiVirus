@@ -102,6 +102,26 @@ Creating or rotating a credential requires a recent password check, and the toke
 
 **Retention.** Retention is 365 to 3650 days, or keep everything. Rows are pruned only up to a checkpoint whose hash still matches; that checkpoint becomes the anchor verification starts from. A legal hold stops all pruning and needs a reason. Changing the policy needs a platform administrator and a fresh password check.
 
+### D-14: Roles and least privilege
+
+**Finer powers.** `remote`, `scripts`, `destructive` and `approve` are required on top of the broader `respond` or `configure` for the actions they name. Built-in roles get them wherever they already had the broader permission, so existing users see no change.
+
+**Custom roles.** A custom role (`custom:<id>`) is an explicit set of permissions owned by a customer or by the MSP. It can only be given to users inside that owner's subtree. Changes apply on the next request.
+
+**Customer assignments.** These limit a user to chosen customers within their own tenant.
+
+**One no-escalation rule.** A user can't grant, or manage someone with, permissions they don't hold. It applies to creating users, changing roles, building or editing custom roles, resetting MFA and signing a user out.
+
+### D-15: Production mode
+
+`FENRIR_ENV=production` is the Compose default. In production the server refuses to start with:
+
+- an unset, placeholder or short `FENRIR_SECRET_KEY`;
+- SQLite as the database;
+- a weak first-admin password on a fresh install.
+
+Softer risks are logged and shown to platform administrators (Settings > Platform) without blocking: a non-HTTPS public URL, open enrolment, and legacy vault keys. On a deployed server, a refused start fails the health check and `auto-update.sh` rolls back, leaving the previous version running.
+
 ### Other external dependencies (owner action needed when reached)
 
 | Dependency | Needed for |

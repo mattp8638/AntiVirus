@@ -53,19 +53,41 @@ function TenantsTab() {
 }
 
 function UsersTab() {
-  const { tenantId, can, tenantName } = useApp();
-  const { data, reload } = useListData<any>("users", { tenant_id: tenantId });
+  const { tenantId, can, tenantName, me } = useApp();
+  const { data, reload } = useData<any[]>("users", { tenant_id: tenantId });
+  const { data: roleData, reload: reloadRoles } = useData<any>(can("configure") ? "roles" : null);
   const [form, setForm] = useState<any>(null);
+  const [assigning, setAssigning] = useState<any>(null);
+  const [roleForm, setRoleForm] = useState<any>(null);
   const { run, busy } = useAction();
+  const customRoles: any[] = roleData?.custom || [];
+  const roleLabel = (role: string) => customRoles.find((r) => r.role === role)?.name || role.replace(/_/g, " ");
+  const roleOptions = [...ROLES.map((r) => ({ value: r, label: r.replace(/_/g, " ") })), ...customRoles.map((r) => ({ value: r.role, label: `${r.name} (custom)` }))];
   return (
     <div className="card">
+      {can("configure") && roleData && (
+        <details style={{ marginBottom: 12 }}>
+          <summary className="row" style={{ cursor: "pointer" }}><b style={{ flex: 1 }}>Custom roles</b><span className="small muted">{customRoles.length}</span></summary>
+          <p className="small muted">A custom role gives exactly the permissions you tick, never more than your own. Use it for least-privilege support staff,
+            e.g. remote support without running scripts.</p>
+          <button style={{ marginBottom: 8 }} onClick={() => setRoleForm({ tenantId: me?.user.tenantId, name: "", description: "", permissions: ["read"] })}>New custom role</button>
+          <Table rows={customRoles} empty="No custom roles." columns={[{ key: "name", label: "Role" }, { key: "tenantId", label: "Owned by", render: (r: any) => tenantName(r.tenantId) },
+            { key: "permissions", label: "Permissions", render: (r: any) => r.permissions.join(", ") }, { key: "users", label: "Users" },
+            { key: "act", label: "", render: (r: any) => <span className="row" style={{ gap: 6 }}>
+              <button className="small" onClick={() => setRoleForm({ ...r })}>Edit</button>
+              <button className="small danger" disabled={r.users > 0} title={r.users ? "Move its users to another role first" : ""}
+                      onClick={async () => { if (confirm(`Delete the role ${r.name}?`) && await run(() => api(`roles/${r.id}`, { method: "DELETE" }), "Role deleted")) reloadRoles(); }}>Delete</button></span> }]} />
+        </details>
+      )}
       {can("configure") && <button className="primary" style={{ marginBottom: 10 }} onClick={() => setForm({ email: "", name: "", role: "tenant_analyst", tenantId, password: "" })}>Invite user</button>}
-      <Table rows={data} columns={[{ key: "email", label: "Email" }, { key: "name", label: "Name" }, { key: "role", label: "Role", render: (u) => u.role.replace(/_/g, " ") },
+      <Table rows={data} columns={[{ key: "email", label: "Email" }, { key: "name", label: "Name" },
+        { key: "role", label: "Role", render: (u) => <>{roleLabel(u.role)}{u.assignedTenantIds?.length ? <div className="small muted">limited to {u.assignedTenantIds.map(tenantName).join(", ")}</div> : null}</> },
         { key: "tenantId", label: "Tenant", render: (u) => tenantName(u.tenantId) }, { key: "active", label: "Status", render: (u) => <Pill value={u.active ? "active" : "disabled"} tone={u.active ? "good" : "muted"} /> },
         { key: "lastLoginAt", label: "Last sign-in", render: (u) => fmtTime(u.lastLoginAt) },
         { key: "mfaEnabled", label: "MFA", render: (u) => <Pill value={u.mfaEnabled ? "on" : "off"} tone={u.mfaEnabled ? "good" : "warn"} /> },
         { key: "act", label: "", render: (u) => <span className="row" style={{ gap: 6 }}>
           {can("configure") && <button className="small" onClick={async () => { await run(() => api(`users/${u.id}`, { method: "PATCH", body: { active: !u.active } }), "User updated"); reload(); }}>{u.active ? "Disable" : "Enable"}</button>}
+          {can("configure") && <button className="small" onClick={() => setAssigning({ id: u.id, email: u.email, role: u.role, tenantId: u.tenantId, assignedTenantIds: u.assignedTenantIds || [] })}>Role &amp; customers</button>}
           {can("manage_tenants") && u.mfaEnabled && <button className="small" title="For a user who lost their phone" onClick={async () => { if (confirm(`Reset MFA for ${u.email}? They will need to set it up again.`)) { await run(() => api(`users/${u.id}/mfa/reset`, { method: "POST" }), "MFA reset"); reload(); } }}>Reset MFA</button>}
         </span> }]} />
       {form && (
@@ -75,9 +97,32 @@ function UsersTab() {
             <label className="field">Email<input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></label>
             <label className="field">Name<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
             <label className="field">Tenant<TenantSelect value={form.tenantId} onChange={(id) => setForm({ ...form, tenantId: id })} allowAll={false} /></label>
-            <label className="field">Role<select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>{ROLES.map((r) => <option key={r} value={r}>{r.replace(/_/g, " ")}</option>)}</select></label>
+            <label className="field">Role<select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>{roleOptions.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}</select></label>
             <label className="field">Temporary password (12+)<input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></label>
           </div>
+        </Modal>
+      )}
+      {assigning && (
+        <Modal title={`Role and customers: ${assigning.email}`} onClose={() => setAssigning(null)} footer={<button className="primary" disabled={busy}
+               onClick={async () => { if (await run(() => api(`users/${assigning.id}`, { method: "PATCH", body: { role: assigning.role, assignedTenantIds: assigning.assignedTenantIds } }), "User updated")) { setAssigning(null); reload(); } }}>Save</button>}>
+          <label className="field">Role<select value={assigning.role} onChange={(e) => setAssigning({ ...assigning, role: e.target.value })}>{roleOptions.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}</select></label>
+          <div className="field">Limit to these customers (none ticked: every customer under {tenantName(assigning.tenantId)})
+            {(me?.tenants || []).filter((t: any) => t.id !== assigning.tenantId).map((t: any) => <label key={t.id} className="row" style={{ gap: 6 }}>
+              <input type="checkbox" checked={assigning.assignedTenantIds.includes(t.id)} onChange={(e) => setAssigning({ ...assigning, assignedTenantIds: e.target.checked
+                ? [...assigning.assignedTenantIds, t.id] : assigning.assignedTenantIds.filter((x: string) => x !== t.id) })} />{t.name}</label>)}</div>
+        </Modal>
+      )}
+      {roleForm && (
+        <Modal title={roleForm.id ? `Edit ${roleForm.name}` : "New custom role"} onClose={() => setRoleForm(null)} footer={<button className="primary" disabled={busy || !roleForm.name || !roleForm.permissions.length}
+               onClick={async () => { const body = { name: roleForm.name, description: roleForm.description, permissions: roleForm.permissions, ...(roleForm.id ? {} : { tenantId: roleForm.tenantId }) };
+                 if (await run(() => api(roleForm.id ? `roles/${roleForm.id}` : "roles", { method: roleForm.id ? "PATCH" : "POST", body }), "Role saved")) { setRoleForm(null); reloadRoles(); } }}>Save</button>}>
+          <label className="field">Name<input value={roleForm.name} onChange={(e) => setRoleForm({ ...roleForm, name: e.target.value })} placeholder="e.g. Remote support" /></label>
+          {!roleForm.id && <label className="field">Owned by<TenantSelect allowAll={false} value={roleForm.tenantId} onChange={(id) => setRoleForm({ ...roleForm, tenantId: id })} /></label>}
+          <label className="field">Description<input value={roleForm.description} onChange={(e) => setRoleForm({ ...roleForm, description: e.target.value })} /></label>
+          <div className="field">Permissions
+            {(roleData?.permissions || []).map((p: any) => <label key={p.key} className="row" style={{ gap: 6, opacity: p.grantable ? 1 : 0.5 }}>
+              <input type="checkbox" disabled={!p.grantable} checked={roleForm.permissions.includes(p.key)} onChange={(e) => setRoleForm({ ...roleForm, permissions: e.target.checked
+                ? [...roleForm.permissions, p.key] : roleForm.permissions.filter((x: string) => x !== p.key) })} /><b>{p.key}</b> <span className="small muted">{p.label}</span></label>)}</div>
         </Modal>
       )}
     </div>
@@ -350,12 +395,28 @@ function MfaCard() {
   );
 }
 
+function ReadinessCard() {
+  const { data } = useData<any>("platform/readiness");
+  if (!data) return null;
+  return (
+    <div className="card" style={{ marginBottom: 14 }}>
+      <div className="row"><b style={{ flex: 1 }}>Production readiness</b>
+        <Pill value={data.environment} tone={data.environment === "production" ? "good" : "warn"} />
+        <Pill value={`schema ${data.schemaVersion}/${data.expectedSchemaVersion}`} tone={data.schemaVersion === data.expectedSchemaVersion ? "good" : "bad"} /></div>
+      {data.warnings.length ? <ul className="small">{data.warnings.map((w: string) => <li key={w}>{w}</li>)}</ul>
+        : <p className="small muted">No warnings. Unsafe settings stop the server from starting in production.</p>}
+    </div>
+  );
+}
+
 function PlatformTab() {
+  const { can } = useApp();
   const { data, error, reload } = useData<any>("platform/status");
   const { data: dead, reload: reloadDead } = useListData<any>("platform/events", { status: "dead" });
   const { run } = useAction();
   return (
     <>
+      {can("platform") && <ReadinessCard />}
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
         <div className="card"><div className="label muted small">Vault encryption</div>
           <p><b>{displayValue(data?.vault.algorithm ?? "…")}</b></p>

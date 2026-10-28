@@ -350,6 +350,16 @@ def _command_arguments(body: dict) -> dict:
     return arguments
 
 
+def _require_fine(principal: Principal, spec) -> None:
+    """CORE-02 finer powers on top of the command's own permission."""
+    if spec.destructive:
+        principal.require("destructive")
+    if spec.type == "script.run":
+        principal.require("scripts")
+    if spec.type == "remote.session.start":
+        principal.require("remote")
+
+
 @router.post("/devices/{device_id}/commands")
 def issue_command(device_id: str, request: Request, body: dict = Body(...), principal: Principal = Depends(current_principal),
                   db: Session = Depends(get_db)):
@@ -359,6 +369,7 @@ def issue_command(device_id: str, request: Request, body: dict = Body(...), prin
     if spec is None:
         raise HTTPException(400, "Unknown command type")
     principal.require(spec.permission)
+    _require_fine(principal, spec)
     if command_type in REAUTH_COMMANDS:
         require_reauth(request, principal)
     if command_type == "device.lostmode":
@@ -381,6 +392,7 @@ def bulk_command(body: dict = Body(...), principal: Principal = Depends(current_
     if spec is None:
         raise HTTPException(400, "Unknown command type")
     principal.require(spec.permission)
+    _require_fine(principal, spec)
     if command_type in REAUTH_COMMANDS or command_type == "device.lostmode":
         raise HTTPException(400, f"{spec.label} is sent to one device at a time")
     ids = body.get("deviceIds")

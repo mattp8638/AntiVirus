@@ -14,7 +14,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, text
 
 from . import __version__, crypto, audit, db as database, events, policy_schema, psa, ratelimit, remote, rmm, rmm_library
 from . import vulnmgmt  # noqa: F401 - registers its event handlers
@@ -28,6 +28,7 @@ from .routers import active_directory as ad_router
 from .routers import grc_programme as grc_programme_router
 from .routers import rollouts as rollouts_router
 from .routers import apikeys as apikeys_router
+from .routers import roles as roles_router
 from .routers import admin, agent_api, artifacts as artifacts_router, business, crm as crm_router, fleet, portal, protection, service_mgmt, soc
 from .routers import psa as psa_router, remote as remote_router, rmm as rmm_router
 from .security import hash_password
@@ -211,10 +212,25 @@ echo "Fenrir agent installed and enrolling with $FENRIR_SERVER"
 """
 
 
+def _existing_users() -> int:
+    try:
+        with database.session_factory()() as db:
+            return db.execute(select(func.count()).select_from(User)).scalar() or 0
+    except Exception:  # noqa: BLE001 - a fresh database has no tables yet
+        return 0
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     set_settings(settings)
     database.init_engine(settings.database_url)
+    from . import production
+
+    errors, warnings = production.check(settings, _existing_users())
+    if errors:  # CORE-14: never start an unsafe production server
+        raise RuntimeError("Fenrir will not start in production with these settings:\n- " + "\n- ".join(errors))
+    for warning in warnings:
+        log.warning("%s", warning)
     stop = threading.Event()
 
     @asynccontextmanager
@@ -250,7 +266,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     for module in (agent_api, admin, fleet, soc, crm_router, business, rmm_router, service_mgmt, psa_router, remote_router, portal):
         app.include_router(module.router)
     for module in (m365_admin_router, m365_router, network_router, grc_router, backup_router, soc_workflows, ad_router, grc_programme_router,
-                   rollouts_router, apikeys_router):
+                   rollouts_router, apikeys_router, roles_router):
         app.include_router(module.router)
     app.include_router(documentation_router.router)
     app.include_router(m365_router.oauth)
@@ -277,6 +293,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/health", tags=["System"])
     def health():
         return {"status": "ok", "version": __version__, "policySettings": len(policy_schema.FIELDS)}
+
+    @app.get("/ready", tags=["System"])
+    def ready():
+        """For load balancers and orchestrators: the database answers and its schema is the one this build expects."""
+        try:
+            with database.session_factory()() as db:
+                version = db.execute(text("SELECT MAX(version) FROM schema_migrations")).scalar()
+        except Exception:  # noqa: BLE001
+            return JSONResponse({"ready": False, "reason": "database unavailable"}, status_code=503)
+        if version != database.LATEST_MIGRATION:
+            return JSONResponse({"ready": False, "reason": "database schema is not current"}, status_code=503)
+        return {"ready": True}
 
     @app.get("/install/linux.sh", response_class=PlainTextResponse, include_in_schema=False)
     def linux_installer():
