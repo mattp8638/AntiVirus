@@ -1,4 +1,5 @@
 #include "ControlPlaneClient.h"
+#include "BuildInfo.h"
 
 #include <fstream>
 #include "CryptoUtils.h"
@@ -1105,6 +1106,7 @@ HeartbeatResult ControlPlaneClient::SendHeartbeat(const AgentState& state, const
   body << "{"
        << "\"agentVersion\":\"" << EscapeJsonString(state.agentVersion) << "\","
        << "\"platformVersion\":\"" << EscapeJsonString(state.platformVersion) << "\","
+       << "\"buildId\":\"" << EscapeJsonString(std::wstring(kFenrirBuildId)) << "\","
        << "\"healthState\":\"" << EscapeJsonString(state.healthState) << "\","
        << "\"isolated\":" << (state.isolated ? "true" : "false");
   if (!metricsJson.empty()) {

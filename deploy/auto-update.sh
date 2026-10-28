@@ -56,9 +56,34 @@ build_profile() {
   echo "$profile"
 }
 
+# Linux/macOS agent release signing key (FIX-07/AGT-03). Created on first run, kept only on this server under
+# deploy/signing (never committed). To sign elsewhere instead, set FENRIR_RELEASE_KEY to an empty file, put the
+# offline key's public key in FENRIR_RELEASE_PUBLIC_KEYS and copy signed manifests into deploy/releases.
+release_key() {
+  local key="${FENRIR_RELEASE_KEY:-$(sed -n 's/^FENRIR_RELEASE_KEY=//p' "$ENV_FILE" 2>/dev/null | tail -1 | tr -d '"'"'"' \r')}"
+  if [ -z "$key" ]; then
+    key="$DEPLOY_DIR/signing/release-ed25519.pem"
+    if [ ! -s "$key" ]; then
+      mkdir -p "$DEPLOY_DIR/signing"
+      if (umask 077; openssl genpkey -algorithm ed25519 -out "$key") 2>/dev/null; then
+        log "Created the agent release signing key $key. Back it up offline: agents built from now on only accept" \
+            "updates signed with it. Public key: $(openssl pkey -in "$key" -pubout -outform DER 2>/dev/null | tail -c 32 | base64)"
+      else
+        log "WARNING: could not create a release signing key (is openssl installed?); agent releases stay unsigned."
+        return 0
+      fi
+    fi
+  fi
+  export FENRIR_RELEASE_KEY="$key"
+  # Release number: the git time of the last agent change, so rebuilding the same code is not a new release.
+  FENRIR_RELEASE_SEQ="$(git_ log -1 --format=%ct -- agent/linux 2>/dev/null || true)"
+  export FENRIR_RELEASE_SEQ
+}
+
 deploy() {  # build first so the running server keeps serving during the (slow) image build
   local profile
   profile="$(build_profile)"
+  release_key
   case "$profile" in
     production)
       if [ ! -s "$DEPLOY_DIR/signing/codesign.pfx" ]; then

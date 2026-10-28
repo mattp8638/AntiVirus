@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ago, api, fmtTime, setToken } from "../api";
+import { ago, api, downloadFile, fmtTime, setToken } from "../api";
 import { useApp } from "../app-context";
 import { Modal, PageHead, Pill, Table, Tabs, TenantSelect, useAction, useData } from "../components/ui";
 
@@ -7,7 +7,7 @@ const ROLES = ["platform_admin", "msp_admin", "soc_analyst", "technician", "bill
 
 export default function Settings() {
   const { can } = useApp();
-  const tabs = ["Tenants", "Users", "Groups", "Webhooks", "Agent releases", "Audit log", ...(can("configure") ? ["Platform"] : []), "Account"];
+  const tabs = ["Tenants", "Users", "Groups", "Webhooks", ...(can("configure") ? ["API credentials"] : []), "Agent releases", "Audit log", ...(can("configure") ? ["Platform"] : []), "Account"];
   const [tab, setTab] = useState("Tenants");
   return (
     <>
@@ -17,7 +17,8 @@ export default function Settings() {
       {tab === "Users" && <UsersTab />}
       {tab === "Groups" && <GroupsTab />}
       {tab === "Webhooks" && <WebhooksTab />}
-      {tab === "Agent releases" && <ReleasesTab canPublish={can("platform")} />}
+      {tab === "API credentials" && <ApiCredentialsTab />}
+      {tab === "Agent releases" && <>{can("platform") && <RolloutsCard />}<ReleasesTab canPublish={can("platform")} /></>}
       {tab === "Audit log" && <AuditTab />}
       {tab === "Platform" && <PlatformTab />}
       {tab === "Account" && <AccountTab />}
@@ -139,6 +140,95 @@ function WebhooksTab() {
   );
 }
 
+const CREDENTIAL_TONE: Record<string, string> = { active: "good", expired: "warn", revoked: "muted" };
+
+// Scoped API credentials (CORE-04): an integration signs in as its own service identity with only the permissions
+// chosen here, within one customer, until it expires. The token is shown once.
+function ApiCredentialsTab() {
+  const { tenantId, tenantName } = useApp();
+  const { data, reload } = useData<any>("api-credentials");
+  const [form, setForm] = useState<any>(null);
+  const [shown, setShown] = useState<any>(null);
+  const { run, busy } = useAction();
+  const create = async () => {
+    const made = await run(() => api<any>("api-credentials", { body: { ...form, expiresDays: Number(form.expiresDays) } }), "API credential created");
+    if (made) { setForm(null); setShown(made); reload(); }
+  };
+  const rotate = async (id: string) => {
+    if (!confirm("Rotate this credential? The current token stops working immediately.")) return;
+    const made = await run(() => api<any>(`api-credentials/${id}/rotate`, { body: {} }), "Credential rotated");
+    if (made) { setShown(made); reload(); }
+  };
+  const revoke = async (id: string) => {
+    if (confirm("Revoke this credential? Integrations using it stop working.") && await run(() => api(`api-credentials/${id}/revoke`, { body: {} }), "Credential revoked")) reload();
+  };
+  return (
+    <div className="card">
+      <p className="small muted" style={{ marginTop: 0 }}>For integrations (PSA, documentation, scripts). Each credential acts as its own service identity with only the
+        permissions you choose, for one customer, until it expires. It can never reveal secrets, approve sensitive actions or manage the platform.</p>
+      <button className="primary" style={{ marginBottom: 10 }} onClick={() => setForm({ tenantId, name: "", scopes: ["read"], expiresDays: 90 })}>New API credential</button>
+      <Table rows={data?.credentials} empty="No API credentials."
+             columns={[{ key: "name", label: "Name", render: (c: any) => <>{c.name}<div className="small mono muted">{c.prefix}…</div></> },
+                       { key: "tenantId", label: "Customer", render: (c: any) => tenantName(c.tenantId) },
+                       { key: "scopes", label: "Permissions", render: (c: any) => c.scopes.join(", ") },
+                       { key: "state", label: "State", render: (c: any) => <Pill value={c.state} tone={CREDENTIAL_TONE[c.state]} /> },
+                       { key: "expiresAt", label: "Expires", render: (c: any) => fmtTime(c.expiresAt) },
+                       { key: "lastUsedAt", label: "Last used", render: (c: any) => c.lastUsedAt ? <>{ago(c.lastUsedAt)}<div className="small muted">{c.lastUsedIp} · {c.useCount} calls</div></> : "never" },
+                       { key: "actions", label: "", render: (c: any) => c.state !== "revoked" && <div className="row" style={{ gap: 4 }}>
+                         <button disabled={busy} onClick={() => rotate(c.id)}>Rotate</button><button className="danger" disabled={busy} onClick={() => revoke(c.id)}>Revoke</button></div> }]} />
+      {form && (
+        <Modal title="New API credential" onClose={() => setForm(null)} footer={<button className="primary" disabled={busy || !form.name || !form.scopes.length} onClick={create}>Create</button>}>
+          <label className="field">Name<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Documentation sync" /></label>
+          <label className="field">Customer<TenantSelect allowAll={false} value={form.tenantId} onChange={(v: string) => setForm({ ...form, tenantId: v })} /></label>
+          <div className="field">Permissions
+            {(data?.grantable || []).map((s: string) => <label key={s} className="row" style={{ gap: 6 }}><input type="checkbox" checked={form.scopes.includes(s)}
+              onChange={(e) => setForm({ ...form, scopes: e.target.checked ? [...form.scopes, s] : form.scopes.filter((x: string) => x !== s) })} />{s}</label>)}</div>
+          <label className="field">Expires after (days)<input type="number" min={1} max={365} value={form.expiresDays} onChange={(e) => setForm({ ...form, expiresDays: e.target.value })} /></label>
+        </Modal>
+      )}
+      {shown && (
+        <Modal title="Copy the token now" onClose={() => setShown(null)}>
+          <p className="small">This is the only time the token is shown. Store it in the integration's secret store.</p>
+          <input readOnly className="mono" value={shown.token} onFocus={(e) => e.target.select()} style={{ width: "100%" }} />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+const ROLLOUT_TONE: Record<string, string> = { active: "warn", paused: "bad", stopped: "bad", complete: "good", superseded: "muted" };
+
+// Staged agent rollouts (AGT-04): each new build goes canary -> beta -> stable -> lts by the devices' "Release ring"
+// policy, and pauses itself if a device in the current stage fails to come back on the new build.
+function RolloutsCard() {
+  const { data, reload } = useData<any>("agent-rollouts");
+  const { run, busy } = useAction();
+  const act = async (id: string, action: string, ask?: string) => {
+    const reason = ask ? prompt(ask) : "";
+    if (reason === null) return;
+    if (await run(() => api(`agent-rollouts/${id}/action`, { body: { action, reason: reason || "" } }), "Rollout updated")) reload();
+  };
+  return (
+    <div className="card" style={{ marginBottom: 14 }}>
+      <h3 style={{ marginTop: 0 }}>Agent rollouts</h3>
+      <p className="small muted">New agent builds reach devices ring by ring ({(data?.stages || []).join(" → ")}), set by each device's
+        Release ring policy. A failure in the current ring pauses the rollout before the next ring gets the build.</p>
+      <Table rows={data?.rollouts} empty="No agent build has been rolled out yet."
+             columns={[{ key: "platform", label: "Platform" }, { key: "version", label: "Build", render: (r: any) => <>{r.version || "—"} <span className="mono small muted">{r.build.slice(0, 10)}</span></> },
+                       { key: "stage", label: "Ring reached" },
+                       { key: "state", label: "State", render: (r: any) => <><Pill value={r.state} tone={ROLLOUT_TONE[r.state]} />{r.reason && <div className="small muted">{r.reason}</div>}</> },
+                       { key: "devices", label: "Devices", render: (r: any) => `${r.devices.updated} updated · ${r.devices.pending} pending · ${r.devices.failed} failed` },
+                       { key: "startedAt", label: "Started", render: (r: any) => fmtTime(r.startedAt) },
+                       { key: "actions", label: "", render: (r: any) => <div className="row" style={{ gap: 4 }}>
+                         {r.state === "active" && <button disabled={busy} onClick={() => act(r.id, "pause", "Why pause this rollout?")}>Pause</button>}
+                         {r.state === "paused" && <button disabled={busy} onClick={() => act(r.id, "resume")}>Resume</button>}
+                         {["active", "paused"].includes(r.state) && r.stage !== "lts" && <button disabled={busy} onClick={() => act(r.id, "advance")}>Next ring</button>}
+                         {["active", "paused", "complete"].includes(r.state) && <button className="danger" disabled={busy} onClick={() => act(r.id, "stop", "Emergency stop: why? Devices will not be offered this build again.")}>Stop</button>}
+                       </div> }]} />
+    </div>
+  );
+}
+
 function ReleasesTab({ canPublish }: { canPublish: boolean }) {
   const { data, reload } = useData<any[]>("releases");
   const [form, setForm] = useState<any>(null);
@@ -164,21 +254,62 @@ function ReleasesTab({ canPublish }: { canPublish: boolean }) {
   );
 }
 
+const BREAK_LABEL: Record<string, string> = { modified: "entry changed after it was written", deleted: "entries missing",
+  "legacy-race": "old concurrent-write race (not tampering)", relinked: "entries inserted or reordered", checkpoint: "rewritten since a checkpoint" };
+
 function AuditTab() {
   const { tenantId, can } = useApp();
-  const { data } = useData<any[]>("audit", { tenant_id: tenantId });
+  const { data, reload } = useData<any[]>("audit", { tenant_id: tenantId });
   const [verify, setVerify] = useState<any>(null);
-  const { run } = useAction();
+  const { run, busy } = useAction();
   return (
-    <div className="card">
-      {can("manage_tenants") && (
-        <div className="row" style={{ marginBottom: 10 }}>
-          <button onClick={async () => setVerify(await run(() => api("audit/verify")))}>Verify integrity</button>
-          {verify && (verify.valid ? <Pill value={`chain intact · ${verify.checked} entries`} tone="good" /> : <Pill value={`chain broken at entry ${verify.brokenAt}`} tone="bad" />)}
+    <>
+      <div className="card" style={{ marginBottom: 14 }}>
+        <div className="row" style={{ marginBottom: 10, flexWrap: "wrap" }}>
+          {can("manage_tenants") && <button disabled={busy} onClick={async () => setVerify(await run(() => api("audit/verify")))}>Verify integrity</button>}
+          {can("manage_tenants") && <button disabled={busy} onClick={async () => { if (await run(() => api("audit/checkpoints", { body: { reason: "manual" } }), "Checkpoint recorded and sent to webhooks")) reload(); }}>Record checkpoint</button>}
+          {can("configure") && <button disabled={busy} onClick={() => run(() => downloadFile("audit/export", "fenrir-audit.jsonl"))}>Export (verifiable)</button>}
+          {verify && (verify.valid ? <Pill value={`chain intact · ${verify.checked} entries${verify.anchor ? ` since position ${verify.anchor.seq}` : ""}`} tone="good" />
+            : <Pill value={verify.tampered ? "tampering detected" : "only old race breaks (not tampering)"} tone={verify.tampered ? "bad" : "warn"} />)}
         </div>
+        {verify && !verify.valid && (
+          <ul className="small">{verify.breaks.slice(0, 20).map((b: any, i: number) => <li key={i}>Position {b.seq ?? "?"}: {BREAK_LABEL[b.kind] || b.kind}{b.at ? ` (${fmtTime(b.at)})` : ""}</li>)}</ul>
+        )}
+        <p className="small muted" style={{ margin: 0 }}>Checkpoints record the chain's newest hash and are sent to your webhooks, so a copy lives outside Fenrir.
+          Check an export offline with <span className="mono">scripts/verify_audit_export.py</span>; other customers' entries in it are reduced to their hashes.</p>
+        {can("platform") && <AuditPolicyCard />}
+      </div>
+      <div className="card">
+        <Table rows={data} columns={[{ key: "at", label: "When", render: (r) => fmtTime(r.at) }, { key: "actor", label: "Who" }, { key: "action", label: "Action" },
+          { key: "target", label: "Target" }, { key: "details", label: "Details", render: (r) => <span className="mono small">{JSON.stringify(r.details).slice(0, 120)}</span> }]} />
+      </div>
+    </>
+  );
+}
+
+function AuditPolicyCard() {
+  const { data, reload } = useData<any>("audit/policy");
+  const [form, setForm] = useState<any>(null);
+  const { run, busy } = useAction();
+  if (!data) return null;
+  const save = async () => {
+    const body = { retentionDays: form.retentionDays ? Number(form.retentionDays) : null, legalHold: form.legalHold, holdReason: form.holdReason };
+    if (await run(() => api("audit/policy", { method: "PUT", body }), "Audit retention saved")) { setForm(null); reload(); }
+  };
+  return (
+    <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: "wrap" }}>
+      <span className="small">Retention: <b>{data.retentionDays ? `${data.retentionDays} days` : "keep everything"}</b></span>
+      {data.legalHold && <Pill value={`legal hold: ${data.holdReason}`} tone="warn" />}
+      <button onClick={() => setForm({ retentionDays: data.retentionDays ?? "", legalHold: data.legalHold, holdReason: data.holdReason })}>Change</button>
+      {form && (
+        <Modal title="Audit retention and legal hold" onClose={() => setForm(null)} footer={<button className="primary" disabled={busy} onClick={save}>Save</button>}>
+          <label className="field">Keep entries for (days, 365 to 3650; empty keeps everything)<input type="number" min={365} max={3650} value={form.retentionDays}
+            onChange={(e) => setForm({ ...form, retentionDays: e.target.value })} /></label>
+          <p className="small muted">Old entries are removed only up to a checkpoint, which then anchors verification.</p>
+          <label className="field row" style={{ gap: 8 }}><input type="checkbox" checked={form.legalHold} onChange={(e) => setForm({ ...form, legalHold: e.target.checked })} />Legal hold (nothing is removed)</label>
+          {form.legalHold && <label className="field">Reason<input value={form.holdReason} onChange={(e) => setForm({ ...form, holdReason: e.target.value })} /></label>}
+        </Modal>
       )}
-      <Table rows={data} columns={[{ key: "at", label: "When", render: (r) => fmtTime(r.at) }, { key: "actor", label: "Who" }, { key: "action", label: "Action" },
-        { key: "target", label: "Target" }, { key: "details", label: "Details", render: (r) => <span className="mono small">{JSON.stringify(r.details).slice(0, 120)}</span> }]} />
     </div>
   );
 }

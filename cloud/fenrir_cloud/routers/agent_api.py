@@ -17,7 +17,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import audit, endpoint_health, intel, psa, rmm, services
+from .. import rollouts, audit, endpoint_health, intel, psa, rmm, services
 from ..config import get_settings
 from ..db import get_db
 from ..deps import current_device, current_device_by_key
@@ -174,6 +174,8 @@ def enroll(
 def heartbeat(body: dict = Body(default={}), device: Device = Depends(current_device), db: Session = Depends(get_db)):
     device.agent_version = str(body.get("agentVersion") or device.agent_version)[:64]
     device.platform_version = str(body.get("platformVersion") or device.platform_version)[:64]
+    if re.fullmatch(r"[a-z0-9]{1,64}", str(body.get("buildId") or "")):
+        device.agent_build = str(body["buildId"])
     previous_health = device.health_state
     device.health_state = str(body.get("healthState") or device.health_state)[:40]
     endpoint_health.on_heartbeat(db, device, previous_health)
@@ -354,9 +356,13 @@ def agent_update_windows(device: Device = Depends(current_device_by_key), db: Se
     build = _windows_build()
     resolution, _ = services.effective_policy(db, device)
     allowed = bool(resolution["settings"].get("updates", {}).get("autoUpdateAgent", True))
-    db.commit()  # records last_seen from the device lookup
+    if build is not None:
+        offered, reason = rollouts.offer(db, device, "windows", build["buildId"], record=allowed)
+    db.commit()  # records last_seen from the device lookup, and the rollout offer
     if build is None:
         return {"available": False, "autoUpdate": allowed, "buildId": "", "sha256": "", "url": ""}
+    if not offered:  # staged rollout: not this device's turn yet, or paused
+        return {"available": False, "autoUpdate": allowed, "buildId": "", "sha256": "", "url": "", "rollout": reason}
     return {"available": True, "autoUpdate": allowed, **build, "url": "/api/v1/agent/update/windows/package"}
 
 
@@ -393,11 +399,28 @@ def agent_update(os_name: str = Path(pattern="^(linux|macos)$"), arch: str = Que
         build_id = str(meta.get("buildId") or "")
     except (OSError, ValueError, KeyError, TypeError):
         return empty
+    # Signed release manifest (FIX-07/AGT-03): agents built with a pinned release key install only what it signs.
+    # Signed at image build time, or offline and dropped into deploy/releases (see docs/AUTO_UPDATE.md).
+    manifest = signature = ""
+    manifest_file = deployment_installers.signed_release_file(f"{os_name}-{arch}.manifest.json")
+    signature_file = manifest_file and manifest_file.with_suffix(".sig")
+    if signature_file is not None and (signature_file.is_symlink() or not signature_file.is_file()):
+        signature_file = None
+    if manifest_file is not None and signature_file is not None:
+        try:
+            manifest, signature = manifest_file.read_text(), signature_file.read_text().strip()
+            signed = json.loads(manifest)
+            version, sha = str(signed.get("version") or version), str(signed.get("sha256") or sha).lower()
+        except (OSError, ValueError):
+            manifest = signature = ""
     resolution, _ = services.effective_policy(db, device)
     allowed = bool(resolution["settings"].get("updates", {}).get("autoUpdateAgent", True))
-    db.commit()  # records last_seen from the device lookup
+    offered, reason = rollouts.offer(db, device, os_name, build_id, version, record=allowed) if build_id else (True, "")
+    db.commit()  # records last_seen from the device lookup, and the rollout offer
+    if not offered:  # staged rollout: not this device's turn yet, or paused
+        return {**empty, "rollout": reason, "autoUpdate": allowed}
     return {"available": True, "version": version, "buildId": build_id, "sha256": sha, "url": f"/downloads/{name}",
-            "autoUpdate": allowed}
+            "autoUpdate": allowed, "manifest": manifest, "signature": signature}
 
 
 @router.post("/update-check")

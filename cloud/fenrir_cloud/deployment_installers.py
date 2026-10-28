@@ -41,9 +41,17 @@ def server_address(value: str) -> str:
     return value
 
 
-def release_file(name: str) -> Path | None:
+# Release manifests signed off the server (mounted read-only from deploy/releases); preferred over the image's own.
+SIGNED_RELEASES = Path(__file__).resolve().parents[1] / "releases"
+
+
+def signed_release_file(name: str) -> Path | None:
+    return release_file(name, SIGNED_RELEASES) or release_file(name)
+
+
+def release_file(name: str, root_dir: Path | None = None) -> Path | None:
     """Only serve pre-staged local artifacts, never arbitrary user paths/symlinks."""
-    root = DOWNLOADS.resolve()
+    root = (root_dir or DOWNLOADS).resolve()
     candidate = root / name
     if candidate.is_symlink() or not candidate.is_file():
         return None

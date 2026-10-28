@@ -22,12 +22,17 @@ class Principal:
     user: User
     tenant_ids: frozenset[str]
     session_id: str | None = None
+    # Set for API credentials (CORE-04): exactly these permissions, whatever the role says.
+    scopes: frozenset[str] | None = None
+    credential_id: str | None = None
 
     @property
     def actor(self) -> str:
         return self.user.email
 
     def can(self, permission: str) -> bool:
+        if self.scopes is not None:
+            return permission in self.scopes
         return has_permission(self.user.role, permission)
 
     def require(self, permission: str) -> None:
@@ -65,6 +70,15 @@ def current_principal(
 ) -> Principal:
     if creds is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Sign in required", headers={"WWW-Authenticate": "Bearer"})
+    from . import apikeys
+
+    if creds.credentials.startswith(apikeys.PREFIX):
+        if request.url.path.startswith("/api/portal") or request.url.path.startswith("/api/console/auth"):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "API credentials cannot use sign-in or portal endpoints")
+        client_ip = request.client.host if request.client else ""
+        service_user, cred = apikeys.authenticate(db, creds.credentials, client_ip)
+        return Principal(user=service_user, tenant_ids=frozenset(tenant_subtree(db, cred.tenant_id)),
+                         scopes=frozenset(cred.scopes), credential_id=cred.id)
     payload = read_token(get_settings().secret_key, creds.credentials)
     # Only session tokens sign a user in; re-auth, remote-session and other purpose tokens carry an "aud".
     if payload is None or payload.get("aud") not in (None, "session"):
