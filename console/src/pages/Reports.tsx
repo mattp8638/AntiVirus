@@ -1,3 +1,4 @@
+import { displayValue } from "../components/DisplayValue";
 import { useState } from "react";
 import { getToken } from "../api";
 import { useApp } from "../app-context";
@@ -38,10 +39,10 @@ export default function Reports() {
           </div>
           <div className="grid k2" style={{ marginTop: 16 }}>
             <div className="card"><h3>Compliance</h3>
-              {data.compliance.map((c: any) => <div key={c.name} className="row" style={{ padding: "4px 0" }}><span style={{ flex: 1 }}>{c.name}</span><b>{c.score}%</b></div>)}
+              {data.compliance.map((c: any) => <div key={c.name} className="row" style={{ padding: "4px 0" }}><span style={{ flex: 1 }}>{displayValue(c.name)}</span><b>{displayValue(c.score)}%</b></div>)}
             </div>
             <div className="card"><h3>Service</h3>
-              <dl className="kv"><dt>Tickets</dt><dd>{data.service.tickets}</dd><dt>Resolved</dt><dd>{data.service.resolved}</dd>
+              <dl className="kv"><dt>Tickets</dt><dd>{displayValue(data.service.tickets)}</dd><dt>Resolved</dt><dd>{displayValue(data.service.resolved)}</dd>
                 <dt>Within SLA</dt><dd>{data.service.slaMet === null ? "n/a" : `${data.service.slaMet}%`}</dd></dl>
               <h3 style={{ marginTop: 12 }}>Open vulnerabilities</h3>
               <pre>{JSON.stringify(data.openVulnerabilities, null, 2)}</pre>

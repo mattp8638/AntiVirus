@@ -47,9 +47,14 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: console/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install isolated console test API
+        run: python -m pip install -r cloud/requirements-dev.txt
       - name: Compile and test the console
         working-directory: console
-        run: npm ci --no-audit --no-fund && npm run build && npm run test:shapes && npm run test:remote
+        run: npm ci --no-audit --no-fund && npm run build && npm run test:shapes && npm run test:remote && npm run test:pages
 
   linux-agent-regressions:
     name: Linux agent Go tests and both native architectures
@@ -81,6 +86,8 @@ jobs:
           & ./build/Release/fenrir-remote-sas-tests.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & ./build/Release/fenrir-remote-pipe-tests.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell.exe -NoProfile -File agent/windows/tests/SystemProfileShapeTests.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build Windows native installer and bundled service
         shell: pwsh

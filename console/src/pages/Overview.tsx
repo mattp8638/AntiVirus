@@ -1,3 +1,4 @@
+import { displayValue } from "../components/DisplayValue";
 import { Fragment } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ago } from "../api";
@@ -29,16 +30,16 @@ export default function Overview() {
               <h3>Alerts per day</h3>
               <Bars data={days} />
               <div className="row small muted" style={{ marginTop: 6 }}>
-                {["critical", "high", "medium", "low"].map((s) => <span key={s}><Sev level={s} /> {sev[s] ?? 0}</span>)}
+                {["critical", "high", "medium", "low"].map((s) => <span key={s}><Sev level={s} /> {displayValue(sev[s] ?? 0)}</span>)}
               </div>
             </div>
             <div className="card">
               <h3>Fleet</h3>
               <dl className="kv">
-                <dt>Isolated now</dt><dd>{data.devices.isolated}</dd>
-                <dt>At risk (score ≥ 40)</dt><dd>{data.devices.atRisk}</dd>
+                <dt>Isolated now</dt><dd>{displayValue(data.devices.isolated)}</dd>
+                <dt>At risk (score ≥ 40)</dt><dd>{displayValue(data.devices.atRisk)}</dd>
                 {Object.entries(data.devices.byPlatform).map(([k, v]) => (<Fragment key={k}><dt>{k}</dt><dd>{String(v)}</dd></Fragment>))}
-                <dt>Open tickets</dt><dd>{data.psa.openTickets} {data.psa.slaBreached ? <span className="badge tone-bad">{data.psa.slaBreached} past SLA</span> : null}</dd>
+                <dt>Open tickets</dt><dd>{displayValue(data.psa.openTickets)} {data.psa.slaBreached ? <span className="badge tone-bad">{displayValue(data.psa.slaBreached)} past SLA</span> : null}</dd>
               </dl>
             </div>
           </div>
@@ -55,7 +56,7 @@ export default function Overview() {
               <Table rows={data.riskiestDevices} onRow={(r) => navigate(`/devices/${r.id}`)} empty="No devices with open risk."
                      columns={[{ key: "hostname", label: "Device" },
                                { key: "tenantId", label: "Tenant", render: (r) => tenantName(r.tenantId) },
-                               { key: "riskScore", label: "Risk", render: (r) => <div style={{ minWidth: 120 }}><Meter value={r.riskScore} /> <span className="small">{r.riskScore}</span></div> }]} />
+                               { key: "riskScore", label: "Risk", render: (r) => <div style={{ minWidth: 120 }}><Meter value={r.riskScore} /> <span className="small">{displayValue(r.riskScore)}</span></div> }]} />
             </div>
           </div>
           <div className="grid k2" style={{ marginTop: 16 }}>
@@ -68,8 +69,8 @@ export default function Overview() {
               <div className="heat">
                 {data.mitre.length ? data.mitre.map((m: any) => (
                   <div key={m.technique} style={{ background: `rgba(244,63,94,${Math.min(0.6, 0.1 + m.count / 20)})` }}>
-                    <a href={`https://attack.mitre.org/techniques/${m.technique.replace(".", "/")}/`} target="_blank" rel="noreferrer">{m.technique}</a>
-                    <span className="muted"> ×{m.count}</span>
+                    <a href={`https://attack.mitre.org/techniques/${m.technique.replace(".", "/")}/`} target="_blank" rel="noreferrer">{displayValue(m.technique)}</a>
+                    <span className="muted"> ×{displayValue(m.count)}</span>
                   </div>
                 )) : <span className="muted">None in this period.</span>}
               </div>

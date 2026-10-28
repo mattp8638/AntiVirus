@@ -1,14 +1,15 @@
+import { displayValue } from "../../components/DisplayValue";
 import { DocumentHistory, DocumentTemplates } from "../Documentation";
 import { useState } from "react";
 import { api, getToken, money } from "../../api";
 import { useApp } from "../../app-context";
-import { Modal, PageHead, Pill, Table, Tabs, TenantSelect, useAction, useData } from "../../components/ui";
+import { Modal, PageHead, Pill, Table, Tabs, TenantSelect, useAction, useListData } from "../../components/ui";
 
 export default function Catalog() {
   const { can } = useApp();
   const [tab, setTab] = useState("Quotes");
-  const { data: products, reload: reloadProducts } = useData<any[]>("psa/products");
-  const { data: quotes, reload: reloadQuotes } = useData<any[]>("psa/quotes");
+  const { data: products, reload: reloadProducts } = useListData<any>("psa/products");
+  const { data: quotes, reload: reloadQuotes } = useListData<any>("psa/quotes");
   const [product, setProduct] = useState<any>(null);
   const [quote, setQuote] = useState<any>(null);
   return (
@@ -27,7 +28,7 @@ export default function Catalog() {
                            { key: "validUntil", label: "Valid until" }, { key: "status", label: "Status", render: (q) => <Pill value={q.status} tone={q.status === "Accepted" ? "good" : q.status === "Declined" ? "muted" : "blue"} /> }]} />
         ) : (
           <Table rows={products} onRow={setProduct} empty="No products."
-                 columns={[{ key: "sku", label: "SKU", render: (p) => <span className="mono">{p.sku}</span> }, { key: "description", label: "Description" }, { key: "category", label: "Category" },
+                 columns={[{ key: "sku", label: "SKU", render: (p) => <span className="mono">{displayValue(p.sku)}</span> }, { key: "description", label: "Description" }, { key: "category", label: "Category" },
                            { key: "cost", label: "Cost", render: (p) => money(p.cost) }, { key: "price", label: "Price", render: (p) => money(p.price) },
                            { key: "margin", label: "Margin", render: (p) => p.price ? `${Math.round((100 * (p.price - p.cost)) / p.price)}%` : "—" },
                            { key: "recurring", label: "", render: (p) => p.recurring ? <Pill value="monthly" tone="blue" /> : null }]} />
@@ -98,7 +99,7 @@ function QuoteEditor({ quote, products, onClose }: { quote: any; products: any[]
       ))}
       <div className="row">
         <select value="" onChange={(e) => { const p = products.find((x) => x.id === e.target.value); if (p) setForm({ ...form, lines: [...form.lines, { productId: p.id, description: p.description, quantity: 1, unitPrice: p.price, recurring: p.recurring }] }); }}>
-          <option value="">Add a product…</option>{products.map((p) => <option key={p.id} value={p.id}>{p.sku} · {p.description}</option>)}</select>
+          <option value="">Add a product…</option>{products.map((p) => <option key={p.id} value={p.id}>{displayValue(p.sku)} · {displayValue(p.description)}</option>)}</select>
         <button className="small" onClick={() => setForm({ ...form, lines: [...form.lines, { description: "Labour", quantity: 1, unitPrice: 85, recurring: false }] })}>Add custom line</button>
       </div>
       <p style={{ textAlign: "right" }}>One-off <b>{money(oneOff)}</b> · Monthly <b>{money(monthly)}</b> <span className="small muted">ex VAT</span></p>
@@ -109,7 +110,7 @@ function QuoteEditor({ quote, products, onClose }: { quote: any; products: any[]
 
 export function Knowledge() {
   const { can, tenantId } = useApp();
-  const { data, reload } = useData<any[]>("psa/kb", {tenant_id: tenantId});
+  const { data, reload } = useListData<any>("psa/kb", {tenant_id: tenantId});
   const [editing, setEditing] = useState<any>(null);
   const [q, setQ] = useState("");
   const { run, busy } = useAction();
@@ -121,7 +122,7 @@ export function Knowledge() {
       <input placeholder="Search articles" value={q} onChange={(e) => setQ(e.target.value)} style={{ minWidth: 280, marginBottom: 12 }} />
       <div className="card">
         <Table rows={data?.filter((a) => !q || `${a.title} ${a.body}`.toLowerCase().includes(q.toLowerCase()))} onRow={setEditing} empty="No articles."
-               columns={[{ key: "title", label: "Article", render: (a) => <b>{a.title}</b> }, { key: "category", label: "Category" },
+               columns={[{ key: "title", label: "Article", render: (a) => <b>{displayValue(a.title)}</b> }, { key: "category", label: "Category" },
                          { key: "public", label: "Visibility", render: (a) => a.public ? <Pill value="customers" tone="good" /> : <Pill value="internal" tone="muted" /> },
                          { key: "author", label: "Author" }]} />
       </div>

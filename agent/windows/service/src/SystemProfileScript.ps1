@@ -63,7 +63,7 @@ $profile.os = Section {
 }
 
 # --- Disks and SMART --------------------------------------------------------------------------------------------
-$profile.disks = Section {
+$profile.disks = @(Section {
   @(Get-PhysicalDisk | ForEach-Object {
     $r = $_ | Get-StorageReliabilityCounter
     [ordered]@{
@@ -72,7 +72,7 @@ $profile.disks = Section {
       temperatureC = $r.Temperature; temperatureMaxC = $r.TemperatureMax; wearPercent = $r.Wear; powerOnHours = $r.PowerOnHours
       readErrors = $r.ReadErrorsTotal; writeErrors = $r.WriteErrorsTotal; startStopCount = $r.StartStopCycleCount
     } })
-}
+})
 
 # --- Volumes and BitLocker --------------------------------------------------------------------------------------
 $bitlocker = @{}
@@ -87,7 +87,7 @@ Section {
   }
 } | Out-Null
 $systemDrive = $env:SystemDrive
-$profile.volumes = Section {
+$profile.volumes = @(Section {
   @(Get-Volume | Where-Object { $_.DriveType -eq 'Fixed' -and $_.Size -gt 1GB } | ForEach-Object {
     $mount = $(if ($_.DriveLetter) { "$($_.DriveLetter):" } else { $_.FileSystemLabel })
     $b = $bitlocker[$mount]
@@ -97,7 +97,7 @@ $profile.volumes = Section {
       encryption = $(if ($b) { [ordered]@{ status = "$($b.VolumeStatus)"; protection = "$($b.ProtectionStatus)"; percent = $b.EncryptionPercentage;
                                             method = "$($b.EncryptionMethod)"; protectors = @($b.KeyProtector | ForEach-Object { "$($_.KeyProtectorType)" }) } })
     } })
-}
+})
 
 # --- Users ------------------------------------------------------------------------------------------------------
 $profile.users = Section {
@@ -183,14 +183,14 @@ $profile.services = Section {
     Where-Object { $_.Name -notmatch '^(gupdate|edgeupdate|MapsBroker|sppsvc|RemoteRegistry|WbioSrvc|TrustedInstaller|BITS|wuauserv|UsoSvc|CDPSvc|tiledatamodelsvc|GoogleUpdater.*|clr_optimization.*|DoSvc|WaaSMedicSvc)' } |
     ForEach-Object { $_.DisplayName } | Select-Object -First 40) }
 }
-$profile.startup = Section { @(Get-CimInstance Win32_StartupCommand | Select-Object -First 60 | ForEach-Object { [ordered]@{ name = $_.Name; command = $_.Command; location = $_.Location; user = $_.User } }) }
-$profile.printers = Section { @(Get-Printer | ForEach-Object { [ordered]@{ name = $_.Name; driver = $_.DriverName; port = $_.PortName; shared = $_.Shared; type = "$($_.Type)" } }) }
-$profile.monitors = Section {
+$profile.startup = @(Section { @(Get-CimInstance Win32_StartupCommand | Select-Object -First 60 | ForEach-Object { [ordered]@{ name = $_.Name; command = $_.Command; location = $_.Location; user = $_.User } }) })
+$profile.printers = @(Section { @(Get-Printer | ForEach-Object { [ordered]@{ name = $_.Name; driver = $_.DriverName; port = $_.PortName; shared = $_.Shared; type = "$($_.Type)" } }) })
+$profile.monitors = @(Section {
   $text = { param($codes) (($codes | Where-Object { $_ -gt 0 } | ForEach-Object { [char]$_ }) -join '').Trim() }
   @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorID | ForEach-Object {
     [ordered]@{ manufacturer = & $text $_.ManufacturerName; model = & $text $_.UserFriendlyName; serial = & $text $_.SerialNumberID; year = $_.YearOfManufacture } })
-}
-$profile.shares = Section { @(Get-SmbShare | Where-Object { -not $_.Special } | ForEach-Object { [ordered]@{ name = $_.Name; path = $_.Path; description = $_.Description } }) }
+})
+$profile.shares = @(Section { @(Get-SmbShare | Where-Object { -not $_.Special } | ForEach-Object { [ordered]@{ name = $_.Name; path = $_.Path; description = $_.Description } }) })
 
 # --- Role: workstation, server or domain controller (re-detected every run, so promotions show up) ----------------
 $profile.role = Section {
@@ -214,7 +214,7 @@ $profile.role = Section {
 }
 
 # --- Audit policy that Active Directory and sign-in detections depend on ---------------------------------------------
-$profile.auditPolicy = Section {
+$profile.auditPolicy = @(Section {
   $wanted = @{ '{0CCE923B-69AE-11D9-BED3-505054503030}'='Directory Service Access'; '{0CCE923C-69AE-11D9-BED3-505054503030}'='Directory Service Changes';
     '{0CCE9237-69AE-11D9-BED3-505054503030}'='Security Group Management'; '{0CCE9235-69AE-11D9-BED3-505054503030}'='User Account Management';
     '{0CCE9236-69AE-11D9-BED3-505054503030}'='Computer Account Management'; '{0CCE9242-69AE-11D9-BED3-505054503030}'='Kerberos Authentication Service';
@@ -226,7 +226,7 @@ $profile.auditPolicy = Section {
     if (-not $value) { $text = "$($_.'Inclusion Setting')"; $value = "$([int]($text -match 'Success') + 2 * [int]($text -match 'Failure'))" }
     [ordered]@{ guid = "$($_.'Subcategory GUID')".ToUpper(); name = $wanted["$($_.'Subcategory GUID')".ToUpper()]
       success = ($value -eq '1' -or $value -eq '3'); failure = ($value -eq '2' -or $value -eq '3'); setting = $_.'Inclusion Setting' } })
-}
+})
 
 # --- Active Directory (domain controllers only) ------------------------------------------------------------------------
 if ($profile.role -and $profile.role.kind -eq 'domain-controller') {

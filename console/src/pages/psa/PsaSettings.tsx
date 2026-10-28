@@ -1,8 +1,9 @@
+import { displayValue } from "../../components/DisplayValue";
 import { useState } from "react";
 import { useParams } from "react-router-dom";
 import { api } from "../../api";
 import { useApp } from "../../app-context";
-import { Modal, PageHead, Pill, Table, Tabs, useAction, useData } from "../../components/ui";
+import { Modal, PageHead, Pill, Table, Tabs, useAction, useData, useListData } from "../../components/ui";
 
 export default function PsaSettings() {
   const [tab, setTab] = useState("Boards");
@@ -19,7 +20,7 @@ export default function PsaSettings() {
 
 function Boards() {
   const { can } = useApp();
-  const { data, reload } = useData<any[]>("psa/boards");
+  const { data, reload } = useListData<any>("psa/boards");
   const [editing, setEditing] = useState<any>(null);
   const { run } = useAction();
   return (
@@ -27,8 +28,8 @@ function Boards() {
       {can("configure") && <button className="primary" style={{ marginBottom: 12 }} onClick={async () => { const name = window.prompt("Board name"); if (name && await run(() => api("psa/boards", { body: { name } }), "Board created")) reload(); }}>New board</button>}
       <div className="card">
         <Table rows={data} onRow={setEditing} empty="No boards."
-               columns={[{ key: "name", label: "Board", render: (b) => <b>{b.name}</b> },
-                         { key: "statuses", label: "Statuses", render: (b) => <span className="small">{b.statuses.map((s: any) => s.name).join(" → ")}</span> },
+               columns={[{ key: "name", label: "Board", render: (b) => <b>{displayValue(b.name)}</b> },
+                         { key: "statuses", label: "Statuses", render: (b) => <span className="small">{displayValue(b.statuses.map((s: any) => s.name).join(" → "))}</span> },
                          { key: "types", label: "Types", render: (b) => b.types.length },
                          { key: "members", label: "Members", render: (b) => b.members.length || "everyone" },
                          { key: "autoAssign", label: "Assignment", render: (b) => b.autoAssign === "round_robin" ? "round robin" : "manual" },
@@ -40,7 +41,7 @@ function Boards() {
 }
 
 function BoardEditor({ board, onClose }: { board: any; onClose: () => void }) {
-  const { data: members } = useData<any[]>("psa/members");
+  const { data: members } = useListData<any>("psa/members");
   const [form, setForm] = useState<any>({ ...board, statuses: board.statuses.map((s: any) => ({ ...s })), typesText: board.types.map((t: any) =>
     `${t.name}: ${t.subtypes.map((s: any) => s.items.length ? `${s.name} (${s.items.join(", ")})` : s.name).join("; ")}`).join("\n") });
   const { run, busy } = useAction();
@@ -69,7 +70,7 @@ function BoardEditor({ board, onClose }: { board: any; onClose: () => void }) {
       </div>
       <h3 style={{ marginTop: 14 }}>Members</h3>
       <div className="row">{members?.map((m) => <label key={m.email} className="small"><input type="checkbox" checked={form.members.includes(m.email)}
-        onChange={() => setForm({ ...form, members: form.members.includes(m.email) ? form.members.filter((x: string) => x !== m.email) : [...form.members, m.email] })} /> {m.name}</label>)}</div>
+        onChange={() => setForm({ ...form, members: form.members.includes(m.email) ? form.members.filter((x: string) => x !== m.email) : [...form.members, m.email] })} /> {displayValue(m.name)}</label>)}</div>
       <h3 style={{ marginTop: 14 }}>Statuses</h3>
       {form.statuses.map((s: any, i: number) => (
         <div key={i} className="row" style={{ marginBottom: 4 }}>
@@ -92,19 +93,19 @@ const FIELDS = ["status", "priority", "board", "account", "type", "subtype", "so
 
 function Workflows() {
   const { can } = useApp();
-  const { data, reload } = useData<any[]>("psa/workflows");
-  const { data: boards } = useData<any[]>("psa/boards");
+  const { data, reload } = useListData<any>("psa/workflows");
+  const { data: boards } = useListData<any>("psa/boards");
   const [editing, setEditing] = useState<any>(null);
   return (
     <>
       {can("configure") && <button className="primary" style={{ marginBottom: 12 }} onClick={() => setEditing({ name: "", trigger: "ticket.created", conditions: [], actions: [], enabled: true, idleHours: 0 })}>New rule</button>}
       <div className="card">
         <Table rows={data} onRow={setEditing} empty="No workflow rules. Example: close tickets that wait on the customer for 3 days."
-               columns={[{ key: "name", label: "Rule", render: (w) => <b>{w.name}</b> },
+               columns={[{ key: "name", label: "Rule", render: (w) => <b>{displayValue(w.name)}</b> },
                          { key: "trigger", label: "When", render: (w) => w.trigger === "ticket.idle" ? `in the same status for ${w.idleHours}h` : w.trigger.replace(".", " ") },
                          { key: "boardId", label: "Board", render: (w) => boards?.find((b) => b.id === w.boardId)?.name || "all boards" },
-                         { key: "conditions", label: "If", render: (w) => <span className="small">{w.conditions.map((c: any) => `${c.field} ${c.op} ${c.value}`).join(" and ") || "always"}</span> },
-                         { key: "actions", label: "Then", render: (w) => <span className="small">{w.actions.map((a: any) => a.type === "set" ? `set ${a.field}=${a.value}` : a.type).join(", ")}</span> },
+                         { key: "conditions", label: "If", render: (w) => <span className="small">{displayValue(w.conditions.map((c: any) => `${c.field} ${c.op} ${c.value}`).join(" and ") || "always")}</span> },
+                         { key: "actions", label: "Then", render: (w) => <span className="small">{displayValue(w.actions.map((a: any) => a.type === "set" ? `set ${a.field}=${a.value}` : a.type).join(", "))}</span> },
                          { key: "runs", label: "Runs" }, { key: "enabled", label: "", render: (w) => <Pill value={w.enabled ? "on" : "off"} tone={w.enabled ? "good" : "muted"} /> }]} />
       </div>
       {editing && <WorkflowEditor rule={editing} boards={boards || []} onClose={() => { setEditing(null); reload(); }} />}
@@ -131,7 +132,7 @@ function WorkflowEditor({ rule, boards, onClose }: { rule: any; boards: any[]; o
           <option value="ticket.created">A ticket is created</option><option value="ticket.updated">A ticket is updated</option>
           <option value="ticket.idle">A ticket sits in one status</option><option value="sla.warning">75% of the SLA has passed</option><option value="sla.breached">The SLA is breached</option></select></label>
         {form.trigger === "ticket.idle" && <label className="field">For (hours)<input type="number" value={form.idleHours} onChange={(e) => setForm({ ...form, idleHours: e.target.value })} /></label>}
-        <label className="field">Board<select value={form.boardId || ""} onChange={(e) => setForm({ ...form, boardId: e.target.value })}><option value="">All boards</option>{boards.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}</select></label>
+        <label className="field">Board<select value={form.boardId || ""} onChange={(e) => setForm({ ...form, boardId: e.target.value })}><option value="">All boards</option>{boards.map((b) => <option key={b.id} value={b.id}>{displayValue(b.name)}</option>)}</select></label>
         <label className="field">Enabled<select value={form.enabled ? "yes" : "no"} onChange={(e) => setForm({ ...form, enabled: e.target.value === "yes" })}><option value="yes">Yes</option><option value="no">No</option></select></label>
       </div>
       <h3 style={{ marginTop: 14 }}>If</h3>
@@ -180,7 +181,7 @@ function InboundEmail() {
       <h3>Option 2: Webhook</h3>
       <p className="small">Point your mail provider's inbound webhook (Mailgun, SendGrid, Postmark, Microsoft 365 via Power Automate) at the URL below. It accepts raw RFC 822 messages or JSON with from, to, subject, text and messageId.</p>
       {can("configure") && <button disabled={busy} onClick={async () => setResult(await run(() => api<any>("psa/inbound-token", { method: "POST" }), "New inbound URL created"))}>Create a new inbound URL</button>}
-      {result && <pre style={{ marginTop: 10 }}>{window.location.origin}{result.url}</pre>}
+      {result && <pre style={{ marginTop: 10 }}>{window.location.origin}{displayValue(result.url)}</pre>}
       <p className="small muted" style={{ marginTop: 8 }}>Creating a new URL disables the previous one.</p>
     </div>
   );
@@ -196,14 +197,14 @@ export function ProjectDetail() {
   const savePhases = async (phases: any[]) => { await run(() => api(`crm/projects/${p.id}`, { method: "PATCH", body: { phases } }), "Saved"); reload(); };
   return (
     <>
-      <PageHead title={p.name} subtitle={<>{p.status} · {p.billingMethod || "Time & Materials"} · {data.actualHours} of {p.estimatedHours || 0} estimated hours · due {p.dueDate || "—"}</>} />
+      <PageHead title={p.name} subtitle={<>{displayValue(p.status)} · {displayValue(p.billingMethod || "Time & Materials")} · {displayValue(data.actualHours)} of {displayValue(p.estimatedHours || 0)} estimated hours · due {displayValue(p.dueDate || "—")}</>} />
       <div className="grid k3">
         {data.phases.map((ph: any, i: number) => (
           <div key={i} className="card">
-            <div className="row"><b>{ph.name}</b><Pill value={ph.status || "Open"} /><span style={{ flex: 1 }} />
+            <div className="row"><b>{displayValue(ph.name)}</b><Pill value={ph.status || "Open"} /><span style={{ flex: 1 }} />
               <select value={ph.status || "Open"} onChange={(e) => savePhases(p.phases.map((x: any, j: number) => (j === i ? { ...x, status: e.target.value } : x)))}>{["Open", "In Progress", "Done"].map((s) => <option key={s}>{s}</option>)}</select></div>
             <div className="small muted">{ph.budgetHours ? `${ph.budgetHours}h budget` : ""}</div>
-            {ph.tickets.map((t: any) => <div key={t.id} className="small" style={{ marginTop: 4 }}><a href={`/tickets/${t.id}`}>#{t.number}</a> {t.subject} <Pill value={t.status} /></div>)}
+            {ph.tickets.map((t: any) => <div key={t.id} className="small" style={{ marginTop: 4 }}><a href={`/tickets/${t.id}`}>#{displayValue(t.number)}</a> {displayValue(t.subject)} <Pill value={t.status} /></div>)}
             {!ph.tickets.length && <p className="small muted">No tickets in this phase. Create a ticket on the Projects board and set its phase.</p>}
           </div>
         ))}
@@ -211,7 +212,7 @@ export function ProjectDetail() {
       <form className="row" style={{ marginTop: 12 }} onSubmit={async (e) => { e.preventDefault(); if (phase) { await savePhases([...(p.phases || []), { name: phase, status: "Open", budgetHours: 0 }]); setPhase(""); } }}>
         <input value={phase} onChange={(e) => setPhase(e.target.value)} placeholder="New phase name" /><button>Add phase</button>
       </form>
-      {data.unphased.length > 0 && <div className="card" style={{ marginTop: 12 }}><h3>Tickets without a phase</h3>{data.unphased.map((t: any) => <div key={t.id}><a href={`/tickets/${t.id}`}>#{t.number}</a> {t.subject}</div>)}</div>}
+      {data.unphased.length > 0 && <div className="card" style={{ marginTop: 12 }}><h3>Tickets without a phase</h3>{data.unphased.map((t: any) => <div key={t.id}><a href={`/tickets/${t.id}`}>#{displayValue(t.number)}</a> {displayValue(t.subject)}</div>)}</div>}
     </>
   );
 }

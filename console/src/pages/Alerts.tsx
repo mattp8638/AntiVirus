@@ -1,15 +1,16 @@
+import { displayValue } from "../components/DisplayValue";
 import { Fragment, useState } from "react";
 import { Link } from "react-router-dom";
 import { ago, api, fmtTime } from "../api";
 import { useApp } from "../app-context";
-import { Modal, PageHead, Pill, Sev, Table, useAction, useData } from "../components/ui";
+import { Modal, PageHead, Pill, Sev, Table, useAction, useData, useListData } from "../components/ui";
 import { EvidenceList } from "../components/Evidence";
 
 export default function Alerts() {
   const { tenantId, tenantName } = useApp();
   const [status, setStatus] = useState("new");
   const [severity, setSeverity] = useState("");
-  const { data, reload } = useData<any[]>("alerts", { tenant_id: tenantId, status, severity });
+  const { data, reload } = useListData<any>("alerts", { tenant_id: tenantId, status, severity });
   const [open, setOpen] = useState<string | null>(null);
   return (
     <>
@@ -26,7 +27,7 @@ export default function Alerts() {
       <div className="card">
         <Table rows={data} onRow={(r) => setOpen(r.id)} empty="No alerts match."
                columns={[{ key: "severity", label: "Sev", render: (r) => <Sev level={r.severity} /> },
-                         { key: "title", label: "Alert", render: (r) => <><b>{r.title}</b><div className="small muted mono">{r.details?.process || r.details?.file || ""}</div></> },
+                         { key: "title", label: "Alert", render: (r) => <><b>{displayValue(r.title)}</b><div className="small muted mono">{displayValue(r.details?.process || r.details?.file || "")}</div></> },
                          { key: "hostname", label: "Device" },
                          { key: "tenantId", label: "Tenant", render: (r) => tenantName(r.tenantId) },
                          { key: "mitre", label: "MITRE", render: (r) => r.mitre.filter((m: string) => m.startsWith("T")).join(", ") },
@@ -66,16 +67,16 @@ function AlertDrawer({ id, onClose }: { id: string; onClose: () => void }) {
            </>}>
       <div className="row"><Sev level={a.severity} /><Pill value={a.status} />{a.incidentId && <Link to={`/incidents/${a.incidentId}`}>Open incident →</Link>}</div>
       <dl className="kv" style={{ marginTop: 12 }}>
-        <dt>Rule</dt><dd>{data.rule?.title} <span className="muted small mono">{a.ruleId}</span></dd>
+        <dt>Rule</dt><dd>{displayValue(data.rule?.title)} <span className="muted small mono">{displayValue(a.ruleId)}</span></dd>
         <dt>MITRE ATT&CK</dt><dd>{a.mitre.map((m: string) => <span key={m} className="chip">{m}</span>)}</dd>
         <dt>First seen</dt><dd>{fmtTime(a.createdAt)}</dd>
         {Object.entries(a.details || {}).filter(([k, v]) => !["description", "evidence", "falsePositives"].includes(k) && (typeof v !== "object" || v === null)).map(([k, v]) =>
           <Fragment key={k}><dt>{k}</dt><dd className="mono small" style={{ wordBreak: "break-all" }}>{String(v)}</dd></Fragment>)}
       </dl>
-      {a.details?.description && <p className="muted">{a.details.description}</p>}
+      {a.details?.description && <p className="muted">{displayValue(a.details.description)}</p>}
       <h3 style={{ marginTop: 16 }}>Evidence</h3>
       <EvidenceList details={a.details} />
-      <details style={{ marginTop: 14 }}><summary className="small">Raw events ({data.events.length})</summary>
+      <details style={{ marginTop: 14 }}><summary className="small">Raw events ({displayValue(data.events.length)})</summary>
         <pre>{JSON.stringify(data.events.slice(0, 5).map((e: any) => ({ at: e.occurredAt, type: e.eventType, ...e.fields })), null, 2)}</pre>
       </details>
       {data.processContext.length > 0 && (
@@ -85,7 +86,7 @@ function AlertDrawer({ id, onClose }: { id: string; onClose: () => void }) {
             { key: "occurredAt", label: "Time", render: (e) => new Date(e.occurredAt).toLocaleTimeString() },
             { key: "eventType", label: "Event" },
             { key: "pid", label: "PID", render: (e) => e.fields.ProcessId ?? "" },
-            { key: "detail", label: "Detail", render: (e) => <span className="mono small">{e.fields.CommandLine || e.fields.TargetFilename || e.fields.DestinationIp || e.summary}</span> },
+            { key: "detail", label: "Detail", render: (e) => <span className="mono small">{displayValue(e.fields.CommandLine || e.fields.TargetFilename || e.fields.DestinationIp || e.summary)}</span> },
           ]} />
         </>
       )}

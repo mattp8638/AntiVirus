@@ -1,8 +1,9 @@
+import { displayValue } from "../../components/DisplayValue";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ago, api, downloadFile, fmtTime, uploadFile } from "../../api";
 import { useApp } from "../../app-context";
-import { Modal, PageHead, Pill, Stat, Table, TenantSelect, useAction, useData } from "../../components/ui";
+import { Modal, PageHead, Pill, Stat, Table, TenantSelect, useAction, useData, useListData } from "../../components/ui";
 
 // Compliance programmes per customer: pick frameworks, work through every requirement or question with an
 // answer, status, owner and due date, attach evidence, and see which policies cover it.
@@ -19,7 +20,7 @@ export function Progress({ value }: { value: number }) {
 
 export function ProgrammesTab() {
   const { tenantId, tenantName, can } = useApp();
-  const { data, reload } = useData<any[]>("grc/programmes", { tenant_id: tenantId });
+  const { data, reload } = useListData<any>("grc/programmes", { tenant_id: tenantId });
   const [adopt, setAdopt] = useState(false);
   const navigate = useNavigate();
   return (
@@ -33,12 +34,12 @@ export function ProgrammesTab() {
         {(data || []).map((p) => (
           <button key={p.tenantId + p.key} className="card domain-card" style={{ textAlign: "left", cursor: "pointer" }}
                   onClick={() => navigate(`/governance/${p.tenantId}/${p.key}`)}>
-            <div className="row" style={{ alignItems: "baseline" }}><b style={{ flex: 1, fontSize: 16 }}>{p.short}</b><b>{p.progress}%</b></div>
+            <div className="row" style={{ alignItems: "baseline" }}><b style={{ flex: 1, fontSize: 16 }}>{displayValue(p.short)}</b><b>{displayValue(p.progress)}%</b></div>
             <div className="small muted" style={{ marginBottom: 8 }}>{tenantName(p.tenantId)}{p.targetDate ? ` · target ${fmtTime(p.targetDate).split(",")[0]}` : ""}</div>
             <Progress value={p.progress} />
             <div className="row small" style={{ marginTop: 8, flexWrap: "wrap" }}>
-              <span>{p.counts.implemented} done</span><span className="muted">{p.counts.in_progress} in progress</span>
-              <span className="muted">{p.counts.not_started} to do</span>{p.counts.not_applicable > 0 && <span className="muted">{p.counts.not_applicable} N/A</span>}
+              <span>{displayValue(p.counts.implemented)} done</span><span className="muted">{displayValue(p.counts.in_progress)} in progress</span>
+              <span className="muted">{displayValue(p.counts.not_started)} to do</span>{p.counts.not_applicable > 0 && <span className="muted">{displayValue(p.counts.not_applicable)} N/A</span>}
               {p.signals.overdue > 0 && <Pill value={`${p.signals.overdue} overdue`} tone="bad" />}
             </div>
           </button>
@@ -77,9 +78,9 @@ function AdoptModal({ onClose }: { onClose: () => void }) {
       <div className="grid k2" style={{ margin: "10px 0" }}>
         {(library?.frameworks || []).map((f: any) => (
           <button key={f.key} className={`card domain-card ${key === f.key ? "active" : ""}`} style={{ textAlign: "left", cursor: "pointer" }} onClick={() => setKey(f.key)}>
-            <b>{f.name}</b> {f.source !== "built-in" && <Pill value={f.source} tone="blue" />}
-            <div className="small muted" style={{ margin: "4px 0" }}>{f.requirements} {f.questionSet ? "questions" : "requirements"} · {f.policies} matching policies{f.version ? ` · ${f.version}` : ""}</div>
-            <div className="small">{f.description}</div>
+            <b>{displayValue(f.name)}</b> {f.source !== "built-in" && <Pill value={f.source} tone="blue" />}
+            <div className="small muted" style={{ margin: "4px 0" }}>{displayValue(f.requirements)} {f.questionSet ? "questions" : "requirements"} · {displayValue(f.policies)} matching policies{f.version ? ` · ${f.version}` : ""}</div>
+            <div className="small">{displayValue(f.description)}</div>
           </button>
         ))}
       </div>
@@ -88,7 +89,7 @@ function AdoptModal({ onClose }: { onClose: () => void }) {
         <label className="field">Who staff report incidents to<input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="e.g. it@customer.co.uk or 01234 567890" /></label>
         <label className="field">Target date (optional)<input type="date" value={target} onChange={(e) => setTarget(e.target.value)} /></label>
         <label className="field row" style={{ alignItems: "center", gap: 8 }}><input type="checkbox" checked={createPolicies} onChange={(e) => setCreatePolicies(e.target.checked)} />
-          Create the {chosen?.policies} matching policies as drafts</label>
+          Create the {displayValue(chosen?.policies)} matching policies as drafts</label>
       </div>}
     </Modal>
   );
@@ -130,7 +131,7 @@ export function ProgrammeDetail() {
         <Stat label="In progress" value={data.counts.in_progress} hint={`${data.counts.not_started} not started`} />
         <Stat label="With evidence" value={data.signals.withEvidence} hint={`${data.signals.withApprovedPolicy} covered by an approved policy${data.signals.overdue ? ` · ${data.signals.overdue} overdue` : ""}`} />
       </div>
-      {data.description && <p className="small muted">{data.description}</p>}
+      {data.description && <p className="small muted">{displayValue(data.description)}</p>}
       <div className="row" style={{ marginBottom: 10 }}>
         <input placeholder="Search requirements and answers" value={q} onChange={(e) => setQ(e.target.value)} style={{ minWidth: 260 }} />
         <select value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Filter">
@@ -144,14 +145,14 @@ export function ProgrammeDetail() {
         const done = section.requirements.filter((r: any) => ["implemented", "not_applicable"].includes(r.status)).length;
         return (
           <details key={section.id} className="card" open style={{ marginBottom: 10 }}>
-            <summary className="row" style={{ cursor: "pointer" }}><b style={{ flex: 1 }}>{section.title}</b><span className="small muted">{done}/{section.requirements.length}</span></summary>
+            <summary className="row" style={{ cursor: "pointer" }}><b style={{ flex: 1 }}>{displayValue(section.title)}</b><span className="small muted">{displayValue(done)}/{displayValue(section.requirements.length)}</span></summary>
             {rows.map((r: any) => (
               <div key={r.id} className="req-row" onClick={() => setOpen(r)}>
-                <span className="mono small" style={{ minWidth: 64 }}>{r.id}</span>
-                <span style={{ flex: 1 }}>{r.title}{data.questionSet && r.answer && <div className="small muted ellipsis">{r.answer}</div>}</span>
+                <span className="mono small" style={{ minWidth: 64 }}>{displayValue(r.id)}</span>
+                <span style={{ flex: 1 }}>{displayValue(r.title)}{data.questionSet && r.answer && <div className="small muted ellipsis">{displayValue(r.answer)}</div>}</span>
                 <span className="req-signals">
-                  {r.policies.length > 0 && <span className={r.policies.every((p: any) => p.status === "approved") ? "ok" : ""} title="Policies">📄 {r.policies.filter((p: any) => p.status === "approved").length}/{r.policies.length}</span>}
-                  {r.evidence.length > 0 && <span className={r.evidence.some((e: any) => !e.expired) ? "ok" : "bad"} title="Evidence">📎 {r.evidence.length}</span>}
+                  {r.policies.length > 0 && <span className={r.policies.every((p: any) => p.status === "approved") ? "ok" : ""} title="Policies">📄 {displayValue(r.policies.filter((p: any) => p.status === "approved").length)}/{displayValue(r.policies.length)}</span>}
+                  {r.evidence.length > 0 && <span className={r.evidence.some((e: any) => !e.expired) ? "ok" : "bad"} title="Evidence">📎 {displayValue(r.evidence.length)}</span>}
                   {r.checks.length > 0 && <span className={r.checks.every((c: any) => c.passed) ? "ok" : "bad"} title="Fenrir's automatic check">⚙ {r.checks.every((c: any) => c.passed) ? "pass" : "fail"}</span>}
                 </span>
                 <Pill value={SHOWN_LABEL[r.status]} tone={STATUS_TONE[r.status]} />
@@ -188,10 +189,10 @@ function RequirementDrawer({ tenantId, framework, requirement: r, onClose, onCha
       {r.needsReview && <div className="card" style={{ borderColor: "var(--bad)", marginBottom: 10 }}>
         <b>The wording of this requirement changed after it was answered.</b> It no longer counts as done until someone checks the
         answer still holds and saves it again.
-        {r.previousWording && <details><summary className="small">Wording that was answered</summary><p className="small" style={{ whiteSpace: "pre-wrap" }}>{r.previousWording}</p></details>}
+        {r.previousWording && <details><summary className="small">Wording that was answered</summary><p className="small" style={{ whiteSpace: "pre-wrap" }}>{displayValue(r.previousWording)}</p></details>}
       </div>}
-      <p style={{ marginTop: 0 }}>{r.text}</p>
-      {r.guidance && <p className="small muted">{r.guidance}</p>}
+      <p style={{ marginTop: 0 }}>{displayValue(r.text)}</p>
+      {r.guidance && <p className="small muted">{displayValue(r.guidance)}</p>}
       <div className="grid k2">
         <div>
           {r.type === "yesno" && <div className="field">Answer<div className="row">{["Yes", "No"].map((v) => <button key={v} className={form.answer === v ? "primary" : ""} disabled={!editable}
@@ -207,17 +208,17 @@ function RequirementDrawer({ tenantId, framework, requirement: r, onClose, onCha
             <label className="field">Due<input type="date" value={form.dueDate} disabled={!editable} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} /></label>
           </div>
           {!(r.type === "yesno" && ["Yes", "No"].includes(form.answer)) && <label className="field">Notes<textarea rows={3} value={form.notes} disabled={!editable} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></label>}
-          {r.updatedAt && <p className="small muted">Last updated {ago(r.updatedAt)} by {r.updatedBy}</p>}
+          {r.updatedAt && <p className="small muted">Last updated {ago(r.updatedAt)} by {displayValue(r.updatedBy)}</p>}
         </div>
         <div>
           <h4 style={{ marginTop: 0 }}>Policies</h4>
-          {r.policies.map((p: any) => <div key={p.id} className="row small"><Link to={`/governance/policies/${p.id}`} style={{ flex: 1 }}>{p.title}</Link><Pill value={p.status.replace("_", " ")} tone={POLICY_TONE[p.status]} /></div>)}
-          {r.suggestedPolicies.map((t: any) => <div key={t.key} className="row small"><span style={{ flex: 1 }} className="muted">{t.title}</span>{editable && <button className="small" onClick={() => adoptPolicy(t.key)}>Add policy</button>}</div>)}
+          {r.policies.map((p: any) => <div key={p.id} className="row small"><Link to={`/governance/policies/${p.id}`} style={{ flex: 1 }}>{displayValue(p.title)}</Link><Pill value={p.status.replace("_", " ")} tone={POLICY_TONE[p.status]} /></div>)}
+          {r.suggestedPolicies.map((t: any) => <div key={t.key} className="row small"><span style={{ flex: 1 }} className="muted">{displayValue(t.title)}</span>{editable && <button className="small" onClick={() => adoptPolicy(t.key)}>Add policy</button>}</div>)}
           {!r.policies.length && !r.suggestedPolicies.length && <p className="small muted">No policy is mapped to this requirement.</p>}
           {r.checks.length > 0 && <>
             <h4>Checked automatically by Fenrir</h4>
-            {r.checks.map((c: any) => <div key={c.ref} className="small" style={{ marginBottom: 6 }}><Pill value={c.passed ? "pass" : "fail"} tone={c.passed ? "good" : "bad"} /> <b>{c.title}</b>
-              <div className="muted">{c.evidence.join(" · ")}</div></div>)}
+            {r.checks.map((c: any) => <div key={c.ref} className="small" style={{ marginBottom: 6 }}><Pill value={c.passed ? "pass" : "fail"} tone={c.passed ? "good" : "bad"} /> <b>{displayValue(c.title)}</b>
+              <div className="muted">{displayValue(c.evidence.join(" · "))}</div></div>)}
           </>}
           <h4>Evidence</h4>
           {r.evidence.map((e: any) => <EvidenceLine key={e.id} evidence={e} />)}
@@ -234,8 +235,8 @@ export function EvidenceLine({ evidence: e }: { evidence: any }) {
   const { run } = useAction();
   return (
     <div className="row small" style={{ marginBottom: 4 }}>
-      <span style={{ flex: 1 }}>{e.kind === "file" ? "📎" : e.kind === "link" ? "🔗" : "📝"} {e.kind === "link" ? <a href={e.url} target="_blank" rel="noreferrer">{e.title}</a>
-        : e.kind === "file" ? <button className="link" onClick={() => run(() => downloadFile(`grc/evidence/${e.id}/download`, e.filename))}>{e.title}</button> : e.title}</span>
+      <span style={{ flex: 1 }}>{e.kind === "file" ? "📎" : e.kind === "link" ? "🔗" : "📝"} {e.kind === "link" ? <a href={e.url} target="_blank" rel="noreferrer">{displayValue(e.title)}</a>
+        : e.kind === "file" ? <button className="link" onClick={() => run(() => downloadFile(`grc/evidence/${e.id}/download`, e.filename))}>{displayValue(e.title)}</button> : e.title}</span>
       {e.expired ? <Pill value="expired" tone="bad" /> : e.validUntil && <span className="muted">valid to {fmtTime(e.validUntil).split(",")[0]}</span>}
     </div>
   );
@@ -303,12 +304,12 @@ function ImportModal({ tenantId, framework, onClose }: { tenantId: string; frame
       <label className="field"><input type="file" accept=".csv,.json,.yml,.yaml,.txt" onChange={async (e) => { const f = e.target.files?.[0]; if (f) { setContent(await f.text()); if (f.name.endsWith(".json")) setFormat("json"); else if (/\.ya?ml$/.test(f.name)) setFormat("yaml"); } }} /></label>
       {me?.user.role === "platform_admin" && <label className="field row" style={{ gap: 8 }}><input type="checkbox" checked={everyone} onChange={(e) => setEveryone(e.target.checked)} />Use for every customer</label>}
       {preview && <div className="card">
-        <b>{preview.requirements} requirements</b> · {preview.diff.added.length} new · {preview.diff.changed.length} reworded · {preview.diff.removed.length} removed · {preview.diff.unchanged} unchanged
-        {preview.affectedCustomers > 0 && <> · affects {preview.affectedCustomers} customer{preview.affectedCustomers === 1 ? "" : "s"}</>}
+        <b>{displayValue(preview.requirements)} requirements</b> · {displayValue(preview.diff.added.length)} new · {displayValue(preview.diff.changed.length)} reworded · {displayValue(preview.diff.removed.length)} removed · {displayValue(preview.diff.unchanged)} unchanged
+        {preview.affectedCustomers > 0 && <> · affects {displayValue(preview.affectedCustomers)} customer{preview.affectedCustomers === 1 ? "" : "s"}</>}
         <p className="small muted">Each affected assessment is saved to its history first. Reworded requirements that were done are marked for review; removed ones stay in the saved history.</p>
-        {preview.diff.changedDetail.map((c: any) => <details key={c.id}><summary className="small mono">{c.id} reworded</summary>
-          <div className="grid k2 small"><div><b>Before</b><p style={{ whiteSpace: "pre-wrap" }}>{c.before}</p></div><div><b>After</b><p style={{ whiteSpace: "pre-wrap" }}>{c.after}</p></div></div></details>)}
-        {preview.diff.removed.length > 0 && <p className="small">Removed: <span className="mono">{preview.diff.removed.join(", ")}</span></p>}
+        {preview.diff.changedDetail.map((c: any) => <details key={c.id}><summary className="small mono">{displayValue(c.id)} reworded</summary>
+          <div className="grid k2 small"><div><b>Before</b><p style={{ whiteSpace: "pre-wrap" }}>{displayValue(c.before)}</p></div><div><b>After</b><p style={{ whiteSpace: "pre-wrap" }}>{displayValue(c.after)}</p></div></div></details>)}
+        {preview.diff.removed.length > 0 && <p className="small">Removed: <span className="mono">{displayValue(preview.diff.removed.join(", "))}</span></p>}
       </div>}
     </Modal>
   );
@@ -316,7 +317,7 @@ function ImportModal({ tenantId, framework, onClose }: { tenantId: string; frame
 
 function HistoryModal({ tenantId, framework, onClose }: { tenantId: string; framework: any; onClose: () => void }) {
   const { can } = useApp();
-  const { data, reload } = useData<any[]>(`grc/programmes/${tenantId}/${framework.key}/snapshots`, {}, [tenantId, framework.key], true);
+  const { data, reload } = useListData<any>(`grc/programmes/${tenantId}/${framework.key}/snapshots`, {}, [tenantId, framework.key]);
   const [label, setLabel] = useState("");
   const { run, busy } = useAction();
   const save = async () => { if (await run(() => api(`grc/programmes/${tenantId}/${framework.key}/snapshots`, { body: { label } }), "Saved to history")) { setLabel(""); reload(); } };
@@ -327,7 +328,7 @@ function HistoryModal({ tenantId, framework, onClose }: { tenantId: string; fram
         <button disabled={busy || !label.trim()} onClick={save}>Save current assessment</button></div>}
       <Table rows={data ?? []} empty="Nothing saved yet" columns={[
         { key: "createdAt", label: "Saved", render: (s: any) => fmtTime(s.createdAt) },
-        { key: "label", label: "Label", render: (s: any) => <>{s.label}<div className="small muted">{s.reason} · {s.createdBy}</div></> },
+        { key: "label", label: "Label", render: (s: any) => <>{displayValue(s.label)}<div className="small muted">{displayValue(s.reason)} · {displayValue(s.createdBy)}</div></> },
         { key: "progress", label: "Complete", render: (s: any) => `${s.progress}%` },
         { key: "export", label: "", render: (s: any) => <button onClick={() => run(() => downloadFile(`grc/programmes/${tenantId}/${framework.key}/export?snapshot=${s.id}`, `${framework.key}-${s.id}.csv`))}>Export</button> },
       ]} />
@@ -337,7 +338,7 @@ function HistoryModal({ tenantId, framework, onClose }: { tenantId: string; fram
 
 export function EvidenceTab() {
   const { tenantId, tenantName, can } = useApp();
-  const { data, reload } = useData<any[]>("grc/evidence", { tenant_id: tenantId });
+  const { data, reload } = useListData<any>("grc/evidence", { tenant_id: tenantId });
   const { run } = useAction();
   const [adding, setAdding] = useState(false);
   const expired = useMemo(() => (data || []).filter((e) => e.expired).length, [data]);
@@ -351,7 +352,7 @@ export function EvidenceTab() {
              columns={[{ key: "title", label: "Evidence", render: (e) => <EvidenceLine evidence={e} /> },
                        { key: "tenantId", label: "Customer", render: (e) => tenantName(e.tenantId) },
                        { key: "links", label: "Supports", render: (e) => e.links.map((l: string) => <span key={l} className="chip mono">{l}</span>) },
-                       { key: "uploadedBy", label: "Added", render: (e) => <span className="small">{ago(e.createdAt)}<div className="muted">{e.uploadedBy}</div></span> },
+                       { key: "uploadedBy", label: "Added", render: (e) => <span className="small">{ago(e.createdAt)}<div className="muted">{displayValue(e.uploadedBy)}</div></span> },
                        { key: "actions", label: "", render: (e) => can("grc") && <button className="small danger" onClick={async () => { if (confirm(`Delete ${e.title}?`) && await run(() => api(`grc/evidence/${e.id}`, { method: "DELETE" }), "Deleted")) reload(); }}>Delete</button> }]} />
       {adding && <AddEvidence tenantId={tenantId} links={[]} onClose={() => { setAdding(false); reload(); }} />}
     </div>

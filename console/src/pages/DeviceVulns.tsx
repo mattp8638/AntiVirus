@@ -1,3 +1,4 @@
+import { displayValue } from "../components/DisplayValue";
 import { useMemo, useState } from "react";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
@@ -36,27 +37,27 @@ export function DeviceVulns({ device, vulnerabilities, risk, scans, onChanged }:
           </div>
           {(scans || []).filter((s) => s.status !== "complete").map((s) => (
             <div key={s.id} className="small" style={{ marginBottom: 8, color: s.status === "failed" ? "#fca5a5" : "#fcd34d" }}>
-              Last {SOURCE_LABEL[s.source] || s.source} scan was <b>{s.status}</b> ({s.packagesAssessed} of {s.packagesTotal} packages assessed, {fmtTime(s.startedAt)}).
+              Last {displayValue(SOURCE_LABEL[s.source] || s.source)} scan was <b>{displayValue(s.status)}</b> ({displayValue(s.packagesAssessed)} of {displayValue(s.packagesTotal)} packages assessed, {fmtTime(s.startedAt)}).
               Findings outside what was assessed are kept as they were, not marked fixed.{s.errors?.length ? ` ${s.errors[0]}` : ""}
             </div>))}
           <Table rows={rows} onRow={(v) => setExpanded(expanded === v.id ? null : v.id)} empty={show === "open" ? "No open vulnerabilities on this device." : "Nothing here."}
                  columns={[{ key: "riskScore", label: "Risk", render: (v) => <RiskBadge score={v.riskScore} /> },
-                           { key: "vulnId", label: "Vulnerability", render: (v) => <><b className="mono">{v.vulnId}</b> {v.knownExploited && <Pill value="exploited in the wild" tone="bad" />} <EpssPill epss={v.epss} />
-                             <div className="small muted">{(v.intel?.description || v.summary || "").slice(0, 130)}</div></> },
-                           { key: "severity", label: "Severity", render: (v) => <><Sev level={v.severity} />{v.cvss !== null && v.cvss !== undefined && <div className="small muted">CVSS {v.cvss}</div>}</> },
-                           { key: "package", label: "Affected", render: (v) => <><span className="small">{v.package} <span className="muted">{v.source === "windows-update" ? "" : v.installedVersion}</span></span><div className="small muted">{SOURCE_LABEL[v.source] || v.source}</div></> },
-                           { key: "fix", label: "Fix", render: (v) => <span className="small"><b>{v.fix?.ref || v.fixedVersion || "—"}</b></span> },
+                           { key: "vulnId", label: "Vulnerability", render: (v) => <><b className="mono">{displayValue(v.vulnId)}</b> {v.knownExploited && <Pill value="exploited in the wild" tone="bad" />} <EpssPill epss={v.epss} />
+                             <div className="small muted">{displayValue((v.intel?.description || v.summary || "").slice(0, 130))}</div></> },
+                           { key: "severity", label: "Severity", render: (v) => <><Sev level={v.severity} />{v.cvss !== null && v.cvss !== undefined && <div className="small muted">CVSS {displayValue(v.cvss)}</div>}</> },
+                           { key: "package", label: "Affected", render: (v) => <><span className="small">{displayValue(v.package)} <span className="muted">{displayValue(v.source === "windows-update" ? "" : v.installedVersion)}</span></span><div className="small muted">{displayValue(SOURCE_LABEL[v.source] || v.source)}</div></> },
+                           { key: "fix", label: "Fix", render: (v) => <span className="small"><b>{displayValue(v.fix?.ref || v.fixedVersion || "—")}</b></span> },
                            { key: "status", label: "Status", render: (v) => <Pill value={v.status} /> }]} />
           {expanded !== null && (() => { const v = rows.find((x) => x.id === expanded); return v && (
             <div className="card evidence-card">
-              <div className="row"><RiskBadge score={v.riskScore} /><b className="mono" style={{ flex: 1 }}>{v.vulnId}</b><button className="ghost small" onClick={() => setExpanded(null)}>Close</button></div>
-              {v.reasons?.length > 0 && <p className="small muted">Risk {v.riskScore}/10: {v.reasons.join(" · ")}{device.criticality && device.criticality !== "medium" ? ` · ${device.criticality}-criticality device` : ""}</p>}
+              <div className="row"><RiskBadge score={v.riskScore} /><b className="mono" style={{ flex: 1 }}>{displayValue(v.vulnId)}</b><button className="ghost small" onClick={() => setExpanded(null)}>Close</button></div>
+              {v.reasons?.length > 0 && <p className="small muted">Risk {displayValue(v.riskScore)}/10: {displayValue(v.reasons.join(" · "))}{device.criticality && device.criticality !== "medium" ? ` · ${device.criticality}-criticality device` : ""}</p>}
               <div className="grid k2">
                 <div><div className="evidence-title">Why this device is affected</div><VulnEvidence evidence={v.evidence} installed={v.installedVersion} /></div>
                 <div><div className="evidence-title">Fix</div><FixBlock fix={v.fix} deviceId={device.id} status={v.status} onQueued={onChanged} />
-                  <div className="small muted" style={{ marginTop: 8 }}>{v.recommendation}</div></div>
+                  <div className="small muted" style={{ marginTop: 8 }}>{displayValue(v.recommendation)}</div></div>
               </div>
-              <div className="evidence-title" style={{ marginTop: 12 }}>About {v.vulnId}</div>
+              <div className="evidence-title" style={{ marginTop: 12 }}>About {displayValue(v.vulnId)}</div>
               <IntelCard intel={v.intel} cve={v.vulnId} />
             </div>); })()}
         </div>
@@ -67,7 +68,7 @@ export function DeviceVulns({ device, vulnerabilities, risk, scans, onChanged }:
           <h3>Fixes that clear the most</h3>
           {byFix.slice(0, 8).map((g) => (
             <div key={g.fix.ref} style={{ marginBottom: 10 }}>
-              <div className="row small"><RiskBadge score={g.top} /><b style={{ flex: 1 }}>{g.fix.kind === "kb" ? g.fix.ref : g.fix.title || g.fix.ref}</b><span className="muted">{g.count} CVE{g.count === 1 ? "" : "s"}</span></div>
+              <div className="row small"><RiskBadge score={g.top} /><b style={{ flex: 1 }}>{displayValue(g.fix.kind === "kb" ? g.fix.ref : g.fix.title || g.fix.ref)}</b><span className="muted">{g.count} CVE{g.count === 1 ? "" : "s"}</span></div>
               {g.fix.patchKey && <div style={{ paddingLeft: 42 }}><FixBlock fix={g.fix} deviceId={device.id} onQueued={onChanged} /></div>}
             </div>
           ))}

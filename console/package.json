@@ -8,7 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test:shapes": "node --experimental-strip-types --test tests/data-shapes.test.mjs",
-    "test:remote": "node --experimental-strip-types --test tests/remote-actions.test.mjs"
+    "test:remote": "node --experimental-strip-types --test tests/remote-actions.test.mjs",
+    "test:pages": "vitest run"
   },
   "dependencies": {
     "@xterm/addon-fit": "0.10.0",
@@ -20,12 +21,15 @@
     "react-router-dom": "6.30.6"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.0",
     "@types/leaflet": "1.9.12",
     "@types/qrcode": "1.5.5",
     "@types/react": "18.3.11",
     "@types/react-dom": "18.3.0",
     "@vitejs/plugin-react": "4.3.2",
+    "jsdom": "^26.1.0",
     "typescript": "5.6.3",
-    "vite": "5.4.8"
+    "vite": "5.4.8",
+    "vitest": "^2.1.9"
   }
 }

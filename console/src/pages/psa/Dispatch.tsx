@@ -1,7 +1,8 @@
+import { displayValue } from "../../components/DisplayValue";
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../../api";
-import { PageHead, Pill, useAction, useData } from "../../components/ui";
+import { PageHead, Pill, useAction, useData, useListData } from "../../components/ui";
 import { PRIORITY_TONE } from "./ServiceBoard";
 
 const START_HOUR = 7;
@@ -14,8 +15,8 @@ export default function Dispatch() {
   const [day, setDay] = useState(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; });
   const dayEnd = useMemo(() => new Date(day.getTime() + 86400000), [day]);
   const { data: meta } = useData<any>("psa/meta");
-  const { data: entries, reload } = useData<any[]>("psa/schedule", { start: day.toISOString(), end: dayEnd.toISOString() });
-  const { data: queue, reload: reloadQueue } = useData<any[]>("tickets", { status: "active", assignee: "unassigned" });
+  const { data: entries, reload } = useListData<any>("psa/schedule", { start: day.toISOString(), end: dayEnd.toISOString() });
+  const { data: queue, reload: reloadQueue } = useListData<any>("tickets", { status: "active", assignee: "unassigned" });
   const { run } = useAction();
   const slots = useMemo(() => Array.from({ length: ((END_HOUR - START_HOUR) * 60) / SLOT_MINUTES }, (_, i) => START_HOUR * 60 + i * SLOT_MINUTES), []);
   const members: any[] = meta?.members || [];
@@ -55,8 +56,8 @@ export default function Dispatch() {
           <h3>Unassigned ({queue?.length ?? 0})</h3>
           {(queue || []).map((t) => (
             <div key={t.id} className="lead" draggable onDragStart={(e) => e.dataTransfer.setData("text/plain", `ticket:${t.id}`)} style={{ cursor: "grab" }}>
-              <div className="row"><Pill value={t.priority} tone={PRIORITY_TONE[t.priority]} /><span className="small muted">#{t.number}</span></div>
-              <div className="small"><b>{t.subject}</b></div><div className="small muted">{t.account}</div>
+              <div className="row"><Pill value={t.priority} tone={PRIORITY_TONE[t.priority]} /><span className="small muted">#{displayValue(t.number)}</span></div>
+              <div className="small"><b>{displayValue(t.subject)}</b></div><div className="small muted">{displayValue(t.account)}</div>
             </div>
           ))}
           {!queue?.length && <p className="muted small">Nothing waiting.</p>}
@@ -71,7 +72,7 @@ export default function Dispatch() {
             </div>
             {members.map((member) => (
               <div key={member.email} style={{ display: "contents" }}>
-                <div style={{ padding: "10px 8px", borderTop: "1px solid var(--line)" }}><b className="small">{member.name}</b><div className="small muted">{member.role.replace(/_/g, " ")}</div></div>
+                <div style={{ padding: "10px 8px", borderTop: "1px solid var(--line)" }}><b className="small">{displayValue(member.name)}</b><div className="small muted">{displayValue(member.role.replace(/_/g, " "))}</div></div>
                 <div style={{ position: "relative", height: 54, borderTop: "1px solid var(--line)" }}>
                   {slots.map((minute, i) => (
                     <div key={minute} title={`${Math.floor(minute / 60)}:${String(minute % 60).padStart(2, "0")}`}
@@ -85,7 +86,7 @@ export default function Dispatch() {
                          title={e.title}
                          style={{ position: "absolute", top: 6, bottom: 6, ...position(e), background: e.kind === "Onsite" ? "rgba(168,85,247,.35)" : e.kind === "Meeting" ? "rgba(100,116,139,.4)" : "rgba(59,130,246,.35)",
                                   border: "1px solid rgba(255,255,255,.15)", borderRadius: 6, padding: "2px 6px", overflow: "hidden", cursor: "pointer", fontSize: 12 }}>
-                      <b>{e.ticketNumber ? `#${e.ticketNumber}` : e.kind}</b> {e.title.replace(/^#\d+ /, "")}
+                      <b>{displayValue(e.ticketNumber ? `#${e.ticketNumber}` : e.kind)}</b> {displayValue(e.title.replace(/^#\d+ /, ""))}
                     </div>
                   ))}
                 </div>

@@ -1,3 +1,4 @@
+import { displayValue } from "./DisplayValue";
 import { useState } from "react";
 import { useApp } from "../app-context";
 import { safeArray } from "../data-shapes";
@@ -23,7 +24,7 @@ export function RecordEditor({ title, fields, tenant = true, onSave, onClose }: 
     <ErrorNote error={configError || docError || ruleError || deviceError}/><form onSubmit={async e => { e.preventDefault(); if (await run(() => onSave(form), "Saved")) onClose(); }}>
       {tenant && <label className="field">Customer<TenantSelect value={form.tenantId} onChange={id => setForm({ ...form, tenantId: id, ...Object.fromEntries(fields.filter(f=>f.source).map(f=>[f.key,""])) })} /></label>}
       {fields.map(f => <label className="field" key={f.key}>{f.label}
-        {f.type === "select" ? <select required={f.required} value={form[f.key]} onChange={e => setForm({ ...form, [f.key]: e.target.value })}><option value="">Choose…</option>{choices(f).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
+        {f.type === "select" ? <select required={f.required} value={form[f.key]} onChange={e => setForm({ ...form, [f.key]: e.target.value })}><option value="">Choose…</option>{choices(f).map(o => <option key={o.value} value={o.value}>{displayValue(o.label)}</option>)}</select>
           : f.type === "textarea" ? <textarea required={f.required} rows={4} value={form[f.key]} onChange={e => setForm({ ...form, [f.key]: e.target.value })} />
           : <input required={f.required} type={f.type || "text"} autoComplete={f.type === "password" ? "new-password" : undefined} value={form[f.key]} onChange={e => setForm({ ...form, [f.key]: f.type === "number" ? Number(e.target.value) : e.target.value })} />}
       </label>)}
