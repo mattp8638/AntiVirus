@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -549,6 +550,7 @@ func maxInt(a, b int) int {
 func (a *Agent) RunCommands() {
 	a.cmdMu.Lock()
 	defer a.cmdMu.Unlock()
+	a.replayCancellationReceipts()
 	cmds, err := a.client.PendingCommands(20)
 	if err != nil {
 		log.Printf("command poll failed: %v", err)
@@ -563,6 +565,9 @@ func (a *Agent) RunCommands() {
 			continue
 		}
 		if found {
+			if receipt.Status == "cancelled_ack" {
+				continue
+			}
 			if receipt.Status == "started" {
 				receipt = commandReceipt{Status: "failed", Result: map[string]interface{}{
 					"error":            "Agent restarted while the command outcome was uncertain. No automatic replay was attempted.",
@@ -584,10 +589,11 @@ func (a *Agent) RunCommands() {
 			log.Printf("cannot journal command %s; execution blocked: %v", cmd.ID, err)
 			continue
 		}
-		result, err := a.Execute(cmd)
-		status := "completed"
+		result, status, err := a.executeControlled(cmd)
 		if err != nil {
-			status = "failed"
+			if status != "cancelled" {
+				status = "failed"
+			}
 			if result == nil {
 				result = map[string]interface{}{}
 			}
@@ -599,6 +605,8 @@ func (a *Agent) RunCommands() {
 		}
 		if err := a.client.CompleteCommand(cmd.ID, status, result); err != nil {
 			log.Printf("could not report command %s; saved result will be replayed: %v", cmd.ID, err)
+		} else if status == "cancelled" {
+			_ = a.saveCommandReceipt(cmd.ID, "cancelled_ack", result)
 		}
 		a.emit("command."+status, "command-executor", cmd.Type, map[string]interface{}{"commandId": cmd.ID, "type": cmd.Type})
 	}
@@ -606,6 +614,13 @@ func (a *Agent) RunCommands() {
 }
 
 func (a *Agent) Execute(cmd Command) (map[string]interface{}, error) {
+	return a.ExecuteContext(context.Background(), cmd)
+}
+
+func (a *Agent) ExecuteContext(ctx context.Context, cmd Command) (map[string]interface{}, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	switch cmd.Type {
 	case "device.isolate":
 		if !a.state.Policy.NetworkContainment {
@@ -663,8 +678,8 @@ func (a *Agent) Execute(cmd Command) (map[string]interface{}, error) {
 		if cmd.TargetPath == "" && cmd.Type == "scan.targeted" {
 			return nil, errors.New("targetPath is required")
 		}
-		scanned, findings := a.runScan(roots, a.state.Policy.SuppressionPathRoots, a.state.Policy.QuarantineOnMalicious, false)
-		return map[string]interface{}{"scanned": scanned, "findings": findings}, nil
+		scanned, findings := a.runScanContext(ctx, roots, a.state.Policy.SuppressionPathRoots, a.state.Policy.QuarantineOnMalicious, false)
+		return map[string]interface{}{"scanned": scanned, "findings": findings}, ctx.Err()
 	case "remediate.path":
 		sha, err := HashFile(cmd.TargetPath, 0)
 		if err != nil {
@@ -709,19 +724,19 @@ func (a *Agent) Execute(cmd Command) (map[string]interface{}, error) {
 		if !a.state.Policy.ModuleBool("response", "scriptExecution", true) {
 			return nil, errors.New("script execution is turned off by policy")
 		}
-		return RunScript(a.cfg.StateDir, cmd.PayloadJSON)
+		return RunScriptContext(ctx, a.cfg.StateDir, cmd.PayloadJSON)
 	case "patch.scan":
-		return PatchScan()
+		return PatchScanContext(ctx)
 	case "patch.install":
-		return PatchInstall(cmd.PayloadJSON)
+		return PatchInstallContext(ctx, cmd.PayloadJSON)
 	case "software.install":
-		return SoftwareInstall(cmd.PayloadJSON, false)
+		return SoftwareInstallContext(ctx, cmd.PayloadJSON, false)
 	case "software.uninstall":
-		return SoftwareInstall(cmd.PayloadJSON, true)
+		return SoftwareInstallContext(ctx, cmd.PayloadJSON, true)
 	case "service.control":
-		return ServiceControl(cmd.TargetPath, cmd.PayloadJSON)
+		return ServiceControlContext(ctx, cmd.TargetPath, cmd.PayloadJSON)
 	case "device.reboot", "device.shutdown":
-		return PowerAction(cmd.Type == "device.reboot", cmd.PayloadJSON)
+		return PowerActionContext(ctx, cmd.Type == "device.reboot", cmd.PayloadJSON)
 	case "remote.session.start":
 		var opts remote.Options
 		if err := json.Unmarshal([]byte(cmd.PayloadJSON), &opts); err != nil {

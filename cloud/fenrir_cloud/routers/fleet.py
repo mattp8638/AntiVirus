@@ -8,7 +8,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
-from .. import approvals, audit, detection, policy_schema, rmm, services
+from .. import approvals, audit, command_control, detection, policy_schema, remote, rmm, services
 from ..commands import BY_TYPE, catalog_document
 from ..config import get_settings
 from ..db import get_db
@@ -141,6 +141,7 @@ def device_detail(device_id: str, principal: Principal = Depends(current_princip
         "dnsOverHttpsUrl": f"{base}/dns/{device.dns_token}/dns-query",
         "alerts": [to_dict(a) for a in alerts],
         "commands": [to_dict(c) for c in commands],
+        "stoppingCommands": db.scalar(select(func.count()).where(Command.device_id == device.id, Command.status == "cancelling")) or 0,
         "software": [to_dict(s) for s in software],
         "vulnerabilities": _vuln_views(db, device, vulns),
         "risk": detection.risk_breakdown(db, device),
@@ -182,26 +183,17 @@ def update_device(device_id: str, body: dict = Body(...), principal: Principal =
 def retire_device(device_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("configure")
     device = _get_device(db, principal, device_id)
+    device = db.execute(select(Device).where(Device.id == device.id).with_for_update()
+                        .execution_options(populate_existing=True)).scalar_one()
     if device.api_key_hash == f"retired-{device.id}":
         return {"ok": True}
-    in_flight = db.execute(select(Command).where(
-        Command.device_id == device.id, Command.status == "dispatched")).first()
-    if in_flight:
-        raise HTTPException(409, "This device has in-flight work. Reconcile command outcomes before retirement.")
-    active_support = db.execute(select(RemoteSession).where(
+    active_support = list(db.scalars(select(RemoteSession).where(
         RemoteSession.device_id == device.id,
-        RemoteSession.status.in_(("waiting", "connected")))).first()
-    if active_support:
-        raise HTTPException(409, "End active remote support sessions before retiring this device.")
-    affected_jobs: set[str] = set()
-    for command in db.execute(select(Command).where(
-            Command.device_id == device.id, Command.status == "pending")).scalars():
-        command.status, command.updated_at = "cancelled", utcnow()
-        job_id = (command.payload or {}).get("jobId")
-        if job_id:
-            affected_jobs.add(job_id)
-    for job_id in affected_jobs:
-        rmm.refresh_job(db, job_id)
+        RemoteSession.status.in_(("waiting", "connected")))))
+    for session in active_support:
+        remote.end_session(db, session, principal.actor, "device decommissioned")
+    db.flush()
+    cancellation = command_control.cancel_commands(db, principal.actor, device=device, retiring=True)
     # Preserve historical ownership; never leave retired endpoints active in CMDB.
     for asset in db.execute(select(Configuration).where(
             Configuration.device_id == device.id)).scalars():
@@ -209,9 +201,11 @@ def retire_device(device_id: str, principal: Principal = Depends(current_princip
         asset.updated_at = utcnow()
     device.approved = False
     device.api_key_hash = f"retired-{device.id}"
-    audit.record(db, principal.actor, "device.retired", device.hostname, device.tenant_id)
+    audit.record(db, principal.actor, "device.retired", device.hostname, device.tenant_id, **cancellation)
     db.commit()
-    return {"ok": True}
+    for session in active_support:
+        remote.notify_session_end(session.id, principal.actor)
+    return {"ok": True, **cancellation, "sessionsEnded": len(active_support)}
 
 
 @router.post("/devices/{device_id}/purge")
@@ -424,14 +418,21 @@ def bulk_command(body: dict = Body(...), principal: Principal = Depends(current_
 @router.post("/commands/{command_id}/cancel")
 def cancel_command(command_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("respond")
-    command = db.get(Command, command_id)
+    command = db.execute(select(Command).where(Command.id == command_id).with_for_update()
+                         .execution_options(populate_existing=True)).scalar_one_or_none()
     if command is None:
         raise HTTPException(404, "Not found")
     principal.check_tenant(command.tenant_id)
-    if command.status != "pending":
+    if command.status not in (*command_control.ACTIVE, "cancelled"):
         raise HTTPException(409, f"Command is already {command.status}")
-    command.status, command.updated_at = "cancelled", utcnow()
-    audit.record(db, principal.actor, "command.cancelled", command.id, command.tenant_id)
+    command_control.request_cancel(db, command, principal.actor)
+    db.flush()
+    payload = command.payload if isinstance(command.payload, dict) else {}
+    if payload.get("jobId"):
+        from ..models import Job
+        job = db.get(Job, payload["jobId"])
+        if job is not None and job.tenant_id == command.tenant_id:
+            rmm.refresh_job(db, job.id)
     db.commit()
     return to_dict(command)
 

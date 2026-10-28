@@ -142,6 +142,24 @@ def end_session(db: Session, session: RemoteSession, by: str, reason: str = "end
                  minutes=round(((now - (session.connected_at or now)).total_seconds()) / 60, 1))
 
 
+def notify_session_end(session_id: str, actor: str) -> None:
+    """Close live peers after the database transaction ending a session commits."""
+    room = hub.rooms.get(session_id)
+    if room is None or hub.loop is None:
+        return
+    message = json.dumps({"ch": "sys", "t": "end", "by": actor})
+    async def close_peer(peer):
+        try:
+            await asyncio.wait_for(peer.send(message), timeout=3)
+        finally:
+            try:
+                await asyncio.wait_for(peer.websocket.close(code=1000, reason="Session ended"), timeout=3)
+            except Exception:
+                pass
+    for peer in ([room.agent] if room.agent else []) + list(room.viewers):
+        asyncio.run_coroutine_threadsafe(close_peer(peer), hub.loop)
+
+
 def on_command_complete(db: Session, device: Device, command: Command) -> None:
     session_id = (command.payload or {}).get("sessionId")
     session = db.get(RemoteSession, session_id) if session_id else None

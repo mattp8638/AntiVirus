@@ -939,6 +939,17 @@ bool RuntimeDatabase::LoadCommandJournal(const std::wstring& commandId, std::wst
   return true;
 }
 
+std::vector<std::pair<std::wstring, std::wstring>> RuntimeDatabase::UnacknowledgedCancellations() const {
+  const auto db = OpenConnection(databasePath_);
+  auto statement = Prepare(db.get(), "SELECT command_id, result_json FROM command_journal WHERE status='cancelled' ORDER BY updated_at DESC LIMIT 100;");
+  std::vector<std::pair<std::wstring, std::wstring>> rows;
+  int step;
+  while ((step = sqlite3_step(statement.get())) == SQLITE_ROW)
+    rows.emplace_back(ColumnText(statement.get(), 0), ColumnText(statement.get(), 1));
+  if (step != SQLITE_DONE) ThrowSqliteError(db.get(), "loading cancellation receipts failed");
+  return rows;
+}
+
 void RuntimeDatabase::UpdateCommandJournalStatus(const std::wstring& commandId, const std::wstring& status,
                                                  const std::wstring& resultJson, const std::wstring& lastError) const {
   const auto db = OpenConnection(databasePath_);

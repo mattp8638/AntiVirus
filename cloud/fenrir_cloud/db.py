@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 29
+LATEST_MIGRATION = 30
 
 def init_engine(url: str) -> Engine:
     global _engine, _session_factory
@@ -283,6 +283,10 @@ def migrate(bind: Engine) -> list[int]:
                 conn.execute(text("UPDATE devices SET agent_build = '' WHERE agent_build IS NULL"))
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (29)"))
                 applied.append(29)
+            if 30 not in versions:
+                ensure_columns(Base, conn)  # nullable command cancellation fields; no history is changed
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (30)"))
+                applied.append(30)
             conn.commit()
         except Exception:
             conn.rollback()

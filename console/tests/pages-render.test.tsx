@@ -208,3 +208,32 @@ test("UK governance catalogue shows scope and adopts a working DORA programme", 
   expect(screen.getByText("Entity and supplier applicability", { exact: true })).toBeTruthy();
   expect(screen.getByRole("button", { name: "Export answers (CSV)" })).toBeTruthy();
 }, 30000);
+
+test("a dispatched job can be stopped and removed while awaiting its endpoint", async () => {
+  const confirmation = vi.spyOn(window, "confirm").mockReturnValue(true);
+  render(<MemoryRouter initialEntries={[`/automation?job=${ids.cancellationJob}`]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Root /></MemoryRouter>);
+  await settled();
+  fireEvent.click(screen.getByRole("button", { name: "Stop job", exact: true }));
+  await settled();
+  expect(screen.getAllByText("Stopping").length).toBeGreaterThan(0);
+  expect(document.body.textContent).toContain("awaiting stop acknowledgement");
+  fireEvent.click(screen.getByRole("button", { name: "Remove job", exact: true }));
+  await settled();
+  assertView("Automation › remove dispatched job");
+  expect(screen.queryByRole("dialog", { name: "Cancellable UI job" })).toBeNull();
+  expect(document.body.textContent).not.toContain("Cancellable UI job");
+  confirmation.mockRestore();
+}, 20000);
+
+test("decommissioning succeeds while a command is awaiting its stop acknowledgement", async () => {
+  render(<MemoryRouter initialEntries={[`/devices/${ids.cancellationDevice}`]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Root /></MemoryRouter>);
+  await settled();
+  fireEvent.click(screen.getByRole("button", { name: "More ▾", exact: true }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Decommission device…", exact: true }));
+  fireEvent.change(screen.getByLabelText("Type CANCEL-SERVER to confirm"), { target: { value: "CANCEL-SERVER" } });
+  fireEvent.click(screen.getByRole("button", { name: "Decommission and retain history", exact: true }));
+  await settled();
+  assertView("Device › decommission with in-flight work");
+  expect(document.body.textContent).toContain("Decommissioned: agent access is revoked");
+  expect(document.body.textContent).toContain("awaiting a stop acknowledgement");
+}, 20000);

@@ -88,7 +88,7 @@ function TaskEditor({ task, onClose }: { task: any; onClose: () => void }) {
   const setAction = (i: number, patch: any) => setForm({ ...form, actions: form.actions.map((a: any, j: number) => (i === j ? { ...a, ...patch } : a)) });
   return (
     <Modal title={form.id ? form.name : "New scheduled task"} onClose={onClose}
-           footer={<>{form.id && <button className="danger" onClick={async () => { if (await run(() => api(`rmm/tasks/${form.id}`, { method: "DELETE" }), "Deleted")) onClose(); }}>Delete</button>}
+           footer={<>{form.id && <button className="danger" disabled={busy} onClick={async () => { if (confirm("Delete this schedule and stop its outstanding jobs?")) { if (await run(() => api(`rmm/tasks/${form.id}`, { method: "DELETE" }), "Schedule deleted; outstanding work cancelled or stopping")) onClose(); } }}>Delete</button>}
                    <button className="primary" disabled={busy || !form.name || !form.actions.length} onClick={save}>Save</button></>}>
       <div className="form-grid">
         <label className="field">Name<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>

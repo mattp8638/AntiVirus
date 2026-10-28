@@ -182,7 +182,7 @@ class Command(Base):
     tenant_id: Mapped[str] = mapped_column(String(32), index=True)
     device_id: Mapped[str] = mapped_column(ForeignKey("devices.id"), index=True)
     type: Mapped[str] = mapped_column(String(80))
-    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending|dispatched|completed|failed|cancelled
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending|dispatched|cancelling|completed|failed|cancelled
     issued_by: Mapped[str] = mapped_column(String(200))
     target_path: Mapped[str] = mapped_column(Text, default="")
     record_id: Mapped[str] = mapped_column(String(200), default="")
@@ -194,6 +194,11 @@ class Command(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     dispatched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cancel_requested_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # A retired key may ONLY check/acknowledge this command's cancellation, for seven days.
+    # Normal device access is revoked immediately; this grant cannot fetch or create work.
+    cancel_api_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class DeviceArtifact(Base):

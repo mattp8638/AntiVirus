@@ -576,7 +576,7 @@ std::wstring ExtractDeviceApiKeyFromCommandChannelUrl(const std::wstring& comman
 }
 
 HttpResponse RequestJson(const wchar_t* method, const std::wstring& url, const std::string& body = {},
-                         const std::wstring& deviceApiKey = {}, const std::wstring& sharedToken = {}) {
+                         const std::wstring& deviceApiKey = {}, const std::wstring& sharedToken = {}, int timeoutMs = 30000) {
   URL_COMPONENTS components{};
   components.dwStructSize = sizeof(components);
   components.dwSchemeLength = static_cast<DWORD>(-1);
@@ -602,6 +602,7 @@ HttpResponse RequestJson(const wchar_t* method, const std::wstring& url, const s
   if (session == nullptr) {
     throw std::runtime_error("WinHttpOpen failed");
   }
+  WinHttpSetTimeouts(session, timeoutMs, timeoutMs, timeoutMs, timeoutMs);
 
   auto connection = WinHttpConnect(session, host.c_str(), components.nPort, 0);
   if (connection == nullptr) {
@@ -1106,6 +1107,7 @@ HeartbeatResult ControlPlaneClient::SendHeartbeat(const AgentState& state, const
   body << "{"
        << "\"agentVersion\":\"" << EscapeJsonString(state.agentVersion) << "\","
        << "\"platformVersion\":\"" << EscapeJsonString(state.platformVersion) << "\","
+       << "\"commandCancellation\":true,"
        << "\"buildId\":\"" << EscapeJsonString(std::wstring(kFenrirBuildId)) << "\","
        << "\"healthState\":\"" << EscapeJsonString(state.healthState) << "\","
        << "\"isolated\":" << (state.isolated ? "true" : "false");
@@ -1203,7 +1205,7 @@ CommandPollResult ControlPlaneClient::PollPendingCommands(const AgentState& stat
 
   const auto response = RequestJson(
       L"GET", JoinUrl(baseUrl_, L"/api/v1/devices/" + state.deviceId + L"/commands/pending?limit=" + std::to_wstring(limit) +
-                                      (types.empty() ? std::wstring() : L"&types=" + types)),
+                                      L"&include_cancelling=true" + (types.empty() ? std::wstring() : L"&types=" + types)),
       {}, deviceApiKey);
 
   CommandPollResult result{
@@ -1215,6 +1217,23 @@ CommandPollResult ControlPlaneClient::PollPendingCommands(const AgentState& stat
   }
 
   return result;
+}
+
+bool ControlPlaneClient::CommandStopRequested(const AgentState& state, const std::wstring& commandId) const {
+  try {
+    const auto response = RequestJson(L"GET", JoinUrl(baseUrl_, L"/api/v1/devices/" + state.deviceId + L"/commands/" +
+                                                   commandId + L"/state"), {}, DeviceApiKey(state), {}, 5000);
+    const auto status = ExtractJsonString(response.body, "status").value_or("");
+    return RequireBool(ExtractJsonBool(response.body, "cancelRequested"), "cancelRequested") ||
+         (status != "pending" && status != "dispatched");
+  } catch (const DeviceIdentityRejectedError&) {
+    return true;
+  } catch (const std::exception& error) {
+    const std::string message(error.what());
+    for (const auto code : {"401", "403", "404"})
+      if (message.rfind(std::string("HTTP request failed with status ") + code + ":", 0) == 0) return true;
+    throw;  // network failures remain retryable; revoked/deleted work must stop
+  }
 }
 
 void ControlPlaneClient::CompleteCommand(const AgentState& state, const std::wstring& commandId,

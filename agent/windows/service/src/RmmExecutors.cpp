@@ -1,4 +1,5 @@
 #include "RmmExecutors.h"
+#include "CommandCancellation.h"
 
 #include <windows.h>
 #include <tlhelp32.h>
@@ -104,6 +105,7 @@ HANDLE ActiveUserToken() {
 ProcessResult RunProcessAs(const std::wstring& commandLine, const std::wstring& workingDirectory,
                            const std::vector<std::pair<std::wstring, std::wstring>>& extraEnvironment, unsigned long timeoutMs,
                            std::size_t maxOutputBytes, HANDLE userToken) {
+  command_control::Check();
   SECURITY_ATTRIBUTES inherit{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
   HANDLE outRead = nullptr, outWrite = nullptr, errRead = nullptr, errWrite = nullptr;
   if (!CreatePipe(&outRead, &outWrite, &inherit, 0) || !CreatePipe(&errRead, &errWrite, &inherit, 0)) {
@@ -122,16 +124,16 @@ ProcessResult RunProcessAs(const std::wstring& commandLine, const std::wstring& 
     DestroyEnvironmentBlock(userEnvironment);
   }
 
-  STARTUPINFOW startup{};
-  startup.cb = sizeof(startup);
-  startup.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
-  startup.wShowWindow = SW_HIDE;
-  startup.hStdInput = nul;
-  startup.hStdOutput = outWrite;
-  startup.hStdError = errWrite;
+  STARTUPINFOEXW startup{};
+  startup.StartupInfo.cb = sizeof(startup);
+  startup.StartupInfo.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
+  startup.StartupInfo.wShowWindow = SW_HIDE;
+  startup.StartupInfo.hStdInput = nul;
+  startup.StartupInfo.hStdOutput = outWrite;
+  startup.StartupInfo.hStdError = errWrite;
   wchar_t desktop[] = L"winsta0\\default";
   if (userToken) {
-    startup.lpDesktop = desktop;
+    startup.StartupInfo.lpDesktop = desktop;
   }
   std::vector<wchar_t> mutableCommand(commandLine.begin(), commandLine.end());
   mutableCommand.push_back(L'\0');
@@ -139,37 +141,66 @@ ProcessResult RunProcessAs(const std::wstring& commandLine, const std::wstring& 
   HANDLE job = CreateJobObjectW(nullptr, nullptr);
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
   limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-  SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits));
+  if (!job || !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+    CloseHandle(outRead); CloseHandle(outWrite); CloseHandle(errRead); CloseHandle(errWrite); CloseHandle(nul);
+    if (job) CloseHandle(job);
+    throw std::runtime_error("Could not configure the command process containment");
+  }
 
+  SIZE_T attributeSize = 0;
+  InitializeProcThreadAttributeList(nullptr, 1, 0, &attributeSize);
+  std::vector<unsigned char> attributeStorage(attributeSize);
+  startup.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributeStorage.data());
+  HANDLE inherited[] = {nul, outWrite, errWrite};
+  if (!InitializeProcThreadAttributeList(startup.lpAttributeList, 1, 0, &attributeSize) ||
+      !UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                inherited, sizeof(inherited), nullptr, nullptr)) {
+    CloseHandle(outRead); CloseHandle(outWrite); CloseHandle(errRead); CloseHandle(errWrite); CloseHandle(nul);
+    if (job) CloseHandle(job);
+    throw std::runtime_error("Could not restrict command process handle inheritance");
+  }
   PROCESS_INFORMATION process{};
-  const DWORD flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED;
+  const DWORD flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
   const auto started = std::chrono::steady_clock::now();
   BOOL created = userToken
                      ? CreateProcessAsUserW(userToken, nullptr, mutableCommand.data(), nullptr, nullptr, TRUE, flags, environment.data(),
-                                            workingDirectory.empty() ? nullptr : workingDirectory.c_str(), &startup, &process)
+                                            workingDirectory.empty() ? nullptr : workingDirectory.c_str(), &startup.StartupInfo, &process)
                      : CreateProcessW(nullptr, mutableCommand.data(), nullptr, nullptr, TRUE, flags, environment.data(),
-                                      workingDirectory.empty() ? nullptr : workingDirectory.c_str(), &startup, &process);
+                                      workingDirectory.empty() ? nullptr : workingDirectory.c_str(), &startup.StartupInfo, &process);
+  const auto creationError = GetLastError();
+  DeleteProcThreadAttributeList(startup.lpAttributeList);
   CloseHandle(outWrite);
   CloseHandle(errWrite);
   CloseHandle(nul);
   if (!created) {
-    const auto error = GetLastError();
+    const auto error = creationError;
     CloseHandle(outRead);
     CloseHandle(errRead);
     CloseHandle(job);
     throw std::runtime_error("Could not start the process (error " + std::to_string(error) + ")");
   }
-  AssignProcessToJobObject(job, process.hProcess);
-  ResumeThread(process.hThread);
+  if (!job || !AssignProcessToJobObject(job, process.hProcess) || ResumeThread(process.hThread) == static_cast<DWORD>(-1)) {
+    TerminateProcess(process.hProcess, 1);
+    WaitForSingleObject(process.hProcess, 5000);
+    CloseHandle(process.hThread); CloseHandle(process.hProcess);
+    CloseHandle(outRead); CloseHandle(errRead); if (job) CloseHandle(job);
+    throw std::runtime_error("Could not contain the process in its cancellable job");
+  }
 
   ProcessResult result;
   std::size_t droppedOut = 0, droppedErr = 0;
   std::thread outThread(Drain, outRead, &result.stdoutText, maxOutputBytes, &droppedOut);
   std::thread errThread(Drain, errRead, &result.stderrText, maxOutputBytes, &droppedErr);
-  if (WaitForSingleObject(process.hProcess, timeoutMs) == WAIT_TIMEOUT) {
-    result.timedOut = true;
-    TerminateJobObject(job, 1);
-    WaitForSingleObject(process.hProcess, 5000);
+  bool cancelled = false;
+  while (WaitForSingleObject(process.hProcess, 100) == WAIT_TIMEOUT) {
+    cancelled = command_control::Requested();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
+    if (cancelled || elapsed >= timeoutMs) {
+      result.timedOut = !cancelled;
+      TerminateJobObject(job, cancelled ? ERROR_CANCELLED : ERROR_TIMEOUT);
+      WaitForSingleObject(process.hProcess, 5000);
+      break;
+    }
   }
   // Closing the job kills anything the script left running, which also closes the pipes.
   CloseHandle(job);
@@ -188,6 +219,7 @@ ProcessResult RunProcessAs(const std::wstring& commandLine, const std::wstring& 
   CloseHandle(errRead);
   CloseHandle(process.hThread);
   CloseHandle(process.hProcess);
+  if (cancelled) throw command_control::Cancelled();
   return result;
 }
 

@@ -54,7 +54,7 @@ def overview(tenant_id: str | None = None, principal: Principal = Depends(curren
     devices = db.execute(select(Device).where(Device.tenant_id.in_(scope), Device.approved.is_(True))).scalars().all()
     online = [d for d in devices if d.last_seen_at and now - d.last_seen_at < timedelta(minutes=5)]
     triggered = db.execute(select(func.count()).where(ConditionState.tenant_id.in_(scope), ConditionState.triggered.is_(True))).scalar() or 0
-    jobs_running = db.execute(select(func.count()).where(Job.tenant_id.in_(scope), Job.status == "running")).scalar() or 0
+    jobs_running = db.execute(select(func.count()).where(Job.tenant_id.in_(scope), Job.status.in_(("running", "cancelling")))).scalar() or 0
     active_sessions = db.execute(select(func.count()).where(RemoteSession.tenant_id.in_(scope),
                                                             RemoteSession.status.in_(("waiting", "connected")))).scalar() or 0
     compliance = rmm.patch_compliance(db, scope)
@@ -204,11 +204,11 @@ def list_jobs(tenant_id: str | None = None, device_id: str | None = Query(defaul
     scope = scoped_tenant(principal, tenant_id)
     # Creator identity never overrides current tenant authorisation: access
     # may be revoked or the technician reassigned to another MSP.
-    rows = db.execute(select(Job).where(Job.tenant_id.in_(scope))
+    rows = db.execute(select(Job).where(Job.tenant_id.in_(scope), Job.payload["removedAt"].as_string().is_(None))
                       .order_by(Job.created_at.desc()).limit(min(limit, 1000))).scalars().all()
     if device_id:
         rows = [r for r in rows if device_id in (r.command_ids or {})]
-    return [_job_view(db, r) for r in rows]
+    return [_job_view(db, r) for r in rows if not (r.payload or {}).get("removedAt")]
 
 
 @router.get("/jobs/{job_id}")
@@ -245,6 +245,8 @@ def retry_job(job_id: str, principal: Principal = Depends(current_principal), db
     job = db.get(Job, job_id)
     if job is None or job.tenant_id not in principal.tenant_ids:
         raise HTTPException(404, "Not found")
+    if (job.payload or {}).get("removedAt") or job.status == "cancelling":
+        raise HTTPException(409, "This job was removed or is still stopping; create a new job when appropriate")
     principal.require("configure" if job.command_type == "script.run" else "respond")
     retried = rmm.retry_failed(db, job, principal.actor)
     db.commit()
@@ -257,23 +259,28 @@ def cancel_job(job_id: str, principal: Principal = Depends(current_principal), d
     job = db.get(Job, job_id)
     if job is None or job.tenant_id not in principal.tenant_ids:
         raise HTTPException(404, "Not found")
-    cancelled = 0
-    for command in db.execute(select(Command).where(Command.id.in_(list((job.command_ids or {}).values())),
-                                                    Command.status == "pending")).scalars():
-        command.status, command.updated_at = "cancelled", utcnow()
-        cancelled += 1
+    from ..command_control import cancel_commands
+    cancellation = cancel_commands(db, principal.actor, ids=list((job.command_ids or {}).values()))
     rmm.refresh_job(db, job.id)
-    # A command already dispatched to an endpoint cannot be recalled safely.
-    # Leave the job running until the real agent result is received rather
-    # than falsely telling technicians that executing work was cancelled.
-    in_flight = db.execute(select(Command).where(
-        Command.id.in_(list((job.command_ids or {}).values())),
-        Command.status == "dispatched")).scalars().all()
     audit.record(db, principal.actor, "rmm.job.cancel.requested", job.name, job.tenant_id,
-                 cancelledPending=cancelled, alreadyDispatched=len(in_flight))
+                 **cancellation)
     db.commit()
-    return {**_job_view(db, job), "cancelledPending": cancelled,
-            "alreadyDispatched": len(in_flight), "cancellationComplete": not bool(in_flight)}
+    return {**_job_view(db, job), **cancellation, "alreadyDispatched": cancellation["stopRequested"]}
+
+
+@router.delete("/jobs/{job_id}")
+def remove_job(job_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Remove from activity immediately, retaining the commands until their stop acknowledgement arrives."""
+    principal.require("respond")
+    job = db.get(Job, job_id)
+    if job is None or job.tenant_id not in principal.tenant_ids:
+        raise HTTPException(404, "Not found")
+    from ..command_control import cancel_commands
+    result = cancel_commands(db, principal.actor, ids=list((job.command_ids or {}).values()))
+    job.payload = {**(job.payload or {}), "removedAt": utcnow().isoformat(), "removedBy": principal.actor}
+    audit.record(db, principal.actor, "rmm.job.removed", job.id, job.tenant_id)
+    db.commit()
+    return {"ok": True, "stopRequested": result["stopRequested"], "cancellationComplete": result["cancellationComplete"]}
 
 
 # --------------------------------------------------------------------------- scheduled tasks
@@ -333,9 +340,13 @@ def update_task(task_id: str, body: dict = Body(...), principal: Principal = Dep
 @router.delete("/tasks/{task_id}")
 def delete_task(task_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("configure")
-    task = db.get(ScheduledTask, task_id)
+    task = db.execute(select(ScheduledTask).where(ScheduledTask.id == task_id).with_for_update()).scalar_one_or_none()
     if task is None or task.tenant_id not in principal.tenant_ids:
         raise HTTPException(404, "Not found")
+    from ..command_control import cancel_commands
+    task.enabled = False
+    for job in db.scalars(select(Job).where(Job.scheduled_task_id == task.id, Job.status.in_(("running", "cancelling")))):
+        cancel_commands(db, principal.actor, ids=list((job.command_ids or {}).values()))
     db.delete(task)
     audit.record(db, principal.actor, "rmm.task.deleted", task.name, task.tenant_id)
     db.commit()

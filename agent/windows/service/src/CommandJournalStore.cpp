@@ -25,4 +25,8 @@ void CommandJournalStore::RecordFailed(const RemoteCommand& command, const std::
   RuntimeDatabase(databasePath_).UpsertCommandJournal(command, L"failed", failureJson, errorMessage);
 }
 
+void CommandJournalStore::RecordCancelled(const RemoteCommand& command, const std::wstring& resultJson) const {
+  RuntimeDatabase(databasePath_).UpsertCommandJournal(command, L"cancelled", resultJson, L"");
+}
+
 }  // namespace antivirus::agent

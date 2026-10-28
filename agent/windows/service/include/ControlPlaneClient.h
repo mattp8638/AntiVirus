@@ -127,6 +127,7 @@ class ControlPlaneClient {
   TelemetryBatchResult SendTelemetryBatch(const AgentState& state, const std::vector<TelemetryRecord>& records) const;
   // types: optional comma-separated command types to fetch (servers without the filter return everything).
   CommandPollResult PollPendingCommands(const AgentState& state, int limit = 10, const std::wstring& types = L"") const;
+  bool CommandStopRequested(const AgentState& state, const std::wstring& commandId) const;
   // Uploads a forensic/support bundle for a command (before it is completed); returns the artifact id.
   std::wstring UploadCommandArtifact(const AgentState& state, const std::wstring& commandId, const std::wstring& filename,
                                      const std::string& data) const;
