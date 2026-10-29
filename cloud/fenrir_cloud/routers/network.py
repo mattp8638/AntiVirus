@@ -84,3 +84,92 @@ def check(monitor_id: str, principal: Principal = Depends(current_principal), db
     audit.record(db, principal.actor, "network.checked", row.id, row.tenant_id, state=row.state)
     db.commit()
     return to_dict(row)
+
+
+# --------------------------------------------------------------------------- topology discovery (topology.py)
+from fastapi import Body  # noqa: E402
+
+from .. import services, topology  # noqa: E402
+from ..models import NetworkNode, Tenant  # noqa: E402
+
+
+@router.post("/discover")
+def discover(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Run discovery from one device, or from every approved device of a customer."""
+    principal.require("respond")
+    if body.get("deviceId"):
+        device = db.get(Device, str(body["deviceId"]))
+        if device is None or device.tenant_id not in principal.tenant_ids:
+            raise HTTPException(404, "Not found")
+        devices = [device]
+    else:
+        devices = db.scalars(select(Device).where(Device.tenant_id.in_(scoped_tenant(principal, body.get("tenantId"))),
+                                                  Device.approved.is_(True))).all()
+    queued, skipped = [], []
+    for device in devices[:500]:
+        try:
+            queued.append(topology.request_discovery(db, device, principal.actor, sweep=bool(body.get("sweep", True))).id)
+        except services.CommandError as exc:
+            skipped.append({"deviceId": device.id, "reason": str(exc)})
+    audit.record(db, principal.actor, "topology.discovery_requested", f"{len(queued)} devices", devices[0].tenant_id if devices else None)
+    db.commit()
+    return {"queued": len(queued), "skipped": skipped}
+
+
+@router.get("/topology")
+def topology_graph(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("read")
+    principal.check_tenant(tenant_id)
+    tenant = db.get(Tenant, tenant_id)
+    return {**topology.graph(db, tenant_id), "settings": ((tenant.settings or {}).get("topology") or {}) if tenant else {}}
+
+
+@router.put("/topology/settings")
+def topology_settings(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Which devices re-run discovery on a schedule for this customer."""
+    principal.require("configure")
+    tenant_id = str(body.get("tenantId") or "")
+    principal.check_tenant(tenant_id)
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(404, "Not found")
+    probes = [str(d) for d in body.get("probeDeviceIds") or []][:20]
+    for device_id in probes:
+        _probe_device(db, tenant_id, device_id)
+    config = {"probeDeviceIds": probes, "intervalHours": max(1, min(int(body.get("intervalHours") or 24), 168)),
+              "sweep": bool(body.get("sweep", True))}
+    tenant.settings = {**(tenant.settings or {}), "topology": config}
+    audit.record(db, principal.actor, "topology.settings", tenant.name, tenant.id, probes=len(probes))
+    db.commit()
+    return config
+
+
+@router.patch("/nodes/{node_id}")
+def update_node(node_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("configure")
+    row = owned(db, NetworkNode, node_id, principal)
+    if "ignored" in body:
+        row.ignored = bool(body["ignored"])
+    if body.get("kind") in ("gateway", "server", "workstation", "printer", "network", "virtual", "iot", "camera", "unknown"):
+        row.kind = body["kind"]
+    audit.record(db, principal.actor, "topology.node_updated", row.ip, row.tenant_id, ignored=row.ignored, kind=row.kind)
+    db.commit()
+    return to_dict(row)
+
+
+@router.post("/nodes/{node_id}/monitor")
+def monitor_node(node_id: str, body: dict = Body(default={}), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Watch an unmanaged node (printer, switch, NAS) from a device on its network."""
+    principal.require("configure")
+    row = owned(db, NetworkNode, node_id, principal)
+    port = int(body.get("port") or (row.open_ports or [0])[0] or 0)
+    if not 0 < port < 65536:
+        raise HTTPException(422, "Choose a port to check; none was found open on this node")
+    probe = next((d for d in row.seen_by or [] if db.get(Device, d) is not None), None)
+    monitor = NetworkMonitor(tenant_id=row.tenant_id, name=str(body.get("name") or row.hostname or row.ip)[:200], address=row.ip,
+                             port=port, interval_seconds=300, probe_device_id=probe)
+    db.add(monitor)
+    db.flush()
+    audit.record(db, principal.actor, "network.created", monitor.id, monitor.tenant_id, fromTopology=row.id)
+    db.commit()
+    return to_dict(monitor)

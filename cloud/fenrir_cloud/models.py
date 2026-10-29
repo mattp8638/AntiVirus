@@ -784,6 +784,8 @@ class Ticket(Base):
     backout_plan: Mapped[str | None] = mapped_column(Text, default="", nullable=True)
     test_plan: Mapped[str | None] = mapped_column(Text, default="", nullable=True)
     change_approvals: Mapped[list | None] = mapped_column(JSON, default=list, nullable=True)  # [{by, decision, comment, at}]
+    # AI helpdesk triage (ai_helpdesk.py): category, priority, summary, suggestions, engine and what was applied.
+    ai_triage: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     status_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     email_thread_id: Mapped[str | None] = mapped_column(String(300), default="", nullable=True)
     workflow_fired: Mapped[list | None] = mapped_column(JSON, default=list, nullable=True)  # markers so timed rules fire once
@@ -833,6 +835,11 @@ class Invoice(Base):
     status: Mapped[str] = mapped_column(String(20), default="Draft")  # Draft|Sent|Paid|Overdue|Void
     due_date: Mapped[str] = mapped_column(String(20), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # Accounting sync (billing_sync.py): the invoice in Xero and its last known state there.
+    external_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    external_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    external_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    external_error: Mapped[str | None] = mapped_column(String(300), nullable=True)
 
 
 class Webhook(Base):
@@ -1954,6 +1961,103 @@ class M365StandardRun(Base):
     details: Mapped[dict] = mapped_column(JSON, default=dict)
     actor: Mapped[str] = mapped_column(String(200), default="")
     at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+class NetworkSubnet(Base):
+    """A subnet a managed device sits on, with its gateway (topology.py)."""
+    __tablename__ = "network_subnets"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("sub"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    cidr: Mapped[str] = mapped_column(String(64))
+    gateway_ip: Mapped[str] = mapped_column(String(64), default="")
+    seen_by: Mapped[list] = mapped_column(JSON, default=list)  # device ids that reported it
+    first_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    __table_args__ = (UniqueConstraint("tenant_id", "cidr", name="uq_network_subnet"),)
+
+
+class NetworkNode(Base):
+    """Something seen on a customer network: a managed device, or an unmanaged printer, switch, camera..."""
+    __tablename__ = "network_nodes"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("nod"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    key: Mapped[str] = mapped_column(String(80))  # "mac:aa:bb.." or "ip:10.0.0.5" when no MAC was seen
+    ip: Mapped[str] = mapped_column(String(64), default="")
+    mac: Mapped[str] = mapped_column(String(32), default="")
+    hostname: Mapped[str] = mapped_column(String(255), default="")
+    vendor: Mapped[str] = mapped_column(String(120), default="")
+    kind: Mapped[str] = mapped_column(String(30), default="unknown")  # gateway|server|workstation|printer|network|virtual|iot|unknown
+    open_ports: Mapped[list] = mapped_column(JSON, default=list)
+    subnet: Mapped[str] = mapped_column(String(64), default="")
+    device_id: Mapped[str | None] = mapped_column(String(32), nullable=True)  # the managed device, when matched
+    seen_by: Mapped[list] = mapped_column(JSON, default=list)
+    first_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    ignored: Mapped[bool] = mapped_column(Boolean, default=False)
+    __table_args__ = (UniqueConstraint("tenant_id", "key", name="uq_network_node"),)
+
+
+class ConditionPackage(Base):
+    """A detection + remediation script pair run silently on a schedule (condition_remediation.py)."""
+    __tablename__ = "rmm_condition_packages"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("crp"))
+    tenant_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)  # None = built-in template
+    builtin_key: Mapped[str] = mapped_column(String(60), default="")
+    name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text, default="")
+    platforms: Mapped[list] = mapped_column(JSON, default=list)
+    language: Mapped[str] = mapped_column(String(20), default="powershell")
+    detection_script: Mapped[str] = mapped_column(Text, default="")
+    remediation_script: Mapped[str] = mapped_column(Text, default="")
+    interval_hours: Mapped[int] = mapped_column(Integer, default=24)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=300)
+    auto_remediate: Mapped[bool] = mapped_column(Boolean, default=True)
+    ticket_on_failure: Mapped[bool] = mapped_column(Boolean, default=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    targets: Mapped[dict] = mapped_column(JSON, default=dict)  # {deviceIds, groupIds, tenantIds, platforms, tags}; empty = the customer
+    created_by: Mapped[str] = mapped_column(String(200), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ConditionResult(Base):
+    """The latest outcome of one package on one device."""
+    __tablename__ = "rmm_condition_results"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    package_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    # pending | compliant | noncompliant | remediating | verifying | remediated | failed | error
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    phase: Mapped[str] = mapped_column(String(20), default="")
+    command_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    detect_output: Mapped[str] = mapped_column(Text, default="")
+    remediate_output: Mapped[str] = mapped_column(Text, default="")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    failures: Mapped[int] = mapped_column(Integer, default=0)
+    last_detect_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_remediated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ticket_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    __table_args__ = (UniqueConstraint("package_id", "device_id", name="uq_condition_result"),)
+
+
+class AccountingConnection(Base):
+    """The MSP's accounting system (Xero) for invoice sync (billing_sync.py). Credentials are encrypted."""
+    __tablename__ = "accounting_connections"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("acc"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)  # the MSP
+    provider: Mapped[str] = mapped_column(String(20), default="xero")
+    client_id: Mapped[str] = mapped_column(String(100))
+    credentials_envelope: Mapped[dict] = mapped_column(JSON, default=dict)  # {clientSecret, refreshToken}
+    scopes: Mapped[str] = mapped_column(String(300), default="")
+    account_code: Mapped[str] = mapped_column(String(20), default="200")
+    external_tenant_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    external_name: Mapped[str] = mapped_column(String(200), default="")
+    status: Mapped[str] = mapped_column(String(20), default="awaiting_authorisation")
+    last_error: Mapped[str] = mapped_column(String(300), default="")
+    pending_state: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pending_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 # --------------------------------------------------------------------------

@@ -248,6 +248,10 @@ def open_ticket(
     db.add(ticket)
     db.flush()
     psa.run_workflows(db, ticket, "ticket.created")
+    from . import events
+
+    # Durable follow-up work (AI triage) runs from the outbox, never in the request that created the ticket.
+    events.publish(db, "ticket.created", {"ticketId": ticket.id}, account_tenant_id, key=f"ticket.created:{ticket.id}")
     return ticket
 
 

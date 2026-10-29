@@ -890,3 +890,47 @@ def rotate_inbound_token(principal: Principal = Depends(current_principal), db: 
     audit.record(db, principal.actor, "psa.inbound_token.rotated", tenant.name, tenant.id)
     db.commit()
     return {"token": token, "url": f"/api/inbound/email/{tenant.slug}?token={token}"}
+
+
+# --------------------------------------------------------------------------- AI helpdesk triage (ai_helpdesk.py)
+
+
+@router.get("/psa/ai-triage")
+def get_ai_triage(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    from .. import ai_helpdesk
+
+    principal.require("crm")
+    owner = db.get(Tenant, services.msp_tenant_id(db, principal.user.tenant_id))
+    return {"mode": "off", "engine": "local", **((owner.settings or {}).get("aiTriage") or {}),
+            "claudeConfigured": bool(ai_helpdesk.api_key()), "model": os.getenv("FENRIR_AI_TRIAGE_MODEL", ai_helpdesk.DEFAULT_MODEL)}
+
+
+@router.put("/psa/ai-triage")
+def set_ai_triage(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """MSP-wide. Choosing the Claude engine sends redacted ticket text to Anthropic: an explicit opt-in."""
+    principal.require("crm")
+    principal.require("configure")
+    owner = db.get(Tenant, services.msp_tenant_id(db, principal.user.tenant_id))
+    if owner is None or owner.id != principal.user.tenant_id:
+        raise HTTPException(403, "Only the MSP's own staff change helpdesk triage")
+    mode, engine = str(body.get("mode") or "off"), str(body.get("engine") or "local")
+    if mode not in ("off", "suggest", "apply") or engine not in ("local", "claude"):
+        raise HTTPException(422, "mode must be off, suggest or apply; engine local or claude")
+    owner.settings = {**(owner.settings or {}), "aiTriage": {"mode": mode, "engine": engine}}
+    audit.record(db, principal.actor, "psa.ai_triage.updated", owner.name, owner.id, mode=mode, engine=engine)
+    db.commit()
+    return owner.settings["aiTriage"]
+
+
+@router.post("/tickets/{ticket_id}/triage")
+def triage_ticket(ticket_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Run triage now (suggest mode when triage is otherwise off)."""
+    from .. import ai_helpdesk
+
+    principal.require("respond")
+    ticket = db.get(Ticket, ticket_id)
+    if ticket is None or (ticket.account_tenant_id or ticket.tenant_id) not in principal.tenant_ids:
+        raise HTTPException(404, "Not found")
+    result = ai_helpdesk.triage(db, ticket, force=True)
+    db.commit()
+    return result

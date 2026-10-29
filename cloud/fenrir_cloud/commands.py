@@ -49,6 +49,9 @@ CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("forensics.collect", "Collect forensic triage package", "Investigation", platforms=ALL,
                 description="Processes, autoruns, network, event logs and prefetch in one archive."),
     CommandSpec("inventory.refresh", "Refresh inventory", "Investigation", platforms=ALL),
+    CommandSpec("network.discover", "Discover the local network", "Investigation", platforms=("linux", "macos"),
+                description="Interfaces, gateway, neighbours and a short TCP sweep of the device's own private subnets. "
+                            "Windows runs the same discovery as a script (Network → Topology)."),
     CommandSpec("pii.scan", "Discover personal data", "Investigation", platforms=("linux", "macos"),
                 description="Counts payment cards, NI and NHS numbers, IBANs and emails in users' documents. Only counts and "
                             "file paths are reported. Windows runs the same scan as a script (Vulnerabilities → PII discovery)."),

@@ -142,6 +142,7 @@ export default function TicketDetail() {
         </div>
 
         <div>
+          <AiTriageCard ticket={t} onDone={reload} />
           <ServiceRecord ticket={t} onChange={reload} />
           <div className="card">
             <h3>SLA</h3>
@@ -253,5 +254,27 @@ function MergeModal({ ticket, onClose }: { ticket: any; onClose: (target?: strin
         if (window.confirm(`Merge #${ticket.number} into #${target.number}?`) && await run(() => api(`tickets/${ticket.id}/merge`, { body: { intoTicketId: target.id } }), "Merged")) onClose(target.id);
       }} columns={[{ key: "number", label: "#", render: (x) => `#${x.number}` }, { key: "subject", label: "Summary" }, { key: "account", label: "Company" }]} />
     </Modal>
+  );
+}
+
+function AiTriageCard({ ticket, onDone }: { ticket: any; onDone: () => void }) {
+  const { can } = useApp();
+  const { run, busy } = useAction();
+  const triage = ticket.aiTriage;
+  const rerun = async () => { if (await run(() => api(`tickets/${ticket.id}/triage`, { method: "POST" }), "Ticket triaged")) onDone(); };
+  if (!triage && !can("respond")) return null;
+  return (
+    <div className="card">
+      <h3>Triage {triage && <span className="small muted">· {displayValue(triage.engine)} · {ago(triage.at)}</span>}</h3>
+      {triage ? <>
+        <p><Pill value={triage.category} tone="blue" /> <Pill value={triage.priority} tone={PRIORITY_TONE[triage.priority]} />
+          {triage.securityConcern && <Pill value="possible security issue" tone="bad" />}</p>
+        {triage.summary && <p className="small">{displayValue(triage.summary)}</p>}
+        <p className="small muted">{displayValue(triage.reasoning)}</p>
+        {triage.applied?.length > 0 && <p className="small">Applied: {triage.applied.join(", ")}</p>}
+        {triage.suggestedReply && <details><summary className="small">Suggested reply</summary><pre className="small" style={{ whiteSpace: "pre-wrap" }}>{displayValue(triage.suggestedReply)}</pre></details>}
+      </> : <p className="small muted">Not triaged yet.</p>}
+      {can("respond") && <button className="ghost" disabled={busy} onClick={rerun}>{triage ? "Triage again" : "Triage now"}</button>}
+    </div>
   );
 }
