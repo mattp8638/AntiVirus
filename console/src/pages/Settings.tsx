@@ -480,6 +480,17 @@ function PlatformTab() {
           <p className="small">{Object.entries(data?.handlers ?? {}).map(([k, v]: any) => `${k} (${v.length})`).join(", ") || "none"}</p></div>
       </div>
       {error && <p className="muted">{error}</p>}
+      {can("platform") && <div className="card" style={{ marginTop: 14 }}>
+        <h3 style={{ marginTop: 0 }}>Background jobs</h3>
+        <p className="small muted">Scheduled work the server runs by itself. Each job runs on its own, so one failing job does not stop the others.</p>
+        <Table rows={(data?.jobs ?? []).map((j: any) => ({ ...j, id: j.name }))} empty="No job has run yet. Jobs start about 30 seconds after the server starts."
+               columns={[{ key: "name", label: "Job", render: (j) => <span className="mono small">{j.name}</span> },
+                         { key: "ok", label: "Last run", render: (j) => <Pill value={j.ok ? "ok" : j.failures > 1 ? `failed ${j.failures}× in a row` : "failed"} tone={j.ok ? "good" : "bad"} /> },
+                         { key: "lastRunAt", label: "When", render: (j) => j.lastRunAt ? ago(j.lastRunAt) : "" },
+                         { key: "lastOkAt", label: "Last success", render: (j) => j.lastOkAt ? ago(j.lastOkAt) : "never" },
+                         { key: "durationMs", label: "Took", className: "right", render: (j) => `${(j.durationMs / 1000).toFixed(1)} s` },
+                         { key: "error", label: "Error", render: (j) => <span className="small">{displayValue(j.error)}</span> }]} />
+      </div>}
       <div className="card" style={{ marginTop: 14 }}>
         <h3 style={{ marginTop: 0 }}>Failed automation events</h3>
         <Table rows={dead} empty="No failed events."

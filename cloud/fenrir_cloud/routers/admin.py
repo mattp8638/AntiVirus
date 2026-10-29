@@ -237,9 +237,17 @@ def platform_status(principal: Principal = Depends(current_principal), db: Sessi
     from ..models import PlatformEvent
 
     counts = dict(db.execute(select(PlatformEvent.status, func.count()).group_by(PlatformEvent.status)).all())
+    jobs = []
+    if principal.can("platform"):  # job errors can name any customer, so only platform administrators see them
+        from ..models import BackgroundJob
+
+        jobs = [{"name": j.name, "ok": j.ok, "failures": j.failures, "error": j.error, "durationMs": j.duration_ms,
+                 "lastRunAt": j.last_run_at.isoformat() + "Z" if j.last_run_at else None,
+                 "lastOkAt": j.last_ok_at.isoformat() + "Z" if j.last_ok_at else None}
+                for j in db.execute(select(BackgroundJob).order_by(BackgroundJob.name)).scalars()]
     return {"vault": crypto.key_status(), "events": {"pending": counts.get("pending", 0), "done": counts.get("done", 0),
                                                      "dead": counts.get("dead", 0)},
-            "handlers": events.registered()}
+            "handlers": events.registered(), "jobs": jobs}
 
 
 @router.post("/platform/vault/rotate")

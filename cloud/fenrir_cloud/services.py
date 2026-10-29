@@ -6,7 +6,6 @@ import hashlib
 import hmac
 import json
 import logging
-import threading
 from datetime import timedelta
 
 import httpx
@@ -297,22 +296,43 @@ def _format_webhook(kind: str, event: str, body: dict) -> dict:
 
 
 def _post(url: str, payload: dict, secret: str) -> None:
+    """Delivers one webhook. Raises on a network error or a non-2xx answer, so the outbox retries it."""
     data = json.dumps(payload, default=str).encode()
     headers = {"Content-Type": "application/json"}
     if secret:
         headers["X-Fenrir-Signature"] = "sha256=" + hmac.new(secret.encode(), data, hashlib.sha256).hexdigest()
-    try:
-        httpx.post(url, content=data, headers=headers, timeout=5.0)
-    except httpx.HTTPError as exc:  # pragma: no cover - network dependent
-        log.warning("webhook delivery to %s failed: %s", url, exc)
+    response = httpx.post(url, content=data, headers=headers, timeout=5.0)
+    if response.status_code >= 300:
+        raise RuntimeError(f"webhook answered HTTP {response.status_code}")
 
 
 def fire_webhooks(db: Session, tenant_id: str, event: str, body: dict) -> int:
+    """Queues one delivery per matching webhook in the durable outbox (sent in the caller's transaction, retried with
+    back-off, and listed under Settings → Platform when it keeps failing)."""
+    from . import events
+
     hooks = db.execute(select(Webhook).where(Webhook.tenant_id.in_({tenant_id, msp_tenant_id(db, tenant_id)}),
                                              Webhook.enabled.is_(True))).scalars().all()
-    sent = 0
+    queued = 0
     for hook in hooks:
         if event in (hook.events or []) or "*" in (hook.events or []):
-            threading.Thread(target=_post, args=(hook.url, _format_webhook(hook.kind, event, body), hook.secret), daemon=True).start()
-            sent += 1
-    return sent
+            events.publish(db, "webhook.delivery", {"webhookId": hook.id, "event": event,
+                                                     "body": json.loads(json.dumps(body, default=str))}, tenant_id)
+            queued += 1
+    return queued
+
+
+def _deliver_webhook(db: Session, event) -> None:
+    hook = db.get(Webhook, event.payload.get("webhookId"))
+    if hook is None or not hook.enabled:
+        return  # deleted or turned off since: nothing to send
+    _post(hook.url, _format_webhook(hook.kind, event.payload.get("event", ""), event.payload.get("body") or {}), hook.secret)
+
+
+def _register_webhook_handler() -> None:
+    from . import events
+
+    events.handler("webhook.delivery", name="webhook.deliver")(_deliver_webhook)
+
+
+_register_webhook_handler()

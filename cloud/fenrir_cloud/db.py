@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 43
+LATEST_MIGRATION = 44
 
 def init_engine(url: str) -> Engine:
     global _engine, _session_factory
@@ -361,6 +361,12 @@ def migrate(bind: Engine) -> list[int]:
                 ensure_columns(Base, conn)  # elevation_requests: temporary admin account, kind, target, timeline
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (43)"))
                 applied.append(43)
+            if 44 not in versions:
+                from .models import BackgroundJob
+                BackgroundJob.__table__.create(conn, checkfirst=True)
+                ensure_columns(Base, conn)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (44)"))
+                applied.append(44)
             conn.commit()
         except Exception:
             conn.rollback()

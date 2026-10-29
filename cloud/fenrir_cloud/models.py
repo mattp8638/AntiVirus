@@ -1413,6 +1413,19 @@ class PlatformEvent(Base):
     __table_args__ = (Index("ix_platform_events_due", "status", "next_attempt_at"),)
 
 
+class BackgroundJob(Base):
+    """Last outcome of each scheduled background job, so a failing job is visible instead of silent."""
+
+    __tablename__ = "background_jobs"
+    name: Mapped[str] = mapped_column(String(80), primary_key=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_ok_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ok: Mapped[bool] = mapped_column(Boolean, default=True)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    failures: Mapped[int] = mapped_column(Integer, default=0)  # in a row
+    error: Mapped[str] = mapped_column(Text, default="")
+
+
 class RateLimitBucket(Base):
     """Shared sliding windows, serialized using a database write lock per key."""
     __tablename__ = "rate_limit_buckets"
