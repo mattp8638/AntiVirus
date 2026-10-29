@@ -7,10 +7,11 @@ gone. Each check passes, fails or is skipped, with the evidence it saw, written 
 
 Run it against a lab (see docs/ACCEPTANCE_LAB.md), never against customers' machines:
 
-    python3 scripts/acceptance/fenrir_acceptance.py --server https://rmm.lab.example --token fac_... \\
-        --device LAB-WIN11 --device LAB-UBUNTU --out acceptance-report
+    python3 scripts/acceptance/fenrir_acceptance.py --server https://rmm.lab.example --email lab-admin@example.com \\
+        --password ... [--mfa-code 123456] --device LAB-WIN11 --device LAB-UBUNTU --out acceptance-report
 
-    --email/--password   sign in as a lab administrator instead of using an API credential
+    --token fac_...      an API credential instead; it can run the read-only checks, but credentials deliberately cannot
+                         run scripts or grant admin rights, so most checks need a lab administrator's sign-in
     --scenario a,b       run only these (``--list`` shows them all)
     --disruptive         also run checks that cut the device off for a moment (network isolation)
     --insecure           accept a self-signed lab certificate

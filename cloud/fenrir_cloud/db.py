@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 44
+LATEST_MIGRATION = 45
 
 def init_engine(url: str) -> Engine:
     global _engine, _session_factory
@@ -369,6 +369,12 @@ def migrate(bind: Engine) -> list[int]:
                 ensure_columns(Base, conn)  # alerts: assignee/acknowledged/snoozed; devices, psa_tickets: custom_fields
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (44)"))
                 applied.append(44)
+            if 45 not in versions:
+                # "awaiting_authorisation" did not fit VARCHAR(20): PostgreSQL refused every new Xero connection.
+                if conn.dialect.name == "postgresql":
+                    conn.execute(text("ALTER TABLE accounting_connections ALTER COLUMN status TYPE VARCHAR(40)"))
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (45)"))
+                applied.append(45)
             conn.commit()
         except Exception:
             conn.rollback()
