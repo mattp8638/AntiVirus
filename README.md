@@ -6,7 +6,7 @@ Fenrir is a self-hosted project combining endpoint security, RMM, Microsoft 365 
 
 Hosting, domains, publicly trusted code-signing certificates and optional providers can still cost money.
 
-> **Free, as-is, unsupported.** Fenrir is released free of charge under the [Apache License 2.0](LICENSE). It is provided **"AS IS", without warranty of any kind**, and **no support is offered**: issues and pull requests may not be answered. You are responsible for testing it on your own systems before relying on it, for securing your own installation, and for anything it does on the devices and tenants you connect to it. See [Licence and support](#licence-and-support).
+> **Free, as-is, unsupported.** Fenrir is released free of charge under the [Apache License 2.0](LICENSE). It is provided **"AS IS", without warranty of any kind**, and **no support is offered**: issues and pull requests may not be answered. You are responsible for testing it on your own systems before relying on it (see the [acceptance lab](docs/ACCEPTANCE_LAB.md)), for securing your own installation, and for anything it does on the devices and tenants you connect to it. See [Licence and support](#licence-and-support).
 
 ## Contents
 
@@ -444,6 +444,7 @@ Contributions should include reproduction steps and meaningful tests. Keep migra
 Before relying on a release, review the dependency notices in [NOTICE](NOTICE), the supported-platform matrix and measured limits, and the relevant security/recovery/efficacy gates. Publish limitations alongside features; code presence or a mocked test is not observed parity with another product.
 
 - [Architecture](docs/ARCHITECTURE.md), [RMM/PSA](docs/RMM_PSA.md), [RMM/PSA intelligence](docs/RMM_PSA_INTELLIGENCE.md), [zero-trust remote administration](docs/ZERO_TRUST_REMOTE_ADMINISTRATION.md), [continuous GRC](docs/CONTINUOUS_GRC.md), [remote protocol](docs/REMOTE_PROTOCOL.md)
+- [Acceptance lab: prove it works before you rely on it](docs/ACCEPTANCE_LAB.md)
 - [Code signing](docs/CODE_SIGNING.md), [driver/prevention limits](docs/DRIVER_SIGNING.md), [updates](docs/AUTO_UPDATE.md)
 - [Parity decisions](docs/parity/decisions.md), [acceptance](docs/parity/acceptance.md), [release gates](docs/parity/release-gates.md)
 - [Console rendering](docs/CONSOLE_RENDER_SAFETY.md), [Ctrl+Alt+Del](docs/REMOTE_CTRL_ALT_DEL.md)
