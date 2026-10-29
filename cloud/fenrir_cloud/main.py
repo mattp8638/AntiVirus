@@ -112,8 +112,9 @@ def _maintenance_loop(settings: Settings, stop: threading.Event) -> None:
 
                 result = sync_feed(db, settings.feed_url, settings.feed_token)
                 log.info("feed sync: %s", result)
-            from . import autodoc, billing_sync, darkweb, grc_automation, m365_standards, tprm
+            from . import autodoc, billing_sync, darkweb, grc_automation, m365_partner, m365_standards, tprm
 
+            m365_partner.tick(db)
             autodoc.tick(db)
             tprm.tick(db)
             grc_automation.tick(db)

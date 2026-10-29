@@ -15,6 +15,7 @@ from fenrir_cloud.models import Contact, M365Connection, M365Partner, Ticket
 PARTNER_DIR = "11111111-1111-1111-1111-111111111111"
 CLIENT_ID = "22222222-2222-2222-2222-222222222222"
 CUSTOMER_DIR = "33333333-3333-3333-3333-333333333333"
+OTHER_DIR = "44444444-4444-4444-4444-444444444444"
 
 
 class FakeMicrosoft:
@@ -31,6 +32,13 @@ class FakeMicrosoft:
         self.refresh_tokens = []
         self.public_client = True  # "Allow public client flows" on, as documented
         self.secrets_sent = 0
+        self.contracts = [{"customerId": CUSTOMER_DIR, "displayName": "Acme Ltd", "defaultDomainName": "acme.onmicrosoft.com",
+                           "contractType": "ResellerPartner"},
+                          {"customerId": OTHER_DIR, "displayName": "Darren Blows Carpentry", "defaultDomainName": "dbc.onmicrosoft.com",
+                           "contractType": "ResellerPartner"}]
+        self.partner_tenant_type = "resellerPartnerDelegatedAdmin"
+        self.user_type, self.member_of = "Member", ["AdminAgents"]
+        self.consents = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         url, method = request.url, request.method
@@ -52,8 +60,21 @@ class FakeMicrosoft:
             if directory not in self.gdap_tenants | {PARTNER_DIR}:
                 return httpx.Response(400, json={"error": "invalid_grant", "error_description": "AADSTS: no GDAP relationship"})
             return httpx.Response(200, json={"access_token": f"token-{directory}", "refresh_token": "rt-2"})
+        if url.host == "api.partnercenter.microsoft.com":
+            assert request.headers["authorization"] == f"Bearer token-{PARTNER_DIR}"
+            self.consents.append((url.path, json.loads(request.content)))
+            return httpx.Response(201, json={})
         path = url.path.removeprefix("/v1.0")
         body = json.loads(request.content) if request.content else None
+        if path == "/organization":
+            return httpx.Response(200, json={"value": [{"displayName": "Palmertech", "partnerTenantType": self.partner_tenant_type,
+                                                        "verifiedDomains": [{"name": "palmertech.co.uk"}]}]})
+        if path == "/me":
+            return httpx.Response(200, json={"userPrincipalName": "admin@palmertech.co.uk", "userType": self.user_type})
+        if path == "/me/memberOf":
+            return httpx.Response(200, json={"value": [{"displayName": g} for g in self.member_of]})
+        if path == "/contracts":
+            return httpx.Response(200, json={"value": self.contracts})
         if method != "GET":
             self.writes.append((method, path, body))
         if path == "/tenantRelationships/delegatedAdminRelationships":
@@ -296,3 +317,58 @@ def test_partner_token_requests_match_the_app_client_type(client, admin, microso
         assert m365_partner.access_token_for(partner) == f"token-{PARTNER_DIR}"
         assert m365_partner._secrets(partner)["clientType"] == "confidential" and partner.status == "connected"
         db.commit()
+
+
+def test_partner_check_explains_what_blocks_gdap(client, admin, microsoft):
+    connect_partner(client, admin)
+    ok = client.get("/api/console/m365/partner/check", headers=admin).json()
+    assert ok["problems"] == [] and ok["organization"] == "Palmertech" and ok["adminAgent"] and ok["partnerCenter"]
+    microsoft.partner_tenant_type, microsoft.user_type, microsoft.member_of = None, "Guest", []
+    bad = client.get("/api/console/m365/partner/check", headers=admin).json()["problems"]
+    assert any("not registered as a Microsoft partner" in p for p in bad)
+    assert any("is a guest" in p for p in bad) and any("Admin Agents" in p for p in bad)
+    assert client.get("/api/console/m365/partner", headers=admin).json()["partner"]["check"]["problems"] == bad
+
+
+def test_import_brings_every_partner_customer_into_fenrir(client, admin, microsoft):
+    proof = connect_partner(client, admin)
+    found = client.get("/api/console/m365/partner/discover", headers=admin).json()
+    by_id = {c["tenantId"]: c for c in found["customers"]}
+    assert by_id[CUSTOMER_DIR]["gdap"] == "active" and set(by_id[CUSTOMER_DIR]["sources"]) == {"contract", "gdap"}
+    assert by_id[OTHER_DIR]["gdap"] == "none" and by_id[OTHER_DIR]["displayName"] == "Darren Blows Carpentry"
+    assert found["errors"] == {}
+
+    results = {r["tenantId"]: r for r in client.post("/api/console/m365/partner/import", headers=proof, json={}).json()}
+    assert results[CUSTOMER_DIR]["status"] == "linked" and results[CUSTOMER_DIR]["createdCustomer"]
+    assert results[CUSTOMER_DIR]["consent"] == "consented"
+    assert results[OTHER_DIR]["status"] == "no GDAP relationship" and results[OTHER_DIR]["createdCustomer"]
+    path, consent = microsoft.consents[0]
+    assert path == f"/v1/customers/{CUSTOMER_DIR}/applicationconsents" and consent["applicationId"] == CLIENT_ID
+    assert "Policy.ReadWrite.ConditionalAccess" in consent["applicationGrants"][0]["scope"]
+    tenants = {t["name"]: t for t in client.get("/api/console/tenants", headers=admin).json()}
+    assert {"Acme Ltd", "Darren Blows Carpentry"} <= set(tenants)
+    with session_factory()() as db:
+        connection = db.query(M365Connection).filter_by(directory_id=CUSTOMER_DIR).one()
+        assert connection.auth_mode == "gdap" and connection.tenant_id == tenants["Acme Ltd"]["id"]
+
+    # Running it again links nothing twice and creates no duplicate customers; asking for invitations creates one for
+    # the customer without GDAP, attached to the Fenrir customer made the first time.
+    again = {r["tenantId"]: r for r in client.post("/api/console/m365/partner/import", headers=proof,
+                                                      json={"createRelationships": True}).json()}
+    assert again[CUSTOMER_DIR]["status"] == "already linked"
+    assert again[OTHER_DIR]["status"] == "invitation created" and not again[OTHER_DIR]["createdCustomer"]
+    assert again[OTHER_DIR]["fenrirTenantId"] == tenants["Darren Blows Carpentry"]["id"]
+    created = [b for m, p, b in microsoft.writes if p == "/tenantRelationships/delegatedAdminRelationships"]
+    assert created[-1]["customer"] == {"tenantId": OTHER_DIR}
+    assert len([t for t in client.get("/api/console/tenants", headers=admin).json() if t["name"] == "Darren Blows Carpentry"]) == 1
+
+
+def test_auto_import_links_new_gdap_customers(client, admin, microsoft):
+    connect_partner(client, admin)
+    client.put("/api/console/m365/partner/settings", headers=admin, json={"autoImport": True})
+    with session_factory()() as db:
+        m365_partner.tick(db)
+        assert db.query(M365Connection).filter_by(directory_id=CUSTOMER_DIR).count() == 1
+        assert db.query(M365Connection).filter_by(directory_id=OTHER_DIR).count() == 0  # no GDAP: never auto-invited
+        m365_partner.tick(db)  # within the interval: nothing more
+        assert db.query(M365Connection).count() == 1

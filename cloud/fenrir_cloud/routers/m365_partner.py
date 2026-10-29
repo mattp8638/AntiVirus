@@ -164,6 +164,52 @@ def onboard(directory_id: str, request: Request, body: dict = Body(...), princip
     return {"connectionId": connection.id, "tenantId": tenant_id, "directoryId": connection.directory_id}
 
 
+@router.get("/partner/check")
+def partner_check(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Can this sign-in run GDAP? Lists every problem with what to do about it."""
+    row = _partner(db, principal)
+    result = _provider(lambda: partner_mod.check(row))
+    db.commit()
+    return result
+
+
+@router.get("/partner/discover")
+def partner_discover(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Every customer the partner tenant knows (CSP contracts and GDAP), with its Fenrir link."""
+    row = _partner(db, principal)
+    found = _provider(lambda: partner_mod.discover(row))
+    linked = {c.directory_id.lower(): c for c in db.execute(select(M365Connection).where(M365Connection.tenant_id.in_(principal.tenant_ids))).scalars()}
+    names = dict(db.execute(select(Tenant.id, Tenant.name).where(Tenant.id.in_(principal.tenant_ids))).all())
+    for customer in found["customers"]:
+        connection = linked.get(customer["tenantId"])
+        customer["fenrirTenantId"] = connection.tenant_id if connection else None
+        customer["fenrirTenantName"] = names.get(connection.tenant_id, "") if connection else ""
+        customer["connectionId"] = connection.id if connection else None
+    db.commit()
+    return found
+
+
+@router.post("/partner/import")
+def partner_import(request: Request, body: dict = Body(default={}), principal: Principal = Depends(current_principal),
+                   db: Session = Depends(get_db)):
+    """Import partner customers: Fenrir customers, app consent and GDAP connections (all, or the directories listed)."""
+    row = _partner(db, principal)
+    require_reauth(request, principal)
+    ids = [str(UUID(str(d))) for d in body.get("directoryIds") or []] or None
+    results = _provider(lambda: partner_mod.import_customers(db, row, principal.actor, ids, bool(body.get("createRelationships"))))
+    db.commit()
+    return results
+
+
+@router.put("/partner/settings")
+def partner_settings(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    row = _partner(db, principal)
+    row.settings = {**(row.settings or {}), "autoImport": bool(body.get("autoImport"))}
+    audit.record(db, principal.actor, "m365.partner.settings", row.partner_directory_id, row.tenant_id, autoImport=row.settings["autoImport"])
+    db.commit()
+    return partner_mod.view(row)
+
+
 # --------------------------------------------------------------------------- standards
 
 

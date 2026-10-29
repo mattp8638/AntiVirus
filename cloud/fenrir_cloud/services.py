@@ -200,6 +200,32 @@ def sla_hours(db: Session, account_tenant_id: str | None, priority: str) -> int:
     return DEFAULT_SLA_HOURS.get(priority, 24)
 
 
+def create_customer(db: Session, name: str, parent_id: str, actor: str, template: str = "balanced", plan: str = "complete",
+                    slug: str | None = None) -> Tenant:
+    """A customer tenant with its own default policy (from a policy template). The caller commits."""
+    import re
+
+    from . import audit, policy_schema
+    from .models import Policy
+    from .security import new_secret
+
+    if template not in policy_schema.TEMPLATES:
+        raise ValueError("unknown template")
+    slug = re.sub(r"[^a-z0-9]+", "-", (slug or name).lower()).strip("-")[:70] or "tenant"
+    if db.execute(select(Tenant).where(Tenant.slug == slug)).scalar_one_or_none():
+        slug = f"{slug}-{new_secret('x', 3)[2:].lower()}"
+    tenant = Tenant(name=name, slug=slug, parent_id=parent_id, kind="customer", plan=plan)
+    db.add(tenant)
+    db.flush()
+    policy = Policy(tenant_id=tenant.id, name=f"{name} default", template=template, settings=policy_schema.template_settings(template),
+                    updated_by=actor)
+    db.add(policy)
+    db.flush()
+    tenant.default_policy_id = policy.id
+    audit.record(db, actor, "tenant.created", tenant.id, tenant.id, template=template)
+    return tenant
+
+
 def open_ticket(
     db: Session,
     account_tenant_id: str,

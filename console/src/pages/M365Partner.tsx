@@ -33,7 +33,7 @@ function Partner() {
   if (!partner) return (
     <div className="card" style={{ marginTop: 12 }}>
       <h3>Connect your partner tenant</h3>
-      <p className="small muted">Register an app in your Microsoft partner tenant: multi-tenant, "Allow public client flows" on, with delegated Graph permissions DelegatedAdminRelationship.ReadWrite.All, Directory.Read.All and Group.ReadWrite.All plus offline_access, and the customer-side permissions you administer (for example Policy.ReadWrite.ConditionalAccess, DeviceManagementConfiguration.ReadWrite.All, User.ReadWrite.All). A partner admin then signs in once.</p>
+      <p className="small muted">Register an app in your Microsoft partner (CSP) tenant: multi-tenant, "Allow public client flows" on, with delegated Graph permissions DelegatedAdminRelationship.ReadWrite.All, Directory.Read.All and Group.ReadWrite.All plus offline_access, the customer-side permissions you administer (for example Policy.ReadWrite.ConditionalAccess, DeviceManagementConfiguration.ReadWrite.All, User.ReadWrite.All), and the Microsoft Partner Center permission user_impersonation (so Fenrir can consent its app in customer tenants). Grant admin consent. Then sign in once with an account that belongs to the partner tenant and is an Admin Agent in Partner Center.</p>
       <div className="form-grid">
         <label className="field">Partner tenant ID<input value={form.directoryId} onChange={(e) => setForm({ ...form, directoryId: e.target.value })} /></label>
         <label className="field">App (client) ID<input value={form.clientId} onChange={(e) => setForm({ ...form, clientId: e.target.value })} /></label>
@@ -60,8 +60,26 @@ function Partner() {
         {code && <p>Go to <a href={code.verificationUri} target="_blank" rel="noreferrer">{code.verificationUri}</a> and enter <b className="mono">{code.userCode}</b>, then <button className="ghost" disabled={busy} onClick={poll}>I've signed in</button></p>}
         {Object.keys(partner.roleGroups || {}).length > 0 && <p className="small muted">{Object.keys(partner.roleGroups).length} role groups: add partner staff to "Fenrir GDAP - …" groups to give them that role in customer tenants.</p>}
       </div>
-      {partner.status === "connected" && <><Relationships /><Customers /></>}
+      {partner.status === "connected" && <><PartnerCheck partner={partner} onChecked={reload} /><Customers partner={partner} onChanged={reload} /><Relationships /></>}
     </>
+  );
+}
+
+function PartnerCheck({ partner, onChecked }: { partner: any; onChecked: () => void }) {
+  const { run, busy } = useAction();
+  const check = partner.check;
+  const runCheck = async () => { if (await run(() => api<any>("m365/partner/check"))) onChecked(); };
+  return (
+    <div className="card">
+      <div className="row"><h3 style={{ margin: 0, flex: 1 }}>Partner check</h3>
+        {check && <Pill value={check.problems.length ? `${check.problems.length} to fix` : "ready for GDAP"} tone={check.problems.length ? "bad" : "good"} />}
+        <button className="ghost" disabled={busy} onClick={runCheck}>{check ? "Check again" : "Run check"}</button></div>
+      {!check ? <p className="small muted">Checks that the signed-in account can manage customers: the tenant is your Partner Center (CSP) tenant, the account is a member and an Admin Agent, the app's permissions are consented, and Partner Center accepts the sign-in.</p> : <>
+        <p className="small muted">{displayValue(check.organization || "Unknown organisation")}{check.partnerTenantType ? ` · partner type ${check.partnerTenantType}` : ""}
+          {check.user ? ` · ${check.user} (${check.userType || "member"}${check.adminAgent ? ", Admin Agent" : ""})` : ""} · checked {ago(check.checkedAt)}</p>
+        {check.problems.length > 0 && <ul className="small">{check.problems.map((p: string, i: number) => <li key={i} className="error">{displayValue(p)}</li>)}</ul>}
+      </>}
+    </div>
   );
 }
 
@@ -96,23 +114,46 @@ function Relationships() {
   );
 }
 
-function Customers() {
-  const tenants = useApp().me?.tenants ?? [];
-  const { data, error, reload } = useData<any[]>("m365/partner/customers");
+const GDAP_TONE: Record<string, string> = { active: "good", pending: "warn", expired: "bad", none: "muted" };
+
+function Customers({ partner, onChanged }: { partner: any; onChanged: () => void }) {
+  const { data, error, reload } = useData<any>("m365/partner/discover");
   const { run, busy } = useAction();
-  const [mapping, setMapping] = useState<Record<string, string>>({});
+  const [results, setResults] = useState<any[] | null>(null);
+  const customers: any[] = data?.customers ?? [];
+  const importNow = async (directoryIds?: string[], createRelationships = false) => {
+    const r = await run(() => api<any[]>("m365/partner/import", { body: { directoryIds, createRelationships } }));
+    if (r) { setResults(r); reload(); }
+  };
+  const toggleAuto = async () => { if (await run(() => api("m365/partner/settings", { method: "PUT", body: { autoImport: !partner.autoImport } }))) onChanged(); };
+  const unlinked = customers.filter((c) => !c.connectionId);
   return (
     <div className="card">
-      <h3>GDAP customers</h3>
+      <div className="row"><h3 style={{ margin: 0, flex: 1 }}>Customers in your partner tenant</h3>
+        <label className="small"><input type="checkbox" checked={!!partner.autoImport} disabled={busy} onChange={toggleAuto} /> Import new GDAP customers automatically</label>
+        <button className="primary" disabled={busy || !unlinked.length} title="Creates a Fenrir customer for each, consents the Fenrir app through Partner Center and connects Microsoft 365 where GDAP is active"
+                onClick={() => importNow()}>Import all ({unlinked.length})</button></div>
+      <p className="small muted">From your CSP customer list and GDAP. Customers with active GDAP are connected straight away; the others are created in Fenrir and can be sent a GDAP invitation.{partner.lastImportAt ? ` Last import ${ago(partner.lastImportAt)}.` : ""}</p>
       <ErrorNote error={error} />
-      <Table rows={data?.map((c) => ({ ...c, id: c.tenantId })) ?? undefined} empty="No customers have approved a relationship yet."
-             columns={[{ key: "displayName", label: "Customer", render: (c) => <><b>{displayValue(c.displayName)}</b><div className="small muted mono">{c.tenantId}</div></> },
-                       { key: "fenrir", label: "Fenrir customer", render: (c) => c.connectionId ? <Pill value="connected" tone="good" />
-                         : <select value={mapping[c.tenantId] || ""} onChange={(e) => setMapping({ ...mapping, [c.tenantId]: e.target.value })} aria-label="Fenrir customer">
-                             <option value="">Choose…</option>{tenants.filter((t) => t.kind === "customer").map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</select> },
-                       { key: "act", label: "", render: (c) => !c.connectionId && <button disabled={busy || !mapping[c.tenantId]} onClick={async () => {
-                         if (await run(() => api(`m365/partner/customers/${c.tenantId}/onboard`, { body: { tenantId: mapping[c.tenantId], name: c.displayName } }), "Connected through GDAP")) reload();
-                       }}>Connect</button> }]} />
+      {data?.errors && Object.entries(data.errors).map(([source, message]) => <p key={source} className="error small">{source === "contracts" ? "CSP customer list" : source === "relationships" ? "GDAP relationships" : "GDAP customers"}: {displayValue(message as string)}</p>)}
+      {results && <div className="card" style={{ background: "transparent" }}>
+        <b>Import results</b>
+        <Table rows={results.map((r) => ({ ...r, id: r.tenantId }))} columns={[
+          { key: "displayName", label: "Customer" },
+          { key: "status", label: "Result", render: (r) => <><Pill value={r.status} tone={r.status === "linked" || r.status === "already linked" ? "good" : r.status === "needs attention" ? "bad" : "warn"} />{r.createdCustomer && <span className="small muted"> new Fenrir customer</span>}</> },
+          { key: "detail", label: "", render: (r) => r.invitationUrl ? <a href={r.invitationUrl} target="_blank" rel="noreferrer">Invitation link for the customer's Global Administrator</a>
+            : <span className="small muted">{displayValue(r.error || (r.consent && r.consent !== "consented" && r.consent !== "already" ? `App consent ${r.consent}` : ""))}</span> },
+        ]} />
+        <button className="small ghost" onClick={() => setResults(null)}>Close</button>
+      </div>}
+      <Table rows={customers.map((c) => ({ ...c, id: c.tenantId })) ?? undefined} empty={data ? "Your partner tenant lists no customers. Run the partner check above." : "Loading…"}
+             columns={[{ key: "displayName", label: "Customer", render: (c) => <><b>{displayValue(c.displayName || c.defaultDomain)}</b><div className="small muted mono">{c.defaultDomain || c.tenantId}</div></> },
+                       { key: "gdap", label: "GDAP", render: (c) => <Pill value={c.gdap} tone={GDAP_TONE[c.gdap]} /> },
+                       { key: "sources", label: "Listed in", render: (c) => <span className="small">{c.sources.map((s: string) => s === "contract" ? "CSP" : s === "gdap" ? "GDAP customers" : "GDAP relationships").join(", ")}</span> },
+                       { key: "fenrir", label: "Fenrir", render: (c) => c.connectionId ? <Pill value={`linked: ${c.fenrirTenantName}`} tone="good" /> : <span className="small muted">not linked</span> },
+                       { key: "act", label: "", className: "right", render: (c) => !c.connectionId && <span className="row" style={{ gap: 6, justifyContent: "flex-end" }}>
+                         <button className="small" disabled={busy} onClick={() => importNow([c.tenantId])}>Import</button>
+                         {c.gdap !== "active" && c.gdap !== "pending" && <button className="small ghost" disabled={busy} onClick={() => importNow([c.tenantId], true)}>Import and invite to GDAP</button>}</span> }]} />
     </div>
   );
 }

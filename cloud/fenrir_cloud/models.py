@@ -1977,6 +1977,8 @@ class M365Partner(Base):
     last_error: Mapped[str] = mapped_column(String(300), default="")
     signed_in_as: Mapped[str] = mapped_column(String(320), default="")
     role_groups: Mapped[dict] = mapped_column(JSON, default=dict)  # role template id -> partner security group id
+    # {autoImport, lastImportAt, check: last partner check} - nullable so existing databases gain it additively
+    settings: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=dict)
     created_by: Mapped[str] = mapped_column(String(200), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     refreshed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
