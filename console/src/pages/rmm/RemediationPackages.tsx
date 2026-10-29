@@ -3,6 +3,7 @@ import { ago, api } from "../../api";
 import { useApp } from "../../app-context";
 import { displayValue } from "../../components/DisplayValue";
 import { ErrorNote, Modal, PageHead, Pill, Table, TenantSelect, useAction, useListData } from "../../components/ui";
+import { confirmDialog } from "../../components/dialogs";
 
 interface Package {
   id: string; tenantId: string | null; builtinKey: string | null; name: string; description: string; platforms: string[]; language: string;
@@ -26,7 +27,7 @@ export default function RemediationPackages() {
   const runNow = async (row: Package) => { if (await run(() => api(`rmm/remediation-packages/${row.id}/run`, { body: {} }), "Detection queued")) reload(); };
   const toggle = async (row: Package) => { if (await run(() => api(`rmm/remediation-packages/${row.id}`, { method: "PATCH", body: { enabled: !row.enabled } }))) reload(); };
   const remove = async (row: Package) => {
-    if (window.confirm(`Delete "${row.name}" and its results?`) && await run(() => api(`rmm/remediation-packages/${row.id}`, { method: "DELETE" }), "Deleted")) reload();
+    if (await confirmDialog(`Delete "${row.name}" and its results?`) && await run(() => api(`rmm/remediation-packages/${row.id}`, { method: "DELETE" }), "Deleted")) reload();
   };
 
   return (

@@ -5,6 +5,7 @@ import { ago, api, money } from "../api";
 import { useApp } from "../app-context";
 import { ErrorNote, PageHead, Pill, Stat, Table, useAction, useData } from "../components/ui";
 import { CrmEditor } from "./Crm";
+import { promptDialog } from "../components/dialogs";
 
 const TIMELINE_TONE: Record<string, string> = { ticket: "warn", invoice: "muted", opportunity: "good", task: "blue" };
 
@@ -19,7 +20,7 @@ export default function CrmAccount() {
   const p = data?.profitability;
 
   const setOwner = async () => {
-    const owner = window.prompt("Account owner (name or email of the person responsible)", a?.accountOwner ?? "");
+    const owner = await promptDialog("Account owner (name or email of the person responsible)", a?.accountOwner ?? "");
     if (owner === null) return;
     await run(() => api(`crm/accounts/${id}`, { method: "PATCH", body: { accountOwner: owner } }), "Owner updated");
     reload();

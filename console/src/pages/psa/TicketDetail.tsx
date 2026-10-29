@@ -7,6 +7,7 @@ import { ConnectButtons } from "../../components/rmm";
 import { ErrorNote, Modal, Pill, Table, Tabs, useAction, useData, useListData } from "../../components/ui";
 import ServiceRecord from "./ServiceRecord";
 import { PRIORITY_TONE } from "./ServiceBoard";
+import { confirmDialog, noticeDialog } from "../../components/dialogs";
 
 const NOTE_TONE: Record<string, string> = { discussion: "blue", internal: "warn", resolution: "good", system: "muted" };
 
@@ -229,7 +230,7 @@ function ScheduleModal({ ticket, meta, onClose }: { ticket: any; meta: any; onCl
     <Modal title={`Schedule #${ticket.number}`} onClose={onClose}
            footer={<><button onClick={onClose}>Cancel</button><button className="primary" disabled={busy} onClick={async () => {
              const r = await run(() => api<any>("psa/schedule", { body: { ...form, ticketId: ticket.id, startAt: new Date(form.startAt).toISOString(), endAt: new Date(form.endAt).toISOString() } }), "Scheduled");
-             if (r) { if (r.conflict) window.alert(`${form.member} already has something booked at that time.`); onClose(); }
+             if (r) { if (r.conflict) noticeDialog(`${form.member} already has something booked at that time.`); onClose(); }
            }}>Schedule</button></>}>
       <div className="form-grid">
         <label className="field">Member<select value={form.member} onChange={(e) => setForm({ ...form, member: e.target.value })}>{meta?.members.map((m: any) => <option key={m.email} value={m.email}>{displayValue(m.name)}</option>)}</select></label>
@@ -251,7 +252,7 @@ function MergeModal({ ticket, onClose }: { ticket: any; onClose: (target?: strin
       <p className="muted small">Notes and time move to the other ticket. This one closes and links to it.</p>
       <input placeholder="Search tickets" value={q} onChange={(e) => setQ(e.target.value)} style={{ width: "100%", marginBottom: 8 }} />
       <Table rows={data?.filter((x) => x.id !== ticket.id)} onRow={async (target) => {
-        if (window.confirm(`Merge #${ticket.number} into #${target.number}?`) && await run(() => api(`tickets/${ticket.id}/merge`, { body: { intoTicketId: target.id } }), "Merged")) onClose(target.id);
+        if (await confirmDialog(`Merge #${ticket.number} into #${target.number}?`) && await run(() => api(`tickets/${ticket.id}/merge`, { body: { intoTicketId: target.id } }), "Merged")) onClose(target.id);
       }} columns={[{ key: "number", label: "#", render: (x) => `#${x.number}` }, { key: "subject", label: "Summary" }, { key: "account", label: "Company" }]} />
     </Modal>
   );

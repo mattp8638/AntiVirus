@@ -5,6 +5,7 @@ import { ago, api, downloadFile, fmtTime } from "../../api";
 import { useApp } from "../../app-context";
 import { Markdown } from "../../components/Markdown";
 import { Modal, PageHead, Pill, Table, TenantSelect, useAction, useData, useListData } from "../../components/ui";
+import { confirmDialog } from "../../components/dialogs";
 
 const TONE: Record<string, string> = { draft: "muted", in_review: "warn", approved: "good", retired: "muted" };
 const FRAMEWORK_SHORT: Record<string, string> = { "iso-27001": "ISO 27001", "cyber-essentials": "CE", "nist-csf-2": "NIST", "uk-gdpr": "GDPR",
@@ -121,7 +122,7 @@ export function PolicyEditor() {
                   <select value={months} onChange={(e) => setMonths(Number(e.target.value))} aria-label="Review period">{[6, 12, 24].map((m) => <option key={m} value={m}>review in {m} months</option>)}</select>
                   <button className="primary" disabled={busy} onClick={() => act("approve", "Approved and published")}>Approve</button></>}
                 {data.status === "in_review" && <button disabled={busy} onClick={() => act("reject", "Sent back to draft")}>Send back</button>}
-                {data.status !== "retired" ? <button className="danger" disabled={busy} onClick={() => confirm("Retire this policy?") && act("retire", "Retired")}>Retire</button>
+                {data.status !== "retired" ? <button className="danger" disabled={busy} onClick={async () => (await confirmDialog("Retire this policy?")) && act("retire", "Retired")}>Retire</button>
                   : <button disabled={busy} onClick={() => act("restore", "Restored as a draft")}>Restore</button>}
               </div>
             </>}

@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { ago, api, downloadFile, fmtTime, uploadFile } from "../../api";
 import { useApp } from "../../app-context";
 import { Modal, PageHead, Pill, Stat, Table, TenantSelect, useAction, useData, useListData } from "../../components/ui";
+import { confirmDialog } from "../../components/dialogs";
 
 // Compliance programmes per customer: pick frameworks, work through every requirement or question with an
 // answer, status, owner and due date, attach evidence, and see which policies cover it.
@@ -129,7 +130,7 @@ export function ProgrammeDetail() {
                   <button onClick={() => run(() => downloadFile(`grc/programmes/${tid}/${framework}/export`, `${framework}.csv`))}>Export answers (CSV)</button>
                   <button onClick={() => setHistory(true)}>History</button>
                   {can("grc") && !data.retired && <button onClick={() => setImporting(true)}>Import exact question set</button>}
-                  {can("grc") && data.adopted && <button className="danger" onClick={async () => { if (confirm("Stop tracking this framework? Answers, evidence and policies are kept.") && await run(() => api(`grc/programmes/${tid}/${framework}`, { method: "DELETE" }), "Framework paused")) navigate("/governance"); }}>Pause</button>}
+                  {can("grc") && data.adopted && <button className="danger" onClick={async () => { if (await confirmDialog("Stop tracking this framework? Answers, evidence and policies are kept.") && await run(() => api(`grc/programmes/${tid}/${framework}`, { method: "DELETE" }), "Framework paused")) navigate("/governance"); }}>Pause</button>}
                 </div>} />
       {data.retired && <p className="card">This framework has been removed from the UK catalogue. Existing answers, evidence and exports remain available as a read-only record.</p>}
       {data.owner && <p className="small muted">{displayValue(data.owner)} · {displayValue(data.assessmentStyle)}<br />{displayValue(data.targetScope)} {data.sourceUrl && <a href={data.sourceUrl} target="_blank" rel="noopener noreferrer">Official guidance</a>}</p>}
@@ -361,7 +362,7 @@ export function EvidenceTab() {
                        { key: "tenantId", label: "Customer", render: (e) => tenantName(e.tenantId) },
                        { key: "links", label: "Supports", render: (e) => e.links.map((l: string) => <span key={l} className="chip mono">{l}</span>) },
                        { key: "uploadedBy", label: "Added", render: (e) => <span className="small">{ago(e.createdAt)}<div className="muted">{displayValue(e.uploadedBy)}</div></span> },
-                       { key: "actions", label: "", render: (e) => can("grc") && <button className="small danger" onClick={async () => { if (confirm(`Delete ${e.title}?`) && await run(() => api(`grc/evidence/${e.id}`, { method: "DELETE" }), "Deleted")) reload(); }}>Delete</button> }]} />
+                       { key: "actions", label: "", render: (e) => can("grc") && <button className="small danger" onClick={async () => { if (await confirmDialog(`Delete ${e.title}?`) && await run(() => api(`grc/evidence/${e.id}`, { method: "DELETE" }), "Deleted")) reload(); }}>Delete</button> }]} />
       {adding && <AddEvidence tenantId={tenantId} links={[]} onClose={() => { setAdding(false); reload(); }} />}
     </div>
   );

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
 import { Modal, Pill, useAction, useData, useListData } from "./ui";
+import { confirmDialog, promptDialog } from "./dialogs";
 
 export interface Targets {
   deviceIds: string[];
@@ -93,7 +94,7 @@ export function useConnect() {
   const connect = async (deviceId: string, mode: "desktop" | "terminal" | "files" | "backstage" = "desktop", ticketId?: string) => {
     // Backstage is silent (no prompt, banner or screen), so it needs a stated reason and a fresh sign-in check.
     const reason = mode === "backstage" && !ticketId
-      ? window.prompt("Reason for backstage access (kept in the audit log; the session is recorded)") : "";
+      ? await promptDialog("Reason for backstage access (kept in the audit log; the session is recorded)") : "";
     if (reason === null) return;
     // Open the window first so pop-up blockers treat it as a direct click. It starts on an in-app page
     // (not about:blank) so an installed console opens it as an app window without browser bars.
@@ -152,7 +153,7 @@ export function JobDetail({ jobId, onClose }: { jobId: string; onClose: () => vo
     <Modal title={data.name} onClose={onClose}
            footer={<>{data.status === "running" && can("respond") && <button disabled={busy} onClick={async () => { await run(() => api(`rmm/jobs/${jobId}/cancel`, { method: "POST" }), "Queued actions cancelled; stop requested for running work"); reload(); }}>Stop job</button>}
                      {can("respond") && <button className="danger" disabled={busy} onClick={async () => {
-                       if (confirm("Remove this job and stop its outstanding work? Completed changes and audit history are retained.")) {
+                       if (await confirmDialog("Remove this job and stop its outstanding work? Completed changes and audit history are retained.")) {
                          if (await run(() => api(`rmm/jobs/${jobId}`, { method: "DELETE" }), "Job removed; outstanding work cancelled or stopping")) onClose();
                        }
                      }}>Remove job</button>}

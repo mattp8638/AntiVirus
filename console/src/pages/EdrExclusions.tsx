@@ -3,6 +3,7 @@ import { ago, api } from "../api";
 import { useApp } from "../app-context";
 import { displayValue } from "../components/DisplayValue";
 import { ErrorNote, Modal, PageHead, Pill, Table, TenantSelect, useAction, useListData } from "../components/ui";
+import { confirmDialog } from "../components/dialogs";
 
 interface Exclusion {
   id: string; tenantId: string | null; name: string; kind: string; parentImage: string; parentSha256: string[]; childImage: string;
@@ -26,7 +27,7 @@ export default function EdrExclusions() {
     if (await run(() => api(`edr/exclusions/${row.id}`, { method: "PATCH", body: { enabled: !row.enabled } }), row.enabled ? "Exclusion disabled" : "Exclusion enabled")) reload();
   };
   const remove = async (row: Exclusion) => {
-    if (!window.confirm(`Delete the exclusion "${row.name}"?`)) return;
+    if (!await confirmDialog(`Delete the exclusion "${row.name}"?`)) return;
     if (await run(() => api(`edr/exclusions/${row.id}`, { method: "DELETE" }), "Exclusion deleted")) reload();
   };
 

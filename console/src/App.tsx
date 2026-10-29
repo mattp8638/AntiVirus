@@ -63,6 +63,7 @@ import EdrExclusions from "./pages/EdrExclusions";
 import Exposure from "./pages/Exposure";
 import Elevation from "./pages/Elevation";
 import RecordingPlayer from "./pages/RecordingPlayer";
+import { DialogHost } from "./components/dialogs";
 
 const NAV: { group: string; items: { to: string; label: string; icon: string }[] }[] = [
   { group: "Overview", items: [{ to: "/", label: "Dashboard", icon: "◎" }, { to: "/reports", label: "Reports", icon: "▤" }] },
@@ -301,6 +302,10 @@ function Shell() {
 }
 
 export function Root() {
+  return <><RootContent /><DialogHost /></>;
+}
+
+function RootContent() {
   const { me, loading } = useApp();
   const location = useLocation();
   // Opened from a phone's camera when it scans an enrolment code: no sign-in.

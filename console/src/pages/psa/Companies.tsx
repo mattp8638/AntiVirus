@@ -5,6 +5,7 @@ import { ago, api, money } from "../../api";
 import { useApp } from "../../app-context";
 import { Modal, PageHead, Pill, Table, Tabs, useAction, useData, useListData } from "../../components/ui";
 import { NewTicket, PRIORITY_TONE } from "./ServiceBoard";
+import { noticeDialog } from "../../components/dialogs";
 
 export default function Companies() {
   const navigate = useNavigate();
@@ -125,7 +126,7 @@ export function Configurations() {
     <>
       <PageHead title="Configurations" subtitle="The CMDB: every device, network appliance, licence and service you look after, linked to tickets."
                 actions={can("crm") && <>
-                  <button disabled={busy} onClick={async () => { const r = await run(() => api<any>("psa/configurations/sync", { body: { tenantId: tenantId || undefined } })); if (r) { window.alert(`${r.created} created, ${r.updated} updated from RMM`); reload(); } }}>Sync from RMM</button>
+                  <button disabled={busy} onClick={async () => { const r = await run(() => api<any>("psa/configurations/sync", { body: { tenantId: tenantId || undefined } })); if (r) { noticeDialog(`${r.created} created, ${r.updated} updated from RMM`); reload(); } }}>Sync from RMM</button>
                   <button className="primary" onClick={() => setEditing({ type: "Firewall", status: "Active", accountTenantId: tenantId })}>New configuration</button>
                 </>} />
       <select value={type} onChange={(e) => setType(e.target.value)} style={{ marginBottom: 12 }}><option value="">All types</option>{[...new Set((data || []).map((c) => c.type))].map((t) => <option key={t}>{displayValue(t)}</option>)}</select>

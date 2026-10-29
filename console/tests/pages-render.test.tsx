@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, expect, test, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -210,7 +210,6 @@ test("UK governance catalogue shows scope and adopts a working DORA programme", 
 }, 30000);
 
 test("a dispatched job can be stopped and removed while awaiting its endpoint", async () => {
-  const confirmation = vi.spyOn(window, "confirm").mockReturnValue(true);
   render(<MemoryRouter initialEntries={[`/automation?job=${ids.cancellationJob}`]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Root /></MemoryRouter>);
   await settled();
   fireEvent.click(screen.getByRole("button", { name: "Stop job", exact: true }));
@@ -219,10 +218,14 @@ test("a dispatched job can be stopped and removed while awaiting its endpoint", 
   expect(document.body.textContent).toContain("awaiting stop acknowledgement");
   fireEvent.click(screen.getByRole("button", { name: "Remove job", exact: true }));
   await settled();
+  // The in-page confirmation (not the browser's), with a red button for a destructive action.
+  const dialog = screen.getByRole("dialog", { name: "Please confirm" });
+  expect(dialog.textContent).toContain("Remove this job and stop its outstanding work?");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Continue" }));
+  await settled();
   assertView("Automation › remove dispatched job");
   expect(screen.queryByRole("dialog", { name: "Cancellable UI job" })).toBeNull();
   expect(document.body.textContent).not.toContain("Cancellable UI job");
-  confirmation.mockRestore();
 }, 20000);
 
 test("decommissioning succeeds while a command is awaiting its stop acknowledgement", async () => {

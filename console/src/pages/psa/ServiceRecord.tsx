@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { api, fmtTime } from "../../api";
 import { useApp } from "../../app-context";
 import { Pill, useAction, useData, useListData } from "../../components/ui";
+import { confirmDialog, promptDialog } from "../../components/dialogs";
 
 export const RECORD_TYPES: Record<string, string> = { incident: "Incident", service_request: "Service request", problem: "Problem", change: "Change" };
 export const CHANGE_TONE: Record<string, string> = { Draft: "muted", Submitted: "warn", Approved: "blue", Rejected: "bad", Implemented: "good",
@@ -28,7 +29,7 @@ export default function ServiceRecord({ ticket, onChange }: { ticket: any; onCha
     if (await run(() => api(`tickets/${ticket.id}/itil`, { method: "PATCH", body }), message)) { onChange(); reloadLinks(); }
   };
   const act = async (action: string, needsComment = false) => {
-    const comment = needsComment || action === "approve" ? window.prompt(action === "approve" ? "Approval comment (optional)" : "Reason") : "";
+    const comment = needsComment || action === "approve" ? await promptDialog(action === "approve" ? "Approval comment (optional)" : "Reason") : "";
     if (needsComment && !comment) return;
     if (await run(() => api(`tickets/${ticket.id}/change/${action}`, { body: { comment: comment || "" } }), `Change ${action}d`)) onChange();
   };
@@ -69,7 +70,7 @@ export default function ServiceRecord({ ticket, onChange }: { ticket: any; onCha
         {editable && <div className="row" style={{ marginTop: 8, gap: 6 }}>
           <button disabled={busy} onClick={() => save({ rootCause: draft.rootCause, workaround: draft.workaround })}>Save</button>
           {links?.incidents.some((i: any) => !i.closed) && <button className="primary" disabled={busy} onClick={async () => {
-            if (!window.confirm("Resolve every open linked incident with this problem's root cause as the resolution note?")) return;
+            if (!await confirmDialog("Resolve every open linked incident with this problem's root cause as the resolution note?")) return;
             if (await run(() => api(`tickets/${ticket.id}/problem/resolve-linked`, { body: {} }), "Linked incidents resolved")) { onChange(); reloadLinks(); }
           }}>Resolve linked incidents</button>}
         </div>}

@@ -4,6 +4,7 @@ import { ago, api } from "../../api";
 import { useApp } from "../../app-context";
 import { emptyTargets, JobDetail, TargetPicker, Targets } from "../../components/rmm";
 import { Modal, PageHead, Pill, Table, useAction, useListData } from "../../components/ui";
+import { confirmDialog } from "../../components/dialogs";
 
 const LANGS = ["powershell", "cmd", "bash", "sh", "python"];
 const LANG_PLATFORMS: Record<string, string[]> = { powershell: ["windows"], cmd: ["windows"], bash: ["linux", "macos"], sh: ["linux", "macos"], python: ["windows", "linux", "macos"] };
@@ -60,7 +61,7 @@ function ScriptEditor({ script, onClose, onRun }: { script: any; onClose: () => 
     <Modal title={form.id ? form.name : "New script"} onClose={onClose}
            footer={<>
              {form.id && form.builtin && can("configure") && <button onClick={() => save(true)} disabled={busy}>Duplicate to edit</button>}
-             {form.id && !form.builtin && can("configure") && <button className="danger" onClick={async () => { if (window.confirm("Delete this script?") && await run(() => api(`rmm/scripts/${form.id}`, { method: "DELETE" }), "Deleted")) onClose(); }}>Delete</button>}
+             {form.id && !form.builtin && can("configure") && <button className="danger" onClick={async () => { if (await confirmDialog("Delete this script?") && await run(() => api(`rmm/scripts/${form.id}`, { method: "DELETE" }), "Deleted")) onClose(); }}>Delete</button>}
              {form.id && <button onClick={() => onRun(form)}>Run…</button>}
              {!readOnly && <button className="primary" disabled={busy || !form.name || !form.body} onClick={() => save()}>Save</button>}
            </>}>

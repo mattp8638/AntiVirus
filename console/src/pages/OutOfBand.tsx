@@ -3,6 +3,7 @@ import { ago, api } from "../api";
 import { useApp } from "../app-context";
 import { displayValue } from "../components/DisplayValue";
 import { ErrorNote, Modal, PageHead, Pill, Table, TenantSelect, useAction, useListData } from "../components/ui";
+import { confirmDialog } from "../components/dialogs";
 
 interface Endpoint {
   id: string; tenantId: string; deviceId: string | null; deviceName: string; name: string; host: string; port: number; tls: boolean;
@@ -25,13 +26,13 @@ export default function OutOfBand() {
     if (r) reload();
   };
   const power = async (row: Endpoint, action: string, label: string) => {
-    if (action !== "on" && !window.confirm(`${label} ${row.name || row.host}? This acts on the hardware, whatever Windows is doing.`)) return;
+    if (action !== "on" && !await confirmDialog(`${label} ${row.name || row.host}? This acts on the hardware, whatever Windows is doing.`)) return;
     const r = await run(() => api<any>(`oob/amt/${row.id}/power`, { body: { action } }),
                         row.route === "agent" ? `${label} sent through ${row.probeName}` : `${label} sent`);
     if (r) reload();
   };
   const remove = async (row: Endpoint) => {
-    if (window.confirm(`Remove ${row.name || row.host}? Its stored AMT password is deleted.`) && await run(() => api(`oob/amt/${row.id}`, { method: "DELETE" }), "Removed")) reload();
+    if (await confirmDialog(`Remove ${row.name || row.host}? Its stored AMT password is deleted.`) && await run(() => api(`oob/amt/${row.id}`, { method: "DELETE" }), "Removed")) reload();
   };
 
   return (
