@@ -119,9 +119,18 @@ class IntelCache:
             host = value.lower().strip(".")
             if kind == "url":
                 match = re.match(r"^[a-z]+://([^/:?#]+)", host)
-                if not match:
-                    continue
-                host = match.group(1)
+                if match:
+                    host = match.group(1)
+            if host.startswith("||") and host.endswith("^"):
+                host = host[2:-1]
+            elif host.startswith("||"):
+                host = host[2:]
+            parts = host.split()
+            if len(parts) >= 2 and parts[0] in {"0.0.0.0", "127.0.0.1"}:
+                host = parts[1]
+            host = host.strip(".^/ ")
+            if not host:
+                continue
             # A tenant "allow" overrides a global "malicious".
             if verdict == "allow" or host not in mapping:
                 mapping[host] = (verdict, category or "malware")
@@ -149,8 +158,8 @@ def decide(domain: str, dns_settings: dict, intel: dict[str, tuple[str, str]]) -
             if verdict == "allow":
                 return Decision("allow", "intel allow")
             if verdict in {"malicious", "suspicious"}:
-                cat = category if category in {"phishing", "command-and-control", "malware"} else "malware"
-                if cat in blocked_categories or verdict == "malicious":
+                cat = (category or "malware").lower()
+                if verdict == "malicious" or cat in blocked_categories or not blocked_categories:
                     return Decision("block", f"threat intel ({verdict})", cat)
     for category, domains in CATEGORY_DOMAINS.items():
         if category in blocked_categories and any(c in domains for c in candidates):

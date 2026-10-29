@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import audit, services
-from .models import (Alert, Command, ConditionState, Device, DeviceGroup, DeviceMetric, DevicePatch, Job, MonitorCondition,
+from .models import (Alert, Command, ConditionState, Device, DeviceGroup, DeviceMetric, DevicePatch, DiskTelemetryHistory, Job, MonitorCondition,
                      PatchApproval, PatchPolicy, ScheduledTask, Script, SoftwarePackage, Ticket, Vulnerability, utcnow)
 
 log = logging.getLogger("fenrir.rmm")
@@ -1157,6 +1157,30 @@ def record_heartbeat_metrics(db: Session, device: Device, metrics: dict) -> None
     db.add(DeviceMetric(device_id=device.id, cpu=clean.get("cpuPercent", 0), memory=clean.get("memoryPercent", 0),
                         disk_free_percent=min(free) if free else 100))
 
+    # Record disk telemetry history for storage predictive analytics
+    for disk in clean.get("disks", []):
+        mount = str(disk.get("mount", ""))[:120]
+        total_gb = float(disk.get("totalGb", 0))
+        free_gb = float(disk.get("freeGb", 0))
+        used_gb = max(0.0, total_gb - free_gb)
+        free_percent = float(disk.get("freePercent", 100))
+        if mount and total_gb > 0:
+            db.add(DiskTelemetryHistory(
+                device_id=device.id,
+                mount=mount,
+                total_gb=total_gb,
+                used_gb=used_gb,
+                free_gb=free_gb,
+                free_percent=free_percent
+            ))
+
+    # Evaluate CPU/RAM anomalies
+    try:
+        from . import analytics
+        analytics.process_device_anomalies(db, device, metrics)
+    except Exception as exc:
+        log.warning("Anomaly evaluation failed for device %s: %s", device.id, exc)
+
 
 def evaluate_offline(db: Session, now: datetime | None = None) -> int:
     now = now or utcnow()
@@ -1207,4 +1231,13 @@ def tick(db: Session) -> dict:
     result["undeliveredCommandsExpired"] = expire_stale_queued_commands(db, now)
     cutoff = now - timedelta(days=30)
     db.query(DeviceMetric).filter(DeviceMetric.at < cutoff).delete()
+    db.query(DiskTelemetryHistory).filter(DiskTelemetryHistory.at < now - timedelta(days=90)).delete()
+
+    # Periodic storage exhaustion prediction pass
+    try:
+        from . import analytics
+        analytics.tick_analytics(db)
+    except Exception as exc:
+        log.warning("Analytics tick failed: %s", exc)
+
     return result
