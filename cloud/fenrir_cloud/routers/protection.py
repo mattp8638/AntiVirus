@@ -478,3 +478,17 @@ def compliance_report(tenant_id: str | None = None, framework: str | None = None
     principal.check_tenant(tid)
     tenant = db.get(Tenant, tid)
     return {"tenant": tenant.name, "frameworks": compliance.evaluate(db, tenant, framework)}
+
+
+
+@console.post("/vulnerabilities/{vuln_id}/cyber-heal")
+def cyber_heal(vuln_id: int, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Trigger automated "Cyber Heal" zero-interaction remediation for a vulnerability."""
+    principal.require("configure")
+    res = vulnmgmt.cyber_heal_remediate(db, vuln_id)
+    if res["status"] == "skipped":
+        raise HTTPException(400, res["reason"])
+    if res["status"] == "failed":
+        raise HTTPException(404, res["reason"])
+    db.commit()
+    return res
