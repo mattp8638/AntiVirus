@@ -122,14 +122,22 @@ def create(db: Session, msp_tenant_id: str, directory_id: str, client_id: str, c
 # --------------------------------------------------------------------------- partner sign-in (device code)
 
 
+# Microsoft only lets a partner admin into a customer tenant with an MFA-verified sign-in; otherwise every customer token
+# fails with AADSTS50076 (or 50079 when the account has no MFA method yet). So the partner sign-in asks for MFA.
+MFA_CLAIMS = '{"access_token":{"amr":{"essential":true,"values":["mfa"]}},"id_token":{"amr":{"essential":true,"values":["mfa"]}}}'
+MFA_ERRORS = ("AADSTS50076", "AADSTS50079", "AADSTS50158")
+
+
 def start_signin(row: M365Partner, purpose: str = "graph") -> dict:
     """Device-code sign-in. ``graph`` signs in and asks for the partner Graph permissions; ``partner-center`` asks for
-    Partner Center access (needed to consent Fenrir's app in customer tenants)."""
+    Partner Center access (needed to consent Fenrir's app in customer tenants). Both ask Microsoft for MFA."""
     if purpose not in SIGNIN_SCOPES:
         raise PartnerError("Unknown sign-in purpose")
+    form = {"client_id": row.client_id, "scope": SIGNIN_SCOPES[purpose]}
     with http_client() as client:
-        response = client.post(f"{LOGIN}/{row.partner_directory_id}/oauth2/v2.0/devicecode",
-                               data={"client_id": row.client_id, "scope": SIGNIN_SCOPES[purpose]})
+        response = client.post(f"{LOGIN}/{row.partner_directory_id}/oauth2/v2.0/devicecode", data={**form, "claims": MFA_CLAIMS})
+        if response.status_code != 200:  # a tenant that rejects the claims request still gets a sign-in code
+            response = client.post(f"{LOGIN}/{row.partner_directory_id}/oauth2/v2.0/devicecode", data=form)
     if response.status_code != 200:
         raise PartnerError("Microsoft did not issue a sign-in code: " + _error(response))
     data = response.json()
@@ -181,6 +189,8 @@ def complete_signin(row: M365Partner, device_code: str) -> str:
         _store_secrets(row, {**secrets, "refreshToken": data["refresh_token"], "clientType": client_type})
         row.status, row.last_error, row.refreshed_at = "connected", "", utcnow()
         row.signed_in_as = str(_claim(data.get("id_token") or data.get("access_token") or "", "upn") or "")[:320]
+        amr = _claim(data.get("id_token") or "", "amr") or _claim(data.get("access_token") or "", "amr")
+        row.settings = {**(row.settings or {}), "signInMfa": ("mfa" in amr) if isinstance(amr, list) else None, "mfaRequired": False}
         return "ok"
     code = None
     try:
@@ -223,6 +233,12 @@ def access_token_for(row: M365Partner, directory_id: str | None = None, client: 
         message = _error(response)
         if partner_itself:
             row.status, row.last_error = "error", message
+        if any(code in response.text for code in MFA_ERRORS):
+            row.settings = {**(row.settings or {}), "mfaRequired": True}
+            raise PartnerError("Microsoft requires multi-factor authentication for partner access" +
+                               ("" if partner_itself else " to this customer") + ", and Fenrir's partner sign-in was not MFA-verified. "
+                               "Click \"Sign in again\" and complete MFA when Microsoft asks (the account needs an MFA method in "
+                               f"the partner tenant). Microsoft said: {message[:120]}")
         raise PartnerError("Microsoft refused a token: " + message)
     data = response.json()
     updated = {**secrets, "clientType": client_type}
@@ -432,7 +448,13 @@ def check(row: M365Partner) -> dict:
     and group membership, so those are only judged once it is granted), then tenant, account and Partner Center.
     ``actions`` says which one-click approvals would fix what was found."""
     problems: list[str] = []
-    actions = {"approveGraph": False, "approvePartnerCenter": False}
+    actions = {"approveGraph": False, "approvePartnerCenter": False, "signInWithMfa": False}
+    settings = row.settings or {}
+    if settings.get("mfaRequired") or settings.get("signInMfa") is False:
+        actions["signInWithMfa"] = True
+        problems.append("The partner sign-in was not MFA-verified, and Microsoft refuses partner access to customer tenants "
+                        "without MFA (AADSTS50076). Click \"Sign in again with MFA\" and complete MFA when Microsoft asks; if it "
+                        "does not ask, set up MFA for this account in the partner tenant first.")
     out: dict = {"partnerTenantId": row.partner_directory_id}
     with http_client() as client:
         token = access_token_for(row, client=client)

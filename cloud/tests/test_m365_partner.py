@@ -42,6 +42,9 @@ class FakeMicrosoft:
         self.device_scopes = []
         self.jwt_scopes = None  # set to issue JWT access tokens carrying this scp claim
         self.partner_center_consented = True
+        self.customer_requires_mfa = False  # customer Conditional Access / security defaults
+        self.honour_mfa_claims = True  # Microsoft prompts for MFA when the sign-in asks for it
+        self.mfa_done = False
         # Delegated permission grants in the partner tenant; the consent page created Fenrir's Graph grant.
         self.service_principals = {CLIENT_ID: "sp-fenrir", "fa3d9a0c-3fb0-42cc-9193-47c7ecd2edbd": "sp-partner-center",
                                    "00000003-0000-0000-c000-000000000000": "sp-graph"}
@@ -56,6 +59,7 @@ class FakeMicrosoft:
             directory = url.path.split("/")[1]
             if url.path.endswith("/devicecode"):
                 self.device_scopes.append(form.get("scope", "").replace("+", " ").replace("%3A", ":").replace("%2F", "/"))
+                self.mfa_done = "claims" in form and self.honour_mfa_claims
                 return httpx.Response(200, json={"device_code": "DEVICE-SECRET", "user_code": "ABCD-EFGH", "expires_in": 900, "interval": 1})
             if "partnercenter" in form.get("scope", "") and not self.partner_center_consented:
                 return httpx.Response(400, json={"error": "invalid_grant", "error_description": (
@@ -73,7 +77,15 @@ class FakeMicrosoft:
                 return httpx.Response(401, json={"error": "invalid_client", "error_description": (
                     "AADSTS7000218: The request body must contain the following parameter: 'client_assertion' or 'client_secret'.")})
             if form["grant_type"].endswith("device_code"):
-                return httpx.Response(200, json={"access_token": "partner-token", "refresh_token": "rt-1"})
+                import base64
+
+                amr = ["pwd", "mfa"] if self.mfa_done else ["pwd"]
+                id_token = "e30." + base64.urlsafe_b64encode(json.dumps({"upn": "admin@palmertech.co.uk", "amr": amr}).encode()).decode().rstrip("=") + ".x"
+                return httpx.Response(200, json={"access_token": "partner-token", "refresh_token": "rt-1", "id_token": id_token})
+            if directory == CUSTOMER_DIR and self.customer_requires_mfa and not self.mfa_done:
+                return httpx.Response(400, json={"error": "invalid_grant", "error_description": (
+                    "AADSTS50076: Due to a configuration change made by your administrator, or because you moved to a new location, "
+                    "you must use multi-factor authentication to access '00000003-0000-0000-c000-000000000000'.")})
             self.refresh_tokens.append(form.get("refresh_token"))
             if directory not in self.gdap_tenants | {PARTNER_DIR}:
                 return httpx.Response(400, json={"error": "invalid_grant", "error_description": "AADSTS: no GDAP relationship"})
@@ -418,7 +430,7 @@ def test_unconsented_sign_in_points_to_one_click_approvals(client, admin, micros
     microsoft.partner_tenant_type, microsoft.member_of = None, []  # hidden without Directory.Read.All
     microsoft.partner_center_consented = False
     check = client.get("/api/console/m365/partner/check", headers=admin).json()
-    assert check["actions"] == {"approveGraph": True, "approvePartnerCenter": True}
+    assert check["actions"] == {"approveGraph": True, "approvePartnerCenter": True, "signInWithMfa": False}
     assert len(check["problems"]) == 2 and "Approve Microsoft Graph permissions" in check["problems"][0]
     assert not any("not registered" in p or "Admin Agents" in p for p in check["problems"])
 
@@ -429,7 +441,7 @@ def test_unconsented_sign_in_points_to_one_click_approvals(client, admin, micros
     microsoft.partner_tenant_type, microsoft.member_of = "resellerPartnerDelegatedAdmin", ["AdminAgents"]
     microsoft.partner_center_consented = True
     ready = client.get("/api/console/m365/partner/check", headers=admin).json()
-    assert ready["problems"] == [] and ready["actions"] == {"approveGraph": False, "approvePartnerCenter": False}
+    assert ready["problems"] == [] and not any(ready["actions"].values())
 
 
 def test_one_sign_in_grants_partner_center_and_gives_back_the_setup_permission(client, admin, microsoft):
@@ -449,3 +461,18 @@ def test_one_sign_in_grants_partner_center_and_gives_back_the_setup_permission(c
     client.post("/api/console/m365/partner/signin", headers=admin, json={})
     again = client.post("/api/console/m365/partner/signin/poll", headers=admin).json()
     assert again["setup"]["partnerCenter"] == "already granted" and len(microsoft.grants) == 2
+
+
+def test_customer_mfa_requirement_is_met_by_an_mfa_partner_sign_in(client, admin, microsoft):
+    microsoft.customer_requires_mfa, microsoft.honour_mfa_claims = True, False  # the sign-in did not get MFA
+    proof = connect_partner(client, admin)
+    result = client.post("/api/console/m365/partner/import", headers=proof, json={"directoryIds": [CUSTOMER_DIR]}).json()[0]
+    assert result["status"] == "needs attention" and "multi-factor authentication" in result["error"]
+    check = client.get("/api/console/m365/partner/check", headers=admin).json()
+    assert check["actions"]["signInWithMfa"] and "MFA" in check["problems"][0]
+
+    microsoft.honour_mfa_claims = True  # signing in again asks for MFA, and Microsoft prompts for it
+    client.post("/api/console/m365/partner/signin", headers=admin, json={})
+    assert client.post("/api/console/m365/partner/signin/poll", headers=admin).json()["status"] == "ok"
+    assert client.post("/api/console/m365/partner/import", headers=proof, json={"directoryIds": [CUSTOMER_DIR]}).json()[0]["status"] == "linked"
+    assert not client.get("/api/console/m365/partner/check", headers=admin).json()["actions"]["signInWithMfa"]
