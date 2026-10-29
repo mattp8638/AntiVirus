@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from . import evidence, services
+from . import edr_exclusions, evidence, services
 from .models import Alert, AutomationRule, DetectionRule, Device, Event, Incident, RuleMatch, Tenant, utcnow
 from .normalize import normalize
 from .sigma import CorrelationRule, SigmaError, SigmaRule, parse_rule
@@ -165,6 +165,7 @@ def ingest(db: Session, device: Device, raw_events: list[dict], *, apply_device_
     compiled = RULES.get(db)
     tenant = db.get(Tenant, device.tenant_id)
     new_alerts: list[Alert] = []
+    sigma_exclusions: list[dict] | None = None  # loaded on the first rule hit
 
     for raw in raw_events:
         if not isinstance(raw, dict):
@@ -198,6 +199,13 @@ def ingest(db: Session, device: Device, raw_events: list[dict], *, apply_device_
             db.add(RuleMatch(tenant_id=device.tenant_id, rule_id=row.id, device_id=device.id, event_pk=event.id,
                              group_key="", at=event.occurred_at))
             _bump_hits(db, row.id)
+            if sigma_exclusions is None:
+                sigma_exclusions = edr_exclusions.agent_rules(edr_exclusions.active_for(db, device.tenant_id), "sigma")
+            excluded = edr_exclusions.first_match(sigma_exclusions, fields) if sigma_exclusions else None
+            if excluded is not None:
+                # A trusted RMM/tooling process chain: keep the match for hunting, raise nothing.
+                edr_exclusions.record_hit(db, excluded["id"], event.occurred_at)
+                continue
             if rule.level in ALERT_LEVELS:
                 alert = _raise_alert(db, device, row.id, rule.title, rule.level, rule.mitre, event,
                                      {"description": rule.description, "falsePositives": rule.falsepositives,
@@ -233,6 +241,10 @@ def _apply_side_effects(db: Session, device: Device, norm: dict) -> None:
         device.isolated = True
     elif event_type == "device.released":
         device.isolated = False
+    elif event_type == "edr.exclusion.applied":
+        rule_id = str(norm["fields"].get("exclusionId") or "")
+        if rule_id and any(r.id == rule_id for r in edr_exclusions.active_for(db, device.tenant_id)):
+            edr_exclusions.record_hit(db, rule_id, norm["occurred_at"])
     elif event_type in {"device.inventory.snapshot", "inventory.snapshot"}:
         from .exposure import record_inventory
 

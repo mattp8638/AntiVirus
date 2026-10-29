@@ -54,6 +54,7 @@ import { ProgrammeDetail } from "./pages/grc/Programmes";
 import { PolicyEditor as GrcPolicyEditor } from "./pages/grc/Policies";
 import ProtectionHealth from "./pages/ProtectionHealth";
 import Quarantine from "./pages/Quarantine";
+import EdrExclusions from "./pages/EdrExclusions";
 import Elevation from "./pages/Elevation";
 import RecordingPlayer from "./pages/RecordingPlayer";
 
@@ -80,6 +81,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string }[]
       { to: "/incidents", label: "Incidents", icon: "⚑" },
       { to: "/alerts", label: "Alerts", icon: "△" },
       { to: "/policies", label: "Policies", icon: "⚙" },
+      { to: "/edr-exclusions", label: "EDR exclusions", icon: "⊜" },
       { to: "/hunt", label: "Threat hunting", icon: "⌕" },
       { to: "/rules", label: "Detection rules", icon: "≡" },
       { to: "/automations", label: "Response rules", icon: "↯" },
@@ -222,6 +224,7 @@ function Shell() {
             <Route path="/alerts" element={<Alerts />} />
             <Route path="/protection-health" element={<ProtectionHealth />} />
             <Route path="/quarantine" element={<Quarantine />} />
+            <Route path="/edr-exclusions" element={<EdrExclusions />} />
             <Route path="/admin-requests" element={<Elevation />} />
             <Route path="/recordings/:id" element={<RecordingPlayer />} />
             <Route path="/incidents" element={<Incidents />} />

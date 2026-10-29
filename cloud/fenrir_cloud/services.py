@@ -84,8 +84,17 @@ def effective_policy(db: Session, device: Device) -> tuple[dict, dict]:
     name = layers[-1].name if layers else "Fenrir baseline"
     doc = policy_schema.to_agent_policy(policy_id=device.policy_id or (tenant.default_policy_id if tenant else None) or GLOBAL_POLICY_ID,
                                         name=name, settings=resolution["settings"], botnet_ips=botnet_ips(db, device.tenant_id),
-                                        trusted_sha256=trusted_hashes(db, device.tenant_id))
+                                        trusted_sha256=trusted_hashes(db, device.tenant_id),
+                                        edr_exclusions=_edr_exclusions(db, device.tenant_id))
     return resolution, doc
+
+
+def _edr_exclusions(db: Session, tenant_id: str | None) -> list[dict]:
+    from . import edr_exclusions
+
+    # Agents enforce behavior/antimalware scopes; sigma-only rules stay in the cloud.
+    return [rule for rule in edr_exclusions.agent_rules(edr_exclusions.active_for(db, tenant_id))
+            if set(rule["scopes"]) & {"behavior", "antimalware"}]
 
 
 def trusted_hashes(db: Session, tenant_id: str | None, limit: int = 5000) -> list[str]:

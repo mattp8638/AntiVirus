@@ -1849,6 +1849,34 @@ class DnsBlocklist(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class EdrExclusion(Base):
+    """A strict EDR exclusion (see edr_exclusions.py).
+
+    ``process-chain``: a child started by a parent whose image path *and* SHA-256 match - for RMM agents that
+    legitimately launch PowerShell, cmd or bash. ``hash``: one exact file, optionally bound to its path.
+    ``tenant_id`` None applies platform-wide; otherwise the customer and its sites."""
+    __tablename__ = "edr_exclusions"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("exc"))
+    tenant_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    kind: Mapped[str] = mapped_column(String(20), default="process-chain")  # process-chain | hash
+    parent_image: Mapped[str] = mapped_column(String(500), default="")
+    parent_sha256: Mapped[list] = mapped_column(JSON, default=list)
+    child_image: Mapped[str] = mapped_column(String(500), default="")
+    child_sha256: Mapped[list] = mapped_column(JSON, default=list)
+    command_line_contains: Mapped[str] = mapped_column(String(500), default="")
+    scopes: Mapped[list] = mapped_column(JSON, default=list)  # behavior | antimalware | sigma
+    reason: Mapped[str] = mapped_column(String(1000), default="")
+    profile: Mapped[str] = mapped_column(String(80), default="")  # set when generated from an RMM agent profile
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    hits: Mapped[int] = mapped_column(Integer, default=0)
+    last_hit_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 # --------------------------------------------------------------------------
 # Analytics Data Ingestion Models (Pydantic Validation Schemas)
 # --------------------------------------------------------------------------

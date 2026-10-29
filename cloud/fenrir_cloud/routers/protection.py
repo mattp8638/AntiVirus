@@ -47,8 +47,11 @@ def _doh(db: Session, device: Device, wire: bytes) -> Response:
     except httpx.HTTPError as exc:
         raise HTTPException(502, f"Upstream resolver failed: {exc}") from exc
     db.commit()
+    # The agent's local DNS proxy caches these so a blocked name stays blocked while the device is offline.
+    reason = (decision.reason or "").encode("ascii", "replace").decode()[:200]
     return Response(content=answer, media_type=DNS_MESSAGE, headers={"Cache-Control": "max-age=30",
-                                                                     "X-Fenrir-Dns-Action": decision.action})
+                                                                     "X-Fenrir-Dns-Action": decision.action,
+                                                                     "X-Fenrir-Dns-Reason": reason})
 
 
 @router.get("/dns/{token}/dns-query", include_in_schema=False)
@@ -565,7 +568,10 @@ def compliance_report(tenant_id: str | None = None, framework: str | None = None
 @console.post("/vulnerabilities/{vuln_id}/cyber-heal")
 def cyber_heal(vuln_id: int, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     """Trigger automated "Cyber Heal" zero-interaction remediation for a vulnerability."""
-    principal.require("configure")
+    principal.require("scripts")
+    vuln = db.get(Vulnerability, vuln_id)
+    if vuln is None or vuln.tenant_id not in principal.tenant_ids:
+        raise HTTPException(404, "Not found")
     res = vulnmgmt.cyber_heal_remediate(db, vuln_id)
     if res["status"] == "skipped":
         raise HTTPException(400, res["reason"])

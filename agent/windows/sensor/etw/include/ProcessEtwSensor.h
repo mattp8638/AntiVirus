@@ -28,6 +28,7 @@ struct EtwProcessContext {
   std::wstring sessionId;
   std::wstring signer;
   std::wstring startedAt;
+  std::wstring parentSha256;  // set by the start handler when a strict EDR exclusion names the parent
 };
 
 class ProcessEtwSensor {
@@ -44,7 +45,8 @@ class ProcessEtwSensor {
   bool IsActive() const;
   void SetDeviceId(std::wstring deviceId);
   // Called on the ETW thread for every process start; returned records are queued as telemetry.
-  using ProcessStartHandler = std::function<std::vector<TelemetryRecord>(const EtwProcessContext&)>;
+  // Runs before process.started is queued, so it can add verified facts (parentSha256) to the event.
+  using ProcessStartHandler = std::function<std::vector<TelemetryRecord>(EtwProcessContext&)>;
   void SetProcessStartHandler(ProcessStartHandler handler);
   // Called on the ETW thread when a process starts a thread inside another process (code injection).
   // Set before Start(): thread events are only collected when a handler exists.

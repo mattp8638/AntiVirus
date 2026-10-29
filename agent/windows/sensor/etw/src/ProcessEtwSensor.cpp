@@ -560,7 +560,10 @@ std::wstring BuildProcessStartPayload(const EtwProcessContext& context, const US
          Utf8ToWide(EscapeJsonString(context.userSid)) + L"\",\"integrityLevel\":\"" +
          Utf8ToWide(EscapeJsonString(context.integrityLevel)) + L"\",\"sessionId\":\"" +
          Utf8ToWide(EscapeJsonString(context.sessionId)) + L"\",\"signer\":\"" +
-         Utf8ToWide(EscapeJsonString(context.signer)) + L"\",\"eventVersion\":" + std::to_wstring(eventVersion) + L"}";
+         Utf8ToWide(EscapeJsonString(context.signer)) + L"\"" +
+         (context.parentSha256.empty() ? std::wstring{}
+                                       : L",\"parentSha256\":\"" + Utf8ToWide(EscapeJsonString(context.parentSha256)) + L"\"") +
+         L",\"eventVersion\":" + std::to_wstring(eventVersion) + L"}";
 }
 
 std::wstring BuildProcessExitPayload(const EtwProcessContext& context, const DWORD exitCode, const USHORT eventVersion) {
@@ -873,6 +876,20 @@ void ProcessEtwSensor::HandleEventRecord(const EVENT_RECORD& eventRecord) {
     }
     summary << L".";
 
+    ProcessStartHandler handler;
+    {
+      const std::scoped_lock lock(stateMutex_);
+      handler = processStartHandler_;
+    }
+    std::vector<TelemetryRecord> handlerRecords;
+    if (handler) {
+      try {
+        handlerRecords = handler(context);
+      } catch (...) {
+        // Enforcement must never take down the sensor thread.
+      }
+    }
+
     QueueTelemetry(TelemetryRecord{
         .eventId = GenerateGuidString(),
         .eventType = L"process.started",
@@ -881,20 +898,8 @@ void ProcessEtwSensor::HandleEventRecord(const EVENT_RECORD& eventRecord) {
         .occurredAt = context.startedAt,
         .payloadJson = BuildProcessStartPayload(context, eventRecord.EventHeader.EventDescriptor.Version),
     });
-
-    ProcessStartHandler handler;
-    {
-      const std::scoped_lock lock(stateMutex_);
-      handler = processStartHandler_;
-    }
-    if (handler) {
-      try {
-        for (const auto& record : handler(context)) {
-          QueueTelemetry(record);
-        }
-      } catch (...) {
-        // Enforcement must never take down the sensor thread.
-      }
+    for (const auto& record : handlerRecords) {
+      QueueTelemetry(record);
     }
     return;
   }

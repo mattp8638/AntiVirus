@@ -224,6 +224,15 @@ SCHEMA: tuple[Section, ...] = (
             F("safeSearch", "bool", False, "Enforce SafeSearch"),
             F("blockThirdPartyDoh", "bool", True, "Block third-party encrypted DNS (DoH/DoT bypass)"),
             F("logQueries", "enum", "blocked", "Query logging", options=("none", "blocked", "all")),
+            F("localProxy", "bool", False, "Local loopback DNS proxy",
+              "The agent answers DNS on a loopback address, forwards it to the device's DoH URL and caches verdicts, so "
+              "blocked domains stay blocked offline. The system resolver is pointed at it and restored when turned off."),
+            F("localProxyFailMode", "enum", "open", "When Fenrir Cloud is unreachable",
+              "open: resolve uncached names with the previous system resolver. closed: refuse them.", options=("open", "closed")),
+            F("sinkholeInterception", "bool", True, "Intercept connections to blocked domains",
+              "Blocked names resolve to a loopback sinkhole that records which process tried to connect (HTTP Host and TLS SNI) "
+              "and serves a block page over HTTP."),
+            F("localCacheMinutes", "int", 30, "Local verdict cache (minutes)", min=1, max=1440),
         ),
     ),
     Section(
@@ -460,6 +469,10 @@ AGENT_SUPPORT: dict[str, tuple[str, ...]] = {
     "web.phishingBlockThreshold": ('windows',),
     "web.destinationCacheTtlMinutes": ('windows',),
     "web.bankingProtection": (),
+    "dns.localProxy": ('linux', 'macos'),
+    "dns.localProxyFailMode": ('linux', 'macos'),
+    "dns.sinkholeInterception": ('linux', 'macos'),
+    "dns.localCacheMinutes": ('linux', 'macos'),
     "firewall.networkAttackProtection": (),
     "firewall.bruteForceProtection": ('windows', 'linux', 'macos'),
     "firewall.blockSmbV1": ('windows',),
@@ -817,7 +830,7 @@ def managed_firewall_rules(settings: dict, botnet_ips: list[str] | None = None) 
 
 
 def to_agent_policy(policy_id: str, name: str, settings: dict, botnet_ips: list[str] | None = None,
-                    trusted_sha256: list[str] | None = None) -> dict:
+                    trusted_sha256: list[str] | None = None, edr_exclusions: list[dict] | None = None) -> dict:
     """Translate effective settings into the document agents parse.
 
     The top-level keys are exactly what the Windows service's
@@ -878,6 +891,12 @@ def to_agent_policy(policy_id: str, name: str, settings: dict, botnet_ips: list[
         doc["revision"] = hashlib.sha256((doc["revision"] + "|" + ",".join(botnet_ips)).encode()).hexdigest()[:16]
     if trusted_sha256:
         doc["revision"] = hashlib.sha256((doc["revision"] + "|trusted|" + ",".join(sorted(trusted_sha256))).encode()).hexdigest()[:16]
+    if edr_exclusions:
+        # Strict process-chain/hash exclusions (edr_exclusions.py); they change without the settings changing.
+        # An object, not a bare list: the Go agent decodes every module as a JSON object.
+        doc["modules"]["edrExclusions"] = {"rules": edr_exclusions}
+        doc["revision"] = hashlib.sha256((doc["revision"] + "|exclusions|" + json.dumps(edr_exclusions, sort_keys=True))
+                                         .encode()).hexdigest()[:16]
     for key, plan_key in (("quickScanSchedule", "quickScanPlan"), ("fullScanSchedule", "fullScanPlan")):
         plan = parse_scan_schedule(str(am.get(key) or ""))
         if plan is not None:
