@@ -51,12 +51,12 @@ constexpr wchar_t kWindowClassName[] = L"FenrirEndpointClientWindow";
 constexpr wchar_t kWindowTitle[] = L"Fenrir Protection Centre";
 constexpr wchar_t kInstanceMutexName[] = L"Local\\FenrirEndpointClientSingleton";
 constexpr wchar_t kRestoreWindowMessageName[] = L"FenrirEndpointClient.RestoreWindow";
-constexpr wchar_t kPamRequestEventName[] = L"Global\\FenrirPamRequestReady";
-constexpr wchar_t kPamRequestFileName[] = L"pam-request.json";
 constexpr UINT kTrayMessage = WM_APP + 1;
 constexpr UINT kScanCompleteMessage = WM_APP + 2;
 constexpr UINT kScanProgressMessage = WM_APP + 3;
 constexpr UINT kPatchActionCompleteMessage = WM_APP + 4;
+// A program started as the temporary administrator has closed: end that admin session now.
+constexpr UINT kElevationProgramClosedMessage = WM_APP + 20;
 constexpr UINT_PTR kRefreshTimerId = 100;
 constexpr UINT kRefreshIntervalMs = 10000;
 constexpr UINT kFenrirPngResourceId = 101;
@@ -164,6 +164,15 @@ struct LaunchOptions {
   bool applySoftwareUpdateMode{false};
   std::wstring applySoftwareUpdateId;
   std::vector<std::filesystem::path> applyExclusionsPaths;
+  // --fenrir-runas: helper started as the temporary administrator; it asks Windows to elevate the program and waits.
+  std::wstring elevateRunTarget;
+  std::wstring elevateRunArgs;
+  // --pam-run: ask for approval to run a program as a temporary administrator (from the PAM tray app).
+  std::wstring pamRunTarget;
+  std::wstring pamRunArgs;
+  std::wstring pamRunReason;
+  // --pam-session: ask for admin access (a temporary administrator account), not tied to one program.
+  bool pamSessionMode{false};
 };
 
 std::wstring BuildPatchExecutionSummary(const antivirus::agent::PatchExecutionResult& result, bool searchOnly);
@@ -261,6 +270,8 @@ struct UiContext {
   std::string experienceJson{"{}"};
   // The signed-in user's temporary admin status from the service (elevation.status), when requests are allowed.
   std::wstring elevationJson{L"{}"};
+  // Requests whose program this window has already started as the temporary administrator.
+  std::vector<std::wstring> launchedElevations;
   std::wstring brandName{L"Fenrir"};
   bool allowUserScans{true};
   bool trayIconAllowed{true};
@@ -441,6 +452,9 @@ class WebViewNavigationCompletedHandler final : public ICoreWebView2NavigationCo
 void UpdateTrayIcon(UiContext& context);
 void PublishWebViewState(UiContext& context);
 void PostWebViewNotice(UiContext& context, const std::wstring& tone, const std::wstring& text, bool supportSent = false);
+void RefreshSnapshot(UiContext& context);
+bool RequestAdminProgram(const antivirus::agent::AgentConfig& config, const std::wstring& target, const std::wstring& arguments,
+                         const std::wstring& reason, std::wstring* message);
 void ResizeWebView(UiContext& context);
 void HideNativeShellControls(UiContext& context, bool visible);
 void LayoutControls(UiContext& context);
@@ -571,6 +585,17 @@ LaunchOptions ParseLaunchOptions() {
   }
   LocalFree(argumentValues);
 
+  for (std::size_t index = 0; index + 1 < arguments.size(); ++index) {
+    const auto& name = arguments[index];
+    const auto& value = arguments[index + 1];
+    if (_wcsicmp(name.c_str(), L"--fenrir-runas") == 0) options.elevateRunTarget = value;
+    else if (_wcsicmp(name.c_str(), L"--fenrir-runas-args") == 0) options.elevateRunArgs = value;
+    else if (_wcsicmp(name.c_str(), L"--pam-run") == 0) options.pamRunTarget = value;
+    else if (_wcsicmp(name.c_str(), L"--pam-args") == 0) options.pamRunArgs = value;
+    else if (_wcsicmp(name.c_str(), L"--pam-reason") == 0) options.pamRunReason = value;
+  }
+
+  options.pamSessionMode = HasSwitch(arguments, L"--pam-session");
   options.backgroundMode =
       HasSwitch(arguments, L"--background") || HasSwitch(arguments, L"--tray") || HasSwitch(arguments, L"/background");
   options.manageExclusionsMode = HasSwitch(arguments, L"--manage-exclusions") ||
@@ -832,32 +857,6 @@ std::wstring GetCurrentUserName() {
   return std::wstring(buffer.data(), size);
 }
 
-std::wstring EscapePamJsonValue(const std::wstring& value) {
-  return antivirus::agent::Utf8ToWide(antivirus::agent::EscapeJsonString(value));
-}
-
-std::filesystem::path GetPerUserPamRequestPath() {
-  const auto localAppData = antivirus::agent::ReadEnvironmentVariable(L"LOCALAPPDATA");
-  if (localAppData.empty()) {
-    return {};
-  }
-
-  return std::filesystem::path(localAppData) / L"FenrirAgent" / L"runtime" / kPamRequestFileName;
-}
-
-std::filesystem::path GetPamRequestPath(const UiContext& context) {
-  const auto perUserPath = GetPerUserPamRequestPath();
-  if (!perUserPath.empty()) {
-    return perUserPath;
-  }
-
-  auto runtimeRoot = context.config.runtimeDatabasePath.parent_path();
-  if (runtimeRoot.empty()) {
-    runtimeRoot = GetCurrentExecutableDirectory() / L"runtime";
-  }
-  return runtimeRoot / kPamRequestFileName;
-}
-
 std::wstring GetSystemBinaryPath(const wchar_t* relativePath) {
   std::wstring buffer(MAX_PATH, L'\0');
   const auto written = GetSystemDirectoryW(buffer.data(), static_cast<UINT>(buffer.size()));
@@ -893,83 +892,17 @@ bool PromptForPamTarget(HWND owner, std::wstring* targetPath) {
   return !targetPath->empty();
 }
 
-bool QueuePamRequest(UiContext& context, const std::wstring& action, const std::wstring& targetPath,
-                     const std::wstring& arguments, const std::wstring& reason, std::wstring* errorMessage) {
-  if (targetPath.empty()) {
-    if (errorMessage != nullptr) {
-      *errorMessage = L"Fenrir PAM did not receive a valid target path.";
-    }
-    return false;
-  }
-
-  const auto requestPath = GetPamRequestPath(context);
-  std::error_code directoryError;
-  std::filesystem::create_directories(requestPath.parent_path(), directoryError);
-  if (directoryError) {
-    if (errorMessage != nullptr) {
-      *errorMessage = L"Fenrir could not create the PAM runtime directory.";
-    }
-    return false;
-  }
-
-  const auto requestedAt = antivirus::agent::CurrentUtcTimestamp();
-  const auto requester = GetCurrentUserName();
-  const auto tempPath = requestPath.wstring() + L".new";
-
-  const std::wstring payload =
-      L"{\"requestedAt\":\"" + EscapePamJsonValue(requestedAt) + L"\",\"requester\":\"" +
-      EscapePamJsonValue(requester) + L"\",\"action\":\"" + EscapePamJsonValue(action) + L"\",\"targetPath\":\"" +
-      EscapePamJsonValue(targetPath) + L"\",\"arguments\":\"" + EscapePamJsonValue(arguments) + L"\",\"reason\":\"" +
-      EscapePamJsonValue(reason) + L"\"}";
-
-  {
-    std::ofstream stream(std::filesystem::path(tempPath), std::ios::binary | std::ios::trunc);
-    if (!stream.is_open()) {
-      if (errorMessage != nullptr) {
-        *errorMessage = L"Fenrir could not write the PAM request payload.";
-      }
-      return false;
-    }
-
-    const auto utf8Payload = antivirus::agent::WideToUtf8(payload);
-    stream.write(utf8Payload.data(), static_cast<std::streamsize>(utf8Payload.size()));
-    stream.flush();
-    if (!stream.good()) {
-      if (errorMessage != nullptr) {
-        *errorMessage = L"Fenrir could not flush the PAM request payload.";
-      }
-      return false;
-    }
-  }
-
-  if (MoveFileExW(tempPath.c_str(), requestPath.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE) {
-    DeleteFileW(tempPath.c_str());
-    if (errorMessage != nullptr) {
-      *errorMessage = L"Fenrir could not finalize the PAM request payload.";
-    }
-    return false;
-  }
-
-  const auto requestEvent = CreateEventW(nullptr, FALSE, FALSE, kPamRequestEventName);
-  if (requestEvent != nullptr) {
-    SetEvent(requestEvent);
-    CloseHandle(requestEvent);
-  }
-
-  return true;
-}
 
 bool SubmitPamRequestFromTray(HWND hwnd, UiContext& context, const std::wstring& action,
                               const std::wstring& targetPath, const std::wstring& arguments,
                               const std::wstring& reason) {
-  std::wstring errorMessage;
-  if (QueuePamRequest(context, action, targetPath, arguments, reason, &errorMessage)) {
-    return true;
-  }
-
-  const auto message = errorMessage.empty() ? L"Fenrir could not queue this PAM request right now." : errorMessage;
-  MessageBoxW(hwnd, message.c_str(), kWindowTitle, MB_OK | MB_ICONWARNING);
-  return false;
+  // Approved like any admin request (policy or a technician); the program then runs as a temporary administrator.
+  (void)action;
+  std::wstring message;
+  const bool sent = RequestAdminProgram(context.config, targetPath, arguments, reason, &message);
+  MessageBoxW(hwnd, message.c_str(), kWindowTitle, MB_OK | (sent ? MB_ICONINFORMATION : MB_ICONWARNING));
+  if (sent) RefreshSnapshot(context);
+  return sent;
 }
 
 bool SubmitPowerShellPamRequest(HWND hwnd, UiContext& context) {
@@ -3635,12 +3568,107 @@ void OfferWebViewRuntime(UiContext& context) {
   }
 }
 
+std::wstring ElevationField(const std::wstring& json, const char* key) {
+  const auto parsed = antivirus::agent::json::Parse(antivirus::agent::WideToUtf8(json));
+  const auto* value = parsed ? parsed->Get(key) : nullptr;
+  return value && value->String() ? antivirus::agent::Utf8ToWide(*value->String()) : std::wstring{};
+}
+
+std::wstring QuoteArgument(const std::wstring& value) {
+  std::wstring out = L"\"";
+  for (const wchar_t c : value) {
+    if (c == L'"') out += L'\\';
+    out += c;
+  }
+  return out + L"\"";
+}
+
+// Starts the approved program as the temporary administrator: this executable runs as that account (Secondary Logon
+// handles the desktop access) and asks Windows to elevate the program, so the user only confirms the Windows prompt.
+// When it closes, the admin session ends and the service deletes the account.
+bool LaunchAsTemporaryAdmin(UiContext& context, const std::wstring& requestId, const std::wstring& account,
+                            const std::wstring& password, const std::wstring& target, const std::wstring& arguments,
+                            std::wstring* error) {
+  wchar_t self[MAX_PATH]{};
+  GetModuleFileNameW(nullptr, self, MAX_PATH);
+  auto user = account.rfind(L".\\", 0) == 0 ? account.substr(2) : account;
+  std::wstring commandLine = QuoteArgument(self) + L" --fenrir-runas " + QuoteArgument(target);
+  if (!arguments.empty()) commandLine += L" --fenrir-runas-args " + QuoteArgument(arguments);
+  std::vector<wchar_t> buffer(commandLine.begin(), commandLine.end());
+  buffer.push_back(L'\0');
+  STARTUPINFOW startup{};
+  startup.cb = sizeof(startup);
+  PROCESS_INFORMATION process{};
+  std::wstring secret = password;
+  const BOOL started = CreateProcessWithLogonW(user.c_str(), L".", secret.c_str(), LOGON_WITH_PROFILE, self, buffer.data(),
+                                               CREATE_UNICODE_ENVIRONMENT, nullptr, std::filesystem::path(self).parent_path().c_str(),
+                                               &startup, &process);
+  SecureZeroMemory(secret.data(), secret.size() * sizeof(wchar_t));
+  if (!started) {
+    if (error != nullptr) *error = L"Windows could not start it as the temporary administrator (error " + std::to_wstring(GetLastError()) + L").";
+    return false;
+  }
+  CloseHandle(process.hThread);
+  antivirus::agent::SendLocalBrokerCommand(context.config, L"elevation.launched", L"",
+                                           L"{\"requestId\":\"" + JsonEscape(requestId) + L"\",\"pid\":" + std::to_wstring(process.dwProcessId) + L"}",
+                                           L"", L"");
+  const HWND hwnd = context.hwnd;
+  auto* closedRequest = new std::wstring(requestId);
+  std::thread([hwnd, handle = process.hProcess, closedRequest]() {
+    WaitForSingleObject(handle, INFINITE);
+    CloseHandle(handle);
+    if (!PostMessageW(hwnd, kElevationProgramClosedMessage, 0, reinterpret_cast<LPARAM>(closedRequest))) delete closedRequest;
+  }).detach();
+  return true;
+}
+
+void LaunchApprovedProgram(UiContext& context) {
+  const auto& json = context.elevationJson;
+  if (ElevationField(json, "state") != L"granted" || ElevationField(json, "kind") != L"run") return;
+  const auto requestId = ElevationField(json, "requestId");
+  const auto account = ElevationField(json, "account");
+  const auto password = ElevationField(json, "password");
+  if (requestId.empty() || account.empty() || password.empty() ||
+      std::find(context.launchedElevations.begin(), context.launchedElevations.end(), requestId) != context.launchedElevations.end()) {
+    return;
+  }
+  context.launchedElevations.push_back(requestId);
+  std::wstring error;
+  const auto target = ElevationField(json, "target");
+  if (LaunchAsTemporaryAdmin(context, requestId, account, password, target, ElevationField(json, "arguments"), &error)) {
+    PostWebViewNotice(context, L"good", L"Approved. Fenrir is opening " + std::filesystem::path(target).filename().wstring() +
+                                            L" as a temporary administrator: choose Yes when Windows asks.");
+  } else {
+    PostWebViewNotice(context, L"danger", error);
+  }
+}
+
+// Asks for approval to run one program as a temporary administrator (the PAM tray actions and --pam-run), or with no
+// program for admin access (--pam-session).
+bool RequestAdminProgram(const antivirus::agent::AgentConfig& config, const std::wstring& target, const std::wstring& arguments,
+                         const std::wstring& reason, std::wstring* message) {
+  const auto payload = L"{\"reason\":\"" + JsonEscape(reason.substr(0, 300)) + L"\",\"target\":\"" + JsonEscape(target) +
+                       L"\",\"arguments\":\"" + JsonEscape(arguments) + L"\"}";
+  const auto result = antivirus::agent::SendLocalBrokerCommand(config, L"elevation.request", L"", payload, L"", L"");
+  if (message != nullptr) {
+    const bool approved = result.responseJson.find(L"\"status\":\"approved\"") != std::wstring::npos;
+    *message = !result.success ? (result.errorMessage.empty() ? std::wstring(L"The protection service did not answer.") : result.errorMessage)
+               : target.empty()
+                   ? (approved ? L"Approved. The temporary administrator account appears under Get help in a moment."
+                               : L"Your request was sent. Once it is approved, the temporary administrator account appears under Get help.")
+               : approved ? L"Approved. The program opens in a moment; choose Yes when Windows asks."
+                          : L"Your request was sent. The program opens as soon as it is approved.";
+  }
+  return result.success;
+}
+
 void RefreshSnapshot(UiContext& context) {
   LoadExperience(context);
   if (context.experienceJson.find("\"elevationRequests\":\"off\"") == std::string::npos &&
       context.experienceJson.find("\"elevationRequests\"") != std::string::npos) {
     const auto status = antivirus::agent::SendLocalBrokerCommand(context.config, L"elevation.status", L"", L"{}", L"", L"");
     context.elevationJson = status.success && !status.responseJson.empty() && status.responseJson.front() == L'{' ? status.responseJson : L"{}";
+    LaunchApprovedProgram(context);
   } else {
     context.elevationJson = L"{}";
   }
@@ -4340,6 +4368,16 @@ void HandleWebViewMessage(UiContext& context, const std::wstring& message) {
     return;
   }
 
+  if (_wcsicmp(action.c_str(), L"elevationFinish") == 0) {
+    const auto result = antivirus::agent::SendLocalBrokerCommand(context.config, L"elevation.finish", L"", L"{}", L"", L"");
+    PostWebViewNotice(context, result.success ? L"good" : L"danger",
+                      result.success ? L"Admin access ended and the temporary administrator account was removed."
+                                     : L"Admin access could not be ended: " + result.errorMessage);
+    RefreshSnapshot(context);
+    PublishWebViewState(context);
+    return;
+  }
+
   if (_wcsicmp(action.c_str(), L"elevationRequest") == 0) {
     const auto reason = GetQueryValue(pairs, L"reason");
     const auto payload = L"{\"reason\":\"" + JsonEscape(reason.substr(0, 300)) + L"\"}";
@@ -4347,9 +4385,9 @@ void HandleWebViewMessage(UiContext& context, const std::wstring& message) {
     if (result.success) {
       const bool granted = result.responseJson.find(L"\"status\":\"approved\"") != std::wstring::npos;
       PostWebViewNotice(context, L"good",
-                        granted ? L"Approved. Admin access will be ready in a moment; when Windows asks for an administrator, "
-                                  L"enter your own user name and password."
-                                : L"Your request was sent. You will get admin access once it is approved.",
+                        granted ? L"Approved. A temporary administrator account will appear here in a moment; enter it when "
+                                  L"Windows asks for an administrator."
+                                : L"Your request was sent. You will get a temporary administrator account once it is approved.",
                         true);
     } else {
       PostWebViewNotice(context, L"danger", L"Your request could not be sent: " +
@@ -5161,6 +5199,18 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
       return 0;
     }
 
+    case kElevationProgramClosedMessage: {
+      std::unique_ptr<std::wstring> requestId(reinterpret_cast<std::wstring*>(lParam));
+      if (auto* context = GetContext(hwnd); context != nullptr && requestId) {
+        antivirus::agent::SendLocalBrokerCommand(context->config, L"elevation.finish", L"",
+                                                 L"{\"requestId\":\"" + JsonEscape(*requestId) + L"\",\"reason\":\"program-closed\"}", L"", L"");
+        PostWebViewNotice(*context, L"good", L"The program closed, so the temporary administrator account was removed.");
+        RefreshSnapshot(*context);
+        PublishWebViewState(*context);
+      }
+      return 0;
+    }
+
     case kPatchActionCompleteMessage: {
       auto* context = GetContext(hwnd);
       auto* payload = reinterpret_cast<PatchActionCompletePayload*>(lParam);
@@ -5259,6 +5309,37 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     const auto exitCode = ApplySoftwareUpdateFromLaunchOptions(launchOptions);
     OleUninitialize();
     return exitCode;
+  }
+
+  if (!launchOptions.elevateRunTarget.empty()) {
+    // Running as the temporary administrator: ask Windows to elevate the program (the user confirms) and wait for it.
+    SHELLEXECUTEINFOW info{};
+    info.cbSize = sizeof(info);
+    info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+    info.lpVerb = L"runas";
+    info.lpFile = launchOptions.elevateRunTarget.c_str();
+    info.lpParameters = launchOptions.elevateRunArgs.empty() ? nullptr : launchOptions.elevateRunArgs.c_str();
+    const auto directory = std::filesystem::path(launchOptions.elevateRunTarget).parent_path().wstring();
+    info.lpDirectory = directory.c_str();
+    info.nShow = SW_SHOWNORMAL;
+    int exitCode = 0;
+    if (!ShellExecuteExW(&info)) {
+      exitCode = GetLastError() == ERROR_CANCELLED ? 3 : 2;
+    } else if (info.hProcess != nullptr) {
+      WaitForSingleObject(info.hProcess, INFINITE);
+      CloseHandle(info.hProcess);
+    }
+    OleUninitialize();
+    return exitCode;
+  }
+
+  if (!launchOptions.pamRunTarget.empty() || launchOptions.pamSessionMode) {
+    std::wstring message;
+    const bool sent = RequestAdminProgram(antivirus::agent::LoadAgentConfigForModule(nullptr), launchOptions.pamRunTarget,
+                                          launchOptions.pamRunArgs,
+                                          launchOptions.pamRunReason.empty() ? L"Requested from the PAM tray" : launchOptions.pamRunReason,
+                                          &message);
+    MessageBoxW(nullptr, message.c_str(), kWindowTitle, MB_OK | (sent ? MB_ICONINFORMATION : MB_ICONWARNING));
   }
 
   const wchar_t* mutexName =

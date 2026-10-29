@@ -141,6 +141,7 @@ add_library(antivirus-agent-core STATIC
   src/BundleArchive.cpp
   src/FirewallPolicy.cpp
   src/LocalAdminRotation.cpp
+  src/TemporaryAdmin.cpp
   src/RansomwareDetector.cpp
   src/RansomwareShield.cpp
   src/BruteForceTracker.cpp
@@ -585,6 +586,8 @@ endif()
 add_executable(fenrir-mltest ../tools/mltestcli/src/MlTestCliMain.cpp src/MlStaticModel.cpp)
 target_include_directories(fenrir-mltest PRIVATE include)
 add_executable(fenrir-behavior-tests ../tests/BehaviorRulesTests.cpp src/BehaviorRules.cpp)
+add_executable(fenrir-tempadmin-tests ../tests/TemporaryAdminTests.cpp)
+target_include_directories(fenrir-tempadmin-tests PRIVATE include)
 target_include_directories(fenrir-behavior-tests PRIVATE include)
 add_executable(fenrir-remote-sas-tests ../tests/RemoteSasRequestTests.cpp)
 add_executable(fenrir-winget-tests ../tests/WingetSupportTests.cpp)

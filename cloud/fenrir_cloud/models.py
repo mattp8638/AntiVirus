@@ -288,6 +288,16 @@ class ElevationRequest(Base):
     command_id: Mapped[str] = mapped_column(String(32), default="")
     granted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # session: the user gets a temporary admin account to type when Windows asks; run: the agent launches ``target``
+    # as that account. Nullable so existing databases gain them additively.
+    kind: Mapped[str | None] = mapped_column(String(10), nullable=True, default="session")
+    target: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    arguments: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    account: Mapped[str | None] = mapped_column(String(40), nullable=True)  # the temporary local administrator
+    account_sid: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    end_reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    events: Mapped[list | None] = mapped_column(JSON, nullable=True)  # timeline: requested, decided, granted, launched, ended
 
 
 class LocalAdminPassword(Base):

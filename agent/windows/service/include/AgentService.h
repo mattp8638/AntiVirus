@@ -196,8 +196,17 @@ class AgentService {
   std::wstring ElevationStatus(const RemoteCommand& command);
   std::wstring GrantElevation(const RemoteCommand& command);
   std::wstring RevokeElevation(const RemoteCommand& command);
+  std::wstring FinishElevation(const RemoteCommand& command);
+  std::wstring ReportElevationLaunch(const RemoteCommand& command);
   void ExpireElevations();
+  // Opaque pointers to the elevation state types, which live in AgentService.cpp.
+  using ElevationStateRef = void*;
+  using ElevationCleanupRef = const void*;
+  void EndElevationLocked(ElevationStateRef state, const std::wstring& requestId, const std::wstring& reason);
+  bool ReportElevationEnd(const ElevationCleanupRef& cleanup);
   std::mutex elevationMutex_{};
+  // Temporary admin passwords by request id: memory only, never written to disk or sent to the cloud.
+  std::map<std::wstring, std::wstring> elevationPasswords_{};
   void CheckRemovableMedia();  // antimalware.scanRemovableMedia
   unsigned long knownDrives_{0};
   unsigned long pendingRemovable_{0};
