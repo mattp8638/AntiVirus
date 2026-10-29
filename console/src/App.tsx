@@ -55,6 +55,7 @@ import { PolicyEditor as GrcPolicyEditor } from "./pages/grc/Policies";
 import ProtectionHealth from "./pages/ProtectionHealth";
 import Quarantine from "./pages/Quarantine";
 import EdrExclusions from "./pages/EdrExclusions";
+import Exposure from "./pages/Exposure";
 import Elevation from "./pages/Elevation";
 import RecordingPlayer from "./pages/RecordingPlayer";
 
@@ -88,6 +89,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string }[]
       { to: "/dns", label: "DNS protection", icon: "◈" },
       { to: "/intel", label: "Threat intel", icon: "✦" },
       { to: "/vulnerabilities", label: "Vulnerabilities", icon: "⚠" },
+      { to: "/exposure", label: "Data & identity exposure", icon: "⚇" },
       { to: "/active-directory", label: "Active Directory", icon: "⌘" },
       { to: "/attack-surface", label: "Attack surface", icon: "◍" },
       { to: "/compliance", label: "Compliance", icon: "✓" },
@@ -235,6 +237,7 @@ function Shell() {
             <Route path="/dns" element={<Dns />} />
             <Route path="/intel" element={<Intel />} />
             <Route path="/vulnerabilities" element={<Vulnerabilities />} />
+            <Route path="/exposure" element={<Exposure />} />
             <Route path="/active-directory" element={<ActiveDirectory />} />
             <Route path="/attack-surface" element={<AttackSurface />} />
             <Route path="/compliance" element={<Compliance />} />

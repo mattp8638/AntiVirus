@@ -63,9 +63,10 @@ def _vuln_views(db: Session, device: Device, vulns: list[Vulnerability]) -> list
     out = []
     for v in vulns:
         view = to_dict(v)
-        view["riskScore"] = vulnmgmt.risk_score(v, device.criticality)
-        view["reasons"] = vulnmgmt.risk_reasons(v)
-        view["priority"] = vulnmgmt.priority(v)
+        elevated = vulnmgmt.device_elevated(device)
+        view["riskScore"] = vulnmgmt.risk_score(v, device.criticality, elevated)
+        view["reasons"] = vulnmgmt.risk_reasons(v, device)
+        view["priority"] = vulnmgmt.priority(v, elevated)
         view["recommendation"] = vulnmgmt.recommendation(v)
         view["intel"] = cveintel.record_view(records.get(v.vuln_id))
         out.append(view)

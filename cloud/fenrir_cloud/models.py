@@ -152,6 +152,8 @@ class Device(Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # Business criticality (low|medium|high|critical) used to rank vulnerabilities and alerts.
     criticality: Mapped[str | None] = mapped_column(String(16), nullable=True, default="medium")
+    # Context that raises vulnerability priority (datadiscovery.py, darkweb.py): "pii-high", "breached-user".
+    exposure_flags: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # Phones: lost mode ({"enabled", "message", "phone", "since", "by"}); the agent re-reads it on every heartbeat.
     lost_mode: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     # Last maintenance window in which protection-policy patching ran on this device ("2026-10-25T22:00").
@@ -566,6 +568,8 @@ class Vulnerability(Base):
     cvss_vector: Mapped[str | None] = mapped_column(String(200), nullable=True)
     evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=dict)
     fix: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=dict)
+    # The latest remediation attempt (remediation.py): {mode, commandId, status, queuedAt, by, automatic, error}.
+    remediation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     __table_args__ = (UniqueConstraint("device_id", "vuln_id", "package", name="uq_vuln_device"),)
 
@@ -1875,6 +1879,47 @@ class EdrExclusion(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     hits: Mapped[int] = mapped_column(Integer, default=0)
     last_hit_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class DataDiscoveryScan(Base):
+    """A PII discovery scan on a device. Only counts, types and file paths are kept: never the matched values."""
+    __tablename__ = "data_discovery_scans"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("pii"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    command_id: Mapped[str] = mapped_column(String(32), default="")
+    status: Mapped[str] = mapped_column(String(20), default="queued")  # queued | completed | failed
+    requested_by: Mapped[str] = mapped_column(String(200), default="")
+    requested_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    files_scanned: Mapped[int] = mapped_column(Integer, default=0)
+    files_with_pii: Mapped[int] = mapped_column(Integer, default=0)
+    counts: Mapped[dict] = mapped_column(JSON, default=dict)  # type -> matches
+    files: Mapped[list] = mapped_column(JSON, default=list)  # [{path, types: {type: n}}], at most 200
+    sensitivity: Mapped[str] = mapped_column(String(10), default="none")  # none | low | high
+    truncated: Mapped[bool] = mapped_column(Boolean, default=False)
+    error: Mapped[str] = mapped_column(String(500), default="")
+
+
+class BreachExposure(Base):
+    """An account at a monitored customer domain found in a public data breach (darkweb.py)."""
+    __tablename__ = "breach_exposures"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("brx"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    email: Mapped[str] = mapped_column(String(320), index=True)
+    breach: Mapped[str] = mapped_column(String(200))
+    breach_title: Mapped[str] = mapped_column(String(300), default="")
+    breach_date: Mapped[str] = mapped_column(String(20), default="")
+    data_classes: Mapped[list] = mapped_column(JSON, default=list)
+    source: Mapped[str] = mapped_column(String(40), default="hibp")
+    first_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    status: Mapped[str] = mapped_column(String(20), default="open")  # open | remediated | dismissed
+    # Correlation: the directory account and devices this address belongs to, and whether MFA protects it.
+    correlation: Mapped[dict] = mapped_column(JSON, default=dict)
+    risk: Mapped[str] = mapped_column(String(10), default="medium")
+    ticket_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    __table_args__ = (UniqueConstraint("tenant_id", "email", "breach", name="uq_breach_exposure"),)
 
 
 # --------------------------------------------------------------------------
