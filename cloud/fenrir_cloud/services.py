@@ -322,11 +322,28 @@ def fire_webhooks(db: Session, tenant_id: str, event: str, body: dict) -> int:
     return queued
 
 
+# Hosts that just failed are skipped for a minute, so a burst of deliveries to an unreachable receiver costs one timeout,
+# not one per event, inside the scheduler pass. Skipped deliveries are retried by the outbox like any other failure.
+_FAILING_HOSTS: dict[str, float] = {}
+HOST_BACKOFF_SECONDS = 60.0
+
+
 def _deliver_webhook(db: Session, event) -> None:
+    import time
+    from urllib.parse import urlsplit
+
     hook = db.get(Webhook, event.payload.get("webhookId"))
     if hook is None or not hook.enabled:
         return  # deleted or turned off since: nothing to send
-    _post(hook.url, _format_webhook(hook.kind, event.payload.get("event", ""), event.payload.get("body") or {}), hook.secret)
+    host = urlsplit(hook.url).hostname or ""
+    if _FAILING_HOSTS.get(host, 0) > time.monotonic():
+        raise RuntimeError(f"{host} failed moments ago; retrying later")
+    try:
+        _post(hook.url, _format_webhook(hook.kind, event.payload.get("event", ""), event.payload.get("body") or {}), hook.secret)
+    except Exception:
+        _FAILING_HOSTS[host] = time.monotonic() + HOST_BACKOFF_SECONDS
+        raise
+    _FAILING_HOSTS.pop(host, None)
 
 
 def _register_webhook_handler() -> None:

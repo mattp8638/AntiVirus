@@ -41,6 +41,7 @@ def test_webhooks_are_delivered_from_the_outbox_and_retried(client, admin, tenan
         return httpx.Response(answers.pop(0))
 
     monkeypatch.setattr(services.httpx, "post", fake_post)
+    monkeypatch.setattr(services, "_FAILING_HOSTS", {})
     with database.session_factory()() as db:
         assert services.fire_webhooks(db, tenant["id"], "incident.created", {"title": "Ransomware on PC1", "severity": "critical"}) == 1
         assert services.fire_webhooks(db, tenant["id"], "monitor.triggered", {"title": "Disk full"}) == 0  # not subscribed
@@ -50,6 +51,7 @@ def test_webhooks_are_delivered_from_the_outbox_and_retried(client, admin, tenan
         db.commit()
         row = db.execute(select(PlatformEvent).where(PlatformEvent.type == "webhook.delivery")).scalar_one()
         assert row.status == "pending" and "HTTP 500" in row.last_error  # retried later with back-off
+        services._FAILING_HOSTS.clear()  # the host back-off has passed
         row.next_attempt_at = utcnow()
         db.commit()
         events.process(db)
@@ -59,3 +61,24 @@ def test_webhooks_are_delivered_from_the_outbox_and_retried(client, admin, tenan
     assert [s["url"] for s in sent] == [hook["url"]] * 2
     assert sent[-1]["body"] == {"event": "incident.created", "data": {"title": "Ransomware on PC1", "severity": "critical"}}
     assert sent[-1]["signature"].startswith("sha256=")
+
+
+def test_an_unreachable_webhook_host_costs_one_timeout_per_burst(client, admin, tenant, monkeypatch):
+    client.post("/api/console/webhooks", headers=admin, json={"url": "https://down.example/hook", "events": ["*"], "tenantId": tenant["id"]})
+    calls = []
+
+    def unreachable(url, content=None, headers=None, timeout=None):
+        calls.append(url)
+        raise httpx.ConnectTimeout("timed out")
+
+    monkeypatch.setattr(services.httpx, "post", unreachable)
+    monkeypatch.setattr(services, "_FAILING_HOSTS", {})
+    with database.session_factory()() as db:
+        for i in range(20):
+            services.fire_webhooks(db, tenant["id"], "monitor.triggered", {"title": f"Disk full {i}"})
+        db.commit()
+        events.process(db)
+        db.commit()
+        waiting = db.execute(select(PlatformEvent).where(PlatformEvent.type == "webhook.delivery")).scalars().all()
+    assert len(calls) == 1  # one real attempt; the other 19 wait for the retry
+    assert len(waiting) == 20 and all(e.status == "pending" for e in waiting)
