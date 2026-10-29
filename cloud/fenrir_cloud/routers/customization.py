@@ -1,4 +1,4 @@
-"""Saved list views and custom fields: small things that make the console fit how an MSP works.
+"""Saved list views, custom fields and regional settings: small things that make the console fit how an MSP works.
 
 Saved views keep a page's filters under a name, private to their owner or shared with the organisation. Custom fields
 are defined once by the MSP for every device or ticket (asset tag, cost centre, contract reference) and filled in per
@@ -12,7 +12,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from .. import audit, services
+from .. import audit, regional, services
 from ..db import get_db
 from ..deps import Principal, current_principal
 from ..models import CustomField, Device, SavedView, Ticket
@@ -188,3 +188,38 @@ def set_custom_values(entity: str, record_id: str, body: dict = Body(...), princ
     audit.record(db, principal.actor, f"{entity}.custom_fields.updated", record_id, tenant, fields=sorted(values))
     db.commit()
     return {"customFields": current}
+
+
+# --------------------------------------------------------------------------- regional settings
+
+
+@router.get("/region")
+def get_region(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """The MSP's currency, time zone and holiday calendar, with the choices and the next holidays."""
+    from datetime import date
+
+    region = regional.get(db, principal.user.tenant_id)
+    today = date.today()
+    upcoming = sorted(d for d in regional.holiday_dates(region, range(today.year, today.year + 2)) if d >= today.isoformat())[:12]
+    return {**region, "calendars": regional.CALENDARS, "currencies": regional.CURRENCIES, "upcomingHolidays": upcoming}
+
+
+@router.put("/region")
+def set_region(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Applies to every customer of the MSP: default currency for new agreements, and the time zone and public holidays
+    that business-hours SLAs use when an agreement does not set its own time zone."""
+    from ..models import Tenant
+
+    principal.require("configure")
+    msp_id = _msp(db, principal)
+    principal.check_tenant(msp_id)
+    try:
+        region = regional.validate(body)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    msp = db.get(Tenant, msp_id)
+    msp.settings = {**(msp.settings or {}), "region": region}
+    audit.record(db, principal.actor, "region.updated", msp.name, msp_id, currency=region["currency"], timeZone=region["timeZone"],
+                 holidayCalendar=region["holidayCalendar"], extraHolidays=len(region["extraHolidays"]))
+    db.commit()
+    return get_region(principal, db)

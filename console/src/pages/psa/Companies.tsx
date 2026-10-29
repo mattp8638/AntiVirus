@@ -57,7 +57,7 @@ export function CompanyDetail() {
           {can("crm") && <button style={{ marginTop: 8 }} onClick={() => setAdding("contact")}>Add contact</button>}
         </>}
         {tab === "Sites" && <>
-          <Table rows={data.sites} empty="No sites." columns={[{ key: "name", label: "Site", render: (x) => <>{displayValue(x.name)}{x.primary && <> <Pill value="primary" tone="blue" /></>}</> }, { key: "address", label: "Address" }, { key: "city", label: "City" }, { key: "postcode", label: "Postcode" }, { key: "phone", label: "Phone" }]} />
+          <Table rows={data.sites} empty="No sites." columns={[{ key: "name", label: "Site", render: (x) => <>{displayValue(x.name)}{x.primary && <> <Pill value="primary" tone="blue" /></>}</> }, { key: "address", label: "Address" }, { key: "city", label: "City" }, { key: "postcode", label: "Postal code" }, { key: "phone", label: "Phone" }]} />
           {can("crm") && <button style={{ marginTop: 8 }} onClick={() => setAdding("site")}>Add site</button>}
         </>}
         {tab === "Agreements" && <Table rows={data.agreements} empty="No agreements. Create one on the Agreements page."
@@ -98,6 +98,8 @@ function EditCompany({ company, onClose }: { company: any; onClose: () => void }
   );
 }
 
+const FIELD_LABEL: Record<string, string> = { name: "Name", title: "Job title", email: "Email", phone: "Phone", address: "Address", city: "City", postcode: "Postal code" };
+
 function AddChild({ kind, tenantId, onClose }: { kind: string; tenantId: string; onClose: () => void }) {
   const [form, setForm] = useState<any>({});
   const { run, busy } = useAction();
@@ -109,7 +111,7 @@ function AddChild({ kind, tenantId, onClose }: { kind: string; tenantId: string;
   return (
     <Modal title={`Add ${kind}`} onClose={onClose} footer={<button className="primary" disabled={busy || !form.name} onClick={save}>Save</button>}>
       <div className="form-grid">
-        {fields.map((f) => <label key={f} className="field">{f}<input value={form[f] || ""} onChange={(e) => setForm({ ...form, [f]: e.target.value })} /></label>)}
+        {fields.map((f) => <label key={f} className="field">{FIELD_LABEL[f] ?? f}<input value={form[f] || ""} onChange={(e) => setForm({ ...form, [f]: e.target.value })} /></label>)}
         <label className="field">Primary<select value={form[kind === "contact" ? "isPrimary" : "primary"] ? "yes" : "no"} onChange={(e) => setForm({ ...form, [kind === "contact" ? "isPrimary" : "primary"]: e.target.value === "yes" })}><option value="no">No</option><option value="yes">Yes</option></select></label>
       </div>
     </Modal>

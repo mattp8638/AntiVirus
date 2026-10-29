@@ -256,6 +256,10 @@ def create_contract(body: dict = Body(...), principal: Principal = Depends(curre
     principal.check_tenant(account)
     contract = Contract(tenant_id=principal.user.tenant_id, account_tenant_id=account, name=str(body.get("name") or "Contract"))
     apply_fields(contract, body, AGREEMENT_FIELDS | {"start_date"})
+    if not body.get("currency"):
+        from .. import regional
+
+        contract.currency = regional.get(db, account)["currency"]  # the MSP's default currency
     contract.sla = contract.sla or dict(services.DEFAULT_SLA_HOURS)
     db.add(contract)
     audit.record(db, principal.actor, "billing.contract.created", contract.name, account)

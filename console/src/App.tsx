@@ -64,6 +64,7 @@ import Exposure from "./pages/Exposure";
 import Elevation from "./pages/Elevation";
 import RecordingPlayer from "./pages/RecordingPlayer";
 import { DialogHost } from "./components/dialogs";
+import { api, setDefaultCurrency } from "./api";
 
 // `also`: other pages of the same section (they switch with section tabs), so the entry stays highlighted on them.
 const NAV: { group: string; items: { to: string; label: string; icon: string; also?: string[] }[] }[] = [
@@ -189,6 +190,7 @@ const BOTTOM_NAV = [
 function Shell() {
   const { me, tenantId, setTenantId, logout } = useApp();
   const location = useLocation();
+  useEffect(() => { api<{ currency: string }>("region").then((r) => setDefaultCurrency(r.currency)).catch(() => undefined); }, [me?.user.id]);
   const [navOpen, setNavOpen] = useState(false);
   // Close the phone menu whenever a page is opened from it.
   useEffect(() => { setNavOpen(false); }, [location.pathname]);

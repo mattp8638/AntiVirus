@@ -4,14 +4,14 @@ import { ago, api, downloadFile, fmtTime, setToken } from "../api";
 import { useApp } from "../app-context";
 import { Modal, PageHead, Pill, Table, Tabs, TenantSelect, useAction, useData, useListData } from "../components/ui";
 import { confirmDialog, promptDialog } from "../components/dialogs";
-import { CustomFieldsSettings } from "../components/Customization";
+import { CustomFieldsSettings, RegionSettings } from "../components/Customization";
 import { useSearchParams } from "react-router-dom";
 
 const ROLES = ["platform_admin", "msp_admin", "soc_analyst", "technician", "billing", "tenant_admin", "tenant_analyst", "viewer"];
 
 export default function Settings() {
   const { can } = useApp();
-  const tabs = ["Tenants", "Users", "Groups", "Custom fields", "Webhooks", ...(can("configure") ? ["API credentials"] : []), "Approvals", "Agent releases", "Audit log", ...(can("configure") ? ["Platform"] : []), "Account"];
+  const tabs = ["Tenants", "Users", "Groups", "Custom fields", "Region & holidays", "Webhooks", ...(can("configure") ? ["API credentials"] : []), "Approvals", "Agent releases", "Audit log", ...(can("configure") ? ["Platform"] : []), "Account"];
   const [params] = useSearchParams();
   const [tab, setTab] = useState(() => { const asked = params.get("tab"); return asked && tabs.includes(asked) ? asked : "Tenants"; });
   return (
@@ -22,6 +22,7 @@ export default function Settings() {
       {tab === "Users" && <UsersTab />}
       {tab === "Groups" && <GroupsTab />}
       {tab === "Custom fields" && <CustomFieldsSettings />}
+      {tab === "Region & holidays" && <RegionSettings />}
       {tab === "Webhooks" && <WebhooksTab />}
       {tab === "API credentials" && <ApiCredentialsTab />}
       {tab === "Approvals" && <ApprovalsTab />}

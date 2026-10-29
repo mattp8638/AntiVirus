@@ -1,9 +1,9 @@
 import { Fragment, useEffect, useState } from "react";
-import { api } from "../api";
+import { api, setDefaultCurrency } from "../api";
 import { useApp } from "../app-context";
 import { displayValue } from "./DisplayValue";
 import { confirmDialog } from "./dialogs";
-import { Modal, Pill, Table, useAction, useListData } from "./ui";
+import { Modal, Pill, Table, useAction, useData, useListData } from "./ui";
 
 // Saved list views (devices, tickets, alerts) and MSP-defined custom fields on devices and tickets.
 
@@ -160,5 +160,58 @@ export function CustomFieldsSettings() {
         <div className="card"><h3>Ticket fields <Pill value={String(ticket?.length ?? 0)} /></h3>{table(ticket)}</div>
       </div>
     </>
+  );
+}
+
+interface Region { currency: string; timeZone: string; holidayCalendar: string; extraHolidays: string[]; calendars: Record<string, string>;
+                   currencies: string[]; upcomingHolidays: string[] }
+
+const zones = (): string[] => {
+  try { return (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf?.("timeZone") ?? []; } catch { return []; }
+};
+
+/** Settings → Region & holidays: the MSP's default currency, time zone and the public holidays that pause SLA clocks. */
+export function RegionSettings() {
+  const { can } = useApp();
+  const { data, reload } = useData<Region>("region");
+  const [form, setForm] = useState<{ currency: string; timeZone: string; holidayCalendar: string; extra: string } | null>(null);
+  const { run, busy } = useAction();
+  useEffect(() => {
+    if (data) setForm({ currency: data.currency, timeZone: data.timeZone, holidayCalendar: data.holidayCalendar, extra: data.extraHolidays.join("\n") });
+  }, [data]);
+  if (!data || !form) return <div className="empty">Loading…</div>;
+  const save = async () => {
+    const body = { currency: form.currency, timeZone: form.timeZone, holidayCalendar: form.holidayCalendar,
+                   extraHolidays: form.extra.split(/[\s,]+/).map((d) => d.trim()).filter(Boolean) };
+    if (await run(() => api("region", { method: "PUT", body }), "Saved")) { setDefaultCurrency(form.currency); reload(); }
+  };
+  const fmt = (d: string) => new Date(`${d}T12:00:00`).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+  return (
+    <div className="grid k2">
+      <div className="card">
+        <h3>Region</h3>
+        <p className="small muted">For every customer: the currency of new agreements and amounts, and the time zone and public holidays that
+          business-hours SLAs use (an agreement can still set its own time zone). Dates and numbers show in each person's own browser format.</p>
+        <div className="form-grid">
+          <label className="field">Currency<select value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })} disabled={!can("configure")}>
+            {[...new Set([form.currency, ...data.currencies])].map((c) => <option key={c}>{c}</option>)}</select></label>
+          <label className="field">Time zone<input list="fenrir-time-zones" value={form.timeZone} disabled={!can("configure")}
+                                                   onChange={(e) => setForm({ ...form, timeZone: e.target.value })} />
+            <datalist id="fenrir-time-zones">{zones().map((z) => <option key={z} value={z} />)}</datalist></label>
+          <label className="field">Public holidays<select value={form.holidayCalendar} onChange={(e) => setForm({ ...form, holidayCalendar: e.target.value })} disabled={!can("configure")}>
+            {Object.entries(data.calendars).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>
+          <label className="field" style={{ gridColumn: "1 / -1" }}>Other days off (YYYY-MM-DD, one per line)
+            <textarea rows={4} value={form.extra} disabled={!can("configure")} placeholder={"2026-12-24\n2026-12-31"}
+                      onChange={(e) => setForm({ ...form, extra: e.target.value })} /></label>
+        </div>
+        <p className="small muted">Your country is not in the list? Choose "No public holidays" and add the dates above, a year at a time.</p>
+        {can("configure") && <button className="primary" disabled={busy} onClick={save}>Save</button>}
+      </div>
+      <div className="card">
+        <h3>Next days off</h3>
+        <Table rows={data.upcomingHolidays.map((d) => ({ id: d, date: d }))} empty="No holidays set: SLA clocks only skip nights and weekends."
+               columns={[{ key: "date", label: "Date", render: (r) => fmt(r.date) }]} />
+      </div>
+    </div>
   );
 }
