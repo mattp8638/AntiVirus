@@ -88,6 +88,20 @@ type Agent struct {
 	brute *bruteGuard
 	// New USB drives and memory cards (removable.go).
 	media *removableWatch
+	// File hashes for strict EDR exclusions (exclusions.go).
+	hashes hashCache
+	// Local loopback DNS proxy (dnsproxy.go).
+	dns *dnsProxyState
+}
+
+// Agent binaries can be large; exclusions never hash anything bigger.
+const maxExclusionHashBytes = 512 << 20
+
+// exclusionApplied reports what a strict exclusion let through, so every use is visible in the console.
+func (a *Agent) exclusionApplied(rule *ExclusionRule, proc, parent ProcInfo, parentSha string, suppressed []string) {
+	a.emit("edr.exclusion.applied", "process-guard", "Exclusion "+rule.ID+" allowed "+filepath.Base(proc.Exe),
+		map[string]interface{}{"exclusionId": rule.ID, "suppressed": suppressed, "pid": proc.PID, "processImagePath": proc.Exe,
+			"commandLine": proc.Cmdline, "parentProcessImagePath": parent.Exe, "parentSha256": parentSha})
 }
 
 func New(cfg Config) *Agent {
@@ -259,21 +273,33 @@ func (a *Agent) QueueLength() int {
 // SenseOnce runs every sensor once and applies real-time verdicts.
 func (a *Agent) SenseOnce() {
 	p := a.state.Policy
+	rules := p.EdrExclusions()
 	for _, proc := range a.procs.Poll() {
 		parent, _ := a.procs.Lookup(proc.PPID)
 		payload := map[string]interface{}{"processImagePath": proc.Exe, "commandLine": proc.Cmdline, "pid": proc.PID, "ppid": proc.PPID,
 			"parentProcessImagePath": parent.Exe, "parentCommandLine": parent.Cmdline, "user": userName(proc.UID)}
+		// Parent hashes are only needed (and only reported) where an exclusion names the parent's path.
+		parentSha := ""
+		if parent.Exe != "" && NeedsParentHash(rules, parent.Exe) {
+			if parentSha = a.hashes.Hash(parent.Exe, maxExclusionHashBytes); parentSha != "" {
+				payload["parentSha256"] = parentSha
+			}
+		}
 		if p.RealtimeProtection && proc.Exe != "" && !a.suppressed(proc.Exe) {
 			if sha, err := HashFile(proc.Exe, a.scanner.MaxFileBytes); err == nil {
 				payload["sha256"] = sha
 				if bad, family := a.scanner.Verdict(sha); bad {
-					switch mode := ScanOptionsFromPolicy(p).PUA; {
-					case !a.scanner.IsPUA(sha) || mode == "block":
-						a.blockProcess(proc, sha, family)
-					case mode == "audit":
-						a.emit("threat.pua.detected", "realtime", "Potentially unwanted application running: "+filepath.Base(proc.Exe),
-							map[string]interface{}{"processImagePath": proc.Exe, "pid": proc.PID, "sha256": sha, "threatName": family,
-								"verdict": "audit", "score": 60, "category": "pua"})
+					if rule := MatchExclusion(rules, "antimalware", proc.Exe, sha, parent.Exe, parentSha, proc.Cmdline); rule != nil {
+						a.exclusionApplied(rule, proc, parent, parentSha, []string{"antimalware.signature:" + family})
+					} else {
+						switch mode := ScanOptionsFromPolicy(p).PUA; {
+						case !a.scanner.IsPUA(sha) || mode == "block":
+							a.blockProcess(proc, sha, family)
+						case mode == "audit":
+							a.emit("threat.pua.detected", "realtime", "Potentially unwanted application running: "+filepath.Base(proc.Exe),
+								map[string]interface{}{"processImagePath": proc.Exe, "pid": proc.PID, "sha256": sha, "threatName": family,
+									"verdict": "audit", "score": 60, "category": "pua"})
+						}
 					}
 				}
 			}
@@ -281,11 +307,19 @@ func (a *Agent) SenseOnce() {
 		var sha string
 		if v, ok := payload["sha256"].(string); ok {
 			sha = v
-		} else if hasHashRules(p) && proc.Exe != "" {
-			sha, _ = HashFile(proc.Exe, a.scanner.MaxFileBytes)
+		} else if (hasHashRules(p) || len(rules) > 0) && proc.Exe != "" {
+			sha = a.hashes.Hash(proc.Exe, a.scanner.MaxFileBytes)
 		}
 		if decisions := EvaluateProcess(p, proc, parent, sha); len(decisions) > 0 {
-			a.applyDecisions(proc, decisions)
+			if rule := MatchExclusion(rules, "behavior", proc.Exe, sha, parent.Exe, parentSha, proc.Cmdline); rule != nil {
+				names := make([]string, 0, len(decisions))
+				for _, d := range decisions {
+					names = append(names, d.Rule)
+				}
+				a.exclusionApplied(rule, proc, parent, parentSha, names)
+			} else {
+				a.applyDecisions(proc, decisions)
+			}
 		}
 		a.emit("process.start", "procfs", "", payload)
 	}
@@ -436,6 +470,7 @@ func (a *Agent) refreshPolicy() {
 		_ = a.saveState()
 		a.applyDeviceControl()
 		a.applyFirewall()
+		a.applyDNSProxy()
 		if a.scanner.Model != nil {
 			sens, _ := policy.Modules["antimalware"]["mlSensitivity"].(string)
 			a.scanner.SetModel(a.scanner.Model, mlThreshold(a.scanner.Model, sens))
@@ -477,7 +512,9 @@ func (a *Agent) heartbeat() {
 
 // Run blocks until Stop is called.
 func (a *Agent) Run() {
+	restoreStaleResolver(a.cfg.StateDir) // a previous run that crashed may have left the resolver pointed at its proxy
 	a.refreshPolicy()
+	a.applyDNSProxy()
 	a.applyDeviceControl()
 	a.refreshSignatures()
 	a.refreshModel()
@@ -504,6 +541,7 @@ func (a *Agent) Run() {
 	for {
 		select {
 		case <-a.stop:
+			a.stopDNSProxy() // never leave the system resolver pointing at a proxy that is gone
 			_ = a.Flush()
 			return
 		case <-a.wake:

@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 32
+LATEST_MIGRATION = 33
 
 def init_engine(url: str) -> Engine:
     global _engine, _session_factory
@@ -300,6 +300,11 @@ def migrate(bind: Engine) -> list[int]:
                 DnsBlocklist.__table__.create(conn, checkfirst=True)
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (32)"))
                 applied.append(32)
+            if 33 not in versions:
+                from .models import EdrExclusion
+                EdrExclusion.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (33)"))
+                applied.append(33)
             conn.commit()
         except Exception:
             conn.rollback()

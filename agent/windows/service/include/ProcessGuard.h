@@ -29,7 +29,8 @@ class ProcessGuard {
   void UpdatePolicy(const PolicySnapshot& policy);
   ExtendedPolicy CurrentExtendedPolicy() const;
 
-  std::vector<TelemetryRecord> OnProcessStart(const EtwProcessContext& process);
+  // May set process.parentSha256 when a strict exclusion names the parent, so the cloud can verify the chain too.
+  std::vector<TelemetryRecord> OnProcessStart(EtwProcessContext& process);
   // attackSurface.blockOfficeCodeInjection: an Office process started a thread inside another process.
   std::vector<TelemetryRecord> OnRemoteThread(const EtwProcessContext& source, unsigned long targetPid);
 
@@ -50,6 +51,9 @@ class ProcessGuard {
   ExtendedPolicy extended_{};
   std::wstring appliedDeviceControlSummary_;
   std::map<std::wstring, double> mlCache_;
+  std::map<std::wstring, std::wstring> hashCache_;  // "path|size|mtime" -> sha256, for exclusions
+
+  std::wstring CachedSha256(const std::wstring& path);
 };
 
 }  // namespace antivirus::agent

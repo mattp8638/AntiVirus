@@ -1073,7 +1073,7 @@ int AgentService::Run(const AgentRunMode mode) {
     ml::SetDefaultModelPath(processGuard_->ModelPath().wstring());
     processEtwSensor_ = std::make_unique<ProcessEtwSensor>(config_);
     processEtwSensor_->SetProcessStartHandler(
-        [guard = processGuard_.get()](const EtwProcessContext& process) { return guard->OnProcessStart(process); });
+        [guard = processGuard_.get()](EtwProcessContext& process) { return guard->OnProcessStart(process); });
     processEtwSensor_->SetRemoteThreadHandler([guard = processGuard_.get()](const EtwProcessContext& source, DWORD target) {
       return guard->OnRemoteThread(source, target);
     });

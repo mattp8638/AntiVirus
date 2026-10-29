@@ -140,3 +140,24 @@ def test_blocklist_management_is_platform_only(client, admin, tenant):
     assert created.status_code == 200
     assert client.delete("/api/console/dns/blocklists/hagezi-pro", headers=admin).status_code == 409
     assert client.delete("/api/console/dns/blocklists/custom-list", headers=admin).status_code == 200
+
+
+def test_doh_reports_its_decision_for_the_agent_proxy(client, admin, tenant, device):
+    """The agent's loopback proxy caches X-Fenrir-Dns-Action/Reason so blocks survive going offline."""
+    import dns.message
+
+    from fenrir_cloud.db import session_factory
+    from fenrir_cloud.models import Device
+
+    with session_factory()() as db:
+        token = db.get(Device, device["deviceId"]).dns_token
+    client.post("/api/console/intel/indicators", json={"values": ["c2.evil.example"], "verdict": "malicious", "tenantId": tenant["id"]},
+                headers=admin)
+    from fenrir_cloud.dnsfilter import INTEL
+
+    INTEL.invalidate()
+    wire = dns.message.make_query("beacon.c2.evil.example", "A").to_wire()
+    response = client.post(f"/dns/{token}/dns-query", content=wire, headers={"Content-Type": "application/dns-message"})
+    assert response.status_code == 200
+    assert response.headers["X-Fenrir-Dns-Action"] == "block"
+    assert response.headers["X-Fenrir-Dns-Reason"].startswith("threat intel")

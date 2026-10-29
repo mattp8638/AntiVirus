@@ -96,6 +96,17 @@ int main(int argc, char** argv) {
     CHECK(!ExtendedPolicy::Parse(R"({"antimalware":{}})").quickScanPlan.present);
     CHECK(!ExtendedPolicy::Parse(R"({"antimalware":{"quickScanPlan":{"days":[9]}}})").quickScanPlan.present);
   }
+  {  // Strict EDR exclusions arrive under modules.edrExclusions.rules
+    const auto policy = ExtendedPolicy::Parse(
+        R"({"edrExclusions":{"rules":[{"id":"exc_1","kind":"process-chain","parentImage":"C:\\Program Files\\Acme\\agent.exe",)"
+        R"("parentSha256":["AAAA"],"childImage":"C:\\Windows\\System32\\cmd.exe","scopes":["behavior"]},{"kind":"hash"}]}})");
+    CHECK(policy.behavior.exclusions.size() == 1);  // a rule without an id is ignored
+    CHECK(policy.behavior.exclusions.size() == 1 && policy.behavior.exclusions[0].parentSha256 == std::vector<std::wstring>{L"aaaa"});
+    CHECK(policy.behavior.exclusions.size() == 1 && policy.behavior.exclusions[0].HasScope(L"behavior"));
+    CHECK(policy.behavior.exclusions.size() == 1 &&
+          policy.behavior.exclusions[0].parentImage == L"C:\\Program Files\\Acme\\agent.exe");
+    CHECK(ExtendedPolicy::Parse(R"({"antimalware":{}})").behavior.exclusions.empty());
+  }
   {  // EDR collection switches drop routine telemetry only
     auto policy = ExtendedPolicy::Parse(R"({"edr":{"collectFileEvents":false,"collectScriptEvents":false},"experience":{"allowQuarantineRestore":true},"privilege":{"breakGlassAllowed":false}})");
     CHECK(!RoutineTelemetryAllowed(policy, L"file.modified", L"{}"));

@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <cwctype>
 
 namespace antivirus::agent {
 namespace json {
@@ -374,6 +375,31 @@ ExtendedPolicy ExtendedPolicy::Parse(const std::string& modulesJson) {
   policy.allowQuarantineRestore = BoolOr(root->Get("experience"), "allowQuarantineRestore", false);
   policy.breakGlassAllowed = BoolOr(root->Get("privilege"), "breakGlassAllowed", true);
   policy.removeLocalAdmins = BoolOr(root->Get("privilege"), "enabled", false) && BoolOr(root->Get("privilege"), "removeLocalAdmins", false);
+
+  if (const auto* exclusions = root->Get("edrExclusions"); exclusions != nullptr) {
+    if (const auto* rules = exclusions->Get("rules"); rules != nullptr) {
+      if (const auto* list = std::get_if<json::Array>(&rules->v)) {
+        for (const auto& item : *list) {
+          if (!item.IsObject()) continue;
+          behavior::ExclusionRule rule;
+          rule.id = WideString(&item, "id", L"");
+          rule.kind = WideString(&item, "kind", L"process-chain");
+          rule.parentImage = WideString(&item, "parentImage", L"");
+          rule.childImage = WideString(&item, "childImage", L"");
+          rule.commandLineContains = WideString(&item, "commandLineContains", L"");
+          rule.parentSha256 = WideList(&item, "parentSha256");
+          rule.childSha256 = WideList(&item, "childSha256");
+          for (auto* hashes : {&rule.parentSha256, &rule.childSha256}) {
+            for (auto& hash : *hashes) {
+              std::transform(hash.begin(), hash.end(), hash.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+            }
+          }
+          rule.scopes = WideList(&item, "scopes");
+          if (!rule.id.empty()) policy.behavior.exclusions.push_back(std::move(rule));
+        }
+      }
+    }
+  }
 
   policy.scriptExecution = BoolOr(root->Get("response"), "scriptExecution", true);
   policy.remoteAccessEnabled = BoolOr(root->Get("remoteAccess"), "enabled", true);
