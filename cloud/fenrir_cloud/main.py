@@ -32,6 +32,7 @@ from .routers import roles as roles_router
 from .routers import approvals as approvals_router
 from .routers import exclusions as exclusions_router
 from .routers import exposure_intel as exposure_intel_router
+from .routers import m365_partner as m365_partner_router
 from .routers import admin, agent_api, artifacts as artifacts_router, business, crm as crm_router, fleet, portal, protection, service_mgmt, soc
 from .routers import psa as psa_router, remote as remote_router, rmm as rmm_router
 from .security import hash_password
@@ -104,9 +105,10 @@ def _maintenance_loop(settings: Settings, stop: threading.Event) -> None:
 
                 result = sync_feed(db, settings.feed_url, settings.feed_token)
                 log.info("feed sync: %s", result)
-            from . import darkweb
+            from . import darkweb, m365_standards
 
             darkweb.tick(db)
+            m365_standards.tick(db)
             if settings.dns_blocklists_enabled:
                 from . import blocklists
 
@@ -292,7 +294,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.include_router(module.router)
     for module in (m365_admin_router, m365_router, network_router, grc_router, backup_router, soc_workflows, ad_router, grc_programme_router,
                    rollouts_router, apikeys_router, roles_router, approvals_router, exclusions_router,
-                   exposure_intel_router):
+                   exposure_intel_router, m365_partner_router):
         app.include_router(module.router)
     app.include_router(documentation_router.router)
     app.include_router(m365_router.oauth)

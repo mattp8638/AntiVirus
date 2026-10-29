@@ -1922,6 +1922,40 @@ class BreachExposure(Base):
     __table_args__ = (UniqueConstraint("tenant_id", "email", "breach", name="uq_breach_exposure"),)
 
 
+class M365Partner(Base):
+    """The MSP's Microsoft partner tenant connection for GDAP (m365_partner.py).
+
+    A partner-tenant app registration plus a refresh token from an admin sign-in. Delegated tokens for each
+    customer tenant are obtained through the customer's GDAP relationship; nothing is installed in customers."""
+    __tablename__ = "m365_partners"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("mpt"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)  # the MSP tenant
+    partner_directory_id: Mapped[str] = mapped_column(String(36))
+    client_id: Mapped[str] = mapped_column(String(36))
+    credentials_envelope: Mapped[dict] = mapped_column(JSON, default=dict)  # {clientSecret, refreshToken}, encrypted
+    status: Mapped[str] = mapped_column(String(30), default="awaiting_signin")  # awaiting_signin | connected | error
+    last_error: Mapped[str] = mapped_column(String(300), default="")
+    signed_in_as: Mapped[str] = mapped_column(String(320), default="")
+    role_groups: Mapped[dict] = mapped_column(JSON, default=dict)  # role template id -> partner security group id
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    refreshed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class M365StandardRun(Base):
+    """One evaluation or deployment of a Microsoft 365 standard for one customer (m365_standards.py)."""
+    __tablename__ = "m365_standard_runs"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("msr"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    connection_id: Mapped[str] = mapped_column(String(32), index=True)
+    standard: Mapped[str] = mapped_column(String(80))
+    action: Mapped[str] = mapped_column(String(20))  # evaluate | deploy
+    status: Mapped[str] = mapped_column(String(20))  # compliant | drifted | deployed | failed | unknown
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+    actor: Mapped[str] = mapped_column(String(200), default="")
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
 # --------------------------------------------------------------------------
 # Analytics Data Ingestion Models (Pydantic Validation Schemas)
 # --------------------------------------------------------------------------
