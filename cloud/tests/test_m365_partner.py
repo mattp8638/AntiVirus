@@ -29,6 +29,8 @@ class FakeMicrosoft:
         self.security_defaults = False
         self.gdap_tenants = {CUSTOMER_DIR}
         self.refresh_tokens = []
+        self.public_client = True  # "Allow public client flows" on, as documented
+        self.secrets_sent = 0
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         url, method = request.url, request.method
@@ -37,6 +39,13 @@ class FakeMicrosoft:
             directory = url.path.split("/")[1]
             if url.path.endswith("/devicecode"):
                 return httpx.Response(200, json={"device_code": "DEVICE-SECRET", "user_code": "ABCD-EFGH", "expires_in": 900, "interval": 1})
+            self.secrets_sent += "client_secret" in form
+            if self.public_client and "client_secret" in form:
+                return httpx.Response(401, json={"error": "invalid_client", "error_description": (
+                    "AADSTS700025: Client is public so neither 'client_assertion' nor 'client_secret' should be presented.")})
+            if not self.public_client and form.get("client_secret") != "partner-secret":
+                return httpx.Response(401, json={"error": "invalid_client", "error_description": (
+                    "AADSTS7000218: The request body must contain the following parameter: 'client_assertion' or 'client_secret'.")})
             if form["grant_type"].endswith("device_code"):
                 return httpx.Response(200, json={"access_token": "partner-token", "refresh_token": "rt-1"})
             self.refresh_tokens.append(form.get("refresh_token"))
@@ -267,3 +276,23 @@ def test_entra_reconciliation(client, admin, tenant):
     assert applied == {"added": ["new@acme.test"], "retired": ["left@acme.test"]}
     after = client.get("/api/console/m365/reconcile", params={"tenant_id": tenant["id"]}, headers=admin).json()
     assert after["newStarters"] == [] and [l["email"] for l in after["leavers"]] == ["gone@acme.test"]
+
+
+def test_partner_token_requests_match_the_app_client_type(client, admin, microsoft):
+    """Public client (the documented setup): never send the secret, even one stored from setup or an older version.
+    Confidential client (public flows off): the secret is required, and is learned on the first refusal."""
+    connect_partner(client, admin)
+    with session_factory()() as db:
+        partner = db.query(M365Partner).one()
+        assert m365_partner._secrets(partner)["clientType"] == "public"
+        m365_partner._store_secrets(partner, {**m365_partner._secrets(partner), "clientType": "confidential"})  # stale belief
+        assert m365_partner.access_token_for(partner) == f"token-{PARTNER_DIR}"
+        assert m365_partner._secrets(partner)["clientType"] == "public"
+        before = microsoft.secrets_sent
+        m365_partner.access_token_for(partner, CUSTOMER_DIR)
+        assert microsoft.secrets_sent == before  # remembered: no secret, no refusal
+
+        microsoft.public_client = False
+        assert m365_partner.access_token_for(partner) == f"token-{PARTNER_DIR}"
+        assert m365_partner._secrets(partner)["clientType"] == "confidential" and partner.status == "connected"
+        db.commit()
