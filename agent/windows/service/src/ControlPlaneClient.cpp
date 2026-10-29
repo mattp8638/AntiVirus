@@ -1096,6 +1096,15 @@ std::string ControlPlaneClient::RequestElevation(const AgentState& state, const 
   }
 }
 
+void ControlPlaneClient::ReportElevationEvent(const AgentState& state, const std::wstring& requestId, const std::string& bodyJson) const {
+  if (state.deviceId.empty() || requestId.empty()) {
+    throw std::runtime_error("This device is not enrolled");
+  }
+  const auto deviceApiKey = ExtractDeviceApiKeyFromCommandChannelUrl(state.commandChannelUrl);
+  RequestJson(L"POST", JoinUrl(baseUrl_, L"/api/v1/devices/" + state.deviceId + L"/elevation-requests/" + requestId + L"/events"),
+              bodyJson, deviceApiKey);
+}
+
 std::string ControlPlaneClient::FetchAmtCredential(const AgentState& state, const std::wstring& commandId) const {
   if (state.deviceId.empty()) {
     throw std::runtime_error("This device is not enrolled");

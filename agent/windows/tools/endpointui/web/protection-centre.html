@@ -663,9 +663,20 @@ function elevationCard() {
   if (mode === 'off') return '';
   const st = S.elevation || {};
   if (st.state === 'granted') {
-    return `<div class="card"><div class="card-head"><h3>Admin access</h3><span class="badge good">Active</span></div><div class="card-body">
-      <p style="margin:0 0 8px">You have administrator rights until <b>${esc(when(st.until))}</b>.</p>
-      <p class="muted small" style="margin:0">When Windows asks for an administrator, enter your own user name and password.</p></div></div>`;
+    const head = `<div class="card"><div class="card-head"><h3>Admin access</h3><span class="badge good">Active until ${esc(when(st.until))}</span></div><div class="card-body">`;
+    const done = `<div class="actions"><button class="btn" data-act="elevationFinish">${icon('shield')}I'm done: remove the account</button></div>
+      <p class="muted small" style="margin:8px 0 0">The temporary account is deleted when the time is up or when you are done. Everything done with it is recorded.</p></div></div>`;
+    if (st.alreadyAdmin) {
+      return head + `<p style="margin:0 0 8px">Your account is already an administrator on this computer, so no temporary account was needed.</p>` + done;
+    }
+    if (st.kind === 'run') {
+      return head + `<p style="margin:0 0 8px">Fenrir opens <b>${esc((st.target || '').split('\\').pop())}</b> as a temporary administrator. Choose <b>Yes</b> when Windows asks.</p>` + done;
+    }
+    return head + `<p style="margin:0 0 8px">When Windows asks for an administrator, enter this temporary account:</p>
+      <label class="f">User name<input class="text mono" id="elvAccount" readonly value="${esc(st.account || '')}"></label>
+      <label class="f">Password<input class="text mono" id="elvPassword" readonly value="${esc(st.password || '')}"></label>
+      <div class="actions"><button class="btn" data-act="elevationCopy" data-field="elvAccount">Copy user name</button>
+        <button class="btn" data-act="elevationCopy" data-field="elvPassword">Copy password</button></div>` + done;
   }
   if (st.state === 'pending') {
     return `<div class="card"><div class="card-head"><h3>Admin access</h3><span class="badge">Waiting</span></div><div class="card-body">
@@ -816,6 +827,16 @@ document.addEventListener('click', (ev) => {
     supportBusy = true; render();
     send('supportRequest', { summary: supportDraft.summary.trim(), details: supportDraft.details.trim(), contact: supportDraft.contact.trim() });
     setTimeout(() => { if (supportBusy) { supportBusy = false; render(); } }, 20000);
+    return;
+  }
+  if (act === 'elevationCopy') {
+    const field = document.getElementById(t.dataset.field);
+    if (field) { field.select(); try { document.execCommand('copy'); toast('good', 'Copied.'); } catch (e) { toast('warning', 'Select the text and press Ctrl+C.'); } }
+    return;
+  }
+  if (act === 'elevationFinish') {
+    if (!window.confirm('End admin access now? The temporary administrator account is deleted.')) return;
+    send('elevationFinish');
     return;
   }
   if (act === 'elevationRequest') {

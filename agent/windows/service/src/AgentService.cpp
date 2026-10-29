@@ -1,6 +1,7 @@
 #include "AgentService.h"
 #include "BuildInfo.h"
 #include "LocalAdminRotation.h"
+#include "TemporaryAdmin.h"
 #include "CrashReporter.h"
 #include "SystemProfile.h"
 #include "ExtendedPolicy.h"
@@ -2180,11 +2181,14 @@ std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
     }
     return command.type == L"protection.pause" ? PauseProtection(command) : ResumeProtection(command);
   }
-  if (command.type == L"elevation.request" || command.type == L"elevation.status") {
-    // Only the signed-in user, from the agent window (the local pipe), asks for their own elevation.
+  if (command.type == L"elevation.request" || command.type == L"elevation.status" || command.type == L"elevation.finish" ||
+      command.type == L"elevation.launched") {
+    // Only the signed-in user, from the agent window (the local pipe), asks for, uses and ends their own elevation.
     if (command.issuedBy.rfind(L"local-dashboard:", 0) != 0 || command.callerSid.empty()) {
       throw std::runtime_error("Admin access is requested from the agent window on the device");
     }
+    if (command.type == L"elevation.finish") return FinishElevation(command);
+    if (command.type == L"elevation.launched") return ReportElevationLaunch(command);
     return command.type == L"elevation.request" ? RequestElevation(command) : ElevationStatus(command);
   }
   if (command.type == L"elevation.grant" || command.type == L"elevation.revoke") {
@@ -2791,6 +2795,12 @@ std::vector<std::wstring> AgentService::LocalAdminKeepList(const std::wstring& p
       if (const auto* grants = parsed->Get("grants"); grants && std::get_if<json::Array>(&grants->v)) {
         for (const auto& grant : std::get<json::Array>(grants->v)) {
           if (const auto* sid = grant.Get("sid"); sid && sid->String()) keep.push_back(Utf8ToWide(*sid->String()));
+          if (const auto* account = grant.Get("account"); account && account->String() && !account->String()->empty()) {
+            keep.push_back(Utf8ToWide(*account->String()));
+          }
+          if (const auto* accountSid = grant.Get("accountSid"); accountSid && accountSid->String() && !accountSid->String()->empty()) {
+            keep.push_back(Utf8ToWide(*accountSid->String()));
+          }
         }
       }
     }
@@ -3693,18 +3703,26 @@ std::wstring AgentService::RotateLocalAdminPassword(const bool force) {
 
 namespace {
 
+// One approved request: the temporary local administrator made for it, and when it ends. Passwords are never stored.
 struct ElevationGrant {
   std::wstring sid, user, requestId;
   long long until{0};
-  bool wasAdmin{false};
+  bool wasAdmin{false};  // the user is already an administrator: no temporary account was needed
+  std::wstring account, accountSid, kind, target, arguments;
 };
 struct ElevationPending {
   std::wstring sid, requestId;
   long long at{0};
 };
+// Ended sessions whose profile is still in use, or whose end the cloud has not acknowledged yet.
+struct ElevationCleanup {
+  std::wstring requestId, account, accountSid, reason;
+  bool profileRemoved{false}, reported{false};
+};
 struct ElevationState {
   std::vector<ElevationGrant> grants;
   std::vector<ElevationPending> pending;
+  std::vector<ElevationCleanup> cleanup;
 };
 
 ElevationState LoadElevations(const std::filesystem::path& file) {
@@ -3722,31 +3740,51 @@ ElevationState LoadElevations(const std::filesystem::path& file) {
     const auto* f = v.Get(key);
     return f && f->Number() ? static_cast<long long>(*f->Number()) : 0LL;
   };
+  const auto flag = [](const json::Value& v, const char* key) {
+    const auto* f = v.Get(key);
+    return f && f->Bool().value_or(false);
+  };
   if (const auto* grants = parsed->Get("grants"); grants && std::get_if<json::Array>(&grants->v)) {
     for (const auto& g : std::get<json::Array>(grants->v)) {
-      const auto* was = g.Get("wasAdmin");
-      state.grants.push_back({str(g, "sid"), str(g, "user"), str(g, "requestId"), num(g, "until"), was && was->Bool().value_or(false)});
+      state.grants.push_back({str(g, "sid"), str(g, "user"), str(g, "requestId"), num(g, "until"), flag(g, "wasAdmin"),
+                              str(g, "account"), str(g, "accountSid"), str(g, "kind"), str(g, "target"), str(g, "arguments")});
     }
   }
   if (const auto* pending = parsed->Get("pending"); pending && std::get_if<json::Array>(&pending->v)) {
     for (const auto& p : std::get<json::Array>(pending->v)) state.pending.push_back({str(p, "sid"), str(p, "requestId"), num(p, "at")});
+  }
+  if (const auto* cleanup = parsed->Get("cleanup"); cleanup && std::get_if<json::Array>(&cleanup->v)) {
+    for (const auto& c : std::get<json::Array>(cleanup->v)) {
+      state.cleanup.push_back({str(c, "requestId"), str(c, "account"), str(c, "accountSid"), str(c, "reason"), flag(c, "profileRemoved"),
+                               flag(c, "reported")});
+    }
   }
   return state;
 }
 
 void SaveElevations(const std::filesystem::path& file, const ElevationState& state) {
   const auto q = [](const std::wstring& v) { return L"\"" + Utf8ToWide(EscapeJsonString(v)) + L"\""; };
+  const auto b = [](bool v) { return std::wstring(v ? L"true" : L"false"); };
   std::wstring body = L"{\"grants\":[";
   for (std::size_t i = 0; i < state.grants.size(); ++i) {
     const auto& g = state.grants[i];
     body += (i ? L"," : L"") + std::wstring(L"{\"sid\":") + q(g.sid) + L",\"user\":" + q(g.user) + L",\"requestId\":" +
-            q(g.requestId) + L",\"until\":" + std::to_wstring(g.until) + L",\"wasAdmin\":" + (g.wasAdmin ? L"true" : L"false") + L"}";
+            q(g.requestId) + L",\"until\":" + std::to_wstring(g.until) + L",\"wasAdmin\":" + b(g.wasAdmin) + L",\"account\":" +
+            q(g.account) + L",\"accountSid\":" + q(g.accountSid) + L",\"kind\":" + q(g.kind) + L",\"target\":" + q(g.target) +
+            L",\"arguments\":" + q(g.arguments) + L"}";
   }
   body += L"],\"pending\":[";
   for (std::size_t i = 0; i < state.pending.size(); ++i) {
     const auto& p = state.pending[i];
     body += (i ? L"," : L"") + std::wstring(L"{\"sid\":") + q(p.sid) + L",\"requestId\":" + q(p.requestId) + L",\"at\":" +
             std::to_wstring(p.at) + L"}";
+  }
+  body += L"],\"cleanup\":[";
+  for (std::size_t i = 0; i < state.cleanup.size(); ++i) {
+    const auto& c = state.cleanup[i];
+    body += (i ? L"," : L"") + std::wstring(L"{\"requestId\":") + q(c.requestId) + L",\"account\":" + q(c.account) +
+            L",\"accountSid\":" + q(c.accountSid) + L",\"reason\":" + q(c.reason) + L",\"profileRemoved\":" + b(c.profileRemoved) +
+            L",\"reported\":" + b(c.reported) + L"}";
   }
   body += L"]}";
   std::ofstream(file, std::ios::binary | std::ios::trunc) << WideToUtf8(body);
@@ -3766,6 +3804,12 @@ std::wstring UnixToIso(const long long seconds) {
   return buffer;
 }
 
+std::wstring Quoted(const std::wstring& value) { return L"\"" + Utf8ToWide(EscapeJsonString(value)) + L"\""; }
+
+// The Windows account expiry is set a few minutes after the session's end: Fenrir deletes the account on time, and
+// Windows stops it working even if the agent is not running to do so.
+constexpr long long kExpiryBackstopSeconds = 5 * 60;
+
 }  // namespace
 
 std::wstring AgentService::RequestElevation(const RemoteCommand& command) {
@@ -3779,8 +3823,17 @@ std::wstring AgentService::RequestElevation(const RemoteCommand& command) {
   }
   const auto user = command.issuedBy.substr(std::wstring(L"local-dashboard:").size());
   const auto reason = ExtractPayloadString(command.payloadJson, "reason").value_or(L"");
-  const std::string body = "{\"user\":\"" + EscapeJsonString(user.substr(0, 200)) + "\",\"userSid\":\"" +
-                           EscapeJsonString(command.callerSid) + "\",\"reason\":\"" + EscapeJsonString(reason.substr(0, 1000)) + "\"}";
+  // run: one program to start as the temporary administrator (from the PAM tray); session: admin access in general.
+  const auto target = ExtractPayloadString(command.payloadJson, "target").value_or(L"");
+  const auto arguments = ExtractPayloadString(command.payloadJson, "arguments").value_or(L"");
+  const bool run = !target.empty();
+  std::string body = "{\"user\":\"" + EscapeJsonString(user.substr(0, 200)) + "\",\"userSid\":\"" +
+                     EscapeJsonString(command.callerSid) + "\",\"reason\":\"" + EscapeJsonString(reason.substr(0, 1000)) +
+                     "\",\"kind\":\"" + (run ? "run" : "session") + "\"";
+  if (run) {
+    body += ",\"target\":\"" + EscapeJsonString(target.substr(0, 1024)) + "\",\"arguments\":\"" + EscapeJsonString(arguments.substr(0, 2000)) + "\"";
+  }
+  body += "}";
   const auto response = controlPlaneClient_->RequestElevation(IdentitySnapshot(), body);
   const auto parsed = json::Parse(response);
   const auto* id = parsed ? parsed->Get("id") : nullptr;
@@ -3793,18 +3846,32 @@ std::wstring AgentService::RequestElevation(const RemoteCommand& command) {
     SaveElevations(file, state);
   }
   QueueTelemetryEvent(L"elevation.requested", L"endpoint-client", user + L" asked for temporary admin access.",
-                      L"{\"user\":\"" + Utf8ToWide(EscapeJsonString(user)) + L"\"}");
+                      L"{\"user\":" + Quoted(user) + L",\"kind\":\"" + (run ? L"run" : L"session") + L"\",\"target\":" + Quoted(target) + L"}");
   return Utf8ToWide(response);
 }
 
 std::wstring AgentService::ElevationStatus(const RemoteCommand& command) {
+  // Only the user the session is for sees its account and password (the local pipe identifies the caller).
   const std::lock_guard lock(elevationMutex_);
   const auto state = LoadElevations(config_.runtimeDatabasePath.parent_path() / L"elevations.json");
   const auto now = static_cast<long long>(std::time(nullptr));
   for (const auto& grant : state.grants) {
-    if (grant.sid == command.callerSid && grant.until > now) {
-      return L"{\"state\":\"granted\",\"until\":\"" + UnixToIso(grant.until) + L"\"}";
+    if (grant.sid != command.callerSid || grant.until <= now) continue;
+    std::wstring out = L"{\"state\":\"granted\",\"until\":\"" + UnixToIso(grant.until) + L"\",\"requestId\":" + Quoted(grant.requestId) +
+                       L",\"kind\":" + Quoted(grant.kind.empty() ? L"session" : grant.kind) + L",\"target\":" + Quoted(grant.target) +
+                       L",\"arguments\":" + Quoted(grant.arguments);
+    if (!grant.account.empty()) {
+      auto& password = elevationPasswords_[grant.requestId];
+      if (password.empty()) {
+        // The service restarted and no longer knows it: give the account a new one.
+        password = laps::GeneratePassword(20);
+        if (tempadmin::SetPassword(grant.account, password) != 0) password.clear();
+      }
+      out += L",\"account\":" + Quoted(L".\\" + grant.account) + L",\"password\":" + Quoted(password);
+    } else {
+      out += L",\"alreadyAdmin\":true";
     }
+    return out + L"}";
   }
   for (const auto& pending : state.pending) {
     if (pending.sid == command.callerSid && now - pending.at < 24 * 3600) return L"{\"state\":\"pending\"}";
@@ -3816,92 +3883,188 @@ std::wstring AgentService::GrantElevation(const RemoteCommand& command) {
   const auto sid = ExtractPayloadString(command.payloadJson, "userSid").value_or(L"");
   const auto user = ExtractPayloadString(command.payloadJson, "user").value_or(sid);
   const auto requestId = ExtractPayloadString(command.payloadJson, "requestId").value_or(L"");
-  long long minutes = 30;
-  if (const auto pos = command.payloadJson.find(L"\"minutes\""); pos != std::wstring::npos) {
-    const auto digits = command.payloadJson.find_first_of(L"0123456789", pos + 9);
-    if (digits != std::wstring::npos) minutes = std::wcstoll(command.payloadJson.c_str() + digits, nullptr, 10);
-  }
+  const auto kind = ExtractPayloadString(command.payloadJson, "kind").value_or(L"session");
+  const auto target = ExtractPayloadString(command.payloadJson, "target").value_or(L"");
+  const auto arguments = ExtractPayloadString(command.payloadJson, "arguments").value_or(L"");
+  long long minutes = static_cast<long long>(ExtractPayloadUInt32(command.payloadJson, "minutes").value_or(30));
   minutes = std::clamp(minutes, 5LL, 480LL);
   if (!PlausibleUserSid(sid)) {
     throw std::runtime_error("The request does not name a valid user account");
   }
+  if (requestId.empty() || requestId.size() > 64) {
+    throw std::runtime_error("The request has no valid id");
+  }
   if (laps::IsDomainController()) {
-    throw std::runtime_error("This is a domain controller; temporary admin rights are never granted on one");
+    throw std::runtime_error("This is a domain controller; temporary admin accounts are never created on one");
   }
   const auto members = laps::ListAdministrators();
   const bool wasAdmin = std::any_of(members.begin(), members.end(), [&](const laps::AdminMember& m) { return _wcsicmp(m.sid.c_str(), sid.c_str()) == 0; });
-  if (!wasAdmin) {
-    if (const auto status = laps::AddAdministrator(sid); status != 0) {
-      throw std::runtime_error("The user could not be added to the Administrators group (error " + std::to_string(status) + ")");
-    }
-  }
   const auto until = static_cast<long long>(std::time(nullptr)) + minutes * 60;
+  std::wstring account, accountSid, password;
   {
+    // Held while the account is created so the expiry pass never sees it before its grant is saved (it would delete it as left over).
     const std::lock_guard lock(elevationMutex_);
+    if (!wasAdmin) {
+      account = tempadmin::AccountName(user, requestId);
+      password = laps::GeneratePassword(20);
+      if (const auto status = tempadmin::Create(account, password, until + kExpiryBackstopSeconds, &accountSid); status != 0) {
+        SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+        throw std::runtime_error("The temporary admin account could not be created (Windows error " + std::to_string(status) + ")");
+      }
+    }
     const auto file = config_.runtimeDatabasePath.parent_path() / L"elevations.json";
     auto state = LoadElevations(file);
-    bool keepWasAdmin = wasAdmin;
-    for (const auto& existing : state.grants) {
-      if (existing.sid == sid) keepWasAdmin = existing.wasAdmin;  // extending a grant keeps the original state
-    }
-    std::erase_if(state.grants, [&](const ElevationGrant& g) { return g.sid == sid; });
+    std::erase_if(state.grants, [&](const ElevationGrant& g) { return g.requestId == requestId; });
     std::erase_if(state.pending, [&](const ElevationPending& p) { return p.sid == sid; });
-    state.grants.push_back({sid, user, requestId, until, keepWasAdmin});
+    state.grants.push_back({sid, user, requestId, until, wasAdmin, account, accountSid, kind, target, arguments});
     SaveElevations(file, state);
+    if (!password.empty()) elevationPasswords_[requestId] = password;
   }
+  SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
   QueueTelemetryEvent(L"elevation.granted", L"local-security",
-                      user + L" has temporary admin rights for " + std::to_wstring(minutes) + L" minutes.",
-                      L"{\"commandId\":\"" + command.commandId + L"\",\"user\":\"" + Utf8ToWide(EscapeJsonString(user)) +
-                          L"\",\"minutes\":" + std::to_wstring(minutes) + L",\"alreadyAdmin\":" + (wasAdmin ? L"true" : L"false") + L"}");
-  return L"{\"granted\":true,\"until\":\"" + UnixToIso(until) + L"\",\"alreadyAdmin\":" + (wasAdmin ? L"true" : L"false") + L"}";
+                      wasAdmin ? user + L" is already an administrator; no temporary account was needed."
+                               : L"Temporary administrator " + account + L" was created for " + user + L" for " + std::to_wstring(minutes) + L" minutes.",
+                      L"{\"commandId\":\"" + command.commandId + L"\",\"requestId\":" + Quoted(requestId) + L",\"user\":" + Quoted(user) +
+                          L",\"account\":" + Quoted(account) + L",\"minutes\":" + std::to_wstring(minutes) + L",\"kind\":" + Quoted(kind) +
+                          L",\"target\":" + Quoted(target) + L",\"alreadyAdmin\":" + (wasAdmin ? L"true" : L"false") + L"}");
+  return L"{\"granted\":true,\"until\":\"" + UnixToIso(until) + L"\",\"alreadyAdmin\":" + (wasAdmin ? L"true" : L"false") +
+         L",\"account\":" + Quoted(account) + L",\"accountSid\":" + Quoted(accountSid) + L"}";
+}
+
+// Deletes a grant's temporary account and profile, reports the end to the cloud and to telemetry. Callers hold the lock.
+void AgentService::EndElevationLocked(ElevationStateRef stateRef, const std::wstring& requestId, const std::wstring& reason) {
+  auto& state = *static_cast<ElevationState*>(stateRef);
+  const auto it = std::find_if(state.grants.begin(), state.grants.end(), [&](const ElevationGrant& g) { return g.requestId == requestId; });
+  if (it == state.grants.end()) return;
+  ElevationCleanup cleanup{it->requestId, it->account, it->accountSid, reason, true, false};
+  unsigned long status = 0;
+  if (!it->account.empty()) {
+    bool profileRemoved = false;
+    status = tempadmin::Remove(it->account, it->accountSid, &profileRemoved);
+    cleanup.profileRemoved = profileRemoved;
+  }
+  if (auto found = elevationPasswords_.find(requestId); found != elevationPasswords_.end()) {
+    SecureZeroMemory(found->second.data(), found->second.size() * sizeof(wchar_t));
+    elevationPasswords_.erase(found);
+  }
+  QueueTelemetryEvent(status == 0 ? L"elevation.ended" : L"elevation.removal.failed", L"local-security",
+                      status == 0 ? L"Temporary admin access for " + it->user + L" ended (" + reason + L")" +
+                                        (it->account.empty() ? L"." : L"; account " + it->account + L" was deleted.")
+                                  : L"Temporary admin account " + it->account + L" could not be deleted (Windows error " +
+                                        std::to_wstring(status) + L"); it expires by itself.",
+                      L"{\"requestId\":" + Quoted(requestId) + L",\"user\":" + Quoted(it->user) + L",\"account\":" + Quoted(it->account) +
+                          L",\"reason\":" + Quoted(reason) + L",\"error\":" + std::to_wstring(status) + L"}");
+  if (status != 0) {
+    return;  // keep the grant: the next expiry pass tries again (Windows' own account expiry still applies)
+  }
+  state.grants.erase(it);
+  cleanup.reported = ReportElevationEnd(&cleanup);
+  if (!cleanup.reported || !cleanup.profileRemoved) state.cleanup.push_back(cleanup);
+}
+
+bool AgentService::ReportElevationEnd(const ElevationCleanupRef& cleanupRef) {
+  const auto& cleanup = *static_cast<const ElevationCleanup*>(cleanupRef);
+  try {
+    controlPlaneClient_->ReportElevationEvent(
+        IdentitySnapshot(), cleanup.requestId,
+        "{\"type\":\"ended\",\"reason\":\"" + EscapeJsonString(cleanup.reason) + "\",\"account\":\"" + EscapeJsonString(cleanup.account) +
+            "\",\"accountRemoved\":true,\"profileRemoved\":" + (cleanup.profileRemoved ? "true" : "false") + "}");
+    return true;
+  } catch (const std::exception& error) {
+    std::wcerr << L"Could not report the end of a temporary admin session: " << Utf8ToWide(error.what()) << std::endl;
+    return false;
+  }
 }
 
 std::wstring AgentService::RevokeElevation(const RemoteCommand& command) {
   const auto sid = ExtractPayloadString(command.payloadJson, "userSid").value_or(L"");
+  const auto requestId = ExtractPayloadString(command.payloadJson, "requestId").value_or(L"");
   const std::lock_guard lock(elevationMutex_);
   const auto file = config_.runtimeDatabasePath.parent_path() / L"elevations.json";
   auto state = LoadElevations(file);
-  bool removed = false;
+  std::vector<std::wstring> ids;
   for (const auto& grant : state.grants) {
-    if (grant.sid == sid && !grant.wasAdmin) removed = laps::RemoveAdministrator(sid) == 0;
+    if ((!requestId.empty() && grant.requestId == requestId) || (requestId.empty() && grant.sid == sid)) ids.push_back(grant.requestId);
   }
-  std::erase_if(state.grants, [&](const ElevationGrant& g) { return g.sid == sid; });
+  for (const auto& id : ids) EndElevationLocked(&state, id, L"revoked from the console");
   std::erase_if(state.pending, [&](const ElevationPending& p) { return p.sid == sid; });
   SaveElevations(file, state);
-  QueueTelemetryEvent(L"elevation.revoked", L"local-security", L"Temporary admin rights were revoked.",
-                      L"{\"commandId\":\"" + command.commandId + L"\",\"removed\":" + (removed ? L"true" : L"false") + L"}");
-  return L"{\"revoked\":true}";
+  return L"{\"revoked\":true,\"ended\":" + std::to_wstring(ids.size()) + L"}";
+}
+
+std::wstring AgentService::FinishElevation(const RemoteCommand& command) {
+  // The user is done (or the program launched as the temporary administrator has closed): end it now.
+  const auto requestId = ExtractPayloadString(command.payloadJson, "requestId").value_or(L"");
+  const auto why = ExtractPayloadString(command.payloadJson, "reason").value_or(L"");
+  const std::lock_guard lock(elevationMutex_);
+  const auto file = config_.runtimeDatabasePath.parent_path() / L"elevations.json";
+  auto state = LoadElevations(file);
+  std::vector<std::wstring> ids;
+  for (const auto& grant : state.grants) {
+    if (grant.sid == command.callerSid && (requestId.empty() || grant.requestId == requestId)) ids.push_back(grant.requestId);
+  }
+  for (const auto& id : ids) {
+    EndElevationLocked(&state, id, why == L"program-closed" ? L"the program closed" : L"finished by the user");
+  }
+  SaveElevations(file, state);
+  return L"{\"ended\":" + std::to_wstring(ids.size()) + L"}";
+}
+
+std::wstring AgentService::ReportElevationLaunch(const RemoteCommand& command) {
+  // The agent window started the requested program as the temporary administrator: audit it in the cloud.
+  const auto requestId = ExtractPayloadString(command.payloadJson, "requestId").value_or(L"");
+  const auto pid = ExtractPayloadUInt32(command.payloadJson, "pid").value_or(0);
+  std::wstring account, target;
+  {
+    const std::lock_guard lock(elevationMutex_);
+    const auto state = LoadElevations(config_.runtimeDatabasePath.parent_path() / L"elevations.json");
+    for (const auto& grant : state.grants) {
+      if (grant.requestId == requestId && grant.sid == command.callerSid) account = grant.account, target = grant.target;
+    }
+  }
+  if (target.empty()) throw std::runtime_error("No temporary admin session to run a program in");
+  QueueTelemetryEvent(L"elevation.program.launched", L"local-security", target + L" was started as temporary administrator " + account + L".",
+                      L"{\"requestId\":" + Quoted(requestId) + L",\"account\":" + Quoted(account) + L",\"target\":" + Quoted(target) +
+                          L",\"pid\":" + std::to_wstring(pid) + L"}");
+  try {
+    controlPlaneClient_->ReportElevationEvent(IdentitySnapshot(), requestId,
+                                              "{\"type\":\"launched\",\"account\":\"" + EscapeJsonString(account) + "\",\"target\":\"" +
+                                                  EscapeJsonString(target) + "\",\"pid\":" + std::to_string(pid) + "}");
+  } catch (const std::exception&) {
+  }
+  return L"{\"recorded\":true}";
 }
 
 void AgentService::ExpireElevations() {
   const std::lock_guard lock(elevationMutex_);
   const auto file = config_.runtimeDatabasePath.parent_path() / L"elevations.json";
-  std::error_code ec;
-  if (!std::filesystem::exists(file, ec)) return;
   auto state = LoadElevations(file);
   const auto now = static_cast<long long>(std::time(nullptr));
-  bool changed = false;
-  for (auto it = state.grants.begin(); it != state.grants.end();) {
-    if (it->until > now) {
-      ++it;
-      continue;
-    }
-    const auto status = it->wasAdmin ? 0UL : laps::RemoveAdministrator(it->sid);
-    QueueTelemetryEvent(status == 0 ? L"elevation.expired" : L"elevation.expiry.failed", L"local-security",
-                        status == 0 ? it->user + L"'s temporary admin rights ended."
-                                    : it->user + L"'s temporary admin rights ended but could not be removed.",
-                        L"{\"user\":\"" + Utf8ToWide(EscapeJsonString(it->user)) + L"\",\"error\":" + std::to_wstring(status) + L"}");
-    if (status == 0) {
-      it = state.grants.erase(it);
-      changed = true;
-    } else {
-      ++it;
+  std::vector<std::wstring> due;
+  for (const auto& grant : state.grants) {
+    if (grant.until <= now) due.push_back(grant.requestId);
+  }
+  for (const auto& id : due) EndElevationLocked(&state, id, L"time limit reached");
+  // Retry what an earlier end could not finish: a profile that was in use, a report the cloud did not get.
+  for (auto& cleanup : state.cleanup) {
+    if (!cleanup.profileRemoved) cleanup.profileRemoved = tempadmin::RemoveProfile(cleanup.accountSid);
+    if (!cleanup.reported) cleanup.reported = ReportElevationEnd(&cleanup);
+  }
+  std::erase_if(state.cleanup, [](const ElevationCleanup& c) { return c.profileRemoved && c.reported; });
+  // A temporary account no session knows about (a crash, a power cut, a restored disk image) is deleted.
+  if (!laps::IsDomainController()) {
+    for (const auto& account : tempadmin::List()) {
+      const bool known = std::any_of(state.grants.begin(), state.grants.end(), [&](const ElevationGrant& g) { return g.account == account.name; });
+      if (known) continue;
+      bool profileRemoved = false;
+      const auto status = tempadmin::Remove(account.name, account.sid, &profileRemoved);
+      QueueTelemetryEvent(L"elevation.orphan.removed", L"local-security",
+                          L"A leftover temporary admin account (" + account.name + L") was " + (status == 0 ? L"deleted." : L"found but could not be deleted."),
+                          L"{\"account\":" + Quoted(account.name) + L",\"error\":" + std::to_wstring(status) + L"}");
     }
   }
-  const auto before = state.pending.size();
   std::erase_if(state.pending, [now](const ElevationPending& p) { return now - p.at > 24 * 3600; });
-  changed = changed || before != state.pending.size();
-  if (changed) SaveElevations(file, state);
+  SaveElevations(file, state);
 }
 
 PolicySnapshot AgentService::EnforcedPolicy() const {

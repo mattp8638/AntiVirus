@@ -89,7 +89,7 @@ jobs:
         run: |
           agent/windows/cmake/make-mingw-header-shims.sh /tmp/shims
           cmake -B /tmp/winbuild -S agent/windows/service -DCMAKE_TOOLCHAIN_FILE=$PWD/agent/windows/cmake/mingw-w64-x86_64.cmake -DCMAKE_BUILD_TYPE=Release -DANTIVIRUS_REQUIRE_MINIFILTER_PAYLOAD=OFF -DCMAKE_CXX_FLAGS=-I/tmp/shims -DCMAKE_C_FLAGS=-I/tmp/shims
-          cmake --build /tmp/winbuild -j4 --target antivirus-agent-service fenrir-remote antivirus-scannercli fenrir-mltest fenrir-behavior-tests fenrir-policy-tests fenrir-rmm-tests
+          cmake --build /tmp/winbuild -j4 --target antivirus-agent-service fenrir-remote antivirus-scannercli fenrir-mltest fenrir-behavior-tests fenrir-policy-tests fenrir-rmm-tests fenrir-tempadmin-tests
 
   image:
     name: Platform image

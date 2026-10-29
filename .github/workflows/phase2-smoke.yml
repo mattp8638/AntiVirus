@@ -99,7 +99,7 @@ jobs:
       - name: Test remote SAS, bounded pipe I/O and WinGet operation safety
         shell: pwsh
         run: |
-          cmake --build build --config Release --target fenrir-remote-sas-tests fenrir-remote-pipe-tests fenrir-winget-tests fenrir-cancellation-tests fenrir-rmm-tests
+          cmake --build build --config Release --target fenrir-remote-sas-tests fenrir-remote-pipe-tests fenrir-winget-tests fenrir-cancellation-tests fenrir-rmm-tests fenrir-tempadmin-tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & ./build/Release/fenrir-remote-sas-tests.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -110,6 +110,8 @@ jobs:
           & ./build/Release/fenrir-cancellation-tests.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & ./build/Release/fenrir-rmm-tests.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./build/Release/fenrir-tempadmin-tests.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell.exe -NoProfile -File agent/windows/tests/SystemProfileShapeTests.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
