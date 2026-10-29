@@ -42,6 +42,12 @@ class FakeMicrosoft:
         self.device_scopes = []
         self.jwt_scopes = None  # set to issue JWT access tokens carrying this scp claim
         self.partner_center_consented = True
+        # Delegated permission grants in the partner tenant; the consent page created Fenrir's Graph grant.
+        self.service_principals = {CLIENT_ID: "sp-fenrir", "fa3d9a0c-3fb0-42cc-9193-47c7ecd2edbd": "sp-partner-center",
+                                   "00000003-0000-0000-c000-000000000000": "sp-graph"}
+        self.grants = [{"id": "grant-graph", "clientId": "sp-fenrir", "resourceId": "sp-graph", "consentType": "AllPrincipals",
+                        "scope": "DelegatedAdminRelationship.ReadWrite.All Directory.Read.All Group.ReadWrite.All "
+                                 "DelegatedPermissionGrant.ReadWrite.All openid profile offline_access"}]
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         url, method = request.url, request.method
@@ -78,6 +84,22 @@ class FakeMicrosoft:
             return httpx.Response(201, json={})
         path = url.path.removeprefix("/v1.0")
         body = json.loads(request.content) if request.content else None
+        from urllib.parse import unquote
+
+        if unquote(path).startswith("/servicePrincipals(appId="):
+            app_id = unquote(path).split("'")[1]
+            sp = self.service_principals.get(app_id)
+            return httpx.Response(200, json={"id": sp}) if sp else httpx.Response(404, json={"error": {"code": "NotFound", "message": app_id}})
+        if path == "/oauth2PermissionGrants":
+            if method == "POST":
+                grant = {**body, "id": f"grant-{len(self.grants)}"}
+                self.grants.append(grant)
+                return httpx.Response(201, json=grant)
+            client_sp, resource_sp = [part.split("'")[1] for part in url.params["$filter"].split(" and ")]
+            return httpx.Response(200, json={"value": [g for g in self.grants if g["clientId"] == client_sp and g["resourceId"] == resource_sp]})
+        if path.startswith("/oauth2PermissionGrants/"):
+            next(g for g in self.grants if g["id"] == path.rsplit("/", 1)[1]).update(body)
+            return httpx.Response(204)
         if path == "/organization":
             return httpx.Response(200, json={"value": [{"displayName": "Palmertech", "partnerTenantType": self.partner_tenant_type,
                                                         "verifiedDomains": [{"name": "palmertech.co.uk"}]}]})
@@ -408,3 +430,22 @@ def test_unconsented_sign_in_points_to_one_click_approvals(client, admin, micros
     microsoft.partner_center_consented = True
     ready = client.get("/api/console/m365/partner/check", headers=admin).json()
     assert ready["problems"] == [] and ready["actions"] == {"approveGraph": False, "approvePartnerCenter": False}
+
+
+def test_one_sign_in_grants_partner_center_and_gives_back_the_setup_permission(client, admin, microsoft):
+    proof = stepup(client, admin)
+    client.post("/api/console/m365/partner", headers=proof, json={"directoryId": PARTNER_DIR, "clientId": CLIENT_ID})
+    client.post("/api/console/m365/partner/signin", headers=admin, json={})
+    assert "DelegatedPermissionGrant.ReadWrite.All" in microsoft.device_scopes[-1]
+    polled = client.post("/api/console/m365/partner/signin/poll", headers=admin).json()
+    assert polled["status"] == "ok" and polled["setup"] == {"partnerCenter": "granted", "setupPermissionRemoved": True}
+    partner_center = [g for g in microsoft.grants if g["resourceId"] == "sp-partner-center"]
+    assert partner_center == [{"clientId": "sp-fenrir", "consentType": "AllPrincipals", "resourceId": "sp-partner-center",
+                               "scope": "user_impersonation", "id": "grant-1"}]
+    graph = next(g for g in microsoft.grants if g["id"] == "grant-graph")
+    assert "DelegatedPermissionGrant.ReadWrite.All" not in graph["scope"] and "Directory.Read.All" in graph["scope"]
+
+    # Signing in again finds the grant in place and changes nothing.
+    client.post("/api/console/m365/partner/signin", headers=admin, json={})
+    again = client.post("/api/console/m365/partner/signin/poll", headers=admin).json()
+    assert again["setup"]["partnerCenter"] == "already granted" and len(microsoft.grants) == 2

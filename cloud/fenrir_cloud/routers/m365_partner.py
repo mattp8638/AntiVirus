@@ -86,7 +86,7 @@ def partner_signin(body: dict = Body(default={}), principal: Principal = Depends
         raise HTTPException(422, "purpose must be graph or partner-center")
     code = _provider(lambda: partner_mod.start_signin(row, purpose))
     code["purpose"] = purpose
-    partner_mod._store_secrets(row, {**partner_mod._secrets(row), "pendingDeviceCode": code.pop("deviceCode")})
+    partner_mod._store_secrets(row, {**partner_mod._secrets(row), "pendingDeviceCode": code.pop("deviceCode"), "pendingPurpose": purpose})
     db.commit()
     return code
 
@@ -97,12 +97,21 @@ def partner_signin_poll(principal: Principal = Depends(current_principal), db: S
     pending = partner_mod._secrets(row).get("pendingDeviceCode")
     if not pending:
         raise HTTPException(409, "Start a sign-in first")
+    purpose = partner_mod._secrets(row).get("pendingPurpose") or "graph"
     status = _provider(lambda: partner_mod.complete_signin(row, pending))
+    setup = None
     if status == "ok":
-        partner_mod._store_secrets(row, {k: v for k, v in partner_mod._secrets(row).items() if k != "pendingDeviceCode"})
+        partner_mod._store_secrets(row, {k: v for k, v in partner_mod._secrets(row).items() if k not in ("pendingDeviceCode", "pendingPurpose")})
         audit.record(db, principal.actor, "m365.partner.signed_in", row.signed_in_as, row.tenant_id)
+        if purpose == "graph":
+            # The same sign-in also sets up Partner Center access, so one approval covers everything.
+            try:
+                setup = partner_mod.setup_consents(row)
+            except (partner_mod.PartnerError, httpx.HTTPError, ValueError) as exc:
+                setup = {"partnerCenter": f"failed: {exc}"[:300]}
+            audit.record(db, principal.actor, "m365.partner.consents", row.partner_directory_id, row.tenant_id, **setup)
     db.commit()
-    return {"status": status, "partner": partner_mod.view(row)}
+    return {"status": status, "partner": partner_mod.view(row), "setup": setup}
 
 
 @router.get("/partner/relationships")

@@ -39,8 +39,11 @@ SCOPE = "https://graph.microsoft.com/.default offline_access"
 # whole organisation on Microsoft's sign-in page ("Consent on behalf of your organization"): nothing has to be added
 # to the app registration first. Partner Center is a separate API, so it is approved in a second, separate sign-in.
 PARTNER_GRAPH_SCOPES = ("DelegatedAdminRelationship.ReadWrite.All", "Directory.Read.All", "Group.ReadWrite.All")
+# Asked for at sign-in only so Fenrir can grant itself Partner Center access in the same step (one consent covers one
+# API); setup_consents() removes it from Fenrir's grant straight afterwards.
+SETUP_SCOPE = "DelegatedPermissionGrant.ReadWrite.All"
 SIGNIN_SCOPES = {
-    "graph": "openid profile offline_access " + " ".join(f"https://graph.microsoft.com/{p}" for p in PARTNER_GRAPH_SCOPES),
+    "graph": "openid profile offline_access " + " ".join(f"https://graph.microsoft.com/{p}" for p in (*PARTNER_GRAPH_SCOPES, SETUP_SCOPE)),
     "partner-center": "openid profile offline_access https://api.partnercenter.microsoft.com/user_impersonation",
 }
 
@@ -488,6 +491,65 @@ def check(row: M365Partner) -> dict:
     out["problems"], out["actions"] = problems, actions
     out["checkedAt"] = utcnow().isoformat() + "Z"
     row.settings = {**(row.settings or {}), "check": out}
+    return out
+
+
+PARTNER_CENTER_APP_ID = "fa3d9a0c-3fb0-42cc-9193-47c7ecd2edbd"  # the Microsoft Partner Center API
+
+
+def _service_principal(client: httpx.Client, token: str, app_id: str) -> str | None:
+    response = client.get(f"{GRAPH}/servicePrincipals(appId='{app_id}')?$select=id",
+                          headers={"Authorization": "Bearer " + token})
+    if response.status_code == 404:
+        return None
+    if response.status_code >= 400:
+        raise _refused("GET", "/servicePrincipals", response)
+    return response.json().get("id")
+
+
+def _grants(client: httpx.Client, token: str, client_sp: str, resource_sp: str) -> list[dict]:
+    return _list(client, token, f"/oauth2PermissionGrants?$filter=clientId eq '{client_sp}' and resourceId eq '{resource_sp}'")
+
+
+def setup_consents(row: M365Partner) -> dict:
+    """Right after the partner sign-in: grant Fenrir Partner Center access for the whole partner tenant (the one consent
+    a sign-in cannot cover, because it is a second API), then drop the setup permission from Fenrir's own Graph grant
+    so it does not keep the power to grant permissions. Best effort: what fails is reported, and the partner check
+    offers the manual approval instead."""
+    out: dict = {"partnerCenter": None, "setupPermissionRemoved": False}
+    with http_client() as client:
+        token = access_token_for(row, client=client)
+        scopes = set(str(_claim(token, "scp") or "").split())
+        if _claim(token, "scp") is not None and SETUP_SCOPE not in scopes:
+            out["partnerCenter"] = "skipped: the sign-in was not granted " + SETUP_SCOPE
+            return out
+        try:
+            fenrir_sp = _service_principal(client, token, row.client_id)
+            partner_center_sp = _service_principal(client, token, PARTNER_CENTER_APP_ID)
+            graph_sp = _service_principal(client, token, GRAPH_APP_ID)
+            if not fenrir_sp:
+                raise PartnerError("Fenrir's app has no service principal in the partner tenant yet")
+            if not partner_center_sp:
+                raise PartnerError("The Microsoft Partner Center API is not present in the partner tenant")
+            existing = [g for g in _grants(client, token, fenrir_sp, partner_center_sp) if g.get("consentType") == "AllPrincipals"]
+            if existing and "user_impersonation" in str(existing[0].get("scope") or "").split():
+                out["partnerCenter"] = "already granted"
+            elif existing:
+                scope = " ".join(sorted(set(str(existing[0].get("scope") or "").split()) | {"user_impersonation"}))
+                _graph(client, token, "PATCH", f"/oauth2PermissionGrants/{existing[0]['id']}", {"scope": scope})
+                out["partnerCenter"] = "granted"
+            else:
+                _graph(client, token, "POST", "/oauth2PermissionGrants", {"clientId": fenrir_sp, "consentType": "AllPrincipals",
+                                                                           "resourceId": partner_center_sp, "scope": "user_impersonation"})
+                out["partnerCenter"] = "granted"
+            for grant in _grants(client, token, fenrir_sp, graph_sp) if graph_sp else []:
+                kept = [p for p in str(grant.get("scope") or "").split() if p != SETUP_SCOPE]
+                if len(kept) != len(str(grant.get("scope") or "").split()):
+                    _graph(client, token, "PATCH", f"/oauth2PermissionGrants/{grant['id']}", {"scope": " ".join(kept)})
+                    out["setupPermissionRemoved"] = True
+        except PartnerError as exc:
+            out["partnerCenter"] = out["partnerCenter"] or f"failed: {exc}"[:300]
+    row.settings = {**(row.settings or {}), "setup": {**out, "at": utcnow().isoformat() + "Z"}}
     return out
 
 
