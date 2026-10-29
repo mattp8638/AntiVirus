@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, expect, test, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -210,7 +210,6 @@ test("UK governance catalogue shows scope and adopts a working DORA programme", 
 }, 30000);
 
 test("a dispatched job can be stopped and removed while awaiting its endpoint", async () => {
-  const confirmation = vi.spyOn(window, "confirm").mockReturnValue(true);
   render(<MemoryRouter initialEntries={[`/automation?job=${ids.cancellationJob}`]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Root /></MemoryRouter>);
   await settled();
   fireEvent.click(screen.getByRole("button", { name: "Stop job", exact: true }));
@@ -219,10 +218,14 @@ test("a dispatched job can be stopped and removed while awaiting its endpoint", 
   expect(document.body.textContent).toContain("awaiting stop acknowledgement");
   fireEvent.click(screen.getByRole("button", { name: "Remove job", exact: true }));
   await settled();
+  // The in-page confirmation (not the browser's), with a red button for a destructive action.
+  const dialog = screen.getByRole("dialog", { name: "Please confirm" });
+  expect(dialog.textContent).toContain("Remove this job and stop its outstanding work?");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Continue" }));
+  await settled();
   assertView("Automation › remove dispatched job");
   expect(screen.queryByRole("dialog", { name: "Cancellable UI job" })).toBeNull();
   expect(document.body.textContent).not.toContain("Cancellable UI job");
-  confirmation.mockRestore();
 }, 20000);
 
 test("decommissioning succeeds while a command is awaiting its stop acknowledgement", async () => {
@@ -236,4 +239,30 @@ test("decommissioning succeeds while a command is awaiting its stop acknowledgem
   assertView("Device › decommission with in-flight work");
   expect(document.body.textContent).toContain("Decommissioned: agent access is revoked");
   expect(document.body.textContent).toContain("awaiting a stop acknowledgement");
+}, 20000);
+
+test("the service board can be worked from the keyboard", async () => {
+  render(<MemoryRouter initialEntries={["/service-board"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Root /></MemoryRouter>);
+  await settled();
+  expect(document.querySelector("tr.active-row")).toBeNull();
+  fireEvent.keyDown(document, { key: "j" });
+  await settled();
+  expect(document.querySelector("tr.active-row")).toBeTruthy();
+  fireEvent.keyDown(document, { key: "?" });
+  await settled();
+  expect(screen.getByRole("dialog", { name: "Keyboard shortcuts" }).textContent).toContain("Next / previous ticket");
+}, 20000);
+
+test("custom fields are defined in settings and shown on devices", async () => {
+  render(<MemoryRouter initialEntries={["/settings?tab=Custom%20fields"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Root /></MemoryRouter>);
+  await settled();
+  fireEvent.change(screen.getByPlaceholderText("Label, e.g. Asset tag"), { target: { value: "Asset tag" } });
+  fireEvent.click(screen.getByRole("button", { name: "Add field" }));
+  await settled();
+  expect(document.body.textContent).toContain("asset_tag");
+  cleanup();
+  render(<MemoryRouter initialEntries={[`/devices/${ids.device}`]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Root /></MemoryRouter>);
+  await settled();
+  expect(screen.getByRole("heading", { name: "Custom fields" })).toBeTruthy();
+  assertView("Device › custom fields");
 }, 20000);

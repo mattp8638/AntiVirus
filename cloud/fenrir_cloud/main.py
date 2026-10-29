@@ -7,6 +7,7 @@ import mimetypes
 import secrets
 import sys
 import threading
+import time
 from contextlib import asynccontextmanager, contextmanager
 from datetime import timedelta
 from pathlib import Path
@@ -36,6 +37,7 @@ from .routers import exposure_intel as exposure_intel_router
 from .routers import m365_partner as m365_partner_router
 from .routers import condition_packages as condition_packages_router
 from .routers import oob as oob_router
+from .routers import customization as customization_router
 from .routers import grc_assurance as grc_assurance_router
 from .routers import admin, agent_api, artifacts as artifacts_router, business, crm as crm_router, fleet, portal, protection, service_mgmt, soc
 from .routers import psa as psa_router, remote as remote_router, rmm as rmm_router
@@ -94,69 +96,139 @@ def bootstrap(settings: Settings) -> None:
         db.close()
 
 
+SCHEDULER_LOCK = 726191904221
+MAINTENANCE_LOCK = 726191904222
+
+
+def _run_job(db, name: str, job) -> bool:
+    """Runs one background job in its own transaction and records how it went. One failing job never stops the others."""
+    from .models import BackgroundJob
+
+    started = time.monotonic()
+    error = ""
+    try:
+        job(db)
+        db.commit()
+    except Exception as exc:  # noqa: BLE001 - the next job still runs
+        db.rollback()
+        error = f"{type(exc).__name__}: {exc}"[:1000]
+        log.warning("background job %s failed: %s", name, error)
+    try:
+        now = utcnow()
+        row = db.get(BackgroundJob, name) or BackgroundJob(name=name, failures=0)
+        row.last_run_at, row.ok, row.error = now, not error, error
+        row.duration_ms = int((time.monotonic() - started) * 1000)
+        row.failures = (row.failures or 0) + 1 if error else 0
+        if not error:
+            row.last_ok_at = now
+        db.merge(row)
+        db.commit()
+    except Exception as exc:  # noqa: BLE001 - recording the outcome must not break the loop
+        db.rollback()
+        log.warning("could not record background job %s: %s", name, exc)
+    return not error
+
+
+def _purge_telemetry(db, settings: Settings) -> None:
+    cutoff = utcnow() - timedelta(days=settings.telemetry_retention_days)
+    db.execute(delete(Event).where(Event.occurred_at < cutoff))
+    db.execute(delete(RuleMatch).where(RuleMatch.at < cutoff))
+    db.execute(delete(DnsQueryLog).where(DnsQueryLog.at < cutoff))
+    db.execute(delete(RateLimitBucket).where(RateLimitBucket.expires_at < utcnow()))
+
+
+def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
+    """Hourly jobs, in order."""
+    from . import autodoc, billing_sync, darkweb, grc_automation, m365_partner, m365_standards, tprm
+
+    jobs: list[tuple[str, object]] = [("telemetry.retention", lambda db: _purge_telemetry(db, settings))]
+    if settings.feed_sync_enabled:
+        from .intel import sync_feed
+
+        jobs.append(("intel.feed", lambda db: log.info("feed sync: %s", sync_feed(db, settings.feed_url, settings.feed_token))))
+    jobs += [("m365.partner", m365_partner.tick), ("documentation.auto", autodoc.tick), ("tprm", tprm.tick),
+             ("grc.automation", grc_automation.tick), ("darkweb", darkweb.tick), ("m365.standards", m365_standards.tick),
+             ("billing.sync", billing_sync.tick)]
+    if settings.dns_blocklists_enabled:
+        from . import blocklists
+
+        jobs.append(("dns.blocklists", lambda db: [log.info("dns blocklist sync: %s", r) for r in blocklists.sync_due(db)]))
+    return jobs
+
+
 def _maintenance_loop(settings: Settings, stop: threading.Event) -> None:
-    """Hourly: purge telemetry past retention, refresh the upstream feed if enabled."""
+    """Hourly: purge telemetry past retention, refresh feeds, run the slow provider syncs. One worker at a time."""
     delay = 30.0
     while not stop.wait(delay):
         delay = 3600.0
-        db = database.session_factory()()
         try:
-            cutoff = utcnow() - timedelta(days=settings.telemetry_retention_days)
-            db.execute(delete(Event).where(Event.occurred_at < cutoff))
-            db.execute(delete(RuleMatch).where(RuleMatch.at < cutoff))
-            db.execute(delete(DnsQueryLog).where(DnsQueryLog.at < cutoff))
-            db.execute(delete(RateLimitBucket).where(RateLimitBucket.expires_at < utcnow()))
-            db.commit()
-            if settings.feed_sync_enabled:
-                from .intel import sync_feed
-
-                result = sync_feed(db, settings.feed_url, settings.feed_token)
-                log.info("feed sync: %s", result)
-            from . import autodoc, billing_sync, darkweb, grc_automation, m365_partner, m365_standards, tprm
-
-            m365_partner.tick(db)
-            autodoc.tick(db)
-            tprm.tick(db)
-            grc_automation.tick(db)
-            darkweb.tick(db)
-            m365_standards.tick(db)
-            billing_sync.tick(db)
-            if settings.dns_blocklists_enabled:
-                from . import blocklists
-
-                for result in blocklists.sync_due(db):
-                    log.info("dns blocklist sync: %s", result)
+            with _scheduler_lease(MAINTENANCE_LOCK) as acquired:
+                if not acquired:
+                    continue  # another worker is running them
+                db = database.session_factory()()
+                try:
+                    for name, job in _maintenance_jobs(settings):
+                        if stop.is_set():
+                            break
+                        _run_job(db, name, job)
+                finally:
+                    db.close()
         except Exception as exc:  # noqa: BLE001 - keep the loop alive
-            log.warning("maintenance cycle failed: %s", exc)
-            db.rollback()
-        finally:
-            db.close()
+            log.warning("maintenance lease could not be acquired/released: %s", exc)
 
 
 @contextmanager
-def _scheduler_lease():
-    """Only one cloud worker may run scheduled MSP operations at a time.
+def _scheduler_lease(lock_key: int = SCHEDULER_LOCK):
+    """Only one cloud worker may run a set of scheduled jobs at a time.
 
     PostgreSQL session advisory locks survive the intermediate commits used by
-    the existing scheduler. Hold a *dedicated connection* throughout the pass
-    and release the lock on that same connection on every exit.
+    the jobs. Hold a *dedicated connection* throughout the pass and release the
+    lock on that same connection on every exit.
     """
     engine = database.engine()
     if engine.dialect.name != "postgresql":
         # SQLite remains supported for single-process local development only.
         yield True
         return
-    lock_key = 726191904221
     with engine.connect() as lock_connection:
         acquired = bool(lock_connection.exec_driver_sql(
-            f"SELECT pg_try_advisory_lock({lock_key})").scalar())
+            f"SELECT pg_try_advisory_lock({int(lock_key)})").scalar())
         try:
             yield acquired
         finally:
             if acquired:
                 lock_connection.exec_driver_sql(
-                    f"SELECT pg_advisory_unlock({lock_key})")
+                    f"SELECT pg_advisory_unlock({int(lock_key)})")
             lock_connection.rollback()
+
+
+def _poll_msp_mailbox(db) -> None:
+    msp = db.execute(select(Tenant).where(Tenant.kind == "msp")).scalars().first()
+    if msp is not None:
+        psa.poll_imap(db, msp.id)
+
+
+def _scheduled_jobs() -> list[tuple[str, int, object]]:
+    """(name, every N passes of 30 seconds, job), in the order they run within a pass."""
+    from . import condition_remediation, network, remediation, topology
+    from .routers import artifacts as artifact_store
+    from .routers import backup as backup_health
+
+    return [
+        ("rmm", 1, rmm.tick),
+        ("psa.timed-workflows", 1, psa.timed_workflows),
+        ("remote.expire-sessions", 1, remote.expire_sessions),
+        ("events.outbox", 1, events.process),  # after the jobs above, so their events go out in the same pass
+        ("network", 1, network.tick),
+        ("psa.mailbox", 4, _poll_msp_mailbox),  # every two minutes
+        ("condition-remediation", 10, condition_remediation.tick),  # every five minutes
+        ("backup.health", 10, backup_health.health_tick),
+        ("remediation", 20, remediation.tick),  # every ten minutes
+        ("topology", 120, topology.tick),  # hourly
+        ("artifacts.purge", 120, artifact_store.purge_expired),
+        ("audit.checkpoint", 120, audit.daily_checkpoint),  # CORE-06: daily chain-head checkpoint (published to webhooks)
+        ("audit.retention", 120, audit.apply_retention),
+    ]
 
 
 def _scheduler_loop(stop: threading.Event, interval: float = 30.0) -> None:
@@ -170,48 +242,12 @@ def _scheduler_loop(stop: threading.Event, interval: float = 30.0) -> None:
                 passes += 1
                 db = database.session_factory()()
                 try:
-                    rmm.tick(db)
-                    psa.timed_workflows(db)
-                    remote.expire_sessions(db)
-                    db.commit()
-                    events.process(db)
-                    db.commit()
-                    from . import network
-                    network.tick(db)
-                    if passes % 10 == 0:  # every five minutes
-                        from . import condition_remediation
-
-                        condition_remediation.tick(db)
-                        db.commit()
-                    if passes % 120 == 0:
-                        from . import topology
-
-                        topology.tick(db)
-                        db.commit()
-                    if passes % 20 == 0:  # every ten minutes
-                        from . import remediation
-
-                        remediation.tick(db)
-                        db.commit()
-                    if passes % 10 == 0:
-                        from .routers import backup as backup_health
-                        backup_health.health_tick(db)
-                    if passes % 120 == 0:
-                        from .routers import artifacts as artifact_store
-                        artifact_store.purge_expired(db)
-                        audit.daily_checkpoint(db)  # CORE-06: daily chain-head checkpoint (published to webhooks)
-                        audit.apply_retention(db)
-                    if passes % 4 == 0:
-                        msp = db.execute(select(Tenant).where(Tenant.kind == "msp")).scalars().first()
-                        if msp is not None:
-                            psa.poll_imap(db, msp.id)
-                    db.commit()
-                except Exception as exc:
-                    log.warning("scheduler pass failed: %s", exc)
-                    db.rollback()
+                    for name, every, job in _scheduled_jobs():
+                        if passes % every == 0 and not stop.is_set():
+                            _run_job(db, name, job)
                 finally:
                     db.close()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - keep the loop alive
             log.warning("scheduler lease could not be acquired/released: %s", exc)
 
 
@@ -344,6 +380,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(grc_assurance_router.public)
     app.include_router(protection.router)
     app.include_router(protection.console)
+    app.include_router(customization_router.router)
 
     @app.get("/health", tags=["System"])
     def health():

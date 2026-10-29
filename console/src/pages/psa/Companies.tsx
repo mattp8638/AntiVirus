@@ -5,6 +5,7 @@ import { ago, api, money } from "../../api";
 import { useApp } from "../../app-context";
 import { Modal, PageHead, Pill, Table, Tabs, useAction, useData, useListData } from "../../components/ui";
 import { NewTicket, PRIORITY_TONE } from "./ServiceBoard";
+import { noticeDialog } from "../../components/dialogs";
 
 export default function Companies() {
   const navigate = useNavigate();
@@ -56,7 +57,7 @@ export function CompanyDetail() {
           {can("crm") && <button style={{ marginTop: 8 }} onClick={() => setAdding("contact")}>Add contact</button>}
         </>}
         {tab === "Sites" && <>
-          <Table rows={data.sites} empty="No sites." columns={[{ key: "name", label: "Site", render: (x) => <>{displayValue(x.name)}{x.primary && <> <Pill value="primary" tone="blue" /></>}</> }, { key: "address", label: "Address" }, { key: "city", label: "City" }, { key: "postcode", label: "Postcode" }, { key: "phone", label: "Phone" }]} />
+          <Table rows={data.sites} empty="No sites." columns={[{ key: "name", label: "Site", render: (x) => <>{displayValue(x.name)}{x.primary && <> <Pill value="primary" tone="blue" /></>}</> }, { key: "address", label: "Address" }, { key: "city", label: "City" }, { key: "postcode", label: "Postal code" }, { key: "phone", label: "Phone" }]} />
           {can("crm") && <button style={{ marginTop: 8 }} onClick={() => setAdding("site")}>Add site</button>}
         </>}
         {tab === "Agreements" && <Table rows={data.agreements} empty="No agreements. Create one on the Agreements page."
@@ -97,6 +98,8 @@ function EditCompany({ company, onClose }: { company: any; onClose: () => void }
   );
 }
 
+const FIELD_LABEL: Record<string, string> = { name: "Name", title: "Job title", email: "Email", phone: "Phone", address: "Address", city: "City", postcode: "Postal code" };
+
 function AddChild({ kind, tenantId, onClose }: { kind: string; tenantId: string; onClose: () => void }) {
   const [form, setForm] = useState<any>({});
   const { run, busy } = useAction();
@@ -108,7 +111,7 @@ function AddChild({ kind, tenantId, onClose }: { kind: string; tenantId: string;
   return (
     <Modal title={`Add ${kind}`} onClose={onClose} footer={<button className="primary" disabled={busy || !form.name} onClick={save}>Save</button>}>
       <div className="form-grid">
-        {fields.map((f) => <label key={f} className="field">{f}<input value={form[f] || ""} onChange={(e) => setForm({ ...form, [f]: e.target.value })} /></label>)}
+        {fields.map((f) => <label key={f} className="field">{FIELD_LABEL[f] ?? f}<input value={form[f] || ""} onChange={(e) => setForm({ ...form, [f]: e.target.value })} /></label>)}
         <label className="field">Primary<select value={form[kind === "contact" ? "isPrimary" : "primary"] ? "yes" : "no"} onChange={(e) => setForm({ ...form, [kind === "contact" ? "isPrimary" : "primary"]: e.target.value === "yes" })}><option value="no">No</option><option value="yes">Yes</option></select></label>
       </div>
     </Modal>
@@ -125,7 +128,7 @@ export function Configurations() {
     <>
       <PageHead title="Configurations" subtitle="The CMDB: every device, network appliance, licence and service you look after, linked to tickets."
                 actions={can("crm") && <>
-                  <button disabled={busy} onClick={async () => { const r = await run(() => api<any>("psa/configurations/sync", { body: { tenantId: tenantId || undefined } })); if (r) { window.alert(`${r.created} created, ${r.updated} updated from RMM`); reload(); } }}>Sync from RMM</button>
+                  <button disabled={busy} onClick={async () => { const r = await run(() => api<any>("psa/configurations/sync", { body: { tenantId: tenantId || undefined } })); if (r) { noticeDialog(`${r.created} created, ${r.updated} updated from RMM`); reload(); } }}>Sync from RMM</button>
                   <button className="primary" onClick={() => setEditing({ type: "Firewall", status: "Active", accountTenantId: tenantId })}>New configuration</button>
                 </>} />
       <select value={type} onChange={(e) => setType(e.target.value)} style={{ marginBottom: 12 }}><option value="">All types</option>{[...new Set((data || []).map((c) => c.type))].map((t) => <option key={t}>{displayValue(t)}</option>)}</select>

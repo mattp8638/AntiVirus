@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { ago, api } from "../api";
 import { useApp } from "../app-context";
 import { ErrorNote, PageHead, Pill, Table, useAction, useListData } from "../components/ui";
+import { confirmDialog, promptDialog } from "../components/dialogs";
 
 const TONE: Record<string, string> = { quarantined: "warn", restoring: "blue", deleting: "blue", restored: "muted", deleted: "muted" };
 
@@ -19,8 +20,8 @@ export default function Quarantine() {
 
   const act = async (item: Item, kind: "quarantine.restore" | "quarantine.delete") => {
     const verb = kind === "quarantine.restore" ? "Restore" : "Permanently delete";
-    if (!window.confirm(`${verb} ${item.path || item.recordId} on ${item.hostname}?`)) return;
-    const reason = window.prompt("Reason (recorded in the audit log)", kind === "quarantine.restore" ? "False positive" : "Confirmed malicious") ?? "";
+    if (!await confirmDialog(`${verb} ${item.path || item.recordId} on ${item.hostname}?`)) return;
+    const reason = await promptDialog("Reason (recorded in the audit log)", kind === "quarantine.restore" ? "False positive" : "Confirmed malicious") ?? "";
     await run(() => api(`devices/${item.deviceId}/commands`, { method: "POST", body: { type: kind, recordId: item.recordId, reason } }),
               `${verb} queued; the device acts on it at its next check-in.`);
     reload();

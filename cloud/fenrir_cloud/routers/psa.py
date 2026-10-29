@@ -9,7 +9,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
-from sqlalchemy import func, or_, select
+from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.orm import Session
 
 from .. import audit, psa, rmm, services
@@ -150,7 +150,7 @@ def list_tickets(tenant_id: str | None = None, status: str | None = None, queue:
         query = query.where(Ticket.project_id == project_id)
     if q:
         like = f"%{q}%"
-        conditions = [Ticket.subject.ilike(like), Ticket.description.ilike(like)]
+        conditions = [Ticket.subject.ilike(like), Ticket.description.ilike(like), cast(Ticket.custom_fields, String).ilike(like)]
         if q.lstrip("#").isdigit():
             conditions.append(Ticket.number == int(q.lstrip("#")))
         query = query.where(or_(*conditions))

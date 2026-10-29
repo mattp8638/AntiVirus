@@ -11,7 +11,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from .. import audit, evidence, services
+from .. import audit, evidence, psa, services
 from ..db import get_db
 from ..deps import Principal, current_principal, scoped_tenant
 from ..detection import RULES, playbooks
@@ -188,12 +188,67 @@ def retro_hunt(body: dict = Body(...), principal: Principal = Depends(current_pr
     return {"rule": rule.title, "scanned": scanned, "hits": len(hits), "devices": dict(devices), "events": hits[:200]}
 
 
+@router.get("/my-work")
+def my_work(tenant_id: str | None = None, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """The signed-in technician's queue for the dashboard: their tickets and alerts, what is past SLA, what failed, and
+    what waits for someone's decision."""
+    from ..models import ApprovalRequest, Board, ElevationRequest, Job, Tenant
+
+    scope = scoped_tenant(principal, tenant_id)
+    me, now = principal.actor, utcnow()
+    in_scope = or_(Ticket.account_tenant_id.in_(scope), Ticket.tenant_id.in_(scope))
+    open_rows = db.execute(select(Ticket).where(in_scope, Ticket.status.notin_(tuple(psa.CLOSED_DEFAULT)))
+                           .order_by(Ticket.sla_due_at.is_(None), Ticket.sla_due_at).limit(2000)).scalars().all()
+    boards = {b.id: b for b in db.execute(select(Board).where(Board.id.in_({t.board_id for t in open_rows if t.board_id}))).scalars()}
+    open_tickets = [t for t in open_rows if t.status not in psa.closed_statuses(boards.get(t.board_id))]
+    mine = [t for t in open_tickets if (t.assignee or "").lower() == me.lower()
+            or me.lower() in {str(r).lower() for r in (t.resources or [])}]
+    breached = [t for t in open_tickets if t.sla_due_at and t.sla_due_at < now]
+    names = dict(db.execute(select(Tenant.id, Tenant.name).where(Tenant.id.in_({t.account_tenant_id for t in mine + breached
+                                                                                 if t.account_tenant_id}))).all())
+
+    def ticket(t: Ticket) -> dict:
+        return {"id": t.id, "number": t.number, "subject": t.subject, "priority": t.priority, "status": t.status,
+                "assignee": t.assignee, "customer": names.get(t.account_tenant_id or "", ""),
+                "slaDueAt": t.sla_due_at.isoformat() + "Z" if t.sla_due_at else None,
+                "breached": bool(t.sla_due_at and t.sla_due_at < now)}
+
+    not_snoozed = or_(Alert.snoozed_until.is_(None), Alert.snoozed_until <= now)
+    open_alerts = (Alert.tenant_id.in_(scope), Alert.status.in_(("new", "triaged")), not_snoozed)
+    my_alerts = db.execute(select(Alert).where(*open_alerts, func.lower(Alert.assignee) == me.lower())
+                           .order_by(Alert.created_at.desc()).limit(50)).scalars().all()
+    urgent_unowned = db.execute(select(func.count()).select_from(Alert).where(
+        *open_alerts, or_(Alert.assignee.is_(None), Alert.assignee == ""), Alert.severity.in_(("critical", "high")))).scalar() or 0
+    hosts = dict(db.execute(select(Device.id, Device.hostname).where(Device.id.in_({a.device_id for a in my_alerts if a.device_id}))).all())
+    failed_jobs = db.execute(select(Job).where(Job.tenant_id.in_(scope), Job.status.in_(("failed", "partial")),
+                                               Job.finished_at >= now - timedelta(hours=24))
+                             .order_by(Job.finished_at.desc()).limit(50)).scalars().all()
+    approvals_waiting = db.execute(select(func.count()).select_from(ApprovalRequest).where(
+        ApprovalRequest.tenant_id.in_(scope), ApprovalRequest.status == "pending", ApprovalRequest.expires_at > now,
+        ApprovalRequest.requested_by != me)).scalar() or 0
+    admin_requests = db.execute(select(func.count()).select_from(ElevationRequest).where(
+        ElevationRequest.tenant_id.in_(scope), ElevationRequest.status == "pending")).scalar() or 0
+    return {
+        "tickets": {"mine": [ticket(t) for t in mine[:10]], "mineCount": len(mine),
+                    "breached": [ticket(t) for t in breached[:10]], "breachedCount": len(breached),
+                    "unassignedCount": sum(1 for t in open_tickets if not t.assignee)},
+        "alerts": {"mine": [{"id": a.id, "title": a.title, "severity": a.severity, "status": a.status,
+                             "hostname": hosts.get(a.device_id, ""), "createdAt": a.created_at.isoformat() + "Z"} for a in my_alerts[:10]],
+                   "mineCount": len(my_alerts), "urgentUnowned": urgent_unowned},
+        "jobs": {"failed": [{"id": j.id, "name": j.name, "status": j.status, "finishedAt": j.finished_at.isoformat() + "Z"}
+                            for j in failed_jobs[:10]], "failedCount": len(failed_jobs)},
+        "decisions": {"approvals": approvals_waiting, "adminRequests": admin_requests},
+    }
+
+
 # --------------------------------------------------------------------------- alerts
 
 
 @router.get("/alerts")
 def list_alerts(tenant_id: str | None = None, status: str | None = None, severity: str | None = None, device_id: str | None = None,
+                assignee: str | None = None, snoozed: str = "hide",
                 principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """``assignee``: "me", "unassigned" or an email. ``snoozed``: "hide" (default), "only" or "all"."""
     query = select(Alert).where(Alert.tenant_id.in_(scoped_tenant(principal, tenant_id)))
     if status:
         query = query.where(Alert.status == status)
@@ -201,9 +256,83 @@ def list_alerts(tenant_id: str | None = None, status: str | None = None, severit
         query = query.where(Alert.severity == severity)
     if device_id:
         query = query.where(Alert.device_id == device_id)
+    if assignee == "unassigned":
+        query = query.where(or_(Alert.assignee.is_(None), Alert.assignee == ""))
+    elif assignee:
+        query = query.where(func.lower(Alert.assignee) == (principal.actor if assignee == "me" else assignee).lower())
+    now = utcnow()
+    if snoozed == "hide":
+        query = query.where(or_(Alert.snoozed_until.is_(None), Alert.snoozed_until <= now))
+    elif snoozed == "only":
+        query = query.where(Alert.snoozed_until > now)
     rows = db.execute(query.order_by(Alert.created_at.desc()).limit(1000)).scalars().all()
     hosts = dict(db.execute(select(Device.id, Device.hostname).where(Device.id.in_({a.device_id for a in rows if a.device_id}))).all())
-    return [{**to_dict(a), "hostname": hosts.get(a.device_id, "")} for a in rows]
+    return [{**to_dict(a), "hostname": hosts.get(a.device_id, ""),
+             "snoozed": bool(a.snoozed_until and a.snoozed_until > now)} for a in rows]
+
+
+MAX_SNOOZE_MINUTES = 7 * 24 * 60
+
+
+def _triage(db: Session, alert: Alert, body: dict, principal: Principal) -> dict:
+    """Ownership and snooze. Returns what changed, for the audit log."""
+    changes: dict = {}
+    if "assignee" in body:
+        who = str(body.get("assignee") or "").strip()
+        if who.lower() == "me":
+            who = principal.actor
+        if who:
+            members = {m["email"].lower(): m["email"] for m in psa.members(db, list(principal.tenant_ids))}
+            if who.lower() not in members:
+                raise HTTPException(400, "Alerts can only be assigned to a technician in your organisation")
+            who = members[who.lower()]
+        alert.assignee = who or None
+        changes["assignee"] = who
+    if body.get("acknowledge"):
+        alert.acknowledged_by, alert.acknowledged_at = principal.actor, utcnow()
+        alert.assignee = alert.assignee or principal.actor
+        if alert.status == "new":
+            alert.status = "triaged"
+        changes["acknowledged"] = True
+    if body.get("snoozeMinutes") is not None:
+        try:
+            minutes = int(body["snoozeMinutes"])
+        except (TypeError, ValueError):
+            raise HTTPException(400, "snoozeMinutes must be a number") from None
+        if not 5 <= minutes <= MAX_SNOOZE_MINUTES:
+            raise HTTPException(400, "Snooze for between 5 minutes and 7 days")
+        alert.snoozed_until, alert.snoozed_by = utcnow() + timedelta(minutes=minutes), principal.actor
+        changes["snoozedMinutes"] = minutes
+    if body.get("unsnooze"):
+        alert.snoozed_until = alert.snoozed_by = None
+        changes["unsnoozed"] = True
+    return changes
+
+
+@router.post("/alerts/bulk")
+def bulk_update_alerts(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Assign, acknowledge, snooze or set the status of many alerts at once (learning actions stay one at a time)."""
+    principal.require("respond")
+    ids = [str(i) for i in (body.get("ids") or [])][:500]
+    if not ids:
+        raise HTTPException(400, "Choose at least one alert")
+    if body.get("status") not in (None, "new", "triaged", "resolved", "false_positive"):
+        raise HTTPException(400, "invalid status")
+    alerts = db.execute(select(Alert).where(Alert.id.in_(ids))).scalars().all()
+    for alert in alerts:
+        principal.check_tenant(alert.tenant_id)
+    updated = 0
+    for alert in alerts:
+        changes = _triage(db, alert, body, principal)
+        if body.get("status"):
+            alert.status = body["status"]
+            changes["status"] = alert.status
+        if changes:
+            alert.updated_at = utcnow()
+            audit.record(db, principal.actor, "alert.updated", alert.id, alert.tenant_id, bulk=True, **changes)
+            updated += 1
+    db.commit()
+    return {"updated": updated}
 
 
 @router.get("/alerts/{alert_id}")
@@ -258,6 +387,7 @@ def update_alert(alert_id: str, body: dict = Body(...), principal: Principal = D
     if body.get("status") not in (None, "new", "triaged", "resolved", "false_positive"):
         raise HTTPException(400, "invalid status")
     apply_fields(alert, body, {"status"})
+    triage = _triage(db, alert, body, principal)
     alert.updated_at = utcnow()
     learned = None
     if body.get("status") == "false_positive" and body.get("trust"):
@@ -293,7 +423,7 @@ def update_alert(alert_id: str, body: dict = Body(...), principal: Principal = D
         image = (alert.details or {}).get("process")
         if image:
             _add_rule_exclusion(db, alert.rule_id, alert.tenant_id, str(image), principal.actor)
-    audit.record(db, principal.actor, "alert.updated", alert.id, alert.tenant_id, status=alert.status, learned=learned)
+    audit.record(db, principal.actor, "alert.updated", alert.id, alert.tenant_id, status=alert.status, learned=learned, **triage)
     db.commit()
     return {**to_dict(alert), "learned": learned}
 

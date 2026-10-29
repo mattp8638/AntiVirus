@@ -4,6 +4,7 @@ import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
 import { RecordEditor } from "../components/RecordEditor";
 import { ErrorNote, Modal, PageHead, Pill, Table, useListData } from "../components/ui";
+import { confirmDialog, noticeDialog } from "../components/dialogs";
 export default function Backup() {
   const {tenantId,can}=useApp();
   const {data,error,reload}=useListData<any>("backup/plans",{tenant_id:tenantId});
@@ -19,8 +20,8 @@ export default function Backup() {
     <Table rows={data} onRow={setSelected} columns={[{key:"name",label:"Protected service"},{key:"provider",label:"Provider"},{key:"health",label:"Health",render:r=><Pill value={r.health} tone={r.health==="protected"?"good":r.health==="unknown"?"muted":"bad"}/>},{key:"lastSuccessAt",label:"Last success",render:r=>fmtTime(r.lastSuccessAt)},{key:"rpoHours",label:"RPO (hours)"},{key:"rtoMinutes",label:"RTO (minutes)"}]}/>
     <h2>Recovery exercises</h2><Table rows={exercises} onRow={r=>{setExercise(r);setMode("review");}} columns={[{key:"target",label:"Isolated recovery target"},{key:"status",label:"Status",render:r=><Pill value={r.status}/>},{key:"requestedBy",label:"Requested by"},{key:"durationMinutes",label:"Actual minutes"},{key:"completedAt",label:"Completed",render:r=>fmtTime(r.completedAt)}]}/>
     {selected&&<Modal title={selected.name} onClose={()=>{setSelected(null);setIngest(null);}} footer={can("configure")&&<><button onClick={async()=>{
-        if(selected.ingestConfigured&&!window.confirm("Issue a new token? The backup tool's current token stops working."))return;
-        try{setIngest(await api("backup/plans/"+selected.id+"/ingest-token",{method:"POST"}));reload();}catch(e){alert((e as Error).message);}
+        if(selected.ingestConfigured&&!await confirmDialog("Issue a new token? The backup tool's current token stops working."))return;
+        try{setIngest(await api("backup/plans/"+selected.id+"/ingest-token",{method:"POST"}));reload();}catch(e){noticeDialog((e as Error).message);}
       }}>{selected.ingestConfigured?"Rotate tool token":"Connect backup tool"}</button><button onClick={()=>setMode("run")}>Record provider result</button><button onClick={()=>setMode("exercise")}>Request recovery exercise</button></>}>
       {ingest&&<div className="card" style={{marginBottom:12}}>
         <b>Push job results from your backup tool</b>

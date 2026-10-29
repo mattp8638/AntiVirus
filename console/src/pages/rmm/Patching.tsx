@@ -5,6 +5,7 @@ import { ago, api } from "../../api";
 import { useApp } from "../../app-context";
 import { emptyTargets, JobDetail, TargetPicker } from "../../components/rmm";
 import { Modal, PageHead, Pill, Stat, Table, Tabs, TenantSelect, useAction, useData, useListData } from "../../components/ui";
+import { noticeDialog } from "../../components/dialogs";
 
 const APPROVAL_TONE: Record<string, string> = { approved: "good", rejected: "muted", pending: "warn" };
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -27,7 +28,7 @@ export default function Patching() {
   };
   const scanAll = async () => {
     const targets = { ...emptyTargets(), tenantIds: tenantId ? [tenantId] : [] };
-    if (!targets.tenantIds.length) { window.alert("Choose a customer in the top bar first, or scan from a device."); return; }
+    if (!targets.tenantIds.length) { noticeDialog("Choose a customer in the top bar first, or scan from a device."); return; }
     const job = await run(() => api<any>("rmm/patches/scan", { body: { targets } }), "Patch scan queued");
     if (job) setJobId(job.id);
   };

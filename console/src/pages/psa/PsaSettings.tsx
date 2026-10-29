@@ -4,6 +4,7 @@ import { useParams } from "react-router-dom";
 import { api } from "../../api";
 import { useApp } from "../../app-context";
 import { Modal, PageHead, Pill, Table, Tabs, useAction, useData, useListData } from "../../components/ui";
+import { promptDialog } from "../../components/dialogs";
 
 export default function PsaSettings() {
   const [tab, setTab] = useState("Boards");
@@ -26,7 +27,7 @@ function Boards() {
   const { run } = useAction();
   return (
     <>
-      {can("configure") && <button className="primary" style={{ marginBottom: 12 }} onClick={async () => { const name = window.prompt("Board name"); if (name && await run(() => api("psa/boards", { body: { name } }), "Board created")) reload(); }}>New board</button>}
+      {can("configure") && <button className="primary" style={{ marginBottom: 12 }} onClick={async () => { const name = await promptDialog("Board name"); if (name && await run(() => api("psa/boards", { body: { name } }), "Board created")) reload(); }}>New board</button>}
       <div className="card">
         <Table rows={data} onRow={setEditing} empty="No boards."
                columns={[{ key: "name", label: "Board", render: (b) => <b>{displayValue(b.name)}</b> },

@@ -102,7 +102,7 @@ function QuoteEditor({ quote, products, onClose }: { quote: any; products: any[]
           <option value="">Add a product…</option>{products.map((p) => <option key={p.id} value={p.id}>{displayValue(p.sku)} · {displayValue(p.description)}</option>)}</select>
         <button className="small" onClick={() => setForm({ ...form, lines: [...form.lines, { description: "Labour", quantity: 1, unitPrice: 85, recurring: false }] })}>Add custom line</button>
       </div>
-      <p style={{ textAlign: "right" }}>One-off <b>{money(oneOff)}</b> · Monthly <b>{money(monthly)}</b> <span className="small muted">ex VAT</span></p>
+      <p style={{ textAlign: "right" }}>One-off <b>{money(oneOff)}</b> · Monthly <b>{money(monthly)}</b> <span className="small muted">excl. tax</span></p>
       <label className="field">Notes<textarea rows={2} value={form.notes || ""} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></label>
     </Modal>
   );

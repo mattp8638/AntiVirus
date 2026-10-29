@@ -8,6 +8,7 @@ import { ErrorNote, Modal, PageHead, Pill, Table, Tabs, useAction, useData, useL
 import { useSearchParams } from "react-router-dom";
 import { EvidenceTab, ProgrammesTab } from "./grc/Programmes";
 import { PoliciesTab } from "./grc/Policies";
+import { COMPLIANCE_SECTION, SectionTabs } from "../components/sections";
 
 const CONTROL_TONE:Record<string,string>={met:"good",evidenced:"good",exception:"warn",gap:"bad"};
 
@@ -46,6 +47,7 @@ export default function Governance() {
   const {run,busy}=useAction();
   useEffect(()=>{setCreate(false);setSelected(null);},[tenantId]);
   return <>
+    <SectionTabs items={COMPLIANCE_SECTION} />
     <PageHead title="GRC & compliance" subtitle="UK and UK-targeted governance programmes with requirements, answers, policies, evidence and a risk register."
       actions={can("grc")&&tab==="Risk register"&&<button className="primary" onClick={()=>setCreate({})}>New record</button>}/>
     <ErrorNote error={error}/>

@@ -2,6 +2,7 @@ import { displayValue } from "../components/DisplayValue";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
 import { ErrorNote, Table, useAction, useListData } from "../components/ui";
+import { confirmDialog } from "../components/dialogs";
 
 export function DocumentTemplates({ onSelect }: { onSelect: (row: any) => void }) {
   const { data } = useListData<any>("documentation/templates");
@@ -20,7 +21,7 @@ export function DocumentHistory({ articleId, onRestore }: { articleId: string; o
     { key: "author", label: "Author" },
     { key: "snapshot", label: "Preview", render: r => <details><summary>{displayValue(r.snapshot.title)}</summary><pre style={{whiteSpace:"pre-wrap"}}>{displayValue(r.snapshot.body)}</pre></details> },
     { key: "restore", label: "", render: r => can("crm") && <button disabled={busy} onClick={async () => {
-      if (!confirm("Restore this revision? The current document will remain in history.")) return;
+      if (!await confirmDialog("Restore this revision? The current document will remain in history.")) return;
       const row = await run(() => api("documentation/" + articleId + "/restore/" + r.id, { method: "POST" }), "Revision restored");
       if (row) { onRestore(row); reload(); }
     }}>Restore</button> }

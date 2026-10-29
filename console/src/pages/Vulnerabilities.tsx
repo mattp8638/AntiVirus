@@ -5,6 +5,7 @@ import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
 import { Bars, Modal, PageHead, Pill, Sev, Stat, Table, useAction, useData, useListData } from "../components/ui";
 import { EpssPill, FixBlock, IntelCard, RiskBadge, VulnEvidence } from "../components/Vuln";
+import { confirmDialog } from "../components/dialogs";
 
 // "fixed" is not offered: only a rescan that no longer finds the vulnerability marks it fixed.
 const MANUAL_STATUSES = ["open", "patching", "mitigated", "accepted"];
@@ -100,7 +101,7 @@ function RemediationBlock({ row, onQueued }: { row: any; onQueued: () => void })
   const { data: uninstall } = useData<any>(`vulnerabilities/${row.id}/remediation`, { mode: "uninstall" }, [row.remediation?.commandId]);
   const { run, busy } = useAction();
   const go = async (mode: string, description: string) => {
-    if (!window.confirm(`${description} on ${row.hostname}?`)) return;
+    if (!await confirmDialog(`${description} on ${row.hostname}?`)) return;
     if (await run(() => api(`vulnerabilities/${row.id}/remediate`, { body: { mode } }), "Queued; the device acts on it at its next check-in")) onQueued();
   };
   const last = row.remediation;

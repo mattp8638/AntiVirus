@@ -1,6 +1,6 @@
 import { displayValue } from "../components/DisplayValue";
 import { useState } from "react";
-import { api, money } from "../api";
+import { api, getDefaultCurrency, money } from "../api";
 import { useApp } from "../app-context";
 import { Modal, PageHead, Pill, Stat, Table, Tabs, TenantSelect, useAction, useData, useListData } from "../components/ui";
 
@@ -71,16 +71,17 @@ export default function Billing() {
 function NewContract({ onClose }: { onClose: () => void }) {
   const [account, setAccount] = useState("");
   const [form, setForm] = useState<any>({ name: "Managed services", agreementType: "Managed Services", billingCycle: "Monthly", plan: "complete", pricePerDevice: 6,
-                                          monthlyFee: 0, hourlyRate: 85, includedHours: 2, currency: "GBP", coveredWorkTypes: "Remote Support, Onsite Support",
+                                          monthlyFee: 0, hourlyRate: 85, includedHours: 2, currency: getDefaultCurrency(), coveredWorkTypes: "Remote Support, Onsite Support",
                                           coversAfterHours: false, additions: [] as any[], businessStart: 9, businessEnd: 17, respondP1: 0.25, respondP2: 1, respondP3: 4, respondP4: 8,
                                           resolveP1: 4, resolveP2: 8, resolveP3: 24, resolveP4: 72 });
   const { run, busy } = useAction();
+  const { data: region } = useData<{ currencies: string[]; timeZone: string }>("region");
   const submit = async () => {
     const body = { name: form.name, agreementType: form.agreementType, billingCycle: form.billingCycle, plan: form.plan, pricePerDevice: Number(form.pricePerDevice),
                    monthlyFee: Number(form.monthlyFee), hourlyRate: Number(form.hourlyRate), includedHours: Number(form.includedHours), currency: form.currency,
                    coveredWorkTypes: form.coveredWorkTypes.split(",").map((w: string) => w.trim()).filter(Boolean), coversAfterHours: form.coversAfterHours,
                    additions: form.additions.map((a: any) => ({ ...a, unitPrice: Number(a.unitPrice), quantity: Number(a.quantity || 0) })),
-                   businessHours: { days: [0, 1, 2, 3, 4], start: Number(form.businessStart), end: Number(form.businessEnd), tz: Intl.DateTimeFormat().resolvedOptions().timeZone, p1AllHours: true },
+                   businessHours: { days: [0, 1, 2, 3, 4], start: Number(form.businessStart), end: Number(form.businessEnd), tz: region?.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone, p1AllHours: true },
                    sla: { P1: Number(form.resolveP1), P2: Number(form.resolveP2), P3: Number(form.resolveP3), P4: Number(form.resolveP4),
                           respond: { P1: Number(form.respondP1), P2: Number(form.respondP2), P3: Number(form.respondP3), P4: Number(form.respondP4) } },
                    accountTenantId: account };
@@ -95,7 +96,7 @@ function NewContract({ onClose }: { onClose: () => void }) {
         <label className="field">Type<select value={form.agreementType} onChange={(e) => setForm({ ...form, agreementType: e.target.value })}>{["Managed Services", "Block Hours", "Retainer", "Time & Materials"].map((p) => <option key={p}>{p}</option>)}</select></label>
         <label className="field">Billing cycle<select value={form.billingCycle} onChange={(e) => setForm({ ...form, billingCycle: e.target.value })}>{["Monthly", "Quarterly", "Annually"].map((p) => <option key={p}>{p}</option>)}</select></label>
         <label className="field">Security plan<select value={form.plan} onChange={(e) => setForm({ ...form, plan: e.target.value })}>{["essentials", "advanced", "complete", "mdr"].map((p) => <option key={p}>{p}</option>)}</select></label>
-        <label className="field">Currency<select value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })}>{["GBP", "EUR", "USD"].map((c) => <option key={c}>{c}</option>)}</select></label>
+        <label className="field">Currency<select value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })}>{[...new Set([form.currency, ...(region?.currencies ?? [])])].map((c) => <option key={c}>{c}</option>)}</select></label>
         {num("pricePerDevice", "Price per device")}{num("monthlyFee", "Monthly fee")}{num("hourlyRate", "Hourly rate")}{num("includedHours", "Hours included per month")}
       </div>
       <label className="field" style={{ marginTop: 10 }}>Covered work types (blank = everything)<input value={form.coveredWorkTypes} onChange={(e) => setForm({ ...form, coveredWorkTypes: e.target.value })} /></label>

@@ -4,7 +4,9 @@ Fenrir is a self-hosted project combining endpoint security, RMM, Microsoft 365 
 
 **Status: active development and controlled evaluation.** Implemented features are not all independently verified on real endpoints/providers. Windows protection is user mode; the Docker image does not deliver the production kernel minifilter or pre-execution prevention. The current build must not be advertised as a certified replacement for every commercial AV/RMM. Follow the [feature catalogue](docs/parity/catalogue.csv), [acceptance evidence](docs/parity/acceptance.md) and [release gates](docs/parity/release-gates.md).
 
-Hosting, domains, publicly trusted code-signing certificates and optional providers can still cost money. There is currently no top-level `LICENSE` file: the owner must select the project licence before a public release and retain third-party notices.
+Hosting, domains, publicly trusted code-signing certificates and optional providers can still cost money.
+
+> **Free, as-is, unsupported.** Fenrir is released free of charge under the [Apache License 2.0](LICENSE). It is provided **"AS IS", without warranty of any kind**, and **no support is offered**: issues and pull requests may not be answered. You are responsible for testing it on your own systems before relying on it, for securing your own installation, and for anything it does on the devices and tenants you connect to it. See [Licence and support](#licence-and-support).
 
 ## Contents
 
@@ -19,6 +21,7 @@ Hosting, domains, publicly trusted code-signing certificates and optional provid
 - [Troubleshooting](#troubleshooting)
 - [Development and tests](#development-and-tests)
 - [Public release and contribution](#public-release-and-contribution)
+- [Licence and support](#licence-and-support)
 
 ## Components
 
@@ -438,7 +441,7 @@ The page tests start an isolated Python API; `FENRIR_UI_PYTHON` can select its i
 
 Contributions should include reproduction steps and meaningful tests. Keep migrations additive and exercise upgrades with existing rows. Validate real endpoint/provider outcomes before marking capabilities verified.
 
-Before a public release, choose the licence, review dependency notices, publish the supported-platform matrix and measured limits, and complete relevant security/recovery/efficacy gates. Publish limitations alongside features; code presence or a mocked test is not observed parity with another product.
+Before relying on a release, review the dependency notices in [NOTICE](NOTICE), the supported-platform matrix and measured limits, and the relevant security/recovery/efficacy gates. Publish limitations alongside features; code presence or a mocked test is not observed parity with another product.
 
 - [Architecture](docs/ARCHITECTURE.md), [RMM/PSA](docs/RMM_PSA.md), [RMM/PSA intelligence](docs/RMM_PSA_INTELLIGENCE.md), [zero-trust remote administration](docs/ZERO_TRUST_REMOTE_ADMINISTRATION.md), [continuous GRC](docs/CONTINUOUS_GRC.md), [remote protocol](docs/REMOTE_PROTOCOL.md)
 - [Code signing](docs/CODE_SIGNING.md), [driver/prevention limits](docs/DRIVER_SIGNING.md), [updates](docs/AUTO_UPDATE.md)
@@ -446,3 +449,20 @@ Before a public release, choose the licence, review dependency notices, publish 
 - [Console rendering](docs/CONSOLE_RENDER_SAFETY.md), [Ctrl+Alt+Del](docs/REMOTE_CTRL_ALT_DEL.md)
 - [Malware model](ml/README.md), [source-component history](components/README.md)
 - Official references: [Docker installation](https://docs.docker.com/engine/install/ubuntu/), [Compose overrides](https://docs.docker.com/reference/compose-file/merge/), [build secrets](https://docs.docker.com/compose/how-tos/use-secrets/), [Caddy HTTPS](https://caddyserver.com/docs/automatic-https)
+
+## Licence and support
+
+Fenrir is licensed under the [Apache License, Version 2.0](LICENSE). Third-party attributions are in [NOTICE](NOTICE);
+each bundled dependency keeps its own licence.
+
+- **No support.** This is a free project with no support, maintenance commitment or service level. Questions, issues and
+  pull requests may go unanswered.
+- **No warranty.** As sections 7 and 8 of the licence state, the software is provided "AS IS", without warranties or
+  conditions of any kind, and the authors are not liable for damages arising from its use. That includes damage done by
+  scripts, patches, remote actions, policies or Microsoft 365 changes you run through it.
+- **Your installation, your responsibility.** An RMM/EDR controls every device it manages. Keep the server patched and
+  behind HTTPS, use MFA for every console account, restrict who can reach the console, protect the signing and vault keys,
+  and test changes on a small group of devices first.
+- **Security problems.** If you find a vulnerability, report it privately through GitHub's
+  [security advisories](https://github.com/mattp8638/AntiVirus/security/advisories/new) rather than a public issue. There
+  is no promise of a fix or a response time.

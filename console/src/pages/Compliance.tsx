@@ -2,6 +2,7 @@ import { displayValue } from "../components/DisplayValue";
 import { useState } from "react";
 import { useApp } from "../app-context";
 import { Meter, PageHead, Pill, TenantSelect, useData } from "../components/ui";
+import { COMPLIANCE_SECTION, SectionTabs } from "../components/sections";
 
 export default function Compliance() {
   const { tenantId, me } = useApp();
@@ -10,7 +11,8 @@ export default function Compliance() {
   const [open, setOpen] = useState<string | null>("cyber-essentials");
   return (
     <>
-      <PageHead title="Compliance" subtitle="Live posture against Cyber Essentials, CIS v8, NIST CSF 2.0, Essential Eight and ISO 27001, from real policy and fleet evidence."
+      <SectionTabs items={COMPLIANCE_SECTION} />
+      <PageHead title="Live compliance posture" subtitle="Live posture against Cyber Essentials, CIS v8, NIST CSF 2.0, Essential Eight and ISO 27001, from real policy and fleet evidence."
                 actions={<TenantSelect value={tenant} onChange={setTenant} allowAll={false} />} />
       <div className="grid k3">
         {data?.frameworks.map((f: any) => (

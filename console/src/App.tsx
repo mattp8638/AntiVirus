@@ -63,8 +63,11 @@ import EdrExclusions from "./pages/EdrExclusions";
 import Exposure from "./pages/Exposure";
 import Elevation from "./pages/Elevation";
 import RecordingPlayer from "./pages/RecordingPlayer";
+import { DialogHost } from "./components/dialogs";
+import { api, setDefaultCurrency } from "./api";
 
-const NAV: { group: string; items: { to: string; label: string; icon: string }[] }[] = [
+// `also`: other pages of the same section (they switch with section tabs), so the entry stays highlighted on them.
+const NAV: { group: string; items: { to: string; label: string; icon: string; also?: string[] }[] }[] = [
   { group: "Overview", items: [{ to: "/", label: "Dashboard", icon: "◎" }, { to: "/reports", label: "Reports", icon: "▤" }] },
   {
     group: "Devices & RMM",
@@ -74,7 +77,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string }[]
       { to: "/patching", label: "Patching", icon: "⟳" },
       { to: "/scripts", label: "Scripts", icon: "❯" },
       { to: "/remediation-packages", label: "Remediation packages", icon: "✚" },
-      { to: "/automation", label: "Automation", icon: "⏱" },
+      { to: "/automation", label: "Jobs & schedules", icon: "⏱" },
       { to: "/software", label: "Software", icon: "⬇" },
       { to: "/deploy", label: "Deploy agents", icon: "⇩" },
     ],
@@ -98,7 +101,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string }[]
       { to: "/exposure", label: "Data & identity exposure", icon: "⚇" },
       { to: "/active-directory", label: "Active Directory", icon: "⌘" },
       { to: "/attack-surface", label: "Attack surface", icon: "◍" },
-      { to: "/compliance", label: "Compliance", icon: "✓" },
+      { to: "/soc-workflows", label: "SOC maintenance", icon: "◷" },
     ],
   },
   {
@@ -122,7 +125,16 @@ const NAV: { group: string; items: { to: string; label: string; icon: string }[]
       { to: "/billing", label: "Agreements & billing", icon: "£" },
     ],
   },
-  { group: "MSP operations", items: [{to:"/m365",label:"Microsoft 365",icon:"▦"},{to:"/m365-partner",label:"M365 partner & standards",icon:"⧉"},{to:"/network",label:"Network monitoring",icon:"⌁"},{to:"/network-topology",label:"Network topology",icon:"⧈"},{to:"/out-of-band",label:"Out-of-band (Intel AMT)",icon:"⏻"},{to:"/governance",label:"GRC & compliance",icon:"✓"},{to:"/continuous-compliance",label:"Continuous compliance",icon:"⟲"},{to:"/backup",label:"Backup & recovery",icon:"⟳"},{to:"/soc-workflows",label:"SOC maintenance",icon:"◷"}] },
+  {
+    group: "Cloud, network & compliance",
+    items: [
+      { to: "/m365", label: "Microsoft 365", icon: "▦", also: ["/m365-partner"] },
+      { to: "/network", label: "Network", icon: "⌁", also: ["/network-topology"] },
+      { to: "/out-of-band", label: "Out-of-band (Intel AMT)", icon: "⏻" },
+      { to: "/governance", label: "Compliance & GRC", icon: "✓", also: ["/continuous-compliance", "/compliance"] },
+      { to: "/backup", label: "Backup & recovery", icon: "⟳" },
+    ],
+  },
   { group: "Administration", items: [{ to: "/service-settings", label: "Service settings", icon: "⚙" }, { to: "/settings", label: "Settings", icon: "⚒" }] },
 ];
 
@@ -178,6 +190,7 @@ const BOTTOM_NAV = [
 function Shell() {
   const { me, tenantId, setTenantId, logout } = useApp();
   const location = useLocation();
+  useEffect(() => { api<{ currency: string }>("region").then((r) => setDefaultCurrency(r.currency)).catch(() => undefined); }, [me?.user.id]);
   const [navOpen, setNavOpen] = useState(false);
   // Close the phone menu whenever a page is opened from it.
   useEffect(() => { setNavOpen(false); }, [location.pathname]);
@@ -203,7 +216,8 @@ function Shell() {
           <div key={group.group}>
             <div className="nav-group">{group.group}</div>
             {group.items.map((item) => (
-              <NavLink key={item.to} to={item.to} end={item.to === "/"} className={({ isActive }) => `nav-link ${isActive ? "active" : ""}`}>
+              <NavLink key={item.to} to={item.to} end={item.to === "/"}
+                       className={({ isActive }) => `nav-link ${isActive || item.also?.some((p) => location.pathname === p || location.pathname.startsWith(`${p}/`)) ? "active" : ""}`}>
                 <span aria-hidden style={{ width: 16, textAlign: "center" }}>{item.icon}</span>{item.label}
               </NavLink>
             ))}
@@ -301,6 +315,10 @@ function Shell() {
 }
 
 export function Root() {
+  return <><RootContent /><DialogHost /></>;
+}
+
+function RootContent() {
   const { me, loading } = useApp();
   const location = useLocation();
   // Opened from a phone's camera when it scans an enrolment code: no sign-in.

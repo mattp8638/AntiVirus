@@ -4,6 +4,7 @@ import { ago, api } from "../api";
 import { useApp } from "../app-context";
 import { displayValue } from "../components/DisplayValue";
 import { ErrorNote, PageHead, Pill, Stat, Table, Tabs, useAction, useData } from "../components/ui";
+import { M365_SECTION, SectionTabs } from "../components/sections";
 
 const STATUS_TONE: Record<string, string> = { compliant: "good", drifted: "bad", deployed: "blue", failed: "bad", unknown: "muted", active: "good" };
 
@@ -13,6 +14,7 @@ export default function M365Partner() {
   const [tab, setTab] = useState(tabs[0]);
   return (
     <>
+      <SectionTabs items={M365_SECTION} />
       <PageHead title="Microsoft 365 across customers"
                 subtitle="Partner access through GDAP, MFA and Conditional Access standards deployed to many tenants at once, and reconciliation of each directory with Fenrir's records." />
       <Tabs tabs={tabs} active={tab} onChange={setTab} />

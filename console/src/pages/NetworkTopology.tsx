@@ -4,6 +4,7 @@ import { useApp } from "../app-context";
 import { displayValue } from "../components/DisplayValue";
 import { RoutesPanel } from "../components/routes";
 import { ErrorNote, Modal, PageHead, Pill, Stat, Table, useAction, useData, useListData } from "../components/ui";
+import { NETWORK_SECTION, SectionTabs } from "../components/sections";
 
 interface TopologyNode {
   id: string; type: "subnet" | "node"; label: string; ip?: string; mac?: string; vendor?: string; kind?: string; openPorts?: number[];
@@ -31,9 +32,10 @@ export default function NetworkTopology() {
   const members = (cidr: string) => (data?.nodes ?? []).filter((n) => n.type === "node" && n.subnet === cidr && (showIgnored || !n.ignored))
     .sort((a, b) => Number(b.kind === "gateway") - Number(a.kind === "gateway") || Number(a.managed) - Number(b.managed));
 
-  if (!tenantId) return <><PageHead title="Network topology" subtitle="Choose a customer to see their network map." /></>;
+  if (!tenantId) return <><SectionTabs items={NETWORK_SECTION} /><PageHead title="Network topology" subtitle="Choose a customer to see their network map." /></>;
   return (
     <>
+      <SectionTabs items={NETWORK_SECTION} />
       <PageHead title="Network topology"
                 subtitle="Built from ARP tables, routes and a light TCP sweep run by the customer's own agents. Managed devices are matched by MAC and IP; everything else is classified by vendor and open ports so you can see unmanaged machines, printers and network gear."
                 actions={can("respond") && <>

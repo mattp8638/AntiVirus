@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { api } from "../../api";
 import { PageHead, Pill, useAction, useData, useListData } from "../../components/ui";
 import { PRIORITY_TONE } from "./ServiceBoard";
+import { noticeDialog } from "../../components/dialogs";
 
 const START_HOUR = 7;
 const END_HOUR = 19;
@@ -24,7 +25,7 @@ export default function Dispatch() {
   const book = async (ticketId: string, member: string, minute: number) => {
     const start = new Date(day.getTime() + minute * 60000);
     const result = await run(() => api<any>("psa/schedule", { body: { ticketId, member, startAt: start.toISOString(), endAt: new Date(start.getTime() + 3600000).toISOString() } }), "Booked");
-    if (result?.conflict) window.alert(`${member} already has something booked then.`);
+    if (result?.conflict) noticeDialog(`${member} already has something booked then.`);
     reload();
     reloadQueue();
   };

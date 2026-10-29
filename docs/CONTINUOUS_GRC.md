@@ -1,6 +1,6 @@
 # Continuous GRC automation
 
-**MSP operations → Continuous compliance** brings four pieces together on top of the GRC programmes (frameworks, requirements, policies and evidence):
+**Cloud, network & compliance → Compliance & GRC → Continuous assurance** brings four pieces together on top of the GRC programmes (frameworks, requirements, policies and evidence):
 
 - one control set mapped across frameworks;
 - evidence collected automatically, with drift alerts;

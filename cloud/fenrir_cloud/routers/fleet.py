@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import String, cast, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from .. import approvals, audit, command_control, detection, policy_schema, remote, rmm, services
@@ -101,7 +101,8 @@ def list_devices(
     query = query.where(retired if status == "retired" else ~retired)
     if q:
         like = f"%{q}%"
-        query = query.where(or_(Device.hostname.ilike(like), Device.os_version.ilike(like), Device.ip_address.ilike(like)))
+        query = query.where(or_(Device.hostname.ilike(like), Device.os_version.ilike(like), Device.ip_address.ilike(like),
+                                cast(Device.custom_fields, String).ilike(like)))
     if platform:
         query = query.where(Device.platform == platform)
     if group_id:

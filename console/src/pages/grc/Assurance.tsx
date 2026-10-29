@@ -3,6 +3,8 @@ import { ago, api, fmtTime } from "../../api";
 import { useApp } from "../../app-context";
 import { displayValue } from "../../components/DisplayValue";
 import { ErrorNote, Modal, PageHead, Pill, Stat, Table, Tabs, TenantSelect, useAction, useData, useListData } from "../../components/ui";
+import { confirmDialog, noticeDialog } from "../../components/dialogs";
+import { COMPLIANCE_SECTION, SectionTabs } from "../../components/sections";
 
 const AUTO_TONE: Record<string, string> = { passing: "good", failing: "bad", manual: "muted" };
 const TIER_TONE: Record<string, string> = { low: "good", medium: "blue", high: "warn", critical: "bad", unrated: "muted" };
@@ -13,6 +15,7 @@ export default function Assurance() {
   const [tab, setTab] = useState("Controls");
   return (
     <>
+      <SectionTabs items={COMPLIANCE_SECTION} />
       <PageHead title="Continuous compliance"
                 subtitle="Live control signals mapped across every framework, evidence collected automatically, endpoint baselines enforced on devices, and supplier risk kept current." />
       <Tabs tabs={["Controls", "Evidence automation", "Baselines", "Suppliers"]} active={tab} onChange={setTab} />
@@ -57,7 +60,7 @@ function ControlModal({ control, tenantId, onClose }: { control: any; tenantId: 
   const { run, busy } = useAction();
   const propagate = async (m: any) => {
     const r = await run(() => api<any>("grc-assurance/crosswalk/propagate", { body: { tenantId, framework: m.framework, requirementId: m.requirementId } }));
-    if (r) alert(r.updated.length ? `Marked implemented: ${r.updated.map((u: any) => `${u.framework} ${u.requirementId}`).join(", ")}` : "Nothing else to update.");
+    if (r) noticeDialog(r.updated.length ? `Marked implemented: ${r.updated.map((u: any) => `${u.framework} ${u.requirementId}`).join(", ")}` : "Nothing else to update.");
   };
   return (
     <Modal wide title={`${control.id} · ${control.title}`} onClose={onClose}>
@@ -125,7 +128,7 @@ function Baselines({ tenantId }: { tenantId: string }) {
   if (error) return <ErrorNote error={error} />;
   if (!data) return <div className="empty">Loading…</div>;
   const assign = async (key: string, mode: string) => { if (await run(() => api(`grc-assurance/baselines/${key}/${tenantId}`, { method: "PUT", body: { mode } }), mode === "enforce" ? "Baseline enforced" : "Baseline in audit mode")) reload(); };
-  const remove = async (key: string) => { if (window.confirm("Stop checking this baseline?") && await run(() => api(`grc-assurance/baselines/${key}/${tenantId}`, { method: "DELETE" }), "Baseline removed")) reload(); };
+  const remove = async (key: string) => { if (await confirmDialog("Stop checking this baseline?") && await run(() => api(`grc-assurance/baselines/${key}/${tenantId}`, { method: "DELETE" }), "Baseline removed")) reload(); };
   return (
     <>
       {data.catalogue.map((b: any) => {

@@ -4,6 +4,7 @@ import { fmtTime, getToken } from "../api";
 import { useApp } from "../app-context";
 import { ErrorNote, PageHead, Pill, Table, TenantSelect, useData, useListData } from "../components/ui";
 import { AddPhone } from "./AddPhone";
+import { confirmDialog } from "../components/dialogs";
 
 type OsName = "windows" | "linux" | "macos";
 type InstallerStatus = Record<OsName, { ready: boolean; reason: string; extension: string; mode?: string; warning?: string; certificateUrl?: string }>;
@@ -135,7 +136,7 @@ export default function Deploy() {
                          { key: "expiresAt", label: "Expires", render: (r) => fmtTime(r.expiresAt) },
                          { key: "revoked", label: "", render: (r) => r.revoked ? <Pill value="revoked" tone="muted" /> :
                            can("configure") && <button className="small danger" onClick={async () => {
-                             if (!window.confirm("Revoke this enrollment token? Any unused installers containing it will stop enrolling devices.")) return;
+                             if (!await confirmDialog("Revoke this enrollment token? Any unused installers containing it will stop enrolling devices.")) return;
                              try {
                                const response = await fetch(`/api/console/enrollment-tokens/${encodeURIComponent(r.id)}`, {
                                  method: "DELETE", headers: { Authorization: `Bearer ${getToken() ?? ""}` },

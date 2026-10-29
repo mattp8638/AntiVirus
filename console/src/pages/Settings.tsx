@@ -3,13 +3,17 @@ import { useState } from "react";
 import { ago, api, downloadFile, fmtTime, setToken } from "../api";
 import { useApp } from "../app-context";
 import { Modal, PageHead, Pill, Table, Tabs, TenantSelect, useAction, useData, useListData } from "../components/ui";
+import { confirmDialog, promptDialog } from "../components/dialogs";
+import { CustomFieldsSettings, RegionSettings } from "../components/Customization";
+import { useSearchParams } from "react-router-dom";
 
 const ROLES = ["platform_admin", "msp_admin", "soc_analyst", "technician", "billing", "tenant_admin", "tenant_analyst", "viewer"];
 
 export default function Settings() {
   const { can } = useApp();
-  const tabs = ["Tenants", "Users", "Groups", "Webhooks", ...(can("configure") ? ["API credentials"] : []), "Approvals", "Agent releases", "Audit log", ...(can("configure") ? ["Platform"] : []), "Account"];
-  const [tab, setTab] = useState("Tenants");
+  const tabs = ["Tenants", "Users", "Groups", "Custom fields", "Region & holidays", "Webhooks", ...(can("configure") ? ["API credentials"] : []), "Approvals", "Agent releases", "Audit log", ...(can("configure") ? ["Platform"] : []), "Account"];
+  const [params] = useSearchParams();
+  const [tab, setTab] = useState(() => { const asked = params.get("tab"); return asked && tabs.includes(asked) ? asked : "Tenants"; });
   return (
     <>
       <PageHead title="Settings" subtitle="Tenants, people, device groups, integrations, releases and the tamper-evident audit trail." />
@@ -17,6 +21,8 @@ export default function Settings() {
       {tab === "Tenants" && <TenantsTab />}
       {tab === "Users" && <UsersTab />}
       {tab === "Groups" && <GroupsTab />}
+      {tab === "Custom fields" && <CustomFieldsSettings />}
+      {tab === "Region & holidays" && <RegionSettings />}
       {tab === "Webhooks" && <WebhooksTab />}
       {tab === "API credentials" && <ApiCredentialsTab />}
       {tab === "Approvals" && <ApprovalsTab />}
@@ -77,7 +83,7 @@ function UsersTab() {
             { key: "act", label: "", render: (r: any) => <span className="row" style={{ gap: 6 }}>
               <button className="small" onClick={() => setRoleForm({ ...r })}>Edit</button>
               <button className="small danger" disabled={r.users > 0} title={r.users ? "Move its users to another role first" : ""}
-                      onClick={async () => { if (confirm(`Delete the role ${r.name}?`) && await run(() => api(`roles/${r.id}`, { method: "DELETE" }), "Role deleted")) reloadRoles(); }}>Delete</button></span> }]} />
+                      onClick={async () => { if (await confirmDialog(`Delete the role ${r.name}?`) && await run(() => api(`roles/${r.id}`, { method: "DELETE" }), "Role deleted")) reloadRoles(); }}>Delete</button></span> }]} />
         </details>
       )}
       {can("configure") && <button className="primary" style={{ marginBottom: 10 }} onClick={() => setForm({ email: "", name: "", role: "tenant_analyst", tenantId, password: "" })}>Invite user</button>}
@@ -89,7 +95,7 @@ function UsersTab() {
         { key: "act", label: "", render: (u) => <span className="row" style={{ gap: 6 }}>
           {can("configure") && <button className="small" onClick={async () => { await run(() => api(`users/${u.id}`, { method: "PATCH", body: { active: !u.active } }), "User updated"); reload(); }}>{u.active ? "Disable" : "Enable"}</button>}
           {can("configure") && <button className="small" onClick={() => setAssigning({ id: u.id, email: u.email, role: u.role, tenantId: u.tenantId, assignedTenantIds: u.assignedTenantIds || [] })}>Role &amp; customers</button>}
-          {can("manage_tenants") && u.mfaEnabled && <button className="small" title="For a user who lost their phone" onClick={async () => { if (confirm(`Reset MFA for ${u.email}? They will need to set it up again.`)) { await run(() => api(`users/${u.id}/mfa/reset`, { method: "POST" }), "MFA reset"); reload(); } }}>Reset MFA</button>}
+          {can("manage_tenants") && u.mfaEnabled && <button className="small" title="For a user who lost their phone" onClick={async () => { if (await confirmDialog(`Reset MFA for ${u.email}? They will need to set it up again.`)) { await run(() => api(`users/${u.id}/mfa/reset`, { method: "POST" }), "MFA reset"); reload(); } }}>Reset MFA</button>}
         </span> }]} />
       {form && (
         <Modal title="Invite user" onClose={() => setForm(null)} footer={<button className="primary" disabled={busy}
@@ -196,7 +202,7 @@ function ApprovalsTab() {
   const { data: policy, reload: reloadPolicy } = useData<any>(tenantId ? `tenants/${tenantId}/approval-policy` : null, {}, [tenantId]);
   const { run, busy } = useAction();
   const decide = async (id: string, verdict: "approve" | "reject") => {
-    const reason = verdict === "reject" ? prompt("Why reject it?") : "";
+    const reason = verdict === "reject" ? await promptDialog("Why reject it?") : "";
     if (reason === null) return;
     if (await run(() => api(`approvals/${id}/${verdict}`, { body: { reason } }), verdict === "approve" ? "Approved: the requester can now run it" : "Rejected")) reload();
   };
@@ -212,7 +218,7 @@ function ApprovalsTab() {
             <b style={{ flex: 1 }}>Two-person approval for {tenantName(tenantId)}</b>
             <Pill value={policy.effective.twoPerson ? `on${policy.effective.tenantId !== tenantId ? ` (from ${tenantName(policy.effective.tenantId)})` : ""}` : "off"} tone={policy.effective.twoPerson ? "good" : "muted"} />
             {can("configure") && can("approve") && <button disabled={busy} onClick={async () => {
-              const threshold = policy.twoPerson ? null : prompt("Hold scripts and bulk actions that reach at least how many devices?", String(policy.bulkThreshold));
+              const threshold = policy.twoPerson ? null : await promptDialog("Hold scripts and bulk actions that reach at least how many devices?", String(policy.bulkThreshold));
               if (!policy.twoPerson && threshold === null) return;
               if (await run(() => api(`tenants/${tenantId}/approval-policy`, { method: "PUT", body: { twoPerson: !policy.twoPerson, bulkThreshold: Number(threshold || policy.bulkThreshold) } }), "Approval policy saved")) reloadPolicy();
             }}>{policy.twoPerson ? "Turn off" : "Turn on"}</button>}
@@ -252,12 +258,12 @@ function ApiCredentialsTab() {
     if (made) { setForm(null); setShown(made); reload(); }
   };
   const rotate = async (id: string) => {
-    if (!confirm("Rotate this credential? The current token stops working immediately.")) return;
+    if (!await confirmDialog("Rotate this credential? The current token stops working immediately.")) return;
     const made = await run(() => api<any>(`api-credentials/${id}/rotate`, { body: {} }), "Credential rotated");
     if (made) { setShown(made); reload(); }
   };
   const revoke = async (id: string) => {
-    if (confirm("Revoke this credential? Integrations using it stop working.") && await run(() => api(`api-credentials/${id}/revoke`, { body: {} }), "Credential revoked")) reload();
+    if (await confirmDialog("Revoke this credential? Integrations using it stop working.") && await run(() => api(`api-credentials/${id}/revoke`, { body: {} }), "Credential revoked")) reload();
   };
   return (
     <div className="card">
@@ -301,7 +307,7 @@ function RolloutsCard() {
   const { data, reload } = useData<any>("agent-rollouts");
   const { run, busy } = useAction();
   const act = async (id: string, action: string, ask?: string) => {
-    const reason = ask ? prompt(ask) : "";
+    const reason = ask ? await promptDialog(ask) : "";
     if (reason === null) return;
     if (await run(() => api(`agent-rollouts/${id}/action`, { body: { action, reason: reason || "" } }), "Rollout updated")) reload();
   };
@@ -480,6 +486,17 @@ function PlatformTab() {
           <p className="small">{Object.entries(data?.handlers ?? {}).map(([k, v]: any) => `${k} (${v.length})`).join(", ") || "none"}</p></div>
       </div>
       {error && <p className="muted">{error}</p>}
+      {can("platform") && <div className="card" style={{ marginTop: 14 }}>
+        <h3 style={{ marginTop: 0 }}>Background jobs</h3>
+        <p className="small muted">Scheduled work the server runs by itself. Each job runs on its own, so one failing job does not stop the others.</p>
+        <Table rows={(data?.jobs ?? []).map((j: any) => ({ ...j, id: j.name }))} empty="No job has run yet. Jobs start about 30 seconds after the server starts."
+               columns={[{ key: "name", label: "Job", render: (j) => <span className="mono small">{j.name}</span> },
+                         { key: "ok", label: "Last run", render: (j) => <Pill value={j.ok ? "ok" : j.failures > 1 ? `failed ${j.failures}× in a row` : "failed"} tone={j.ok ? "good" : "bad"} /> },
+                         { key: "lastRunAt", label: "When", render: (j) => j.lastRunAt ? ago(j.lastRunAt) : "" },
+                         { key: "lastOkAt", label: "Last success", render: (j) => j.lastOkAt ? ago(j.lastOkAt) : "never" },
+                         { key: "durationMs", label: "Took", className: "right", render: (j) => `${(j.durationMs / 1000).toFixed(1)} s` },
+                         { key: "error", label: "Error", render: (j) => <span className="small">{displayValue(j.error)}</span> }]} />
+      </div>}
       <div className="card" style={{ marginTop: 14 }}>
         <h3 style={{ marginTop: 0 }}>Failed automation events</h3>
         <Table rows={dead} empty="No failed events."

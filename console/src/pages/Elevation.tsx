@@ -4,6 +4,7 @@ import { ago, api, fmtTime } from "../api";
 import { useApp } from "../app-context";
 import { displayValue } from "../components/DisplayValue";
 import { ErrorNote, Modal, PageHead, Pill, Table, useAction, useListData } from "../components/ui";
+import { confirmDialog, promptDialog, noticeDialog } from "../components/dialogs";
 
 const TONE: Record<string, string> = { pending: "warn", approved: "blue", granted: "good", denied: "muted", expired: "muted", revoked: "muted", failed: "bad", ended: "muted" };
 const EVENT_LABEL: Record<string, string> = { requested: "Requested", approved: "Approved", denied: "Denied", granted: "Temporary admin account created",
@@ -26,21 +27,22 @@ export default function Elevation() {
 
   const approve = async (r: Request) => {
     const what = r.kind === "run" ? `run ${r.target.split("\\").pop()} as a temporary administrator` : "a temporary administrator account";
-    const input = window.prompt(`Give ${r.user} ${what} on ${r.hostname} for how many minutes? (5–480)`, String(r.minutes));
+    const input = await promptDialog(`Give ${r.user} ${what} on ${r.hostname} for how many minutes? (5–480)`, String(r.minutes),
+                                    { title: "Approve admin access", inputMode: "numeric", required: true });
     if (input === null) return;
     const minutes = Number.parseInt(input, 10);
-    if (!Number.isFinite(minutes) || minutes < 5 || minutes > 480) { window.alert("Enter a number of minutes between 5 and 480."); return; }
+    if (!Number.isFinite(minutes) || minutes < 5 || minutes > 480) { noticeDialog("Enter a number of minutes between 5 and 480."); return; }
     await run(() => api(`elevation-requests/${r.id}/approve`, { method: "POST", body: { minutes } }), "Approved; the device creates the temporary admin account at its next check-in");
     reload();
   };
   const deny = async (r: Request) => {
-    const note = window.prompt("Reason for the user (optional)", "") ?? null;
+    const note = await promptDialog("Reason for the user (optional)", "", { title: `Deny ${r.user}'s request` });
     if (note === null) return;
     await run(() => api(`elevation-requests/${r.id}/deny`, { method: "POST", body: { note } }), "Request denied");
     reload();
   };
   const revoke = async (r: Request) => {
-    if (!window.confirm(`End ${r.user}'s admin session on ${r.hostname} now? The temporary admin account is deleted.`)) return;
+    if (!await confirmDialog(`End ${r.user}'s admin session on ${r.hostname} now? The temporary admin account is deleted.`)) return;
     await run(() => api(`elevation-requests/${r.id}/revoke`, { method: "POST" }), "The temporary admin account is deleted at the next check-in");
     reload();
   };
