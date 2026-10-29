@@ -35,19 +35,28 @@ def synchronize(connection):
     with httpx.Client(timeout=20, follow_redirects=False) as client:
         token = access_token(client, connection)
         snapshot = {
-            "users": collect(client, GRAPH + "/users?$select=id,displayName,userPrincipalName,accountEnabled,assignedLicenses&$top=999", token, deadline),
+            "users": collect(client, GRAPH + "/users?$select=id,displayName,userPrincipalName,mail,accountEnabled,assignedLicenses,userType,jobTitle&$top=999", token, deadline),
             "licenses": collect(client, GRAPH + "/subscribedSkus", token, deadline),
             "secureScores": collect(client, GRAPH + "/security/secureScores?$top=1", token, deadline),
         }
-        # MFA registration needs AuditLog.Read.All (and Entra ID P1/P2); sync carries on without it.
-        try:
-            snapshot["mfaRegistration"] = collect(
-                client, GRAPH + "/reports/authenticationMethods/userRegistrationDetails?$select=userPrincipalName,isAdmin,isMfaRegistered",
-                token, deadline)
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code not in (400, 401, 403, 404):
-                raise
-            snapshot["mfaRegistration"] = None
+        # Optional collections: each needs its own permission (and some an Entra ID P1/P2 or Intune licence).
+        # Sync carries on without them and records None, so callers can tell "not permitted" from "none".
+        optional = {
+            # AuditLog.Read.All
+            "mfaRegistration": "/reports/authenticationMethods/userRegistrationDetails?$select=userPrincipalName,isAdmin,isMfaRegistered",
+            # DeviceManagementManagedDevices.Read.All (Entra ID reconciliation against managed endpoints)
+            "managedDevices": "/deviceManagement/managedDevices?$select=id,deviceName,serialNumber,operatingSystem,userPrincipalName,"
+                              "complianceState,lastSyncDateTime",
+            # Domain.Read.All
+            "domains": "/domains?$select=id,isVerified,isDefault",
+        }
+        for key, path in optional.items():
+            try:
+                snapshot[key] = collect(client, GRAPH + path, token, deadline)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code not in (400, 401, 403, 404):
+                    raise
+                snapshot[key] = None
         snapshot["insights"] = insights(snapshot)
         return snapshot
 
@@ -82,6 +91,31 @@ def insights(snapshot: dict) -> dict:
 
 
 def access_token(client, connection):
+    if connection.auth_mode == "gdap":
+        # Delegated token for the customer tenant through the MSP's GDAP relationship (m365_partner.py). A rotated
+        # partner refresh token is saved with the caller's own transaction.
+        from sqlalchemy.orm import object_session
+
+        from . import m365_partner
+        from .db import session_factory
+
+        db = object_session(connection)
+        own = db is None
+        db = db or session_factory()()
+        try:
+            partner = m365_partner.partner_for(db, connection.tenant_id)
+            if partner is None:
+                raise ValueError("No Microsoft partner connection is configured for GDAP")
+            try:
+                token = m365_partner.access_token_for(partner, connection.directory_id, client=client)
+            except m365_partner.PartnerError as exc:
+                raise ValueError(str(exc)) from exc
+            if own:
+                db.commit()
+            return token
+        finally:
+            if own:
+                db.close()
     if (connection.auth_mode or "app") == "platform":
         # The MSP's multi-tenant Fenrir app, consented by this tenant's admin.
         from .config import get_settings
