@@ -1,0 +1,22 @@
+Fenrir
+Copyright 2026 Matthew Palmer and the Fenrir contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+It is provided "AS IS", without warranty of any kind, and without support.
+
+Third-party components keep their own licences:
+
+- SQLite (third_party/sqlite) is in the public domain. https://sqlite.org/copyright.html
+- The Linux eBPF sensor (agent/linux/ebpf/sensor.c) is licensed under MIT or GPL-2.0, because the Linux kernel
+  only lets GPL-compatible programs use its tracing helpers.
+- The static malware model (ml/models) was trained on features from the SOREL-20M dataset published by Sophos and
+  ReversingLabs (https://github.com/sophos/SOREL-20M), using the EMBER feature set.
+- Compliance frameworks (cloud/fenrir_cloud/grc_library) paraphrase requirement wording. The standards themselves
+  (ISO/IEC 27001, PCI DSS, SOC 2, NIST CSF, CIS Controls, Cyber Essentials and others) are published by their owners,
+  and you need their official texts to certify against them.
+- Go, npm, Python and Rust dependencies are listed in agent/linux/go.mod, console/package.json,
+  cloud/requirements.txt, ml/requirements.txt and password_manager/Cargo.toml. Each is distributed under the
+  licence included with that package.
+
+Microsoft, Windows, Microsoft 365, Entra, Defender and Intel AMT are trademarks of their respective owners. Fenrir
+is not affiliated with or endorsed by them.
