@@ -82,8 +82,8 @@ function PartnerCheck({ partner, onChecked, onApprove, busy: signingIn }: { part
         <p className="small muted">{displayValue(check.organization || "Unknown organisation")}{check.partnerTenantType ? ` · partner type ${check.partnerTenantType}` : ""}
           {check.user ? ` · ${check.user} (${check.userType || "member"}${check.adminAgent ? ", Admin Agent" : ""})` : ""} · checked {ago(check.checkedAt)}</p>
         {check.problems.length > 0 && <ul className="small">{check.problems.map((p: string, i: number) => <li key={i} className="error">{displayValue(p)}</li>)}</ul>}
-        {(check.actions?.approveGraph || check.actions?.approvePartnerCenter) && <div className="row" style={{ gap: 8 }}>
-          {check.actions.approveGraph && <button className="primary" disabled={busy || signingIn} onClick={() => onApprove("graph")}>Approve Microsoft Graph permissions</button>}
+        {(check.actions?.approveGraph || check.actions?.approvePartnerCenter || check.actions?.signInWithMfa) && <div className="row" style={{ gap: 8 }}>
+          {(check.actions.approveGraph || check.actions.signInWithMfa) && <button className="primary" disabled={busy || signingIn} onClick={() => onApprove("graph")}>{check.actions.approveGraph ? "Approve Microsoft Graph permissions" : "Sign in again with MFA"}</button>}
           {check.actions.approvePartnerCenter && <button className={check.actions.approveGraph ? "" : "primary"} disabled={busy || signingIn} onClick={() => onApprove("partner-center")}>Approve Partner Center access</button>}
         </div>}
       </>}
