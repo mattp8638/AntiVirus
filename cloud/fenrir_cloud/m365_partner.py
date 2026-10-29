@@ -188,9 +188,10 @@ def complete_signin(row: M365Partner, device_code: str) -> str:
             raise PartnerError("Microsoft returned no refresh token; the app needs the offline_access permission")
         _store_secrets(row, {**secrets, "refreshToken": data["refresh_token"], "clientType": client_type})
         row.status, row.last_error, row.refreshed_at = "connected", "", utcnow()
-        row.signed_in_as = str(_claim(data.get("id_token") or data.get("access_token") or "", "upn") or "")[:320]
-        amr = _claim(data.get("id_token") or "", "amr") or _claim(data.get("access_token") or "", "amr")
-        row.settings = {**(row.settings or {}), "signInMfa": ("mfa" in amr) if isinstance(amr, list) else None, "mfaRequired": False}
+        row.signed_in_as = _identity(data.get("id_token") or "", data.get("access_token") or "")[:320]
+        amr = _claim(data.get("access_token") or "", "amr") or _claim(data.get("id_token") or "", "amr")
+        row.settings = {**(row.settings or {}), "signInMfa": ("mfa" in amr) if isinstance(amr, list) else None, "mfaRequired": False,
+                        "mfaRequiredFor": None}
         return "ok"
     code = None
     try:
@@ -200,6 +201,16 @@ def complete_signin(row: M365Partner, device_code: str) -> str:
     if code in ("authorization_pending", "slow_down"):
         return "pending"
     raise PartnerError("Sign-in did not complete: " + _error(response))
+
+
+def _identity(*tokens: str) -> str:
+    """The signed-in account: v2 ID tokens carry preferred_username, v1 access tokens upn or unique_name."""
+    for token in tokens:
+        for name in ("preferred_username", "upn", "unique_name", "email"):
+            value = _claim(token, name) if token else None
+            if value:
+                return str(value)
+    return ""
 
 
 def _claim(token: str, name: str):
@@ -234,7 +245,8 @@ def access_token_for(row: M365Partner, directory_id: str | None = None, client: 
         if partner_itself:
             row.status, row.last_error = "error", message
         if any(code in response.text for code in MFA_ERRORS):
-            row.settings = {**(row.settings or {}), "mfaRequired": True}
+            row.settings = {**(row.settings or {}), "mfaRequired": True,
+                            "mfaRequiredFor": None if partner_itself else directory_id}
             raise PartnerError("Microsoft requires multi-factor authentication for partner access" +
                                ("" if partner_itself else " to this customer") + ", and Fenrir's partner sign-in was not MFA-verified. "
                                "Click \"Sign in again\" and complete MFA when Microsoft asks (the account needs an MFA method in "
@@ -248,6 +260,8 @@ def access_token_for(row: M365Partner, directory_id: str | None = None, client: 
         _store_secrets(row, updated)
     if partner_itself:
         row.status, row.last_error = "connected", ""
+    elif (row.settings or {}).get("mfaRequiredFor") == directory_id:
+        row.settings = {**row.settings, "mfaRequired": False, "mfaRequiredFor": None, "mfaRequiredForName": None}
     row.refreshed_at = utcnow()
     return data["access_token"]
 
@@ -450,15 +464,31 @@ def check(row: M365Partner) -> dict:
     problems: list[str] = []
     actions = {"approveGraph": False, "approvePartnerCenter": False, "signInWithMfa": False}
     settings = row.settings or {}
-    if settings.get("mfaRequired") or settings.get("signInMfa") is False:
-        actions["signInWithMfa"] = True
-        problems.append("The partner sign-in was not MFA-verified, and Microsoft refuses partner access to customer tenants "
-                        "without MFA (AADSTS50076). Click \"Sign in again with MFA\" and complete MFA when Microsoft asks; if it "
-                        "does not ask, set up MFA for this account in the partner tenant first.")
     out: dict = {"partnerTenantId": row.partner_directory_id}
     with http_client() as client:
         token = access_token_for(row, client=client)
         out["tokenTenantId"] = _claim(token, "tid")
+        # The access token carries how the original sign-in was authenticated, and every refresh keeps it.
+        amr = _claim(token, "amr")
+        out["mfa"] = ("mfa" in amr) if isinstance(amr, list) else settings.get("signInMfa")
+        if out["mfa"] is False:
+            actions["signInWithMfa"] = True
+            problems.append("The partner sign-in was not MFA-verified (Microsoft recorded " + ", ".join(amr or ["no MFA"]) + "), and "
+                            "Microsoft refuses partner access to customer tenants without MFA (AADSTS50076). Click \"Sign in again "
+                            "with MFA\" and complete the MFA prompt. If Microsoft does not prompt, MFA was skipped for this device or "
+                            "location: turn off \"remember MFA on trusted devices\" and trusted IPs for the account, or require MFA with "
+                            "a Conditional Access policy, then sign in again.")
+        elif settings.get("mfaRequired"):
+            customer = settings.get("mfaRequiredForName") or settings.get("mfaRequiredFor") or "a customer"
+            if out["mfa"]:
+                problems.append(f"The partner sign-in is MFA-verified, but {customer} still asks for MFA (AADSTS50076), so that "
+                                "customer's tenant does not accept MFA done in your partner tenant. In the customer's Entra admin centre, "
+                                "open External Identities > Cross-tenant access settings, add your partner tenant and, under Inbound "
+                                "access > Trust settings, tick \"Trust multifactor authentication from Microsoft Entra tenants\".")
+            else:
+                actions["signInWithMfa"] = True
+                problems.append(f"{customer} requires MFA for partner access (AADSTS50076). Click \"Sign in again with MFA\" and "
+                                "complete the MFA prompt.")
         scope_claim = _claim(token, "scp")
         scopes = set(str(scope_claim or "").split())
         out["scopes"] = sorted(scopes)
@@ -486,6 +516,8 @@ def check(row: M365Partner) -> dict:
         try:
             me = _graph(client, token, "GET", "/me?$select=userPrincipalName,userType,displayName")
             out["user"], out["userType"] = me.get("userPrincipalName") or "", me.get("userType") or ""
+            if out["user"] and not row.signed_in_as:
+                row.signed_in_as = out["user"][:320]
             if out["userType"] == "Guest":
                 problems.append(f"{out['user']} is a guest in the partner tenant. Sign in with an account that belongs to the partner tenant.")
         except PartnerError as exc:
@@ -699,6 +731,8 @@ def import_customers(db: Session, row: M365Partner, actor: str, directory_ids: l
             result.update(status="linked", connectionId=connection.id)
         except PartnerError as exc:
             result.update(status="needs attention", error=str(exc))
+            if (row.settings or {}).get("mfaRequiredFor") == directory_id:
+                row.settings = {**row.settings, "mfaRequiredForName": name}  # the partner check names the customer
         results.append(result)
     row.settings = {**(row.settings or {}), "lastImportAt": utcnow().isoformat() + "Z"}
     audit.record(db, actor, "m365.gdap.imported", row.partner_directory_id, row.tenant_id,
