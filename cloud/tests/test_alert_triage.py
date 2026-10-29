@@ -56,3 +56,22 @@ def test_customer_users_cannot_triage_other_customers_alerts(client, admin, tena
     [alert] = _alerts(tenant["id"], device["deviceId"], 1)
     assert client.post("/api/console/alerts/bulk", headers=outsider, json={"ids": [alert], "status": "resolved"}).status_code in (403, 404)
     assert client.patch(f"/api/console/alerts/{alert}", headers=outsider, json={"snoozeMinutes": 60}).status_code in (403, 404)
+
+
+def test_my_work_lists_the_technicians_queue(client, admin, tenant, device):
+    tickets = "/api/console/tickets"
+    mine = client.post(tickets, headers=admin, json={"accountTenantId": tenant["id"], "subject": "Printer jammed", "assignee": "admin@fenrir.local"}).json()
+    other = client.post(tickets, headers=admin, json={"accountTenantId": tenant["id"], "subject": "New starter"}).json()
+    with database.session_factory()() as db:
+        from fenrir_cloud.models import Ticket
+
+        db.get(Ticket, other["id"]).sla_due_at = utcnow() - timedelta(hours=1)  # past SLA
+        db.commit()
+    first, second = _alerts(tenant["id"], device["deviceId"], 2)
+    client.patch(f"/api/console/alerts/{first}", headers=admin, json={"acknowledge": True})
+
+    work = client.get("/api/console/my-work", headers=admin).json()
+    assert [t["id"] for t in work["tickets"]["mine"]] == [mine["id"]] and work["tickets"]["mineCount"] == 1
+    assert other["id"] in [t["id"] for t in work["tickets"]["breached"]] and work["tickets"]["breached"][0]["breached"]
+    assert [a["id"] for a in work["alerts"]["mine"]] == [first] and work["alerts"]["urgentUnowned"] == 1  # the other high alert
+    assert work["jobs"]["failedCount"] == 0 and work["decisions"] == {"approvals": 0, "adminRequests": 0}

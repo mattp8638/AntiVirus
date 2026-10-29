@@ -14,7 +14,7 @@ export default function Alerts() {
   const { tenantId, tenantName, can } = useApp();
   const [status, setStatus] = useState("new");
   const [severity, setSeverity] = useState("");
-  const [owner, setOwner] = useState("");
+  const [owner, setOwner] = useState(() => new URLSearchParams(window.location.search).get("owner") ?? "");
   const [snoozed, setSnoozed] = useState("hide");
   const { data, reload } = useListData<any>("alerts", { tenant_id: tenantId, status, severity, assignee: owner, snoozed });
   const { data: members } = useListData<Member>("psa/members");

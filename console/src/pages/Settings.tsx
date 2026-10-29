@@ -9,7 +9,7 @@ const ROLES = ["platform_admin", "msp_admin", "soc_analyst", "technician", "bill
 export default function Settings() {
   const { can } = useApp();
   const tabs = ["Tenants", "Users", "Groups", "Webhooks", ...(can("configure") ? ["API credentials"] : []), "Approvals", "Agent releases", "Audit log", ...(can("configure") ? ["Platform"] : []), "Account"];
-  const [tab, setTab] = useState("Tenants");
+  const [tab, setTab] = useState(() => { const asked = new URLSearchParams(window.location.search).get("tab"); return asked && tabs.includes(asked) ? asked : "Tenants"; });
   return (
     <>
       <PageHead title="Settings" subtitle="Tenants, people, device groups, integrations, releases and the tamper-evident audit trail." />

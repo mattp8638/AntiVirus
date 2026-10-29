@@ -1,4 +1,5 @@
 import { ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { displayValue } from "./DisplayValue";
 import { expectArray, safeArray } from "../data-shapes";
 import { api, rememberReauth, setReauthPrompt } from "../api";
@@ -78,14 +79,14 @@ export function PageHead({ title, subtitle, actions }: { title: string; subtitle
   );
 }
 
-export function Stat({ label, value, hint, accent }: { label: string; value: ReactNode; hint?: ReactNode; accent?: string }) {
-  return (
-    <div className={`card stat ${accent ? `accent-${accent}` : ""}`}>
-      <div className="label">{label}</div>
-      <div className="value">{displayValue(value)}</div>
-      {hint && <div className="hint">{displayValue(hint)}</div>}
-    </div>
-  );
+export function Stat({ label, value, hint, accent, to }: { label: string; value: ReactNode; hint?: ReactNode; accent?: string; to?: string }) {
+  const body = <>
+    <div className="label">{label}</div>
+    <div className="value">{displayValue(value)}</div>
+    {hint && <div className="hint">{displayValue(hint)}</div>}
+  </>;
+  const className = `card stat ${accent ? `accent-${accent}` : ""}`;
+  return to ? <Link to={to} className={`${className} stat-link`}>{body}</Link> : <div className={className}>{body}</div>;
 }
 
 export function Sev({ level }: { level?: string }) {

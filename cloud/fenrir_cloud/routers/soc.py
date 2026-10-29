@@ -188,6 +188,59 @@ def retro_hunt(body: dict = Body(...), principal: Principal = Depends(current_pr
     return {"rule": rule.title, "scanned": scanned, "hits": len(hits), "devices": dict(devices), "events": hits[:200]}
 
 
+@router.get("/my-work")
+def my_work(tenant_id: str | None = None, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """The signed-in technician's queue for the dashboard: their tickets and alerts, what is past SLA, what failed, and
+    what waits for someone's decision."""
+    from ..models import ApprovalRequest, Board, ElevationRequest, Job, Tenant
+
+    scope = scoped_tenant(principal, tenant_id)
+    me, now = principal.actor, utcnow()
+    in_scope = or_(Ticket.account_tenant_id.in_(scope), Ticket.tenant_id.in_(scope))
+    open_rows = db.execute(select(Ticket).where(in_scope, Ticket.status.notin_(tuple(psa.CLOSED_DEFAULT)))
+                           .order_by(Ticket.sla_due_at.is_(None), Ticket.sla_due_at).limit(2000)).scalars().all()
+    boards = {b.id: b for b in db.execute(select(Board).where(Board.id.in_({t.board_id for t in open_rows if t.board_id}))).scalars()}
+    open_tickets = [t for t in open_rows if t.status not in psa.closed_statuses(boards.get(t.board_id))]
+    mine = [t for t in open_tickets if (t.assignee or "").lower() == me.lower()
+            or me.lower() in {str(r).lower() for r in (t.resources or [])}]
+    breached = [t for t in open_tickets if t.sla_due_at and t.sla_due_at < now]
+    names = dict(db.execute(select(Tenant.id, Tenant.name).where(Tenant.id.in_({t.account_tenant_id for t in mine + breached
+                                                                                 if t.account_tenant_id}))).all())
+
+    def ticket(t: Ticket) -> dict:
+        return {"id": t.id, "number": t.number, "subject": t.subject, "priority": t.priority, "status": t.status,
+                "assignee": t.assignee, "customer": names.get(t.account_tenant_id or "", ""),
+                "slaDueAt": t.sla_due_at.isoformat() + "Z" if t.sla_due_at else None,
+                "breached": bool(t.sla_due_at and t.sla_due_at < now)}
+
+    not_snoozed = or_(Alert.snoozed_until.is_(None), Alert.snoozed_until <= now)
+    open_alerts = (Alert.tenant_id.in_(scope), Alert.status.in_(("new", "triaged")), not_snoozed)
+    my_alerts = db.execute(select(Alert).where(*open_alerts, func.lower(Alert.assignee) == me.lower())
+                           .order_by(Alert.created_at.desc()).limit(50)).scalars().all()
+    urgent_unowned = db.execute(select(func.count()).select_from(Alert).where(
+        *open_alerts, or_(Alert.assignee.is_(None), Alert.assignee == ""), Alert.severity.in_(("critical", "high")))).scalar() or 0
+    hosts = dict(db.execute(select(Device.id, Device.hostname).where(Device.id.in_({a.device_id for a in my_alerts if a.device_id}))).all())
+    failed_jobs = db.execute(select(Job).where(Job.tenant_id.in_(scope), Job.status.in_(("failed", "partial")),
+                                               Job.finished_at >= now - timedelta(hours=24))
+                             .order_by(Job.finished_at.desc()).limit(50)).scalars().all()
+    approvals_waiting = db.execute(select(func.count()).select_from(ApprovalRequest).where(
+        ApprovalRequest.tenant_id.in_(scope), ApprovalRequest.status == "pending", ApprovalRequest.expires_at > now,
+        ApprovalRequest.requested_by != me)).scalar() or 0
+    admin_requests = db.execute(select(func.count()).select_from(ElevationRequest).where(
+        ElevationRequest.tenant_id.in_(scope), ElevationRequest.status == "pending")).scalar() or 0
+    return {
+        "tickets": {"mine": [ticket(t) for t in mine[:10]], "mineCount": len(mine),
+                    "breached": [ticket(t) for t in breached[:10]], "breachedCount": len(breached),
+                    "unassignedCount": sum(1 for t in open_tickets if not t.assignee)},
+        "alerts": {"mine": [{"id": a.id, "title": a.title, "severity": a.severity, "status": a.status,
+                             "hostname": hosts.get(a.device_id, ""), "createdAt": a.created_at.isoformat() + "Z"} for a in my_alerts[:10]],
+                   "mineCount": len(my_alerts), "urgentUnowned": urgent_unowned},
+        "jobs": {"failed": [{"id": j.id, "name": j.name, "status": j.status, "finishedAt": j.finished_at.isoformat() + "Z"}
+                            for j in failed_jobs[:10]], "failedCount": len(failed_jobs)},
+        "decisions": {"approvals": approvals_waiting, "adminRequests": admin_requests},
+    }
+
+
 # --------------------------------------------------------------------------- alerts
 
 
