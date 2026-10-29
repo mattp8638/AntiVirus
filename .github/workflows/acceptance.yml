@@ -50,7 +50,7 @@ jobs:
       - name: Run the acceptance checks
         run: |
           python scripts/acceptance/fenrir_acceptance.py --server "$FENRIR_PUBLIC_URL" --email "$FENRIR_ADMIN_EMAIL" \
-            --password "$FENRIR_ADMIN_PASSWORD" --device "$(hostname)" --disruptive --timeout 180 --out acceptance-linux
+            --password "$FENRIR_ADMIN_PASSWORD" --device "$(hostname)" --disruptive --wait-for-device 120 --timeout 180 --out acceptance-linux
       - name: Report
         if: always()
         run: |
@@ -102,7 +102,7 @@ jobs:
           Get-Service FenrirAgent | Format-List Name, Status, StartType
           python scripts/acceptance/fenrir_acceptance.py --server $env:FENRIR_PUBLIC_URL --email $env:FENRIR_ADMIN_EMAIL `
             --password $env:FENRIR_ADMIN_PASSWORD --device $env:COMPUTERNAME --scenario checks_in,policy,inventory,script,eicar,pam `
-            --timeout 240 --out acceptance-windows
+            --wait-for-device 300 --timeout 240 --out acceptance-windows
           exit $LASTEXITCODE
       - name: Report and diagnostics
         if: always()

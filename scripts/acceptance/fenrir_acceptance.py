@@ -358,13 +358,25 @@ def patch_scan(ctx: Context, device: dict) -> tuple[str, dict]:
 # --------------------------------------------------------------------------- runner
 
 
-def find_device(api: Api, name: str) -> dict:
+def find_device(api: Api, name: str, wait: float) -> dict:
+    """The enrolled device with this hostname (or id), waiting up to ``wait`` seconds for a freshly installed agent."""
     short = name.lower().split(".")[0]  # Windows reports NETBIOS names; Linux may report a full domain name
-    matches = [d for d in api.get("devices", q=short)
-               if d["id"] == name or d["hostname"].lower() == name.lower() or d["hostname"].lower().split(".")[0] == short]
-    if not matches:
+
+    def lookup():
+        matches = [d for d in api.get("devices", q=short)
+                   if d["id"] == name or d["hostname"].lower() == name.lower() or d["hostname"].lower().split(".")[0] == short]
+        return max(matches, key=lambda d: d.get("lastSeenAt") or "") if matches else None
+
+    found = lookup()
+    if found is None and wait > 0:
+        print(f"Waiting up to {int(wait)} s for {name} to enrol…", flush=True)
+        try:
+            found = wait_for(f"{name} to enrol", lookup, wait)
+        except Check:
+            found = None
+    if found is None:
         raise SystemExit(f"No device called {name!r}. Enrol it first; see docs/ACCEPTANCE_LAB.md.")
-    return max(matches, key=lambda d: d.get("lastSeenAt") or "")
+    return found
 
 
 def run(api: Api, args: argparse.Namespace) -> list[Outcome]:
@@ -375,7 +387,7 @@ def run(api: Api, args: argparse.Namespace) -> list[Outcome]:
     ctx = Context(api, args)
     outcomes: list[Outcome] = []
     for name in args.device:
-        device = find_device(api, name)
+        device = find_device(api, name, args.wait_for_device)
         for key in chosen:
             spec = SCENARIOS[key]
             platform = (device.get("platform") or "").lower()
@@ -426,6 +438,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scenario", default="", help="comma-separated; default all")
     parser.add_argument("--disruptive", action="store_true")
     parser.add_argument("--timeout", type=float, default=300.0, help="seconds to wait for each result")
+    parser.add_argument("--wait-for-device", type=float, default=0.0, help="seconds to wait for a just-installed agent to enrol")
     parser.add_argument("--insecure", action="store_true")
     parser.add_argument("--out", default="acceptance-report")
     parser.add_argument("--list", action="store_true", help="list the checks and exit")
