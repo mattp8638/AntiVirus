@@ -46,10 +46,39 @@ jobs:
       - name: Run all tests with SQLite
         working-directory: cloud
         run: python -m pytest -q
-      - name: Run all tests with real PostgreSQL
+
+  cloud-postgres:
+    # Every test builds and drops the whole schema, so the full PostgreSQL run takes over 20 minutes on one runner.
+    # Four parallel shards, each with its own database, keep it well inside the timeout.
+    name: Cloud API on real PostgreSQL (shard ${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: fenrir
+          POSTGRES_PASSWORD: fenrir
+          POSTGRES_DB: fenrir
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U fenrir" --health-interval 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install tests
+        run: pip install -r cloud/requirements-dev.txt "psycopg[binary]>=3.2"
+      - name: Run this shard of all tests with real PostgreSQL
         working-directory: cloud
         env:
           FENRIR_TEST_DATABASE_URL: postgresql+psycopg://fenrir:fenrir@localhost:5432/fenrir
+          FENRIR_TEST_SHARD: ${{ matrix.shard }}/4
         run: python -m pytest -q
 
   console-regressions:
