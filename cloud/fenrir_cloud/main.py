@@ -31,6 +31,7 @@ from .routers import apikeys as apikeys_router
 from .routers import roles as roles_router
 from .routers import approvals as approvals_router
 from .routers import exclusions as exclusions_router
+from .routers import exposure_intel as exposure_intel_router
 from .routers import admin, agent_api, artifacts as artifacts_router, business, crm as crm_router, fleet, portal, protection, service_mgmt, soc
 from .routers import psa as psa_router, remote as remote_router, rmm as rmm_router
 from .security import hash_password
@@ -103,6 +104,9 @@ def _maintenance_loop(settings: Settings, stop: threading.Event) -> None:
 
                 result = sync_feed(db, settings.feed_url, settings.feed_token)
                 log.info("feed sync: %s", result)
+            from . import darkweb
+
+            darkweb.tick(db)
             if settings.dns_blocklists_enabled:
                 from . import blocklists
 
@@ -160,6 +164,11 @@ def _scheduler_loop(stop: threading.Event, interval: float = 30.0) -> None:
                     db.commit()
                     from . import network
                     network.tick(db)
+                    if passes % 20 == 0:  # every ten minutes
+                        from . import remediation
+
+                        remediation.tick(db)
+                        db.commit()
                     if passes % 10 == 0:
                         from .routers import backup as backup_health
                         backup_health.health_tick(db)
@@ -282,7 +291,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     for module in (agent_api, admin, fleet, soc, crm_router, business, rmm_router, service_mgmt, psa_router, remote_router, portal):
         app.include_router(module.router)
     for module in (m365_admin_router, m365_router, network_router, grc_router, backup_router, soc_workflows, ad_router, grc_programme_router,
-                   rollouts_router, apikeys_router, roles_router, approvals_router, exclusions_router):
+                   rollouts_router, apikeys_router, roles_router, approvals_router, exclusions_router,
+                   exposure_intel_router):
         app.include_router(module.router)
     app.include_router(documentation_router.router)
     app.include_router(m365_router.oauth)

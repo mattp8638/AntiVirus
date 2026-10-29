@@ -765,6 +765,8 @@ func (a *Agent) ExecuteContext(ctx context.Context, cmd Command) (map[string]int
 		return RunScriptContext(ctx, a.cfg.StateDir, cmd.PayloadJSON)
 	case "patch.scan":
 		return PatchScanContext(ctx)
+	case "pii.scan":
+		return PIIScanContext(ctx, cmd.PayloadJSON)
 	case "patch.install":
 		return PatchInstallContext(ctx, cmd.PayloadJSON)
 	case "software.install":

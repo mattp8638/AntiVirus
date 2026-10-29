@@ -343,12 +343,16 @@ def list_vulnerabilities(tenant_id: str | None = None, status: str | None = "ope
     for v in rows:
         device = devices.get(v.device_id)
         criticality = (device.criticality if device else None) or "medium"
-        risk = vulnmgmt.risk_score(v, criticality)
+        elevated = vulnmgmt.device_elevated(device)
+        risk = vulnmgmt.risk_score(v, criticality, elevated)
         entry = by_cve.setdefault(v.vuln_id, {"vulnId": v.vuln_id, "severity": v.severity, "cvss": v.cvss,
                                               "knownExploited": v.known_exploited, "summary": v.summary, "packages": set(),
                                               "fixedVersion": v.fixed_version, "devices": [], "riskScore": 0.0,
                                               "recommendation": vulnmgmt.recommendation(v), "overdue": 0,
-                                              "epss": v.epss, "cvssVector": v.cvss_vector, "fix": v.fix or {}, "sources": set()})
+                                              "epss": v.epss, "cvssVector": v.cvss_vector, "fix": v.fix or {}, "sources": set(),
+                                              "priority": "P4"})
+        device_priority = vulnmgmt.priority(v, elevated)
+        entry["priority"] = min(entry["priority"], device_priority)  # "P1" < "P4"
         entry["packages"].add(v.package)
         entry["sources"].add(v.source)
         if v.epss is not None and (entry["epss"] is None or v.epss > entry["epss"]):
@@ -359,6 +363,8 @@ def list_vulnerabilities(tenant_id: str | None = None, status: str | None = "ope
         entry["devices"].append({"deviceId": v.device_id, "hostname": device.hostname if device else "", "installed": v.installed_version,
                                  "package": v.package, "evidence": v.evidence or {}, "fix": v.fix or {}, "platform": device.platform if device else "",
                                  "id": v.id, "status": v.status, "criticality": criticality, "riskScore": risk,
+                                 "priority": device_priority, "exposure": (device.exposure_flags or []) if device else [],
+                                 "remediation": v.remediation,
                                  "assignee": v.assignee or "", "ticketId": v.ticket_id, "overdue": overdue,
                                  "dueAt": v.due_at.isoformat(timespec="seconds") + "Z" if v.due_at else None,
                                  "verifiedAt": v.verified_at.isoformat(timespec="seconds") + "Z" if v.verified_at else None,
@@ -369,8 +375,6 @@ def list_vulnerabilities(tenant_id: str | None = None, status: str | None = "ope
     for entry in out:
         entry["packages"] = sorted(entry["packages"])
         entry["sources"] = sorted(entry["sources"])
-        entry["priority"] = ("P1" if entry["knownExploited"] else "P2" if entry["severity"] == "critical"
-                             else "P3" if entry["severity"] == "high" else "P4")
     return out
 
 
@@ -390,8 +394,9 @@ def cve_detail(cve_id: str, tenant_id: str | None = None, principal: Principal =
     for v in sorted(rows, key=lambda r: (r.status == "fixed", r.device_id)):
         device = devices.get(v.device_id)
         affected.append({**to_dict(v), "hostname": device.hostname if device else "", "platform": device.platform if device else "",
-                         "riskScore": vulnmgmt.risk_score(v, device.criticality if device else None),
-                         "reasons": vulnmgmt.risk_reasons(v), "recommendation": vulnmgmt.recommendation(v)})
+                         "riskScore": vulnmgmt.risk_score(v, device.criticality if device else None, vulnmgmt.device_elevated(device)),
+                         "priority": vulnmgmt.priority(v, vulnmgmt.device_elevated(device)),
+                         "reasons": vulnmgmt.risk_reasons(v, device), "recommendation": vulnmgmt.recommendation(v)})
     return {"cve": cve_id, "intel": intel, "affected": affected}
 
 
@@ -564,18 +569,85 @@ def compliance_report(tenant_id: str | None = None, framework: str | None = None
     return {"tenant": tenant.name, "frameworks": compliance.evaluate(db, tenant, framework)}
 
 
-
-@console.post("/vulnerabilities/{vuln_id}/cyber-heal")
-def cyber_heal(vuln_id: int, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    """Trigger automated "Cyber Heal" zero-interaction remediation for a vulnerability."""
-    principal.require("scripts")
+def _scoped_vulnerability(db: Session, principal: Principal, vuln_id: int) -> Vulnerability:
     vuln = db.get(Vulnerability, vuln_id)
     if vuln is None or vuln.tenant_id not in principal.tenant_ids:
         raise HTTPException(404, "Not found")
-    res = vulnmgmt.cyber_heal_remediate(db, vuln_id)
-    if res["status"] == "skipped":
-        raise HTTPException(400, res["reason"])
-    if res["status"] == "failed":
-        raise HTTPException(404, res["reason"])
+    return vuln
+
+
+@console.get("/vulnerabilities/{vuln_id}/remediation")
+def remediation_plan(vuln_id: int, mode: str = "update", principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """What a silent update (or uninstall) would do for this vulnerability on its device, without doing it."""
+    from .. import remediation
+
+    principal.require("read")
+    vuln = _scoped_vulnerability(db, principal, vuln_id)
+    try:
+        the_plan = remediation.plan(db, vuln, mode)
+    except remediation.RemediationError as exc:
+        return {"available": False, "reason": str(exc), "last": vuln.remediation}
+    return {"available": True, "mode": the_plan.mode, "commandType": the_plan.command_type, "description": the_plan.description,
+            "destructive": the_plan.destructive, "last": vuln.remediation}
+
+
+@console.post("/vulnerabilities/{vuln_id}/remediate")
+def remediate_vulnerability(vuln_id: int, request: Request, body: dict = Body(default={}), principal: Principal = Depends(current_principal),
+                            db: Session = Depends(get_db)):
+    """Silently patch (mode=update) or uninstall (mode=uninstall) through the agent's own package commands."""
+    from .. import approvals, remediation
+
+    mode = str(body.get("mode") or "update")
+    principal.require("destructive" if mode == "uninstall" else "scripts")
+    vuln = _scoped_vulnerability(db, principal, vuln_id)
+    if mode == "uninstall":  # CORE-15: optional second-person approval for removing software
+        device = db.get(Device, vuln.device_id)
+        approvals.gate(db, principal, "vulnerability.uninstall", f"Uninstall {vuln.package} on {device.hostname if device else vuln.device_id}",
+                       {"vulnerabilityId": vuln.id, **body}, [device] if device else [], destructive=True,
+                       route=f"vulnerabilities/{vuln.id}/remediate")
+    try:
+        command = remediation.execute(db, vuln, principal.actor, mode)
+    except remediation.RemediationError as exc:
+        raise HTTPException(409, str(exc)) from exc
     db.commit()
-    return res
+    return {"status": "queued", "commandId": command.id, "vulnerabilityId": vuln.id, "remediation": vuln.remediation}
+
+
+@console.post("/vulnerabilities/{vuln_id}/cyber-heal")
+def cyber_heal(vuln_id: int, request: Request, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """The original Cyber Heal entry point: a silent update through remediation.py."""
+    return remediate_vulnerability(vuln_id, request, {"mode": "update"}, principal, db)
+
+
+@console.get("/vulnerabilities/auto-remediation")
+def get_auto_remediation(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    from .. import remediation
+
+    principal.check_tenant(tenant_id)
+    tenant = db.get(Tenant, tenant_id)
+    settings = remediation.auto_settings(tenant)
+    return {"settings": settings, "candidates": len(remediation.candidates(db, tenant, {**settings, "enabled": True})) if tenant else 0}
+
+
+@console.put("/vulnerabilities/auto-remediation")
+def set_auto_remediation(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Per-customer silent automatic updates for the priorities named (never uninstalls)."""
+    from .. import remediation
+
+    principal.require("configure")
+    principal.require("scripts")
+    tenant_id = str(body.get("tenantId") or "")
+    principal.check_tenant(tenant_id)
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(404, "Not found")
+    priorities = [p for p in (body["priorities"] if "priorities" in body else ["P1"]) or [] if p in vulnmgmt.PRIORITIES]
+    if not priorities:
+        raise HTTPException(422, "Choose at least one priority")
+    settings = {"enabled": bool(body.get("enabled")), "priorities": priorities,
+                "minEpss": max(0.0, min(float(body.get("minEpss") or 0.0), 1.0)),
+                "maxPerRun": max(1, min(int(body.get("maxPerRun") or 25), 200))}
+    tenant.settings = {**(tenant.settings or {}), "autoRemediation": settings}
+    audit.record(db, principal.actor, "vulnerability.auto_remediation.updated", tenant.name, tenant.id, **settings)
+    db.commit()
+    return {"settings": remediation.auto_settings(tenant)}

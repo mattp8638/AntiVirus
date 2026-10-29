@@ -56,6 +56,7 @@ export default function Vulnerabilities() {
       <div className="card">
         <Table rows={rows.map((v) => ({ ...v, id: v.vulnId }))} onRow={(v) => setOpen(v.vulnId)} empty="No vulnerabilities in this view."
                columns={[{ key: "riskScore", label: "Risk", render: (v) => <RiskBadge score={v.riskScore} /> },
+                         { key: "priority", label: "Priority", render: (v) => <Pill value={v.priority} tone={v.priority === "P1" ? "bad" : v.priority === "P2" ? "warn" : "muted"} /> },
                          { key: "vulnId", label: "Vulnerability", render: (v) => <><b className="mono">{displayValue(v.vulnId)}</b> {v.knownExploited && <Pill value="exploited in the wild" tone="bad" />} <EpssPill epss={v.epss} /> {v.overdue > 0 && <Pill value={`${v.overdue} overdue`} tone="bad" />}
                            <div className="small muted">{displayValue(v.summary.slice(0, 140))}</div></> },
                          { key: "severity", label: "Severity", render: (v) => <><Sev level={v.severity} />{v.cvss !== null && v.cvss !== undefined && <div className="small muted">CVSS {displayValue(v.cvss)}</div>}</> },
@@ -63,8 +64,56 @@ export default function Vulnerabilities() {
                          { key: "fix", label: "Fix", render: (v) => <span className="small">{v.fix?.kind === "kb" ? <b>{displayValue(v.fix.ref)}</b> : v.fix?.ref || v.fixedVersion || "—"}</span> },
                          { key: "devices", label: "Devices", render: (v) => v.devices.length, className: "right" }]} />
       </div>
+      {tenantId && can("configure") && <AutoRemediationCard tenantId={tenantId} />}
       {open && <CveModal cve={open} onClose={(changed) => { setOpen(null); if (changed) reload(); }} />}
     </>
+  );
+}
+
+function AutoRemediationCard({ tenantId }: { tenantId: string }) {
+  const { data, reload } = useData<any>("vulnerabilities/auto-remediation", { tenant_id: tenantId });
+  const { run, busy } = useAction();
+  const settings = data?.settings;
+  const save = async (next: any) => {
+    if (await run(() => api("vulnerabilities/auto-remediation", { method: "PUT", body: { tenantId, ...settings, ...next } }), "Automatic remediation updated")) reload();
+  };
+  if (!settings) return null;
+  return (
+    <div className="card" style={{ marginTop: 14 }}>
+      <h3>Automatic remediation</h3>
+      <p className="small muted">Silently installs the update for open vulnerabilities at the chosen priorities, using each device's own package manager or the update it reported. It never uninstalls software, retries a vulnerability at most once a day, and a fix counts only after the next scan confirms it.</p>
+      <div className="row">
+        <label className="small" style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <input type="checkbox" checked={settings.enabled} disabled={busy} onChange={(e) => save({ enabled: e.target.checked })} /> On for this customer</label>
+        {["P1", "P2", "P3"].map((p) => <label key={p} className="small" style={{ display: "flex", gap: 4, alignItems: "center" }}>
+          <input type="checkbox" checked={settings.priorities.includes(p)} disabled={busy}
+                 onChange={(e) => save({ priorities: e.target.checked ? [...settings.priorities, p] : settings.priorities.filter((x: string) => x !== p) })} />{p}</label>)}
+        <span className="small muted">{data.candidates} open vulnerabilit{data.candidates === 1 ? "y" : "ies"} currently qualify</span>
+      </div>
+    </div>
+  );
+}
+
+function RemediationBlock({ row, onQueued }: { row: any; onQueued: () => void }) {
+  const { can } = useApp();
+  const { data: update } = useData<any>(`vulnerabilities/${row.id}/remediation`, { mode: "update" }, [row.remediation?.commandId]);
+  const { data: uninstall } = useData<any>(`vulnerabilities/${row.id}/remediation`, { mode: "uninstall" }, [row.remediation?.commandId]);
+  const { run, busy } = useAction();
+  const go = async (mode: string, description: string) => {
+    if (!window.confirm(`${description} on ${row.hostname}?`)) return;
+    if (await run(() => api(`vulnerabilities/${row.id}/remediate`, { body: { mode } }), "Queued; the device acts on it at its next check-in")) onQueued();
+  };
+  const last = row.remediation;
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div className="evidence-title">Silent remediation</div>
+      {last && <div className="small">Last: <Pill value={last.status} /> {displayValue(last.description)}{last.automatic ? " (automatic)" : ""}{last.error ? ` · ${last.error}` : ""}</div>}
+      {update && !update.available && <div className="small muted">{displayValue(update.reason)}</div>}
+      <div className="row" style={{ marginTop: 6 }}>
+        {update?.available && can("scripts") && <button disabled={busy} onClick={() => go("update", update.description)}>Update silently</button>}
+        {uninstall?.available && can("destructive") && <button className="danger" disabled={busy} onClick={() => go("uninstall", uninstall.description)}>Uninstall</button>}
+      </div>
+    </div>
   );
 }
 
@@ -117,6 +166,7 @@ function CveModal({ cve, onClose }: { cve: string; onClose: (changed: boolean) =
               <div><div className="evidence-title">Evidence</div><VulnEvidence evidence={d.evidence} installed={d.installedVersion} /></div>
               <div><div className="evidence-title">Fix</div><FixBlock fix={d.fix} deviceId={d.deviceId} status={d.status} onQueued={reload} />
                 <div className="small muted" style={{ marginTop: 8 }}>{displayValue(d.recommendation)}</div>
+                {d.status !== "fixed" && <RemediationBlock row={d} onQueued={reload} />}
                 {d.reasons?.length > 0 && <div className="small" style={{ marginTop: 8 }}>Risk {displayValue(d.riskScore)}: {displayValue(d.reasons.join(" · "))}</div>}</div>
             </div>
           </div>); })()}

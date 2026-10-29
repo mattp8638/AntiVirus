@@ -53,6 +53,8 @@ class Settings:
     feed_token: str = field(default_factory=lambda: os.getenv("FENRIR_FEED_TOKEN", ""))
     feed_sync_enabled: bool = field(default_factory=lambda: _bool("FENRIR_FEED_SYNC", False))
 
+    # Have I Been Pwned subscription key for dark-web credential exposure monitoring (darkweb.py).
+    hibp_api_key: str = field(default_factory=lambda: os.getenv("FENRIR_HIBP_API_KEY", ""))
     # External DNS blocklists (HaGeZi and others; see blocklists.py), refreshed by the hourly maintenance loop.
     dns_blocklists_enabled: bool = field(default_factory=lambda: _bool("FENRIR_DNS_BLOCKLISTS", True))
     dns_upstream: str = field(default_factory=lambda: os.getenv("FENRIR_DNS_UPSTREAM", "https://cloudflare-dns.com/dns-query"))

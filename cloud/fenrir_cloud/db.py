@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 33
+LATEST_MIGRATION = 34
 
 def init_engine(url: str) -> Engine:
     global _engine, _session_factory
@@ -305,6 +305,13 @@ def migrate(bind: Engine) -> list[int]:
                 EdrExclusion.__table__.create(conn, checkfirst=True)
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (33)"))
                 applied.append(33)
+            if 34 not in versions:
+                from .models import BreachExposure, DataDiscoveryScan
+                DataDiscoveryScan.__table__.create(conn, checkfirst=True)
+                BreachExposure.__table__.create(conn, checkfirst=True)
+                ensure_columns(Base, conn)  # vulnerabilities.remediation, devices.exposure_flags
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (34)"))
+                applied.append(34)
             conn.commit()
         except Exception:
             conn.rollback()
