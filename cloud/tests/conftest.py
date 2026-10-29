@@ -10,6 +10,22 @@ from fenrir_cloud.main import create_app
 ADMIN_PASSWORD = "correct-horse-battery-staple"
 
 
+def pytest_collection_modifyitems(config, items):
+    """FENRIR_TEST_SHARD="2/4" runs every fourth test starting with the second, so CI can split the slow PostgreSQL
+    run (each test builds and drops the whole schema) across parallel jobs. Round-robin keeps the shards even."""
+    shard = os.getenv("FENRIR_TEST_SHARD", "")
+    if not shard:
+        return
+    index, total = (int(part) for part in shard.split("/"))
+    if not 1 <= index <= total:
+        raise ValueError(f"FENRIR_TEST_SHARD must be N/M with 1 <= N <= M, not {shard}")
+    keep = [item for position, item in enumerate(items) if position % total == index - 1]
+    dropped = [item for item in items if item not in keep]
+    if dropped:
+        config.hook.pytest_deselected(items=dropped)
+        items[:] = keep
+
+
 @pytest.fixture()
 def client():
     settings = dataclasses.replace(Settings(), database_url=os.getenv("FENRIR_TEST_DATABASE_URL", "sqlite://"), bootstrap_admin_password=ADMIN_PASSWORD,

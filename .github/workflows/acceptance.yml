@@ -1,0 +1,125 @@
+name: Acceptance on real agents
+
+# Runs the real agents on GitHub's Windows Server and Ubuntu machines against a Fenrir server started in the same job,
+# and checks real outcomes with scripts/acceptance/fenrir_acceptance.py: check-ins, policy, inventory, a script's
+# output, EICAR detection and, on Windows, a temporary admin account created and removed. The report is attached to
+# the run and shown in its summary. Network isolation is only exercised as a dry run (it would cut the runner off).
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: ["main"]
+
+env:
+  FENRIR_ADMIN_EMAIL: admin@fenrir.local
+  FENRIR_ADMIN_PASSWORD: acceptance-run-only-password
+  FENRIR_SECRET_KEY: acceptance-run-only-secret
+  FENRIR_PUBLIC_URL: http://127.0.0.1:8080
+  FENRIR_DNS_BLOCKLISTS: "false"
+  FENRIR_VULN_INTEL: "false"
+
+jobs:
+  linux:
+    name: Linux agent on Ubuntu
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: agent/linux/go.sum
+      - name: Install the server and build the agent
+        run: |
+          pip install -r cloud/requirements.txt
+          go -C agent/linux build -o "$RUNNER_TEMP/fenrir-agent" ./cmd/fenrir-agent
+      - name: Start Fenrir
+        working-directory: cloud
+        run: |
+          export FENRIR_DATABASE_URL="sqlite:///$RUNNER_TEMP/fenrir.db" FENRIR_ARTIFACT_DIR="$RUNNER_TEMP/artifacts"
+          nohup python -m uvicorn --factory fenrir_cloud.main:create_app --host 127.0.0.1 --port 8080 > "$RUNNER_TEMP/server.log" 2>&1 &
+      - name: Enrol the agent as root
+        run: |
+          eval "$(python scripts/acceptance/bootstrap.py --server "$FENRIR_PUBLIC_URL" --email "$FENRIR_ADMIN_EMAIL" --password "$FENRIR_ADMIN_PASSWORD" | sed 's/^/export /')"
+          sudo mkdir -p /var/lib/fenrir
+          sudo env FENRIR_SERVER="$FENRIR_PUBLIC_URL" FENRIR_ENROLLMENT_TOKEN="$TOKEN" \
+            nohup "$RUNNER_TEMP/fenrir-agent" --dry-run-isolation > "$RUNNER_TEMP/agent.log" 2>&1 &
+      - name: Run the acceptance checks
+        run: |
+          python scripts/acceptance/fenrir_acceptance.py --server "$FENRIR_PUBLIC_URL" --email "$FENRIR_ADMIN_EMAIL" \
+            --password "$FENRIR_ADMIN_PASSWORD" --device "$(hostname)" --disruptive --timeout 180 --out acceptance-linux
+      - name: Report
+        if: always()
+        run: |
+          cat acceptance-linux/report.md >> "$GITHUB_STEP_SUMMARY" || echo "No report was written." >> "$GITHUB_STEP_SUMMARY"
+          cp "$RUNNER_TEMP/server.log" "$RUNNER_TEMP/agent.log" acceptance-linux/ 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: acceptance-linux
+          path: acceptance-linux
+
+  windows:
+    name: Windows agent service on Windows Server
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build the agent (MSVC)
+        shell: pwsh
+        run: |
+          cmake -B build -S agent/windows/service -DANTIVIRUS_REQUIRE_MINIFILTER_PAYLOAD=OFF
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build --config Release --target antivirus-setup
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Start Fenrir
+        shell: pwsh
+        run: |
+          pip install -r cloud/requirements.txt
+          $temp = $env:RUNNER_TEMP -replace '\\', '/'
+          $env:FENRIR_DATABASE_URL = "sqlite:///$temp/fenrir.db"
+          $env:FENRIR_ARTIFACT_DIR = "$temp/artifacts"
+          Start-Process -FilePath python -WorkingDirectory cloud -NoNewWindow `
+            -ArgumentList '-m', 'uvicorn', '--factory', 'fenrir_cloud.main:create_app', '--host', '127.0.0.1', '--port', '8080' `
+            -RedirectStandardOutput "$env:RUNNER_TEMP\server.log" -RedirectStandardError "$env:RUNNER_TEMP\server.err.log"
+      - name: Install and enrol the agent service
+        shell: pwsh
+        run: |
+          $boot = python scripts/acceptance/bootstrap.py --server $env:FENRIR_PUBLIC_URL --email $env:FENRIR_ADMIN_EMAIL --password $env:FENRIR_ADMIN_PASSWORD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $token = (($boot | Where-Object { $_ -like 'TOKEN=*' }) -replace '^TOKEN=', '').Trim()
+          # Defender would take the EICAR file first; the check is whether Fenrir catches it.
+          Add-MpPreference -ExclusionPath 'C:\ProgramData\FenrirAcceptance' -ErrorAction SilentlyContinue
+          & agent/windows/out/dev/fenrir-agent-service.exe --install --server $env:FENRIR_PUBLIC_URL --enroll-token $token
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Start-Service FenrirAgent -ErrorAction SilentlyContinue
+          Get-Service FenrirAgent | Format-List Name, Status, StartType
+      - name: Run the acceptance checks
+        shell: pwsh
+        run: |
+          python scripts/acceptance/fenrir_acceptance.py --server $env:FENRIR_PUBLIC_URL --email $env:FENRIR_ADMIN_EMAIL `
+            --password $env:FENRIR_ADMIN_PASSWORD --device $env:COMPUTERNAME --scenario checks_in,policy,inventory,script,eicar,pam `
+            --timeout 240 --out acceptance-windows
+          exit $LASTEXITCODE
+      - name: Report and diagnostics
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path acceptance-windows | Out-Null
+          if (Test-Path acceptance-windows/report.md) { Get-Content acceptance-windows/report.md | Add-Content $env:GITHUB_STEP_SUMMARY }
+          else { 'No report was written.' | Add-Content $env:GITHUB_STEP_SUMMARY }
+          Copy-Item "$env:RUNNER_TEMP\server*.log" acceptance-windows/ -ErrorAction SilentlyContinue
+          & powershell.exe -NoProfile -File agent/windows/installer/Get-FenrirAgentDiagnostics.ps1 *> acceptance-windows/agent-diagnostics.txt
+          Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'FenrirAgent' } -MaxEvents 200 -ErrorAction SilentlyContinue |
+            Format-List TimeCreated, Id, LevelDisplayName, Message | Out-File acceptance-windows/agent-events.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: acceptance-windows
+          path: acceptance-windows

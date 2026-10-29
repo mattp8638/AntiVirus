@@ -295,7 +295,7 @@ export default function DeviceDetail() {
         </div>
       )}
       {sub === "Vulnerabilities" && <DeviceVulns device={d} vulnerabilities={data.vulnerabilities} risk={data.risk} scans={data.vulnScans} onChanged={reload} />}
-      {sub === "Local admin" && <LocalAdmin deviceId={d.id} />}
+      {sub === "Local admin" && <><TemporaryAdmin device={d} /><LocalAdmin deviceId={d.id} /></>}
       {sub === "Patches" && <PatchesTab device={d} />}
       {sub === "Installed" && <SoftwareList rows={data.software} />}
       {sub === "Scripts & jobs" && <JobsTab deviceId={d.id} onOpen={setJobId} onRun={can("configure") ? () => setScriptPicker(true) : undefined} />}
@@ -588,6 +588,46 @@ function ScriptPicker({ device, onClose, onStarted }: { device: any; onClose: ()
 
 
 // LAPS-style local admin passwords: history, reveal (asks to re-enter your password, audited) and rotate now.
+// A technician gives the person signed in at this PC a temporary administrator account (PAM), without them asking first.
+function TemporaryAdmin({ device }: { device: any }) {
+  const { can } = useApp();
+  const { data, reload } = useListData<any>("elevation-requests", { device_id: device.id }, [device.id]);
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ reason: "", minutes: 30 });
+  const { run, busy } = useAction();
+  const user = device.metrics?.loggedOnUser;
+  const grant = async () => {
+    if (await run(() => api("elevation-requests", { body: { deviceId: device.id, reason: form.reason.trim(), minutes: form.minutes } }),
+                  "Granted: the temporary account is created at the device's next check-in and shows in the user's agent window")) {
+      setOpen(false); setForm({ reason: "", minutes: 30 }); reload();
+    }
+  };
+  const recent = (data ?? []).slice(0, 5);
+  return (
+    <div className="card" style={{ marginBottom: 14 }}>
+      <div className="row"><h3 style={{ margin: 0, flex: 1 }}>Temporary admin access</h3>
+        <Link className="small" to="/admin-requests">All admin requests →</Link></div>
+      <p className="small muted">Creates a temporary local administrator account for the signed-in user, removed automatically when the time
+        is up or they are done. Every step is in the audit log against this device and the user.</p>
+      {can("configure") && can("approve") && (user
+        ? <button className="primary" disabled={busy} onClick={() => setOpen(true)}>Give {user} admin access…</button>
+        : <span className="small muted">Nobody is signed in at this device right now.</span>)}
+      {recent.length > 0 && <Table rows={recent} columns={[
+        { key: "user", label: "User" }, { key: "status", label: "Status", render: (r) => <Pill value={r.status} /> },
+        { key: "account", label: "Temporary admin", render: (r) => <span className="mono small">{r.account || "—"}</span> },
+        { key: "createdAt", label: "When", render: (r) => fmtTime(r.createdAt) }]} />}
+      {open && <Modal title={`Admin access for ${user}`} onClose={() => setOpen(false)}
+                      footer={<><button onClick={() => setOpen(false)}>Cancel</button>
+                        <button className="primary" disabled={busy || form.reason.trim().length < 4} onClick={grant}>Grant</button></>}>
+        <label className="field">Why (kept in the audit log)<input autoFocus value={form.reason} placeholder="e.g. Install the accounts package update"
+                                                                  onChange={(e) => setForm({ ...form, reason: e.target.value })} /></label>
+        <label className="field">For<select value={form.minutes} onChange={(e) => setForm({ ...form, minutes: Number(e.target.value) })}>
+          {[15, 30, 60, 120, 240, 480].map((m) => <option key={m} value={m}>{m < 60 ? `${m} minutes` : `${m / 60} hour${m > 60 ? "s" : ""}`}</option>)}</select></label>
+      </Modal>}
+    </div>
+  );
+}
+
 function LocalAdmin({ deviceId }: { deviceId: string }) {
   const { can } = useApp();
   const { data, error, reload } = useData<any>(`devices/${deviceId}/local-admin`);

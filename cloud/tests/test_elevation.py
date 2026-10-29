@@ -103,3 +103,22 @@ def test_temporary_admin_account_lifecycle_is_audited_against_device_and_user(cl
     other = enroll(client, admin, tenant, hostname="OTHER-PC", serial="ELV-2")
     assert client.post(f"/api/v1/devices/{other['deviceId']}/elevation-requests/{request['id']}/events", headers=other["headers"],
                        json={"type": "ended"}).status_code == 404
+
+
+def test_technician_grants_the_signed_in_user_temporary_admin(client, admin, tenant, device):
+    from fenrir_cloud import db as database
+    from fenrir_cloud.models import Device
+
+    base = "/api/console/elevation-requests"
+    assert client.post(base, headers=admin, json={"deviceId": device["deviceId"], "reason": "Install the printer driver"}).status_code == 422
+    with database.session_factory()() as db:  # what the agent reports at check-in
+        db.get(Device, device["deviceId"]).metrics = {"loggedOnUser": "PC1\\jo", "loggedOnUserSid": SID}
+        db.commit()
+    assert client.post(base, headers=admin, json={"deviceId": device["deviceId"], "reason": ""}).status_code == 422  # say why
+    granted = client.post(base, headers=admin, json={"deviceId": device["deviceId"], "reason": "Install the printer driver", "minutes": 15}).json()
+    assert granted["status"] == "approved" and granted["user"] == "PC1\\jo" and granted["userSid"] == SID and granted["minutes"] == 15
+    grant = next(c for c in _pending_commands(client, device) if c["type"] == "elevation.grant")
+    assert json.loads(grant["payloadJson"])["requestId"] == granted["id"]
+    trail = [e for e in client.get("/api/console/audit", headers=admin).json() if e["action"].startswith("elevation.")]
+    assert [e["action"] for e in reversed(trail)] == ["elevation.requested", "elevation.approved"]
+    assert all(e["actor"] == "admin@fenrir.local" for e in trail)

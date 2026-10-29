@@ -169,6 +169,46 @@ def list_requests(status: str = Query(""), tenant_id: str = Query(""), device_id
     return [_view(r, devices.get(r.device_id)) for r in rows]
 
 
+@console.post("")
+def grant_directly(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """A technician gives a user temporary admin rights on a device without a request from the agent window (for
+    example while on the phone with them). Same temporary account, timeline and audit trail as an approved request.
+    Without ``userSid``, the user signed in at the device (from its last check-in) is used."""
+    principal.require("configure")
+    principal.require("approve")
+    device = db.get(Device, str(body.get("deviceId") or ""))
+    if device is None or device.tenant_id not in principal.tenant_ids:
+        raise HTTPException(404, "Device not found")
+    if (device.platform or "windows").lower() != "windows":
+        raise HTTPException(422, "Temporary admin accounts are available on Windows")
+    metrics = device.metrics or {}
+    user = str(body.get("user") or metrics.get("loggedOnUser") or "").strip()[:200]
+    sid = str(body.get("userSid") or (metrics.get("loggedOnUserSid") if user == metrics.get("loggedOnUser") else "") or "")
+    if not user or not _SID.fullmatch(sid):
+        raise HTTPException(422, "Nobody is signed in at this device; give the user's name and SID")
+    reason = str(body.get("reason") or "").strip()[:1000]
+    if len(reason) < 4:
+        raise HTTPException(422, "Say why admin access is needed (it goes in the audit log)")
+    try:
+        minutes = max(5, min(480, int(body.get("minutes") or 30)))
+    except (TypeError, ValueError):
+        raise HTTPException(422, "minutes must be a number") from None
+    row = ElevationRequest(tenant_id=device.tenant_id, device_id=device.id, user=user, user_sid=sid, reason=reason,
+                           minutes=minutes, kind="session")
+    db.add(row)
+    db.flush()
+    _event(row, "requested", principal.actor, reason=reason, note="Granted by a technician")
+    _record(db, principal.actor, "elevation.requested", row, device, mode="technician", reason=reason)
+    try:
+        _grant(db, device, row, principal.actor)
+    except services.CommandError as exc:
+        raise HTTPException(409, str(exc)) from None
+    _event(row, "approved", principal.actor, minutes=minutes)
+    _record(db, principal.actor, "elevation.approved", row, device, minutes=minutes)
+    db.commit()
+    return _view(row, device)
+
+
 def _owned(db: Session, principal: Principal, request_id: str) -> tuple[ElevationRequest, Device]:
     row = db.get(ElevationRequest, request_id)
     if row is None or row.tenant_id not in principal.tenant_ids:
