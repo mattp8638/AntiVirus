@@ -1,5 +1,5 @@
 import { displayValue } from "../../components/DisplayValue";
-import { DocumentHistory, DocumentTemplates } from "../Documentation";
+import { AutoDocumentation, DocumentHistory, DocumentTemplates } from "../Documentation";
 import { useState } from "react";
 import { api, getToken, money } from "../../api";
 import { useApp } from "../../app-context";
@@ -118,6 +118,7 @@ export function Knowledge() {
     <>
       <PageHead title="Knowledge base" subtitle="Runbooks for the team and how-to articles for customers. Public articles show in the client portal."
                 actions={can("crm") && <button className="primary" onClick={() => setEditing({ title: "", body: "", category: "General", public: false })}>New article</button>} />
+      <AutoDocumentation />
       {can("crm") && <DocumentTemplates onSelect={setEditing} />}
       <input placeholder="Search articles" value={q} onChange={(e) => setQ(e.target.value)} style={{ minWidth: 280, marginBottom: 12 }} />
       <div className="card">

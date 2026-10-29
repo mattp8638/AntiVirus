@@ -2,7 +2,7 @@ import { displayValue } from "../components/DisplayValue";
 import { useState } from "react";
 import { api, money } from "../api";
 import { useApp } from "../app-context";
-import { Modal, PageHead, Pill, Stat, Table, Tabs, TenantSelect, useAction, useListData } from "../components/ui";
+import { Modal, PageHead, Pill, Stat, Table, Tabs, TenantSelect, useAction, useData, useListData } from "../components/ui";
 
 export default function Billing() {
   const { can } = useApp();
@@ -29,8 +29,8 @@ export default function Billing() {
         <Stat label="Outstanding" value={money(outstanding)} accent={outstanding ? "amber" : undefined} />
       </div>
       <Renewals />
-      <div style={{ marginTop: 16 }}><Tabs tabs={["Agreements", "Invoices"]} active={tab === "Contracts" ? "Agreements" : tab} onChange={(t) => setTab(t === "Agreements" ? "Contracts" : t)} /></div>
-      {tab === "Contracts" ? (
+      <div style={{ marginTop: 16 }}><Tabs tabs={["Agreements", "Invoices", ...(can("billing") ? ["Reconciliation", "Accounting"] : [])]} active={tab === "Contracts" ? "Agreements" : tab} onChange={(t) => setTab(t === "Agreements" ? "Contracts" : t)} /></div>
+      {tab === "Reconciliation" ? <Reconciliation period={period} /> : tab === "Accounting" ? <Accounting onSynced={reloadInvoices} /> : tab === "Contracts" ? (
         <div className="card">
           <Table rows={contracts} empty="No contracts. Converting a CRM lead creates one."
                  columns={[{ key: "account", label: "Company" }, { key: "name", label: "Agreement", render: (c) => <><b>{displayValue(c.name)}</b><div className="small muted">{displayValue(c.agreementType || "Managed Services")} · {displayValue(c.billingCycle || "Monthly")}</div></> }, { key: "plan", label: "Plan" },
@@ -46,7 +46,8 @@ export default function Billing() {
           <Table rows={invoices} onRow={setInvoice} empty="No invoices yet."
                  columns={[{ key: "number", label: "Invoice" }, { key: "account", label: "Account" }, { key: "period", label: "Period" },
                            { key: "total", label: "Total", render: (i) => money(i.total, i.currency) }, { key: "dueDate", label: "Due" },
-                           { key: "status", label: "Status", render: (i) => <Pill value={i.status} /> }]} />
+                           { key: "status", label: "Status", render: (i) => <Pill value={i.status} /> },
+                           { key: "externalStatus", label: "Xero", render: (i) => i.externalError ? <Pill value="sync failed" tone="bad" /> : i.externalId ? <Pill value={(i.externalStatus || "pushed").toLowerCase()} tone="blue" /> : <span className="muted">-</span> }]} />
         </div>
       )}
       {creating && <NewContract onClose={() => { setCreating(false); reload(); }} />}
@@ -131,6 +132,68 @@ function Renewals() {
       <Table rows={data} columns={[{ key: "account", label: "Company" }, { key: "name", label: "Agreement" }, { key: "endDate", label: "Ends" },
         { key: "daysLeft", label: "Days left", render: (c) => <Pill value={c.daysLeft < 0 ? "ended" : `${c.daysLeft} days`} tone={c.daysLeft < 30 ? "bad" : "warn"} /> },
         { key: "monthlyValue", label: "Monthly fee", render: (c) => money(c.monthlyValue, c.currency) }]} />
+    </div>
+  );
+}
+
+function Reconciliation({ period }: { period: string }) {
+  const { data, error } = useListData<any>("billing/reconciliation", { period });
+  const gap = data?.reduce((n, r) => n + r.revenueGap, 0) ?? 0;
+  return (
+    <>
+      <p className="small muted">What each agreement billed for {period} against what is actually managed now: live device counts, auto-counted additions and Microsoft 365 licences assigned in the customer's tenant that no agreement line covers.</p>
+      {error && <div className="error">{error}</div>}
+      <div className="grid k3">
+        <Stat label="Agreements with drift" value={data?.filter((r) => r.drift).length ?? 0} accent={data?.some((r) => r.drift) ? "amber" : undefined} />
+        <Stat label="Unbilled per month" value={money(gap)} accent={gap > 0 ? "amber" : undefined} hint="managed but not on the invoice" />
+        <Stat label="Agreements checked" value={data?.length ?? 0} />
+      </div>
+      {data?.map((r) => (
+        <div className="card" key={r.contractId}>
+          <h3>{displayValue(r.customer)} · {displayValue(r.contract)} {r.drift ? <Pill value="drift" tone="warn" /> : <Pill value="matches" tone="good" />}
+            <span className="small muted"> {r.invoice ? `invoice ${r.invoice}` : "not invoiced for this period"}</span></h3>
+          <Table rows={r.items.map((i: any, n: number) => ({ ...i, id: n }))}
+                 columns={[{ key: "item", label: "Item", render: (i) => <>{displayValue(i.item)}{i.autoCount && <div className="small muted">counted from {displayValue(i.autoCount)}</div>}</> },
+                           { key: "billed", label: "Billed", className: "right" }, { key: "actual", label: "Actual", className: "right" },
+                           { key: "difference", label: "Difference", className: "right", render: (i) => i.difference ? <b>{i.difference > 0 ? "+" : ""}{i.difference}</b> : "0" },
+                           { key: "revenueGap", label: "Gap", className: "right", render: (i) => money(i.revenueGap) }]} />
+          {r.unbilledM365.length > 0 && <p className="small">Microsoft 365 licences not on any agreement line: {r.unbilledM365.map((u: any) => `${u.sku} × ${u.assigned}`).join(", ")}</p>}
+        </div>
+      ))}
+    </>
+  );
+}
+
+function Accounting({ onSynced }: { onSynced: () => void }) {
+  const { data, error, reload } = useData<any>("billing/accounting");
+  const { run, busy } = useAction();
+  const [form, setForm] = useState({ clientId: "", clientSecret: "", accountCode: "200" });
+  const notice = new URLSearchParams(window.location.search).get("xero");
+  const connect = async () => {
+    const r = await run(() => api<any>("billing/accounting", { method: "PUT", body: { ...form, clientSecret: form.clientSecret || undefined } }));
+    if (r?.authorizeUrl) window.location.assign(r.authorizeUrl);
+  };
+  const push = async () => { const r = await run(() => api<any[]>("billing/accounting/push", { body: {} })); if (r) { reload(); onSynced(); } };
+  const pull = async () => { const r = await run(() => api<any>("billing/accounting/pull", { method: "POST" }), "Statuses refreshed from Xero"); if (r) { reload(); onSynced(); } };
+  return (
+    <div className="card">
+      <h3>Xero</h3>
+      {notice && <p className={notice === "connected" ? "small" : "error"}>{notice === "connected" ? "Xero connected." : "Xero did not complete the connection. Try again."}</p>}
+      {error && <div className="error">{error}</div>}
+      {data ? <>
+        <p>Status <Pill value={data.status} tone={data.status === "connected" ? "good" : "warn"} /> {data.organisation && <>· {displayValue(data.organisation)}</>}
+          {data.lastSyncAt && <span className="small muted"> · last sync {new Date(data.lastSyncAt).toLocaleString()}</span>}</p>
+        {data.lastError && <p className="error small">{displayValue(data.lastError)}</p>}
+        <p className="small muted">Sent invoices are pushed to Xero as drafts with the same number and lines; payments recorded in Xero mark them Paid here (hourly).</p>
+        <div className="row"><button disabled={busy || data.status !== "connected"} onClick={push}>Push sent invoices</button>
+          <button className="ghost" disabled={busy || data.status !== "connected"} onClick={pull}>Refresh payment status</button></div>
+      </> : <p className="small muted">Create an app at developer.xero.com (Web app), set its redirect URI to <code>{"<your Fenrir URL>/api/billing/xero/callback"}</code>, then enter its credentials.</p>}
+      <div className="form-grid" style={{ marginTop: 12 }}>
+        <label className="field">Client ID<input value={form.clientId} placeholder={data?.clientId} onChange={(e) => setForm({ ...form, clientId: e.target.value })} /></label>
+        <label className="field">Client secret<input type="password" value={form.clientSecret} onChange={(e) => setForm({ ...form, clientSecret: e.target.value })} /></label>
+        <label className="field">Sales account code<input value={form.accountCode} onChange={(e) => setForm({ ...form, accountCode: e.target.value })} /></label>
+      </div>
+      <button className="primary" disabled={busy || (!data && (!form.clientId || !form.clientSecret))} onClick={connect}>{data ? "Reconnect to Xero" : "Connect to Xero"}</button>
     </div>
   );
 }

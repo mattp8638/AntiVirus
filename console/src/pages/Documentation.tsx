@@ -26,3 +26,22 @@ export function DocumentHistory({ articleId, onRestore }: { articleId: string; o
     }}>Restore</button> }
   ]} /></details>;
 }
+
+export function AutoDocumentation() {
+  const { can, tenantId } = useApp();
+  const { data, error, reload } = useListData<any>("documentation/auto", { tenant_id: tenantId });
+  const { run, busy } = useAction();
+  const toggle = async (row: any) => { if (await run(() => api("documentation/auto/" + row.tenantId, { method: "PUT", body: { enabled: !row.enabled } }))) reload(); };
+  const refresh = async (row: any) => { if (await run(() => api("documentation/auto/" + row.tenantId + "/refresh", { method: "POST" }), "Documentation refreshed")) reload(); };
+  return <details className="card" style={{ marginBottom: 12 }}><summary><b>Generated documentation</b> <span className="small muted">environment overview, network, Microsoft 365 and devices, written from live data and refreshed daily; notes below the notes line are kept</span></summary>
+    <ErrorNote error={error} />
+    <Table rows={data} empty="No customers." columns={[
+      { key: "tenantName", label: "Customer" },
+      { key: "enabled", label: "Daily refresh", render: r => r.enabled ? "on" : "off" },
+      { key: "lastRefreshAt", label: "Last refreshed", render: r => r.lastRefreshAt ? fmtTime(r.lastRefreshAt + "Z") : "never" },
+      { key: "pages", label: "Pages", render: r => r.pages.length },
+      { key: "actions", label: "", render: r => can("crm") && <span style={{ display: "inline-flex", gap: 6 }}>
+        <button className="ghost" disabled={busy} onClick={() => toggle(r)}>{r.enabled ? "Turn off" : "Turn on"}</button>
+        <button disabled={busy} onClick={() => refresh(r)}>Refresh now</button></span> },
+    ]} /></details>;
+}

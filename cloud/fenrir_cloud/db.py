@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 35
+LATEST_MIGRATION = 39
 
 def init_engine(url: str) -> Engine:
     global _engine, _session_factory
@@ -318,6 +318,28 @@ def migrate(bind: Engine) -> list[int]:
                 M365StandardRun.__table__.create(conn, checkfirst=True)
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (35)"))
                 applied.append(35)
+            if 36 not in versions:
+                from .models import NetworkNode, NetworkSubnet
+                NetworkSubnet.__table__.create(conn, checkfirst=True)
+                NetworkNode.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (36)"))
+                applied.append(36)
+            if 37 not in versions:
+                from .models import ConditionPackage, ConditionResult
+                ConditionPackage.__table__.create(conn, checkfirst=True)
+                ConditionResult.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (37)"))
+                applied.append(37)
+            if 38 not in versions:
+                ensure_columns(Base, conn)  # psa_tickets.ai_triage
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (38)"))
+                applied.append(38)
+            if 39 not in versions:
+                from .models import AccountingConnection
+                AccountingConnection.__table__.create(conn, checkfirst=True)
+                ensure_columns(Base, conn)  # billing_invoices.external_*
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (39)"))
+                applied.append(39)
             conn.commit()
         except Exception:
             conn.rollback()

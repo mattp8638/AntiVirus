@@ -4,10 +4,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from .. import audit, crypto, ratelimit, documentation
+from .. import audit, autodoc, crypto, ratelimit, documentation
 from ..db import get_db
 from ..deps import Principal, current_principal, scoped_tenant, require_reauth
-from ..models import Configuration, DocumentRevision, KbArticle, VaultCredential, new_id, utcnow
+from ..models import Configuration, DocumentRevision, KbArticle, Tenant, VaultCredential, new_id, utcnow
 from ..serialize import to_dict
 
 router = APIRouter(prefix="/api/console", tags=["Documentation and vault"])
@@ -45,6 +45,49 @@ def owned(db, model, ident, principal):
 def templates(principal: Principal = Depends(current_principal)):
     principal.require("read")
     return documentation.TEMPLATES
+
+def _customer(db, tenant_id, principal):
+    principal.check_tenant(tenant_id)
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(404, "Not found")
+    return tenant
+
+@router.get("/documentation/auto")
+def auto_documentation(tenant_id: str | None = None, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Per customer: whether generated documentation is on, when it last refreshed, and its pages."""
+    principal.require("read")
+    scope = scoped_tenant(principal, tenant_id)
+    articles = db.scalars(select(KbArticle).where(KbArticle.tenant_id.in_(scope), KbArticle.category == autodoc.CATEGORY)).all()
+    out = []
+    for tenant in db.scalars(select(Tenant).where(Tenant.id.in_(scope), Tenant.kind == "customer").order_by(Tenant.name)):
+        config = (tenant.settings or {}).get("autoDocumentation") or {}
+        out.append({"tenantId": tenant.id, "tenantName": tenant.name, "enabled": bool(config.get("enabled")),
+                    "lastRefreshAt": config.get("lastRefreshAt"),
+                    "pages": [{"id": a.id, "title": a.title, "updatedAt": a.updated_at.isoformat() + "Z" if a.updated_at else None}
+                              for a in articles if a.tenant_id == tenant.id]})
+    return out
+
+@router.put("/documentation/auto/{tenant_id}")
+def set_auto_documentation(tenant_id: str, body: dict, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("crm")
+    tenant = _customer(db, tenant_id, principal)
+    config = {**((tenant.settings or {}).get("autoDocumentation") or {}), "enabled": bool(body.get("enabled"))}
+    tenant.settings = {**(tenant.settings or {}), "autoDocumentation": config}
+    audit.record(db, principal.actor, "documentation.auto.configured", tenant.name, tenant.id, enabled=config["enabled"])
+    db.commit()
+    return config
+
+@router.post("/documentation/auto/{tenant_id}/refresh")
+def refresh_auto_documentation(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Regenerate the customer's documentation pages now. Engineer notes below the notes line are kept."""
+    principal.require("crm")
+    tenant = _customer(db, tenant_id, principal)
+    results = autodoc.refresh(db, tenant, principal.actor)
+    config = (tenant.settings or {}).get("autoDocumentation") or {}
+    tenant.settings = {**(tenant.settings or {}), "autoDocumentation": {**config, "lastRefreshAt": utcnow().isoformat()}}
+    db.commit()
+    return results
 
 @router.get("/documentation/{article_id}/revisions")
 def revisions(article_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):

@@ -18,6 +18,7 @@ from sqlalchemy import delete, func, select, text
 
 from . import __version__, crypto, audit, db as database, events, policy_schema, psa, ratelimit, remote, rmm, rmm_library
 from . import vulnmgmt  # noqa: F401 - registers its event handlers
+from . import ai_helpdesk  # noqa: F401 - registers its event handlers
 from .config import Settings, get_settings, set_settings
 from .detection import sync_builtin_rules
 from .models import Device, DnsQueryLog, Event, RateLimitBucket, Policy, RuleMatch, Tenant, User, utcnow
@@ -33,6 +34,7 @@ from .routers import approvals as approvals_router
 from .routers import exclusions as exclusions_router
 from .routers import exposure_intel as exposure_intel_router
 from .routers import m365_partner as m365_partner_router
+from .routers import condition_packages as condition_packages_router
 from .routers import admin, agent_api, artifacts as artifacts_router, business, crm as crm_router, fleet, portal, protection, service_mgmt, soc
 from .routers import psa as psa_router, remote as remote_router, rmm as rmm_router
 from .security import hash_password
@@ -68,6 +70,9 @@ def bootstrap(settings: Settings) -> None:
                 # Printed once so the first operator can sign in; change it straight away.
                 print(f"\n[fenrir] Created admin {settings.bootstrap_admin_email} with password: {password}\n", file=sys.stderr)
         rmm_library.seed(db)
+        from . import condition_remediation
+
+        condition_remediation.seed(db)
         from . import blocklists
 
         blocklists.ensure_builtin(db)
@@ -105,10 +110,12 @@ def _maintenance_loop(settings: Settings, stop: threading.Event) -> None:
 
                 result = sync_feed(db, settings.feed_url, settings.feed_token)
                 log.info("feed sync: %s", result)
-            from . import darkweb, m365_standards
+            from . import autodoc, billing_sync, darkweb, m365_standards
 
+            autodoc.tick(db)
             darkweb.tick(db)
             m365_standards.tick(db)
+            billing_sync.tick(db)
             if settings.dns_blocklists_enabled:
                 from . import blocklists
 
@@ -166,6 +173,16 @@ def _scheduler_loop(stop: threading.Event, interval: float = 30.0) -> None:
                     db.commit()
                     from . import network
                     network.tick(db)
+                    if passes % 10 == 0:  # every five minutes
+                        from . import condition_remediation
+
+                        condition_remediation.tick(db)
+                        db.commit()
+                    if passes % 120 == 0:
+                        from . import topology
+
+                        topology.tick(db)
+                        db.commit()
                     if passes % 20 == 0:  # every ten minutes
                         from . import remediation
 
@@ -294,11 +311,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.include_router(module.router)
     for module in (m365_admin_router, m365_router, network_router, grc_router, backup_router, soc_workflows, ad_router, grc_programme_router,
                    rollouts_router, apikeys_router, roles_router, approvals_router, exclusions_router,
-                   exposure_intel_router, m365_partner_router):
+                   exposure_intel_router, m365_partner_router, condition_packages_router):
         app.include_router(module.router)
     app.include_router(documentation_router.router)
     app.include_router(m365_router.oauth)
     app.include_router(psa_router.inbound)
+    app.include_router(business.xero_callback)
     app.include_router(backup_router.ingest)
     from .routers import local_admin as local_admin_router
     app.include_router(local_admin_router.agent)

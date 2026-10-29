@@ -440,7 +440,7 @@ Contributions should include reproduction steps and meaningful tests. Keep migra
 
 Before a public release, choose the licence, review dependency notices, publish the supported-platform matrix and measured limits, and complete relevant security/recovery/efficacy gates. Publish limitations alongside features; code presence or a mocked test is not observed parity with another product.
 
-- [Architecture](docs/ARCHITECTURE.md), [RMM/PSA](docs/RMM_PSA.md), [remote protocol](docs/REMOTE_PROTOCOL.md)
+- [Architecture](docs/ARCHITECTURE.md), [RMM/PSA](docs/RMM_PSA.md), [RMM/PSA intelligence](docs/RMM_PSA_INTELLIGENCE.md), [remote protocol](docs/REMOTE_PROTOCOL.md)
 - [Code signing](docs/CODE_SIGNING.md), [driver/prevention limits](docs/DRIVER_SIGNING.md), [updates](docs/AUTO_UPDATE.md)
 - [Parity decisions](docs/parity/decisions.md), [acceptance](docs/parity/acceptance.md), [release gates](docs/parity/release-gates.md)
 - [Console rendering](docs/CONSOLE_RENDER_SAFETY.md), [Ctrl+Alt+Del](docs/REMOTE_CTRL_ALT_DEL.md)
