@@ -242,3 +242,71 @@ def _update_ticket(db: Session, event) -> None:
     remaining = db.execute(select(Vulnerability).where(Vulnerability.ticket_id == ticket.id, Vulnerability.status != "fixed")).scalars().first()
     if remaining is None and not psa.is_closed(db, ticket):
         psa.set_status(db, ticket, "Resolved", "system:rescan")
+
+
+
+# ---------------------------------------------------------------------------
+# Automated "Cyber Heal" Zero-Interaction Remediation Engine
+# ---------------------------------------------------------------------------
+
+
+def cyber_heal_remediate(db: Session, vuln_id: int) -> dict:
+    """Automated "Cyber Heal" zero-interaction remediation.
+
+    Generates and queues silent force-patch / mitigation commands for identified
+    vulnerabilities. For applications, it utilizes package managers (e.g.
+    winget upgrade --id <AppID> --silent). For OS vulnerabilities, it executes
+    PowerShell hardening scripts.
+    """
+    vuln = db.get(Vulnerability, vuln_id)
+    if vuln is None or vuln.status not in UNRESOLVED:
+        return {"status": "skipped", "reason": "vulnerability not found or already fixed"}
+
+    device = db.get(Device, vuln.device_id)
+    if device is None:
+        return {"status": "failed", "reason": "device not found"}
+
+    fix = vuln.fix or {}
+    fix_type = fix.get("kind", "")
+    pkg_id = fix.get("ref") or vuln.package
+
+    if device.platform == "windows":
+        if fix_type == "winget" or pkg_id:
+            script_body = f"winget upgrade --id '{pkg_id}' --silent --accept-package-agreements --accept-source-agreements"
+            cmd_type = "script.run"
+            payload = {"language": "powershell", "body": script_body}
+        else:
+            script_body = """
+            Enable-BitLocker -MountPoint "C:" -EncryptionMethod XtsAes256 -UsedSpaceOnly -ErrorAction SilentlyContinue
+            Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled True
+            """
+            cmd_type = "script.run"
+            payload = {"language": "powershell", "body": script_body}
+    else:
+        script_body = f"apt-get update && apt-get install --only-upgrade -y '{pkg_id}' || yum update -y '{pkg_id}'"
+        cmd_type = "script.run"
+        payload = {"language": "bash", "body": script_body}
+
+    from .models import Command
+    cmd = Command(
+        tenant_id=vuln.tenant_id,
+        device_id=vuln.device_id,
+        type=cmd_type,
+        status="pending",
+        issued_by="system:cyber-heal",
+        payload=payload,
+        reason=f"Cyber Heal automated remediation for {vuln.vuln_id}",
+    )
+    db.add(cmd)
+    vuln.status = "patching"
+    vuln.status_changed_at = utcnow()
+    audit.record(
+        db,
+        "system:cyber-heal",
+        "vulnerability.cyber_heal_triggered",
+        str(vuln.id),
+        vuln.tenant_id,
+        cve=vuln.vuln_id,
+        package=vuln.package,
+    )
+    return {"status": "queued", "commandId": cmd.id, "vulnerabilityId": vuln.id}
