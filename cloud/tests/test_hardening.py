@@ -202,3 +202,15 @@ def test_upgrade_adds_columns_new_since_the_database_was_created(tmp_path):
         columns = [row[1] for row in conn.execute(text("PRAGMA table_info(devices)"))]
     assert "patch_window_run" in columns
     engine.dispose()
+
+
+def test_column_defaults_fit_their_columns():
+    """SQLite ignores VARCHAR lengths, PostgreSQL does not: a default longer than its column fails only in production."""
+    from sqlalchemy import String
+
+    from fenrir_cloud import models  # noqa: F401 - registers every table
+
+    too_long = [f"{table.name}.{column.name}" for table in database.Base.metadata.sorted_tables for column in table.columns
+                if isinstance(column.type, String) and column.type.length and column.default is not None
+                and isinstance(getattr(column.default, "arg", None), str) and len(column.default.arg) > column.type.length]
+    assert too_long == []

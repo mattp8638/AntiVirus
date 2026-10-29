@@ -2150,7 +2150,7 @@ class AccountingConnection(Base):
     account_code: Mapped[str] = mapped_column(String(20), default="200")
     external_tenant_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     external_name: Mapped[str] = mapped_column(String(200), default="")
-    status: Mapped[str] = mapped_column(String(20), default="awaiting_authorisation")
+    status: Mapped[str] = mapped_column(String(40), default="awaiting_authorisation")
     last_error: Mapped[str] = mapped_column(String(300), default="")
     pending_state: Mapped[str | None] = mapped_column(String(64), nullable=True)
     pending_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
