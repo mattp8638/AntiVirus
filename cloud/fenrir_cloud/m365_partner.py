@@ -35,6 +35,14 @@ from .models import M365Connection, M365Partner, Tenant, utcnow
 LOGIN = "https://login.microsoftonline.com"
 GRAPH = m365.GRAPH
 SCOPE = "https://graph.microsoft.com/.default offline_access"
+# The partner sign-in names the permissions it needs (dynamic consent), so a Global Administrator approves them for the
+# whole organisation on Microsoft's sign-in page ("Consent on behalf of your organization"): nothing has to be added
+# to the app registration first. Partner Center is a separate API, so it is approved in a second, separate sign-in.
+PARTNER_GRAPH_SCOPES = ("DelegatedAdminRelationship.ReadWrite.All", "Directory.Read.All", "Group.ReadWrite.All")
+SIGNIN_SCOPES = {
+    "graph": "openid profile offline_access " + " ".join(f"https://graph.microsoft.com/{p}" for p in PARTNER_GRAPH_SCOPES),
+    "partner-center": "openid profile offline_access https://api.partnercenter.microsoft.com/user_impersonation",
+}
 
 # Least-privilege role set for day-to-day MSP administration. Global Administrator is deliberately absent:
 # GDAP relationships containing it cannot auto-extend and should be the exception, not the default.
@@ -111,10 +119,14 @@ def create(db: Session, msp_tenant_id: str, directory_id: str, client_id: str, c
 # --------------------------------------------------------------------------- partner sign-in (device code)
 
 
-def start_signin(row: M365Partner) -> dict:
+def start_signin(row: M365Partner, purpose: str = "graph") -> dict:
+    """Device-code sign-in. ``graph`` signs in and asks for the partner Graph permissions; ``partner-center`` asks for
+    Partner Center access (needed to consent Fenrir's app in customer tenants)."""
+    if purpose not in SIGNIN_SCOPES:
+        raise PartnerError("Unknown sign-in purpose")
     with http_client() as client:
         response = client.post(f"{LOGIN}/{row.partner_directory_id}/oauth2/v2.0/devicecode",
-                               data={"client_id": row.client_id, "scope": SCOPE})
+                               data={"client_id": row.client_id, "scope": SIGNIN_SCOPES[purpose]})
     if response.status_code != 200:
         raise PartnerError("Microsoft did not issue a sign-in code: " + _error(response))
     data = response.json()
@@ -408,13 +420,16 @@ CUSTOMER_GRAPH_SCOPES = ("Directory.Read.All", "Organization.Read.All", "Domain.
                          "AuditLog.Read.All", "Reports.Read.All", "UserAuthenticationMethod.Read.All", "SecurityEvents.Read.All",
                          "Policy.Read.All", "Policy.ReadWrite.ConditionalAccess", "Application.Read.All",
                          "DeviceManagementConfiguration.ReadWrite.All", "DeviceManagementManagedDevices.Read.All")
-REQUIRED_PARTNER_SCOPES = ("DelegatedAdminRelationship.ReadWrite.All", "Directory.Read.All", "Group.ReadWrite.All")
+REQUIRED_PARTNER_SCOPES = PARTNER_GRAPH_SCOPES
 IMPORT_EVERY = timedelta(hours=6)
 
 
 def check(row: M365Partner) -> dict:
-    """Is this sign-in able to run GDAP? Tenant, partner registration, account type, Admin Agents, permissions."""
+    """Is this sign-in able to run GDAP? Permissions first (without Directory.Read.All Microsoft hides the partner type
+    and group membership, so those are only judged once it is granted), then tenant, account and Partner Center.
+    ``actions`` says which one-click approvals would fix what was found."""
     problems: list[str] = []
+    actions = {"approveGraph": False, "approvePartnerCenter": False}
     out: dict = {"partnerTenantId": row.partner_directory_id}
     with http_client() as client:
         token = access_token_for(row, client=client)
@@ -422,14 +437,21 @@ def check(row: M365Partner) -> dict:
         scope_claim = _claim(token, "scp")
         scopes = set(str(scope_claim or "").split())
         out["scopes"] = sorted(scopes)
+        missing = [p for p in REQUIRED_PARTNER_SCOPES if p not in scopes] if scope_claim is not None else []
+        readable = "Directory.Read.All" in scopes or scope_claim is None
+        if missing:
+            actions["approveGraph"] = True
+            problems.append("Microsoft has not granted Fenrir the partner permissions (" + ", ".join(missing) + "). Click "
+                            "\"Approve Microsoft Graph permissions\", sign in as a Global Administrator of the partner tenant and tick "
+                            "\"Consent on behalf of your organization\".")
         if out["tokenTenantId"] and str(out["tokenTenantId"]).lower() != row.partner_directory_id.lower():
             problems.append(f"The sign-in is for tenant {out['tokenTenantId']}, not the partner tenant {row.partner_directory_id}.")
         try:
             org = (_graph(client, token, "GET", "/organization?$select=id,displayName,partnerTenantType,verifiedDomains").get("value") or [{}])[0]
             out["organization"] = org.get("displayName") or ""
-            out["partnerTenantType"] = org.get("partnerTenantType")
+            out["partnerTenantType"] = org.get("partnerTenantType") or (None if readable else "not readable yet")
             out["domains"] = [d.get("name") for d in org.get("verifiedDomains") or []][:10]
-            if not org.get("partnerTenantType"):
+            if readable and not org.get("partnerTenantType"):
                 problems.append(f"{out['organization'] or 'This tenant'} is not registered as a Microsoft partner (CSP) tenant. Check that "
                                 "the partner tenant ID is your Partner Center tenant.")
         except PartnerError as exc:
@@ -441,26 +463,25 @@ def check(row: M365Partner) -> dict:
                 problems.append(f"{out['user']} is a guest in the partner tenant. Sign in with an account that belongs to the partner tenant.")
         except PartnerError as exc:
             problems.append(str(exc))
-        try:
-            groups = {g.get("displayName") for g in _list(client, token, "/me/memberOf?$select=displayName,id")}
-            out["adminAgent"] = "AdminAgents" in groups
-            if not out["adminAgent"]:
-                problems.append("The signed-in account is not in the Admin Agents group. Add it in Partner Center (Account settings > "
-                                "User management > Admin agent), wait a few minutes, then sign in again.")
-        except PartnerError as exc:
-            problems.append(str(exc))
-        missing = [p for p in REQUIRED_PARTNER_SCOPES if p not in scopes] if scope_claim is not None else []
-        if missing:
-            problems.append("The app is missing consented delegated permissions: " + ", ".join(missing) +
-                            ". Add them to the app registration, grant admin consent, then sign in again.")
+        if readable:
+            try:
+                groups = {g.get("displayName") for g in _list(client, token, "/me/memberOf?$select=displayName,id")}
+                out["adminAgent"] = "AdminAgents" in groups
+                if not out["adminAgent"]:
+                    problems.append("The signed-in account is not in the Admin Agents group. Add it in Partner Center (Account settings > "
+                                    "User management > the user > Admin agent), wait a few minutes, then sign in again.")
+            except PartnerError as exc:
+                problems.append(str(exc))
         try:
             access_token_for(row, client=client, scope=PARTNER_CENTER_SCOPE)
             out["partnerCenter"] = True
         except PartnerError as exc:
             out["partnerCenter"] = False
-            problems.append("Partner Center access failed, so Fenrir cannot consent its app in customer tenants: " + str(exc)[:200] +
-                            ". Add the 'Microsoft Partner Center' API permission user_impersonation to the app and grant consent.")
-    out["problems"] = problems
+            actions["approvePartnerCenter"] = True
+            problems.append("Partner Center access is not approved, so Fenrir cannot consent its app in customer tenants. Click "
+                            "\"Approve Partner Center access\" and sign in as a Global Administrator who is an Admin Agent "
+                            f"(Microsoft said: {str(exc).removeprefix('Microsoft refused a token: ')[:160]}).")
+    out["problems"], out["actions"] = problems, actions
     out["checkedAt"] = utcnow().isoformat() + "Z"
     row.settings = {**(row.settings or {}), "check": out}
     return out

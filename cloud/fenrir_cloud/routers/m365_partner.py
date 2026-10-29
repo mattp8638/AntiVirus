@@ -77,10 +77,15 @@ def delete_partner(request: Request, principal: Principal = Depends(current_prin
 
 
 @router.post("/partner/signin")
-def partner_signin(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    """Start a device-code sign-in as a partner admin. The device code itself stays on the server."""
+def partner_signin(body: dict = Body(default={}), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Start a device-code sign-in as a partner admin (purpose ``graph``, or ``partner-center`` to approve Partner Center
+    access). The device code itself stays on the server."""
     row = _partner(db, principal)
-    code = _provider(lambda: partner_mod.start_signin(row))
+    purpose = str(body.get("purpose") or "graph")
+    if purpose not in partner_mod.SIGNIN_SCOPES:
+        raise HTTPException(422, "purpose must be graph or partner-center")
+    code = _provider(lambda: partner_mod.start_signin(row, purpose))
+    code["purpose"] = purpose
     partner_mod._store_secrets(row, {**partner_mod._secrets(row), "pendingDeviceCode": code.pop("deviceCode")})
     db.commit()
     return code

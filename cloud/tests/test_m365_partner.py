@@ -39,6 +39,9 @@ class FakeMicrosoft:
         self.partner_tenant_type = "resellerPartnerDelegatedAdmin"
         self.user_type, self.member_of = "Member", ["AdminAgents"]
         self.consents = []
+        self.device_scopes = []
+        self.jwt_scopes = None  # set to issue JWT access tokens carrying this scp claim
+        self.partner_center_consented = True
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         url, method = request.url, request.method
@@ -46,7 +49,16 @@ class FakeMicrosoft:
             form = dict(x.split("=", 1) for x in request.content.decode().split("&"))
             directory = url.path.split("/")[1]
             if url.path.endswith("/devicecode"):
+                self.device_scopes.append(form.get("scope", "").replace("+", " ").replace("%3A", ":").replace("%2F", "/"))
                 return httpx.Response(200, json={"device_code": "DEVICE-SECRET", "user_code": "ABCD-EFGH", "expires_in": 900, "interval": 1})
+            if "partnercenter" in form.get("scope", "") and not self.partner_center_consented:
+                return httpx.Response(400, json={"error": "invalid_grant", "error_description": (
+                    "AADSTS65001: The user or administrator has not consented to use the application with ID '22222222'.")})
+            if self.jwt_scopes is not None and "graph.microsoft.com" in form.get("scope", "") and form["grant_type"] == "refresh_token":
+                import base64
+
+                claims = base64.urlsafe_b64encode(json.dumps({"tid": directory, "scp": self.jwt_scopes}).encode()).decode().rstrip("=")
+                return httpx.Response(200, json={"access_token": f"eyJhbGciOiJub25lIn0.{claims}.sig", "refresh_token": "rt-2"})
             self.secrets_sent += "client_secret" in form
             if self.public_client and "client_secret" in form:
                 return httpx.Response(401, json={"error": "invalid_client", "error_description": (
@@ -372,3 +384,27 @@ def test_auto_import_links_new_gdap_customers(client, admin, microsoft):
         assert db.query(M365Connection).filter_by(directory_id=OTHER_DIR).count() == 0  # no GDAP: never auto-invited
         m365_partner.tick(db)  # within the interval: nothing more
         assert db.query(M365Connection).count() == 1
+
+
+def test_unconsented_sign_in_points_to_one_click_approvals(client, admin, microsoft):
+    """Before admin consent the token has no partner permissions and Microsoft hides the partner type and group
+    membership: the check says to approve, and does not claim the tenant is not a partner."""
+    proof = connect_partner(client, admin)
+    assert all(s.startswith("openid profile offline_access https://graph.microsoft.com/DelegatedAdminRelationship.ReadWrite.All")
+               for s in microsoft.device_scopes)
+    microsoft.jwt_scopes = "User.Read"
+    microsoft.partner_tenant_type, microsoft.member_of = None, []  # hidden without Directory.Read.All
+    microsoft.partner_center_consented = False
+    check = client.get("/api/console/m365/partner/check", headers=admin).json()
+    assert check["actions"] == {"approveGraph": True, "approvePartnerCenter": True}
+    assert len(check["problems"]) == 2 and "Approve Microsoft Graph permissions" in check["problems"][0]
+    assert not any("not registered" in p or "Admin Agents" in p for p in check["problems"])
+
+    started = client.post("/api/console/m365/partner/signin", headers=proof, json={"purpose": "partner-center"}).json()
+    assert started["purpose"] == "partner-center" and "api.partnercenter.microsoft.com/user_impersonation" in microsoft.device_scopes[-1]
+    assert client.post("/api/console/m365/partner/signin/poll", headers=admin).json()["status"] == "ok"
+    microsoft.jwt_scopes = "DelegatedAdminRelationship.ReadWrite.All Directory.Read.All Group.ReadWrite.All User.Read"
+    microsoft.partner_tenant_type, microsoft.member_of = "resellerPartnerDelegatedAdmin", ["AdminAgents"]
+    microsoft.partner_center_consented = True
+    ready = client.get("/api/console/m365/partner/check", headers=admin).json()
+    assert ready["problems"] == [] and ready["actions"] == {"approveGraph": False, "approvePartnerCenter": False}
