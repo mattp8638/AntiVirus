@@ -96,3 +96,24 @@ func TestEnrollAndCommandProtocol(t *testing.T) {
 		t.Fatalf("reload: %v %s", err, b.client.DeviceID)
 	}
 }
+
+// The EICAR test file is detected out of the box, before any cloud bundle arrives. The string is assembled at run time
+// so this source file is not itself flagged by antivirus software.
+func TestScannerDetectsEicarWithoutABundle(t *testing.T) {
+	dir := t.TempDir()
+	eicar := "X5O!P%@AP[4\\PZX54(P^)7CC)7}$" + "EICAR-STANDARD-" + "ANTIVIRUS-TEST-FILE!$H+H*"
+	for name, suffix := range map[string]string{"plain.com": "", "echoed.txt": "\n", "windows.txt": "\r\n"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(eicar+suffix), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := NewScanner(filepath.Join(dir, "q"))
+	_, findings := s.ScanPaths([]string{dir}, nil, false, 0)
+	if len(findings) != 3 {
+		t.Fatalf("want 3 EICAR findings, got %+v", findings)
+	}
+	s.Load(&Bundle{SignatureVersion: "v2"}) // a bundle without it must not drop the test signature
+	if bad, family := s.Verdict("275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f"); !bad || family != "EICAR-Test-File" {
+		t.Fatalf("verdict after bundle load: %v %q", bad, family)
+	}
+}

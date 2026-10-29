@@ -2,6 +2,7 @@
 #include "CommandCancellation.h"
 
 #include <windows.h>
+#include <sddl.h>
 #include <tlhelp32.h>
 #include <wtsapi32.h>
 #include <userenv.h>
@@ -610,6 +611,18 @@ std::string CollectHealthMetricsJson() {
       account = std::wstring(domain) + L"\\" + account;
     }
     out << ",\"loggedOnUser\":" << Q(account);
+    // Its SID too, so a technician can grant this user temporary admin rights from the console.
+    BYTE sidBuffer[SECURITY_MAX_SID_SIZE]{};
+    DWORD sidSize = sizeof(sidBuffer);
+    wchar_t domainBuffer[256]{};
+    DWORD domainSize = static_cast<DWORD>(std::size(domainBuffer));
+    SID_NAME_USE use{};
+    LPWSTR sidText = nullptr;
+    if (LookupAccountNameW(nullptr, account.c_str(), sidBuffer, &sidSize, domainBuffer, &domainSize, &use) &&
+        ConvertSidToStringSidW(sidBuffer, &sidText) && sidText != nullptr) {
+      out << ",\"loggedOnUserSid\":" << Q(sidText);
+      LocalFree(sidText);
+    }
   }
   if (name) {
     WTSFreeMemory(name);
