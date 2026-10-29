@@ -78,21 +78,21 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build build --config Release --target antivirus-setup
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Start Fenrir
+      - name: Start Fenrir, install the agent service and run the acceptance checks
+        # One step: on Windows runners every process a step starts is ended with the step, so a server started in its
+        # own step is gone before the agent can enrol. The agent itself runs as a Windows service and is unaffected.
         shell: pwsh
         run: |
           pip install -r cloud/requirements.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $temp = $env:RUNNER_TEMP -replace '\\', '/'
           $env:FENRIR_DATABASE_URL = "sqlite:///$temp/fenrir.db"
           $env:FENRIR_ARTIFACT_DIR = "$temp/artifacts"
           Start-Process -FilePath python -WorkingDirectory cloud -NoNewWindow `
             -ArgumentList '-m', 'uvicorn', '--factory', 'fenrir_cloud.main:create_app', '--host', '127.0.0.1', '--port', '8080' `
             -RedirectStandardOutput "$env:RUNNER_TEMP\server.log" -RedirectStandardError "$env:RUNNER_TEMP\server.err.log"
-      - name: Install and enrol the agent service
-        shell: pwsh
-        run: |
           $boot = python scripts/acceptance/bootstrap.py --server $env:FENRIR_PUBLIC_URL --email $env:FENRIR_ADMIN_EMAIL --password $env:FENRIR_ADMIN_PASSWORD
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE -ne 0) { Get-Content "$env:RUNNER_TEMP\server.err.log" -Tail 40; exit $LASTEXITCODE }
           $token = (($boot | Where-Object { $_ -like 'TOKEN=*' }) -replace '^TOKEN=', '').Trim()
           # Defender would take the EICAR file first; the check is whether Fenrir catches it.
           Add-MpPreference -ExclusionPath 'C:\ProgramData\FenrirAcceptance' -ErrorAction SilentlyContinue
@@ -100,9 +100,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Start-Service FenrirAgent -ErrorAction SilentlyContinue
           Get-Service FenrirAgent | Format-List Name, Status, StartType
-      - name: Run the acceptance checks
-        shell: pwsh
-        run: |
           python scripts/acceptance/fenrir_acceptance.py --server $env:FENRIR_PUBLIC_URL --email $env:FENRIR_ADMIN_EMAIL `
             --password $env:FENRIR_ADMIN_PASSWORD --device $env:COMPUTERNAME --scenario checks_in,policy,inventory,script,eicar,pam `
             --timeout 240 --out acceptance-windows
@@ -116,8 +113,11 @@ jobs:
           else { 'No report was written.' | Add-Content $env:GITHUB_STEP_SUMMARY }
           Copy-Item "$env:RUNNER_TEMP\server*.log" acceptance-windows/ -ErrorAction SilentlyContinue
           & powershell.exe -NoProfile -File agent/windows/installer/Get-FenrirAgentDiagnostics.ps1 *> acceptance-windows/agent-diagnostics.txt
-          Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'FenrirAgent' } -MaxEvents 200 -ErrorAction SilentlyContinue |
-            Format-List TimeCreated, Id, LevelDisplayName, Message | Out-File acceptance-windows/agent-events.txt
+          try {
+            Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'FenrirAgent' } -MaxEvents 200 -ErrorAction Stop |
+              Format-List TimeCreated, Id, LevelDisplayName, Message | Out-File acceptance-windows/agent-events.txt
+          } catch { "No FenrirAgent events: $_" | Out-File acceptance-windows/agent-events.txt }
+          exit 0
       - uses: actions/upload-artifact@v4
         if: always()
         with:
