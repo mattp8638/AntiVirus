@@ -45,6 +45,7 @@ class FakeMicrosoft:
         self.customer_requires_mfa = False  # customer Conditional Access / security defaults
         self.honour_mfa_claims = True  # Microsoft prompts for MFA when the sign-in asks for it
         self.mfa_done = False
+        self.customer_trusts_partner_mfa = True  # the customer's cross-tenant access trusts the partner's MFA
         # Delegated permission grants in the partner tenant; the consent page created Fenrir's Graph grant.
         self.service_principals = {CLIENT_ID: "sp-fenrir", "fa3d9a0c-3fb0-42cc-9193-47c7ecd2edbd": "sp-partner-center",
                                    "00000003-0000-0000-c000-000000000000": "sp-graph"}
@@ -82,7 +83,7 @@ class FakeMicrosoft:
                 amr = ["pwd", "mfa"] if self.mfa_done else ["pwd"]
                 id_token = "e30." + base64.urlsafe_b64encode(json.dumps({"upn": "admin@palmertech.co.uk", "amr": amr}).encode()).decode().rstrip("=") + ".x"
                 return httpx.Response(200, json={"access_token": "partner-token", "refresh_token": "rt-1", "id_token": id_token})
-            if directory == CUSTOMER_DIR and self.customer_requires_mfa and not self.mfa_done:
+            if directory == CUSTOMER_DIR and self.customer_requires_mfa and not (self.mfa_done and self.customer_trusts_partner_mfa):
                 return httpx.Response(400, json={"error": "invalid_grant", "error_description": (
                     "AADSTS50076: Due to a configuration change made by your administrator, or because you moved to a new location, "
                     "you must use multi-factor authentication to access '00000003-0000-0000-c000-000000000000'.")})
@@ -475,4 +476,16 @@ def test_customer_mfa_requirement_is_met_by_an_mfa_partner_sign_in(client, admin
     client.post("/api/console/m365/partner/signin", headers=admin, json={})
     assert client.post("/api/console/m365/partner/signin/poll", headers=admin).json()["status"] == "ok"
     assert client.post("/api/console/m365/partner/import", headers=proof, json={"directoryIds": [CUSTOMER_DIR]}).json()[0]["status"] == "linked"
-    assert not client.get("/api/console/m365/partner/check", headers=admin).json()["actions"]["signInWithMfa"]
+    after = client.get("/api/console/m365/partner/check", headers=admin).json()
+    assert not after["actions"]["signInWithMfa"] and after["problems"] == [] and after["mfa"] is True
+    assert client.get("/api/console/m365/partner", headers=admin).json()["partner"]["signedInAs"] == "admin@palmertech.co.uk"
+
+
+def test_mfa_verified_sign_in_refused_by_customer_points_to_trust_settings(client, admin, microsoft):
+    microsoft.customer_requires_mfa, microsoft.customer_trusts_partner_mfa = True, False
+    proof = connect_partner(client, admin)
+    result = client.post("/api/console/m365/partner/import", headers=proof, json={"directoryIds": [CUSTOMER_DIR]}).json()[0]
+    assert result["status"] == "needs attention"
+    check = client.get("/api/console/m365/partner/check", headers=admin).json()
+    assert check["mfa"] is True and not check["actions"]["signInWithMfa"]
+    assert any("Acme Ltd still asks for MFA" in p and "Trust multifactor authentication" in p for p in check["problems"])

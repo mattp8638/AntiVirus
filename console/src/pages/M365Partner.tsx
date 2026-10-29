@@ -56,7 +56,7 @@ function Partner() {
       <div className="card" style={{ marginTop: 12 }}>
         <div className="row"><h3 style={{ margin: 0, flex: 1 }}>Partner tenant {displayValue(partner.partnerDirectoryId)}</h3>
           <Pill value={partner.status} tone={partner.status === "connected" ? "good" : "warn"} /></div>
-        <p className="small muted">{partner.signedInAs ? `Signed in as ${partner.signedInAs}` : "Not signed in"}{partner.refreshedAt ? ` · token refreshed ${ago(partner.refreshedAt)}` : ""}{partner.lastError ? ` · ${partner.lastError}` : ""}</p>
+        <p className="small muted">{partner.signedInAs ? `Signed in as ${partner.signedInAs}` : "Not signed in"}{partner.check?.mfa === true ? " · MFA verified" : partner.check?.mfa === false ? " · not MFA-verified" : ""}{partner.refreshedAt ? ` · token refreshed ${ago(partner.refreshedAt)}` : ""}{partner.lastError ? ` · ${partner.lastError}` : ""}</p>
         <div className="row">
           <button disabled={busy} onClick={() => signin()}>{partner.status === "connected" ? "Sign in again" : "Sign in as partner admin"}</button>
           <button className="ghost" disabled={busy || partner.status !== "connected"} onClick={async () => { if (await run(() => api("m365/partner/role-groups", { method: "POST" }), "Role groups ready")) reload(); }}>Create role groups</button>
