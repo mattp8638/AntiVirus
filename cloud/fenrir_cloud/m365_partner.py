@@ -4,8 +4,9 @@ How it works:
 
 1. The MSP registers an app in its **partner** tenant (multi-tenant, public client flows allowed, delegated
    Graph permissions ``DelegatedAdminRelationship.ReadWrite.All``, ``Directory.Read.All`` and
-   ``Group.ReadWrite.All``, plus whatever customer-side permissions administration needs) and enters its ID and
-   secret. A partner admin signs in once with a device code; Fenrir keeps the encrypted refresh token.
+   ``Group.ReadWrite.All``, plus whatever customer-side permissions administration needs) and enters its ID.
+   A partner admin signs in once with a device code; Fenrir keeps the encrypted refresh token. A client secret is
+   only needed if public client flows are off (a confidential client); with them on, Microsoft rejects a secret.
 2. **GDAP relationships** are created from Fenrir with a least-privilege role set (``RECOMMENDED_ROLES``), locked
    for approval, and the customer's Global Administrator approves them from the invitation link.
 3. **Role groups**: one partner security group per role ("Fenrir GDAP - <role>"), and once a relationship is active
@@ -122,18 +123,47 @@ def start_signin(row: M365Partner) -> dict:
             "expiresIn": int(data.get("expires_in") or 900), "interval": int(data.get("interval") or 5)}
 
 
+# Device-code sign-in is a public-client flow when the app allows public client flows (the documented setup): Microsoft
+# then binds the refresh token to a public client and rejects any client secret on it (AADSTS700025). With public
+# client flows turned off the app is a confidential client and the secret is required (AADSTS7000218).
+SECRET_REJECTED = "AADSTS700025"
+SECRET_REQUIRED = "AADSTS7000218"
+
+
+def _token_request(client: httpx.Client, row: M365Partner, directory_id: str, form: dict, secrets: dict) -> tuple[httpx.Response, str]:
+    """POST to the token endpoint as the client type that worked last (public unless known otherwise), switching once
+    if Microsoft says the app is the other type. Returns the response and the client type it was sent as."""
+    client_type = secrets.get("clientType") or "public"
+    secret = secrets.get("clientSecret") or ""
+    response = None
+    for _ in range(2):
+        data = {**form, "client_id": row.client_id}
+        if client_type == "confidential" and secret:
+            data["client_secret"] = secret
+        response = client.post(f"{LOGIN}/{directory_id}/oauth2/v2.0/token", data=data)
+        if response.status_code == 200:
+            break
+        if client_type == "confidential" and SECRET_REJECTED in response.text:
+            client_type = "public"
+        elif client_type == "public" and secret and SECRET_REQUIRED in response.text:
+            client_type = "confidential"
+        else:
+            break
+    return response, client_type
+
+
 def complete_signin(row: M365Partner, device_code: str) -> str:
     """Returns pending | ok; stores the refresh token on success."""
     secrets = _secrets(row)
     with http_client() as client:
-        response = client.post(f"{LOGIN}/{row.partner_directory_id}/oauth2/v2.0/token",
-                               data={"grant_type": "urn:ietf:params:oauth:grant-type:device_code", "client_id": row.client_id,
-                                     "client_secret": secrets.get("clientSecret", ""), "device_code": device_code})
+        response, client_type = _token_request(client, row, row.partner_directory_id,
+                                               {"grant_type": "urn:ietf:params:oauth:grant-type:device_code", "device_code": device_code},
+                                               secrets)
     if response.status_code == 200:
         data = response.json()
         if not data.get("refresh_token"):
             raise PartnerError("Microsoft returned no refresh token; the app needs the offline_access permission")
-        _store_secrets(row, {**secrets, "refreshToken": data["refresh_token"]})
+        _store_secrets(row, {**secrets, "refreshToken": data["refresh_token"], "clientType": client_type})
         row.status, row.last_error, row.refreshed_at = "connected", "", utcnow()
         row.signed_in_as = str(_claim(data.get("id_token") or data.get("access_token") or "", "upn") or "")[:320]
         return "ok"
@@ -165,21 +195,27 @@ def access_token_for(row: M365Partner, directory_id: str | None = None, client: 
         raise PartnerError("The partner connection has not been signed in")
     own = client is None
     client = client or http_client()
+    partner_itself = directory_id is None or directory_id == row.partner_directory_id
     try:
-        response = client.post(f"{LOGIN}/{directory_id or row.partner_directory_id}/oauth2/v2.0/token",
-                               data={"grant_type": "refresh_token", "client_id": row.client_id, "client_secret": secrets.get("clientSecret", ""),
-                                     "refresh_token": secrets["refreshToken"], "scope": SCOPE})
+        response, client_type = _token_request(client, row, directory_id or row.partner_directory_id,
+                                               {"grant_type": "refresh_token", "refresh_token": secrets["refreshToken"], "scope": SCOPE},
+                                               secrets)
     finally:
         if own:
             client.close()
     if response.status_code != 200:
         message = _error(response)
-        if directory_id is None or directory_id == row.partner_directory_id:
+        if partner_itself:
             row.status, row.last_error = "error", message
         raise PartnerError("Microsoft refused a token: " + message)
     data = response.json()
-    if data.get("refresh_token") and data["refresh_token"] != secrets["refreshToken"]:
-        _store_secrets(row, {**secrets, "refreshToken": data["refresh_token"]})  # refresh tokens rotate
+    updated = {**secrets, "clientType": client_type}
+    if data.get("refresh_token"):
+        updated["refreshToken"] = data["refresh_token"]  # refresh tokens rotate
+    if updated != secrets:
+        _store_secrets(row, updated)
+    if partner_itself:
+        row.status, row.last_error = "connected", ""
     row.refreshed_at = utcnow()
     return data["access_token"]
 

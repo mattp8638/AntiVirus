@@ -37,7 +37,7 @@ function Partner() {
       <div className="form-grid">
         <label className="field">Partner tenant ID<input value={form.directoryId} onChange={(e) => setForm({ ...form, directoryId: e.target.value })} /></label>
         <label className="field">App (client) ID<input value={form.clientId} onChange={(e) => setForm({ ...form, clientId: e.target.value })} /></label>
-        <label className="field">Client secret<input type="password" value={form.clientSecret} onChange={(e) => setForm({ ...form, clientSecret: e.target.value })} /></label>
+        <label className="field">Client secret (only if public client flows are off)<input type="password" value={form.clientSecret} onChange={(e) => setForm({ ...form, clientSecret: e.target.value })} /></label>
       </div>
       <button style={{ marginTop: 10 }} disabled={busy} onClick={async () => { if (await run(() => api("m365/partner", { body: form }), "Partner app saved")) reload(); }}>Save</button>
     </div>

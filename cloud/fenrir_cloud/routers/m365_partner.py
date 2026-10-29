@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from .. import audit, crypto, entra_reconcile, m365_partner as partner_mod, m365_standards as standards
 from ..db import get_db
-from ..deps import Principal, current_principal, require_reauth, scoped_tenant
+from ..deps import Principal, current_principal, require_reauth
 from ..models import M365Connection, M365Partner, M365StandardRun, Tenant
 
 router = APIRouter(prefix="/api/console/m365", tags=["Microsoft partner and standards"])
@@ -56,9 +56,7 @@ def create_partner(request: Request, body: dict = Body(...), principal: Principa
     require_reauth(request, principal)
     if db.execute(select(M365Partner).where(M365Partner.tenant_id == msp)).scalars().first():
         raise HTTPException(409, "A partner connection exists; delete it first")
-    secret = str(body.get("clientSecret") or "")
-    if not secret:
-        raise HTTPException(422, "clientSecret is required")
+    secret = str(body.get("clientSecret") or "")  # only for apps with public client flows turned off
     try:
         row = partner_mod.create(db, msp, str(UUID(str(body.get("directoryId")))), str(UUID(str(body.get("clientId")))), secret, principal.actor)
     except ValueError as exc:
