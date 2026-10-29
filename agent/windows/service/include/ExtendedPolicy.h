@@ -92,6 +92,9 @@ struct ExtendedPolicy {
   bool tamperUninstallToken{true};    // tamper.enabled && tamper.uninstallRequiresToken
   bool scriptExecution{true};      // modules.response.scriptExecution
   bool remoteAccessEnabled{true};  // modules.remoteAccess.enabled
+  bool remoteBackstageAllowed{false};  // modules.remoteAccess.backstage != "off": silent SYSTEM sessions
+  bool remoteTunnelsAllowed{false};   // modules.remoteAccess.allowTunnels: relay TCP to agentless LAN machines
+  std::vector<int> remoteTunnelPorts{22, 23, 80, 443, 3389, 5900, 8080, 8443, 16992, 16993, 16994, 16995};
   // modules.edr collection switches: routine telemetry only; detections are always sent.
   bool collectProcessEvents{true};
   bool collectFileEvents{true};

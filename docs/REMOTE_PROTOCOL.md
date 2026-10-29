@@ -28,6 +28,7 @@ Both sockets close when either side sends `{"ch":"sys","t":"end"}` or disconnect
 | `0x01` screen tile | agent → viewer | `01 x:u16 y:u16 w:u16 h:u16 screenW:u16 screenH:u16 <JPEG>` |
 | `0x02` download chunk | agent → viewer | `02 transferId:u32 <bytes>` |
 | `0x03` upload chunk | viewer → agent | `03 transferId:u32 <bytes>` |
+| `0x05` tunnel data | both | `05 streamId:u32 <bytes>` (tunnel sessions only) |
 
 ## Channels
 
@@ -82,11 +83,36 @@ Both sockets close when either side sends `{"ch":"sys","t":"end"}` or disconnect
 - `procs`: `list {req}` → `list {req, items: [{pid, name, user, cpu, memMb, path}]}`; `kill {pid, req}`.
 - `svc`: `list {req}` → `list {req, items: [{name, display, status, startType}]}`; `control {name, action, req}`, where `action` is `start`, `stop` or `restart`.
 
+### `tunnel` (tunnel sessions only)
+- A tunnel session relays TCP from the agent to one private LAN address and port (`targetHost`, `targetPort` in the start payload). Several streams share the session.
+- Viewer sends `open {id}` and `close {id}`.
+- Agent sends `opened {id}`, `error {id, message}` and `close {id}`.
+- Data in both directions is binary `0x05 id:u32 <bytes>`.
+- The relay forwards only `sys` and `tunnel` messages and `0x05` frames in a tunnel session, and drops `tunnel` messages in every other mode.
+- `fenrir-tunnel` (`agent/linux/cmd/fenrir-tunnel`) is the technician-side client. It listens on a local port and turns each local connection into a stream.
+
 ### `chat`
 - `msg {text}` in both directions. The Windows helper shows a small chat window to the signed-in user.
+
+## Modes
+
+The start payload's `mode` decides which channels a session may use. The relay enforces this, and the agent enforces it again.
+
+| Mode | Channels | Where it runs |
+|---|---|---|
+| `desktop` | all | Windows: helper in the signed-in user's session. Consent and banner follow policy. |
+| `terminal` / `files` | all | Windows: helper in the user's session, with the banner per policy but no consent prompt. |
+| `backstage` | `sys`, `term`, `files`, `procs`, `svc` | Windows: helper as SYSTEM in session 0. Works with nobody signed in. No prompt, banner, screen, input or chat. Linux/macOS: the agent (root). |
+| `tunnel` | `sys`, `tunnel` | As `backstage`. |
 
 ## Security
 - Tokens are HMAC-signed, scoped to one session and one audience (`remote-agent` or `remote-viewer`), and short-lived.
 - The agent token is bound to the device id. A viewer token cannot be used as an agent token, and an agent token cannot be used as a viewer token.
 - Policy (`remoteAccess.*`) is enforced twice: by the cloud before the session starts and by the relay on every message. The agent applies consent, the banner and the idle timeout.
 - Every session start and end, file transfer, Ctrl+Alt+Del, terminal open and screen blank is written to the session's event list and to the hash-chained audit log.
+- **Backstage and tunnel sessions** are silent, so they carry extra checks:
+  - Each needs a fresh sign-in check (`X-Fenrir-Reauth`) and a stated reason or linked ticket.
+  - Analyst roles cannot open them.
+  - Both are off by default (`remoteAccess.backstage`, `remoteAccess.allowTunnels`). The cloud and the device's own agent both check the policy, so a compromised console alone cannot open one.
+  - Backstage sessions are always recorded (terminal output).
+  - Tunnels reach private addresses on allowed ports only (`remoteAccess.tunnelPorts`). The agent checks the target again before connecting, and every stream open is audited.

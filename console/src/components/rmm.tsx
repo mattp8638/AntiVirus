@@ -90,13 +90,17 @@ export function TargetPicker({ value, onChange, platforms }: { value: Targets; o
 /** Start a remote session and open the pop-out viewer. */
 export function useConnect() {
   const { run, busy } = useAction();
-  const connect = async (deviceId: string, mode: "desktop" | "terminal" | "files" = "desktop", ticketId?: string) => {
+  const connect = async (deviceId: string, mode: "desktop" | "terminal" | "files" | "backstage" = "desktop", ticketId?: string) => {
+    // Backstage is silent (no prompt, banner or screen), so it needs a stated reason and a fresh sign-in check.
+    const reason = mode === "backstage" && !ticketId
+      ? window.prompt("Reason for backstage access (kept in the audit log; the session is recorded)") : "";
+    if (reason === null) return;
     // Open the window first so pop-up blockers treat it as a direct click. It starts on an in-app page
     // (not about:blank) so an installed console opens it as an app window without browser bars.
     const width = Math.min(window.screen.availWidth, 1440);
     const height = Math.min(window.screen.availHeight, 900);
     const placeholder = window.open("/remote/starting", "_blank", `popup,width=${width},height=${height}`);
-    const session = await run(() => api<any>("remote/sessions", { body: { deviceId, mode, ticketId } }));
+    const session = await run(() => api<any>("remote/sessions", { body: { deviceId, mode, ticketId, reason } }));
     if (!session) { placeholder?.close(); return; }
     if (placeholder) placeholder.location.href = `/remote/${session.id}`;
     else openRemoteWindow(session.id);
@@ -116,6 +120,7 @@ export function ConnectButtons({ device, ticketId, compact }: { device: any; tic
       {!compact && <>
         <button disabled={busy} onClick={() => connect(device.id, "terminal", ticketId)}>{device.platform === "windows" ? "PowerShell" : "Terminal"}</button>
         <button disabled={busy} onClick={() => connect(device.id, "files", ticketId)}>Files</button>
+        <button disabled={busy} title="Silent SYSTEM/root terminal, files, processes and services: nothing shows on the user's screen" onClick={() => connect(device.id, "backstage", ticketId)}>Backstage</button>
       </>}
     </span>
   );

@@ -137,6 +137,7 @@ add_library(antivirus-agent-core STATIC
   src/RmmExecutors.cpp
   src/WebSocketClient.cpp
   src/NetworkProbe.cpp
+  src/AmtWsman.cpp
   src/BundleArchive.cpp
   src/FirewallPolicy.cpp
   src/LocalAdminRotation.cpp
@@ -177,13 +178,14 @@ antivirus_apply_portable_runtime(antivirus-agent-core)
 # Remote access helper: started by the service in the signed-in user's session.
 add_executable(fenrir-remote WIN32
   ../tools/remotehelper/src/RemoteHelperMain.cpp
+  ../tools/remotehelper/src/RemoteTunnel.cpp
   src/WebSocketClient.cpp
   src/ExtendedPolicy.cpp
   src/BehaviorRules.cpp
   src/StringUtils.cpp
 )
 target_include_directories(fenrir-remote PRIVATE include ../shared/include)
-target_link_libraries(fenrir-remote PRIVATE winhttp gdiplus ole32 wtsapi32 advapi32 shell32 user32 gdi32)
+target_link_libraries(fenrir-remote PRIVATE winhttp gdiplus ole32 wtsapi32 advapi32 shell32 user32 gdi32 ws2_32)
 if(MINGW)
   target_link_options(fenrir-remote PRIVATE -municode)
 endif()

@@ -5,16 +5,16 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, WebSocket
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, WebSocket
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import audit, psa, remote, services
 from ..db import get_db, session_factory
-from ..deps import Principal, current_principal, scoped_tenant
+from ..deps import Principal, current_principal, require_reauth, scoped_tenant
 from ..config import get_settings
-from ..models import Command, Device, DeviceArtifact, RemoteSession, Tenant, Ticket, utcnow
+from ..models import Command, Device, DeviceArtifact, NetworkNode, RemoteSession, Tenant, Ticket, utcnow
 from ..security import digest
 from ..serialize import to_dict
 
@@ -43,13 +43,13 @@ def _session_view(db: Session, session: RemoteSession) -> dict:
             "hostname": device.hostname if device else "", "platform": device.platform if device else "",
             "deviceOnline": remote.hub.device_online(session.device_id), "agentConnected": session.id in remote.hub.rooms
             and remote.hub.rooms[session.id].agent is not None, "connectedMinutes": connected_minutes,
-            "recorded": bool(device and remote.remote_policy(db, device).get("recordSessions")),
+            "recorded": session.mode == "backstage" or bool(device and remote.remote_policy(db, device).get("recordSessions")),
             "recordingId": db.scalar(select(DeviceArtifact.id).where(DeviceArtifact.command_id == session.id,
                                                                      DeviceArtifact.kind == "remote.recording"))}
 
 
 @router.post("/sessions")
-def create_session(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+def create_session(request: Request, body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("respond")
     principal.require("remote")
     device = db.get(Device, str(body.get("deviceId") or ""))
@@ -60,8 +60,21 @@ def create_session(body: dict = Body(...), principal: Principal = Depends(curren
     if not device.approved:
         raise HTTPException(409, "Approve the device before connecting to it")
     mode = str(body.get("mode") or "desktop")
-    if mode not in {"desktop", "terminal", "files"}:
-        raise HTTPException(400, "mode must be desktop, terminal or files")
+    if mode not in remote.MODES:
+        raise HTTPException(400, "mode must be desktop, terminal, files, backstage or tunnel")
+    target = None
+    if mode in ("backstage", "tunnel"):
+        # Zero trust for silent access: a fresh password (and MFA) check and a stated reason or ticket, every time.
+        require_reauth(request, principal)
+        if len(str(body.get("reason") or "").strip()) < 8 and not body.get("ticketId"):
+            raise HTTPException(422, "Give a reason (or link a ticket) for backstage and tunnel sessions")
+    if mode == "tunnel":
+        target = {"host": str(body.get("targetHost") or ""), "port": int(body.get("targetPort") or 0)}
+        if body.get("targetNodeId"):
+            node = db.get(NetworkNode, str(body["targetNodeId"]))
+            if node is None or node.tenant_id != device.tenant_id:
+                raise HTTPException(404, "Network node not found")
+            target.update(host=node.ip, nodeId=node.id)
     ticket_id = body.get("ticketId")
     if ticket_id:
         ticket = db.get(Ticket, ticket_id)
@@ -71,16 +84,19 @@ def create_session(body: dict = Body(...), principal: Principal = Depends(curren
             raise HTTPException(422, "The ticket and remote-support device must belong to the same customer")
         if ticket.device_id and ticket.device_id != device.id:
             raise HTTPException(422, "The ticket is linked to a different managed device")
-    if mode == "terminal" and principal.user.role in ANALYST_ROLES:
+    if mode in ("terminal", "backstage", "tunnel") and principal.user.role in ANALYST_ROLES:
         settings, _ = services.effective_policy(db, device)
         if not settings["settings"]["response"].get("remoteShell", False):
             raise HTTPException(403, "Analysts need the policy's 'Allow remote shell for analysts' setting to open a terminal")
     try:
         session = remote.start_session(db, device, principal.actor, mode, bool(body.get("viewOnly")), ticket_id,
-                                       str(body.get("reason") or ""))
+                                       str(body.get("reason") or ""), target)
     except PermissionError as exc:
         db.rollback()
         raise HTTPException(403, str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(422, str(exc)) from exc
     except services.CommandError as exc:
         db.rollback()  # start_session may have flushed a session before enqueueing
         raise HTTPException(422, str(exc)) from exc
@@ -182,7 +198,7 @@ def _agent_join(db: Session, session_id: str, device_id: str) -> dict | None:
     session.events = (session.events or []) + [{"at": now.isoformat(), "by": f"device:{device_id}", "type": "agent.connected"}]
     device = db.get(Device, device_id)
     policy = remote.remote_policy(db, device) if device else {}
-    return {"viewOnly": session.view_only, "allow": policy}
+    return {"viewOnly": session.view_only, "allow": policy, "mode": session.mode}
 
 
 def _console_session_active(db: Session, console_session: str) -> bool:
@@ -199,7 +215,8 @@ def _viewer_join(db: Session, session_id: str, actor: str) -> dict | None:
     session.events = (session.events or []) + [{"at": utcnow().isoformat(), "by": actor, "type": "viewer.connected"}]
     device = db.get(Device, session.device_id)
     policy = remote.remote_policy(db, device) if device else {}
-    return {"viewOnly": session.view_only, "allow": policy, "mode": session.mode, "deviceId": session.device_id}
+    return {"viewOnly": session.view_only, "allow": policy, "mode": session.mode, "deviceId": session.device_id,
+            "target": f"{session.target_host}:{session.target_port}" if session.mode == "tunnel" else None}
 
 
 def _flush_room(db: Session, session_id: str, events: list[dict], bytes_relayed: int, end_reason: str | None, by: str) -> None:
@@ -233,8 +250,9 @@ async def agent_socket(websocket: WebSocket, session_id: str, token: str | None 
         await _close(websocket, 4404, "session not available")
         return
     await websocket.accept()
-    room = remote.hub.room(session_id, info["viewOnly"], info["allow"])
-    if info["allow"].get("recordSessions") and room.recorder is None:
+    room = remote.hub.room(session_id, info["viewOnly"], info["allow"], info["mode"])
+    # Backstage sessions are always recorded (terminal output): silent access leaves a reviewable trail.
+    if (info["allow"].get("recordSessions") or info["mode"] == "backstage") and room.recorder is None:
         try:
             from .artifacts import artifact_dir
             room.recorder = remote.Recorder(artifact_dir() / f"rec-{session_id}", get_settings().artifact_max_bytes * 5)
@@ -325,10 +343,10 @@ async def viewer_socket(websocket: WebSocket, session_id: str, token: str | None
         await _close(websocket, 4404, "session not available")
         return
     await websocket.accept()
-    room = remote.hub.room(session_id, info["viewOnly"], info["allow"])
+    room = remote.hub.room(session_id, info["viewOnly"], info["allow"], info["mode"])
     peer = remote.Peer(websocket, actor=actor, console_session=console_session)
     room.viewers.append(peer)
-    await peer.send(json.dumps({"ch": "sys", "t": "hello", "sessionId": session_id, "mode": info["mode"],
+    await peer.send(json.dumps({"ch": "sys", "t": "hello", "sessionId": session_id, "mode": info["mode"], "target": info["target"],
                                 "agentConnected": room.agent is not None, "viewOnly": room.view_only,
                                 "allowTerminal": room.allow.get("allowTerminal", True),
                                 "allowFileTransfer": room.allow.get("allowFileTransfer", True),
@@ -342,11 +360,11 @@ async def viewer_socket(websocket: WebSocket, session_id: str, token: str | None
             if message["type"] == "websocket.disconnect":
                 break
             if message.get("bytes") is not None:
-                # Binary from the viewer is only ever file-upload data.
+                # Binary from the viewer is file-upload data, or tunnel data in a tunnel session.
                 if remote.hub.viewer_revoked(peer):
                     await _close(websocket, 4401, "session ended")
                     break
-                if not room.allow.get("allowFileTransfer", True) or room.agent is None:
+                if not remote.hub.viewer_binary_allowed(room, message["bytes"]) or room.agent is None:
                     continue
                 room.bytes_relayed += len(message["bytes"])
                 await room.agent.send(message["bytes"])

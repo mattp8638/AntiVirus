@@ -54,7 +54,7 @@ type TopologyResult struct {
 	Truncated  bool                `json:"truncated"`
 }
 
-var DefaultDiscoveryPorts = []int{22, 23, 53, 80, 135, 139, 443, 445, 515, 554, 631, 3389, 5900, 8080, 8443, 9100}
+var DefaultDiscoveryPorts = []int{22, 23, 53, 80, 135, 139, 443, 445, 515, 554, 631, 3389, 5900, 8080, 8443, 9100, 16992, 16993}
 
 var privateRanges = func() []*net.IPNet {
 	var out []*net.IPNet

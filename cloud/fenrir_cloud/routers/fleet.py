@@ -353,6 +353,8 @@ def _require_fine(principal: Principal, spec) -> None:
         principal.require("scripts")
     if spec.type == "remote.session.start":
         principal.require("remote")
+    if spec.type == "amt.wsman":
+        raise HTTPException(400, "Intel AMT requests are sent from Out-of-band management")
 
 
 @router.post("/devices/{device_id}/commands")

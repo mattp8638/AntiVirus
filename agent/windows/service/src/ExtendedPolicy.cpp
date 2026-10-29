@@ -403,6 +403,15 @@ ExtendedPolicy ExtendedPolicy::Parse(const std::string& modulesJson) {
 
   policy.scriptExecution = BoolOr(root->Get("response"), "scriptExecution", true);
   policy.remoteAccessEnabled = BoolOr(root->Get("remoteAccess"), "enabled", true);
+  policy.remoteBackstageAllowed = WideString(root->Get("remoteAccess"), "backstage", L"off") != L"off";
+  policy.remoteTunnelsAllowed = BoolOr(root->Get("remoteAccess"), "allowTunnels", false);
+  if (const auto ports = WideList(root->Get("remoteAccess"), "tunnelPorts"); !ports.empty()) {
+    policy.remoteTunnelPorts.clear();
+    for (const auto& port : ports) {
+      const int value = _wtoi(port.c_str());
+      if (value > 0 && value < 65536) policy.remoteTunnelPorts.push_back(value);
+    }
+  }
 
   const auto* ransomware = root->Get("ransomware");
   policy.ransomwareEnabled = BoolOr(ransomware, "enabled", true);

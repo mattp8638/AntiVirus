@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ago, api } from "../api";
 import { useApp } from "../app-context";
 import { displayValue } from "../components/DisplayValue";
+import { RoutesPanel } from "../components/routes";
 import { ErrorNote, Modal, PageHead, Pill, Stat, Table, useAction, useData, useListData } from "../components/ui";
 
 interface TopologyNode {
@@ -85,6 +86,8 @@ function NodeModal({ node, onClose, onChanged }: { node: TopologyNode; onClose: 
       ]} columns={[{ key: "k", label: "" }, { key: "v", label: "", render: (r) => r.v || "-" }]} />
       {can("configure") && <label className="field">Kind<select value={node.kind} disabled={busy} onChange={(e) => patch({ kind: e.target.value })}>
         {Object.keys(KIND_ICON).map((k) => <option key={k}>{k}</option>)}</select></label>}
+      <h4 style={{ marginTop: 12 }}>Connect</h4>
+      {node.managed && node.deviceId ? <RoutesPanel deviceId={node.deviceId} /> : <RoutesPanel nodeId={node.id} />}
     </Modal>
   );
 }

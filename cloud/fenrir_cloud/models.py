@@ -1145,7 +1145,7 @@ class RemoteSession(Base):
     tenant_id: Mapped[str] = mapped_column(String(32), index=True)
     device_id: Mapped[str] = mapped_column(String(32), index=True)
     technician: Mapped[str] = mapped_column(String(200))
-    mode: Mapped[str] = mapped_column(String(20), default="desktop")  # desktop|terminal|files
+    mode: Mapped[str] = mapped_column(String(20), default="desktop")  # desktop|terminal|files|backstage|tunnel
     status: Mapped[str] = mapped_column(String(20), default="waiting")  # waiting|connected|ended|failed|denied
     consent: Mapped[str] = mapped_column(String(20), default="not_required")  # not_required|pending|granted|denied
     view_only: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -1159,6 +1159,36 @@ class RemoteSession(Base):
     connected_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Tunnel sessions: the device above relays TCP to this LAN target (an agentless server, switch, printer or AMT).
+    target_host: Mapped[str | None] = mapped_column(String(255), nullable=True, default="")
+    target_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    target_node_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+class AmtEndpoint(Base):
+    """An Intel AMT / vPro management engine, reached directly (site VPN) or through an agent on the same LAN."""
+
+    __tablename__ = "amt_endpoints"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("amt"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)  # the managed device this AMT belongs to
+    node_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    name: Mapped[str] = mapped_column(String(200), default="")
+    host: Mapped[str] = mapped_column(String(255))
+    port: Mapped[int] = mapped_column(Integer, default=16992)  # 16992 HTTP, 16993 TLS
+    tls_insecure: Mapped[bool] = mapped_column(Boolean, default=False)  # accept AMT's self-signed certificate
+    username: Mapped[str] = mapped_column(String(100), default="admin")
+    secret_envelope: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    route: Mapped[str] = mapped_column(String(10), default="agent")  # agent|direct
+    probe_device_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="unknown")  # unknown|online|unreachable|auth_failed|pending
+    amt_version: Mapped[str] = mapped_column(String(60), default="")
+    power_state: Mapped[str] = mapped_column(String(40), default="")
+    settings: Mapped[dict] = mapped_column(JSON, default=dict)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 # --------------------------------------------------------------------------
@@ -1623,6 +1653,9 @@ class GrcEvidence(Base):
     valid_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     uploaded_by: Mapped[str] = mapped_column(String(200), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # Automated evidence (kind "automated"): the signals captured, as recorded. sha256 covers this JSON.
+    data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    control_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
 
 class GrcEvidenceLink(Base):
@@ -2058,6 +2091,56 @@ class AccountingConnection(Base):
     pending_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Vendor(Base):
+    """A third party a customer (or the MSP itself) relies on: register, tier, assessments and external posture."""
+
+    __tablename__ = "tprm_vendors"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("vnd"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    domain: Mapped[str] = mapped_column(String(255), default="")
+    services: Mapped[str] = mapped_column(Text, default="")
+    criticality: Mapped[str] = mapped_column(String(10), default="medium")  # low|medium|high|critical
+    data_access: Mapped[str] = mapped_column(String(20), default="none")  # none|internal|personal|special
+    contact_name: Mapped[str] = mapped_column(String(200), default="")
+    contact_email: Mapped[str] = mapped_column(String(200), default="")
+    owner: Mapped[str] = mapped_column(String(200), default="")
+    status: Mapped[str] = mapped_column(String(20), default="active")  # active|offboarded
+    documents: Mapped[list] = mapped_column(JSON, default=list)  # [{type, name, expiresAt, url}]
+    posture: Mapped[dict] = mapped_column(JSON, default=dict)  # last external scan
+    posture_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    questionnaire_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    risk_score: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 0 (low) .. 100 (high)
+    risk_tier: Mapped[str] = mapped_column(String(10), default="unrated")
+    last_scanned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_assessed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    next_review_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    review_ticket_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class VendorAssessment(Base):
+    """A security questionnaire sent to a vendor, answered through a single-use link."""
+
+    __tablename__ = "tprm_assessments"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("vas"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    vendor_id: Mapped[str] = mapped_column(String(32), index=True)
+    questionnaire: Mapped[str] = mapped_column(String(40), default="core")
+    token_hash: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="sent")  # sent|completed|expired|cancelled
+    recipient: Mapped[str] = mapped_column(String(200), default="")
+    answers: Mapped[dict] = mapped_column(JSON, default=dict)
+    score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    findings: Mapped[list] = mapped_column(JSON, default=list)
+    sent_by: Mapped[str] = mapped_column(String(200), default="")
+    sent_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 # --------------------------------------------------------------------------

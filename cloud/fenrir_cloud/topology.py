@@ -35,7 +35,7 @@ OUI_VENDORS = {
 VIRTUAL_VENDORS = {"VMware", "Microsoft Hyper-V", "VirtualBox", "QEMU/KVM", "Xen"}
 
 WINDOWS_SCRIPT = r"""$ErrorActionPreference = 'SilentlyContinue'
-$ports = @(22,23,53,80,135,139,443,445,515,554,631,3389,5900,8080,8443,9100)
+$ports = @(22,23,53,80,135,139,443,445,515,554,631,3389,5900,8080,8443,9100,16992,16993)
 $private = { param($ip) $b = $ip.GetAddressBytes(); ($b[0] -eq 10) -or ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or ($b[0] -eq 192 -and $b[1] -eq 168) -or ($b[0] -eq 100 -and $b[1] -ge 64 -and $b[1] -le 127) }
 $interfaces = @(); $targets = New-Object System.Collections.ArrayList; $swept = @()
 foreach ($cfg in Get-NetIPConfiguration | Where-Object { $_.NetAdapter.Status -eq 'Up' }) {

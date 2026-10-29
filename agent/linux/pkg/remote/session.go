@@ -39,6 +39,10 @@ type Options struct {
 	MaxFps             int    `json:"maxFps"`
 	Quality            int    `json:"quality"`
 	IdleTimeoutMinutes int    `json:"idleTimeoutMinutes"`
+	// Tunnel sessions: the LAN target this agent relays TCP to, and the ports policy allows.
+	TargetHost   string `json:"targetHost"`
+	TargetPort   int    `json:"targetPort"`
+	AllowedPorts []int  `json:"allowedPorts"`
 }
 
 // Message is a JSON control frame.
@@ -91,6 +95,7 @@ type Session struct {
 	term       *terminal
 	files      *fileTransfers
 	procs      *procSampler
+	tunnels    *tunnels
 	logf       func(string, ...interface{})
 }
 
@@ -126,6 +131,7 @@ func Dial(ctx context.Context, opts Options) (*Session, error) {
 	s := &Session{opts: opts, conn: conn, ctx: sctx, cancel: cancel, lastInput: time.Now(), logf: log.Printf}
 	s.files = newFileTransfers(s)
 	s.procs = &procSampler{}
+	s.tunnels = newTunnels(s)
 	return s, nil
 }
 
@@ -175,7 +181,13 @@ func (s *Session) Close(reason string) {
 }
 
 func (s *Session) capabilities() []string {
+	if s.opts.Mode == "tunnel" {
+		return []string{"tunnel"}
+	}
 	caps := []string{"processes", "services"}
+	if s.opts.Mode == "backstage" {
+		caps = append(caps, "backstage")
+	}
 	if s.opts.AllowTerminal {
 		caps = append(caps, "terminal")
 	}
@@ -237,8 +249,10 @@ func (s *Session) Serve() error {
 			return err
 		}
 		if kind == websocket.BinaryMessage {
-			if len(data) > 5 && data[0] == 0x03 {
+			if len(data) > 5 && data[0] == 0x03 && s.opts.Mode != "tunnel" {
 				s.files.uploadChunk(binary.BigEndian.Uint32(data[1:5]), data[5:])
+			} else if len(data) > 5 && data[0] == tunnelFrame && s.opts.Mode == "tunnel" {
+				s.tunnels.data(data)
 			}
 			continue
 		}
@@ -286,6 +300,10 @@ func (s *Session) dispatch(m Message) bool {
 	if ch != "screen" || t != "ack" {
 		s.touch()
 	}
+	// Each mode serves only its own channels: backstage never touches the desktop, a tunnel carries only its streams.
+	if !channelAllowed(s.opts.Mode, ch) {
+		return false
+	}
 	switch ch {
 	case "sys":
 		switch t {
@@ -311,8 +329,21 @@ func (s *Session) dispatch(m Message) bool {
 		s.handleServices(t, m)
 	case "chat":
 		_ = s.send(Message{"ch": "sys", "t": "error", "message": "chat is not available on this device"})
+	case "tunnel":
+		s.tunnels.handle(t, m)
 	}
 	return false
+}
+
+func channelAllowed(mode, ch string) bool {
+	switch mode {
+	case "tunnel":
+		return ch == "sys" || ch == "tunnel"
+	case "backstage":
+		return ch == "sys" || ch == "term" || ch == "files" || ch == "procs" || ch == "svc"
+	default:
+		return ch != "tunnel"
+	}
 }
 
 func (s *Session) handleScreen(t string, m Message) {
@@ -399,6 +430,7 @@ func (s *Session) cleanup() {
 		s.term.close()
 	}
 	s.files.closeAll()
+	s.tunnels.closeAll()
 	if s.desktop != nil {
 		s.desktop.Close()
 	}

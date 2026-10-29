@@ -5,6 +5,7 @@ import { ago, api, fmtTime, getToken } from "../api";
 import { useApp } from "../app-context";
 import { ErrorNote, Modal, Pill, Sev, Table, useAction, useData, useListData } from "../components/ui";
 import { ConnectButtons, JobDetail, JobStatus, pct } from "../components/rmm";
+import { RoutesPanel } from "../components/routes";
 import { TimeChart } from "../components/TimeChart";
 import { RunScript } from "./rmm/Scripts";
 import { SystemTab } from "./DeviceSystem";
@@ -93,6 +94,7 @@ export default function DeviceDetail() {
   const [params, setParams] = useSearchParams();
   const [action, setAction] = useState<string | null>(null);
   const [scriptPicker, setScriptPicker] = useState(false);
+  const [routesOpen, setRoutesOpen] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const { run, busy } = useAction();
   const commandLabel = useCommandLabels();
@@ -203,6 +205,8 @@ export default function DeviceDetail() {
         {!d.retired && can("respond") && !isPhone && <div className="device-actions">
           {!d.approved && can("configure") && <button className="primary" onClick={() => patch({ approved: true }, "Device approved")}>Approve</button>}
           <ConnectButtons device={d} />
+          {can("remote") && <button className="ghost" title="Agent, tunnel through a peer, or Intel AMT out-of-band" onClick={() => setRoutesOpen(true)}>All routes</button>}
+          {routesOpen && <Modal title={`Connect to ${d.hostname}`} onClose={() => setRoutesOpen(false)}><RoutesPanel deviceId={d.id} /></Modal>}
           {can("configure") && <button onClick={() => setScriptPicker(true)}>Run script</button>}
           <Menu label="Scan">{(close) => <>
             <button role="menuitem" onClick={() => { close(); queue("scan.quick", "Quick scan"); }}>Quick scan</button>

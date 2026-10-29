@@ -55,6 +55,9 @@ CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("pii.scan", "Discover personal data", "Investigation", platforms=("linux", "macos"),
                 description="Counts payment cards, NI and NHS numbers, IBANs and emails in users' documents. Only counts and "
                             "file paths are reported. Windows runs the same scan as a script (Vulnerabilities → PII discovery)."),
+    CommandSpec("amt.wsman", "Intel AMT request", "Remote access", permission="respond", platforms=ALL,
+                description="Sent by Out-of-band management: WS-Management calls to an Intel AMT engine on this device's LAN. "
+                            "The agent fetches the AMT credential for the one command; it is never in the payload."),
     CommandSpec("network.probe", "Probe network services", "Investigation", platforms=ALL,
                 description="Sent automatically for network monitors that probe from this device; checks TCP services on its LAN."),
     CommandSpec("script.run", "Run script", "Administration", permission="configure", platforms=ALL,

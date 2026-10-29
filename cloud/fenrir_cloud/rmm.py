@@ -289,6 +289,10 @@ def on_command_complete(db: Session, device: Device, command: Command) -> None:
         from . import network
 
         network.apply_probe_results(db, device, command)
+    elif command.type == "amt.wsman":
+        from . import amt
+
+        amt.on_command_complete(db, device, command)
     if (command.payload or {}).get("conditionPackageId"):
         from . import condition_remediation
 
