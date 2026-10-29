@@ -41,3 +41,6 @@ deploy/signing/*
 
 .venv/
 .venv*
+agent/windows/service/build-quiet*
+*.zip
+!components/**/*.zip

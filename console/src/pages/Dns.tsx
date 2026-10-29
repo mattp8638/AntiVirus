@@ -2,10 +2,10 @@ import { displayValue } from "../components/DisplayValue";
 import { useState } from "react";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
-import { PageHead, Pill, Stat, Table, useAction, useData } from "../components/ui";
+import { PageHead, Pill, Stat, Table, useAction, useData, useListData } from "../components/ui";
 
 export default function Dns() {
-  const { tenantId } = useApp();
+  const { tenantId, can } = useApp();
   const [action, setAction] = useState("");
   const [hours, setHours] = useState(24);
   const { data } = useData<any>("dns/log", { tenant_id: tenantId, action, hours });
@@ -36,6 +36,7 @@ export default function Dns() {
           <Table rows={data?.topCategories.map(([c, n]: [string, number]) => ({ id: c, category: c, count: n }))} empty="—"
                  columns={[{ key: "category", label: "Category" }, { key: "count", label: "Lookups", className: "right" }]} /></div>
       </div>
+      <BlocklistsCard canManage={can("platform")} />
       <div className="card">
         <div className="row" style={{ marginBottom: 10 }}>
           <h3 style={{ margin: 0 }}>Query log</h3><span style={{ flex: 1 }} />
@@ -48,5 +49,33 @@ export default function Dns() {
                          { key: "category", label: "Category" }, { key: "reason", label: "Reason" }]} />
       </div>
     </>
+  );
+}
+
+function BlocklistsCard({ canManage }: { canManage: boolean }) {
+  const { data, reload } = useListData<any>("dns/blocklists");
+  const { run, busy } = useAction();
+  const toggle = async (row: any) => {
+    if (await run(() => api(`dns/blocklists/${row.id}`, { method: "PATCH", body: { enabled: !row.enabled } }), row.enabled ? "List disabled" : "List enabled")) reload();
+  };
+  const sync = async (row: any) => {
+    const result = await run(() => api<any>(`dns/blocklists/${row.id}/sync`, { method: "POST" }));
+    if (result) reload();
+  };
+  return (
+    <div className="card">
+      <h3>External blocklists</h3>
+      <p className="small muted">Refreshed on a schedule by the server. Malware lists block wherever DNS protection is on; other lists block only where a policy blocks their category. Policy allow lists and allow indicators always win.</p>
+      <Table rows={data ?? undefined} empty="No lists configured."
+             columns={[{ key: "name", label: "List", render: (r) => <><b>{displayValue(r.name)}</b><div className="small muted">{displayValue(r.description)}</div></> },
+                       { key: "category", label: "Category" },
+                       { key: "enabled", label: "State", render: (r) => <Pill value={r.enabled ? "enabled" : "disabled"} /> },
+                       { key: "domainCount", label: "Domains", className: "right", render: (r) => Number(r.domainCount || 0).toLocaleString() },
+                       { key: "lastSuccessAt", label: "Last refresh", render: (r) => r.lastSuccessAt ? fmtTime(r.lastSuccessAt) : "never" },
+                       { key: "lastError", label: "Problem", render: (r) => r.lastError ? <span className="small" style={{ color: "var(--red)" }}>{displayValue(r.lastError)}</span> : "" },
+                       ...(canManage ? [{ key: "actions", label: "", render: (r: any) => <div className="row">
+                         <button className="ghost" disabled={busy} onClick={() => toggle(r)}>{r.enabled ? "Disable" : "Enable"}</button>
+                         <button className="ghost" disabled={busy || !r.enabled} onClick={() => sync(r)}>Refresh now</button></div> }] : [])]} />
+    </div>
   );
 }

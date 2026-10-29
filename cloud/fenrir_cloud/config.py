@@ -53,6 +53,8 @@ class Settings:
     feed_token: str = field(default_factory=lambda: os.getenv("FENRIR_FEED_TOKEN", ""))
     feed_sync_enabled: bool = field(default_factory=lambda: _bool("FENRIR_FEED_SYNC", False))
 
+    # External DNS blocklists (HaGeZi and others; see blocklists.py), refreshed by the hourly maintenance loop.
+    dns_blocklists_enabled: bool = field(default_factory=lambda: _bool("FENRIR_DNS_BLOCKLISTS", True))
     dns_upstream: str = field(default_factory=lambda: os.getenv("FENRIR_DNS_UPSTREAM", "https://cloudflare-dns.com/dns-query"))
     dns_sinkhole_ipv4: str = field(default_factory=lambda: os.getenv("FENRIR_DNS_SINKHOLE", "0.0.0.0"))
 

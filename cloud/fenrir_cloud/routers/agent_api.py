@@ -494,8 +494,6 @@ def _bundle_tenant(db: Session, x_device_api_key: str | None, x_fenrir_token: st
     return None
 
 
-@router.api_route("/agent/bundle", methods=["GET", "POST"])
-@router.api_route("/signatures/delta", methods=["GET", "POST"])
 def agent_bundle(
     hashes_limit: int = Query(default=50000, alias="hashesLimit", ge=0, le=200000),
     urls_limit: int = Query(default=50000, alias="urlsLimit", ge=0, le=200000),
@@ -506,6 +504,12 @@ def agent_bundle(
 ):
     tenant_id = _bundle_tenant(db, x_device_api_key, x_fenrir_token)
     return intel.agent_bundle(db, tenant_id, hashes_limit, urls_limit, rules_limit)
+
+
+# One handler serves both paths and methods; each registration needs its own OpenAPI operation ID.
+for _path, _name in (("/agent/bundle", "agent_bundle"), ("/signatures/delta", "signatures_delta")):
+    for _method in ("GET", "POST"):
+        router.add_api_route(_path, agent_bundle, methods=[_method], operation_id=f"{_name}_{_method.lower()}")
 
 
 @router.get("/agent/model/manifest")
