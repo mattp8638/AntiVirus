@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 41
+LATEST_MIGRATION = 42
 
 def init_engine(url: str) -> Engine:
     global _engine, _session_factory
@@ -353,6 +353,10 @@ def migrate(bind: Engine) -> list[int]:
                 ensure_columns(Base, conn)  # grc_evidence.data / control_id
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (41)"))
                 applied.append(41)
+            if 42 not in versions:
+                ensure_columns(Base, conn)  # m365_partners.settings
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (42)"))
+                applied.append(42)
             conn.commit()
         except Exception:
             conn.rollback()

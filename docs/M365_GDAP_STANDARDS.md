@@ -7,13 +7,22 @@ Console: **MSP operations → M365 partner & standards**. API: `/api/console/m36
 1. Register an app in the MSP's **partner** tenant:
    - multi-tenant, with **Allow public client flows** on;
    - delegated Graph permissions `DelegatedAdminRelationship.ReadWrite.All`, `Directory.Read.All`, `Group.ReadWrite.All` and `offline_access`;
-   - the customer-side permissions you need, for example `Policy.ReadWrite.ConditionalAccess`, `Policy.Read.All`, `DeviceManagementConfiguration.ReadWrite.All`, `DeviceManagementManagedDevices.Read.All`, `User.ReadWrite.All`, `AuditLog.Read.All` and `Domain.Read.All`.
-2. Enter the partner tenant ID, app ID and secret. This needs MSP staff with `m365_admin` and `manage_tenants`, plus step-up re-authentication.
-3. **Sign in as partner admin** with a device code. The device code and the refresh token stay encrypted on the server. Microsoft rotates refresh tokens, and Fenrir keeps the newest.
+   - the customer-side permissions you need, for example `Policy.ReadWrite.ConditionalAccess`, `Policy.Read.All`, `DeviceManagementConfiguration.ReadWrite.All`, `DeviceManagementManagedDevices.Read.All`, `User.ReadWrite.All`, `AuditLog.Read.All` and `Domain.Read.All`;
+   - the **Microsoft Partner Center** permission `user_impersonation`, so Fenrir can consent its app in customer tenants;
+   - admin consent granted for all of them.
+2. Enter the partner tenant ID and app ID. A client secret is only needed if public client flows are off. This needs MSP staff with `m365_admin` and `manage_tenants`, plus step-up re-authentication.
+3. **Sign in as partner admin** with a device code. Use an account that belongs to the partner tenant (not a guest) and is an **Admin Agent** in Partner Center; Microsoft refuses the GDAP APIs to anyone else ("Access to the resource is restricted"). The device code and the refresh token stay encrypted on the server. Microsoft rotates refresh tokens, and Fenrir keeps the newest.
+   - **Partner check** confirms all of this and lists what to fix: the tenant is registered as a partner (`partnerTenantType`), the account is a member and in AdminAgents, the app's permissions are in the token, and Partner Center accepts the sign-in.
 4. **Create with recommended roles** makes a GDAP relationship with 15 least-privilege roles and locks it for approval. Global Administrator is deliberately excluded. The relationship lasts 730 days and auto-extends by 180 days. Send the invitation link to the customer's Global Administrator. Fenrir never approves for the customer.
 5. **Create role groups** makes one partner security group per role ("Fenrir GDAP - Exchange Administrator" and so on). Existing groups are reused by name.
 6. When a relationship is active, **Assign role groups** maps each group to its role. Existing assignments are left alone. Partner staff get each role through group membership.
-7. **Connect** maps a GDAP customer to a Fenrir customer. Fenrir checks GDAP access first, then creates an `M365Connection` with `auth_mode=gdap`. Its delegated tokens are minted from the partner refresh token for the customer tenant. Nothing is installed in the customer tenant, and sync, administration and standards work as for any other connection.
+7. **Customers in your partner tenant** merges the CSP customer list (Graph `/contracts`), GDAP relationships and GDAP customers, with each customer's GDAP state. **Import all** (or **Import** on one row):
+   - creates a Fenrir customer for each Microsoft customer, or reuses one already linked to that directory or with the same name;
+   - consents the Fenrir app in the customer tenant through Partner Center (`applicationconsents`), the way CSP partners grant apps without asking each customer;
+   - connects Microsoft 365 through GDAP where a relationship is active, as in step 8;
+   - with **Import and invite to GDAP**, creates a GDAP relationship for a customer that has none and returns its invitation link.
+   With **Import new GDAP customers automatically**, newly active GDAP customers are imported every 6 hours. Invitations are never sent automatically.
+8. **Connect** maps a GDAP customer to a Fenrir customer. Fenrir checks GDAP access first, then creates an `M365Connection` with `auth_mode=gdap`. Its delegated tokens are minted from the partner refresh token for the customer tenant. Nothing is installed in the customer tenant, and sync, administration and standards work as for any other connection.
 
 The recommended role IDs are Microsoft built-in role template IDs. Check them against Microsoft's role reference before a first live rollout.
 

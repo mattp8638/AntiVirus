@@ -188,8 +188,9 @@ def _claim(token: str, name: str):
         return None
 
 
-def access_token_for(row: M365Partner, directory_id: str | None = None, client: httpx.Client | None = None) -> str:
-    """A delegated Graph token for the partner tenant, or (through GDAP) for a customer tenant."""
+def access_token_for(row: M365Partner, directory_id: str | None = None, client: httpx.Client | None = None, scope: str = SCOPE) -> str:
+    """A delegated Graph token for the partner tenant, or (through GDAP) for a customer tenant. ``scope`` selects
+    another API for the same sign-in (Partner Center for application consent)."""
     secrets = _secrets(row)
     if not secrets.get("refreshToken"):
         raise PartnerError("The partner connection has not been signed in")
@@ -198,7 +199,7 @@ def access_token_for(row: M365Partner, directory_id: str | None = None, client: 
     partner_itself = directory_id is None or directory_id == row.partner_directory_id
     try:
         response, client_type = _token_request(client, row, directory_id or row.partner_directory_id,
-                                               {"grant_type": "refresh_token", "refresh_token": secrets["refreshToken"], "scope": SCOPE},
+                                               {"grant_type": "refresh_token", "refresh_token": secrets["refreshToken"], "scope": scope},
                                                secrets)
     finally:
         if own:
@@ -236,12 +237,31 @@ def partner_for(db: Session, tenant_id: str) -> M365Partner | None:
 # --------------------------------------------------------------------------- Graph calls in the partner tenant
 
 
+# Microsoft's answer when the signed-in account may not use the partner (GDAP) APIs.
+RESTRICTED_HINT = ("Microsoft allows this only for an account that is a member (not a guest) of your partner tenant and is in the "
+                   "Admin Agents group (Partner Center > Account settings > User management), signed in to an app with "
+                   "DelegatedAdminRelationship.ReadWrite.All consented. Run the partner check, fix what it lists, then sign in again.")
+
+
+def _refused(method: str, path: str, response: httpx.Response) -> PartnerError:
+    message = _error(response)
+    hint = f" {RESTRICTED_HINT}" if response.status_code == 403 and path.startswith(("/tenantRelationships", "/contracts")) else ""
+    return PartnerError(f"Microsoft rejected {method} {path.split('?')[0]}: {message}.{hint}".replace("..", "."))
+
+
 def _graph(client: httpx.Client, token: str, method: str, path: str, body: dict | None = None) -> dict:
     response = client.request(method, GRAPH + path, headers={"Authorization": "Bearer " + token},
                               **({"json": body} if body is not None else {}))
     if response.status_code >= 400:
-        raise PartnerError(f"Microsoft rejected {method} {path.split('?')[0]}: {_error(response)}")
+        raise _refused(method, path, response)
     return response.json() if response.content else {}
+
+
+def _list(client: httpx.Client, token: str, path: str) -> list[dict]:
+    try:
+        return m365.collect(client, GRAPH + path, token)
+    except httpx.HTTPStatusError as exc:
+        raise _refused("GET", path, exc.response) from exc
 
 
 def _when(value: str | None) -> datetime | None:
@@ -276,14 +296,14 @@ def relationship_view(rel: dict, assignments: list[dict] | None = None) -> dict:
 def list_relationships(row: M365Partner) -> list[dict]:
     with http_client() as client:
         token = access_token_for(row, client=client)
-        rows = m365.collect(client, GRAPH + "/tenantRelationships/delegatedAdminRelationships", token)
+        rows = _list(client, token, "/tenantRelationships/delegatedAdminRelationships")
     return [relationship_view(r) for r in rows]
 
 
 def list_customers(row: M365Partner) -> list[dict]:
     with http_client() as client:
         token = access_token_for(row, client=client)
-        rows = m365.collect(client, GRAPH + "/tenantRelationships/delegatedAdminCustomers", token)
+        rows = _list(client, token, "/tenantRelationships/delegatedAdminCustomers")
     return [{"tenantId": r.get("tenantId") or r.get("id"), "displayName": r.get("displayName") or ""} for r in rows]
 
 
@@ -377,8 +397,241 @@ def onboard_customer(db: Session, partner: M365Partner, customer_directory_id: s
     return row
 
 
+# --------------------------------------------------------------------------- partner check, discovery and import
+
+PARTNER_CENTER = "https://api.partnercenter.microsoft.com"
+PARTNER_CENTER_SCOPE = "https://api.partnercenter.microsoft.com/user_impersonation offline_access"
+GRAPH_APP_ID = "00000003-0000-0000-c000-000000000000"
+# Delegated Graph permissions consented in each customer tenant (Partner Center application consent). What a technician
+# can actually do is still limited by the GDAP roles of the groups they are in.
+CUSTOMER_GRAPH_SCOPES = ("Directory.Read.All", "Organization.Read.All", "Domain.Read.All", "User.ReadWrite.All", "Group.ReadWrite.All",
+                         "AuditLog.Read.All", "Reports.Read.All", "UserAuthenticationMethod.Read.All", "SecurityEvents.Read.All",
+                         "Policy.Read.All", "Policy.ReadWrite.ConditionalAccess", "Application.Read.All",
+                         "DeviceManagementConfiguration.ReadWrite.All", "DeviceManagementManagedDevices.Read.All")
+REQUIRED_PARTNER_SCOPES = ("DelegatedAdminRelationship.ReadWrite.All", "Directory.Read.All", "Group.ReadWrite.All")
+IMPORT_EVERY = timedelta(hours=6)
+
+
+def check(row: M365Partner) -> dict:
+    """Is this sign-in able to run GDAP? Tenant, partner registration, account type, Admin Agents, permissions."""
+    problems: list[str] = []
+    out: dict = {"partnerTenantId": row.partner_directory_id}
+    with http_client() as client:
+        token = access_token_for(row, client=client)
+        out["tokenTenantId"] = _claim(token, "tid")
+        scope_claim = _claim(token, "scp")
+        scopes = set(str(scope_claim or "").split())
+        out["scopes"] = sorted(scopes)
+        if out["tokenTenantId"] and str(out["tokenTenantId"]).lower() != row.partner_directory_id.lower():
+            problems.append(f"The sign-in is for tenant {out['tokenTenantId']}, not the partner tenant {row.partner_directory_id}.")
+        try:
+            org = (_graph(client, token, "GET", "/organization?$select=id,displayName,partnerTenantType,verifiedDomains").get("value") or [{}])[0]
+            out["organization"] = org.get("displayName") or ""
+            out["partnerTenantType"] = org.get("partnerTenantType")
+            out["domains"] = [d.get("name") for d in org.get("verifiedDomains") or []][:10]
+            if not org.get("partnerTenantType"):
+                problems.append(f"{out['organization'] or 'This tenant'} is not registered as a Microsoft partner (CSP) tenant. Check that "
+                                "the partner tenant ID is your Partner Center tenant.")
+        except PartnerError as exc:
+            problems.append(str(exc))
+        try:
+            me = _graph(client, token, "GET", "/me?$select=userPrincipalName,userType,displayName")
+            out["user"], out["userType"] = me.get("userPrincipalName") or "", me.get("userType") or ""
+            if out["userType"] == "Guest":
+                problems.append(f"{out['user']} is a guest in the partner tenant. Sign in with an account that belongs to the partner tenant.")
+        except PartnerError as exc:
+            problems.append(str(exc))
+        try:
+            groups = {g.get("displayName") for g in _list(client, token, "/me/memberOf?$select=displayName,id")}
+            out["adminAgent"] = "AdminAgents" in groups
+            if not out["adminAgent"]:
+                problems.append("The signed-in account is not in the Admin Agents group. Add it in Partner Center (Account settings > "
+                                "User management > Admin agent), wait a few minutes, then sign in again.")
+        except PartnerError as exc:
+            problems.append(str(exc))
+        missing = [p for p in REQUIRED_PARTNER_SCOPES if p not in scopes] if scope_claim is not None else []
+        if missing:
+            problems.append("The app is missing consented delegated permissions: " + ", ".join(missing) +
+                            ". Add them to the app registration, grant admin consent, then sign in again.")
+        try:
+            access_token_for(row, client=client, scope=PARTNER_CENTER_SCOPE)
+            out["partnerCenter"] = True
+        except PartnerError as exc:
+            out["partnerCenter"] = False
+            problems.append("Partner Center access failed, so Fenrir cannot consent its app in customer tenants: " + str(exc)[:200] +
+                            ". Add the 'Microsoft Partner Center' API permission user_impersonation to the app and grant consent.")
+    out["problems"] = problems
+    out["checkedAt"] = utcnow().isoformat() + "Z"
+    row.settings = {**(row.settings or {}), "check": out}
+    return out
+
+
+def discover(row: M365Partner) -> dict:
+    """Every customer the partner tenant knows: CSP contracts, GDAP relationships and GDAP customers, merged by tenant ID.
+    Each source fails on its own, so one refusal does not hide the others."""
+    errors: dict[str, str] = {}
+    customers: dict[str, dict] = {}
+
+    def entry(tenant_id: str | None) -> dict | None:
+        if not tenant_id:
+            return None
+        key = str(tenant_id).lower()
+        return customers.setdefault(key, {"tenantId": key, "displayName": "", "defaultDomain": "", "sources": [], "gdap": "none",
+                                           "relationships": [], "contractType": None})
+
+    with http_client() as client:
+        token = access_token_for(row, client=client)
+        try:
+            for c in _list(client, token, "/contracts?$select=customerId,defaultDomainName,displayName,contractType&$top=999"):
+                item = entry(c.get("customerId"))
+                if item:
+                    item.update(displayName=item["displayName"] or c.get("displayName") or "", defaultDomain=c.get("defaultDomainName") or "",
+                                contractType=c.get("contractType"))
+                    item["sources"].append("contract")
+        except (PartnerError, ValueError) as exc:
+            errors["contracts"] = str(exc)
+        try:
+            for rel in _list(client, token, "/tenantRelationships/delegatedAdminRelationships"):
+                view_ = relationship_view(rel)
+                item = entry(view_["customerTenantId"])
+                if item is None:
+                    continue
+                item["displayName"] = item["displayName"] or view_["customer"]
+                item["relationships"].append({k: view_[k] for k in ("id", "displayName", "status", "endDateTime", "roles", "invitationUrl")})
+                if "relationship" not in item["sources"]:
+                    item["sources"].append("relationship")
+        except (PartnerError, ValueError) as exc:
+            errors["relationships"] = str(exc)
+        try:
+            for c in _list(client, token, "/tenantRelationships/delegatedAdminCustomers"):
+                item = entry(c.get("tenantId") or c.get("id"))
+                if item:
+                    item["displayName"] = item["displayName"] or c.get("displayName") or ""
+                    item["sources"].append("gdap")
+        except (PartnerError, ValueError) as exc:
+            errors["customers"] = str(exc)
+    for item in customers.values():
+        statuses = {r["status"] for r in item["relationships"]}
+        item["gdap"] = ("active" if statuses & {"active", "expiring"} or "gdap" in item["sources"] else  # expiring still grants access
+                        "pending" if statuses & {"created", "approvalPending", "approved", "activating"} else
+                        "expired" if statuses & {"expired", "terminated", "terminating", "terminationRequested"} else "none")
+    return {"customers": sorted(customers.values(), key=lambda c: c["displayName"].lower()), "errors": errors}
+
+
+def consent_app(row: M365Partner, directory_id: str, client: httpx.Client | None = None) -> str:
+    """Consent Fenrir's app in a customer tenant through Partner Center (what CSP partners use instead of asking each
+    customer). Returns consented | already. Needs the Partner Center user_impersonation permission and Admin Agent."""
+    own = client is None
+    client = client or http_client()
+    try:
+        token = access_token_for(row, client=client, scope=PARTNER_CENTER_SCOPE)
+        response = client.post(f"{PARTNER_CENTER}/v1/customers/{UUID(directory_id)}/applicationconsents",
+                               headers={"Authorization": "Bearer " + token, "Accept": "application/json"},
+                               json={"applicationId": row.client_id, "displayName": "Fenrir",
+                                     "applicationGrants": [{"enterpriseApplicationId": GRAPH_APP_ID, "scope": ",".join(CUSTOMER_GRAPH_SCOPES)}]})
+    finally:
+        if own:
+            client.close()
+    if response.status_code in (200, 201):
+        return "consented"
+    if response.status_code == 409:
+        return "already"
+    raise PartnerError(f"Partner Center refused the app consent: {_error(response)}")
+
+
+def import_customers(db: Session, row: M365Partner, actor: str, directory_ids: list[str] | None = None,
+                     create_relationships: bool = False) -> list[dict]:
+    """Bring partner customers into Fenrir: a Fenrir customer per Microsoft customer (matched to an existing one by
+    directory or name), app consent through Partner Center, and a GDAP Microsoft 365 connection where GDAP is active.
+    Customers without GDAP get an invitation when ``create_relationships`` is set."""
+    from . import services
+
+    found = discover(row)
+    wanted = {str(d).lower() for d in directory_ids} if directory_ids else None
+    subtree = _subtree(db, row.tenant_id)
+    linked = {c.directory_id.lower(): c for c in db.execute(select(M365Connection).where(M365Connection.tenant_id.in_(subtree))).scalars()}
+    tenants = [t for t in db.execute(select(Tenant).where(Tenant.id.in_(subtree), Tenant.kind == "customer")).scalars()]
+    results = []
+    for customer in found["customers"]:
+        directory_id = customer["tenantId"]
+        if wanted is not None and directory_id not in wanted:
+            continue
+        name = customer["displayName"] or customer["defaultDomain"] or directory_id
+        result = {"tenantId": directory_id, "displayName": name, "gdap": customer["gdap"]}
+        if directory_id in linked:
+            results.append({**result, "status": "already linked", "fenrirTenantId": linked[directory_id].tenant_id})
+            continue
+        tenant = next((t for t in tenants if str((t.settings or {}).get("m365DirectoryId", "")).lower() == directory_id), None) or \
+            next((t for t in tenants if t.name.strip().lower() == name.strip().lower()), None)
+        created = tenant is None
+        if created:
+            tenant = services.create_customer(db, name, row.tenant_id, actor)
+            tenants.append(tenant)
+        tenant.settings = {**(tenant.settings or {}), "m365DirectoryId": directory_id}
+        result["fenrirTenantId"], result["createdCustomer"] = tenant.id, created
+        if customer["gdap"] != "active":
+            if create_relationships and customer["gdap"] in ("none", "expired"):
+                try:
+                    rel = create_relationship(row, f"Fenrir {name}"[:50], directory_id)
+                    result.update(status="invitation created", invitationUrl=rel["invitationUrl"])
+                except PartnerError as exc:
+                    result.update(status="needs attention", error=str(exc))
+            else:
+                result["status"] = "awaiting GDAP" if customer["gdap"] == "pending" else "no GDAP relationship"
+            results.append(result)
+            continue
+        try:
+            result["consent"] = consent_app(row, directory_id)
+        except (PartnerError, httpx.HTTPError) as exc:
+            result["consent"] = "failed: " + str(exc)[:200]
+        try:
+            connection = onboard_customer(db, row, directory_id, tenant.id, name, actor)
+            db.flush()
+            result.update(status="linked", connectionId=connection.id)
+        except PartnerError as exc:
+            result.update(status="needs attention", error=str(exc))
+        results.append(result)
+    row.settings = {**(row.settings or {}), "lastImportAt": utcnow().isoformat() + "Z"}
+    audit.record(db, actor, "m365.gdap.imported", row.partner_directory_id, row.tenant_id,
+                 linked=sum(1 for r in results if r["status"] == "linked"),
+                 created=sum(1 for r in results if r.get("createdCustomer")))
+    return results
+
+
+def _subtree(db: Session, tenant_id: str) -> list[str]:
+    from .deps import tenant_subtree
+
+    return list(tenant_subtree(db, tenant_id))
+
+
+def tick(db: Session) -> None:
+    """Auto-import: link new GDAP customers for partners that turned it on (never creates relationships)."""
+    import logging
+
+    for row in db.execute(select(M365Partner).where(M365Partner.status == "connected")).scalars().all():
+        settings = row.settings or {}
+        if not settings.get("autoImport"):
+            continue
+        last = _when(settings.get("lastImportAt"))
+        if last and utcnow() - last < IMPORT_EVERY:
+            continue
+        try:
+            found = discover(row)
+            ids = [c["tenantId"] for c in found["customers"] if c["gdap"] == "active"]
+            if ids:
+                import_customers(db, row, "system:gdap-import", ids)
+            else:
+                row.settings = {**settings, "lastImportAt": utcnow().isoformat() + "Z"}
+            db.commit()
+        except (PartnerError, httpx.HTTPError, ValueError) as exc:
+            db.rollback()
+            logging.getLogger("fenrir.m365").warning("GDAP auto-import failed for %s: %s", row.partner_directory_id, exc)
+
+
 def view(row: M365Partner) -> dict:
     return {"id": row.id, "tenantId": row.tenant_id, "partnerDirectoryId": row.partner_directory_id, "clientId": row.client_id,
             "status": row.status, "lastError": row.last_error, "signedInAs": row.signed_in_as,
             "roleGroups": {RECOMMENDED_ROLES.get(k, k): v for k, v in (row.role_groups or {}).items()},
-            "refreshedAt": row.refreshed_at.isoformat() + "Z" if row.refreshed_at else None}
+            "refreshedAt": row.refreshed_at.isoformat() + "Z" if row.refreshed_at else None,
+            "autoImport": bool((row.settings or {}).get("autoImport")), "lastImportAt": (row.settings or {}).get("lastImportAt"),
+            "check": (row.settings or {}).get("check")}

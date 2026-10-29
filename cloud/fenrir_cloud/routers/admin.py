@@ -13,11 +13,11 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from sqlalchemy import text, select
 from sqlalchemy.orm import Session
 
-from .. import roles, sessions, audit, crypto, deployment_installers, policy_schema, ratelimit
+from .. import roles, sessions, audit, crypto, deployment_installers, ratelimit
 from ..config import get_settings
 from ..db import get_db
 from ..deps import REAUTH_MINUTES, Principal, current_principal, require_reauth, scoped_tenant, tenant_subtree
-from ..models import AuditLog, Device, DeviceGroup, EnrollmentToken, Policy, Tenant, User, utcnow
+from ..models import AuditLog, Device, DeviceGroup, EnrollmentToken, Tenant, User, utcnow
 from ..security import ROLES, digest, hash_password, issue_token, new_secret, new_totp_secret, totp_uri, verify_password, verify_totp, reauth_state
 from ..serialize import apply_fields, to_dict
 
@@ -304,21 +304,13 @@ def create_tenant(body: dict = Body(...), principal: Principal = Depends(current
         raise HTTPException(400, "name is required")
     parent_id = body.get("parentId") or principal.user.tenant_id
     principal.check_tenant(parent_id)
-    slug = _slugify(body.get("slug") or name)
-    if db.execute(select(Tenant).where(Tenant.slug == slug)).scalar_one_or_none():
-        slug = f"{slug}-{new_secret('x', 3)[2:].lower()}"
-    template = str(body.get("template") or "balanced")
-    if template not in policy_schema.TEMPLATES:
-        raise HTTPException(400, "unknown template")
-    tenant = Tenant(name=name, slug=slug, parent_id=parent_id, kind="customer", plan=str(body.get("plan") or "complete"))
-    db.add(tenant)
-    db.flush()
-    policy = Policy(tenant_id=tenant.id, name=f"{name} default", template=template,
-                    settings=policy_schema.template_settings(template), updated_by=principal.actor)
-    db.add(policy)
-    db.flush()
-    tenant.default_policy_id = policy.id
-    audit.record(db, principal.actor, "tenant.created", tenant.id, tenant.id, template=template)
+    from .. import services
+
+    try:
+        tenant = services.create_customer(db, name, parent_id, principal.actor, str(body.get("template") or "balanced"),
+                                          str(body.get("plan") or "complete"), body.get("slug"))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     db.commit()
     return to_dict(tenant)
 
