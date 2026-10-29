@@ -6,10 +6,13 @@ Console: **MSP operations → M365 partner & standards**. API: `/api/console/m36
 
 1. Register an app in the MSP's **partner** tenant:
    - multi-tenant, with **Allow public client flows** on;
-   - delegated Graph permissions `DelegatedAdminRelationship.ReadWrite.All`, `Directory.Read.All`, `Group.ReadWrite.All` and `offline_access`;
+   - **Delegated** Graph permissions `DelegatedAdminRelationship.ReadWrite.All`, `Directory.Read.All`, `Group.ReadWrite.All` and `offline_access`. They must be Delegated: the partner connection signs in as a partner admin, and Microsoft ignores Application permissions for a signed-in user;
    - the customer-side permissions you need, for example `Policy.ReadWrite.ConditionalAccess`, `Policy.Read.All`, `DeviceManagementConfiguration.ReadWrite.All`, `DeviceManagementManagedDevices.Read.All`, `User.ReadWrite.All`, `AuditLog.Read.All` and `Domain.Read.All`;
-   - the **Microsoft Partner Center** permission `user_impersonation`, so Fenrir can consent its app in customer tenants;
-   - admin consent granted for all of them.
+   - the **Microsoft Partner Center** API's Delegated permission `user_impersonation`, so Fenrir can consent its app in customer tenants. This is a different API from "Partner Customer Delegated Administration";
+   - admin consent for all of them. You don't have to set any of this up in the Entra admin centre first. The partner sign-in asks for the partner Graph permissions by name, plus `DelegatedPermissionGrant.ReadWrite.All` for setup, and a Global Administrator approves them on Microsoft's sign-in page by ticking **Consent on behalf of your organization**.
+     - Straight after the sign-in, Fenrir uses the setup permission to grant itself the Partner Center API's `user_impersonation` for the organisation (app ID `fa3d9a0c-3fb0-42cc-9193-47c7ecd2edbd`). One sign-in can only approve one API, so this would otherwise need a second sign-in.
+     - It then removes `DelegatedPermissionGrant.ReadWrite.All` from its own grant, so it does not keep the power to grant permissions.
+     - If that step fails, the partner check offers **Approve Partner Center access**, a second sign-in for Partner Center alone.
 2. Enter the partner tenant ID and app ID. A client secret is only needed if public client flows are off. This needs MSP staff with `m365_admin` and `manage_tenants`, plus step-up re-authentication.
 3. **Sign in as partner admin** with a device code. Use an account that belongs to the partner tenant (not a guest) and is an **Admin Agent** in Partner Center; Microsoft refuses the GDAP APIs to anyone else ("Access to the resource is restricted"). The device code and the refresh token stay encrypted on the server. Microsoft rotates refresh tokens, and Fenrir keeps the newest.
    - **Partner check** confirms all of this and lists what to fix: the tenant is registered as a partner (`partnerTenantType`), the account is a member and in AdminAgents, the app's permissions are in the token, and Partner Center accepts the sign-in.

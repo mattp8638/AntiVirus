@@ -42,10 +42,14 @@ function Partner() {
       <button style={{ marginTop: 10 }} disabled={busy} onClick={async () => { if (await run(() => api("m365/partner", { body: form }), "Partner app saved")) reload(); }}>Save</button>
     </div>
   );
-  const signin = async () => setCode(await run(() => api<any>("m365/partner/signin", { method: "POST" })));
+  const signin = async (purpose: "graph" | "partner-center" = "graph") => setCode(await run(() => api<any>("m365/partner/signin", { body: { purpose } })));
   const poll = async () => {
     const r = await run(() => api<any>("m365/partner/signin/poll", { method: "POST" }));
-    if (r?.status === "ok") { setCode(null); reload(); }
+    if (r?.status === "ok") {
+      setCode(null);
+      await run(() => api<any>("m365/partner/check"));  // show straight away whether the approval fixed it
+      reload();
+    }
   };
   return (
     <>
@@ -54,18 +58,18 @@ function Partner() {
           <Pill value={partner.status} tone={partner.status === "connected" ? "good" : "warn"} /></div>
         <p className="small muted">{partner.signedInAs ? `Signed in as ${partner.signedInAs}` : "Not signed in"}{partner.refreshedAt ? ` · token refreshed ${ago(partner.refreshedAt)}` : ""}{partner.lastError ? ` · ${partner.lastError}` : ""}</p>
         <div className="row">
-          <button disabled={busy} onClick={signin}>{partner.status === "connected" ? "Sign in again" : "Sign in as partner admin"}</button>
+          <button disabled={busy} onClick={() => signin()}>{partner.status === "connected" ? "Sign in again" : "Sign in as partner admin"}</button>
           <button className="ghost" disabled={busy || partner.status !== "connected"} onClick={async () => { if (await run(() => api("m365/partner/role-groups", { method: "POST" }), "Role groups ready")) reload(); }}>Create role groups</button>
         </div>
-        {code && <p>Go to <a href={code.verificationUri} target="_blank" rel="noreferrer">{code.verificationUri}</a> and enter <b className="mono">{code.userCode}</b>, then <button className="ghost" disabled={busy} onClick={poll}>I've signed in</button></p>}
+        {code && <p>Go to <a href={code.verificationUri} target="_blank" rel="noreferrer">{code.verificationUri}</a> and enter <b className="mono">{code.userCode}</b>{code.purpose === "partner-center" ? " to approve Partner Center access" : ""}. Sign in as a Global Administrator of the partner tenant and, when Microsoft asks, tick <b>Consent on behalf of your organization</b> and accept. {code.purpose !== "partner-center" && "That one approval covers everything: Fenrir then grants itself Partner Center access and gives back the permission it used to do so. "}Then <button className="ghost" disabled={busy} onClick={poll}>I've signed in</button></p>}
         {Object.keys(partner.roleGroups || {}).length > 0 && <p className="small muted">{Object.keys(partner.roleGroups).length} role groups: add partner staff to "Fenrir GDAP - …" groups to give them that role in customer tenants.</p>}
       </div>
-      {partner.status === "connected" && <><PartnerCheck partner={partner} onChecked={reload} /><Customers partner={partner} onChanged={reload} /><Relationships /></>}
+      {partner.status === "connected" && <><PartnerCheck partner={partner} onChecked={reload} onApprove={signin} busy={busy} /><Customers partner={partner} onChanged={reload} /><Relationships /></>}
     </>
   );
 }
 
-function PartnerCheck({ partner, onChecked }: { partner: any; onChecked: () => void }) {
+function PartnerCheck({ partner, onChecked, onApprove, busy: signingIn }: { partner: any; onChecked: () => void; onApprove: (purpose: "graph" | "partner-center") => void; busy: boolean }) {
   const { run, busy } = useAction();
   const check = partner.check;
   const runCheck = async () => { if (await run(() => api<any>("m365/partner/check"))) onChecked(); };
@@ -78,6 +82,10 @@ function PartnerCheck({ partner, onChecked }: { partner: any; onChecked: () => v
         <p className="small muted">{displayValue(check.organization || "Unknown organisation")}{check.partnerTenantType ? ` · partner type ${check.partnerTenantType}` : ""}
           {check.user ? ` · ${check.user} (${check.userType || "member"}${check.adminAgent ? ", Admin Agent" : ""})` : ""} · checked {ago(check.checkedAt)}</p>
         {check.problems.length > 0 && <ul className="small">{check.problems.map((p: string, i: number) => <li key={i} className="error">{displayValue(p)}</li>)}</ul>}
+        {(check.actions?.approveGraph || check.actions?.approvePartnerCenter) && <div className="row" style={{ gap: 8 }}>
+          {check.actions.approveGraph && <button className="primary" disabled={busy || signingIn} onClick={() => onApprove("graph")}>Approve Microsoft Graph permissions</button>}
+          {check.actions.approvePartnerCenter && <button className={check.actions.approveGraph ? "" : "primary"} disabled={busy || signingIn} onClick={() => onApprove("partner-center")}>Approve Partner Center access</button>}
+        </div>}
       </>}
     </div>
   );
