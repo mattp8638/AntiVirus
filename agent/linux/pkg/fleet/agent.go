@@ -769,6 +769,12 @@ func (a *Agent) ExecuteContext(ctx context.Context, cmd Command) (map[string]int
 		return PIIScanContext(ctx, cmd.PayloadJSON)
 	case "network.discover":
 		return a.DiscoverContext(ctx, cmd.PayloadJSON)
+	case "amt.wsman":
+		cred, err := a.client.FetchAmtCredential(cmd.ID)
+		if err != nil {
+			return nil, fmt.Errorf("could not get the AMT credential: %w", err)
+		}
+		return AmtWsmanContext(ctx, cmd.PayloadJSON, cred, nil)
 	case "patch.install":
 		return PatchInstallContext(ctx, cmd.PayloadJSON)
 	case "software.install":
@@ -786,6 +792,20 @@ func (a *Agent) ExecuteContext(ctx context.Context, cmd Command) (map[string]int
 		}
 		if !a.state.Policy.ModuleBool("remoteAccess", "enabled", true) {
 			return map[string]interface{}{"consent": "denied"}, errors.New("remote access is turned off by policy")
+		}
+		// The device enforces its own policy too: a compromised console cannot open a silent session or a tunnel
+		// this device's policy does not allow.
+		if opts.Mode == "backstage" && a.state.Policy.ModuleString("remoteAccess", "backstage", "off") != "on" {
+			return nil, errors.New("backstage access is turned off by this device's policy")
+		}
+		if opts.Mode == "tunnel" {
+			if !a.state.Policy.ModuleBool("remoteAccess", "allowTunnels", false) {
+				return nil, errors.New("tunnels are turned off by this device's policy")
+			}
+			opts.AllowedPorts = intersectPorts(opts.AllowedPorts, a.state.Policy.ModuleStrings("remoteAccess", "tunnelPorts"))
+			if err := remote.TunnelTargetAllowed(opts.TargetHost, opts.TargetPort, opts.AllowedPorts); err != nil {
+				return nil, err
+			}
 		}
 		opts.RelayURL = RelayURLForServer(a.cfg.Server, opts.RelayURL)
 		if err := a.remote.Start(opts); err != nil {

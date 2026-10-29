@@ -365,6 +365,13 @@ SCHEMA: tuple[Section, ...] = (
             F("allowTerminal", "bool", True, "Allow remote terminal (PowerShell / shell)"),
             F("allowFileTransfer", "bool", True, "Allow file transfer"),
             F("showBanner", "bool", True, "Show a 'session in progress' banner to the user"),
+            F("backstage", "enum", "off", "Backstage access",
+              "Silent SYSTEM/root terminal, files, processes and services with no prompt, banner or screen, even with nobody "
+              "signed in. Each session needs a fresh sign-in check and a reason, and is always recorded.", options=("off", "on")),
+            F("allowTunnels", "bool", False, "Allow tunnels through this device",
+              help="Technicians can reach agentless machines on this device's LAN (RDP, SSH, VNC, web UIs, Intel AMT) through it."),
+            F("tunnelPorts", "list", ["22", "23", "80", "443", "3389", "5900", "8080", "8443", "16992", "16993", "16994", "16995"], "Tunnel ports",
+              "TCP ports a tunnel may reach on private LAN addresses."),
             F("blankScreen", "bool", False, "Allow technicians to blank the user's screen", platforms=("windows",)),
             F("idleTimeoutMinutes", "int", 30, "End idle sessions after (minutes)", min=5, max=480),
             F("maxFps", "int", 15, "Maximum frame rate", min=1, max=30),

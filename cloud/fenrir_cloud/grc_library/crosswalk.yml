@@ -1,0 +1,251 @@
+# Fenrir common controls: one control, implemented and evidenced once, mapped to the requirements it satisfies in every
+# framework in this library. "signals" name the live checks that evidence it automatically (grc_automation.SIGNALS).
+# Mappings are to requirement ids in grc_library/*.yml; tests fail if an id does not exist.
+version: 1
+controls:
+  - id: FC-ASSET
+    title: Asset and software inventory
+    description: Every device and its installed software is known and reporting.
+    signals: [fleet-reporting]
+    maps:
+      cis-v8-ig1: ["1.1", "1.2", "2.1", "2.3"]
+      cyber-essentials: [A2.4, A2.5, A2.6]
+      essential-eight: [E8-PA-1]
+      iso-27001: [A.5.9]
+      nist-csf-2: [ID.AM]
+      ncsc-caf: [A3.a]
+      nis2: [NIS2-21i]
+  - id: FC-MALWARE
+    title: Malware protection
+    description: Real-time anti-malware on every device, kept up to date, scanning files and web content.
+    signals: [malware-protection]
+    maps:
+      cis-v8-ig1: ["10.1", "10.2"]
+      cyber-essentials: [A6.2.2, A8.1, A8.2, A8.3]
+      cyber-essentials-plus: [CEP-MALWARE]
+      iso-27001: [A.8.7]
+      pci-dss: [PCI-5]
+      soc2: [CC6.8]
+  - id: FC-WEBFILTER
+    title: Web and DNS filtering
+    description: Malicious and phishing websites are blocked by DNS and web protection.
+    signals: [web-filtering]
+    maps:
+      cis-v8-ig1: ["9.2"]
+      cyber-essentials: [A8.4]
+      iso-27001: [A.8.23]
+  - id: FC-FIREWALL
+    title: Firewalls
+    description: Boundary and host firewalls block unsolicited inbound connections.
+    signals: [firewall, baseline:FC-FIREWALL]
+    maps:
+      cis-v8-ig1: ["4.4", "4.5"]
+      cyber-essentials: [A4.1, A4.9]
+      iso-27001: [A.8.20]
+      nist-csf-2: [PR.IR]
+      pci-dss: [PCI-1]
+      soc2: [CC6.6]
+  - id: FC-SECURECONFIG
+    title: Secure configuration and hardening baseline
+    description: Devices follow a hardening baseline; unneeded services, protocols and auto-run are off; drift is fixed automatically.
+    signals: [secure-configuration, baseline:FC-SECURECONFIG]
+    maps:
+      cis-v8-ig1: ["4.1", "4.2", "4.7", "10.3"]
+      cyber-essentials: [A5.1, A5.3, A5.8]
+      iso-27001: [A.8.9]
+      ncsc-caf: [B4.b]
+      nist-csf-2: [PR.PS]
+      nis2: [NIS2-21e]
+      pci-dss: [PCI-2]
+      soc2: [CC7.1]
+  - id: FC-SCREENLOCK
+    title: Automatic session locking
+    description: Unattended sessions lock after a short period of inactivity.
+    signals: [baseline:FC-SCREENLOCK]
+    maps:
+      cis-v8-ig1: ["4.3"]
+      cyber-essentials: [A5.9, A5.10]
+  - id: FC-PATCH
+    title: Security updates
+    description: Operating systems and applications are patched automatically and promptly (within 14 days for high and critical).
+    signals: [patching]
+    maps:
+      cis-v8-ig1: ["7.3", "7.4"]
+      cyber-essentials: [A6.4, A6.4.1, A6.5, A6.5.1]
+      cyber-essentials-plus: [CEP-PATCH]
+      essential-eight: [E8-PA-2, E8-PA-3, E8-PO-1, E8-PO-2]
+      iso-27001: [A.8.8]
+      pci-dss: [PCI-6]
+      ncsc-caf: [B4.d]
+      nis2: [NIS2-21e]
+  - id: FC-VULN
+    title: Vulnerability management
+    description: Vulnerabilities are found continuously and remediated by exploit likelihood (EPSS and known-exploited first).
+    signals: [vulnerabilities]
+    maps:
+      cis-v8-ig1: ["7.1", "7.2"]
+      essential-eight: [E8-PA-1]
+      iso-27001: [A.8.8]
+      ncsc-caf: [B4.d]
+      nist-csf-2: [ID.RA]
+      pci-dss: [PCI-11]
+      soc2: [CC7.1]
+  - id: FC-SUPPORTED
+    title: Supported software only
+    description: Unsupported operating systems and applications are removed or isolated.
+    signals: []
+    maps:
+      cis-v8-ig1: ["2.2"]
+      cyber-essentials: [A6.1, A6.2, A6.6]
+      essential-eight: [E8-PA-4, E8-PO-3]
+  - id: FC-MFA
+    title: Multi-factor authentication
+    description: MFA for every cloud service user, administrators and remote access.
+    signals: [m365-mfa]
+    maps:
+      cis-v8-ig1: ["6.3", "6.4", "6.5"]
+      cyber-essentials: [A7.11, A7.12]
+      essential-eight: [E8-MFA-1, E8-MFA-2, E8-MFA-3]
+      iso-27001: [A.8.5]
+      ncsc-caf: [B2.a]
+      nist-csf-2: [PR.AA]
+      nis2: [NIS2-21j]
+      pci-dss: [PCI-8]
+  - id: FC-PRIV
+    title: Privileged access
+    description: Administrator rights are limited, separate and reviewed; day-to-day accounts are standard users.
+    signals: [least-privilege, baseline:FC-PRIV]
+    maps:
+      cis-v8-ig1: ["5.4"]
+      cyber-essentials: [A7.4, A7.5, A7.6, A7.7, A7.9]
+      essential-eight: [E8-RAP-1, E8-RAP-2, E8-RAP-3]
+      iso-27001: [A.8.2]
+      ncsc-caf: [B2.c]
+      pci-dss: [PCI-7]
+      soc2: [CC6.3]
+  - id: FC-ACCOUNTS
+    title: Account lifecycle
+    description: Accounts are unique, approved, and removed when people leave; dormant and guest accounts are disabled.
+    signals: [baseline:FC-ACCOUNTS]
+    maps:
+      cis-v8-ig1: ["5.1", "5.3", "6.1", "6.2"]
+      cyber-essentials: [A5.2, A7.1, A7.2, A7.3]
+      iso-27001: [A.5.16, A.5.18]
+      ncsc-caf: [B2.d]
+      soc2: [CC6.2]
+  - id: FC-PASSWORDS
+    title: Passwords and authentication information
+    description: Unique passwords, protection against guessing, and a process for compromised passwords.
+    signals: []
+    maps:
+      cis-v8-ig1: ["5.2"]
+      cyber-essentials: [A5.5, A5.6, A5.7, A7.10]
+      iso-27001: [A.5.17]
+  - id: FC-APPCONTROL
+    title: Application control
+    description: Only approved software runs or installs; users cannot install software.
+    signals: [application-control, baseline:FC-APPCONTROL]
+    maps:
+      cis-v8-ig1: ["2.3"]
+      cyber-essentials: [A7.8, A8.5]
+      essential-eight: [E8-AC-1, E8-AC-2, E8-AC-3]
+      iso-27001: [A.8.19]
+  - id: FC-ENCRYPTION
+    title: Encryption at rest
+    description: End-user devices and stored data are encrypted (BitLocker, FileVault).
+    signals: [baseline:FC-ENCRYPTION]
+    maps:
+      cis-v8-ig1: ["3.6"]
+      iso-27001: [A.8.24]
+      ncsc-caf: [B3.c]
+      nis2: [NIS2-21h]
+      pci-dss: [PCI-3]
+      uk-gdpr: [Art.32]
+  - id: FC-LOGGING
+    title: Logging and monitoring
+    description: Security events are collected, retained and monitored with alerting.
+    signals: [monitoring]
+    maps:
+      cis-v8-ig1: ["8.1", "8.2", "8.3"]
+      iso-27001: [A.8.15, A.8.16]
+      ncsc-caf: [C1.a, C1.b, C1.c]
+      nist-csf-2: [DE.CM]
+      pci-dss: [PCI-10]
+      soc2: [CC7.2]
+      dora: [DORA-DETECT]
+  - id: FC-BACKUP
+    title: Backup and recovery
+    description: Automated, protected backups with tested restores.
+    signals: [backup]
+    maps:
+      cis-v8-ig1: ["11.1", "11.2", "11.3", "11.4"]
+      essential-eight: [E8-RB-1, E8-RB-2, E8-RB-3]
+      iso-27001: [A.8.13]
+      ncsc-caf: [B5.c]
+      nist-csf-2: [RC.RP]
+      nis2: [NIS2-21c]
+      soc2: [CC9.1]
+  - id: FC-INCIDENT
+    title: Incident response
+    description: Incidents are detected, triaged, contained and learned from, with breach notification where required.
+    signals: [incident-response]
+    maps:
+      cis-v8-ig1: ["17.1", "17.2", "17.3"]
+      iso-27001: [A.5.24, A.5.25, A.5.26, A.5.27]
+      ncsc-caf: [D1.a, D1.b]
+      nist-csf-2: [RS.MA, RS.AN, RS.MI]
+      nis2: [NIS2-21b, NIS2-23]
+      soc2: [CC7.3, CC7.4, CC7.5]
+      dora: [DORA-INCIDENT]
+      uk-gdpr: [Art.33-34]
+      eu-gdpr: [GDPR-BREACH]
+      govs-007: [G007-INCIDENT]
+  - id: FC-TRAINING
+    title: Security awareness training
+    description: Everyone is trained to recognise phishing and handle data and credentials safely.
+    signals: []
+    maps:
+      cis-v8-ig1: ["14.1", "14.2", "14.3", "14.4", "14.5", "14.6", "14.7", "14.8"]
+      iso-27001: [A.6.3]
+      ncsc-caf: [B6.b]
+      nist-csf-2: [PR.AT]
+      nis2: [NIS2-21g]
+      soc2: [CC1.4]
+  - id: FC-SUPPLIER
+    title: Third-party risk management
+    description: Suppliers are inventoried, tiered and assessed on a schedule; contracts and certificates are tracked.
+    signals: [third-party-risk]
+    maps:
+      cis-v8-ig1: ["15.1"]
+      iso-27001: [A.5.19, A.5.20, A.5.21, A.5.22, A.5.23]
+      ncsc-caf: [A4.a]
+      nist-csf-2: [GV.SC]
+      nis2: [NIS2-21d]
+      soc2: [CC9.2]
+      dora: [DORA-THIRD, DORA-EXIT]
+      uk-gdpr: [Art.28]
+      eu-gdpr: [GDPR-PROCESSORS]
+      govs-007: [G007-SUPPLIERS]
+      def-stan-05-138: [CSM-FLOWDOWN]
+  - id: FC-POLICY
+    title: Security policy and governance
+    description: Approved, reviewed security policies with management accountability.
+    signals: [policies-approved]
+    maps:
+      iso-27001: ["5.2", A.5.1]
+      ncsc-caf: [B1.a]
+      nist-csf-2: [GV.PO]
+      nis2: [NIS2-21a]
+      pci-dss: [PCI-12]
+      soc2: [CC5.3]
+      govs-007: [G007-GOV]
+  - id: FC-RISK
+    title: Risk assessment
+    description: Information security risks are assessed and treated on a regular cycle.
+    signals: []
+    maps:
+      iso-27001: [6.1.2, "8.2"]
+      ncsc-caf: [A2.a]
+      nist-csf-2: [GV.RM]
+      soc2: [CC3.2]
+      dora: [DORA-RISK]

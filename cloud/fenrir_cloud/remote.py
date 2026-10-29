@@ -40,7 +40,26 @@ MAX_SESSION_HOURS = 12
 INPUT_TYPES = {"mm", "md", "mu", "wh", "kd", "ku", "type", "cad", "clip.set", "blank", "lock"}
 CHANNEL_POLICY = {"term": "allowTerminal", "files": "allowFileTransfer"}
 AUDITED = {("files", "get"), ("files", "put"), ("files", "delete"), ("files", "mkdir"), ("input", "cad"), ("term", "open"),
-           ("sys", "blank"), ("input", "lock"), ("sys", "reboot")}
+           ("sys", "blank"), ("input", "lock"), ("sys", "reboot"), ("tunnel", "open")}
+MODES = {"desktop", "terminal", "files", "backstage", "tunnel"}
+# Channels each mode may use. Backstage never touches the user's desktop; a tunnel carries only its TCP streams.
+MODE_CHANNELS = {"backstage": {"sys", "term", "files", "procs", "svc"}, "tunnel": {"sys", "tunnel"}}
+DEFAULT_TUNNEL_PORTS = (22, 23, 80, 443, 3389, 5900, 8080, 8443, 16992, 16993, 16994, 16995)
+
+
+def tunnel_ports(policy: dict) -> set[int]:
+    ports = policy.get("tunnelPorts") or list(DEFAULT_TUNNEL_PORTS)
+    return {int(p) for p in ports if str(p).isdigit() and 0 < int(p) < 65536}
+
+
+def private_address(host: str) -> bool:
+    import ipaddress
+
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return address.is_private and not (address.is_loopback or address.is_link_local or address.is_multicast or address.is_unspecified)
 
 
 # --------------------------------------------------------------------------- tokens
@@ -81,9 +100,13 @@ def remote_policy(db: Session, device: Device) -> dict:
 
 
 def start_session(db: Session, device: Device, technician: str, mode: str = "desktop", view_only: bool = False,
-                  ticket_id: str | None = None, reason: str = "") -> RemoteSession:
+                  ticket_id: str | None = None, reason: str = "", target: dict | None = None) -> RemoteSession:
+    """Start a session. ``backstage`` is a silent SYSTEM/root session (terminal, files, processes, services) with no
+    prompt, banner or screen; ``tunnel`` relays TCP from this device to ``target`` ({host, port, nodeId}) on its LAN."""
     from . import services
 
+    if mode not in MODES:
+        raise ValueError(f"mode must be one of {', '.join(sorted(MODES))}")
     policy = remote_policy(db, device)
     if not policy.get("enabled", True):
         raise PermissionError("Remote access is turned off by this device's policy")
@@ -91,29 +114,49 @@ def start_session(db: Session, device: Device, technician: str, mode: str = "des
         raise PermissionError("Remote terminal is turned off by this device's policy")
     if mode == "files" and not policy.get("allowFileTransfer", True):
         raise PermissionError("File transfer is turned off by this device's policy")
+    if mode == "backstage" and policy.get("backstage", "off") != "on":
+        raise PermissionError("Backstage access is turned off by this device's policy")
+    target = target or {}
+    if mode == "tunnel":
+        if not policy.get("allowTunnels", False):
+            raise PermissionError("Tunnels through this device are turned off by its policy")
+        host, port = str(target.get("host") or ""), int(target.get("port") or 0)
+        if not private_address(host):
+            raise ValueError("A tunnel reaches private LAN addresses only (an IP address on the device's network)")
+        if port not in tunnel_ports(policy):
+            raise PermissionError(f"Port {port} is not in this device's allowed tunnel ports")
+    silent = mode in ("backstage", "tunnel")
     view_only = view_only or not policy.get("allowControl", True)
     now = utcnow()
     session = RemoteSession(tenant_id=device.tenant_id, device_id=device.id, technician=technician, mode=mode, view_only=view_only,
                             ticket_id=ticket_id, reason=reason, created_at=now, expires_at=now + timedelta(hours=MAX_SESSION_HOURS),
-                            consent="pending" if policy.get("consent", "when_user_present") != "never" else "not_required",
-                            events=[{"at": now.isoformat(), "by": technician, "type": "requested", "mode": mode}])
+                            consent="not_required" if silent or policy.get("consent", "when_user_present") == "never" else "pending",
+                            target_host=str(target.get("host") or "") if mode == "tunnel" else "",
+                            target_port=int(target.get("port") or 0) if mode == "tunnel" else None,
+                            target_node_id=target.get("nodeId") if mode == "tunnel" else None,
+                            events=[{"at": now.isoformat(), "by": technician, "type": "requested", "mode": mode,
+                                     **({"target": f"{target.get('host')}:{target.get('port')}"} if mode == "tunnel" else {})}])
     db.add(session)
     db.flush()
     payload = {
         "sessionId": session.id, "relayUrl": relay_url(session), "token": agent_token(session), "mode": mode,
         "viewOnly": view_only, "technician": technician,
-        "consent": policy.get("consent", "when_user_present"),
+        "consent": "never" if silent else policy.get("consent", "when_user_present"),
         "consentTimeoutSeconds": policy.get("consentTimeoutSeconds", 30),
         "onConsentTimeout": policy.get("onConsentTimeout", "deny"),
         "allowTerminal": policy.get("allowTerminal", True), "allowFileTransfer": policy.get("allowFileTransfer", True),
-        "showBanner": policy.get("showBanner", True), "maxFps": policy.get("maxFps", 15),
+        "showBanner": policy.get("showBanner", True) and not silent, "maxFps": policy.get("maxFps", 15),
         "quality": policy.get("defaultQuality", 70), "idleTimeoutMinutes": policy.get("idleTimeoutMinutes", 30),
     }
+    if mode == "tunnel":
+        payload.update({"targetHost": session.target_host, "targetPort": session.target_port,
+                        "allowedPorts": sorted(tunnel_ports(policy))})
     command = services.enqueue_command(db, device, "remote.session.start", technician, payload=payload,
                                        reason=reason or f"Remote {mode} session")
     db.flush()
     session.command_id = command.id
-    audit.record(db, technician, "remote.session.requested", f"{device.hostname}:{mode}", device.tenant_id, session=session.id)
+    audit.record(db, technician, "remote.session.requested", f"{device.hostname}:{mode}", device.tenant_id, session=session.id,
+                 reason=reason[:300], **({"tunnelTarget": f"{session.target_host}:{session.target_port}"} if mode == "tunnel" else {}))
     return session
 
 
@@ -267,6 +310,7 @@ class Room:
     session_id: str
     view_only: bool
     allow: dict
+    mode: str = "desktop"
     agent: Peer | None = None
     viewers: list[Peer] = field(default_factory=list)
     bytes_relayed: int = 0
@@ -319,11 +363,11 @@ class RelayHub:
             asyncio.run_coroutine_threadsafe(peer.send(message), loop)
 
     # -- session rooms --------------------------------------------------------
-    def room(self, session_id: str, view_only: bool, allow: dict) -> Room:
+    def room(self, session_id: str, view_only: bool, allow: dict, mode: str = "desktop") -> Room:
         self.loop = asyncio.get_running_loop()
         room = self.rooms.get(session_id)
         if room is None:
-            room = Room(session_id=session_id, view_only=view_only, allow=allow)
+            room = Room(session_id=session_id, view_only=view_only, allow=allow, mode=mode)
             self.rooms[session_id] = room
         return room
 
@@ -337,6 +381,9 @@ class RelayHub:
         except json.JSONDecodeError:
             return False, None
         channel, kind = message.get("ch"), message.get("t")
+        allowed = MODE_CHANNELS.get(room.mode)
+        if (allowed is not None and channel not in allowed) or (channel == "tunnel" and room.mode != "tunnel"):
+            return False, None
         if channel == "input" and kind in INPUT_TYPES and room.view_only:
             return False, None
         if channel in CHANNEL_POLICY and not room.allow.get(CHANNEL_POLICY[channel], True):
@@ -345,6 +392,15 @@ class RelayHub:
         if (channel, kind) in AUDITED:
             audit_event = {"type": f"{channel}.{kind}", "path": str(message.get("path", ""))[:300]}
         return True, audit_event
+
+    @staticmethod
+    def viewer_binary_allowed(room: Room, data: bytes) -> bool:
+        """Viewer binary frames: file upload chunks (0x03), or tunnel data (0x05) in a tunnel session only."""
+        if not data:
+            return False
+        if room.mode == "tunnel":
+            return data[0] == 0x05
+        return data[0] == 0x03 and room.allow.get("allowFileTransfer", True)
 
 
 hub = RelayHub()

@@ -5,6 +5,7 @@
 #include "SystemProfile.h"
 #include "ExtendedPolicy.h"
 #include "FirewallPolicy.h"
+#include "AmtWsman.h"
 #include "NetworkProbe.h"
 #include "BundleArchive.h"
 #include "RemotePipeIo.h"
@@ -2059,6 +2060,24 @@ std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
   if (command.type == L"network.probe") {
     return Utf8ToWide(RunNetworkProbe(WideToUtf8(command.payloadJson)));
   }
+  if (command.type == L"amt.wsman") {
+    const auto details = json::Parse(controlPlaneClient_->FetchAmtCredential(IdentitySnapshot(), command.commandId));
+    if (!details || !details->IsObject()) {
+      throw std::runtime_error("The AMT credential could not be read");
+    }
+    const auto text = [&](const char* key) {
+      return Utf8ToWide(details->Get(key) ? details->Get(key)->String().value_or("") : "");
+    };
+    AmtCredential credential;
+    credential.host = text("host");
+    credential.username = text("username");
+    credential.password = text("password");
+    credential.port = details->Get("port") ? static_cast<int>(details->Get("port")->Number().value_or(0)) : 0;
+    credential.tlsInsecure = details->Get("tlsInsecure") && details->Get("tlsInsecure")->Bool().value_or(false);
+    const auto result = RunAmtWsman(WideToUtf8(command.payloadJson), credential);
+    SecureZeroMemory(credential.password.data(), credential.password.size() * sizeof(wchar_t));
+    return Utf8ToWide(result);
+  }
   if (command.type == L"amsi.telemetry.submit") {
     return ExecuteAmsiTelemetrySubmitCommand(command);
   }
@@ -3226,59 +3245,87 @@ std::wstring AgentService::LaunchRemoteHelper(const RemoteCommand& command) {
     std::ofstream out(optionsPath, std::ios::binary | std::ios::trunc);
     out << WideToUtf8(payload);
   }
-  const auto windowsSession = InteractiveSessionId();
-  if (windowsSession == 0 || windowsSession == 0xFFFFFFFF) {
+  // Backstage sessions (terminal, files, processes, services) run as SYSTEM in the service's own session 0:
+  // nothing appears on the user's screen and they work with nobody signed in. Desktop sessions run in the
+  // signed-in user's console session.
+  const auto mode = ExtractPayloadString(command.payloadJson, "mode").value_or(L"");
+  if (mode == L"backstage" && processGuard_ && !processGuard_->CurrentExtendedPolicy().remoteBackstageAllowed) {
     std::filesystem::remove(optionsPath, ec);
-    throw std::runtime_error("No interactive Windows session is available for remote access");
+    throw std::runtime_error("Backstage access is turned off by this device's policy");
   }
-  HANDLE self = nullptr, primary = nullptr;
-  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID, &self) ||
-      !DuplicateTokenEx(self, MAXIMUM_ALLOWED, nullptr, SecurityImpersonation, TokenPrimary, &primary)) {
-    if (self) CloseHandle(self);
-    std::filesystem::remove(optionsPath, ec);
-    throw std::runtime_error("Could not prepare the remote access helper token");
+  if (mode == L"tunnel") {
+    // The device's own policy decides too: a tunnel needs allowTunnels and a port from its tunnelPorts.
+    const auto policy = processGuard_ ? processGuard_->CurrentExtendedPolicy() : ExtendedPolicy{};
+    const auto port = static_cast<int>(ExtractPayloadUInt32(command.payloadJson, "targetPort").value_or(0));
+    if (!policy.remoteTunnelsAllowed ||
+        std::find(policy.remoteTunnelPorts.begin(), policy.remoteTunnelPorts.end(), port) == policy.remoteTunnelPorts.end()) {
+      std::filesystem::remove(optionsPath, ec);
+      throw std::runtime_error("This tunnel is not allowed by this device's policy");
+    }
   }
-  CloseHandle(self);
-  DWORD target = windowsSession;
-  if (!SetTokenInformation(primary, TokenSessionId, &target, sizeof(target))) {
-    const DWORD error = GetLastError();
-    CloseHandle(primary);
-    std::filesystem::remove(optionsPath, ec);
-    throw std::runtime_error("Could not target the remote Windows session (error " + std::to_string(error) + ")");
-  }
+  const bool backstage = mode == L"backstage" || mode == L"tunnel";  // both run silently in session 0
   std::wstring commandLine = L"\"" + helper.wstring() + L"\" --options \"" + optionsPath.wstring() + L"\"";
   std::vector<wchar_t> mutableCommand(commandLine.begin(), commandLine.end());
   mutableCommand.push_back(L'\0');
   STARTUPINFOW startup{};
   startup.cb = sizeof(startup);
-  wchar_t desktop[] = L"winsta0\\default";
-  startup.lpDesktop = desktop;
   PROCESS_INFORMATION process{};
-  const BOOL created = CreateProcessAsUserW(primary, helper.c_str(), mutableCommand.data(), nullptr, nullptr, FALSE,
-                                            CREATE_NEW_PROCESS_GROUP, nullptr, helper.parent_path().c_str(), &startup, &process);
-  CloseHandle(primary);
-  if (!created) {
-    std::filesystem::remove(optionsPath, ec);
-    throw std::runtime_error("Could not start the remote access helper (error " + std::to_string(GetLastError()) + ")");
-  }
-  CloseHandle(process.hThread);
-  // Offer the service-side SAS broker before the helper reaches the relay, so
-  // the first click on the sign-in screen cannot race the 30-second start wait.
-  HANDLE watched = nullptr;
-  if (!DuplicateHandle(GetCurrentProcess(), process.hProcess, GetCurrentProcess(), &watched, SYNCHRONIZE, FALSE, 0)) {
-    TerminateProcess(process.hProcess, 1);
-    CloseHandle(process.hProcess);
-    std::filesystem::remove(optionsPath, ec);
-    throw std::runtime_error("Could not start the Ctrl+Alt+Del service channel");
-  }
-  try {
-    std::thread(ServeSasRequests, SasPipeName(sessionId), process.dwProcessId, windowsSession, watched).detach();
-  } catch (...) {
-    CloseHandle(watched);
-    TerminateProcess(process.hProcess, 1);
-    CloseHandle(process.hProcess);
-    std::filesystem::remove(optionsPath, ec);
-    throw;
+  const DWORD windowsSession = backstage ? 0 : InteractiveSessionId();
+  if (backstage) {
+    if (!CreateProcessW(helper.c_str(), mutableCommand.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
+                        nullptr, helper.parent_path().c_str(), &startup, &process)) {
+      std::filesystem::remove(optionsPath, ec);
+      throw std::runtime_error("Could not start the backstage helper (error " + std::to_string(GetLastError()) + ")");
+    }
+    CloseHandle(process.hThread);
+  } else {
+    if (windowsSession == 0 || windowsSession == 0xFFFFFFFF) {
+      std::filesystem::remove(optionsPath, ec);
+      throw std::runtime_error("No interactive Windows session is available for remote access");
+    }
+    HANDLE self = nullptr, primary = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID, &self) ||
+        !DuplicateTokenEx(self, MAXIMUM_ALLOWED, nullptr, SecurityImpersonation, TokenPrimary, &primary)) {
+      if (self) CloseHandle(self);
+      std::filesystem::remove(optionsPath, ec);
+      throw std::runtime_error("Could not prepare the remote access helper token");
+    }
+    CloseHandle(self);
+    DWORD target = windowsSession;
+    if (!SetTokenInformation(primary, TokenSessionId, &target, sizeof(target))) {
+      const DWORD error = GetLastError();
+      CloseHandle(primary);
+      std::filesystem::remove(optionsPath, ec);
+      throw std::runtime_error("Could not target the remote Windows session (error " + std::to_string(error) + ")");
+    }
+    wchar_t desktop[] = L"winsta0\\default";
+    startup.lpDesktop = desktop;
+    const BOOL created = CreateProcessAsUserW(primary, helper.c_str(), mutableCommand.data(), nullptr, nullptr, FALSE,
+                                              CREATE_NEW_PROCESS_GROUP, nullptr, helper.parent_path().c_str(), &startup, &process);
+    CloseHandle(primary);
+    if (!created) {
+      std::filesystem::remove(optionsPath, ec);
+      throw std::runtime_error("Could not start the remote access helper (error " + std::to_string(GetLastError()) + ")");
+    }
+    CloseHandle(process.hThread);
+    // Offer the service-side SAS broker before the helper reaches the relay, so
+    // the first click on the sign-in screen cannot race the 30-second start wait.
+    HANDLE watched = nullptr;
+    if (!DuplicateHandle(GetCurrentProcess(), process.hProcess, GetCurrentProcess(), &watched, SYNCHRONIZE, FALSE, 0)) {
+      TerminateProcess(process.hProcess, 1);
+      CloseHandle(process.hProcess);
+      std::filesystem::remove(optionsPath, ec);
+      throw std::runtime_error("Could not start the Ctrl+Alt+Del service channel");
+    }
+    try {
+      std::thread(ServeSasRequests, SasPipeName(sessionId), process.dwProcessId, windowsSession, watched).detach();
+    } catch (...) {
+      CloseHandle(watched);
+      TerminateProcess(process.hProcess, 1);
+      CloseHandle(process.hProcess);
+      std::filesystem::remove(optionsPath, ec);
+      throw;
+    }
   }
   // Wait until the helper reaches the relay (its log says so) or quits, so a helper that cannot connect
   // fails the command with its reason instead of leaving the technician on "waiting" forever.
@@ -3322,10 +3369,11 @@ std::wstring AgentService::LaunchRemoteHelper(const RemoteCommand& command) {
     }
     remoteHelpers_[sessionId] = process.hProcess;
   }
-  QueueTelemetryEvent(L"remote.session.started", L"remote-access", L"A remote access session was started.",
-                      std::wstring(L"{\"sessionId\":\"") + sessionId + L"\",\"windowsSession\":" + std::to_wstring(windowsSession) +
+  QueueTelemetryEvent(L"remote.session.started", L"remote-access", backstage ? L"A backstage remote session was started." : L"A remote access session was started.",
+                      std::wstring(L"{\"sessionId\":\"") + sessionId + L"\",\"backstage\":" + (backstage ? L"true" : L"false") +
+                          L",\"windowsSession\":" + std::to_wstring(windowsSession) +
                           L",\"technician\":\"" + Utf8ToWide(EscapeJsonString(ExtractPayloadString(command.payloadJson, "technician").value_or(L""))) + L"\"}");
-  return std::wstring(L"{\"started\":true,\"consent\":\"pending\",\"helperPid\":") + std::to_wstring(process.dwProcessId) +
+  return std::wstring(L"{\"started\":true,\"consent\":\"") + (backstage ? L"not_required" : L"pending") + L"\",\"helperPid\":" + std::to_wstring(process.dwProcessId) +
          L",\"windowsSession\":" + std::to_wstring(windowsSession) + L",\"reachedRelay\":" + (reachedRelay ? L"true" : L"false") +
          L",\"logPath\":\"" + Utf8ToWide(EscapeJsonString(logPath.wstring())) + L"\"}";
 }

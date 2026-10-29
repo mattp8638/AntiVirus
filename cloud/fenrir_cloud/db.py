@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 39
+LATEST_MIGRATION = 41
 
 def init_engine(url: str) -> Engine:
     global _engine, _session_factory
@@ -340,6 +340,19 @@ def migrate(bind: Engine) -> list[int]:
                 ensure_columns(Base, conn)  # billing_invoices.external_*
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (39)"))
                 applied.append(39)
+            if 40 not in versions:
+                from .models import AmtEndpoint
+                AmtEndpoint.__table__.create(conn, checkfirst=True)
+                ensure_columns(Base, conn)  # remote_sessions.target_*
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (40)"))
+                applied.append(40)
+            if 41 not in versions:
+                from .models import Vendor, VendorAssessment
+                Vendor.__table__.create(conn, checkfirst=True)
+                VendorAssessment.__table__.create(conn, checkfirst=True)
+                ensure_columns(Base, conn)  # grc_evidence.data / control_id
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (41)"))
+                applied.append(41)
             conn.commit()
         except Exception:
             conn.rollback()

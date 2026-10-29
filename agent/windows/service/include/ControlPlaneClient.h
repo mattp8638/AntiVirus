@@ -118,6 +118,8 @@ class ControlPlaneClient {
   std::wstring SubmitSupportRequest(const AgentState& state, const std::string& bodyJson) const;
   // POST /elevation-requests; returns the response body ({"id","status","minutes"}).
   std::string RequestElevation(const AgentState& state, const std::string& bodyJson) const;
+  // POST /commands/<id>/amt-credential: the AMT connection details for one amt.wsman command, released once.
+  std::string FetchAmtCredential(const AgentState& state, const std::wstring& commandId) const;
   // POST /profile with the system profile document ({"profile":..., "recoveryKeys":[...]}).
   void SendSystemProfile(const AgentState& state, const std::string& bodyJson) const;
   // ws(s)://.../api/v1/devices/<id>/realtime and the device key that authenticates it.

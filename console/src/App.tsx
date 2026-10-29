@@ -2,8 +2,10 @@ import M365 from "./pages/M365";
 import M365Partner from "./pages/M365Partner";
 import Network from "./pages/Network";
 import NetworkTopology from "./pages/NetworkTopology";
+import OutOfBand from "./pages/OutOfBand";
 import RemediationPackages from "./pages/rmm/RemediationPackages";
 import Governance from "./pages/Governance";
+import Assurance from "./pages/grc/Assurance";
 import Backup from "./pages/Backup";
 import SocWorkflows from "./pages/SocWorkflows";
 import { FormEvent, lazy, Suspense, useEffect, useState } from "react";
@@ -120,7 +122,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string }[]
       { to: "/billing", label: "Agreements & billing", icon: "£" },
     ],
   },
-  { group: "MSP operations", items: [{to:"/m365",label:"Microsoft 365",icon:"▦"},{to:"/m365-partner",label:"M365 partner & standards",icon:"⧉"},{to:"/network",label:"Network monitoring",icon:"⌁"},{to:"/network-topology",label:"Network topology",icon:"⧈"},{to:"/governance",label:"GRC & compliance",icon:"✓"},{to:"/backup",label:"Backup & recovery",icon:"⟳"},{to:"/soc-workflows",label:"SOC maintenance",icon:"◷"}] },
+  { group: "MSP operations", items: [{to:"/m365",label:"Microsoft 365",icon:"▦"},{to:"/m365-partner",label:"M365 partner & standards",icon:"⧉"},{to:"/network",label:"Network monitoring",icon:"⌁"},{to:"/network-topology",label:"Network topology",icon:"⧈"},{to:"/out-of-band",label:"Out-of-band (Intel AMT)",icon:"⏻"},{to:"/governance",label:"GRC & compliance",icon:"✓"},{to:"/continuous-compliance",label:"Continuous compliance",icon:"⟲"},{to:"/backup",label:"Backup & recovery",icon:"⟳"},{to:"/soc-workflows",label:"SOC maintenance",icon:"◷"}] },
   { group: "Administration", items: [{ to: "/service-settings", label: "Service settings", icon: "⚙" }, { to: "/settings", label: "Settings", icon: "⚒" }] },
 ];
 
@@ -273,8 +275,10 @@ function Shell() {
             <Route path="/m365-partner" element={<M365Partner />} />
             <Route path="/network" element={<Network />} />
             <Route path="/network-topology" element={<NetworkTopology />} />
+            <Route path="/out-of-band" element={<OutOfBand />} />
             <Route path="/remediation-packages" element={<RemediationPackages />} />
             <Route path="/governance" element={<Governance />} />
+            <Route path="/continuous-compliance" element={<Assurance />} />
             <Route path="/governance/policies/:id" element={<GrcPolicyEditor />} />
             <Route path="/governance/:tenantId/:framework" element={<ProgrammeDetail />} />
             <Route path="/backup" element={<Backup />} />

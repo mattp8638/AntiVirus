@@ -59,7 +59,7 @@ def _normalise(doc: dict, source: str) -> dict:
 def builtin_frameworks(include_retired: bool = False) -> dict[str, dict]:
     out = {}
     for path in sorted(LIBRARY.glob("*.yml")):
-        if path.name == "policies.yml":
+        if path.name in ("policies.yml", "crosswalk.yml"):  # templates and the control map, not frameworks
             continue
         doc = yaml.safe_load(path.read_text(encoding="utf-8"))
         if not include_retired and retired_framework(doc["key"], doc.get("name", "")):

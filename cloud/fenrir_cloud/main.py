@@ -35,6 +35,8 @@ from .routers import exclusions as exclusions_router
 from .routers import exposure_intel as exposure_intel_router
 from .routers import m365_partner as m365_partner_router
 from .routers import condition_packages as condition_packages_router
+from .routers import oob as oob_router
+from .routers import grc_assurance as grc_assurance_router
 from .routers import admin, agent_api, artifacts as artifacts_router, business, crm as crm_router, fleet, portal, protection, service_mgmt, soc
 from .routers import psa as psa_router, remote as remote_router, rmm as rmm_router
 from .security import hash_password
@@ -110,9 +112,11 @@ def _maintenance_loop(settings: Settings, stop: threading.Event) -> None:
 
                 result = sync_feed(db, settings.feed_url, settings.feed_token)
                 log.info("feed sync: %s", result)
-            from . import autodoc, billing_sync, darkweb, m365_standards
+            from . import autodoc, billing_sync, darkweb, grc_automation, m365_standards, tprm
 
             autodoc.tick(db)
+            tprm.tick(db)
+            grc_automation.tick(db)
             darkweb.tick(db)
             m365_standards.tick(db)
             billing_sync.tick(db)
@@ -333,6 +337,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(artifacts_router.agent)
     app.include_router(artifacts_router.console)
     app.include_router(remote_router.sockets)
+    app.include_router(oob_router.router)
+    app.include_router(oob_router.agent_router)
+    app.include_router(grc_assurance_router.router)
+    app.include_router(grc_assurance_router.public)
     app.include_router(protection.router)
     app.include_router(protection.console)
 

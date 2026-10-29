@@ -5,7 +5,7 @@ Five features that make the RMM and PSA work as one: the network map, background
 ## Network topology discovery (`topology.py`, Network → Topology)
 
 - **What runs.**
-  - Linux and macOS agents run `network.discover`, built into the agent (`pkg/fleet/topology.go`). It reads interfaces, the default gateway and the ARP/neighbour table, then optionally does a light TCP connect sweep of the local /24 (16 common service ports: SSH, Telnet, DNS, HTTP/S, SMB/NetBIOS, LPD/IPP/9100 printing, RTSP, RDP, VNC and alternate web ports).
+  - Linux and macOS agents run `network.discover`, built into the agent (`pkg/fleet/topology.go`). It reads interfaces, the default gateway and the ARP/neighbour table, then optionally does a light TCP connect sweep of the local /24 (18 common service ports: SSH, Telnet, DNS, HTTP/S, SMB/NetBIOS, LPD/IPP/9100 printing, RTSP, RDP, VNC, alternate web ports and Intel AMT).
   - Windows agents run an equivalent PowerShell script through `script.run` (`Get-NetNeighbor`, `Get-NetRoute`, a bounded `TcpClient` sweep).
   - Both report the same JSON shape.
 - **Ingestion.**

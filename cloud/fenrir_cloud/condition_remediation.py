@@ -91,6 +91,122 @@ exit 1""",
      "remediation": r"""timedatectl set-ntp true
 sleep 5
 timedatectl status"""},
+    # ---- Endpoint baseline checks (grc_baselines.py). Detect-only where a remote fix could lock people out or needs keys.
+    {"key": "win-smb1", "name": "SMBv1 server enabled", "platforms": ["windows"], "language": "powershell", "control": "FC-SECURECONFIG",
+     "description": "Turns off the SMBv1 server (WannaCry, EternalBlue). Nothing modern needs it.",
+     "detection": r"""$c = Get-SmbServerConfiguration -ErrorAction SilentlyContinue
+if ($null -eq $c) { 'SMB server configuration not available'; exit 0 }
+if ($c.EnableSMB1Protocol) { 'The SMBv1 server is enabled'; exit 1 }
+'The SMBv1 server is disabled'; exit 0""",
+     "remediation": r"""Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force -ErrorAction Stop
+'SMBv1 server disabled'"""},
+    {"key": "win-guest", "name": "Guest account enabled", "platforms": ["windows"], "language": "powershell", "control": "FC-ACCOUNTS",
+     "description": "Disables the built-in Guest account.",
+     "detection": r"""$g = Get-LocalUser -ErrorAction SilentlyContinue | Where-Object { $_.SID.Value -like 'S-1-5-*-501' }
+if ($g -and $g.Enabled) { 'The Guest account is enabled'; exit 1 }
+'The Guest account is disabled'; exit 0""",
+     "remediation": r"""Get-LocalUser | Where-Object { $_.SID.Value -like 'S-1-5-*-501' } | Disable-LocalUser -ErrorAction Stop
+'Guest account disabled'"""},
+    {"key": "win-autorun", "name": "AutoRun not disabled", "platforms": ["windows"], "language": "powershell", "control": "FC-SECURECONFIG",
+     "description": "Disables AutoRun for every drive type (Cyber Essentials A5.8, CIS 10.3).",
+     "detection": r"""$k = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+$v = (Get-ItemProperty -Path $k -Name NoDriveTypeAutoRun -ErrorAction SilentlyContinue).NoDriveTypeAutoRun
+if ($v -ne 255) { "AutoRun is not disabled for all drives (NoDriveTypeAutoRun=$v)"; exit 1 }
+'AutoRun is disabled for all drives'; exit 0""",
+     "remediation": r"""$k = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+if (-not (Test-Path $k)) { New-Item -Path $k -Force | Out-Null }
+Set-ItemProperty -Path $k -Name NoDriveTypeAutoRun -Value 255 -Type DWord -ErrorAction Stop
+'AutoRun disabled for all drives'"""},
+    {"key": "win-rdp-nla", "name": "Remote Desktop without Network Level Authentication", "platforms": ["windows"], "language": "powershell",
+     "control": "FC-SECURECONFIG",
+     "description": "When Remote Desktop is on, requires Network Level Authentication so nobody reaches the sign-in screen unauthenticated.",
+     "detection": r"""$ts = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
+if ((Get-ItemProperty -Path $ts -Name fDenyTSConnections -ErrorAction SilentlyContinue).fDenyTSConnections -eq 1) { 'Remote Desktop is off'; exit 0 }
+$nla = (Get-ItemProperty -Path "$ts\WinStations\RDP-Tcp" -Name UserAuthentication -ErrorAction SilentlyContinue).UserAuthentication
+if ($nla -ne 1) { 'Remote Desktop accepts connections without Network Level Authentication'; exit 1 }
+'Remote Desktop requires Network Level Authentication'; exit 0""",
+     "remediation": r"""Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 1 -Type DWord -ErrorAction Stop
+'Network Level Authentication required for Remote Desktop'"""},
+    {"key": "win-screenlock", "name": "No inactivity screen lock", "platforms": ["windows"], "language": "powershell", "control": "FC-SCREENLOCK",
+     "description": "Locks the session after at most 15 minutes of inactivity (machine inactivity limit).",
+     "detection": r"""$v = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name InactivityTimeoutSecs -ErrorAction SilentlyContinue).InactivityTimeoutSecs
+if (-not $v -or $v -gt 900) { "Inactivity lock is not set to 15 minutes or less (InactivityTimeoutSecs=$v)"; exit 1 }
+"Sessions lock after $v seconds of inactivity"; exit 0""",
+     "remediation": r"""Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name InactivityTimeoutSecs -Value 900 -Type DWord -ErrorAction Stop
+'Sessions now lock after 15 minutes of inactivity'"""},
+    {"key": "win-bitlocker", "name": "System drive not encrypted (BitLocker)", "platforms": ["windows"], "language": "powershell",
+     "control": "FC-ENCRYPTION",
+     "description": "Reports whether BitLocker protects the system drive. Detection only: turning BitLocker on needs a recovery-key escrow plan.",
+     "detection": r"""$v = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction SilentlyContinue
+if ($null -eq $v) { "BitLocker status is not available for $env:SystemDrive"; exit 1 }
+if ("$($v.ProtectionStatus)" -ne 'On') { "BitLocker protection is $($v.ProtectionStatus) on $env:SystemDrive"; exit 1 }
+"BitLocker protects $env:SystemDrive"; exit 0""",
+     "remediation": ""},
+    {"key": "win-llmnr", "name": "LLMNR name resolution enabled", "platforms": ["windows"], "language": "powershell", "control": "FC-SECURECONFIG",
+     "description": "Turns off LLMNR multicast name resolution, a common credential-relay target.",
+     "detection": r"""$v = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' -Name EnableMulticast -ErrorAction SilentlyContinue).EnableMulticast
+if ($v -ne 0) { 'LLMNR is enabled'; exit 1 }
+'LLMNR is disabled'; exit 0""",
+     "remediation": r"""$k = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
+if (-not (Test-Path $k)) { New-Item -Path $k -Force | Out-Null }
+Set-ItemProperty -Path $k -Name EnableMulticast -Value 0 -Type DWord -ErrorAction Stop
+'LLMNR disabled'"""},
+    {"key": "win-ps2", "name": "PowerShell 2.0 engine installed", "platforms": ["windows"], "language": "powershell", "control": "FC-SECURECONFIG",
+     "description": "Removes the PowerShell 2.0 engine, which bypasses script logging and AMSI.",
+     "detection": r"""$f = Get-WindowsOptionalFeature -Online -FeatureName MicrosoftWindowsPowerShellV2Root -ErrorAction SilentlyContinue
+if ($f -and "$($f.State)" -eq 'Enabled') { 'The PowerShell 2.0 engine is installed'; exit 1 }
+'The PowerShell 2.0 engine is not installed'; exit 0""",
+     "remediation": r"""Disable-WindowsOptionalFeature -Online -FeatureName MicrosoftWindowsPowerShellV2Root -NoRestart -ErrorAction Stop | Out-Null
+'PowerShell 2.0 engine removed'"""},
+    {"key": "linux-ssh-root", "name": "SSH allows root password login", "platforms": ["linux"], "language": "bash", "control": "FC-PRIV",
+     "description": "Sets PermitRootLogin prohibit-password (keys only) and reloads sshd; the change is rolled back if sshd rejects the configuration.",
+     "detection": r"""command -v sshd >/dev/null 2>&1 || { echo "OpenSSH server is not installed"; exit 0; }
+v=$(sshd -T 2>/dev/null | awk '$1=="permitrootlogin"{print $2}')
+[ -n "$v" ] || { echo "Could not read the effective SSH configuration"; exit 2; }
+if [ "$v" = "yes" ]; then echo "SSH allows root to log in with a password"; exit 1; fi
+echo "SSH root login: $v"; exit 0""",
+     "remediation": r"""set -u
+conf=/etc/ssh/sshd_config
+if grep -qiE '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/' "$conf"; then
+  mkdir -p /etc/ssh/sshd_config.d
+  target=/etc/ssh/sshd_config.d/00-fenrir-baseline.conf
+  printf 'PermitRootLogin prohibit-password\n' > "$target"
+  undo() { rm -f "$target"; }
+else
+  cp -p "$conf" "$conf.fenrir-backup"
+  sed -i '1i PermitRootLogin prohibit-password' "$conf"
+  undo() { cp -p "$conf.fenrir-backup" "$conf"; }
+fi
+if ! sshd -t; then undo; echo "sshd rejected the change; it was rolled back"; exit 1; fi
+systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+echo "Root password login over SSH turned off"
+"""},
+    {"key": "linux-firewall", "name": "No host firewall active", "platforms": ["linux"], "language": "bash", "control": "FC-FIREWALL",
+     "description": "Reports whether ufw, firewalld or nftables input rules are active. Detection only: Fenrir's own firewall policy turns filtering on safely.",
+     "detection": r"""if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then echo "ufw is active"; exit 0; fi
+if systemctl is-active --quiet firewalld 2>/dev/null; then echo "firewalld is active"; exit 0; fi
+if command -v nft >/dev/null 2>&1 && nft list ruleset 2>/dev/null | grep -q 'hook input'; then echo "nftables input rules are loaded"; exit 0; fi
+echo "No host firewall is active"; exit 1""",
+     "remediation": ""},
+    {"key": "mac-filevault", "name": "FileVault off", "platforms": ["macos"], "language": "sh", "control": "FC-ENCRYPTION",
+     "description": "Reports whether FileVault encrypts the startup disk. Detection only: turning it on needs a user and a recovery-key plan.",
+     "detection": r"""s=$(fdesetup status 2>/dev/null)
+case "$s" in *"FileVault is On"*) echo "$s"; exit 0;; esac
+echo "${s:-FileVault status unavailable}"; exit 1""",
+     "remediation": ""},
+    {"key": "mac-gatekeeper", "name": "Gatekeeper disabled", "platforms": ["macos"], "language": "sh", "control": "FC-APPCONTROL",
+     "description": "Turns Gatekeeper back on so unsigned and unnotarised apps are checked.",
+     "detection": r"""s=$(spctl --status 2>&1)
+case "$s" in *"assessments enabled"*) echo "Gatekeeper is on"; exit 0;; esac
+echo "Gatekeeper: $s"; exit 1""",
+     "remediation": r"""spctl --master-enable && echo "Gatekeeper turned on"
+"""},
+    {"key": "mac-firewall", "name": "macOS application firewall off", "platforms": ["macos"], "language": "sh", "control": "FC-FIREWALL",
+     "description": "Turns the macOS application firewall on.",
+     "detection": r"""s=$(/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate 2>&1)
+case "$s" in *"enabled"*) echo "$s"; exit 0;; esac
+echo "$s"; exit 1""",
+     "remediation": r"""/usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate on"""},
 ]
 
 
