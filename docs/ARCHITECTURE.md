@@ -54,7 +54,8 @@
 ## DNS protection (`dnsfilter.py`)
 
 - **Every device gets a private RFC 8484 DoH URL** (`/dns/<token>/dns-query`), so filtering follows laptops off-network.
-- **Decision order:** policy allow list → policy block list → threat intel (tenant beats global) → categories → DGA heuristic → SafeSearch rewrite → forward upstream.
+- **Decision order:** policy allow list → policy block list → threat intel (tenant beats global; an allow indicator wins) → external blocklists → categories → DGA heuristic → SafeSearch rewrite → forward upstream.
+- **External blocklists** (`blocklists.py`): HaGeZi TIF (mini on by default, full optional), HaGeZi Multi PRO and OISD big, plus custom HTTPS lists. The hourly maintenance loop refreshes each list on its own period (default 24 h) with ETag revalidation. A failed, empty or oversized download keeps the previous copy, and a list that shrinks by more than half in one refresh is held back. Lists are stored compressed in `dns_blocklists`, never as malware indicators, so they do not reach agent malware bundles. Malware lists block wherever DNS protection is on; other lists only where the policy blocks their category. Set `FENRIR_DNS_BLOCKLISTS=false` to stop refreshes.
 - **Blocked lookups** are sinkholed (or NXDOMAIN/REFUSED, per policy) and logged.
 
 ## Exposure management (`exposure.py`, `compliance.py`)

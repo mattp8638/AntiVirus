@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 31
+LATEST_MIGRATION = 32
 
 def init_engine(url: str) -> Engine:
     global _engine, _session_factory
@@ -295,6 +295,11 @@ def migrate(bind: Engine) -> list[int]:
                 ResourceAnomaly.__table__.create(conn, checkfirst=True)
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (31)"))
                 applied.append(31)
+            if 32 not in versions:
+                from .models import DnsBlocklist
+                DnsBlocklist.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (32)"))
+                applied.append(32)
             conn.commit()
         except Exception:
             conn.rollback()

@@ -11,7 +11,7 @@ from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Qu
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import audit, compliance, dnsfilter, exposure, intel, services, vulnmgmt
+from .. import audit, blocklists, compliance, dnsfilter, exposure, intel, services, vulnmgmt
 from ..config import get_settings
 from ..db import get_db, session_factory
 from ..deps import Principal, current_principal, scoped_tenant
@@ -86,7 +86,7 @@ def dns_check(domain: str, device_id: str | None = None, tenant_id: str | None =
         from ..policy_schema import resolve
 
         resolution = resolve(services.policy_layers(db, db.get(Tenant, tid)))
-    decision = dnsfilter.decide(domain, resolution["settings"]["dns"], dnsfilter.INTEL.domains(db, tid))
+    decision = dnsfilter.decide(domain, resolution["settings"]["dns"], dnsfilter.INTEL.domains(db, tid), blocklists.CACHE.active(db))
     return {"domain": domain, "action": decision.action, "reason": decision.reason or "no match", "category": decision.category,
             "rewrite": decision.rewrite, "dgaScore": dnsfilter.looks_like_dga(domain.lower())}
 
@@ -102,6 +102,87 @@ def dns_log(tenant_id: str | None = None, action: str | None = None, hours: int 
     categories = Counter(r.category for r in rows if r.action == "block")
     domains = Counter(r.qname for r in rows if r.action == "block")
     return {"entries": [to_dict(r) for r in rows], "topCategories": categories.most_common(10), "topDomains": domains.most_common(10)}
+
+
+@console.get("/dns/blocklists")
+def list_blocklists(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("read")
+    blocklists.ensure_builtin(db)
+    db.commit()
+    rows = db.execute(select(blocklists.DnsBlocklist).order_by(blocklists.DnsBlocklist.builtin.desc(), blocklists.DnsBlocklist.id)).scalars()
+    return [blocklists.view(row) for row in rows]
+
+
+def _blocklist(db: Session, key: str):
+    row = db.get(blocklists.DnsBlocklist, key)
+    if row is None:
+        raise HTTPException(404, "Not found")
+    return row
+
+
+@console.post("/dns/blocklists")
+def create_blocklist(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Add a custom domain list (hosts, AdBlock or plain domains). Lists apply platform-wide."""
+    principal.require("platform")
+    key = str(body.get("id") or "").strip().lower()
+    url = str(body.get("url") or "").strip()
+    if not key or not key.replace("-", "").isalnum() or len(key) > 40:
+        raise HTTPException(422, "id must be up to 40 letters, digits or hyphens")
+    if not url.startswith("https://"):
+        raise HTTPException(422, "url must be an https:// address")
+    if db.get(blocklists.DnsBlocklist, key) is not None:
+        raise HTTPException(409, "A list with this id exists")
+    row = blocklists.DnsBlocklist(id=key, name=str(body.get("name") or key)[:200], url=url[:500],
+                                  category=str(body.get("category") or "malware")[:40], description=str(body.get("description") or "")[:500],
+                                  enabled=bool(body.get("enabled", True)), refresh_hours=int(body.get("refreshHours") or 24))
+    db.add(row)
+    audit.record(db, principal.actor, "dns.blocklist.create", key, None, url=url, category=row.category)
+    db.commit()
+    return blocklists.view(row)
+
+
+@console.patch("/dns/blocklists/{key}")
+def update_blocklist(key: str, body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("platform")
+    row = _blocklist(db, key)
+    if "enabled" in body:
+        row.enabled = bool(body["enabled"])
+    if "refreshHours" in body:
+        row.refresh_hours = max(1, min(168, int(body["refreshHours"])))
+    if not row.builtin:
+        for field, attr in (("name", "name"), ("url", "url"), ("category", "category"), ("description", "description")):
+            if field in body:
+                if field == "url" and not str(body[field]).startswith("https://"):
+                    raise HTTPException(422, "url must be an https:// address")
+                setattr(row, attr, str(body[field])[:500])
+    audit.record(db, principal.actor, "dns.blocklist.update", key, None,
+                 **{k: body[k] for k in body if k in {"enabled", "refreshHours", "url", "category"}})
+    db.commit()
+    blocklists.CACHE.invalidate()
+    return blocklists.view(row)
+
+
+@console.post("/dns/blocklists/{key}/sync")
+def sync_blocklist(key: str, force: bool = False, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("platform")
+    row = _blocklist(db, key)
+    result = blocklists.fetch(db, row, force=force)
+    audit.record(db, principal.actor, "dns.blocklist.sync", key, None, **{k: v for k, v in result.items() if k != "id"})
+    db.commit()
+    return {**result, "list": blocklists.view(row)}
+
+
+@console.delete("/dns/blocklists/{key}")
+def delete_blocklist(key: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("platform")
+    row = _blocklist(db, key)
+    if row.builtin:
+        raise HTTPException(409, "Built-in lists can be disabled but not deleted")
+    db.delete(row)
+    audit.record(db, principal.actor, "dns.blocklist.delete", key, None)
+    db.commit()
+    blocklists.CACHE.invalidate()
+    return {"deleted": key}
 
 
 # --------------------------------------------------------------------------- threat intel

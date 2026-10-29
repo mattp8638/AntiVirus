@@ -65,6 +65,9 @@ def bootstrap(settings: Settings) -> None:
                 # Printed once so the first operator can sign in; change it straight away.
                 print(f"\n[fenrir] Created admin {settings.bootstrap_admin_email} with password: {password}\n", file=sys.stderr)
         rmm_library.seed(db)
+        from . import blocklists
+
+        blocklists.ensure_builtin(db)
         psa.ensure_default_boards(db, msp.id)
         db.commit()
         sync_builtin_rules(db, settings.rules_dir)
@@ -99,6 +102,11 @@ def _maintenance_loop(settings: Settings, stop: threading.Event) -> None:
 
                 result = sync_feed(db, settings.feed_url, settings.feed_token)
                 log.info("feed sync: %s", result)
+            if settings.dns_blocklists_enabled:
+                from . import blocklists
+
+                for result in blocklists.sync_due(db):
+                    log.info("dns blocklist sync: %s", result)
         except Exception as exc:  # noqa: BLE001 - keep the loop alive
             log.warning("maintenance cycle failed: %s", exc)
             db.rollback()

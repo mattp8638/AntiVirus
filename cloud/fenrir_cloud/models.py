@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -1822,6 +1822,31 @@ class ApprovalRequest(Base):
     reason: Mapped[str] = mapped_column(String(500), default="")
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class DnsBlocklist(Base):
+    """An external domain blocklist (HaGeZi, OISD or a custom URL) refreshed on a schedule.
+
+    Domains are stored zlib-compressed in one row so a list of a million names neither bloats the
+    indicator table nor ships to agents as malware URLs. Lists in the "malware" category block whenever
+    DNS protection is on; other categories block only where the policy blocks that category."""
+    __tablename__ = "dns_blocklists"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    url: Mapped[str] = mapped_column(String(500))
+    category: Mapped[str] = mapped_column(String(40), default="malware")
+    description: Mapped[str] = mapped_column(String(500), default="")
+    builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    refresh_hours: Mapped[int] = mapped_column(Integer, default=24)
+    domain_count: Mapped[int] = mapped_column(Integer, default=0)
+    content_sha256: Mapped[str] = mapped_column(String(64), default="")
+    etag: Mapped[str] = mapped_column(String(200), default="")
+    domains: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str] = mapped_column(String(500), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 # --------------------------------------------------------------------------

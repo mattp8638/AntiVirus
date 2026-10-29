@@ -6,10 +6,11 @@ device off-network. Decisions, in order:
 
 1. policy allow list           -> allow
 2. policy block list           -> block (reason "policy")
-3. tenant/global indicators     -> block if verdict malicious (reason "threat-intel")
-4. category lists               -> block if the category is in policy.dns.blockedCategories
-5. heuristics (DGA, DoH bypass) -> block if that category is blocked
-6. otherwise forward upstream
+3. tenant/global indicators     -> allow if verdict allow, block if malicious (reason "threat-intel")
+4. external blocklists          -> "malware" lists always block; other lists block if their category is blocked
+5. category lists               -> block if the category is in policy.dns.blockedCategories
+6. heuristics (DGA, DoH bypass) -> block if that category is blocked
+7. otherwise forward upstream
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import math
 import re
 import time
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 import dns.flags
@@ -141,7 +143,7 @@ class IntelCache:
 INTEL = IntelCache()
 
 
-def decide(domain: str, dns_settings: dict, intel: dict[str, tuple[str, str]]) -> Decision:
+def decide(domain: str, dns_settings: dict, intel: dict[str, tuple[str, str]], blocklists: Iterable = ()) -> Decision:
     domain = domain.lower().rstrip(".")
     candidates = [domain, *_parents(domain)]
     allow = {d.lower().strip(".") for d in dns_settings.get("allowDomains", [])}
@@ -161,6 +163,10 @@ def decide(domain: str, dns_settings: dict, intel: dict[str, tuple[str, str]]) -
                 cat = (category or "malware").lower()
                 if verdict == "malicious" or cat in blocked_categories or not blocked_categories:
                     return Decision("block", f"threat intel ({verdict})", cat)
+    for blocklist in blocklists:
+        if blocklist.category == "malware" or blocklist.category in blocked_categories:
+            if any(c in blocklist.domains for c in candidates):
+                return Decision("block", f"blocklist {blocklist.id}", blocklist.category)
     for category, domains in CATEGORY_DOMAINS.items():
         if category in blocked_categories and any(c in domains for c in candidates):
             return Decision("block", f"category {category}", category)
@@ -221,7 +227,9 @@ def resolve(
         return response.to_wire(), Decision("allow", "malformed")
     question = query.question[0]
     qname = question.name.to_text().rstrip(".")
-    decision = decide(qname, dns_settings, INTEL.domains(db, device.tenant_id))
+    from . import blocklists
+
+    decision = decide(qname, dns_settings, INTEL.domains(db, device.tenant_id), blocklists.CACHE.active(db))
     if dns_settings.get("mode") == "observe" and decision.action == "block":
         decision = Decision("allow", f"observe-only: {decision.reason}", decision.category)
 
