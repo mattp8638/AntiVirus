@@ -362,9 +362,11 @@ def migrate(bind: Engine) -> list[int]:
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (43)"))
                 applied.append(43)
             if 44 not in versions:
-                from .models import BackgroundJob
+                from .models import BackgroundJob, CustomField, SavedView
                 BackgroundJob.__table__.create(conn, checkfirst=True)
-                ensure_columns(Base, conn)
+                SavedView.__table__.create(conn, checkfirst=True)
+                CustomField.__table__.create(conn, checkfirst=True)
+                ensure_columns(Base, conn)  # alerts: assignee/acknowledged/snoozed; devices, psa_tickets: custom_fields
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (44)"))
                 applied.append(44)
             conn.commit()

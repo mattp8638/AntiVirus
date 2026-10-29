@@ -240,3 +240,29 @@ test("decommissioning succeeds while a command is awaiting its stop acknowledgem
   expect(document.body.textContent).toContain("Decommissioned: agent access is revoked");
   expect(document.body.textContent).toContain("awaiting a stop acknowledgement");
 }, 20000);
+
+test("the service board can be worked from the keyboard", async () => {
+  render(<MemoryRouter initialEntries={["/service-board"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Root /></MemoryRouter>);
+  await settled();
+  expect(document.querySelector("tr.active-row")).toBeNull();
+  fireEvent.keyDown(document, { key: "j" });
+  await settled();
+  expect(document.querySelector("tr.active-row")).toBeTruthy();
+  fireEvent.keyDown(document, { key: "?" });
+  await settled();
+  expect(screen.getByRole("dialog", { name: "Keyboard shortcuts" }).textContent).toContain("Next / previous ticket");
+}, 20000);
+
+test("custom fields are defined in settings and shown on devices", async () => {
+  render(<MemoryRouter initialEntries={["/settings?tab=Custom%20fields"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Root /></MemoryRouter>);
+  await settled();
+  fireEvent.change(screen.getByPlaceholderText("Label, e.g. Asset tag"), { target: { value: "Asset tag" } });
+  fireEvent.click(screen.getByRole("button", { name: "Add field" }));
+  await settled();
+  expect(document.body.textContent).toContain("asset_tag");
+  cleanup();
+  render(<MemoryRouter initialEntries={[`/devices/${ids.device}`]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Root /></MemoryRouter>);
+  await settled();
+  expect(screen.getByRole("heading", { name: "Custom fields" })).toBeTruthy();
+  assertView("Device › custom fields");
+}, 20000);

@@ -5,6 +5,7 @@ import { ago, api } from "../api";
 import { useApp } from "../app-context";
 import { ErrorNote, Meter, Modal, PageHead, Pill, Table, useAction, useListData } from "../components/ui";
 import { ConnectButtons, pct } from "../components/rmm";
+import { SavedViews } from "../components/Customization";
 
 export default function Devices() {
   const { tenantId, tenantName, can } = useApp();
@@ -48,6 +49,9 @@ export default function Devices() {
         <select value={role} onChange={(e) => setRole(e.target.value)} aria-label="Role">
           <option value="">All roles</option><option value="workstation">Workstations</option><option value="server">Servers</option><option value="domain-controller">Domain controllers</option>
         </select>
+        <span className="spacer" />
+        <SavedViews page="devices" filters={{ q, status, platform, role }}
+                    onApply={(f) => { setQ(f.q ?? ""); setStatus(f.status ?? ""); setPlatform(f.platform ?? ""); setRole(f.role ?? ""); }} />
       </div>
       <ErrorNote error={error} />
       <div className="card">

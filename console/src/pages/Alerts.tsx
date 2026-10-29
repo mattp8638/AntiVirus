@@ -1,10 +1,11 @@
 import { displayValue } from "../components/DisplayValue";
 import { Fragment, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { ago, api, fmtTime } from "../api";
 import { useApp } from "../app-context";
 import { Modal, PageHead, Pill, Sev, Table, useAction, useData, useListData } from "../components/ui";
 import { EvidenceList } from "../components/Evidence";
+import { SavedViews } from "../components/Customization";
 
 interface Member { email: string; name: string; role: string }
 
@@ -14,7 +15,8 @@ export default function Alerts() {
   const { tenantId, tenantName, can } = useApp();
   const [status, setStatus] = useState("new");
   const [severity, setSeverity] = useState("");
-  const [owner, setOwner] = useState(() => new URLSearchParams(window.location.search).get("owner") ?? "");
+  const [params] = useSearchParams();
+  const [owner, setOwner] = useState(() => params.get("owner") ?? "");
   const [snoozed, setSnoozed] = useState("hide");
   const { data, reload } = useListData<any>("alerts", { tenant_id: tenantId, status, severity, assignee: owner, snoozed });
   const { data: members } = useListData<Member>("psa/members");
@@ -47,6 +49,9 @@ export default function Alerts() {
         <select value={snoozed} onChange={(e) => setSnoozed(e.target.value)} aria-label="Snoozed">
           <option value="hide">Hide snoozed</option><option value="only">Snoozed only</option><option value="all">Include snoozed</option>
         </select>
+        <span className="spacer" />
+        <SavedViews page="alerts" filters={{ status, severity, owner, snoozed }}
+                    onApply={(f) => { setStatus(f.status ?? ""); setSeverity(f.severity ?? ""); setOwner(f.owner ?? ""); setSnoozed(f.snoozed ?? "hide"); }} />
       </div>
       {selected.size > 0 && can("respond") && (
         <div className="card row" style={{ marginBottom: 12, flexWrap: "wrap", gap: 8 }}>

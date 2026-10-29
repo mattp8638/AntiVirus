@@ -117,11 +117,12 @@ export interface Column<T> {
   className?: string;
 }
 
-export function Table<T extends Record<string, any>>({ rows, columns, onRow, empty = "Nothing here yet." }: {
+export function Table<T extends Record<string, any>>({ rows, columns, onRow, empty = "Nothing here yet.", activeId }: {
   rows: T[] | null | undefined;
   columns: Column<T>[];
   onRow?: (row: T) => void;
   empty?: string;
+  activeId?: string | null;  // the row picked with the keyboard
 }) {
   if (rows == null) return <div className="empty">Loading…</div>;
   if (!Array.isArray(rows)) {
@@ -139,7 +140,8 @@ export function Table<T extends Record<string, any>>({ rows, columns, onRow, emp
         </thead>
         <tbody>
           {rows.map((row, i) => (
-            <tr key={row.id ?? i} className={onRow ? "clickable" : ""} onClick={onRow ? () => onRow(row) : undefined}>
+            <tr key={row.id ?? i} className={`${onRow ? "clickable" : ""}${activeId != null && row.id === activeId ? " active-row" : ""}`}
+                aria-selected={activeId != null ? row.id === activeId : undefined} onClick={onRow ? () => onRow(row) : undefined}>
               {columns.map((c) => <td key={c.key} className={c.className}>{displayValue(c.render ? c.render(row) : typeof row[c.key] === "boolean" ? String(row[c.key]) : row[c.key])}</td>)}
             </tr>
           ))}

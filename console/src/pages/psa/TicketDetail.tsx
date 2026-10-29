@@ -8,6 +8,7 @@ import { ErrorNote, Modal, Pill, Table, Tabs, useAction, useData, useListData } 
 import ServiceRecord from "./ServiceRecord";
 import { PRIORITY_TONE } from "./ServiceBoard";
 import { confirmDialog, noticeDialog } from "../../components/dialogs";
+import { CustomFieldsCard } from "../../components/Customization";
 
 const NOTE_TONE: Record<string, string> = { discussion: "blue", internal: "warn", resolution: "good", system: "muted" };
 
@@ -162,6 +163,7 @@ export default function TicketDetail() {
               <dt>Agreement</dt><dd>{t.agreement ? <>{displayValue(t.agreement.name)}<div className="small muted">{displayValue(t.agreement.agreementType)}</div></> : <span className="muted">none (time is billable)</span>}</dd>
             </dl>
           </div>
+          <CustomFieldsCard entity="ticket" recordId={t.id} values={t.customFields} />
           {t.device && <div className="card">
             <h3>Device</h3>
             <p><Link to={`/devices/${t.device.id}`}>{displayValue(t.device.hostname)}</Link><br /><span className="small muted">{displayValue(t.device.osVersion)}</span></p>

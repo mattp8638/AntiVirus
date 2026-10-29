@@ -158,6 +158,8 @@ class Device(Base):
     lost_mode: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     # Last maintenance window in which protection-policy patching ran on this device ("2026-10-25T22:00").
     patch_window_run: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Values of the MSP's custom device fields ({key: value}); definitions in CustomField.
+    custom_fields: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class Policy(Base):
@@ -805,6 +807,8 @@ class Ticket(Base):
     status_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     email_thread_id: Mapped[str | None] = mapped_column(String(300), default="", nullable=True)
     workflow_fired: Mapped[list | None] = mapped_column(JSON, default=list, nullable=True)  # markers so timed rules fire once
+    # Values of the MSP's custom ticket fields ({key: value}); definitions in CustomField.
+    custom_fields: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class Contract(Base):
@@ -1417,6 +1421,36 @@ class PlatformEvent(Base):
     processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     __table_args__ = (Index("ix_platform_events_due", "status", "next_attempt_at"),)
+
+
+class SavedView(Base):
+    """A named set of list filters (devices, tickets, alerts), private to its owner or shared with the organisation."""
+
+    __tablename__ = "saved_views"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("svw"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)  # the owner's organisation
+    owner: Mapped[str] = mapped_column(String(200), index=True)
+    page: Mapped[str] = mapped_column(String(40))
+    name: Mapped[str] = mapped_column(String(120))
+    filters: Mapped[dict] = mapped_column(JSON, default=dict)
+    shared: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class CustomField(Base):
+    """A field the MSP adds to every device or ticket (asset tag, cost centre, warranty reference...)."""
+
+    __tablename__ = "custom_fields"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("cfd"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)  # the MSP; applies to all its customers
+    entity: Mapped[str] = mapped_column(String(20))  # device | ticket
+    key: Mapped[str] = mapped_column(String(60))
+    label: Mapped[str] = mapped_column(String(120))
+    field_type: Mapped[str] = mapped_column(String(20), default="text")  # text | number | date | select | checkbox
+    options: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    __table_args__ = (UniqueConstraint("tenant_id", "entity", "key", name="uq_custom_field_key"),)
 
 
 class BackgroundJob(Base):

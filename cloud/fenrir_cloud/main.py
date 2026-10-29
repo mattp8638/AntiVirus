@@ -37,6 +37,7 @@ from .routers import exposure_intel as exposure_intel_router
 from .routers import m365_partner as m365_partner_router
 from .routers import condition_packages as condition_packages_router
 from .routers import oob as oob_router
+from .routers import customization as customization_router
 from .routers import grc_assurance as grc_assurance_router
 from .routers import admin, agent_api, artifacts as artifacts_router, business, crm as crm_router, fleet, portal, protection, service_mgmt, soc
 from .routers import psa as psa_router, remote as remote_router, rmm as rmm_router
@@ -379,6 +380,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(grc_assurance_router.public)
     app.include_router(protection.router)
     app.include_router(protection.console)
+    app.include_router(customization_router.router)
 
     @app.get("/health", tags=["System"])
     def health():
