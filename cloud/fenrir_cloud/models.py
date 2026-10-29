@@ -409,6 +409,12 @@ class Alert(Base):
     incident_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # Triage: who owns it, who picked it up and when, and until when it is out of the queue.
+    assignee: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+    acknowledged_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    snoozed_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    snoozed_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
 
 class Incident(Base):

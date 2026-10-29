@@ -11,7 +11,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from .. import audit, evidence, services
+from .. import audit, evidence, psa, services
 from ..db import get_db
 from ..deps import Principal, current_principal, scoped_tenant
 from ..detection import RULES, playbooks
@@ -193,7 +193,9 @@ def retro_hunt(body: dict = Body(...), principal: Principal = Depends(current_pr
 
 @router.get("/alerts")
 def list_alerts(tenant_id: str | None = None, status: str | None = None, severity: str | None = None, device_id: str | None = None,
+                assignee: str | None = None, snoozed: str = "hide",
                 principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """``assignee``: "me", "unassigned" or an email. ``snoozed``: "hide" (default), "only" or "all"."""
     query = select(Alert).where(Alert.tenant_id.in_(scoped_tenant(principal, tenant_id)))
     if status:
         query = query.where(Alert.status == status)
@@ -201,9 +203,83 @@ def list_alerts(tenant_id: str | None = None, status: str | None = None, severit
         query = query.where(Alert.severity == severity)
     if device_id:
         query = query.where(Alert.device_id == device_id)
+    if assignee == "unassigned":
+        query = query.where(or_(Alert.assignee.is_(None), Alert.assignee == ""))
+    elif assignee:
+        query = query.where(func.lower(Alert.assignee) == (principal.actor if assignee == "me" else assignee).lower())
+    now = utcnow()
+    if snoozed == "hide":
+        query = query.where(or_(Alert.snoozed_until.is_(None), Alert.snoozed_until <= now))
+    elif snoozed == "only":
+        query = query.where(Alert.snoozed_until > now)
     rows = db.execute(query.order_by(Alert.created_at.desc()).limit(1000)).scalars().all()
     hosts = dict(db.execute(select(Device.id, Device.hostname).where(Device.id.in_({a.device_id for a in rows if a.device_id}))).all())
-    return [{**to_dict(a), "hostname": hosts.get(a.device_id, "")} for a in rows]
+    return [{**to_dict(a), "hostname": hosts.get(a.device_id, ""),
+             "snoozed": bool(a.snoozed_until and a.snoozed_until > now)} for a in rows]
+
+
+MAX_SNOOZE_MINUTES = 7 * 24 * 60
+
+
+def _triage(db: Session, alert: Alert, body: dict, principal: Principal) -> dict:
+    """Ownership and snooze. Returns what changed, for the audit log."""
+    changes: dict = {}
+    if "assignee" in body:
+        who = str(body.get("assignee") or "").strip()
+        if who.lower() == "me":
+            who = principal.actor
+        if who:
+            members = {m["email"].lower(): m["email"] for m in psa.members(db, list(principal.tenant_ids))}
+            if who.lower() not in members:
+                raise HTTPException(400, "Alerts can only be assigned to a technician in your organisation")
+            who = members[who.lower()]
+        alert.assignee = who or None
+        changes["assignee"] = who
+    if body.get("acknowledge"):
+        alert.acknowledged_by, alert.acknowledged_at = principal.actor, utcnow()
+        alert.assignee = alert.assignee or principal.actor
+        if alert.status == "new":
+            alert.status = "triaged"
+        changes["acknowledged"] = True
+    if body.get("snoozeMinutes") is not None:
+        try:
+            minutes = int(body["snoozeMinutes"])
+        except (TypeError, ValueError):
+            raise HTTPException(400, "snoozeMinutes must be a number") from None
+        if not 5 <= minutes <= MAX_SNOOZE_MINUTES:
+            raise HTTPException(400, "Snooze for between 5 minutes and 7 days")
+        alert.snoozed_until, alert.snoozed_by = utcnow() + timedelta(minutes=minutes), principal.actor
+        changes["snoozedMinutes"] = minutes
+    if body.get("unsnooze"):
+        alert.snoozed_until = alert.snoozed_by = None
+        changes["unsnoozed"] = True
+    return changes
+
+
+@router.post("/alerts/bulk")
+def bulk_update_alerts(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Assign, acknowledge, snooze or set the status of many alerts at once (learning actions stay one at a time)."""
+    principal.require("respond")
+    ids = [str(i) for i in (body.get("ids") or [])][:500]
+    if not ids:
+        raise HTTPException(400, "Choose at least one alert")
+    if body.get("status") not in (None, "new", "triaged", "resolved", "false_positive"):
+        raise HTTPException(400, "invalid status")
+    alerts = db.execute(select(Alert).where(Alert.id.in_(ids))).scalars().all()
+    for alert in alerts:
+        principal.check_tenant(alert.tenant_id)
+    updated = 0
+    for alert in alerts:
+        changes = _triage(db, alert, body, principal)
+        if body.get("status"):
+            alert.status = body["status"]
+            changes["status"] = alert.status
+        if changes:
+            alert.updated_at = utcnow()
+            audit.record(db, principal.actor, "alert.updated", alert.id, alert.tenant_id, bulk=True, **changes)
+            updated += 1
+    db.commit()
+    return {"updated": updated}
 
 
 @router.get("/alerts/{alert_id}")
@@ -258,6 +334,7 @@ def update_alert(alert_id: str, body: dict = Body(...), principal: Principal = D
     if body.get("status") not in (None, "new", "triaged", "resolved", "false_positive"):
         raise HTTPException(400, "invalid status")
     apply_fields(alert, body, {"status"})
+    triage = _triage(db, alert, body, principal)
     alert.updated_at = utcnow()
     learned = None
     if body.get("status") == "false_positive" and body.get("trust"):
@@ -293,7 +370,7 @@ def update_alert(alert_id: str, body: dict = Body(...), principal: Principal = D
         image = (alert.details or {}).get("process")
         if image:
             _add_rule_exclusion(db, alert.rule_id, alert.tenant_id, str(image), principal.actor)
-    audit.record(db, principal.actor, "alert.updated", alert.id, alert.tenant_id, status=alert.status, learned=learned)
+    audit.record(db, principal.actor, "alert.updated", alert.id, alert.tenant_id, status=alert.status, learned=learned, **triage)
     db.commit()
     return {**to_dict(alert), "learned": learned}
 
