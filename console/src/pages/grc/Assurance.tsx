@@ -4,6 +4,7 @@ import { useApp } from "../../app-context";
 import { displayValue } from "../../components/DisplayValue";
 import { ErrorNote, Modal, PageHead, Pill, Stat, Table, Tabs, TenantSelect, useAction, useData, useListData } from "../../components/ui";
 import { confirmDialog, noticeDialog } from "../../components/dialogs";
+import { COMPLIANCE_SECTION, SectionTabs } from "../../components/sections";
 
 const AUTO_TONE: Record<string, string> = { passing: "good", failing: "bad", manual: "muted" };
 const TIER_TONE: Record<string, string> = { low: "good", medium: "blue", high: "warn", critical: "bad", unrated: "muted" };
@@ -14,6 +15,7 @@ export default function Assurance() {
   const [tab, setTab] = useState("Controls");
   return (
     <>
+      <SectionTabs items={COMPLIANCE_SECTION} />
       <PageHead title="Continuous compliance"
                 subtitle="Live control signals mapped across every framework, evidence collected automatically, endpoint baselines enforced on devices, and supplier risk kept current." />
       <Tabs tabs={["Controls", "Evidence automation", "Baselines", "Suppliers"]} active={tab} onChange={setTab} />

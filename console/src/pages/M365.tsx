@@ -8,6 +8,7 @@ import { useApp } from "../app-context";
 import { RecordEditor } from "../components/RecordEditor";
 import { safeArray } from "../data-shapes";
 import { ErrorNote, Modal, PageHead, Pill, Table, useAction, useListData } from "../components/ui";
+import { M365_SECTION, SectionTabs } from "../components/sections";
 function Insights({data}:{data:any}) {
   const mfa=data.mfa, score=data.secureScore;
   return <div className="card" style={{marginBottom:12}}>
@@ -49,6 +50,7 @@ export default function M365() {
   useEffect(()=>{setCreate(false);setSelected(null);setSecret(false);},[tenantId]);
   if (!can("configure")) return <PageHead title="Microsoft 365" subtitle="Configuration access is required." />;
   return <>
+    <SectionTabs items={M365_SECTION} />
     <PageHead title="Microsoft 365" subtitle="Customer directory administration, licences and security snapshots."
       actions={<button className="primary" onClick={() => setConnect(true)}>Connect Microsoft 365</button>} />
     <ErrorNote error={error} />

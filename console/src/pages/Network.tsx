@@ -5,6 +5,7 @@ import { useApp } from "../app-context";
 import { RecordEditor } from "../components/RecordEditor";
 import { safeArray } from "../data-shapes";
 import { ErrorNote, Modal, PageHead, Pill, Table, useAction, useListData } from "../components/ui";
+import { NETWORK_SECTION, SectionTabs } from "../components/sections";
 const STATE_LABEL:Record<string,string>={up:"up",down:"down",unknown:"waiting",probe_offline:"probe device not reporting",no_probe:"probe device missing"};
 export default function Network() {
   const { tenantId, can }=useApp();
@@ -16,6 +17,7 @@ export default function Network() {
   const hostname=(id:string|null)=>id?(safeArray<any>(devices).find(d=>d.id===id)?.hostname??"an enrolled device"):"the Fenrir server";
   const action=async(path:string,body?:unknown)=>{const row=await run(()=>api("network/monitors/"+selected.id+path,{method:body?"PATCH":"POST",body}),"Monitor updated");if(row)setSelected(row);reload();};
   return <>
+    <SectionTabs items={NETWORK_SECTION} />
     <PageHead title="Network monitoring" subtitle="Scheduled TCP service checks, from the Fenrir server for internet-facing services or from an enrolled device for printers, switches and servers on a customer's LAN. Three consecutive failures raise an alert; recovery resolves it."
       actions={can("configure")&&<button className="primary" onClick={()=>setCreate(true)}>Add service monitor</button>}/>
     <ErrorNote error={error}/>

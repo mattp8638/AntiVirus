@@ -12,7 +12,7 @@ export default function Automations() {
   const { run } = useAction();
   return (
     <>
-      <PageHead title="Automations" subtitle="SOAR rules: when an alert matches, queue response actions, open tickets or call webhooks."
+      <PageHead title="Response rules" subtitle="SOAR rules: when an alert matches, queue response actions, open tickets or call webhooks."
                 actions={can("configure") && <button className="primary" onClick={() => setCreating(true)}>New automation</button>} />
       <div className="card">
         <Table rows={data} empty="No automations yet. Policy-level auto-response (kill, isolate, rollback, ticket) still applies."

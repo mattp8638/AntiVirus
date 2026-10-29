@@ -17,7 +17,7 @@ export default function Jobs() {
   useEffect(() => { const t = window.setInterval(reload, 8000); return () => window.clearInterval(t); }, [reload]);
   return (
     <>
-      <PageHead title="Automation" subtitle="Every script, patch and deployment job, plus schedules that run them for you." />
+      <PageHead title="Jobs & schedules" subtitle="Every script, patch and deployment job, plus schedules that run them for you." />
       <Tabs tabs={["Activity", "Scheduled tasks"]} active={tab} onChange={setTab} />
       {tab === "Activity" ? (
         <div className="card">

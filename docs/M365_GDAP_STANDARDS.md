@@ -1,6 +1,6 @@
 # Microsoft 365 across customers: GDAP, identity standards and Entra ID reconciliation
 
-Console: **MSP operations → M365 partner & standards**. API: `/api/console/m365/partner`, `/api/console/m365/standards`, `/api/console/m365/reconcile`.
+Console: **Microsoft 365 → Partner & standards**. API: `/api/console/m365/partner`, `/api/console/m365/standards`, `/api/console/m365/reconcile`.
 
 ## Partner access (GDAP)
 

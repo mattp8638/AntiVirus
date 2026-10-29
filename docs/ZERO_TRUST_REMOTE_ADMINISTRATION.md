@@ -17,7 +17,7 @@ A silent administrative session: a SYSTEM (Windows) or root (Linux/macOS) termin
 
 ## Cross-platform session routing
 
-**Device → All routes** (or a node on **Network topology**) lists every way to reach a machine, best first:
+**Device → All routes** (or a node on **Network → Topology**) lists every way to reach a machine, best first:
 
 | Route | When | What you get |
 |---|---|---|
@@ -35,7 +35,7 @@ A silent administrative session: a SYSTEM (Windows) or root (Linux/macOS) termin
 
 ## Intel AMT / vPro out-of-band management
 
-**MSP operations → Out-of-band (Intel AMT)** manages AMT engines over WS-Management.
+**Cloud, network & compliance → Out-of-band (Intel AMT)** manages AMT engines over WS-Management.
 
 - **Check** reads the AMT version (`Identify`), the power state (`CIM_AssociatedPowerManagementService`) and AMT's own host name (`AMT_GeneralSettings`).
 - **Power** calls `CIM_PowerManagementService.RequestPowerStateChange`: on, graceful restart, reset, power cycle, graceful shut-down or off.
