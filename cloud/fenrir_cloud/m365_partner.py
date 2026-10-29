@@ -441,9 +441,11 @@ def check(row: M365Partner) -> dict:
         readable = "Directory.Read.All" in scopes or scope_claim is None
         if missing:
             actions["approveGraph"] = True
-            problems.append("Microsoft has not granted Fenrir the partner permissions (" + ", ".join(missing) + "). Click "
-                            "\"Approve Microsoft Graph permissions\", sign in as a Global Administrator of the partner tenant and tick "
-                            "\"Consent on behalf of your organization\".")
+            problems.append("The signed-in token lacks the partner permissions (" + ", ".join(missing) + "). They must be Delegated "
+                            "permissions: Application permissions only apply to app-only tokens and are ignored for a signed-in partner "
+                            "admin. Click \"Approve Microsoft Graph permissions\", sign in as a Global Administrator of the partner tenant "
+                            "and tick \"Consent on behalf of your organization\" (or add them under Microsoft Graph > Delegated "
+                            "permissions in the app registration, grant admin consent and sign in again).")
         if out["tokenTenantId"] and str(out["tokenTenantId"]).lower() != row.partner_directory_id.lower():
             problems.append(f"The sign-in is for tenant {out['tokenTenantId']}, not the partner tenant {row.partner_directory_id}.")
         try:
@@ -479,8 +481,10 @@ def check(row: M365Partner) -> dict:
             out["partnerCenter"] = False
             actions["approvePartnerCenter"] = True
             problems.append("Partner Center access is not approved, so Fenrir cannot consent its app in customer tenants. Click "
-                            "\"Approve Partner Center access\" and sign in as a Global Administrator who is an Admin Agent "
-                            f"(Microsoft said: {str(exc).removeprefix('Microsoft refused a token: ')[:160]}).")
+                            "\"Approve Partner Center access\" and sign in as a Global Administrator who is an Admin Agent, or add the "
+                            "\"Microsoft Partner Center\" API's Delegated permission user_impersonation to the app and grant admin consent "
+                            "(this is not the \"Partner Customer Delegated Administration\" API). "
+                            f"Microsoft said: {str(exc).removeprefix('Microsoft refused a token: ')[:160]}")
     out["problems"], out["actions"] = problems, actions
     out["checkedAt"] = utcnow().isoformat() + "Z"
     row.settings = {**(row.settings or {}), "check": out}

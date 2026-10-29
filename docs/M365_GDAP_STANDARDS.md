@@ -6,9 +6,9 @@ Console: **MSP operations → M365 partner & standards**. API: `/api/console/m36
 
 1. Register an app in the MSP's **partner** tenant:
    - multi-tenant, with **Allow public client flows** on;
-   - delegated Graph permissions `DelegatedAdminRelationship.ReadWrite.All`, `Directory.Read.All`, `Group.ReadWrite.All` and `offline_access`;
+   - **Delegated** Graph permissions `DelegatedAdminRelationship.ReadWrite.All`, `Directory.Read.All`, `Group.ReadWrite.All` and `offline_access`. They must be Delegated: the partner connection signs in as a partner admin, and Microsoft ignores Application permissions for a signed-in user;
    - the customer-side permissions you need, for example `Policy.ReadWrite.ConditionalAccess`, `Policy.Read.All`, `DeviceManagementConfiguration.ReadWrite.All`, `DeviceManagementManagedDevices.Read.All`, `User.ReadWrite.All`, `AuditLog.Read.All` and `Domain.Read.All`;
-   - the **Microsoft Partner Center** permission `user_impersonation`, so Fenrir can consent its app in customer tenants;
+   - the **Microsoft Partner Center** API's Delegated permission `user_impersonation`, so Fenrir can consent its app in customer tenants. This is a different API from "Partner Customer Delegated Administration";
    - admin consent for all of them. You don't have to grant this in the Entra admin centre first: the partner sign-in asks for the partner Graph permissions by name, so a Global Administrator approves them on Microsoft's sign-in page by ticking **Consent on behalf of your organization**. **Approve Partner Center access** in the partner check does the same for Partner Center, in a second sign-in, because it is a separate API.
 2. Enter the partner tenant ID and app ID. A client secret is only needed if public client flows are off. This needs MSP staff with `m365_admin` and `manage_tenants`, plus step-up re-authentication.
 3. **Sign in as partner admin** with a device code. Use an account that belongs to the partner tenant (not a guest) and is an **Admin Agent** in Partner Center; Microsoft refuses the GDAP APIs to anyone else ("Access to the resource is restricted"). The device code and the refresh token stay encrypted on the server. Microsoft rotates refresh tokens, and Fenrir keeps the newest.
