@@ -38,6 +38,7 @@ from .routers import m365_partner as m365_partner_router
 from .routers import condition_packages as condition_packages_router
 from .routers import triage as triage_router
 from .routers import clients as clients_router
+from .routers import search as search_router
 from .routers import oob as oob_router
 from .routers import customization as customization_router
 from .routers import grc_assurance as grc_assurance_router
@@ -474,7 +475,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.include_router(module.router)
     for module in (m365_admin_router, m365_router, network_router, grc_router, backup_router, soc_workflows, ad_router, grc_programme_router,
                    rollouts_router, apikeys_router, roles_router, approvals_router, exclusions_router,
-                   exposure_intel_router, m365_partner_router, condition_packages_router, triage_router, clients_router):
+                   exposure_intel_router, m365_partner_router, condition_packages_router, triage_router, clients_router, search_router):
         app.include_router(module.router)
     app.include_router(documentation_router.router)
     app.include_router(m365_router.oauth)

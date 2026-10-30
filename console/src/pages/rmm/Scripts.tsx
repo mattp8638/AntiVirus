@@ -1,5 +1,6 @@
 import { displayValue } from "../../components/DisplayValue";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { ago, api } from "../../api";
 import { useApp } from "../../app-context";
 import { emptyTargets, JobDetail, TargetPicker, Targets } from "../../components/rmm";
@@ -18,6 +19,13 @@ export default function Scripts() {
   const [editing, setEditing] = useState<any>(null);
   const [running, setRunning] = useState<any>(null);
   const [jobId, setJobId] = useState<string | null>(null);
+  // Opened from search (?id=): show that script.
+  const [params, setParams] = useSearchParams();
+  useEffect(() => {
+    const wanted = params.get("id");
+    const script = wanted && data?.find((s) => s.id === wanted);
+    if (script) { setEditing(script); setParams({}, { replace: true }); }
+  }, [data, params, setParams]);
   const categories = [...new Set((data || []).map((s) => s.category))].sort();
   const rows = (data || []).filter((s) => (!category || s.category === category) &&
     (!q || `${s.name} ${s.description}`.toLowerCase().includes(q.toLowerCase())));

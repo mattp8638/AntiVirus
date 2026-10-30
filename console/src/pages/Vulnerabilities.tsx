@@ -1,5 +1,5 @@
 import { displayValue } from "../components/DisplayValue";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useMemo, useState } from "react";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
@@ -16,7 +16,8 @@ export default function Vulnerabilities() {
   const [status, setStatus] = useState("open");
   const [severity, setSeverity] = useState("");
   const [focus, setFocus] = useState("");
-  const [q, setQ] = useState("");
+  const [params] = useSearchParams();
+  const [q, setQ] = useState(() => params.get("q") ?? "");  // from search: one CVE
   const { data, reload } = useListData<any>("vulnerabilities", { tenant_id: tenantId, status, severity });
   const { data: trends } = useListData<any>("vulnerabilities/trends", { tenant_id: tenantId, weeks: 12 });
   const [open, setOpen] = useState<string | null>(null);

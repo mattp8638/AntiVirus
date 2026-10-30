@@ -8,7 +8,7 @@ import Governance from "./pages/Governance";
 import Assurance from "./pages/grc/Assurance";
 import Backup from "./pages/Backup";
 import SocWorkflows from "./pages/SocWorkflows";
-import { FormEvent, lazy, Suspense, useEffect, useState } from "react";
+import { FormEvent, lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { useApp } from "./app-context";
 import { PageBoundary } from "./components/PageBoundary";
@@ -66,79 +66,96 @@ import Exposure from "./pages/Exposure";
 import Elevation from "./pages/Elevation";
 import RecordingPlayer from "./pages/RecordingPlayer";
 import { DialogHost } from "./components/dialogs";
+import { CommandPalette, useSearchShortcut } from "./components/CommandPalette";
 import { api, setDefaultCurrency } from "./api";
 
 // `also`: other pages of the same section (they switch with section tabs), so the entry stays highlighted on them.
+// Grouped by the job in hand rather than by module: work the queue, look after a client, look after their endpoints,
+// their identity and cloud, run the service desk and the business, prove compliance, then administration.
 const NAV: { group: string; items: { to: string; label: string; icon: string; also?: string[] }[] }[] = [
-  { group: "Overview", items: [{ to: "/", label: "Dashboard", icon: "◎" }, { to: "/inbox", label: "Inbox", icon: "☰" }, { to: "/reports", label: "Reports", icon: "▤" }] },
   {
-    group: "Devices & RMM",
+    group: "Triage",
     items: [
-      { to: "/devices", label: "Devices", icon: "▣" },
-      { to: "/monitoring", label: "Monitoring", icon: "♥" },
-      { to: "/patching", label: "Patching", icon: "⟳" },
-      { to: "/scripts", label: "Scripts", icon: "❯" },
-      { to: "/remediation-packages", label: "Remediation packages", icon: "✚" },
-      { to: "/automation", label: "Jobs & schedules", icon: "⏱" },
-      { to: "/software", label: "Software", icon: "⬇" },
-      { to: "/deploy", label: "Deploy agents", icon: "⇩" },
-    ],
-  },
-  {
-    group: "Security",
-    items: [
-      { to: "/protection-health", label: "Protection health", icon: "⛨" },
-      { to: "/quarantine", label: "Quarantine", icon: "⊘" },
-      { to: "/admin-requests", label: "Admin requests", icon: "⇡" },
-      { to: "/incidents", label: "Incidents", icon: "⚑" },
+      { to: "/", label: "Dashboard", icon: "◎" },
+      { to: "/inbox", label: "Inbox", icon: "☰" },
       { to: "/alerts", label: "Alerts", icon: "△" },
-      { to: "/policies", label: "Policies", icon: "⚙" },
-      { to: "/edr-exclusions", label: "EDR exclusions", icon: "⊜" },
+      { to: "/incidents", label: "Incidents", icon: "⚑" },
+      { to: "/admin-requests", label: "Admin requests", icon: "⇡" },
       { to: "/hunt", label: "Threat hunting", icon: "⌕" },
-      { to: "/rules", label: "Detection rules", icon: "≡" },
-      { to: "/automations", label: "Response rules", icon: "↯" },
-      { to: "/dns", label: "DNS protection", icon: "◈" },
       { to: "/intel", label: "Threat intel", icon: "✦" },
-      { to: "/vulnerabilities", label: "Vulnerabilities", icon: "⚠" },
-      { to: "/exposure", label: "Data & identity exposure", icon: "⚇" },
-      { to: "/active-directory", label: "Active Directory", icon: "⌘" },
-      { to: "/attack-surface", label: "Attack surface", icon: "◍" },
-      { to: "/soc-workflows", label: "SOC maintenance", icon: "◷" },
     ],
   },
   {
-    group: "Service (PSA)",
+    group: "Clients",
     items: [
-      { to: "/service-board", label: "Service board", icon: "✉" },
-      { to: "/dispatch", label: "Dispatch", icon: "▦" },
-      { to: "/workload", label: "Workload & changes", icon: "⚖" },
-      { to: "/time", label: "Time & timesheets", icon: "◷" },
       { to: "/companies", label: "Companies", icon: "⌂" },
+      { to: "/reports", label: "Reports", icon: "▤" },
       { to: "/configurations", label: "Configurations", icon: "⚿" },
       { to: "/knowledge", label: "Knowledge base", icon: "❏" },
       { to: "/vault", label: "Credential vault", icon: "⚿" },
     ],
   },
   {
-    group: "Sales & finance",
+    group: "Endpoints",
+    items: [
+      { to: "/devices", label: "Devices", icon: "▣" },
+      { to: "/monitoring", label: "Monitoring", icon: "♥" },
+      { to: "/patching", label: "Patching", icon: "⟳" },
+      { to: "/software", label: "Software", icon: "⬇" },
+      { to: "/scripts", label: "Scripts", icon: "❯" },
+      { to: "/remediation-packages", label: "Remediation packages", icon: "✚" },
+      { to: "/automation", label: "Jobs & schedules", icon: "⏱" },
+      { to: "/policies", label: "Protection policies", icon: "⚙" },
+      { to: "/protection-health", label: "Protection health", icon: "⛨" },
+      { to: "/quarantine", label: "Quarantine", icon: "⊘" },
+      { to: "/vulnerabilities", label: "Vulnerabilities", icon: "⚠" },
+      { to: "/out-of-band", label: "Out-of-band (Intel AMT)", icon: "⏻" },
+      { to: "/deploy", label: "Deploy agents", icon: "⇩" },
+    ],
+  },
+  {
+    group: "Identity, cloud & network",
+    items: [
+      { to: "/m365", label: "Microsoft 365", icon: "▦", also: ["/m365-partner"] },
+      { to: "/active-directory", label: "Active Directory", icon: "⌘" },
+      { to: "/exposure", label: "Data & identity exposure", icon: "⚇" },
+      { to: "/backup", label: "Backup & recovery", icon: "⟳" },
+      { to: "/network", label: "Network", icon: "⌁", also: ["/network-topology"] },
+      { to: "/dns", label: "DNS protection", icon: "◈" },
+      { to: "/attack-surface", label: "Attack surface", icon: "◍" },
+    ],
+  },
+  {
+    group: "Service desk",
+    items: [
+      { to: "/service-board", label: "Service board", icon: "✉" },
+      { to: "/dispatch", label: "Dispatch", icon: "▦" },
+      { to: "/workload", label: "Workload & changes", icon: "⚖" },
+      { to: "/time", label: "Time & timesheets", icon: "◷" },
+    ],
+  },
+  {
+    group: "Business",
     items: [
       { to: "/crm", label: "CRM & projects", icon: "☺" },
       { to: "/quotes", label: "Products & quotes", icon: "❖" },
       { to: "/billing", label: "Agreements & billing", icon: "£" },
     ],
   },
+  { group: "Governance", items: [{ to: "/governance", label: "Compliance & GRC", icon: "✓", also: ["/continuous-compliance", "/compliance"] }] },
   {
-    group: "Cloud, network & compliance",
+    group: "Admin",
     items: [
-      { to: "/m365", label: "Microsoft 365", icon: "▦", also: ["/m365-partner"] },
-      { to: "/network", label: "Network", icon: "⌁", also: ["/network-topology"] },
-      { to: "/out-of-band", label: "Out-of-band (Intel AMT)", icon: "⏻" },
-      { to: "/governance", label: "Compliance & GRC", icon: "✓", also: ["/continuous-compliance", "/compliance"] },
-      { to: "/backup", label: "Backup & recovery", icon: "⟳" },
+      { to: "/settings", label: "Settings", icon: "⚒" },
+      { to: "/service-settings", label: "Service settings", icon: "⚙" },
+      { to: "/rules", label: "Detection rules", icon: "≡" },
+      { to: "/automations", label: "Response rules", icon: "↯" },
+      { to: "/edr-exclusions", label: "EDR exclusions", icon: "⊜" },
+      { to: "/soc-workflows", label: "SOC maintenance", icon: "◷" },
     ],
   },
-  { group: "Administration", items: [{ to: "/service-settings", label: "Service settings", icon: "⚙" }, { to: "/settings", label: "Settings", icon: "⚒" }] },
 ];
+const PAGES = NAV.flatMap((g) => g.items.map((i) => ({ to: i.to, label: i.label, group: g.group })));
 
 function Login() {
   const { login, completeSso, loginWithPasskey } = useApp();
@@ -236,6 +253,9 @@ function Shell() {
   const location = useLocation();
   useEffect(() => { api<{ currency: string }>("region").then((r) => setDefaultCurrency(r.currency)).catch(() => undefined); }, [me?.user.id]);
   const [navOpen, setNavOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const openSearch = useCallback(() => setSearchOpen(true), []);
+  useSearchShortcut(openSearch);
   // Close the phone menu whenever a page is opened from it.
   useEffect(() => { setNavOpen(false); }, [location.pathname]);
   useEffect(() => {
@@ -273,6 +293,8 @@ function Shell() {
           <button className="ghost nav-toggle" aria-label="Open menu" aria-expanded={navOpen} onClick={() => setNavOpen(true)}>☰</button>
           <span className="muted small hide-phone">Viewing</span>
           <TenantSelect value={tenantId} onChange={setTenantId} />
+          <button className="ghost search-button" onClick={openSearch} aria-label="Search (Ctrl+K)" title="Search everything (Ctrl+K)">
+            ⌕ <span className="hide-phone">Search</span> <kbd className="hide-phone small muted">Ctrl K</kbd></button>
           <span className="spacer" />
           <InstallAppButton />
           <span className="small muted hide-phone">{me.user.email} · {me.user.role.replace(/_/g, " ")}</span>
@@ -349,6 +371,7 @@ function Shell() {
           </Routes>
           </PageBoundary>
         </main>
+        {searchOpen && <CommandPalette pages={PAGES} onClose={() => setSearchOpen(false)} />}
         <nav className="bottom-nav" aria-label="Quick navigation">
           {BOTTOM_NAV.map((item) => (
             <NavLink key={item.to} to={item.to} end={item.to === "/"} className={({ isActive }) => isActive ? "active" : ""}>

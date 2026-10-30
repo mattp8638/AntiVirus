@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, expect, test, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -277,4 +277,20 @@ test("the inbox lists open work from other pages and an item can be taken", asyn
   fireEvent.click(within(dialog).getByRole("button", { name: "Take" }));
   await settled();
   expect((within(dialog).getByLabelText("Owner") as HTMLSelectElement).value).toBe("admin@fenrir.local");
+}, 20000);
+
+test("Ctrl+K finds pages and records and opens them", async () => {
+  render(<MemoryRouter initialEntries={["/"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Root /></MemoryRouter>);
+  await settled();
+  fireEvent.keyDown(document, { key: "k", ctrlKey: true });
+  const box = screen.getByRole("combobox", { name: "Search" });
+  fireEvent.change(box, { target: { value: "patch" } });
+  expect(screen.getByRole("option", { name: /Patching/ })).toBeTruthy();
+  fireEvent.change(box, { target: { value: "render-serv" } });
+  await waitFor(() => expect(screen.getByRole("option", { name: /RENDER-SERVER/ })).toBeTruthy(), { timeout: 5000 });
+  fireEvent.keyDown(box, { key: "ArrowDown" });
+  fireEvent.keyDown(box, { key: "Enter" });
+  await settled();
+  expect(screen.queryByRole("combobox", { name: "Search" })).toBeNull();
+  expect(document.querySelector("h1")?.textContent).toContain("RENDER-SERVER");
 }, 20000);
