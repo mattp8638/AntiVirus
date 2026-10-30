@@ -140,20 +140,32 @@ _STRAY_QUOTE = re.compile(r'(":\s*-?\d+(?:\.\d+)?)"(?=\s*,\s*")')
 
 def _repair(text: str) -> dict:
     try:
-        repaired = json.loads(_STRAY_QUOTE.sub(r"\1", text))
+        repaired = json.loads(_STRAY_QUOTE.sub(r"\1", text), strict=False)
         return repaired if isinstance(repaired, dict) else {"raw": text}
     except json.JSONDecodeError:
         return {"raw": text}
 
 
+def _scrub(value: Any) -> Any:
+    """Drop NUL characters: PostgreSQL text cannot store them, and one would fail the agent's whole batch."""
+    if isinstance(value, str):
+        return value.replace("\x00", "") if "\x00" in value else value
+    if isinstance(value, dict):
+        return {_scrub(key): _scrub(inner) for key, inner in value.items()}
+    if isinstance(value, list):
+        return [_scrub(inner) for inner in value]
+    return value
+
+
 def normalize(raw: dict, platform: str = "") -> dict:
     """Return ``{event_id, event_type, category, source, summary, occurred_at, severity, fields}``."""
+    raw = _scrub(raw)
     payload: Any = raw.get("payload")
     if payload is None and isinstance(raw.get("payloadJson"), str) and raw["payloadJson"].strip():
         try:
-            payload = json.loads(raw["payloadJson"])
+            payload = _scrub(json.loads(raw["payloadJson"], strict=False))
         except json.JSONDecodeError:
-            payload = _repair(raw["payloadJson"])
+            payload = _scrub(_repair(raw["payloadJson"]))
     if not isinstance(payload, dict):
         payload = {} if payload is None else {"value": payload}
 

@@ -266,10 +266,11 @@ echo "PATH=$path"
     path = next((line[5:].strip() for line in (row.get("stdout") or "").splitlines() if line.startswith("PATH=")), "")
     if not path:
         raise Check(f"the test file was not written: {(row.get('stdout') or row.get('stderr') or '')[:200]!r}")
+    scan: dict = {}
     try:  # real-time protection may already have taken it; a targeted scan covers agents that only scan on demand
-        ctx.command(device, "scan.targeted", target_path=path)
-    except Check:
-        pass
+        scan = ctx.command(device, "scan.targeted", target_path=path).get("result") or {}
+    except Check as exc:
+        scan = {"error": str(exc)}
     name = path.replace("\\", "/").rsplit("/", 1)[-1]
 
     def caught():
@@ -279,8 +280,14 @@ echo "PATH=$path"
         flagged = [a for a in ctx.api.get("alerts", device_id=device["id"], snoozed="all") if name in json.dumps(a.get("details") or {})]
         return {"via": "alert", "threat": flagged[0]["title"]} if flagged else None
 
-    found = wait_for(f"{name} to be quarantined or alerted", caught, ctx.args.timeout)
-    return f"detected via {found['via']} as {found.get('threat')}", {**found, "file": path}
+    try:
+        found = wait_for(f"{name} to be quarantined or alerted", caught, ctx.args.timeout)
+    except Check as exc:  # say what the device did report, so the cause is in the log
+        events = (ctx.api.get("events", device_id=device["id"], hours=1, limit=200) or {}).get("events", [])
+        seen = [f"{str(e.get('occurredAt') or '')[11:19]} {e.get('eventType')}: {str(e.get('summary') or '')[:100]}" for e in events
+                if not str(e.get("eventType", "")).startswith(("process.", "network.", "dns."))][:12]
+        raise Check(f"{exc}. Targeted scan result: {json.dumps(scan)[:300]}. Latest device events: {seen}") from None
+    return f"detected via {found['via']} as {found.get('threat')}", {**found, "file": path, "scan": scan}
 
 
 _PAM_USER = "fenrir-acc-user"

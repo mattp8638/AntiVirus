@@ -449,6 +449,15 @@ void EnforceTelemetryQueueBudget(std::vector<TelemetryRecord>* pendingTelemetry)
                           pendingTelemetry->begin() + (pendingTelemetry->size() - kMaxQueuedTelemetry));
 }
 
+// Detections and response outcomes, which go to the server ahead of routine activity.
+bool IsPriorityTelemetry(const std::wstring& eventType) {
+  static constexpr const wchar_t* kPrefixes[] = {L"scan.finding", L"scan.threat.", L"realtime.protection.action",
+                                                 L"threat.", L"quarantine.", L"ransomware.", L"tamper.",
+                                                 L"device.isolated", L"device.released"};
+  return std::any_of(std::begin(kPrefixes), std::end(kPrefixes),
+                     [&eventType](const wchar_t* prefix) { return eventType.rfind(prefix, 0) == 0; });
+}
+
 std::optional<EventEnvelope> BuildBehaviorEventFromNetworkTelemetry(const TelemetryRecord& record,
                                                                     const std::wstring& deviceId) {
   const auto targetPath = ExtractPayloadString(record.payloadJson, "path").value_or(L"");
@@ -4944,6 +4953,11 @@ void AgentService::FlushTelemetryQueue() {
     return;
   }
 
+  // Detections first: a busy machine can queue thousands of routine image-load and snapshot events, and a malware
+  // finding must not wait behind them. The partition is stable, so each group keeps its order.
+  std::stable_partition(pendingTelemetry_.begin(), pendingTelemetry_.end(),
+                        [](const TelemetryRecord& record) { return IsPriorityTelemetry(record.eventType); });
+
   lastTelemetryFlushFailed_ = false;
   bool attemptedRecovery = false;
   while (!pendingTelemetry_.empty() && !ShouldStop()) {
@@ -4951,26 +4965,54 @@ void AgentService::FlushTelemetryQueue() {
         std::min<std::size_t>(pendingTelemetry_.size(), static_cast<std::size_t>(config_.telemetryBatchSize));
     const std::vector<TelemetryRecord> batch(pendingTelemetry_.begin(), pendingTelemetry_.begin() + batchSize);
 
+    std::size_t handled = 0;  // records from the front of the batch that were delivered or dropped
+    std::string failure;
     try {
       const auto result = controlPlaneClient_->SendTelemetryBatch(state_, batch);
-      std::vector<std::wstring> delivered;
-      delivered.reserve(batch.size());
-      for (const auto& record : batch) {
-        delivered.push_back(record.eventId);
-      }
-      telemetryQueueStore_->Remove(delivered);
-      pendingTelemetry_.erase(pendingTelemetry_.begin(), pendingTelemetry_.begin() + batchSize);
+      handled = batchSize;
       std::wcout << L"Uploaded " << result.accepted << L" telemetry event(s) at " << result.receivedAt
                  << L". Backend now stores " << result.totalStored << L" event(s)." << std::endl;
     } catch (const std::exception& error) {
-      if (!attemptedRecovery && RecoverDeviceIdentity(error, L"telemetry upload")) {
+      const auto* status = dynamic_cast<const HttpStatusError*>(&error);
+      if (status != nullptr && status->Malformed()) {
+        // The server will never accept this batch as sent. Send its records one at a time and drop only the ones
+        // it refuses, so one bad record cannot hold back everything queued behind it.
+        for (; handled < batch.size(); ++handled) {
+          try {
+            controlPlaneClient_->SendTelemetryBatch(state_, {batch[handled]});
+          } catch (const HttpStatusError& single) {
+            if (!single.Malformed()) {
+              failure = single.what();
+              break;
+            }
+            std::wcerr << L"Dropped a " << batch[handled].eventType << L" telemetry event the server refused: "
+                       << Utf8ToWide(single.what()) << std::endl;
+          } catch (const std::exception& single) {
+            failure = single.what();
+            break;
+          }
+        }
+      } else if (!attemptedRecovery && RecoverDeviceIdentity(error, L"telemetry upload")) {
         attemptedRecovery = true;
         continue;
+      } else {
+        failure = error.what();
       }
+    }
 
+    if (handled > 0) {
+      std::vector<std::wstring> delivered;
+      delivered.reserve(handled);
+      for (std::size_t index = 0; index < handled; ++index) {
+        delivered.push_back(batch[index].eventId);
+      }
+      telemetryQueueStore_->Remove(delivered);
+      pendingTelemetry_.erase(pendingTelemetry_.begin(), pendingTelemetry_.begin() + handled);
+    }
+    if (!failure.empty()) {
       lastTelemetryFlushFailed_ = true;
       std::wcerr << L"Telemetry upload failed, leaving " << pendingTelemetry_.size()
-                 << L" event(s) queued locally: " << Utf8ToWide(error.what()) << std::endl;
+                 << L" event(s) queued locally: " << Utf8ToWide(failure) << std::endl;
       break;
     }
   }

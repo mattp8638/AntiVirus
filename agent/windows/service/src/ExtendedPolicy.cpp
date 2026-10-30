@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <cwchar>
 #include <cwctype>
 
 namespace antivirus::agent {
@@ -408,8 +409,8 @@ ExtendedPolicy ExtendedPolicy::Parse(const std::string& modulesJson) {
   if (const auto ports = WideList(root->Get("remoteAccess"), "tunnelPorts"); !ports.empty()) {
     policy.remoteTunnelPorts.clear();
     for (const auto& port : ports) {
-      const int value = _wtoi(port.c_str());
-      if (value > 0 && value < 65536) policy.remoteTunnelPorts.push_back(value);
+      const long value = std::wcstol(port.c_str(), nullptr, 10);  // portable: the policy tests also run on Linux
+      if (value > 0 && value < 65536) policy.remoteTunnelPorts.push_back(static_cast<int>(value));
     }
   }
 

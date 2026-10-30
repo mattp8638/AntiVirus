@@ -693,7 +693,7 @@ HttpResponse RequestJson(const wchar_t* method, const std::wstring& url, const s
 
     std::ostringstream message;
     message << "HTTP request failed with status " << statusCode << ": " << responseBody;
-    throw std::runtime_error(message.str());
+    throw HttpStatusError(statusCode, message.str());
   }
 
   return HttpResponse{.statusCode = statusCode, .body = std::move(responseBody)};

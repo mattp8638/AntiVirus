@@ -112,6 +112,10 @@ jobs:
           if (Test-Path acceptance-windows/report.md) { Get-Content acceptance-windows/report.md | Add-Content $env:GITHUB_STEP_SUMMARY }
           else { 'No report was written.' | Add-Content $env:GITHUB_STEP_SUMMARY }
           Copy-Item "$env:RUNNER_TEMP\server*.log" acceptance-windows/ -ErrorAction SilentlyContinue
+          # In the log too: an agent whose telemetry the server refuses passes every check that does not need it.
+          Select-String -Path "$env:RUNNER_TEMP\server.log" -Pattern '"POST /api/v1/devices/[^/]+/telemetry HTTP/1\.1" (\d+)' -ErrorAction SilentlyContinue |
+            ForEach-Object { $_.Matches[0].Groups[1].Value } | Group-Object | ForEach-Object { "Telemetry uploads answered HTTP $($_.Name): $($_.Count)" }
+          Select-String -Path "$env:RUNNER_TEMP\server.err.log" -Pattern 'Traceback|ERROR' -ErrorAction SilentlyContinue | Select-Object -Last 10 | ForEach-Object { $_.Line }
           & powershell.exe -NoProfile -File agent/windows/installer/Get-FenrirAgentDiagnostics.ps1 *> acceptance-windows/agent-diagnostics.txt
           try {
             Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'FenrirAgent' } -MaxEvents 200 -ErrorAction Stop |

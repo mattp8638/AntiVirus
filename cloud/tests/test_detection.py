@@ -371,3 +371,37 @@ detection:
 level: low
 """)
     assert escaped.matches({"Details": "xa*bx"}, "registry") and not escaped.matches({"Details": "xaZZbx"}, "registry")
+
+
+def test_a_windows_batch_with_raw_control_characters_is_stored_and_the_finding_quarantined(client, admin, device):
+    """Windows agents used to send control characters unescaped. The server refused the batch, the agent retried it
+    forever, and every event behind it, the EICAR finding included, never arrived."""
+    finding = {"path": "C:\\ProgramData\\FenrirAcceptance\\eicar.com", "sizeBytes": 68,
+               "sha256": "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f", "contentType": "com",
+               "reputation": "unknown", "signer": "", "heuristicScore": 99, "remediationStatus": "quarantined",
+               "disposition": "quarantine", "tacticId": "TA0002", "techniqueId": "T1204",
+               "quarantineRecordId": "q-eicar-1", "evidenceRecordId": "e-1", "alertTitle": "EICAR test file",
+               "alertSummary": "EICAR_TEST_SIGNATURE", "originContext": {"channel": "local", "zone": 0}}
+    # Exactly what the old agent's escaper sent: control characters raw inside the JSON strings, at both levels.
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    service = ('{"eventId":"svc-1","eventType":"service.snapshot","source":"agent-service",'
+               '"summary":"Observed service\x0b with a vertical tab and a NUL\x00","occurredAt":"' + now + '",'
+               '"payloadJson":"{\\"name\\":\\"Udk User Service\\",\\"description\\":\\"bell\x07 nul\\\\u0000 end\\"}"}')
+    scan = json.dumps({"eventId": "find-1", "eventType": "scan.finding", "source": "agent-service",
+                       "summary": "EICAR test file: EICAR_TEST_SIGNATURE", "occurredAt": now,
+                       "payloadJson": json.dumps(finding)})
+    batch = '{"events":[' + service + "," + scan + "]}"
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(batch)  # strict JSON, as the server parsed it before
+    response = client.post(f"/api/v1/devices/{device['deviceId']}/telemetry", content=batch.encode(),
+                           headers={**device["headers"], "Content-Type": "application/json"})
+    assert response.status_code == 200, response.text
+    assert response.json()["accepted"] == 2 and response.json()["alerts"] >= 1
+    stored = client.get("/api/console/events", params={"device_id": device["deviceId"], "hours": 24 * 365}, headers=admin).json()
+    service = next(e for e in stored["events"] if e["eventType"] == "service.snapshot")
+    assert "\x00" not in json.dumps(service) and "\\u0000" not in json.dumps(service)  # PostgreSQL cannot store NUL
+    quarantined = client.get("/api/console/protection/quarantine", headers=admin).json()
+    items = quarantined["items"] if isinstance(quarantined, dict) else quarantined
+    assert [i["recordId"] for i in items] == ["q-eicar-1"]
+    assert client.post(f"/api/v1/devices/{device['deviceId']}/telemetry", content=b"{not json",
+                       headers={**device["headers"], "Content-Type": "application/json"}).status_code == 422
