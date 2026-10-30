@@ -384,22 +384,39 @@ def patch_scan(ctx: Context, device: dict) -> tuple[str, dict]:
 
 @scenario("telemetry_volume", ("windows", "linux", "macos"), "Sends a sustainable amount of telemetry")
 def telemetry_volume(ctx: Context, device: dict) -> tuple[str, dict]:
-    """Events per minute since the agent enrolled, stored or not, against --max-events-per-minute. An agent that
-    floods the server fills its database and slows every console page for every customer."""
+    """Two budgets. Busy: events a minute since the agent enrolled, while the other checks ran scripts, scans and
+    admin changes, against --max-busy-events-per-minute (the server's per-device cap by default). Idle: events a
+    minute over --idle-seconds with nothing asked of the device, against --max-events-per-minute: what every device
+    costs all day. Stored and capped events both count."""
     enrolled = str(ctx.device(device["id"])["device"].get("enrolledAt") or "")
     try:
         started = datetime.fromisoformat(enrolled.replace("Z", "+00:00"))
         minutes = max(1, min(60, int((datetime.now(timezone.utc) - started).total_seconds() // 60)))
     except ValueError:
         minutes = 60
-    volume = ctx.api.get("platform/telemetry-volume", device_id=device["id"], minutes=minutes)
-    rate = (volume["events"] + volume.get("notStored", 0)) / minutes
-    evidence = {"minutes": minutes, "perMinute": round(rate, 1), "notStored": volume.get("notStored", 0),
-                "topTypes": {t["eventType"]: t["events"] for t in volume["byType"][:8]}}
-    if rate > ctx.args.max_events_per_minute:
-        raise Check(f"{rate:.0f} events a minute over {minutes} min (budget {ctx.args.max_events_per_minute}); "
-                    f"most sent: {evidence['topTypes']}")
-    return f"{rate:.0f} events a minute over {minutes} min", evidence
+
+    def counted(window: int) -> tuple[int, dict]:
+        volume = ctx.api.get("platform/telemetry-volume", device_id=device["id"], minutes=window)
+        return volume["events"] + volume.get("notStored", 0), volume
+
+    busy_total, busy = counted(minutes)
+    busy_rate = busy_total / minutes
+    time.sleep(45)  # let the busy period's last batches arrive
+    before, _ = counted(60)
+    time.sleep(ctx.args.idle_seconds)
+    after, idle = counted(60)
+    idle_rate = (after - before) / (ctx.args.idle_seconds / 60)
+    evidence = {"busyPerMinute": round(busy_rate, 1), "busyMinutes": minutes, "idlePerMinute": round(idle_rate, 1),
+                "idleSeconds": ctx.args.idle_seconds, "notStored": idle.get("notStored", 0),
+                "busyTopTypes": {t["eventType"]: t["events"] for t in busy["byType"][:8]}}
+    problems = []
+    if busy_rate > ctx.args.max_busy_events_per_minute:
+        problems.append(f"{busy_rate:.0f} a minute while busy (budget {ctx.args.max_busy_events_per_minute:.0f})")
+    if idle_rate > ctx.args.max_events_per_minute:
+        problems.append(f"{idle_rate:.0f} a minute idle (budget {ctx.args.max_events_per_minute:.0f})")
+    if problems:
+        raise Check(f"too much telemetry: {'; '.join(problems)}; most sent while busy: {evidence['busyTopTypes']}")
+    return f"{idle_rate:.0f} events a minute idle, {busy_rate:.0f} while busy", evidence
 
 
 @scenario("false_positives", ("windows", "linux", "macos"), "Quarantines and alerts on nothing but the test files")
@@ -514,8 +531,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scenario", default="", help="comma-separated; default all")
     parser.add_argument("--disruptive", action="store_true")
     parser.add_argument("--timeout", type=float, default=300.0, help="seconds to wait for each result")
-    parser.add_argument("--max-events-per-minute", type=float, default=150.0,
-                        help="telemetry_volume budget: events a minute a device may send (default 150)")
+    parser.add_argument("--max-events-per-minute", type=float, default=60.0,
+                        help="telemetry_volume: events a minute an idle device may send (default 60)")
+    parser.add_argument("--max-busy-events-per-minute", type=float, default=600.0,
+                        help="telemetry_volume: events a minute while the checks keep it busy (default 600, the server's cap)")
+    parser.add_argument("--idle-seconds", type=float, default=120.0, help="telemetry_volume: length of the idle window")
     parser.add_argument("--wait-for-device", type=float, default=0.0, help="seconds to wait for a just-installed agent to enrol")
     parser.add_argument("--insecure", action="store_true")
     parser.add_argument("--out", default="acceptance-report")
