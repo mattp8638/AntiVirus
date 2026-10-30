@@ -464,6 +464,22 @@ make -C agent/linux test
 
 The page tests start an isolated Python API; `FENRIR_UI_PYTHON` can select its interpreter. Legacy mode repairs the missing-column schema before sweeping routes/tabs/details. Fixture provider/desktop transports do not establish live Microsoft changes, malware efficacy or SAS delivery. CI also runs PostgreSQL tests. **Never use production for `FENRIR_TEST_DATABASE_URL`: tests create/drop data.**
 
+### Load test
+
+Before trusting a server with your estate, see what it carries on your hardware. On a **lab** server (it creates a
+customer and the simulated devices):
+
+```bash
+python3 scripts/loadtest/fenrir_load.py --server https://lab-fenrir.example.com --email admin@example.com \
+  --password "$LAB_PASSWORD" --devices 500 --minutes 10 --events-per-minute 60 --out load-500
+```
+
+Each simulated agent enrols and then behaves like a real one: commands every 15 seconds, a telemetry batch every 30
+seconds, a heartbeat every minute and a policy check-in every five. The report gives latency percentiles and errors for
+each call, events per second, whether every event was stored, and whether background work kept up. Increase
+`--devices` until something gives; the first thing that does is your capacity limit. CI runs 300 agents for three
+minutes against PostgreSQL with the separate worker on every Phase 2 run.
+
 ## Public release and contribution
 
 Contributions should include reproduction steps and meaningful tests. Keep migrations additive and exercise upgrades with existing rows. Validate real endpoint/provider outcomes before marking capabilities verified.
