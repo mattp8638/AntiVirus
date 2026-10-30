@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from .. import approvals, audit, rmm, services
+from .. import approvals, audit, rmm, script_review, services
 from ..commands import BY_TYPE, INTERACTIVE_ONLY
 from ..db import get_db
-from ..deps import Principal, current_principal, scoped_tenant
+from ..deps import Principal, current_principal, require_reauth, scoped_tenant
 from ..models import (Alert, Command, ConditionState, Device, DeviceMetric, DevicePatch, Job, MonitorCondition, PatchApproval,
                       PatchPolicy, RemoteSession, ScheduledTask, Script, SoftwarePackage, Tenant, utcnow)
 from ..serialize import apply_fields, to_dict
@@ -82,11 +82,19 @@ def _check_script(body: dict) -> None:
         raise HTTPException(400, "timeout must be between 10 seconds and 24 hours")
 
 
+def _script_view(db: Session, script: Script, detail: bool = False) -> dict:
+    view = {k: v for k, v in to_dict(script).items() if k not in ("review", "reviewEditors")}
+    view["review"] = script_review.view(db, script)
+    if detail:
+        view["review"]["diff"] = script_review.diff(script) if view["review"]["status"] == "pending" else ""
+    return view
+
+
 @router.get("/scripts")
 def list_scripts(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     rows = db.execute(select(Script).where(or_(Script.tenant_id.is_(None), Script.tenant_id.in_(principal.tenant_ids)))
                       .order_by(Script.category, Script.name)).scalars().all()
-    return [to_dict(r) for r in rows]
+    return [_script_view(db, r) for r in rows]
 
 
 @router.get("/scripts/{script_id}")
@@ -94,7 +102,22 @@ def get_script(script_id: str, principal: Principal = Depends(current_principal)
     script = db.get(Script, script_id)
     if not _visible(principal, script):
         raise HTTPException(404, "Not found")
-    return to_dict(script)
+    return _script_view(db, script, detail=True)
+
+
+@router.post("/scripts/{script_id}/review")
+def review_script(script_id: str, request: Request, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                  db: Session = Depends(get_db)):
+    """A second person approves exactly the version they read (body.hash, from GET /scripts/{id})."""
+    script = db.get(Script, script_id)
+    if not _visible(principal, script):
+        raise HTTPException(404, "Not found")
+    if script.tenant_id is None and not principal.can("platform"):  # shared scripts run for every customer
+        raise HTTPException(403, "Only a platform administrator can review a shared built-in script")
+    require_reauth(request, principal)
+    script_review.approve(db, principal, script, str(body.get("hash") or ""))
+    db.commit()
+    return _script_view(db, script, detail=True)
 
 
 @router.post("/scripts")
@@ -106,13 +129,13 @@ def create_script(body: dict = Body(...), principal: Principal = Depends(current
     tenant_id = body.get("tenantId") or principal.user.tenant_id
     principal.check_tenant(tenant_id)
     script = Script(tenant_id=tenant_id, updated_by=principal.actor, language="powershell", run_as="system", timeout_seconds=600,
-                    parameters=[], category="General", description="", version=1)
+                    parameters=[], category="General", description="", version=1, review_editors=[principal.actor])
     apply_fields(script, body, SCRIPT_FIELDS)
     script.platforms = script.platforms or list(rmm.LANGUAGES.get(script.language, ("windows",)))
     db.add(script)
     audit.record(db, principal.actor, "rmm.script.created", script.name, tenant_id)
     db.commit()
-    return to_dict(script)
+    return _script_view(db, script, detail=True)
 
 
 @router.patch("/scripts/{script_id}")
@@ -121,13 +144,15 @@ def update_script(script_id: str, body: dict = Body(...), principal: Principal =
     script = db.get(Script, script_id)
     _editable(principal, script)
     _check_script(body)
+    before = script_review.before_edit(script)
     changed = apply_fields(script, body, SCRIPT_FIELDS)
     if "body" in changed or "parameters" in changed:
         script.version += 1
     script.updated_by, script.updated_at = principal.actor, utcnow()
+    script_review.edited(script, principal.actor, before)
     audit.record(db, principal.actor, "rmm.script.updated", script.name, script.tenant_id, fields=changed, version=script.version)
     db.commit()
-    return to_dict(script)
+    return _script_view(db, script, detail=True)
 
 
 @router.delete("/scripts/{script_id}")
@@ -248,7 +273,10 @@ def retry_job(job_id: str, principal: Principal = Depends(current_principal), db
     if (job.payload or {}).get("removedAt") or job.status == "cancelling":
         raise HTTPException(409, "This job was removed or is still stopping; create a new job when appropriate")
     principal.require("configure" if job.command_type == "script.run" else "respond")
-    retried = rmm.retry_failed(db, job, principal.actor)
+    try:
+        retried = rmm.retry_failed(db, job, principal.actor)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
     db.commit()
     return {**_job_view(db, job), "retried": retried}
 

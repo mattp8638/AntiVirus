@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from .. import audit, condition_remediation as engine, services
+from .. import audit, condition_remediation as engine, script_review, services
 from ..db import get_db
-from ..deps import Principal, current_principal, scoped_tenant
+from ..deps import Principal, current_principal, require_reauth, scoped_tenant
 from ..models import ConditionPackage, ConditionResult, Device
 
 router = APIRouter(prefix="/api/console/rmm/remediation-packages", tags=["Condition remediation"])
@@ -60,7 +60,7 @@ def list_packages(tenant_id: str | None = None, principal: Principal = Depends(c
     by_package: dict[str, list] = {}
     for r in results:
         by_package.setdefault(r.package_id, []).append(r)
-    return [engine.view(r, by_package.get(r.id, []) if r.tenant_id else None) for r in rows]
+    return [engine.view(r, by_package.get(r.id, []) if r.tenant_id else None, db) for r in rows]
 
 
 @router.post("")
@@ -71,13 +71,13 @@ def create_package(body: dict = Body(...), principal: Principal = Depends(curren
     tenant_id = str(body.get("tenantId") or "")
     principal.check_tenant(tenant_id)
     row = ConditionPackage(tenant_id=tenant_id, name="", created_by=principal.actor, language=str(body.get("language") or "powershell"),
-                           platforms=["windows"])
+                           platforms=["windows"], review_editors=[principal.actor])
     _apply(row, body)
     db.add(row)
     db.flush()
     audit.record(db, principal.actor, "condition.package.created", row.name, tenant_id, package=row.id)
     db.commit()
-    return engine.view(row, [])
+    return engine.view(row, [], db)
 
 
 @router.post("/{package_id}/enable")
@@ -101,7 +101,7 @@ def enable_template(package_id: str, body: dict = Body(...), principal: Principa
     db.flush()
     audit.record(db, principal.actor, "condition.package.enabled", row.name, tenant_id, package=row.id)
     db.commit()
-    return engine.view(row, [])
+    return engine.view(row, [], db)
 
 
 @router.patch("/{package_id}")
@@ -109,10 +109,23 @@ def update_package(package_id: str, body: dict = Body(...), principal: Principal
     principal.require("configure")
     principal.require("scripts")
     row = _owned(db, principal, package_id)
+    before = script_review.before_edit(row)
     _apply(row, body)
+    script_review.edited(row, principal.actor, before)
     audit.record(db, principal.actor, "condition.package.updated", row.name, row.tenant_id, package=row.id, fields=sorted(body))
     db.commit()
-    return engine.view(row)
+    return engine.view(row, None, db)
+
+
+@router.post("/{package_id}/review")
+def review_package(package_id: str, request: Request, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                   db: Session = Depends(get_db)):
+    """A second person approves exactly the detection and remediation scripts they read (body.hash)."""
+    row = _owned(db, principal, package_id)
+    require_reauth(request, principal)
+    script_review.approve(db, principal, row, str(body.get("hash") or ""))
+    db.commit()
+    return engine.view(row, None, db)
 
 
 @router.delete("/{package_id}")
@@ -132,6 +145,10 @@ def run_now(package_id: str, body: dict = Body(default={}), principal: Principal
     """Run detection now on every target (or the devices listed)."""
     principal.require("scripts")
     row = _owned(db, principal, package_id)
+    try:
+        script_review.check(db, row)
+    except script_review.NotReviewed as exc:
+        raise HTTPException(400, str(exc)) from None
     devices = engine.targets(db, row)
     if body.get("deviceIds"):
         wanted = set(body["deviceIds"])

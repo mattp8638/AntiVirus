@@ -172,14 +172,32 @@ def create_job(db: Session, *, tenant_id: str, actor: str, name: str, devices: l
 def run_script(db: Session, *, script: Script, devices: list[Device], actor: str, tenant_id: str, parameters: dict | None = None,
                targets: dict | None = None, scheduled_task_id: str | None = None, ticket_id: str | None = None,
                name: str | None = None) -> Job:
+    from . import script_review
+
+    script_review.check(db, script)  # raises NotReviewed (a ValueError) while a second person still has to look at it
     values = validate_parameters(script, parameters or {})
-    return create_job(db, tenant_id=tenant_id, actor=actor, name=name or script.name, devices=devices, command_type="script.run",
-                      kind="script", payload=script_payload(script, values), script=script, parameters=values, targets=targets,
-                      scheduled_task_id=scheduled_task_id, ticket_id=ticket_id)
+    job = create_job(db, tenant_id=tenant_id, actor=actor, name=name or script.name, devices=devices, command_type="script.run",
+                     kind="script", payload=script_payload(script, values), script=script, parameters=values, targets=targets,
+                     scheduled_task_id=scheduled_task_id, ticket_id=ticket_id)
+    if script_review.status(script) != "pending":
+        job.payload = {**job.payload, "reviewedHash": script_review.content_hash(script)}
+    return job
+
+
+def _record_held_script(db: Session, exc: ValueError, actor: str, tenant_id: str, script: Script, **details) -> None:
+    """A schedule or monitor reached a script still waiting for review: say so where the MSP looks, not only in the log."""
+    from . import script_review
+
+    if isinstance(exc, script_review.NotReviewed):
+        audit.record(db, actor, "rmm.script.held_for_review", script.name, tenant_id, scriptId=script.id, **details)
 
 
 def retry_failed(db: Session, job: Job, actor: str) -> int:
     """Queue the job's command again on the devices where it failed or expired. Returns how many."""
+    from . import script_review
+
+    if job.command_type == "script.run" and script_review.required(db) and not (job.payload or {}).get("reviewedHash"):
+        raise ValueError("This job ran a script version nobody reviewed. Run the reviewed script again from the library.")
     command_ids = dict(job.command_ids or {})
     failed = db.execute(select(Command).where(Command.id.in_(list(command_ids.values())),
                                               Command.status.in_(("failed", "expired")))).scalars().all()
@@ -879,6 +897,7 @@ def run_scheduled_task(db: Session, task: ScheduledTask, actor: str | None = Non
                                        name=f"{task.name}: {script.name}"))
             except ValueError as exc:
                 log.warning("scheduled task %s script error: %s", task.id, exc)
+                _record_held_script(db, exc, who, task.tenant_id, script, task=task.name)
         elif action.get("type") == "command":
             jobs.append(create_job(db, tenant_id=task.tenant_id, actor=who, name=f"{task.name}: {action.get('command')}",
                                    devices=devices, command_type=str(action.get("command")), payload=action.get("payload") or {},
@@ -1089,6 +1108,7 @@ def _trigger(db: Session, condition: MonitorCondition, device: Device, state: Co
                                ticket_id=state.ticket_id)
                 except ValueError as exc:
                     log.warning("self-heal script failed validation: %s", exc)
+                    _record_held_script(db, exc, f"monitor:{condition.name}", device.tenant_id, script, device=device.hostname)
         elif kind == "command" and action.get("command"):
             create_job(db, tenant_id=device.tenant_id, actor=f"monitor:{condition.name}",
                        name=f"Self-heal: {condition.name}", devices=[device],

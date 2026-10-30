@@ -529,6 +529,16 @@ function SecurityCard() {
           {data.requireMfa ? "Stop requiring" : "Require MFA"}</button>
       </div>
       <hr />
+      <div className="row" style={{ justifyContent: "space-between" }}>
+        <div><b>Require script review</b>
+          <p className="small muted" style={{ margin: "4px 0" }}>Library scripts and remediation packages run only in a version someone who did not
+            write or edit it has approved (Scripts shows what changed). Scripts shipped with Fenrir count as reviewed until changed.
+            One-off scripts outside the library are refused.</p></div>
+        <button className={data.scriptReview ? "" : "primary"} disabled={busy}
+                onClick={() => save({ scriptReview: !data.scriptReview }, data.scriptReview ? "Script review no longer required" : "Script review required")}>
+          {data.scriptReview ? "Stop requiring" : "Require review"}</button>
+      </div>
+      <hr />
       <b>Networks staff may use the console from</b>
       <p className="small muted" style={{ margin: "4px 0" }}>One address or network per line (for example 203.0.113.0/24). Empty means anywhere.
         Agents, the client portal and DNS protection are not affected. You are connecting from <span className="mono">{data.yourAddress}</span>.

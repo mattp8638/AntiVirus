@@ -246,6 +246,12 @@ def _result(db: Session, package: ConditionPackage, device: Device) -> Condition
 
 
 def queue(db: Session, package: ConditionPackage, device: Device, phase: str, actor: str) -> Command:
+    from . import script_review
+
+    try:
+        script_review.check(db, package)
+    except script_review.NotReviewed as exc:
+        raise services.CommandError(str(exc)) from None
     command = services.enqueue_command(db, device, "script.run", actor, payload=_payload(package, phase),
                                        reason=f"Condition remediation: {package.name} ({phase})")
     db.flush()
@@ -356,12 +362,17 @@ def _maybe_ticket(db: Session, package: ConditionPackage, device: Device, row: C
     row.ticket_id = ticket.id
 
 
-def view(package: ConditionPackage, results: list[ConditionResult] | None = None) -> dict:
+def view(package: ConditionPackage, results: list[ConditionResult] | None = None, db: Session | None = None) -> dict:
     out = {"id": package.id, "tenantId": package.tenant_id, "builtinKey": package.builtin_key, "name": package.name,
            "description": package.description, "platforms": package.platforms or [], "language": package.language,
            "detectionScript": package.detection_script, "remediationScript": package.remediation_script,
            "intervalHours": package.interval_hours, "autoRemediate": package.auto_remediate, "ticketOnFailure": package.ticket_on_failure,
            "enabled": package.enabled, "targets": package.targets or {}, "template": package.tenant_id is None}
+    if db is not None and package.tenant_id is not None:
+        from . import script_review
+        out["review"] = script_review.view(db, package)
+        if out["review"]["status"] == "pending":
+            out["review"]["diff"] = script_review.diff(package)
     if results is not None:
         counts: dict[str, int] = {}
         for r in results:

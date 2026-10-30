@@ -16,7 +16,7 @@ function MyWork() {
   const waiting = decisions.approvals + decisions.adminRequests;
   return (
     <>
-      <h2 style={{ margin: "0 0 10px" }}>My work</h2>
+      <h2 style={{ margin: "0 0 10px" }}>My work <Link to="/inbox?view=mine" className="small" style={{ fontWeight: 400 }}>Open my inbox</Link></h2>
       <div className="grid k4">
         <Stat label="My open tickets" value={tickets.mineCount} to="/service-board?assignee=me" hint={`${tickets.unassignedCount} unassigned in view`} />
         <Stat label="Past SLA" value={tickets.breachedCount} accent={tickets.breachedCount ? "red" : "green"} to="/service-board" hint="open tickets, everyone's" />

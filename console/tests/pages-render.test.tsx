@@ -266,3 +266,15 @@ test("custom fields are defined in settings and shown on devices", async () => {
   expect(screen.getByRole("heading", { name: "Custom fields" })).toBeTruthy();
   assertView("Device › custom fields");
 }, 20000);
+
+test("the inbox lists open work from other pages and an item can be taken", async () => {
+  render(<MemoryRouter initialEntries={["/inbox"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Root /></MemoryRouter>);
+  await settled();
+  fireEvent.click(screen.getByText("Console smoke incident"));
+  await settled();
+  const dialog = screen.getByRole("dialog", { name: "Console smoke incident" });
+  expect(dialog.textContent).toContain("Incidents");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Take" }));
+  await settled();
+  expect((within(dialog).getByLabelText("Owner") as HTMLSelectElement).value).toBe("admin@fenrir.local");
+}, 20000);
