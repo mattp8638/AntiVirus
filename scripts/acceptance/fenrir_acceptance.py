@@ -379,13 +379,18 @@ def defender(ctx: Context, device: dict) -> tuple[str, dict]:
     machine is blocked, and checks Defender itself now has those settings. Then has Defender catch an EICAR file and
     checks the detection arrives as a Fenrir alert. The device's previous policy is put back afterwards."""
     previous = device.get("policyId")
+    folder = "C:\\Users\\Public\\FenrirAcceptance-Defender"
     policy = ctx.api.post("policies", {"tenantId": device["tenantId"], "name": "Fenrir acceptance: managed Defender",
                                        "settings": {"defender": {"managed": True, "cloudProtection": "high", "puaProtection": "audit",
                                                                  "networkProtection": "audit", "controlledFolderAccess": "off"},
-                                                    "attackSurface": {key: "audit" for key in _ATTACK_SURFACE_RULES}}})
+                                                    "attackSurface": {key: "audit" for key in _ATTACK_SURFACE_RULES},
+                                                    # Fenrir leaves Defender's test file alone, so it is Defender that catches it.
+                                                    "antimalware": {"exclusionPaths": [folder]}}})
     ctx.api.call("PATCH", f"devices/{device['id']}", {"policyId": policy["id"]})
     path = f"devices/{device['id']}/defender"
     try:
+        ctx.command(device, "policy.refresh")
+        wait_for("the agent to take the scenario's policy", lambda: ctx.device(device["id"])["policy"]["applied"], ctx.args.timeout)
         ctx.api.post(f"{path}/check", {})
 
         def applied():
@@ -412,16 +417,26 @@ def defender(ctx: Context, device: dict) -> tuple[str, dict]:
         if not view.get("inSync"):
             raise Check(f"Defender did not take the policy: {view.get('error')}")
         not_set = [r["key"] for r in view["rules"] if r["actual"] != "audit"]
-        if not_set or view.get("problems"):
+        # GitHub's image holds real-time protection off by policy, which Set-MpPreference cannot override. Fenrir must
+        # report it and raise the protection alert: that is what an MSP needs to see on a machine like this.
+        realtime_held_off = not status.get("realTime")
+        other = [p for p in view.get("problems") or [] if "real-time" not in p]
+        if not_set or other:
             raise Check(f"Defender reports problems {view.get('problems')}; rules not in audit: {not_set}")
+        if realtime_held_off:
+            wait_for("the 'Defender protection is off' alert for real-time protection held off", lambda: next(
+                (a for a in ctx.api.get("alerts", device_id=device["id"], snoozed="all")
+                 if a.get("ruleId") == "defender:protection-off" and a.get("status") in ("new", "triaged")), None),
+                ctx.args.timeout, interval=10)
 
+        # Real-time protection catches it on write where it is on; an on-demand Defender scan covers machines where not.
         parts = "+".join("'" + p.replace("'", "''") + "'" for p in _EICAR_PARTS)
         ctx.script(device, "give Defender an EICAR file", "powershell", f"""
-$folder = 'C:\\Users\\Public\\FenrirAcceptance-Defender'
+$folder = '{folder}'
 New-Item -ItemType Directory -Force -Path $folder | Out-Null
 $path = Join-Path $folder ('eicar-' + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + '.com')
-try {{ [IO.File]::WriteAllText($path, {parts}); Start-Sleep -Seconds 5; Get-Content -Path $path -ErrorAction Stop | Out-Null; Write-Output 'WRITTEN' }}
-catch {{ Write-Output ('BLOCKED=' + $_.Exception.Message) }}""")
+try {{ [IO.File]::WriteAllText($path, {parts}); Write-Output 'WRITTEN' }} catch {{ Write-Output ('BLOCKED=' + $_.Exception.Message) }}
+try {{ Start-MpScan -ScanType CustomScan -ScanPath $folder; Write-Output 'SCANNED' }} catch {{ Write-Output ('SCAN=' + $_.Exception.Message) }}""")
 
         def alerted():
             found = [a for a in ctx.api.get("alerts", device_id=device["id"], snoozed="all")
@@ -438,10 +453,11 @@ catch {{ Write-Output ('BLOCKED=' + $_.Exception.Message) }}""")
             ctx.api.post(f"{path}/check", {})
         except ApiError:
             pass
-    return (f"Defender {status.get('mode')}, real-time {'on' if status.get('realTime') else 'off'}, "
-            f"{len(view['rules'])} attack surface rules in audit; detection alerted as {alert['title']}",
-            {"mode": status.get("mode"), "tamper": status.get("tamper"), "signatureAgeDays": status.get("signatureAgeDays"),
-             "alert": alert["title"], "file": (alert.get("details") or {}).get("file")})
+    held = " (held off by this machine's policy: reported and alerted)" if realtime_held_off else ""
+    return (f"Defender {status.get('mode')}, real-time {'on' if status.get('realTime') else 'off'}{held}, "
+            f"{len(view['rules'])} attack surface rules set to audit in Defender; detection alerted as {alert['title']}",
+            {"mode": status.get("mode"), "realTime": status.get("realTime"), "tamper": status.get("tamper"),
+             "signatureAgeDays": status.get("signatureAgeDays"), "alert": alert["title"], "file": (alert.get("details") or {}).get("file")})
 
 
 @scenario("isolation", ("windows", "linux", "macos"), "Isolates the device and releases it again", disruptive=True)

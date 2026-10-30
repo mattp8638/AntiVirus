@@ -278,7 +278,7 @@ def problems(status: dict, settings: dict) -> list[str]:
     if not status.get("antivirus"):
         found.append("Defender antivirus is turned off")
     if settings["defender"].get("realTimeProtection", True) and not status.get("realTime"):
-        found.append("Defender real-time protection is off")
+        found.append("Defender real-time protection is off (Group Policy, tamper protection or another product may be holding it off)")
     wanted = asr_wanted(settings)
     actual = status.get("asr") or {}
     drift = [guid for guid, m in wanted.items() if m != "off" and actual.get(guid) != ASR_ACTION_NUMBER[m]]

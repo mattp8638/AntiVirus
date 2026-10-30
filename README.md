@@ -293,7 +293,7 @@ machine learning and DNS filtering on top:
 It works through the normal command channel (system PowerShell: `Set-MpPreference`, `Get-MpComputerStatus`,
 `Get-MpThreatDetection`), so it needs no agent update and respects the emergency stop. Tamper protection cannot be
 turned on from the device itself: Fenrir reports it and says to turn it on in the Microsoft Defender portal or Intune.
-When tamper protection or Intune holds a setting, Fenrir reports the difference rather than fighting it. Without
+When tamper protection, Group Policy or Intune holds a setting, Fenrir reports the difference rather than fighting it. Without
 **Manage**, Fenrir only reads Defender's state and raises nothing about it.
 
 ### Client health and reports
