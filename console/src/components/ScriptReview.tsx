@@ -26,7 +26,7 @@ export function ReviewPill({ review }: { review?: Review }) {
 }
 
 /** Shown on a script or package: what changed since the last review, and the approve button for a second person. */
-export function ReviewPanel({ review, path, dirty, onReviewed }: { review?: Review; path: string; dirty?: boolean; onReviewed: () => void }) {
+export function ReviewPanel({ review, path, dirty, shared, onReviewed }: { review?: Review; path: string; dirty?: boolean; shared?: boolean; onReviewed: () => void }) {
   const { me, can } = useApp();
   const { run, busy } = useAction();
   if (!review?.required) return null;
@@ -49,7 +49,7 @@ export function ReviewPanel({ review, path, dirty, onReviewed }: { review?: Revi
           ))}
         </pre>
       </> : <p className="small muted">Nothing was reviewed before: read the whole script below.</p>}
-      {can("approve") && can("scripts") && !mine && <button className="primary" disabled={busy || dirty} onClick={approve}
+      {can("approve") && can("scripts") && (!shared || can("platform")) && !mine && <button className="primary" disabled={busy || dirty} onClick={approve}
         title={dirty ? "Save or discard your edits first" : undefined}>Approve this version</button>}
       {mine && <p className="small muted">You changed this version, so someone else has to review it.</p>}
     </div>

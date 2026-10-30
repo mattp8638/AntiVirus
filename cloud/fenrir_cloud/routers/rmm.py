@@ -112,6 +112,8 @@ def review_script(script_id: str, request: Request, body: dict = Body(...), prin
     script = db.get(Script, script_id)
     if not _visible(principal, script):
         raise HTTPException(404, "Not found")
+    if script.tenant_id is None and not principal.can("platform"):  # shared scripts run for every customer
+        raise HTTPException(403, "Only a platform administrator can review a shared built-in script")
     require_reauth(request, principal)
     script_review.approve(db, principal, script, str(body.get("hash") or ""))
     db.commit()

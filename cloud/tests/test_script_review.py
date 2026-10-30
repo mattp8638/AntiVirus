@@ -91,7 +91,7 @@ def test_a_change_to_what_runs_needs_a_new_review_and_shows_what_changed(client,
     assert back["review"]["status"] == "reviewed" and _run(client, admin, script["id"], device).status_code == 200
 
 
-def test_scripts_shipped_with_fenrir_run_until_someone_changes_them(client, admin, device):
+def test_scripts_shipped_with_fenrir_run_until_someone_changes_them(client, admin, device, ops):
     _require_review()
     builtin = next(s for s in client.get("/api/console/rmm/scripts", headers=admin).json()
                    if s["builtin"] and "windows" in s["platforms"] and not any(p.get("required") for p in s["parameters"]))
@@ -100,6 +100,10 @@ def test_scripts_shipped_with_fenrir_run_until_someone_changes_them(client, admi
     edited = client.patch(f"/api/console/rmm/scripts/{builtin['id']}", headers=admin, json={"body": "Write-Output 'changed'"}).json()
     assert edited["review"]["status"] == "pending"
     assert _run(client, admin, builtin["id"], device).status_code == 400
+    # Shared scripts run for every customer, so a customer's own administrator cannot approve them.
+    _, ops_stepped = ops
+    refused = _review(client, ops_stepped, builtin["id"], edited["review"]["hash"])
+    assert refused.status_code == 403 and "platform administrator" in refused.json()["detail"]
 
 
 def test_review_off_changes_nothing_but_old_unreviewed_jobs_cannot_be_retried_once_on(client, admin, tenant, device):

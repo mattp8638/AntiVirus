@@ -72,7 +72,7 @@ function ScriptEditor({ script, onClose, onRun }: { script: any; onClose: () => 
              {form.id && <button disabled={needsReview(review)} onClick={() => onRun(form)}>Run…</button>}
              {!readOnly && <button className="primary" disabled={busy || !form.name || !form.body} onClick={() => save()}>Save</button>}
            </>}>
-      {form.id && <ReviewPanel review={review} path={`rmm/scripts/${form.id}`} dirty={dirty} onReviewed={reload} />}
+      {form.id && <ReviewPanel review={review} path={`rmm/scripts/${form.id}`} dirty={dirty} shared={!script.tenantId} onReviewed={reload} />}
       <div className="form-grid">
         <label className="field">Name<input value={form.name || ""} disabled={readOnly} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
         <label className="field">Category<input value={form.category || ""} disabled={readOnly} onChange={(e) => setForm({ ...form, category: e.target.value })} /></label>
