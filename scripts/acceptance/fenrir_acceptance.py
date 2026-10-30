@@ -402,12 +402,26 @@ def telemetry_volume(ctx: Context, device: dict) -> tuple[str, dict]:
     busy_total, busy = counted(minutes)
     busy_rate = busy_total / minutes
     time.sleep(45)  # let the busy period's last batches arrive
-    before, _ = counted(60)
+    before, before_volume = counted(60)
+    idle_from = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
     time.sleep(ctx.args.idle_seconds)
     after, idle = counted(60)
     idle_rate = (after - before) / (ctx.args.idle_seconds / 60)
+    earlier = {t["eventType"]: t["events"] for t in before_volume["byType"]}
+    idle_types = sorted(((t["eventType"], t["events"] - earlier.get(t["eventType"], 0)) for t in idle["byType"]),
+                        key=lambda item: -item[1])
+    # Which processes started while nothing was asked of the device, and what started them.
+    events = (ctx.api.get("events", device_id=device["id"], hours=1, limit=2000) or {}).get("events", [])
+    started = {}
+    for event in events:
+        if str(event.get("eventType", "")).startswith("process.start") and str(event.get("occurredAt", "")) >= idle_from:
+            fields = event.get("fields") or {}
+            key = f"{str(fields.get('Image') or '').rsplit(chr(92), 1)[-1]} <- {str(fields.get('ParentImage') or '').rsplit(chr(92), 1)[-1]}"
+            started[key] = started.get(key, 0) + 1
     evidence = {"busyPerMinute": round(busy_rate, 1), "busyMinutes": minutes, "idlePerMinute": round(idle_rate, 1),
                 "idleSeconds": ctx.args.idle_seconds, "notStored": idle.get("notStored", 0),
+                "idleTopTypes": dict((k, v) for k, v in idle_types[:8] if v > 0),
+                "idleProcesses": dict(sorted(started.items(), key=lambda item: -item[1])[:8]),
                 "busyTopTypes": {t["eventType"]: t["events"] for t in busy["byType"][:8]}}
     problems = []
     if busy_rate > ctx.args.max_busy_events_per_minute:
@@ -415,7 +429,8 @@ def telemetry_volume(ctx: Context, device: dict) -> tuple[str, dict]:
     if idle_rate > ctx.args.max_events_per_minute:
         problems.append(f"{idle_rate:.0f} a minute idle (budget {ctx.args.max_events_per_minute:.0f})")
     if problems:
-        raise Check(f"too much telemetry: {'; '.join(problems)}; most sent while busy: {evidence['busyTopTypes']}")
+        raise Check(f"too much telemetry: {'; '.join(problems)}; idle: {evidence['idleTopTypes']}, processes started "
+                    f"while idle (image <- parent): {evidence['idleProcesses']}; busy: {evidence['busyTopTypes']}")
     return f"{idle_rate:.0f} events a minute idle, {busy_rate:.0f} while busy", evidence
 
 
