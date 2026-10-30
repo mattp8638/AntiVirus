@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import ssl
 import sys
 import time
@@ -94,6 +95,21 @@ class Outcome:
     detail: str
     seconds: float = 0.0
     evidence: dict = field(default_factory=dict)
+
+
+def annotate(outcome: Outcome) -> None:
+    """Under GitHub Actions, each result also becomes an annotation on the run (and its pull request)."""
+    if os.environ.get("GITHUB_ACTIONS") != "true" or outcome.status == "skip":
+        return
+
+    def escape(text: str, title: bool = False) -> str:
+        text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        return text.replace(":", "%3A").replace(",", "%2C") if title else text
+
+    level = "notice" if outcome.status == "pass" else "error"
+    detail = outcome.detail + (f" {json.dumps(outcome.evidence)[:600]}" if outcome.evidence else "")
+    print(f"::{level} title={escape(f'{outcome.scenario} on {outcome.device}', title=True)}::{escape(detail[:1500])}",
+          flush=True)
 
 
 class Check(Exception):
@@ -466,6 +482,7 @@ def run(api: Api, args: argparse.Namespace) -> list[Outcome]:
                     outcome = Outcome(key, device["hostname"], "fail", str(exc))
             outcome.seconds = round(time.monotonic() - started, 1)
             print(f"[{device['hostname']}] {key}: {outcome.status.upper()} - {outcome.detail}", flush=True)
+            annotate(outcome)
             outcomes.append(outcome)
     return outcomes
 
