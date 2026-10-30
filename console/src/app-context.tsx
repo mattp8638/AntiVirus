@@ -1,5 +1,6 @@
 import { createContext, ReactNode, useCallback, useContext, useEffect, useState } from "react";
 import { api, getToken, setToken, setUnauthorizedHandler } from "./api";
+import { passkeyResponse } from "./passkeys";
 
 export interface Tenant {
   id: string;
@@ -15,6 +16,9 @@ export interface Me {
   user: { id: string; email: string; name: string; role: string; tenantId: string; mfaEnabled?: boolean };
   permissions: string[];
   tenants: Tenant[];
+  mfaSetupRequired?: boolean;  // the MSP requires MFA and this account has not enrolled yet
+  emergencyStop?: { active: boolean; by: string; reason: string; at: string } | null;
+  passkeys?: number;  // how many passkeys this account has registered
 }
 
 interface Ctx {
@@ -25,6 +29,8 @@ interface Ctx {
   tenantName: (id?: string | null) => string;
   can: (permission: string) => boolean;
   login: (email: string, password: string, code?: string) => Promise<void>;
+  completeSso: (handoff: string) => Promise<void>;
+  loginWithPasskey: () => Promise<void>;
   logout: () => void;
   refreshMe: () => Promise<void>;
   toast: (message: string, error?: boolean) => void;
@@ -77,6 +83,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
     refreshMe();
   }, [clearSession, refreshMe]);
 
+  // Microsoft sign-in returns with a one-minute, single-use code; swap it for the session token.
+  const completeSso = async (handoff: string) => {
+    const result = await api<{ token: string }>("auth/sso/complete", { body: { handoff } });
+    setToken(result.token);
+    await refreshMe();
+  };
+
+  // A passkey is the password and the second factor in one, so no code is asked for afterwards.
+  const loginWithPasskey = async () => {
+    const result = await api<{ token: string }>("auth/passkey/login", { body: await passkeyResponse() });
+    setToken(result.token);
+    await refreshMe();
+  };
+
   const login = async (email: string, password: string, code?: string) => {
     const result = await api<{ token: string }>("auth/login", { body: { email, password, ...(code ? { code } : {}) } });
     setToken(result.token);
@@ -105,6 +125,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     tenantName: (id) => me?.tenants.find((t) => t.id === id)?.name ?? (id ? "Unknown tenant" : "Global"),
     can: (permission) => !!me?.permissions.includes(permission),
     login,
+    completeSso,
+    loginWithPasskey,
     logout,
     refreshMe,
     toast,

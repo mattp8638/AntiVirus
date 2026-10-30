@@ -4,6 +4,7 @@ import { ago, api, downloadFile, fmtTime, setToken } from "../api";
 import { useApp } from "../app-context";
 import { Modal, PageHead, Pill, Table, Tabs, TenantSelect, useAction, useData, useListData } from "../components/ui";
 import { confirmDialog, promptDialog } from "../components/dialogs";
+import { addPasskey, passkeysSupported } from "../passkeys";
 import { CustomFieldsSettings, RegionSettings } from "../components/Customization";
 import { useSearchParams } from "react-router-dom";
 
@@ -91,11 +92,13 @@ function UsersTab() {
         { key: "role", label: "Role", render: (u) => <>{roleLabel(u.role)}{u.assignedTenantIds?.length ? <div className="small muted">limited to {u.assignedTenantIds.map(tenantName).join(", ")}</div> : null}</> },
         { key: "tenantId", label: "Tenant", render: (u) => tenantName(u.tenantId) }, { key: "active", label: "Status", render: (u) => <Pill value={u.active ? "active" : "disabled"} tone={u.active ? "good" : "muted"} /> },
         { key: "lastLoginAt", label: "Last sign-in", render: (u) => fmtTime(u.lastLoginAt) },
-        { key: "mfaEnabled", label: "MFA", render: (u) => <Pill value={u.mfaEnabled ? "on" : "off"} tone={u.mfaEnabled ? "good" : "warn"} /> },
+        { key: "mfaEnabled", label: "MFA", render: (u) => <>
+          <Pill value={u.mfaEnabled ? "on" : u.passkeys ? "passkey" : "off"} tone={u.mfaEnabled || u.passkeys ? "good" : "warn"} />
+          {u.mfaEnabled && u.passkeys ? <span className="small muted"> + {u.passkeys} passkey{u.passkeys === 1 ? "" : "s"}</span> : null}</> },
         { key: "act", label: "", render: (u) => <span className="row" style={{ gap: 6 }}>
           {can("configure") && <button className="small" onClick={async () => { await run(() => api(`users/${u.id}`, { method: "PATCH", body: { active: !u.active } }), "User updated"); reload(); }}>{u.active ? "Disable" : "Enable"}</button>}
           {can("configure") && <button className="small" onClick={() => setAssigning({ id: u.id, email: u.email, role: u.role, tenantId: u.tenantId, assignedTenantIds: u.assignedTenantIds || [] })}>Role &amp; customers</button>}
-          {can("manage_tenants") && u.mfaEnabled && <button className="small" title="For a user who lost their phone" onClick={async () => { if (await confirmDialog(`Reset MFA for ${u.email}? They will need to set it up again.`)) { await run(() => api(`users/${u.id}/mfa/reset`, { method: "POST" }), "MFA reset"); reload(); } }}>Reset MFA</button>}
+          {can("manage_tenants") && (u.mfaEnabled || u.passkeys > 0) && <button className="small" title="For a user who lost their phone or security key" onClick={async () => { if (await confirmDialog(`Reset MFA for ${u.email}? Their authenticator app and passkeys are removed, and they will need to set them up again.`)) { await run(() => api(`users/${u.id}/mfa/reset`, { method: "POST" }), "MFA reset"); reload(); } }}>Reset MFA</button>}
         </span> }]} />
       {form && (
         <Modal title="Invite user" onClose={() => setForm(null)} footer={<button className="primary" disabled={busy}
@@ -417,7 +420,7 @@ function AuditPolicyCard() {
   );
 }
 
-function MfaCard() {
+export function MfaCard() {
   const { me, refreshMe } = useApp();
   const [setup, setSetup] = useState<{ secret: string; otpauthUri: string } | null>(null);
   const [code, setCode] = useState("");
@@ -452,6 +455,36 @@ function MfaCard() {
   );
 }
 
+// Passkeys: sign in with the phone, laptop or security key's own PIN, fingerprint or face, instead of a password and code.
+export function PasskeysCard({ onAdded }: { onAdded?: () => Promise<void> | void }) {
+  const { refreshMe } = useApp();
+  const { data: rows, reload } = useListData<any>("auth/passkeys");
+  const { run, busy } = useAction();
+  if (!passkeysSupported()) return null;
+  const data = rows ?? [];
+  const add = async () => {
+    const name = await promptDialog("Name this passkey so you can tell it apart later.", "", { title: "Add a passkey", required: true });
+    if (!name) return;
+    if (await run(async () => { await addPasskey(name); return true; }, "Passkey added")) { reload(); refreshMe(); await onAdded?.(); }
+  };
+  const remove = async (id: string, name: string) => {
+    if (!(await confirmDialog(`Remove the passkey "${name}"? Your other sessions are signed out in case it was lost.`))) return;
+    if (await run(() => api(`auth/passkeys/${id}`, { method: "DELETE" }), "Passkey removed")) { reload(); refreshMe(); }
+  };
+  return (
+    <div className="card" style={{ maxWidth: 520, marginTop: 14 }}>
+      <h3 style={{ marginTop: 0 }}>Passkeys <Pill value={data.length ? `${data.length}` : "none"} tone={data.length ? "good" : "muted"} /></h3>
+      <p className="muted">Sign in with this device's fingerprint, face or PIN, or a security key. It counts as two-step sign-in,
+        and it only works on this console's real address, so a look-alike phishing site cannot use it.</p>
+      {data.length > 0 && <Table rows={data} columns={[{ key: "name", label: "Name" },
+        { key: "createdAt", label: "Added", render: (p) => fmtTime(p.createdAt) },
+        { key: "lastUsedAt", label: "Last used", render: (p) => (p.lastUsedAt ? ago(p.lastUsedAt) : "never") },
+        { key: "act", label: "", render: (p) => <button className="small danger" disabled={busy} onClick={() => remove(p.id, p.name)}>Remove</button> }]} />}
+      <button className="primary" style={{ marginTop: 10 }} disabled={busy} onClick={add}>Add a passkey</button>
+    </div>
+  );
+}
+
 function ReadinessCard() {
   const { data } = useData<any>("platform/readiness");
   if (!data) return null;
@@ -463,6 +496,86 @@ function ReadinessCard() {
       {data.warnings.length ? <ul className="small">{data.warnings.map((w: string) => <li key={w}>{w}</li>)}</ul>
         : <p className="small muted">No warnings. Unsafe settings stop the server from starting in production.</p>}
     </div>
+  );
+}
+
+// Install-wide staff controls: required MFA, the networks the console may be used from, and the emergency stop.
+function SecurityCard() {
+  const { refreshMe } = useApp();
+  const { data, reload } = useData<any>("platform/security");
+  const [networks, setNetworks] = useState<string | null>(null);
+  const { run, busy } = useAction();
+  if (!data) return null;
+  const stop = data.emergencyStop ?? {};
+  const save = async (body: Record<string, unknown>, message: string) => {
+    if (await run(() => api("platform/security", { method: "PUT", body }), message)) { setNetworks(null); reload(); }
+  };
+  const setStop = async (active: boolean) => {
+    const reason = active ? await promptDialog("Why? Everyone sees this until the stop is lifted.", "", { title: "Emergency stop", required: true }) : "";
+    if (active && !reason) return;
+    if (!active && !(await confirmDialog("Lift the emergency stop? Scripts, commands and remote sessions will reach devices again."))) return;
+    if (await run(() => api<any>("platform/emergency-stop", { body: { active, reason } }),
+                  active ? "Emergency stop on: queued work cancelled, remote sessions ended" : "Emergency stop lifted")) { reload(); refreshMe(); }
+  };
+  return (
+    <div className="card" style={{ marginBottom: 14 }}>
+      <h3 style={{ marginTop: 0 }}>Security</h3>
+      <div className="row" style={{ justifyContent: "space-between" }}>
+        <div><b>Require two-step sign-in (MFA) for staff</b>
+          <p className="small muted" style={{ margin: "4px 0" }}>Staff without it can only set it up until they do. Client portal users and API credentials are not affected.</p>
+          {data.staffWithoutMfa?.length > 0 && <p className="small">Not enrolled yet: {data.staffWithoutMfa.join(", ")}</p>}</div>
+        <button className={data.requireMfa ? "" : "primary"} disabled={busy}
+                onClick={() => save({ requireMfa: !data.requireMfa }, data.requireMfa ? "MFA no longer required" : "MFA required for staff")}>
+          {data.requireMfa ? "Stop requiring" : "Require MFA"}</button>
+      </div>
+      <hr />
+      <b>Networks staff may use the console from</b>
+      <p className="small muted" style={{ margin: "4px 0" }}>One address or network per line (for example 203.0.113.0/24). Empty means anywhere.
+        Agents, the client portal and DNS protection are not affected. You are connecting from <span className="mono">{data.yourAddress}</span>.
+        {data.allowListIgnored && <> <Pill value="ignored: FENRIR_IGNORE_CONSOLE_ALLOWLIST is set" tone="warn" /></>}</p>
+      <textarea rows={3} style={{ width: "100%" }} className="mono" value={networks ?? (data.consoleAllowedNetworks ?? []).join("\n")}
+                onChange={(e) => setNetworks(e.target.value)} />
+      <button disabled={busy || networks === null} style={{ marginTop: 8 }}
+              onClick={() => save({ consoleAllowedNetworks: (networks ?? "").split(/\s+/).filter(Boolean) }, "Console networks saved")}>Save networks</button>
+      <hr />
+      <SsoSettings view={data.sso} reload={reload} />
+      <hr />
+      <div className="row" style={{ justifyContent: "space-between" }}>
+        <div><b>Emergency stop</b> {stop.active && <Pill value="ON" tone="bad" />}
+          <p className="small muted" style={{ margin: "4px 0" }}>{stop.active
+            ? `Since ${fmtTime(stop.at)} by ${stop.by}: ${stop.reason}. Nothing but isolation reaches devices.`
+            : "If an account, a script or this server may be compromised: cancels every queued command, ends every remote session and refuses new ones. Isolation still works."}</p></div>
+        <button className={stop.active ? "" : "danger"} disabled={busy} onClick={() => setStop(!stop.active)}>
+          {stop.active ? "Lift the stop" : "Stop everything"}</button>
+      </div>
+    </div>
+  );
+}
+
+function SsoSettings({ view, reload }: { view: any; reload: () => void }) {
+  const [form, setForm] = useState<any>(null);
+  const { run, busy } = useAction();
+  if (!view) return null;
+  const value = form ?? { ...view, clientSecret: "" };
+  const set = (key: string, next: unknown) => setForm({ ...value, [key]: next });
+  return (
+    <>
+      <b>Sign in with Microsoft (Entra ID)</b> {view.enabled && <Pill value={view.required ? "required for staff" : "on"} tone="good" />}
+      <p className="small muted" style={{ margin: "4px 0" }}>In Entra, register an app (single tenant, web) with the redirect URI
+        <span className="mono"> {view.redirectUri}</span>, create a client secret, and enter them here. Staff sign in with their
+        Microsoft account, matched by email to an existing Fenrir account; leavers disabled in Entra lose access.</p>
+      <div className="form-grid">
+        <label className="field">Entra tenant ID or domain<input value={value.tenant} onChange={(e) => set("tenant", e.target.value)} /></label>
+        <label className="field">Application (client) ID<input value={value.clientId} onChange={(e) => set("clientId", e.target.value)} /></label>
+        <label className="field">Client secret<input type="password" placeholder={view.secretSet ? "saved: leave blank to keep" : ""}
+                                                     value={value.clientSecret} onChange={(e) => set("clientSecret", e.target.value)} /></label>
+      </div>
+      <label className="small"><input type="checkbox" checked={!!value.enabled} onChange={(e) => set("enabled", e.target.checked)} /> Offer "Sign in with Microsoft"</label><br />
+      <label className="small"><input type="checkbox" checked={!!value.required} onChange={(e) => set("required", e.target.checked)} /> Staff must use it (platform administrators can still use a password)</label><br />
+      <label className="small"><input type="checkbox" checked={!!value.trustMfa} onChange={(e) => set("trustMfa", e.target.checked)} /> Entra conditional access enforces MFA: do not ask again here</label><br />
+      <button disabled={busy || form === null} style={{ marginTop: 8 }}
+              onClick={async () => { if (await run(() => api("platform/security/sso", { method: "PUT", body: value }), "Microsoft sign-in saved")) { setForm(null); reload(); } }}>Save Microsoft sign-in</button>
+    </>
   );
 }
 
@@ -480,6 +593,7 @@ function PlatformTab() {
   return (
     <>
       {can("platform") && <ReadinessCard />}
+      {can("platform") && <SecurityCard />}
       {background && <div className="card" style={{ marginBottom: 14 }}>
         <div className="row" style={{ justifyContent: "space-between" }}>
           <h3 style={{ margin: 0 }}>Background work</h3>
@@ -548,6 +662,7 @@ function AccountTab() {
                 if (result) { if (result.token) setToken(result.token); setCurrent(""); setNext(""); } }}>Change password</button>
     </div>
     <MfaCard />
+    <PasskeysCard />
     <SessionsCard />
     </>
   );

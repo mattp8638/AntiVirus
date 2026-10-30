@@ -535,6 +535,24 @@ class UserSession(Base):
     revoked_reason: Mapped[str] = mapped_column(String(80), default="")
     ip: Mapped[str] = mapped_column(String(64), default="")
     user_agent: Mapped[str] = mapped_column(String(300), default="")
+    method: Mapped[str | None] = mapped_column(String(20), nullable=True)  # password | sso | passkey
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # SSO hand-off redeemed (once)
+
+
+class PasskeyCredential(Base):
+    """A passkey (WebAuthn credential) someone registered for signing in. Only its public key is kept; the private key
+    never leaves their phone, laptop or security key."""
+    __tablename__ = "passkey_credentials"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("pk"))
+    user_id: Mapped[str] = mapped_column(String(32), index=True)
+    credential_id: Mapped[str] = mapped_column(String(1400), unique=True)  # base64url, as the browser reports it
+    public_key: Mapped[str] = mapped_column(Text)  # SubjectPublicKeyInfo DER, base64
+    algorithm: Mapped[int] = mapped_column(Integer)  # COSE: -7 ES256, -8 EdDSA, -257 RS256
+    sign_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    name: Mapped[str] = mapped_column(String(100), default="")
+    transports: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class VulnScan(Base):

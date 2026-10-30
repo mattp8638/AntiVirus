@@ -18,8 +18,8 @@ machine, and runs `scripts/acceptance/fenrir_acceptance.py` against it:
 
 | Runner | Agent | Checks |
 |---|---|---|
-| Ubuntu (GitHub-hosted VM) | Go agent built from `agent/linux`, running as root | check-in, policy, inventory, script output, EICAR detection and quarantine, isolation (dry run), update scan, no false positives |
-| Windows Server (GitHub-hosted VM) | Service built with MSVC from `agent/windows`, installed with `fenrir-agent-service.exe --install` | check-in, policy, inventory, PowerShell script output, EICAR detected and reported to the console, temporary admin account created and then removed, no false positives (including signed Microsoft programs) |
+| Ubuntu (GitHub-hosted VM) | Go agent built from `agent/linux`, running as root | check-in, policy, inventory, script output, EICAR detection and quarantine, isolation (dry run), update scan, no false positives, telemetry within budget |
+| Windows Server (GitHub-hosted VM) | Service built with MSVC from `agent/windows`, installed with `fenrir-agent-service.exe --install` | check-in, policy, inventory, PowerShell script output, EICAR detected and reported to the console, temporary admin account created and then removed, no false positives (including signed Microsoft programs), telemetry within budget |
 
 The run summary shows the report table. The `acceptance-linux` and `acceptance-windows` artifacts hold
 `report.json` (with the evidence each check saw), the server log and, on Windows, the service diagnostics.
@@ -63,6 +63,10 @@ python3 scripts/acceptance/fenrir_acceptance.py --server https://your-fenrir --e
 The harness exits non-zero if anything failed. `lab-…/report.md` is the table and `report.json` has the evidence.
 Keep the reports: they are your record of what was true for each version. Run `false_positives` last: it fails if
 the agent quarantined or alerted on anything other than the harness's own test files since it was installed.
+
+`telemetry_volume` holds each agent to two budgets: at most 60 events a minute when nothing is asked of it (two quiet
+minutes, `--max-events-per-minute`), and at most 600 while the other checks keep it busy (`--max-busy-events-per-minute`,
+the server's per-device cap). The idle figure is what every device costs you all day.
 
 When the console does not show something a Windows agent should have reported, run
 `python scripts\acceptance\agent_state.py` as an administrator on that machine. It prints what the agent itself

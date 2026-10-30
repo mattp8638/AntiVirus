@@ -29,6 +29,7 @@ struct EtwProcessContext {
   std::wstring signer;
   std::wstring startedAt;
   std::wstring parentSha256;  // set by the start handler when a strict EDR exclusion names the parent
+  bool reported{true};        // whether its start went to the server; its exit goes only if so
 };
 
 class ProcessEtwSensor {

@@ -50,7 +50,8 @@ import Companies, { CompanyDetail, Configurations } from "./pages/psa/Companies"
 import Catalog, { Knowledge } from "./pages/psa/Catalog";
 import PsaSettings, { ProjectDetail } from "./pages/psa/PsaSettings";
 import Reports from "./pages/Reports";
-import Settings from "./pages/Settings";
+import Settings, { MfaCard, PasskeysCard } from "./pages/Settings";
+import { passkeysSupported } from "./passkeys";
 import Deploy from "./pages/Deploy";
 import { EnrollPhonePage } from "./pages/AddPhone";
 import Vault from "./pages/Vault";
@@ -139,13 +140,46 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; al
 ];
 
 function Login() {
-  const { login } = useApp();
+  const { login, completeSso, loginWithPasskey } = useApp();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
   const [needCode, setNeedCode] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [sso, setSso] = useState<{ enabled: boolean; required: boolean } | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
+  useEffect(() => {
+    api<{ enabled: boolean; required: boolean }>("auth/sso/info").then(setSso).catch(() => setSso(null));
+    // Back from Microsoft: a single-use code to swap for a session, or the reason it failed.
+    const params = new URLSearchParams(window.location.search);
+    const handoff = params.get("sso");
+    const failure = params.get("sso_error");
+    if (!handoff && !failure) return;
+    params.delete("sso");
+    params.delete("sso_error");
+    window.history.replaceState(null, "", window.location.pathname + (params.toString() ? `?${params}` : ""));
+    if (failure) setError(failure);
+    if (handoff) {
+      setBusy(true);
+      completeSso(handoff).catch((err) => setError((err as Error).message)).finally(() => setBusy(false));
+    }
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+  const microsoft = sso?.enabled && (
+    <a className="btn primary" style={{ width: "100%", justifyContent: "center", marginTop: 4, display: "flex", textDecoration: "none" }}
+       href={`/api/console/auth/sso/start?returnTo=${encodeURIComponent(window.location.pathname)}`}>Sign in with Microsoft</a>);
+  const passwordForm = !sso?.required || showPassword;
+  const signInWithPasskey = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await loginWithPasskey();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     setBusy(true);
@@ -167,13 +201,22 @@ function Login() {
           <div className="brand-mark">F</div>
           <div><b>Fenrir Console</b><small>Endpoint · SIEM · Exposure · PSA</small></div>
         </div>
+        {microsoft}
+        {sso?.required && !showPassword && <p className="small muted" style={{ marginTop: 12 }}>
+          <button type="button" className="ghost small" onClick={() => setShowPassword(true)}>Platform administrator? Use a password</button></p>}
+        {sso?.enabled && passwordForm && <p className="small muted" style={{ textAlign: "center", margin: "14px 0 4px" }}>or</p>}
+        {passwordForm && <>
         <label className="field">Email<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus required /></label>
         <label className="field" style={{ marginTop: 12 }}>Password<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required /></label>
         {needCode && <label className="field" style={{ marginTop: 12 }}>Authenticator code<input inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} onChange={(e) => setCode(e.target.value)} autoFocus required /></label>}
+        </>}
         {error && <p style={{ color: "#fecaca" }}>{error}</p>}
-        <button className="primary" style={{ width: "100%", justifyContent: "center", marginTop: 18 }} disabled={busy}>
+        {passwordForm && <button className={sso?.enabled ? "" : "primary"} style={{ width: "100%", justifyContent: "center", marginTop: 18 }} disabled={busy}>
           {busy ? "Signing in…" : "Sign in"}
-        </button>
+        </button>}
+        {passwordForm && passkeysSupported() && <button type="button" style={{ width: "100%", justifyContent: "center", marginTop: 10 }}
+                                                        disabled={busy} onClick={signInWithPasskey}>Sign in with a passkey</button>}
+        {!passwordForm && busy && <p className="small muted">Signing in…</p>}
       </form>
     </div>
   );
@@ -235,6 +278,9 @@ function Shell() {
           <button className="small hide-phone" onClick={logout}>Sign out</button>
         </header>
         <main className="content">
+          {me.emergencyStop?.active && <div className="card" role="alert" style={{ borderColor: "var(--bad, #c0392b)", marginBottom: 12 }}>
+            <b>Emergency stop is on.</b> Nothing but isolation reaches devices. {me.emergencyStop.reason} ({me.emergencyStop.by}). A platform
+            administrator can lift it in Settings → Platform.</div>}
           <PageBoundary resetKey={`${location.pathname}${location.search}`}>
           <Routes>
             <Route path="/" element={<Overview />} />
@@ -330,5 +376,30 @@ function RootContent() {
     return <PageBoundary resetKey={`${location.pathname}${location.search}`}><Suspense fallback={<div className="empty">Opening session…</div>}><Routes><Route path="/remote/:id" element={<RemoteViewer />} /></Routes></Suspense></PageBoundary>;
   }
   if (me.user.role === "client" || location.pathname.startsWith("/portal")) return <PageBoundary resetKey={`${location.pathname}${location.search}`}><Portal /></PageBoundary>;
+  if (me.mfaSetupRequired) return <MfaSetupGate />;
   return <Shell />;
+}
+
+// The MSP requires MFA for staff: until this account enrols, this is all it can reach.
+function MfaSetupGate() {
+  const { me, logout, loginWithPasskey, toast } = useApp();
+  // A new passkey is used straight away to sign in again, which replaces this password-only session.
+  const signInWithNewPasskey = async () => {
+    try {
+      await loginWithPasskey();
+    } catch (err) {
+      toast(`Passkey added. Sign out and choose "Sign in with a passkey" to continue (${(err as Error).message})`, true);
+    }
+  };
+  return (
+    <div className="empty" style={{ maxWidth: 560, margin: "40px auto", textAlign: "left" }}>
+      <h2 style={{ marginTop: 0 }}>Set up two-step sign-in</h2>
+      <p>Your organisation requires multi-factor authentication for everyone who can reach customer devices. Set up an
+        authenticator app{passkeysSupported() ? " or a passkey" : ""} now to continue as <b>{me?.user.email}</b>.</p>
+      {me?.passkeys ? <p className="small">You already have a passkey: sign out and choose <b>Sign in with a passkey</b>.</p> : null}
+      <MfaCard />
+      <PasskeysCard onAdded={signInWithNewPasskey} />
+      <p style={{ marginTop: 14 }}><button className="small" onClick={logout}>Sign out</button></p>
+    </div>
+  );
 }

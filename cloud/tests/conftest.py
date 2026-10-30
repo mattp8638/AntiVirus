@@ -30,7 +30,7 @@ def pytest_collection_modifyitems(config, items):
 def client():
     settings = dataclasses.replace(Settings(), database_url=os.getenv("FENRIR_TEST_DATABASE_URL", "sqlite://"), bootstrap_admin_password=ADMIN_PASSWORD,
                                    secret_key="test-secret", public_base_url="https://fenrir.test",
-                                   dns_blocklists_enabled=False)
+                                   dns_blocklists_enabled=False, require_mfa=False)
     with TestClient(create_app(settings)) as test_client:
         yield test_client
     if settings.database_url.startswith("postgresql"):

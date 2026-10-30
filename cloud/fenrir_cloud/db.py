@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 46
+LATEST_MIGRATION = 48
 
 def init_engine(url: str) -> Engine:
     global _engine, _session_factory
@@ -382,6 +382,15 @@ def migrate(bind: Engine) -> list[int]:
                 conn.execute(text("CREATE INDEX IF NOT EXISTS ix_rule_matches_event ON rule_matches (event_pk)"))
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (46)"))
                 applied.append(46)
+            if 47 not in versions:
+                ensure_columns(Base, conn)  # user_sessions.method, user_sessions.claimed_at (Microsoft sign-in)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (47)"))
+                applied.append(47)
+            if 48 not in versions:
+                from .models import PasskeyCredential
+                PasskeyCredential.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (48)"))
+                applied.append(48)
             conn.commit()
         except Exception:
             conn.rollback()
