@@ -140,6 +140,11 @@ def enqueue_command(
 ) -> Command:
     if device.api_key_hash == f"retired-{device.id}":
         raise CommandError("Decommissioned devices cannot receive commands; enrol the device again to manage it.")
+    from . import platform_security
+
+    if stop := platform_security.stopped(db, command_type):
+        raise CommandError(f"The emergency stop is on ({stop.get('reason') or 'no reason given'}): nothing but isolation "
+                           "reaches devices until a platform administrator lifts it.")
     spec = BY_TYPE.get(command_type)
     if spec is None:
         raise CommandError(f"unknown command type '{command_type}'")

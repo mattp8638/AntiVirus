@@ -66,7 +66,7 @@ beforeAll(async () => {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   vi.spyOn(console, "error").mockImplementation((...args) => { renderErrors.push(args); });
   child = spawn(process.env.FENRIR_UI_PYTHON || "python", ["tests/api-bridge.py"], {
-    cwd: process.cwd(), env: { ...process.env, FENRIR_FEED_SYNC: "false", FENRIR_VULN_INTEL: "false" },
+    cwd: process.cwd(), env: { ...process.env, FENRIR_FEED_SYNC: "false", FENRIR_VULN_INTEL: "false", FENRIR_REQUIRE_MFA: "false" },
   });
   child.stderr.on("data", (chunk) => { diagnostic += String(chunk); });
   await new Promise<void>((resolve, reject) => {

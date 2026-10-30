@@ -91,11 +91,14 @@ def current_principal(
     from . import sessions
 
     # The token is only good while its server-side session is: logout, password/MFA changes and revokes end it.
-    if sessions.active(db, payload.get("jti"), user.id) is None:
+    session_row = sessions.active(db, payload.get("jti"), user.id)
+    if session_row is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Session ended. Sign in again.", headers={"WWW-Authenticate": "Bearer"})
     path = request.url.path
     if user.role == "client" and not (path.startswith("/api/portal") or path.startswith("/api/console/auth")):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Client accounts can only use the client portal")
+    if user.role != "client":
+        staff_access_check(db, user, request, session_row.method)
     if user.role == "platform_admin":
         scope = {tid for (tid,) in db.execute(select(Tenant.id)).all()}
     else:
@@ -112,6 +115,26 @@ def current_principal(
 
         scopes = frozenset(roles.permissions_of(db, user.role))
     return Principal(user=user, tenant_ids=frozenset(scope), session_id=payload.get("jti"), scopes=scopes)
+
+
+# What a staff member without MFA can still reach while MFA is required: enough to enrol, read who they are, or leave.
+# What a staff account still needs while required MFA is not set up: enrol an authenticator app or a passkey, sign out.
+MFA_SETUP_PATHS = ("/api/console/auth/me", "/api/console/auth/mfa/setup", "/api/console/auth/mfa/enable",
+                   "/api/console/auth/logout", "/api/console/auth/reauth", "/api/console/auth/passkeys")
+
+
+def staff_access_check(db: Session, user: User, request: Request, session_method: str | None = None) -> None:
+    """The install's staff controls: console networks and required MFA (platform_security)."""
+    from . import platform_security
+
+    security = platform_security.get(db)
+    client_ip = request.client.host if request.client else ""
+    if (not get_settings().ignore_console_allowlist
+            and not platform_security.ip_allowed(security.get("consoleAllowedNetworks") or [], client_ip)):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, f"Console access is not allowed from this network ({client_ip})")
+    if platform_security.mfa_required(db, user, session_method) and not request.url.path.startswith(MFA_SETUP_PATHS):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Set up multi-factor authentication to continue",
+                            headers={"X-Fenrir-Mfa-Setup": "required"})
 
 
 def scoped_tenant(principal: Principal, tenant_id: str | None) -> list[str]:

@@ -423,6 +423,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         raise RuntimeError(f"FENRIR_ROLE must be all, web or worker, not {settings.role!r}")
     set_settings(settings)
     database.init_engine(settings.database_url)
+    from . import platform_security
+
+    platform_security.invalidate()  # cached for the previous database, if any
     from . import production
 
     errors, warnings = production.check(settings, _existing_users())

@@ -235,7 +235,7 @@ The local override keeps HTTP on loopback. Use the same three Compose files for 
 
 ## First sign-in and use
 
-1. Change the administrator password, enable MFA in **Settings → Account**, and retain recovery codes.
+1. Change the administrator password. Staff must set up MFA (an authenticator app) before they can do anything else: the console asks at first sign-in.
 2. Create customers in **Settings → Tenants**, then groups and appropriate policies. Assign operators only the required roles/custom roles and customer scope.
 3. In **Deploy agents**, select the customer and generate an installer/token. Treat installers containing enrolment data as temporary credentials.
 4. Start with a test endpoint. Verify its customer, hostname, platform, check-in, applied policy and inventory; approve it if required.
@@ -247,6 +247,47 @@ The local override keeps HTTP on loopback. Use the same three Compose files for 
 Use incident/job evidence to verify outcomes. Secret reveals and sensitive actions may require password re-entry and are audited. Integrations should use scoped API credentials, not shared administrator tokens.
 
 Where two-person approval is configured, high-impact actions are held for a different authorised operator to review in **Settings → Approvals**. An approval request is not an executed action: check the eventual job/endpoint result.
+
+### Staff sign-in and the emergency stop
+
+**Settings → Platform → Security** (platform administrators; changes need your password again):
+
+- **Require MFA for staff** is on by default (`FENRIR_REQUIRE_MFA=true`). A staff account without MFA can only set it up,
+  read its own profile or sign out until it does; existing sessions are covered too. Client portal users and API
+  credentials are not affected. Someone who loses their phone needs an administrator to reset their MFA.
+- **Networks staff may use the console from**: your office and VPN ranges. A stolen session token stops working from
+  anywhere else. Agents, the client portal and DNS protection are not affected. The console refuses a list that does
+  not include the address you are saving it from. If a wrong list still locks every administrator out, set
+  `FENRIR_IGNORE_CONSOLE_ALLOWLIST=true` in `deploy/.env`, restart, fix the list, and remove the setting.
+- **Emergency stop**: if an account, a script or this server may be compromised, one button cancels every command not
+  yet started, ends every remote session and refuses new scripts, commands and sessions on every device, with the
+  reason shown to all staff. Isolating and releasing devices still works. Lifting it needs your password again. Agents
+  are handed nothing but isolation while it is on, whatever was queued before.
+
+Upgrading an existing installation turns MFA on for staff: each person is asked to enrol at their next request.
+
+**Sign in with Microsoft (Entra ID).** In Entra, register an application (single tenant), add a *Web* redirect URI of
+`https://<your FENRIR_PUBLIC_URL>/api/console/auth/sso/callback` (Settings → Platform → Security shows the exact
+value) and create a client secret. Enter the tenant ID, the application (client) ID and the secret in **Microsoft
+sign-in**. Microsoft sign-in only matches existing, active staff accounts by email; it never creates accounts, so
+removing someone from Fenrir or disabling them in Entra both end their access. Options:
+
+- **Require it**: staff can no longer sign in with a password. Platform administrators keep their password as a
+  break-glass way in if Entra is unavailable.
+- **Trust Entra's MFA**: a Microsoft sign-in satisfies "Require MFA" without a Fenrir authenticator code. Turn this on
+  only if your Entra conditional access requires MFA for this application.
+
+The ID token is checked here (signature against your tenant's published keys, issuer, audience, expiry, nonce), the
+sign-in is bound to the browser that started it, and the console receives a one-minute, single-use code rather than a
+session token in the URL. Confirming a sensitive action still asks for the Fenrir password, or a passkey.
+
+**Passkeys.** Under **Settings → My account**, anyone can add passkeys (a phone, a laptop's Windows Hello or Touch ID,
+or a security key) and then choose **Sign in with a passkey**. A passkey sign-in counts as MFA, and a passkey can
+confirm sensitive actions instead of the password and code. Passkeys are tied to the host name in `FENRIR_PUBLIC_URL`
+and need the console opened at that HTTPS address (or `localhost`), so set it to the address staff actually use; a
+look-alike phishing site cannot use them. Removing a passkey signs out your other sessions, and an administrator's
+**Reset MFA** removes a person's passkeys as well as their authenticator app. If "Require Microsoft sign-in" is on,
+passkeys follow the same rule as passwords: platform administrators only.
 
 ## Agent installation
 

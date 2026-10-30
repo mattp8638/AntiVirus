@@ -17,6 +17,7 @@ env:
   FENRIR_PUBLIC_URL: http://127.0.0.1:8080
   FENRIR_DNS_BLOCKLISTS: "false"
   FENRIR_VULN_INTEL: "false"
+  FENRIR_REQUIRE_MFA: "false"  # the throwaway lab admin has no authenticator
 
 jobs:
   linux:

@@ -8,17 +8,19 @@ import secrets
 
 import re
 from datetime import timedelta
+from urllib.parse import quote
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
-from sqlalchemy import text, select
+from fastapi.responses import RedirectResponse
+from sqlalchemy import delete, func, text, select
 from sqlalchemy.orm import Session
 
-from .. import roles, sessions, audit, crypto, deployment_installers, ratelimit
+from .. import roles, sessions, sso, audit, crypto, deployment_installers, passkeys, platform_security, ratelimit
 from ..config import get_settings
 from ..db import get_db
 from ..deps import REAUTH_MINUTES, Principal, current_principal, require_reauth, scoped_tenant, tenant_subtree
-from ..models import AuditLog, Device, DeviceGroup, EnrollmentToken, Tenant, User, utcnow
-from ..security import ROLES, digest, hash_password, issue_token, new_secret, new_totp_secret, totp_uri, verify_password, verify_totp, reauth_state
+from ..models import AuditLog, Device, DeviceGroup, EnrollmentToken, PasskeyCredential, Tenant, User, UserSession, utcnow
+from ..security import ROLES, digest, hash_password, issue_token, new_secret, new_totp_secret, read_token, totp_uri, verify_password, verify_totp, reauth_state
 from ..serialize import apply_fields, to_dict
 
 REINSTATE_PREFIX = "fet_rs-"
@@ -48,6 +50,21 @@ def _check_mfa(user: User, code) -> None:
         raise HTTPException(401, "The MFA code is incorrect")
 
 
+def _staff_sign_in_checks(db: Session, user: User, request: Request) -> None:
+    """Platform security for a password or passkey sign-in: required Microsoft sign-in and console networks."""
+    if user.role == "client":
+        return
+    security = platform_security.get(db)
+    sso_config = security.get("sso") or {}
+    if sso_config.get("enabled") and sso_config.get("required") and user.role != "platform_admin":
+        raise HTTPException(403, "Your organisation signs in with Microsoft: use \"Sign in with Microsoft\"")
+    if not get_settings().ignore_console_allowlist and not platform_security.ip_allowed(
+            security.get("consoleAllowedNetworks") or [], _client_ip(request)):
+        audit.record(db, user.email, "auth.login_blocked_network", user.id, user.tenant_id, ip=_client_ip(request))
+        db.commit()
+        raise HTTPException(403, f"Console access is not allowed from this network ({_client_ip(request)})")
+
+
 @router.post("/auth/login")
 def login(request: Request, body: dict = Body(...), db: Session = Depends(get_db)):
     email = str(body.get("email") or "").strip().lower()
@@ -59,12 +76,13 @@ def login(request: Request, body: dict = Body(...), db: Session = Depends(get_db
             audit.record(db, email, "auth.login_failed", user.id, user.tenant_id, ip=_client_ip(request))
             db.commit()
         raise HTTPException(401, "Email or password is incorrect")
+    _staff_sign_in_checks(db, user, request)
     _check_mfa(user, body.get("code"))
     user.last_login_at = utcnow()
     token, session = sessions.create(db, user, _client_ip(request), request.headers.get("user-agent", ""))
     audit.record(db, user.email, "auth.login", user.id, user.tenant_id, session=session.id[-8:])
     db.commit()
-    return {"token": token, "user": to_dict(user)}
+    return {"token": token, "user": to_dict(user), "mfaSetupRequired": platform_security.mfa_required(db, user)}
 
 
 @router.post("/auth/logout")
@@ -127,7 +145,11 @@ def revoke_user_sessions(user_id: str, request: Request, principal: Principal = 
 def me(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     tenants = db.execute(select(Tenant).where(Tenant.id.in_(principal.tenant_ids)).order_by(Tenant.name)).scalars().all()
     return {"user": to_dict(principal.user), "permissions": sorted(roles.held(principal)),
-            "tenants": [to_dict(t) for t in tenants]}
+            "tenants": [to_dict(t) for t in tenants],
+            "mfaSetupRequired": principal.credential_id is None and platform_security.mfa_required(
+                db, principal.user, getattr(db.get(UserSession, principal.session_id or ""), "method", None)),
+            "emergencyStop": platform_security.stopped(db),
+            "passkeys": len(passkeys.list_for(db, principal.user.id))}
 
 
 @router.post("/auth/password")
@@ -153,12 +175,21 @@ def reauthenticate(request: Request, body: dict = Body(...), principal: Principa
     """Confirm the password (and MFA code) again before a sensitive action; returns a 5-minute token."""
     ratelimit.check(f"reauth:{principal.user.id}", 10, 300)
     user = db.get(User, principal.user.id)
-    if not verify_password(str(body.get("password") or ""), user.password_hash):
-        audit.record(db, principal.actor, "auth.reauth_failed", user.id, user.tenant_id, ip=_client_ip(request))
-        db.commit()
-        raise HTTPException(401, "Password is incorrect")
-    _check_mfa(user, body.get("code"))
-    audit.record(db, principal.actor, "auth.reauth", user.id, user.tenant_id)
+    if isinstance(body.get("passkey"), dict):  # a passkey is the password and the second factor in one
+        try:
+            owner, _ = passkeys.verify_assertion(db, body["passkey"].get("token"), body["passkey"].get("credential"))
+        except passkeys.PasskeyError as exc:
+            raise HTTPException(401, str(exc)) from None
+        if owner.id != user.id:
+            raise HTTPException(401, "That passkey belongs to a different account")
+    else:
+        if not verify_password(str(body.get("password") or ""), user.password_hash):
+            audit.record(db, principal.actor, "auth.reauth_failed", user.id, user.tenant_id, ip=_client_ip(request))
+            db.commit()
+            raise HTTPException(401, "Password is incorrect")
+        _check_mfa(user, body.get("code"))
+    audit.record(db, principal.actor, "auth.reauth", user.id, user.tenant_id,
+                 method="passkey" if isinstance(body.get("passkey"), dict) else "password")
     db.commit()
     token = issue_token(get_settings().secret_key, user.id, REAUTH_MINUTES, aud="reauth",
                         session=digest(request.headers.get("Authorization", "")),
@@ -198,6 +229,8 @@ def mfa_enable(body: dict = Body(...), principal: Principal = Depends(current_pr
 def mfa_disable(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     ratelimit.check(f"mfa-disable:{principal.user.id}", 10, 300)
     user = db.get(User, principal.user.id)
+    if user.role != "client" and platform_security.get(db).get("requireMfa"):
+        raise HTTPException(409, "Your organisation requires MFA. To move it to a new phone, ask an administrator to reset it.")
     if not verify_password(str(body.get("password") or ""), user.password_hash):
         raise HTTPException(401, "Password is incorrect")
     _check_mfa(user, body.get("code"))
@@ -210,7 +243,7 @@ def mfa_disable(body: dict = Body(...), principal: Principal = Depends(current_p
 
 @router.post("/users/{user_id}/mfa/reset")
 def mfa_reset(user_id: str, request: Request, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    """For a user who lost their phone: an administrator clears their MFA so they can enrol again."""
+    """For a user who lost their phone: an administrator clears their MFA and passkeys so they can enrol again."""
     principal.require("manage_tenants")
     user = db.get(User, user_id)
     if user is None or user.role == "service":  # API credentials' service users are managed only as credentials
@@ -221,8 +254,10 @@ def mfa_reset(user_id: str, request: Request, principal: Principal = Depends(cur
     roles.check_manageable(db, principal, user)
     require_reauth(request, principal)
     user.mfa_enabled, user.mfa_secret = False, None
+    removed = db.execute(delete(PasskeyCredential).where(PasskeyCredential.user_id == user.id)).rowcount
     revoked = sessions.revoke_user(db, user.id, f"MFA reset by {principal.actor}")
-    audit.record(db, principal.actor, "auth.mfa_reset", user.id, user.tenant_id, user=user.email, sessionsRevoked=revoked)
+    audit.record(db, principal.actor, "auth.mfa_reset", user.id, user.tenant_id, user=user.email, sessionsRevoked=revoked,
+                 passkeysRemoved=removed)
     db.commit()
     return {"mfaEnabled": False}
 
@@ -284,6 +319,246 @@ def telemetry_volume(tenant_id: str | None = None, device_id: str | None = None,
                      for d, n in by_device],
         "notStored": detection.storage_skipped(device_id),
     }
+
+
+@router.get("/platform/security")
+def get_platform_security(request: Request, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("platform")
+    from ..apikeys import SERVICE_ROLE
+
+    security = platform_security.get(db)
+    staff = db.execute(select(User).where(User.role.notin_(("client", SERVICE_ROLE)), User.active.is_(True))).scalars().all()
+    with_passkeys = _passkey_counts(db, [u.id for u in staff])
+    return {**{k: v for k, v in security.items() if k != "sso"}, "sso": sso.public_view(db),
+            "staffWithoutMfa": sorted(u.email for u in staff if not u.mfa_enabled and u.id not in with_passkeys),
+            "yourAddress": _client_ip(request), "allowListIgnored": get_settings().ignore_console_allowlist}
+
+
+@router.put("/platform/security")
+def set_platform_security(request: Request, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                          db: Session = Depends(get_db)):
+    """Require MFA for staff, and the networks staff may use the console from. Needs a fresh password (and MFA) check."""
+    principal.require("platform")
+    require_reauth(request, principal)
+    updates: dict = {}
+    if "requireMfa" in body:
+        updates["requireMfa"] = bool(body["requireMfa"])
+    if "consoleAllowedNetworks" in body:
+        try:
+            networks = platform_security.validate_networks(body["consoleAllowedNetworks"])
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        if networks and not platform_security.ip_allowed(networks, _client_ip(request)):
+            raise HTTPException(400, f"Your own address ({_client_ip(request)}) is not in that list: you would lock yourself out")
+        updates["consoleAllowedNetworks"] = networks
+    saved = platform_security.save(db, updates)
+    audit.record(db, principal.actor, "platform.security_updated", "platform", principal.user.tenant_id,
+                 requireMfa=saved["requireMfa"], consoleAllowedNetworks=saved["consoleAllowedNetworks"])
+    db.commit()
+    return get_platform_security(request, principal, db)
+
+
+# --------------------------------------------------------------------------- passkeys (passkeys.py)
+
+
+def _passkey_error(exc: Exception, status_code: int = 400) -> HTTPException:
+    return HTTPException(status_code, str(exc))
+
+
+@router.get("/auth/passkeys")
+def my_passkeys(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    return [passkeys.view(row) for row in passkeys.list_for(db, principal.user.id)]
+
+
+@router.post("/auth/passkeys/options")
+def passkey_registration_options(request: Request, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Adding a sign-in method is an identity change: it needs a fresh password (or passkey) check."""
+    require_reauth(request, principal)
+    try:
+        return passkeys.registration_options(db, db.get(User, principal.user.id))
+    except passkeys.PasskeyError as exc:
+        raise _passkey_error(exc) from None
+
+
+@router.post("/auth/passkeys")
+def add_passkey(request: Request, body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    require_reauth(request, principal)
+    ratelimit.check(f"passkey-add:{principal.user.id}", 10, 300)
+    user = db.get(User, principal.user.id)
+    try:
+        row = passkeys.register(db, user, body.get("token"), body.get("credential"), str(body.get("name") or ""))
+    except passkeys.PasskeyError as exc:
+        raise _passkey_error(exc) from None
+    audit.record(db, principal.actor, "auth.passkey_added", user.id, user.tenant_id, name=row.name)
+    db.commit()
+    return passkeys.view(row)
+
+
+@router.delete("/auth/passkeys/{passkey_id}")
+def remove_passkey(passkey_id: str, request: Request, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Usually because a phone or key was lost, so every other session ends too."""
+    require_reauth(request, principal)
+    row = db.get(PasskeyCredential, passkey_id)
+    if row is None or row.user_id != principal.user.id:
+        raise HTTPException(404, "Not found")
+    db.delete(row)
+    revoked = sessions.revoke_user(db, principal.user.id, "passkey removed", keep=principal.session_id)
+    audit.record(db, principal.actor, "auth.passkey_removed", principal.user.id, principal.user.tenant_id,
+                 name=row.name, sessionsRevoked=revoked)
+    db.commit()
+    return {"ok": True, "sessionsRevoked": revoked}
+
+
+@router.post("/auth/passkey/options")
+def passkey_options(request: Request):
+    """A challenge for signing in, or confirming who you are, with a passkey."""
+    ratelimit.check(f"passkey-options:{_client_ip(request)}", 60, 300)
+    return passkeys.assertion_options()
+
+
+@router.post("/auth/passkey/login")
+def passkey_login(request: Request, body: dict = Body(...), db: Session = Depends(get_db)):
+    ratelimit.check(f"login:{_client_ip(request)}", 30, 300)
+    try:
+        user, row = passkeys.verify_assertion(db, body.get("token"), body.get("credential"))
+    except passkeys.PasskeyError as exc:
+        audit.record(db, "passkey", "auth.login_failed", "", None, ip=_client_ip(request), reason=str(exc)[:200])
+        db.commit()
+        raise _passkey_error(exc, 401) from None
+    _staff_sign_in_checks(db, user, request)
+    user.last_login_at = utcnow()
+    token, session = sessions.create(db, user, _client_ip(request), request.headers.get("user-agent", ""), method="passkey")
+    audit.record(db, user.email, "auth.login", user.id, user.tenant_id, session=session.id[-8:], method="passkey",
+                 passkey=row.name)
+    db.commit()
+    return {"token": token, "user": to_dict(user), "mfaSetupRequired": False}
+
+
+# --------------------------------------------------------------------------- Microsoft Entra sign-in (sso.py)
+
+
+@router.get("/auth/sso/info")
+def sso_info(db: Session = Depends(get_db)):
+    """For the sign-in page: whether to offer "Sign in with Microsoft", and whether passwords still work."""
+    config = sso.settings(db)
+    return {"enabled": bool(config["enabled"]), "required": bool(config["enabled"] and config["required"])}
+
+
+@router.get("/auth/sso/start")
+def sso_start(returnTo: str = "/", db: Session = Depends(get_db)):
+    try:
+        url, binding = sso.start(db, returnTo)
+    except sso.SsoError as exc:
+        return RedirectResponse(f"/?sso_error={quote(str(exc))}", status_code=302)
+    response = RedirectResponse(url, status_code=302)
+    response.set_cookie(sso.COOKIE, binding, max_age=sso.STATE_MINUTES * 60, httponly=True, samesite="lax",
+                        secure=get_settings().public_base_url.startswith("https://"), path="/api/console/auth/sso")
+    return response
+
+
+@router.get("/auth/sso/callback")
+def sso_callback(request: Request, code: str = "", state: str = "", error: str = "", error_description: str = "",
+                 db: Session = Depends(get_db)):
+    """Microsoft sends the browser back here. Success hands the console a one-minute, single-use code for its
+    session token, so the token itself never appears in a URL or the browser history."""
+    def fail(message: str) -> RedirectResponse:
+        response = RedirectResponse(f"/?sso_error={quote(message[:300])}", status_code=302)
+        response.delete_cookie(sso.COOKIE, path="/api/console/auth/sso")
+        return response
+
+    if error:
+        return fail(f"Microsoft sign-in did not complete: {error_description or error}")
+    ratelimit.check(f"sso:{_client_ip(request)}", 30, 300)
+    try:
+        user, return_to = sso.complete(db, code, state, request.cookies.get(sso.COOKIE, ""))
+    except sso.SsoError as exc:
+        audit.record(db, "sso", "auth.sso_failed", "", None, ip=_client_ip(request), reason=str(exc)[:200])
+        db.commit()
+        return fail(str(exc))
+    if not get_settings().ignore_console_allowlist and not platform_security.ip_allowed(
+            platform_security.get(db).get("consoleAllowedNetworks") or [], _client_ip(request)):
+        return fail(f"Console access is not allowed from this network ({_client_ip(request)})")
+    user.last_login_at = utcnow()
+    _, session = sessions.create(db, user, _client_ip(request), request.headers.get("user-agent", ""), method="sso")
+    audit.record(db, user.email, "auth.login", user.id, user.tenant_id, session=session.id[-8:], method="microsoft")
+    db.commit()
+    handoff = issue_token(get_settings().secret_key, user.id, 1, aud="sso-handoff", jti=session.id)
+    separator = "&" if "?" in return_to else "?"
+    response = RedirectResponse(f"{return_to}{separator}sso={quote(handoff)}", status_code=302)
+    response.delete_cookie(sso.COOKIE, path="/api/console/auth/sso")
+    return response
+
+
+@router.post("/auth/sso/complete")
+def sso_complete(body: dict = Body(...), db: Session = Depends(get_db)):
+    payload = read_token(get_settings().secret_key, str(body.get("handoff") or ""))
+    session = db.get(UserSession, (payload or {}).get("jti") or "")
+    if (payload is None or payload.get("aud") != "sso-handoff" or session is None or session.method != "sso"
+            or session.user_id != payload.get("sub") or session.claimed_at is not None or session.revoked_at is not None):
+        raise HTTPException(401, "This sign-in has expired or was already used. Sign in again.")
+    session.claimed_at = utcnow()
+    user = db.get(User, session.user_id)
+    db.commit()
+    token = issue_token(get_settings().secret_key, user.id, get_settings().token_ttl_minutes, role=user.role, jti=session.id)
+    return {"token": token, "user": to_dict(user), "mfaSetupRequired": platform_security.mfa_required(db, user, "sso")}
+
+
+@router.put("/platform/security/sso")
+def set_sso(request: Request, body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("platform")
+    require_reauth(request, principal)
+    try:
+        view = sso.save(db, body)
+    except sso.SsoError as exc:
+        raise HTTPException(400, str(exc)) from None
+    audit.record(db, principal.actor, "platform.sso_updated", "platform", principal.user.tenant_id,
+                 enabled=view["enabled"], tenant=view["tenant"], required=view["required"], trustMfa=view["trustMfa"])
+    db.commit()
+    return view
+
+
+@router.post("/platform/emergency-stop")
+def emergency_stop(request: Request, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                   db: Session = Depends(get_db)):
+    """Stop everything reaching devices: for a suspected compromised account, script or server. Turning it on is
+    immediate and cancels every command not yet started and every remote session; turning it off needs a fresh
+    password (and MFA) check. Isolation, release and ending remote sessions still work while it is on."""
+    from ..models import Command, RemoteSession
+    from .. import remote, services
+
+    principal.require("platform")
+    active = bool(body.get("active"))
+    reason = str(body.get("reason") or "").strip()
+    if active and not reason:
+        raise HTTPException(400, "Say why: the reason is shown to everyone until the stop is lifted")
+    if not active:
+        require_reauth(request, principal)
+    saved = platform_security.save(db, {"emergencyStop": platform_security.stop_record(active, principal.actor, reason)})
+    cancelled = sessions_ended = 0
+    if active:
+        now = utcnow()
+        for command in db.execute(select(Command).where(
+                Command.status.in_(("pending", "dispatched")),
+                Command.type.notin_(platform_security.STOP_EXEMPT_COMMANDS))).scalars():
+            # Not started yet: cancelled. Handed out: asked to stop (agents check while long commands run).
+            command.status = "cancelled" if command.status == "pending" else "cancelling"
+            command.cancel_requested_at = now
+            command.updated_at = now
+            cancelled += 1
+        ended = []
+        for session in db.execute(select(RemoteSession).where(RemoteSession.status.in_(("waiting", "connected")))).scalars():
+            remote.end_session(db, session, principal.actor, "emergency stop")
+            ended.append(session.id)
+        sessions_ended = len(ended)
+    audit.record(db, principal.actor, "platform.emergency_stop_on" if active else "platform.emergency_stop_off", "platform",
+                 principal.user.tenant_id, reason=reason, commandsCancelled=cancelled, remoteSessionsEnded=sessions_ended)
+    services.fire_webhooks(db, services.msp_tenant_id(db, principal.user.tenant_id), "platform.emergency_stop",
+                           {"active": active, "by": principal.actor, "reason": reason})
+    db.commit()
+    if active:
+        for session_id in ended:
+            remote.notify_session_end(session_id, principal.actor)
+    return {**saved["emergencyStop"], "commandsCancelled": cancelled, "remoteSessionsEnded": sessions_ended}
 
 
 @router.post("/platform/vault/rotate")
@@ -378,7 +653,15 @@ def update_tenant(tenant_id: str, body: dict = Body(...), principal: Principal =
 def list_users(tenant_id: str | None = None, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     rows = db.execute(select(User).where(User.tenant_id.in_(scoped_tenant(principal, tenant_id)), User.role != "service")
                       .order_by(User.email)).scalars().all()  # API credentials' service users are listed with the credentials
-    return [to_dict(u) for u in rows]
+    counts = _passkey_counts(db, [u.id for u in rows])
+    return [{**to_dict(u), "passkeys": counts.get(u.id, 0)} for u in rows]
+
+
+def _passkey_counts(db: Session, user_ids: list[str]) -> dict[str, int]:
+    if not user_ids:
+        return {}
+    return dict(db.execute(select(PasskeyCredential.user_id, func.count()).where(PasskeyCredential.user_id.in_(user_ids))
+                           .group_by(PasskeyCredential.user_id)).all())
 
 
 @router.post("/users")

@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { displayValue } from "./DisplayValue";
 import { expectArray, safeArray } from "../data-shapes";
 import { api, rememberReauth, setReauthPrompt } from "../api";
+import { passkeyResponse, passkeysSupported } from "../passkeys";
 import { useApp } from "../app-context";
 
 /** Load data from the API and reload when deps change. */
@@ -275,8 +276,9 @@ export function InstallAppButton() {
   );
 }
 
-/** Asks for the password (and MFA code) when the server needs a recent re-authentication. */
+/** Asks for the password (and MFA code), or a passkey, when the server needs a recent re-authentication. */
 export function ReauthDialog() {
+  const { me } = useApp();
   const [pending, setPending] = useState<((ok: string | null) => void) | null>(null);
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
@@ -289,10 +291,11 @@ export function ReauthDialog() {
   }, []);
   if (!pending) return null;
   const finish = (token: string | null) => { pending(token); setPending(null); };
-  const submit = async () => {
+  const submit = async (withPasskey = false) => {
     setBusy(true);
     try {
-      const result = await api<{ reauthToken: string; expiresInSeconds: number }>("auth/reauth", { body: { password, ...(code ? { code } : {}) } });
+      const body = withPasskey ? { passkey: await passkeyResponse() } : { password, ...(code ? { code } : {}) };
+      const result = await api<{ reauthToken: string; expiresInSeconds: number }>("auth/reauth", { body });
       rememberReauth(result.reauthToken, result.expiresInSeconds);
       finish(result.reauthToken);
     } catch (err) {
@@ -304,7 +307,10 @@ export function ReauthDialog() {
   };
   return (
     <Modal title="Confirm it's you" onClose={() => finish(null)}
-           footer={<button className="primary" disabled={busy || !password || (needCode && code.length !== 6)} onClick={submit}>Confirm</button>}>
+           footer={<>
+             {passkeysSupported() && !!me?.passkeys && <button disabled={busy} onClick={() => submit(true)}>Use a passkey</button>}
+             <button className="primary" disabled={busy || !password || (needCode && code.length !== 6)} onClick={() => submit()}>Confirm</button>
+           </>}>
       <p className="muted">This action is sensitive. Enter your password{needCode ? " and authenticator code" : ""} to continue. It stays confirmed for 5 minutes.</p>
       <form onSubmit={(e) => { e.preventDefault(); submit(); }}>
         <label className="field">Password<input type="password" autoFocus value={password} onChange={(e) => setPassword(e.target.value)} /></label>

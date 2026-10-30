@@ -33,6 +33,10 @@ class Settings:
     # everyone out on restart: set it in any real deployment.
     secret_key: str = field(default_factory=lambda: os.getenv("FENRIR_SECRET_KEY") or secrets.token_hex(32))
     token_ttl_minutes: int = field(default_factory=lambda: int(os.getenv("FENRIR_TOKEN_TTL_MINUTES", "720")))
+    # Staff must use MFA unless the platform settings say otherwise (Settings > Platform > Security).
+    require_mfa: bool = field(default_factory=lambda: _bool("FENRIR_REQUIRE_MFA", True))
+    # Break glass: ignore the console network allow-list (when a wrong list has locked every administrator out).
+    ignore_console_allowlist: bool = field(default_factory=lambda: _bool("FENRIR_IGNORE_CONSOLE_ALLOWLIST", False))
     public_base_url: str = field(default_factory=lambda: os.getenv("FENRIR_PUBLIC_URL", "http://localhost:8080"))
     # Microsoft 365 sign-in. The MSP's own multi-tenant Entra app ("Sign in with Microsoft"); leave empty to use only
     # "Sign in with a code", which creates a Fenrir app registration inside each customer tenant instead.

@@ -280,6 +280,10 @@ def pending_commands(limit: int = Query(default=20, ge=1, le=100), types: str | 
     wanted = [t.strip() for t in (types or "").split(",") if t.strip()]
     if wanted:
         query = query.where(Command.type.in_(wanted))
+    from .. import platform_security
+
+    if platform_security.stopped(db):  # emergency stop: hand out containment only, whatever was queued
+        query = query.where(Command.type.in_(platform_security.STOP_EXEMPT_COMMANDS))
     commands = db.execute(query.order_by(Command.created_at).limit(limit).with_for_update()
                           .execution_options(populate_existing=True)).scalars().all()
     now = utcnow()
