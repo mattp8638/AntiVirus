@@ -521,16 +521,6 @@ bool StartsWithInsensitive(const std::wstring& value, const std::wstring& prefix
   return lowerValue.rfind(lowerPrefix, 0) == 0;
 }
 
-bool IsSystemPath(const std::wstring& pathValue) {
-  if (pathValue.empty()) {
-    return false;
-  }
-
-  return StartsWithInsensitive(pathValue, LR"(c:\windows\)") ||
-         StartsWithInsensitive(pathValue, LR"(c:\program files\)") ||
-         StartsWithInsensitive(pathValue, LR"(c:\program files (x86)\)");
-}
-
 // ETW reports kernel paths (\Device\HarddiskVolume3\Windows\System32\...). Mapped to drive letters so path
 // filters, detection rules and the console all see C:\Windows\System32\...
 std::wstring ToDosPath(const std::wstring& path) {
@@ -601,12 +591,35 @@ bool FirstImageLoadThisHour(const std::wstring& key) {
   return true;
 }
 
-bool ShouldEmitImageLoad(const EtwProcessContext& processContext, const std::wstring& modulePath,
-                         const std::wstring& signer) {
-  const auto lowerSigner = ToLowerCopy(signer);
-  const bool signedWindowsModule = IsSystemPath(modulePath) && lowerSigner.find(L"microsoft") != std::wstring::npos;
-  if (!signedWindowsModule) {
-    return true;  // unsigned, another publisher, or outside the system folders
+// Folders only an administrator can write to. Windows, .NET and installed programs load hundreds of modules from
+// here, many catalog-signed (no signature in the file) or unsigned native images, so the signer cannot tell them
+// apart; the location can. Side-loaded DLLs live in user-writable places, which are always reported.
+bool InAdminOnlyDirectory(const std::wstring& modulePath) {
+  static const std::vector<std::wstring> prefixes = [] {
+    std::vector<std::wstring> result;
+    wchar_t windows[MAX_PATH]{};
+    const auto length = GetWindowsDirectoryW(windows, MAX_PATH);
+    const std::wstring root = length > 0 && length < MAX_PATH ? std::wstring(windows, length) : L"C:\\Windows";
+    for (const auto* sub : {L"\\System32\\", L"\\SysWOW64\\", L"\\WinSxS\\", L"\\assembly\\", L"\\Microsoft.NET\\",
+                            L"\\SystemApps\\", L"\\servicing\\", L"\\ImmersiveControlPanel\\"}) {
+      result.push_back(ToLowerCopy(root + sub));
+    }
+    for (const auto* variable : {L"%ProgramFiles%\\", L"%ProgramFiles(x86)%\\", L"%ProgramW6432%\\"}) {
+      wchar_t expanded[MAX_PATH]{};
+      if (ExpandEnvironmentStringsW(variable, expanded, MAX_PATH) > 0 && expanded[0] != L'%') {
+        result.push_back(ToLowerCopy(expanded));
+      }
+    }
+    return result;
+  }();
+  const auto lower = ToLowerCopy(modulePath);
+  return std::any_of(prefixes.begin(), prefixes.end(),
+                     [&lower](const std::wstring& prefix) { return lower.rfind(prefix, 0) == 0; });
+}
+
+bool ShouldEmitImageLoad(const EtwProcessContext& processContext, const std::wstring& modulePath) {
+  if (!InAdminOnlyDirectory(modulePath)) {
+    return true;  // user-writable or unusual location: where DLL side-loading lives
   }
   return IsInterestingProcess(processContext.imageName) && IsNotableSystemModule(BaseNameFromPath(modulePath));
 }
@@ -1034,12 +1047,12 @@ void ProcessEtwSensor::HandleEventRecord(const EVENT_RECORD& eventRecord) {
   if (!FirstImageLoadThisHour(ToLowerCopy(processKey) + L"|" + ToLowerCopy(modulePath))) {
     return;  // decided within the hour, reported or not
   }
-  const auto imageBase = ReadFirstProperty(properties, {L"imagebase", L"defaultbase"});
-  const auto imageSize = ReadFirstProperty(properties, {L"imagesize"});
-  const auto signer = QuerySignerSubject(modulePath);
-  if (!ShouldEmitImageLoad(processContext, modulePath, signer)) {
+  if (!ShouldEmitImageLoad(processContext, modulePath)) {
     return;
   }
+  const auto imageBase = ReadFirstProperty(properties, {L"imagebase", L"defaultbase"});
+  const auto imageSize = ReadFirstProperty(properties, {L"imagesize"});
+  const auto signer = QuerySignerSubject(modulePath);  // only for what is reported
 
   std::wstringstream summary;
   summary << L"Image " << BaseNameFromPath(modulePath) << L" loaded into "
