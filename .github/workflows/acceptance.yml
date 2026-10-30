@@ -116,6 +116,7 @@ jobs:
           Select-String -Path "$env:RUNNER_TEMP\server.log" -Pattern '"POST /api/v1/devices/[^/]+/telemetry HTTP/1\.1" (\d+)' -ErrorAction SilentlyContinue |
             ForEach-Object { $_.Matches[0].Groups[1].Value } | Group-Object | ForEach-Object { "Telemetry uploads answered HTTP $($_.Name): $($_.Count)" }
           Select-String -Path "$env:RUNNER_TEMP\server.err.log" -Pattern 'Traceback|ERROR' -ErrorAction SilentlyContinue | Select-Object -Last 10 | ForEach-Object { $_.Line }
+          python scripts/acceptance/agent_state.py --search agent/windows/out --search $env:ProgramData
           & powershell.exe -NoProfile -File agent/windows/installer/Get-FenrirAgentDiagnostics.ps1 *> acceptance-windows/agent-diagnostics.txt
           try {
             Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'FenrirAgent' } -MaxEvents 200 -ErrorAction Stop |
