@@ -4970,8 +4970,8 @@ void AgentService::FlushTelemetryQueue() {
     try {
       const auto result = controlPlaneClient_->SendTelemetryBatch(state_, batch);
       handled = batchSize;
-      std::wcout << L"Uploaded " << result.accepted << L" telemetry event(s) at " << result.receivedAt
-                 << L". Backend now stores " << result.totalStored << L" event(s)." << std::endl;
+      std::wcout << L"Uploaded " << result.accepted << L" telemetry event(s) at " << result.receivedAt << L"."
+                 << std::endl;
     } catch (const std::exception& error) {
       const auto* status = dynamic_cast<const HttpStatusError*>(&error);
       if (status != nullptr && status->Malformed()) {

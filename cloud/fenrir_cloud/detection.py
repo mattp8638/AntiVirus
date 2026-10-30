@@ -158,14 +158,58 @@ class IngestResult:
     accepted: int = 0
     duplicates: int = 0
     alerts: int = 0
+    not_stored: int = 0  # routine events over the device's per-minute cap that matched no rule
+
+
+# High-volume activity. Detections, scan results, protection actions, identity and agent state are never capped.
+ROUTINE_CATEGORIES = frozenset({"process", "image_load", "network", "dns", "file", "registry"})
+
+
+class _RoutineBudget:
+    """Per-device count of routine events stored this minute, and how many were left out (this process only)."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._minute: dict[str, tuple[int, int]] = {}
+        self.skipped: dict[str, int] = {}
+
+    def take(self, device_id: str, minute: int, cap: int) -> bool:
+        with self._lock:
+            current, used = self._minute.get(device_id, (minute, 0))
+            if current != minute:
+                used = 0
+                if len(self._minute) > 50_000:  # forget devices from earlier minutes
+                    self._minute = {k: v for k, v in self._minute.items() if v[0] == minute}
+            if used >= cap:
+                self._minute[device_id] = (minute, used)
+                return False
+            self._minute[device_id] = (minute, used + 1)
+            return True
+
+    def skip(self, device_id: str) -> None:
+        with self._lock:
+            self.skipped[device_id] = self.skipped.get(device_id, 0) + 1
+
+
+ROUTINE_BUDGET = _RoutineBudget()
+
+
+def storage_skipped(device_id: str | None = None) -> int:
+    """Routine events checked but not stored because their device was over its cap, since this process started."""
+    with ROUTINE_BUDGET._lock:
+        return ROUTINE_BUDGET.skipped.get(device_id, 0) if device_id else sum(ROUTINE_BUDGET.skipped.values())
 
 
 def ingest(db: Session, device: Device, raw_events: list[dict], *, apply_device_effects: bool = True) -> IngestResult:
+    from .config import get_settings
+
     result = IngestResult()
     compiled = RULES.get(db)
     tenant = db.get(Tenant, device.tenant_id)
     new_alerts: list[Alert] = []
     sigma_exclusions: list[dict] | None = None  # loaded on the first rule hit
+    cap = get_settings().routine_events_per_device_minute
+    minute = int(utcnow().timestamp() // 60)
 
     for raw in raw_events:
         if not isinstance(raw, dict):
@@ -176,6 +220,16 @@ def ingest(db: Session, device: Device, raw_events: list[dict], *, apply_device_
         fields = norm["fields"]
         fields.setdefault("Hostname", device.hostname)
         fields.setdefault("DeviceId", device.id)
+        matched = [(row, rule) for row, rule in compiled.sigma
+                   if _rule_visible(row, device.tenant_id, compiled.suppressed)
+                   and rule.matches(fields, norm["category"], device.platform)]
+        if (cap > 0 and not matched and norm["category"] in ROUTINE_CATEGORIES and norm["severity"] == "info"
+                and not ROUTINE_BUDGET.take(device.id, minute, cap)):
+            # Over this device's routine budget and nothing to detect in it: checked, not stored.
+            ROUTINE_BUDGET.skip(device.id)
+            result.not_stored += 1
+            result.accepted += 1
+            continue
 
         event = Event(
             tenant_id=device.tenant_id, device_id=device.id, event_id=norm["event_id"], event_type=norm["event_type"],
@@ -193,9 +247,7 @@ def ingest(db: Session, device: Device, raw_events: list[dict], *, apply_device_
         if apply_device_effects:
             _apply_side_effects(db, device, norm)
 
-        for row, rule in compiled.sigma:
-            if not _rule_visible(row, device.tenant_id, compiled.suppressed) or not rule.matches(fields, norm["category"], device.platform):
-                continue
+        for row, rule in matched:
             db.add(RuleMatch(tenant_id=device.tenant_id, rule_id=row.id, device_id=device.id, event_pk=event.id,
                              group_key="", at=event.occurred_at))
             _bump_hits(db, row.id)

@@ -250,6 +250,39 @@ def platform_status(principal: Principal = Depends(current_principal), db: Sessi
             "handlers": events.registered(), "jobs": jobs}
 
 
+@router.get("/platform/telemetry-volume")
+def telemetry_volume(tenant_id: str | None = None, device_id: str | None = None, minutes: int = 60,
+                     principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """How much telemetry agents are sending, and which devices and event types send most. A noisy agent or event
+    type is the usual reason a Fenrir database grows faster than expected."""
+    principal.require("configure")
+    from sqlalchemy import func
+
+    from ..models import Event
+
+    minutes = max(1, min(int(minutes), 24 * 60))
+    since = utcnow() - timedelta(minutes=minutes)
+    scope = [Event.tenant_id.in_(scoped_tenant(principal, tenant_id)), Event.occurred_at >= since]
+    if device_id:
+        scope.append(Event.device_id == device_id)
+    total = db.execute(select(func.count()).select_from(Event).where(*scope)).scalar() or 0
+    by_type = db.execute(select(Event.event_type, func.count()).where(*scope).group_by(Event.event_type)
+                         .order_by(func.count().desc()).limit(15)).all()
+    by_device = db.execute(select(Event.device_id, func.count()).where(*scope).group_by(Event.device_id)
+                           .order_by(func.count().desc()).limit(10)).all()
+    names = dict(db.execute(select(Device.id, Device.hostname).where(Device.id.in_([d for d, _ in by_device if d]))).all())
+    from .. import detection
+
+    return {
+        "minutes": minutes, "events": total, "perMinute": round(total / minutes, 1),
+        "perDayProjected": int(total / minutes * 1440),
+        "byType": [{"eventType": t, "events": n} for t, n in by_type],
+        "byDevice": [{"deviceId": d, "hostname": names.get(d, ""), "events": n, "perMinute": round(n / minutes, 1)}
+                     for d, n in by_device],
+        "notStored": detection.storage_skipped(device_id),
+    }
+
+
 @router.post("/platform/vault/rotate")
 def rotate_vault_key(request: Request, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     """Re-encrypt all stored secrets under the current FENRIR_VAULT_KEY (after changing it)."""

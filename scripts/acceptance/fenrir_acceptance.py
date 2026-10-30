@@ -366,6 +366,26 @@ def patch_scan(ctx: Context, device: dict) -> tuple[str, dict]:
     return "update scan finished", {k: v for k, v in result.items() if isinstance(v, (str, int, float, bool))}
 
 
+@scenario("telemetry_volume", ("windows", "linux", "macos"), "Sends a sustainable amount of telemetry")
+def telemetry_volume(ctx: Context, device: dict) -> tuple[str, dict]:
+    """Events per minute since the agent enrolled, stored or not, against --max-events-per-minute. An agent that
+    floods the server fills its database and slows every console page for every customer."""
+    enrolled = str(ctx.device(device["id"])["device"].get("enrolledAt") or "")
+    try:
+        started = datetime.fromisoformat(enrolled.replace("Z", "+00:00"))
+        minutes = max(1, min(60, int((datetime.now(timezone.utc) - started).total_seconds() // 60)))
+    except ValueError:
+        minutes = 60
+    volume = ctx.api.get("platform/telemetry-volume", device_id=device["id"], minutes=minutes)
+    rate = (volume["events"] + volume.get("notStored", 0)) / minutes
+    evidence = {"minutes": minutes, "perMinute": round(rate, 1), "notStored": volume.get("notStored", 0),
+                "topTypes": {t["eventType"]: t["events"] for t in volume["byType"][:8]}}
+    if rate > ctx.args.max_events_per_minute:
+        raise Check(f"{rate:.0f} events a minute over {minutes} min (budget {ctx.args.max_events_per_minute}); "
+                    f"most sent: {evidence['topTypes']}")
+    return f"{rate:.0f} events a minute over {minutes} min", evidence
+
+
 @scenario("false_positives", ("windows", "linux", "macos"), "Quarantines and alerts on nothing but the test files")
 def false_positives(ctx: Context, device: dict) -> tuple[str, dict]:
     """Run it last. Everything the agent quarantined or raised as malware since it was installed, its own first scan
@@ -477,6 +497,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scenario", default="", help="comma-separated; default all")
     parser.add_argument("--disruptive", action="store_true")
     parser.add_argument("--timeout", type=float, default=300.0, help="seconds to wait for each result")
+    parser.add_argument("--max-events-per-minute", type=float, default=150.0,
+                        help="telemetry_volume budget: events a minute a device may send (default 150)")
     parser.add_argument("--wait-for-device", type=float, default=0.0, help="seconds to wait for a just-installed agent to enrol")
     parser.add_argument("--insecure", action="store_true")
     parser.add_argument("--out", default="acceptance-report")
