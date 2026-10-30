@@ -109,6 +109,16 @@ int main(int argc, char** argv) {
   }
   CHECK(threw);
 
+  // Control characters are escaped: one raw in a service description or file name made the server refuse a whole
+  // telemetry batch, which then blocked every event queued behind it.
+  std::wstring raw = L"a";
+  raw += static_cast<wchar_t>(0x01);
+  raw += L"b";
+  raw += static_cast<wchar_t>(0x00);
+  raw += L"c\x1f\x7f\n\"\\";
+  CHECK(EscapeJsonString(raw) == "a\\u0001b\\u0000c\\u001f\x7f\\n\\\"\\\\");
+  CHECK(json::Parse("{\"v\":\"" + EscapeJsonString(raw) + "\"}").has_value());
+
   // Health metrics are valid JSON with the fields the cloud monitors read.
   rmm::CollectHealthMetricsJson();
   const auto metrics = json::Parse(rmm::CollectHealthMetricsJson());

@@ -237,8 +237,21 @@ def policy_check_in(body: dict = Body(default={}), device: Device = Depends(curr
     return {"retrievedAt": _iso(utcnow()), "changed": changed, "policy": policy_doc}
 
 
+async def _lenient_json(request: Request) -> dict:
+    """The body as a JSON object, tolerating raw control characters inside strings. Windows agents before this fix
+    sent them unescaped (from a service description or file name), and refusing the batch left the agent retrying it
+    forever, so nothing it queued afterwards, malware findings included, ever arrived."""
+    try:
+        body = json.loads((await request.body()).decode("utf-8", errors="replace"), strict=False)
+    except json.JSONDecodeError:
+        raise HTTPException(422, "The body must be JSON") from None
+    if not isinstance(body, dict):
+        raise HTTPException(422, "The body must be a JSON object")
+    return body
+
+
 @router.post("/devices/{device_id}/telemetry")
-def telemetry(body: dict = Body(...), device: Device = Depends(current_device), db: Session = Depends(get_db)):
+def telemetry(body: dict = Depends(_lenient_json), device: Device = Depends(current_device), db: Session = Depends(get_db)):
     events = body.get("events")
     if not isinstance(events, list):
         raise HTTPException(400, "events must be a list")

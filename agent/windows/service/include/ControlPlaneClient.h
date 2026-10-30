@@ -91,6 +91,18 @@ class DeviceIdentityRejectedError final : public std::runtime_error {
   explicit DeviceIdentityRejectedError(const std::string& message) : std::runtime_error(message) {}
 };
 
+// The server answered with a non-2xx status. 400, 413 and 422 mean it will never accept that request as sent.
+class HttpStatusError final : public std::runtime_error {
+ public:
+  HttpStatusError(const unsigned long statusCode, const std::string& message)
+      : std::runtime_error(message), statusCode_(statusCode) {}
+  unsigned long StatusCode() const noexcept { return statusCode_; }
+  bool Malformed() const noexcept { return statusCode_ == 400 || statusCode_ == 413 || statusCode_ == 422; }
+
+ private:
+  unsigned long statusCode_;
+};
+
 // The Windows agent build the server ships (GET /api/v1/agent/update/windows).
 struct AgentPackageInfo {
   bool available{false};
