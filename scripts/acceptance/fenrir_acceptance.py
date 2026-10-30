@@ -390,11 +390,14 @@ def defender(ctx: Context, device: dict) -> tuple[str, dict]:
 
         def applied():
             view = ctx.api.get(path)
+            finished = not view.get("checking") and (view.get("checkedAt") or view.get("error"))
             done = view.get("inSync") or view.get("error") or (view.get("status") or {}).get("available") is False
-            return view if view.get("checkedAt") and not view.get("checking") and done else None
+            return view if finished and done else None
 
         view = wait_for("Defender to take the policy and report back", applied, max(ctx.args.timeout, 300), interval=10)
         status = view.get("status") or {}
+        if not status and view.get("error"):
+            raise Check(f"the Defender check did not report: {view['error']}")
         if status.get("available") is False:
             # GitHub's Windows Server image does not run the Defender service. What can still be checked here: the device
             # ran the check and said so, and managed-but-unavailable Defender raises the protection alert.

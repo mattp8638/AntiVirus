@@ -197,3 +197,20 @@ def test_defender_not_running_is_reported_alerted_and_never_counted_as_applied(c
     off = [a for a in client.get("/api/console/alerts", headers=admin, params={"device_id": device["deviceId"]}).json()
            if a["ruleId"] == defender.OFF_RULE]
     assert len(off) == 1 and "0x800106ba" in off[0]["details"]["description"]
+
+
+def test_a_report_the_device_could_not_build_keeps_the_last_good_state(client, admin, tenant, device):
+    _manage(client, admin, tenant, device)
+    _complete(client, device, _check(client, admin, device), _report(tamper=True))
+    _complete(client, device, _check(client, admin, device), {"reportError": "report: Value was either too large", "errors": []})
+    view = client.get(f"/api/console/devices/{device['deviceId']}/defender", headers=admin).json()
+    assert view["status"]["tamper"] is True and "too large" in view["error"] and view["problems"] == []
+    assert not [a for a in client.get("/api/console/alerts", headers=admin, params={"device_id": device["deviceId"]}).json()
+                if a["ruleId"] == defender.OFF_RULE]
+
+
+def test_the_script_never_casts_defender_ages_to_int32():
+    from fenrir_cloud import policy_schema
+    body = defender.script({"defender": {**policy_schema.defaults()["defender"], "managed": True},
+                            "attackSurface": policy_schema.defaults()["attackSurface"]})
+    assert "[int]$status" not in body and "Days $status.QuickScanAge" in body and "reportError" in body
