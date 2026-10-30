@@ -337,12 +337,14 @@ def get_platform_security(request: Request, principal: Principal = Depends(curre
 @router.put("/platform/security")
 def set_platform_security(request: Request, body: dict = Body(...), principal: Principal = Depends(current_principal),
                           db: Session = Depends(get_db)):
-    """Require MFA for staff, and the networks staff may use the console from. Needs a fresh password (and MFA) check."""
+    """Require MFA for staff, script review, and the networks staff may use the console from. Needs a fresh password check."""
     principal.require("platform")
     require_reauth(request, principal)
     updates: dict = {}
     if "requireMfa" in body:
         updates["requireMfa"] = bool(body["requireMfa"])
+    if "scriptReview" in body:
+        updates["scriptReview"] = bool(body["scriptReview"])
     if "consoleAllowedNetworks" in body:
         try:
             networks = platform_security.validate_networks(body["consoleAllowedNetworks"])
@@ -353,7 +355,8 @@ def set_platform_security(request: Request, body: dict = Body(...), principal: P
         updates["consoleAllowedNetworks"] = networks
     saved = platform_security.save(db, updates)
     audit.record(db, principal.actor, "platform.security_updated", "platform", principal.user.tenant_id,
-                 requireMfa=saved["requireMfa"], consoleAllowedNetworks=saved["consoleAllowedNetworks"])
+                 requireMfa=saved["requireMfa"], consoleAllowedNetworks=saved["consoleAllowedNetworks"],
+                 scriptReview=bool(saved.get("scriptReview")))
     db.commit()
     return get_platform_security(request, principal, db)
 

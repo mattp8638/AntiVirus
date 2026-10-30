@@ -8,7 +8,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from sqlalchemy import String, cast, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
-from .. import approvals, audit, command_control, detection, policy_schema, remote, rmm, services
+from .. import approvals, audit, command_control, detection, policy_schema, remote, rmm, script_review, services
 from ..commands import BY_TYPE, catalog_document
 from ..config import get_settings
 from ..db import get_db
@@ -372,6 +372,8 @@ def issue_command(device_id: str, request: Request, body: dict = Body(...), prin
         require_reauth(request, principal)
     if command_type == "device.lostmode":
         raise HTTPException(400, "Turn lost mode on or off from the device's Location tab")
+    if command_type == "script.run":
+        script_review.guard_direct_run(db)
     if spec.destructive:  # CORE-15: optional second-person approval
         approvals.gate(db, principal, "device.command", f"{spec.label} on {device.hostname}", {"deviceId": device.id, **body}, [device],
                        destructive=True, route=f"devices/{device.id}/commands")
@@ -396,6 +398,8 @@ def bulk_command(body: dict = Body(...), principal: Principal = Depends(current_
     _require_fine(principal, spec)
     if command_type in REAUTH_COMMANDS or command_type == "device.lostmode":
         raise HTTPException(400, f"{spec.label} is sent to one device at a time")
+    if command_type == "script.run":
+        script_review.guard_direct_run(db)
     ids = body.get("deviceIds")
     if not isinstance(ids, list) or not ids or any(not isinstance(i, str) or not i.strip() for i in ids):
         raise HTTPException(422, "deviceIds must be a non-empty list of device IDs")

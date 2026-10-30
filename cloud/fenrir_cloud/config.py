@@ -35,6 +35,8 @@ class Settings:
     token_ttl_minutes: int = field(default_factory=lambda: int(os.getenv("FENRIR_TOKEN_TTL_MINUTES", "720")))
     # Staff must use MFA unless the platform settings say otherwise (Settings > Platform > Security).
     require_mfa: bool = field(default_factory=lambda: _bool("FENRIR_REQUIRE_MFA", True))
+    # Default for Settings > Platform > Security > "Require script review" until it is saved there.
+    script_review: bool = field(default_factory=lambda: _bool("FENRIR_SCRIPT_REVIEW", False))
     # Break glass: ignore the console network allow-list (when a wrong list has locked every administrator out).
     ignore_console_allowlist: bool = field(default_factory=lambda: _bool("FENRIR_IGNORE_CONSOLE_ALLOWLIST", False))
     public_base_url: str = field(default_factory=lambda: os.getenv("FENRIR_PUBLIC_URL", "http://localhost:8080"))

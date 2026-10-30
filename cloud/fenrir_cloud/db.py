@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 48
+LATEST_MIGRATION = 49
 
 def init_engine(url: str) -> Engine:
     global _engine, _session_factory
@@ -391,6 +391,10 @@ def migrate(bind: Engine) -> list[int]:
                 PasskeyCredential.__table__.create(conn, checkfirst=True)
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (48)"))
                 applied.append(48)
+            if 49 not in versions:
+                ensure_columns(Base, conn)  # rmm_scripts / rmm_condition_packages review, review_editors
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (49)"))
+                applied.append(49)
             conn.commit()
         except Exception:
             conn.rollback()

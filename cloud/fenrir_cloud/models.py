@@ -920,6 +920,9 @@ class Script(Base):
     builtin: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_by: Mapped[str] = mapped_column(String(200), default="system")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # script_review.py: {hash, by, at, content} of the version a second person approved; who edited it since
+    review: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    review_editors: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
 class Job(Base):
@@ -2136,6 +2139,8 @@ class ConditionPackage(Base):
     targets: Mapped[dict] = mapped_column(JSON, default=dict)  # {deviceIds, groupIds, tenantIds, platforms, tags}; empty = the customer
     created_by: Mapped[str] = mapped_column(String(200), default="system")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    review: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # as Script.review
+    review_editors: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
 class ConditionResult(Base):

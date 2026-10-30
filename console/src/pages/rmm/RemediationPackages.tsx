@@ -4,11 +4,12 @@ import { useApp } from "../../app-context";
 import { displayValue } from "../../components/DisplayValue";
 import { ErrorNote, Modal, PageHead, Pill, Table, TenantSelect, useAction, useListData } from "../../components/ui";
 import { confirmDialog } from "../../components/dialogs";
+import { needsReview, Review, ReviewPanel, ReviewPill } from "../../components/ScriptReview";
 
 interface Package {
   id: string; tenantId: string | null; builtinKey: string | null; name: string; description: string; platforms: string[]; language: string;
   detectionScript: string; remediationScript: string; intervalHours: number; autoRemediate: boolean; ticketOnFailure: boolean;
-  enabled: boolean; template: boolean; results?: Record<string, number>;
+  enabled: boolean; template: boolean; results?: Record<string, number>; review?: Review;
 }
 
 const STATUS_TONE: Record<string, string> = { compliant: "good", remediated: "good", noncompliant: "bad", failed: "bad", pending: "warn", error: "warn" };
@@ -40,13 +41,13 @@ export default function RemediationPackages() {
         <h3>Active on customers</h3>
         <Table rows={data ? active : undefined} empty="Nothing enabled yet. Turn on a built-in package below or write your own."
                columns={[
-                 { key: "name", label: "Package", render: (r) => <><b>{displayValue(r.name)}</b><div className="small muted">{tenantName(r.tenantId || "")} · {r.platforms.join(", ")} · every {r.intervalHours}h</div></> },
+                 { key: "name", label: "Package", render: (r) => <><b>{displayValue(r.name)}</b> <ReviewPill review={r.review} /><div className="small muted">{tenantName(r.tenantId || "")} · {r.platforms.join(", ")} · every {r.intervalHours}h</div></> },
                  { key: "mode", label: "Mode", render: (r) => <Pill value={r.autoRemediate ? "detect and fix" : "detect only"} tone={r.autoRemediate ? "blue" : "muted"} /> },
                  { key: "results", label: "Devices", render: (r) => Object.entries(r.results || {}).map(([s, n]) => <Pill key={s} value={`${n} ${s}`} tone={STATUS_TONE[s]} />) },
                  { key: "enabled", label: "State", render: (r) => <Pill value={r.enabled ? "on" : "paused"} tone={r.enabled ? "good" : "muted"} /> },
                  { key: "actions", label: "", className: "right", render: (r) => <span style={{ display: "inline-flex", gap: 6 }}>
                    <button className="ghost" onClick={() => setResults(r)}>Results</button>
-                   {can("scripts") && <button className="ghost" disabled={busy} onClick={() => runNow(r)}>Run now</button>}
+                   {can("scripts") && <button className="ghost" disabled={busy || needsReview(r.review)} onClick={() => runNow(r)}>Run now</button>}
                    {canEdit && <><button className="ghost" onClick={() => setEditing(r)}>Edit</button>
                      <button className="ghost" disabled={busy} onClick={() => toggle(r)}>{r.enabled ? "Pause" : "Resume"}</button>
                      <button className="danger" disabled={busy} onClick={() => remove(r)}>Delete</button></>}</span> },
@@ -101,6 +102,8 @@ function PackageEditor({ value, onClose, onSaved }: { value: Partial<Package>; o
   return (
     <Modal wide title={form.id ? `Edit ${form.name}` : "New remediation package"} onClose={onClose}
            footer={<button className="primary" disabled={busy || !form.name || !form.detectionScript || !form.tenantId} onClick={save}>Save</button>}>
+      {form.id && <ReviewPanel review={value.review} path={`rmm/remediation-packages/${form.id}`} onReviewed={onSaved}
+                               dirty={form.detectionScript !== value.detectionScript || form.remediationScript !== value.remediationScript || form.language !== value.language} />}
       <div className="form-grid">
         {!form.id && <TenantSelect value={form.tenantId || ""} allowAll={false} label="Customer" onChange={(id) => setForm({ ...form, tenantId: id })} />}
         <label className="field">Name<input value={form.name || ""} onChange={set("name")} /></label>

@@ -4,6 +4,8 @@
   Microsoft sign-in. A staff account without it can only reach its own profile, MFA setup and sign-out until it enrols. Client portal users and API credentials are not affected.
 - consoleAllowedNetworks: staff sign-in and console use only from these networks (CIDRs). Agents, the client portal,
   the DNS resolver and API credentials (which have their own allow-lists) are not affected.
+- scriptReview: library scripts and remediation packages run only in a version a second person reviewed
+  (script_review.py).
 - emergencyStop: while on, no new script, command or remote session reaches any device, except isolating or
   releasing one. For when an account, a script or the server itself may be compromised.
 
@@ -35,7 +37,8 @@ def _msp(db: Session) -> Tenant | None:
 
 
 def defaults() -> dict:
-    return {"requireMfa": get_settings().require_mfa, "consoleAllowedNetworks": [], "emergencyStop": {"active": False}}
+    return {"requireMfa": get_settings().require_mfa, "consoleAllowedNetworks": [], "emergencyStop": {"active": False},
+            "scriptReview": get_settings().script_review}
 
 
 def get(db: Session) -> dict:

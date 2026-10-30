@@ -263,6 +263,14 @@ Where two-person approval is configured, high-impact actions are held for a diff
   yet started, ends every remote session and refuses new scripts, commands and sessions on every device, with the
   reason shown to all staff. Isolating and releasing devices still works. Lifting it needs your password again. Agents
   are handed nothing but isolation while it is on, whatever was queued before.
+- **Require script review** (off by default, `FENRIR_SCRIPT_REVIEW`): a library script or remediation package runs on
+  devices only in a version that someone who did not write or edit it has approved, after confirming their password.
+  Any change to what runs (the text, language, parameters or run-as account) needs a new review, and the reviewer sees
+  exactly what changed since the last approved version. Scripts shipped with Fenrir count as reviewed until someone
+  changes them. Scheduled tasks and self-healing monitors skip a script awaiting review, retrying a job that ran an
+  unreviewed version is refused, and one-off scripts outside the library are refused. This is separate from
+  per-run two-person approval (**Settings → Approvals**), which holds a reviewed script run on many devices until a
+  second person agrees to that particular run.
 
 Upgrading an existing installation turns MFA on for staff: each person is asked to enrol at their next request.
 
