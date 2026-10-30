@@ -103,8 +103,8 @@ function ScriptEditor({ script, onClose, onRun }: { script: any; onClose: () => 
   );
 }
 
-export function RunScript({ script, onClose, onStarted, presetDeviceId }: { script: any; onClose: () => void; onStarted: (jobId: string) => void; presetDeviceId?: string }) {
-  const [targets, setTargets] = useState<Targets>(() => ({ ...emptyTargets(), deviceIds: presetDeviceId ? [presetDeviceId] : [] }));
+export function RunScript({ script, onClose, onStarted, presetDeviceId, presetDeviceIds }: { script: any; onClose: () => void; onStarted: (jobId: string) => void; presetDeviceId?: string; presetDeviceIds?: string[] }) {
+  const [targets, setTargets] = useState<Targets>(() => ({ ...emptyTargets(), deviceIds: presetDeviceIds ?? (presetDeviceId ? [presetDeviceId] : []) }));
   const [values, setValues] = useState<Record<string, string>>(() => Object.fromEntries((script.parameters || []).map((p: any) => [p.name, p.default ?? ""])));
   const { run, busy } = useAction();
   const submit = async () => {

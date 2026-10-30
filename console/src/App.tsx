@@ -15,6 +15,7 @@ import { PageBoundary } from "./components/PageBoundary";
 import { InstallAppButton, TenantSelect } from "./components/ui";
 
 import Overview from "./pages/Overview";
+import Inbox from "./pages/Inbox";
 import Devices from "./pages/Devices";
 import DeviceDetail from "./pages/DeviceDetail";
 import Policies from "./pages/Policies";
@@ -69,7 +70,7 @@ import { api, setDefaultCurrency } from "./api";
 
 // `also`: other pages of the same section (they switch with section tabs), so the entry stays highlighted on them.
 const NAV: { group: string; items: { to: string; label: string; icon: string; also?: string[] }[] }[] = [
-  { group: "Overview", items: [{ to: "/", label: "Dashboard", icon: "◎" }, { to: "/reports", label: "Reports", icon: "▤" }] },
+  { group: "Overview", items: [{ to: "/", label: "Dashboard", icon: "◎" }, { to: "/inbox", label: "Inbox", icon: "☰" }, { to: "/reports", label: "Reports", icon: "▤" }] },
   {
     group: "Devices & RMM",
     items: [
@@ -226,7 +227,7 @@ function Login() {
 const BOTTOM_NAV = [
   { to: "/", label: "Home", icon: "◎" },
   { to: "/devices", label: "Devices", icon: "▣" },
-  { to: "/alerts", label: "Alerts", icon: "△" },
+  { to: "/inbox", label: "Inbox", icon: "☰" },
   { to: "/service-board", label: "Tickets", icon: "✉" },
 ];
 
@@ -284,6 +285,7 @@ function Shell() {
           <PageBoundary resetKey={`${location.pathname}${location.search}`}>
           <Routes>
             <Route path="/" element={<Overview />} />
+            <Route path="/inbox" element={<Inbox />} />
             <Route path="/devices" element={<Devices />} />
             <Route path="/devices/:id" element={<DeviceDetail />} />
             <Route path="/policies" element={<Policies />} />

@@ -248,6 +248,26 @@ Use incident/job evidence to verify outcomes. Secret reveals and sensitive actio
 
 Where two-person approval is configured, high-impact actions are held for a different authorised operator to review in **Settings → Approvals**. An approval request is not an executed action: check the eventual job/endpoint result.
 
+### The inbox
+
+**Inbox** is the one list of everything that needs someone, so nobody has to check ten pages:
+
+- alerts (detections, monitors, stale backups, endpoint protection health, network monitors), incidents, and tickets
+  that nobody owns, are past their SLA, or are yours;
+- updates that failed to install, jobs that failed in the last three days, admin-rights requests and two-person
+  approvals waiting for a decision;
+- Microsoft 365 standards that drifted or failed, compliance requirements past their due date and evidence about to
+  expire.
+
+Repeats collapse: the same monitor or detection rule on 40 devices of one customer is one item, and so is one update
+failing on many devices. Every item has an owner, an SLA (by severity, set under **SLA targets**; tickets keep their
+board's SLA and approvals their expiry) and snooze; select several to take, assign, snooze or finish them together.
+From an item it is one click to raise a ticket (with the devices listed), connect to a device, run a library script on
+its devices, or log billable time against its ticket (one is raised if it has none). Owner, snooze and **Done** act on
+the alerts, incidents and tickets themselves, so their own pages agree; **Done** resolves alerts, and hides other items
+until they change (another device failing the same update brings it back). Decisions, incidents and tickets are
+finished on their own pages.
+
 ### Staff sign-in and the emergency stop
 
 **Settings → Platform → Security** (platform administrators; changes need your password again):

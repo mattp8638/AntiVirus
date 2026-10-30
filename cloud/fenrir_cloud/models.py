@@ -539,6 +539,22 @@ class UserSession(Base):
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # SSO hand-off redeemed (once)
 
 
+class TriageState(Base):
+    """The triage inbox's own state for an item whose source has no owner, snooze or dismissal of its own (triage.py).
+    Keyed by the item key, which names the source and customer, so it survives the item being rebuilt each time."""
+    __tablename__ = "triage_states"
+    key: Mapped[str] = mapped_column(String(400), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    owner: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    snoozed_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    snoozed_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    dismissed_marker: Mapped[str | None] = mapped_column(String(64), nullable=True)  # hidden while the item still matches
+    dismissed_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ticket_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class PasskeyCredential(Base):
     """A passkey (WebAuthn credential) someone registered for signing in. Only its public key is kept; the private key
     never leaves their phone, laptop or security key."""

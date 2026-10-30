@@ -13,14 +13,17 @@ const SNOOZE = [{ label: "1 hour", minutes: 60 }, { label: "4 hours", minutes: 2
 
 export default function Alerts() {
   const { tenantId, tenantName, can } = useApp();
-  const [status, setStatus] = useState("new");
-  const [severity, setSeverity] = useState("");
   const [params] = useSearchParams();
+  // From the inbox: one alert (?id=) or every open alert of one rule (?rule=).
+  const rule = params.get("rule");
+  const [status, setStatus] = useState(rule || params.get("id") ? "" : "new");
+  const [severity, setSeverity] = useState("");
   const [owner, setOwner] = useState(() => params.get("owner") ?? "");
   const [snoozed, setSnoozed] = useState("hide");
-  const { data, reload } = useListData<any>("alerts", { tenant_id: tenantId, status, severity, assignee: owner, snoozed });
+  const { data: all, reload } = useListData<any>("alerts", { tenant_id: tenantId, status, severity, assignee: owner, snoozed });
+  const data = rule && all ? all.filter((a) => a.ruleId === rule && ["new", "triaged"].includes(a.status)) : all;
   const { data: members } = useListData<Member>("psa/members");
-  const [open, setOpen] = useState<string | null>(null);
+  const [open, setOpen] = useState<string | null>(() => params.get("id"));
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const { run, busy } = useAction();
   const toggle = (id: string) => setSelected((current) => {
