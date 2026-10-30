@@ -4953,6 +4953,34 @@ void AgentService::FlushTelemetryQueue() {
     return;
   }
 
+  // Clean AMSI scans repeat: every PowerShell start scans the same module script blocks again. Each distinct one
+  // (host, content name, preview) is sent once an hour; blocked content always goes.
+  {
+    const auto now = GetTickCount64();
+    std::vector<std::wstring> repeats;
+    std::erase_if(pendingTelemetry_, [&](const TelemetryRecord& record) {
+      if (record.eventType != L"amsi.scan" || record.payloadJson.find(L"\"blocked\":true") != std::wstring::npos) {
+        return false;
+      }
+      const auto key = ExtractPayloadString(record.payloadJson, "appName").value_or(L"") + L"|" +
+                       ExtractPayloadString(record.payloadJson, "contentName").value_or(L"") + L"|" +
+                       ExtractPayloadString(record.payloadJson, "preview").value_or(L"");
+      const auto found = recentAmsiScans_.find(key);
+      if (found != recentAmsiScans_.end() && now - found->second < 60ULL * 60 * 1000) {
+        repeats.push_back(record.eventId);
+        return true;
+      }
+      recentAmsiScans_[key] = now;
+      return false;
+    });
+    if (recentAmsiScans_.size() > 20000) {
+      recentAmsiScans_.clear();
+    }
+    if (!repeats.empty() && telemetryQueueStore_) {
+      telemetryQueueStore_->Remove(repeats);
+    }
+  }
+
   // Detections first: a busy machine can queue thousands of routine image-load and snapshot events, and a malware
   // finding must not wait behind them. The partition is stable, so each group keeps its order.
   std::stable_partition(pendingTelemetry_.begin(), pendingTelemetry_.end(),

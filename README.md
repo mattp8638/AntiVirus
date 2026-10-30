@@ -207,7 +207,7 @@ Telemetry settings (in `deploy/.env`, passed through the Compose file's shared e
 | Setting | Default | Meaning |
 |---|---|---|
 | `FENRIR_TELEMETRY_RETENTION_DAYS` | 90 | Every event is deleted after this. |
-| `FENRIR_ROUTINE_RETENTION_DAYS` | 30 | Routine activity (process, image-load, network, DNS, file and registry events at "info") is deleted sooner, unless a detection rule matched it. |
+| `FENRIR_ROUTINE_RETENTION_DAYS` | 30 | Routine activity (process, image-load, network, DNS, file, registry and script-scan events at "info") is deleted sooner, unless a detection rule matched it. |
 | `FENRIR_ROUTINE_EVENTS_PER_DEVICE_MINUTE` | 600 | Past this, a device's routine events are still checked against every detection rule but stored only if one matches. 0 turns the cap off. |
 
 `GET /api/console/platform/telemetry-volume` lists the devices and event types sending most, if the database grows
