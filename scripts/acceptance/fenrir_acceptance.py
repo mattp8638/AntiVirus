@@ -365,6 +365,68 @@ Write-Output ("ADMIN=" + $admin)"""
     return f"{account} created as an administrator, then removed", {"account": account, "timeline": trail, "endReason": ended.get("endReason")}
 
 
+_ATTACK_SURFACE_RULES = (
+    "blockOfficeChildProcesses", "blockOfficeExecutableContent", "blockOfficeCodeInjection", "blockObfuscatedScripts",
+    "blockScriptDownloadedPayloads", "blockEmailExecutables", "blockCredentialStealingLsass", "blockPsexecWmiProcessCreation",
+    "blockUntrustedUsbProcesses", "blockWmiPersistence", "blockVulnerableSignedDrivers", "blockLolbinAbuse",
+    "blockAdobeReaderChildProcesses", "blockWebshellCreation", "advancedRansomwareProtection",
+)
+
+
+@scenario("defender", ("windows",), "Manages Microsoft Defender through policy and reports its detections as alerts")
+def defender(ctx: Context, device: dict) -> tuple[str, dict]:
+    """Turns on "Manage Microsoft Defender" for this device, with every attack surface rule in audit so nothing on the
+    machine is blocked, and checks Defender itself now has those settings. Then has Defender catch an EICAR file and
+    checks the detection arrives as a Fenrir alert. The device's previous policy is put back afterwards."""
+    previous = device.get("policyId")
+    policy = ctx.api.post("policies", {"tenantId": device["tenantId"], "name": "Fenrir acceptance: managed Defender",
+                                       "settings": {"defender": {"managed": True, "cloudProtection": "high", "puaProtection": "audit",
+                                                                 "networkProtection": "audit", "controlledFolderAccess": "off"},
+                                                    "attackSurface": {key: "audit" for key in _ATTACK_SURFACE_RULES}}})
+    ctx.api.call("PATCH", f"devices/{device['id']}", {"policyId": policy["id"]})
+    path = f"devices/{device['id']}/defender"
+    try:
+        ctx.api.post(f"{path}/check", {})
+
+        def applied():
+            view = ctx.api.get(path)
+            return view if view.get("checkedAt") and not view.get("checking") and (view.get("inSync") or view.get("error")) else None
+
+        view = wait_for("Defender to take the policy and report back", applied, max(ctx.args.timeout, 300), interval=10)
+        status = view.get("status") or {}
+        if status.get("available") is False:
+            raise Check(f"Microsoft Defender is not available on this device: {status.get('error')}")
+        if not view.get("inSync"):
+            raise Check(f"Defender did not take the policy: {view.get('error')}")
+        not_set = [r["key"] for r in view["rules"] if r["actual"] != "audit"]
+        if not_set or view.get("problems"):
+            raise Check(f"Defender reports problems {view.get('problems')}; rules not in audit: {not_set}")
+
+        parts = "+".join("'" + p.replace("'", "''") + "'" for p in _EICAR_PARTS)
+        ctx.script(device, "give Defender an EICAR file", "powershell", f"""
+$folder = 'C:\\Users\\Public\\FenrirAcceptance-Defender'
+New-Item -ItemType Directory -Force -Path $folder | Out-Null
+$path = Join-Path $folder ('eicar-' + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + '.com')
+try {{ [IO.File]::WriteAllText($path, {parts}); Start-Sleep -Seconds 5; Get-Content -Path $path -ErrorAction Stop | Out-Null; Write-Output 'WRITTEN' }}
+catch {{ Write-Output ('BLOCKED=' + $_.Exception.Message) }}""")
+
+        def alerted():
+            found = [a for a in ctx.api.get("alerts", device_id=device["id"], snoozed="all")
+                     if str(a.get("ruleId") or "").startswith("defender:") and a.get("ruleId") != "defender:protection-off"]
+            if found:
+                return found[0]
+            ctx.api.post(f"{path}/check", {})  # Defender records the detection a moment after it acts
+            return None
+
+        alert = wait_for("Defender's detection to arrive as an alert", alerted, max(ctx.args.timeout, 300), interval=30)
+    finally:
+        ctx.api.call("PATCH", f"devices/{device['id']}", {"policyId": previous})
+    return (f"Defender {status.get('mode')}, real-time {'on' if status.get('realTime') else 'off'}, "
+            f"{len(view['rules'])} attack surface rules in audit; detection alerted as {alert['title']}",
+            {"mode": status.get("mode"), "tamper": status.get("tamper"), "signatureAgeDays": status.get("signatureAgeDays"),
+             "alert": alert["title"], "file": (alert.get("details") or {}).get("file")})
+
+
 @scenario("isolation", ("windows", "linux", "macos"), "Isolates the device and releases it again", disruptive=True)
 def isolation(ctx: Context, device: dict) -> tuple[str, dict]:
     ctx.command(device, "device.isolate")

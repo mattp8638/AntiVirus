@@ -539,6 +539,19 @@ class UserSession(Base):
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # SSO hand-off redeemed (once)
 
 
+class DefenderState(Base):
+    """What Microsoft Defender reported on a Windows device the last time Fenrir checked it (defender.py)."""
+    __tablename__ = "defender_states"
+    device_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    status: Mapped[dict] = mapped_column(JSON, default=dict)
+    applied_revision: Mapped[str | None] = mapped_column(String(64), nullable=True)  # the Defender settings last applied
+    command_id: Mapped[str | None] = mapped_column(String(32), nullable=True)  # the check in flight
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    requested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    error: Mapped[str] = mapped_column(String(500), default="")
+
+
 class ClientHealthSnapshot(Base):
     """A customer's health score on one day (client360.py), for the trend on the client page and the quarterly review."""
     __tablename__ = "client_health_snapshots"
