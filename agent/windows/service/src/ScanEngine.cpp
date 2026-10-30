@@ -1290,11 +1290,13 @@ std::optional<ScanFinding> ScanFile(const std::filesystem::path& path, const Pol
   std::vector<Hit> hits;
   const auto archiveText = file.zipEntryNamesLower.empty() ? file.asciiLower : file.zipEntryNamesLower + L" " + file.asciiLower;
 
-  if (ContainsAny(file.fileNameLower, {L"eicar"}) ||
-      ContainsAny(file.textLower, {L"eicar-standard-antivirus-test-file"}) ||
-      ContainsAny(archiveText, {L"eicar-standard-antivirus-test-file", L"x5o!p%@ap", L"eicar.com", L"eicar.txt"})) {
+  const auto eicarContent = ContainsAny(file.textLower, {L"eicar-standard-antivirus-test-file"}) ||
+                           ContainsAny(archiveText, {L"eicar-standard-antivirus-test-file", L"x5o!p%@ap"});
+  if (eicarContent || ContainsAny(file.fileNameLower, {L"eicar"}) ||
+      ContainsAny(archiveText, {L"eicar.com", L"eicar.txt"})) {
+    // The content is an exact, published test signature: no reputation source may talk it down to "allow".
     AddHit(hits, Hit{L"EICAR_TEST_SIGNATURE", L"A standard antivirus test signature was detected.", L"TA0002",
-                     L"T1204.002", 99});
+                     L"T1204.002", 99, eicarContent});
   }
 
   if ((file.pe || ExecutableExt(file.extension)) && file.userPath) {
@@ -1352,7 +1354,9 @@ std::optional<ScanFinding> ScanFile(const std::filesystem::path& path, const Pol
                      L"TA0005", L"T1027", 24});
   }
 
-  if (!trustedSystemBinary) {
+  // Script and document content only: in a compiled program these words are ordinary strings (every .NET binary
+  // carries "FromBase64String" and "DownloadFile"), and scoring them quarantined signed vendor software.
+  if (!trustedSystemBinary && !file.pe) {
     if (Contains(file.textLower, L"amsiutils")) {
       AddHit(hits, Hit{L"DEFENSE_EVASION_AMSI", L"Content contains AMSI bypass or defense-evasion patterns.",
                        L"TA0005", L"T1562.001", 55});
@@ -1424,7 +1428,7 @@ std::optional<ScanFinding> ScanFile(const std::filesystem::path& path, const Pol
                      L"Content resembles a ransom note with file-recovery and payment instructions.", L"TA0040",
                      L"T1486", 68});
   }
-  if (!trustedSystemBinary) {
+  if (!trustedSystemBinary && !file.pe) {
     if (LongBase64(file.textLower)) {
       AddHit(hits,
              Hit{L"LONG_BASE64_BLOB", L"Content contains a long encoded payload blob.", L"TA0005", L"T1027", 30});
@@ -1433,24 +1437,26 @@ std::optional<ScanFinding> ScanFile(const std::filesystem::path& path, const Pol
         std::count(file.textLower.begin(), file.textLower.end(), L'`') >= 12) {
       AddHit(hits, Hit{L"SCRIPT_OBFUSCATION", L"Content uses common obfuscation markers.", L"TA0005", L"T1027", 28});
     }
-
-    if (Contains(file.asciiLower, L"http://") || Contains(file.asciiLower, L"https://") ||
-        Contains(file.asciiLower, L"urldownloadtofile") || Contains(file.asciiLower, L"winhttp") ||
-        Contains(file.asciiLower, L"internetopenurl")) {
+  }
+  // String heuristics for programs nobody has signed. A validly signed program is judged on its publisher, the ML
+  // model and threat intel instead: certificate URLs, VirtualAlloc and "cmd.exe" are in almost every real program.
+  if (file.pe && !trustedSystemBinary && !(file.signatureVerified && !file.signer.empty())) {
+    if (Contains(file.asciiLower, L"urldownloadtofile") || Contains(file.asciiLower, L"internetopenurl")) {
       AddHit(hits, Hit{L"PE_DOWNLOAD_AND_EXECUTE", L"Portable executable contains download-and-execute strings.",
                        L"TA0011", L"T1105", 35});
     }
-    if (Contains(file.asciiLower, L"virtualalloc") || Contains(file.asciiLower, L"writeprocessmemory") ||
-        Contains(file.asciiLower, L"createremotethread") || Contains(file.asciiLower, L"queueuserapc")) {
+    // Writing into another process and starting code there, not merely allocating memory.
+    if (Contains(file.asciiLower, L"writeprocessmemory") &&
+        (Contains(file.asciiLower, L"createremotethread") || Contains(file.asciiLower, L"queueuserapc") ||
+         Contains(file.asciiLower, L"ntqueueapcthread"))) {
       AddHit(hits, Hit{L"PE_PROCESS_INJECTION", L"Portable executable contains process injection strings.", L"TA0005",
                        L"T1055", 45});
     }
-    if (Contains(file.asciiLower, L"powershell") || Contains(file.asciiLower, L"rundll32") ||
-        Contains(file.asciiLower, L"regsvr32") || Contains(file.asciiLower, L"mshta") ||
-        Contains(file.asciiLower, L"cmd.exe") || Contains(file.asciiLower, L"wscript") ||
+    if (Contains(file.asciiLower, L"rundll32") || Contains(file.asciiLower, L"regsvr32") ||
+        Contains(file.asciiLower, L"mshta") || Contains(file.asciiLower, L"wscript") ||
         Contains(file.asciiLower, L"cscript")) {
       AddHit(hits, Hit{L"PE_LOLBIN_PROXY", L"Portable executable references LOLBins often used for proxy execution.",
-                       L"TA0005", L"T1218", 32});
+                       L"TA0005", L"T1218", 20});
     }
   }
   if (file.pe && file.entropy >= 7.2 && file.signer.empty()) {
@@ -1589,7 +1595,8 @@ std::optional<ScanFinding> ScanFile(const std::filesystem::path& path, const Pol
     benignPressure += static_cast<int>(policy.scanBenignDampeningScore) + 12;
   }
 
-  if (policy.enableKnownGoodHashDampening && reputationLookup.lookupSucceeded && reputationLookup.knownGood) {
+  if (policy.enableKnownGoodHashDampening && reputationLookup.lookupSucceeded && reputationLookup.knownGood &&
+      !exactIndicatorMatch) {
     benignPressure += static_cast<int>(policy.scanBenignDampeningScore) + 18;
   }
 
@@ -1632,7 +1639,7 @@ std::optional<ScanFinding> ScanFile(const std::filesystem::path& path, const Pol
   reportedReputation = BuildReportedReputation(reportedReputation, reputationLookup);
 
   auto disposition = VerdictDisposition::Block;
-  if (trustedCleanware && netPressure < quarantineThreshold) {
+  if (trustedCleanware && netPressure < quarantineThreshold && !exactIndicatorMatch) {
     disposition = VerdictDisposition::Allow;
   }
   if (policy.archiveObserveOnly && archiveSurface && netPressure < quarantineThreshold) {

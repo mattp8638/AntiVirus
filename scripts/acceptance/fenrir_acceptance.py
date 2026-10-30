@@ -366,6 +366,34 @@ def patch_scan(ctx: Context, device: dict) -> tuple[str, dict]:
     return "update scan finished", {k: v for k, v in result.items() if isinstance(v, (str, int, float, bool))}
 
 
+@scenario("false_positives", ("windows", "linux", "macos"), "Quarantines and alerts on nothing but the test files")
+def false_positives(ctx: Context, device: dict) -> tuple[str, dict]:
+    """Run it last. Everything the agent quarantined or raised as malware since it was installed, its own first scan
+    included, must be one of the harness's test files. On Windows it also scans signed Microsoft programs outside
+    System32, the case that once quarantined the Azure guest agent."""
+    scanned = ""
+    if is_windows(device):
+        scanned = r"C:\Program Files\Windows Defender"
+        try:
+            ctx.command(device, "scan.targeted", target_path=scanned, timeout=max(ctx.args.timeout, 600))
+        except Check as exc:
+            if "does not exist" not in str(exc):
+                raise
+            scanned = ""
+
+    def ours(text: str) -> bool:
+        return "fenriracceptance" in text.lower().replace("-", "").replace("_", "")
+
+    held = [str(q.get("path") or "") for q in ctx.api.get("protection/quarantine", device_id=device["id"])
+            if not ours(str(q.get("path") or ""))]
+    flagged = [f"{a.get('title')}: {(a.get('details') or {}).get('file') or a.get('summary') or ''}"
+               for a in ctx.api.get("alerts", device_id=device["id"], snoozed="all")
+               if str(a.get("ruleId") or "").startswith("fenrir-av-") and not ours(json.dumps(a.get("details") or {}))]
+    if held or flagged:
+        raise Check(f"legitimate files were treated as malware. Quarantined: {held[:10]}. Alerted: {flagged[:10]}")
+    return "nothing but the test files was quarantined or alerted", {"alsoScanned": scanned}
+
+
 # --------------------------------------------------------------------------- runner
 
 
@@ -456,7 +484,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.list:
         for name, spec in SCENARIOS.items():
-            print(f"{name:12} {'/'.join(spec['platforms']):22} {'(disruptive) ' if spec['disruptive'] else ''}{spec['description']}")
+            print(f"{name:16} {'/'.join(spec['platforms']):22} {'(disruptive) ' if spec['disruptive'] else ''}{spec['description']}")
         return 0
     if not args.server or not args.device or not (args.token or (args.email and args.password)):
         parser.error("--server, at least one --device, and --token or --email/--password are required")
