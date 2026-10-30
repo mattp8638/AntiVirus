@@ -323,6 +323,10 @@ def on_command_complete(db: Session, device: Device, command: Command) -> None:
         from . import datadiscovery
 
         datadiscovery.on_command_complete(db, device, command)
+    if (command.payload or {}).get("defender"):
+        from . import defender
+
+        defender.on_command_complete(db, device, command)
     if (command.payload or {}).get("vulnerabilityIds"):
         from . import remediation
 

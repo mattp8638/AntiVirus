@@ -268,6 +268,30 @@ the alerts, incidents and tickets themselves, so their own pages agree; **Done**
 until they change (another device failing the same update brings it back). Decisions, incidents and tickets are
 finished on their own pages.
 
+### Managed Microsoft Defender
+
+Most Microsoft 365 Business Premium customers already pay for Defender. In a policy's **Microsoft Defender** section,
+**Manage Microsoft Defender** makes Defender the prevention engine on that policy's Windows devices, with Fenrir's EDR,
+machine learning and DNS filtering on top:
+
+- Fenrir sets real-time protection, the cloud protection level, potentially unwanted app blocking, network protection,
+  controlled folder access and any Defender exclusions you list.
+- Each rule under **Attack surface reduction** is also set in Defender's own attack surface reduction rules (off,
+  audit, warn or block), which stop the technique before the program runs. Rules Defender has no equivalent for stay
+  with Fenrir.
+- The settings are applied within the hour when the policy changes and re-applied every six hours, and Fenrir reads
+  back what Defender actually has. A device's **Security → Microsoft Defender** page shows its mode, real-time and
+  tamper protection, signature age, each rule as asked and as set, and recent detections; **Protection health** lists
+  every Windows device. **Apply and check now** does it straight away.
+- Defender's detections become Fenrir alerts (so they reach the inbox). Defender switched off, or passive because
+  another antivirus took over, raises a high alert that clears itself when Defender is back.
+
+It works through the normal command channel (system PowerShell: `Set-MpPreference`, `Get-MpComputerStatus`,
+`Get-MpThreatDetection`), so it needs no agent update and respects the emergency stop. Tamper protection cannot be
+turned on from the device itself: Fenrir reports it and says to turn it on in the Microsoft Defender portal or Intune.
+When tamper protection or Intune holds a setting, Fenrir reports the difference rather than fighting it. Without
+**Manage**, Fenrir only reads Defender's state and raises nothing about it.
+
 ### Client health and reports
 
 Opening a company (**Companies**, or **Health and reports** on a CRM account) starts on **Overview**: one health score

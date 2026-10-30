@@ -163,6 +163,34 @@ SCHEMA: tuple[Section, ...] = (
                 label, options=ASR_MODES) for key, label in ASR_RULES),
     ),
     Section(
+        "defender",
+        "Microsoft Defender",
+        "Manage the Defender antivirus built into Windows alongside Fenrir. Defender blocks before a program runs; Fenrir's "
+        "EDR, machine learning and DNS filtering work on top of it.",
+        (
+            F("managed", "bool", False, "Manage Microsoft Defender",
+              "Fenrir sets the options below on every Windows device, re-applies them every six hours, and turns Defender's "
+              "detections into alerts.", platforms=("windows",)),
+            F("realTimeProtection", "bool", True, "Real-time protection", platforms=("windows",)),
+            F("cloudProtection", "enum", "high", "Cloud-delivered protection",
+              "How hard Defender's cloud blocks unknown files: default, high, high+ or zero tolerance.",
+              options=("off", "default", "high", "highPlus", "zeroTolerance"), platforms=("windows",)),
+            F("puaProtection", "enum", "block", "Potentially unwanted apps", options=("off", "audit", "block"), platforms=("windows",)),
+            F("networkProtection", "enum", "audit", "Network protection",
+              "Blocks connections to dangerous sites from any app, not only browsers.", options=("off", "audit", "block"),
+              platforms=("windows",)),
+            F("controlledFolderAccess", "enum", "off", "Controlled folder access",
+              "Only trusted apps may change files in protected folders.", options=("off", "audit", "block"), platforms=("windows",)),
+            F("enforceAttackSurfaceRules", "bool", True, "Enforce attack surface rules through Defender",
+              "Each rule under Attack surface reduction is also set in Defender, which stops it before the program runs. "
+              "Rules Defender has no equivalent for stay with Fenrir.", platforms=("windows",)),
+            F("exclusionPaths", "list", [], "Defender path exclusions", "Files and folders Defender should not scan.",
+              platforms=("windows",)),
+            F("exclusionProcesses", "list", [], "Defender process exclusions", platforms=("windows",)),
+            F("exclusionExtensions", "list", [], "Defender extension exclusions", platforms=("windows",)),
+        ),
+    ),
+    Section(
         "ransomware",
         "Ransomware protection",
         "Behavioural encryption detection, protected folders, canaries and rollback.",

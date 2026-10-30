@@ -39,6 +39,7 @@ from .routers import condition_packages as condition_packages_router
 from .routers import triage as triage_router
 from .routers import clients as clients_router
 from .routers import search as search_router
+from .routers import defender as defender_router
 from .routers import oob as oob_router
 from .routers import customization as customization_router
 from .routers import grc_assurance as grc_assurance_router
@@ -207,7 +208,7 @@ def _purge_telemetry(db, settings: Settings) -> dict:
 
 def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
     """Hourly jobs, in order."""
-    from . import autodoc, billing_sync, client360, darkweb, grc_automation, m365_partner, m365_standards, tprm
+    from . import autodoc, billing_sync, client360, darkweb, defender, grc_automation, m365_partner, m365_standards, tprm
 
     jobs: list[tuple[str, object]] = [("telemetry.retention", lambda db: _purge_telemetry(db, settings))]
     if settings.feed_sync_enabled:
@@ -216,7 +217,8 @@ def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
         jobs.append(("intel.feed", lambda db: log.info("feed sync: %s", sync_feed(db, settings.feed_url, settings.feed_token))))
     jobs += [("m365.partner", m365_partner.tick), ("documentation.auto", autodoc.tick), ("tprm", tprm.tick),
              ("grc.automation", grc_automation.tick), ("darkweb", darkweb.tick), ("m365.standards", m365_standards.tick),
-             ("billing.sync", billing_sync.tick), ("clients.health", client360.tick)]
+             ("billing.sync", billing_sync.tick), ("clients.health", client360.tick),
+             ("defender", defender.tick)]
     if settings.dns_blocklists_enabled:
         from . import blocklists
 
@@ -475,7 +477,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.include_router(module.router)
     for module in (m365_admin_router, m365_router, network_router, grc_router, backup_router, soc_workflows, ad_router, grc_programme_router,
                    rollouts_router, apikeys_router, roles_router, approvals_router, exclusions_router,
-                   exposure_intel_router, m365_partner_router, condition_packages_router, triage_router, clients_router, search_router):
+                   exposure_intel_router, m365_partner_router, condition_packages_router, triage_router, clients_router, search_router, defender_router):
         app.include_router(module.router)
     app.include_router(documentation_router.router)
     app.include_router(m365_router.oauth)

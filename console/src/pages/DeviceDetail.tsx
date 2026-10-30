@@ -1,4 +1,5 @@
 import { displayValue } from "../components/DisplayValue";
+import { DeviceDefender } from "../components/Defender";
 import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ago, api, fmtTime, getToken } from "../api";
@@ -21,7 +22,7 @@ const SECTIONS: { key: string; label: string; subs?: string[] }[] = [
   { key: "overview", label: "Overview" },
   { key: "health", label: "Health" },
   { key: "system", label: "System" },
-  { key: "security", label: "Security", subs: ["Alerts", "Vulnerabilities", "Local admin"] },
+  { key: "security", label: "Security", subs: ["Alerts", "Vulnerabilities", "Microsoft Defender", "Local admin"] },
   { key: "software", label: "Software", subs: ["Patches", "Installed"] },
   { key: "activity", label: "Activity", subs: ["Scripts & jobs", "Remote actions", "Remote sessions", "Bundles & recordings"] },
   { key: "settings", label: "Settings", subs: ["Effective policy", "Device details"] },
@@ -109,7 +110,7 @@ export default function DeviceDetail() {
   if (!data) return <div className="empty">Loading…</div>;
   const d = data.device;
   const isWindows = String(d.platform || "windows").toLowerCase() === "windows";
-  const sections = isPhone ? PHONE_SECTIONS : SECTIONS.map((s) => s.key === "security" && !isWindows ? { ...s, subs: s.subs!.filter((x) => x !== "Local admin") } : s);
+  const sections = isPhone ? PHONE_SECTIONS : SECTIONS.map((s) => s.key === "security" && !isWindows ? { ...s, subs: s.subs!.filter((x) => x !== "Local admin" && x !== "Microsoft Defender") } : s);
   const section = sections.find((s) => s.key === params.get("tab")) ?? sections[0];
   const sub = section.subs ? (section.subs.find((s) => s === params.get("sub")) ?? section.subs[0]) : undefined;
   const go = (tab: string, subPage?: string) => {
@@ -296,6 +297,7 @@ export default function DeviceDetail() {
       )}
       {sub === "Vulnerabilities" && <DeviceVulns device={d} vulnerabilities={data.vulnerabilities} risk={data.risk} scans={data.vulnScans} onChanged={reload} />}
       {sub === "Local admin" && <><TemporaryAdmin device={d} /><LocalAdmin deviceId={d.id} /></>}
+      {sub === "Microsoft Defender" && <DeviceDefender deviceId={d.id} />}
       {sub === "Patches" && <PatchesTab device={d} />}
       {sub === "Installed" && <SoftwareList rows={data.software} />}
       {sub === "Scripts & jobs" && <JobsTab deviceId={d.id} onOpen={setJobId} onRun={can("configure") ? () => setScriptPicker(true) : undefined} />}
