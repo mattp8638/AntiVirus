@@ -604,7 +604,8 @@ bool InAdminOnlyDirectory(const std::wstring& modulePath) {
                             L"\\SystemApps\\", L"\\servicing\\", L"\\ImmersiveControlPanel\\"}) {
       result.push_back(ToLowerCopy(root + sub));
     }
-    for (const auto* variable : {L"%ProgramFiles%\\", L"%ProgramFiles(x86)%\\", L"%ProgramW6432%\\"}) {
+    for (const auto* variable : {L"%ProgramFiles%\\", L"%ProgramFiles(x86)%\\", L"%ProgramW6432%\\",
+                                 L"%ProgramData%\\Microsoft\\Windows Defender\\"}) {
       wchar_t expanded[MAX_PATH]{};
       if (ExpandEnvironmentStringsW(variable, expanded, MAX_PATH) > 0 && expanded[0] != L'%') {
         result.push_back(ToLowerCopy(expanded));
@@ -615,6 +616,40 @@ bool InAdminOnlyDirectory(const std::wstring& modulePath) {
   const auto lower = ToLowerCopy(modulePath);
   return std::any_of(prefixes.begin(), prefixes.end(),
                      [&lower](const std::wstring& prefix) { return lower.rfind(prefix, 0) == 0; });
+}
+
+// Windows starting its own components over and over (Defender running wevtutil every few seconds, update and
+// telemetry tasks) was most of an idle machine's process events. A Windows component started by another, neither a
+// scripting host or LOLBin, is reported once an hour per command line; the first still reaches every detection rule.
+bool FirstSystemLaunchThisHour(const std::wstring& key) {
+  static std::mutex mutex;
+  static std::unordered_map<std::wstring, ULONGLONG> seen;
+  const auto now = GetTickCount64();
+  const std::scoped_lock lock(mutex);
+  if (seen.size() > 20000) {
+    seen.clear();
+  }
+  const auto found = seen.find(key);
+  if (found != seen.end() && now - found->second < 60ULL * 60 * 1000) {
+    return false;
+  }
+  seen[key] = now;
+  return true;
+}
+
+bool ShouldReportProcessStart(const EtwProcessContext& context) {
+  const auto name = ToLowerCopy(context.imageName);
+  const auto commandLine = ToLowerCopy(context.commandLine);
+  if (name == L"conhost.exe" && InAdminOnlyDirectory(context.imagePath) &&
+      commandLine.find(L"--headless") == std::wstring::npos) {
+    return false;  // attached to every console program; headless conhost proxies commands and is still reported
+  }
+  if (InAdminOnlyDirectory(context.imagePath) && InAdminOnlyDirectory(context.parentImagePath) &&
+      !IsInterestingProcess(context.imageName) && !IsInterestingProcess(context.parentImageName)) {
+    return FirstSystemLaunchThisHour(ToLowerCopy(context.parentImagePath) + L"|" + ToLowerCopy(context.imagePath) + L"|" +
+                                     commandLine);
+  }
+  return true;
 }
 
 bool ShouldEmitImageLoad(const EtwProcessContext& processContext, const std::wstring& modulePath) {
@@ -938,6 +973,7 @@ void ProcessEtwSensor::HandleEventRecord(const EVENT_RECORD& eventRecord) {
     context.parentImagePath = parentImagePath;
     context.parentImageName = parentImageName;
 
+    context.reported = ShouldReportProcessStart(context);
     {
       const std::scoped_lock lock(stateMutex_);
       activeProcesses_.insert_or_assign(context.pid, context);
@@ -971,14 +1007,16 @@ void ProcessEtwSensor::HandleEventRecord(const EVENT_RECORD& eventRecord) {
       }
     }
 
-    QueueTelemetry(TelemetryRecord{
-        .eventId = GenerateGuidString(),
-        .eventType = L"process.started",
-        .source = L"process-etw",
-        .summary = summary.str(),
-        .occurredAt = context.startedAt,
-        .payloadJson = BuildProcessStartPayload(context, eventRecord.EventHeader.EventDescriptor.Version),
-    });
+    if (context.reported) {
+      QueueTelemetry(TelemetryRecord{
+          .eventId = GenerateGuidString(),
+          .eventType = L"process.started",
+          .source = L"process-etw",
+          .summary = summary.str(),
+          .occurredAt = context.startedAt,
+          .payloadJson = BuildProcessStartPayload(context, eventRecord.EventHeader.EventDescriptor.Version),
+      });
+    }
     for (const auto& record : handlerRecords) {
       QueueTelemetry(record);
     }
@@ -999,10 +1037,9 @@ void ProcessEtwSensor::HandleEventRecord(const EVENT_RECORD& eventRecord) {
       }
     }
 
-    if (context.pid == 0) {
-      context.pid = pid;
-      context.imagePath = QueryProcessImagePath(pid);
-      context.imageName = BaseNameFromPath(context.imagePath);
+    // An exit is only worth sending for a process whose start was: otherwise it has nothing to complete.
+    if (context.pid == 0 || !context.reported) {
+      return;
     }
 
     std::wstringstream summary;

@@ -449,6 +449,31 @@ void EnforceTelemetryQueueBudget(std::vector<TelemetryRecord>* pendingTelemetry)
                           pendingTelemetry->begin() + (pendingTelemetry->size() - kMaxQueuedTelemetry));
 }
 
+// The same services, files, connections and patch posture, and a "starting a sync cycle" event, were sent every
+// cycle: about ten identical events a minute per device. Each distinct snapshot record (type, summary and payload
+// without the cycle number) now goes once every six hours; a change goes at once.
+bool RepeatedSnapshot(const TelemetryRecord& record) {
+  const auto& type = record.eventType;
+  if (type != L"service.sync.cycle" && type.find(L".snapshot") == std::wstring::npos) {
+    return false;
+  }
+  static const std::wregex cycleField(LR"("cycle":\d+,?)");
+  const auto key = type + L"|" + record.summary + L"|" + std::regex_replace(record.payloadJson, cycleField, L"");
+  static std::mutex mutex;
+  static std::unordered_map<std::wstring, ULONGLONG> sent;
+  const auto now = GetTickCount64();
+  const std::scoped_lock lock(mutex);
+  if (sent.size() > 20000) {
+    sent.clear();
+  }
+  const auto found = sent.find(key);
+  if (found != sent.end() && now - found->second < 6ULL * 60 * 60 * 1000) {
+    return true;
+  }
+  sent[key] = now;
+  return false;
+}
+
 // Detections and response outcomes, which go to the server ahead of routine activity.
 bool IsPriorityTelemetry(const std::wstring& eventType) {
   static constexpr const wchar_t* kPrefixes[] = {L"scan.finding", L"scan.threat.", L"realtime.protection.action",
@@ -4925,7 +4950,7 @@ void AgentService::QueueTelemetryRecords(const std::vector<TelemetryRecord>& sou
   std::vector<TelemetryRecord> records;
   records.reserve(source.size());
   for (const auto& record : source) {
-    if (RoutineTelemetryAllowed(filter, record.eventType, record.payloadJson)) {
+    if (RoutineTelemetryAllowed(filter, record.eventType, record.payloadJson) && !RepeatedSnapshot(record)) {
       records.push_back(record);
     }
   }
