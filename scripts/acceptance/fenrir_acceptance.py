@@ -283,10 +283,14 @@ echo "PATH=$path"
     try:
         found = wait_for(f"{name} to be quarantined or alerted", caught, ctx.args.timeout)
     except Check as exc:  # say what the device did report, so the cause is in the log
-        events = (ctx.api.get("events", device_id=device["id"], hours=1, limit=200) or {}).get("events", [])
-        seen = [f"{str(e.get('occurredAt') or '')[11:19]} {e.get('eventType')}: {str(e.get('summary') or '')[:100]}" for e in events
-                if not str(e.get("eventType", "")).startswith(("process.", "network.", "dns."))][:12]
-        raise Check(f"{exc}. Targeted scan result: {json.dumps(scan)[:300]}. Latest device events: {seen}") from None
+        events = (ctx.api.get("events", device_id=device["id"], hours=1, limit=2000) or {}).get("events", [])
+        keys = ("disposition", "remediationStatus", "quarantineRecordId", "remediationError", "heuristicScore", "reputation")
+        scans = [f"{str(e.get('occurredAt') or '')[11:19]} {e.get('eventType')} "
+                 + json.dumps({k: (e.get('fields') or {}).get(k) for k in keys if (e.get('fields') or {}).get(k) not in (None, '')})
+                 for e in events if str(e.get("eventType", "")).startswith(("scan.", "quarantine", "realtime.protection", "threat."))][:8]
+        latest = [f"{str(e.get('occurredAt') or '')[11:19]} {e.get('eventType')}" for e in events[:5]]
+        raise Check(f"{exc}. Targeted scan result: {json.dumps(scan)[:300]}. Scan and quarantine events the server holds: "
+                    f"{scans or 'none'}. Latest events: {latest}") from None
     return f"detected via {found['via']} as {found.get('threat')}", {**found, "file": path, "scan": scan}
 
 
