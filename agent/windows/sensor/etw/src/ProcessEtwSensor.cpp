@@ -521,28 +521,107 @@ bool StartsWithInsensitive(const std::wstring& value, const std::wstring& prefix
   return lowerValue.rfind(lowerPrefix, 0) == 0;
 }
 
-bool IsSystemPath(const std::wstring& pathValue) {
-  if (pathValue.empty()) {
-    return false;
+// ETW reports kernel paths (\Device\HarddiskVolume3\Windows\System32\...). Mapped to drive letters so path
+// filters, detection rules and the console all see C:\Windows\System32\...
+std::wstring ToDosPath(const std::wstring& path) {
+  if (StartsWithInsensitive(path, LR"(\??\)")) {
+    return path.substr(4);
   }
-
-  return StartsWithInsensitive(pathValue, LR"(c:\windows\)") ||
-         StartsWithInsensitive(pathValue, LR"(c:\program files\)") ||
-         StartsWithInsensitive(pathValue, LR"(c:\program files (x86)\)");
+  if (StartsWithInsensitive(path, LR"(\SystemRoot\)")) {
+    wchar_t windows[MAX_PATH]{};
+    const auto length = GetWindowsDirectoryW(windows, MAX_PATH);
+    return length > 0 && length < MAX_PATH ? std::wstring(windows, length) + path.substr(11) : path;
+  }
+  if (!StartsWithInsensitive(path, LR"(\Device\)")) {
+    return path;
+  }
+  static std::mutex mutex;
+  static std::vector<std::pair<std::wstring, std::wstring>> volumes;  // (lower-case device prefix with "\", "C:")
+  static ULONGLONG loadedAt = 0;
+  const std::scoped_lock lock(mutex);
+  if (volumes.empty() || GetTickCount64() - loadedAt > 10ULL * 60 * 1000) {  // drives come and go
+    volumes.clear();
+    wchar_t drives[512]{};
+    const auto length = GetLogicalDriveStringsW(static_cast<DWORD>(std::size(drives) - 1), drives);
+    for (const wchar_t* drive = drives; length > 0 && *drive; drive += wcslen(drive) + 1) {
+      const std::wstring letter(drive, 2);
+      wchar_t device[1024]{};
+      if (QueryDosDeviceW(letter.c_str(), device, static_cast<DWORD>(std::size(device))) > 0) {
+        volumes.emplace_back(ToLowerCopy(std::wstring(device)) + L"\\", letter);
+      }
+    }
+    loadedAt = GetTickCount64();
+  }
+  const auto lower = ToLowerCopy(path);
+  for (const auto& [device, letter] : volumes) {
+    if (lower.rfind(device, 0) == 0) {
+      return letter + L"\\" + path.substr(device.size());
+    }
+  }
+  return path;
 }
 
-bool ShouldEmitImageLoad(const EtwProcessContext& processContext, const std::wstring& modulePath,
-                         const std::wstring& signer) {
-  if (IsInterestingProcess(processContext.imageName)) {
-    return true;
-  }
+// Signed Windows DLLs that say something when a scripting host or Office loads them: .NET or PowerShell inside the
+// process, macro and scriptlet engines, memory-dump and credential libraries.
+bool IsNotableSystemModule(const std::wstring& moduleName) {
+  static const std::array<const wchar_t*, 17> notable = {
+      L"clr.dll",       L"clrjit.dll",   L"mscoree.dll",  L"mscoreei.dll", L"system.management.automation.dll",
+      L"system.management.automation.ni.dll", L"vbe7.dll", L"jscript.dll", L"jscript9.dll", L"vbscript.dll",
+      L"scrobj.dll",    L"scrrun.dll",   L"wshom.ocx",    L"dbghelp.dll",  L"dbgcore.dll",  L"comsvcs.dll",
+      L"vaultcli.dll"};
+  const auto lower = ToLowerCopy(moduleName);
+  return std::any_of(notable.begin(), notable.end(), [&lower](const auto* name) { return lower == name; });
+}
 
-  if (!IsSystemPath(modulePath)) {
-    return true;
+// Each process image and module pair is decided once an hour. Without this an idle server sent about a thousand
+// image loads a minute, and every one of them cost a signature check.
+bool FirstImageLoadThisHour(const std::wstring& key) {
+  static std::mutex mutex;
+  static std::unordered_map<std::wstring, ULONGLONG> seen;
+  const auto now = GetTickCount64();
+  const std::scoped_lock lock(mutex);
+  if (seen.size() > 50000) {
+    seen.clear();
   }
+  const auto found = seen.find(key);
+  if (found != seen.end() && now - found->second < 60ULL * 60 * 1000) {
+    return false;
+  }
+  seen[key] = now;
+  return true;
+}
 
-  const auto lowerSigner = ToLowerCopy(signer);
-  return lowerSigner.empty() || lowerSigner.find(L"microsoft") == std::wstring::npos;
+// Folders only an administrator can write to. Windows, .NET and installed programs load hundreds of modules from
+// here, many catalog-signed (no signature in the file) or unsigned native images, so the signer cannot tell them
+// apart; the location can. Side-loaded DLLs live in user-writable places, which are always reported.
+bool InAdminOnlyDirectory(const std::wstring& modulePath) {
+  static const std::vector<std::wstring> prefixes = [] {
+    std::vector<std::wstring> result;
+    wchar_t windows[MAX_PATH]{};
+    const auto length = GetWindowsDirectoryW(windows, MAX_PATH);
+    const std::wstring root = length > 0 && length < MAX_PATH ? std::wstring(windows, length) : L"C:\\Windows";
+    for (const auto* sub : {L"\\System32\\", L"\\SysWOW64\\", L"\\WinSxS\\", L"\\assembly\\", L"\\Microsoft.NET\\",
+                            L"\\SystemApps\\", L"\\servicing\\", L"\\ImmersiveControlPanel\\"}) {
+      result.push_back(ToLowerCopy(root + sub));
+    }
+    for (const auto* variable : {L"%ProgramFiles%\\", L"%ProgramFiles(x86)%\\", L"%ProgramW6432%\\"}) {
+      wchar_t expanded[MAX_PATH]{};
+      if (ExpandEnvironmentStringsW(variable, expanded, MAX_PATH) > 0 && expanded[0] != L'%') {
+        result.push_back(ToLowerCopy(expanded));
+      }
+    }
+    return result;
+  }();
+  const auto lower = ToLowerCopy(modulePath);
+  return std::any_of(prefixes.begin(), prefixes.end(),
+                     [&lower](const std::wstring& prefix) { return lower.rfind(prefix, 0) == 0; });
+}
+
+bool ShouldEmitImageLoad(const EtwProcessContext& processContext, const std::wstring& modulePath) {
+  if (!InAdminOnlyDirectory(modulePath)) {
+    return true;  // user-writable or unusual location: where DLL side-loading lives
+  }
+  return IsInterestingProcess(processContext.imageName) && IsNotableSystemModule(BaseNameFromPath(modulePath));
 }
 
 std::wstring EventTimestampToUtc(const EVENT_RECORD& eventRecord) {
@@ -816,14 +895,16 @@ void ProcessEtwSensor::HandleEventRecord(const EVENT_RECORD& eventRecord) {
     EtwProcessContext context{};
     context.pid = ParseDword(ReadFirstProperty(properties, {L"processid", L"processidnew", L"pid"}));
     context.parentPid = ParseDword(ReadFirstProperty(properties, {L"parentprocessid", L"parentpid"}));
-    context.imageName =
-        ReadFirstProperty(properties, {L"imagename", L"imagefilename", L"processname", L"applicationid"});
+    // The kernel provider's ImageName is the full kernel path, not a file name.
+    const auto etwImage =
+        ToDosPath(ReadFirstProperty(properties, {L"imagename", L"imagefilename", L"processname", L"applicationid"}));
+    context.imageName = BaseNameFromPath(etwImage);
     context.commandLine = ReadFirstProperty(properties, {L"commandline"});
     context.sessionId = ReadFirstProperty(properties, {L"sessionid"});
     context.startedAt = EventTimestampToUtc(eventRecord);
 
     const auto runtime = QueryProcessRuntimeContext(context.pid);
-    context.imagePath = runtime.imagePath;
+    context.imagePath = runtime.imagePath.empty() && etwImage.find(L'\\') != std::wstring::npos ? etwImage : runtime.imagePath;
     context.userSid = runtime.userSid;
     context.integrityLevel = runtime.integrityLevel;
     if (context.sessionId.empty()) {
@@ -941,7 +1022,7 @@ void ProcessEtwSensor::HandleEventRecord(const EVENT_RECORD& eventRecord) {
 
   const auto pid = ParseDword(ReadFirstProperty(properties, {L"processid", L"pid"}));
   const auto modulePath =
-      ReadFirstProperty(properties, {L"imagename", L"imagefilename", L"filename", L"filepath", L"loadedimage"});
+      ToDosPath(ReadFirstProperty(properties, {L"imagename", L"imagefilename", L"filename", L"filepath", L"loadedimage"}));
   if (modulePath.empty()) {
     return;
   }
@@ -962,12 +1043,16 @@ void ProcessEtwSensor::HandleEventRecord(const EVENT_RECORD& eventRecord) {
     processContext.sessionId = QueryProcessRuntimeContext(pid).sessionId;
   }
 
-  const auto imageBase = ReadFirstProperty(properties, {L"imagebase", L"defaultbase"});
-  const auto imageSize = ReadFirstProperty(properties, {L"imagesize"});
-  const auto signer = QuerySignerSubject(modulePath);
-  if (!ShouldEmitImageLoad(processContext, modulePath, signer)) {
+  const auto processKey = processContext.imagePath.empty() ? processContext.imageName : processContext.imagePath;
+  if (!FirstImageLoadThisHour(ToLowerCopy(processKey) + L"|" + ToLowerCopy(modulePath))) {
+    return;  // decided within the hour, reported or not
+  }
+  if (!ShouldEmitImageLoad(processContext, modulePath)) {
     return;
   }
+  const auto imageBase = ReadFirstProperty(properties, {L"imagebase", L"defaultbase"});
+  const auto imageSize = ReadFirstProperty(properties, {L"imagesize"});
+  const auto signer = QuerySignerSubject(modulePath);  // only for what is reported
 
   std::wstringstream summary;
   summary << L"Image " << BaseNameFromPath(modulePath) << L" loaded into "

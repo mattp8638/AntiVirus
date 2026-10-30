@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "AgentConfig.h"
@@ -239,6 +240,7 @@ class AgentService {
   bool lastControlPlaneSyncFailed_{false};
   bool lastHardeningCheckFailed_{false};
   bool lastTelemetryFlushFailed_{false};
+  std::unordered_map<std::wstring, ULONGLONG> recentAmsiScans_{};  // clean AMSI scans sent in the last hour
   HANDLE stopEvent_{nullptr};
   HANDLE pamRequestEvent_{nullptr};
   // Set by the realtime channel when the cloud queues a command.

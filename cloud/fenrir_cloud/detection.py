@@ -162,7 +162,7 @@ class IngestResult:
 
 
 # High-volume activity. Detections, scan results, protection actions, identity and agent state are never capped.
-ROUTINE_CATEGORIES = frozenset({"process", "image_load", "network", "dns", "file", "registry"})
+ROUTINE_CATEGORIES = frozenset({"process", "image_load", "network", "dns", "file", "registry", "script"})
 
 
 class _RoutineBudget:

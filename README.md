@@ -178,15 +178,40 @@ dc() {
 dc config --quiet
 dc up -d --build
 dc ps
-dc logs --tail=100 cloud caddy
+dc logs --tail=100 cloud worker caddy
 curl --fail http://127.0.0.1:8080/health
 curl --fail https://rmm.example.com/health
 curl --fail https://rmm.example.com/ready
+curl --fail https://rmm.example.com/health/background   # 200 about a minute after the worker starts
 ```
 
 The first build compiles the console and agent installers and can take time. Sign in using the configured admin email/password. Open Devices, Monitoring and a customer report, and review **Settings → Platform** readiness findings. A build exit code or `200 /health` alone does not verify an entire workflow.
 
 Production checks reject unsafe secrets and SQLite. `/ready` also checks the migration ledger and mapped device columns; container health and server updates use it. Bootstrap credentials create the first administrator; editing the bootstrap password later does not reset an existing account.
+
+### Background worker and telemetry volume
+
+The `cloud` container serves the console and the agents (`FENRIR_ROLE=web`). The `worker` container runs everything
+scheduled: RMM schedules and automations, webhooks and the event outbox, the PSA mailbox, Microsoft 365, accounting and
+GRC syncs, and retention (`FENRIR_ROLE=worker`, `python -m fenrir_cloud.worker`). A slow provider sync never delays a
+console page or an agent check-in, and a crash in one never takes the other down. Commands the worker queues still
+reach agents within a couple of seconds: the API wakes connected agents that have new work. To run everything in one
+container instead, set `FENRIR_ROLE: all` on `cloud` and remove the `worker` service.
+
+Point your uptime monitor at `/health/background` as well as `/ready`. It returns 503, naming the problem, when the
+scheduler or the hourly maintenance has stopped completing, a job has been running for over 30 minutes, or the event
+outbox is falling behind. **Settings → Platform** shows the same, with each job's last run and error.
+
+Telemetry settings (in `deploy/.env`, passed through the Compose file's shared environment):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `FENRIR_TELEMETRY_RETENTION_DAYS` | 90 | Every event is deleted after this. |
+| `FENRIR_ROUTINE_RETENTION_DAYS` | 30 | Routine activity (process, image-load, network, DNS, file, registry and script-scan events at "info") is deleted sooner, unless a detection rule matched it. |
+| `FENRIR_ROUTINE_EVENTS_PER_DEVICE_MINUTE` | 600 | Past this, a device's routine events are still checked against every detection rule but stored only if one matches. 0 turns the cap off. |
+
+`GET /api/console/platform/telemetry-volume` lists the devices and event types sending most, if the database grows
+faster than expected.
 
 ## Local evaluation without a signing certificate
 
@@ -313,7 +338,7 @@ If installed, pause the timer with `sudo systemctl stop fenrir-auto-update.timer
 
 Restore onto a **separate installation first**:
 
-1. Clone the recorded commit; restore configuration/keys with their permissions. Define `dc` for that checkout and build its image. Keep production DNS/agents directed at the live service during rehearsal. Before starting cloud, add a restore-only Compose override setting `FENRIR_SCHEDULER`, `FENRIR_FEED_SYNC` and `FENRIR_VULN_INTEL` to `"false"`, and `FENRIR_SMTP_HOST`/`FENRIR_IMAP_HOST` to `""`; include it as the final `-f` file in `dc`. Keep the restored host isolated from managed endpoints/provider credentials until checks are complete.
+1. Clone the recorded commit; restore configuration/keys with their permissions. Define `dc` for that checkout and build its image. Keep production DNS/agents directed at the live service during rehearsal. Before starting cloud, add a restore-only Compose override setting `FENRIR_SCHEDULER`, `FENRIR_FEED_SYNC` and `FENRIR_VULN_INTEL` to `"false"`, and `FENRIR_SMTP_HOST`/`FENRIR_IMAP_HOST` to `""`; include it as the final `-f` file in `dc`. Never start the `worker` service during a rehearsal: it runs schedules, emails and agent commands. Keep the restored host isolated from managed endpoints/provider credentials until checks are complete.
 2. Start only the database with `dc up -d db`; wait for `dc exec -T db pg_isready -U fenrir -d fenrir` to succeed.
 3. On this restore target only:
 
@@ -321,7 +346,7 @@ Restore onto a **separate installation first**:
    dc exec -T db pg_restore -U fenrir -d fenrir --clean --if-exists --no-owner --no-privileges < /path/to/database.dump
    dc run --rm --no-deps -T --user 0 --entrypoint tar cloud -xzf - -C /data . < /path/to/artifacts.tgz
    dc run --rm --no-deps -T --user 0 --entrypoint tar caddy -xzf - -C /data . < /path/to/caddy-data.tgz
-   dc up -d
+   dc up -d db cloud caddy   # not the worker: see step 1
    ```
 
 4. Verify health, sign-in, customer data, artifacts and a controlled vault reveal, then a test agent/provider workflow before switching traffic. Rehearse without running duplicate scheduled jobs, emails or commands against production endpoints.
@@ -335,13 +360,15 @@ Run from `~/AntiVirus` with the deployment's original Compose files and `.env`. 
 ```bash
 git rev-parse --short HEAD
 dc ps
-dc logs --since=15m --tail=200 cloud db caddy
+dc logs --since=15m --tail=200 cloud worker db caddy
 curl --fail http://127.0.0.1:8080/health
+curl http://127.0.0.1:8080/health/background
 ```
 
 | Symptom | Check / solution |
 |---|---|
 | `fatal: not a git repository` | Run `cd ~/AntiVirus`, then `git status` before fetching. |
+| `/health/background` returns 503 | Its `problems` list says what stopped. Check `dc ps worker` and `dc logs --tail=200 worker`; `dc restart worker` is safe at any time. A job named under `stuck` is still running after 30 minutes: its log lines say which provider it is waiting on. |
 | `sudo: a password is required` | Use an interactive SSH terminal and an authorised sudo account. Enter its password at the prompt; have the server administrator correct missing access. |
 | 500 on Devices, RMM, patching, dashboard or reports after upgrading | Read the cloud traceback. A missing `devices.agent_build` is repaired by migration 29. Rebuild/restart the updated cloud image; refreshing a browser cannot repair a database. See below. |
 | Blank screen / React #31 | Older UI rendered an object as text. Deploy the console/profile fixes and Ctrl+F5. A visible API error still needs its backend cause fixed. |
@@ -436,6 +463,22 @@ make -C agent/linux test
 ```
 
 The page tests start an isolated Python API; `FENRIR_UI_PYTHON` can select its interpreter. Legacy mode repairs the missing-column schema before sweeping routes/tabs/details. Fixture provider/desktop transports do not establish live Microsoft changes, malware efficacy or SAS delivery. CI also runs PostgreSQL tests. **Never use production for `FENRIR_TEST_DATABASE_URL`: tests create/drop data.**
+
+### Load test
+
+Before trusting a server with your estate, see what it carries on your hardware. On a **lab** server (it creates a
+customer and the simulated devices):
+
+```bash
+python3 scripts/loadtest/fenrir_load.py --server https://lab-fenrir.example.com --email admin@example.com \
+  --password "$LAB_PASSWORD" --devices 500 --minutes 10 --events-per-minute 60 --out load-500
+```
+
+Each simulated agent enrols and then behaves like a real one: commands every 15 seconds, a telemetry batch every 30
+seconds, a heartbeat every minute and a policy check-in every five. The report gives latency percentiles and errors for
+each call, events per second, whether every event was stored, and whether background work kept up. Increase
+`--devices` until something gives; the first thing that does is your capacity limit. CI runs 300 agents for three
+minutes against PostgreSQL with the separate worker on every Phase 2 run.
 
 ## Public release and contribution
 

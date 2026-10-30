@@ -878,7 +878,9 @@ bool RuleApplies(const Rule& rule, const FileData& file) {
     return true;
   }
   if (rule.scope == L"text") {
-    return true;
+    // Script, note and document content. Compiled programs carry such strings for their own reasons (security
+    // products hold ransom-note text to detect it) and have the "pe" and "ascii" scopes.
+    return !file.pe;
   }
   if (rule.scope == L"ascii") {
     return true;

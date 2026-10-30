@@ -85,7 +85,7 @@ class Settings:
     enable_legacy: bool = field(default_factory=lambda: _bool("FENRIR_ENABLE_LEGACY", False))
     telemetry_retention_days: int = field(default_factory=lambda: int(os.getenv("FENRIR_TELEMETRY_RETENTION_DAYS", "90")))
     max_telemetry_batch: int = field(default_factory=lambda: int(os.getenv("FENRIR_MAX_TELEMETRY_BATCH", "2000")))
-    # Routine activity (process, image-load, network, DNS, file, registry events at "info") is kept for less time
+    # Routine activity (process, image-load, network, DNS, file, registry, script-scan events at "info") is kept for less time
     # than detections, scan results and agent state, and each device may store only so much of it per minute: past
     # the cap, routine events are still checked against every detection rule but stored only if one matches.
     routine_retention_days: int = field(default_factory=lambda: int(os.getenv("FENRIR_ROUTINE_RETENTION_DAYS", "30")))

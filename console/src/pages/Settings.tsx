@@ -470,10 +470,27 @@ function PlatformTab() {
   const { can } = useApp();
   const { data, error, reload } = useData<any>("platform/status");
   const { data: dead, reload: reloadDead } = useListData<any>("platform/events", { status: "dead" });
+  const { data: volume } = useData<any>("platform/telemetry-volume", { minutes: 60 });
   const { run } = useAction();
+  const background = data?.background;
+  const passAgo = (name: string) => {
+    const seconds = background?.checks?.[name]?.lastPassSecondsAgo;
+    return seconds == null ? "never" : seconds < 120 ? `${seconds} s ago` : `${Math.round(seconds / 60)} min ago`;
+  };
   return (
     <>
       {can("platform") && <ReadinessCard />}
+      {background && <div className="card" style={{ marginBottom: 14 }}>
+        <div className="row" style={{ justifyContent: "space-between" }}>
+          <h3 style={{ margin: 0 }}>Background work</h3>
+          <Pill value={background.ok ? "running" : "needs attention"} tone={background.ok ? "good" : "bad"} />
+        </div>
+        <p className="small">Scheduler pass {passAgo("scheduler.pass")} · hourly maintenance {passAgo("maintenance.pass")} · runs in {background.role === "web" ? "the worker container" : "this server process"}</p>
+        {(background.problems ?? []).map((problem: string) => <p key={problem} className="small"><Pill value="problem" tone="bad" /> {problem}</p>)}
+        {(background.checks?.jobs?.failingRepeatedly ?? []).length > 0 &&
+          <p className="small muted">Failing repeatedly: {background.checks.jobs.failingRepeatedly.join(", ")}. See the error column below.</p>}
+        <p className="small muted">Uptime monitors can watch <span className="mono">/health/background</span>: it returns 503 with the same problems.</p>
+      </div>}
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
         <div className="card"><div className="label muted small">Vault encryption</div>
           <p><b>{displayValue(data?.vault.algorithm ?? "…")}</b></p>
@@ -484,6 +501,11 @@ function PlatformTab() {
           <p>{displayValue(data?.events.pending ?? 0)} waiting · {displayValue(data?.events.done ?? 0)} done · <b>{displayValue(data?.events.dead ?? 0)} failed</b></p></div>
         <div className="card"><div className="label muted small">Event handlers</div>
           <p className="small">{Object.entries(data?.handlers ?? {}).map(([k, v]: any) => `${k} (${v.length})`).join(", ") || "none"}</p></div>
+        {volume && <div className="card"><div className="label muted small">Telemetry, last hour</div>
+          <p><b>{displayValue(volume.perMinute)}</b> events a minute · about {displayValue(volume.perDayProjected?.toLocaleString())} a day</p>
+          <p className="small muted">Most: {(volume.byType ?? []).slice(0, 3).map((t: any) => `${t.eventType} (${t.events})`).join(", ") || "none"}
+            {(volume.byDevice ?? [])[0] ? ` · noisiest device ${volume.byDevice[0].hostname || volume.byDevice[0].deviceId} (${volume.byDevice[0].perMinute}/min)` : ""}
+            {volume.notStored ? ` · ${volume.notStored} routine events over the cap checked but not stored` : ""}</p></div>}
       </div>
       {error && <p className="muted">{error}</p>}
       {can("platform") && <div className="card" style={{ marginTop: 14 }}>
@@ -491,7 +513,8 @@ function PlatformTab() {
         <p className="small muted">Scheduled work the server runs by itself. Each job runs on its own, so one failing job does not stop the others.</p>
         <Table rows={(data?.jobs ?? []).map((j: any) => ({ ...j, id: j.name }))} empty="No job has run yet. Jobs start about 30 seconds after the server starts."
                columns={[{ key: "name", label: "Job", render: (j) => <span className="mono small">{j.name}</span> },
-                         { key: "ok", label: "Last run", render: (j) => <Pill value={j.ok ? "ok" : j.failures > 1 ? `failed ${j.failures}× in a row` : "failed"} tone={j.ok ? "good" : "bad"} /> },
+                         { key: "ok", label: "Last run", render: (j) => j.runningSince ? <Pill value={`running since ${ago(j.runningSince)}`} tone="warn" />
+                           : <Pill value={j.ok ? "ok" : j.failures > 1 ? `failed ${j.failures}× in a row` : "failed"} tone={j.ok ? "good" : "bad"} /> },
                          { key: "lastRunAt", label: "When", render: (j) => j.lastRunAt ? ago(j.lastRunAt) : "" },
                          { key: "lastOkAt", label: "Last success", render: (j) => j.lastOkAt ? ago(j.lastOkAt) : "never" },
                          { key: "durationMs", label: "Took", className: "right", render: (j) => `${(j.durationMs / 1000).toFixed(1)} s` },

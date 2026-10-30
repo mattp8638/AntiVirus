@@ -106,6 +106,7 @@ def _run_job(db, name: str, job) -> bool:
 
     started = time.monotonic()
     error = ""
+    _mark_running(db, name)
     try:
         job(db)
         db.commit()
@@ -116,7 +117,7 @@ def _run_job(db, name: str, job) -> bool:
     try:
         now = utcnow()
         row = db.get(BackgroundJob, name) or BackgroundJob(name=name, failures=0)
-        row.last_run_at, row.ok, row.error = now, not error, error
+        row.last_run_at, row.ok, row.error, row.running_since = now, not error, error, None
         row.duration_ms = int((time.monotonic() - started) * 1000)
         row.failures = (row.failures or 0) + 1 if error else 0
         if not error:
@@ -129,12 +130,76 @@ def _run_job(db, name: str, job) -> bool:
     return not error
 
 
-def _purge_telemetry(db, settings: Settings) -> None:
-    cutoff = utcnow() - timedelta(days=settings.telemetry_retention_days)
-    db.execute(delete(Event).where(Event.occurred_at < cutoff))
-    db.execute(delete(RuleMatch).where(RuleMatch.at < cutoff))
-    db.execute(delete(DnsQueryLog).where(DnsQueryLog.at < cutoff))
+def _mark_running(db, name: str) -> None:
+    """Record that a job has started, so one that never finishes shows up as stuck rather than as nothing."""
+    from .models import BackgroundJob
+
+    try:
+        row = db.get(BackgroundJob, name) or BackgroundJob(name=name, failures=0)
+        row.running_since = utcnow()
+        db.merge(row)
+        db.commit()
+    except Exception as exc:  # noqa: BLE001 - never stop the job over its bookkeeping
+        db.rollback()
+        log.warning("could not mark background job %s as running: %s", name, exc)
+
+
+def _heartbeat(name: str, started: float) -> None:
+    """A completed scheduler or maintenance pass: what /health/background checks for freshness."""
+    from .models import BackgroundJob
+
+    with database.session_factory()() as db:
+        try:
+            now = utcnow()
+            row = db.get(BackgroundJob, name) or BackgroundJob(name=name, failures=0)
+            row.last_run_at = row.last_ok_at = now
+            row.ok, row.error, row.failures, row.running_since = True, "", 0, None
+            row.duration_ms = int((time.monotonic() - started) * 1000)
+            db.merge(row)
+            db.commit()
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            log.warning("could not record %s: %s", name, exc)
+
+
+PURGE_CHUNK = 5000
+
+
+def _delete_in_chunks(db, model, *conditions) -> int:
+    """Delete in short transactions, so an hourly purge of millions of rows never holds one long lock."""
+    removed = 0
+    while True:
+        ids = db.execute(select(model.id).where(*conditions).limit(PURGE_CHUNK)).scalars().all()
+        if not ids:
+            return removed
+        db.execute(delete(model).where(model.id.in_(ids)))
+        db.commit()
+        removed += len(ids)
+        if len(ids) < PURGE_CHUNK:
+            return removed
+
+
+def _purge_telemetry(db, settings: Settings) -> dict:
+    """Everything past FENRIR_TELEMETRY_RETENTION_DAYS; routine activity past FENRIR_ROUTINE_RETENTION_DAYS, unless a
+    detection rule matched it (it is an alert's evidence then)."""
+    from sqlalchemy import exists
+
+    from .detection import ROUTINE_CATEGORIES
+
+    now = utcnow()
+    cutoff = now - timedelta(days=settings.telemetry_retention_days)
+    removed = {"events": _delete_in_chunks(db, Event, Event.occurred_at < cutoff)}
+    routine_cutoff = now - timedelta(days=min(settings.routine_retention_days, settings.telemetry_retention_days))
+    if routine_cutoff > cutoff:
+        removed["routine"] = _delete_in_chunks(
+            db, Event, Event.occurred_at < routine_cutoff, Event.category.in_(ROUTINE_CATEGORIES), Event.severity == "info",
+            ~exists().where(RuleMatch.event_pk == Event.id))
+    removed["ruleMatches"] = _delete_in_chunks(db, RuleMatch, RuleMatch.at < cutoff)
+    removed["dnsQueries"] = _delete_in_chunks(db, DnsQueryLog, DnsQueryLog.at < cutoff)
     db.execute(delete(RateLimitBucket).where(RateLimitBucket.expires_at < utcnow()))
+    if any(removed.values()):
+        log.info("telemetry retention removed %s", removed)
+    return removed
 
 
 def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
@@ -165,6 +230,7 @@ def _maintenance_loop(settings: Settings, stop: threading.Event) -> None:
             with _scheduler_lease(MAINTENANCE_LOCK) as acquired:
                 if not acquired:
                     continue  # another worker is running them
+                started = time.monotonic()
                 db = database.session_factory()()
                 try:
                     for name, job in _maintenance_jobs(settings):
@@ -173,6 +239,7 @@ def _maintenance_loop(settings: Settings, stop: threading.Event) -> None:
                         _run_job(db, name, job)
                 finally:
                     db.close()
+                _heartbeat("maintenance.pass", started)
         except Exception as exc:  # noqa: BLE001 - keep the loop alive
             log.warning("maintenance lease could not be acquired/released: %s", exc)
 
@@ -240,6 +307,7 @@ def _scheduler_loop(stop: threading.Event, interval: float = 30.0) -> None:
                 if not acquired:
                     continue
                 passes += 1
+                started = time.monotonic()
                 db = database.session_factory()()
                 try:
                     for name, every, job in _scheduled_jobs():
@@ -247,8 +315,58 @@ def _scheduler_loop(stop: threading.Event, interval: float = 30.0) -> None:
                             _run_job(db, name, job)
                 finally:
                     db.close()
+                _heartbeat("scheduler.pass", started)
         except Exception as exc:  # noqa: BLE001 - keep the loop alive
             log.warning("scheduler lease could not be acquired/released: %s", exc)
+
+
+def start_background(settings: Settings, stop: threading.Event) -> list[threading.Thread]:
+    """Starts the background loops: hourly maintenance, the 30-second scheduler and vulnerability intel. The web
+    process runs them itself (FENRIR_ROLE=all) or leaves them to ``python -m fenrir_cloud.worker`` (web/worker)."""
+    threads = [threading.Thread(target=_maintenance_loop, args=(settings, stop), daemon=True, name="maintenance")]
+    if settings.scheduler_enabled:
+        threads.append(threading.Thread(target=_scheduler_loop, args=(stop,), daemon=True, name="scheduler"))
+    if settings.scheduler_enabled and settings.vuln_intel_enabled:
+        from . import cveintel
+
+        threads.append(threading.Thread(target=cveintel.loop, args=(stop,), daemon=True, name="vuln-intel"))
+    for thread in threads:
+        thread.start()
+    return threads
+
+
+def _wake_relay_loop(stop: threading.Event, interval: float = 2.0) -> None:
+    """In a split deployment the worker queues commands (schedules, automations, remediation, playbooks) but agents
+    keep their live connections to this process, so a commit in the worker cannot wake them. Every couple of
+    seconds, wake connected agents that have a pending command not yet woken for."""
+    woken: dict[str, float] = {}
+    while not stop.wait(interval):
+        try:
+            _wake_pending(woken)
+        except Exception as exc:  # noqa: BLE001 - try again next round
+            log.warning("wake relay could not read pending commands: %s", exc)
+
+
+def _wake_pending(woken: dict[str, float]) -> set[str]:
+    """One relay round. ``woken`` maps command ids already woken for to when; returns the devices woken now."""
+    from .models import Command
+    from .remote import hub
+
+    connected = list(hub.devices)
+    if not connected:
+        return set()
+    with database.session_factory()() as db:
+        rows = [row for start in range(0, len(connected), 500) for row in db.execute(
+            select(Command.id, Command.device_id).where(Command.status == "pending",
+                                                        Command.device_id.in_(connected[start:start + 500]))).all()]
+    now = time.monotonic()
+    due = {device_id for command_id, device_id in rows if command_id not in woken}
+    woken.update({command_id: woken.get(command_id, now) for command_id, _ in rows})
+    for command_id in [c for c, at in woken.items() if now - at > 600]:
+        del woken[command_id]
+    if due:
+        hub.wake(due)
+    return due
 
 
 LINUX_INSTALLER = r"""#!/bin/sh
@@ -301,6 +419,8 @@ def _existing_users() -> int:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
+    if settings.role not in ("all", "web", "worker"):
+        raise RuntimeError(f"FENRIR_ROLE must be all, web or worker, not {settings.role!r}")
     set_settings(settings)
     database.init_engine(settings.database_url)
     from . import production
@@ -315,14 +435,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         bootstrap(settings)
-        worker = threading.Thread(target=_maintenance_loop, args=(settings, stop), daemon=True)
-        worker.start()
-        if settings.scheduler_enabled:
-            threading.Thread(target=_scheduler_loop, args=(stop,), daemon=True).start()
-        if settings.scheduler_enabled and settings.vuln_intel_enabled:
-            from . import cveintel
-
-            threading.Thread(target=cveintel.loop, args=(stop,), daemon=True, name="vuln-intel").start()
+        if settings.role == "web":
+            # The worker queues commands; this process holds the agents' live connections, so it wakes them.
+            threading.Thread(target=_wake_relay_loop, args=(stop,), daemon=True, name="wake-relay").start()
+        else:
+            start_background(settings, stop)
         yield
         stop.set()
 
@@ -385,6 +502,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/health", tags=["System"])
     def health():
         return {"status": "ok", "version": __version__, "policySettings": len(policy_schema.FIELDS)}
+
+    @app.get("/health/background", tags=["System"])
+    def background_health():
+        """For uptime monitors: the scheduler and hourly maintenance are completing, no job is hung and the event
+        outbox is keeping up. 503 names what is wrong. Job names and counts only, no errors or customer data."""
+        from .health import background_health as report
+
+        try:
+            with database.session_factory()() as db:
+                result = report(db, settings)
+        except Exception:  # noqa: BLE001
+            return JSONResponse({"ok": False, "problems": ["database unavailable"]}, status_code=503)
+        return result if result["ok"] else JSONResponse(result, status_code=503)
 
     @app.get("/ready", tags=["System"])
     def ready():

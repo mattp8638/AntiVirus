@@ -241,13 +241,15 @@ jobs:
           COMPOSE_BAKE: "false"
         run: |
           set -euo pipefail
-          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.lab.yml --env-file deploy/.env up -d --build --wait --wait-timeout 180
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.lab.yml --env-file deploy/.env up -d --build --wait --wait-timeout 300
       - name: Real HTTP and Python module smoke
         shell: bash
         run: |
           set -euo pipefail
           curl --fail --silent --show-error --retry 8 --retry-delay 3 --retry-connrefused http://127.0.0.1:8080/health
           curl --fail --silent --show-error http://127.0.0.1:8080/ready
+          # The API runs as FENRIR_ROLE=web; the worker container's scheduler and maintenance passes make this 200.
+          curl --fail --silent --show-error --retry 20 --retry-delay 6 --retry-all-errors http://127.0.0.1:8080/health/background
           curl --fail --silent --show-error http://127.0.0.1:8080/ -o /tmp/fenrir-ui.html
           grep -Eiq '<title>|id="root"' /tmp/fenrir-ui.html
           docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.lab.yml --env-file deploy/.env exec -T cloud python -c 'import ast,pathlib; files=list(pathlib.Path("/app/cloud/fenrir_cloud").rglob("*.py")); [ast.parse(p.read_text(),filename=str(p)) for p in files]; print("PASS:",len(files),"Python modules parsed without writing to read-only runtime")'
@@ -300,6 +302,16 @@ jobs:
           source deploy/.env
           set +a
           python3 scripts/phase2_cloud_smoke.py
+      - name: Load test, 300 simulated agents on PostgreSQL with the separate worker (CORE-13)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -a
+          source deploy/.env
+          set +a
+          python3 scripts/loadtest/fenrir_load.py --server http://127.0.0.1:8080 --email admin@fenrir.local \
+            --password "$FENRIR_ADMIN_PASSWORD" --devices 300 --minutes 3 --events-per-minute 60 --out /tmp/load-300
+          cat /tmp/load-300/report.md >> "$GITHUB_STEP_SUMMARY"
       - name: Platform backup and full restore drill (AT-24)
         shell: bash
         run: |
