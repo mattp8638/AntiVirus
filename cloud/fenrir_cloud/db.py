@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 45
+LATEST_MIGRATION = 46
 
 def init_engine(url: str) -> Engine:
     global _engine, _session_factory
@@ -375,6 +375,13 @@ def migrate(bind: Engine) -> list[int]:
                     conn.execute(text("ALTER TABLE accounting_connections ALTER COLUMN status TYPE VARCHAR(40)"))
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (45)"))
                 applied.append(45)
+            if 46 not in versions:
+                ensure_columns(Base, conn)  # background_jobs.running_since
+                # Retention purges select events by age alone and keep events a detection rule matched.
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_events_time ON events (occurred_at)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_rule_matches_event ON rule_matches (event_pk)"))
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (46)"))
+                applied.append(46)
             conn.commit()
         except Exception:
             conn.rollback()

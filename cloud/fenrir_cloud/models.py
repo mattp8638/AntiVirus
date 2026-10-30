@@ -360,6 +360,7 @@ class Event(Base):
     __table_args__ = (
         Index("ix_events_tenant_time", "tenant_id", "occurred_at"),
         Index("ix_events_device_time", "device_id", "occurred_at"),
+        Index("ix_events_time", "occurred_at"),  # retention purges select by age alone
         UniqueConstraint("device_id", "event_id", name="uq_events_device_event"),
     )
 
@@ -393,7 +394,8 @@ class RuleMatch(Base):
     event_pk: Mapped[int | None] = mapped_column(Integer, nullable=True)
     at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
-    __table_args__ = (Index("ix_rule_matches_lookup", "rule_id", "tenant_id", "group_key", "at"),)
+    __table_args__ = (Index("ix_rule_matches_lookup", "rule_id", "tenant_id", "group_key", "at"),
+                      Index("ix_rule_matches_event", "event_pk"))
 
 
 class Alert(Base):
@@ -1464,6 +1466,7 @@ class BackgroundJob(Base):
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
     failures: Mapped[int] = mapped_column(Integer, default=0)  # in a row
     error: Mapped[str] = mapped_column(Text, default="")
+    running_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # set while it runs: shows a hung job
 
 
 class RateLimitBucket(Base):

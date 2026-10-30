@@ -242,12 +242,15 @@ def platform_status(principal: Principal = Depends(current_principal), db: Sessi
         from ..models import BackgroundJob
 
         jobs = [{"name": j.name, "ok": j.ok, "failures": j.failures, "error": j.error, "durationMs": j.duration_ms,
+                 "runningSince": j.running_since.isoformat() + "Z" if j.running_since else None,
                  "lastRunAt": j.last_run_at.isoformat() + "Z" if j.last_run_at else None,
                  "lastOkAt": j.last_ok_at.isoformat() + "Z" if j.last_ok_at else None}
                 for j in db.execute(select(BackgroundJob).order_by(BackgroundJob.name)).scalars()]
+    from ..health import background_health
+
     return {"vault": crypto.key_status(), "events": {"pending": counts.get("pending", 0), "done": counts.get("done", 0),
                                                      "dead": counts.get("dead", 0)},
-            "handlers": events.registered(), "jobs": jobs}
+            "handlers": events.registered(), "jobs": jobs, "background": background_health(db, get_settings())}
 
 
 @router.get("/platform/telemetry-volume")

@@ -43,8 +43,8 @@ if [ $yes -eq 0 ]; then
   [ "$answer" = RESTORE ] || { echo "Cancelled"; exit 1; }
 fi
 
-echo "Stopping the API..."
-compose stop cloud
+echo "Stopping the API and the background worker..."
+compose stop worker cloud
 echo "Restoring PostgreSQL..."
 compose exec -T db psql -U fenrir -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS fenrir WITH (FORCE)" -c "CREATE DATABASE fenrir OWNER fenrir"
 compose exec -T db pg_restore -U fenrir -d fenrir --no-owner --exit-on-error < "$dir/db.dump"
@@ -57,6 +57,7 @@ for i in $(seq 1 60); do
   if compose exec -T cloud python -c 'import urllib.request,sys; sys.exit(0 if urllib.request.urlopen("http://127.0.0.1:8080/ready", timeout=3).status == 200 else 1)' 2>/dev/null; then break; fi
   sleep 3
 done
+compose start worker  # only once the restored database and artifacts are in place
 echo "Verifying the restored platform..."
 compose exec -T cloud python - <<'PY'
 import sys

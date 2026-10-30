@@ -33,7 +33,9 @@ compose() { docker compose "${compose_args[@]}" --env-file "$ENV_FILE" "$@"; }
 healthy() {
   for _ in $(seq 60); do
     if compose exec -T cloud python -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8080/ready", timeout=5)' >/dev/null 2>&1; then
-      return 0
+      # A deployment with a background worker is healthy only once the worker is completing its passes too.
+      if ! compose config --services 2>/dev/null | grep -qx worker; then return 0; fi
+      if compose exec -T worker python -m fenrir_cloud.worker --check >/dev/null 2>&1; then return 0; fi
     fi
     sleep 5
   done

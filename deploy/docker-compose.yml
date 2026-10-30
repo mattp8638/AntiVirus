@@ -1,6 +1,37 @@
 # Fenrir Platform: single-node deployment.
 #   cp deploy/.env.example deploy/.env   # then edit secrets
 #   docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d --build
+x-fenrir-environment: &fenrir-environment
+  # production refuses to start on unsafe settings (placeholder secrets, SQLite); see cloud/fenrir_cloud/production.py.
+  FENRIR_ENV: ${FENRIR_ENV:-production}
+  FENRIR_DATABASE_URL: postgresql+psycopg://fenrir:${POSTGRES_PASSWORD}@db:5432/fenrir
+  FENRIR_SECRET_KEY: ${FENRIR_SECRET_KEY:?set FENRIR_SECRET_KEY}
+  FENRIR_PUBLIC_URL: ${FENRIR_PUBLIC_URL:?set FENRIR_PUBLIC_URL}
+  FENRIR_ADMIN_EMAIL: ${FENRIR_ADMIN_EMAIL:-admin@fenrir.local}
+  FENRIR_ADMIN_PASSWORD: ${FENRIR_ADMIN_PASSWORD:?set FENRIR_ADMIN_PASSWORD}
+  FENRIR_OPEN_ENROLLMENT: ${FENRIR_OPEN_ENROLLMENT:-true}
+  FENRIR_FEED_URL: ${FENRIR_FEED_URL:-https://api.fenrir-security.co.uk}
+  FENRIR_FEED_TOKEN: ${FENRIR_FEED_TOKEN:-}
+  FENRIR_VAULT_KEY: ${FENRIR_VAULT_KEY:?set a persistent base64 32-byte FENRIR_VAULT_KEY}
+  FENRIR_VAULT_REQUIRE_EXPLICIT_KEY: "true"
+  FENRIR_VAULT_ALLOW_DERIVED_LEGACY: ${FENRIR_VAULT_ALLOW_DERIVED_LEGACY:-true}
+  FENRIR_VAULT_OLD_KEYS: ${FENRIR_VAULT_OLD_KEYS:-}
+  FENRIR_FEED_SYNC: ${FENRIR_FEED_SYNC:-true}
+  FENRIR_CORS_ORIGINS: ${FENRIR_PUBLIC_URL}
+  FENRIR_SMTP_HOST: ${FENRIR_SMTP_HOST:-}
+  FENRIR_SMTP_PORT: ${FENRIR_SMTP_PORT:-587}
+  FENRIR_SMTP_USER: ${FENRIR_SMTP_USER:-}
+  FENRIR_SMTP_PASSWORD: ${FENRIR_SMTP_PASSWORD:-}
+  FENRIR_SMTP_FROM: ${FENRIR_SMTP_FROM:-support@fenrir.local}
+  FENRIR_IMAP_HOST: ${FENRIR_IMAP_HOST:-}
+  FENRIR_IMAP_USER: ${FENRIR_IMAP_USER:-}
+  FENRIR_IMAP_PASSWORD: ${FENRIR_IMAP_PASSWORD:-}
+  FENRIR_IMAP_FOLDER: ${FENRIR_IMAP_FOLDER:-INBOX}
+  FENRIR_ARTIFACT_DIR: /data/artifacts
+  FENRIR_TELEMETRY_RETENTION_DAYS: ${FENRIR_TELEMETRY_RETENTION_DAYS:-90}
+  FENRIR_ROUTINE_RETENTION_DAYS: ${FENRIR_ROUTINE_RETENTION_DAYS:-30}
+  FENRIR_ROUTINE_EVENTS_PER_DEVICE_MINUTE: ${FENRIR_ROUTINE_EVENTS_PER_DEVICE_MINUTE:-600}
+
 services:
   db:
     image: postgres:16.4-alpine
@@ -28,38 +59,37 @@ services:
         FENRIR_BUILD_PROFILE: ${FENRIR_BUILD_PROFILE:-production}
         FENRIR_RELEASE_PUBLIC_KEYS: ${FENRIR_RELEASE_PUBLIC_KEYS:-}
         FENRIR_RELEASE_SEQ: ${FENRIR_RELEASE_SEQ:-}
+    image: ${FENRIR_IMAGE:-fenrir-cloud:local}
     restart: unless-stopped
     depends_on: { db: { condition: service_healthy } }
     environment:
-      # production refuses to start on unsafe settings (placeholder secrets, SQLite); see cloud/fenrir_cloud/production.py.
-      FENRIR_ENV: ${FENRIR_ENV:-production}
-      FENRIR_DATABASE_URL: postgresql+psycopg://fenrir:${POSTGRES_PASSWORD}@db:5432/fenrir
-      FENRIR_SECRET_KEY: ${FENRIR_SECRET_KEY:?set FENRIR_SECRET_KEY}
-      FENRIR_PUBLIC_URL: ${FENRIR_PUBLIC_URL:?set FENRIR_PUBLIC_URL}
-      FENRIR_ADMIN_EMAIL: ${FENRIR_ADMIN_EMAIL:-admin@fenrir.local}
-      FENRIR_ADMIN_PASSWORD: ${FENRIR_ADMIN_PASSWORD:?set FENRIR_ADMIN_PASSWORD}
-      FENRIR_OPEN_ENROLLMENT: ${FENRIR_OPEN_ENROLLMENT:-true}
-      FENRIR_FEED_URL: ${FENRIR_FEED_URL:-https://api.fenrir-security.co.uk}
-      FENRIR_FEED_TOKEN: ${FENRIR_FEED_TOKEN:-}
-      FENRIR_VAULT_KEY: ${FENRIR_VAULT_KEY:?set a persistent base64 32-byte FENRIR_VAULT_KEY}
-      FENRIR_VAULT_REQUIRE_EXPLICIT_KEY: "true"
-      FENRIR_VAULT_ALLOW_DERIVED_LEGACY: ${FENRIR_VAULT_ALLOW_DERIVED_LEGACY:-true}
-      FENRIR_VAULT_OLD_KEYS: ${FENRIR_VAULT_OLD_KEYS:-}
-      FENRIR_FEED_SYNC: ${FENRIR_FEED_SYNC:-true}
-      FENRIR_CORS_ORIGINS: ${FENRIR_PUBLIC_URL}
-      FENRIR_SMTP_HOST: ${FENRIR_SMTP_HOST:-}
-      FENRIR_SMTP_PORT: ${FENRIR_SMTP_PORT:-587}
-      FENRIR_SMTP_USER: ${FENRIR_SMTP_USER:-}
-      FENRIR_SMTP_PASSWORD: ${FENRIR_SMTP_PASSWORD:-}
-      FENRIR_SMTP_FROM: ${FENRIR_SMTP_FROM:-support@fenrir.local}
-      FENRIR_IMAP_HOST: ${FENRIR_IMAP_HOST:-}
-      FENRIR_IMAP_USER: ${FENRIR_IMAP_USER:-}
-      FENRIR_IMAP_PASSWORD: ${FENRIR_IMAP_PASSWORD:-}
-      FENRIR_IMAP_FOLDER: ${FENRIR_IMAP_FOLDER:-INBOX}
-      FENRIR_ARTIFACT_DIR: /data/artifacts
+      <<: *fenrir-environment
+      # web: serve the console and the agents' API; the worker service below runs the background jobs.
+      # Set both to "all" and remove the worker to run everything in one container, as before.
+      FENRIR_ROLE: web
     # deploy/releases: agent release manifests signed off the server (docs/AUTO_UPDATE.md); read-only.
     volumes: [artifacts:/data, ./releases:/app/cloud/releases:ro]
     ports: ["8080:8080"]
+
+  worker:
+    # Background jobs: RMM schedules, automations, webhooks, the PSA mailbox, Microsoft 365 and accounting syncs,
+    # retention. Same image as the API, no HTTP. A slow provider never delays a console page or an agent check-in.
+    image: ${FENRIR_IMAGE:-fenrir-cloud:local}
+    pull_policy: never  # built by the cloud service above
+    command: ["python", "-m", "fenrir_cloud.worker"]
+    restart: unless-stopped
+    depends_on: { cloud: { condition: service_healthy } }  # the API creates and upgrades the database
+    environment:
+      <<: *fenrir-environment
+      FENRIR_ROLE: worker
+    volumes: [artifacts:/data, ./releases:/app/cloud/releases:ro]
+    healthcheck:
+      test: ["CMD", "python", "-m", "fenrir_cloud.worker", "--check"]
+      interval: 30s
+      timeout: 20s
+      start_period: 120s
+      retries: 3
+    stop_grace_period: 90s  # running jobs finish before it stops
 
 secrets:
   codesign_pfx:
