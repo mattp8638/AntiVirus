@@ -9,6 +9,7 @@ something the agent should have reported.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sqlite3
 import sys
@@ -61,7 +62,24 @@ def main() -> int:
             continue
         for row in rows or [("(none)",)]:
             print("   " + " | ".join("" if v is None else str(v) for v in row))
+    print("-- Why the latest files were flagged (rule codes from their evidence records)")
+    try:
+        rows = db.execute("SELECT s.subject_path, s.disposition, e.record_path FROM scan_history s"
+                          " JOIN evidence_index e ON e.record_id = s.evidence_record_id"
+                          " ORDER BY s.scan_id DESC LIMIT 8").fetchall()
+    except sqlite3.Error as exc:
+        rows = []
+        print(f"   (unreadable: {exc})")
+    for subject, disposition, record_path in rows:
+        print(f"   {subject} [{disposition}]: {', '.join(reason_codes(Path(record_path))) or '(no evidence file)'}")
     return 0
+
+
+def reason_codes(record: Path) -> list[str]:
+    try:
+        return [r.get("code", "") for r in json.loads(record.read_text(encoding="utf-8", errors="replace")).get("reasons", [])]
+    except (OSError, ValueError, AttributeError):
+        return []
 
 
 if __name__ == "__main__":
