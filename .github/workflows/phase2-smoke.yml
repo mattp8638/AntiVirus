@@ -302,6 +302,16 @@ jobs:
           source deploy/.env
           set +a
           python3 scripts/phase2_cloud_smoke.py
+      - name: Load test, 300 simulated agents on PostgreSQL with the separate worker (CORE-13)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -a
+          source deploy/.env
+          set +a
+          python3 scripts/loadtest/fenrir_load.py --server http://127.0.0.1:8080 --email admin@fenrir.local \
+            --password "$FENRIR_ADMIN_PASSWORD" --devices 300 --minutes 3 --events-per-minute 60 --out /tmp/load-300
+          cat /tmp/load-300/report.md >> "$GITHUB_STEP_SUMMARY"
       - name: Platform backup and full restore drill (AT-24)
         shell: bash
         run: |
