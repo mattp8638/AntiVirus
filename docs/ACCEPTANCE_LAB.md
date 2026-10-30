@@ -18,8 +18,8 @@ machine, and runs `scripts/acceptance/fenrir_acceptance.py` against it:
 
 | Runner | Agent | Checks |
 |---|---|---|
-| Ubuntu (GitHub-hosted VM) | Go agent built from `agent/linux`, running as root | check-in, policy, inventory, script output, EICAR detection and quarantine, isolation (dry run), update scan |
-| Windows Server (GitHub-hosted VM) | Service built with MSVC from `agent/windows`, installed with `fenrir-agent-service.exe --install` | check-in, policy, inventory, PowerShell script output, EICAR detection, temporary admin account created and then removed |
+| Ubuntu (GitHub-hosted VM) | Go agent built from `agent/linux`, running as root | check-in, policy, inventory, script output, EICAR detection and quarantine, isolation (dry run), update scan, no false positives |
+| Windows Server (GitHub-hosted VM) | Service built with MSVC from `agent/windows`, installed with `fenrir-agent-service.exe --install` | check-in, policy, inventory, PowerShell script output, EICAR detected and reported to the console, temporary admin account created and then removed, no false positives (including signed Microsoft programs) |
 
 The run summary shows the report table. The `acceptance-linux` and `acceptance-windows` artifacts hold
 `report.json` (with the evidence each check saw), the server log and, on Windows, the service diagnostics.
@@ -61,7 +61,13 @@ python3 scripts/acceptance/fenrir_acceptance.py --server https://your-fenrir --e
 - `--insecure` accepts a self-signed lab certificate.
 
 The harness exits non-zero if anything failed. `lab-…/report.md` is the table and `report.json` has the evidence.
-Keep the reports: they are your record of what was true for each version.
+Keep the reports: they are your record of what was true for each version. Run `false_positives` last: it fails if
+the agent quarantined or alerted on anything other than the harness's own test files since it was installed.
+
+When the console does not show something a Windows agent should have reported, run
+`python scripts\acceptance\agent_state.py` as an administrator on that machine. It prints what the agent itself
+recorded: recent scan verdicts and the rules behind them, quarantine records, the command journal and any telemetry
+still waiting to upload.
 
 **Then check by hand what the harness cannot see.** Tick these off on the Windows 11 VM:
 
