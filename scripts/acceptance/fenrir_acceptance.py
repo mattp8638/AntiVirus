@@ -283,8 +283,9 @@ echo "PATH=$path"
     try:
         found = wait_for(f"{name} to be quarantined or alerted", caught, ctx.args.timeout)
     except Check as exc:  # say what the device did report, so the cause is in the log
-        seen = [f"{e.get('eventType')}: {str(e.get('summary') or '')[:120]}"
-                for e in ctx.api.get("events", device_id=device["id"], hours=1, limit=15)]
+        events = (ctx.api.get("events", device_id=device["id"], hours=1, limit=200) or {}).get("events", [])
+        seen = [f"{e.get('eventType')}: {str(e.get('summary') or '')[:120]}" for e in events
+                if not str(e.get("eventType", "")).startswith(("process.", "network.", "dns."))][:12]
         raise Check(f"{exc}. Targeted scan result: {json.dumps(scan)[:300]}. Latest device events: {seen}") from None
     return f"detected via {found['via']} as {found.get('threat')}", {**found, "file": path, "scan": scan}
 
