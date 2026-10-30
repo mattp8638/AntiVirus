@@ -74,6 +74,8 @@ def sync(connection_id: str, principal: Principal = Depends(current_principal), 
         audit.record(db, principal.actor, "m365.sync_failed", row.id, row.tenant_id)
         db.commit()
         raise HTTPException(502, row.last_error)
+    defender = m365.ingest_defender_alerts(db, row, snapshot.pop("defenderAlerts", None))
+    snapshot["defenderAlerts"] = defender
     row.snapshot, row.status, row.last_error, row.synced_at = snapshot, "synced", "", utcnow()
     audit.record(db, principal.actor, "m365.synced", row.id, row.tenant_id, users=len(snapshot["users"]), licenses=len(snapshot["licenses"]))
     db.commit()

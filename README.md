@@ -285,11 +285,15 @@ machine learning and DNS filtering on top:
   every Windows device. **Apply and check now** does it straight away.
 - Defender's detections become Fenrir alerts (so they reach the inbox). Defender switched off, or passive because
   another antivirus took over, raises a high alert that clears itself when Defender is back.
+- Customers with Defender for Endpoint or Defender for Business: each Microsoft 365 sync also brings in their open
+  Defender alerts (EDR detections included), on the matching device, and resolves them here when they are resolved in
+  Defender. This needs the SecurityAlert.Read.All permission; connections set up before it was added get it when they
+  are connected again, and sync carries on without it.
 
 It works through the normal command channel (system PowerShell: `Set-MpPreference`, `Get-MpComputerStatus`,
 `Get-MpThreatDetection`), so it needs no agent update and respects the emergency stop. Tamper protection cannot be
 turned on from the device itself: Fenrir reports it and says to turn it on in the Microsoft Defender portal or Intune.
-When tamper protection or Intune holds a setting, Fenrir reports the difference rather than fighting it. Without
+When tamper protection, Group Policy or Intune holds a setting, Fenrir reports the difference rather than fighting it. Without
 **Manage**, Fenrir only reads Defender's state and raises nothing about it.
 
 ### Client health and reports

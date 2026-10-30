@@ -34,7 +34,7 @@ MANAGED_TAG = "fenrir-managed"
 APP_PERMISSIONS = [
     "User.Read.All", "Organization.Read.All", "Directory.Read.All", "Domain.Read.All", "SecurityEvents.Read.All",
     "AuditLog.Read.All", "Reports.Read.All", "User.ReadWrite.All", "User.RevokeSessions.All", "User.EnableDisableAccount.All",
-    "LicenseAssignment.ReadWrite.All", "GroupMember.ReadWrite.All",
+    "LicenseAssignment.ReadWrite.All", "GroupMember.ReadWrite.All", "SecurityAlert.Read.All",
 ]
 # What the signing-in admin must allow for the code flow (to create the app registration and consent to it).
 DEVICE_SCOPES = ["https://graph.microsoft.com/Application.ReadWrite.All", "https://graph.microsoft.com/AppRoleAssignment.ReadWrite.All",

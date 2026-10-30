@@ -133,21 +133,28 @@ try {
                   status = [int]$_.ThreatStatusID; process = [string]$_.ProcessName; user = [string]$_.DomainUser }
     })
 } catch { $errors += ('detections: ' + $_.Exception.Message) }
-$ids = @($pref.AttackSurfaceReductionRules_Ids); $actions = @($pref.AttackSurfaceReductionRules_Actions)
-$asr = [ordered]@{}
-for ($i = 0; $i -lt $ids.Count; $i++) { if ($ids[$i]) { $asr[([string]$ids[$i]).ToLower()] = [int]$actions[$i] } }
-$out = [ordered]@{
-  available = $true; mode = [string]$status.AMRunningMode; antivirus = [bool]$status.AntivirusEnabled;
-  realTime = [bool]$status.RealTimeProtectionEnabled; tamper = [bool]$status.IsTamperProtected;
-  signatureAgeDays = [int]$status.AntivirusSignatureAge; signatureVersion = [string]$status.AntivirusSignatureVersion;
-  product = [string]$status.AMProductVersion; quickScanAgeDays = [int]$status.QuickScanAge;
-  cloudBlockLevel = [int]$pref.CloudBlockLevel; maps = [int]$pref.MAPSReporting; pua = [int]$pref.PUAProtection;
-  networkProtection = [int]$pref.EnableNetworkProtection; controlledFolderAccess = [int]$pref.EnableControlledFolderAccess;
-  asr = $asr; exclusions = [ordered]@{ paths = @($pref.ExclusionPath | Where-Object { $_ }); processes = @($pref.ExclusionProcess | Where-Object { $_ });
-                                 extensions = @($pref.ExclusionExtension | Where-Object { $_ }) };
-  detections = $detections; errors = $errors
-}
-Write-Output ('FENRIR-DEFENDER:' + ($out | ConvertTo-Json -Depth 6 -Compress))""")
+# Ages are unsigned; Defender reports "never" as 4294967295 (or 65535), which does not fit an Int32.
+function Days($value) { if ($null -eq $value) { return $null }; $n = [int64]$value; if ($n -ge 65535) { return $null }; return $n }
+try {
+  $ids = @($pref.AttackSurfaceReductionRules_Ids); $actions = @($pref.AttackSurfaceReductionRules_Actions)
+  $asr = [ordered]@{}
+  for ($i = 0; $i -lt $ids.Count; $i++) { if ($ids[$i]) { $asr[([string]$ids[$i]).ToLower()] = [int64]$actions[$i] } }
+  $out = [ordered]@{
+    available = $true; mode = [string]$status.AMRunningMode; antivirus = [bool]$status.AntivirusEnabled;
+    realTime = [bool]$status.RealTimeProtectionEnabled; tamper = [bool]$status.IsTamperProtected;
+    signatureAgeDays = (Days $status.AntivirusSignatureAge); signatureVersion = [string]$status.AntivirusSignatureVersion;
+    product = [string]$status.AMProductVersion; quickScanAgeDays = (Days $status.QuickScanAge);
+    cloudBlockLevel = [int64]$pref.CloudBlockLevel; maps = [int64]$pref.MAPSReporting; pua = [int64]$pref.PUAProtection;
+    networkProtection = [int64]$pref.EnableNetworkProtection; controlledFolderAccess = [int64]$pref.EnableControlledFolderAccess;
+    asr = $asr; exclusions = [ordered]@{ paths = @($pref.ExclusionPath | Where-Object { $_ }); processes = @($pref.ExclusionProcess | Where-Object { $_ });
+                                   extensions = @($pref.ExclusionExtension | Where-Object { $_ }) };
+    detections = $detections; errors = $errors
+  }
+  Write-Output ('FENRIR-DEFENDER:' + ($out | ConvertTo-Json -Depth 6 -Compress))
+} catch {
+  # Say what went wrong rather than exit with an error: the server keeps the last good state and shows this.
+  Write-Output ('FENRIR-DEFENDER:' + (@{ reportError = ('report: ' + $_.Exception.Message); errors = $errors } | ConvertTo-Json -Compress))
+}""")
     return "\n".join(lines)
 
 
@@ -271,7 +278,7 @@ def problems(status: dict, settings: dict) -> list[str]:
     if not status.get("antivirus"):
         found.append("Defender antivirus is turned off")
     if settings["defender"].get("realTimeProtection", True) and not status.get("realTime"):
-        found.append("Defender real-time protection is off")
+        found.append("Defender real-time protection is off (Group Policy, tamper protection or another product may be holding it off)")
     wanted = asr_wanted(settings)
     actual = status.get("asr") or {}
     drift = [guid for guid, m in wanted.items() if m != "off" and actual.get(guid) != ASR_ACTION_NUMBER[m]]
@@ -315,10 +322,14 @@ def on_command_complete(db: Session, device: Device, command: Command) -> None:
     if command.status != "completed" or status is None:
         state.error = (str(result.get("error") or result.get("stderr") or "") or f"The check ended {command.status}")[:500]
         return
+    if status.get("reportError"):  # the device could not put its report together: keep the last good state
+        state.error, state.checked_at = str(status["reportError"])[:500], utcnow()
+        return
     settings = settings_for(db, device)
     state.status, state.checked_at = status, utcnow()
     state.error = "; ".join(status.get("errors") or [])[:500]
-    if payload_.get("defender") == "apply" and not status.get("errors") and payload_.get("defenderRevision"):
+    if payload_.get("defender") == "apply" and status.get("available", True) and not status.get("errors") \
+            and payload_.get("defenderRevision"):
         state.applied_revision = payload_["defenderRevision"]
     managed = bool(settings["defender"].get("managed"))
     if managed:
