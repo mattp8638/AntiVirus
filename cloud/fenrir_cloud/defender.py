@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from datetime import datetime, timedelta
 
 from sqlalchemy import select
@@ -279,6 +280,9 @@ def problems(status: dict, settings: dict) -> list[str]:
         found.append("Defender antivirus is turned off")
     if settings["defender"].get("realTimeProtection", True) and not status.get("realTime"):
         found.append("Defender real-time protection is off (Group Policy, tamper protection or another product may be holding it off)")
+    drives = sorted({str(p) for p in (status.get("exclusions") or {}).get("paths") or [] if re.fullmatch(r"[A-Za-z]:\\?", str(p).strip())})
+    if drives:
+        found.append(f"Defender excludes whole drives ({', '.join(drives)}), so it scans almost nothing there")
     wanted = asr_wanted(settings)
     actual = status.get("asr") or {}
     drift = [guid for guid, m in wanted.items() if m != "off" and actual.get(guid) != ASR_ACTION_NUMBER[m]]
