@@ -31,7 +31,8 @@ export default function CrmAccount() {
     <>
       <PageHead title={a?.name ?? "Account"}
                 subtitle={a ? <>Plan {displayValue(a.plan)} · {displayValue(data.devices)} devices · owner <b>{displayValue(a.accountOwner || "unassigned")}</b>
-                  {can("crm") && <> · <button className="small" onClick={setOwner}>Change owner</button></>}</> : undefined}
+                  {can("crm") && <> · <button className="small" onClick={setOwner}>Change owner</button></>}
+                  {" · "}<Link to={`/companies/${id}`}>Health and reports</Link></> : undefined}
                 actions={can("crm") && <span style={{ display: "inline-flex", gap: 6 }}>
                   <button onClick={() => blank("activities", { kind: "call", direction: "outbound" })}>Log activity</button>
                   <button onClick={() => blank("activities", { kind: "task" })}>Add task</button>

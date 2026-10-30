@@ -6,10 +6,12 @@ import { useApp } from "../../app-context";
 import { Modal, PageHead, Pill, Table, Tabs, useAction, useData, useListData } from "../../components/ui";
 import { NewTicket, PRIORITY_TONE } from "./ServiceBoard";
 import { noticeDialog } from "../../components/dialogs";
+import { ClientHealth, HealthBadge } from "../../components/ClientHealth";
 
 export default function Companies() {
   const navigate = useNavigate();
   const { data } = useListData<any>("psa/companies");
+  const { data: health } = useData<Record<string, { score: number | null }>>("clients/health");
   const [q, setQ] = useState("");
   return (
     <>
@@ -18,6 +20,7 @@ export default function Companies() {
       <div className="card">
         <Table rows={data?.filter((c) => !q || c.name.toLowerCase().includes(q.toLowerCase()))} onRow={(c) => navigate(`/companies/${c.id}`)} empty="No companies."
                columns={[{ key: "name", label: "Company", render: (c) => <><b>{displayValue(c.name)}</b><div className="small muted">{displayValue(c.website)}</div></> },
+                         { key: "health", label: "Health", render: (c) => <HealthBadge score={health?.[c.id]?.score} /> },
                          { key: "companyType", label: "Type", render: (c) => <Pill value={c.companyType} tone={c.companyType === "Client" ? "good" : "muted"} /> },
                          { key: "phone", label: "Phone" }, { key: "openTickets", label: "Open tickets" }, { key: "devices", label: "Devices" },
                          { key: "contacts", label: "Contacts" }, { key: "agreements", label: "Agreements" }]} />
@@ -32,7 +35,7 @@ export function CompanyDetail() {
   const { can, setTenantId } = useApp();
   const { data, reload } = useData<any>(`psa/companies/${id}`);
   const { data: meta } = useData<any>("psa/meta");
-  const [tab, setTab] = useState("Tickets");
+  const [tab, setTab] = useState("Overview");
   const [editing, setEditing] = useState(false);
   const [adding, setAdding] = useState<string | null>(null);
   const [ticket, setTicket] = useState(false);
@@ -46,8 +49,10 @@ export function CompanyDetail() {
                   {can("crm") && <button onClick={() => setEditing(true)}>Edit company</button>}
                   <button onClick={() => { setTenantId(c.id); navigate("/devices"); }}>Devices</button>
                 </>} />
-      <Tabs tabs={["Tickets", "Contacts", "Sites", "Agreements", "Configurations", "Projects"]} active={tab} onChange={setTab} />
+      <Tabs tabs={["Overview", "Tickets", "Contacts", "Sites", "Agreements", "Configurations", "Projects"]} active={tab} onChange={setTab} />
       <div className="card">
+        {tab === "Overview" && (c.kind === "customer" ? <ClientHealth tenantId={c.id} />
+          : <p className="muted">Health is worked out for customers, not for your own organisation.</p>)}
         {tab === "Tickets" && <Table rows={data.tickets} onRow={(t) => navigate(`/tickets/${t.id}`)} empty="No tickets."
                                      columns={[{ key: "number", label: "#", render: (t) => `#${t.number}` }, { key: "priority", label: "Pri", render: (t) => <Pill value={t.priority} tone={PRIORITY_TONE[t.priority]} /> },
                                                { key: "subject", label: "Summary" }, { key: "status", label: "Status", render: (t) => <Pill value={t.status} tone={t.closed ? "muted" : "blue"} /> },

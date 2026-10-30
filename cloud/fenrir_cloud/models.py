@@ -539,6 +539,28 @@ class UserSession(Base):
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # SSO hand-off redeemed (once)
 
 
+class ClientHealthSnapshot(Base):
+    """A customer's health score on one day (client360.py), for the trend on the client page and the quarterly review."""
+    __tablename__ = "client_health_snapshots"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    parts: Mapped[dict] = mapped_column(JSON, default=dict)  # part key -> score (None when not measured)
+
+
+class ClientReport(Base):
+    """A generated customer report, kept as sent: the monthly "what we did for you" or a quarterly review."""
+    __tablename__ = "client_reports"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("crep"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    kind: Mapped[str] = mapped_column(String(20))  # monthly | quarterly
+    period: Mapped[str] = mapped_column(String(10))  # 2026-09 | 2026-Q3
+    html: Mapped[str] = mapped_column(Text)
+    created_by: Mapped[str] = mapped_column(String(200), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class TriageState(Base):
     """The triage inbox's own state for an item whose source has no owner, snooze or dismissal of its own (triage.py).
     Keyed by the item key, which names the source and customer, so it survives the item being rebuilt each time."""

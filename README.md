@@ -268,6 +268,22 @@ the alerts, incidents and tickets themselves, so their own pages agree; **Done**
 until they change (another device failing the same update brings it back). Decisions, incidents and tickets are
 finished on their own pages.
 
+### Client health and reports
+
+Opening a company (**Companies**, or **Health and reports** on a CRM account) starts on **Overview**: one health score
+out of 100 for that customer, the areas it comes from, a year's trend, and their reports. The score is a weighted
+average of protection (20), patching (15), known-exploited vulnerabilities (15), backup (10), Microsoft 365 MFA and
+Secure Score (10), devices checking in (10), service desk SLA (10), compliance (5) and account margin (5). An area with
+nothing to measure (no Microsoft 365 connection, no backup plan, no invoices) shows as **not set up** and does not
+count, so connect what you sell to get a full picture. Margin and MRR are only shown to staff with billing or CRM
+rights; the renewal date is flagged when it is within 60 days.
+
+The same data produces two customer-facing reports, opened as printable pages: **What we did for you** for a month
+(support resolved and within SLA, hours, updates installed, vulnerabilities fixed, alerts investigated, threats and
+websites blocked, backups and jobs) and a **Quarterly review** (health and how it moved, the work done, and the weakest
+areas as next steps). The background worker keeps a daily score for the trend, and at the start of each month keeps
+last month's report for every customer; **Save review** keeps a copy of a quarterly review as sent.
+
 ### Staff sign-in and the emergency stop
 
 **Settings → Platform → Security** (platform administrators; changes need your password again):
