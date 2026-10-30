@@ -101,7 +101,7 @@ jobs:
           Start-Service FenrirAgent -ErrorAction SilentlyContinue
           Get-Service FenrirAgent | Format-List Name, Status, StartType
           python scripts/acceptance/fenrir_acceptance.py --server $env:FENRIR_PUBLIC_URL --email $env:FENRIR_ADMIN_EMAIL `
-            --password $env:FENRIR_ADMIN_PASSWORD --device $env:COMPUTERNAME --scenario checks_in,policy,inventory,script,eicar,pam,false_positives `
+            --password $env:FENRIR_ADMIN_PASSWORD --device $env:COMPUTERNAME --scenario checks_in,policy,inventory,script,eicar,pam,telemetry_volume,false_positives `
             --wait-for-device 300 --timeout 240 --out acceptance-windows
           exit $LASTEXITCODE
       - name: Report and diagnostics

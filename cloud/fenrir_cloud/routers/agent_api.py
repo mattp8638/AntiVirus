@@ -22,7 +22,7 @@ from ..config import get_settings
 from ..db import get_db
 from ..deps import current_command_device, current_device, current_device_by_key
 from ..detection import ingest
-from ..models import AgentRelease, Command, Device, EnrollmentToken, Event, Tenant, Ticket, utcnow
+from ..models import AgentRelease, Command, Device, EnrollmentToken, Tenant, Ticket, utcnow
 from ..security import digest, new_secret
 
 router = APIRouter(prefix="/api/v1", tags=["Agent API"])
@@ -259,10 +259,10 @@ def telemetry(body: dict = Depends(_lenient_json), device: Device = Depends(curr
     if len(events) > limit:
         raise HTTPException(413, f"at most {limit} events per batch")
     result = ingest(db, device, events)
-    total = db.execute(select(func.count()).where(Event.device_id == device.id)).scalar() or 0
     db.commit()
+    # No running total: counting a device's whole history on every batch got slower as the table grew.
     return {"receivedAt": _iso(utcnow()), "accepted": result.accepted, "duplicates": result.duplicates,
-            "totalStored": total, "alerts": result.alerts}
+            "notStored": result.not_stored, "alerts": result.alerts}
 
 
 @router.get("/devices/{device_id}/commands/pending")
