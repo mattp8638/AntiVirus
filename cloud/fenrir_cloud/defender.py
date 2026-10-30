@@ -318,7 +318,8 @@ def on_command_complete(db: Session, device: Device, command: Command) -> None:
     settings = settings_for(db, device)
     state.status, state.checked_at = status, utcnow()
     state.error = "; ".join(status.get("errors") or [])[:500]
-    if payload_.get("defender") == "apply" and not status.get("errors") and payload_.get("defenderRevision"):
+    if payload_.get("defender") == "apply" and status.get("available", True) and not status.get("errors") \
+            and payload_.get("defenderRevision"):
         state.applied_revision = payload_["defenderRevision"]
     managed = bool(settings["defender"].get("managed"))
     if managed:

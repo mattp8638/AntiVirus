@@ -390,12 +390,22 @@ def defender(ctx: Context, device: dict) -> tuple[str, dict]:
 
         def applied():
             view = ctx.api.get(path)
-            return view if view.get("checkedAt") and not view.get("checking") and (view.get("inSync") or view.get("error")) else None
+            done = view.get("inSync") or view.get("error") or (view.get("status") or {}).get("available") is False
+            return view if view.get("checkedAt") and not view.get("checking") and done else None
 
         view = wait_for("Defender to take the policy and report back", applied, max(ctx.args.timeout, 300), interval=10)
         status = view.get("status") or {}
         if status.get("available") is False:
-            raise Check(f"Microsoft Defender is not available on this device: {status.get('error')}")
+            # GitHub's Windows Server image does not run the Defender service. What can still be checked here: the device
+            # ran the check and said so, and managed-but-unavailable Defender raises the protection alert.
+            def protection_alert():
+                return next((a for a in ctx.api.get("alerts", device_id=device["id"], snoozed="all")
+                             if a.get("ruleId") == "defender:protection-off" and a.get("status") in ("new", "triaged")), None)
+
+            wait_for("the 'Defender protection is off' alert", protection_alert, ctx.args.timeout, interval=10)
+            raise Skip(f"Microsoft Defender is not running on this machine ({status.get('error')}). Fenrir reported it as "
+                       "unavailable and raised the protection-off alert; applying settings and Defender's detections need a "
+                       "machine where Defender runs (docs/ACCEPTANCE_LAB.md, --scenario defender)")
         if not view.get("inSync"):
             raise Check(f"Defender did not take the policy: {view.get('error')}")
         not_set = [r["key"] for r in view["rules"] if r["actual"] != "audit"]
@@ -421,6 +431,10 @@ catch {{ Write-Output ('BLOCKED=' + $_.Exception.Message) }}""")
         alert = wait_for("Defender's detection to arrive as an alert", alerted, max(ctx.args.timeout, 300), interval=30)
     finally:
         ctx.api.call("PATCH", f"devices/{device['id']}", {"policyId": previous})
+        try:  # read Defender again under the restored policy, which clears this scenario's protection alert
+            ctx.api.post(f"{path}/check", {})
+        except ApiError:
+            pass
     return (f"Defender {status.get('mode')}, real-time {'on' if status.get('realTime') else 'off'}, "
             f"{len(view['rules'])} attack surface rules in audit; detection alerted as {alert['title']}",
             {"mode": status.get("mode"), "tamper": status.get("tamper"), "signatureAgeDays": status.get("signatureAgeDays"),

@@ -162,3 +162,38 @@ def test_fleet_view_and_scope(client, admin, tenant, device):
         db.get(Device, linux["deviceId"]).platform = "linux"
         db.commit()
     assert client.get(f"/api/console/devices/{linux['deviceId']}/defender", headers=admin).status_code == 404
+
+
+def test_defender_for_endpoint_alerts_from_microsoft_365_reach_the_device_once_and_resolve(client, admin, tenant, device):
+    from fenrir_cloud import m365
+    from fenrir_cloud.models import Alert, M365Connection
+
+    graph_alert = {"id": "da637", "title": "Suspicious PowerShell command line", "severity": "high", "category": "Execution",
+                   "mitreTechniques": ["T1059.001"], "alertWebUrl": "https://security.microsoft.com/alerts/da637",
+                   "evidence": [{"@odata.type": "#microsoft.graph.security.deviceEvidence", "deviceDnsName": "acme-ws-01.acme.local"}]}
+    with database.session_factory()() as db:
+        connection = M365Connection(tenant_id=tenant["id"], name="Acme", directory_id="d" * 36, client_id="c" * 36,
+                                    credentials_envelope={})
+        db.add(connection)
+        db.flush()
+        assert m365.ingest_defender_alerts(db, connection, None) == {"raised": 0, "resolved": 0, "available": False}
+        assert m365.ingest_defender_alerts(db, connection, [graph_alert])["raised"] == 1
+        db.flush()
+        assert m365.ingest_defender_alerts(db, connection, [graph_alert])["raised"] == 0  # once only
+        alert = db.query(Alert).filter_by(rule_id="mde:da637").one()
+        assert alert.device_id == device["deviceId"] and alert.severity == "high" and alert.mitre == ["T1059.001"]
+        assert alert.title == "Defender for Endpoint: Suspicious PowerShell command line"
+        assert m365.ingest_defender_alerts(db, connection, [])["resolved"] == 1  # resolved in Defender, resolved here
+        assert alert.status == "resolved"
+        db.commit()
+
+
+def test_defender_not_running_is_reported_alerted_and_never_counted_as_applied(client, admin, tenant, device):
+    _manage(client, admin, tenant, device)
+    _complete(client, device, _check(client, admin, device),
+              {"available": False, "error": "Operation failed with the following error: 0x800106ba", "errors": []})
+    view = client.get(f"/api/console/devices/{device['deviceId']}/defender", headers=admin).json()
+    assert view["inSync"] is False and any("not available" in p for p in view["problems"])
+    off = [a for a in client.get("/api/console/alerts", headers=admin, params={"device_id": device["deviceId"]}).json()
+           if a["ruleId"] == defender.OFF_RULE]
+    assert len(off) == 1 and "0x800106ba" in off[0]["details"]["description"]

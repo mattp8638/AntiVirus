@@ -452,7 +452,8 @@ GRAPH_APP_ID = "00000003-0000-0000-c000-000000000000"
 CUSTOMER_GRAPH_SCOPES = ("Directory.Read.All", "Organization.Read.All", "Domain.Read.All", "User.ReadWrite.All", "Group.ReadWrite.All",
                          "AuditLog.Read.All", "Reports.Read.All", "UserAuthenticationMethod.Read.All", "SecurityEvents.Read.All",
                          "Policy.Read.All", "Policy.ReadWrite.ConditionalAccess", "Application.Read.All",
-                         "DeviceManagementConfiguration.ReadWrite.All", "DeviceManagementManagedDevices.Read.All")
+                         "DeviceManagementConfiguration.ReadWrite.All", "DeviceManagementManagedDevices.Read.All",
+                         "SecurityAlert.Read.All")
 REQUIRED_PARTNER_SCOPES = PARTNER_GRAPH_SCOPES
 IMPORT_EVERY = timedelta(hours=6)
 
