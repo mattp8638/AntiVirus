@@ -232,7 +232,15 @@ function SupplierDetail({ vendor, onClose, onEdit }: { vendor: any; onClose: () 
   const checks = v.posture?.checks || {};
   return (
     <Modal wide title={v.name} onClose={onClose}
-           footer={can("grc") && <><button onClick={onEdit}>Edit</button><button disabled={busy || !v.domain} onClick={scan}>Scan posture</button><button className="primary" disabled={busy} onClick={send}>Send questionnaire</button></>}>
+           footer={can("grc") && <>
+             <button disabled={busy} onClick={async () => {
+               const leaving = v.status !== "offboarded";
+               if (leaving && !(await confirmDialog(`Offboard ${v.name}? It stays on record with its assessments, but leaves risk totals and review reminders.`, { confirmLabel: "Offboard" }))) return;
+               const r = await run(() => api<any>(`grc-assurance/vendors/${v.id}`, { method: "PATCH", body: { status: leaving ? "offboarded" : "active" } }), leaving ? "Supplier offboarded" : "Supplier active again");
+               if (r) setV(r);
+             }}>{v.status === "offboarded" ? "Make active again" : "Offboard"}</button>
+             <button onClick={onEdit}>Edit</button><button disabled={busy || !v.domain || v.status === "offboarded"} onClick={scan}>Scan posture</button>
+             <button className="primary" disabled={busy || v.status === "offboarded"} onClick={send}>Send questionnaire</button></>}>
       <div className="grid k3">
         <Stat label="Residual risk" value={<Pill value={v.riskTier} tone={TIER_TONE[v.riskTier]} />} hint={`score ${v.riskScore ?? "-"} (inherent ${v.inherentRisk})`} />
         <Stat label="Questionnaire" value={v.questionnaireScore ?? "-"} hint={v.lastAssessedAt ? `answered ${fmtTime(v.lastAssessedAt)}` : "not answered"} />
