@@ -1,11 +1,12 @@
 import { displayValue } from "../components/DisplayValue";
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { ago, api } from "../api";
 import { useApp } from "../app-context";
 import { ErrorNote, Meter, Modal, PageHead, Pill, PresenceDot, presenceOf, Table, useAction, useAutoRefresh, useListData } from "../components/ui";
 import { ConnectButtons, pct } from "../components/rmm";
 import { SavedViews } from "../components/Customization";
+import { GroupSelect, groupTree, type Group } from "../components/Groups";
 
 export default function Devices() {
   const { tenantId, tenantName, can } = useApp();
@@ -14,15 +15,20 @@ export default function Devices() {
   const [status, setStatus] = useState("");
   const [platform, setPlatform] = useState("");
   const [role, setRole] = useState("");
+  const [params] = useSearchParams();
+  const [group, setGroup] = useState(params.get("group") ?? "");
+  const [moving, setMoving] = useState(false);
+  const { data: groups } = useListData<Group>("groups", { tenant_id: tenantId }, [tenantId]);
+  const groupPath = Object.fromEntries(groupTree(groups ?? []).map(({ group: g, path }) => [g.id, path]));
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulk, setBulk] = useState(false);
-  const { data, error, reload } = useListData<any>("devices", { tenant_id: tenantId, q, status, platform, role });
+  const { data, error, reload } = useListData<any>("devices", { tenant_id: tenantId, q, status, platform, role, group_id: group });
   useAutoRefresh(reload);
 
   useEffect(() => {
     setSelected(new Set());
     setBulk(false);
-  }, [tenantId, q, status, platform, role]);
+  }, [tenantId, q, status, platform, role, group]);
 
   const toggle = (id: string) => {
     const next = new Set(selected);
@@ -35,7 +41,9 @@ export default function Devices() {
     <>
       <PageHead title="Devices" subtitle="Every enrolled endpoint across Windows, Linux and macOS."
                 actions={<>
+                  {selected.size > 0 && can("configure") && <button onClick={() => setMoving(true)}>Move {selected.size} to group</button>}
                   {selected.size > 0 && can("respond") && <button onClick={() => setBulk(true)}>Run action on {selected.size}</button>}
+                  <button onClick={() => navigate("/groups")}>Groups</button>
                   <button className="primary" onClick={() => navigate("/deploy")}>Deploy agents</button>
                 </>} />
       <div className="row" style={{ marginBottom: 12 }}>
@@ -50,9 +58,13 @@ export default function Devices() {
         <select value={role} onChange={(e) => setRole(e.target.value)} aria-label="Role">
           <option value="">All roles</option><option value="workstation">Workstations</option><option value="server">Servers</option><option value="domain-controller">Domain controllers</option>
         </select>
+        <select value={group} onChange={(e) => setGroup(e.target.value)} aria-label="Group">
+          <option value="">All groups</option><option value="none">Not in a group</option>
+          {groupTree(groups ?? []).map(({ group: g, path }) => <option key={g.id} value={g.id}>{displayValue(path)}</option>)}
+        </select>
         <span className="spacer" />
-        <SavedViews page="devices" filters={{ q, status, platform, role }}
-                    onApply={(f) => { setQ(f.q ?? ""); setStatus(f.status ?? ""); setPlatform(f.platform ?? ""); setRole(f.role ?? ""); }} />
+        <SavedViews page="devices" filters={{ q, status, platform, role, group }}
+                    onApply={(f) => { setQ(f.q ?? ""); setStatus(f.status ?? ""); setPlatform(f.platform ?? ""); setRole(f.role ?? ""); setGroup(f.group ?? ""); }} />
       </div>
       <ErrorNote error={error} />
       <div className="card">
@@ -61,6 +73,7 @@ export default function Devices() {
                  { key: "sel", label: "", render: (r) => <input type="checkbox" disabled={r.retired} checked={selected.has(r.id)} onClick={(e) => e.stopPropagation()} onChange={() => toggle(r.id)} aria-label={`Select ${r.hostname}`} /> },
                  { key: "hostname", label: "Device", render: (r) => <><PresenceDot device={r} /> <b>{displayValue(r.hostname)}</b>{(r.role === "server" || r.role === "domain-controller") && <> <RoleBadge role={r.role} /></>}{r.agentless && <> <Pill value="web protection only" tone="blue" /></>}<div className="small muted">{displayValue(r.osVersion)}{shownWorkloads(r).length ? ` · ${shownWorkloads(r).join(", ")}` : ""}</div></> },
                  { key: "tenantId", label: "Tenant", render: (r) => tenantName(r.tenantId) },
+                 { key: "groupId", label: "Group", render: (r) => r.groupId ? <span className="small">{displayValue(groupPath[r.groupId] ?? "—")}</span> : <span className="small muted">—</span> },
                  { key: "platform", label: "Platform" },
                  { key: "agentVersion", label: "Agent", render: (r) => r.agentVersion || "—" },
                  { key: "state", label: "State", render: (r) => <div className="row">
@@ -77,6 +90,7 @@ export default function Devices() {
                ]} />
       </div>
       {bulk && <BulkAction ids={[...selected]} onClose={() => { setBulk(false); setSelected(new Set()); reload(); }} />}
+      {moving && <MoveToGroup ids={[...selected]} devices={data ?? []} onClose={(changed) => { setMoving(false); if (changed) { setSelected(new Set()); reload(); } }} />}
     </>
   );
 }
@@ -130,4 +144,34 @@ export function RoleBadge({ role }: { role?: string }) {
   if (role === "domain-controller") return <span title="Active Directory domain controller"><Pill value="Domain controller" tone="blue" /></span>;
   if (role === "server") return <Pill value="Server" tone="muted" />;
   return null;
+}
+
+// Put the selected devices in one group, or take them out of any group. A group belongs to one customer, so devices
+// from other customers are left where they are and listed.
+function MoveToGroup({ ids, devices, onClose }: { ids: string[]; devices: any[]; onClose: (changed: boolean) => void }) {
+  const chosen = devices.filter((d) => ids.includes(d.id));
+  const tenants = [...new Set(chosen.map((d) => d.tenantId))];
+  const { tenantName } = useApp();
+  const [tenant, setTenant] = useState(tenants[0] ?? "");
+  const [groupId, setGroupId] = useState("");
+  const [result, setResult] = useState<any>(null);
+  const { run, busy } = useAction();
+  const move = async () => {
+    const reply = await run(() => api<any>("groups/members", { body: { deviceIds: chosen.filter((d) => d.tenantId === tenant).map((d) => d.id), groupId: groupId || null } }),
+                            groupId ? "Moved to the group" : "Taken out of their group");
+    if (reply) { if (reply.skipped?.length) setResult(reply); else onClose(true); }
+  };
+  return (
+    <Modal title={`Move ${ids.length} device${ids.length === 1 ? "" : "s"} to a group`} onClose={() => onClose(Boolean(result))}
+           footer={!result && <button className="primary" disabled={busy || !tenant} onClick={move}>{groupId ? "Move" : "Take out of group"}</button>}>
+      {result ? <p>{result.moved.length} moved. Not moved: {result.skipped.map((s: any) => `${s.deviceId} (${s.reason})`).join(", ")}</p> : <>
+        {tenants.length > 1 && <label className="field">Customer
+          <select value={tenant} onChange={(e) => { setTenant(e.target.value); setGroupId(""); }}>
+            {tenants.map((t) => <option key={t} value={t}>{tenantName(t)} ({chosen.filter((d) => d.tenantId === t).length})</option>)}
+          </select>
+          <span className="small muted">A group belongs to one customer: only that customer's selected devices move.</span></label>}
+        <label className="field">Group<GroupSelect tenantId={tenant} value={groupId} onChange={setGroupId} emptyLabel="No group (take them out)" /></label>
+      </>}
+    </Modal>
+  );
 }

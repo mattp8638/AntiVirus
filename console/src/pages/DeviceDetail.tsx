@@ -2,6 +2,7 @@ import { displayValue } from "../components/DisplayValue";
 import { DeviceDefender } from "../components/Defender";
 import { MobileApps } from "../components/MobileApps";
 import { WebProtection } from "../components/WebProtection";
+import { GroupSelect } from "../components/Groups";
 import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ago, api, fmtTime, getToken } from "../api";
@@ -151,11 +152,8 @@ export default function DeviceDetail() {
 
   const management = (
     <div className="form-grid compact">
-      <label className="field">Group
-        <select value={d.groupId ?? ""} disabled={!can("configure")} onChange={(e) => patch({ groupId: e.target.value || null }, "Group updated")}>
-          <option value="">No group</option>
-          {groups?.map((g) => <option key={g.id} value={g.id}>{displayValue(g.name)}</option>)}
-        </select>
+      <label className="field">Group <Link className="small" to="/groups">Manage groups</Link>
+        <GroupSelect tenantId={d.tenantId} value={d.groupId ?? ""} disabled={!can("configure")} onChange={(id) => patch({ groupId: id || null }, "Group updated")} />
       </label>
       <label className="field">Policy override
         <select value={d.policyId ?? ""} disabled={!can("configure")} onChange={(e) => patch({ policyId: e.target.value || null }, "Policy override updated")}>

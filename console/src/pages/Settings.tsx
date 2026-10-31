@@ -1,4 +1,5 @@
 import { displayValue } from "../components/DisplayValue";
+import { GroupsManager } from "../components/Groups";
 import { useState } from "react";
 import { ago, api, downloadFile, fmtTime, setToken } from "../api";
 import { useApp } from "../app-context";
@@ -140,30 +141,7 @@ function UsersTab() {
 }
 
 function GroupsTab() {
-  const { tenantId, can, tenantName } = useApp();
-  const { data, reload } = useListData<any>("groups", { tenant_id: tenantId });
-  const { data: policies } = useListData<any>("policies", { tenant_id: tenantId });
-  const [form, setForm] = useState<any>(null);
-  const { run, busy } = useAction();
-  return (
-    <div className="card">
-      {can("configure") && <button className="primary" style={{ marginBottom: 10 }} onClick={() => setForm({ name: "", tenantId, policyId: "" })}>New group</button>}
-      <Table rows={data} empty="No groups. Groups let you apply different policies to servers, laptops, kiosks…"
-             columns={[{ key: "name", label: "Group" }, { key: "tenantId", label: "Tenant", render: (g) => tenantName(g.tenantId) },
-                       { key: "policyId", label: "Policy", render: (g) => policies?.find((p) => p.id === g.policyId)?.name ?? "Inherit" }]} />
-      {form && (
-        <Modal title="New group" onClose={() => setForm(null)} footer={<button className="primary" disabled={busy || !form.tenantId}
-               onClick={async () => { if (await run(() => api("groups", { body: { ...form, policyId: form.policyId || null } }), "Group created")) { setForm(null); reload(); } }}>Create</button>}>
-          <div className="form-grid">
-            <label className="field">Tenant<TenantSelect value={form.tenantId} onChange={(id) => setForm({ ...form, tenantId: id })} allowAll={false} /></label>
-            <label className="field">Name<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
-            <label className="field">Policy<select value={form.policyId} onChange={(e) => setForm({ ...form, policyId: e.target.value })}><option value="">Inherit from tenant</option>
-              {policies?.filter((p) => p.tenantId === form.tenantId).map((p) => <option key={p.id} value={p.id}>{displayValue(p.name)}</option>)}</select></label>
-          </div>
-        </Modal>
-      )}
-    </div>
-  );
+  return <GroupsManager />;
 }
 
 function WebhooksTab() {

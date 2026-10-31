@@ -106,7 +106,9 @@ def list_devices(
                                 cast(Device.custom_fields, String).ilike(like)))
     if platform:
         query = query.where(Device.platform == platform)
-    if group_id:
+    if group_id == "none":
+        query = query.where(Device.group_id.is_(None))
+    elif group_id:
         query = query.where(Device.group_id == group_id)
     if status == "online":
         query = query.where(presence.up_clause())

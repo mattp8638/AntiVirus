@@ -12,7 +12,8 @@ import { FormEvent, lazy, Suspense, useCallback, useEffect, useState } from "rea
 import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { useApp } from "./app-context";
 import { PageBoundary } from "./components/PageBoundary";
-import { InstallAppButton, TenantSelect } from "./components/ui";
+import { InstallAppButton, PageHead, TenantSelect } from "./components/ui";
+import { GroupsManager } from "./components/Groups";
 
 import Overview from "./pages/Overview";
 import Inbox from "./pages/Inbox";
@@ -99,6 +100,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; al
     group: "Endpoints",
     items: [
       { to: "/devices", label: "Devices", icon: "▣" },
+      { to: "/groups", label: "Device groups", icon: "⧉" },
       { to: "/monitoring", label: "Monitoring", icon: "♥" },
       { to: "/patching", label: "Patching", icon: "⟳" },
       { to: "/software", label: "Software", icon: "⬇" },
@@ -310,6 +312,7 @@ function Shell() {
             <Route path="/inbox" element={<Inbox />} />
             <Route path="/devices" element={<Devices />} />
             <Route path="/devices/:id" element={<DeviceDetail />} />
+            <Route path="/groups" element={<><PageHead title="Device groups" subtitle="Organise each customer's devices, give groups their own policy, and target them with scripts, patching and monitoring." /><GroupsManager /></>} />
             <Route path="/policies" element={<Policies />} />
             <Route path="/policies/:id" element={<PolicyEditor />} />
             <Route path="/deploy" element={<Deploy />} />
