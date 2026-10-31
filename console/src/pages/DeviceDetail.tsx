@@ -1,5 +1,6 @@
 import { displayValue } from "../components/DisplayValue";
 import { DeviceDefender } from "../components/Defender";
+import { MobileApps } from "../components/MobileApps";
 import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ago, api, fmtTime, getToken } from "../api";
@@ -31,7 +32,7 @@ const SECTIONS: { key: string; label: string; subs?: string[] }[] = [
 const PHONE_SECTIONS: { key: string; label: string; subs?: string[] }[] = [
   { key: "overview", label: "Overview" },
   { key: "location", label: "Location" },
-  { key: "security", label: "Security", subs: ["Alerts"] },
+  { key: "security", label: "Security", subs: ["Alerts", "App protection"] },
   { key: "software", label: "Apps", subs: ["Installed"] },
   { key: "activity", label: "Activity", subs: ["Remote actions"] },
   { key: "settings", label: "Settings", subs: ["Effective policy", "Device details"] },
@@ -298,6 +299,7 @@ export default function DeviceDetail() {
       {sub === "Vulnerabilities" && <DeviceVulns device={d} vulnerabilities={data.vulnerabilities} risk={data.risk} scans={data.vulnScans} onChanged={reload} />}
       {sub === "Local admin" && <><TemporaryAdmin device={d} /><LocalAdmin deviceId={d.id} /></>}
       {sub === "Microsoft Defender" && <DeviceDefender deviceId={d.id} />}
+      {sub === "App protection" && <MobileApps deviceId={d.id} />}
       {sub === "Patches" && <PatchesTab device={d} />}
       {sub === "Installed" && <SoftwareList rows={data.software} />}
       {sub === "Scripts & jobs" && <JobsTab deviceId={d.id} onOpen={setJobId} onRun={can("configure") ? () => setScriptPicker(true) : undefined} />}

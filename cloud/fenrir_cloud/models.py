@@ -539,6 +539,34 @@ class UserSession(Base):
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # SSO hand-off redeemed (once)
 
 
+class MobileApp(Base):
+    """An app installed on an Android phone, as the phone last assessed it, with Fenrir's verdict (mobile_protection.py)."""
+    __tablename__ = "mobile_apps"
+    __table_args__ = (UniqueConstraint("device_id", "package", name="uq_mobile_app_device_package"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    package: Mapped[str] = mapped_column(String(255))
+    label: Mapped[str] = mapped_column(String(200), default="")
+    version: Mapped[str] = mapped_column(String(100), default="")
+    installer: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sideloaded: Mapped[bool] = mapped_column(Boolean, default=False)
+    system: Mapped[bool] = mapped_column(Boolean, default=False)
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    signer: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    permissions: Mapped[list] = mapped_column(JSON, default=list)
+    abilities: Mapped[dict] = mapped_column(JSON, default=dict)  # accessibility, deviceAdmin, notificationAccess, hidden
+    risk_score: Mapped[int] = mapped_column(Integer, default=0)
+    risk_level: Mapped[str] = mapped_column(String(10), default="low")
+    reasons: Mapped[list] = mapped_column(JSON, default=list)
+    verdict: Mapped[str] = mapped_column(String(12), default="clean")  # malicious|suspicious|risky|review|clean|trusted
+    verdict_reason: Mapped[str] = mapped_column(String(300), default="")
+    suspended: Mapped[bool] = mapped_column(Boolean, default=False)
+    first_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class DefenderState(Base):
     """What Microsoft Defender reported on a Windows device the last time Fenrir checked it (defender.py)."""
     __tablename__ = "defender_states"

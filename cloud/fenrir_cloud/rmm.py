@@ -327,6 +327,10 @@ def on_command_complete(db: Session, device: Device, command: Command) -> None:
         from . import defender
 
         defender.on_command_complete(db, device, command)
+    if command.type in {"app.suspend", "app.uninstall"}:
+        from . import mobile_protection
+
+        mobile_protection.on_command_complete(db, device, command)
     if (command.payload or {}).get("vulnerabilityIds"):
         from . import remediation
 

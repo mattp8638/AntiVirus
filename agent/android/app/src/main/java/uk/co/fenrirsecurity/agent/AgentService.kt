@@ -16,9 +16,11 @@ import android.os.SystemClock
 import android.util.Log
 import org.json.JSONObject
 import uk.co.fenrirsecurity.agent.core.ApiException
+import uk.co.fenrirsecurity.agent.core.AppRisk
 import uk.co.fenrirsecurity.agent.core.Command
 import uk.co.fenrirsecurity.agent.core.ControlPlane
 import uk.co.fenrirsecurity.agent.core.LostMode
+import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -49,6 +51,7 @@ class WakeReceiver : BroadcastReceiver() {
 /**
  * The agent: a foreground service (Android's requirement for running continuously) that checks in every minute,
  * runs the console's actions, reports location every 15 minutes (every 5 in lost mode) and the app list every 6 hours.
+ * App protection checks each app as it is installed or updated, and every app once a day.
  */
 class AgentService : Service() {
     companion object {
@@ -93,6 +96,22 @@ class AgentService : Service() {
         }
     }
 
+    // New and updated apps are checked the moment Android installs them.
+    private val packages = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val name = intent.data?.schemeSpecificPart ?: return
+            if (name == packageName) return
+            when (intent.action) {
+                Intent.ACTION_PACKAGE_ADDED -> if (!intent.getBooleanExtra(Intent.EXTRA_REPLACING, false)) worker.execute { checkApps(listOf(name)) }
+                Intent.ACTION_PACKAGE_REPLACED -> worker.execute { checkApps(listOf(name)) }
+                Intent.ACTION_PACKAGE_FULLY_REMOVED -> worker.execute {
+                    store.queueEvent(AppRisk.removedEvent(UUID.randomUUID().toString(), name, System.currentTimeMillis()))
+                    runCatching { flush() }
+                }
+            }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         store = Store(this)
@@ -100,6 +119,12 @@ class AgentService : Service() {
         goForeground()
         running = true
         registerReceiver(screenOn, IntentFilter(Intent.ACTION_SCREEN_ON))
+        registerReceiver(packages, IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_ADDED)
+            addAction(Intent.ACTION_PACKAGE_REPLACED)
+            addAction(Intent.ACTION_PACKAGE_FULLY_REMOVED)
+            addDataScheme("package")
+        })
         worker.scheduleWithFixedDelay({ cycle(force = false) }, 3, 30, TimeUnit.SECONDS)
     }
 
@@ -120,6 +145,7 @@ class AgentService : Service() {
     override fun onDestroy() {
         running = false
         runCatching { unregisterReceiver(screenOn) }
+        runCatching { unregisterReceiver(packages) }
         alarm.stop()
         worker.shutdownNow()
         super.onDestroy()
@@ -165,6 +191,7 @@ class AgentService : Service() {
                 bootReason = null
             }
             if (now - store.lastInventory >= 6 * 3600_000L) sendInventory()
+            if (now - store.lastAppScan >= 24 * 3600_000L) checkApps()
             flush()
             store.lastError = ""
         } catch (error: ApiException) {
@@ -233,6 +260,18 @@ class AgentService : Service() {
             }
         }
         "inventory.refresh" -> { sendInventory(); Outcome(true, JSONObject()) }
+        "app.scan" -> Outcome(true, JSONObject().put("highRisk", checkApps()))
+        "app.uninstall" -> {
+            val target = command.text("package", 255).ifBlank { command.targetPath }
+            if (target.isBlank() || !AppScanner.installed(this, target)) fail("$target is not installed")
+            else Outcome(true, AppScanner.uninstall(this, target, appLabel(target)))
+        }
+        "app.suspend" -> {
+            val target = command.text("package", 255).ifBlank { command.targetPath }
+            val suspend = command.payload.optBoolean("suspended", true)
+            val why = if (target.isBlank()) "No app given" else Device.suspendApp(this, target, suspend)
+            if (why != null) fail(why) else Outcome(true, JSONObject().put("suspended", suspend))
+        }
         "policy.refresh" -> Outcome(true, JSONObject())
         else -> fail("${command.type} is not supported on Android")
     }
@@ -257,6 +296,26 @@ class AgentService : Service() {
         store.lastLocation = System.currentTimeMillis()
         Locator.current(this, reason)?.let(store::queueFix)
     }
+
+    /** Checks every app (only = null) or the given ones, reports them, and warns the user once about a dangerous app.
+     *  Returns how many are high risk. */
+    private fun checkApps(only: List<String>? = null): Int {
+        val results = AppScanner.scan(this, store, only)
+        store.queueEvent(AppScanner.event(results, full = only == null))
+        if (only == null) store.lastAppScan = System.currentTimeMillis()
+        val high = results.filter { it.second.level == "high" }
+        for ((facts, assessment) in high) {
+            if (store.warnedOnce("${facts.packageName}@${facts.lastUpdateMillis}")) {
+                Notifications.removeApp(this, facts.label, facts.packageName,
+                    assessment.reasons.lastOrNull() ?: "This app looks dangerous.")
+            }
+        }
+        runCatching { flush() }
+        return high.size
+    }
+
+    private fun appLabel(name: String): String =
+        runCatching { packageManager.getApplicationLabel(packageManager.getApplicationInfo(name, 0)).toString() }.getOrDefault(name)
 
     private fun sendInventory() {
         store.queueEvent(Device.inventory(this))

@@ -247,6 +247,11 @@ def add_indicators(body: dict = Body(...), principal: Principal = Depends(curren
                      tenant_id, int(body.get("confidence") or 80), str(body.get("description") or ""))
         added += 1
     audit.record(db, principal.actor, "intel.indicators.added", f"{added} indicators", tenant_id, verdict=verdict)
+    if added:  # phones' apps take the new verdicts straight away rather than at their next daily check
+        from .. import mobile_protection
+
+        db.flush()
+        mobile_protection.reassess(db, tenant_id)
     db.commit()
     dnsfilter.INTEL.invalidate()
     return {"added": added, "rejected": rejected[:50]}

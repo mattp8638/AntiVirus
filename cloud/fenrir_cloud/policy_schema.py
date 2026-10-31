@@ -191,6 +191,21 @@ SCHEMA: tuple[Section, ...] = (
         ),
     ),
     Section(
+        "mobile",
+        "Phone app protection",
+        "Android phones check every installed app: where it came from, what it can do, and its fingerprint against threat "
+        "intelligence. New installs are checked as they happen.",
+        (
+            F("alertOn", "enum", "high", "Raise an alert for",
+              "malicious: only apps threat intelligence knows are bad; high: also apps that behave like banking trojans or "
+              "stalkerware; medium: also apps worth a look, such as sideloaded apps with risky abilities.",
+              options=("off", "malicious", "high", "medium"), platforms=("android",)),
+            F("suspendMalicious", "bool", False, "Suspend malicious apps on company-owned phones",
+              "On phones where Fenrir is the device owner, a malicious app is suspended at once (it cannot run until an "
+              "administrator lets it). Other phones ask the user to remove it.", platforms=("android",)),
+        ),
+    ),
+    Section(
         "ransomware",
         "Ransomware protection",
         "Behavioural encryption detection, protected folders, canaries and rollback.",

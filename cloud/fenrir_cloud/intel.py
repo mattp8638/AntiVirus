@@ -22,6 +22,9 @@ HEX = {"md5": 32, "sha1": 40, "sha256": 64}
 def classify(value: str) -> str:
     value = value.strip()
     lowered = value.lower()
+    # Android app package names look like domains, so they are written android:com.example.app.
+    if lowered.startswith("android:") and re.fullmatch(r"[a-z][a-z0-9_]*(\.[a-z0-9_]+)+", lowered[8:]):
+        return "package"
     for kind, length in HEX.items():
         if len(lowered) == length and re.fullmatch(r"[0-9a-f]+", lowered):
             return kind
@@ -38,6 +41,8 @@ def normalise_value(kind: str, value: str) -> str:
     value = value.strip()
     if kind in HEX or kind == "domain":
         return value.lower().rstrip(".")
+    if kind == "package":
+        return value[8:].lower() if value.lower().startswith("android:") else value.lower()
     return value
 
 

@@ -11,11 +11,13 @@ object Notifications {
     const val STATUS = "status"
     const val MESSAGES = "messages"
     const val URGENT = "urgent"
+    const val PROTECTION = "protection"
 
     const val ID_STATUS = 1
     const val ID_ALARM = 2
     const val ID_LOST = 3
     private const val ID_MESSAGE_BASE = 100
+    private const val ID_APP_BASE = 1000
 
     fun createChannels(context: Context) {
         val manager = context.service<NotificationManager>()
@@ -28,6 +30,9 @@ object Notifications {
             NotificationChannel(URGENT, "Lost mode and alarm", NotificationManager.IMPORTANCE_HIGH).apply {
                 description = "Lost-mode screen and the find-my-phone alarm."
                 lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            },
+            NotificationChannel(PROTECTION, "App protection", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "Dangerous apps Fenrir finds on this phone."
             },
         ))
     }
@@ -95,6 +100,24 @@ object Notifications {
             .setContentIntent(screen)
             .build()
         context.service<NotificationManager>().notify(ID_LOST, notification)
+    }
+
+    /** A dangerous app: tapping opens Android's own "uninstall this app?" screen. */
+    fun removeApp(context: Context, label: String, packageName: String, why: String) {
+        val uninstall = PendingIntent.getActivity(
+            context, packageName.hashCode(), AppScanner.uninstallIntent(packageName),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val notification = Notification.Builder(context, PROTECTION)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("Remove $label")
+            .setContentText(why)
+            .setStyle(Notification.BigTextStyle().bigText("$why Tap to remove it."))
+            .setAutoCancel(true)
+            .addAction(Notification.Action.Builder(null as android.graphics.drawable.Icon?, "Remove", uninstall).build())
+            .setContentIntent(uninstall)
+            .build()
+        context.service<NotificationManager>().notify(ID_APP_BASE + (packageName.hashCode() and 0xffff), notification)
     }
 
     fun cancel(context: Context, id: Int) = context.service<NotificationManager>().cancel(id)
