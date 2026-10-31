@@ -36,17 +36,43 @@ export default function Settings() {
   );
 }
 
+function TenantEdit({ tenant, onClose }: { tenant: any; onClose: (saved: boolean) => void }) {
+  const [form, setForm] = useState(tenant);
+  const { data: policies } = useListData<any>("policies", { tenant_id: tenant.id }, [tenant.id]);
+  const { run, busy } = useAction();
+  const save = async () => {
+    if (await run(() => api(`tenants/${tenant.id}`, { method: "PATCH", body: { name: form.name.trim(), plan: form.plan, defaultPolicyId: form.defaultPolicyId || null } }), "Customer saved")) onClose(true);
+  };
+  return (
+    <Modal title={`Edit ${tenant.name}`} onClose={() => onClose(false)} footer={<button className="primary" disabled={busy || !form.name.trim()} onClick={save}>Save</button>}>
+      <div className="form-grid">
+        <label className="field">Name<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} maxLength={200} /></label>
+        <label className="field">Plan<select value={form.plan} onChange={(e) => setForm({ ...form, plan: e.target.value })}>{["essentials", "advanced", "complete", "mdr"].map((p) => <option key={p}>{p}</option>)}</select></label>
+        <label className="field">Default protection policy
+          <select value={form.defaultPolicyId} onChange={(e) => setForm({ ...form, defaultPolicyId: e.target.value })}>
+            <option value="">The built-in template</option>
+            {policies?.filter((p) => !p.tenantId || p.tenantId === tenant.id).map((p) => <option key={p.id} value={p.id}>{displayValue(p.name)}</option>)}
+          </select>
+          <span className="small muted">Devices and groups without their own policy use this one.</span></label>
+      </div>
+    </Modal>
+  );
+}
+
 function TenantsTab() {
   const { can, tenantName, refreshMe } = useApp();
   const { data, reload } = useListData<any>("tenants");
   const { data: schema } = useData<any>("policy-schema");
   const [form, setForm] = useState<any>(null);
+  const [editing, setEditing] = useState<any>(null);
   const { run, busy } = useAction();
   return (
     <div className="card">
       {can("manage_tenants") && <button className="primary" style={{ marginBottom: 10 }} onClick={() => setForm({ name: "", template: "balanced", plan: "complete" })}>New tenant</button>}
       <Table rows={data} columns={[{ key: "name", label: "Tenant" }, { key: "kind", label: "Type", render: (t) => <Pill value={t.kind} tone={t.kind === "msp" ? "blue" : "muted"} /> },
-        { key: "plan", label: "Plan" }, { key: "parentId", label: "Managed by", render: (t) => t.parentId ? tenantName(t.parentId) : "—" }, { key: "createdAt", label: "Created", render: (t) => fmtTime(t.createdAt) }]} />
+        { key: "plan", label: "Plan" }, { key: "parentId", label: "Managed by", render: (t) => t.parentId ? tenantName(t.parentId) : "—" }, { key: "createdAt", label: "Created", render: (t) => fmtTime(t.createdAt) },
+        { key: "edit", label: "", render: (t) => can("manage_tenants") && t.kind !== "unassigned" && <button className="small" onClick={() => setEditing({ id: t.id, name: t.name, plan: t.plan, defaultPolicyId: t.defaultPolicyId ?? "" })}>Edit</button> }]} />
+      {editing && <TenantEdit tenant={editing} onClose={(saved) => { setEditing(null); if (saved) { reload(); refreshMe(); } }} />}
       {form && (
         <Modal title="New tenant" onClose={() => setForm(null)} footer={<button className="primary" disabled={busy || !form.name}
                onClick={async () => { if (await run(() => api("tenants", { body: form }), "Tenant created")) { setForm(null); reload(); refreshMe(); } }}>Create</button>}>
@@ -99,6 +125,8 @@ function UsersTab() {
         { key: "act", label: "", render: (u) => <span className="row" style={{ gap: 6 }}>
           {can("configure") && <button className="small" onClick={async () => { await run(() => api(`users/${u.id}`, { method: "PATCH", body: { active: !u.active } }), "User updated"); reload(); }}>{u.active ? "Disable" : "Enable"}</button>}
           {can("configure") && <button className="small" onClick={() => setAssigning({ id: u.id, email: u.email, role: u.role, tenantId: u.tenantId, assignedTenantIds: u.assignedTenantIds || [] })}>Role &amp; customers</button>}
+          {can("configure") && u.active && u.id !== me?.user.id && <button className="small" title="End every signed-in session of this user (for a lost laptop or a leaver)"
+            onClick={async () => { if (await confirmDialog(`Sign ${u.email} out of every browser and device now?`, { confirmLabel: "Sign out everywhere" })) await run(() => api(`users/${u.id}/sessions/revoke`, { method: "POST" }), "Signed out everywhere"); }}>Sign out</button>}
           {can("manage_tenants") && (u.mfaEnabled || u.passkeys > 0) && <button className="small" title="For a user who lost their phone or security key" onClick={async () => { if (await confirmDialog(`Reset MFA for ${u.email}? Their authenticator app and passkeys are removed, and they will need to set them up again.`)) { await run(() => api(`users/${u.id}/mfa/reset`, { method: "POST" }), "MFA reset"); reload(); } }}>Reset MFA</button>}
         </span> }]} />
       {form && (
@@ -144,6 +172,14 @@ function GroupsTab() {
   return <GroupsManager />;
 }
 
+// Every event the server sends to webhooks (services.fire_webhooks and the event outbox).
+const WEBHOOK_EVENTS: [string, string][] = [
+  ["*", "Everything"], ["incident.created", "Incident opened"], ["alert.automation", "Response rule fired"], ["ticket.created", "Ticket created"],
+  ["network.down", "Monitored service down"], ["network.recovered", "Monitored service recovered"], ["backup.failed", "Backup failed"],
+  ["backup.success", "Backup succeeded"], ["vulnerability.detected", "Vulnerability found"], ["vulnerability.verified_fixed", "Vulnerability fixed"],
+  ["grc.drift", "Compliance drift"], ["m365.action_finished", "Microsoft 365 action finished"], ["audit.checkpoint", "Audit checkpoint"],
+];
+
 function WebhooksTab() {
   const { can, tenantId } = useApp();
   const { data, reload } = useListData<any>("webhooks");
@@ -157,16 +193,24 @@ function WebhooksTab() {
       <Table rows={data} empty="No webhooks. Send incidents to Slack, Teams or your own systems."
              columns={[{ key: "name", label: "Name" }, { key: "kind", label: "Type" }, { key: "url", label: "URL", render: (w) => <span className="mono small">{displayValue(w.url)}</span> },
                        { key: "events", label: "Events", render: (w) => w.events.join(", ") },
-                       { key: "del", label: "", render: (w) => can("configure") && <button className="small danger" onClick={async () => { await run(() => api(`webhooks/${w.id}`, { method: "DELETE" }), "Removed"); reload(); }}>Remove</button> }]} />
+                       { key: "del", label: "", render: (w) => can("configure") && <span style={{ whiteSpace: "nowrap" }}>
+                         <button className="small" onClick={() => setForm({ id: w.id, name: w.name, url: w.url, kind: w.kind, events: w.events, tenantId: w.tenantId })}>Edit</button>{" "}
+                         <button className="small danger" onClick={async () => { if (await confirmDialog(`Remove the webhook "${w.name}"?`) && await run(() => api(`webhooks/${w.id}`, { method: "DELETE" }), "Removed")) reload(); }}>Remove</button></span> }]} />
       {form && (
-        <Modal title="Add webhook" onClose={() => setForm(null)} footer={<button className="primary" disabled={busy}
-               onClick={async () => { const r = await run(() => api<any>("webhooks", { body: form }), "Webhook added"); if (r) { setSecret(r.secret); setForm(null); reload(); } }}>Add</button>}>
+        <Modal title={form.id ? "Edit webhook" : "Add webhook"} onClose={() => setForm(null)} footer={<button className="primary" disabled={busy || !form.events?.length}
+               onClick={async () => {
+                 if (form.id) {
+                   if (await run(() => api(`webhooks/${form.id}`, { method: "PATCH", body: { name: form.name, url: form.url, kind: form.kind, events: form.events } }), "Webhook saved")) { setForm(null); reload(); }
+                   return;
+                 }
+                 const r = await run(() => api<any>("webhooks", { body: form }), "Webhook added"); if (r) { setSecret(r.secret); setForm(null); reload(); } }}>{form.id ? "Save" : "Add"}</button>}>
           <div className="form-grid">
             <label className="field">Name<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
             <label className="field">Type<select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })}><option>slack</option><option>teams</option><option>generic</option></select></label>
             <label className="field">URL<input value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} /></label>
             <label className="field">Events<select multiple value={form.events} onChange={(e) => setForm({ ...form, events: [...e.target.selectedOptions].map((o) => o.value) })}>
-              <option>incident.created</option><option>alert.automation</option><option value="*">everything</option></select></label>
+              {WEBHOOK_EVENTS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
+              <span className="small muted">Hold Ctrl (⌘ on a Mac) to choose several.</span></label>
           </div>
         </Modal>
       )}
@@ -372,6 +416,7 @@ function AuditTab() {
 }
 
 function AuditPolicyCard() {
+  const { can, toast } = useApp();
   const { data, reload } = useData<any>("audit/policy");
   const [form, setForm] = useState<any>(null);
   const { run, busy } = useAction();
@@ -385,6 +430,10 @@ function AuditPolicyCard() {
       <span className="small">Retention: <b>{data.retentionDays ? `${data.retentionDays} days` : "keep everything"}</b></span>
       {data.legalHold && <Pill value={`legal hold: ${data.holdReason}`} tone="warn" />}
       <button onClick={() => setForm({ retentionDays: data.retentionDays ?? "", legalHold: data.legalHold, holdReason: data.holdReason })}>Change</button>
+      {can("platform") && data.retentionDays && !data.legalHold && <button disabled={busy} title="Fenrir also does this every two hours" onClick={async () => {
+        const result = await run(() => api<any>("audit/retention/apply", { method: "POST" }));
+        if (result) toast(result.pruned ? `${result.pruned} entries older than ${data.retentionDays} days removed` : "Nothing old enough to remove yet");
+      }}>Apply now</button>}
       {form && (
         <Modal title="Audit retention and legal hold" onClose={() => setForm(null)} footer={<button className="primary" disabled={busy} onClick={save}>Save</button>}>
           <label className="field">Keep entries for (days, 365 to 3650; empty keeps everything)<input type="number" min={365} max={3650} value={form.retentionDays}

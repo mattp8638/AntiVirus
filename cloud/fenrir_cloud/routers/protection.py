@@ -539,6 +539,20 @@ def add_asset(body: dict = Body(...), principal: Principal = Depends(current_pri
     return to_dict(row)
 
 
+@console.delete("/exposure/assets/{asset_id}")
+def delete_asset(asset_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Stop scanning an address (for example, the customer no longer owns it)."""
+    principal.require("configure")
+    asset = db.get(ExternalAsset, asset_id)
+    if asset is None:
+        raise HTTPException(404, "Not found")
+    principal.check_tenant(asset.tenant_id)
+    db.delete(asset)
+    audit.record(db, principal.actor, "exposure.asset.removed", asset.target, asset.tenant_id)
+    db.commit()
+    return {"ok": True}
+
+
 def _scan_asset_job(asset_id: str) -> None:
     db = session_factory()()
     try:

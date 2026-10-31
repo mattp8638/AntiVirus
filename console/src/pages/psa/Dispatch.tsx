@@ -4,7 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { api } from "../../api";
 import { PageHead, Pill, useAction, useData, useListData } from "../../components/ui";
 import { PRIORITY_TONE } from "./ServiceBoard";
-import { noticeDialog } from "../../components/dialogs";
+import { confirmDialog, noticeDialog } from "../../components/dialogs";
 
 const START_HOUR = 7;
 const END_HOUR = 19;
@@ -87,6 +87,9 @@ export default function Dispatch() {
                          title={e.title}
                          style={{ position: "absolute", top: 6, bottom: 6, ...position(e), background: e.kind === "Onsite" ? "rgba(168,85,247,.35)" : e.kind === "Meeting" ? "rgba(100,116,139,.4)" : "rgba(59,130,246,.35)",
                                   border: "1px solid rgba(255,255,255,.15)", borderRadius: 6, padding: "2px 6px", overflow: "hidden", cursor: "pointer", fontSize: 12 }}>
+                      <button className="small ghost" aria-label={`Remove ${e.title} from the schedule`} title="Remove from the schedule"
+                              style={{ float: "right", padding: "0 4px", lineHeight: 1.2 }}
+                              onClick={async (ev) => { ev.stopPropagation(); if (await confirmDialog(`Remove "${e.title}" from ${member.name || member.email}'s schedule?`, { confirmLabel: "Remove" }) && await run(() => api(`psa/schedule/${e.id}`, { method: "DELETE" }), "Removed from the schedule")) reload(); }}>✕</button>
                       <b>{displayValue(e.ticketNumber ? `#${e.ticketNumber}` : e.kind)}</b> {displayValue(e.title.replace(/^#\d+ /, ""))}
                     </div>
                   ))}

@@ -663,6 +663,26 @@ def update_rule(rule_id: str, body: dict = Body(...), principal: Principal = Dep
     return to_dict(row)
 
 
+@router.delete("/rules/{rule_id}")
+def delete_rule(rule_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Custom rules can be deleted; Fenrir's shipped rules come back with every release, so they are turned off instead."""
+    principal.require("configure")
+    row = db.get(DetectionRule, rule_id)
+    if row is None:
+        raise HTTPException(404, "Not found")
+    if row.builtin:
+        raise HTTPException(409, "This is one of Fenrir's shipped rules: turn it off instead of deleting it")
+    if row.tenant_id is None and not principal.can("platform"):
+        raise HTTPException(403, "Only platform admins delete rules shared by every customer")
+    if row.tenant_id is not None:
+        principal.check_tenant(row.tenant_id)
+    db.delete(row)
+    audit.record(db, principal.actor, "rule.deleted", rule_id, row.tenant_id, title=row.title)
+    db.commit()
+    RULES.invalidate()
+    return {"ok": True}
+
+
 @router.get("/mitre")
 def mitre_coverage(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     """Which ATT&CK techniques the enabled rule set covers, and how often each fired."""
@@ -717,6 +737,21 @@ def update_automation(automation_id: str, body: dict = Body(...), principal: Pri
     apply_fields(row, body, {"name", "conditions", "actions", "enabled"})
     db.commit()
     return to_dict(row)
+
+
+@router.delete("/automations/{automation_id}")
+def delete_automation(automation_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("configure")
+    row = db.get(AutomationRule, automation_id)
+    if row is None:
+        raise HTTPException(404, "Not found")
+    if row.tenant_id is None and not principal.can("platform"):
+        raise HTTPException(403, "Only platform admins delete automations shared by every customer")
+    principal.check_tenant(row.tenant_id)
+    db.delete(row)
+    audit.record(db, principal.actor, "automation.deleted", row.name, row.tenant_id)
+    db.commit()
+    return {"ok": True}
 
 
 @router.get("/playbooks")

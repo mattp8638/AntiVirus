@@ -1,6 +1,7 @@
 import { displayValue } from "../components/DisplayValue";
 import { useState } from "react";
 import { api } from "../api";
+import { confirmDialog } from "../components/dialogs";
 import { useApp } from "../app-context";
 import { Modal, PageHead, Pill, Table, TenantSelect, useAction, useListData } from "../components/ui";
 
@@ -9,6 +10,7 @@ export default function Automations() {
   const { data, reload } = useListData<any>("automations");
   const { data: books } = useListData<any>("playbooks");
   const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<any>(null);
   const { run } = useAction();
   return (
     <>
@@ -21,7 +23,12 @@ export default function Automations() {
                          { key: "actions", label: "Then", render: (r) => r.actions.map((a: any, i: number) => <span key={i} className="chip">{displayValue(a.type)}{a.command ? `: ${a.command}` : ""}</span>) },
                          { key: "runs", label: "Runs", className: "right" },
                          { key: "enabled", label: "On", render: (r) => <input type="checkbox" checked={r.enabled} disabled={!can("configure")}
-                             onChange={async () => { await run(() => api(`automations/${r.id}`, { method: "PATCH", body: { enabled: !r.enabled } })); reload(); }} /> }]} />
+                             onChange={async () => { await run(() => api(`automations/${r.id}`, { method: "PATCH", body: { enabled: !r.enabled } })); reload(); }} /> },
+                         { key: "manage", label: "", render: (r) => can("configure") && (r.tenantId || can("platform")) && <span style={{ whiteSpace: "nowrap" }}>
+                             <button className="small" onClick={() => setEditing(r)}>Edit</button>{" "}
+                             <button className="small danger" onClick={async () => {
+                               if (await confirmDialog(`Delete the automation "${r.name}"?`, { confirmLabel: "Delete" }) && await run(() => api(`automations/${r.id}`, { method: "DELETE" }), "Automation deleted")) reload();
+                             }}>Delete</button></span> }]} />
       </div>
       <div className="card">
         <h3>Guided response playbooks</h3>
@@ -32,21 +39,24 @@ export default function Automations() {
                          { key: "gates", label: "Closure gates", render: (b) => (b.critical_closure_gates || []).length }]} />
       </div>
       {creating && <NewAutomation onClose={() => { setCreating(false); reload(); }} />}
+      {editing && <NewAutomation existing={editing} onClose={() => { setEditing(null); reload(); }} />}
     </>
   );
 }
 
-function NewAutomation({ onClose }: { onClose: () => void }) {
+function NewAutomation({ onClose, existing }: { onClose: () => void; existing?: any }) {
   const { tenantId } = useApp();
   const { data: catalog } = useListData<any>("commands/catalog");
-  const [tenant, setTenant] = useState(tenantId);
-  const [name, setName] = useState("Isolate on ransomware");
-  const [minSeverity, setMinSeverity] = useState("critical");
-  const [mitre, setMitre] = useState("T1486");
-  const [titleContains, setTitleContains] = useState("");
-  const [command, setCommand] = useState("device.isolate");
-  const [ticket, setTicket] = useState(true);
-  const [webhook, setWebhook] = useState(false);
+  const was = existing ?? {};
+  const wasCommand = (was.actions || []).find((a: any) => a.type === "command");
+  const [tenant, setTenant] = useState(existing ? (was.tenantId || "") : tenantId);
+  const [name, setName] = useState(existing ? was.name : "Isolate on ransomware");
+  const [minSeverity, setMinSeverity] = useState(was.conditions?.minSeverity ?? "critical");
+  const [mitre, setMitre] = useState(existing ? (was.conditions?.mitre || []).join(", ") : "T1486");
+  const [titleContains, setTitleContains] = useState(was.conditions?.titleContains ?? "");
+  const [command, setCommand] = useState(existing ? (wasCommand?.command ?? "") : "device.isolate");
+  const [ticket, setTicket] = useState(existing ? (was.actions || []).some((a: any) => a.type === "ticket") : true);
+  const [webhook, setWebhook] = useState(existing ? (was.actions || []).some((a: any) => a.type === "webhook") : false);
   const { run, busy } = useAction();
   const submit = async () => {
     const actions: any[] = [];
@@ -54,15 +64,17 @@ function NewAutomation({ onClose }: { onClose: () => void }) {
     if (ticket) actions.push({ type: "ticket" });
     if (webhook) actions.push({ type: "webhook" });
     const conditions: any = { minSeverity };
-    if (mitre) conditions.mitre = mitre.split(",").map((s) => s.trim()).filter(Boolean);
+    if (mitre) conditions.mitre = mitre.split(",").map((s: string) => s.trim()).filter(Boolean);
     if (titleContains) conditions.titleContains = titleContains;
-    const ok = await run(() => api("automations", { body: { tenantId: tenant || null, name, conditions, actions } }), "Automation created");
+    const ok = existing
+      ? await run(() => api(`automations/${existing.id}`, { method: "PATCH", body: { name, conditions, actions } }), "Automation saved")
+      : await run(() => api("automations", { body: { tenantId: tenant || null, name, conditions, actions } }), "Automation created");
     if (ok) onClose();
   };
   return (
-    <Modal title="New automation" onClose={onClose} footer={<><button onClick={onClose}>Cancel</button><button className="primary" disabled={busy} onClick={submit}>Create</button></>}>
+    <Modal title={existing ? `Edit ${was.name}` : "New automation"} onClose={onClose} footer={<><button onClick={onClose}>Cancel</button><button className="primary" disabled={busy || !name.trim()} onClick={submit}>{existing ? "Save" : "Create"}</button></>}>
       <div className="form-grid">
-        <label className="field">Scope<TenantSelect value={tenant} onChange={setTenant} label="Scope" /></label>
+        {!existing && <label className="field">Scope<TenantSelect value={tenant} onChange={setTenant} label="Scope" /></label>}
         <label className="field">Name<input value={name} onChange={(e) => setName(e.target.value)} /></label>
         <label className="field">Minimum severity<select value={minSeverity} onChange={(e) => setMinSeverity(e.target.value)}>{["low", "medium", "high", "critical"].map((s) => <option key={s}>{s}</option>)}</select></label>
         <label className="field">MITRE techniques (any)<input value={mitre} onChange={(e) => setMitre(e.target.value)} placeholder="T1486, T1490" /></label>

@@ -543,6 +543,28 @@ def update_policy(policy_id: str, body: dict = Body(...), principal: Principal =
     return to_dict(policy)
 
 
+@router.delete("/policies/{policy_id}")
+def delete_policy(policy_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Delete a policy nothing uses. Anything still using it is listed, so devices never fall back to another policy silently."""
+    principal.require("configure")
+    policy = db.get(Policy, policy_id)
+    if policy is None:
+        raise HTTPException(404, "Not found")
+    principal.check_tenant(policy.tenant_id)
+    uses = [f"customer '{t.name}' (default policy)" for t in db.execute(select(Tenant).where(Tenant.default_policy_id == policy.id)).scalars()]
+    uses += [f"group '{g.name}'" for g in db.execute(select(DeviceGroup).where(DeviceGroup.policy_id == policy.id)).scalars()]
+    devices = db.scalar(select(func.count()).where(Device.policy_id == policy.id, Device.api_key_hash != ("retired-" + Device.id))) or 0
+    if devices:
+        uses.append(f"{devices} device override(s)")
+    uses += [f"policy '{p.name}' (inherits from it)" for p in db.execute(select(Policy).where(Policy.parent_id == policy.id)).scalars()]
+    if uses:
+        raise HTTPException(409, "Still in use by " + "; ".join(uses) + ". Choose another policy for them first.")
+    db.delete(policy)
+    audit.record(db, principal.actor, "policy.deleted", policy.name, policy.tenant_id)
+    db.commit()
+    return {"ok": True}
+
+
 @router.post("/policies/preview")
 def preview_policy(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     """Resolve what a device would get, before saving: the 'what if' button."""

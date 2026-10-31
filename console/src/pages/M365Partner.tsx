@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { confirmDialog } from "../components/dialogs";
 import { Link } from "react-router-dom";
 import { ago, api } from "../api";
 import { useApp } from "../app-context";
@@ -62,6 +63,11 @@ function Partner() {
         <div className="row">
           <button disabled={busy} onClick={() => signin()}>{partner.status === "connected" ? "Sign in again" : "Sign in as partner admin"}</button>
           <button className="ghost" disabled={busy || partner.status !== "connected"} onClick={async () => { if (await run(() => api("m365/partner/role-groups", { method: "POST" }), "Role groups ready")) reload(); }}>Create role groups</button>
+          <span className="spacer" />
+          <button className="ghost danger" disabled={busy} onClick={async () => {
+            if (await confirmDialog("Disconnect the partner tenant? Fenrir forgets the partner sign-in and app. Customers already connected keep their own Microsoft 365 connections.", { confirmLabel: "Disconnect" })
+                && await run(() => api("m365/partner", { method: "DELETE" }), "Partner tenant disconnected")) reload();
+          }}>Disconnect</button>
         </div>
         {code && <p>Go to <a href={code.verificationUri} target="_blank" rel="noreferrer">{code.verificationUri}</a> and enter <b className="mono">{code.userCode}</b>{code.purpose === "partner-center" ? " to approve Partner Center access" : ""}. Sign in as a Global Administrator of the partner tenant and, when Microsoft asks, tick <b>Consent on behalf of your organization</b> and accept. {code.purpose !== "partner-center" && "That one approval covers everything: Fenrir then grants itself Partner Center access and gives back the permission it used to do so. "}Then <button className="ghost" disabled={busy} onClick={poll}>I've signed in</button></p>}
         {Object.keys(partner.roleGroups || {}).length > 0 && <p className="small muted">{Object.keys(partner.roleGroups).length} role groups: add partner staff to "Fenrir GDAP - …" groups to give them that role in customer tenants.</p>}

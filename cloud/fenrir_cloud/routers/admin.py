@@ -643,6 +643,16 @@ def update_tenant(tenant_id: str, body: dict = Body(...), principal: Principal =
     principal.require("manage_tenants")
     principal.check_tenant(tenant_id)
     tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(404, "Not found")
+    if "name" in body and not str(body.get("name") or "").strip():
+        raise HTTPException(422, "A customer needs a name")
+    if body.get("defaultPolicyId"):
+        from ..models import Policy
+
+        policy = db.get(Policy, body["defaultPolicyId"])
+        if policy is None or policy.tenant_id not in (None, tenant.id):
+            raise HTTPException(400, "That policy belongs to another customer")
     changed = apply_fields(tenant, body, {"name", "plan", "settings", "default_policy_id"})
     audit.record(db, principal.actor, "tenant.updated", tenant.id, tenant.id, fields=changed)
     db.commit()

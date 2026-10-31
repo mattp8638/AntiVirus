@@ -11,6 +11,7 @@ export default function Billing() {
   const { data: invoices, reload: reloadInvoices } = useListData<any>("billing/invoices");
   const [period, setPeriod] = useState(new Date().toISOString().slice(0, 7));
   const [creating, setCreating] = useState(false);
+  const [editingContract, setEditingContract] = useState<any>(null);
   const [invoice, setInvoice] = useState<any>(null);
   const { run, busy } = useAction();
   const mrr = contracts?.filter((c) => c.active).reduce((n, c) => n + c.monthlyValue, 0) ?? 0;
@@ -32,7 +33,7 @@ export default function Billing() {
       <div style={{ marginTop: 16 }}><Tabs tabs={["Agreements", "Invoices", ...(can("billing") ? ["Reconciliation", "Accounting"] : [])]} active={tab === "Contracts" ? "Agreements" : tab} onChange={(t) => setTab(t === "Agreements" ? "Contracts" : t)} /></div>
       {tab === "Reconciliation" ? <Reconciliation period={period} /> : tab === "Accounting" ? <Accounting onSynced={reloadInvoices} /> : tab === "Contracts" ? (
         <div className="card">
-          <Table rows={contracts} empty="No contracts. Converting a CRM lead creates one."
+          <Table rows={contracts} onRow={can("billing") ? setEditingContract : undefined} empty="No contracts. Converting a CRM lead creates one."
                  columns={[{ key: "account", label: "Company" }, { key: "name", label: "Agreement", render: (c) => <><b>{displayValue(c.name)}</b><div className="small muted">{displayValue(c.agreementType || "Managed Services")} · {displayValue(c.billingCycle || "Monthly")}</div></> }, { key: "plan", label: "Plan" },
                            { key: "includedHours", label: "Hours incl." },
                            { key: "devices", label: "Devices", className: "right" }, { key: "pricePerDevice", label: "Per device", render: (c) => money(c.pricePerDevice, c.currency) },
@@ -51,6 +52,7 @@ export default function Billing() {
         </div>
       )}
       {creating && <NewContract onClose={() => { setCreating(false); reload(); }} />}
+      {editingContract && <NewContract existing={editingContract} onClose={() => { setEditingContract(null); reload(); }} />}
       {invoice && (
         <Modal title={`${invoice.number} · ${invoice.account}`} onClose={() => setInvoice(null)}
                footer={can("billing") && ["Sent", "Paid", "Void"].map((s) => <button key={s} onClick={async () => { await run(() => api(`billing/invoices/${invoice.id}`, { method: "PATCH", body: { status: s } }), `Marked ${s}`); reloadInvoices(); setInvoice(null); }}>Mark {s}</button>)}>
@@ -68,12 +70,22 @@ export default function Billing() {
   );
 }
 
-function NewContract({ onClose }: { onClose: () => void }) {
-  const [account, setAccount] = useState("");
-  const [form, setForm] = useState<any>({ name: "Managed services", agreementType: "Managed Services", billingCycle: "Monthly", plan: "complete", pricePerDevice: 6,
+function contractForm(c: any) {
+  const sla = c.sla || {};
+  const respond = sla.respond || {};
+  return { name: c.name, agreementType: c.agreementType || "Managed Services", billingCycle: c.billingCycle || "Monthly", plan: c.plan, pricePerDevice: c.pricePerDevice,
+           monthlyFee: c.monthlyFee, hourlyRate: c.hourlyRate, includedHours: c.includedHours, currency: c.currency, coveredWorkTypes: (c.coveredWorkTypes || []).join(", "),
+           coversAfterHours: Boolean(c.coversAfterHours), additions: c.additions || [], businessStart: c.businessHours?.start ?? 9, businessEnd: c.businessHours?.end ?? 17,
+           respondP1: respond.P1 ?? 0.25, respondP2: respond.P2 ?? 1, respondP3: respond.P3 ?? 4, respondP4: respond.P4 ?? 8,
+           resolveP1: sla.P1 ?? 4, resolveP2: sla.P2 ?? 8, resolveP3: sla.P3 ?? 24, resolveP4: sla.P4 ?? 72, active: c.active !== false, endDate: c.endDate || "" };
+}
+
+function NewContract({ onClose, existing }: { onClose: () => void; existing?: any }) {
+  const [account, setAccount] = useState(existing?.accountTenantId ?? "");
+  const [form, setForm] = useState<any>(existing ? contractForm(existing) : { name: "Managed services", agreementType: "Managed Services", billingCycle: "Monthly", plan: "complete", pricePerDevice: 6,
                                           monthlyFee: 0, hourlyRate: 85, includedHours: 2, currency: getDefaultCurrency(), coveredWorkTypes: "Remote Support, Onsite Support",
                                           coversAfterHours: false, additions: [] as any[], businessStart: 9, businessEnd: 17, respondP1: 0.25, respondP2: 1, respondP3: 4, respondP4: 8,
-                                          resolveP1: 4, resolveP2: 8, resolveP3: 24, resolveP4: 72 });
+                                          resolveP1: 4, resolveP2: 8, resolveP3: 24, resolveP4: 72, active: true, endDate: "" });
   const { run, busy } = useAction();
   const { data: region } = useData<{ currencies: string[]; timeZone: string }>("region");
   const submit = async () => {
@@ -84,20 +96,26 @@ function NewContract({ onClose }: { onClose: () => void }) {
                    businessHours: { days: [0, 1, 2, 3, 4], start: Number(form.businessStart), end: Number(form.businessEnd), tz: region?.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone, p1AllHours: true },
                    sla: { P1: Number(form.resolveP1), P2: Number(form.resolveP2), P3: Number(form.resolveP3), P4: Number(form.resolveP4),
                           respond: { P1: Number(form.respondP1), P2: Number(form.respondP2), P3: Number(form.respondP3), P4: Number(form.respondP4) } },
-                   accountTenantId: account };
-    if (await run(() => api("billing/contracts", { body }), "Agreement created")) onClose();
+                   active: form.active, endDate: form.endDate || "" };
+    const done = existing
+      ? await run(() => api(`billing/contracts/${existing.id}`, { method: "PATCH", body }), "Agreement saved")
+      : await run(() => api("billing/contracts", { body: { ...body, accountTenantId: account } }), "Agreement created");
+    if (done) onClose();
   };
   const num = (k: string, label: string, step = "0.01") => <label key={k} className="field">{label}<input type="number" step={step} value={form[k]} onChange={(e) => setForm({ ...form, [k]: e.target.value })} /></label>;
   return (
-    <Modal title="New agreement" onClose={onClose} footer={<><button onClick={onClose}>Cancel</button><button className="primary" disabled={busy || !account} onClick={submit}>Create</button></>}>
+    <Modal title={existing ? `Edit ${existing.name}` : "New agreement"} onClose={onClose} footer={<><button onClick={onClose}>Cancel</button><button className="primary" disabled={busy || !account || !String(form.name).trim()} onClick={submit}>{existing ? "Save" : "Create"}</button></>}>
       <div className="form-grid">
-        <label className="field">Company<TenantSelect value={account} onChange={setAccount} allowAll={false} /></label>
+        {!existing && <label className="field">Company<TenantSelect value={account} onChange={setAccount} allowAll={false} /></label>}
         <label className="field">Name<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
         <label className="field">Type<select value={form.agreementType} onChange={(e) => setForm({ ...form, agreementType: e.target.value })}>{["Managed Services", "Block Hours", "Retainer", "Time & Materials"].map((p) => <option key={p}>{p}</option>)}</select></label>
         <label className="field">Billing cycle<select value={form.billingCycle} onChange={(e) => setForm({ ...form, billingCycle: e.target.value })}>{["Monthly", "Quarterly", "Annually"].map((p) => <option key={p}>{p}</option>)}</select></label>
         <label className="field">Security plan<select value={form.plan} onChange={(e) => setForm({ ...form, plan: e.target.value })}>{["essentials", "advanced", "complete", "mdr"].map((p) => <option key={p}>{p}</option>)}</select></label>
         <label className="field">Currency<select value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })}>{[...new Set([form.currency, ...(region?.currencies ?? [])])].map((c) => <option key={c}>{c}</option>)}</select></label>
         {num("pricePerDevice", "Price per device")}{num("monthlyFee", "Monthly fee")}{num("hourlyRate", "Hourly rate")}{num("includedHours", "Hours included per month")}
+        <label className="field">Ends (optional)<input type="date" value={form.endDate} onChange={(e) => setForm({ ...form, endDate: e.target.value })} /></label>
+        {existing && <label className="field">Status<select value={form.active ? "active" : "inactive"} onChange={(e) => setForm({ ...form, active: e.target.value === "active" })}>
+          <option value="active">Active (billed)</option><option value="inactive">Inactive (ended, not billed)</option></select></label>}
       </div>
       <label className="field" style={{ marginTop: 10 }}>Covered work types (blank = everything)<input value={form.coveredWorkTypes} onChange={(e) => setForm({ ...form, coveredWorkTypes: e.target.value })} /></label>
       <label className="small" style={{ display: "block", marginTop: 6 }}><input type="checkbox" checked={form.coversAfterHours} onChange={(e) => setForm({ ...form, coversAfterHours: e.target.checked })} /> Covers after-hours work (otherwise billed at 1.5×)</label>

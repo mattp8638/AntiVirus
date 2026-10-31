@@ -149,6 +149,17 @@ def update(credential_id: str, body: CredentialUpdate, request: Request, princip
     db.commit()
     return to_dict(row)
 
+@router.delete("/vault/credentials/{credential_id}")
+def delete_credential(credential_id: str, request: Request, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Destroy a stored credential (fresh sign-in required). The audit log keeps that it existed and who removed it."""
+    principal.require("vault")
+    row = owned(db, VaultCredential, credential_id, principal)
+    require_reauth(request, principal)
+    db.delete(row)
+    audit.record(db, principal.actor, "vault.deleted", row.id, row.tenant_id, name=row.name)
+    db.commit()
+    return {"ok": True}
+
 @router.post("/vault/credentials/{credential_id}/reveal")
 def reveal(credential_id: str, request: Request, response: Response, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("vault")
