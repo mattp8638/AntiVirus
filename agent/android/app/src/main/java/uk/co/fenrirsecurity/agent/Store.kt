@@ -41,10 +41,23 @@ class Store(context: Context) {
     var lastHeartbeat: Long by LongPref("lastHeartbeat")
     var lastLocation: Long by LongPref("lastLocation")
     var lastInventory: Long by LongPref("lastInventory")
+    var lastAppScan: Long by LongPref("lastAppScan")
     var lastContact: Long by LongPref("lastContact")
     var lastError: String
         get() = prefs.getString("lastError", "") ?: ""
         set(value) = prefs.edit().putString("lastError", value.take(300)).apply()
+
+    /** APK SHA-256 by "package@lastUpdateTime", so only new and updated apps are read again. */
+    @Synchronized fun apkHashes(): JSONObject = runCatching { JSONObject(prefs.getString("apkHashes", "{}") ?: "{}") }.getOrDefault(JSONObject())
+    @Synchronized fun saveApkHashes(hashes: JSONObject) = prefs.edit().putString("apkHashes", hashes.toString()).apply()
+
+    /** High-risk apps the user has already been warned about ("package@lastUpdateTime"), so each is mentioned once. */
+    @Synchronized fun warnedOnce(key: String): Boolean {
+        val warned = prefs.getStringSet("warnedApps", emptySet()).orEmpty()
+        if (key in warned) return false
+        prefs.edit().putStringSet("warnedApps", (warned + key).toList().takeLast(500).toSet()).apply()
+        return true
+    }
 
     val enrolled: Boolean get() = server.isNotEmpty() && deviceId.isNotEmpty() && apiKey.isNotEmpty() && !removed
 

@@ -78,6 +78,14 @@ object Device {
         if (isDeviceOwner(context)) runCatching { policy(context).setDeviceOwnerLockScreenInfo(component(context), text) }
     }
 
+    /** Stops an app running (or lets it run again). Only a device-owner (company-owned) Fenrir may; null when done. */
+    fun suspendApp(context: Context, packageName: String, suspend: Boolean): String? {
+        if (!isDeviceOwner(context)) return "Only a company-owned phone (Fenrir as device owner) can suspend apps"
+        val failed = runCatching { policy(context).setPackagesSuspended(component(context), arrayOf(packageName), suspend) }
+            .getOrElse { return "Android refused: ${it.message}" }
+        return if (failed.isEmpty()) null else "Android could not suspend $packageName"
+    }
+
     /** Returns null when the factory reset was started, or why it could not be. */
     fun wipe(context: Context): String? {
         if (!adminActive(context)) return "Fenrir is not a device administrator on this phone"
@@ -150,6 +158,8 @@ object Device {
             encryption == DevicePolicyManager.ENCRYPTION_STATUS_ACTIVE_PER_USER ||
             encryption == DevicePolicyManager.ENCRYPTION_STATUS_ACTIVE_DEFAULT_KEY)
         m.put("deviceAdmin", adminActive(context))
+        m.put("deviceOwner", isDeviceOwner(context))
+        m.put("usbDebugging", Settings.Global.getInt(context.contentResolver, Settings.Global.ADB_ENABLED, 0) == 1)
         m.put("developerMode", Settings.Global.getInt(context.contentResolver, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0) == 1)
         m.put("rooted", listOf("/system/bin/su", "/system/xbin/su", "/sbin/su", "/su/bin/su", "/system/app/Superuser.apk").any { File(it).exists() })
         m.put("locationEnabled", Locator.enabled(context.service<LocationManager>()))

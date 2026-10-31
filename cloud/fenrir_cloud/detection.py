@@ -301,6 +301,14 @@ def _apply_side_effects(db: Session, device: Device, norm: dict) -> None:
         from .exposure import record_inventory
 
         record_inventory(db, device, norm["fields"])
+    elif event_type == "mobile.apps.assessed":
+        from . import mobile_protection
+
+        mobile_protection.ingest(db, device, norm["fields"])
+    elif event_type == "mobile.app.removed":
+        from . import mobile_protection
+
+        mobile_protection.removed(db, device, norm["fields"])
 
 
 def _evaluate_correlation(db: Session, device: Device, corr_row: DetectionRule, corr: CorrelationRule, base_id: str,

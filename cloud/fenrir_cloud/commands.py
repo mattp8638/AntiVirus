@@ -118,6 +118,14 @@ CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("device.lostmode", "Lost mode", "Phone", platforms=MOBILE,
                 description="Locks the phone, shows your message and phone number on the screen and reports its "
                             "location every 5 minutes until lost mode is turned off. Use the Location tab."),
+    CommandSpec("app.scan", "Check apps now", "Phone", platforms=MOBILE,
+                description="Check every installed app now, instead of at the daily check."),
+    CommandSpec("app.uninstall", "Remove an app", "Phone", platforms=MOBILE,
+                description="Removes the app in payload.package: silently on company-owned (device owner) phones, otherwise "
+                            "the phone asks its user to remove it."),
+    CommandSpec("app.suspend", "Suspend an app", "Phone", platforms=MOBILE,
+                description="Stops the app in payload.package from running (payload.suspended false lets it run again). "
+                            "Company-owned (device owner) phones only."),
     CommandSpec("device.wipe", "Erase the phone", "Phone", permission="configure", platforms=MOBILE, destructive=True,
                 description="Factory-resets the phone. Everything on it is deleted and it stops reporting. Asks for your "
                             "password again."),
