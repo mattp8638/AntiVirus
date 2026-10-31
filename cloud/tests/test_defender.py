@@ -214,3 +214,11 @@ def test_the_script_never_casts_defender_ages_to_int32():
     body = defender.script({"defender": {**policy_schema.defaults()["defender"], "managed": True},
                             "attackSurface": policy_schema.defaults()["attackSurface"]})
     assert "[int]$status" not in body and "Days $status.QuickScanAge" in body and "reportError" in body
+
+
+def test_whole_drive_exclusions_are_reported(client, admin, tenant, device):
+    _manage(client, admin, tenant, device)
+    _complete(client, device, _check(client, admin, device), _report(exclusions={"paths": ["C:\\", "D:\\", "C:\\Tools"],
+                                                                                 "processes": [], "extensions": []}))
+    view = client.get(f"/api/console/devices/{device['deviceId']}/defender", headers=admin).json()
+    assert view["problems"] == ["Defender excludes whole drives (C:\\, D:\\), so it scans almost nothing there"]

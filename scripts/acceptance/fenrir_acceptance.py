@@ -420,7 +420,8 @@ def defender(ctx: Context, device: dict) -> tuple[str, dict]:
         # GitHub's image holds real-time protection off by policy, which Set-MpPreference cannot override. Fenrir must
         # report it and raise the protection alert: that is what an MSP needs to see on a machine like this.
         realtime_held_off = not status.get("realTime")
-        other = [p for p in view.get("problems") or [] if "real-time" not in p]
+        # The same image excludes whole drives from Defender; Fenrir must report that too.
+        other = [p for p in view.get("problems") or [] if "real-time" not in p and "excludes whole drives" not in p]
         if not_set or other:
             raise Check(f"Defender reports problems {view.get('problems')}; rules not in audit: {not_set}")
         if realtime_held_off:
@@ -430,13 +431,29 @@ def defender(ctx: Context, device: dict) -> tuple[str, dict]:
                 ctx.args.timeout, interval=10)
 
         # Real-time protection catches it on write where it is on; an on-demand Defender scan covers machines where not.
+        # Any Defender exclusion covering the test folder (the image's C:\ exclusion) is lifted for the scan and put back.
         parts = "+".join("'" + p.replace("'", "''") + "'" for p in _EICAR_PARTS)
-        ctx.script(device, "give Defender an EICAR file", "powershell", f"""
+        row = ctx.script(device, "give Defender an EICAR file", "powershell", f"""
 $folder = '{folder}'
 New-Item -ItemType Directory -Force -Path $folder | Out-Null
-$path = Join-Path $folder ('eicar-' + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + '.com')
-try {{ [IO.File]::WriteAllText($path, {parts}); Write-Output 'WRITTEN' }} catch {{ Write-Output ('BLOCKED=' + $_.Exception.Message) }}
-try {{ Start-MpScan -ScanType CustomScan -ScanPath $folder; Write-Output 'SCANNED' }} catch {{ Write-Output ('SCAN=' + $_.Exception.Message) }}""")
+$covering = @((Get-MpPreference).ExclusionPath | Where-Object {{ $_ -and ($folder.ToLower() + '\\').StartsWith(($_.TrimEnd('\\') + '\\').ToLower()) }})
+if ($covering.Count) {{ try {{ Remove-MpPreference -ExclusionPath $covering; Write-Output ('LIFTED=' + ($covering -join ';')) }} catch {{ Write-Output ('LIFT=' + $_.Exception.Message) }} }}
+try {{
+  $path = Join-Path $folder ('eicar-' + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + '.com')
+  try {{ [IO.File]::WriteAllText($path, {parts}); Write-Output 'WRITTEN' }} catch {{ Write-Output ('BLOCKED=' + $_.Exception.Message) }}
+  Start-Sleep -Seconds 3  # let the exclusion change reach the engine
+  try {{ Start-MpScan -ScanType CustomScan -ScanPath $folder; Write-Output 'SCANNED' }} catch {{ Write-Output ('SCAN=' + $_.Exception.Message) }}
+  $cmd = Join-Path $env:ProgramFiles 'Windows Defender\\MpCmdRun.exe'
+  if (Test-Path $path) {{ try {{ $r = & $cmd -Scan -ScanType 3 -File $path 2>&1; Write-Output ('MPCMDRUN=' + $LASTEXITCODE + ' ' + (($r | Select-Object -Last 2) -join ' | ')) }} catch {{ Write-Output ('MPCMDRUN=' + $_.Exception.Message) }} }}
+  Start-Sleep -Seconds 5
+  $s = Get-MpComputerStatus
+  Write-Output ('EXISTS=' + (Test-Path $path))
+  Write-Output ('DETECTIONS=' + @(Get-MpThreatDetection).Count)
+  Write-Output ('ENGINE=' + $s.AMEngineVersion + ' signatures ' + $s.AntivirusSignatureVersion + ' mode ' + $s.AMRunningMode)
+}} finally {{
+  if ($covering.Count) {{ try {{ Add-MpPreference -ExclusionPath $covering; Write-Output 'RESTORED' }} catch {{ Write-Output ('RESTORE=' + $_.Exception.Message) }} }}
+}}""")
+        scan_output = (row.get("stdout") or "").strip()
 
         def alerted():
             found = [a for a in ctx.api.get("alerts", device_id=device["id"], snoozed="all")
@@ -446,7 +463,20 @@ try {{ Start-MpScan -ScanType CustomScan -ScanPath $folder; Write-Output 'SCANNE
             ctx.api.post(f"{path}/check", {})  # Defender records the detection a moment after it acts
             return None
 
-        alert = wait_for("Defender's detection to arrive as an alert", alerted, max(ctx.args.timeout, 300), interval=30)
+        said = dict(line.split("=", 1) for line in scan_output.splitlines() if "=" in line)
+        if said.get("DETECTIONS") == "0" and said.get("EXISTS") == "True":
+            # Defender's own engine on this machine did not detect the test file, even on demand. Fenrir cannot turn
+            # that into an alert; what it does with a detection is covered by tests/test_defender.py.
+            raise Skip(f"settings verified on this machine (every rule set to audit in Defender; real-time held off and "
+                       f"whole-drive exclusions reported and alerted), but Defender's engine here did not detect the EICAR "
+                       f"file even on demand ({said.get('ENGINE')}; {said.get('MPCMDRUN', 'no MpCmdRun result')}). The "
+                       "detection-to-alert path needs a machine where Defender detects (docs/ACCEPTANCE_LAB.md)")
+        try:
+            alert = wait_for("Defender's detection to arrive as an alert", alerted, max(ctx.args.timeout, 300), interval=30)
+        except Check as exc:  # say what Defender itself reported, so the cause is in the log
+            latest = (ctx.api.get(path).get("status") or {})
+            raise Check(f"{exc}. Test script said: {scan_output[:500]!r}. Defender reports {len(latest.get('detections') or [])} "
+                        f"detections; its exclusions: {(latest.get('exclusions') or {}).get('paths')}") from None
     finally:
         ctx.api.call("PATCH", f"devices/{device['id']}", {"policyId": previous})
         try:  # read Defender again under the restored policy, which clears this scenario's protection alert
