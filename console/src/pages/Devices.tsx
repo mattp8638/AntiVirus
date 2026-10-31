@@ -44,7 +44,7 @@ export default function Devices() {
           <option value="isolated">Isolated</option><option value="pending">Awaiting approval</option><option value="at-risk">At risk</option>
         </select>
         <select value={platform} onChange={(e) => setPlatform(e.target.value)} aria-label="Platform">
-          <option value="">All platforms</option><option value="windows">Windows</option><option value="linux">Linux</option><option value="macos">macOS</option><option value="android">Android</option>
+          <option value="">All platforms</option><option value="windows">Windows</option><option value="linux">Linux</option><option value="macos">macOS</option><option value="android">Android</option><option value="ios">iPhone / iPad</option>
         </select>
         <select value={role} onChange={(e) => setRole(e.target.value)} aria-label="Role">
           <option value="">All roles</option><option value="workstation">Workstations</option><option value="server">Servers</option><option value="domain-controller">Domain controllers</option>
@@ -58,7 +58,7 @@ export default function Devices() {
         <Table rows={data} onRow={(r) => navigate(`/devices/${r.id}`)} empty="No devices match. Deploy the agent to get started."
                columns={[
                  { key: "sel", label: "", render: (r) => <input type="checkbox" disabled={r.retired} checked={selected.has(r.id)} onClick={(e) => e.stopPropagation()} onChange={() => toggle(r.id)} aria-label={`Select ${r.hostname}`} /> },
-                 { key: "hostname", label: "Device", render: (r) => <><span className={`dot ${r.online ? "on" : "off"}`} /> <b>{displayValue(r.hostname)}</b>{(r.role === "server" || r.role === "domain-controller") && <> <RoleBadge role={r.role} /></>}<div className="small muted">{displayValue(r.osVersion)}{shownWorkloads(r).length ? ` · ${shownWorkloads(r).join(", ")}` : ""}</div></> },
+                 { key: "hostname", label: "Device", render: (r) => <><span className={`dot ${r.online ? "on" : "off"}`} /> <b>{displayValue(r.hostname)}</b>{(r.role === "server" || r.role === "domain-controller") && <> <RoleBadge role={r.role} /></>}{r.agentless && <> <Pill value="web protection only" tone="blue" /></>}<div className="small muted">{displayValue(r.osVersion)}{shownWorkloads(r).length ? ` · ${shownWorkloads(r).join(", ")}` : ""}</div></> },
                  { key: "tenantId", label: "Tenant", render: (r) => tenantName(r.tenantId) },
                  { key: "platform", label: "Platform" },
                  { key: "agentVersion", label: "Agent", render: (r) => r.agentVersion || "—" },
