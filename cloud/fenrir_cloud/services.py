@@ -140,6 +140,8 @@ def enqueue_command(
 ) -> Command:
     if device.api_key_hash == f"retired-{device.id}":
         raise CommandError("Decommissioned devices cannot receive commands; enrol the device again to manage it.")
+    if (device.metrics or {}).get("agentless"):
+        raise CommandError("This device is protected by a web protection profile only: there is no Fenrir agent on it to run commands.")
     from . import platform_security
 
     if stop := platform_security.stopped(db, command_type):

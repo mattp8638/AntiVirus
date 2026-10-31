@@ -8,7 +8,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from sqlalchemy import String, cast, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
-from .. import approvals, audit, command_control, detection, policy_schema, remote, rmm, script_review, services
+from .. import approvals, audit, command_control, detection, policy_schema, remote, rmm, script_review, services, web_profile
 from ..commands import BY_TYPE, catalog_document
 from ..config import get_settings
 from ..db import get_db
@@ -28,6 +28,7 @@ def _device_view(device: Device, summary: bool = False) -> dict:
     data = to_dict(device, exclude={"dns_token", "inventory"} if summary else {"dns_token"})
     data["retired"] = device.api_key_hash == f"retired-{device.id}"
     data["online"] = not data["retired"] and bool(device.last_seen_at and device.last_seen_at >= utcnow() - ONLINE_WINDOW)
+    data["agentless"] = bool((device.metrics or {}).get("agentless"))
     if summary:
         metrics = device.metrics or {}
         disks = metrics.get("disks") or []
@@ -37,7 +38,7 @@ def _device_view(device: Device, summary: bool = False) -> dict:
             data["metrics"]["diskFreePercent"] = min(d.get("freePercent", 100) for d in disks)
         inventory = device.inventory or {}
         # Workstation / server / domain controller, for list badges and filters.
-        data["role"] = inventory.get("role") or ("phone" if device.platform == "android" else None)
+        data["role"] = inventory.get("role") or ("phone" if device.platform in ("android", "ios") else None)
         data["roleLabel"] = inventory.get("roleLabel")
         data["workloads"] = (inventory.get("workloads") or [])[:6]
     return data
@@ -137,7 +138,9 @@ def device_detail(device_id: str, principal: Principal = Depends(current_princip
     base = get_settings().public_base_url.rstrip("/")
     return {
         "device": _device_view(device),
-        "policy": {"revision": agent_doc["revision"], "applied": device.applied_policy_revision == agent_doc["revision"],
+        # A profile device has nothing to apply: its resolver reads the policy on every lookup.
+        "policy": {"revision": agent_doc["revision"],
+                   "applied": device.applied_policy_revision == agent_doc["revision"] or bool((device.metrics or {}).get("agentless")),
                    "settings": resolution["settings"], "origin": resolution["origin"], "locked": resolution["locked"],
                    "overridesBlocked": resolution["overridesBlocked"]},
         "dnsOverHttpsUrl": f"{base}/dns/{device.dns_token}/dns-query",
@@ -203,6 +206,8 @@ def retire_device(device_id: str, principal: Principal = Depends(current_princip
         asset.updated_at = utcnow()
     device.approved = False
     device.api_key_hash = f"retired-{device.id}"
+    if web_profile.agentless(device):
+        web_profile.resolve_silent(db, device, utcnow(), "The device was decommissioned.")
     audit.record(db, principal.actor, "device.retired", device.hostname, device.tenant_id, **cancellation)
     db.commit()
     for session in active_support:

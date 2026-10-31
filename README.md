@@ -369,6 +369,7 @@ passkeys follow the same rule as passwords: platform administrators only.
 | Linux | Download the generated customer installer, inspect it and run `sudo sh /path/to/installer.sh`. It installs a systemd service. Desktop remote control needs X11; terminal/files are separate capabilities. |
 | macOS | Use the generated macOS installer with administrator rights. It installs the Go agent as a LaunchDaemon; grant required OS permissions, including Full Disk Access where needed. This is not the older Swift prototype. |
 | Android | Use phone enrolment and grant requested device/location permissions. Capabilities differ from desktop agents. |
+| iPhone, iPad, Mac (no agent) | Use phone enrolment: the code installs a Fenrir DNS profile for web and phishing protection. There is no app, Intune or Apple MDM, and so no remote actions. See [Apple web protection](docs/APPLE_WEB_PROTECTION.md). |
 
 Do not run a manual/prototype service beside an installed agent. Keep uninstall-protection credentials and use the normal maintenance/installer flow for upgrades.
 

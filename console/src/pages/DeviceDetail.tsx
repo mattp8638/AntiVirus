@@ -1,6 +1,7 @@
 import { displayValue } from "../components/DisplayValue";
 import { DeviceDefender } from "../components/Defender";
 import { MobileApps } from "../components/MobileApps";
+import { WebProtection } from "../components/WebProtection";
 import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ago, api, fmtTime, getToken } from "../api";
@@ -37,8 +38,14 @@ const PHONE_SECTIONS: { key: string; label: string; subs?: string[] }[] = [
   { key: "activity", label: "Activity", subs: ["Remote actions"] },
   { key: "settings", label: "Settings", subs: ["Effective policy", "Device details"] },
 ];
+// iPhones, iPads and Macs with only Fenrir's DNS profile: no agent, so no remote actions, scripts or inventory.
+const PROFILE_SECTIONS: { key: string; label: string; subs?: string[] }[] = [
+  { key: "overview", label: "Web protection" },
+  { key: "security", label: "Security", subs: ["Alerts"] },
+  { key: "settings", label: "Settings", subs: ["Effective policy", "Device details"] },
+];
 const OPEN_ALERT = (a: any) => !["resolved", "closed", "false_positive"].includes(a.status);
-const PLATFORM_GLYPH: Record<string, string> = { windows: "⊞", macos: "⌘", linux: "🐧", android: "📱" };
+const PLATFORM_GLYPH: Record<string, string> = { windows: "⊞", macos: "⌘", linux: "🐧", android: "📱", ios: "📱" };
 
 // A small drop-down menu: closes on outside click or Escape.
 function Menu({ label, children }: { label: React.ReactNode; children: (close: () => void) => React.ReactNode }) {
@@ -84,7 +91,8 @@ export default function DeviceDetail() {
   const { data: groups } = useListData<any>("groups", { tenant_id: data?.device.tenantId }, [data?.device.tenantId]);
   const { data: profile } = useData<any>(id ? `devices/${id}/profile` : null);
   const isPhone = data?.device.platform === "android";
-  const { data: patches } = useData<any>(id && data && !isPhone ? `rmm/devices/${id}/patches` : null, {}, [isPhone]);
+  const agentless = Boolean(data?.device.agentless);
+  const { data: patches } = useData<any>(id && data && !isPhone && !agentless ? `rmm/devices/${id}/patches` : null, {}, [isPhone, agentless]);
   const { data: whereabouts, reload: reloadWhere } = useData<any>(id && isPhone ? `devices/${id}/locations` : null, { hours: 24 }, [isPhone]);
   const [reinstating, setReinstating] = useState(false);
   const [installerReady, setInstallerReady] = useState(false);
@@ -111,7 +119,7 @@ export default function DeviceDetail() {
   if (!data) return <div className="empty">Loading…</div>;
   const d = data.device;
   const isWindows = String(d.platform || "windows").toLowerCase() === "windows";
-  const sections = isPhone ? PHONE_SECTIONS : SECTIONS.map((s) => s.key === "security" && !isWindows ? { ...s, subs: s.subs!.filter((x) => x !== "Local admin" && x !== "Microsoft Defender") } : s);
+  const sections = agentless ? PROFILE_SECTIONS : isPhone ? PHONE_SECTIONS : SECTIONS.map((s) => s.key === "security" && !isWindows ? { ...s, subs: s.subs!.filter((x) => x !== "Local admin" && x !== "Microsoft Defender") } : s);
   const section = sections.find((s) => s.key === params.get("tab")) ?? sections[0];
   const sub = section.subs ? (section.subs.find((s) => s === params.get("sub")) ?? section.subs[0]) : undefined;
   const go = (tab: string, subPage?: string) => {
@@ -204,7 +212,14 @@ export default function DeviceDetail() {
               <button role="menuitem" className="danger-text" onClick={() => { close(); setRetireName(""); setRetiring(true); }}>Decommission device…</button></>}
           </>}</Menu>
         </div>}
-        {!d.retired && can("respond") && !isPhone && <div className="device-actions">
+        {!d.retired && agentless && <div className="device-actions">
+          <Menu label="More">{(close) => <>
+            <button role="menuitem" onClick={() => { close(); navigator.clipboard?.writeText(d.id); }}>Copy device ID</button>
+            {can("configure") && <><div className="menu-sep" />
+              <button role="menuitem" className="danger-text" onClick={() => { close(); setRetireName(""); setRetiring(true); }}>Decommission device…</button></>}
+          </>}</Menu>
+        </div>}
+        {!d.retired && can("respond") && !isPhone && !agentless && <div className="device-actions">
           {!d.approved && can("configure") && <button className="primary" onClick={() => patch({ approved: true }, "Device approved")}>Approve</button>}
           <ConnectButtons device={d} />
           {can("remote") && <button className="ghost" title="Agent, tunnel through a peer, or Intel AMT out-of-band" onClick={() => setRoutesOpen(true)}>All routes</button>}
@@ -246,10 +261,11 @@ export default function DeviceDetail() {
         </div>)}
       {d.retired && <div className="card" role="status" style={{ marginBottom: 12, borderColor: "rgba(100,116,139,.6)" }}>
         <div className="row">
-          <span style={{ flex: 1 }}>Decommissioned: agent access is revoked. History stays available. Reinstate to reconnect the endpoint to this record.
+          <span style={{ flex: 1 }}>{agentless ? "Decommissioned: nothing is filtered for this device any more, but its lookups still get plain answers so it keeps working. Remove the Fenrir profile from the device. History stays available."
+            : "Decommissioned: agent access is revoked. History stays available. Reinstate to reconnect the endpoint to this record."}
             {data.stoppingCommands > 0 && <div>{displayValue(data.stoppingCommands)} action(s) awaiting a stop acknowledgement.</div>}
           </span>
-          {can("configure") && <><button className="primary" onClick={() => { setInstallerReady(false); setReinstating(true); }}>Reinstate device</button>
+          {can("configure") && <>{!agentless && <button className="primary" onClick={() => { setInstallerReady(false); setReinstating(true); }}>Reinstate device</button>}
             <button className="danger" onClick={() => { setPurgeName(""); setPurging(true); }}>Delete permanently</button></>}
         </div>
       </div>}
@@ -263,7 +279,7 @@ export default function DeviceDetail() {
         <StatTile label="Screen lock" value={m.screenLockSecure === undefined ? "—" : m.screenLockSecure ? "Set" : "None"} tone={m.screenLockSecure === undefined ? undefined : m.screenLockSecure ? "good" : "bad"} sub={m.securityPatch ? `patch ${m.securityPatch}` : "PIN, pattern or password"} />
         <StatTile label="Open alerts" value={openAlerts.length} tone={openAlerts.length ? "warn" : "good"} sub={`risk score ${d.riskScore}`} onClick={() => go("security", "Alerts")} />
       </div>}
-      {!d.retired && !isPhone && <div className="stat-strip">
+      {!d.retired && !isPhone && !agentless && <div className="stat-strip">
         <StatTile label="CPU" value={pct(m.cpuPercent)} tone={levelTone(m.cpuPercent, 70, 90)} sub={m.reportedAt ? `reported ${ago(m.reportedAt)}` : "no data yet"} onClick={() => go("health")} />
         <StatTile label="Memory" value={pct(m.memoryPercent)} tone={levelTone(m.memoryPercent, 80, 92)} sub={m.memoryTotalGb ? `of ${Math.round(m.memoryTotalGb)} GB` : undefined} onClick={() => go("health")} />
         <StatTile label="Disk free" value={diskFree === undefined ? "—" : `${Math.round(diskFree)}%`} tone={diskFree === undefined ? undefined : diskFree < 5 ? "bad" : diskFree < 15 ? "warn" : "good"} sub="lowest volume" onClick={() => go("system")} />
@@ -281,7 +297,9 @@ export default function DeviceDetail() {
         {section.subs.map((s) => <button key={s} className={s === sub ? "active" : ""} onClick={() => go(section.key, s)}>{s}{subCounts[s] ? <span className="sub-count">{subCounts[s]}</span> : null}</button>)}
       </div>}
 
-      {section.key === "overview" && <DeviceOverview data={data} profile={profile} patches={patches} go={go} management={management} whereabouts={whereabouts} />}
+      {section.key === "overview" && (agentless ? <div className="grid k2"><WebProtection deviceId={d.id} />
+        <div className="card"><h3>Management</h3>{management}</div></div>
+        : <DeviceOverview data={data} profile={profile} patches={patches} go={go} management={management} whereabouts={whereabouts} />)}
       {section.key === "health" && <HealthTab deviceId={d.id} />}
       {section.key === "location" && <Suspense fallback={<div className="empty">Loading map…</div>}><LocationTab device={d} onChanged={() => { reload(); reloadWhere(); }} /></Suspense>}
       {section.key === "system" && <SystemTab deviceId={d.id} />}

@@ -41,6 +41,7 @@ from .routers import clients as clients_router
 from .routers import search as search_router
 from .routers import defender as defender_router
 from .routers import mobile_apps as mobile_apps_router
+from .routers import web_profile as web_profile_router
 from .routers import oob as oob_router
 from .routers import customization as customization_router
 from .routers import grc_assurance as grc_assurance_router
@@ -209,7 +210,7 @@ def _purge_telemetry(db, settings: Settings) -> dict:
 
 def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
     """Hourly jobs, in order."""
-    from . import autodoc, billing_sync, client360, darkweb, defender, grc_automation, m365_partner, m365_standards, tprm
+    from . import autodoc, billing_sync, client360, darkweb, defender, grc_automation, m365_partner, m365_standards, tprm, web_profile
 
     jobs: list[tuple[str, object]] = [("telemetry.retention", lambda db: _purge_telemetry(db, settings))]
     if settings.feed_sync_enabled:
@@ -219,7 +220,7 @@ def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
     jobs += [("m365.partner", m365_partner.tick), ("documentation.auto", autodoc.tick), ("tprm", tprm.tick),
              ("grc.automation", grc_automation.tick), ("darkweb", darkweb.tick), ("m365.standards", m365_standards.tick),
              ("billing.sync", billing_sync.tick), ("clients.health", client360.tick),
-             ("defender", defender.tick)]
+             ("defender", defender.tick), ("web.profiles", web_profile.tick)]
     if settings.dns_blocklists_enabled:
         from . import blocklists
 
@@ -494,6 +495,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from .routers import mobile as mobile_router
     app.include_router(mobile_router.agent)
     app.include_router(mobile_router.console)
+    app.include_router(web_profile_router.router)
+    app.include_router(web_profile_router.console)
     from .routers import elevation as elevation_router
     app.include_router(elevation_router.agent)
     app.include_router(elevation_router.console)

@@ -58,7 +58,8 @@ def resolve_targets(db: Session, allowed_tenants: set[str] | frozenset[str], tar
     if tenant_ids:
         for device in db.execute(query.where(Device.tenant_id.in_(tenant_ids & set(allowed_tenants)))).scalars():
             selected[device.id] = device
-    devices = list(selected.values())
+    # Every caller sends commands; a profile-only iPhone or Mac has no agent to run them.
+    devices = [d for d in selected.values() if not (d.metrics or {}).get("agentless")]
     if platforms:
         devices = [d for d in devices if d.platform in platforms]
     if tags:
@@ -973,7 +974,8 @@ def metric_value(db: Session, condition: MonitorCondition, device: Device, now: 
     metrics = device.metrics or {}
     m, target = condition.metric, condition.target.strip()
     if m == "offline_minutes":
-        if device.last_seen_at is None:
+        # Profile-only iPhones and Macs are seen only while they look names up: web_profile raises its own alert.
+        if device.last_seen_at is None or (device.metrics or {}).get("agentless"):
             return None, ""
         minutes = (now - device.last_seen_at).total_seconds() / 60
         return round(minutes, 1), f"offline for {int(minutes)} minutes"

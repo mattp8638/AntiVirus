@@ -11,7 +11,7 @@ from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Qu
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import audit, blocklists, compliance, dnsfilter, exposure, intel, services, vulnmgmt
+from .. import audit, blocklists, compliance, dnsfilter, exposure, intel, services, vulnmgmt, web_profile
 from ..config import get_settings
 from ..db import get_db, session_factory
 from ..deps import Principal, current_principal, scoped_tenant
@@ -29,15 +29,19 @@ DNS_MESSAGE = "application/dns-message"
 
 def _dns_device(db: Session, token: str) -> Device:
     device = db.execute(select(Device).where(Device.dns_token == token)).scalar_one_or_none()
-    if device is None or device.api_key_hash.startswith("retired-"):
+    # A decommissioned iPhone or Mac still has the profile until someone removes it: it gets plain answers meanwhile.
+    if device is None or (device.api_key_hash.startswith("retired-") and not web_profile.agentless(device)):
         raise HTTPException(404, "Unknown resolver")
     return device
 
 
-def _doh(db: Session, device: Device, wire: bytes) -> Response:
+def _doh(db: Session, device: Device, wire: bytes, request: Request | None = None) -> Response:
     settings = get_settings()
     resolution, _ = services.effective_policy(db, device)
     dns_settings = resolution["settings"]["dns"]
+    if web_profile.agentless(device):
+        dns_settings = web_profile.resolver_settings(device, dns_settings)
+        web_profile.touch(db, device, request.client.host if request is not None and request.client else "")
     if not dns_settings["enabled"]:
         dns_settings = {**dns_settings, "blockedCategories": [], "blockDomains": [], "mode": "observe", "logQueries": "none"}
     try:
@@ -55,12 +59,12 @@ def _doh(db: Session, device: Device, wire: bytes) -> Response:
 
 
 @router.get("/dns/{token}/dns-query", include_in_schema=False)
-def doh_get(token: str, dns_param: str = Query(alias="dns"), db: Session = Depends(get_db)):
+def doh_get(token: str, request: Request, dns_param: str = Query(alias="dns"), db: Session = Depends(get_db)):
     try:
         wire = dnsfilter.decode_get_param(dns_param)
     except ValueError as exc:
         raise HTTPException(400, "dns parameter is not base64url") from exc
-    return _doh(db, _dns_device(db, token), wire)
+    return _doh(db, _dns_device(db, token), wire, request)
 
 
 @router.post("/dns/{token}/dns-query", include_in_schema=False)
@@ -70,7 +74,7 @@ async def doh_post(token: str, request: Request, db: Session = Depends(get_db)):
     wire = await request.body()
     if len(wire) > 4096:
         raise HTTPException(413, "DNS message too large")
-    return _doh(db, _dns_device(db, token), wire)
+    return _doh(db, _dns_device(db, token), wire, request)
 
 
 @console.get("/dns/check")
