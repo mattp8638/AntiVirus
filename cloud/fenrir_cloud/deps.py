@@ -11,6 +11,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from . import presence
 from .config import get_settings
 from .db import get_db
 from .models import Command, Device, Tenant, User, utcnow
@@ -155,7 +156,7 @@ def current_device(
     device = db.execute(select(Device).where(Device.api_key_hash == digest(x_device_api_key))).scalar_one_or_none()
     if device is None or device.id != device_id:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unknown device credentials")
-    device.last_seen_at = utcnow()
+    presence.touch(device)
     return device
 
 
@@ -169,9 +170,7 @@ def current_command_device(
     key_hash = digest(x_device_api_key)
     device = db.get(Device, device_id)
     if device is not None and hmac.compare_digest(device.api_key_hash, key_hash):
-        now = utcnow()
-        if device.last_seen_at is None or device.last_seen_at < now - timedelta(seconds=30):
-            device.last_seen_at = now
+        presence.touch(device)
         return device
     command = db.get(Command, command_id)
     if (device is not None
@@ -207,5 +206,5 @@ def current_device_by_key(x_device_api_key: str | None = Header(default=None), d
     device = db.execute(select(Device).where(Device.api_key_hash == digest(x_device_api_key))).scalar_one_or_none()
     if device is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unknown device credentials")
-    device.last_seen_at = utcnow()
+    presence.touch(device)
     return device

@@ -26,6 +26,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from . import presence
 from .models import (Alert, BackupPlan, BackupRun, ClientHealthSnapshot, ClientReport, Command, Contract, Device, DevicePatch,
                      DnsQueryLog, Event, Incident, Job, M365Connection, Tenant, Ticket, TimeEntry, Vulnerability, utcnow)
 
@@ -61,7 +62,7 @@ def _devices(db: Session, tenant: Tenant, now: datetime) -> tuple[dict, list[Dev
                if d.api_key_hash != f"retired-{d.id}"]
     if not devices:
         return _part("devices", None, "No devices yet"), devices
-    online = sum(1 for d in devices if d.last_seen_at and d.last_seen_at >= now - timedelta(minutes=10))
+    online = sum(1 for d in devices if presence.is_up(d, now))
     stale = [d for d in devices if not d.last_seen_at or d.last_seen_at < now - STALE_DEVICE]
     return _part("devices", 100 * (len(devices) - len(stale)) / len(devices), f"{online} of {len(devices)} online now",
                  f"{len(stale)} not seen for 7 days or more" if stale else "All checked in this week",

@@ -11,7 +11,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from .. import audit, evidence, psa, services
+from .. import audit, evidence, presence, psa, services
 from ..db import get_db
 from ..deps import Principal, current_principal, scoped_tenant
 from ..detection import RULES, playbooks
@@ -31,7 +31,6 @@ def dashboard(tenant_id: str | None = None, days: int = Query(default=7, ge=1, l
               principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     scope = scoped_tenant(principal, tenant_id)
     since = utcnow() - timedelta(days=days)
-    online_cutoff = utcnow() - timedelta(minutes=10)
     devices = db.execute(select(Device).where(Device.tenant_id.in_(scope))).scalars().all()
     alerts = db.execute(select(Alert.severity, func.count()).where(Alert.tenant_id.in_(scope), Alert.created_at >= since)
                         .group_by(Alert.severity)).all()
@@ -62,7 +61,7 @@ def dashboard(tenant_id: str | None = None, days: int = Query(default=7, ge=1, l
     return {
         "devices": {
             "total": len(devices),
-            "online": sum(1 for d in devices if d.last_seen_at and d.last_seen_at >= online_cutoff),
+            "online": sum(1 for d in devices if presence.is_up(d)),
             "isolated": sum(1 for d in devices if d.isolated),
             "pendingApproval": sum(1 for d in devices if not d.approved),
             "atRisk": sum(1 for d in devices if d.risk_score >= 40),

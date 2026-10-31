@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ago, api } from "../api";
 import { useApp } from "../app-context";
-import { ErrorNote, Meter, Modal, PageHead, Pill, Table, useAction, useListData } from "../components/ui";
+import { ErrorNote, Meter, Modal, PageHead, Pill, PresenceDot, presenceOf, Table, useAction, useAutoRefresh, useListData } from "../components/ui";
 import { ConnectButtons, pct } from "../components/rmm";
 import { SavedViews } from "../components/Customization";
 
@@ -17,6 +17,7 @@ export default function Devices() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulk, setBulk] = useState(false);
   const { data, error, reload } = useListData<any>("devices", { tenant_id: tenantId, q, status, platform, role });
+  useAutoRefresh(reload);
 
   useEffect(() => {
     setSelected(new Set());
@@ -58,7 +59,7 @@ export default function Devices() {
         <Table rows={data} onRow={(r) => navigate(`/devices/${r.id}`)} empty="No devices match. Deploy the agent to get started."
                columns={[
                  { key: "sel", label: "", render: (r) => <input type="checkbox" disabled={r.retired} checked={selected.has(r.id)} onClick={(e) => e.stopPropagation()} onChange={() => toggle(r.id)} aria-label={`Select ${r.hostname}`} /> },
-                 { key: "hostname", label: "Device", render: (r) => <><span className={`dot ${r.online ? "on" : "off"}`} /> <b>{displayValue(r.hostname)}</b>{(r.role === "server" || r.role === "domain-controller") && <> <RoleBadge role={r.role} /></>}{r.agentless && <> <Pill value="web protection only" tone="blue" /></>}<div className="small muted">{displayValue(r.osVersion)}{shownWorkloads(r).length ? ` · ${shownWorkloads(r).join(", ")}` : ""}</div></> },
+                 { key: "hostname", label: "Device", render: (r) => <><PresenceDot device={r} /> <b>{displayValue(r.hostname)}</b>{(r.role === "server" || r.role === "domain-controller") && <> <RoleBadge role={r.role} /></>}{r.agentless && <> <Pill value="web protection only" tone="blue" /></>}<div className="small muted">{displayValue(r.osVersion)}{shownWorkloads(r).length ? ` · ${shownWorkloads(r).join(", ")}` : ""}</div></> },
                  { key: "tenantId", label: "Tenant", render: (r) => tenantName(r.tenantId) },
                  { key: "platform", label: "Platform" },
                  { key: "agentVersion", label: "Agent", render: (r) => r.agentVersion || "—" },
@@ -71,7 +72,7 @@ export default function Devices() {
                  { key: "health", label: "CPU · Mem · Disk free", render: (r) => r.metrics?.reportedAt ? <span className="small mono">{pct(r.metrics.cpuPercent)} · {pct(r.metrics.memoryPercent)} · <span style={{ color: r.metrics.diskFreePercent < 10 ? "#fecaca" : undefined }}>{pct(r.metrics.diskFreePercent)}</span></span> : <span className="muted small">—</span> },
                  { key: "user", label: "User", render: (r) => <span className="small">{displayValue(r.metrics?.loggedOnUser || "—")}{r.metrics?.rebootPending && <> <Pill value="restart" tone="warn" /></>}</span> },
                  { key: "riskScore", label: "Risk", render: (r) => <div style={{ minWidth: 90 }}><Meter value={r.riskScore} /><span className="small muted">{displayValue(r.riskScore)}</span></div> },
-                 { key: "lastSeenAt", label: "Last seen", render: (r) => ago(r.lastSeenAt) },
+                 { key: "lastSeenAt", label: "Last seen", render: (r) => <span title={presenceOf(r).title}>{presenceOf(r).label === "Online" ? ago(r.lastSeenAt) : `${presenceOf(r).label} · ${ago(r.lastSeenAt)}`}</span> },
                  { key: "connect", label: "", render: (r) => r.online && <ConnectButtons device={r} compact /> },
                ]} />
       </div>

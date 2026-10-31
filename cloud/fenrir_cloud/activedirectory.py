@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from . import presence
 from .models import Alert, Device, DeviceProfile, Event, utcnow
 
 ROLE_LABELS = {"domain-controller": "Domain controller", "server": "Server", "workstation": "Workstation"}
@@ -261,7 +262,7 @@ def domains(db: Session, tenant_ids: list[str]) -> list[dict]:
         name = str(((ad or {}).get("domain") or {}).get("dnsName") or (data.get("role") or {}).get("domain") or "unknown").lower()
         entry = grouped.setdefault((device.tenant_id, name), {"tenantId": device.tenant_id, "domain": name, "snapshot": None,
                                                               "snapshotAt": None, "auditPolicy": None, "agents": []})
-        online = bool(device.last_seen_at and device.last_seen_at >= utcnow() - timedelta(minutes=15))
+        online = presence.is_up(device)
         entry["agents"].append({"deviceId": device.id, "hostname": device.hostname, "online": online,
                                 "lastSeen": device.last_seen_at.isoformat() + "Z" if device.last_seen_at else None,
                                 "profileAt": profile.collected_at.isoformat() + "Z" if profile.collected_at else None,

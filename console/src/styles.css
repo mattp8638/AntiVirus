@@ -115,6 +115,7 @@ label.field input, label.field select, label.field textarea { color: var(--text)
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .dot.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
 .dot.off { background: #475569; }
+.dot.sleep { background: var(--warn, #f59e0b); opacity: .75; }
 
 /* Misc */
 .muted { color: var(--muted); }

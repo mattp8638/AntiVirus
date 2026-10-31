@@ -6,10 +6,10 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import amt, audit, remote, services
+from .. import amt, audit, presence, remote, services
 from ..db import get_db
 from ..deps import Principal, current_device, current_principal, require_reauth, scoped_tenant
-from ..models import AmtEndpoint, Command, Device, NetworkNode, utcnow
+from ..models import AmtEndpoint, Command, Device, NetworkNode
 
 router = APIRouter(prefix="/api/console", tags=["Out-of-band management"])
 agent_router = APIRouter(prefix="/api/v1", tags=["Agent API"])
@@ -208,7 +208,7 @@ def remote_routes(device_id: str | None = None, node_id: str | None = None, prin
             raise HTTPException(404, "Not found")
         tenant_id = device.tenant_id
         policy = remote.remote_policy(db, device)
-        online = remote.hub.device_online(device.id) or bool(device.last_seen_at and (utcnow() - device.last_seen_at).total_seconds() < 600)
+        online = remote.hub.device_online(device.id) or presence.state(device) == "online"
         if policy.get("enabled", True):
             modes = (["desktop"] if device.platform in DESKTOP_PLATFORMS else []) + \
                     [m for m, key in (("terminal", "allowTerminal"), ("files", "allowFileTransfer")) if policy.get(key, True)] + \

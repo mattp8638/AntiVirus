@@ -8,7 +8,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from .. import approvals, audit, rmm, script_review, services
+from .. import approvals, audit, presence, rmm, script_review, services
 from ..commands import BY_TYPE, INTERACTIVE_ONLY
 from ..db import get_db
 from ..deps import Principal, current_principal, require_reauth, scoped_tenant
@@ -52,7 +52,7 @@ def overview(tenant_id: str | None = None, principal: Principal = Depends(curren
     scope = scoped_tenant(principal, tenant_id)
     now = utcnow()
     devices = db.execute(select(Device).where(Device.tenant_id.in_(scope), Device.approved.is_(True))).scalars().all()
-    online = [d for d in devices if d.last_seen_at and now - d.last_seen_at < timedelta(minutes=5)]
+    online = [d for d in devices if presence.is_up(d, now)]
     triggered = db.execute(select(func.count()).where(ConditionState.tenant_id.in_(scope), ConditionState.triggered.is_(True))).scalar() or 0
     jobs_running = db.execute(select(func.count()).where(Job.tenant_id.in_(scope), Job.status.in_(("running", "cancelling")))).scalar() or 0
     active_sessions = db.execute(select(func.count()).where(RemoteSession.tenant_id.in_(scope),

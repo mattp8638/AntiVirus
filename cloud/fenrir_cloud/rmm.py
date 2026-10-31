@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import audit, services
+from . import audit, presence, services
 from .models import (Alert, Command, ConditionState, Device, DeviceGroup, DeviceMetric, DevicePatch, DiskTelemetryHistory, Job, MonitorCondition,
                      PatchApproval, PatchPolicy, ScheduledTask, Script, SoftwarePackage, Ticket, Vulnerability, utcnow)
 
@@ -803,10 +803,9 @@ def _run_protection_policy_windows(db: Session, rmm_policies: list[PatchPolicy],
 def queue_patch_scans(db: Session, now: datetime | None = None) -> int:
     """Ask online devices for a patch scan when their last one is older than the policy interval (default 12h)."""
     now = now or utcnow()
-    online_since = now - timedelta(minutes=10)
     policies = db.execute(select(PatchPolicy).where(PatchPolicy.enabled.is_(True))).scalars().all()
     queued = 0
-    for device in db.execute(select(Device).where(Device.approved.is_(True), Device.last_seen_at >= online_since)).scalars():
+    for device in db.execute(select(Device).where(Device.approved.is_(True), presence.up_clause(now))).scalars():
         policy = policy_for_device(db, device, [p for p in policies if p.tenant_id == device.tenant_id])
         interval = timedelta(hours=(policy.scan_interval_hours if policy else 24) or 24)
         incomplete = (device.metrics or {}).get("patchScanStatus") in {"partial", "failed"}
