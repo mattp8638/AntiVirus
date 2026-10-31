@@ -4,7 +4,7 @@ import { useParams } from "react-router-dom";
 import { api } from "../../api";
 import { useApp } from "../../app-context";
 import { Modal, PageHead, Pill, Table, Tabs, useAction, useData, useListData } from "../../components/ui";
-import { promptDialog } from "../../components/dialogs";
+import { confirmDialog, promptDialog } from "../../components/dialogs";
 
 export default function PsaSettings() {
   const [tab, setTab] = useState("Boards");
@@ -62,7 +62,12 @@ function BoardEditor({ board, onClose }: { board: any; onClose: () => void }) {
   };
   const setStatus = (i: number, patch: any) => setForm({ ...form, statuses: form.statuses.map((s: any, j: number) => (i === j ? { ...s, ...patch } : s)) });
   return (
-    <Modal title={`Board: ${form.name}`} onClose={onClose} footer={<button className="primary" disabled={busy} onClick={save}>Save board</button>}>
+    <Modal title={`Board: ${form.name}`} onClose={onClose} footer={<>
+      <button className="danger" disabled={busy} onClick={async () => {
+        if (await confirmDialog(`Delete the board "${form.name}"? Fenrir refuses while tickets are on it, or if it is the only board.`, { confirmLabel: "Delete board" })
+            && await run(() => api(`psa/boards/${form.id}`, { method: "DELETE" }), "Board deleted")) onClose();
+      }}>Delete board</button>
+      <button className="primary" disabled={busy} onClick={save}>Save board</button></>}>
       <div className="form-grid">
         <label className="field">Name<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
         <label className="field">Default priority<select value={form.defaultPriority} onChange={(e) => setForm({ ...form, defaultPriority: e.target.value })}>{["P1", "P2", "P3", "P4"].map((p) => <option key={p}>{p}</option>)}</select></label>

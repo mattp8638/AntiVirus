@@ -43,6 +43,35 @@ export function useData<T>(path: string | null, query: Record<string, unknown> =
   return { data, error, loading, reload, setData };
 }
 
+/** Re-fetch every few seconds while the page is on screen, and straight away when the tab comes back. */
+export function useAutoRefresh(reload: () => unknown, ms = 15000) {
+  useEffect(() => {
+    const tick = () => { if (document.visibilityState === "visible") reload(); };
+    const timer = setInterval(tick, ms);
+    document.addEventListener("visibilitychange", tick);
+    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", tick); };
+  }, [reload, ms]);
+}
+
+// Device presence, decided by the server (presence.py): agents are online when heard from in the last 2 minutes
+// (they ping every 30 seconds); phones in power saving are "asleep" for up to 30 minutes, which is not a fault.
+const PRESENCE: Record<string, { label: string; dot: string; title: string }> = {
+  online: { label: "Online", dot: "on", title: "Heard from in the last 2 minutes" },
+  asleep: { label: "Asleep", dot: "sleep", title: "The phone is saving power. It checks in about every 10 minutes and runs actions when it wakes." },
+  idle: { label: "Idle", dot: "sleep", title: "No website lookups in the last 15 minutes. Normal when the device is not being used." },
+  offline: { label: "Offline", dot: "off", title: "Not heard from for over 2 minutes (30 for a phone)" },
+  retired: { label: "Decommissioned", dot: "off", title: "Decommissioned" },
+};
+
+export function presenceOf(device: { presence?: string; online?: boolean }) {
+  return PRESENCE[device.presence ?? (device.online ? "online" : "offline")] ?? PRESENCE.offline;
+}
+
+export function PresenceDot({ device }: { device: { presence?: string; online?: boolean } }) {
+  const p = presenceOf(device);
+  return <span className={`dot ${p.dot}`} title={`${p.label}: ${p.title}`} aria-label={p.label} />;
+}
+
 /** List endpoints are validated at runtime; a 200 response is not necessarily a JSON array. */
 export function useListData<T>(path: string | null, query: Record<string, unknown> = {}, deps: unknown[] = []) {
   return useData<T[]>(path, query, deps, true);

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, WebSocket
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import audit, psa, remote, services
+from .. import audit, presence, psa, remote, services
 from ..db import get_db, session_factory
 from ..deps import Principal, current_principal, require_reauth, scoped_tenant
 from ..config import get_settings
@@ -419,6 +420,13 @@ def _device_for_key(db: Session, device_id: str, api_key: str | None) -> bool:
     return True
 
 
+def _touch_device(db: Session, device_id: str) -> None:
+    """A ping on the live connection is a check-in: it keeps the device online without waiting for a heartbeat."""
+    device = db.get(Device, device_id)
+    if device is not None and not presence.retired(device):
+        presence.touch(device)
+
+
 @sockets.websocket("/api/v1/devices/{device_id}/realtime")
 async def device_realtime(websocket: WebSocket, device_id: str, key: str | None = None):
     """A long-lived socket agents hold so actions (remote sessions, scripts) start instantly instead of on the next poll."""
@@ -430,6 +438,7 @@ async def device_realtime(websocket: WebSocket, device_id: str, key: str | None 
     peer = remote.Peer(websocket, actor=f"device:{device_id}")
     remote.hub.register_device(device_id, peer)
     await peer.send(json.dumps({"type": "hello", "pollNow": True}))
+    last_touch = time.monotonic()
     try:
         while True:
             message = await websocket.receive()
@@ -437,5 +446,11 @@ async def device_realtime(websocket: WebSocket, device_id: str, key: str | None 
                 break
             if (message.get("text") or "").strip() == "ping":
                 await peer.send("pong")
+                if time.monotonic() - last_touch >= presence.TOUCH_EVERY.total_seconds():
+                    last_touch = time.monotonic()
+                    try:
+                        await run_in_threadpool(_db_call, _touch_device, device_id)
+                    except Exception as exc:  # noqa: BLE001 - a busy database must not drop the live connection
+                        log.warning("could not record a realtime check-in for %s: %s", device_id, exc)
     finally:
         remote.hub.unregister_device(device_id, peer)

@@ -13,7 +13,7 @@ from typing import Callable
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import policy_schema, services
+from . import policy_schema, presence, services
 from .models import Device, Tenant, Vulnerability, utcnow
 
 
@@ -174,7 +174,7 @@ def _context(db: Session, tenant: Tenant) -> Context:
     crit, kev = sum(crit_states.values()), sum(kev_states.values())
     return Context(
         settings=resolution["settings"], devices=len(devices),
-        online=sum(1 for d in devices if d.last_seen_at and d.last_seen_at >= utcnow() - timedelta(minutes=15)),
+        online=sum(1 for d in devices if presence.is_up(d)),
         stale=sum(1 for d in devices if not d.last_seen_at or d.last_seen_at < week_ago),
         outdated_agents=sum(1 for d in devices if d.agent_version and d.agent_version != newest),
         critical_vulns=crit, kev_vulns=kev, isolated=sum(1 for d in devices if d.isolated),

@@ -12,7 +12,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
-from sqlalchemy import delete, func, text, select
+from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from .. import roles, sessions, sso, audit, crypto, deployment_installers, passkeys, platform_security, ratelimit
@@ -643,6 +643,16 @@ def update_tenant(tenant_id: str, body: dict = Body(...), principal: Principal =
     principal.require("manage_tenants")
     principal.check_tenant(tenant_id)
     tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(404, "Not found")
+    if "name" in body and not str(body.get("name") or "").strip():
+        raise HTTPException(422, "A customer needs a name")
+    if body.get("defaultPolicyId"):
+        from ..models import Policy
+
+        policy = db.get(Policy, body["defaultPolicyId"])
+        if policy is None or policy.tenant_id not in (None, tenant.id):
+            raise HTTPException(400, "That policy belongs to another customer")
     changed = apply_fields(tenant, body, {"name", "plan", "settings", "default_policy_id"})
     audit.record(db, principal.actor, "tenant.updated", tenant.id, tenant.id, fields=changed)
     db.commit()
@@ -735,24 +745,64 @@ def update_user(user_id: str, body: dict = Body(...), principal: Principal = Dep
 # --------------------------------------------------------------------------- groups
 
 
+def _group_view(group: DeviceGroup, devices: dict[str, int], children: dict[str, int]) -> dict:
+    return {**to_dict(group), "deviceCount": devices.get(group.id, 0), "childCount": children.get(group.id, 0)}
+
+
 @router.get("/groups")
 def list_groups(tenant_id: str | None = None, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     rows = db.execute(select(DeviceGroup).where(DeviceGroup.tenant_id.in_(scoped_tenant(principal, tenant_id)))
                       .order_by(DeviceGroup.name)).scalars().all()
-    return [to_dict(g) for g in rows]
+    ids = [g.id for g in rows]
+    retired = Device.api_key_hash == ("retired-" + Device.id)
+    devices = dict(db.execute(select(Device.group_id, func.count()).where(Device.group_id.in_(ids), ~retired)
+                              .group_by(Device.group_id)).all()) if ids else {}
+    children: dict[str, int] = {}
+    for g in rows:
+        if g.parent_id:
+            children[g.parent_id] = children.get(g.parent_id, 0) + 1
+    return [_group_view(g, devices, children) for g in rows]
+
+
+def _check_group_fields(db: Session, tenant_id: str, body: dict, group: DeviceGroup | None = None) -> None:
+    """Name present; parent in the same customer and not the group itself or one of its sub-groups; policy usable here."""
+    from ..models import Policy
+
+    if "name" in body and not str(body.get("name") or "").strip():
+        raise HTTPException(422, "A group needs a name")
+    parent_id = body.get("parentId")
+    if parent_id:
+        parent = db.get(DeviceGroup, parent_id)
+        if parent is None or parent.tenant_id != tenant_id:
+            raise HTTPException(400, "The parent group belongs to another customer")
+        seen, cursor = set(), parent
+        while cursor is not None and cursor.id not in seen:
+            if group is not None and cursor.id == group.id:
+                raise HTTPException(400, "A group cannot sit inside itself or one of its own sub-groups")
+            seen.add(cursor.id)
+            cursor = db.get(DeviceGroup, cursor.parent_id) if cursor.parent_id else None
+    policy_id = body.get("policyId")
+    if policy_id:
+        policy = db.get(Policy, policy_id)
+        if policy is None or policy.tenant_id not in (None, tenant_id):
+            raise HTTPException(400, "The policy belongs to another customer")
 
 
 @router.post("/groups")
 def create_group(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("configure")
     tenant_id = body.get("tenantId")
+    if not tenant_id:
+        raise HTTPException(422, "Choose the customer the group belongs to")
     principal.check_tenant(tenant_id)
-    group = DeviceGroup(tenant_id=tenant_id, name=str(body.get("name") or "New group"), parent_id=body.get("parentId"),
-                        policy_id=body.get("policyId"), match_rules=body.get("matchRules") or {})
+    body = {"name": "", **body}
+    _check_group_fields(db, tenant_id, body)
+    group = DeviceGroup(tenant_id=tenant_id, name=str(body["name"]).strip()[:200], parent_id=body.get("parentId") or None,
+                        policy_id=body.get("policyId") or None, match_rules=body.get("matchRules") or {})
     db.add(group)
     audit.record(db, principal.actor, "group.created", group.name, tenant_id)
     db.commit()
-    return to_dict(group)
+    return _group_view(group, {}, {})
 
 
 @router.patch("/groups/{group_id}")
@@ -762,10 +812,85 @@ def update_group(group_id: str, body: dict = Body(...), principal: Principal = D
     if group is None:
         raise HTTPException(404, "Not found")
     principal.check_tenant(group.tenant_id)
+    _check_group_fields(db, group.tenant_id, body, group)
+    if "name" in body:
+        body = {**body, "name": str(body["name"]).strip()[:200]}
+    body = {k: (v or None) if k in ("parentId", "policyId") else v for k, v in body.items()}
     changed = apply_fields(group, body, {"name", "parent_id", "policy_id", "match_rules"})
     audit.record(db, principal.actor, "group.updated", group.name, group.tenant_id, fields=changed)
     db.commit()
     return to_dict(group)
+
+
+def group_uses(db: Session, group: DeviceGroup) -> list[str]:
+    """What would silently change scope if the group disappeared: those must be changed first."""
+    from ..models import ConditionPackage, MonitorCondition, PatchPolicy, ScheduledTask
+
+    uses = [f"patch policy '{p.name}'" for p in db.execute(select(PatchPolicy).where(PatchPolicy.group_id == group.id)).scalars()]
+    for model, field, label in ((ScheduledTask, "targets", "scheduled task"), (ConditionPackage, "targets", "condition package"),
+                                (MonitorCondition, "scope", "monitor")):
+        for row in db.execute(select(model).where(or_(model.tenant_id == group.tenant_id, model.tenant_id.is_(None)))).scalars():
+            if group.id in ((getattr(row, field) or {}).get("groupIds") or []):
+                uses.append(f"{label} '{getattr(row, 'name', row.id)}'")
+    for policy in db.execute(select(PatchPolicy).where(PatchPolicy.tenant_id == group.tenant_id)).scalars():
+        if any(group.id in (ring.get("groupIds") or []) for ring in (policy.rings or []) if isinstance(ring, dict)):
+            uses.append(f"a ring in patch policy '{policy.name}'")
+    return uses
+
+
+@router.delete("/groups/{group_id}")
+def delete_group(group_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Delete a group. Its devices, sub-groups and enrolment codes move up to its parent (or out of any group)."""
+    principal.require("configure")
+    group = db.get(DeviceGroup, group_id)
+    if group is None:
+        raise HTTPException(404, "Not found")
+    principal.check_tenant(group.tenant_id)
+    uses = group_uses(db, group)
+    if uses:
+        raise HTTPException(409, "Change these first, so they do not quietly cover more or fewer devices: " + "; ".join(uses))
+    moved = 0
+    for device in db.execute(select(Device).where(Device.group_id == group.id)).scalars():
+        device.group_id = group.parent_id
+        moved += 1
+    for child in db.execute(select(DeviceGroup).where(DeviceGroup.parent_id == group.id)).scalars():
+        child.parent_id = group.parent_id
+    for token in db.execute(select(EnrollmentToken).where(EnrollmentToken.group_id == group.id)).scalars():
+        token.group_id = group.parent_id
+    db.flush()
+    db.delete(group)
+    audit.record(db, principal.actor, "group.deleted", group.name, group.tenant_id, devicesMoved=moved, movedTo=group.parent_id or "no group")
+    db.commit()
+    return {"ok": True, "devicesMoved": moved, "movedTo": group.parent_id}
+
+
+@router.post("/groups/members")
+def set_group_members(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Put devices into a group (groupId) or take them out of any group (groupId null)."""
+    principal.require("configure")
+    ids = body.get("deviceIds")
+    if not isinstance(ids, list) or not ids or len(ids) > 5000:
+        raise HTTPException(422, "deviceIds must list between 1 and 5000 devices")
+    group = None
+    if body.get("groupId"):
+        group = db.get(DeviceGroup, body["groupId"])
+        if group is None:
+            raise HTTPException(404, "Group not found")
+        principal.check_tenant(group.tenant_id)
+    moved, skipped = [], []
+    for device_id in dict.fromkeys(str(i) for i in ids):
+        device = db.get(Device, device_id)
+        if device is None or device.tenant_id not in principal.tenant_ids:
+            skipped.append({"deviceId": device_id, "reason": "not found"})
+        elif group is not None and device.tenant_id != group.tenant_id:
+            skipped.append({"deviceId": device_id, "reason": "belongs to another customer than the group"})
+        else:
+            device.group_id = group.id if group else None
+            moved.append(device_id)
+    audit.record(db, principal.actor, "group.members.set", group.name if group else "no group", group.tenant_id if group else None,
+                 devices=len(moved))
+    db.commit()
+    return {"moved": moved, "skipped": skipped}
 
 
 # --------------------------------------------------------------------------- enrollment
@@ -783,6 +908,10 @@ def create_token(body: dict = Body(...), principal: Principal = Depends(current_
     principal.require("configure")
     tenant_id = body.get("tenantId")
     principal.check_tenant(tenant_id)
+    if body.get("groupId"):
+        group = db.get(DeviceGroup, body["groupId"])
+        if group is None or group.tenant_id != tenant_id:
+            raise HTTPException(400, "The group belongs to another customer")
     raw = new_secret("fet", 24)
     days = body.get("expiresInDays")
     token = EnrollmentToken(tenant_id=tenant_id, group_id=body.get("groupId"), label=str(body.get("label") or "Deployment"),

@@ -90,9 +90,15 @@ class AgentService : Service() {
     private var bootReason: String? = null
     private val screenOn = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            // A lost phone shows its lost-mode screen every time someone wakes it.
-            val lost = store.lostMode
-            if (lost.enabled) Notifications.lost(this@AgentService, lost.message)
+            if (intent.action == Intent.ACTION_SCREEN_ON) {
+                // A lost phone shows its lost-mode screen every time someone wakes it.
+                val lost = store.lostMode
+                if (lost.enabled) Notifications.lost(this@AgentService, lost.message)
+            }
+            // Check in the moment the phone wakes (screen on, or leaving power saving), so the console shows it online
+            // and queued actions run now instead of at the next timer. cycle() only sends a heartbeat when one is due.
+            val idle = intent.action == PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED && context.service<PowerManager>().isDeviceIdleMode
+            if (!idle) worker.execute { cycle(force = false) }
         }
     }
 
@@ -118,7 +124,10 @@ class AgentService : Service() {
         alarm = AlarmPlayer(this)
         goForeground()
         running = true
-        registerReceiver(screenOn, IntentFilter(Intent.ACTION_SCREEN_ON))
+        registerReceiver(screenOn, IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED)
+        })
         registerReceiver(packages, IntentFilter().apply {
             addAction(Intent.ACTION_PACKAGE_ADDED)
             addAction(Intent.ACTION_PACKAGE_REPLACED)
@@ -184,6 +193,7 @@ class AgentService : Service() {
         try {
             val now = System.currentTimeMillis()
             val lost = store.lostMode.enabled
+            // Every 60 seconds while awake (the server counts a phone online for 2 minutes, asleep for 30).
             if (force || now - store.lastHeartbeat >= (if (lost) 30_000L else 60_000L)) heartbeat()
             val reason = bootReason ?: if (store.lostMode.enabled) "lostmode" else "periodic"
             if (bootReason != null || now - store.lastLocation >= (if (store.lostMode.enabled) 5 else 15) * 60_000L) {

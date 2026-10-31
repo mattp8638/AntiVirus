@@ -11,7 +11,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from .. import audit, evidence, psa, services
+from .. import audit, evidence, presence, psa, services
 from ..db import get_db
 from ..deps import Principal, current_principal, scoped_tenant
 from ..detection import RULES, playbooks
@@ -31,7 +31,6 @@ def dashboard(tenant_id: str | None = None, days: int = Query(default=7, ge=1, l
               principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     scope = scoped_tenant(principal, tenant_id)
     since = utcnow() - timedelta(days=days)
-    online_cutoff = utcnow() - timedelta(minutes=10)
     devices = db.execute(select(Device).where(Device.tenant_id.in_(scope))).scalars().all()
     alerts = db.execute(select(Alert.severity, func.count()).where(Alert.tenant_id.in_(scope), Alert.created_at >= since)
                         .group_by(Alert.severity)).all()
@@ -62,7 +61,7 @@ def dashboard(tenant_id: str | None = None, days: int = Query(default=7, ge=1, l
     return {
         "devices": {
             "total": len(devices),
-            "online": sum(1 for d in devices if d.last_seen_at and d.last_seen_at >= online_cutoff),
+            "online": sum(1 for d in devices if presence.is_up(d)),
             "isolated": sum(1 for d in devices if d.isolated),
             "pendingApproval": sum(1 for d in devices if not d.approved),
             "atRisk": sum(1 for d in devices if d.risk_score >= 40),
@@ -664,6 +663,26 @@ def update_rule(rule_id: str, body: dict = Body(...), principal: Principal = Dep
     return to_dict(row)
 
 
+@router.delete("/rules/{rule_id}")
+def delete_rule(rule_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Custom rules can be deleted; Fenrir's shipped rules come back with every release, so they are turned off instead."""
+    principal.require("configure")
+    row = db.get(DetectionRule, rule_id)
+    if row is None:
+        raise HTTPException(404, "Not found")
+    if row.builtin:
+        raise HTTPException(409, "This is one of Fenrir's shipped rules: turn it off instead of deleting it")
+    if row.tenant_id is None and not principal.can("platform"):
+        raise HTTPException(403, "Only platform admins delete rules shared by every customer")
+    if row.tenant_id is not None:
+        principal.check_tenant(row.tenant_id)
+    db.delete(row)
+    audit.record(db, principal.actor, "rule.deleted", rule_id, row.tenant_id, title=row.title)
+    db.commit()
+    RULES.invalidate()
+    return {"ok": True}
+
+
 @router.get("/mitre")
 def mitre_coverage(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     """Which ATT&CK techniques the enabled rule set covers, and how often each fired."""
@@ -718,6 +737,21 @@ def update_automation(automation_id: str, body: dict = Body(...), principal: Pri
     apply_fields(row, body, {"name", "conditions", "actions", "enabled"})
     db.commit()
     return to_dict(row)
+
+
+@router.delete("/automations/{automation_id}")
+def delete_automation(automation_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("configure")
+    row = db.get(AutomationRule, automation_id)
+    if row is None:
+        raise HTTPException(404, "Not found")
+    if row.tenant_id is None and not principal.can("platform"):
+        raise HTTPException(403, "Only platform admins delete automations shared by every customer")
+    principal.check_tenant(row.tenant_id)
+    db.delete(row)
+    audit.record(db, principal.actor, "automation.deleted", row.name, row.tenant_id)
+    db.commit()
+    return {"ok": True}
 
 
 @router.get("/playbooks")

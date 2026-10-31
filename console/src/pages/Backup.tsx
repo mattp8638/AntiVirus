@@ -22,7 +22,12 @@ export default function Backup() {
     {selected&&<Modal title={selected.name} onClose={()=>{setSelected(null);setIngest(null);}} footer={can("configure")&&<><button onClick={async()=>{
         if(selected.ingestConfigured&&!await confirmDialog("Issue a new token? The backup tool's current token stops working."))return;
         try{setIngest(await api("backup/plans/"+selected.id+"/ingest-token",{method:"POST"}));reload();}catch(e){noticeDialog((e as Error).message);}
-      }}>{selected.ingestConfigured?"Rotate tool token":"Connect backup tool"}</button><button onClick={()=>setMode("run")}>Record provider result</button><button onClick={()=>setMode("exercise")}>Request recovery exercise</button></>}>
+      }}>{selected.ingestConfigured?"Rotate tool token":"Connect backup tool"}</button><button onClick={()=>setMode("run")}>Record provider result</button><button onClick={()=>setMode("exercise")}>Request recovery exercise</button>
+      <button onClick={()=>setMode("editplan")}>Edit plan</button>
+      <button className="danger" onClick={async()=>{
+        if(!await confirmDialog(`Delete the plan "${selected.name}" with its result history and recovery exercises? Its backup tool token stops working.`,{confirmLabel:"Delete plan"}))return;
+        try{await api("backup/plans/"+selected.id,{method:"DELETE"});setSelected(null);setIngest(null);close();}catch(e){noticeDialog((e as Error).message);}
+      }}>Delete plan</button></>}>
       {ingest&&<div className="card" style={{marginBottom:12}}>
         <b>Push job results from your backup tool</b>
         <p className="small muted">Copy this token now; it is not shown again. Add a post-job script (or the provider's webhook) that sends each result:</p>
@@ -35,6 +40,8 @@ export default function Backup() {
     </Modal>}
     {mode==="plan"&&<RecordEditor title="Protection plan" fields={[{key:"name",label:"Service name",required:true},{key:"provider",label:"Backup provider",required:true},{key:"rpoHours",label:"RPO hours",type:"number",value:24},{key:"rtoMinutes",label:"RTO minutes",type:"number",value:240},{key:"configurationId",label:"Configuration (optional)",type:"select",source:"configurations"},{key:"runbookId",label:"Recovery runbook (optional)",type:"select",source:"documents"}]}
       onSave={body=>api("backup/plans",{body:{...body,configurationId:body.configurationId||null,runbookId:body.runbookId||null}})} onClose={close}/>}
+    {mode==="editplan"&&selected&&<RecordEditor title={`Edit ${selected.name}`} tenant={false} fields={[{key:"name",label:"Service name",required:true,value:selected.name},{key:"provider",label:"Backup provider",required:true,value:selected.provider},{key:"rpoHours",label:"RPO hours",type:"number",value:selected.rpoHours},{key:"rtoMinutes",label:"RTO minutes",type:"number",value:selected.rtoMinutes}]}
+      onSave={async({tenantId:_,...body})=>{const row=await api("backup/plans/"+selected.id,{method:"PATCH",body:{...body,rpoHours:Number(body.rpoHours),rtoMinutes:Number(body.rtoMinutes)}});setSelected(row);return row;}} onClose={close}/>}
     {mode==="run"&&selected&&<RecordEditor title="Record provider result" tenant={false} fields={[{key:"externalId",label:"Unique provider job ID",required:true},{key:"status",label:"Result",type:"select",options:["success","failed"],value:"success",required:true},{key:"completedAt",label:"Actual completion time (ISO date/time)",value:new Date().toISOString(),required:true},{key:"bytesProtected",label:"Bytes protected",type:"number",value:0},{key:"evidence",label:"Provider evidence or report reference",type:"textarea"}]}
       onSave={({tenantId:_,...body})=>api("backup/plans/"+selected.id+"/runs",{body})} onClose={close}/>}
     {mode==="exercise"&&selected&&<RecordEditor title="Request recovery exercise" tenant={false} fields={[{key:"target",label:"Isolated test target and scope",required:true}]}

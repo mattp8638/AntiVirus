@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { ago, api, downloadFile, fmtTime, uploadFile } from "../../api";
 import { useApp } from "../../app-context";
 import { Modal, PageHead, Pill, Stat, Table, TenantSelect, useAction, useData, useListData } from "../../components/ui";
-import { confirmDialog } from "../../components/dialogs";
+import { confirmDialog, promptDialog } from "../../components/dialogs";
 
 // Compliance programmes per customer: pick frameworks, work through every requirement or question with an
 // answer, status, owner and due date, attach evidence, and see which policies cover it.
@@ -54,7 +54,7 @@ export function ProgrammesTab() {
 function AdoptModal({ onClose }: { onClose: () => void }) {
   const { tenantId, toast } = useApp();
   const [customer, setCustomer] = useState(tenantId);
-  const { data: library } = useData<any>("grc/library", { tenant_id: customer || undefined }, [customer]);
+  const { data: library, reload: reloadLibrary } = useData<any>("grc/library", { tenant_id: customer || undefined }, [customer]);
   const [key, setKey] = useState("");
   const [owner, setOwner] = useState("");
   const [contact, setContact] = useState("");
@@ -91,6 +91,11 @@ function AdoptModal({ onClose }: { onClose: () => void }) {
         ))}
       </div>
       {chosen?.sourceUrl && <p className="small"><a href={chosen.sourceUrl} target="_blank" rel="noopener noreferrer">Official framework guidance</a> · {displayValue(chosen.jurisdiction)}</p>}
+      {chosen?.importedId && <p className="small">Imported question set.{" "}
+        <button className="small danger" disabled={busy} onClick={async () => {
+          if (await confirmDialog(`Remove the imported "${chosen.name}"? Programmes already using it keep a snapshot; it is no longer offered for new ones.`, { confirmLabel: "Remove import" })
+              && await run(() => api(`grc/library/frameworks/imported/${chosen.importedId}`, { method: "DELETE" }), "Import removed")) { setKey(""); reloadLibrary(); }
+        }}>Remove this import</button></p>}
       {chosen && <div className="grid k2">
         <label className="field">Policy owner (named in the policies)<input value={owner} onChange={(e) => setOwner(e.target.value)} placeholder="e.g. Jo Bloggs, Operations Director" /></label>
         <label className="field">Who staff report incidents to<input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="e.g. it@customer.co.uk or 01234 567890" /></label>
@@ -362,6 +367,14 @@ export function EvidenceTab() {
                        { key: "tenantId", label: "Customer", render: (e) => tenantName(e.tenantId) },
                        { key: "links", label: "Supports", render: (e) => e.links.map((l: string) => <span key={l} className="chip mono">{l}</span>) },
                        { key: "uploadedBy", label: "Added", render: (e) => <span className="small">{ago(e.createdAt)}<div className="muted">{displayValue(e.uploadedBy)}</div></span> },
+                       { key: "validUntil", label: "Valid until", render: (e) => <span className="small">{e.validUntil ? fmtTime(e.validUntil) : "no expiry"}{can("grc") && <>{" "}
+                         <button className="small ghost" onClick={async () => {
+                           const value = await promptDialog("Valid until (YYYY-MM-DD), or leave empty for no expiry", e.validUntil ? String(e.validUntil).slice(0, 10) : "", { title: "Evidence validity" });
+                           if (value === null) return;
+                           const body = value.trim() ? { validUntil: `${value.trim()}T23:59:59Z` } : { clearValidUntil: true };
+                           if (value.trim() && !/^\d{4}-\d{2}-\d{2}$/.test(value.trim())) { await run(async () => { throw new Error("Use the form YYYY-MM-DD"); }); return; }
+                           if (await run(() => api(`grc/evidence/${e.id}`, { method: "PATCH", body }), "Validity saved")) reload();
+                         }}>Change</button></>}</span> },
                        { key: "actions", label: "", render: (e) => can("grc") && <button className="small danger" onClick={async () => { if (await confirmDialog(`Delete ${e.title}?`) && await run(() => api(`grc/evidence/${e.id}`, { method: "DELETE" }), "Deleted")) reload(); }}>Delete</button> }]} />
       {adding && <AddEvidence tenantId={tenantId} links={[]} onClose={() => { setAdding(false); reload(); }} />}
     </div>

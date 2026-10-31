@@ -26,7 +26,7 @@ from collections import Counter
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import audit, events
+from . import audit, events, presence
 from .models import Alert, ConditionPackage, Device, KbArticle, PlatformEvent, Tenant, Ticket, utcnow
 
 log = logging.getLogger("fenrir.ai_helpdesk")
@@ -128,8 +128,7 @@ def context(db: Session, ticket: Ticket) -> dict:
     if device is not None:
         alerts = db.execute(select(Alert.title).where(Alert.device_id == device.id, Alert.status.in_(("new", "triaged")))
                             .order_by(Alert.created_at.desc()).limit(5)).scalars().all()
-        device_view = {"hostname": device.hostname, "os": device.os_version, "online": bool(device.last_seen_at and
-                       (utcnow() - device.last_seen_at).total_seconds() < 600), "openAlerts": list(alerts)}
+        device_view = {"hostname": device.hostname, "os": device.os_version, "online": presence.is_up(device), "openAlerts": list(alerts)}
     return {"customer": customer.name if customer else "", "device": device_view,
             "kb": [{"id": a.id, "title": a.title} for a in kb_candidates(db, ticket)],
             "packages": [{"key": p.id, "name": p.name} for p in packages_for(db, ticket)]}

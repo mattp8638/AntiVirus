@@ -30,6 +30,15 @@ class PlanInput(BaseModel):
     rpoHours: int = Field(default=24, ge=1, le=8760)
     rtoMinutes: int = Field(default=240, ge=1, le=43200)
 
+class PlanUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    provider: str | None = Field(default=None, min_length=1, max_length=100)
+    configurationId: str | None = None
+    runbookId: str | None = None
+    rpoHours: int | None = Field(default=None, ge=1, le=8760)
+    rtoMinutes: int | None = Field(default=None, ge=1, le=43200)
+
 class RunInput(BaseModel):
     externalId: str = Field(min_length=1, max_length=200)
     status: Literal["success", "failed"]
@@ -113,6 +122,40 @@ def create(body: PlanInput, principal: Principal = Depends(current_principal), d
     audit.record(db, principal.actor, "backup.plan_created", row.id, row.tenant_id)
     db.commit()
     return plan_summary(db, row)
+
+@router.patch("/plans/{plan_id}")
+def update_plan(plan_id: str, body: PlanUpdate, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("configure")
+    row = owned(db, BackupPlan, plan_id, principal)
+    given = body.model_fields_set
+    if "configurationId" in given and body.configurationId:
+        config = db.get(Configuration, body.configurationId)
+        if config is None or config.account_tenant_id != row.tenant_id:
+            raise HTTPException(404, "Configuration not found in this tenant")
+    if "runbookId" in given and body.runbookId:
+        doc = owned(db, KbArticle, body.runbookId, principal)
+        if doc.tenant_id != row.tenant_id:
+            raise HTTPException(400, "Runbook must belong to the same customer")
+    for field, column in (("name", "name"), ("provider", "provider"), ("configurationId", "configuration_id"),
+                          ("runbookId", "runbook_id"), ("rpoHours", "rpo_hours"), ("rtoMinutes", "rto_minutes")):
+        if field in given and (getattr(body, field) is not None or field in ("configurationId", "runbookId")):
+            setattr(row, column, getattr(body, field))
+    audit.record(db, principal.actor, "backup.plan_updated", row.id, row.tenant_id, fields=sorted(given))
+    db.commit()
+    return plan_summary(db, row)
+
+@router.delete("/plans/{plan_id}")
+def delete_plan(plan_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Remove a plan with its run history and recovery exercises; its ingest token stops working and its alert closes."""
+    principal.require("configure")
+    row = owned(db, BackupPlan, plan_id, principal)
+    resolve_backup_alerts(db, row)
+    runs = db.query(BackupRun).filter(BackupRun.plan_id == row.id).delete()
+    exercises = db.query(RecoveryExercise).filter(RecoveryExercise.plan_id == row.id).delete()
+    db.delete(row)
+    audit.record(db, principal.actor, "backup.plan_deleted", row.id, row.tenant_id, name=row.name, runs=runs, exercises=exercises)
+    db.commit()
+    return {"ok": True}
 
 @router.get("/plans/{plan_id}/runs")
 def runs(plan_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):

@@ -1,9 +1,10 @@
-import { displayValue } from "../components/DisplayValue";
 import { useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
 import { api } from "../api";
 import { useApp } from "../app-context";
-import { ErrorNote, TenantSelect, useListData } from "../components/ui";
+import { ErrorNote, TenantSelect } from "../components/ui";
+import { GroupSelect } from "../components/Groups";
+import { Link } from "react-router-dom";
 import { AppleEnrol, appleKind } from "../components/WebProtection";
 
 // Enrolling a phone: the technician makes a short-lived token, the phone scans the QR code. The link is
@@ -26,7 +27,6 @@ export function AddPhone() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const canvas = useRef<HTMLCanvasElement>(null);
-  const { data: groups } = useListData<any>("groups", { tenant_id: target }, [target]);
   useEffect(() => { setTarget(initial); setGroupId(""); }, [initial]);
   useEffect(() => {
     if (token && canvas.current) QRCode.toCanvas(canvas.current, phoneEnrollLink(token), { width: 440, margin: 1, errorCorrectionLevel: "M" }).catch(() => setError("Could not draw the QR code"));
@@ -49,11 +49,8 @@ export function AddPhone() {
       {!token ? <>
         <div className="form-grid">
           <label className="field">Customer<TenantSelect value={target} onChange={(v) => { setTarget(v); setGroupId(""); }} allowAll={false} /></label>
-          <label className="field">Group
-            <select value={groupId} onChange={(e) => setGroupId(e.target.value)}>
-              <option value="">None</option>
-              {groups?.map((g) => <option key={g.id} value={g.id}>{displayValue(g.name)}</option>)}
-            </select>
+          <label className="field">Group <Link className="small" to="/groups">Manage groups</Link>
+            <GroupSelect tenantId={target} value={groupId} onChange={setGroupId} emptyLabel="None" />
           </label>
           <label className="field">Who it's for (optional)<input value={owner} onChange={(e) => setOwner(e.target.value)} maxLength={80} placeholder="Jo Bloggs" /></label>
         </div>

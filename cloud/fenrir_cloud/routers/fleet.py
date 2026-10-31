@@ -8,7 +8,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from sqlalchemy import String, cast, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
-from .. import approvals, audit, command_control, detection, policy_schema, remote, rmm, script_review, services, web_profile
+from .. import approvals, audit, command_control, detection, policy_schema, remote, rmm, presence, script_review, services, web_profile
 from ..commands import BY_TYPE, catalog_document
 from ..config import get_settings
 from ..db import get_db
@@ -21,13 +21,13 @@ router = APIRouter(prefix="/api/console", tags=["Fleet"])
 # Irreversible actions that need the technician's password again.
 REAUTH_COMMANDS = {"device.wipe"}
 
-ONLINE_WINDOW = timedelta(minutes=10)
 
 
 def _device_view(device: Device, summary: bool = False) -> dict:
     data = to_dict(device, exclude={"dns_token", "inventory"} if summary else {"dns_token"})
     data["retired"] = device.api_key_hash == f"retired-{device.id}"
-    data["online"] = not data["retired"] and bool(device.last_seen_at and device.last_seen_at >= utcnow() - ONLINE_WINDOW)
+    data["presence"] = presence.state(device)
+    data["online"] = data["presence"] in ("online", "asleep")
     data["agentless"] = bool((device.metrics or {}).get("agentless"))
     if summary:
         metrics = device.metrics or {}
@@ -106,13 +106,14 @@ def list_devices(
                                 cast(Device.custom_fields, String).ilike(like)))
     if platform:
         query = query.where(Device.platform == platform)
-    if group_id:
+    if group_id == "none":
+        query = query.where(Device.group_id.is_(None))
+    elif group_id:
         query = query.where(Device.group_id == group_id)
-    cutoff = utcnow() - ONLINE_WINDOW
     if status == "online":
-        query = query.where(Device.last_seen_at >= cutoff)
+        query = query.where(presence.up_clause())
     elif status == "offline":
-        query = query.where(or_(Device.last_seen_at.is_(None), Device.last_seen_at < cutoff))
+        query = query.where(or_(Device.last_seen_at.is_(None), ~presence.up_clause()))
     elif status == "isolated":
         query = query.where(Device.isolated.is_(True))
     elif status == "pending":
@@ -540,6 +541,28 @@ def update_policy(policy_id: str, body: dict = Body(...), principal: Principal =
     audit.record(db, principal.actor, "policy.updated", policy.name, policy.tenant_id, version=policy.version, changed=changed[:100])
     db.commit()
     return to_dict(policy)
+
+
+@router.delete("/policies/{policy_id}")
+def delete_policy(policy_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Delete a policy nothing uses. Anything still using it is listed, so devices never fall back to another policy silently."""
+    principal.require("configure")
+    policy = db.get(Policy, policy_id)
+    if policy is None:
+        raise HTTPException(404, "Not found")
+    principal.check_tenant(policy.tenant_id)
+    uses = [f"customer '{t.name}' (default policy)" for t in db.execute(select(Tenant).where(Tenant.default_policy_id == policy.id)).scalars()]
+    uses += [f"group '{g.name}'" for g in db.execute(select(DeviceGroup).where(DeviceGroup.policy_id == policy.id)).scalars()]
+    devices = db.scalar(select(func.count()).where(Device.policy_id == policy.id, Device.api_key_hash != ("retired-" + Device.id))) or 0
+    if devices:
+        uses.append(f"{devices} device override(s)")
+    uses += [f"policy '{p.name}' (inherits from it)" for p in db.execute(select(Policy).where(Policy.parent_id == policy.id)).scalars()]
+    if uses:
+        raise HTTPException(409, "Still in use by " + "; ".join(uses) + ". Choose another policy for them first.")
+    db.delete(policy)
+    audit.record(db, principal.actor, "policy.deleted", policy.name, policy.tenant_id)
+    db.commit()
+    return {"ok": True}
 
 
 @router.post("/policies/preview")

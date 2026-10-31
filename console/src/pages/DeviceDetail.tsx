@@ -2,11 +2,12 @@ import { displayValue } from "../components/DisplayValue";
 import { DeviceDefender } from "../components/Defender";
 import { MobileApps } from "../components/MobileApps";
 import { WebProtection } from "../components/WebProtection";
+import { GroupSelect } from "../components/Groups";
 import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ago, api, fmtTime, getToken } from "../api";
 import { useApp } from "../app-context";
-import { ErrorNote, Modal, Pill, Sev, Table, useAction, useData, useListData } from "../components/ui";
+import { ErrorNote, Modal, Pill, PresenceDot, presenceOf, Sev, Table, useAction, useData, useListData } from "../components/ui";
 import { ConnectButtons, JobDetail, JobStatus, pct } from "../components/rmm";
 import { RoutesPanel } from "../components/routes";
 import { TimeChart } from "../components/TimeChart";
@@ -111,7 +112,7 @@ export default function DeviceDetail() {
 
   // Keep the header live (online state, CPU, memory) without a manual refresh.
   useEffect(() => {
-    const timer = setInterval(() => { if (document.visibilityState === "visible") { reload(); reloadWhere(); } }, 30000);
+    const timer = setInterval(() => { if (document.visibilityState === "visible") { reload(); reloadWhere(); } }, 15000);
     return () => clearInterval(timer);
   }, [reload, reloadWhere]);
 
@@ -151,11 +152,8 @@ export default function DeviceDetail() {
 
   const management = (
     <div className="form-grid compact">
-      <label className="field">Group
-        <select value={d.groupId ?? ""} disabled={!can("configure")} onChange={(e) => patch({ groupId: e.target.value || null }, "Group updated")}>
-          <option value="">No group</option>
-          {groups?.map((g) => <option key={g.id} value={g.id}>{displayValue(g.name)}</option>)}
-        </select>
+      <label className="field">Group <Link className="small" to="/groups">Manage groups</Link>
+        <GroupSelect tenantId={d.tenantId} value={d.groupId ?? ""} disabled={!can("configure")} onChange={(id) => patch({ groupId: id || null }, "Group updated")} />
       </label>
       <label className="field">Policy override
         <select value={d.policyId ?? ""} disabled={!can("configure")} onChange={(e) => patch({ policyId: e.target.value || null }, "Policy override updated")}>
@@ -181,7 +179,7 @@ export default function DeviceDetail() {
           <div className="row" style={{ gap: 10 }}>
             <h1 style={{ margin: 0 }}>{displayValue(d.hostname)}</h1>
             {d.retired ? <Pill value="decommissioned" tone="muted" /> :
-              <span className={`status-chip ${d.online ? "on" : "off"}`}><span className={`dot ${d.online ? "on" : "off"}`} />{d.online ? "Online" : `Offline · ${ago(d.lastSeenAt)}`}</span>}
+              <span className={`status-chip ${d.online ? "on" : "off"}`} title={presenceOf(d).title}><PresenceDot device={d} />{d.presence === "online" || (!d.presence && d.online) ? "Online" : `${presenceOf(d).label} · ${ago(d.lastSeenAt)}`}</span>}
             {!d.approved && !d.retired && <Pill value="needs approval" tone="warn" />}
             {d.isolated && <Pill value="isolated" tone="bad" />}
             {d.lostMode?.enabled && <Pill value="lost mode" tone="bad" />}

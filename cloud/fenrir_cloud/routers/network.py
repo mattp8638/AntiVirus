@@ -75,6 +75,22 @@ def enable(monitor_id: str, body: MonitorState, principal: Principal = Depends(c
     db.commit()
     return to_dict(row)
 
+@router.delete("/monitors/{monitor_id}")
+def delete_monitor(monitor_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Stop checking a service and forget the monitor; alerts it raised stay in the alert history, resolved."""
+    from ..models import Alert, utcnow
+
+    principal.require("configure")
+    row = owned(db, NetworkMonitor, monitor_id, principal)
+    for alert in db.execute(select(Alert).where(Alert.tenant_id == row.tenant_id, Alert.rule_id == "network:" + row.id,
+                                                Alert.status.in_(("new", "triaged")))).scalars():
+        alert.status, alert.updated_at = "resolved", utcnow()
+        alert.details = {**(alert.details or {}), "autoResolved": "The monitor was deleted."}
+    db.delete(row)
+    audit.record(db, principal.actor, "network.deleted", row.id, row.tenant_id, name=row.name)
+    db.commit()
+    return {"ok": True}
+
 @router.post("/monitors/{monitor_id}/check")
 def check(monitor_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("configure")

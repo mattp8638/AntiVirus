@@ -13,12 +13,11 @@ from datetime import timedelta
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import audit
+from . import audit, presence
 from .models import AgentRelease, Alert, Device, Event, utcnow
 
 UNHEALTHY = {"degraded", "unprotected", "disabled", "error", "tampered"}
 HEALTH_RULE = "fenrir.health.protection-degraded"
-ONLINE_WINDOW = timedelta(minutes=10)
 STALE_AFTER = timedelta(days=7)
 
 
@@ -63,7 +62,7 @@ def summary(db: Session, tenant_ids: list[str]) -> dict:
         Alert.device_id.in_(ids), Alert.created_at >= since, Alert.rule_id != HEALTH_RULE).group_by(Alert.device_id)).all()) if ids else {}
     rows = []
     for d in devices:
-        online = bool(d.last_seen_at and d.last_seen_at >= now - ONLINE_WINDOW)
+        online = presence.is_up(d, now)
         stale = not d.last_seen_at or d.last_seen_at < now - STALE_AFTER
         newest = latest.get(d.platform)
         outdated = bool(newest and d.agent_version and _version(d.agent_version) < _version(newest))

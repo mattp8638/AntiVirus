@@ -517,11 +517,26 @@ def create_webhook(body: dict = Body(...), principal: Principal = Depends(curren
     return {**to_dict(hook), "secret": hook.secret}
 
 
+@router.patch("/webhooks/{hook_id}")
+def update_webhook(hook_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("configure")
+    hook = _get(db, principal, Webhook, hook_id)
+    if "url" in body and not str(body["url"]).startswith("https://"):
+        raise HTTPException(400, "Webhook URLs must use https://")
+    if "events" in body and (not isinstance(body["events"], list) or not body["events"]):
+        raise HTTPException(400, "Choose at least one event")
+    changed = apply_fields(hook, body, {"name", "url", "kind", "events"})
+    audit.record(db, principal.actor, "webhook.updated", hook.name, hook.tenant_id, fields=changed)
+    db.commit()
+    return to_dict(hook)
+
+
 @router.delete("/webhooks/{hook_id}")
 def delete_webhook(hook_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("configure")
     hook = _get(db, principal, Webhook, hook_id)
     db.delete(hook)
+    audit.record(db, principal.actor, "webhook.deleted", hook.name, hook.tenant_id)
     db.commit()
     return {"ok": True}
 
