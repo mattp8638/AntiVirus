@@ -328,8 +328,10 @@ def ml_model_info(principal: Principal = Depends(current_principal)):
 @console.post("/ml/score")
 async def ml_score(request: Request, principal: Principal = Depends(current_principal)):
     """Score an uploaded file (raw request body, max 64 MB) with the static model. Nothing is stored."""
-    from .. import mlmodel
+    from .. import mlmodel, ratelimit
 
+    principal.require("read")
+    ratelimit.check(f"ml-score:{principal.user.id}", 30, 300)
     data = await request.body()
     if not data:
         raise HTTPException(400, "Send the file as the request body")
@@ -643,7 +645,8 @@ def remediate_vulnerability(vuln_id: int, request: Request, body: dict = Body(de
 
 @console.post("/vulnerabilities/{vuln_id}/cyber-heal")
 def cyber_heal(vuln_id: int, request: Request, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    """The original Cyber Heal entry point: a silent update through remediation.py."""
+    """Kept for API clients written against the original Cyber Heal name: the same as /remediate with mode=update, which the
+    console's Vulnerabilities page uses (Fix silently)."""
     return remediate_vulnerability(vuln_id, request, {"mode": "update"}, principal, db)
 
 

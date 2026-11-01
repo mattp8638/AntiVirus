@@ -1,5 +1,5 @@
 import { displayValue } from "../components/DisplayValue";
-import { confirmDialog } from "../components/dialogs";
+import { confirmDialog, noticeDialog } from "../components/dialogs";
 import { useState } from "react";
 import { api } from "../api";
 import { useApp } from "../app-context";
@@ -32,7 +32,13 @@ export default function Rules() {
   return (
     <>
       <PageHead title="Detection rules" subtitle="Sigma-compatible rules with correlation. Import community rules or write your own."
-                actions={can("configure") && <button className="primary" onClick={() => setEditing({ source: NEW_RULE, isNew: true })}>New rule</button>} />
+                actions={<>
+                  {can("platform") && <button title="After rules change, close open malware alerts the current rules would no longer raise" onClick={async () => {
+                    if (!(await confirmDialog("Re-check every open malware alert against today's rules and close the ones they would no longer raise? Each closed alert notes why.", { confirmLabel: "Re-check alerts" }))) return;
+                    const result = await run(() => api<any>("rules/retune", { method: "POST" }));
+                    if (result) await noticeDialog(`${result.closed} alert(s) closed out of ${result.checked ?? "the"} open malware alerts checked.`, "Alerts re-checked");
+                  }}>Re-check open alerts</button>}
+                  {can("configure") && <button className="primary" onClick={() => setEditing({ source: NEW_RULE, isNew: true })}>New rule</button>}</>} />
       <Tabs tabs={["Rules", "MITRE coverage"]} active={tab} onChange={setTab} />
       {tab === "Rules" ? (
         <div className="card">

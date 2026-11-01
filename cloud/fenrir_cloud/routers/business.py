@@ -225,6 +225,7 @@ def convert_lead(lead_id: str, body: dict = Body(default={}), principal: Princip
 
 @router.get("/crm-pipeline")
 def pipeline(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Lead count and value per stage, for reports and integrations (the console's Leads board totals the same)."""
     rows = db.execute(select(Lead.stage, func.count(), func.sum(Lead.value)).where(Lead.tenant_id.in_(_crm_scope(principal)))
                       .group_by(Lead.stage)).all()
     return [{"stage": s, "count": c, "value": v or 0} for s, c, v in rows]

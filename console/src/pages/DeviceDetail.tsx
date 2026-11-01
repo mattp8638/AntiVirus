@@ -3,6 +3,7 @@ import { DeviceDefender } from "../components/Defender";
 import { MobileApps } from "../components/MobileApps";
 import { WebProtection } from "../components/WebProtection";
 import { GroupSelect } from "../components/Groups";
+import { DeviceAnalytics } from "../components/Analytics";
 import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ago, api, fmtTime, getToken } from "../api";
@@ -243,6 +244,8 @@ export default function DeviceDetail() {
             <div className="menu-label">Collect</div>
             <button role="menuitem" onClick={() => { close(); queue("support.bundle", "Support bundle"); }}>Support bundle</button>
             <button role="menuitem" onClick={() => { close(); queue("forensics.collect", "Forensic bundle"); }}>Forensic bundle</button>
+            <button role="menuitem" title="Look for files holding personal data (card numbers, NI numbers, passports) on this device"
+                    onClick={async () => { close(); if (await run(() => api(`devices/${d.id}/pii-scan`, { method: "POST" }), "Personal data discovery queued: results appear under Data & identity exposure")) reload(); }}>Discover personal data</button>
             <div className="menu-label">Other</div>
             <button role="menuitem" onClick={() => { close(); setAction(""); }}>All remote actions…</button>
             <button role="menuitem" onClick={() => { close(); navigator.clipboard?.writeText(d.id); }}>Copy device ID</button>
@@ -513,6 +516,7 @@ function HealthTab({ deviceId }: { deviceId: string }) {
       <TimeChart height={90} times={times} series={[{ label: "Disk free", color: "#22c55e", values: series.map((p: any) => p.diskFree) }]} />
     </div>
     {renderHealthCards()}
+    <DeviceAnalytics deviceId={deviceId} />
     </>
   );
   function renderHealthCards() { return (

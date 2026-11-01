@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { ago, api } from "../../api";
 import { useApp } from "../../app-context";
 import { PageHead, Modal, Pill, Sev, Stat, Table, Tabs, TenantSelect, useAction, useData, useListData } from "../../components/ui";
+import { FleetAnomalies, FleetDiskForecasts, MonitorHistory } from "../../components/Analytics";
 
 export default function Monitoring() {
   const { tenantId, can } = useApp();
@@ -22,8 +23,11 @@ export default function Monitoring() {
         <Stat label="Low disk" value={overview?.lowDisk.length ?? "—"} accent={overview?.lowDisk.length ? "amber" : undefined} hint={overview?.lowDisk.slice(0, 3).join(", ")} />
         <Stat label="Restart pending" value={overview?.rebootPending.length ?? "—"} hint={overview?.rebootPending.slice(0, 3).join(", ")} />
       </div>
-      <div style={{ marginTop: 16 }}><Tabs tabs={["Triggered", "Conditions"]} active={tab} onChange={setTab} /></div>
-      {tab === "Triggered" ? (
+      <div style={{ marginTop: 16 }}><Tabs tabs={["Triggered", "Conditions", "Disk forecasts", "Unusual activity", "History"]} active={tab} onChange={setTab} /></div>
+      {tab === "Disk forecasts" ? <FleetDiskForecasts tenantId={tenantId} />
+        : tab === "Unusual activity" ? <FleetAnomalies tenantId={tenantId} />
+        : tab === "History" ? <MonitorHistory tenantId={tenantId} />
+        : tab === "Triggered" ? (
         <div className="card">
           <Table rows={active} empty="No monitoring conditions are currently triggered."
                  columns={[{ key: "severity", label: "Sev", render: (r) => <Sev level={r.severity} /> },

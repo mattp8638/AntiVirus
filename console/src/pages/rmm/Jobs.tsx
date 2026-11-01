@@ -1,6 +1,6 @@
 import { displayValue } from "../../components/DisplayValue";
 import { useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { ago, api, fmtTime } from "../../api";
 import { useApp } from "../../app-context";
 import { describeTargets, emptyTargets, JobDetail, JobStatus, TargetPicker, Targets } from "../../components/rmm";
@@ -18,8 +18,8 @@ export default function Jobs() {
   return (
     <>
       <PageHead title="Jobs & schedules" subtitle="Every script, patch and deployment job, plus schedules that run them for you." />
-      <Tabs tabs={["Activity", "Scheduled tasks"]} active={tab} onChange={setTab} />
-      {tab === "Activity" ? (
+      <Tabs tabs={["Activity", "Remote actions", "Scheduled tasks"]} active={tab} onChange={setTab} />
+      {tab === "Remote actions" ? <RemoteActionLog /> : tab === "Activity" ? (
         <div className="card">
           <Table rows={data} onRow={(j) => setJobId(j.id)} empty="No jobs yet. Run a script or deploy software to start one."
                  columns={[{ key: "name", label: "Job", render: (j) => <><b>{displayValue(j.name)}</b><div className="small muted">{displayValue(j.commandType)}</div></> },
@@ -31,6 +31,43 @@ export default function Jobs() {
       ) : <ScheduledTasks />}
       {jobId && <JobDetail jobId={jobId} onClose={() => { setJobId(null); if (searchParams.has("job")) { setSearchParams({}); } reload(); }} />}
     </>
+  );
+}
+
+// Every single command sent to any device (isolation, scans, scripts, phone actions...), not only jobs.
+function RemoteActionLog() {
+  const { tenantId, can } = useApp();
+  const [status, setStatus] = useState("");
+  const [mine, setMine] = useState(false);
+  const [type, setType] = useState("");
+  const { data, reload } = useListData<any>("commands", { tenant_id: tenantId, status, type, issued_by: mine ? "me" : "" });
+  const { data: catalog } = useListData<any>("commands/catalog");
+  const label = (t: string) => catalog?.find((c) => c.type === t)?.label ?? t;
+  const { run, busy } = useAction();
+  useEffect(() => { const t = window.setInterval(reload, 10000); return () => window.clearInterval(t); }, [reload]);
+  return (
+    <div className="card">
+      <div className="row" style={{ marginBottom: 10, gap: 8, flexWrap: "wrap" }}>
+        <select value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Status">
+          <option value="">Any status</option><option value="open">Waiting or running</option><option value="completed">Completed</option>
+          <option value="failed">Failed</option><option value="cancelled">Cancelled</option><option value="expired">Expired</option>
+        </select>
+        <select value={type} onChange={(e) => setType(e.target.value)} aria-label="Action">
+          <option value="">Any action</option>{catalog?.map((c) => <option key={c.type} value={c.type}>{displayValue(c.label)}</option>)}
+        </select>
+        <label className="small"><input type="checkbox" checked={mine} onChange={(e) => setMine(e.target.checked)} /> Sent by me</label>
+        <span className="small muted">The latest 500</span>
+      </div>
+      <Table rows={data} empty="No remote actions match."
+             columns={[{ key: "createdAt", label: "Queued", render: (r) => <span title={fmtTime(r.createdAt)}>{ago(r.createdAt)}</span> },
+                       { key: "hostname", label: "Device", render: (r) => <Link to={`/devices/${r.deviceId}?tab=activity&sub=Remote%20actions`}>{displayValue(r.hostname || r.deviceId)}</Link> },
+                       { key: "type", label: "Action", render: (r) => <span title={r.type}>{displayValue(label(r.type))}</span> },
+                       { key: "status", label: "Status", render: (r) => <Pill value={r.status} /> },
+                       { key: "issuedBy", label: "By", render: (r) => <span className="small">{displayValue(r.issuedBy)}</span> },
+                       { key: "reason", label: "Reason", render: (r) => <span className="small">{displayValue(r.reason || r.targetPath || "")}</span> },
+                       { key: "stop", label: "", render: (r) => can("respond") && ["pending", "dispatched"].includes(r.status) &&
+                           <button className="small danger" disabled={busy} onClick={async () => { if (await run(() => api(`commands/${r.id}/cancel`, { method: "POST" }), "Cancellation requested")) reload(); }}>Stop</button> }]} />
+    </div>
   );
 }
 

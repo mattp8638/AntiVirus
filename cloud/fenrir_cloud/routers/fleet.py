@@ -356,13 +356,24 @@ def command_catalog(principal: Principal = Depends(current_principal)):
 
 @router.get("/commands")
 def list_commands(tenant_id: str | None = None, device_id: str | None = None, status: str | None = None,
+                  type: str | None = None, issued_by: str | None = None,
                   principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Every remote action across the fleet, newest first: who sent what to which device, and what happened."""
     query = select(Command).where(Command.tenant_id.in_(scoped_tenant(principal, tenant_id)))
     if device_id:
         query = query.where(Command.device_id == device_id)
-    if status:
+    if status == "open":
+        query = query.where(Command.status.in_(("pending", "dispatched", "running", "cancelling")))
+    elif status:
         query = query.where(Command.status == status)
-    return [to_dict(c) for c in db.execute(query.order_by(Command.created_at.desc()).limit(500)).scalars()]
+    if type:
+        query = query.where(Command.type == type)
+    if issued_by:
+        query = query.where(Command.issued_by == (principal.actor if issued_by == "me" else issued_by))
+    rows = db.execute(query.order_by(Command.created_at.desc()).limit(500)).scalars().all()
+    ids = {c.device_id for c in rows}
+    names = dict(db.execute(select(Device.id, Device.hostname).where(Device.id.in_(ids))).all()) if ids else {}
+    return [{**to_dict(c), "hostname": names.get(c.device_id, "")} for c in rows]
 
 
 def _command_arguments(body: dict) -> dict:

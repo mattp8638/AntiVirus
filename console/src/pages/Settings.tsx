@@ -5,7 +5,7 @@ import { useState } from "react";
 import { ago, api, downloadFile, fmtTime, setToken } from "../api";
 import { useApp } from "../app-context";
 import { Modal, PageHead, Pill, Table, Tabs, TenantSelect, useAction, useData, useListData } from "../components/ui";
-import { confirmDialog, promptDialog } from "../components/dialogs";
+import { confirmDialog, noticeDialog, promptDialog } from "../components/dialogs";
 import { addPasskey, passkeysSupported } from "../passkeys";
 import { CustomFieldsSettings, RegionSettings } from "../components/Customization";
 import { useSearchParams } from "react-router-dom";
@@ -310,6 +310,16 @@ function ApiCredentialsTab() {
                        { key: "lastUsedAt", label: "Last used", render: (c: any) => c.lastUsedAt ? <>{ago(c.lastUsedAt)}<div className="small muted">{displayValue(c.lastUsedIp)} · {displayValue(c.useCount)} calls</div></> : "never" },
                        { key: "actions", label: "", render: (c: any) => c.state !== "revoked" && <div className="row" style={{ gap: 4 }}>
                          <button disabled={busy} onClick={() => rotate(c.id)}>Rotate</button><button className="danger" disabled={busy} onClick={() => revoke(c.id)}>Revoke</button></div> }]} />
+      <details style={{ marginTop: 12 }}>
+        <summary className="small">Send events from other security tools (firewall, email gateway, another EDR)</summary>
+        <p className="small muted">A credential with the <b>configure</b> permission can post up to 100 events at a time for one of its customer's devices.
+          They go through Fenrir's detection rules like agent telemetry and can raise alerts and incidents. Each event id is only accepted once.</p>
+        <pre className="mono small" style={{ whiteSpace: "pre-wrap", userSelect: "all" }}>{`curl -X POST ${window.location.origin}/api/console/soc/ingest \\
+  -H "Authorization: Bearer <API credential token>" -H "Content-Type: application/json" \\
+  -d '{"deviceId":"<device id>","source":"fortigate","events":[{"eventId":"<unique id>","eventType":"network.connection.blocked",
+       "summary":"Blocked connection to a known C2 address","occurredAt":"2026-11-01T10:00:00Z","payload":{"remoteIp":"203.0.113.9"}}]}'`}</pre>
+        <p className="small muted">The device id is on each device's Settings tab (Copy device ID).</p>
+      </details>
       {form && (
         <Modal title="New API credential" onClose={() => setForm(null)} footer={<button className="primary" disabled={busy || !form.name || !form.scopes.length} onClick={create}>Create</button>}>
           <label className="field">Name<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Documentation sync" /></label>
@@ -654,6 +664,14 @@ function PlatformTab() {
           <p><b>{displayValue(data?.vault.algorithm ?? "…")}</b></p>
           <p>Key {displayValue(data?.vault.keyId)} · {data?.vault.source === "derived" ? <Pill value="derived from FENRIR_SECRET_KEY" tone="warn" /> : <Pill value={`from ${data?.vault.source ?? "…"}`} tone="good" />}</p>
           {data && !data.vault.productionReady && <p className="small muted">Set FENRIR_VAULT_KEY (openssl rand -base64 32) before storing production secrets.</p>}
+          {can("platform") && <>
+            <p className="small muted">After changing FENRIR_VAULT_KEY (keeping the old key in FENRIR_VAULT_OLD_KEYS), re-encrypt every stored secret under the new key, then remove the old one.</p>
+            <button className="small" onClick={async () => {
+              if (!(await confirmDialog("Re-encrypt every stored secret (vault credentials, MFA secrets, integration tokens) under the current vault key? It is safe to run again.", { confirmLabel: "Re-encrypt now" }))) return;
+              const result = await run(() => api<any>("platform/vault/rotate", { method: "POST" }));
+              if (result) await noticeDialog(`${result.rewrapped} secret(s) re-encrypted under key ${result.keyId}.${result.failed ? ` ${result.failed} could not be read with any configured key: check FENRIR_VAULT_OLD_KEYS.` : " Every stored secret now uses the current key."}`, "Vault re-encrypted");
+              reload();
+            }}>Re-encrypt secrets under the current key</button></>}
         </div>
         <div className="card"><div className="label muted small">Automation events</div>
           <p>{displayValue(data?.events.pending ?? 0)} waiting · {displayValue(data?.events.done ?? 0)} done · <b>{displayValue(data?.events.dead ?? 0)} failed</b></p></div>
