@@ -529,6 +529,29 @@ def topology(ctx: Context, device: dict) -> tuple[str, dict]:
     return f"{len(graph.get('switches') or [])} switches, {len(connected)} devices placed on ports", {"sample": sample, "switchErrors": len(failed)}
 
 
+@scenario("key_rotation", ("windows", "linux", "macos"), "Replaces its device API key when asked, and keeps reporting")
+def key_rotation(ctx: Context, device: dict) -> tuple[str, dict]:
+    before = ctx.device(device["id"])["device"].get("apiKeyRotatedAt")
+    ctx.api.post(f"devices/{device['id']}/rotate-key")
+
+    def rotated():
+        row = ctx.device(device["id"])["device"]
+        done = row.get("apiKeyRotatedAt") and row["apiKeyRotatedAt"] != before and not row.get("keyRotationRequested")
+        return row if done else None
+
+    # The agent sees the request in its next heartbeat (about a minute), fetches a new key, saves it and uses it.
+    row = wait_for("the agent to replace its key", rotated, max(ctx.args.timeout, 300), interval=10)
+    first = row.get("lastSeenAt")
+
+    def reported():
+        seen = ctx.device(device["id"])["device"].get("lastSeenAt")
+        return seen if seen and seen != first else None
+
+    seen = wait_for("a check-in with the new key", reported, max(ctx.args.timeout, 180), interval=10)
+    return (f"key replaced at {row['apiKeyRotatedAt']}; checked in again at {seen} (the old key is now refused)",
+            {"rotatedAt": row["apiKeyRotatedAt"], "lastSeenAt": seen})
+
+
 @scenario("patch_scan", ("windows", "linux"), "Scans for missing updates")
 def patch_scan(ctx: Context, device: dict) -> tuple[str, dict]:
     row = ctx.command(device, "patch.scan", timeout=max(ctx.args.timeout, 900))

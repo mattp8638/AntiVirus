@@ -24,9 +24,15 @@ func (f fakeSwitch) Get(oids []string) (*gosnmp.SnmpPacket, error) {
 
 func (f fakeSwitch) BulkWalkAll(root string) ([]gosnmp.SnmpPDU, error) { return f.walks[root], nil }
 
-func snmpStr(oid, v string) gosnmp.SnmpPDU { return gosnmp.SnmpPDU{Name: oid, Type: gosnmp.OctetString, Value: []byte(v)} }
-func snmpNum(oid string, v int) gosnmp.SnmpPDU { return gosnmp.SnmpPDU{Name: oid, Type: gosnmp.Integer, Value: v} }
-func snmpRaw(oid string, b ...byte) gosnmp.SnmpPDU { return gosnmp.SnmpPDU{Name: oid, Type: gosnmp.OctetString, Value: b} }
+func snmpStr(oid, v string) gosnmp.SnmpPDU {
+	return gosnmp.SnmpPDU{Name: oid, Type: gosnmp.OctetString, Value: []byte(v)}
+}
+func snmpNum(oid string, v int) gosnmp.SnmpPDU {
+	return gosnmp.SnmpPDU{Name: oid, Type: gosnmp.Integer, Value: v}
+}
+func snmpRaw(oid string, b ...byte) gosnmp.SnmpPDU {
+	return gosnmp.SnmpPDU{Name: oid, Type: gosnmp.OctetString, Value: b}
+}
 
 // A 24-port access switch: a PC on Gi1/0/5 (VLAN 10), an uplink on Gi1/0/24 to the core with LLDP, ARP for the PC.
 func accessSwitch() fakeSwitch {

@@ -3583,6 +3583,9 @@ void AgentService::PublishHeartbeat(const int cycle) {
                           L"The endpoint heartbeat was acknowledged by the control plane.",
                           BuildCyclePayload(cycle, std::wstring(L"\"commandsPending\":") +
                                                        std::to_wstring(heartbeat.commandsPending)));
+      if (heartbeat.rotateKey) {
+        RotateDeviceKey();
+      }
       return;
     } catch (const std::exception& error) {
       if (!attemptedRecovery && RecoverDeviceIdentity(error, L"heartbeat")) {
@@ -3598,6 +3601,25 @@ void AgentService::PublishHeartbeat(const int cycle) {
                  << std::endl;
       return;
     }
+  }
+}
+
+// Replaces the device API key (CORE-04). The new key is saved before it is used: until its first use the control
+// plane still accepts the old one, so a failure at any point leaves a working key and the next heartbeat asks again.
+void AgentService::RotateDeviceKey() {
+  if (!stateStore_) {
+    return;
+  }
+  try {
+    const auto commandChannelUrl = controlPlaneClient_->RotateDeviceKey(state_);
+    auto next = state_;
+    next.commandChannelUrl = commandChannelUrl;
+    stateStore_->Save(next);
+    state_.commandChannelUrl = commandChannelUrl;
+    PublishIdentitySnapshot();
+    QueueTelemetryEvent(L"device.key.rotated", L"control-plane-client", L"The device API key was replaced.", L"{}");
+  } catch (const std::exception& error) {
+    std::wcerr << L"Key rotation failed, keeping the current key: " << Utf8ToWide(error.what()) << std::endl;
   }
 }
 

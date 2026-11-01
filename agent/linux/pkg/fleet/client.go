@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,8 +20,23 @@ import (
 type Client struct {
 	BaseURL  string
 	DeviceID string
-	APIKey   string
+	APIKey   string // read with Key(): key rotation changes it while other goroutines make requests
 	HTTP     *http.Client
+	keyMu    sync.RWMutex
+}
+
+// Key is the device API key sent with every request.
+func (c *Client) Key() string {
+	c.keyMu.RLock()
+	defer c.keyMu.RUnlock()
+	return c.APIKey
+}
+
+// SetKey switches to a new device API key.
+func (c *Client) SetKey(key string) {
+	c.keyMu.Lock()
+	c.APIKey = key
+	c.keyMu.Unlock()
 }
 
 func NewClient(baseURL string) *Client {
@@ -156,8 +172,8 @@ func (c *Client) doContext(ctx context.Context, method, path string, body, out i
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if c.APIKey != "" {
-		req.Header.Set("X-Device-Api-Key", c.APIKey)
+	if key := c.Key(); key != "" {
+		req.Header.Set("X-Device-Api-Key", key)
 	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
@@ -186,7 +202,8 @@ func (c *Client) Enroll(req EnrollRequest) (*EnrollResponse, error) {
 	if err := c.do("POST", "/api/v1/enroll", req, &out, headers); err != nil {
 		return nil, err
 	}
-	c.DeviceID, c.APIKey = out.DeviceID, out.DeviceAPIKey
+	c.DeviceID = out.DeviceID
+	c.SetKey(out.DeviceAPIKey)
 	return &out, nil
 }
 
@@ -194,6 +211,22 @@ type HeartbeatResponse struct {
 	EffectivePolicyRevision string `json:"effectivePolicyRevision"`
 	CommandsPending         int    `json:"commandsPending"`
 	Approved                bool   `json:"approved"`
+	RotateKey               bool   `json:"rotateKey"` // the cloud wants this device to replace its API key
+}
+
+// RotateKey asks for a new device API key. The current key keeps working until the new one is first used, so the
+// caller must save the new key before switching to it (see Agent.rotateKey).
+func (c *Client) RotateKey() (string, error) {
+	var out struct {
+		DeviceAPIKey string `json:"deviceApiKey"`
+	}
+	if err := c.do("POST", "/api/v1/devices/"+c.DeviceID+"/rotate-key", map[string]string{}, &out, nil); err != nil {
+		return "", err
+	}
+	if len(out.DeviceAPIKey) < 16 {
+		return "", fmt.Errorf("the server returned no usable key")
+	}
+	return out.DeviceAPIKey, nil
 }
 
 func (c *Client) Heartbeat(agentVersion, health string, isolated bool, metrics map[string]interface{}) (*HeartbeatResponse, error) {
@@ -254,7 +287,7 @@ func (c *Client) DownloadModel() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("X-Device-Api-Key", c.APIKey)
+	req.Header.Set("X-Device-Api-Key", c.Key())
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, err

@@ -32,7 +32,18 @@ class ControlPlane(baseUrl: String, var deviceId: String = "", var apiKey: Strin
         val body = JSONObject().put("agentVersion", agentVersion).put("platformVersion", agentVersion)
             .put("healthState", "healthy").put("isolated", false).put("metrics", metrics)
         val reply = request("POST", "/api/v1/devices/$deviceId/heartbeat", body)
-        return HeartbeatReply(reply.optInt("commandsPending", 0), reply.optBoolean("approved", true), LostMode.from(reply.optJSONObject("lostMode")))
+        return HeartbeatReply(reply.optInt("commandsPending", 0), reply.optBoolean("approved", true), LostMode.from(reply.optJSONObject("lostMode")),
+            reply.optBoolean("rotateKey", false))
+    }
+
+    /**
+     * Asks for a new device API key (CORE-04). The current key keeps working until the new one is first used, so the
+     * caller saves the new key before switching to it.
+     */
+    fun rotateKey(): String {
+        val key = request("POST", "/api/v1/devices/$deviceId/rotate-key", JSONObject()).optString("deviceApiKey")
+        if (key.length < 16) throw IOException("The server returned no usable key")
+        return key
     }
 
     fun pendingCommands(limit: Int = 20): List<Command> =

@@ -120,8 +120,10 @@ func New(cfg Config) *Agent {
 
 func (a *Agent) statePath() string { return filepath.Join(a.cfg.StateDir, "state.json") }
 
-func (a *Agent) saveState() error {
-	data, _ := json.MarshalIndent(a.state, "", "  ")
+func (a *Agent) saveState() error { return a.writeState(a.state) }
+
+func (a *Agent) writeState(state State) error {
+	data, _ := json.MarshalIndent(state, "", "  ")
 	tmp := a.statePath() + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
@@ -184,7 +186,8 @@ func (a *Agent) Start() error {
 		}
 		log.Printf("enrolled as %s (approved=%v)", resp.DeviceID, resp.Approved)
 	}
-	a.client.DeviceID, a.client.APIKey = a.state.DeviceID, a.state.APIKey
+	a.client.DeviceID = a.state.DeviceID
+	a.client.SetKey(a.state.APIKey)
 	a.procs = NewProcessSensor(a.cfg.ProcRoot)
 	a.netw = NewNetworkSensor(a.cfg.ProcRoot)
 	globs := a.cfg.PersistenceGlobs
@@ -501,6 +504,9 @@ func (a *Agent) heartbeat() {
 		log.Printf("heartbeat failed: %v", err)
 		return
 	}
+	if resp.RotateKey {
+		a.rotateKey()
+	}
 	if resp.EffectivePolicyRevision != a.state.Policy.Revision {
 		a.refreshPolicy()
 	}
@@ -508,6 +514,26 @@ func (a *Agent) heartbeat() {
 	if resp.CommandsPending > 0 {
 		a.RunCommands()
 	}
+}
+
+// rotateKey replaces the device API key. The new key is saved before it is used: until its first use the cloud
+// still accepts the old one, so a failure at any point leaves a working key and the next heartbeat asks again.
+func (a *Agent) rotateKey() {
+	key, err := a.client.RotateKey()
+	if err != nil {
+		log.Printf("key rotation: could not get a new key: %v", err)
+		return
+	}
+	next := a.state
+	next.APIKey = key
+	if err := a.writeState(next); err != nil {
+		log.Printf("key rotation: could not save the new key, keeping the current one: %v", err)
+		return
+	}
+	a.state.APIKey = key
+	a.client.SetKey(key)
+	a.emit("device.key.rotated", "control-plane-client", "The device API key was replaced", nil)
+	log.Printf("device API key rotated")
 }
 
 // Run blocks until Stop is called.

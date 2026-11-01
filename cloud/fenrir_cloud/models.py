@@ -156,6 +156,11 @@ class Device(Base):
     exposure_flags: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # Phones: lost mode ({"enabled", "message", "phone", "since", "by"}); the agent re-reads it on every heartbeat.
     lost_mode: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    # CORE-04 key rotation (devicekeys.py): the new key until its first use, when the key was last rotated, and a
+    # technician's request to rotate at the next heartbeat.
+    pending_api_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    api_key_rotated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    key_rotation_requested: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
     # Last maintenance window in which protection-policy patching ran on this device ("2026-10-25T22:00").
     patch_window_run: Mapped[str | None] = mapped_column(String(20), nullable=True)
     # Values of the MSP's custom device fields ({key: value}); definitions in CustomField.

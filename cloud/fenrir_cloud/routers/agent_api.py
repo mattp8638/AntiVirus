@@ -17,6 +17,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .. import devicekeys
 from .. import rollouts, audit, endpoint_health, intel, psa, rmm, services
 from ..config import get_settings
 from ..db import get_db
@@ -134,6 +135,7 @@ def enroll(
                         api_key_hash=digest(api_key))
         db.add(device)
     device.api_key_hash = digest(api_key)
+    device.pending_api_key_hash, device.api_key_rotated_at, device.key_rotation_requested = None, utcnow(), False
     if reinstating:
         device.dns_token = secrets.token_urlsafe(24)
     device.hostname, device.os_version = hostname, os_version
@@ -155,19 +157,31 @@ def enroll(
                  token=token.label if token else "open-enrollment")
     db.commit()
 
+    return {"deviceId": device.id, "tenantId": tenant.id, "issuedAt": _iso(utcnow()), "approved": device.approved,
+            **_key_urls(settings, device, api_key), "policy": policy_doc}
+
+
+def _key_urls(settings, device: Device, api_key: str) -> dict:
+    """The device key and the URLs that carry it, in the shape enrolment always returned them."""
     base = settings.public_base_url.rstrip("/")
     return {
-        "deviceId": device.id,
-        "tenantId": tenant.id,
-        "issuedAt": _iso(utcnow()),
-        "approved": device.approved,
         "deviceApiKey": api_key,
         "commandChannelUrl": f"{base}/api/v1/devices/{device.id}/commands/pending?deviceApiKey={api_key}",
         "dnsOverHttpsUrl": f"{base}/dns/{device.dns_token}/dns-query",
         "realtimeUrl": ("wss://" + base[8:] if base.startswith("https://") else "ws://" + base.removeprefix("http://"))
         + f"/api/v1/devices/{device.id}/realtime",
-        "policy": policy_doc,
     }
+
+
+@router.post("/devices/{device_id}/rotate-key")
+def rotate_key(device: Device = Depends(current_device), db: Session = Depends(get_db)):
+    """Step 1 of key rotation (devicekeys.py): a new key, pending until the agent first uses it. The current key keeps
+    working until then, so an agent that fails to save the new key just asks again."""
+    try:
+        key = devicekeys.start(db, device)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return _key_urls(get_settings(), device, key)
 
 
 @router.post("/devices/{device_id}/heartbeat")
@@ -190,7 +204,8 @@ def heartbeat(body: dict = Body(default={}), device: Device = Depends(current_de
     pending = db.execute(select(func.count()).where(Command.device_id == device.id, Command.status == "pending")).scalar() or 0
     db.commit()
     reply = {"receivedAt": _iso(utcnow()), "effectivePolicyRevision": policy_doc["revision"], "commandsPending": pending,
-             "approved": device.approved, "realtimePath": f"/api/v1/devices/{device.id}/realtime"}
+             "approved": device.approved, "realtimePath": f"/api/v1/devices/{device.id}/realtime",
+             "rotateKey": devicekeys.due(device, get_settings())}
     if device.platform == "android":
         # Phones re-sync lost mode from every heartbeat, so a missed command cannot leave it stuck on or off.
         lost = device.lost_mode or {}
@@ -472,7 +487,7 @@ def update_check(body: dict = Body(default={}), x_device_api_key: str | None = H
     channel = str(body.get("channel") or "stable")
     platform = str(body.get("platform") or "")
     if x_device_api_key:
-        device = db.execute(select(Device).where(Device.api_key_hash == digest(x_device_api_key))).scalar_one_or_none()
+        device = devicekeys.find(db, x_device_api_key)
         if device is not None:
             platform = platform or device.platform
             resolution, _ = services.effective_policy(db, device)
@@ -502,7 +517,7 @@ def update_check(body: dict = Body(default={}), x_device_api_key: str | None = H
 
 def _bundle_tenant(db: Session, x_device_api_key: str | None, x_fenrir_token: str | None) -> str | None:
     if x_device_api_key:
-        device = db.execute(select(Device).where(Device.api_key_hash == digest(x_device_api_key))).scalar_one_or_none()
+        device = devicekeys.find(db, x_device_api_key)
         if device is not None:
             return device.tenant_id
     feed_token = get_settings().feed_token
@@ -558,7 +573,7 @@ def model_download(format: str = Query(default="fgbt", pattern="^(fgbt|json)$"))
 def reputation(value: str, x_device_api_key: str | None = Header(default=None), db: Session = Depends(get_db)):
     tenant_id = None
     if x_device_api_key:
-        device = db.execute(select(Device).where(Device.api_key_hash == digest(x_device_api_key))).scalar_one_or_none()
+        device = devicekeys.find(db, x_device_api_key)
         tenant_id = device.tenant_id if device else None
     try:
         return intel.lookup(db, value, tenant_id)
@@ -571,7 +586,7 @@ def legacy_telemetry(body: dict = Body(...), x_device_api_key: str | None = Head
     """The original single-event schema (schema/telemetry.json), kept for older Linux/macOS builds."""
     if not x_device_api_key:
         raise HTTPException(401, "Enroll the agent and send X-Device-Api-Key")
-    device = db.execute(select(Device).where(Device.api_key_hash == digest(x_device_api_key))).scalar_one_or_none()
+    device = devicekeys.find(db, x_device_api_key)
     if device is None:
         raise HTTPException(401, "Unknown device credentials")
     device.last_seen_at = utcnow()

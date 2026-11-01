@@ -34,7 +34,9 @@ Overall parity: **not passed**. MVP: **not yet declared**.
 | CORE-02 (roles) | (this batch) | Custom roles, customer assignments, finer powers. Fixed: a tenant admin could promote anyone, including themselves, to msp_admin. `test_roles.py`. |
 | CORE-14 (production mode) | (this batch) | Unsafe production settings stop the server from starting; `/ready`; readiness warnings for platform admins. `test_production_mode.py`. |
 | CORE-14 (go-live check) | (this batch) | `deploy/preflight.sh` checks a deployment before customers rely on it, without printing secrets; README step 6. `test_preflight.py`; runs against the full stack in the Phase 2 smoke. |
+| RMM-13 (owner request) | `ddca219` | Network topology maps physical connections: switch ports and uplinks over read-only SNMP from Linux/macOS probes. `test_topology_switches.py`, `snmp_test.go`. Not yet run against a real switch. |
 | CORE-08 (alerts and metrics) | (this batch) | Degraded/recovered alerts to MSP webhooks from the web process, artifact-storage health, Prometheus `/metrics` behind a token. `test_health_alerts.py`. |
+| CORE-04 (device keys) | (this batch) | Two-step device key rotation (on demand and by age) in the cloud and the Go, Windows and Android agents. `test_device_key_rotation.py`, `keyrotation_test.go`, acceptance `key_rotation`. |
 | CORE-15 (approvals) | (this batch) | Optional two-person approval bound to the exact request and its devices; `test_approvals.py`. |
 | CI | `b5cf672` | Removed the placeholder signing files that the merge brought back. [Run 78](https://github.com/mattp8638/AntiVirus/actions/runs/40649462515) passed, which also verifies FIX-08 in CI. |
 
@@ -54,8 +56,9 @@ Overall parity: **not passed**. MVP: **not yet declared**.
 
 ## Next actions (Phase 1, in dependency order)
 
-1. CORE-01, remainder: background jobs/automations and file paths.
-2. CORE-04 remainder: device API key rotation and expiry (needs an agent rotate command).
-3. CORE-07 remainder (fair capacity, poison jobs) and AGT-05 (proxy, offline buffering).
-4. CORE-08, CORE-09: health and metrics, backup and restore.
-5. AGT-01, AGT-02, AGT-06 to AGT-10: installers on clean VMs, final-package signature, identity, support matrix, SBOM, capability reporting.
+1. CORE-01 remainder: background jobs/automations and file paths.
+2. CORE-07 remainder (fair capacity, poison jobs) and AGT-05 (proxy, offline buffering).
+3. CORE-13: load at 10,000 endpoints on declared hardware (AT-27).
+4. AGT-01, AGT-02, AGT-06 to AGT-10: installers on clean VMs, final-package signature, identity, support matrix, SBOM, capability reporting.
+
+Needs the owner: a lab acceptance run with a managed switch (`docs/ACCEPTANCE_LAB.md`), the code-signing certificate on the server, a Microsoft 365 test tenant, and the Windows driver decision (D-06).

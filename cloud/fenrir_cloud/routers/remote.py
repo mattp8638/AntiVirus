@@ -11,12 +11,12 @@ from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import devicekeys
 from .. import audit, presence, psa, remote, services
 from ..db import get_db, session_factory
 from ..deps import Principal, current_principal, require_reauth, scoped_tenant
 from ..config import get_settings
 from ..models import Command, Device, DeviceArtifact, NetworkNode, RemoteSession, Tenant, Ticket, utcnow
-from ..security import digest
 from ..serialize import to_dict
 
 log = logging.getLogger("fenrir.remote")
@@ -413,7 +413,7 @@ def _is_end(text: str) -> bool:
 def _device_for_key(db: Session, device_id: str, api_key: str | None) -> bool:
     if not api_key:
         return False
-    device = db.execute(select(Device).where(Device.api_key_hash == digest(api_key))).scalar_one_or_none()
+    device = devicekeys.find(db, api_key)
     if device is None or device.id != device_id:
         return False
     device.last_seen_at = utcnow()

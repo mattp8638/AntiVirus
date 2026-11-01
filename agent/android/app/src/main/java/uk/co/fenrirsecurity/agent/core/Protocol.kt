@@ -88,7 +88,7 @@ data class LostMode(val enabled: Boolean, val message: String, val phone: String
     }
 }
 
-data class HeartbeatReply(val commandsPending: Int, val approved: Boolean, val lostMode: LostMode?)
+data class HeartbeatReply(val commandsPending: Int, val approved: Boolean, val lostMode: LostMode?, val rotateKey: Boolean = false)
 
 /** One location fix, as posted to /location. */
 data class Fix(

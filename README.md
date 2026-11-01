@@ -416,6 +416,12 @@ passkeys follow the same rule as passwords: platform administrators only.
 
 Do not run a manual/prototype service beside an installed agent. Keep uninstall-protection credentials and use the normal maintenance/installer flow for upgrades.
 
+**Device keys.** Each agent authenticates with its own API key. Agents replace it on their own when it is older than
+`FENRIR_DEVICE_KEY_MAX_AGE_DAYS` (default 90; 0 turns this off), and **Devices → More → Rotate device key** asks one to
+do it at its next check-in. The new key is saved before it is used and the old one keeps working until then, so a
+failed rotation never strands a device; once the agent uses the new key, the old one is refused. If you believe a key
+has leaked, decommission the device instead: that revokes it at once.
+
 Windows remote **Ctrl+Alt+Del** requires a matching updated service and `fenrir-remote.exe`, followed by a new remote session. Windows SAS policy must permit services. An acknowledgement confirms the request, not the screen transition; see [the SAS guide](docs/REMOTE_CTRL_ALT_DEL.md).
 
 ## Updates

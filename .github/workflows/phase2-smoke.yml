@@ -338,15 +338,15 @@ jobs:
       - name: Go-live preflight against the running stack
         shell: bash
         run: |
-          set -uo pipefail
+          set -euo pipefail
           # The CI stack is a lab (plain HTTP, no code-signing certificate), so preflight must report it as not ready;
           # every check it can pass here must pass, and it must never print a secret.
+          status=0
           FENRIR_COMPOSE_FILES="$PWD/deploy/docker-compose.lab.yml" FENRIR_BACKUP_DIR=/tmp/fenrir-backups NO_COLOR=1 \
-            deploy/preflight.sh --url http://127.0.0.1:8080 > /tmp/preflight.txt
-          status=$?
+            deploy/preflight.sh --url http://127.0.0.1:8080 > /tmp/preflight.txt || status=$?
           cat /tmp/preflight.txt
           { echo '### Go-live preflight (lab stack)'; echo '```'; cat /tmp/preflight.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-          test "$status" = 1
+          test "$status" = 1 || { echo "preflight exited $status, expected 1"; exit 1; }
           for expected in \
             "PASS  .env is readable by its owner only" \
             "PASS  The four secrets are all different" \
