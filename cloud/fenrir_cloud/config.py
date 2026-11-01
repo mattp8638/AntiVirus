@@ -33,6 +33,12 @@ class Settings:
     # everyone out on restart: set it in any real deployment.
     secret_key: str = field(default_factory=lambda: os.getenv("FENRIR_SECRET_KEY") or secrets.token_hex(32))
     token_ttl_minutes: int = field(default_factory=lambda: int(os.getenv("FENRIR_TOKEN_TTL_MINUTES", "720")))
+    # Staff must use MFA unless the platform settings say otherwise (Settings > Platform > Security).
+    require_mfa: bool = field(default_factory=lambda: _bool("FENRIR_REQUIRE_MFA", True))
+    # Default for Settings > Platform > Security > "Require script review" until it is saved there.
+    script_review: bool = field(default_factory=lambda: _bool("FENRIR_SCRIPT_REVIEW", False))
+    # Break glass: ignore the console network allow-list (when a wrong list has locked every administrator out).
+    ignore_console_allowlist: bool = field(default_factory=lambda: _bool("FENRIR_IGNORE_CONSOLE_ALLOWLIST", False))
     public_base_url: str = field(default_factory=lambda: os.getenv("FENRIR_PUBLIC_URL", "http://localhost:8080"))
     # Microsoft 365 sign-in. The MSP's own multi-tenant Entra app ("Sign in with Microsoft"); leave empty to use only
     # "Sign in with a code", which creates a Fenrir app registration inside each customer tenant instead.
@@ -53,6 +59,10 @@ class Settings:
     feed_token: str = field(default_factory=lambda: os.getenv("FENRIR_FEED_TOKEN", ""))
     feed_sync_enabled: bool = field(default_factory=lambda: _bool("FENRIR_FEED_SYNC", False))
 
+    # Have I Been Pwned subscription key for dark-web credential exposure monitoring (darkweb.py).
+    hibp_api_key: str = field(default_factory=lambda: os.getenv("FENRIR_HIBP_API_KEY", ""))
+    # External DNS blocklists (HaGeZi and others; see blocklists.py), refreshed by the hourly maintenance loop.
+    dns_blocklists_enabled: bool = field(default_factory=lambda: _bool("FENRIR_DNS_BLOCKLISTS", True))
     dns_upstream: str = field(default_factory=lambda: os.getenv("FENRIR_DNS_UPSTREAM", "https://cloudflare-dns.com/dns-query"))
     dns_sinkhole_ipv4: str = field(default_factory=lambda: os.getenv("FENRIR_DNS_SINKHOLE", "0.0.0.0"))
 
@@ -81,6 +91,14 @@ class Settings:
     enable_legacy: bool = field(default_factory=lambda: _bool("FENRIR_ENABLE_LEGACY", False))
     telemetry_retention_days: int = field(default_factory=lambda: int(os.getenv("FENRIR_TELEMETRY_RETENTION_DAYS", "90")))
     max_telemetry_batch: int = field(default_factory=lambda: int(os.getenv("FENRIR_MAX_TELEMETRY_BATCH", "2000")))
+    # Routine activity (process, image-load, network, DNS, file, registry, script-scan events at "info") is kept for less time
+    # than detections, scan results and agent state, and each device may store only so much of it per minute: past
+    # the cap, routine events are still checked against every detection rule but stored only if one matches.
+    routine_retention_days: int = field(default_factory=lambda: int(os.getenv("FENRIR_ROUTINE_RETENTION_DAYS", "30")))
+    routine_events_per_device_minute: int = field(
+        default_factory=lambda: int(os.getenv("FENRIR_ROUTINE_EVENTS_PER_DEVICE_MINUTE", "600")))
+    # all: one process serves the API and runs background jobs. web / worker: split them (python -m fenrir_cloud.worker).
+    role: str = field(default_factory=lambda: os.getenv("FENRIR_ROLE", "all").strip().lower())
 
 
 _active: Settings | None = None

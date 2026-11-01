@@ -1,4 +1,5 @@
 import { displayValue } from "../components/DisplayValue";
+import { confirmDialog } from "../components/dialogs";
 import { useState } from "react";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
@@ -21,7 +22,10 @@ export default function AttackSurface() {
                          { key: "open", label: "Open ports", render: (r) => r.lastResult?.openPorts?.map((p: any) => p.port).join(", ") || "—" },
                          { key: "worst", label: "Worst finding", render: (r) => r.lastResult?.findings?.[0] ? <Sev level={r.lastResult.findings[0].risk} /> : "—" },
                          { key: "lastScanAt", label: "Last scan", render: (r) => fmtTime(r.lastScanAt) },
-                         { key: "scan", label: "", render: (r) => can("respond") && <button className="small" onClick={async (e) => { e.stopPropagation(); await run(() => api(`exposure/assets/${r.id}/scan`, { body: {} }), "Scan started; refresh in a minute"); setTimeout(reload, 15000); }}>Scan</button> }]} />
+                         { key: "scan", label: "", render: (r) => <span style={{ whiteSpace: "nowrap" }}>
+                           {can("respond") && <button className="small" onClick={async (e) => { e.stopPropagation(); await run(() => api(`exposure/assets/${r.id}/scan`, { body: {} }), "Scan started; refresh in a minute"); setTimeout(reload, 15000); }}>Scan</button>}{" "}
+                           {can("configure") && <button className="small danger" onClick={async (e) => { e.stopPropagation();
+                             if (await confirmDialog(`Stop scanning ${r.target} and remove it?`, { confirmLabel: "Remove" }) && await run(() => api(`exposure/assets/${r.id}`, { method: "DELETE" }), "Asset removed")) reload(); }}>Remove</button>}</span> }]} />
       </div>
       {open && (
         <Modal title={`Findings · ${open.target}`} onClose={() => setOpen(null)}>

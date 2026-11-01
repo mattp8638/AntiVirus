@@ -20,9 +20,9 @@ from sqlalchemy.orm import Session
 from .. import rollouts, audit, endpoint_health, intel, psa, rmm, services
 from ..config import get_settings
 from ..db import get_db
-from ..deps import current_device, current_device_by_key
+from ..deps import current_command_device, current_device, current_device_by_key
 from ..detection import ingest
-from ..models import AgentRelease, Command, Device, EnrollmentToken, Event, Tenant, Ticket, utcnow
+from ..models import AgentRelease, Command, Device, EnrollmentToken, Tenant, Ticket, utcnow
 from ..security import digest, new_secret
 
 router = APIRouter(prefix="/api/v1", tags=["Agent API"])
@@ -184,6 +184,7 @@ def heartbeat(body: dict = Body(default={}), device: Device = Depends(current_de
     if isinstance(body.get("metrics"), dict):
         rmm.record_heartbeat_metrics(db, device, body["metrics"])
         rmm.evaluate_device(db, device)
+    device.metrics = {**(device.metrics or {}), "commandCancellation": body.get("commandCancellation") is True}
     _sync_cmdb_from_agent(db, device)
     _, policy_doc = services.effective_policy(db, device)
     pending = db.execute(select(func.count()).where(Command.device_id == device.id, Command.status == "pending")).scalar() or 0
@@ -236,8 +237,21 @@ def policy_check_in(body: dict = Body(default={}), device: Device = Depends(curr
     return {"retrievedAt": _iso(utcnow()), "changed": changed, "policy": policy_doc}
 
 
+async def _lenient_json(request: Request) -> dict:
+    """The body as a JSON object, tolerating raw control characters inside strings. Windows agents before this fix
+    sent them unescaped (from a service description or file name), and refusing the batch left the agent retrying it
+    forever, so nothing it queued afterwards, malware findings included, ever arrived."""
+    try:
+        body = json.loads((await request.body()).decode("utf-8", errors="replace"), strict=False)
+    except json.JSONDecodeError:
+        raise HTTPException(422, "The body must be JSON") from None
+    if not isinstance(body, dict):
+        raise HTTPException(422, "The body must be a JSON object")
+    return body
+
+
 @router.post("/devices/{device_id}/telemetry")
-def telemetry(body: dict = Body(...), device: Device = Depends(current_device), db: Session = Depends(get_db)):
+def telemetry(body: dict = Depends(_lenient_json), device: Device = Depends(current_device), db: Session = Depends(get_db)):
     events = body.get("events")
     if not isinstance(events, list):
         raise HTTPException(400, "events must be a list")
@@ -245,21 +259,33 @@ def telemetry(body: dict = Body(...), device: Device = Depends(current_device), 
     if len(events) > limit:
         raise HTTPException(413, f"at most {limit} events per batch")
     result = ingest(db, device, events)
-    total = db.execute(select(func.count()).where(Event.device_id == device.id)).scalar() or 0
     db.commit()
+    # No running total: counting a device's whole history on every batch got slower as the table grew.
     return {"receivedAt": _iso(utcnow()), "accepted": result.accepted, "duplicates": result.duplicates,
-            "totalStored": total, "alerts": result.alerts}
+            "notStored": result.not_stored, "alerts": result.alerts}
 
 
 @router.get("/devices/{device_id}/commands/pending")
 def pending_commands(limit: int = Query(default=20, ge=1, le=100), types: str | None = Query(default=None, max_length=500),
+                     include_cancelling: bool = False,
                      device: Device = Depends(current_device), db: Session = Depends(get_db)):
+    # Serialise dispatch with decommissioning. A credential check before this lock may have raced retirement.
+    device = db.execute(select(Device).where(Device.id == device.id).with_for_update()
+                        .execution_options(populate_existing=True)).scalar_one()
+    if device.api_key_hash == f"retired-{device.id}":
+        raise HTTPException(401, "Device has been decommissioned")
     # `types` lets an agent fetch only some commands (the Windows agent polls remote sessions on their own thread).
-    query = select(Command).where(Command.device_id == device.id, Command.status.in_(("pending", "dispatched")))
+    states = ("pending", "dispatched", "cancelling") if include_cancelling else ("pending", "dispatched")
+    query = select(Command).where(Command.device_id == device.id, Command.status.in_(states))
     wanted = [t.strip() for t in (types or "").split(",") if t.strip()]
     if wanted:
         query = query.where(Command.type.in_(wanted))
-    commands = db.execute(query.order_by(Command.created_at).limit(limit)).scalars().all()
+    from .. import platform_security
+
+    if platform_security.stopped(db):  # emergency stop: hand out containment only, whatever was queued
+        query = query.where(Command.type.in_(platform_security.STOP_EXEMPT_COMMANDS))
+    commands = db.execute(query.order_by(Command.created_at).limit(limit).with_for_update()
+                          .execution_options(populate_existing=True)).scalars().all()
     now = utcnow()
     for command in commands:
         if command.status == "pending":
@@ -275,9 +301,23 @@ def pending_commands(limit: int = Query(default=20, ge=1, le=100), types: str | 
     }
 
 
+@router.get("/devices/{device_id}/commands/{command_id}/state")
+def command_state(command_id: str, device: Device = Depends(current_command_device), db: Session = Depends(get_db)):
+    command = db.get(Command, command_id)
+    if command is None or command.device_id != device.id or command.tenant_id != device.tenant_id:
+        raise HTTPException(404, "Unknown command")
+    db.commit()  # long-running commands retain presence while their independent monitor checks in
+    return {"id": command.id, "status": command.status,
+            "cancelRequested": command.status in {"cancelling", "cancelled", "expired"},
+            "cancelRequestedAt": _iso(command.cancel_requested_at)}
+
+
 @router.post("/devices/{device_id}/commands/{command_id}/complete")
-def complete_command(command_id: str, body: dict = Body(...), device: Device = Depends(current_device),
+def complete_command(command_id: str, body: dict = Body(...), device: Device = Depends(current_command_device),
                      db: Session = Depends(get_db)):
+    # Same lock order as polling/retirement; result callbacks may update the device too.
+    device = db.execute(select(Device).where(Device.id == device.id).with_for_update()
+                        .execution_options(populate_existing=True)).scalar_one()
     query = select(Command).where(Command.id == command_id)
     if db.bind is not None and db.bind.dialect.name == "postgresql":
         # Lock the command until commit: concurrent agent retries must not
@@ -287,9 +327,9 @@ def complete_command(command_id: str, body: dict = Body(...), device: Device = D
     if command is None or command.device_id != device.id or command.tenant_id != device.tenant_id:
         raise HTTPException(404, "Unknown command")
     status = str(body.get("status") or "completed").lower()
-    if status not in {"completed", "succeeded", "success", "ok", "failed", "error"}:
+    if status not in {"completed", "succeeded", "success", "ok", "failed", "error", "cancelled"}:
         raise HTTPException(422, "Invalid command completion status")
-    requested_status = "completed" if status in {"completed", "succeeded", "success", "ok"} else "failed"
+    requested_status = "cancelled" if status == "cancelled" else "completed" if status in {"completed", "succeeded", "success", "ok"} else "failed"
     raw = body.get("resultJson")
     if isinstance(raw, str) and len(raw) > 1_048_576:
         raise HTTPException(413, "Command result exceeds the maximum size")
@@ -301,17 +341,21 @@ def complete_command(command_id: str, body: dict = Body(...), device: Device = D
         raise HTTPException(422, "Command result must be a JSON object")
     # Derive the *effective* result before idempotency checks; a retry of the
     # same non-zero exit code must acknowledge the same failed outcome.
-    if isinstance(result.get("exitCode"), int) and result["exitCode"] != 0:
+    if requested_status != "cancelled" and isinstance(result.get("exitCode"), int) and result["exitCode"] != 0:
         requested_status = "failed"
-    if command.status in {"completed", "failed"}:
+    if command.status in {"completed", "failed", "cancelled"}:
         if command.status != requested_status:
             raise HTTPException(409, "Command was already completed with a different outcome")
         return {"id": command.id, "status": command.status, "duplicate": True}
-    if command.status in {"cancelled", "expired"}:
+    if command.status == "expired":
         raise HTTPException(409, "Command can no longer be completed")
-    if command.status not in {"pending", "dispatched"}:
+    if requested_status == "cancelled" and command.cancel_requested_at is None:
+        raise HTTPException(409, "Cancellation has not been requested")
+    if command.status not in {"pending", "dispatched", "cancelling"}:
         raise HTTPException(409, "Command is not active")
     command.status = requested_status
+    if requested_status == "cancelled":
+        result["stopConfirmed"] = True
     command.result = result
     command.completed_at = command.updated_at = utcnow()
     if command.type == "device.isolate" and command.status == "completed":
@@ -467,8 +511,6 @@ def _bundle_tenant(db: Session, x_device_api_key: str | None, x_fenrir_token: st
     return None
 
 
-@router.api_route("/agent/bundle", methods=["GET", "POST"])
-@router.api_route("/signatures/delta", methods=["GET", "POST"])
 def agent_bundle(
     hashes_limit: int = Query(default=50000, alias="hashesLimit", ge=0, le=200000),
     urls_limit: int = Query(default=50000, alias="urlsLimit", ge=0, le=200000),
@@ -479,6 +521,12 @@ def agent_bundle(
 ):
     tenant_id = _bundle_tenant(db, x_device_api_key, x_fenrir_token)
     return intel.agent_bundle(db, tenant_id, hashes_limit, urls_limit, rules_limit)
+
+
+# One handler serves both paths and methods; each registration needs its own OpenAPI operation ID.
+for _path, _name in (("/agent/bundle", "agent_bundle"), ("/signatures/delta", "signatures_delta")):
+    for _method in ("GET", "POST"):
+        router.add_api_route(_path, agent_bundle, methods=[_method], operation_id=f"{_name}_{_method.lower()}")
 
 
 @router.get("/agent/model/manifest")

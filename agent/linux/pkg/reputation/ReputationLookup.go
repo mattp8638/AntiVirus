@@ -98,3 +98,58 @@ func sha256File(path string) (string, error) {
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
+
+// DomainVerdict holds cached local DNS lookup verdicts.
+type DomainVerdict struct {
+	Domain     string    `json:"domain"`
+	Verdict    string    `json:"verdict"` // allow | block
+	Category   string    `json:"category,omitempty"`
+	Reason     string    `json:"reason,omitempty"`
+	CachedAt   time.Time `json:"cachedAt"`
+	TTLSeconds int       `json:"ttlSeconds"`
+}
+
+// DNSLookupCache provides thread-safe agent-side local DNS verdict caching.
+type DNSLookupCache struct {
+	cache map[string]DomainVerdict
+	mu    sync.RWMutex
+}
+
+func NewDNSLookupCache() *DNSLookupCache {
+	return &DNSLookupCache{
+		cache: make(map[string]DomainVerdict),
+	}
+}
+
+func (d *DNSLookupCache) Get(domain string) (DomainVerdict, bool) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	entry, ok := d.cache[domain]
+	if !ok {
+		return DomainVerdict{}, false
+	}
+	ttl := time.Duration(entry.TTLSeconds) * time.Second
+	if ttl == 0 {
+		ttl = 5 * time.Minute
+	}
+	if time.Since(entry.CachedAt) > ttl {
+		return DomainVerdict{}, false
+	}
+	return entry, true
+}
+
+func (d *DNSLookupCache) Put(domain string, verdict string, category string, reason string, ttlSeconds int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if ttlSeconds <= 0 {
+		ttlSeconds = 300
+	}
+	d.cache[domain] = DomainVerdict{
+		Domain:     domain,
+		Verdict:    verdict,
+		Category:   category,
+		Reason:     reason,
+		CachedAt:   time.Now(),
+		TTLSeconds: ttlSeconds,
+	}
+}

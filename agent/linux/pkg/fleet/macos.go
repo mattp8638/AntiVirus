@@ -7,6 +7,7 @@ package fleet
 // isolation (a pf anchor). Parsers are plain functions so they are unit-tested on any OS.
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -360,8 +361,10 @@ func ParseSoftwareUpdateList(out, currentMajor string) []map[string]interface{} 
 	return patches
 }
 
-func macPatchScan() (map[string]interface{}, error) {
-	out, err := run(15*time.Minute, "softwareupdate", "-l")
+func macPatchScan() (map[string]interface{}, error) { return macPatchScanContext(context.Background()) }
+
+func macPatchScanContext(ctx context.Context) (map[string]interface{}, error) {
+	out, err := runContext(ctx, 15*time.Minute, "softwareupdate", "-l")
 	if err != nil && !strings.Contains(out, "No new software available") {
 		return nil, fmt.Errorf("softwareupdate -l failed: %s", lastLines(out, 3))
 	}
@@ -372,7 +375,7 @@ func macPatchScan() (map[string]interface{}, error) {
 	}
 	manager := "softwareupdate"
 	if brew, owner, err := brewCommand(); err == nil {
-		if out, err := run(10*time.Minute, "sudo", "-u", owner, "-H", brew, "outdated", "--json=v2"); err == nil {
+		if out, err := runContext(ctx, 10*time.Minute, "sudo", "-u", owner, "-H", brew, "outdated", "--json=v2"); err == nil {
 			patches = append(patches, ParseBrewOutdated([]byte(out))...)
 			manager = "softwareupdate+brew"
 		}
@@ -433,13 +436,17 @@ func ParseBrewOutdated(data []byte) []map[string]interface{} {
 var softwareUpdateLabel = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 ._()+-]{0,199}$`)
 
 func macPatchInstall(p installPayload) (map[string]interface{}, error) {
+	return macPatchInstallContext(context.Background(), p)
+}
+
+func macPatchInstallContext(ctx context.Context, p installPayload) (map[string]interface{}, error) {
 	results := make([]map[string]interface{}, 0, len(p.PatchIDs))
 	var failures []string
 	restart := false
 	for _, id := range p.PatchIDs {
 		if strings.HasPrefix(id, "brew:") {
 			entry := map[string]interface{}{"id": id, "success": true}
-			if err := brewUpgrade(id); err != nil {
+			if err := brewUpgradeContext(ctx, id); err != nil {
 				entry["success"], entry["error"] = false, err.Error()
 				failures = append(failures, id)
 			}
@@ -451,7 +458,7 @@ func macPatchInstall(p installPayload) (map[string]interface{}, error) {
 			results = append(results, map[string]interface{}{"id": id, "success": false, "error": "not a macOS software update"})
 			continue
 		}
-		out, err := run(90*time.Minute, "softwareupdate", "-i", label, "--agree-to-license")
+		out, err := runContext(ctx, 90*time.Minute, "softwareupdate", "-i", label, "--agree-to-license")
 		entry := map[string]interface{}{"id": id, "success": err == nil}
 		if err != nil {
 			entry["error"] = lastLines(out, 2)
@@ -468,7 +475,7 @@ func macPatchInstall(p installPayload) (map[string]interface{}, error) {
 		if delay <= 0 {
 			delay = 5
 		}
-		if _, err := run(30*time.Second, "shutdown", "-r", fmt.Sprintf("+%d", delay)); err == nil {
+		if _, err := runContext(ctx, 30*time.Second, "shutdown", "-r", fmt.Sprintf("+%d", delay)); err == nil {
 			result["rebootScheduledInMinutes"] = delay
 		}
 	}
@@ -479,7 +486,9 @@ func macPatchInstall(p installPayload) (map[string]interface{}, error) {
 }
 
 // brewUpgrade upgrades one formula or cask (brew:formula:<name> / brew:cask:<name>) as the Homebrew owner.
-func brewUpgrade(id string) error {
+func brewUpgrade(id string) error { return brewUpgradeContext(context.Background(), id) }
+
+func brewUpgradeContext(ctx context.Context, id string) error {
 	parts := strings.SplitN(id, ":", 3)
 	if len(parts) != 3 || (parts[1] != "formula" && parts[1] != "cask") || !packageName.MatchString(parts[2]) {
 		return errors.New("not a Homebrew package")
@@ -492,7 +501,7 @@ func brewUpgrade(id string) error {
 	if parts[1] == "cask" {
 		args = append(args, "--cask")
 	}
-	out, err := run(60*time.Minute, "sudo", append(args, "--", parts[2])...)
+	out, err := runContext(ctx, 60*time.Minute, "sudo", append(args, "--", parts[2])...)
 	if err != nil {
 		return fmt.Errorf("brew upgrade %s: %s", parts[2], lastLines(out, 2))
 	}
@@ -517,6 +526,10 @@ func brewCommand() (path, owner string, err error) {
 }
 
 func macSoftware(p softwarePayload, sha string, uninstall bool) (map[string]interface{}, error) {
+	return macSoftwareContext(context.Background(), p, sha, uninstall)
+}
+
+func macSoftwareContext(ctx context.Context, p softwarePayload, sha string, uninstall bool) (map[string]interface{}, error) {
 	switch p.Installer {
 	case "brew":
 		if !packageName.MatchString(p.Identifier) {
@@ -531,7 +544,7 @@ func macSoftware(p softwarePayload, sha string, uninstall bool) (map[string]inte
 			verb = "uninstall"
 		}
 		// Homebrew refuses to run as root; run it as the account that owns the installation.
-		out, err := run(30*time.Minute, "sudo", "-u", owner, "-H", brew, verb, p.Identifier)
+		out, err := runContext(ctx, 30*time.Minute, "sudo", "-u", owner, "-H", brew, verb, p.Identifier)
 		result := map[string]interface{}{"output": lastLines(out, 20)}
 		if err != nil {
 			return result, fmt.Errorf("brew %s failed: %s", verb, lastLines(out, 3))
@@ -541,12 +554,12 @@ func macSoftware(p softwarePayload, sha string, uninstall bool) (map[string]inte
 		if uninstall {
 			return nil, errors.New(".pkg installers cannot be removed generically; use a script or the vendor's uninstaller")
 		}
-		path, err := downloadVerified(p.Identifier, sha)
+		path, err := downloadVerifiedContext(ctx, p.Identifier, sha)
 		if err != nil {
 			return nil, err
 		}
 		defer os.Remove(path)
-		out, err := run(60*time.Minute, "installer", "-pkg", path, "-target", "/")
+		out, err := runContext(ctx, 60*time.Minute, "installer", "-pkg", path, "-target", "/")
 		result := map[string]interface{}{"output": lastLines(out, 20)}
 		if err != nil {
 			return result, fmt.Errorf("installer failed: %s", lastLines(out, 3))
@@ -557,11 +570,19 @@ func macSoftware(p softwarePayload, sha string, uninstall bool) (map[string]inte
 }
 
 func downloadVerified(url, sha string) (string, error) {
+	return downloadVerifiedContext(context.Background(), url, sha)
+}
+
+func downloadVerifiedContext(ctx context.Context, url, sha string) (string, error) {
 	if !strings.HasPrefix(url, "https://") || len(sha) != 64 {
 		return "", errors.New("pkg installers need an https URL and SHA-256")
 	}
 	client := &http.Client{Timeout: 30 * time.Minute}
-	resp, err := client.Get(url)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := client.Do(request)
 	if err != nil {
 		return "", err
 	}
@@ -594,6 +615,10 @@ func downloadVerified(url, sha string) (string, error) {
 var launchdLabel = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$`)
 
 func macServiceControl(label, action string) (map[string]interface{}, error) {
+	return macServiceControlContext(context.Background(), label, action)
+}
+
+func macServiceControlContext(ctx context.Context, label, action string) (map[string]interface{}, error) {
 	if !launchdLabel.MatchString(label) {
 		return nil, errors.New("invalid launchd label")
 	}
@@ -609,11 +634,11 @@ func macServiceControl(label, action string) (map[string]interface{}, error) {
 	default:
 		return nil, errors.New("action must be start, stop or restart")
 	}
-	if out, err := run(2*time.Minute, "launchctl", args...); err != nil {
+	if out, err := runContext(ctx, 2*time.Minute, "launchctl", args...); err != nil {
 		return nil, fmt.Errorf("launchctl %s %s: %s", args[0], label, lastLines(out, 3))
 	}
 	state := "unknown"
-	if out, err := run(30*time.Second, "launchctl", "print", target); err == nil {
+	if out, err := runContext(ctx, 30*time.Second, "launchctl", "print", target); err == nil {
 		if m := regexp.MustCompile(`(?m)^\s*state = (\S+)`).FindStringSubmatch(out); m != nil {
 			state = m[1]
 		}

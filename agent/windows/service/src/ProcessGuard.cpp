@@ -19,6 +19,7 @@ namespace antivirus::agent {
 namespace {
 
 constexpr std::uintmax_t kMaxMlFileBytes = 64ull * 1024 * 1024;
+constexpr std::uintmax_t kMaxExclusionHashBytes = 512ull * 1024 * 1024;
 
 std::wstring LowerCopy(std::wstring value) {
   for (auto& c : value) c = static_cast<wchar_t>(towlower(c));
@@ -141,7 +142,30 @@ ExtendedPolicy ProcessGuard::CurrentExtendedPolicy() const {
   return extended_;
 }
 
-std::vector<TelemetryRecord> ProcessGuard::OnProcessStart(const EtwProcessContext& process) {
+std::wstring ProcessGuard::CachedSha256(const std::wstring& path) {
+  std::error_code ec;
+  const auto size = std::filesystem::file_size(std::filesystem::path(path), ec);
+  if (ec || size > kMaxExclusionHashBytes) return {};
+  const auto stamp = std::filesystem::last_write_time(std::filesystem::path(path), ec);
+  if (ec) return {};
+  const auto key = LowerCopy(path) + L"|" + std::to_wstring(size) + L"|" + std::to_wstring(stamp.time_since_epoch().count());
+  {
+    std::lock_guard lock(mutex_);
+    if (const auto it = hashCache_.find(key); it != hashCache_.end()) return it->second;
+  }
+  std::wstring sha;
+  try {
+    sha = LowerCopy(ComputeFileSha256(path));
+  } catch (...) {
+    return {};
+  }
+  std::lock_guard lock(mutex_);
+  if (hashCache_.size() > 4096) hashCache_.clear();
+  hashCache_[key] = sha;
+  return sha;
+}
+
+std::vector<TelemetryRecord> ProcessGuard::OnProcessStart(EtwProcessContext& process) {
   std::vector<TelemetryRecord> out;
   if (process.pid == 0 || process.pid == GetCurrentProcessId() || process.imagePath.empty()) return out;
   PolicySnapshot policy;
@@ -156,14 +180,26 @@ std::vector<TelemetryRecord> ProcessGuard::OnProcessStart(const EtwProcessContex
   behavior::ProcessFacts facts{.pid = process.pid, .imagePath = process.imagePath, .commandLine = process.commandLine,
                                .parentImagePath = process.parentImagePath, .signer = process.signer,
                                .signatureVerified = !process.signer.empty(), .onRemovableMedia = OnRemovableDrive(process.imagePath)};
-  const bool needsHash = !extended.behavior.blockedApps.empty() || !extended.behavior.allowedHashes.empty();
+  const auto& exclusions = extended.behavior.exclusions;
+  const bool needsHash = !extended.behavior.blockedApps.empty() || !extended.behavior.allowedHashes.empty() ||
+                         behavior::NeedsChildHash(exclusions);
   if (needsHash) {
-    try {
-      facts.sha256 = LowerCopy(ComputeFileSha256(process.imagePath));
-    } catch (...) {
-    }
+    facts.sha256 = CachedSha256(process.imagePath);
+  }
+  if (!process.parentImagePath.empty() && behavior::NeedsParentHash(exclusions, process.parentImagePath)) {
+    facts.parentSha256 = CachedSha256(process.parentImagePath);
+    process.parentSha256 = facts.parentSha256;  // reported on process.started so cloud rules can verify the chain
   }
   auto decisions = behavior::Evaluate(facts, extended.behavior);
+  std::vector<std::wstring> excludedRules;
+  const behavior::ExclusionRule* appliedExclusion = nullptr;
+  if (!decisions.empty()) {
+    if (const auto* rule = behavior::MatchExclusion(exclusions, L"behavior", facts); rule != nullptr) {
+      for (const auto& d : decisions) excludedRules.push_back(d.rule);
+      decisions.clear();
+      appliedExclusion = rule;
+    }
+  }
 
   // Static ML on images that are not signed by Microsoft. Verdicts are cached per (path, size, mtime).
   double mlScore = -1.0;
@@ -190,12 +226,27 @@ std::vector<TelemetryRecord> ProcessGuard::OnProcessStart(const EtwProcessContex
           }
         }
         if (mlScore >= *cut) {
-          decisions.push_back({L"antimalware.mlStatic",
-                               policy.enforceProcessStartVerdicts ? behavior::RuleMode::Block : behavior::RuleMode::Audit,
-                               L"static machine-learning model scored " + std::to_wstring(mlScore), L"T1204.002"});
+          if (const auto* rule = behavior::MatchExclusion(exclusions, L"antimalware", facts); rule != nullptr) {
+            excludedRules.push_back(L"antimalware.mlStatic");
+            appliedExclusion = rule;
+          } else {
+            decisions.push_back({L"antimalware.mlStatic",
+                                 policy.enforceProcessStartVerdicts ? behavior::RuleMode::Block : behavior::RuleMode::Audit,
+                                 L"static machine-learning model scored " + std::to_wstring(mlScore), L"T1204.002"});
+          }
         }
       }
     }
+  }
+  if (appliedExclusion != nullptr && !excludedRules.empty()) {
+    std::wstringstream payload;
+    payload << L"{\"exclusionId\":\"" << J(appliedExclusion->id) << L"\",\"suppressed\":[";
+    for (size_t i = 0; i < excludedRules.size(); ++i) payload << (i ? L"," : L"") << L"\"" << J(excludedRules[i]) << L"\"";
+    payload << L"],\"pid\":" << process.pid << L",\"processImagePath\":\"" << J(process.imagePath) << L"\",\"commandLine\":\""
+            << J(process.commandLine) << L"\",\"parentProcessImagePath\":\"" << J(process.parentImagePath)
+            << L"\",\"parentSha256\":\"" << J(facts.parentSha256) << L"\"}";
+    out.push_back(Record(L"edr.exclusion.applied",
+                         L"Exclusion " + appliedExclusion->id + L" allowed " + process.imageName, payload.str()));
   }
   if (decisions.empty()) return out;
 

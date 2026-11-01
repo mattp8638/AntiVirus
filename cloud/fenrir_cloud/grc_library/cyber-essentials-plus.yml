@@ -1,0 +1,88 @@
+{
+  "key": "cyber-essentials-plus",
+  "name": "Cyber Essentials Plus",
+  "short": "CE+",
+  "version": "Current CE requirements and CE+ test specification",
+  "questionSet": true,
+  "description": "UK-relevant readiness and evidence guide. Record applicability before assessment; use the official framework and any required independent assessment or submission process. UK organisations requiring independently verified Cyber Essentials controls.",
+  "sections": [
+    {
+      "id": "readiness",
+      "title": "Scope, implementation and assurance",
+      "requirements": [
+        {
+          "id": "CEP-SCOPE",
+          "title": "Confirm the assessed estate",
+          "text": "Record the current CE scope, certificate and systems selected with the assessor.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "CEP-EXTERNAL",
+          "title": "External exposure testing",
+          "text": "Attach assessor results for external exposure and boundary controls.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "CEP-INTERNAL",
+          "title": "Internal technical verification",
+          "text": "Record sampled device configurations and independent test evidence.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "CEP-MALWARE",
+          "title": "Protection verification",
+          "text": "Retain evidence that the assessor tested the required protection controls.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "CEP-ACCESS",
+          "title": "Access-control testing",
+          "text": "Record authentication and privilege test findings and remediation.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "CEP-PATCH",
+          "title": "Supported software and patch checks",
+          "text": "Track sampled software support and update findings to closure.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "CEP-RETEST",
+          "title": "Remediation and retesting",
+          "text": "Link each failed test to an owner, fix and assessor retest.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "CEP-DECISION",
+          "title": "Certification decision",
+          "text": "Record the certification body's outcome and renewal date; readiness completion is not certification.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        }
+      ]
+    }
+  ]
+}

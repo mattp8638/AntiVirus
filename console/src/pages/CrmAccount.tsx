@@ -5,6 +5,7 @@ import { ago, api, money } from "../api";
 import { useApp } from "../app-context";
 import { ErrorNote, PageHead, Pill, Stat, Table, useAction, useData } from "../components/ui";
 import { CrmEditor } from "./Crm";
+import { promptDialog } from "../components/dialogs";
 
 const TIMELINE_TONE: Record<string, string> = { ticket: "warn", invoice: "muted", opportunity: "good", task: "blue" };
 
@@ -19,7 +20,7 @@ export default function CrmAccount() {
   const p = data?.profitability;
 
   const setOwner = async () => {
-    const owner = window.prompt("Account owner (name or email of the person responsible)", a?.accountOwner ?? "");
+    const owner = await promptDialog("Account owner (name or email of the person responsible)", a?.accountOwner ?? "");
     if (owner === null) return;
     await run(() => api(`crm/accounts/${id}`, { method: "PATCH", body: { accountOwner: owner } }), "Owner updated");
     reload();
@@ -30,7 +31,8 @@ export default function CrmAccount() {
     <>
       <PageHead title={a?.name ?? "Account"}
                 subtitle={a ? <>Plan {displayValue(a.plan)} · {displayValue(data.devices)} devices · owner <b>{displayValue(a.accountOwner || "unassigned")}</b>
-                  {can("crm") && <> · <button className="small" onClick={setOwner}>Change owner</button></>}</> : undefined}
+                  {can("crm") && <> · <button className="small" onClick={setOwner}>Change owner</button></>}
+                  {" · "}<Link to={`/companies/${id}`}>Health and reports</Link></> : undefined}
                 actions={can("crm") && <span style={{ display: "inline-flex", gap: 6 }}>
                   <button onClick={() => blank("activities", { kind: "call", direction: "outbound" })}>Log activity</button>
                   <button onClick={() => blank("activities", { kind: "task" })}>Add task</button>

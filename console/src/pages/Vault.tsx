@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { confirmDialog } from "../components/dialogs";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
 import { ErrorNote, Modal, PageHead, Pill, Table, TenantSelect, useAction, useListData } from "../components/ui";
@@ -29,6 +30,10 @@ export default function Vault() {
     ]} empty="No credentials for this customer." /></div>
     {editing && <Modal title={editing.id ? editing.name : "New credential"} onClose={close} footer={<>
       {editing.id && <button disabled={busy} onClick={async () => { if (await run(() => api("vault/credentials/" + editing.id, { method: "PATCH", body: { archived: !editing.archived } }), editing.archived ? "Restored" : "Archived")) { close(); reload(); } }}>{editing.archived ? "Restore" : "Archive"}</button>}
+      {editing.id && editing.archived && <button className="danger" disabled={busy} onClick={async () => {
+        if (await confirmDialog(`Delete "${editing.name}" permanently? The secret is destroyed and cannot be recovered. The audit log keeps that it existed.`, { confirmLabel: "Delete permanently" })
+            && await run(() => api("vault/credentials/" + editing.id, { method: "DELETE" }), "Credential deleted")) { close(); reload(); }
+      }}>Delete permanently</button>}
       <button className="primary" disabled={busy || !editing.name || (!editing.id && (!editing.tenantId || !editing.secret))} onClick={save}>Save</button>
     </>}>
       {!editing.id && <label className="field">Customer<TenantSelect value={editing.tenantId} onChange={id => setEditing({ ...editing, tenantId: id })} /></label>}

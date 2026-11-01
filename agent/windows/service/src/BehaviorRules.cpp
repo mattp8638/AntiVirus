@@ -68,6 +68,89 @@ struct Ctx {
 
 }  // namespace
 
+namespace {
+
+std::wstring NormalisePath(const std::wstring& path) {
+  auto out = Lower(path);
+  std::replace(out.begin(), out.end(), L'\\', L'/');
+  const auto first = out.find_first_not_of(L" \t");
+  const auto last = out.find_last_not_of(L" \t");
+  return first == std::wstring::npos ? std::wstring{} : out.substr(first, last - first + 1);
+}
+
+// '*' and '?' glob over one path component (no directory separators can occur here).
+bool Glob(std::wstring_view pattern, std::wstring_view text) {
+  size_t p = 0, t = 0, star = std::wstring_view::npos, mark = 0;
+  while (t < text.size()) {
+    if (p < pattern.size() && (pattern[p] == L'?' || pattern[p] == text[t])) {
+      ++p;
+      ++t;
+    } else if (p < pattern.size() && pattern[p] == L'*') {
+      star = p++;
+      mark = t;
+    } else if (star != std::wstring_view::npos) {
+      p = star + 1;
+      t = ++mark;
+    } else {
+      return false;
+    }
+  }
+  while (p < pattern.size() && pattern[p] == L'*') ++p;
+  return p == pattern.size();
+}
+
+bool HasHash(const std::vector<std::wstring>& hashes, const std::wstring& sha) {
+  if (sha.empty()) return false;
+  const auto lowered = Lower(sha);
+  return std::find(hashes.begin(), hashes.end(), lowered) != hashes.end();
+}
+
+}  // namespace
+
+bool ExclusionRule::HasScope(const std::wstring& scope) const {
+  return std::find(scopes.begin(), scopes.end(), scope) != scopes.end();
+}
+
+bool ExclusionPathMatches(const std::wstring& pattern, const std::wstring& path) {
+  if (pattern.empty()) return true;
+  const auto want = NormalisePath(pattern);
+  const auto have = NormalisePath(path);
+  if (have.empty()) return false;
+  const auto wantSlash = want.find_last_of(L'/');
+  const auto haveSlash = have.find_last_of(L'/');
+  const auto wantDir = wantSlash == std::wstring::npos ? std::wstring{} : want.substr(0, wantSlash);
+  const auto haveDir = haveSlash == std::wstring::npos ? std::wstring{} : have.substr(0, haveSlash);
+  if (wantDir != haveDir) return false;
+  return Glob(want.substr(wantSlash == std::wstring::npos ? 0 : wantSlash + 1),
+              have.substr(haveSlash == std::wstring::npos ? 0 : haveSlash + 1));
+}
+
+bool ExclusionMatches(const ExclusionRule& rule, const ProcessFacts& p) {
+  if (!rule.childImage.empty() && !ExclusionPathMatches(rule.childImage, p.imagePath)) return false;
+  if (!rule.childSha256.empty() && !HasHash(rule.childSha256, p.sha256)) return false;
+  if (!rule.commandLineContains.empty() && !Contains(Lower(p.commandLine), Lower(rule.commandLineContains))) return false;
+  if (rule.kind == L"hash") return !rule.childSha256.empty();
+  return !rule.parentImage.empty() && ExclusionPathMatches(rule.parentImage, p.parentImagePath) &&
+         HasHash(rule.parentSha256, p.parentSha256);
+}
+
+const ExclusionRule* MatchExclusion(const std::vector<ExclusionRule>& rules, const std::wstring& scope, const ProcessFacts& p) {
+  for (const auto& rule : rules) {
+    if (rule.HasScope(scope) && ExclusionMatches(rule, p)) return &rule;
+  }
+  return nullptr;
+}
+
+bool NeedsParentHash(const std::vector<ExclusionRule>& rules, const std::wstring& parentImagePath) {
+  return std::any_of(rules.begin(), rules.end(), [&](const ExclusionRule& r) {
+    return r.kind != L"hash" && !r.parentImage.empty() && ExclusionPathMatches(r.parentImage, parentImagePath);
+  });
+}
+
+bool NeedsChildHash(const std::vector<ExclusionRule>& rules) {
+  return std::any_of(rules.begin(), rules.end(), [](const ExclusionRule& r) { return !r.childSha256.empty(); });
+}
+
 RuleMode ParseRuleMode(const std::wstring& value) {
   const auto v = Lower(value);
   if (v == L"block") return RuleMode::Block;

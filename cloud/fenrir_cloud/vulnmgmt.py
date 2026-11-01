@@ -31,13 +31,39 @@ STATUSES = {"open", "patching", "mitigated", "accepted", "fixed"}
 MAX_ACCEPTANCE_DAYS = 365
 
 
-def priority(vuln: Vulnerability) -> str:
-    if vuln.known_exploited:
-        return "P1"
-    return {"critical": "P2", "high": "P3"}.get(vuln.severity, "P4")
+PRIORITIES = ("P1", "P2", "P3", "P4")
 
 
-def risk_score(vuln: Vulnerability, criticality: str | None) -> float:
+def priority(vuln: Vulnerability, elevated: bool = False) -> str:
+    """Exploit likelihood first, then impact.
+
+    P1: exploited in the wild (CISA KEV), or EPSS >= 50%, or EPSS >= 10% on a critical issue.
+    P2: EPSS >= 10%, or a critical issue not known to be unlikely to be exploited (EPSS >= 0.1% or unscored).
+    P3: high severity, a critical issue with EPSS < 0.1%, or EPSS >= 1%.
+    P4: everything else.
+    ``elevated`` (the device holds sensitive personal data or a breached user's account) raises one level.
+    """
+    epss, severity = vuln.epss, vuln.severity
+    if vuln.known_exploited or (epss is not None and (epss >= 0.5 or (epss >= 0.1 and severity == "critical"))):
+        level = "P1"
+    elif (epss is not None and epss >= 0.1) or (severity == "critical" and (epss is None or epss >= 0.001)):
+        level = "P2"
+    elif severity in {"critical", "high"} or (epss is not None and epss >= 0.01):
+        level = "P3"
+    else:
+        level = "P4"
+    if elevated and level != "P1":
+        level = PRIORITIES[PRIORITIES.index(level) - 1]
+    return level
+
+
+def device_elevated(device: Device | None) -> bool:
+    """Context that makes a vulnerability on this device matter more: sensitive data or a breached user."""
+    flags = set((device.exposure_flags or []) if device is not None else [])
+    return bool(flags & {"pii-high", "breached-user"})
+
+
+def risk_score(vuln: Vulnerability, criticality: str | None, elevated: bool = False) -> float:
     """0-10: how urgently this vulnerability on this device needs fixing.
 
     CVSS (or the severity) says how bad it is; CISA KEV and FIRST EPSS say how likely it is to be used against
@@ -57,11 +83,18 @@ def risk_score(vuln: Vulnerability, criticality: str | None) -> float:
         else:
             score -= 1.0  # scored, and very unlikely to be exploited
     score *= CRITICALITY_FACTOR.get(criticality or "medium", 1.0)
+    if elevated:
+        score += 1.0
     return round(max(0.0, min(score, 10.0)), 1)
 
 
-def risk_reasons(vuln: Vulnerability) -> list[str]:
+def risk_reasons(vuln: Vulnerability, device: Device | None = None) -> list[str]:
     reasons = []
+    flags = set((device.exposure_flags or []) if device is not None else [])
+    if "pii-high" in flags:
+        reasons.append("the device holds sensitive personal data (PII discovery)")
+    if "breached-user" in flags:
+        reasons.append("the device's user appears in a public data breach")
     if vuln.known_exploited:
         reasons.append("exploited in the wild (CISA KEV)")
     if vuln.epss is not None:
@@ -242,3 +275,17 @@ def _update_ticket(db: Session, event) -> None:
     remaining = db.execute(select(Vulnerability).where(Vulnerability.ticket_id == ticket.id, Vulnerability.status != "fixed")).scalars().first()
     if remaining is None and not psa.is_closed(db, ticket):
         psa.set_status(db, ticket, "Resolved", "system:rescan")
+
+
+def cyber_heal_remediate(db: Session, vuln_id: int, actor: str = "system:cyber-heal") -> dict:
+    """Kept for callers of the original Cyber Heal entry point; see remediation.py."""
+    from . import remediation
+
+    vuln = db.get(Vulnerability, vuln_id)
+    if vuln is None:
+        return {"status": "failed", "reason": "vulnerability not found"}
+    try:
+        command = remediation.execute(db, vuln, actor, "update")
+    except remediation.RemediationError as exc:
+        return {"status": "skipped", "reason": str(exc)}
+    return {"status": "queued", "commandId": command.id, "vulnerabilityId": vuln.id, "plan": vuln.remediation}

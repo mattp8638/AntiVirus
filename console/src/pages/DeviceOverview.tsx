@@ -5,6 +5,7 @@ import { useApp } from "../app-context";
 import { Pill, Sev, useData, useListData } from "../components/ui";
 import { TimeChart } from "../components/TimeChart";
 import { RiskBreakdown } from "../components/Vuln";
+import { CustomFieldsCard } from "../components/Customization";
 
 // The device landing page: what needs attention first, then the last 24 hours, recent activity and the
 // facts a technician asks for on the phone (who is signed in, model, serial, Windows build, storage).
@@ -204,6 +205,8 @@ export function DeviceOverview({ data, profile, patches, go, management, whereab
               </div>);
           })}
         </div>
+
+        <CustomFieldsCard entity="device" recordId={d.id} values={d.customFields} />
 
         <div className="card">
           <h3>Management</h3>

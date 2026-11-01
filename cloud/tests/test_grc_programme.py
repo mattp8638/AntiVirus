@@ -16,7 +16,10 @@ def req(view, rid):
 
 def test_library_is_consistent():
     frameworks = gp.builtin_frameworks()
-    assert {"iso-27001", "cyber-essentials", "nist-csf-2", "uk-gdpr", "soc2", "cis-v8-ig1", "essential-eight", "ncsc-caf"} <= set(frameworks)
+    from fenrir_cloud.grccatalogue import CATALOGUE
+    assert set(frameworks) == set(CATALOGUE)
+    assert "essential-eight" not in frameworks
+    assert len(gp.requirements(frameworks["ncsc-caf"])) == 41
     assert len(gp.requirements(frameworks["iso-27001"])) == 118  # clauses 4-10 + 93 Annex A controls
     assert len([r for r in gp.requirements(frameworks["iso-27001"]) if r["id"].startswith("A.")]) == 93
     assert len(gp.requirements(frameworks["cis-v8-ig1"])) == 56

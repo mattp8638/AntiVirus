@@ -1,6 +1,8 @@
 #include "RmmExecutors.h"
+#include "CommandCancellation.h"
 
 #include <windows.h>
+#include <sddl.h>
 #include <tlhelp32.h>
 #include <wtsapi32.h>
 #include <userenv.h>
@@ -17,6 +19,7 @@
 #include <thread>
 
 #include "CryptoUtils.h"
+#include "WingetSupport.h"
 #include "ExtendedPolicy.h"
 #include "StringUtils.h"
 
@@ -103,6 +106,7 @@ HANDLE ActiveUserToken() {
 ProcessResult RunProcessAs(const std::wstring& commandLine, const std::wstring& workingDirectory,
                            const std::vector<std::pair<std::wstring, std::wstring>>& extraEnvironment, unsigned long timeoutMs,
                            std::size_t maxOutputBytes, HANDLE userToken) {
+  command_control::Check();
   SECURITY_ATTRIBUTES inherit{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
   HANDLE outRead = nullptr, outWrite = nullptr, errRead = nullptr, errWrite = nullptr;
   if (!CreatePipe(&outRead, &outWrite, &inherit, 0) || !CreatePipe(&errRead, &errWrite, &inherit, 0)) {
@@ -121,16 +125,16 @@ ProcessResult RunProcessAs(const std::wstring& commandLine, const std::wstring& 
     DestroyEnvironmentBlock(userEnvironment);
   }
 
-  STARTUPINFOW startup{};
-  startup.cb = sizeof(startup);
-  startup.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
-  startup.wShowWindow = SW_HIDE;
-  startup.hStdInput = nul;
-  startup.hStdOutput = outWrite;
-  startup.hStdError = errWrite;
+  STARTUPINFOEXW startup{};
+  startup.StartupInfo.cb = sizeof(startup);
+  startup.StartupInfo.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
+  startup.StartupInfo.wShowWindow = SW_HIDE;
+  startup.StartupInfo.hStdInput = nul;
+  startup.StartupInfo.hStdOutput = outWrite;
+  startup.StartupInfo.hStdError = errWrite;
   wchar_t desktop[] = L"winsta0\\default";
   if (userToken) {
-    startup.lpDesktop = desktop;
+    startup.StartupInfo.lpDesktop = desktop;
   }
   std::vector<wchar_t> mutableCommand(commandLine.begin(), commandLine.end());
   mutableCommand.push_back(L'\0');
@@ -138,37 +142,66 @@ ProcessResult RunProcessAs(const std::wstring& commandLine, const std::wstring& 
   HANDLE job = CreateJobObjectW(nullptr, nullptr);
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
   limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-  SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits));
+  if (!job || !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+    CloseHandle(outRead); CloseHandle(outWrite); CloseHandle(errRead); CloseHandle(errWrite); CloseHandle(nul);
+    if (job) CloseHandle(job);
+    throw std::runtime_error("Could not configure the command process containment");
+  }
 
+  SIZE_T attributeSize = 0;
+  InitializeProcThreadAttributeList(nullptr, 1, 0, &attributeSize);
+  std::vector<unsigned char> attributeStorage(attributeSize);
+  startup.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributeStorage.data());
+  HANDLE inherited[] = {nul, outWrite, errWrite};
+  if (!InitializeProcThreadAttributeList(startup.lpAttributeList, 1, 0, &attributeSize) ||
+      !UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                inherited, sizeof(inherited), nullptr, nullptr)) {
+    CloseHandle(outRead); CloseHandle(outWrite); CloseHandle(errRead); CloseHandle(errWrite); CloseHandle(nul);
+    if (job) CloseHandle(job);
+    throw std::runtime_error("Could not restrict command process handle inheritance");
+  }
   PROCESS_INFORMATION process{};
-  const DWORD flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED;
+  const DWORD flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
   const auto started = std::chrono::steady_clock::now();
   BOOL created = userToken
                      ? CreateProcessAsUserW(userToken, nullptr, mutableCommand.data(), nullptr, nullptr, TRUE, flags, environment.data(),
-                                            workingDirectory.empty() ? nullptr : workingDirectory.c_str(), &startup, &process)
+                                            workingDirectory.empty() ? nullptr : workingDirectory.c_str(), &startup.StartupInfo, &process)
                      : CreateProcessW(nullptr, mutableCommand.data(), nullptr, nullptr, TRUE, flags, environment.data(),
-                                      workingDirectory.empty() ? nullptr : workingDirectory.c_str(), &startup, &process);
+                                      workingDirectory.empty() ? nullptr : workingDirectory.c_str(), &startup.StartupInfo, &process);
+  const auto creationError = GetLastError();
+  DeleteProcThreadAttributeList(startup.lpAttributeList);
   CloseHandle(outWrite);
   CloseHandle(errWrite);
   CloseHandle(nul);
   if (!created) {
-    const auto error = GetLastError();
+    const auto error = creationError;
     CloseHandle(outRead);
     CloseHandle(errRead);
     CloseHandle(job);
     throw std::runtime_error("Could not start the process (error " + std::to_string(error) + ")");
   }
-  AssignProcessToJobObject(job, process.hProcess);
-  ResumeThread(process.hThread);
+  if (!job || !AssignProcessToJobObject(job, process.hProcess) || ResumeThread(process.hThread) == static_cast<DWORD>(-1)) {
+    TerminateProcess(process.hProcess, 1);
+    WaitForSingleObject(process.hProcess, 5000);
+    CloseHandle(process.hThread); CloseHandle(process.hProcess);
+    CloseHandle(outRead); CloseHandle(errRead); if (job) CloseHandle(job);
+    throw std::runtime_error("Could not contain the process in its cancellable job");
+  }
 
   ProcessResult result;
   std::size_t droppedOut = 0, droppedErr = 0;
   std::thread outThread(Drain, outRead, &result.stdoutText, maxOutputBytes, &droppedOut);
   std::thread errThread(Drain, errRead, &result.stderrText, maxOutputBytes, &droppedErr);
-  if (WaitForSingleObject(process.hProcess, timeoutMs) == WAIT_TIMEOUT) {
-    result.timedOut = true;
-    TerminateJobObject(job, 1);
-    WaitForSingleObject(process.hProcess, 5000);
+  bool cancelled = false;
+  while (WaitForSingleObject(process.hProcess, 100) == WAIT_TIMEOUT) {
+    cancelled = command_control::Requested();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
+    if (cancelled || elapsed >= timeoutMs) {
+      result.timedOut = !cancelled;
+      TerminateJobObject(job, cancelled ? ERROR_CANCELLED : ERROR_TIMEOUT);
+      WaitForSingleObject(process.hProcess, 5000);
+      break;
+    }
   }
   // Closing the job kills anything the script left running, which also closes the pipes.
   CloseHandle(job);
@@ -187,6 +220,7 @@ ProcessResult RunProcessAs(const std::wstring& commandLine, const std::wstring& 
   CloseHandle(errRead);
   CloseHandle(process.hThread);
   CloseHandle(process.hProcess);
+  if (cancelled) throw command_control::Cancelled();
   return result;
 }
 
@@ -217,24 +251,7 @@ std::filesystem::path WriteScript(const std::filesystem::path& root, const std::
   return path;
 }
 
-std::wstring FindWinget() {
-  wchar_t programFiles[MAX_PATH]{};
-  GetEnvironmentVariableW(L"ProgramFiles", programFiles, MAX_PATH);
-  std::vector<std::filesystem::path> candidates;
-  std::error_code ec;
-  for (std::filesystem::directory_iterator it(std::filesystem::path(programFiles) / L"WindowsApps", ec), end; !ec && it != end; it.increment(ec)) {
-    const auto name = it->path().filename().wstring();
-    if (name.rfind(L"Microsoft.DesktopAppInstaller_", 0) == 0 && name.find(L"_x64__") != std::wstring::npos &&
-        std::filesystem::exists(it->path() / L"winget.exe")) {
-      candidates.push_back(it->path() / L"winget.exe");
-    }
-  }
-  if (!candidates.empty()) {
-    std::sort(candidates.begin(), candidates.end());
-    return candidates.back().wstring();
-  }
-  return L"winget.exe";
-}
+std::wstring FindWinget() { return winget::FindExecutable(); }
 
 std::string ResultJson(const ProcessResult& r) {
   std::ostringstream out;
@@ -289,7 +306,7 @@ bool RebootPending() {
 std::uint64_t FileTimeValue(const FILETIME& ft) { return (static_cast<std::uint64_t>(ft.dwHighDateTime) << 32) | ft.dwLowDateTime; }
 
 const char kPatchScanScript[] = R"PS(
-$ErrorActionPreference = 'Continue'
+$ErrorActionPreference = 'Stop'
 # Windows PowerShell 5.1's ConvertTo-Json throws "Argument types do not match" on some objects
 # (lists of custom objects built from COM data), so the output JSON is written by hand.
 function J($v) {
@@ -309,6 +326,7 @@ function J($v) {
 }
 function O($h) { return '{' + ((@($h.Keys) | ForEach-Object { (J ([string]$_)) + ':' + (J $h[$_]) }) -join ',') + '}' }
 $patches = New-Object System.Collections.ArrayList
+$wuOk = $false; $wuError = ''; $wgOk = $false; $wgError = 'WinGet/App Installer is unavailable to the service'
 try {
   $session = New-Object -ComObject Microsoft.Update.Session
   $searcher = $session.CreateUpdateSearcher()
@@ -323,28 +341,33 @@ try {
       severity = [string]$u.MsrcSeverity; source = 'windows-update'; rebootRequired = [bool]$u.RebootRequired;
       releasedAt = [string]$released; cves = [string](@($u.CveIDs) -join ',') })))
   }
-} catch { [Console]::Error.WriteLine("Windows Update search failed: $_") }
+  $wuOk = $true
+} catch { $wuError = [string]$_; [Console]::Error.WriteLine("Windows Update search failed: $_") }
 $winget = $env:FENRIR_WINGET
 if ($winget -and (Test-Path $winget)) {
-  $lines = & $winget upgrade --include-unknown --accept-source-agreements --disable-interactivity 2>$null
-  $header = $lines | Where-Object { $_ -match '\bId\b' -and $_ -match '\bVersion\b' } | Select-Object -First 1
-  if ($header) {
-    $header = $header -replace '^[^A-Za-z]+', ''
-    $idAt = $header.IndexOf('Id'); $verAt = $header.IndexOf('Version'); $availAt = $header.IndexOf('Available'); $srcAt = $header.IndexOf('Source')
-    $started = $false
-    foreach ($line in $lines) {
-      if ($line -match '^-{5,}') { $started = $true; continue }
-      if (-not $started -or $line.Length -lt $availAt -or $line -match 'upgrades available') { continue }
-      $name = $line.Substring(0, $idAt).Trim()
-      $pkg = $line.Substring($idAt, $verAt - $idAt).Trim()
-      $installed = $line.Substring($verAt, $availAt - $verAt).Trim()
-      $available = if ($srcAt -gt 0 -and $line.Length -ge $srcAt) { $line.Substring($availAt, $srcAt - $availAt).Trim() } else { $line.Substring($availAt).Trim() }
-      if ($pkg) { [void]$patches.Add((O ([ordered]@{ id = "winget:$pkg"; title = "$name $installed -> $available"; source = 'winget';
+  try {
+  $inventory = @(& $winget list --source winget --accept-source-agreements --disable-interactivity 2>&1)
+  $inventoryCode = [uint32]([int64]$LASTEXITCODE -band 4294967295L)
+  if ($inventoryCode -ne 0) { throw (('WinGet cannot inspect installed packages (0x{0:X8}): ' -f $inventoryCode) + ($inventory -join ' ')) }
+  $lines = @(& $winget list --upgrade-available --source winget --accept-source-agreements --disable-interactivity 2>&1)
+  $scanCode = [uint32]([int64]$LASTEXITCODE -band 4294967295L)
+  if ($scanCode -ne 0 -and $scanCode -ne 0x8A150014 -and $scanCode -ne 0x8A15002B) { throw (('WinGet scan failed (0x{0:X8}): ' -f $scanCode) + ($lines -join ' ')) }
+  $matched = 0
+  foreach ($line in $lines) {
+    # Match data rows, not translated column headings or status messages.
+    if ($line -match '^\s*(?<name>.+?)\s+(?<id>[A-Za-z0-9][A-Za-z0-9+_-]*\.[A-Za-z0-9.+_-]+)\s+(?<installed>\S+)\s+(?<available>\S+)(?:\s+winget)?\s*$') {
+      $pkg = $Matches.id; $name = $Matches.name.Trim(); $installed = $Matches.installed; $available = $Matches.available
+      if ($available -ne 'winget') { $matched++; [void]$patches.Add((O ([ordered]@{ id = "winget:$pkg"; title = "$name $installed -> $available"; source = 'winget';
         product = $name; installedVersion = $installed; availableVersion = $available; classification = 'third-party' }))) }
     }
   }
+  if ($scanCode -eq 0 -and $matched -eq 0) { throw 'WinGet returned an unreadable update table; coverage is unknown' }
+  $wgOk = $true; $wgError = ''
+  } catch { $wgError = [string]$_ }
 }
-[Console]::Out.Write('{"patches":[' + ($patches -join ',') + ']}')
+[Console]::Out.Write('{"patches":[' + ($patches -join ',') + '],"coverage":{"windows-update":' +
+  (O ([ordered]@{success=[bool]$wuOk;error=[string]$wuError})) + ',"winget":' +
+  (O ([ordered]@{success=[bool]$wgOk;error=[string]$wgError})) + '}}')
 )PS";
 
 const char kPatchInstallScript[] = R"PS(
@@ -414,11 +437,18 @@ if ($wu.Count -gt 0) {
 }
 $winget = $env:FENRIR_WINGET
 foreach ($pkg in $wg) {
-  & $winget upgrade --id $pkg --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1 | Out-Null
-  $code = $LASTEXITCODE
+  if (-not $winget -or -not (Test-Path $winget)) { Add-Result "winget:$pkg" $false 'WinGet/App Installer is unavailable to the service'; continue }
+  $LASTEXITCODE = $null
+  $output = ''
+  $output = (& $winget upgrade --id $pkg --exact --source winget --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1 | Out-String)
+  $output = [string]$output
+  if ($null -eq $LASTEXITCODE) { Add-Result "winget:$pkg" $false ('WinGet could not start: ' + $output.Trim()); continue }
+  $code = [uint32]([int64]$LASTEXITCODE -band 4294967295L)
+  $ok = $code -eq 0 -or $code -eq 0x8A15002B -or $code -eq 3010 -or $code -eq 1641
+  if ($code -eq 3010 -or $code -eq 1641) { $rebootRequired = $true }
   $err = ''
-  if ($code -ne 0) { $err = "winget exit code $code" }
-  Add-Result "winget:$pkg" ($code -eq 0) $err
+  if (-not $ok) { $err = ('WinGet failed (0x{0:X8}): ' -f $code) + $output.Trim() }
+  Add-Result "winget:$pkg" $ok $err
 }
 [Console]::Out.Write('{"results":[' + ($results -join ',') + '],"rebootRequired":' + (J ([bool]$rebootRequired)) + '}')
 )PS";
@@ -581,6 +611,18 @@ std::string CollectHealthMetricsJson() {
       account = std::wstring(domain) + L"\\" + account;
     }
     out << ",\"loggedOnUser\":" << Q(account);
+    // Its SID too, so a technician can grant this user temporary admin rights from the console.
+    BYTE sidBuffer[SECURITY_MAX_SID_SIZE]{};
+    DWORD sidSize = sizeof(sidBuffer);
+    wchar_t domainBuffer[256]{};
+    DWORD domainSize = static_cast<DWORD>(std::size(domainBuffer));
+    SID_NAME_USE use{};
+    LPWSTR sidText = nullptr;
+    if (LookupAccountNameW(nullptr, account.c_str(), sidBuffer, &sidSize, domainBuffer, &domainSize, &use) &&
+        ConvertSidToStringSidW(sidBuffer, &sidText) && sidText != nullptr) {
+      out << ",\"loggedOnUserSid\":" << Q(sidText);
+      LocalFree(sidText);
+    }
   }
   if (name) {
     WTSFreeMemory(name);
@@ -666,8 +708,8 @@ std::string PatchScan(const std::filesystem::path& workRoot) {
   std::error_code ec;
   std::filesystem::remove(file, ec);
   const auto parsed = json::Parse(result.stdoutText);
-  if (!parsed || !parsed->IsObject()) {
-    throw CommandFailed("The patch scan did not return a result", ResultJson(result));
+  if (result.timedOut || result.exitCode != 0 || !parsed || !parsed->IsObject()) {
+    throw CommandFailed("The patch scan did not complete successfully", ResultJson(result));
   }
   // Re-emit with the reboot state appended so the cloud can show "restart pending".
   auto body = result.stdoutText;
@@ -719,8 +761,10 @@ std::string Software(const std::wstring& payloadJson, const bool uninstall, cons
       throw std::runtime_error("Invalid package id");
     }
     if (installer == "winget") {
-      command = L"\"" + FindWinget() + L"\" " + (uninstall ? L"uninstall" : L"install") + L" --id " + Utf8ToWide(identifier) +
-                L" --exact --silent --accept-source-agreements --disable-interactivity" +
+      const auto winget = FindWinget();
+      if (winget.empty()) throw std::runtime_error("WinGet/App Installer is unavailable to the protection service");
+      command = L"\"" + winget + L"\" " + (uninstall ? L"uninstall" : L"install") + L" --id " + Utf8ToWide(identifier) +
+                L" --exact --source winget --silent --accept-source-agreements --disable-interactivity" +
                 (uninstall ? L"" : L" --accept-package-agreements --scope machine");
     } else {
       command = std::wstring(L"choco.exe ") + (uninstall ? L"uninstall " : L"install ") + Utf8ToWide(identifier) + L" -y --no-progress";

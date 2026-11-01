@@ -1,15 +1,21 @@
 import { displayValue } from "../components/DisplayValue";
+import { GroupsManager } from "../components/Groups";
 import { useState } from "react";
 import { ago, api, downloadFile, fmtTime, setToken } from "../api";
 import { useApp } from "../app-context";
 import { Modal, PageHead, Pill, Table, Tabs, TenantSelect, useAction, useData, useListData } from "../components/ui";
+import { confirmDialog, promptDialog } from "../components/dialogs";
+import { addPasskey, passkeysSupported } from "../passkeys";
+import { CustomFieldsSettings, RegionSettings } from "../components/Customization";
+import { useSearchParams } from "react-router-dom";
 
 const ROLES = ["platform_admin", "msp_admin", "soc_analyst", "technician", "billing", "tenant_admin", "tenant_analyst", "viewer"];
 
 export default function Settings() {
   const { can } = useApp();
-  const tabs = ["Tenants", "Users", "Groups", "Webhooks", ...(can("configure") ? ["API credentials"] : []), "Approvals", "Agent releases", "Audit log", ...(can("configure") ? ["Platform"] : []), "Account"];
-  const [tab, setTab] = useState("Tenants");
+  const tabs = ["Tenants", "Users", "Groups", "Custom fields", "Region & holidays", "Webhooks", ...(can("configure") ? ["API credentials"] : []), "Approvals", "Agent releases", "Audit log", ...(can("configure") ? ["Platform"] : []), "Account"];
+  const [params] = useSearchParams();
+  const [tab, setTab] = useState(() => { const asked = params.get("tab"); return asked && tabs.includes(asked) ? asked : "Tenants"; });
   return (
     <>
       <PageHead title="Settings" subtitle="Tenants, people, device groups, integrations, releases and the tamper-evident audit trail." />
@@ -17,6 +23,8 @@ export default function Settings() {
       {tab === "Tenants" && <TenantsTab />}
       {tab === "Users" && <UsersTab />}
       {tab === "Groups" && <GroupsTab />}
+      {tab === "Custom fields" && <CustomFieldsSettings />}
+      {tab === "Region & holidays" && <RegionSettings />}
       {tab === "Webhooks" && <WebhooksTab />}
       {tab === "API credentials" && <ApiCredentialsTab />}
       {tab === "Approvals" && <ApprovalsTab />}
@@ -28,17 +36,43 @@ export default function Settings() {
   );
 }
 
+function TenantEdit({ tenant, onClose }: { tenant: any; onClose: (saved: boolean) => void }) {
+  const [form, setForm] = useState(tenant);
+  const { data: policies } = useListData<any>("policies", { tenant_id: tenant.id }, [tenant.id]);
+  const { run, busy } = useAction();
+  const save = async () => {
+    if (await run(() => api(`tenants/${tenant.id}`, { method: "PATCH", body: { name: form.name.trim(), plan: form.plan, defaultPolicyId: form.defaultPolicyId || null } }), "Customer saved")) onClose(true);
+  };
+  return (
+    <Modal title={`Edit ${tenant.name}`} onClose={() => onClose(false)} footer={<button className="primary" disabled={busy || !form.name.trim()} onClick={save}>Save</button>}>
+      <div className="form-grid">
+        <label className="field">Name<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} maxLength={200} /></label>
+        <label className="field">Plan<select value={form.plan} onChange={(e) => setForm({ ...form, plan: e.target.value })}>{["essentials", "advanced", "complete", "mdr"].map((p) => <option key={p}>{p}</option>)}</select></label>
+        <label className="field">Default protection policy
+          <select value={form.defaultPolicyId} onChange={(e) => setForm({ ...form, defaultPolicyId: e.target.value })}>
+            <option value="">The built-in template</option>
+            {policies?.filter((p) => !p.tenantId || p.tenantId === tenant.id).map((p) => <option key={p.id} value={p.id}>{displayValue(p.name)}</option>)}
+          </select>
+          <span className="small muted">Devices and groups without their own policy use this one.</span></label>
+      </div>
+    </Modal>
+  );
+}
+
 function TenantsTab() {
   const { can, tenantName, refreshMe } = useApp();
   const { data, reload } = useListData<any>("tenants");
   const { data: schema } = useData<any>("policy-schema");
   const [form, setForm] = useState<any>(null);
+  const [editing, setEditing] = useState<any>(null);
   const { run, busy } = useAction();
   return (
     <div className="card">
       {can("manage_tenants") && <button className="primary" style={{ marginBottom: 10 }} onClick={() => setForm({ name: "", template: "balanced", plan: "complete" })}>New tenant</button>}
       <Table rows={data} columns={[{ key: "name", label: "Tenant" }, { key: "kind", label: "Type", render: (t) => <Pill value={t.kind} tone={t.kind === "msp" ? "blue" : "muted"} /> },
-        { key: "plan", label: "Plan" }, { key: "parentId", label: "Managed by", render: (t) => t.parentId ? tenantName(t.parentId) : "—" }, { key: "createdAt", label: "Created", render: (t) => fmtTime(t.createdAt) }]} />
+        { key: "plan", label: "Plan" }, { key: "parentId", label: "Managed by", render: (t) => t.parentId ? tenantName(t.parentId) : "—" }, { key: "createdAt", label: "Created", render: (t) => fmtTime(t.createdAt) },
+        { key: "edit", label: "", render: (t) => can("manage_tenants") && t.kind !== "unassigned" && <button className="small" onClick={() => setEditing({ id: t.id, name: t.name, plan: t.plan, defaultPolicyId: t.defaultPolicyId ?? "" })}>Edit</button> }]} />
+      {editing && <TenantEdit tenant={editing} onClose={(saved) => { setEditing(null); if (saved) { reload(); refreshMe(); } }} />}
       {form && (
         <Modal title="New tenant" onClose={() => setForm(null)} footer={<button className="primary" disabled={busy || !form.name}
                onClick={async () => { if (await run(() => api("tenants", { body: form }), "Tenant created")) { setForm(null); reload(); refreshMe(); } }}>Create</button>}>
@@ -77,7 +111,7 @@ function UsersTab() {
             { key: "act", label: "", render: (r: any) => <span className="row" style={{ gap: 6 }}>
               <button className="small" onClick={() => setRoleForm({ ...r })}>Edit</button>
               <button className="small danger" disabled={r.users > 0} title={r.users ? "Move its users to another role first" : ""}
-                      onClick={async () => { if (confirm(`Delete the role ${r.name}?`) && await run(() => api(`roles/${r.id}`, { method: "DELETE" }), "Role deleted")) reloadRoles(); }}>Delete</button></span> }]} />
+                      onClick={async () => { if (await confirmDialog(`Delete the role ${r.name}?`) && await run(() => api(`roles/${r.id}`, { method: "DELETE" }), "Role deleted")) reloadRoles(); }}>Delete</button></span> }]} />
         </details>
       )}
       {can("configure") && <button className="primary" style={{ marginBottom: 10 }} onClick={() => setForm({ email: "", name: "", role: "tenant_analyst", tenantId, password: "" })}>Invite user</button>}
@@ -85,11 +119,15 @@ function UsersTab() {
         { key: "role", label: "Role", render: (u) => <>{roleLabel(u.role)}{u.assignedTenantIds?.length ? <div className="small muted">limited to {u.assignedTenantIds.map(tenantName).join(", ")}</div> : null}</> },
         { key: "tenantId", label: "Tenant", render: (u) => tenantName(u.tenantId) }, { key: "active", label: "Status", render: (u) => <Pill value={u.active ? "active" : "disabled"} tone={u.active ? "good" : "muted"} /> },
         { key: "lastLoginAt", label: "Last sign-in", render: (u) => fmtTime(u.lastLoginAt) },
-        { key: "mfaEnabled", label: "MFA", render: (u) => <Pill value={u.mfaEnabled ? "on" : "off"} tone={u.mfaEnabled ? "good" : "warn"} /> },
+        { key: "mfaEnabled", label: "MFA", render: (u) => <>
+          <Pill value={u.mfaEnabled ? "on" : u.passkeys ? "passkey" : "off"} tone={u.mfaEnabled || u.passkeys ? "good" : "warn"} />
+          {u.mfaEnabled && u.passkeys ? <span className="small muted"> + {u.passkeys} passkey{u.passkeys === 1 ? "" : "s"}</span> : null}</> },
         { key: "act", label: "", render: (u) => <span className="row" style={{ gap: 6 }}>
           {can("configure") && <button className="small" onClick={async () => { await run(() => api(`users/${u.id}`, { method: "PATCH", body: { active: !u.active } }), "User updated"); reload(); }}>{u.active ? "Disable" : "Enable"}</button>}
           {can("configure") && <button className="small" onClick={() => setAssigning({ id: u.id, email: u.email, role: u.role, tenantId: u.tenantId, assignedTenantIds: u.assignedTenantIds || [] })}>Role &amp; customers</button>}
-          {can("manage_tenants") && u.mfaEnabled && <button className="small" title="For a user who lost their phone" onClick={async () => { if (confirm(`Reset MFA for ${u.email}? They will need to set it up again.`)) { await run(() => api(`users/${u.id}/mfa/reset`, { method: "POST" }), "MFA reset"); reload(); } }}>Reset MFA</button>}
+          {can("configure") && u.active && u.id !== me?.user.id && <button className="small" title="End every signed-in session of this user (for a lost laptop or a leaver)"
+            onClick={async () => { if (await confirmDialog(`Sign ${u.email} out of every browser and device now?`, { confirmLabel: "Sign out everywhere" })) await run(() => api(`users/${u.id}/sessions/revoke`, { method: "POST" }), "Signed out everywhere"); }}>Sign out</button>}
+          {can("manage_tenants") && (u.mfaEnabled || u.passkeys > 0) && <button className="small" title="For a user who lost their phone or security key" onClick={async () => { if (await confirmDialog(`Reset MFA for ${u.email}? Their authenticator app and passkeys are removed, and they will need to set them up again.`)) { await run(() => api(`users/${u.id}/mfa/reset`, { method: "POST" }), "MFA reset"); reload(); } }}>Reset MFA</button>}
         </span> }]} />
       {form && (
         <Modal title="Invite user" onClose={() => setForm(null)} footer={<button className="primary" disabled={busy}
@@ -131,31 +169,16 @@ function UsersTab() {
 }
 
 function GroupsTab() {
-  const { tenantId, can, tenantName } = useApp();
-  const { data, reload } = useListData<any>("groups", { tenant_id: tenantId });
-  const { data: policies } = useListData<any>("policies", { tenant_id: tenantId });
-  const [form, setForm] = useState<any>(null);
-  const { run, busy } = useAction();
-  return (
-    <div className="card">
-      {can("configure") && <button className="primary" style={{ marginBottom: 10 }} onClick={() => setForm({ name: "", tenantId, policyId: "" })}>New group</button>}
-      <Table rows={data} empty="No groups. Groups let you apply different policies to servers, laptops, kiosks…"
-             columns={[{ key: "name", label: "Group" }, { key: "tenantId", label: "Tenant", render: (g) => tenantName(g.tenantId) },
-                       { key: "policyId", label: "Policy", render: (g) => policies?.find((p) => p.id === g.policyId)?.name ?? "Inherit" }]} />
-      {form && (
-        <Modal title="New group" onClose={() => setForm(null)} footer={<button className="primary" disabled={busy || !form.tenantId}
-               onClick={async () => { if (await run(() => api("groups", { body: { ...form, policyId: form.policyId || null } }), "Group created")) { setForm(null); reload(); } }}>Create</button>}>
-          <div className="form-grid">
-            <label className="field">Tenant<TenantSelect value={form.tenantId} onChange={(id) => setForm({ ...form, tenantId: id })} allowAll={false} /></label>
-            <label className="field">Name<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
-            <label className="field">Policy<select value={form.policyId} onChange={(e) => setForm({ ...form, policyId: e.target.value })}><option value="">Inherit from tenant</option>
-              {policies?.filter((p) => p.tenantId === form.tenantId).map((p) => <option key={p.id} value={p.id}>{displayValue(p.name)}</option>)}</select></label>
-          </div>
-        </Modal>
-      )}
-    </div>
-  );
+  return <GroupsManager />;
 }
+
+// Every event the server sends to webhooks (services.fire_webhooks and the event outbox).
+const WEBHOOK_EVENTS: [string, string][] = [
+  ["*", "Everything"], ["incident.created", "Incident opened"], ["alert.automation", "Response rule fired"], ["ticket.created", "Ticket created"],
+  ["network.down", "Monitored service down"], ["network.recovered", "Monitored service recovered"], ["backup.failed", "Backup failed"],
+  ["backup.success", "Backup succeeded"], ["vulnerability.detected", "Vulnerability found"], ["vulnerability.verified_fixed", "Vulnerability fixed"],
+  ["grc.drift", "Compliance drift"], ["m365.action_finished", "Microsoft 365 action finished"], ["audit.checkpoint", "Audit checkpoint"],
+];
 
 function WebhooksTab() {
   const { can, tenantId } = useApp();
@@ -170,16 +193,24 @@ function WebhooksTab() {
       <Table rows={data} empty="No webhooks. Send incidents to Slack, Teams or your own systems."
              columns={[{ key: "name", label: "Name" }, { key: "kind", label: "Type" }, { key: "url", label: "URL", render: (w) => <span className="mono small">{displayValue(w.url)}</span> },
                        { key: "events", label: "Events", render: (w) => w.events.join(", ") },
-                       { key: "del", label: "", render: (w) => can("configure") && <button className="small danger" onClick={async () => { await run(() => api(`webhooks/${w.id}`, { method: "DELETE" }), "Removed"); reload(); }}>Remove</button> }]} />
+                       { key: "del", label: "", render: (w) => can("configure") && <span style={{ whiteSpace: "nowrap" }}>
+                         <button className="small" onClick={() => setForm({ id: w.id, name: w.name, url: w.url, kind: w.kind, events: w.events, tenantId: w.tenantId })}>Edit</button>{" "}
+                         <button className="small danger" onClick={async () => { if (await confirmDialog(`Remove the webhook "${w.name}"?`) && await run(() => api(`webhooks/${w.id}`, { method: "DELETE" }), "Removed")) reload(); }}>Remove</button></span> }]} />
       {form && (
-        <Modal title="Add webhook" onClose={() => setForm(null)} footer={<button className="primary" disabled={busy}
-               onClick={async () => { const r = await run(() => api<any>("webhooks", { body: form }), "Webhook added"); if (r) { setSecret(r.secret); setForm(null); reload(); } }}>Add</button>}>
+        <Modal title={form.id ? "Edit webhook" : "Add webhook"} onClose={() => setForm(null)} footer={<button className="primary" disabled={busy || !form.events?.length}
+               onClick={async () => {
+                 if (form.id) {
+                   if (await run(() => api(`webhooks/${form.id}`, { method: "PATCH", body: { name: form.name, url: form.url, kind: form.kind, events: form.events } }), "Webhook saved")) { setForm(null); reload(); }
+                   return;
+                 }
+                 const r = await run(() => api<any>("webhooks", { body: form }), "Webhook added"); if (r) { setSecret(r.secret); setForm(null); reload(); } }}>{form.id ? "Save" : "Add"}</button>}>
           <div className="form-grid">
             <label className="field">Name<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
             <label className="field">Type<select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })}><option>slack</option><option>teams</option><option>generic</option></select></label>
             <label className="field">URL<input value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} /></label>
             <label className="field">Events<select multiple value={form.events} onChange={(e) => setForm({ ...form, events: [...e.target.selectedOptions].map((o) => o.value) })}>
-              <option>incident.created</option><option>alert.automation</option><option value="*">everything</option></select></label>
+              {WEBHOOK_EVENTS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
+              <span className="small muted">Hold Ctrl (⌘ on a Mac) to choose several.</span></label>
           </div>
         </Modal>
       )}
@@ -196,7 +227,7 @@ function ApprovalsTab() {
   const { data: policy, reload: reloadPolicy } = useData<any>(tenantId ? `tenants/${tenantId}/approval-policy` : null, {}, [tenantId]);
   const { run, busy } = useAction();
   const decide = async (id: string, verdict: "approve" | "reject") => {
-    const reason = verdict === "reject" ? prompt("Why reject it?") : "";
+    const reason = verdict === "reject" ? await promptDialog("Why reject it?") : "";
     if (reason === null) return;
     if (await run(() => api(`approvals/${id}/${verdict}`, { body: { reason } }), verdict === "approve" ? "Approved: the requester can now run it" : "Rejected")) reload();
   };
@@ -212,7 +243,7 @@ function ApprovalsTab() {
             <b style={{ flex: 1 }}>Two-person approval for {tenantName(tenantId)}</b>
             <Pill value={policy.effective.twoPerson ? `on${policy.effective.tenantId !== tenantId ? ` (from ${tenantName(policy.effective.tenantId)})` : ""}` : "off"} tone={policy.effective.twoPerson ? "good" : "muted"} />
             {can("configure") && can("approve") && <button disabled={busy} onClick={async () => {
-              const threshold = policy.twoPerson ? null : prompt("Hold scripts and bulk actions that reach at least how many devices?", String(policy.bulkThreshold));
+              const threshold = policy.twoPerson ? null : await promptDialog("Hold scripts and bulk actions that reach at least how many devices?", String(policy.bulkThreshold));
               if (!policy.twoPerson && threshold === null) return;
               if (await run(() => api(`tenants/${tenantId}/approval-policy`, { method: "PUT", body: { twoPerson: !policy.twoPerson, bulkThreshold: Number(threshold || policy.bulkThreshold) } }), "Approval policy saved")) reloadPolicy();
             }}>{policy.twoPerson ? "Turn off" : "Turn on"}</button>}
@@ -252,12 +283,12 @@ function ApiCredentialsTab() {
     if (made) { setForm(null); setShown(made); reload(); }
   };
   const rotate = async (id: string) => {
-    if (!confirm("Rotate this credential? The current token stops working immediately.")) return;
+    if (!await confirmDialog("Rotate this credential? The current token stops working immediately.")) return;
     const made = await run(() => api<any>(`api-credentials/${id}/rotate`, { body: {} }), "Credential rotated");
     if (made) { setShown(made); reload(); }
   };
   const revoke = async (id: string) => {
-    if (confirm("Revoke this credential? Integrations using it stop working.") && await run(() => api(`api-credentials/${id}/revoke`, { body: {} }), "Credential revoked")) reload();
+    if (await confirmDialog("Revoke this credential? Integrations using it stop working.") && await run(() => api(`api-credentials/${id}/revoke`, { body: {} }), "Credential revoked")) reload();
   };
   return (
     <div className="card">
@@ -301,7 +332,7 @@ function RolloutsCard() {
   const { data, reload } = useData<any>("agent-rollouts");
   const { run, busy } = useAction();
   const act = async (id: string, action: string, ask?: string) => {
-    const reason = ask ? prompt(ask) : "";
+    const reason = ask ? await promptDialog(ask) : "";
     if (reason === null) return;
     if (await run(() => api(`agent-rollouts/${id}/action`, { body: { action, reason: reason || "" } }), "Rollout updated")) reload();
   };
@@ -385,6 +416,7 @@ function AuditTab() {
 }
 
 function AuditPolicyCard() {
+  const { can, toast } = useApp();
   const { data, reload } = useData<any>("audit/policy");
   const [form, setForm] = useState<any>(null);
   const { run, busy } = useAction();
@@ -398,6 +430,10 @@ function AuditPolicyCard() {
       <span className="small">Retention: <b>{data.retentionDays ? `${data.retentionDays} days` : "keep everything"}</b></span>
       {data.legalHold && <Pill value={`legal hold: ${data.holdReason}`} tone="warn" />}
       <button onClick={() => setForm({ retentionDays: data.retentionDays ?? "", legalHold: data.legalHold, holdReason: data.holdReason })}>Change</button>
+      {can("platform") && data.retentionDays && !data.legalHold && <button disabled={busy} title="Fenrir also does this every two hours" onClick={async () => {
+        const result = await run(() => api<any>("audit/retention/apply", { method: "POST" }));
+        if (result) toast(result.pruned ? `${result.pruned} entries older than ${data.retentionDays} days removed` : "Nothing old enough to remove yet");
+      }}>Apply now</button>}
       {form && (
         <Modal title="Audit retention and legal hold" onClose={() => setForm(null)} footer={<button className="primary" disabled={busy} onClick={save}>Save</button>}>
           <label className="field">Keep entries for (days, 365 to 3650; empty keeps everything)<input type="number" min={365} max={3650} value={form.retentionDays}
@@ -411,7 +447,7 @@ function AuditPolicyCard() {
   );
 }
 
-function MfaCard() {
+export function MfaCard() {
   const { me, refreshMe } = useApp();
   const [setup, setSetup] = useState<{ secret: string; otpauthUri: string } | null>(null);
   const [code, setCode] = useState("");
@@ -446,20 +482,32 @@ function MfaCard() {
   );
 }
 
-const HEALTH_TONE: Record<string, string> = { ok: "good", disabled: "muted", stale: "bad", missing: "warn", failing: "bad", low: "bad", unknown: "warn" };
-
-// CORE-08: background components, event queue and storage. Degraded parts are also sent to webhooks.
-function HealthCard() {
-  const { data, reload } = useData<any>("platform/health");
-  if (!data) return null;
+// Passkeys: sign in with the phone, laptop or security key's own PIN, fingerprint or face, instead of a password and code.
+export function PasskeysCard({ onAdded }: { onAdded?: () => Promise<void> | void }) {
+  const { refreshMe } = useApp();
+  const { data: rows, reload } = useListData<any>("auth/passkeys");
+  const { run, busy } = useAction();
+  if (!passkeysSupported()) return null;
+  const data = rows ?? [];
+  const add = async () => {
+    const name = await promptDialog("Name this passkey so you can tell it apart later.", "", { title: "Add a passkey", required: true });
+    if (!name) return;
+    if (await run(async () => { await addPasskey(name); return true; }, "Passkey added")) { reload(); refreshMe(); await onAdded?.(); }
+  };
+  const remove = async (id: string, name: string) => {
+    if (!(await confirmDialog(`Remove the passkey "${name}"? Your other sessions are signed out in case it was lost.`))) return;
+    if (await run(() => api(`auth/passkeys/${id}`, { method: "DELETE" }), "Passkey removed")) { reload(); refreshMe(); }
+  };
   return (
-    <div className="card" style={{ marginBottom: 14 }}>
-      <div className="row"><b style={{ flex: 1 }}>Service health</b><Pill value={data.status} tone={data.status === "ok" ? "good" : "bad"} />
-        <button className="small" onClick={reload}>Refresh</button></div>
-      <Table rows={[...data.components, { name: "event queue", status: data.queue.status, reason: `${data.queue.pending} pending, ${data.queue.dead} failed permanently` },
-                    ...(data.storage ? [{ name: "artifact storage", status: data.storage.status, reason: data.storage.freeBytes != null ? `${Math.round(data.storage.freeBytes / 1e9)} GB free` : "" }] : [])]}
-             columns={[{ key: "name", label: "Component" }, { key: "status", label: "Status", render: (c: any) => <Pill value={c.status} tone={HEALTH_TONE[c.status] || "warn"} /> },
-                       { key: "reason", label: "Detail", render: (c: any) => <span className="small">{c.reason || (c.lastOkAt ? `last ran ${ago(c.lastOkAt)}` : "")}</span> }]} />
+    <div className="card" style={{ maxWidth: 520, marginTop: 14 }}>
+      <h3 style={{ marginTop: 0 }}>Passkeys <Pill value={data.length ? `${data.length}` : "none"} tone={data.length ? "good" : "muted"} /></h3>
+      <p className="muted">Sign in with this device's fingerprint, face or PIN, or a security key. It counts as two-step sign-in,
+        and it only works on this console's real address, so a look-alike phishing site cannot use it.</p>
+      {data.length > 0 && <Table rows={data} columns={[{ key: "name", label: "Name" },
+        { key: "createdAt", label: "Added", render: (p) => fmtTime(p.createdAt) },
+        { key: "lastUsedAt", label: "Last used", render: (p) => (p.lastUsedAt ? ago(p.lastUsedAt) : "never") },
+        { key: "act", label: "", render: (p) => <button className="small danger" disabled={busy} onClick={() => remove(p.id, p.name)}>Remove</button> }]} />}
+      <button className="primary" style={{ marginTop: 10 }} disabled={busy} onClick={add}>Add a passkey</button>
     </div>
   );
 }
@@ -478,15 +526,122 @@ function ReadinessCard() {
   );
 }
 
+// Install-wide staff controls: required MFA, the networks the console may be used from, and the emergency stop.
+function SecurityCard() {
+  const { refreshMe } = useApp();
+  const { data, reload } = useData<any>("platform/security");
+  const [networks, setNetworks] = useState<string | null>(null);
+  const { run, busy } = useAction();
+  if (!data) return null;
+  const stop = data.emergencyStop ?? {};
+  const save = async (body: Record<string, unknown>, message: string) => {
+    if (await run(() => api("platform/security", { method: "PUT", body }), message)) { setNetworks(null); reload(); }
+  };
+  const setStop = async (active: boolean) => {
+    const reason = active ? await promptDialog("Why? Everyone sees this until the stop is lifted.", "", { title: "Emergency stop", required: true }) : "";
+    if (active && !reason) return;
+    if (!active && !(await confirmDialog("Lift the emergency stop? Scripts, commands and remote sessions will reach devices again."))) return;
+    if (await run(() => api<any>("platform/emergency-stop", { body: { active, reason } }),
+                  active ? "Emergency stop on: queued work cancelled, remote sessions ended" : "Emergency stop lifted")) { reload(); refreshMe(); }
+  };
+  return (
+    <div className="card" style={{ marginBottom: 14 }}>
+      <h3 style={{ marginTop: 0 }}>Security</h3>
+      <div className="row" style={{ justifyContent: "space-between" }}>
+        <div><b>Require two-step sign-in (MFA) for staff</b>
+          <p className="small muted" style={{ margin: "4px 0" }}>Staff without it can only set it up until they do. Client portal users and API credentials are not affected.</p>
+          {data.staffWithoutMfa?.length > 0 && <p className="small">Not enrolled yet: {data.staffWithoutMfa.join(", ")}</p>}</div>
+        <button className={data.requireMfa ? "" : "primary"} disabled={busy}
+                onClick={() => save({ requireMfa: !data.requireMfa }, data.requireMfa ? "MFA no longer required" : "MFA required for staff")}>
+          {data.requireMfa ? "Stop requiring" : "Require MFA"}</button>
+      </div>
+      <hr />
+      <div className="row" style={{ justifyContent: "space-between" }}>
+        <div><b>Require script review</b>
+          <p className="small muted" style={{ margin: "4px 0" }}>Library scripts and remediation packages run only in a version someone who did not
+            write or edit it has approved (Scripts shows what changed). Scripts shipped with Fenrir count as reviewed until changed.
+            One-off scripts outside the library are refused.</p></div>
+        <button className={data.scriptReview ? "" : "primary"} disabled={busy}
+                onClick={() => save({ scriptReview: !data.scriptReview }, data.scriptReview ? "Script review no longer required" : "Script review required")}>
+          {data.scriptReview ? "Stop requiring" : "Require review"}</button>
+      </div>
+      <hr />
+      <b>Networks staff may use the console from</b>
+      <p className="small muted" style={{ margin: "4px 0" }}>One address or network per line (for example 203.0.113.0/24). Empty means anywhere.
+        Agents, the client portal and DNS protection are not affected. You are connecting from <span className="mono">{data.yourAddress}</span>.
+        {data.allowListIgnored && <> <Pill value="ignored: FENRIR_IGNORE_CONSOLE_ALLOWLIST is set" tone="warn" /></>}</p>
+      <textarea rows={3} style={{ width: "100%" }} className="mono" value={networks ?? (data.consoleAllowedNetworks ?? []).join("\n")}
+                onChange={(e) => setNetworks(e.target.value)} />
+      <button disabled={busy || networks === null} style={{ marginTop: 8 }}
+              onClick={() => save({ consoleAllowedNetworks: (networks ?? "").split(/\s+/).filter(Boolean) }, "Console networks saved")}>Save networks</button>
+      <hr />
+      <SsoSettings view={data.sso} reload={reload} />
+      <hr />
+      <div className="row" style={{ justifyContent: "space-between" }}>
+        <div><b>Emergency stop</b> {stop.active && <Pill value="ON" tone="bad" />}
+          <p className="small muted" style={{ margin: "4px 0" }}>{stop.active
+            ? `Since ${fmtTime(stop.at)} by ${stop.by}: ${stop.reason}. Nothing but isolation reaches devices.`
+            : "If an account, a script or this server may be compromised: cancels every queued command, ends every remote session and refuses new ones. Isolation still works."}</p></div>
+        <button className={stop.active ? "" : "danger"} disabled={busy} onClick={() => setStop(!stop.active)}>
+          {stop.active ? "Lift the stop" : "Stop everything"}</button>
+      </div>
+    </div>
+  );
+}
+
+function SsoSettings({ view, reload }: { view: any; reload: () => void }) {
+  const [form, setForm] = useState<any>(null);
+  const { run, busy } = useAction();
+  if (!view) return null;
+  const value = form ?? { ...view, clientSecret: "" };
+  const set = (key: string, next: unknown) => setForm({ ...value, [key]: next });
+  return (
+    <>
+      <b>Sign in with Microsoft (Entra ID)</b> {view.enabled && <Pill value={view.required ? "required for staff" : "on"} tone="good" />}
+      <p className="small muted" style={{ margin: "4px 0" }}>In Entra, register an app (single tenant, web) with the redirect URI
+        <span className="mono"> {view.redirectUri}</span>, create a client secret, and enter them here. Staff sign in with their
+        Microsoft account, matched by email to an existing Fenrir account; leavers disabled in Entra lose access.</p>
+      <div className="form-grid">
+        <label className="field">Entra tenant ID or domain<input value={value.tenant} onChange={(e) => set("tenant", e.target.value)} /></label>
+        <label className="field">Application (client) ID<input value={value.clientId} onChange={(e) => set("clientId", e.target.value)} /></label>
+        <label className="field">Client secret<input type="password" placeholder={view.secretSet ? "saved: leave blank to keep" : ""}
+                                                     value={value.clientSecret} onChange={(e) => set("clientSecret", e.target.value)} /></label>
+      </div>
+      <label className="small"><input type="checkbox" checked={!!value.enabled} onChange={(e) => set("enabled", e.target.checked)} /> Offer "Sign in with Microsoft"</label><br />
+      <label className="small"><input type="checkbox" checked={!!value.required} onChange={(e) => set("required", e.target.checked)} /> Staff must use it (platform administrators can still use a password)</label><br />
+      <label className="small"><input type="checkbox" checked={!!value.trustMfa} onChange={(e) => set("trustMfa", e.target.checked)} /> Entra conditional access enforces MFA: do not ask again here</label><br />
+      <button disabled={busy || form === null} style={{ marginTop: 8 }}
+              onClick={async () => { if (await run(() => api("platform/security/sso", { method: "PUT", body: value }), "Microsoft sign-in saved")) { setForm(null); reload(); } }}>Save Microsoft sign-in</button>
+    </>
+  );
+}
+
 function PlatformTab() {
   const { can } = useApp();
   const { data, error, reload } = useData<any>("platform/status");
   const { data: dead, reload: reloadDead } = useListData<any>("platform/events", { status: "dead" });
+  const { data: volume } = useData<any>("platform/telemetry-volume", { minutes: 60 });
   const { run } = useAction();
+  const background = data?.background;
+  const passAgo = (name: string) => {
+    const seconds = background?.checks?.[name]?.lastPassSecondsAgo;
+    return seconds == null ? "never" : seconds < 120 ? `${seconds} s ago` : `${Math.round(seconds / 60)} min ago`;
+  };
   return (
     <>
       {can("platform") && <ReadinessCard />}
-      <HealthCard />
+      {can("platform") && <SecurityCard />}
+      {background && <div className="card" style={{ marginBottom: 14 }}>
+        <div className="row" style={{ justifyContent: "space-between" }}>
+          <h3 style={{ margin: 0 }}>Background work</h3>
+          <Pill value={background.ok ? "running" : "needs attention"} tone={background.ok ? "good" : "bad"} />
+        </div>
+        <p className="small">Scheduler pass {passAgo("scheduler.pass")} · hourly maintenance {passAgo("maintenance.pass")} · runs in {background.role === "web" ? "the worker container" : "this server process"}</p>
+        {(background.problems ?? []).map((problem: string) => <p key={problem} className="small"><Pill value="problem" tone="bad" /> {problem}</p>)}
+        {(background.checks?.jobs?.failingRepeatedly ?? []).length > 0 &&
+          <p className="small muted">Failing repeatedly: {background.checks.jobs.failingRepeatedly.join(", ")}. See the error column below.</p>}
+        <p className="small muted">Uptime monitors can watch <span className="mono">/health/background</span>: it returns 503 with the same problems.</p>
+      </div>}
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
         <div className="card"><div className="label muted small">Vault encryption</div>
           <p><b>{displayValue(data?.vault.algorithm ?? "…")}</b></p>
@@ -497,8 +652,25 @@ function PlatformTab() {
           <p>{displayValue(data?.events.pending ?? 0)} waiting · {displayValue(data?.events.done ?? 0)} done · <b>{displayValue(data?.events.dead ?? 0)} failed</b></p></div>
         <div className="card"><div className="label muted small">Event handlers</div>
           <p className="small">{Object.entries(data?.handlers ?? {}).map(([k, v]: any) => `${k} (${v.length})`).join(", ") || "none"}</p></div>
+        {volume && <div className="card"><div className="label muted small">Telemetry, last hour</div>
+          <p><b>{displayValue(volume.perMinute)}</b> events a minute · about {displayValue(volume.perDayProjected?.toLocaleString())} a day</p>
+          <p className="small muted">Most: {(volume.byType ?? []).slice(0, 3).map((t: any) => `${t.eventType} (${t.events})`).join(", ") || "none"}
+            {(volume.byDevice ?? [])[0] ? ` · noisiest device ${volume.byDevice[0].hostname || volume.byDevice[0].deviceId} (${volume.byDevice[0].perMinute}/min)` : ""}
+            {volume.notStored ? ` · ${volume.notStored} routine events over the cap checked but not stored` : ""}</p></div>}
       </div>
       {error && <p className="muted">{error}</p>}
+      {can("platform") && <div className="card" style={{ marginTop: 14 }}>
+        <h3 style={{ marginTop: 0 }}>Background jobs</h3>
+        <p className="small muted">Scheduled work the server runs by itself. Each job runs on its own, so one failing job does not stop the others.</p>
+        <Table rows={(data?.jobs ?? []).map((j: any) => ({ ...j, id: j.name }))} empty="No job has run yet. Jobs start about 30 seconds after the server starts."
+               columns={[{ key: "name", label: "Job", render: (j) => <span className="mono small">{j.name}</span> },
+                         { key: "ok", label: "Last run", render: (j) => j.runningSince ? <Pill value={`running since ${ago(j.runningSince)}`} tone="warn" />
+                           : <Pill value={j.ok ? "ok" : j.failures > 1 ? `failed ${j.failures}× in a row` : "failed"} tone={j.ok ? "good" : "bad"} /> },
+                         { key: "lastRunAt", label: "When", render: (j) => j.lastRunAt ? ago(j.lastRunAt) : "" },
+                         { key: "lastOkAt", label: "Last success", render: (j) => j.lastOkAt ? ago(j.lastOkAt) : "never" },
+                         { key: "durationMs", label: "Took", className: "right", render: (j) => `${(j.durationMs / 1000).toFixed(1)} s` },
+                         { key: "error", label: "Error", render: (j) => <span className="small">{displayValue(j.error)}</span> }]} />
+      </div>}
       <div className="card" style={{ marginTop: 14 }}>
         <h3 style={{ marginTop: 0 }}>Failed automation events</h3>
         <Table rows={dead} empty="No failed events."
@@ -527,6 +699,7 @@ function AccountTab() {
                 if (result) { if (result.token) setToken(result.token); setCurrent(""); setNext(""); } }}>Change password</button>
     </div>
     <MfaCard />
+    <PasskeysCard />
     <SessionsCard />
     </>
   );

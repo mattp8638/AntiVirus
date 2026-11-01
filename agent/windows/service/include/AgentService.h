@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "AgentConfig.h"
@@ -196,8 +197,17 @@ class AgentService {
   std::wstring ElevationStatus(const RemoteCommand& command);
   std::wstring GrantElevation(const RemoteCommand& command);
   std::wstring RevokeElevation(const RemoteCommand& command);
+  std::wstring FinishElevation(const RemoteCommand& command);
+  std::wstring ReportElevationLaunch(const RemoteCommand& command);
   void ExpireElevations();
+  // Opaque pointers to the elevation state types, which live in AgentService.cpp.
+  using ElevationStateRef = void*;
+  using ElevationCleanupRef = const void*;
+  void EndElevationLocked(ElevationStateRef state, const std::wstring& requestId, const std::wstring& reason);
+  bool ReportElevationEnd(const ElevationCleanupRef& cleanup);
   std::mutex elevationMutex_{};
+  // Temporary admin passwords by request id: memory only, never written to disk or sent to the cloud.
+  std::map<std::wstring, std::wstring> elevationPasswords_{};
   void CheckRemovableMedia();  // antimalware.scanRemovableMedia
   unsigned long knownDrives_{0};
   unsigned long pendingRemovable_{0};
@@ -230,6 +240,7 @@ class AgentService {
   bool lastControlPlaneSyncFailed_{false};
   bool lastHardeningCheckFailed_{false};
   bool lastTelemetryFlushFailed_{false};
+  std::unordered_map<std::wstring, ULONGLONG> recentAmsiScans_{};  // clean AMSI scans sent in the last hour
   HANDLE stopEvent_{nullptr};
   HANDLE pamRequestEvent_{nullptr};
   // Set by the realtime channel when the cloud queues a command.

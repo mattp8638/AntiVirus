@@ -8,6 +8,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { api } from "../api";
 import { cadResult, type RemoteFeedback } from "../remote-actions";
+import { confirmDialog, promptDialog, noticeDialog } from "../components/dialogs";
 
 type Tab = "Desktop" | "Terminal" | "Files" | "Processes" | "Services" | "Chat";
 type Msg = { ch: string; t: string; [key: string]: any };
@@ -348,7 +349,7 @@ export default function RemoteViewer() {
       send({ ch: "input", t: "clip.set", text });
       send({ ch: "input", t: "type", text });
     } catch {
-      const text = window.prompt("Text to type on the remote machine:");
+      const text = await promptDialog("Text to type on the remote machine:");
       if (text) send({ ch: "input", t: "type", text });
     }
   };
@@ -638,16 +639,16 @@ function FilesPane({ send, sendBinary, on, binaryListeners, home }: {
   };
 
   const remove = async (entry: any) => {
-    if (!window.confirm(`Delete ${entry.name} on the remote device?`)) return;
+    if (!await confirmDialog(`Delete ${entry.name} on the remote device?`)) return;
     const result = await request({ ch: "files", t: "delete", path: join(entry.name) });
-    if (result.error) window.alert(result.error);
+    if (result.error) noticeDialog(result.error);
     list(path);
   };
   const mkdir = async () => {
-    const name = window.prompt("New folder name");
+    const name = await promptDialog("New folder name");
     if (!name) return;
     const result = await request({ ch: "files", t: "mkdir", path: join(name) });
-    if (result.error) window.alert(result.error);
+    if (result.error) noticeDialog(result.error);
     list(path);
   };
 
@@ -725,9 +726,9 @@ function ProcessesPane({ send, on }: { send: (m: Msg) => void; on: (k: string, f
   const [sort, setSort] = useState<"cpu" | "mem" | "name">("cpu");
   useEffect(() => { const t = window.setInterval(reload, 5000); return () => window.clearInterval(t); }, [reload]);
   const kill = async (p: any) => {
-    if (!window.confirm(`End ${p.name} (PID ${p.pid}) on the remote device?`)) return;
+    if (!await confirmDialog(`End ${p.name} (PID ${p.pid}) on the remote device?`)) return;
     const result = await request({ ch: "procs", t: "kill", pid: p.pid });
-    if (result.error) window.alert(result.error);
+    if (result.error) noticeDialog(result.error);
     reload();
   };
   const rows = (items || []).filter((p) => !filter || `${p.name} ${p.user} ${p.pid}`.toLowerCase().includes(filter.toLowerCase()))
@@ -764,7 +765,7 @@ function ServicesPane({ send, on }: { send: (m: Msg) => void; on: (k: string, fn
   const [filter, setFilter] = useState("");
   const control = async (s: any, action: string) => {
     const result = await request({ ch: "svc", t: "control", name: s.name, action });
-    if (result.error) window.alert(result.error);
+    if (result.error) noticeDialog(result.error);
     reload();
   };
   const rows = (items || []).filter((s) => !filter || `${s.name} ${s.display}`.toLowerCase().includes(filter.toLowerCase()));

@@ -30,12 +30,28 @@ type Scanner struct {
 	MLThreshold float64
 }
 
+// The industry-standard EICAR anti-malware test file (exactly as published, and with the trailing newline or CRLF an
+// editor or echo adds). Harmless by design; every antivirus detects it so people can check protection works. Kept as
+// hashes so this source file is not itself flagged.
+var testSignatures = map[string]string{
+	"275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f": "EICAR-Test-File",
+	"131f95c51cc819465fa1797f6ccacf9d494aaaff46fa3eac73ae63ffbdfd8267": "EICAR-Test-File",
+	"8b3f191819931d1f2cef7289239b5f77c00b079847b9c2636e56854d1e5eff71": "EICAR-Test-File",
+}
+
 func NewScanner(quarantineDir string) *Scanner {
-	return &Scanner{bad: map[string]string{}, allow: map[string]bool{}, QuarantineDir: quarantineDir, MaxFileBytes: 256 << 20}
+	bad := map[string]string{}
+	for sha, family := range testSignatures {
+		bad[sha] = family
+	}
+	return &Scanner{bad: bad, allow: map[string]bool{}, QuarantineDir: quarantineDir, MaxFileBytes: 256 << 20}
 }
 
 func (s *Scanner) Load(b *Bundle) {
-	bad := make(map[string]string, len(b.Hashes))
+	bad := make(map[string]string, len(b.Hashes)+len(testSignatures))
+	for sha, family := range testSignatures {
+		bad[sha] = family
+	}
 	pua := map[string]bool{}
 	for _, h := range b.Hashes {
 		if strings.EqualFold(h.Type, "sha256") && len(h.Value) == 64 {
@@ -199,7 +215,13 @@ func (s *Scanner) ScanPathsWith(roots []string, skip []string, quarantine bool, 
 	}
 	throttle := newCPUThrottle(opts.CPULimitPercent)
 	for _, root := range roots {
+		if opts.Context != nil && opts.Context.Err() != nil {
+			break
+		}
 		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if opts.Context != nil && opts.Context.Err() != nil {
+				return filepath.SkipAll
+			}
 			if err != nil {
 				return nil
 			}
@@ -231,6 +253,9 @@ func (s *Scanner) ScanPathsWith(roots []string, skip []string, quarantine bool, 
 			}
 			if bad && pua && opts.PUA == "off" {
 				return nil
+			}
+			if opts.Context != nil && opts.Context.Err() != nil {
+				return filepath.SkipAll
 			}
 			if bad {
 				f := Finding{Path: path, SHA256: sha, Family: family, Action: "detected", Member: inner}

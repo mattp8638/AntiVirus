@@ -1,0 +1,106 @@
+{
+  "key": "eu-gdpr",
+  "name": "EU GDPR",
+  "short": "EU GDPR",
+  "version": "Regulation (EU) 2016/679",
+  "questionSet": true,
+  "description": "UK-relevant readiness and evidence guide. Record applicability before assessment; use the official framework and any required independent assessment or submission process. UK organisations within EU GDPR territorial scope, including relevant EU offerings or monitoring.",
+  "sections": [
+    {
+      "id": "readiness",
+      "title": "Scope, implementation and assurance",
+      "requirements": [
+        {
+          "id": "GDPR-SCOPE",
+          "title": "EU territorial scope",
+          "text": "Document the EU activities, establishment or relevant offering/monitoring which determines applicability.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "GDPR-ROLES",
+          "title": "Controller and processor responsibilities",
+          "text": "Record roles, relevant representatives and data-protection contacts.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "GDPR-LAWFUL",
+          "title": "Purpose, lawful basis and transparency",
+          "text": "Map processing purposes to lawful bases and accessible privacy information.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "GDPR-RIGHTS",
+          "title": "Individual rights",
+          "text": "Maintain request handling, identity checks, response tracking and evidence.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "GDPR-DPIA",
+          "title": "Privacy risk assessment",
+          "text": "Record DPIA decisions, mitigations and approvals for relevant processing.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "GDPR-SECURITY",
+          "title": "Security and accountability",
+          "text": "Evidence proportionate protection and periodic effectiveness reviews.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "GDPR-PROCESSORS",
+          "title": "Processor contracts",
+          "text": "Maintain appropriate processing terms and supplier oversight.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "GDPR-TRANSFERS",
+          "title": "International transfers",
+          "text": "Record transfer destinations, safeguards and review decisions.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "GDPR-BREACH",
+          "title": "Breach assessment and notification",
+          "text": "Track breach decisions, relevant authority and applicable notification obligations.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "GDPR-RETENTION",
+          "title": "Retention and disposal",
+          "text": "Evidence retention decisions and secure deletion.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        }
+      ]
+    }
+  ]
+}

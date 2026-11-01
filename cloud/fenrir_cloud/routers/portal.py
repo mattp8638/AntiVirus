@@ -6,7 +6,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from .. import audit, psa, services
+from .. import audit, presence, psa, services
 from ..db import get_db
 from ..deps import Principal, current_principal
 from ..models import Board, Contact, Device, Invoice, KbArticle, Tenant, Ticket, utcnow
@@ -122,5 +122,5 @@ def portal_devices(principal: Principal = Depends(_portal), db: Session = Depend
     rows = db.execute(select(Device).where(Device.tenant_id == _account(principal), Device.approved.is_(True))).scalars()
     now = utcnow()
     return [{"id": d.id, "hostname": d.hostname, "osVersion": d.os_version, "healthState": d.health_state,
-             "online": bool(d.last_seen_at and (now - d.last_seen_at).total_seconds() < 300),
+             "online": presence.is_up(d, now),
              "loggedOnUser": (d.metrics or {}).get("loggedOnUser", "")} for d in rows]

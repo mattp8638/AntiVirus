@@ -49,6 +49,15 @@ CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("forensics.collect", "Collect forensic triage package", "Investigation", platforms=ALL,
                 description="Processes, autoruns, network, event logs and prefetch in one archive."),
     CommandSpec("inventory.refresh", "Refresh inventory", "Investigation", platforms=ALL),
+    CommandSpec("network.discover", "Discover the local network", "Investigation", platforms=("linux", "macos"),
+                description="Interfaces, gateway, neighbours and a short TCP sweep of the device's own private subnets. "
+                            "Windows runs the same discovery as a script (Network → Topology)."),
+    CommandSpec("pii.scan", "Discover personal data", "Investigation", platforms=("linux", "macos"),
+                description="Counts payment cards, NI and NHS numbers, IBANs and emails in users' documents. Only counts and "
+                            "file paths are reported. Windows runs the same scan as a script (Vulnerabilities → PII discovery)."),
+    CommandSpec("amt.wsman", "Intel AMT request", "Remote access", permission="respond", platforms=ALL,
+                description="Sent by Out-of-band management: WS-Management calls to an Intel AMT engine on this device's LAN. "
+                            "The agent fetches the AMT credential for the one command; it is never in the payload."),
     CommandSpec("network.probe", "Probe network services", "Investigation", platforms=ALL,
                 description="Sent automatically for network monitors that probe from this device; checks TCP services on its LAN."),
     CommandSpec("script.run", "Run script", "Administration", permission="configure", platforms=ALL,
@@ -90,9 +99,10 @@ CATALOG: tuple[CommandSpec, ...] = (
                             "Its password is stored first and shown in the device's Local admin tab."),
     CommandSpec("breakglass.disable", "Disable break-glass admin", "Privilege", permission="configure"),
     CommandSpec("elevation.grant", "Grant temporary admin rights", "Privilege", permission="configure",
-                description="Sent when an elevation request is approved: adds the user to the local Administrators group "
-                            "for the request's minutes."),
-    CommandSpec("elevation.revoke", "Revoke temporary admin rights", "Privilege", permission="configure"),
+                description="Sent when an elevation request is approved: creates a temporary local administrator account "
+                            "for the user that is deleted after the request's minutes."),
+    CommandSpec("elevation.revoke", "Revoke temporary admin rights", "Privilege", permission="configure",
+                description="Deletes the request's temporary administrator account now."),
     CommandSpec("update.apply", "Apply agent update", "Agent", permission="configure", platforms=ALL),
     CommandSpec("update.rollback", "Roll back agent update", "Agent", permission="configure"),
     CommandSpec("agent.repair", "Repair agent", "Agent", platforms=ALL),
@@ -108,6 +118,14 @@ CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("device.lostmode", "Lost mode", "Phone", platforms=MOBILE,
                 description="Locks the phone, shows your message and phone number on the screen and reports its "
                             "location every 5 minutes until lost mode is turned off. Use the Location tab."),
+    CommandSpec("app.scan", "Check apps now", "Phone", platforms=MOBILE,
+                description="Check every installed app now, instead of at the daily check."),
+    CommandSpec("app.uninstall", "Remove an app", "Phone", platforms=MOBILE,
+                description="Removes the app in payload.package: silently on company-owned (device owner) phones, otherwise "
+                            "the phone asks its user to remove it."),
+    CommandSpec("app.suspend", "Suspend an app", "Phone", platforms=MOBILE,
+                description="Stops the app in payload.package from running (payload.suspended false lets it run again). "
+                            "Company-owned (device owner) phones only."),
     CommandSpec("device.wipe", "Erase the phone", "Phone", permission="configure", platforms=MOBILE, destructive=True,
                 description="Factory-resets the phone. Everything on it is deleted and it stops reporting. Asks for your "
                             "password again."),

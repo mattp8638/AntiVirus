@@ -1,0 +1,70 @@
+{
+  "key": "govassure",
+  "name": "GovAssure",
+  "short": "GovAssure",
+  "version": "Current government CAF profiles",
+  "questionSet": true,
+  "description": "UK-relevant readiness and evidence guide. Record applicability before assessment; use the official framework and any required independent assessment or submission process. Central government departments, arm's-length bodies and systems within GovAssure scope.",
+  "sections": [
+    {
+      "id": "readiness",
+      "title": "Scope, implementation and assurance",
+      "requirements": [
+        {
+          "id": "GA-1",
+          "title": "Organisation and essential services",
+          "text": "Identify essential services, dependencies and accountable service owners.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "GA-2",
+          "title": "Systems and government profiles",
+          "text": "Agree in-scope systems and the applicable government CAF profile.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "GA-3",
+          "title": "CAF self-assessment evidence",
+          "text": "Link the CAF assessment, evidence and WebCAF submission reference.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "GA-4",
+          "title": "Independent review",
+          "text": "Track the appointed reviewer, evidence requests and assurance findings.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "GA-5",
+          "title": "Targeted improvement plan",
+          "text": "Assign and review improvement actions against the accepted assurance findings.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "GA-REVIEW",
+          "title": "Annual assurance cycle",
+          "text": "Record the next assessment cycle and changes to systems and service scope.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        }
+      ]
+    }
+  ]
+}

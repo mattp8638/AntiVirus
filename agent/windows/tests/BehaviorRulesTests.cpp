@@ -123,6 +123,40 @@ int main() {
     p.signatureVerified = true;
     CHECK(!Fired(Evaluate(p, policy), L"attackSurface.blockUntrustedUsbProcesses"));
   }
+  {  // Strict exclusions: path *and* hash of the parent, wildcard only in the file name
+    CHECK(ExclusionPathMatches(L"C:\\Program Files\\Acme\\agent-*.exe", L"c:/program files/acme/AGENT-2.4.exe"));
+    CHECK(!ExclusionPathMatches(L"C:\\Program Files\\Acme\\agent-*.exe", L"C:\\Users\\bob\\agent-2.4.exe"));
+    CHECK(!ExclusionPathMatches(L"C:\\Program Files\\Acme\\agent.exe", L"C:\\Program Files\\Acme\\sub\\agent.exe"));
+    CHECK(ExclusionPathMatches(L"C:\\Tools\\a?c.exe", L"C:\\Tools\\abc.exe"));
+    ExclusionRule chain;
+    chain.id = L"exc_1";
+    chain.parentImage = L"C:\\Program Files\\Acme RMM\\acme-agent.exe";
+    chain.parentSha256 = {std::wstring(64, L'a')};
+    chain.childImage = L"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+    chain.scopes = {L"behavior", L"sigma"};
+    ProcessFacts p{.imagePath = L"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                   .commandLine = L"powershell -enc SQBFAFgA",
+                   .parentImagePath = L"C:\\Program Files\\Acme RMM\\acme-agent.exe",
+                   .parentSha256 = std::wstring(64, L'A')};
+    const std::vector<ExclusionRule> rules{chain};
+    CHECK(MatchExclusion(rules, L"behavior", p) != nullptr);
+    CHECK(MatchExclusion(rules, L"antimalware", p) == nullptr);  // only the listed scopes
+    CHECK(NeedsParentHash(rules, p.parentImagePath));
+    CHECK(!NeedsParentHash(rules, L"C:\\Windows\\explorer.exe"));
+    CHECK(!NeedsChildHash(rules));
+    p.parentSha256 = std::wstring(64, L'b');  // replaced binary at the same path
+    CHECK(MatchExclusion(rules, L"behavior", p) == nullptr);
+    p.parentSha256.clear();  // hash unknown: never trusted
+    CHECK(MatchExclusion(rules, L"behavior", p) == nullptr);
+    ExclusionRule hash;
+    hash.id = L"exc_2";
+    hash.kind = L"hash";
+    hash.childSha256 = {std::wstring(64, L'c')};
+    hash.scopes = {L"antimalware"};
+    CHECK(NeedsChildHash({hash}));
+    CHECK(MatchExclusion({hash}, L"antimalware", ProcessFacts{.imagePath = L"D:\\x.exe", .sha256 = std::wstring(64, L'c')}) != nullptr);
+    CHECK(MatchExclusion({hash}, L"antimalware", ProcessFacts{.imagePath = L"D:\\x.exe", .sha256 = std::wstring(64, L'd')}) == nullptr);
+  }
   std::printf(failures ? "%d failure(s)\n" : "all behavior rule tests passed\n", failures);
   return failures ? 1 : 0;
 }

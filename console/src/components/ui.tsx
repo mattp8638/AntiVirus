@@ -1,7 +1,9 @@
 import { ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { displayValue } from "./DisplayValue";
 import { expectArray, safeArray } from "../data-shapes";
 import { api, rememberReauth, setReauthPrompt } from "../api";
+import { passkeyResponse, passkeysSupported } from "../passkeys";
 import { useApp } from "../app-context";
 
 /** Load data from the API and reload when deps change. */
@@ -41,6 +43,35 @@ export function useData<T>(path: string | null, query: Record<string, unknown> =
   return { data, error, loading, reload, setData };
 }
 
+/** Re-fetch every few seconds while the page is on screen, and straight away when the tab comes back. */
+export function useAutoRefresh(reload: () => unknown, ms = 15000) {
+  useEffect(() => {
+    const tick = () => { if (document.visibilityState === "visible") reload(); };
+    const timer = setInterval(tick, ms);
+    document.addEventListener("visibilitychange", tick);
+    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", tick); };
+  }, [reload, ms]);
+}
+
+// Device presence, decided by the server (presence.py): agents are online when heard from in the last 2 minutes
+// (they ping every 30 seconds); phones in power saving are "asleep" for up to 30 minutes, which is not a fault.
+const PRESENCE: Record<string, { label: string; dot: string; title: string }> = {
+  online: { label: "Online", dot: "on", title: "Heard from in the last 2 minutes" },
+  asleep: { label: "Asleep", dot: "sleep", title: "The phone is saving power. It checks in about every 10 minutes and runs actions when it wakes." },
+  idle: { label: "Idle", dot: "sleep", title: "No website lookups in the last 15 minutes. Normal when the device is not being used." },
+  offline: { label: "Offline", dot: "off", title: "Not heard from for over 2 minutes (30 for a phone)" },
+  retired: { label: "Decommissioned", dot: "off", title: "Decommissioned" },
+};
+
+export function presenceOf(device: { presence?: string; online?: boolean }) {
+  return PRESENCE[device.presence ?? (device.online ? "online" : "offline")] ?? PRESENCE.offline;
+}
+
+export function PresenceDot({ device }: { device: { presence?: string; online?: boolean } }) {
+  const p = presenceOf(device);
+  return <span className={`dot ${p.dot}`} title={`${p.label}: ${p.title}`} aria-label={p.label} />;
+}
+
 /** List endpoints are validated at runtime; a 200 response is not necessarily a JSON array. */
 export function useListData<T>(path: string | null, query: Record<string, unknown> = {}, deps: unknown[] = []) {
   return useData<T[]>(path, query, deps, true);
@@ -78,14 +109,14 @@ export function PageHead({ title, subtitle, actions }: { title: string; subtitle
   );
 }
 
-export function Stat({ label, value, hint, accent }: { label: string; value: ReactNode; hint?: ReactNode; accent?: string }) {
-  return (
-    <div className={`card stat ${accent ? `accent-${accent}` : ""}`}>
-      <div className="label">{label}</div>
-      <div className="value">{displayValue(value)}</div>
-      {hint && <div className="hint">{displayValue(hint)}</div>}
-    </div>
-  );
+export function Stat({ label, value, hint, accent, to }: { label: string; value: ReactNode; hint?: ReactNode; accent?: string; to?: string }) {
+  const body = <>
+    <div className="label">{label}</div>
+    <div className="value">{displayValue(value)}</div>
+    {hint && <div className="hint">{displayValue(hint)}</div>}
+  </>;
+  const className = `card stat ${accent ? `accent-${accent}` : ""}`;
+  return to ? <Link to={to} className={`${className} stat-link`}>{body}</Link> : <div className={className}>{body}</div>;
 }
 
 export function Sev({ level }: { level?: string }) {
@@ -116,11 +147,12 @@ export interface Column<T> {
   className?: string;
 }
 
-export function Table<T extends Record<string, any>>({ rows, columns, onRow, empty = "Nothing here yet." }: {
+export function Table<T extends Record<string, any>>({ rows, columns, onRow, empty = "Nothing here yet.", activeId }: {
   rows: T[] | null | undefined;
   columns: Column<T>[];
   onRow?: (row: T) => void;
   empty?: string;
+  activeId?: string | null;  // the row picked with the keyboard
 }) {
   if (rows == null) return <div className="empty">Loading…</div>;
   if (!Array.isArray(rows)) {
@@ -138,7 +170,8 @@ export function Table<T extends Record<string, any>>({ rows, columns, onRow, emp
         </thead>
         <tbody>
           {rows.map((row, i) => (
-            <tr key={row.id ?? i} className={onRow ? "clickable" : ""} onClick={onRow ? () => onRow(row) : undefined}>
+            <tr key={row.id ?? i} className={`${onRow ? "clickable" : ""}${activeId != null && row.id === activeId ? " active-row" : ""}`}
+                aria-selected={activeId != null ? row.id === activeId : undefined} onClick={onRow ? () => onRow(row) : undefined}>
               {columns.map((c) => <td key={c.key} className={c.className}>{displayValue(c.render ? c.render(row) : typeof row[c.key] === "boolean" ? String(row[c.key]) : row[c.key])}</td>)}
             </tr>
           ))}
@@ -272,8 +305,9 @@ export function InstallAppButton() {
   );
 }
 
-/** Asks for the password (and MFA code) when the server needs a recent re-authentication. */
+/** Asks for the password (and MFA code), or a passkey, when the server needs a recent re-authentication. */
 export function ReauthDialog() {
+  const { me } = useApp();
   const [pending, setPending] = useState<((ok: string | null) => void) | null>(null);
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
@@ -286,10 +320,11 @@ export function ReauthDialog() {
   }, []);
   if (!pending) return null;
   const finish = (token: string | null) => { pending(token); setPending(null); };
-  const submit = async () => {
+  const submit = async (withPasskey = false) => {
     setBusy(true);
     try {
-      const result = await api<{ reauthToken: string; expiresInSeconds: number }>("auth/reauth", { body: { password, ...(code ? { code } : {}) } });
+      const body = withPasskey ? { passkey: await passkeyResponse() } : { password, ...(code ? { code } : {}) };
+      const result = await api<{ reauthToken: string; expiresInSeconds: number }>("auth/reauth", { body });
       rememberReauth(result.reauthToken, result.expiresInSeconds);
       finish(result.reauthToken);
     } catch (err) {
@@ -301,7 +336,10 @@ export function ReauthDialog() {
   };
   return (
     <Modal title="Confirm it's you" onClose={() => finish(null)}
-           footer={<button className="primary" disabled={busy || !password || (needCode && code.length !== 6)} onClick={submit}>Confirm</button>}>
+           footer={<>
+             {passkeysSupported() && !!me?.passkeys && <button disabled={busy} onClick={() => submit(true)}>Use a passkey</button>}
+             <button className="primary" disabled={busy || !password || (needCode && code.length !== 6)} onClick={() => submit()}>Confirm</button>
+           </>}>
       <p className="muted">This action is sensitive. Enter your password{needCode ? " and authenticator code" : ""} to continue. It stays confirmed for 5 minutes.</p>
       <form onSubmit={(e) => { e.preventDefault(); submit(); }}>
         <label className="field">Password<input type="password" autoFocus value={password} onChange={(e) => setPassword(e.target.value)} /></label>

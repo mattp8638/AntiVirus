@@ -514,20 +514,9 @@ def loop(stop: threading.Event, first_delay: float = 120.0, interval: float = 90
         session = database.session_factory()()
         try:
             with httpx.Client(timeout=60, headers={"User-Agent": "FenrirCloud/1.0 (vulnerability intelligence)"}) as client:
-                result = run_once(session, client)
-                log.info("vulnerability intelligence: %s", result)
-            from . import health
-
-            health.beat(session, "vuln-intel", **{k: v for k, v in (result or {}).items() if isinstance(v, (int, str, bool))}
-                        if isinstance(result, dict) else {})
+                log.info("vulnerability intelligence: %s", run_once(session, client))
         except Exception as exc:  # noqa: BLE001 - keep the loop alive
             log.warning("vulnerability intelligence pass failed: %s", exc)
             session.rollback()
-            try:
-                from . import health
-
-                health.beat(session, "vuln-intel", ok=False, error=str(exc))
-            except Exception:  # noqa: BLE001
-                session.rollback()
         finally:
             session.close()

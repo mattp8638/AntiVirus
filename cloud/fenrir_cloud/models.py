@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -130,7 +130,7 @@ class Device(Base):
     os_version: Mapped[str] = mapped_column(String(255), default="")
     serial_number: Mapped[str] = mapped_column(String(255), default="")
     agent_version: Mapped[str] = mapped_column(String(64), default="")
-    agent_build: Mapped[str] = mapped_column(String(64), default="")  # source fingerprint the agent reports (AGT-04)
+    agent_build: Mapped[str] = mapped_column(String(64), default="", server_default="")  # source fingerprint the agent reports (AGT-04)
     platform_version: Mapped[str] = mapped_column(String(64), default="")
     health_state: Mapped[str] = mapped_column(String(40), default="unknown")
     isolated: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -152,10 +152,14 @@ class Device(Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # Business criticality (low|medium|high|critical) used to rank vulnerabilities and alerts.
     criticality: Mapped[str | None] = mapped_column(String(16), nullable=True, default="medium")
+    # Context that raises vulnerability priority (datadiscovery.py, darkweb.py): "pii-high", "breached-user".
+    exposure_flags: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # Phones: lost mode ({"enabled", "message", "phone", "since", "by"}); the agent re-reads it on every heartbeat.
     lost_mode: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     # Last maintenance window in which protection-policy patching ran on this device ("2026-10-25T22:00").
     patch_window_run: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Values of the MSP's custom device fields ({key: value}); definitions in CustomField.
+    custom_fields: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class Policy(Base):
@@ -182,7 +186,7 @@ class Command(Base):
     tenant_id: Mapped[str] = mapped_column(String(32), index=True)
     device_id: Mapped[str] = mapped_column(ForeignKey("devices.id"), index=True)
     type: Mapped[str] = mapped_column(String(80))
-    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending|dispatched|completed|failed|cancelled
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending|dispatched|cancelling|completed|failed|cancelled
     issued_by: Mapped[str] = mapped_column(String(200))
     target_path: Mapped[str] = mapped_column(Text, default="")
     record_id: Mapped[str] = mapped_column(String(200), default="")
@@ -194,6 +198,11 @@ class Command(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     dispatched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cancel_requested_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # A retired key may ONLY check/acknowledge this command's cancellation, for seven days.
+    # Normal device access is revoked immediately; this grant cannot fetch or create work.
+    cancel_api_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class DeviceArtifact(Base):
@@ -281,6 +290,16 @@ class ElevationRequest(Base):
     command_id: Mapped[str] = mapped_column(String(32), default="")
     granted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # session: the user gets a temporary admin account to type when Windows asks; run: the agent launches ``target``
+    # as that account. Nullable so existing databases gain them additively.
+    kind: Mapped[str | None] = mapped_column(String(10), nullable=True, default="session")
+    target: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    arguments: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    account: Mapped[str | None] = mapped_column(String(40), nullable=True)  # the temporary local administrator
+    account_sid: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    end_reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    events: Mapped[list | None] = mapped_column(JSON, nullable=True)  # timeline: requested, decided, granted, launched, ended
 
 
 class LocalAdminPassword(Base):
@@ -341,6 +360,7 @@ class Event(Base):
     __table_args__ = (
         Index("ix_events_tenant_time", "tenant_id", "occurred_at"),
         Index("ix_events_device_time", "device_id", "occurred_at"),
+        Index("ix_events_time", "occurred_at"),  # retention purges select by age alone
         UniqueConstraint("device_id", "event_id", name="uq_events_device_event"),
     )
 
@@ -374,7 +394,8 @@ class RuleMatch(Base):
     event_pk: Mapped[int | None] = mapped_column(Integer, nullable=True)
     at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
-    __table_args__ = (Index("ix_rule_matches_lookup", "rule_id", "tenant_id", "group_key", "at"),)
+    __table_args__ = (Index("ix_rule_matches_lookup", "rule_id", "tenant_id", "group_key", "at"),
+                      Index("ix_rule_matches_event", "event_pk"))
 
 
 class Alert(Base):
@@ -392,6 +413,12 @@ class Alert(Base):
     incident_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # Triage: who owns it, who picked it up and when, and until when it is out of the queue.
+    assignee: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+    acknowledged_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    snoozed_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    snoozed_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
 
 class Incident(Base):
@@ -508,6 +535,103 @@ class UserSession(Base):
     revoked_reason: Mapped[str] = mapped_column(String(80), default="")
     ip: Mapped[str] = mapped_column(String(64), default="")
     user_agent: Mapped[str] = mapped_column(String(300), default="")
+    method: Mapped[str | None] = mapped_column(String(20), nullable=True)  # password | sso | passkey
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # SSO hand-off redeemed (once)
+
+
+class MobileApp(Base):
+    """An app installed on an Android phone, as the phone last assessed it, with Fenrir's verdict (mobile_protection.py)."""
+    __tablename__ = "mobile_apps"
+    __table_args__ = (UniqueConstraint("device_id", "package", name="uq_mobile_app_device_package"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    package: Mapped[str] = mapped_column(String(255))
+    label: Mapped[str] = mapped_column(String(200), default="")
+    version: Mapped[str] = mapped_column(String(100), default="")
+    installer: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sideloaded: Mapped[bool] = mapped_column(Boolean, default=False)
+    system: Mapped[bool] = mapped_column(Boolean, default=False)
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    signer: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    permissions: Mapped[list] = mapped_column(JSON, default=list)
+    abilities: Mapped[dict] = mapped_column(JSON, default=dict)  # accessibility, deviceAdmin, notificationAccess, hidden
+    risk_score: Mapped[int] = mapped_column(Integer, default=0)
+    risk_level: Mapped[str] = mapped_column(String(10), default="low")
+    reasons: Mapped[list] = mapped_column(JSON, default=list)
+    verdict: Mapped[str] = mapped_column(String(12), default="clean")  # malicious|suspicious|risky|review|clean|trusted
+    verdict_reason: Mapped[str] = mapped_column(String(300), default="")
+    suspended: Mapped[bool] = mapped_column(Boolean, default=False)
+    first_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class DefenderState(Base):
+    """What Microsoft Defender reported on a Windows device the last time Fenrir checked it (defender.py)."""
+    __tablename__ = "defender_states"
+    device_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    status: Mapped[dict] = mapped_column(JSON, default=dict)
+    applied_revision: Mapped[str | None] = mapped_column(String(64), nullable=True)  # the Defender settings last applied
+    command_id: Mapped[str | None] = mapped_column(String(32), nullable=True)  # the check in flight
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    requested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    error: Mapped[str] = mapped_column(String(500), default="")
+
+
+class ClientHealthSnapshot(Base):
+    """A customer's health score on one day (client360.py), for the trend on the client page and the quarterly review."""
+    __tablename__ = "client_health_snapshots"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    parts: Mapped[dict] = mapped_column(JSON, default=dict)  # part key -> score (None when not measured)
+
+
+class ClientReport(Base):
+    """A generated customer report, kept as sent: the monthly "what we did for you" or a quarterly review."""
+    __tablename__ = "client_reports"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("crep"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    kind: Mapped[str] = mapped_column(String(20))  # monthly | quarterly
+    period: Mapped[str] = mapped_column(String(10))  # 2026-09 | 2026-Q3
+    html: Mapped[str] = mapped_column(Text)
+    created_by: Mapped[str] = mapped_column(String(200), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class TriageState(Base):
+    """The triage inbox's own state for an item whose source has no owner, snooze or dismissal of its own (triage.py).
+    Keyed by the item key, which names the source and customer, so it survives the item being rebuilt each time."""
+    __tablename__ = "triage_states"
+    key: Mapped[str] = mapped_column(String(400), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    owner: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    snoozed_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    snoozed_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    dismissed_marker: Mapped[str | None] = mapped_column(String(64), nullable=True)  # hidden while the item still matches
+    dismissed_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ticket_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class PasskeyCredential(Base):
+    """A passkey (WebAuthn credential) someone registered for signing in. Only its public key is kept; the private key
+    never leaves their phone, laptop or security key."""
+    __tablename__ = "passkey_credentials"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("pk"))
+    user_id: Mapped[str] = mapped_column(String(32), index=True)
+    credential_id: Mapped[str] = mapped_column(String(1400), unique=True)  # base64url, as the browser reports it
+    public_key: Mapped[str] = mapped_column(Text)  # SubjectPublicKeyInfo DER, base64
+    algorithm: Mapped[int] = mapped_column(Integer)  # COSE: -7 ES256, -8 EdDSA, -257 RS256
+    sign_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    name: Mapped[str] = mapped_column(String(100), default="")
+    transports: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class VulnScan(Base):
@@ -561,6 +685,8 @@ class Vulnerability(Base):
     cvss_vector: Mapped[str | None] = mapped_column(String(200), nullable=True)
     evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=dict)
     fix: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=dict)
+    # The latest remediation attempt (remediation.py): {mode, commandId, status, queuedAt, by, automatic, error}.
+    remediation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     __table_args__ = (UniqueConstraint("device_id", "vuln_id", "package", name="uq_vuln_device"),)
 
@@ -775,9 +901,13 @@ class Ticket(Base):
     backout_plan: Mapped[str | None] = mapped_column(Text, default="", nullable=True)
     test_plan: Mapped[str | None] = mapped_column(Text, default="", nullable=True)
     change_approvals: Mapped[list | None] = mapped_column(JSON, default=list, nullable=True)  # [{by, decision, comment, at}]
+    # AI helpdesk triage (ai_helpdesk.py): category, priority, summary, suggestions, engine and what was applied.
+    ai_triage: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     status_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     email_thread_id: Mapped[str | None] = mapped_column(String(300), default="", nullable=True)
     workflow_fired: Mapped[list | None] = mapped_column(JSON, default=list, nullable=True)  # markers so timed rules fire once
+    # Values of the MSP's custom ticket fields ({key: value}); definitions in CustomField.
+    custom_fields: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class Contract(Base):
@@ -824,6 +954,11 @@ class Invoice(Base):
     status: Mapped[str] = mapped_column(String(20), default="Draft")  # Draft|Sent|Paid|Overdue|Void
     due_date: Mapped[str] = mapped_column(String(20), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # Accounting sync (billing_sync.py): the invoice in Xero and its last known state there.
+    external_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    external_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    external_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    external_error: Mapped[str | None] = mapped_column(String(300), nullable=True)
 
 
 class Webhook(Base):
@@ -864,6 +999,9 @@ class Script(Base):
     builtin: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_by: Mapped[str] = mapped_column(String(200), default="system")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # script_review.py: {hash, by, at, content} of the version a second person approved; who edited it since
+    review: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    review_editors: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
 class Job(Base):
@@ -949,6 +1087,75 @@ class ConditionState(Base):
     triggered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     __table_args__ = (UniqueConstraint("condition_id", "device_id"),)
+
+
+class DiskTelemetryHistory(Base):
+    """Historical telemetry for disk usage per device and mount point."""
+
+    __tablename__ = "rmm_disk_telemetry_history"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    mount: Mapped[str] = mapped_column(String(120), index=True)
+    total_gb: Mapped[float] = mapped_column(Float, default=0.0)
+    used_gb: Mapped[float] = mapped_column(Float, default=0.0)
+    free_gb: Mapped[float] = mapped_column(Float, default=0.0)
+    free_percent: Mapped[float] = mapped_column(Float, default=100.0)
+
+
+class DiskExhaustionPrediction(Base):
+    """Predictive analytics for storage exhaustion per endpoint mount point."""
+
+    __tablename__ = "rmm_disk_exhaustion_predictions"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("dep"))
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    mount: Mapped[str] = mapped_column(String(120))
+    predicted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    total_gb: Mapped[float] = mapped_column(Float, default=0.0)
+    current_used_gb: Mapped[float] = mapped_column(Float, default=0.0)
+    baseline_os_gb: Mapped[float] = mapped_column(Float, default=0.0)
+    daily_growth_gb: Mapped[float] = mapped_column(Float, default=0.0)
+    capacity_threshold_gb: Mapped[float] = mapped_column(Float, default=0.0)
+    days_remaining: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="ok")
+    confidence_score: Mapped[float] = mapped_column(Float, default=1.0)
+    model_type: Mapped[str] = mapped_column(String(64), default="linear_regression")
+
+    __table_args__ = (UniqueConstraint("device_id", "mount", name="uq_disk_prediction_device_mount"),)
+
+
+class ResourceBaseline(Base):
+    """Rolling historical baseline for device operational metrics (CPU, RAM)."""
+
+    __tablename__ = "rmm_resource_baselines"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("rbl"))
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    metric: Mapped[str] = mapped_column(String(32))
+    rolling_mean: Mapped[float] = mapped_column(Float, default=0.0)
+    rolling_std: Mapped[float] = mapped_column(Float, default=1.0)
+    sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    window_days: Mapped[int] = mapped_column(Integer, default=7)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    __table_args__ = (UniqueConstraint("device_id", "metric", name="uq_resource_baseline_device_metric"),)
+
+
+class ResourceAnomaly(Base):
+    """Detected anomaly events for CPU or RAM usage exceeding statistical thresholds."""
+
+    __tablename__ = "rmm_resource_anomalies"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ran"))
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    metric: Mapped[str] = mapped_column(String(32))
+    current_value: Mapped[float] = mapped_column(Float, default=0.0)
+    baseline_mean: Mapped[float] = mapped_column(Float, default=0.0)
+    baseline_std: Mapped[float] = mapped_column(Float, default=0.0)
+    z_score: Mapped[float] = mapped_column(Float, default=0.0)
+    is_sustained: Mapped[bool] = mapped_column(Boolean, default=False)
+    consecutive_spikes: Mapped[int] = mapped_column(Integer, default=1)
+    top_processes: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
+    user_sessions: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 
 
 class DeviceMetric(Base):
@@ -1060,7 +1267,7 @@ class RemoteSession(Base):
     tenant_id: Mapped[str] = mapped_column(String(32), index=True)
     device_id: Mapped[str] = mapped_column(String(32), index=True)
     technician: Mapped[str] = mapped_column(String(200))
-    mode: Mapped[str] = mapped_column(String(20), default="desktop")  # desktop|terminal|files
+    mode: Mapped[str] = mapped_column(String(20), default="desktop")  # desktop|terminal|files|backstage|tunnel
     status: Mapped[str] = mapped_column(String(20), default="waiting")  # waiting|connected|ended|failed|denied
     consent: Mapped[str] = mapped_column(String(20), default="not_required")  # not_required|pending|granted|denied
     view_only: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -1074,6 +1281,36 @@ class RemoteSession(Base):
     connected_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Tunnel sessions: the device above relays TCP to this LAN target (an agentless server, switch, printer or AMT).
+    target_host: Mapped[str | None] = mapped_column(String(255), nullable=True, default="")
+    target_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    target_node_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+class AmtEndpoint(Base):
+    """An Intel AMT / vPro management engine, reached directly (site VPN) or through an agent on the same LAN."""
+
+    __tablename__ = "amt_endpoints"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("amt"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)  # the managed device this AMT belongs to
+    node_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    name: Mapped[str] = mapped_column(String(200), default="")
+    host: Mapped[str] = mapped_column(String(255))
+    port: Mapped[int] = mapped_column(Integer, default=16992)  # 16992 HTTP, 16993 TLS
+    tls_insecure: Mapped[bool] = mapped_column(Boolean, default=False)  # accept AMT's self-signed certificate
+    username: Mapped[str] = mapped_column(String(100), default="admin")
+    secret_envelope: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    route: Mapped[str] = mapped_column(String(10), default="agent")  # agent|direct
+    probe_device_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="unknown")  # unknown|online|unreachable|auth_failed|pending
+    amt_version: Mapped[str] = mapped_column(String(60), default="")
+    power_state: Mapped[str] = mapped_column(String(40), default="")
+    settings: Mapped[dict] = mapped_column(JSON, default=dict)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 # --------------------------------------------------------------------------
@@ -1286,6 +1523,50 @@ class PlatformEvent(Base):
     processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     __table_args__ = (Index("ix_platform_events_due", "status", "next_attempt_at"),)
+
+
+class SavedView(Base):
+    """A named set of list filters (devices, tickets, alerts), private to its owner or shared with the organisation."""
+
+    __tablename__ = "saved_views"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("svw"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)  # the owner's organisation
+    owner: Mapped[str] = mapped_column(String(200), index=True)
+    page: Mapped[str] = mapped_column(String(40))
+    name: Mapped[str] = mapped_column(String(120))
+    filters: Mapped[dict] = mapped_column(JSON, default=dict)
+    shared: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class CustomField(Base):
+    """A field the MSP adds to every device or ticket (asset tag, cost centre, warranty reference...)."""
+
+    __tablename__ = "custom_fields"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("cfd"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)  # the MSP; applies to all its customers
+    entity: Mapped[str] = mapped_column(String(20))  # device | ticket
+    key: Mapped[str] = mapped_column(String(60))
+    label: Mapped[str] = mapped_column(String(120))
+    field_type: Mapped[str] = mapped_column(String(20), default="text")  # text | number | date | select | checkbox
+    options: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    __table_args__ = (UniqueConstraint("tenant_id", "entity", "key", name="uq_custom_field_key"),)
+
+
+class BackgroundJob(Base):
+    """Last outcome of each scheduled background job, so a failing job is visible instead of silent."""
+
+    __tablename__ = "background_jobs"
+    name: Mapped[str] = mapped_column(String(80), primary_key=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_ok_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ok: Mapped[bool] = mapped_column(Boolean, default=True)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    failures: Mapped[int] = mapped_column(Integer, default=0)  # in a row
+    error: Mapped[str] = mapped_column(Text, default="")
+    running_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # set while it runs: shows a hung job
 
 
 class RateLimitBucket(Base):
@@ -1538,6 +1819,9 @@ class GrcEvidence(Base):
     valid_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     uploaded_by: Mapped[str] = mapped_column(String(200), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # Automated evidence (kind "automated"): the signals captured, as recorded. sha256 covers this JSON.
+    data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    control_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
 
 class GrcEvidenceLink(Base):
@@ -1750,12 +2034,309 @@ class ApprovalRequest(Base):
     executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-class ServiceHeartbeat(Base):
-    """Last successful run of each background component (CORE-08), shared by every API worker."""
-    __tablename__ = "service_heartbeats"
-    name: Mapped[str] = mapped_column(String(60), primary_key=True)
-    last_ok_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    last_error_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+class DnsBlocklist(Base):
+    """An external domain blocklist (HaGeZi, OISD or a custom URL) refreshed on a schedule.
+
+    Domains are stored zlib-compressed in one row so a list of a million names neither bloats the
+    indicator table nor ships to agents as malware URLs. Lists in the "malware" category block whenever
+    DNS protection is on; other categories block only where the policy blocks that category."""
+    __tablename__ = "dns_blocklists"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    url: Mapped[str] = mapped_column(String(500))
+    category: Mapped[str] = mapped_column(String(40), default="malware")
+    description: Mapped[str] = mapped_column(String(500), default="")
+    builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    refresh_hours: Mapped[int] = mapped_column(Integer, default=24)
+    domain_count: Mapped[int] = mapped_column(Integer, default=0)
+    content_sha256: Mapped[str] = mapped_column(String(64), default="")
+    etag: Mapped[str] = mapped_column(String(200), default="")
+    domains: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_error: Mapped[str] = mapped_column(String(500), default="")
-    detail: Mapped[dict] = mapped_column(JSON, default=dict)
-    alerted_state: Mapped[str] = mapped_column(String(20), default="ok")  # last state an alert was sent for
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class EdrExclusion(Base):
+    """A strict EDR exclusion (see edr_exclusions.py).
+
+    ``process-chain``: a child started by a parent whose image path *and* SHA-256 match - for RMM agents that
+    legitimately launch PowerShell, cmd or bash. ``hash``: one exact file, optionally bound to its path.
+    ``tenant_id`` None applies platform-wide; otherwise the customer and its sites."""
+    __tablename__ = "edr_exclusions"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("exc"))
+    tenant_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    kind: Mapped[str] = mapped_column(String(20), default="process-chain")  # process-chain | hash
+    parent_image: Mapped[str] = mapped_column(String(500), default="")
+    parent_sha256: Mapped[list] = mapped_column(JSON, default=list)
+    child_image: Mapped[str] = mapped_column(String(500), default="")
+    child_sha256: Mapped[list] = mapped_column(JSON, default=list)
+    command_line_contains: Mapped[str] = mapped_column(String(500), default="")
+    scopes: Mapped[list] = mapped_column(JSON, default=list)  # behavior | antimalware | sigma
+    reason: Mapped[str] = mapped_column(String(1000), default="")
+    profile: Mapped[str] = mapped_column(String(80), default="")  # set when generated from an RMM agent profile
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    hits: Mapped[int] = mapped_column(Integer, default=0)
+    last_hit_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class DataDiscoveryScan(Base):
+    """A PII discovery scan on a device. Only counts, types and file paths are kept: never the matched values."""
+    __tablename__ = "data_discovery_scans"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("pii"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    command_id: Mapped[str] = mapped_column(String(32), default="")
+    status: Mapped[str] = mapped_column(String(20), default="queued")  # queued | completed | failed
+    requested_by: Mapped[str] = mapped_column(String(200), default="")
+    requested_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    files_scanned: Mapped[int] = mapped_column(Integer, default=0)
+    files_with_pii: Mapped[int] = mapped_column(Integer, default=0)
+    counts: Mapped[dict] = mapped_column(JSON, default=dict)  # type -> matches
+    files: Mapped[list] = mapped_column(JSON, default=list)  # [{path, types: {type: n}}], at most 200
+    sensitivity: Mapped[str] = mapped_column(String(10), default="none")  # none | low | high
+    truncated: Mapped[bool] = mapped_column(Boolean, default=False)
+    error: Mapped[str] = mapped_column(String(500), default="")
+
+
+class BreachExposure(Base):
+    """An account at a monitored customer domain found in a public data breach (darkweb.py)."""
+    __tablename__ = "breach_exposures"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("brx"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    email: Mapped[str] = mapped_column(String(320), index=True)
+    breach: Mapped[str] = mapped_column(String(200))
+    breach_title: Mapped[str] = mapped_column(String(300), default="")
+    breach_date: Mapped[str] = mapped_column(String(20), default="")
+    data_classes: Mapped[list] = mapped_column(JSON, default=list)
+    source: Mapped[str] = mapped_column(String(40), default="hibp")
+    first_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    status: Mapped[str] = mapped_column(String(20), default="open")  # open | remediated | dismissed
+    # Correlation: the directory account and devices this address belongs to, and whether MFA protects it.
+    correlation: Mapped[dict] = mapped_column(JSON, default=dict)
+    risk: Mapped[str] = mapped_column(String(10), default="medium")
+    ticket_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    __table_args__ = (UniqueConstraint("tenant_id", "email", "breach", name="uq_breach_exposure"),)
+
+
+class M365Partner(Base):
+    """The MSP's Microsoft partner tenant connection for GDAP (m365_partner.py).
+
+    A partner-tenant app registration plus a refresh token from an admin sign-in. Delegated tokens for each
+    customer tenant are obtained through the customer's GDAP relationship; nothing is installed in customers."""
+    __tablename__ = "m365_partners"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("mpt"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)  # the MSP tenant
+    partner_directory_id: Mapped[str] = mapped_column(String(36))
+    client_id: Mapped[str] = mapped_column(String(36))
+    credentials_envelope: Mapped[dict] = mapped_column(JSON, default=dict)  # {clientSecret, refreshToken}, encrypted
+    status: Mapped[str] = mapped_column(String(30), default="awaiting_signin")  # awaiting_signin | connected | error
+    last_error: Mapped[str] = mapped_column(String(300), default="")
+    signed_in_as: Mapped[str] = mapped_column(String(320), default="")
+    role_groups: Mapped[dict] = mapped_column(JSON, default=dict)  # role template id -> partner security group id
+    # {autoImport, lastImportAt, check: last partner check} - nullable so existing databases gain it additively
+    settings: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=dict)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    refreshed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class M365StandardRun(Base):
+    """One evaluation or deployment of a Microsoft 365 standard for one customer (m365_standards.py)."""
+    __tablename__ = "m365_standard_runs"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("msr"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    connection_id: Mapped[str] = mapped_column(String(32), index=True)
+    standard: Mapped[str] = mapped_column(String(80))
+    action: Mapped[str] = mapped_column(String(20))  # evaluate | deploy
+    status: Mapped[str] = mapped_column(String(20))  # compliant | drifted | deployed | failed | unknown
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+    actor: Mapped[str] = mapped_column(String(200), default="")
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+class NetworkSubnet(Base):
+    """A subnet a managed device sits on, with its gateway (topology.py)."""
+    __tablename__ = "network_subnets"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("sub"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    cidr: Mapped[str] = mapped_column(String(64))
+    gateway_ip: Mapped[str] = mapped_column(String(64), default="")
+    seen_by: Mapped[list] = mapped_column(JSON, default=list)  # device ids that reported it
+    first_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    __table_args__ = (UniqueConstraint("tenant_id", "cidr", name="uq_network_subnet"),)
+
+
+class NetworkNode(Base):
+    """Something seen on a customer network: a managed device, or an unmanaged printer, switch, camera..."""
+    __tablename__ = "network_nodes"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("nod"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    key: Mapped[str] = mapped_column(String(80))  # "mac:aa:bb.." or "ip:10.0.0.5" when no MAC was seen
+    ip: Mapped[str] = mapped_column(String(64), default="")
+    mac: Mapped[str] = mapped_column(String(32), default="")
+    hostname: Mapped[str] = mapped_column(String(255), default="")
+    vendor: Mapped[str] = mapped_column(String(120), default="")
+    kind: Mapped[str] = mapped_column(String(30), default="unknown")  # gateway|server|workstation|printer|network|virtual|iot|unknown
+    open_ports: Mapped[list] = mapped_column(JSON, default=list)
+    subnet: Mapped[str] = mapped_column(String(64), default="")
+    device_id: Mapped[str | None] = mapped_column(String(32), nullable=True)  # the managed device, when matched
+    seen_by: Mapped[list] = mapped_column(JSON, default=list)
+    first_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    ignored: Mapped[bool] = mapped_column(Boolean, default=False)
+    __table_args__ = (UniqueConstraint("tenant_id", "key", name="uq_network_node"),)
+
+
+class ConditionPackage(Base):
+    """A detection + remediation script pair run silently on a schedule (condition_remediation.py)."""
+    __tablename__ = "rmm_condition_packages"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("crp"))
+    tenant_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)  # None = built-in template
+    builtin_key: Mapped[str] = mapped_column(String(60), default="")
+    name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text, default="")
+    platforms: Mapped[list] = mapped_column(JSON, default=list)
+    language: Mapped[str] = mapped_column(String(20), default="powershell")
+    detection_script: Mapped[str] = mapped_column(Text, default="")
+    remediation_script: Mapped[str] = mapped_column(Text, default="")
+    interval_hours: Mapped[int] = mapped_column(Integer, default=24)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=300)
+    auto_remediate: Mapped[bool] = mapped_column(Boolean, default=True)
+    ticket_on_failure: Mapped[bool] = mapped_column(Boolean, default=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    targets: Mapped[dict] = mapped_column(JSON, default=dict)  # {deviceIds, groupIds, tenantIds, platforms, tags}; empty = the customer
+    created_by: Mapped[str] = mapped_column(String(200), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    review: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # as Script.review
+    review_editors: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+
+class ConditionResult(Base):
+    """The latest outcome of one package on one device."""
+    __tablename__ = "rmm_condition_results"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    package_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    # pending | compliant | noncompliant | remediating | verifying | remediated | failed | error
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    phase: Mapped[str] = mapped_column(String(20), default="")
+    command_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    detect_output: Mapped[str] = mapped_column(Text, default="")
+    remediate_output: Mapped[str] = mapped_column(Text, default="")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    failures: Mapped[int] = mapped_column(Integer, default=0)
+    last_detect_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_remediated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ticket_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    __table_args__ = (UniqueConstraint("package_id", "device_id", name="uq_condition_result"),)
+
+
+class AccountingConnection(Base):
+    """The MSP's accounting system (Xero) for invoice sync (billing_sync.py). Credentials are encrypted."""
+    __tablename__ = "accounting_connections"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("acc"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)  # the MSP
+    provider: Mapped[str] = mapped_column(String(20), default="xero")
+    client_id: Mapped[str] = mapped_column(String(100))
+    credentials_envelope: Mapped[dict] = mapped_column(JSON, default=dict)  # {clientSecret, refreshToken}
+    scopes: Mapped[str] = mapped_column(String(300), default="")
+    account_code: Mapped[str] = mapped_column(String(20), default="200")
+    external_tenant_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    external_name: Mapped[str] = mapped_column(String(200), default="")
+    status: Mapped[str] = mapped_column(String(40), default="awaiting_authorisation")
+    last_error: Mapped[str] = mapped_column(String(300), default="")
+    pending_state: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pending_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Vendor(Base):
+    """A third party a customer (or the MSP itself) relies on: register, tier, assessments and external posture."""
+
+    __tablename__ = "tprm_vendors"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("vnd"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    domain: Mapped[str] = mapped_column(String(255), default="")
+    services: Mapped[str] = mapped_column(Text, default="")
+    criticality: Mapped[str] = mapped_column(String(10), default="medium")  # low|medium|high|critical
+    data_access: Mapped[str] = mapped_column(String(20), default="none")  # none|internal|personal|special
+    contact_name: Mapped[str] = mapped_column(String(200), default="")
+    contact_email: Mapped[str] = mapped_column(String(200), default="")
+    owner: Mapped[str] = mapped_column(String(200), default="")
+    status: Mapped[str] = mapped_column(String(20), default="active")  # active|offboarded
+    documents: Mapped[list] = mapped_column(JSON, default=list)  # [{type, name, expiresAt, url}]
+    posture: Mapped[dict] = mapped_column(JSON, default=dict)  # last external scan
+    posture_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    questionnaire_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    risk_score: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 0 (low) .. 100 (high)
+    risk_tier: Mapped[str] = mapped_column(String(10), default="unrated")
+    last_scanned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_assessed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    next_review_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    review_ticket_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class VendorAssessment(Base):
+    """A security questionnaire sent to a vendor, answered through a single-use link."""
+
+    __tablename__ = "tprm_assessments"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("vas"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    vendor_id: Mapped[str] = mapped_column(String(32), index=True)
+    questionnaire: Mapped[str] = mapped_column(String(40), default="core")
+    token_hash: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="sent")  # sent|completed|expired|cancelled
+    recipient: Mapped[str] = mapped_column(String(200), default="")
+    answers: Mapped[dict] = mapped_column(JSON, default=dict)
+    score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    findings: Mapped[list] = mapped_column(JSON, default=list)
+    sent_by: Mapped[str] = mapped_column(String(200), default="")
+    sent_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+# --------------------------------------------------------------------------
+# Analytics Data Ingestion Models (Pydantic Validation Schemas)
+# --------------------------------------------------------------------------
+
+from pydantic import BaseModel, Field
+
+
+class DiskMetricIngest(BaseModel):
+    mount: str = Field(..., max_length=120)
+    totalGb: float = Field(..., ge=0)
+    freeGb: float = Field(..., ge=0)
+    freePercent: float = Field(..., ge=0, le=100)
+
+
+class TopProcessIngest(BaseModel):
+    pid: int | None = None
+    name: str = Field(..., max_length=120)
+    cpuPercent: float | None = Field(default=None, ge=0)
+    memoryMb: float | None = Field(default=None, ge=0)
+
+
+class HeartbeatMetricsIngest(BaseModel):
+    cpuPercent: float | None = Field(default=None, ge=0, le=100)
+    memoryPercent: float | None = Field(default=None, ge=0, le=100)
+    disks: list[DiskMetricIngest] = Field(default_factory=list)
+    topProcesses: list[TopProcessIngest] = Field(default_factory=list)
+    users: list[str] = Field(default_factory=list)

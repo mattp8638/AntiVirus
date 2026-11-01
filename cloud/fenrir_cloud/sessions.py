@@ -17,10 +17,10 @@ from .security import issue_token, new_secret
 TOUCH_SECONDS = 60
 
 
-def create(db: Session, user: User, ip: str = "", user_agent: str = "") -> tuple[str, UserSession]:
+def create(db: Session, user: User, ip: str = "", user_agent: str = "", method: str = "password") -> tuple[str, UserSession]:
     settings = get_settings()
     row = UserSession(id=new_secret("session"), user_id=user.id, expires_at=utcnow() + timedelta(minutes=settings.token_ttl_minutes),
-                      ip=ip[:64], user_agent=user_agent[:300])
+                      ip=ip[:64], user_agent=user_agent[:300], method=method)
     db.add(row)
     db.flush()
     token = issue_token(settings.secret_key, user.id, settings.token_ttl_minutes, role=user.role, jti=row.id)

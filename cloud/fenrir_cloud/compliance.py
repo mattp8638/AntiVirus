@@ -13,7 +13,7 @@ from typing import Callable
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import policy_schema, services
+from . import policy_schema, presence, services
 from .models import Device, Tenant, Vulnerability, utcnow
 
 
@@ -103,7 +103,7 @@ def _agents_current(ctx: Context) -> tuple[bool, str]:
 
 FRAMEWORKS: dict[str, dict] = {
     "cyber-essentials": {
-        "name": "UK Cyber Essentials (v3.1)",
+        "name": "UK Cyber Essentials (requirements v3.3; technical signals)",
         "controls": [
             ("CE-1", "Firewalls", [_s("firewall.enabled"), _s("firewall.defaultInbound")]),
             ("CE-2", "Secure configuration", [_asr_majority, _s("tamper.enabled")]),
@@ -113,7 +113,7 @@ FRAMEWORKS: dict[str, dict] = {
         ],
     },
     "cis-v8-ig1": {
-        "name": "CIS Controls v8 (IG1)",
+        "name": "CIS Controls v8.1 (IG1)",
         "controls": [
             ("CIS-1", "Inventory of enterprise assets", [_fleet_reporting]),
             ("CIS-2", "Inventory and control of software", [_app_control]),
@@ -138,18 +138,6 @@ FRAMEWORKS: dict[str, dict] = {
             ("DE.CM", "Continuous monitoring", [_s("edr.enabled"), _s("dns.enabled"), _s("firewall.networkAttackProtection")]),
             ("RS.MI", "Incident mitigation", [_s("response.autoKillOnHigh"), _s("firewall.networkContainment")]),
             ("RC.RP", "Recovery plan execution", [_s("ransomware.rollbackSnapshots")]),
-        ],
-    },
-    "essential-eight": {
-        "name": "ACSC Essential Eight (Maturity Level 1)",
-        "controls": [
-            ("E8-1", "Application control", [_app_control]),
-            ("E8-2", "Patch applications", [_patch_auto, _s("patch.thirdPartyApps")]),
-            ("E8-3", "Configure Office macro settings", [_s("attackSurface.blockOfficeChildProcesses")]),
-            ("E8-4", "User application hardening", [_s("attackSurface.blockScriptDownloadedPayloads"), _s("web.webProtectionEnabled")]),
-            ("E8-5", "Restrict administrative privileges", [_least_privilege]),
-            ("E8-6", "Patch operating systems", [_patch_auto, _no_kev]),
-            ("E8-8", "Regular backups", [_s("ransomware.rollbackSnapshots")]),
         ],
     },
     "iso-27001": {
@@ -186,7 +174,7 @@ def _context(db: Session, tenant: Tenant) -> Context:
     crit, kev = sum(crit_states.values()), sum(kev_states.values())
     return Context(
         settings=resolution["settings"], devices=len(devices),
-        online=sum(1 for d in devices if d.last_seen_at and d.last_seen_at >= utcnow() - timedelta(minutes=15)),
+        online=sum(1 for d in devices if presence.is_up(d)),
         stale=sum(1 for d in devices if not d.last_seen_at or d.last_seen_at < week_ago),
         outdated_agents=sum(1 for d in devices if d.agent_version and d.agent_version != newest),
         critical_vulns=crit, kev_vulns=kev, isolated=sum(1 for d in devices if d.isolated),

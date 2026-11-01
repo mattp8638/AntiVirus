@@ -35,19 +35,31 @@ def synchronize(connection):
     with httpx.Client(timeout=20, follow_redirects=False) as client:
         token = access_token(client, connection)
         snapshot = {
-            "users": collect(client, GRAPH + "/users?$select=id,displayName,userPrincipalName,accountEnabled,assignedLicenses&$top=999", token, deadline),
+            "users": collect(client, GRAPH + "/users?$select=id,displayName,userPrincipalName,mail,accountEnabled,assignedLicenses,userType,jobTitle&$top=999", token, deadline),
             "licenses": collect(client, GRAPH + "/subscribedSkus", token, deadline),
             "secureScores": collect(client, GRAPH + "/security/secureScores?$top=1", token, deadline),
         }
-        # MFA registration needs AuditLog.Read.All (and Entra ID P1/P2); sync carries on without it.
-        try:
-            snapshot["mfaRegistration"] = collect(
-                client, GRAPH + "/reports/authenticationMethods/userRegistrationDetails?$select=userPrincipalName,isAdmin,isMfaRegistered",
-                token, deadline)
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code not in (400, 401, 403, 404):
-                raise
-            snapshot["mfaRegistration"] = None
+        # Optional collections: each needs its own permission (and some an Entra ID P1/P2 or Intune licence).
+        # Sync carries on without them and records None, so callers can tell "not permitted" from "none".
+        optional = {
+            # AuditLog.Read.All
+            "mfaRegistration": "/reports/authenticationMethods/userRegistrationDetails?$select=userPrincipalName,isAdmin,isMfaRegistered",
+            # DeviceManagementManagedDevices.Read.All (Entra ID reconciliation against managed endpoints)
+            "managedDevices": "/deviceManagement/managedDevices?$select=id,deviceName,serialNumber,operatingSystem,userPrincipalName,"
+                              "complianceState,lastSyncDateTime",
+            # Domain.Read.All
+            "domains": "/domains?$select=id,isVerified,isDefault",
+            # SecurityAlert.Read.All (Defender for Endpoint or Business): open alerts, which become Fenrir alerts
+            "defenderAlerts": "/security/alerts_v2?$filter=serviceSource%20eq%20'microsoftDefenderForEndpoint'%20and%20status%20ne%20'resolved'"
+                              "&$top=200",
+        }
+        for key, path in optional.items():
+            try:
+                snapshot[key] = collect(client, GRAPH + path, token, deadline)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code not in (400, 401, 403, 404):
+                    raise
+                snapshot[key] = None
         snapshot["insights"] = insights(snapshot)
         return snapshot
 
@@ -82,6 +94,31 @@ def insights(snapshot: dict) -> dict:
 
 
 def access_token(client, connection):
+    if connection.auth_mode == "gdap":
+        # Delegated token for the customer tenant through the MSP's GDAP relationship (m365_partner.py). A rotated
+        # partner refresh token is saved with the caller's own transaction.
+        from sqlalchemy.orm import object_session
+
+        from . import m365_partner
+        from .db import session_factory
+
+        db = object_session(connection)
+        own = db is None
+        db = db or session_factory()()
+        try:
+            partner = m365_partner.partner_for(db, connection.tenant_id)
+            if partner is None:
+                raise ValueError("No Microsoft partner connection is configured for GDAP")
+            try:
+                token = m365_partner.access_token_for(partner, connection.directory_id, client=client)
+            except m365_partner.PartnerError as exc:
+                raise ValueError(str(exc)) from exc
+            if own:
+                db.commit()
+            return token
+        finally:
+            if own:
+                db.close()
     if (connection.auth_mode or "app") == "platform":
         # The MSP's multi-tenant Fenrir app, consented by this tenant's admin.
         from .config import get_settings
@@ -98,3 +135,50 @@ def access_token(client, connection):
               "grant_type": "client_credentials", "scope": "https://graph.microsoft.com/.default"})
     response.raise_for_status()
     return response.json()["access_token"]
+
+
+MDE_SEVERITY = {"high": "high", "medium": "medium", "low": "low", "informational": "low"}
+
+
+def ingest_defender_alerts(db, connection, alerts: list | None) -> dict:
+    """Open Defender for Endpoint/Business alerts from Graph become Fenrir alerts on the matching device (by name), once
+    each; an alert Microsoft no longer lists as open is resolved here too. None (no permission) changes nothing."""
+    from sqlalchemy import select
+
+    from .models import Alert, Device, utcnow
+
+    if alerts is None:
+        return {"raised": 0, "resolved": 0, "available": False}
+    devices = {}
+    for device in db.execute(select(Device).where(Device.tenant_id == connection.tenant_id)).scalars():
+        devices[(device.hostname or "").lower().split(".")[0]] = device
+    open_ids, raised = set(), 0
+    existing = {a.rule_id: a for a in db.execute(select(Alert).where(Alert.tenant_id == connection.tenant_id,
+                                                                    Alert.rule_id.like("mde:%"))).scalars()}
+    for item in alerts:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        rule_id = f"mde:{item['id']}"[:64]
+        open_ids.add(rule_id)
+        if rule_id in existing:
+            continue
+        names = [str(e.get("deviceDnsName") or "") for e in item.get("evidence") or []
+                 if isinstance(e, dict) and str(e.get("@odata.type", "")).endswith("deviceEvidence")]
+        device = next((devices.get(n.lower().split(".")[0]) for n in names if devices.get(n.lower().split(".")[0])), None)
+        db.add(Alert(tenant_id=connection.tenant_id, device_id=device.id if device else None, rule_id=rule_id,
+                     title=f"Defender for Endpoint: {item.get('title') or 'alert'}"[:300],
+                     severity=MDE_SEVERITY.get(str(item.get("severity") or "").lower(), "medium"),
+                     mitre=[str(t) for t in item.get("mitreTechniques") or []][:10], event_ids=[],
+                     details={"source": "Microsoft Defender for Endpoint", "mdeAlertId": item["id"], "category": item.get("category"),
+                              "description": str(item.get("description") or "")[:2000],
+                              "recommendedActions": str(item.get("recommendedActions") or "")[:2000],
+                              "detectionSource": item.get("detectionSource"), "url": item.get("alertWebUrl"),
+                              "devices": names[:5], "createdAt": item.get("createdDateTime")}))
+        raised += 1
+    resolved = 0
+    for rule_id, alert in existing.items():
+        if rule_id not in open_ids and alert.status in ("new", "triaged"):
+            alert.status, alert.updated_at = "resolved", utcnow()
+            alert.details = {**(alert.details or {}), "autoResolved": "Resolved in Microsoft Defender."}
+            resolved += 1
+    return {"raised": raised, "resolved": resolved, "available": True}

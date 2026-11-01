@@ -1908,16 +1908,22 @@ void RealtimeProtectionBroker::PumpLoop() {
     return;
   }
 
+  // Report waiting once, then every six hours while it lasts: without the minifilter it lasts forever, and an
+  // event on every retry was thousands of identical events a day from every Windows device.
+  ULONGLONG waitingReportedAt = 0;
   while (WaitForSingleObject(stopEvent_, 0) != WAIT_OBJECT_0) {
     HANDLE port = nullptr;
     const auto connectResult =
         api.connect(config_.realtimeProtectionPortName.c_str(), 0, nullptr, 0, nullptr, &port);
     if (FAILED(connectResult) || port == nullptr) {
       portConnected_.store(false);
-      QueueBrokerStateEvent(L"realtime.broker.waiting",
-                            L"The real-time protection broker is waiting for the minifilter communication port.",
-                            std::wstring(L"{\"portName\":\"") +
-                                Utf8ToWide(EscapeJsonString(config_.realtimeProtectionPortName)) + L"\"}");
+      if (waitingReportedAt == 0 || GetTickCount64() - waitingReportedAt > 6ULL * 60 * 60 * 1000) {
+        waitingReportedAt = GetTickCount64();
+        QueueBrokerStateEvent(L"realtime.broker.waiting",
+                              L"The real-time protection broker is waiting for the minifilter communication port.",
+                              std::wstring(L"{\"portName\":\"") +
+                                  Utf8ToWide(EscapeJsonString(config_.realtimeProtectionPortName)) + L"\"}");
+      }
       const auto retryMilliseconds =
           static_cast<DWORD>(std::max(config_.realtimeBrokerRetrySeconds, 1) * 1000);
       if (WaitForSingleObject(stopEvent_, retryMilliseconds) == WAIT_OBJECT_0) {
@@ -1927,6 +1933,7 @@ void RealtimeProtectionBroker::PumpLoop() {
     }
 
     portConnected_.store(true);
+    waitingReportedAt = 0;
     QueueBrokerStateEvent(L"realtime.broker.connected",
                           L"The real-time protection broker connected to the minifilter communication port.",
                           std::wstring(L"{\"portName\":\"") +

@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from .. import approvals, audit, rmm, services
+from .. import approvals, audit, presence, rmm, script_review, services
 from ..commands import BY_TYPE, INTERACTIVE_ONLY
 from ..db import get_db
-from ..deps import Principal, current_principal, scoped_tenant
+from ..deps import Principal, current_principal, require_reauth, scoped_tenant
 from ..models import (Alert, Command, ConditionState, Device, DeviceMetric, DevicePatch, Job, MonitorCondition, PatchApproval,
                       PatchPolicy, RemoteSession, ScheduledTask, Script, SoftwarePackage, Tenant, utcnow)
 from ..serialize import apply_fields, to_dict
@@ -52,9 +52,9 @@ def overview(tenant_id: str | None = None, principal: Principal = Depends(curren
     scope = scoped_tenant(principal, tenant_id)
     now = utcnow()
     devices = db.execute(select(Device).where(Device.tenant_id.in_(scope), Device.approved.is_(True))).scalars().all()
-    online = [d for d in devices if d.last_seen_at and now - d.last_seen_at < timedelta(minutes=5)]
+    online = [d for d in devices if presence.is_up(d, now)]
     triggered = db.execute(select(func.count()).where(ConditionState.tenant_id.in_(scope), ConditionState.triggered.is_(True))).scalar() or 0
-    jobs_running = db.execute(select(func.count()).where(Job.tenant_id.in_(scope), Job.status == "running")).scalar() or 0
+    jobs_running = db.execute(select(func.count()).where(Job.tenant_id.in_(scope), Job.status.in_(("running", "cancelling")))).scalar() or 0
     active_sessions = db.execute(select(func.count()).where(RemoteSession.tenant_id.in_(scope),
                                                             RemoteSession.status.in_(("waiting", "connected")))).scalar() or 0
     compliance = rmm.patch_compliance(db, scope)
@@ -82,11 +82,19 @@ def _check_script(body: dict) -> None:
         raise HTTPException(400, "timeout must be between 10 seconds and 24 hours")
 
 
+def _script_view(db: Session, script: Script, detail: bool = False) -> dict:
+    view = {k: v for k, v in to_dict(script).items() if k not in ("review", "reviewEditors")}
+    view["review"] = script_review.view(db, script)
+    if detail:
+        view["review"]["diff"] = script_review.diff(script) if view["review"]["status"] == "pending" else ""
+    return view
+
+
 @router.get("/scripts")
 def list_scripts(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     rows = db.execute(select(Script).where(or_(Script.tenant_id.is_(None), Script.tenant_id.in_(principal.tenant_ids)))
                       .order_by(Script.category, Script.name)).scalars().all()
-    return [to_dict(r) for r in rows]
+    return [_script_view(db, r) for r in rows]
 
 
 @router.get("/scripts/{script_id}")
@@ -94,7 +102,22 @@ def get_script(script_id: str, principal: Principal = Depends(current_principal)
     script = db.get(Script, script_id)
     if not _visible(principal, script):
         raise HTTPException(404, "Not found")
-    return to_dict(script)
+    return _script_view(db, script, detail=True)
+
+
+@router.post("/scripts/{script_id}/review")
+def review_script(script_id: str, request: Request, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                  db: Session = Depends(get_db)):
+    """A second person approves exactly the version they read (body.hash, from GET /scripts/{id})."""
+    script = db.get(Script, script_id)
+    if not _visible(principal, script):
+        raise HTTPException(404, "Not found")
+    if script.tenant_id is None and not principal.can("platform"):  # shared scripts run for every customer
+        raise HTTPException(403, "Only a platform administrator can review a shared built-in script")
+    require_reauth(request, principal)
+    script_review.approve(db, principal, script, str(body.get("hash") or ""))
+    db.commit()
+    return _script_view(db, script, detail=True)
 
 
 @router.post("/scripts")
@@ -106,13 +129,13 @@ def create_script(body: dict = Body(...), principal: Principal = Depends(current
     tenant_id = body.get("tenantId") or principal.user.tenant_id
     principal.check_tenant(tenant_id)
     script = Script(tenant_id=tenant_id, updated_by=principal.actor, language="powershell", run_as="system", timeout_seconds=600,
-                    parameters=[], category="General", description="", version=1)
+                    parameters=[], category="General", description="", version=1, review_editors=[principal.actor])
     apply_fields(script, body, SCRIPT_FIELDS)
     script.platforms = script.platforms or list(rmm.LANGUAGES.get(script.language, ("windows",)))
     db.add(script)
     audit.record(db, principal.actor, "rmm.script.created", script.name, tenant_id)
     db.commit()
-    return to_dict(script)
+    return _script_view(db, script, detail=True)
 
 
 @router.patch("/scripts/{script_id}")
@@ -121,13 +144,15 @@ def update_script(script_id: str, body: dict = Body(...), principal: Principal =
     script = db.get(Script, script_id)
     _editable(principal, script)
     _check_script(body)
+    before = script_review.before_edit(script)
     changed = apply_fields(script, body, SCRIPT_FIELDS)
     if "body" in changed or "parameters" in changed:
         script.version += 1
     script.updated_by, script.updated_at = principal.actor, utcnow()
+    script_review.edited(script, principal.actor, before)
     audit.record(db, principal.actor, "rmm.script.updated", script.name, script.tenant_id, fields=changed, version=script.version)
     db.commit()
-    return to_dict(script)
+    return _script_view(db, script, detail=True)
 
 
 @router.delete("/scripts/{script_id}")
@@ -204,11 +229,11 @@ def list_jobs(tenant_id: str | None = None, device_id: str | None = Query(defaul
     scope = scoped_tenant(principal, tenant_id)
     # Creator identity never overrides current tenant authorisation: access
     # may be revoked or the technician reassigned to another MSP.
-    rows = db.execute(select(Job).where(Job.tenant_id.in_(scope))
+    rows = db.execute(select(Job).where(Job.tenant_id.in_(scope), Job.payload["removedAt"].as_string().is_(None))
                       .order_by(Job.created_at.desc()).limit(min(limit, 1000))).scalars().all()
     if device_id:
         rows = [r for r in rows if device_id in (r.command_ids or {})]
-    return [_job_view(db, r) for r in rows]
+    return [_job_view(db, r) for r in rows if not (r.payload or {}).get("removedAt")]
 
 
 @router.get("/jobs/{job_id}")
@@ -245,8 +270,13 @@ def retry_job(job_id: str, principal: Principal = Depends(current_principal), db
     job = db.get(Job, job_id)
     if job is None or job.tenant_id not in principal.tenant_ids:
         raise HTTPException(404, "Not found")
+    if (job.payload or {}).get("removedAt") or job.status == "cancelling":
+        raise HTTPException(409, "This job was removed or is still stopping; create a new job when appropriate")
     principal.require("configure" if job.command_type == "script.run" else "respond")
-    retried = rmm.retry_failed(db, job, principal.actor)
+    try:
+        retried = rmm.retry_failed(db, job, principal.actor)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
     db.commit()
     return {**_job_view(db, job), "retried": retried}
 
@@ -257,23 +287,28 @@ def cancel_job(job_id: str, principal: Principal = Depends(current_principal), d
     job = db.get(Job, job_id)
     if job is None or job.tenant_id not in principal.tenant_ids:
         raise HTTPException(404, "Not found")
-    cancelled = 0
-    for command in db.execute(select(Command).where(Command.id.in_(list((job.command_ids or {}).values())),
-                                                    Command.status == "pending")).scalars():
-        command.status, command.updated_at = "cancelled", utcnow()
-        cancelled += 1
+    from ..command_control import cancel_commands
+    cancellation = cancel_commands(db, principal.actor, ids=list((job.command_ids or {}).values()))
     rmm.refresh_job(db, job.id)
-    # A command already dispatched to an endpoint cannot be recalled safely.
-    # Leave the job running until the real agent result is received rather
-    # than falsely telling technicians that executing work was cancelled.
-    in_flight = db.execute(select(Command).where(
-        Command.id.in_(list((job.command_ids or {}).values())),
-        Command.status == "dispatched")).scalars().all()
     audit.record(db, principal.actor, "rmm.job.cancel.requested", job.name, job.tenant_id,
-                 cancelledPending=cancelled, alreadyDispatched=len(in_flight))
+                 **cancellation)
     db.commit()
-    return {**_job_view(db, job), "cancelledPending": cancelled,
-            "alreadyDispatched": len(in_flight), "cancellationComplete": not bool(in_flight)}
+    return {**_job_view(db, job), **cancellation, "alreadyDispatched": cancellation["stopRequested"]}
+
+
+@router.delete("/jobs/{job_id}")
+def remove_job(job_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Remove from activity immediately, retaining the commands until their stop acknowledgement arrives."""
+    principal.require("respond")
+    job = db.get(Job, job_id)
+    if job is None or job.tenant_id not in principal.tenant_ids:
+        raise HTTPException(404, "Not found")
+    from ..command_control import cancel_commands
+    result = cancel_commands(db, principal.actor, ids=list((job.command_ids or {}).values()))
+    job.payload = {**(job.payload or {}), "removedAt": utcnow().isoformat(), "removedBy": principal.actor}
+    audit.record(db, principal.actor, "rmm.job.removed", job.id, job.tenant_id)
+    db.commit()
+    return {"ok": True, "stopRequested": result["stopRequested"], "cancellationComplete": result["cancellationComplete"]}
 
 
 # --------------------------------------------------------------------------- scheduled tasks
@@ -333,9 +368,13 @@ def update_task(task_id: str, body: dict = Body(...), principal: Principal = Dep
 @router.delete("/tasks/{task_id}")
 def delete_task(task_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("configure")
-    task = db.get(ScheduledTask, task_id)
+    task = db.execute(select(ScheduledTask).where(ScheduledTask.id == task_id).with_for_update()).scalar_one_or_none()
     if task is None or task.tenant_id not in principal.tenant_ids:
         raise HTTPException(404, "Not found")
+    from ..command_control import cancel_commands
+    task.enabled = False
+    for job in db.scalars(select(Job).where(Job.scheduled_task_id == task.id, Job.status.in_(("running", "cancelling")))):
+        cancel_commands(db, principal.actor, ids=list((job.command_ids or {}).values()))
     db.delete(task)
     audit.record(db, principal.actor, "rmm.task.deleted", task.name, task.tenant_id)
     db.commit()
@@ -545,6 +584,9 @@ def patches_compliance(tenant_id: str | None = None, principal: Principal = Depe
     devices = db.execute(select(Device).where(Device.tenant_id.in_(scope), Device.approved.is_(True))).scalars().all()
     result["devices_detail"] = [{"id": d.id, "hostname": d.hostname, "account": names.get(d.tenant_id, ""), "platform": d.platform,
                                  "missing": result["byDevice"].get(d.id, {}), "lastScan": (d.metrics or {}).get("patchScanAt"),
+                                 "scanStatus": (d.metrics or {}).get("patchScanStatus"),
+                                 "providers": (d.metrics or {}).get("patchProviders", {}),
+                                 "lastAttempt": (d.metrics or {}).get("patchScanAttemptAt"),
                                  "rebootPending": bool((d.metrics or {}).get("rebootPending"))} for d in devices]
     result.pop("byDevice")
     return result
@@ -802,4 +844,91 @@ def deploy_package(package_id: str, body: dict = Body(...), principal: Principal
 def monitoring_alerts(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     rows = db.execute(select(Alert).where(Alert.tenant_id.in_(principal.tenant_ids), Alert.rule_id.like("monitor:%"))
                       .order_by(Alert.created_at.desc()).limit(500)).scalars()
+    return [to_dict(r) for r in rows]
+
+
+# --------------------------------------------------------------------------- Predictive Analytics & Anomaly Endpoints
+
+
+@router.get("/analytics/storage-exhaustion")
+def storage_exhaustion_predictions(
+    status: str | None = Query(default=None),
+    principal: Principal = Depends(current_principal),
+    db: Session = Depends(get_db)
+):
+    """List predictive storage exhaustion analytics across managed devices."""
+    devices = db.execute(select(Device.id).where(Device.tenant_id.in_(principal.tenant_ids))).scalars().all()
+    if not devices:
+        return []
+
+    from ..models import DiskExhaustionPrediction
+    query = select(DiskExhaustionPrediction).where(DiskExhaustionPrediction.device_id.in_(devices))
+    if status:
+        query = query.where(DiskExhaustionPrediction.status == status)
+
+    rows = db.execute(query.order_by(DiskExhaustionPrediction.predicted_at.desc())).scalars().all()
+    return [to_dict(r) for r in rows]
+
+
+@router.get("/devices/{device_id}/analytics/disk-predictions")
+def device_disk_predictions(
+    device_id: str,
+    principal: Principal = Depends(current_principal),
+    db: Session = Depends(get_db)
+):
+    """Get predictive storage exhaustion predictions for a specific device."""
+    dev = db.get(Device, device_id)
+    if not dev or dev.tenant_id not in principal.tenant_ids:
+        raise HTTPException(404, "Device not found")
+
+    from ..models import DiskExhaustionPrediction
+    rows = db.execute(
+        select(DiskExhaustionPrediction)
+        .where(DiskExhaustionPrediction.device_id == device_id)
+        .order_by(DiskExhaustionPrediction.predicted_at.desc())
+    ).scalars().all()
+    return [to_dict(r) for r in rows]
+
+
+@router.get("/analytics/resource-anomalies")
+def resource_anomalies(
+    metric: str | None = Query(default=None),
+    sustained_only: bool = Query(default=False),
+    principal: Principal = Depends(current_principal),
+    db: Session = Depends(get_db)
+):
+    """List detected CPU and RAM resource anomalies across managed devices."""
+    devices = db.execute(select(Device.id).where(Device.tenant_id.in_(principal.tenant_ids))).scalars().all()
+    if not devices:
+        return []
+
+    from ..models import ResourceAnomaly
+    query = select(ResourceAnomaly).where(ResourceAnomaly.device_id.in_(devices))
+    if metric:
+        query = query.where(ResourceAnomaly.metric == metric)
+    if sustained_only:
+        query = query.where(ResourceAnomaly.is_sustained.is_(True))
+
+    rows = db.execute(query.order_by(ResourceAnomaly.at.desc()).limit(200)).scalars().all()
+    return [to_dict(r) for r in rows]
+
+
+@router.get("/devices/{device_id}/analytics/anomalies")
+def device_resource_anomalies(
+    device_id: str,
+    principal: Principal = Depends(current_principal),
+    db: Session = Depends(get_db)
+):
+    """Get detected CPU and RAM resource anomalies for a specific device."""
+    dev = db.get(Device, device_id)
+    if not dev or dev.tenant_id not in principal.tenant_ids:
+        raise HTTPException(404, "Device not found")
+
+    from ..models import ResourceAnomaly
+    rows = db.execute(
+        select(ResourceAnomaly)
+        .where(ResourceAnomaly.device_id == device_id)
+        .order_by(ResourceAnomaly.at.desc())
+        .limit(100)
+    ).scalars().all()
     return [to_dict(r) for r in rows]

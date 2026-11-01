@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -20,11 +21,12 @@ import (
 
 // ScanOptions are the antimalware policy settings that shape on-demand and scheduled scans.
 type ScanOptions struct {
-	Archives        bool   // antimalware.scanArchives
-	MaxDepth        int    // antimalware.archiveMaxDepth (nesting levels)
-	SkipNetwork     bool   // !antimalware.scanNetworkDrives
-	CPULimitPercent int    // antimalware.scanCpuLimitPercent (of one core); 0 or 100 = unlimited
-	PUA             string // antimalware.puaProtection: off | audit | block
+	Context         context.Context // optional: an operator-cancellable remote scan
+	Archives        bool            // antimalware.scanArchives
+	MaxDepth        int             // antimalware.archiveMaxDepth (nesting levels)
+	SkipNetwork     bool            // !antimalware.scanNetworkDrives
+	CPULimitPercent int             // antimalware.scanCpuLimitPercent (of one core); 0 or 100 = unlimited
+	PUA             string          // antimalware.puaProtection: off | audit | block
 }
 
 // ScanOptionsFromPolicy reads the antimalware module.

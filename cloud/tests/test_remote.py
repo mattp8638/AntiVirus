@@ -17,6 +17,47 @@ def agent_command(client, device):
     return next(i for i in items if i["type"] == "remote.session.start")
 
 
+def test_remote_unsupported_platform_is_validation_error_without_orphan_session(client, admin, tenant, device):
+    from fenrir_cloud import db
+    from fenrir_cloud.models import Device, RemoteSession
+    from sqlalchemy import select, func
+
+    with db.session_factory()() as session:
+        session.get(Device, device["deviceId"]).platform = "android"
+        session.commit()
+    response = client.post("/api/console/remote/sessions", headers=admin, json={"deviceId": device["deviceId"]})
+    assert response.status_code == 422
+    assert "not supported" in response.json()["detail"]
+    with db.session_factory()() as session:
+        assert session.scalar(select(func.count()).select_from(RemoteSession)) == 0
+
+
+def test_remote_retired_device_returns_actionable_conflict(client, admin, tenant, device):
+    from fenrir_cloud import db
+    from fenrir_cloud.models import Device
+
+    with db.session_factory()() as session:
+        session.get(Device, device["deviceId"]).api_key_hash = f"retired-{device['deviceId']}"
+        session.commit()
+    response = client.post("/api/console/remote/sessions", headers=admin, json={"deviceId": device["deviceId"]})
+    assert response.status_code == 409
+    assert "decommissioned" in response.json()["detail"]
+
+
+def test_remote_list_survives_legacy_scalar_command_result(client, admin, tenant, device):
+    from fenrir_cloud import db
+    from fenrir_cloud.models import Command
+
+    remote = start(client, admin, device)
+    with db.session_factory()() as session:
+        session.get(Command, remote["commandId"]).result = "legacy agent output"
+        session.commit()
+    response = client.get("/api/console/remote/sessions", headers=admin)
+    assert response.status_code == 200
+    item = next(item for item in response.json() if item["id"] == remote["id"])
+    assert "invalid command-result" in item["startCommand"]["error"]
+
+
 def test_session_relays_frames_and_input(client, admin, tenant, device):
     session = start(client, admin, device, mode="desktop")
     assert session["status"] == "waiting" and session["viewerPath"] == f"/remote/{session['id']}"

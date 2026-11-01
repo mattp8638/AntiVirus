@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, expect, test, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -45,9 +45,9 @@ class DesktopPeer extends EventTarget {
   close() { this.readyState = 3; }
 }
 
-const context = vi.hoisted(() => ({ me: null as any }));
+const context = vi.hoisted(() => ({ me: null as any, tenantId: "" }));
 vi.mock("../src/app-context", () => ({
-  useApp: () => ({ me: context.me, loading: false, tenantId: "", can: () => true,
+  useApp: () => ({ me: context.me, loading: false, tenantId: context.tenantId, can: () => true,
     tenantName: (id: string) => context.me?.tenants.find((t: any) => t.id === id)?.name ?? "Customer",
     setTenantId: vi.fn(), toast: vi.fn(), login: vi.fn(), logout: vi.fn(), refreshMe: vi.fn() }),
 }));
@@ -66,7 +66,7 @@ beforeAll(async () => {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   vi.spyOn(console, "error").mockImplementation((...args) => { renderErrors.push(args); });
   child = spawn(process.env.FENRIR_UI_PYTHON || "python", ["tests/api-bridge.py"], {
-    cwd: process.cwd(), env: { ...process.env, FENRIR_FEED_SYNC: "false", FENRIR_VULN_INTEL: "false" },
+    cwd: process.cwd(), env: { ...process.env, FENRIR_FEED_SYNC: "false", FENRIR_VULN_INTEL: "false", FENRIR_REQUIRE_MFA: "false" },
   });
   child.stderr.on("data", (chunk) => { diagnostic += String(chunk); });
   await new Promise<void>((resolve, reject) => {
@@ -93,7 +93,7 @@ beforeAll(async () => {
   });
 }, 30000);
 
-afterEach(() => { cleanup(); failures.length = 0; renderErrors.length = 0; });
+afterEach(() => { context.tenantId = ""; cleanup(); failures.length = 0; renderErrors.length = 0; });
 afterAll(() => {
   child?.stdin.end();
   child?.kill();
@@ -183,4 +183,114 @@ test("renders Android device pages including Location", async () => {
   await settled();
   assertView(route);
   await checkTabs(route);
+}, 20000);
+
+test("UK governance catalogue shows scope and adopts a working DORA programme", async () => {
+  context.tenantId = ids.tenant;
+  render(<MemoryRouter initialEntries={["/governance"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Root /></MemoryRouter>);
+  await settled();
+  fireEvent.click(screen.getByRole("button", { name: "Add framework", exact: true }));
+  await settled();
+  const cards = [...document.querySelectorAll<HTMLButtonElement>("button.domain-card")].filter(b => b.textContent?.includes("matching policies"));
+  expect(cards).toHaveLength(15);
+  expect(cards.some(b => /ACSC|Essential Eight/.test(b.textContent || ""))).toBe(false);
+  expect(cards.every(b => b.textContent?.includes("Owner:") && b.textContent?.includes("Assessment:") && b.textContent?.includes("UK scope:"))).toBe(true);
+  fireEvent.click(cards.find(b => b.textContent?.startsWith("DORA"))!);
+  const source = screen.getByRole("link", { name: "Official framework guidance" });
+  expect(source.getAttribute("href")).toBe("https://eur-lex.europa.eu/eli/reg/2022/2554/oj");
+  const add = screen.getAllByRole<HTMLButtonElement>("button", { name: "Add framework", exact: true }).find(b => b.closest(".modal"));
+  expect(add).toBeTruthy();
+  expect(add!.disabled).toBe(false);
+  fireEvent.click(add!);
+  await settled();
+  assertView("UK governance › DORA adoption");
+  expect(screen.getByRole("heading", { name: "DORA", exact: true })).toBeTruthy();
+  expect(screen.getByText("Entity and supplier applicability", { exact: true })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Export answers (CSV)" })).toBeTruthy();
+}, 30000);
+
+test("a dispatched job can be stopped and removed while awaiting its endpoint", async () => {
+  render(<MemoryRouter initialEntries={[`/automation?job=${ids.cancellationJob}`]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Root /></MemoryRouter>);
+  await settled();
+  fireEvent.click(screen.getByRole("button", { name: "Stop job", exact: true }));
+  await settled();
+  expect(screen.getAllByText("Stopping").length).toBeGreaterThan(0);
+  expect(document.body.textContent).toContain("awaiting stop acknowledgement");
+  fireEvent.click(screen.getByRole("button", { name: "Remove job", exact: true }));
+  await settled();
+  // The in-page confirmation (not the browser's), with a red button for a destructive action.
+  const dialog = screen.getByRole("dialog", { name: "Please confirm" });
+  expect(dialog.textContent).toContain("Remove this job and stop its outstanding work?");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Continue" }));
+  await settled();
+  assertView("Automation › remove dispatched job");
+  expect(screen.queryByRole("dialog", { name: "Cancellable UI job" })).toBeNull();
+  expect(document.body.textContent).not.toContain("Cancellable UI job");
+}, 20000);
+
+test("decommissioning succeeds while a command is awaiting its stop acknowledgement", async () => {
+  render(<MemoryRouter initialEntries={[`/devices/${ids.cancellationDevice}`]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Root /></MemoryRouter>);
+  await settled();
+  fireEvent.click(screen.getByRole("button", { name: "More ▾", exact: true }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Decommission device…", exact: true }));
+  fireEvent.change(screen.getByLabelText("Type CANCEL-SERVER to confirm"), { target: { value: "CANCEL-SERVER" } });
+  fireEvent.click(screen.getByRole("button", { name: "Decommission and retain history", exact: true }));
+  await settled();
+  assertView("Device › decommission with in-flight work");
+  expect(document.body.textContent).toContain("Decommissioned: agent access is revoked");
+  expect(document.body.textContent).toContain("awaiting a stop acknowledgement");
+}, 20000);
+
+test("the service board can be worked from the keyboard", async () => {
+  render(<MemoryRouter initialEntries={["/service-board"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Root /></MemoryRouter>);
+  await settled();
+  expect(document.querySelector("tr.active-row")).toBeNull();
+  fireEvent.keyDown(document, { key: "j" });
+  await settled();
+  expect(document.querySelector("tr.active-row")).toBeTruthy();
+  fireEvent.keyDown(document, { key: "?" });
+  await settled();
+  expect(screen.getByRole("dialog", { name: "Keyboard shortcuts" }).textContent).toContain("Next / previous ticket");
+}, 20000);
+
+test("custom fields are defined in settings and shown on devices", async () => {
+  render(<MemoryRouter initialEntries={["/settings?tab=Custom%20fields"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Root /></MemoryRouter>);
+  await settled();
+  fireEvent.change(screen.getByPlaceholderText("Label, e.g. Asset tag"), { target: { value: "Asset tag" } });
+  fireEvent.click(screen.getByRole("button", { name: "Add field" }));
+  await settled();
+  expect(document.body.textContent).toContain("asset_tag");
+  cleanup();
+  render(<MemoryRouter initialEntries={[`/devices/${ids.device}`]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Root /></MemoryRouter>);
+  await settled();
+  expect(screen.getByRole("heading", { name: "Custom fields" })).toBeTruthy();
+  assertView("Device › custom fields");
+}, 20000);
+
+test("the inbox lists open work from other pages and an item can be taken", async () => {
+  render(<MemoryRouter initialEntries={["/inbox"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Root /></MemoryRouter>);
+  await settled();
+  fireEvent.click(screen.getByText("Console smoke incident"));
+  await settled();
+  const dialog = screen.getByRole("dialog", { name: "Console smoke incident" });
+  expect(dialog.textContent).toContain("Incidents");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Take" }));
+  await settled();
+  expect((within(dialog).getByLabelText("Owner") as HTMLSelectElement).value).toBe("admin@fenrir.local");
+}, 20000);
+
+test("Ctrl+K finds pages and records and opens them", async () => {
+  render(<MemoryRouter initialEntries={["/"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Root /></MemoryRouter>);
+  await settled();
+  fireEvent.keyDown(document, { key: "k", ctrlKey: true });
+  const box = screen.getByRole("combobox", { name: "Search" });
+  fireEvent.change(box, { target: { value: "patch" } });
+  expect(screen.getByRole("option", { name: /Patching/ })).toBeTruthy();
+  fireEvent.change(box, { target: { value: "render-serv" } });
+  await waitFor(() => expect(screen.getByRole("option", { name: /RENDER-SERVER/ })).toBeTruthy(), { timeout: 5000 });
+  fireEvent.keyDown(box, { key: "ArrowDown" });
+  fireEvent.keyDown(box, { key: "Enter" });
+  await settled();
+  expect(screen.queryByRole("combobox", { name: "Search" })).toBeNull();
+  expect(document.querySelector("h1")?.textContent).toContain("RENDER-SERVER");
 }, 20000);

@@ -54,7 +54,8 @@
 ## DNS protection (`dnsfilter.py`)
 
 - **Every device gets a private RFC 8484 DoH URL** (`/dns/<token>/dns-query`), so filtering follows laptops off-network.
-- **Decision order:** policy allow list → policy block list → threat intel (tenant beats global) → categories → DGA heuristic → SafeSearch rewrite → forward upstream.
+- **Decision order:** policy allow list → policy block list → threat intel (tenant beats global; an allow indicator wins) → external blocklists → categories → DGA heuristic → SafeSearch rewrite → forward upstream.
+- **External blocklists** (`blocklists.py`): HaGeZi TIF (mini on by default, full optional), HaGeZi Multi PRO and OISD big, plus custom HTTPS lists. The hourly maintenance loop refreshes each list on its own period (default 24 h) with ETag revalidation. A failed, empty or oversized download keeps the previous copy, and a list that shrinks by more than half in one refresh is held back. Lists are stored compressed in `dns_blocklists`, never as malware indicators, so they do not reach agent malware bundles. Malware lists block wherever DNS protection is on; other lists only where the policy blocks their category. Set `FENRIR_DNS_BLOCKLISTS=false` to stop refreshes.
 - **Blocked lookups** are sinkholed (or NXDOMAIN/REFUSED, per policy) and logged.
 
 ## Exposure management (`exposure.py`, `compliance.py`)
@@ -73,5 +74,8 @@
 ## Data and scale
 
 - **Databases.** SQLite for single-node and dev; PostgreSQL for production. The test suite runs on both.
-- **Telemetry** is stored in the `events` table with tenant/time and device/time indexes. Retention is a setting (default 90 days) and an hourly job purges older data.
-- **Scaling path:** move `events` to a columnar store (ClickHouse/OpenSearch) behind the same interface, and run detection workers off a queue. See the roadmap.
+- **Telemetry** is stored in the `events` table with tenant/time, device/time and time indexes. Everything is kept for `FENRIR_TELEMETRY_RETENTION_DAYS` (90); routine activity (process, image-load, network, DNS, file, registry and script-scan events at "info") for `FENRIR_ROUTINE_RETENTION_DAYS` (30) unless a detection rule matched it. The hourly purge deletes in batches of 5,000 rows so it never holds one long lock.
+- **Per-device cap.** Past `FENRIR_ROUTINE_EVENTS_PER_DEVICE_MINUTE` (600), a device's routine events are still evaluated by every detection rule but stored only if one matches, so a misbehaving agent cannot fill the database. `GET /api/console/platform/telemetry-volume` shows the noisiest devices and event types; the acceptance harness's `telemetry_volume` check holds real agents to a budget.
+- **Processes.** `FENRIR_ROLE=web` serves the console and the agent API and holds the agents' live connections; `python -m fenrir_cloud.worker` (`FENRIR_ROLE=worker`) runs the 30-second scheduler (RMM, automations, the event outbox and webhooks, the PSA mailbox), hourly maintenance and vulnerability intel. The default Compose file runs both; `FENRIR_ROLE=all` keeps the single-process mode. PostgreSQL advisory locks give each set of jobs one owner and the outbox claims events with `SKIP LOCKED`, so extra workers are safe. Because agents connect to the web process, it wakes them within two seconds for commands the worker queued.
+- **Health.** `/health` (alive), `/ready` (database and schema) and `/health/background` (scheduler and maintenance passes completing, no job running over 30 minutes, outbox not behind). The worker container's healthcheck is `python -m fenrir_cloud.worker --check`.
+- **Scaling path:** move `events` to a columnar store (ClickHouse/OpenSearch) behind the same interface, and run detection off a queue. See the roadmap.

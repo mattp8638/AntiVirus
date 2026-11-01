@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -87,6 +88,20 @@ type Agent struct {
 	brute *bruteGuard
 	// New USB drives and memory cards (removable.go).
 	media *removableWatch
+	// File hashes for strict EDR exclusions (exclusions.go).
+	hashes hashCache
+	// Local loopback DNS proxy (dnsproxy.go).
+	dns *dnsProxyState
+}
+
+// Agent binaries can be large; exclusions never hash anything bigger.
+const maxExclusionHashBytes = 512 << 20
+
+// exclusionApplied reports what a strict exclusion let through, so every use is visible in the console.
+func (a *Agent) exclusionApplied(rule *ExclusionRule, proc, parent ProcInfo, parentSha string, suppressed []string) {
+	a.emit("edr.exclusion.applied", "process-guard", "Exclusion "+rule.ID+" allowed "+filepath.Base(proc.Exe),
+		map[string]interface{}{"exclusionId": rule.ID, "suppressed": suppressed, "pid": proc.PID, "processImagePath": proc.Exe,
+			"commandLine": proc.Cmdline, "parentProcessImagePath": parent.Exe, "parentSha256": parentSha})
 }
 
 func New(cfg Config) *Agent {
@@ -258,21 +273,33 @@ func (a *Agent) QueueLength() int {
 // SenseOnce runs every sensor once and applies real-time verdicts.
 func (a *Agent) SenseOnce() {
 	p := a.state.Policy
+	rules := p.EdrExclusions()
 	for _, proc := range a.procs.Poll() {
 		parent, _ := a.procs.Lookup(proc.PPID)
 		payload := map[string]interface{}{"processImagePath": proc.Exe, "commandLine": proc.Cmdline, "pid": proc.PID, "ppid": proc.PPID,
 			"parentProcessImagePath": parent.Exe, "parentCommandLine": parent.Cmdline, "user": userName(proc.UID)}
+		// Parent hashes are only needed (and only reported) where an exclusion names the parent's path.
+		parentSha := ""
+		if parent.Exe != "" && NeedsParentHash(rules, parent.Exe) {
+			if parentSha = a.hashes.Hash(parent.Exe, maxExclusionHashBytes); parentSha != "" {
+				payload["parentSha256"] = parentSha
+			}
+		}
 		if p.RealtimeProtection && proc.Exe != "" && !a.suppressed(proc.Exe) {
 			if sha, err := HashFile(proc.Exe, a.scanner.MaxFileBytes); err == nil {
 				payload["sha256"] = sha
 				if bad, family := a.scanner.Verdict(sha); bad {
-					switch mode := ScanOptionsFromPolicy(p).PUA; {
-					case !a.scanner.IsPUA(sha) || mode == "block":
-						a.blockProcess(proc, sha, family)
-					case mode == "audit":
-						a.emit("threat.pua.detected", "realtime", "Potentially unwanted application running: "+filepath.Base(proc.Exe),
-							map[string]interface{}{"processImagePath": proc.Exe, "pid": proc.PID, "sha256": sha, "threatName": family,
-								"verdict": "audit", "score": 60, "category": "pua"})
+					if rule := MatchExclusion(rules, "antimalware", proc.Exe, sha, parent.Exe, parentSha, proc.Cmdline); rule != nil {
+						a.exclusionApplied(rule, proc, parent, parentSha, []string{"antimalware.signature:" + family})
+					} else {
+						switch mode := ScanOptionsFromPolicy(p).PUA; {
+						case !a.scanner.IsPUA(sha) || mode == "block":
+							a.blockProcess(proc, sha, family)
+						case mode == "audit":
+							a.emit("threat.pua.detected", "realtime", "Potentially unwanted application running: "+filepath.Base(proc.Exe),
+								map[string]interface{}{"processImagePath": proc.Exe, "pid": proc.PID, "sha256": sha, "threatName": family,
+									"verdict": "audit", "score": 60, "category": "pua"})
+						}
 					}
 				}
 			}
@@ -280,11 +307,19 @@ func (a *Agent) SenseOnce() {
 		var sha string
 		if v, ok := payload["sha256"].(string); ok {
 			sha = v
-		} else if hasHashRules(p) && proc.Exe != "" {
-			sha, _ = HashFile(proc.Exe, a.scanner.MaxFileBytes)
+		} else if (hasHashRules(p) || len(rules) > 0) && proc.Exe != "" {
+			sha = a.hashes.Hash(proc.Exe, a.scanner.MaxFileBytes)
 		}
 		if decisions := EvaluateProcess(p, proc, parent, sha); len(decisions) > 0 {
-			a.applyDecisions(proc, decisions)
+			if rule := MatchExclusion(rules, "behavior", proc.Exe, sha, parent.Exe, parentSha, proc.Cmdline); rule != nil {
+				names := make([]string, 0, len(decisions))
+				for _, d := range decisions {
+					names = append(names, d.Rule)
+				}
+				a.exclusionApplied(rule, proc, parent, parentSha, names)
+			} else {
+				a.applyDecisions(proc, decisions)
+			}
 		}
 		a.emit("process.start", "procfs", "", payload)
 	}
@@ -435,6 +470,7 @@ func (a *Agent) refreshPolicy() {
 		_ = a.saveState()
 		a.applyDeviceControl()
 		a.applyFirewall()
+		a.applyDNSProxy()
 		if a.scanner.Model != nil {
 			sens, _ := policy.Modules["antimalware"]["mlSensitivity"].(string)
 			a.scanner.SetModel(a.scanner.Model, mlThreshold(a.scanner.Model, sens))
@@ -476,7 +512,9 @@ func (a *Agent) heartbeat() {
 
 // Run blocks until Stop is called.
 func (a *Agent) Run() {
+	restoreStaleResolver(a.cfg.StateDir) // a previous run that crashed may have left the resolver pointed at its proxy
 	a.refreshPolicy()
+	a.applyDNSProxy()
 	a.applyDeviceControl()
 	a.refreshSignatures()
 	a.refreshModel()
@@ -503,6 +541,7 @@ func (a *Agent) Run() {
 	for {
 		select {
 		case <-a.stop:
+			a.stopDNSProxy() // never leave the system resolver pointing at a proxy that is gone
 			_ = a.Flush()
 			return
 		case <-a.wake:
@@ -549,6 +588,7 @@ func maxInt(a, b int) int {
 func (a *Agent) RunCommands() {
 	a.cmdMu.Lock()
 	defer a.cmdMu.Unlock()
+	a.replayCancellationReceipts()
 	cmds, err := a.client.PendingCommands(20)
 	if err != nil {
 		log.Printf("command poll failed: %v", err)
@@ -563,6 +603,9 @@ func (a *Agent) RunCommands() {
 			continue
 		}
 		if found {
+			if receipt.Status == "cancelled_ack" {
+				continue
+			}
 			if receipt.Status == "started" {
 				receipt = commandReceipt{Status: "failed", Result: map[string]interface{}{
 					"error":            "Agent restarted while the command outcome was uncertain. No automatic replay was attempted.",
@@ -584,10 +627,11 @@ func (a *Agent) RunCommands() {
 			log.Printf("cannot journal command %s; execution blocked: %v", cmd.ID, err)
 			continue
 		}
-		result, err := a.Execute(cmd)
-		status := "completed"
+		result, status, err := a.executeControlled(cmd)
 		if err != nil {
-			status = "failed"
+			if status != "cancelled" {
+				status = "failed"
+			}
 			if result == nil {
 				result = map[string]interface{}{}
 			}
@@ -599,6 +643,8 @@ func (a *Agent) RunCommands() {
 		}
 		if err := a.client.CompleteCommand(cmd.ID, status, result); err != nil {
 			log.Printf("could not report command %s; saved result will be replayed: %v", cmd.ID, err)
+		} else if status == "cancelled" {
+			_ = a.saveCommandReceipt(cmd.ID, "cancelled_ack", result)
 		}
 		a.emit("command."+status, "command-executor", cmd.Type, map[string]interface{}{"commandId": cmd.ID, "type": cmd.Type})
 	}
@@ -606,6 +652,13 @@ func (a *Agent) RunCommands() {
 }
 
 func (a *Agent) Execute(cmd Command) (map[string]interface{}, error) {
+	return a.ExecuteContext(context.Background(), cmd)
+}
+
+func (a *Agent) ExecuteContext(ctx context.Context, cmd Command) (map[string]interface{}, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	switch cmd.Type {
 	case "device.isolate":
 		if !a.state.Policy.NetworkContainment {
@@ -663,8 +716,8 @@ func (a *Agent) Execute(cmd Command) (map[string]interface{}, error) {
 		if cmd.TargetPath == "" && cmd.Type == "scan.targeted" {
 			return nil, errors.New("targetPath is required")
 		}
-		scanned, findings := a.runScan(roots, a.state.Policy.SuppressionPathRoots, a.state.Policy.QuarantineOnMalicious, false)
-		return map[string]interface{}{"scanned": scanned, "findings": findings}, nil
+		scanned, findings := a.runScanContext(ctx, roots, a.state.Policy.SuppressionPathRoots, a.state.Policy.QuarantineOnMalicious, false)
+		return map[string]interface{}{"scanned": scanned, "findings": findings}, ctx.Err()
 	case "remediate.path":
 		sha, err := HashFile(cmd.TargetPath, 0)
 		if err != nil {
@@ -709,19 +762,29 @@ func (a *Agent) Execute(cmd Command) (map[string]interface{}, error) {
 		if !a.state.Policy.ModuleBool("response", "scriptExecution", true) {
 			return nil, errors.New("script execution is turned off by policy")
 		}
-		return RunScript(a.cfg.StateDir, cmd.PayloadJSON)
+		return RunScriptContext(ctx, a.cfg.StateDir, cmd.PayloadJSON)
 	case "patch.scan":
-		return PatchScan()
+		return PatchScanContext(ctx)
+	case "pii.scan":
+		return PIIScanContext(ctx, cmd.PayloadJSON)
+	case "network.discover":
+		return a.DiscoverContext(ctx, cmd.PayloadJSON)
+	case "amt.wsman":
+		cred, err := a.client.FetchAmtCredential(cmd.ID)
+		if err != nil {
+			return nil, fmt.Errorf("could not get the AMT credential: %w", err)
+		}
+		return AmtWsmanContext(ctx, cmd.PayloadJSON, cred, nil)
 	case "patch.install":
-		return PatchInstall(cmd.PayloadJSON)
+		return PatchInstallContext(ctx, cmd.PayloadJSON)
 	case "software.install":
-		return SoftwareInstall(cmd.PayloadJSON, false)
+		return SoftwareInstallContext(ctx, cmd.PayloadJSON, false)
 	case "software.uninstall":
-		return SoftwareInstall(cmd.PayloadJSON, true)
+		return SoftwareInstallContext(ctx, cmd.PayloadJSON, true)
 	case "service.control":
-		return ServiceControl(cmd.TargetPath, cmd.PayloadJSON)
+		return ServiceControlContext(ctx, cmd.TargetPath, cmd.PayloadJSON)
 	case "device.reboot", "device.shutdown":
-		return PowerAction(cmd.Type == "device.reboot", cmd.PayloadJSON)
+		return PowerActionContext(ctx, cmd.Type == "device.reboot", cmd.PayloadJSON)
 	case "remote.session.start":
 		var opts remote.Options
 		if err := json.Unmarshal([]byte(cmd.PayloadJSON), &opts); err != nil {
@@ -729,6 +792,20 @@ func (a *Agent) Execute(cmd Command) (map[string]interface{}, error) {
 		}
 		if !a.state.Policy.ModuleBool("remoteAccess", "enabled", true) {
 			return map[string]interface{}{"consent": "denied"}, errors.New("remote access is turned off by policy")
+		}
+		// The device enforces its own policy too: a compromised console cannot open a silent session or a tunnel
+		// this device's policy does not allow.
+		if opts.Mode == "backstage" && a.state.Policy.ModuleString("remoteAccess", "backstage", "off") != "on" {
+			return nil, errors.New("backstage access is turned off by this device's policy")
+		}
+		if opts.Mode == "tunnel" {
+			if !a.state.Policy.ModuleBool("remoteAccess", "allowTunnels", false) {
+				return nil, errors.New("tunnels are turned off by this device's policy")
+			}
+			opts.AllowedPorts = intersectPorts(opts.AllowedPorts, a.state.Policy.ModuleStrings("remoteAccess", "tunnelPorts"))
+			if err := remote.TunnelTargetAllowed(opts.TargetHost, opts.TargetPort, opts.AllowedPorts); err != nil {
+				return nil, err
+			}
 		}
 		opts.RelayURL = RelayURLForServer(a.cfg.Server, opts.RelayURL)
 		if err := a.remote.Start(opts); err != nil {

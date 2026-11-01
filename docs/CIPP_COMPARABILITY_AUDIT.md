@@ -23,9 +23,9 @@ and cloud/tests/test_m365_*.py. Inventory is not counted as administration parit
 | Onboarding | Create followed by separate licence/group actions | Durable multi-step jobs, partial-failure recovery, templates, scheduling |
 | Offboarding | Individual block/revoke/remove-licence actions only | Reviewed ordered workflow, per-step outcomes, mailbox/OneDrive handover and scheduling |
 | Exchange | No equivalent management provider | App-only Exchange integration, mailbox types, delegation, forwarding, aliases, auto-replies, mail flow |
-| GDAP / partner management | Direct per-directory app connections | Partner consent lifecycle, delegated tenant discovery, relationship expiry and permission refresh |
-| Standards and drift | Not implemented for Microsoft tenants | Templates, report/alert/remediate modes, scheduler, exceptions, drift history and rollback limits |
-| Conditional Access | No management workflow | Policy preview/diff, validation, exclusions, report-only deployment and change verification |
+| GDAP / partner management | Mock-tested: partner sign-in, relationship creation with 15 least-privilege roles, approval links, role groups and access assignments, delegated customer discovery and GDAP-backed connections (see M365_GDAP_STANDARDS.md) | Live partner-tenant verification, relationship renewal workflow, per-technician delegated tokens |
+| Standards and drift | Mock-tested: MFA (all users/admins), legacy-auth block and Windows compliance baseline; report/alert/remediate modes, daily evaluation history, multi-tenant deploy | More standards, exceptions per user/group, rollback, live verification |
+| Conditional Access | Mock-tested: report-only-first deployment, break-glass exclusions, security-defaults detection, name-matched updates | Arbitrary policy templates, diff preview, live verification |
 | Intune policy/application deployment | No equivalent Microsoft workflow | Template import/export, assignments, deployment queue, status and retry behaviour |
 | Teams | No management workflow | Create/manage teams, owners and membership; deletion impact review |
 | SharePoint / OneDrive | No management workflow | Sites, sharing, permissions, ownership/handover, lifecycle and reporting |

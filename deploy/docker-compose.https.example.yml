@@ -1,0 +1,20 @@
+# Copy to docker-compose.https.yml. Requires Docker Compose 2.24.4+.
+# Set FENRIR_DOMAIN and FENRIR_PUBLIC_URL in deploy/.env; copy Caddyfile.example to Caddyfile.
+services:
+  cloud:
+    # Replace the base file's public HTTP binding; keep it available for local diagnostics.
+    ports: !override ["127.0.0.1:8080:8080"]
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      FENRIR_DOMAIN: ${FENRIR_DOMAIN:?set FENRIR_DOMAIN to your hostname without https://}
+    ports: ["80:80", "443:443", "443:443/udp"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [cloud]
+volumes:
+  caddy_data: {}
+  caddy_config: {}

@@ -29,6 +29,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -38,6 +39,7 @@
 #include "ExtendedPolicy.h"
 #include "RemoteKeymap.h"
 #include "RemotePipeIo.h"
+#include "RemoteTunnel.h"
 #include "StringUtils.h"
 #include "WebSocketClient.h"
 
@@ -146,6 +148,9 @@ struct Options {
   std::string sessionId, relayUrl, token, mode, technician, consent{"when_user_present"}, onConsentTimeout{"deny"};
   int consentTimeout{30}, maxFps{15}, quality{70}, idleMinutes{30};
   bool viewOnly{false}, allowTerminal{true}, allowFiles{true}, showBanner{true};
+  std::string targetHost;  // tunnel sessions
+  int targetPort{0};
+  std::vector<int> allowedPorts;
 };
 
 bool LoadOptions(const std::wstring& path, Options* options) {
@@ -174,6 +179,13 @@ bool LoadOptions(const std::wstring& path, Options* options) {
   options->allowTerminal = Flag(*root, "allowTerminal", true);
   options->allowFiles = Flag(*root, "allowFileTransfer", true);
   options->showBanner = Flag(*root, "showBanner", true);
+  options->targetHost = Str(*root, "targetHost");
+  options->targetPort = static_cast<int>(Num(*root, "targetPort", 0));
+  if (const auto* ports = root->Get("allowedPorts")) {
+    if (const auto* list = std::get_if<json::Array>(&ports->v)) {
+      for (const auto& port : *list) options->allowedPorts.push_back(static_cast<int>(port.Number().value_or(0)));
+    }
+  }
   return !options->relayUrl.empty() && !options->token.empty();
 }
 
@@ -336,6 +348,10 @@ class Session {
   void End(const std::string& reason);
   void OnChatFromUser(const std::wstring& text);
   const Options& options() const { return options_; }
+  bool Backstage() const { return options_.mode == "backstage"; }
+  bool Tunnel() const { return options_.mode == "tunnel"; }
+  // Backstage and tunnel sessions run in session 0 and never show or touch the user's desktop.
+  bool Silent() const { return Backstage() || Tunnel(); }
 
  private:
   void Dispatch(const json::Value& m);
@@ -353,6 +369,7 @@ class Session {
 
   Options options_;
   WebSocketClient socket_;
+  std::unique_ptr<fenrir::remote::TunnelStreams> tunnels_;
   std::atomic<bool> running_{true};
   std::atomic<long long> lastInput_{static_cast<long long>(GetTickCount64())};
 
@@ -410,11 +427,13 @@ void Session::Info() {
   }
   std::ostringstream out;
   out << "{\"ch\":\"sys\",\"t\":\"info\",\"hostname\":" << Q(std::wstring(host)) << ",\"os\":\"windows\",\"user\":" << Q(user)
-      << ",\"home\":\"\",\"quality\":" << options_.quality << ",\"maxFps\":" << options_.maxFps << ",\"capabilities\":[\"desktop\",\"processes\",\"services\",\"chat\",\"cad\"";
-  if (options_.allowTerminal) out << ",\"terminal\"";
-  if (options_.allowFiles) out << ",\"files\"";
+      << ",\"home\":\"\",\"quality\":" << options_.quality << ",\"maxFps\":" << options_.maxFps << ",\"capabilities\":[";
+  // Backstage sessions run as SYSTEM in session 0: no screen, input, chat or Ctrl+Alt+Del, and nothing the user sees.
+  out << (Tunnel() ? "\"tunnel\"" : Backstage() ? "\"processes\",\"services\",\"backstage\"" : "\"desktop\",\"processes\",\"services\",\"chat\",\"cad\"");
+  if (options_.allowTerminal && !Tunnel()) out << ",\"terminal\"";
+  if (options_.allowFiles && !Tunnel()) out << ",\"files\"";
   out << "],\"shells\":[\"powershell\",\"cmd\"],\"monitors\":[";
-  const auto monitors = Monitors();
+  const auto monitors = Silent() ? std::vector<Monitor>{} : Monitors();
   for (std::size_t i = 0; i < monitors.size(); ++i) {
     const auto& r = monitors[i].rect;
     out << (i ? "," : "") << "{\"index\":" << i << ",\"x\":" << r.left << ",\"y\":" << r.top << ",\"w\":" << (r.right - r.left)
@@ -1287,6 +1306,15 @@ void Session::Dispatch(const json::Value& m) {
     } else if (t == "end") {
       End("ended by technician");
     }
+  } else if (Tunnel()) {
+    if (ch == "tunnel" && tunnels_) {
+      const auto id = static_cast<std::uint32_t>(Num(m, "id", 0));
+      if (t == "open") tunnels_->Open(id);
+      else if (t == "close") tunnels_->Close(id, false);
+    }
+    return;  // a tunnel carries only its streams
+  } else if (Backstage() && (ch == "screen" || ch == "input" || ch == "chat")) {
+    return;  // the relay already drops these for backstage sessions; never touch the user's desktop
   } else if (ch == "screen") {
     std::lock_guard lock(screenMutex_);
     if (t == "start" || t == "settings") {
@@ -1343,10 +1371,20 @@ int Session::Run() {
     }
     socket_.SendText("{\"ch\":\"sys\",\"t\":\"consent\",\"state\":\"granted\"}");
   }
-  std::thread ui(UiThread, options_.showBanner);
-  ui.detach();
+  if (Tunnel()) {
+    tunnels_ = std::make_unique<fenrir::remote::TunnelStreams>(
+        options_.targetHost, options_.targetPort, options_.allowedPorts,
+        [this](const std::string& text) { return socket_.SendText(text); },
+        [this](const char* data, std::size_t size) { return socket_.SendBinary(data, size); });
+  }
+  if (!Silent()) {
+    std::thread ui(UiThread, options_.showBanner);
+    ui.detach();
+  }
   Info();
-  screenThread_ = std::thread(&Session::ScreenLoop, this);
+  if (!Silent()) {
+    screenThread_ = std::thread(&Session::ScreenLoop, this);
+  }
   std::thread idle([this] {
     while (running_) {
       Sleep(15000);
@@ -1360,8 +1398,10 @@ int Session::Run() {
   bool binary = false;
   while (running_ && socket_.Receive(&message, &binary)) {
     if (binary) {
-      if (!message.empty() && static_cast<std::uint8_t>(message[0]) == 0x03) {
+      if (!message.empty() && static_cast<std::uint8_t>(message[0]) == 0x03 && !Tunnel()) {
         HandleUpload(message);
+      } else if (!message.empty() && static_cast<std::uint8_t>(message[0]) == 0x05 && tunnels_) {
+        tunnels_->Data(message);
       }
       continue;
     }
@@ -1375,6 +1415,7 @@ int Session::Run() {
     screenThread_.join();
   }
   CloseTerminal();
+  if (tunnels_) tunnels_->CloseAll();
   for (auto& [id, upload] : uploads_) {
     if (upload.second != INVALID_HANDLE_VALUE) {
       CloseHandle(upload.second);

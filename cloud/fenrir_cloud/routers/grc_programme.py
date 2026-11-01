@@ -54,6 +54,7 @@ def library(tenant_id: str | None = None, principal: Principal = Depends(current
     frameworks = gp.frameworks_for(db, tenant_id)
     return {"frameworks": [{"key": f["key"], "name": f["name"], "short": f["short"], "version": f["version"], "description": f["description"],
                             "questionSet": f["questionSet"], "source": f["source"], "importedId": f.get("importedId"),
+                            **{k: f.get(k, "") for k in (*gp.CATALOGUE_FIELDS, "currentVersion")},
                             "requirements": len(gp.requirements(f)),
                             "policies": len(gp.templates_for(f["key"]))} for f in frameworks.values()],
             "policies": [{"key": t["key"], "title": t["title"], "summary": t["summary"],
@@ -92,6 +93,8 @@ def import_framework(body: ImportInput, principal: Principal = Depends(current_p
         principal.check_tenant(body.tenantId)
     elif principal.user.role != "platform_admin":
         raise HTTPException(403, "Only platform administrators can import a framework for every customer")
+    if gp.retired_framework(body.key, body.name):
+        raise HTTPException(422, "This framework is retired from the UK governance catalogue")
     if not gp.KEY_RE.match(body.key):
         raise HTTPException(400, "Key must be lower-case letters, digits and dashes")
     try:
@@ -153,7 +156,8 @@ def programmes(tenant_id: str | None = None, principal: Principal = Depends(curr
             summary = gp.programme(db, tenant, adoption.framework_key, include_requirements=False)
         except KeyError:
             continue
-        out.append({"tenantId": tenant.id, **summary})
+        if not summary["retired"]:
+            out.append({"tenantId": tenant.id, **summary})
     return out
 
 

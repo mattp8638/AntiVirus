@@ -1,9 +1,12 @@
 import { displayValue } from "../../components/DisplayValue";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { ago, api } from "../../api";
 import { useApp } from "../../app-context";
 import { emptyTargets, JobDetail, TargetPicker, Targets } from "../../components/rmm";
-import { Modal, PageHead, Pill, Table, useAction, useListData } from "../../components/ui";
+import { Modal, PageHead, Pill, Table, useAction, useData, useListData } from "../../components/ui";
+import { confirmDialog } from "../../components/dialogs";
+import { needsReview, ReviewPanel, ReviewPill } from "../../components/ScriptReview";
 
 const LANGS = ["powershell", "cmd", "bash", "sh", "python"];
 const LANG_PLATFORMS: Record<string, string[]> = { powershell: ["windows"], cmd: ["windows"], bash: ["linux", "macos"], sh: ["linux", "macos"], python: ["windows", "linux", "macos"] };
@@ -16,6 +19,13 @@ export default function Scripts() {
   const [editing, setEditing] = useState<any>(null);
   const [running, setRunning] = useState<any>(null);
   const [jobId, setJobId] = useState<string | null>(null);
+  // Opened from search (?id=): show that script.
+  const [params, setParams] = useSearchParams();
+  useEffect(() => {
+    const wanted = params.get("id");
+    const script = wanted && data?.find((s) => s.id === wanted);
+    if (script) { setEditing(script); setParams({}, { replace: true }); }
+  }, [data, params, setParams]);
   const categories = [...new Set((data || []).map((s) => s.category))].sort();
   const rows = (data || []).filter((s) => (!category || s.category === category) &&
     (!q || `${s.name} ${s.description}`.toLowerCase().includes(q.toLowerCase())));
@@ -29,13 +39,15 @@ export default function Scripts() {
       </div>
       <div className="card">
         <Table rows={rows} empty="No scripts." onRow={(s) => setEditing(s)}
-               columns={[{ key: "name", label: "Script", render: (s) => <><b>{displayValue(s.name)}</b><div className="small muted">{displayValue(s.description)}</div></> },
+               columns={[{ key: "name", label: "Script", render: (s) => <><b>{displayValue(s.name)}</b> <ReviewPill review={s.review} /><div className="small muted">{displayValue(s.description)}</div></> },
                          { key: "category", label: "Category" },
                          { key: "language", label: "Language", render: (s) => <span className="mono small">{displayValue(s.language)}</span> },
                          { key: "platforms", label: "Runs on", render: (s) => s.platforms.join(", ") },
                          { key: "parameters", label: "Params", render: (s) => s.parameters.length || "—" },
                          { key: "builtin", label: "", render: (s) => s.builtin ? <Pill value="built-in" tone="blue" /> : <span className="small muted">v{displayValue(s.version)} · {ago(s.updatedAt)}</span> },
-                         { key: "run", label: "", render: (s) => can("configure") && <button className="small primary" onClick={(e) => { e.stopPropagation(); setRunning(s); }}>Run</button> }]} />
+                         { key: "run", label: "", render: (s) => can("configure") && <button className="small primary" disabled={needsReview(s.review)}
+                             title={needsReview(s.review) ? "A second person has to review this version first" : undefined}
+                             onClick={(e) => { e.stopPropagation(); setRunning(s); }}>Run</button> }]} />
       </div>
       {editing && <ScriptEditor script={editing} onClose={() => { setEditing(null); reload(); }} onRun={(s) => { setEditing(null); setRunning(s); }} />}
       {running && <RunScript script={running} onClose={() => setRunning(null)} onStarted={(id) => { setRunning(null); setJobId(id); }} />}
@@ -48,6 +60,10 @@ function ScriptEditor({ script, onClose, onRun }: { script: any; onClose: () => 
   const { can } = useApp();
   const [form, setForm] = useState<any>({ ...script, parameters: [...(script.parameters || [])] });
   const { run, busy } = useAction();
+  const { data: saved, reload } = useData<any>(script.id ? `rmm/scripts/${script.id}` : null);
+  const review = saved?.review ?? script.review;
+  const dirty = ["body", "language", "runAs"].some((k) => (form[k] ?? "") !== (script[k] ?? "")) ||
+    JSON.stringify(form.parameters || []) !== JSON.stringify(script.parameters || []);
   const readOnly = !can("configure") || (script.builtin && !can("platform"));
   const save = async (asCopy = false) => {
     const body = { name: asCopy ? `${form.name} (copy)` : form.name, description: form.description, category: form.category, language: form.language,
@@ -60,10 +76,11 @@ function ScriptEditor({ script, onClose, onRun }: { script: any; onClose: () => 
     <Modal title={form.id ? form.name : "New script"} onClose={onClose}
            footer={<>
              {form.id && form.builtin && can("configure") && <button onClick={() => save(true)} disabled={busy}>Duplicate to edit</button>}
-             {form.id && !form.builtin && can("configure") && <button className="danger" onClick={async () => { if (window.confirm("Delete this script?") && await run(() => api(`rmm/scripts/${form.id}`, { method: "DELETE" }), "Deleted")) onClose(); }}>Delete</button>}
-             {form.id && <button onClick={() => onRun(form)}>Run…</button>}
+             {form.id && !form.builtin && can("configure") && <button className="danger" onClick={async () => { if (await confirmDialog("Delete this script?") && await run(() => api(`rmm/scripts/${form.id}`, { method: "DELETE" }), "Deleted")) onClose(); }}>Delete</button>}
+             {form.id && <button disabled={needsReview(review)} onClick={() => onRun(form)}>Run…</button>}
              {!readOnly && <button className="primary" disabled={busy || !form.name || !form.body} onClick={() => save()}>Save</button>}
            </>}>
+      {form.id && <ReviewPanel review={review} path={`rmm/scripts/${form.id}`} dirty={dirty} shared={!script.tenantId} onReviewed={reload} />}
       <div className="form-grid">
         <label className="field">Name<input value={form.name || ""} disabled={readOnly} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
         <label className="field">Category<input value={form.category || ""} disabled={readOnly} onChange={(e) => setForm({ ...form, category: e.target.value })} /></label>
@@ -94,8 +111,8 @@ function ScriptEditor({ script, onClose, onRun }: { script: any; onClose: () => 
   );
 }
 
-export function RunScript({ script, onClose, onStarted, presetDeviceId }: { script: any; onClose: () => void; onStarted: (jobId: string) => void; presetDeviceId?: string }) {
-  const [targets, setTargets] = useState<Targets>(() => ({ ...emptyTargets(), deviceIds: presetDeviceId ? [presetDeviceId] : [] }));
+export function RunScript({ script, onClose, onStarted, presetDeviceId, presetDeviceIds }: { script: any; onClose: () => void; onStarted: (jobId: string) => void; presetDeviceId?: string; presetDeviceIds?: string[] }) {
+  const [targets, setTargets] = useState<Targets>(() => ({ ...emptyTargets(), deviceIds: presetDeviceIds ?? (presetDeviceId ? [presetDeviceId] : []) }));
   const [values, setValues] = useState<Record<string, string>>(() => Object.fromEntries((script.parameters || []).map((p: any) => [p.name, p.default ?? ""])));
   const { run, busy } = useAction();
   const submit = async () => {

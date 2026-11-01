@@ -73,3 +73,15 @@ def test_ready_and_readiness(client, admin, tenant):
     client.post("/api/console/users", headers=admin, json={"tenantId": tenant["id"], "email": "ta@acme.example",
                                                            "password": "acme-password-123", "role": "tenant_admin"})
     assert client.get("/api/console/platform/readiness", headers=login(client, "ta@acme.example", "acme-password-123")).status_code == 403
+
+
+def test_current_migration_ledger_does_not_hide_missing_device_columns(client):
+    from sqlalchemy import text
+    from fenrir_cloud import db
+
+    with db.engine().begin() as connection:
+        connection.execute(text("ALTER TABLE devices DROP COLUMN agent_build"))
+    assert client.get("/health").status_code == 200  # process liveness is insufficient
+    response = client.get("/ready")
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "device schema is incompatible"}

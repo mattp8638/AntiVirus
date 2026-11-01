@@ -216,7 +216,7 @@ LocalAction ResolveActionForCommandType(const std::wstring& type) {
     return LocalAction::PatchInstall;
   }
 
-  if (type == L"patch.scan" || type == L"software.update.search") {
+  if (type == L"patch.scan" || type == L"patch.posture.refresh" || type == L"software.update.search") {
     return LocalAction::PatchRefresh;
   }
 
@@ -258,18 +258,21 @@ LocalAction ResolveActionForCommandType(const std::wstring& type) {
 }
 
 bool IsSupportedLocalCommand(const std::wstring& type) {
-  static const std::array<const wchar_t*, 30> kSupportedTypes = {
+  static const std::array<const wchar_t*, 33> kSupportedTypes = {
       L"local.auth.session.begin",
       L"support.request",
       L"protection.pause",
       L"protection.resume",
       L"elevation.request",
       L"elevation.status",
+      L"elevation.finish",
+      L"elevation.launched",
       L"amsi.telemetry.submit",
       L"quarantine.restore",
       L"quarantine.delete",
       L"software.update.search",
       L"patch.scan",
+      L"patch.posture.refresh",
       L"patch.software.install",
       L"patch.windows.install",
       L"patch.cycle.run",

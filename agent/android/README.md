@@ -57,6 +57,31 @@ The phone checks in every minute (every 30 s in lost mode) and reports its locat
 
 If someone turns off Fenrir's device-admin rights, the console raises **Phone protection turned off**.
 
+## App protection
+
+The phone checks every installed app, and each new install or update as it happens (plus every app once a day):
+
+- **Where it came from**: an app store (Google Play, Galaxy Store, Amazon, Huawei, Xiaomi, OPPO, vivo) or sideloaded
+  (installed by a browser, file manager or adb).
+- **What it can do**: control the screen through an accessibility service, read text messages (one-time codes), draw
+  over other apps, act as device administrator, read every notification, install other apps, hide its icon.
+- **Fingerprints**: the SHA-256 of its APK and of its signing certificate, which the cloud checks against threat
+  intelligence. APKs are only read again when an app is updated.
+
+Each finding adds to a risk score; the combinations banking trojans (sideloaded + screen control + texts or overlays)
+and stalkerware (hidden + sideloaded + recording, tracking or call logs) use push an app to high risk. The phone
+tells its user once about a high-risk app, with a **Remove** button that opens Android's uninstall screen.
+
+In the console, the phone's **Security → App protection** lists the apps with Fenrir's verdict: malicious or suspicious
+(threat intelligence on the APK, the signer, or the package written `android:com.example.app`), risky (high risk),
+worth a look (medium), clean or trusted. Policy (**Phone app protection**) decides which verdicts raise an alert; the
+alert closes itself when the app is removed or trusted. From an app: **Remove from phone** (silent on company-owned
+phones, otherwise the user is asked), **Suspend** (company-owned phones only: the app cannot run until allowed again)
+and **Trust**. Policy can also suspend malicious apps automatically on company-owned phones.
+
+What it does not do: it does not scan files other than installed apps, and it does not filter web traffic on the
+phone; that needs Android's VPN or Private DNS, which is a separate piece of work.
+
 ## Limits, and device-owner (managed) phones
 
 Android gives a normal app with device-admin rights *lock* but restricts the rest:

@@ -1,5 +1,6 @@
 import { displayValue } from "../../components/DisplayValue";
-import { DocumentHistory, DocumentTemplates } from "../Documentation";
+import { confirmDialog } from "../../components/dialogs";
+import { AutoDocumentation, DocumentHistory, DocumentTemplates } from "../Documentation";
 import { useState } from "react";
 import { api, getToken, money } from "../../api";
 import { useApp } from "../../app-context";
@@ -48,7 +49,12 @@ function ProductEditor({ product, onClose }: { product: any; onClose: () => void
     if (await run(() => (form.id ? api(`psa/products/${form.id}`, { method: "PATCH", body }) : api("psa/products", { body })), "Saved")) onClose();
   };
   return (
-    <Modal title={form.id ? form.sku : "New product"} onClose={onClose} footer={<button className="primary" disabled={busy || !form.sku} onClick={save}>Save</button>}>
+    <Modal title={form.id ? form.sku : "New product"} onClose={onClose} footer={<>
+      {form.id && <button className="danger" disabled={busy} onClick={async () => {
+        if (await confirmDialog(`Delete the product ${form.sku}? Quotes that already use it keep their lines.`, { confirmLabel: "Delete product" })
+            && await run(() => api(`psa/products/${form.id}`, { method: "DELETE" }), "Product deleted")) onClose();
+      }}>Delete</button>}
+      <button className="primary" disabled={busy || !form.sku} onClick={save}>Save</button></>}>
       <div className="form-grid">
         <label className="field">SKU<input value={form.sku} onChange={(e) => setForm({ ...form, sku: e.target.value })} /></label>
         <label className="field">Category<select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>{["Service", "Hardware", "Software", "Licence", "Labour"].map((c) => <option key={c}>{c}</option>)}</select></label>
@@ -81,7 +87,10 @@ function QuoteEditor({ quote, products, onClose }: { quote: any; products: any[]
   };
   return (
     <Modal title={form.id ? `${form.number} · ${form.title}` : "New quote"} onClose={onClose}
-           footer={<>{form.id && <><button onClick={print}>Print / PDF</button><button onClick={() => save("Sent")}>Mark sent</button><button onClick={() => save("Accepted")}>Accepted</button><button onClick={() => save("Declined")}>Declined</button></>}
+           footer={<>{form.id && form.status !== "Accepted" && <button className="danger" disabled={busy} onClick={async () => {
+                     if (await confirmDialog(`Delete the quote "${form.title}"?`, { confirmLabel: "Delete quote" }) && await run(() => api(`psa/quotes/${form.id}`, { method: "DELETE" }), "Quote deleted")) onClose();
+                   }}>Delete</button>}
+                   {form.id && <><button onClick={print}>Print / PDF</button><button onClick={() => save("Sent")}>Mark sent</button><button onClick={() => save("Accepted")}>Accepted</button><button onClick={() => save("Declined")}>Declined</button></>}
                    <button className="primary" disabled={busy || !form.title} onClick={() => save()}>Save</button></>}>
       <div className="form-grid">
         <label className="field">Title<input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></label>
@@ -102,7 +111,7 @@ function QuoteEditor({ quote, products, onClose }: { quote: any; products: any[]
           <option value="">Add a product…</option>{products.map((p) => <option key={p.id} value={p.id}>{displayValue(p.sku)} · {displayValue(p.description)}</option>)}</select>
         <button className="small" onClick={() => setForm({ ...form, lines: [...form.lines, { description: "Labour", quantity: 1, unitPrice: 85, recurring: false }] })}>Add custom line</button>
       </div>
-      <p style={{ textAlign: "right" }}>One-off <b>{money(oneOff)}</b> · Monthly <b>{money(monthly)}</b> <span className="small muted">ex VAT</span></p>
+      <p style={{ textAlign: "right" }}>One-off <b>{money(oneOff)}</b> · Monthly <b>{money(monthly)}</b> <span className="small muted">excl. tax</span></p>
       <label className="field">Notes<textarea rows={2} value={form.notes || ""} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></label>
     </Modal>
   );
@@ -118,6 +127,7 @@ export function Knowledge() {
     <>
       <PageHead title="Knowledge base" subtitle="Runbooks for the team and how-to articles for customers. Public articles show in the client portal."
                 actions={can("crm") && <button className="primary" onClick={() => setEditing({ title: "", body: "", category: "General", public: false })}>New article</button>} />
+      <AutoDocumentation />
       {can("crm") && <DocumentTemplates onSelect={setEditing} />}
       <input placeholder="Search articles" value={q} onChange={(e) => setQ(e.target.value)} style={{ minWidth: 280, marginBottom: 12 }} />
       <div className="card">

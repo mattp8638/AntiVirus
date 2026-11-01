@@ -1,8 +1,8 @@
 key: ncsc-caf
 name: NCSC Cyber Assessment Framework
 short: NCSC CAF
-version: "3.2"
-description: The UK NCSC's outcome-based framework (objectives A-D, 14 principles, 39 contributing outcomes), used for NIS regulation and GovAssure. Outcome wording is paraphrased.
+version: "4.0"
+description: The UK NCSC's outcome-based framework (objectives A-D, 14 principles, 41 contributing outcomes), used for NIS regulation and GovAssure. Outcome wording is paraphrased.
 sections:
   - id: A
     title: "Objective A: Managing security risk"
@@ -11,9 +11,15 @@ sections:
       - [ "A1.b", "Roles and responsibilities", "Roles for network and information system security are defined and staffed." ]
       - [ "A1.c", "Decision-making", "Security decisions are made with appropriate authority and risk understanding." ]
       - [ "A2.a", "Risk management process", "A tested risk management process identifies, assesses and manages risks to essential functions." ]
-      - [ "A2.b", "Assurance", "You have gained confidence that your security measures work, through testing and audit." ]
+      - id: A2.b
+        title: Understanding threat
+        text: "Maintain and apply an understanding of relevant threat actors, capabilities and attack paths to essential functions."
+        reviewIfUnversioned: true
+        legacyWording: "Assurance: You have gained confidence that your security measures work, through testing and audit."
+      - [ "A2.c", "Assurance", "Use proportionate independent assurance, testing and audit to evaluate security effectiveness." ]
       - [ "A3.a", "Asset management", "Everything supporting essential functions is known, understood and managed.", [], ["nist-csf-2/ID.AM"] ]
       - [ "A4.a", "Supply chain", "Risks from dependencies on third parties are understood and managed." ]
+      - [ "A4.b", "Secure software development and support", "Assure supplier software development, maintenance and support throughout the life cycle of systems supporting essential functions." ]
   - id: B
     title: "Objective B: Protecting against cyber attack"
     requirements:

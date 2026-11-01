@@ -6,7 +6,6 @@ import hashlib
 import hmac
 import json
 import logging
-import threading
 from datetime import timedelta
 
 import httpx
@@ -84,8 +83,17 @@ def effective_policy(db: Session, device: Device) -> tuple[dict, dict]:
     name = layers[-1].name if layers else "Fenrir baseline"
     doc = policy_schema.to_agent_policy(policy_id=device.policy_id or (tenant.default_policy_id if tenant else None) or GLOBAL_POLICY_ID,
                                         name=name, settings=resolution["settings"], botnet_ips=botnet_ips(db, device.tenant_id),
-                                        trusted_sha256=trusted_hashes(db, device.tenant_id))
+                                        trusted_sha256=trusted_hashes(db, device.tenant_id),
+                                        edr_exclusions=_edr_exclusions(db, device.tenant_id))
     return resolution, doc
+
+
+def _edr_exclusions(db: Session, tenant_id: str | None) -> list[dict]:
+    from . import edr_exclusions
+
+    # Agents enforce behavior/antimalware scopes; sigma-only rules stay in the cloud.
+    return [rule for rule in edr_exclusions.agent_rules(edr_exclusions.active_for(db, tenant_id))
+            if set(rule["scopes"]) & {"behavior", "antimalware"}]
 
 
 def trusted_hashes(db: Session, tenant_id: str | None, limit: int = 5000) -> list[str]:
@@ -132,6 +140,13 @@ def enqueue_command(
 ) -> Command:
     if device.api_key_hash == f"retired-{device.id}":
         raise CommandError("Decommissioned devices cannot receive commands; enrol the device again to manage it.")
+    if (device.metrics or {}).get("agentless"):
+        raise CommandError("This device is protected by a web protection profile only: there is no Fenrir agent on it to run commands.")
+    from . import platform_security
+
+    if stop := platform_security.stopped(db, command_type):
+        raise CommandError(f"The emergency stop is on ({stop.get('reason') or 'no reason given'}): nothing but isolation "
+                           "reaches devices until a platform administrator lifts it.")
     spec = BY_TYPE.get(command_type)
     if spec is None:
         raise CommandError(f"unknown command type '{command_type}'")
@@ -191,6 +206,32 @@ def sla_hours(db: Session, account_tenant_id: str | None, priority: str) -> int:
     return DEFAULT_SLA_HOURS.get(priority, 24)
 
 
+def create_customer(db: Session, name: str, parent_id: str, actor: str, template: str = "balanced", plan: str = "complete",
+                    slug: str | None = None) -> Tenant:
+    """A customer tenant with its own default policy (from a policy template). The caller commits."""
+    import re
+
+    from . import audit, policy_schema
+    from .models import Policy
+    from .security import new_secret
+
+    if template not in policy_schema.TEMPLATES:
+        raise ValueError("unknown template")
+    slug = re.sub(r"[^a-z0-9]+", "-", (slug or name).lower()).strip("-")[:70] or "tenant"
+    if db.execute(select(Tenant).where(Tenant.slug == slug)).scalar_one_or_none():
+        slug = f"{slug}-{new_secret('x', 3)[2:].lower()}"
+    tenant = Tenant(name=name, slug=slug, parent_id=parent_id, kind="customer", plan=plan)
+    db.add(tenant)
+    db.flush()
+    policy = Policy(tenant_id=tenant.id, name=f"{name} default", template=template, settings=policy_schema.template_settings(template),
+                    updated_by=actor)
+    db.add(policy)
+    db.flush()
+    tenant.default_policy_id = policy.id
+    audit.record(db, actor, "tenant.created", tenant.id, tenant.id, template=template)
+    return tenant
+
+
 def open_ticket(
     db: Session,
     account_tenant_id: str,
@@ -239,6 +280,10 @@ def open_ticket(
     db.add(ticket)
     db.flush()
     psa.run_workflows(db, ticket, "ticket.created")
+    from . import events
+
+    # Durable follow-up work (AI triage) runs from the outbox, never in the request that created the ticket.
+    events.publish(db, "ticket.created", {"ticketId": ticket.id}, account_tenant_id, key=f"ticket.created:{ticket.id}")
     return ticket
 
 
@@ -258,22 +303,60 @@ def _format_webhook(kind: str, event: str, body: dict) -> dict:
 
 
 def _post(url: str, payload: dict, secret: str) -> None:
+    """Delivers one webhook. Raises on a network error or a non-2xx answer, so the outbox retries it."""
     data = json.dumps(payload, default=str).encode()
     headers = {"Content-Type": "application/json"}
     if secret:
         headers["X-Fenrir-Signature"] = "sha256=" + hmac.new(secret.encode(), data, hashlib.sha256).hexdigest()
-    try:
-        httpx.post(url, content=data, headers=headers, timeout=5.0)
-    except httpx.HTTPError as exc:  # pragma: no cover - network dependent
-        log.warning("webhook delivery to %s failed: %s", url, exc)
+    response = httpx.post(url, content=data, headers=headers, timeout=5.0)
+    if response.status_code >= 300:
+        raise RuntimeError(f"webhook answered HTTP {response.status_code}")
 
 
 def fire_webhooks(db: Session, tenant_id: str, event: str, body: dict) -> int:
+    """Queues one delivery per matching webhook in the durable outbox (sent in the caller's transaction, retried with
+    back-off, and listed under Settings → Platform when it keeps failing)."""
+    from . import events
+
     hooks = db.execute(select(Webhook).where(Webhook.tenant_id.in_({tenant_id, msp_tenant_id(db, tenant_id)}),
                                              Webhook.enabled.is_(True))).scalars().all()
-    sent = 0
+    queued = 0
     for hook in hooks:
         if event in (hook.events or []) or "*" in (hook.events or []):
-            threading.Thread(target=_post, args=(hook.url, _format_webhook(hook.kind, event, body), hook.secret), daemon=True).start()
-            sent += 1
-    return sent
+            events.publish(db, "webhook.delivery", {"webhookId": hook.id, "event": event,
+                                                     "body": json.loads(json.dumps(body, default=str))}, tenant_id)
+            queued += 1
+    return queued
+
+
+# Hosts that just failed are skipped for a minute, so a burst of deliveries to an unreachable receiver costs one timeout,
+# not one per event, inside the scheduler pass. Skipped deliveries are retried by the outbox like any other failure.
+_FAILING_HOSTS: dict[str, float] = {}
+HOST_BACKOFF_SECONDS = 60.0
+
+
+def _deliver_webhook(db: Session, event) -> None:
+    import time
+    from urllib.parse import urlsplit
+
+    hook = db.get(Webhook, event.payload.get("webhookId"))
+    if hook is None or not hook.enabled:
+        return  # deleted or turned off since: nothing to send
+    host = urlsplit(hook.url).hostname or ""
+    if _FAILING_HOSTS.get(host, 0) > time.monotonic():
+        raise RuntimeError(f"{host} failed moments ago; retrying later")
+    try:
+        _post(hook.url, _format_webhook(hook.kind, event.payload.get("event", ""), event.payload.get("body") or {}), hook.secret)
+    except Exception:
+        _FAILING_HOSTS[host] = time.monotonic() + HOST_BACKOFF_SECONDS
+        raise
+    _FAILING_HOSTS.pop(host, None)
+
+
+def _register_webhook_handler() -> None:
+    from . import events
+
+    events.handler("webhook.delivery", name="webhook.deliver")(_deliver_webhook)
+
+
+_register_webhook_handler()

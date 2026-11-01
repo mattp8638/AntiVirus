@@ -27,7 +27,7 @@ constexpr int kTrayMenuPowerShell = 3002;
 constexpr int kTrayMenuCommandPrompt = 3003;
 constexpr int kTrayMenuDiskCleanup = 3004;
 constexpr int kTrayMenuRunApplication = 3005;
-constexpr int kTrayMenuTimedElevate = 3006;
+constexpr int kTrayMenuAdminAccess = 3006;
 constexpr int kTrayMenuRefreshAudit = 3007;
 constexpr int kTrayMenuExit = 3008;
 
@@ -171,6 +171,31 @@ bool LaunchShellExecute(HWND owner, const std::filesystem::path& executable, con
   return true;
 }
 
+std::wstring QuoteArgument(const std::wstring& value) {
+  std::wstring out = L"\"";
+  for (const wchar_t c : value) {
+    if (c == L'"') out += L'\\';
+    out += c;
+  }
+  return out + L"\"";
+}
+
+// Elevation goes through Fenrir: the request is approved by policy or a technician, and the program then runs as a
+// temporary administrator that is removed afterwards (the agent window, --pam-run). Windows' own "Run as
+// administrator" is never used directly, so every elevation is approved and audited.
+bool RequestThroughFenrir(HWND owner, const std::filesystem::path& executable, const std::wstring& parameters,
+                          const std::wstring& reason, const std::wstring& action) {
+  std::wstring arguments = L"--pam-run " + QuoteArgument(executable.wstring()) + L" --pam-reason " + QuoteArgument(reason);
+  if (!parameters.empty()) arguments += L" --pam-args " + QuoteArgument(parameters);
+  const auto result = reinterpret_cast<INT_PTR>(ShellExecuteW(owner, L"open", GetDashboardPath().c_str(), arguments.c_str(),
+                                                               GetDashboardPath().parent_path().c_str(), SW_SHOWNORMAL));
+  if (result <= 32) {
+    return false;
+  }
+  AppendAuditEntry(action, executable.wstring(), L"requested", reason);
+  return true;
+}
+
 bool LaunchDashboard(HWND owner) {
   return LaunchShellExecute(owner, GetDashboardPath(), L"", L"open", L"User opened the Fenrir dashboard",
                             L"open-dashboard");
@@ -183,8 +208,8 @@ bool LaunchSystemTool(HWND owner, const wchar_t* toolRelativePath, const wchar_t
     return false;
   }
 
-  return LaunchShellExecute(owner, executable, parameters != nullptr ? parameters : L"", L"runas",
-                            L"User approved built-in PAM tool launch", actionLabel);
+  return RequestThroughFenrir(owner, executable, parameters != nullptr ? parameters : L"",
+                              L"Built-in admin tool requested from the PAM tray", actionLabel);
 }
 
 bool PromptForElevationTarget(HWND owner, std::filesystem::path* targetPath) {
@@ -218,8 +243,8 @@ bool LaunchApplicationAsAdmin(HWND owner, const std::wstring& reason, const std:
 
   const auto response = MessageBoxW(
       owner,
-      (L"Fenrir will launch this application with administrator rights once:\r\n\r\n" + targetPath.wstring() +
-       L"\r\n\r\nApprove this one-time elevation?")
+      (L"Ask for approval to run this application as a temporary administrator?\r\n\r\n" + targetPath.wstring() +
+       L"\r\n\r\nThe temporary account is removed when it closes or the time is up.")
           .c_str(),
       kWindowTitle, MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2);
   if (response != IDOK) {
@@ -227,28 +252,28 @@ bool LaunchApplicationAsAdmin(HWND owner, const std::wstring& reason, const std:
     return false;
   }
 
-  return LaunchShellExecute(owner, targetPath, L"", L"runas", reason, actionLabel);
+  return RequestThroughFenrir(owner, targetPath, L"", reason, actionLabel);
 }
 
-bool LaunchTimedElevation(HWND owner) {
-  std::filesystem::path targetPath;
-  if (!PromptForElevationTarget(owner, &targetPath)) {
-    return false;
-  }
-
+// Admin access for a while (a temporary administrator account the user types in when Windows asks), not tied to one program.
+bool RequestAdminAccess(HWND owner) {
   const auto response = MessageBoxW(
       owner,
-      (L"Fenrir will approve this application for a 2 minute elevation window:\r\n\r\n" + targetPath.wstring() +
-       L"\r\n\r\nApprove this one-time elevation?")
-          .c_str(),
-      kWindowTitle, MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2);
+      L"Ask your IT team for temporary administrator access?\r\n\r\nOnce approved, Fenrir shows a temporary administrator "
+      L"account to use when Windows asks. It is removed when the time is up or when you say you are done.",
+      kWindowTitle, MB_OKCANCEL | MB_ICONQUESTION | MB_DEFBUTTON2);
   if (response != IDOK) {
-    AppendAuditEntry(L"timed-elevate", targetPath.wstring(), L"denied", L"User denied the 2 minute elevation");
     return false;
   }
-
-  return LaunchShellExecute(owner, targetPath, L"", L"runas",
-                            L"User approved a timed 2 minute elevation window", L"timed-elevate");
+  const std::wstring reason = L"Admin access requested from the PAM tray";
+  const auto arguments = L"--pam-session --pam-reason " + QuoteArgument(reason);
+  const auto result = reinterpret_cast<INT_PTR>(ShellExecuteW(owner, L"open", GetDashboardPath().c_str(), arguments.c_str(),
+                                                               GetDashboardPath().parent_path().c_str(), SW_SHOWNORMAL));
+  if (result <= 32) {
+    return false;
+  }
+  AppendAuditEntry(L"admin-access", L"", L"requested", reason);
+  return true;
 }
 
 void RefreshAudit(HWND owner) {
@@ -292,7 +317,7 @@ void ShowTrayMenu(PamContext& context) {
   AppendMenuW(menu, MF_STRING, kTrayMenuCommandPrompt, L"Run Command Prompt as admin");
   AppendMenuW(menu, MF_STRING, kTrayMenuDiskCleanup, L"Run Disk Cleanup as admin");
   AppendMenuW(menu, MF_STRING, kTrayMenuRunApplication, L"Run application as admin...");
-  AppendMenuW(menu, MF_STRING, kTrayMenuTimedElevate, L"Elevate as admin (2 minutes)");
+  AppendMenuW(menu, MF_STRING, kTrayMenuAdminAccess, L"Ask for admin access...");
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(menu, MF_STRING, kTrayMenuRefreshAudit, L"Refresh audit");
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -346,8 +371,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         case kTrayMenuRunApplication:
           LaunchApplicationAsAdmin(hwnd, L"User approved built-in PAM tool launch", L"custom-elevation");
           return 0;
-        case kTrayMenuTimedElevate:
-          LaunchTimedElevation(hwnd);
+        case kTrayMenuAdminAccess:
+          RequestAdminAccess(hwnd);
           return 0;
         case kTrayMenuRefreshAudit:
           RefreshAudit(hwnd);

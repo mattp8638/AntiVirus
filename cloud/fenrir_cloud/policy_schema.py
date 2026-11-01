@@ -163,6 +163,49 @@ SCHEMA: tuple[Section, ...] = (
                 label, options=ASR_MODES) for key, label in ASR_RULES),
     ),
     Section(
+        "defender",
+        "Microsoft Defender",
+        "Manage the Defender antivirus built into Windows alongside Fenrir. Defender blocks before a program runs; Fenrir's "
+        "EDR, machine learning and DNS filtering work on top of it.",
+        (
+            F("managed", "bool", False, "Manage Microsoft Defender",
+              "Fenrir sets the options below on every Windows device, re-applies them every six hours, and turns Defender's "
+              "detections into alerts.", platforms=("windows",)),
+            F("realTimeProtection", "bool", True, "Real-time protection", platforms=("windows",)),
+            F("cloudProtection", "enum", "high", "Cloud-delivered protection",
+              "How hard Defender's cloud blocks unknown files: default, high, high+ or zero tolerance.",
+              options=("off", "default", "high", "highPlus", "zeroTolerance"), platforms=("windows",)),
+            F("puaProtection", "enum", "block", "Potentially unwanted apps", options=("off", "audit", "block"), platforms=("windows",)),
+            F("networkProtection", "enum", "audit", "Network protection",
+              "Blocks connections to dangerous sites from any app, not only browsers.", options=("off", "audit", "block"),
+              platforms=("windows",)),
+            F("controlledFolderAccess", "enum", "off", "Controlled folder access",
+              "Only trusted apps may change files in protected folders.", options=("off", "audit", "block"), platforms=("windows",)),
+            F("enforceAttackSurfaceRules", "bool", True, "Enforce attack surface rules through Defender",
+              "Each rule under Attack surface reduction is also set in Defender, which stops it before the program runs. "
+              "Rules Defender has no equivalent for stay with Fenrir.", platforms=("windows",)),
+            F("exclusionPaths", "list", [], "Defender path exclusions", "Files and folders Defender should not scan.",
+              platforms=("windows",)),
+            F("exclusionProcesses", "list", [], "Defender process exclusions", platforms=("windows",)),
+            F("exclusionExtensions", "list", [], "Defender extension exclusions", platforms=("windows",)),
+        ),
+    ),
+    Section(
+        "mobile",
+        "Phone app protection",
+        "Android phones check every installed app: where it came from, what it can do, and its fingerprint against threat "
+        "intelligence. New installs are checked as they happen.",
+        (
+            F("alertOn", "enum", "high", "Raise an alert for",
+              "malicious: only apps threat intelligence knows are bad; high: also apps that behave like banking trojans or "
+              "stalkerware; medium: also apps worth a look, such as sideloaded apps with risky abilities.",
+              options=("off", "malicious", "high", "medium"), platforms=("android",)),
+            F("suspendMalicious", "bool", False, "Suspend malicious apps on company-owned phones",
+              "On phones where Fenrir is the device owner, a malicious app is suspended at once (it cannot run until an "
+              "administrator lets it). Other phones ask the user to remove it.", platforms=("android",)),
+        ),
+    ),
+    Section(
         "ransomware",
         "Ransomware protection",
         "Behavioural encryption detection, protected folders, canaries and rollback.",
@@ -224,6 +267,15 @@ SCHEMA: tuple[Section, ...] = (
             F("safeSearch", "bool", False, "Enforce SafeSearch"),
             F("blockThirdPartyDoh", "bool", True, "Block third-party encrypted DNS (DoH/DoT bypass)"),
             F("logQueries", "enum", "blocked", "Query logging", options=("none", "blocked", "all")),
+            F("localProxy", "bool", False, "Local loopback DNS proxy",
+              "The agent answers DNS on a loopback address, forwards it to the device's DoH URL and caches verdicts, so "
+              "blocked domains stay blocked offline. The system resolver is pointed at it and restored when turned off."),
+            F("localProxyFailMode", "enum", "open", "When Fenrir Cloud is unreachable",
+              "open: resolve uncached names with the previous system resolver. closed: refuse them.", options=("open", "closed")),
+            F("sinkholeInterception", "bool", True, "Intercept connections to blocked domains",
+              "Blocked names resolve to a loopback sinkhole that records which process tried to connect (HTTP Host and TLS SNI) "
+              "and serves a block page over HTTP."),
+            F("localCacheMinutes", "int", 30, "Local verdict cache (minutes)", min=1, max=1440),
         ),
     ),
     Section(
@@ -356,6 +408,13 @@ SCHEMA: tuple[Section, ...] = (
             F("allowTerminal", "bool", True, "Allow remote terminal (PowerShell / shell)"),
             F("allowFileTransfer", "bool", True, "Allow file transfer"),
             F("showBanner", "bool", True, "Show a 'session in progress' banner to the user"),
+            F("backstage", "enum", "off", "Backstage access",
+              "Silent SYSTEM/root terminal, files, processes and services with no prompt, banner or screen, even with nobody "
+              "signed in. Each session needs a fresh sign-in check and a reason, and is always recorded.", options=("off", "on")),
+            F("allowTunnels", "bool", False, "Allow tunnels through this device",
+              help="Technicians can reach agentless machines on this device's LAN (RDP, SSH, VNC, web UIs, Intel AMT) through it."),
+            F("tunnelPorts", "list", ["22", "23", "80", "443", "3389", "5900", "8080", "8443", "16992", "16993", "16994", "16995"], "Tunnel ports",
+              "TCP ports a tunnel may reach on private LAN addresses."),
             F("blankScreen", "bool", False, "Allow technicians to blank the user's screen", platforms=("windows",)),
             F("idleTimeoutMinutes", "int", 30, "End idle sessions after (minutes)", min=5, max=480),
             F("maxFps", "int", 15, "Maximum frame rate", min=1, max=30),
@@ -460,6 +519,10 @@ AGENT_SUPPORT: dict[str, tuple[str, ...]] = {
     "web.phishingBlockThreshold": ('windows',),
     "web.destinationCacheTtlMinutes": ('windows',),
     "web.bankingProtection": (),
+    "dns.localProxy": ('linux', 'macos'),
+    "dns.localProxyFailMode": ('linux', 'macos'),
+    "dns.sinkholeInterception": ('linux', 'macos'),
+    "dns.localCacheMinutes": ('linux', 'macos'),
     "firewall.networkAttackProtection": (),
     "firewall.bruteForceProtection": ('windows', 'linux', 'macos'),
     "firewall.blockSmbV1": ('windows',),
@@ -817,7 +880,7 @@ def managed_firewall_rules(settings: dict, botnet_ips: list[str] | None = None) 
 
 
 def to_agent_policy(policy_id: str, name: str, settings: dict, botnet_ips: list[str] | None = None,
-                    trusted_sha256: list[str] | None = None) -> dict:
+                    trusted_sha256: list[str] | None = None, edr_exclusions: list[dict] | None = None) -> dict:
     """Translate effective settings into the document agents parse.
 
     The top-level keys are exactly what the Windows service's
@@ -878,6 +941,12 @@ def to_agent_policy(policy_id: str, name: str, settings: dict, botnet_ips: list[
         doc["revision"] = hashlib.sha256((doc["revision"] + "|" + ",".join(botnet_ips)).encode()).hexdigest()[:16]
     if trusted_sha256:
         doc["revision"] = hashlib.sha256((doc["revision"] + "|trusted|" + ",".join(sorted(trusted_sha256))).encode()).hexdigest()[:16]
+    if edr_exclusions:
+        # Strict process-chain/hash exclusions (edr_exclusions.py); they change without the settings changing.
+        # An object, not a bare list: the Go agent decodes every module as a JSON object.
+        doc["modules"]["edrExclusions"] = {"rules": edr_exclusions}
+        doc["revision"] = hashlib.sha256((doc["revision"] + "|exclusions|" + json.dumps(edr_exclusions, sort_keys=True))
+                                         .encode()).hexdigest()[:16]
     for key, plan_key in (("quickScanSchedule", "quickScanPlan"), ("fullScanSchedule", "fullScanPlan")):
         plan = parse_scan_schedule(str(am.get(key) or ""))
         if plan is not None:

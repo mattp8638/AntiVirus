@@ -206,6 +206,7 @@ class RuntimeDatabase {
   void UpdateCommandJournalStatus(const std::wstring& commandId, const std::wstring& status,
                                   const std::wstring& resultJson, const std::wstring& lastError) const;
   bool LoadCommandJournal(const std::wstring& commandId, std::wstring& status, std::wstring& resultJson) const;
+  std::vector<std::pair<std::wstring, std::wstring>> UnacknowledgedCancellations() const;
 
   bool LoadQuarantineRecord(const std::wstring& recordId, QuarantineIndexRecord& record) const;
   void UpsertQuarantineRecord(const QuarantineIndexRecord& record) const;

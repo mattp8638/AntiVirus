@@ -1,0 +1,106 @@
+{
+  "key": "dora",
+  "name": "DORA",
+  "short": "DORA",
+  "version": "Regulation (EU) 2022/2554",
+  "questionSet": true,
+  "description": "UK-relevant readiness and evidence guide. Record applicability before assessment; use the official framework and any required independent assessment or submission process. UK entities with in-scope EU financial activities or relevant ICT supplier obligations.",
+  "sections": [
+    {
+      "id": "readiness",
+      "title": "Scope, implementation and assurance",
+      "requirements": [
+        {
+          "id": "DORA-SCOPE",
+          "title": "Entity and supplier applicability",
+          "text": "Record the in-scope financial activities or contractual ICT supplier obligations.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "DORA-GOV",
+          "title": "Management responsibility",
+          "text": "Evidence management ownership and approval of ICT risk arrangements.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "DORA-RISK",
+          "title": "ICT risk framework",
+          "text": "Maintain asset, dependency, risk and protection records.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "DORA-DETECT",
+          "title": "Detection and response",
+          "text": "Evidence detection, response, recovery and communication arrangements.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "DORA-INCIDENT",
+          "title": "Incident classification and reporting",
+          "text": "Record applicable incident classifications, reporting decisions and deadlines.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "DORA-TEST",
+          "title": "Resilience testing",
+          "text": "Maintain the proportionate testing programme, findings and remediation.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "DORA-TLPT",
+          "title": "Advanced testing applicability",
+          "text": "Record whether advanced threat-led testing is required and the approved arrangements.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "DORA-THIRD",
+          "title": "ICT third-party oversight",
+          "text": "Maintain the information register, due diligence, contracts and ongoing supplier review.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "DORA-EXIT",
+          "title": "Concentration and exit planning",
+          "text": "Assess dependencies and maintain testable exit and continuity arrangements.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        },
+        {
+          "id": "DORA-REVIEW",
+          "title": "Learning and review",
+          "text": "Track improvements arising from incidents, tests and assurance.",
+          "type": "control",
+          "evidence": [
+            "Approved scope and supporting evidence"
+          ]
+        }
+      ]
+    }
+  ]
+}

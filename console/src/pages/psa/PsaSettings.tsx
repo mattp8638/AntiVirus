@@ -4,16 +4,18 @@ import { useParams } from "react-router-dom";
 import { api } from "../../api";
 import { useApp } from "../../app-context";
 import { Modal, PageHead, Pill, Table, Tabs, useAction, useData, useListData } from "../../components/ui";
+import { confirmDialog, promptDialog } from "../../components/dialogs";
 
 export default function PsaSettings() {
   const [tab, setTab] = useState("Boards");
   return (
     <>
-      <PageHead title="Service settings" subtitle="Boards, statuses and types; workflow rules; email-to-ticket." />
-      <Tabs tabs={["Boards", "Workflow rules", "Email to ticket"]} active={tab} onChange={setTab} />
+      <PageHead title="Service settings" subtitle="Boards, statuses and types; workflow rules; email-to-ticket; AI triage." />
+      <Tabs tabs={["Boards", "Workflow rules", "Email to ticket", "AI triage"]} active={tab} onChange={setTab} />
       {tab === "Boards" && <Boards />}
       {tab === "Workflow rules" && <Workflows />}
       {tab === "Email to ticket" && <InboundEmail />}
+      {tab === "AI triage" && <AiTriage />}
     </>
   );
 }
@@ -25,7 +27,7 @@ function Boards() {
   const { run } = useAction();
   return (
     <>
-      {can("configure") && <button className="primary" style={{ marginBottom: 12 }} onClick={async () => { const name = window.prompt("Board name"); if (name && await run(() => api("psa/boards", { body: { name } }), "Board created")) reload(); }}>New board</button>}
+      {can("configure") && <button className="primary" style={{ marginBottom: 12 }} onClick={async () => { const name = await promptDialog("Board name"); if (name && await run(() => api("psa/boards", { body: { name } }), "Board created")) reload(); }}>New board</button>}
       <div className="card">
         <Table rows={data} onRow={setEditing} empty="No boards."
                columns={[{ key: "name", label: "Board", render: (b) => <b>{displayValue(b.name)}</b> },
@@ -60,7 +62,12 @@ function BoardEditor({ board, onClose }: { board: any; onClose: () => void }) {
   };
   const setStatus = (i: number, patch: any) => setForm({ ...form, statuses: form.statuses.map((s: any, j: number) => (i === j ? { ...s, ...patch } : s)) });
   return (
-    <Modal title={`Board: ${form.name}`} onClose={onClose} footer={<button className="primary" disabled={busy} onClick={save}>Save board</button>}>
+    <Modal title={`Board: ${form.name}`} onClose={onClose} footer={<>
+      <button className="danger" disabled={busy} onClick={async () => {
+        if (await confirmDialog(`Delete the board "${form.name}"? Fenrir refuses while tickets are on it, or if it is the only board.`, { confirmLabel: "Delete board" })
+            && await run(() => api(`psa/boards/${form.id}`, { method: "DELETE" }), "Board deleted")) onClose();
+      }}>Delete board</button>
+      <button className="primary" disabled={busy} onClick={save}>Save board</button></>}>
       <div className="form-grid">
         <label className="field">Name<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
         <label className="field">Default priority<select value={form.defaultPriority} onChange={(e) => setForm({ ...form, defaultPriority: e.target.value })}>{["P1", "P2", "P3", "P4"].map((p) => <option key={p}>{p}</option>)}</select></label>
@@ -214,5 +221,27 @@ export function ProjectDetail() {
       </form>
       {data.unphased.length > 0 && <div className="card" style={{ marginTop: 12 }}><h3>Tickets without a phase</h3>{data.unphased.map((t: any) => <div key={t.id}><a href={`/tickets/${t.id}`}>#{displayValue(t.number)}</a> {displayValue(t.subject)}</div>)}</div>}
     </>
+  );
+}
+
+function AiTriage() {
+  const { can } = useApp();
+  const { data, error, reload } = useData<any>("psa/ai-triage");
+  const { run, busy } = useAction();
+  if (error) return <div className="error">{error}</div>;
+  if (!data) return <div className="empty">Loading…</div>;
+  const save = async (body: any) => { if (await run(() => api("psa/ai-triage", { method: "PUT", body: { mode: data.mode, engine: data.engine, ...body } }), "Triage settings saved")) reload(); };
+  return (
+    <div className="card">
+      <p className="small muted">New tickets from email, the portal and phone are categorised and prioritised, matched to knowledge-base articles and remediation packages, and given a suggested reply as an internal note. With the Claude engine, passwords and secrets, card and National Insurance numbers and long tokens are redacted before the ticket text leaves Fenrir.</p>
+      <div className="form-grid">
+        <label className="field">Mode<select value={data.mode} disabled={busy || !can("configure")} onChange={(e) => save({ mode: e.target.value })}>
+          <option value="off">Off</option><option value="suggest">Suggest (internal note only)</option><option value="apply">Apply (also sets type, impact and urgency; only ever raises priority)</option></select></label>
+        <label className="field">Engine<select value={data.engine} disabled={busy || !can("configure")} onChange={(e) => save({ engine: e.target.value })}>
+          <option value="local">Local rules (nothing leaves Fenrir)</option><option value="claude">Claude (sends redacted ticket text to Anthropic)</option></select></label>
+      </div>
+      {data.engine === "claude" && !data.claudeConfigured && <p className="error small">Set ANTHROPIC_API_KEY on the server to use Claude; until then local rules are used.</p>}
+      {data.engine === "claude" && data.claudeConfigured && <p className="small muted">Model {displayValue(data.model)}. If the API is unavailable, local rules are used for that ticket.</p>}
+    </div>
   );
 }

@@ -1,9 +1,10 @@
 import { displayValue } from "../../components/DisplayValue";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ago, api, fmtTime } from "../../api";
 import { useApp } from "../../app-context";
 import { Modal, PageHead, Pill, Stat, Table, TenantSelect, useAction, useData, useListData } from "../../components/ui";
+import { SavedViews } from "../../components/Customization";
 
 export const PRIORITY_TONE: Record<string, string> = { P1: "bad", P2: "warn", P3: "blue", P4: "muted" };
 
@@ -30,6 +31,39 @@ export default function ServiceBoard() {
   const board = meta?.boards.find((b: any) => b.id === boardId);
   useEffect(() => { try { localStorage.setItem("fenrir.board", boardId); } catch { /* ignore */ } }, [boardId]);
   useEffect(() => { const t = window.setInterval(reload, 20000); return () => window.clearInterval(t); }, [reload]);
+  const [active, setActive] = useState(-1);
+  const [help, setHelp] = useState(false);
+  const search = useRef<HTMLInputElement>(null);
+  useEffect(() => { setActive(-1); }, [boardId, status, assignee, q, tenantId]);
+  // Keyboard shortcuts for working the queue without the mouse (list view). Ignored while typing or with a dialog open.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (e.ctrlKey || e.metaKey || e.altKey || creating || document.querySelector(".modal-back")) return;
+      if (target && (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable)) {
+        if (e.key === "Escape") target.blur();
+        return;
+      }
+      const rows = data ?? [];
+      const keys: Record<string, () => void> = {
+        j: () => setActive((i) => Math.min(rows.length - 1, i + 1)),
+        k: () => setActive((i) => Math.max(0, i - 1)),
+        Enter: () => { if (rows[active]) navigate(`/tickets/${rows[active].id}`); },
+        o: () => { if (rows[active]) navigate(`/tickets/${rows[active].id}`); },
+        n: () => setCreating(true),
+        "/": () => search.current?.focus(),
+        m: () => setAssignee((a) => (a === "me" ? "" : "me")),
+        u: () => setAssignee((a) => (a === "unassigned" ? "" : "unassigned")),
+        r: () => reload(),
+        "?": () => setHelp(true),
+      };
+      const action = keys[e.key];
+      if (action) { e.preventDefault(); action(); }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [data, active, creating, navigate, reload]);
+  useEffect(() => { document.querySelector<HTMLElement>("tr.active-row")?.scrollIntoView?.({ block: "nearest" }); }, [active]);
   const breached = data?.filter((t) => t.slaBreached).length ?? 0;
   const unassigned = data?.filter((t) => !t.assignee && !t.closed).length ?? 0;
   return (
@@ -51,14 +85,17 @@ export default function ServiceBoard() {
         <select value={assignee} onChange={(e) => setAssignee(e.target.value)} aria-label="Assignee">
           <option value="">Anyone</option><option value="me">My tickets</option><option value="unassigned">Unassigned</option>
           {meta?.members.map((m: any) => <option key={m.email} value={m.email}>{displayValue(m.name)}</option>)}</select>
-        <input placeholder="Search # or text" value={q} onChange={(e) => setQ(e.target.value)} />
+        <input ref={search} placeholder="Search # or text  ( / )" value={q} onChange={(e) => setQ(e.target.value)} />
+        <SavedViews page="tickets" filters={{ boardId, status, assignee, q }}
+                    onApply={(f) => { setBoardId(f.boardId ?? ""); setStatus(f.status ?? "active"); setAssignee(f.assignee ?? ""); setQ(f.q ?? ""); }} />
         <span style={{ flex: 1 }} />
+        <button className="small ghost" onClick={() => setHelp(true)} title="Keyboard shortcuts">⌨ ?</button>
         <button className={view === "list" ? "primary small" : "small"} onClick={() => setView("list")}>List</button>
         <button className={view === "board" ? "primary small" : "small"} onClick={() => setView("board")} disabled={!board}>Board</button>
       </div>
       {view === "list" || !board ? (
         <div className="card">
-          <Table rows={data} onRow={(t) => navigate(`/tickets/${t.id}`)} empty="No tickets."
+          <Table rows={data} onRow={(t) => navigate(`/tickets/${t.id}`)} empty="No tickets." activeId={active >= 0 ? data?.[active]?.id : null}
                  columns={[{ key: "number", label: "#", render: (t) => <b>#{displayValue(t.number)}</b> },
                            { key: "priority", label: "Pri", render: (t) => <Pill value={t.priority} tone={PRIORITY_TONE[t.priority]} /> },
                            { key: "subject", label: "Summary", render: (t) => <><b>{displayValue(t.subject)}</b><div className="small muted">{displayValue(t.board)}{t.type ? ` · ${t.type}${t.subtype ? ` / ${t.subtype}` : ""}` : ""} · {displayValue(t.source)}</div></> },
@@ -71,6 +108,18 @@ export default function ServiceBoard() {
         </div>
       ) : <Kanban board={board} tickets={data || []} onMoved={reload} />}
       {creating && <NewTicket meta={meta} defaultBoard={boardId} onClose={(id) => { setCreating(false); if (id) navigate(`/tickets/${id}`); else reload(); }} />}
+      {help && <Modal title="Keyboard shortcuts" onClose={() => setHelp(false)}>
+        <dl className="kv">
+          <dt><kbd>j</kbd> / <kbd>k</kbd></dt><dd>Next / previous ticket</dd>
+          <dt><kbd>Enter</kbd> or <kbd>o</kbd></dt><dd>Open the highlighted ticket</dd>
+          <dt><kbd>n</kbd></dt><dd>New ticket</dd>
+          <dt><kbd>/</kbd></dt><dd>Search (<kbd>Esc</kbd> to leave the box)</dd>
+          <dt><kbd>m</kbd></dt><dd>My tickets on / off</dd>
+          <dt><kbd>u</kbd></dt><dd>Unassigned on / off</dd>
+          <dt><kbd>r</kbd></dt><dd>Refresh</dd>
+          <dt><kbd>?</kbd></dt><dd>This list</dd>
+        </dl>
+      </Modal>}
     </>
   );
 }

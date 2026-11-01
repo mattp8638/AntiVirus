@@ -5,15 +5,16 @@ from __future__ import annotations
 import html
 from datetime import date, datetime, timedelta, timezone
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+import httpx
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from .. import audit, compliance, policy_schema, psa, services
+from .. import audit, billing_sync, compliance, policy_schema, psa, services
 from ..db import get_db
-from ..deps import Principal, current_principal, scoped_tenant
-from ..models import (Activity, Alert, Contact, Contract, Device, DnsQueryLog, Event, Incident, Invoice, Lead, Opportunity, Policy, Project, Tenant,
+from ..deps import Principal, current_principal, require_reauth, scoped_tenant
+from ..models import (AccountingConnection, Activity, Alert, Contact, Contract, Device, DnsQueryLog, Event, Incident, Invoice, Lead, Opportunity, Policy, Project, Tenant,
                       Ticket, TimeEntry, Vulnerability, Webhook, utcnow)
 from ..security import new_secret
 from ..serialize import apply_fields, to_dict
@@ -255,6 +256,10 @@ def create_contract(body: dict = Body(...), principal: Principal = Depends(curre
     principal.check_tenant(account)
     contract = Contract(tenant_id=principal.user.tenant_id, account_tenant_id=account, name=str(body.get("name") or "Contract"))
     apply_fields(contract, body, AGREEMENT_FIELDS | {"start_date"})
+    if not body.get("currency"):
+        from .. import regional
+
+        contract.currency = regional.get(db, account)["currency"]  # the MSP's default currency
     contract.sla = contract.sla or dict(services.DEFAULT_SLA_HOURS)
     db.add(contract)
     audit.record(db, principal.actor, "billing.contract.created", contract.name, account)
@@ -321,10 +326,9 @@ def generate_invoices(body: dict = Body(default={}), principal: Principal = Depe
         for addition in contract.additions or []:
             quantity = float(addition.get("quantity") or 0)
             auto = str(addition.get("autoCount") or "")
-            if auto.startswith("devices"):
-                platform = auto.partition(":")[2]
-                quantity = len([d for d in devices if not platform or d.platform == platform or
-                                (platform == "server" and "server" in d.os_version.lower())])
+            if auto:  # devices, devices:<platform>, m365:<SKU>, m365-users (billing_sync.py)
+                counted = billing_sync.auto_quantity(db, contract, devices, auto)
+                quantity = counted if counted is not None else quantity
             if quantity and addition.get("unitPrice"):
                 lines.append({"description": str(addition.get("product") or "Addition"), "quantity": quantity,
                               "unitPrice": float(addition["unitPrice"])})
@@ -385,6 +389,110 @@ def update_invoice(invoice_id: str, body: dict = Body(...), principal: Principal
     return to_dict(invoice)
 
 
+# --------------------------------------------------------------------------- billing reconciliation and accounting sync
+
+
+def _msp_owner(db: Session, principal: Principal) -> str:
+    principal.require("billing")
+    owner = services.msp_tenant_id(db, principal.user.tenant_id)
+    if owner != principal.user.tenant_id:
+        raise HTTPException(403, "Billing settings belong to the MSP")
+    return owner
+
+
+@router.get("/billing/reconciliation")
+def billing_reconciliation(period: str | None = None, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Billed vs actually managed, per active contract: devices, counted additions and unbilled Microsoft 365 licences."""
+    principal.require("billing")
+    period = period or date.today().strftime("%Y-%m")
+    return billing_sync.reconciliation(db, list(principal.tenant_ids), period)
+
+
+@router.get("/billing/accounting")
+def get_accounting(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    owner = _msp_owner(db, principal)
+    row = db.execute(select(AccountingConnection).where(AccountingConnection.tenant_id == owner)).scalars().first()
+    return billing_sync.view(row) if row else None
+
+
+@router.put("/billing/accounting")
+def set_accounting(request: Request, body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    owner = _msp_owner(db, principal)
+    require_reauth(request, principal)
+    row = db.execute(select(AccountingConnection).where(AccountingConnection.tenant_id == owner)).scalars().first()
+    if row is None:
+        if not body.get("clientId") or not body.get("clientSecret"):
+            raise HTTPException(422, "clientId and clientSecret are required")
+        row = AccountingConnection(tenant_id=owner, client_id=str(body["clientId"])[:100])
+        db.add(row)
+        db.flush()
+    if body.get("clientSecret"):
+        billing_sync._store(row, {**billing_sync._secrets_of(row), "clientSecret": str(body["clientSecret"])})
+    if body.get("accountCode"):
+        row.account_code = str(body["accountCode"])[:20]
+    if body.get("scopes"):
+        row.scopes = str(body["scopes"])[:300]
+    url = billing_sync.authorize_url(row)
+    audit.record(db, principal.actor, "billing.accounting.configured", "xero", owner)
+    db.commit()
+    return {**billing_sync.view(row), "authorizeUrl": url}
+
+
+@router.post("/billing/accounting/push")
+def push_to_accounting(body: dict = Body(default={}), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Push the chosen invoices (or every Sent invoice not yet in Xero) as drafts."""
+    owner = _msp_owner(db, principal)
+    row = db.execute(select(AccountingConnection).where(AccountingConnection.tenant_id == owner)).scalars().first()
+    if row is None:
+        raise HTTPException(404, "Connect Xero first")
+    if body.get("invoiceIds"):
+        invoices = [i for i in (db.get(Invoice, x) for x in body["invoiceIds"]) if i is not None and i.tenant_id == owner]
+    else:
+        invoices = db.execute(select(Invoice).where(Invoice.tenant_id == owner, Invoice.status == "Sent",
+                                                    Invoice.external_id.is_(None))).scalars().all()
+    try:
+        results = billing_sync.push_invoices(db, row, invoices, principal.actor)
+    except (billing_sync.AccountingError, httpx.HTTPError) as exc:
+        db.commit()
+        raise HTTPException(502, str(exc)) from exc
+    db.commit()
+    return results
+
+
+@router.post("/billing/accounting/pull")
+def pull_from_accounting(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    owner = _msp_owner(db, principal)
+    row = db.execute(select(AccountingConnection).where(AccountingConnection.tenant_id == owner)).scalars().first()
+    if row is None:
+        raise HTTPException(404, "Connect Xero first")
+    try:
+        changed = billing_sync.pull_statuses(db, row)
+    except (billing_sync.AccountingError, httpx.HTTPError) as exc:
+        db.commit()
+        raise HTTPException(502, str(exc)) from exc
+    db.commit()
+    return {"updated": changed}
+
+
+xero_callback = APIRouter(prefix="/api/billing/xero", tags=["Billing"])
+
+
+@xero_callback.get("/callback")
+def xero_oauth_callback(state: str = "", code: str = "", error: str = "", db: Session = Depends(get_db)):
+    """Xero redirects here after the MSP authorises Fenrir. The single-use state ties it to the pending request."""
+    from fastapi.responses import RedirectResponse
+
+    if error or not code or not state:
+        return RedirectResponse("/billing?xero=cancelled", status_code=303)
+    try:
+        billing_sync.complete_authorization(db, state, code)
+    except (billing_sync.AccountingError, httpx.HTTPError, KeyError, ValueError):
+        db.rollback()
+        return RedirectResponse("/billing?xero=failed", status_code=303)
+    db.commit()
+    return RedirectResponse("/billing?xero=connected", status_code=303)
+
+
 # --------------------------------------------------------------------------- webhooks
 
 
@@ -409,11 +517,26 @@ def create_webhook(body: dict = Body(...), principal: Principal = Depends(curren
     return {**to_dict(hook), "secret": hook.secret}
 
 
+@router.patch("/webhooks/{hook_id}")
+def update_webhook(hook_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("configure")
+    hook = _get(db, principal, Webhook, hook_id)
+    if "url" in body and not str(body["url"]).startswith("https://"):
+        raise HTTPException(400, "Webhook URLs must use https://")
+    if "events" in body and (not isinstance(body["events"], list) or not body["events"]):
+        raise HTTPException(400, "Choose at least one event")
+    changed = apply_fields(hook, body, {"name", "url", "kind", "events"})
+    audit.record(db, principal.actor, "webhook.updated", hook.name, hook.tenant_id, fields=changed)
+    db.commit()
+    return to_dict(hook)
+
+
 @router.delete("/webhooks/{hook_id}")
 def delete_webhook(hook_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("configure")
     hook = _get(db, principal, Webhook, hook_id)
     db.delete(hook)
+    audit.record(db, principal.actor, "webhook.deleted", hook.name, hook.tenant_id)
     db.commit()
     return {"ok": True}
 

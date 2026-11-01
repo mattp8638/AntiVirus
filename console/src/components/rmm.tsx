@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
 import { Modal, Pill, useAction, useData, useListData } from "./ui";
+import { confirmDialog, promptDialog } from "./dialogs";
 
 export interface Targets {
   deviceIds: string[];
@@ -90,13 +91,17 @@ export function TargetPicker({ value, onChange, platforms }: { value: Targets; o
 /** Start a remote session and open the pop-out viewer. */
 export function useConnect() {
   const { run, busy } = useAction();
-  const connect = async (deviceId: string, mode: "desktop" | "terminal" | "files" = "desktop", ticketId?: string) => {
+  const connect = async (deviceId: string, mode: "desktop" | "terminal" | "files" | "backstage" = "desktop", ticketId?: string) => {
+    // Backstage is silent (no prompt, banner or screen), so it needs a stated reason and a fresh sign-in check.
+    const reason = mode === "backstage" && !ticketId
+      ? await promptDialog("Reason for backstage access (kept in the audit log; the session is recorded)") : "";
+    if (reason === null) return;
     // Open the window first so pop-up blockers treat it as a direct click. It starts on an in-app page
     // (not about:blank) so an installed console opens it as an app window without browser bars.
     const width = Math.min(window.screen.availWidth, 1440);
     const height = Math.min(window.screen.availHeight, 900);
     const placeholder = window.open("/remote/starting", "_blank", `popup,width=${width},height=${height}`);
-    const session = await run(() => api<any>("remote/sessions", { body: { deviceId, mode, ticketId } }));
+    const session = await run(() => api<any>("remote/sessions", { body: { deviceId, mode, ticketId, reason } }));
     if (!session) { placeholder?.close(); return; }
     if (placeholder) placeholder.location.href = `/remote/${session.id}`;
     else openRemoteWindow(session.id);
@@ -107,7 +112,7 @@ export function useConnect() {
 export function ConnectButtons({ device, ticketId, compact }: { device: any; ticketId?: string; compact?: boolean }) {
   const { can } = useApp();
   const { connect, busy } = useConnect();
-  if (!can("respond") || !device?.approved) return null;
+  if (!can("respond") || !can("remote") || !device?.approved || device.retired || !["windows", "linux", "macos"].includes(device.platform)) return null;
   return (
     <span className="row" style={{ gap: 6 }} onClick={(e) => e.stopPropagation()}>
       <button className={compact ? "small primary" : "primary"} disabled={busy} title="Remote desktop in a new window" onClick={() => connect(device.id, "desktop", ticketId)}>
@@ -116,6 +121,7 @@ export function ConnectButtons({ device, ticketId, compact }: { device: any; tic
       {!compact && <>
         <button disabled={busy} onClick={() => connect(device.id, "terminal", ticketId)}>{device.platform === "windows" ? "PowerShell" : "Terminal"}</button>
         <button disabled={busy} onClick={() => connect(device.id, "files", ticketId)}>Files</button>
+        <button disabled={busy} title="Silent SYSTEM/root terminal, files, processes and services: nothing shows on the user's screen" onClick={() => connect(device.id, "backstage", ticketId)}>Backstage</button>
       </>}
     </span>
   );
@@ -125,30 +131,37 @@ export function JobStatus({ job }: { job: any }) {
   const s = job.summary || {};
   return (
     <span className="row" style={{ gap: 4 }}>
-      <Pill value={job.status} tone={job.status === "completed" ? "good" : job.status === "running" ? "blue" : job.status === "partial" ? "warn" : job.status === "cancelled" ? "muted" : "bad"} />
-      <span className="small muted">{displayValue(s.completed || 0)}✓ {displayValue(s.failed || 0)}✗ {displayValue((s.pending || 0) + (s.dispatched || 0))} waiting{s.skipped ? ` · ${s.skipped} skipped` : ""}</span>
+      <Pill value={job.status === "cancelling" ? "Stopping" : job.status} tone={job.status === "completed" ? "good" : job.status === "running" ? "blue" : ["partial", "cancelling"].includes(job.status) ? "warn" : job.status === "cancelled" ? "muted" : "bad"} />
+      <span className="small muted">{displayValue(s.completed || 0)}✓ {displayValue(s.failed || 0)}✗ {displayValue((s.pending || 0) + (s.dispatched || 0))} waiting{s.cancelling ? ` · ${s.cancelling} awaiting stop acknowledgement` : ""}{s.skipped ? ` · ${s.skipped} skipped` : ""}</span>
     </span>
   );
 }
 
 export function JobDetail({ jobId, onClose }: { jobId: string; onClose: () => void }) {
+  const { can } = useApp();
   const { data, reload } = useData<any>(`rmm/jobs/${jobId}`);
-  const running = data?.status === "running";
+  const running = ["running", "cancelling"].includes(data?.status);
   useEffect(() => {
     if (!running) return;
     const timer = window.setInterval(reload, 2000);
     return () => window.clearInterval(timer);
   }, [running, reload]);
   const [open, setOpen] = useState<string | null>(null);
-  const { run } = useAction();
+  const { run, busy } = useAction();
   if (!data) return null;
   return (
     <Modal title={data.name} onClose={onClose}
-           footer={<>{data.status === "running" && <button onClick={async () => { await run(() => api(`rmm/jobs/${jobId}/cancel`, { method: "POST" }), "Pending actions cancelled"); reload(); }}>Cancel pending</button>}
+           footer={<>{data.status === "running" && can("respond") && <button disabled={busy} onClick={async () => { await run(() => api(`rmm/jobs/${jobId}/cancel`, { method: "POST" }), "Queued actions cancelled; stop requested for running work"); reload(); }}>Stop job</button>}
+                     {can("respond") && <button className="danger" disabled={busy} onClick={async () => {
+                       if (await confirmDialog("Remove this job and stop its outstanding work? Completed changes and audit history are retained.")) {
+                         if (await run(() => api(`rmm/jobs/${jobId}`, { method: "DELETE" }), "Job removed; outstanding work cancelled or stopping")) onClose();
+                       }
+                     }}>Remove job</button>}
                      {["failed", "partial"].includes(data.status) && <button title="Run again on the devices where it failed" onClick={async () => { await run(() => api(`rmm/jobs/${jobId}/retry`, { method: "POST" }), "Retry queued"); reload(); }}>Retry failed devices</button>}
                    <button onClick={reload}>Refresh</button><button className="primary" onClick={onClose}>Close</button></>}>
       <p className="small muted">{displayValue(data.createdBy)} · {fmtTime(data.createdAt)} · {displayValue(data.commandType)}{data.script ? ` · ${data.script.language}` : ""}</p>
       <JobStatus job={data} />
+      {data.status === "cancelling" && <p className="small muted">Stop requested. The endpoint must acknowledge that its work has stopped. Offline endpoints and older agents may leave the stop unconfirmed.</p>}
       <div style={{ marginTop: 12 }}>
         {data.results.map((r: any) => (
           <div key={r.deviceId} className="card" style={{ padding: 10, marginTop: 8 }}>

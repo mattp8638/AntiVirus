@@ -9,7 +9,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
-from sqlalchemy import func, or_, select
+from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.orm import Session
 
 from .. import audit, psa, rmm, services
@@ -101,6 +101,22 @@ def create_board(body: dict = Body(...), principal: Principal = Depends(current_
     return to_dict(board)
 
 
+@router.delete("/psa/boards/{board_id}")
+def delete_board(board_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Remove a board nobody uses. Tickets keep their history, so a board with tickets is moved from, not deleted."""
+    principal.require("configure")
+    board = _owned(db, principal, Board, board_id)
+    tickets = db.scalar(select(func.count()).where(Ticket.board_id == board.id)) or 0
+    if tickets:
+        raise HTTPException(409, f"{tickets} ticket(s) are on this board. Move them to another board first.")
+    if (db.scalar(select(func.count()).where(Board.tenant_id == board.tenant_id)) or 0) <= 1:
+        raise HTTPException(409, "This is the only board: tickets need somewhere to go")
+    db.delete(board)
+    audit.record(db, principal.actor, "psa.board.deleted", board.name, board.tenant_id)
+    db.commit()
+    return {"ok": True}
+
+
 @router.patch("/psa/boards/{board_id}")
 def update_board(board_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("configure")
@@ -150,7 +166,7 @@ def list_tickets(tenant_id: str | None = None, status: str | None = None, queue:
         query = query.where(Ticket.project_id == project_id)
     if q:
         like = f"%{q}%"
-        conditions = [Ticket.subject.ilike(like), Ticket.description.ilike(like)]
+        conditions = [Ticket.subject.ilike(like), Ticket.description.ilike(like), cast(Ticket.custom_fields, String).ilike(like)]
         if q.lstrip("#").isdigit():
             conditions.append(Ticket.number == int(q.lstrip("#")))
         query = query.where(or_(*conditions))
@@ -394,12 +410,31 @@ def update_time(entry_id: str, body: dict = Body(...), principal: Principal = De
         raise HTTPException(403, "You can only edit your own time")
     if body.get("status") and body["status"] not in {"Open", "Submitted", "Approved", "Rejected"}:
         raise HTTPException(400, "invalid status")
+    if "billable" in body and body["billable"] not in {"Billable", "Do Not Bill", "No Charge"}:
+        raise HTTPException(400, "billable must be Billable, Do Not Bill or No Charge")
+    if "hours" in body and not (isinstance(body["hours"], (int, float)) and 0 < float(body["hours"]) <= 24):
+        raise HTTPException(400, "hours must be between 0 and 24")
     changed = apply_fields(entry, body, {"hours", "hours_billed", "billable", "notes", "internal_notes", "work_type", "work_role", "status"})
     if "hours" in changed and "hours_billed" not in changed:
         entry.hours_billed = psa.round_hours(float(entry.hours))
     audit.record(db, principal.actor, "psa.time.updated", entry.id, entry.account_tenant_id, fields=changed)
     db.commit()
     return to_dict(entry)
+
+
+@router.delete("/psa/time/{entry_id}")
+def delete_time(entry_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Remove a time entry entered by mistake: your own while open or rejected; a manager's any that is not billed."""
+    entry = _owned(db, principal, TimeEntry, entry_id)
+    if entry.status == "Billed":
+        raise HTTPException(409, "Billed time cannot be removed")
+    manager = principal.can("manage_tenants")
+    if not manager and (entry.member != principal.actor or entry.status not in {"Open", "Rejected"}):
+        raise HTTPException(403, "You can remove only your own time that has not been submitted or approved")
+    db.delete(entry)
+    audit.record(db, principal.actor, "psa.time.deleted", entry.id, entry.account_tenant_id, hours=float(entry.hours or 0))
+    db.commit()
+    return {"ok": True}
 
 
 @router.post("/psa/timesheets/submit")
@@ -768,6 +803,18 @@ def update_quote(quote_id: str, body: dict = Body(...), principal: Principal = D
     return {**to_dict(quote), **_quote_totals(quote)}
 
 
+@router.delete("/psa/quotes/{quote_id}")
+def delete_quote(quote_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("crm")
+    quote = _owned(db, principal, Quote, quote_id)
+    if quote.status == "Accepted":
+        raise HTTPException(409, "An accepted quote is a record of what the customer agreed to and cannot be deleted")
+    db.delete(quote)
+    audit.record(db, principal.actor, "psa.quote.deleted", quote.title, quote.account_tenant_id or quote.tenant_id)
+    db.commit()
+    return {"ok": True}
+
+
 @router.get("/psa/quotes/{quote_id}/print", response_class=HTMLResponse)
 def print_quote(quote_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     quote = _owned(db, principal, Quote, quote_id)
@@ -890,3 +937,47 @@ def rotate_inbound_token(principal: Principal = Depends(current_principal), db: 
     audit.record(db, principal.actor, "psa.inbound_token.rotated", tenant.name, tenant.id)
     db.commit()
     return {"token": token, "url": f"/api/inbound/email/{tenant.slug}?token={token}"}
+
+
+# --------------------------------------------------------------------------- AI helpdesk triage (ai_helpdesk.py)
+
+
+@router.get("/psa/ai-triage")
+def get_ai_triage(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    from .. import ai_helpdesk
+
+    principal.require("crm")
+    owner = db.get(Tenant, services.msp_tenant_id(db, principal.user.tenant_id))
+    return {"mode": "off", "engine": "local", **((owner.settings or {}).get("aiTriage") or {}),
+            "claudeConfigured": bool(ai_helpdesk.api_key()), "model": os.getenv("FENRIR_AI_TRIAGE_MODEL", ai_helpdesk.DEFAULT_MODEL)}
+
+
+@router.put("/psa/ai-triage")
+def set_ai_triage(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """MSP-wide. Choosing the Claude engine sends redacted ticket text to Anthropic: an explicit opt-in."""
+    principal.require("crm")
+    principal.require("configure")
+    owner = db.get(Tenant, services.msp_tenant_id(db, principal.user.tenant_id))
+    if owner is None or owner.id != principal.user.tenant_id:
+        raise HTTPException(403, "Only the MSP's own staff change helpdesk triage")
+    mode, engine = str(body.get("mode") or "off"), str(body.get("engine") or "local")
+    if mode not in ("off", "suggest", "apply") or engine not in ("local", "claude"):
+        raise HTTPException(422, "mode must be off, suggest or apply; engine local or claude")
+    owner.settings = {**(owner.settings or {}), "aiTriage": {"mode": mode, "engine": engine}}
+    audit.record(db, principal.actor, "psa.ai_triage.updated", owner.name, owner.id, mode=mode, engine=engine)
+    db.commit()
+    return owner.settings["aiTriage"]
+
+
+@router.post("/tickets/{ticket_id}/triage")
+def triage_ticket(ticket_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Run triage now (suggest mode when triage is otherwise off)."""
+    from .. import ai_helpdesk
+
+    principal.require("respond")
+    ticket = db.get(Ticket, ticket_id)
+    if ticket is None or (ticket.account_tenant_id or ticket.tenant_id) not in principal.tenant_ids:
+        raise HTTPException(404, "Not found")
+    result = ai_helpdesk.triage(db, ticket, force=True)
+    db.commit()
+    return result

@@ -59,7 +59,7 @@ def test_cancel_dispatched_work_remains_in_progress_until_actual_result(client, 
     assert cancelled.status_code == 200, cancelled.text
     assert cancelled.json()["alreadyDispatched"] == 1
     assert cancelled.json()["cancellationComplete"] is False
-    assert cancelled.json()["status"] == "running"
+    assert cancelled.json()["status"] == "cancelling"
     completion = client.post(
         f"/api/v1/devices/{device['deviceId']}/commands/{pending['id']}/complete",
         headers=device["headers"], json={"status": "completed", "resultJson": {"exitCode": 0}})
@@ -313,17 +313,18 @@ def test_device_retirement_revokes_agent_key_cancels_work_and_preserves_asset(cl
     assert assets[0]["deviceId"] == identity
 
 
-def test_device_retirement_waits_for_command_reconciliation(client, admin, tenant, device):
+def test_device_retirement_requests_stop_without_waiting_for_reconciliation(client, admin, tenant, device):
     job = client.post("/api/console/rmm/jobs", headers=admin,
                       json={"commandType": "inventory.refresh", "targets": {"deviceIds": [device["deviceId"]]}})
     assert job.status_code == 200
     [running] = client.get(f"/api/v1/devices/{device['deviceId']}/commands/pending",
                            headers=device["headers"]).json()["items"]
-    blocked = client.delete(f"/api/console/devices/{device['deviceId']}", headers=admin)
-    assert blocked.status_code == 409
+    removed = client.delete(f"/api/console/devices/{device['deviceId']}", headers=admin)
+    assert removed.status_code == 200
+    assert removed.json()["stopRequested"] == 1
     still_online = client.post(f"/api/v1/devices/{device['deviceId']}/heartbeat",
                                headers=device["headers"], json={"healthState": "healthy"})
-    assert still_online.status_code == 200
+    assert still_online.status_code == 401
     completed = client.post(f"/api/v1/devices/{device['deviceId']}/commands/{running['id']}/complete",
                             headers=device["headers"], json={"status": "completed", "resultJson": {}})
     assert completed.status_code == 200

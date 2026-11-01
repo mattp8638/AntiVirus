@@ -8,7 +8,7 @@ Two pieces keep everything current without merging, pulling and rebuilding by ha
 1. pulls them;
 2. builds the new image while the old one keeps serving;
 3. restarts the containers;
-4. waits for `/health`.
+4. waits for `/ready` (database schema and mapped device columns, as well as a running API).
 
 If the build or the health check fails, it returns to the previous commit and skips the failed commit until a newer one arrives.
 

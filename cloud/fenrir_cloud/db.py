@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 29
+LATEST_MIGRATION = 53
 
 def init_engine(url: str) -> Engine:
     global _engine, _session_factory
@@ -68,9 +68,9 @@ def get_db() -> Iterator[Session]:
 def ensure_columns(base: type[DeclarativeBase], bind: Engine) -> list[str]:
     """Add columns that exist in the models but not yet in the database.
 
-    ``create_all`` creates new tables but never alters existing ones. New
-    columns on existing tables are declared nullable, so a plain
-    ``ALTER TABLE ... ADD COLUMN`` is safe on SQLite and PostgreSQL.
+    ``create_all`` creates new tables but never alters existing ones. This
+    helper adds nullable columns only. Required columns need an explicit
+    migration with a safe backfill; a Python ORM default does not add them.
     """
     from sqlalchemy import inspect, text
 
@@ -272,10 +272,150 @@ def migrate(bind: Engine) -> list[int]:
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (28)"))
                 applied.append(28)
             if 29 not in versions:
-                from .models import ServiceHeartbeat
-                ServiceHeartbeat.__table__.create(conn, checkfirst=True)
+                # Migration 24 used ensure_columns, which deliberately skips
+                # NOT NULL columns. A recorded 24 may still lack agent_build,
+                # making every Device query fail on an upgraded database.
+                # Empty means unknown until the next agent heartbeat.
+                from sqlalchemy import inspect
+                columns = {column["name"] for column in inspect(conn).get_columns("devices")}
+                if "agent_build" not in columns:
+                    conn.execute(text("ALTER TABLE devices ADD COLUMN agent_build VARCHAR(64) NOT NULL DEFAULT ''"))
+                conn.execute(text("UPDATE devices SET agent_build = '' WHERE agent_build IS NULL"))
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (29)"))
                 applied.append(29)
+            if 30 not in versions:
+                ensure_columns(Base, conn)  # nullable command cancellation fields; no history is changed
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (30)"))
+                applied.append(30)
+            if 31 not in versions:
+                from .models import DiskTelemetryHistory, DiskExhaustionPrediction, ResourceBaseline, ResourceAnomaly
+                DiskTelemetryHistory.__table__.create(conn, checkfirst=True)
+                DiskExhaustionPrediction.__table__.create(conn, checkfirst=True)
+                ResourceBaseline.__table__.create(conn, checkfirst=True)
+                ResourceAnomaly.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (31)"))
+                applied.append(31)
+            if 32 not in versions:
+                from .models import DnsBlocklist
+                DnsBlocklist.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (32)"))
+                applied.append(32)
+            if 33 not in versions:
+                from .models import EdrExclusion
+                EdrExclusion.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (33)"))
+                applied.append(33)
+            if 34 not in versions:
+                from .models import BreachExposure, DataDiscoveryScan
+                DataDiscoveryScan.__table__.create(conn, checkfirst=True)
+                BreachExposure.__table__.create(conn, checkfirst=True)
+                ensure_columns(Base, conn)  # vulnerabilities.remediation, devices.exposure_flags
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (34)"))
+                applied.append(34)
+            if 35 not in versions:
+                from .models import M365Partner, M365StandardRun
+                M365Partner.__table__.create(conn, checkfirst=True)
+                M365StandardRun.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (35)"))
+                applied.append(35)
+            if 36 not in versions:
+                from .models import NetworkNode, NetworkSubnet
+                NetworkSubnet.__table__.create(conn, checkfirst=True)
+                NetworkNode.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (36)"))
+                applied.append(36)
+            if 37 not in versions:
+                from .models import ConditionPackage, ConditionResult
+                ConditionPackage.__table__.create(conn, checkfirst=True)
+                ConditionResult.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (37)"))
+                applied.append(37)
+            if 38 not in versions:
+                ensure_columns(Base, conn)  # psa_tickets.ai_triage
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (38)"))
+                applied.append(38)
+            if 39 not in versions:
+                from .models import AccountingConnection
+                AccountingConnection.__table__.create(conn, checkfirst=True)
+                ensure_columns(Base, conn)  # billing_invoices.external_*
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (39)"))
+                applied.append(39)
+            if 40 not in versions:
+                from .models import AmtEndpoint
+                AmtEndpoint.__table__.create(conn, checkfirst=True)
+                ensure_columns(Base, conn)  # remote_sessions.target_*
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (40)"))
+                applied.append(40)
+            if 41 not in versions:
+                from .models import Vendor, VendorAssessment
+                Vendor.__table__.create(conn, checkfirst=True)
+                VendorAssessment.__table__.create(conn, checkfirst=True)
+                ensure_columns(Base, conn)  # grc_evidence.data / control_id
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (41)"))
+                applied.append(41)
+            if 42 not in versions:
+                ensure_columns(Base, conn)  # m365_partners.settings
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (42)"))
+                applied.append(42)
+            if 43 not in versions:
+                ensure_columns(Base, conn)  # elevation_requests: temporary admin account, kind, target, timeline
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (43)"))
+                applied.append(43)
+            if 44 not in versions:
+                from .models import BackgroundJob, CustomField, SavedView
+                BackgroundJob.__table__.create(conn, checkfirst=True)
+                SavedView.__table__.create(conn, checkfirst=True)
+                CustomField.__table__.create(conn, checkfirst=True)
+                ensure_columns(Base, conn)  # alerts: assignee/acknowledged/snoozed; devices, psa_tickets: custom_fields
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (44)"))
+                applied.append(44)
+            if 45 not in versions:
+                # "awaiting_authorisation" did not fit VARCHAR(20): PostgreSQL refused every new Xero connection.
+                if conn.dialect.name == "postgresql":
+                    conn.execute(text("ALTER TABLE accounting_connections ALTER COLUMN status TYPE VARCHAR(40)"))
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (45)"))
+                applied.append(45)
+            if 46 not in versions:
+                ensure_columns(Base, conn)  # background_jobs.running_since
+                # Retention purges select events by age alone and keep events a detection rule matched.
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_events_time ON events (occurred_at)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_rule_matches_event ON rule_matches (event_pk)"))
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (46)"))
+                applied.append(46)
+            if 47 not in versions:
+                ensure_columns(Base, conn)  # user_sessions.method, user_sessions.claimed_at (Microsoft sign-in)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (47)"))
+                applied.append(47)
+            if 48 not in versions:
+                from .models import PasskeyCredential
+                PasskeyCredential.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (48)"))
+                applied.append(48)
+            if 49 not in versions:
+                ensure_columns(Base, conn)  # rmm_scripts / rmm_condition_packages review, review_editors
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (49)"))
+                applied.append(49)
+            if 50 not in versions:
+                from .models import TriageState
+                TriageState.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (50)"))
+                applied.append(50)
+            if 51 not in versions:
+                from .models import ClientHealthSnapshot, ClientReport
+                for model in (ClientHealthSnapshot, ClientReport):
+                    model.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (51)"))
+                applied.append(51)
+            if 52 not in versions:
+                from .models import DefenderState
+                DefenderState.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (52)"))
+                applied.append(52)
+            if 53 not in versions:
+                from .models import MobileApp
+                MobileApp.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (53)"))
+                applied.append(53)
             conn.commit()
         except Exception:
             conn.rollback()

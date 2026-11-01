@@ -15,8 +15,8 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import audit, services
-from .models import (Alert, Command, ConditionState, Device, DeviceGroup, DeviceMetric, DevicePatch, Job, MonitorCondition,
+from . import audit, presence, services
+from .models import (Alert, Command, ConditionState, Device, DeviceGroup, DeviceMetric, DevicePatch, DiskTelemetryHistory, Job, MonitorCondition,
                      PatchApproval, PatchPolicy, ScheduledTask, Script, SoftwarePackage, Ticket, Vulnerability, utcnow)
 
 log = logging.getLogger("fenrir.rmm")
@@ -58,7 +58,8 @@ def resolve_targets(db: Session, allowed_tenants: set[str] | frozenset[str], tar
     if tenant_ids:
         for device in db.execute(query.where(Device.tenant_id.in_(tenant_ids & set(allowed_tenants)))).scalars():
             selected[device.id] = device
-    devices = list(selected.values())
+    # Every caller sends commands; a profile-only iPhone or Mac has no agent to run them.
+    devices = [d for d in selected.values() if not (d.metrics or {}).get("agentless")]
     if platforms:
         devices = [d for d in devices if d.platform in platforms]
     if tags:
@@ -172,14 +173,32 @@ def create_job(db: Session, *, tenant_id: str, actor: str, name: str, devices: l
 def run_script(db: Session, *, script: Script, devices: list[Device], actor: str, tenant_id: str, parameters: dict | None = None,
                targets: dict | None = None, scheduled_task_id: str | None = None, ticket_id: str | None = None,
                name: str | None = None) -> Job:
+    from . import script_review
+
+    script_review.check(db, script)  # raises NotReviewed (a ValueError) while a second person still has to look at it
     values = validate_parameters(script, parameters or {})
-    return create_job(db, tenant_id=tenant_id, actor=actor, name=name or script.name, devices=devices, command_type="script.run",
-                      kind="script", payload=script_payload(script, values), script=script, parameters=values, targets=targets,
-                      scheduled_task_id=scheduled_task_id, ticket_id=ticket_id)
+    job = create_job(db, tenant_id=tenant_id, actor=actor, name=name or script.name, devices=devices, command_type="script.run",
+                     kind="script", payload=script_payload(script, values), script=script, parameters=values, targets=targets,
+                     scheduled_task_id=scheduled_task_id, ticket_id=ticket_id)
+    if script_review.status(script) != "pending":
+        job.payload = {**job.payload, "reviewedHash": script_review.content_hash(script)}
+    return job
+
+
+def _record_held_script(db: Session, exc: ValueError, actor: str, tenant_id: str, script: Script, **details) -> None:
+    """A schedule or monitor reached a script still waiting for review: say so where the MSP looks, not only in the log."""
+    from . import script_review
+
+    if isinstance(exc, script_review.NotReviewed):
+        audit.record(db, actor, "rmm.script.held_for_review", script.name, tenant_id, scriptId=script.id, **details)
 
 
 def retry_failed(db: Session, job: Job, actor: str) -> int:
     """Queue the job's command again on the devices where it failed or expired. Returns how many."""
+    from . import script_review
+
+    if job.command_type == "script.run" and script_review.required(db) and not (job.payload or {}).get("reviewedHash"):
+        raise ValueError("This job ran a script version nobody reviewed. Run the reviewed script again from the library.")
     command_ids = dict(job.command_ids or {})
     failed = db.execute(select(Command).where(Command.id.in_(list(command_ids.values())),
                                               Command.status.in_(("failed", "expired")))).scalars().all()
@@ -239,11 +258,13 @@ def _maybe_close_recovered_monitor_ticket(db: Session, ticket: Ticket) -> None:
 
 def refresh_job(db: Session, job_id: str) -> None:
     job = db.get(Job, job_id)
-    if job is None or job.status not in {"running"}:
+    if job is None or job.status not in {"running", "cancelling"}:
         return
     summary = job_summary(db, job)
-    open_count = summary.get("pending", 0) + summary.get("dispatched", 0)
+    open_count = summary.get("pending", 0) + summary.get("dispatched", 0) + summary.get("cancelling", 0)
     if open_count:
+        if summary.get("cancelling", 0):
+            job.status = "cancelling"
         return
     failed = summary.get("failed", 0) + summary.get("expired", 0)
     done, cancelled = summary.get("completed", 0), summary.get("cancelled", 0)
@@ -287,6 +308,34 @@ def on_command_complete(db: Session, device: Device, command: Command) -> None:
         from . import network
 
         network.apply_probe_results(db, device, command)
+    elif command.type == "amt.wsman":
+        from . import amt
+
+        amt.on_command_complete(db, device, command)
+    if (command.payload or {}).get("conditionPackageId"):
+        from . import condition_remediation
+
+        condition_remediation.on_command_complete(db, device, command)
+    if (command.payload or {}).get("topologyScan"):
+        from . import topology
+
+        topology.on_command_complete(db, device, command)
+    if (command.payload or {}).get("piiScan"):
+        from . import datadiscovery
+
+        datadiscovery.on_command_complete(db, device, command)
+    if (command.payload or {}).get("defender"):
+        from . import defender
+
+        defender.on_command_complete(db, device, command)
+    if command.type in {"app.suspend", "app.uninstall"}:
+        from . import mobile_protection
+
+        mobile_protection.on_command_complete(db, device, command)
+    if (command.payload or {}).get("vulnerabilityIds"):
+        from . import remediation
+
+        remediation.on_command_complete(db, command)
     job_id = (command.payload or {}).get("jobId")
     if job_id:
         refresh_job(db, job_id)
@@ -357,9 +406,16 @@ def ingest_patch_scan(db: Session, device: Device, result: dict) -> int:
         if not (row.status == "installing" and now - row.last_seen_at < timedelta(hours=6)) and row.status != "failed":
             row.status = "missing"
         row.last_seen_at = now
-    # Anything previously missing that is no longer reported has been installed.
+    # A failed/partial provider must not resolve its missing patches merely
+    # because it returned no rows. Legacy agents do not report coverage.
+    has_coverage = "coverage" in result
+    raw_coverage = result.get("coverage")
+    coverage = {str(source)[:30]: {"success": value.get("success") is True,
+                                  "error": str(value.get("error") or "")[:1000]}
+                for source, value in raw_coverage.items() if isinstance(value, dict)} if isinstance(raw_coverage, dict) else {}
     for key, row in existing.items():
-        if key not in seen and row.status in {"missing", "installing", "failed"}:
+        source_complete = not has_coverage or coverage.get(row.source, {}).get("success", False)
+        if source_complete and key not in seen and row.status in {"missing", "installing", "failed"}:
             row.status, row.installed_at = "installed", now
     db.flush()
     sync_update_vulnerabilities(db, device, now, row_cves)
@@ -367,7 +423,16 @@ def ingest_patch_scan(db: Session, device: Device, result: dict) -> int:
 
     refresh_risk_scores(db, [device.id])
     metrics = dict(device.metrics or {})
-    metrics["patchScanAt"] = now.isoformat() + "Z"
+    complete = not has_coverage or (bool(coverage) and all(v["success"] for v in coverage.values())
+                                   and (device.platform != "windows" or {"windows-update", "winget"} <= coverage.keys()))
+    metrics["patchScanAttemptAt"] = now.isoformat() + "Z"
+    metrics["patchScanStatus"] = "completed" if complete else "partial" if any(v["success"] for v in coverage.values()) else "failed"
+    if has_coverage:
+        metrics["patchProviders"] = coverage
+    else:
+        metrics.pop("patchProviders", None)
+    if complete:
+        metrics["patchScanAt"] = now.isoformat() + "Z"
     if "rebootPending" in result:
         metrics["rebootPending"] = bool(result["rebootPending"])
     device.metrics = metrics
@@ -738,13 +803,15 @@ def _run_protection_policy_windows(db: Session, rmm_policies: list[PatchPolicy],
 def queue_patch_scans(db: Session, now: datetime | None = None) -> int:
     """Ask online devices for a patch scan when their last one is older than the policy interval (default 12h)."""
     now = now or utcnow()
-    online_since = now - timedelta(minutes=10)
     policies = db.execute(select(PatchPolicy).where(PatchPolicy.enabled.is_(True))).scalars().all()
     queued = 0
-    for device in db.execute(select(Device).where(Device.approved.is_(True), Device.last_seen_at >= online_since)).scalars():
+    for device in db.execute(select(Device).where(Device.approved.is_(True), presence.up_clause(now))).scalars():
         policy = policy_for_device(db, device, [p for p in policies if p.tenant_id == device.tenant_id])
         interval = timedelta(hours=(policy.scan_interval_hours if policy else 24) or 24)
-        last = (device.metrics or {}).get("patchScanAt")
+        incomplete = (device.metrics or {}).get("patchScanStatus") in {"partial", "failed"}
+        if incomplete:
+            interval = min(interval, timedelta(minutes=15))
+        last = (device.metrics or {}).get("patchScanAttemptAt" if incomplete else "patchScanAt")
         last_at = datetime.fromisoformat(last.rstrip("Z")) if last else None
         if last_at and now - last_at < interval:
             continue
@@ -769,14 +836,16 @@ def patch_compliance(db: Session, tenant_ids: list[str]) -> dict:
             .group_by(DevicePatch.device_id, DevicePatch.classification)).all():
         missing_by_device.setdefault(device_id, {})[classification] = count
     failed = db.execute(select(func.count()).where(DevicePatch.tenant_id.in_(tenant_ids), DevicePatch.status == "failed")).scalar() or 0
-    scanned = [d for d in devices if (d.metrics or {}).get("patchScanAt")]
-    fully = [d for d in scanned if not missing_by_device.get(d.id)]
-    critical = [d for d in scanned if missing_by_device.get(d.id, {}).get("critical") or missing_by_device.get(d.id, {}).get("security")]
+    scanned = [d for d in devices if (d.metrics or {}).get("patchScanAt")
+               and (d.metrics or {}).get("patchScanStatus") not in {"partial", "failed"}]
+    incomplete = [d for d in devices if (d.metrics or {}).get("patchScanStatus") in {"partial", "failed"}]
+    fully = [d for d in scanned if not missing_by_device.get(d.id) and not (d.metrics or {}).get("rebootPending")]
+    critical = [d for d in devices if missing_by_device.get(d.id, {}).get("critical") or missing_by_device.get(d.id, {}).get("security")]
     reboot = [d for d in devices if (d.metrics or {}).get("rebootPending")]
     return {
-        "devices": len(devices), "scanned": len(scanned), "fullyPatched": len(fully),
+        "devices": len(devices), "scanned": len(scanned), "fullyPatched": len(fully), "incompleteScans": len(incomplete),
         "missingCriticalOrSecurity": len(critical), "pendingReboot": len(reboot), "failedPatches": failed,
-        "compliancePercent": round(100 * len(fully) / len(scanned), 1) if scanned else 0,
+        "compliancePercent": round(100 * len(fully) / len(devices), 1) if devices else 0,
         "byDevice": {d.id: missing_by_device.get(d.id, {}) for d in devices},
     }
 
@@ -817,6 +886,10 @@ def next_run(schedule: dict, after: datetime) -> datetime | None:
 def run_scheduled_task(db: Session, task: ScheduledTask, actor: str | None = None) -> list[Job]:
     from .deps import tenant_subtree
 
+    task = db.execute(select(ScheduledTask).where(ScheduledTask.id == task.id).with_for_update()
+                      .execution_options(populate_existing=True)).scalar_one_or_none()
+    if task is None:
+        return []  # deletion won the race with the scheduler
     allowed = tenant_subtree(db, task.tenant_id)
     devices = resolve_targets(db, allowed, task.targets or {})
     jobs: list[Job] = []
@@ -832,6 +905,7 @@ def run_scheduled_task(db: Session, task: ScheduledTask, actor: str | None = Non
                                        name=f"{task.name}: {script.name}"))
             except ValueError as exc:
                 log.warning("scheduled task %s script error: %s", task.id, exc)
+                _record_held_script(db, exc, who, task.tenant_id, script, task=task.name)
         elif action.get("type") == "command":
             jobs.append(create_job(db, tenant_id=task.tenant_id, actor=who, name=f"{task.name}: {action.get('command')}",
                                    devices=devices, command_type=str(action.get("command")), payload=action.get("payload") or {},
@@ -847,7 +921,8 @@ def run_scheduled_task(db: Session, task: ScheduledTask, actor: str | None = Non
 def run_due_tasks(db: Session, now: datetime | None = None) -> int:
     now = now or utcnow()
     count = 0
-    for task in db.execute(select(ScheduledTask).where(ScheduledTask.enabled.is_(True), ScheduledTask.next_run_at <= now)).scalars():
+    for task in db.execute(select(ScheduledTask).where(ScheduledTask.enabled.is_(True), ScheduledTask.next_run_at <= now)
+                            .with_for_update(skip_locked=True).execution_options(populate_existing=True)).scalars():
         run_scheduled_task(db, task)
         task.next_run_at = next_run(task.schedule or {}, now)
         if task.next_run_at is None:
@@ -898,7 +973,8 @@ def metric_value(db: Session, condition: MonitorCondition, device: Device, now: 
     metrics = device.metrics or {}
     m, target = condition.metric, condition.target.strip()
     if m == "offline_minutes":
-        if device.last_seen_at is None:
+        # Profile-only iPhones and Macs are seen only while they look names up: web_profile raises its own alert.
+        if device.last_seen_at is None or (device.metrics or {}).get("agentless"):
             return None, ""
         minutes = (now - device.last_seen_at).total_seconds() / 60
         return round(minutes, 1), f"offline for {int(minutes)} minutes"
@@ -1041,6 +1117,7 @@ def _trigger(db: Session, condition: MonitorCondition, device: Device, state: Co
                                ticket_id=state.ticket_id)
                 except ValueError as exc:
                     log.warning("self-heal script failed validation: %s", exc)
+                    _record_held_script(db, exc, f"monitor:{condition.name}", device.tenant_id, script, device=device.hostname)
         elif kind == "command" and action.get("command"):
             create_job(db, tenant_id=device.tenant_id, actor=f"monitor:{condition.name}",
                        name=f"Self-heal: {condition.name}", devices=[device],
@@ -1119,7 +1196,7 @@ def record_heartbeat_metrics(db: Session, device: Device, metrics: dict) -> None
     if isinstance(metrics.get("remoteCapabilities"), list):
         clean["remoteCapabilities"] = [str(x)[:20] for x in metrics["remoteCapabilities"][:10]]
     previous = device.metrics or {}
-    for key in ("patchScanAt",):
+    for key in ("patchScanAt", "patchScanAttemptAt", "patchScanStatus", "patchProviders"):
         if key in previous:
             clean[key] = previous[key]
     if "rebootPending" not in clean and "rebootPending" in previous:
@@ -1128,6 +1205,30 @@ def record_heartbeat_metrics(db: Session, device: Device, metrics: dict) -> None
     free = [d["freePercent"] for d in clean.get("disks", [])]
     db.add(DeviceMetric(device_id=device.id, cpu=clean.get("cpuPercent", 0), memory=clean.get("memoryPercent", 0),
                         disk_free_percent=min(free) if free else 100))
+
+    # Record disk telemetry history for storage predictive analytics
+    for disk in clean.get("disks", []):
+        mount = str(disk.get("mount", ""))[:120]
+        total_gb = float(disk.get("totalGb", 0))
+        free_gb = float(disk.get("freeGb", 0))
+        used_gb = max(0.0, total_gb - free_gb)
+        free_percent = float(disk.get("freePercent", 100))
+        if mount and total_gb > 0:
+            db.add(DiskTelemetryHistory(
+                device_id=device.id,
+                mount=mount,
+                total_gb=total_gb,
+                used_gb=used_gb,
+                free_gb=free_gb,
+                free_percent=free_percent
+            ))
+
+    # Evaluate CPU/RAM anomalies
+    try:
+        from . import analytics
+        analytics.process_device_anomalies(db, device, metrics)
+    except Exception as exc:
+        log.warning("Anomaly evaluation failed for device %s: %s", device.id, exc)
 
 
 def evaluate_offline(db: Session, now: datetime | None = None) -> int:
@@ -1179,4 +1280,13 @@ def tick(db: Session) -> dict:
     result["undeliveredCommandsExpired"] = expire_stale_queued_commands(db, now)
     cutoff = now - timedelta(days=30)
     db.query(DeviceMetric).filter(DeviceMetric.at < cutoff).delete()
+    db.query(DiskTelemetryHistory).filter(DiskTelemetryHistory.at < now - timedelta(days=90)).delete()
+
+    # Periodic storage exhaustion prediction pass
+    try:
+        from . import analytics
+        analytics.tick_analytics(db)
+    except Exception as exc:
+        log.warning("Analytics tick failed: %s", exc)
+
     return result

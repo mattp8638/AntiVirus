@@ -81,6 +81,7 @@ target_compile_definitions(antivirus-sqlite3 PRIVATE
 )
 
 add_library(antivirus-agent-core STATIC
+  src/CommandCancellation.cpp
   ../sensor/etw/src/ProcessEtwSensor.cpp
   ../sensor/wfp/src/NetworkIsolationManager.cpp
   src/AmsiEvidenceRecorder.cpp
@@ -136,9 +137,11 @@ add_library(antivirus-agent-core STATIC
   src/RmmExecutors.cpp
   src/WebSocketClient.cpp
   src/NetworkProbe.cpp
+  src/AmtWsman.cpp
   src/BundleArchive.cpp
   src/FirewallPolicy.cpp
   src/LocalAdminRotation.cpp
+  src/TemporaryAdmin.cpp
   src/RansomwareDetector.cpp
   src/RansomwareShield.cpp
   src/BruteForceTracker.cpp
@@ -176,13 +179,14 @@ antivirus_apply_portable_runtime(antivirus-agent-core)
 # Remote access helper: started by the service in the signed-in user's session.
 add_executable(fenrir-remote WIN32
   ../tools/remotehelper/src/RemoteHelperMain.cpp
+  ../tools/remotehelper/src/RemoteTunnel.cpp
   src/WebSocketClient.cpp
   src/ExtendedPolicy.cpp
   src/BehaviorRules.cpp
   src/StringUtils.cpp
 )
 target_include_directories(fenrir-remote PRIVATE include ../shared/include)
-target_link_libraries(fenrir-remote PRIVATE winhttp gdiplus ole32 wtsapi32 advapi32 shell32 user32 gdi32)
+target_link_libraries(fenrir-remote PRIVATE winhttp gdiplus ole32 wtsapi32 advapi32 shell32 user32 gdi32 ws2_32)
 if(MINGW)
   target_link_options(fenrir-remote PRIVATE -municode)
 endif()
@@ -582,8 +586,16 @@ endif()
 add_executable(fenrir-mltest ../tools/mltestcli/src/MlTestCliMain.cpp src/MlStaticModel.cpp)
 target_include_directories(fenrir-mltest PRIVATE include)
 add_executable(fenrir-behavior-tests ../tests/BehaviorRulesTests.cpp src/BehaviorRules.cpp)
+add_executable(fenrir-tempadmin-tests ../tests/TemporaryAdminTests.cpp)
+target_include_directories(fenrir-tempadmin-tests PRIVATE include)
 target_include_directories(fenrir-behavior-tests PRIVATE include)
 add_executable(fenrir-remote-sas-tests ../tests/RemoteSasRequestTests.cpp)
+add_executable(fenrir-winget-tests ../tests/WingetSupportTests.cpp)
+add_executable(fenrir-cancellation-tests ../tests/CommandCancellationTests.cpp src/CommandCancellation.cpp)
+target_include_directories(fenrir-cancellation-tests PRIVATE include)
+antivirus_apply_portable_runtime(fenrir-cancellation-tests)
+target_include_directories(fenrir-winget-tests PRIVATE include)
+antivirus_apply_portable_runtime(fenrir-winget-tests)
 target_include_directories(fenrir-remote-sas-tests PRIVATE include)
 antivirus_apply_portable_runtime(fenrir-remote-sas-tests)
 add_executable(fenrir-remote-pipe-tests ../tests/RemotePipeIoTests.cpp)
@@ -593,7 +605,7 @@ add_executable(fenrir-policy-tests ../tests/PolicyAndDeviceControlTests.cpp src/
 target_link_libraries(fenrir-policy-tests PRIVATE bcrypt netapi32 advapi32)
 add_executable(fenrir-admonitor-tests ../tests/AdMonitorTests.cpp src/AdEventRules.cpp)
 target_include_directories(fenrir-admonitor-tests PRIVATE include)
-add_executable(fenrir-rmm-tests ../tests/RmmExecutorTests.cpp src/RmmExecutors.cpp src/ExtendedPolicy.cpp src/BehaviorRules.cpp src/StringUtils.cpp src/CryptoUtils.cpp)
+add_executable(fenrir-rmm-tests ../tests/RmmExecutorTests.cpp src/RmmExecutors.cpp src/CommandCancellation.cpp src/ExtendedPolicy.cpp src/BehaviorRules.cpp src/StringUtils.cpp src/CryptoUtils.cpp)
 target_include_directories(fenrir-rmm-tests PRIVATE include ../shared/include)
 target_link_libraries(fenrir-rmm-tests PRIVATE wtsapi32 userenv urlmon advapi32 bcrypt crypt32 wintrust)
 antivirus_apply_portable_runtime(fenrir-rmm-tests)

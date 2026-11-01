@@ -91,6 +91,18 @@ class DeviceIdentityRejectedError final : public std::runtime_error {
   explicit DeviceIdentityRejectedError(const std::string& message) : std::runtime_error(message) {}
 };
 
+// The server answered with a non-2xx status. 400, 413 and 422 mean it will never accept that request as sent.
+class HttpStatusError final : public std::runtime_error {
+ public:
+  HttpStatusError(const unsigned long statusCode, const std::string& message)
+      : std::runtime_error(message), statusCode_(statusCode) {}
+  unsigned long StatusCode() const noexcept { return statusCode_; }
+  bool Malformed() const noexcept { return statusCode_ == 400 || statusCode_ == 413 || statusCode_ == 422; }
+
+ private:
+  unsigned long statusCode_;
+};
+
 // The Windows agent build the server ships (GET /api/v1/agent/update/windows).
 struct AgentPackageInfo {
   bool available{false};
@@ -118,6 +130,10 @@ class ControlPlaneClient {
   std::wstring SubmitSupportRequest(const AgentState& state, const std::string& bodyJson) const;
   // POST /elevation-requests; returns the response body ({"id","status","minutes"}).
   std::string RequestElevation(const AgentState& state, const std::string& bodyJson) const;
+  // POST /elevation-requests/<id>/events: a program launched as the temporary administrator, or the session's end.
+  void ReportElevationEvent(const AgentState& state, const std::wstring& requestId, const std::string& bodyJson) const;
+  // POST /commands/<id>/amt-credential: the AMT connection details for one amt.wsman command, released once.
+  std::string FetchAmtCredential(const AgentState& state, const std::wstring& commandId) const;
   // POST /profile with the system profile document ({"profile":..., "recoveryKeys":[...]}).
   void SendSystemProfile(const AgentState& state, const std::string& bodyJson) const;
   // ws(s)://.../api/v1/devices/<id>/realtime and the device key that authenticates it.
@@ -127,6 +143,7 @@ class ControlPlaneClient {
   TelemetryBatchResult SendTelemetryBatch(const AgentState& state, const std::vector<TelemetryRecord>& records) const;
   // types: optional comma-separated command types to fetch (servers without the filter return everything).
   CommandPollResult PollPendingCommands(const AgentState& state, int limit = 10, const std::wstring& types = L"") const;
+  bool CommandStopRequested(const AgentState& state, const std::wstring& commandId) const;
   // Uploads a forensic/support bundle for a command (before it is completed); returns the artifact id.
   std::wstring UploadCommandArtifact(const AgentState& state, const std::wstring& commandId, const std::wstring& filename,
                                      const std::string& data) const;

@@ -1,10 +1,12 @@
 #include "AgentService.h"
 #include "BuildInfo.h"
 #include "LocalAdminRotation.h"
+#include "TemporaryAdmin.h"
 #include "CrashReporter.h"
 #include "SystemProfile.h"
 #include "ExtendedPolicy.h"
 #include "FirewallPolicy.h"
+#include "AmtWsman.h"
 #include "NetworkProbe.h"
 #include "BundleArchive.h"
 #include "RemotePipeIo.h"
@@ -43,6 +45,7 @@
 
 #include "EvidenceRecorder.h"
 #include "ContextAwareness.h"
+#include "CommandCancellation.h"
 #include "CryptoUtils.h"
 #include "DestinationEventRecorder.h"
 #include "DestinationRuntimeStore.h"
@@ -444,6 +447,40 @@ void EnforceTelemetryQueueBudget(std::vector<TelemetryRecord>* pendingTelemetry)
 
   pendingTelemetry->erase(pendingTelemetry->begin(),
                           pendingTelemetry->begin() + (pendingTelemetry->size() - kMaxQueuedTelemetry));
+}
+
+// The same services, files, connections and patch posture, and a "starting a sync cycle" event, were sent every
+// cycle: about ten identical events a minute per device. Each distinct snapshot record (type, summary and payload
+// without the cycle number) now goes once every six hours; a change goes at once.
+bool RepeatedSnapshot(const TelemetryRecord& record) {
+  const auto& type = record.eventType;
+  if (type != L"service.sync.cycle" && type.find(L".snapshot") == std::wstring::npos) {
+    return false;
+  }
+  static const std::wregex cycleField(LR"("cycle":\d+,?)");
+  const auto key = type + L"|" + record.summary + L"|" + std::regex_replace(record.payloadJson, cycleField, L"");
+  static std::mutex mutex;
+  static std::unordered_map<std::wstring, ULONGLONG> sent;
+  const auto now = GetTickCount64();
+  const std::scoped_lock lock(mutex);
+  if (sent.size() > 20000) {
+    sent.clear();
+  }
+  const auto found = sent.find(key);
+  if (found != sent.end() && now - found->second < 6ULL * 60 * 60 * 1000) {
+    return true;
+  }
+  sent[key] = now;
+  return false;
+}
+
+// Detections and response outcomes, which go to the server ahead of routine activity.
+bool IsPriorityTelemetry(const std::wstring& eventType) {
+  static constexpr const wchar_t* kPrefixes[] = {L"scan.finding", L"scan.threat.", L"realtime.protection.action",
+                                                 L"threat.", L"quarantine.", L"ransomware.", L"tamper.",
+                                                 L"device.isolated", L"device.released"};
+  return std::any_of(std::begin(kPrefixes), std::end(kPrefixes),
+                     [&eventType](const wchar_t* prefix) { return eventType.rfind(prefix, 0) == 0; });
 }
 
 std::optional<EventEnvelope> BuildBehaviorEventFromNetworkTelemetry(const TelemetryRecord& record,
@@ -1072,7 +1109,7 @@ int AgentService::Run(const AgentRunMode mode) {
     ml::SetDefaultModelPath(processGuard_->ModelPath().wstring());
     processEtwSensor_ = std::make_unique<ProcessEtwSensor>(config_);
     processEtwSensor_->SetProcessStartHandler(
-        [guard = processGuard_.get()](const EtwProcessContext& process) { return guard->OnProcessStart(process); });
+        [guard = processGuard_.get()](EtwProcessContext& process) { return guard->OnProcessStart(process); });
     processEtwSensor_->SetRemoteThreadHandler([guard = processGuard_.get()](const EtwProcessContext& source, DWORD target) {
       return guard->OnRemoteThread(source, target);
     });
@@ -1868,6 +1905,17 @@ void AgentService::PollAndExecuteCommands(const int cycle) {
   if (state_.deviceId.empty()) {
     return;
   }
+  // Retirement revokes general polling credentials, so replay stop receipts
+  // through their command-scoped grant before asking for any more work.
+  try {
+    RuntimeDatabase database(config_.runtimeDatabasePath);
+    for (const auto& [id, result] : database.UnacknowledgedCancellations()) {
+      try {
+        controlPlaneClient_->CompleteCommand(state_, id, L"cancelled", result);
+        database.UpdateCommandJournalStatus(id, L"cancelled_ack", result, L"");
+      } catch (const std::exception&) { /* one unavailable receipt must not starve the rest */ }
+    }
+  } catch (const std::exception&) { /* durable receipts stay queued for reconnect */ }
 
   bool attemptedRecovery = false;
 
@@ -1920,13 +1968,14 @@ void AgentService::ExecuteJournaledCommand(const RemoteCommand& command, const A
     std::wstring savedStatus;
     std::wstring savedResult;
     if (commandJournalStore_->LoadReceipt(command.commandId, savedStatus, savedResult)) {
+      if (savedStatus == L"cancelled_ack") return;
       if (savedStatus == L"started" || savedStatus == L"polled") {
         savedStatus = L"failed";
         savedResult = L"{\"outcomeUncertain\":true,\"error\":\"Agent stopped while command execution was in progress; manual review required. No automatic replay.\"}";
         commandJournalStore_->RecordFailed(command, savedResult,
                                             L"Interrupted command; outcome uncertain");
       }
-      if (savedStatus == L"completed" || savedStatus == L"failed") {
+      if (savedStatus == L"completed" || savedStatus == L"failed" || savedStatus == L"cancelled") {
         try {
           controlPlaneClient_->CompleteCommand(identity, command.commandId, savedStatus, savedResult);
         } catch (const std::exception& error) {
@@ -1948,7 +1997,13 @@ void AgentService::ExecuteJournaledCommand(const RemoteCommand& command, const A
   std::wstring completionStatus = L"completed";
   std::wstring failureReason;
   try {
+    command_control::Monitor cancellation([&] { return controlPlaneClient_->CommandStopRequested(identity, command.commandId); });
+    command_control::Check();
     resultJson = ExecuteCommand(command);
+    command_control::Check();
+  } catch (const command_control::Cancelled& error) {
+    completionStatus = L"cancelled";
+    resultJson = L"{\"cancelled\":true,\"stopConfirmed\":true}";
   } catch (const rmm::CommandFailed& failed) {
     completionStatus = L"failed";
     failureReason = Utf8ToWide(failed.what());
@@ -1968,6 +2023,8 @@ void AgentService::ExecuteJournaledCommand(const RemoteCommand& command, const A
   try {
     if (completionStatus == L"completed") {
       commandJournalStore_->RecordCompleted(command, resultJson);
+    } else if (completionStatus == L"cancelled") {
+      commandJournalStore_->RecordCancelled(command, resultJson);
     } else {
       commandJournalStore_->RecordFailed(command, resultJson, failureReason);
     }
@@ -1980,6 +2037,8 @@ void AgentService::ExecuteJournaledCommand(const RemoteCommand& command, const A
 
   try {
     controlPlaneClient_->CompleteCommand(identity, command.commandId, completionStatus, resultJson);
+    if (completionStatus == L"cancelled")
+      RuntimeDatabase(config_.runtimeDatabasePath).UpdateCommandJournalStatus(command.commandId, L"cancelled_ack", resultJson, L"");
   } catch (const std::exception& error) {
     // The saved outcome will be re-sent on the next poll; never rerun.
     std::wcerr << L"Command completion not delivered; saved for reconnect: " <<
@@ -2016,6 +2075,7 @@ void AgentService::InteractiveCommandLoop() {
 }
 
 std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
+  command_control::Check();
   if (command.type == L"device.isolate") {
     return ExecuteIsolationCommand(command, true);
   }
@@ -2034,6 +2094,24 @@ std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
   }
   if (command.type == L"network.probe") {
     return Utf8ToWide(RunNetworkProbe(WideToUtf8(command.payloadJson)));
+  }
+  if (command.type == L"amt.wsman") {
+    const auto details = json::Parse(controlPlaneClient_->FetchAmtCredential(IdentitySnapshot(), command.commandId));
+    if (!details || !details->IsObject()) {
+      throw std::runtime_error("The AMT credential could not be read");
+    }
+    const auto text = [&](const char* key) {
+      return Utf8ToWide(details->Get(key) ? details->Get(key)->String().value_or("") : "");
+    };
+    AmtCredential credential;
+    credential.host = text("host");
+    credential.username = text("username");
+    credential.password = text("password");
+    credential.port = details->Get("port") ? static_cast<int>(details->Get("port")->Number().value_or(0)) : 0;
+    credential.tlsInsecure = details->Get("tlsInsecure") && details->Get("tlsInsecure")->Bool().value_or(false);
+    const auto result = RunAmtWsman(WideToUtf8(command.payloadJson), credential);
+    SecureZeroMemory(credential.password.data(), credential.password.size() * sizeof(wchar_t));
+    return Utf8ToWide(result);
   }
   if (command.type == L"amsi.telemetry.submit") {
     return ExecuteAmsiTelemetrySubmitCommand(command);
@@ -2137,11 +2215,14 @@ std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
     }
     return command.type == L"protection.pause" ? PauseProtection(command) : ResumeProtection(command);
   }
-  if (command.type == L"elevation.request" || command.type == L"elevation.status") {
-    // Only the signed-in user, from the agent window (the local pipe), asks for their own elevation.
+  if (command.type == L"elevation.request" || command.type == L"elevation.status" || command.type == L"elevation.finish" ||
+      command.type == L"elevation.launched") {
+    // Only the signed-in user, from the agent window (the local pipe), asks for, uses and ends their own elevation.
     if (command.issuedBy.rfind(L"local-dashboard:", 0) != 0 || command.callerSid.empty()) {
       throw std::runtime_error("Admin access is requested from the agent window on the device");
     }
+    if (command.type == L"elevation.finish") return FinishElevation(command);
+    if (command.type == L"elevation.launched") return ReportElevationLaunch(command);
     return command.type == L"elevation.request" ? RequestElevation(command) : ElevationStatus(command);
   }
   if (command.type == L"elevation.grant" || command.type == L"elevation.revoke") {
@@ -2187,7 +2268,12 @@ std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
   if (command.type == L"remote.session.end") {
     return EndRemoteHelper(command);
   }
-  if (command.type == L"software.search") {
+  if (command.type == L"patch.posture.refresh") {
+    const auto summary = PatchOrchestrator(config_).RefreshPatchState();
+    return L"{\"success\":true,\"status\":\"refreshed\",\"summary\":\"Patch inventory refreshed.\",\"windowsUpdateCount\":" +
+           std::to_wstring(summary.windowsUpdateCount) + L",\"softwareCount\":" + std::to_wstring(summary.softwareCount) + L"}";
+  }
+  if (command.type == L"software.search" || command.type == L"software.update.search") {
     return ExecuteSoftwareCommand(command, false, true);
   }
   if (command.type == L"software.update") {
@@ -2281,6 +2367,24 @@ std::wstring AgentService::ExecuteOnDemandScan(const RemoteCommand& command, con
   const auto scope = full ? std::wstring(L"full") : std::wstring(L"quick");
   auto targets = full ? BuildFullScanTargets(ScanNetworkDrives()) : BuildQuickScanTargets();
   const auto count = targets.size();
+  if (command_control::current) {
+    // Remote scans stay attached to their command until they finish, so the
+    // cancellation monitor remains alive. Local dashboard scans stay async.
+    bool expected = false;
+    if (!backgroundScanBusy_->compare_exchange_strong(expected, true))
+      throw std::runtime_error("Another scan is already running on this device");
+    struct BusyGuard { std::shared_ptr<std::atomic_bool> busy; ~BusyGuard() { busy->store(false); } } guard{backgroundScanBusy_};
+    LocalScanExecutionOptions options{};
+    options.source = L"command." + command.commandId;
+    options.queueTelemetry = true;
+    options.applyRemediation = true;
+    const auto result = ExecuteLocalScan(config_, state_, targets, options, [](const LocalScanProgressUpdate&) {
+      command_control::Check();
+    });
+    command_control::Check();
+    return L"{\"scope\":\"" + scope + L"\",\"targetsScanned\":" + std::to_wstring(result.targetCount) +
+           L",\"findingCount\":" + std::to_wstring(result.findings.size()) + L"}";
+  }
   if (!StartBackgroundScan(L"scan." + scope, scope, L"command." + command.commandId, std::move(targets))) {
     throw std::runtime_error("Another scan is already running on this device; try again when it finishes");
   }
@@ -2311,11 +2415,12 @@ std::wstring AgentService::ExecuteTargetedScan(const RemoteCommand& command) {
     throw std::runtime_error("Targeted scan path does not exist");
   }
 
-  auto findings = ScanTargets({targetPath}, policy_);
+  auto findings = ScanTargets({targetPath}, policy_, [](const auto&) { command_control::Check(); });
   QuarantineStore quarantineStore(config_.quarantineRootPath, config_.runtimeDatabasePath);
   EvidenceRecorder evidenceRecorder(config_.evidenceRootPath, config_.runtimeDatabasePath);
 
   for (auto& finding : findings) {
+    command_control::Check();
     if (finding.verdict.disposition == VerdictDisposition::Quarantine) {
       const auto quarantineResult = quarantineStore.QuarantineFile(finding);
       if (quarantineResult.success) {
@@ -2724,6 +2829,12 @@ std::vector<std::wstring> AgentService::LocalAdminKeepList(const std::wstring& p
       if (const auto* grants = parsed->Get("grants"); grants && std::get_if<json::Array>(&grants->v)) {
         for (const auto& grant : std::get<json::Array>(grants->v)) {
           if (const auto* sid = grant.Get("sid"); sid && sid->String()) keep.push_back(Utf8ToWide(*sid->String()));
+          if (const auto* account = grant.Get("account"); account && account->String() && !account->String()->empty()) {
+            keep.push_back(Utf8ToWide(*account->String()));
+          }
+          if (const auto* accountSid = grant.Get("accountSid"); accountSid && accountSid->String() && !accountSid->String()->empty()) {
+            keep.push_back(Utf8ToWide(*accountSid->String()));
+          }
         }
       }
     }
@@ -3178,59 +3289,87 @@ std::wstring AgentService::LaunchRemoteHelper(const RemoteCommand& command) {
     std::ofstream out(optionsPath, std::ios::binary | std::ios::trunc);
     out << WideToUtf8(payload);
   }
-  const auto windowsSession = InteractiveSessionId();
-  if (windowsSession == 0 || windowsSession == 0xFFFFFFFF) {
+  // Backstage sessions (terminal, files, processes, services) run as SYSTEM in the service's own session 0:
+  // nothing appears on the user's screen and they work with nobody signed in. Desktop sessions run in the
+  // signed-in user's console session.
+  const auto mode = ExtractPayloadString(command.payloadJson, "mode").value_or(L"");
+  if (mode == L"backstage" && processGuard_ && !processGuard_->CurrentExtendedPolicy().remoteBackstageAllowed) {
     std::filesystem::remove(optionsPath, ec);
-    throw std::runtime_error("No interactive Windows session is available for remote access");
+    throw std::runtime_error("Backstage access is turned off by this device's policy");
   }
-  HANDLE self = nullptr, primary = nullptr;
-  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID, &self) ||
-      !DuplicateTokenEx(self, MAXIMUM_ALLOWED, nullptr, SecurityImpersonation, TokenPrimary, &primary)) {
-    if (self) CloseHandle(self);
-    std::filesystem::remove(optionsPath, ec);
-    throw std::runtime_error("Could not prepare the remote access helper token");
+  if (mode == L"tunnel") {
+    // The device's own policy decides too: a tunnel needs allowTunnels and a port from its tunnelPorts.
+    const auto policy = processGuard_ ? processGuard_->CurrentExtendedPolicy() : ExtendedPolicy{};
+    const auto port = static_cast<int>(ExtractPayloadUInt32(command.payloadJson, "targetPort").value_or(0));
+    if (!policy.remoteTunnelsAllowed ||
+        std::find(policy.remoteTunnelPorts.begin(), policy.remoteTunnelPorts.end(), port) == policy.remoteTunnelPorts.end()) {
+      std::filesystem::remove(optionsPath, ec);
+      throw std::runtime_error("This tunnel is not allowed by this device's policy");
+    }
   }
-  CloseHandle(self);
-  DWORD target = windowsSession;
-  if (!SetTokenInformation(primary, TokenSessionId, &target, sizeof(target))) {
-    const DWORD error = GetLastError();
-    CloseHandle(primary);
-    std::filesystem::remove(optionsPath, ec);
-    throw std::runtime_error("Could not target the remote Windows session (error " + std::to_string(error) + ")");
-  }
+  const bool backstage = mode == L"backstage" || mode == L"tunnel";  // both run silently in session 0
   std::wstring commandLine = L"\"" + helper.wstring() + L"\" --options \"" + optionsPath.wstring() + L"\"";
   std::vector<wchar_t> mutableCommand(commandLine.begin(), commandLine.end());
   mutableCommand.push_back(L'\0');
   STARTUPINFOW startup{};
   startup.cb = sizeof(startup);
-  wchar_t desktop[] = L"winsta0\\default";
-  startup.lpDesktop = desktop;
   PROCESS_INFORMATION process{};
-  const BOOL created = CreateProcessAsUserW(primary, helper.c_str(), mutableCommand.data(), nullptr, nullptr, FALSE,
-                                            CREATE_NEW_PROCESS_GROUP, nullptr, helper.parent_path().c_str(), &startup, &process);
-  CloseHandle(primary);
-  if (!created) {
-    std::filesystem::remove(optionsPath, ec);
-    throw std::runtime_error("Could not start the remote access helper (error " + std::to_string(GetLastError()) + ")");
-  }
-  CloseHandle(process.hThread);
-  // Offer the service-side SAS broker before the helper reaches the relay, so
-  // the first click on the sign-in screen cannot race the 30-second start wait.
-  HANDLE watched = nullptr;
-  if (!DuplicateHandle(GetCurrentProcess(), process.hProcess, GetCurrentProcess(), &watched, SYNCHRONIZE, FALSE, 0)) {
-    TerminateProcess(process.hProcess, 1);
-    CloseHandle(process.hProcess);
-    std::filesystem::remove(optionsPath, ec);
-    throw std::runtime_error("Could not start the Ctrl+Alt+Del service channel");
-  }
-  try {
-    std::thread(ServeSasRequests, SasPipeName(sessionId), process.dwProcessId, windowsSession, watched).detach();
-  } catch (...) {
-    CloseHandle(watched);
-    TerminateProcess(process.hProcess, 1);
-    CloseHandle(process.hProcess);
-    std::filesystem::remove(optionsPath, ec);
-    throw;
+  const DWORD windowsSession = backstage ? 0 : InteractiveSessionId();
+  if (backstage) {
+    if (!CreateProcessW(helper.c_str(), mutableCommand.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
+                        nullptr, helper.parent_path().c_str(), &startup, &process)) {
+      std::filesystem::remove(optionsPath, ec);
+      throw std::runtime_error("Could not start the backstage helper (error " + std::to_string(GetLastError()) + ")");
+    }
+    CloseHandle(process.hThread);
+  } else {
+    if (windowsSession == 0 || windowsSession == 0xFFFFFFFF) {
+      std::filesystem::remove(optionsPath, ec);
+      throw std::runtime_error("No interactive Windows session is available for remote access");
+    }
+    HANDLE self = nullptr, primary = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID, &self) ||
+        !DuplicateTokenEx(self, MAXIMUM_ALLOWED, nullptr, SecurityImpersonation, TokenPrimary, &primary)) {
+      if (self) CloseHandle(self);
+      std::filesystem::remove(optionsPath, ec);
+      throw std::runtime_error("Could not prepare the remote access helper token");
+    }
+    CloseHandle(self);
+    DWORD target = windowsSession;
+    if (!SetTokenInformation(primary, TokenSessionId, &target, sizeof(target))) {
+      const DWORD error = GetLastError();
+      CloseHandle(primary);
+      std::filesystem::remove(optionsPath, ec);
+      throw std::runtime_error("Could not target the remote Windows session (error " + std::to_string(error) + ")");
+    }
+    wchar_t desktop[] = L"winsta0\\default";
+    startup.lpDesktop = desktop;
+    const BOOL created = CreateProcessAsUserW(primary, helper.c_str(), mutableCommand.data(), nullptr, nullptr, FALSE,
+                                              CREATE_NEW_PROCESS_GROUP, nullptr, helper.parent_path().c_str(), &startup, &process);
+    CloseHandle(primary);
+    if (!created) {
+      std::filesystem::remove(optionsPath, ec);
+      throw std::runtime_error("Could not start the remote access helper (error " + std::to_string(GetLastError()) + ")");
+    }
+    CloseHandle(process.hThread);
+    // Offer the service-side SAS broker before the helper reaches the relay, so
+    // the first click on the sign-in screen cannot race the 30-second start wait.
+    HANDLE watched = nullptr;
+    if (!DuplicateHandle(GetCurrentProcess(), process.hProcess, GetCurrentProcess(), &watched, SYNCHRONIZE, FALSE, 0)) {
+      TerminateProcess(process.hProcess, 1);
+      CloseHandle(process.hProcess);
+      std::filesystem::remove(optionsPath, ec);
+      throw std::runtime_error("Could not start the Ctrl+Alt+Del service channel");
+    }
+    try {
+      std::thread(ServeSasRequests, SasPipeName(sessionId), process.dwProcessId, windowsSession, watched).detach();
+    } catch (...) {
+      CloseHandle(watched);
+      TerminateProcess(process.hProcess, 1);
+      CloseHandle(process.hProcess);
+      std::filesystem::remove(optionsPath, ec);
+      throw;
+    }
   }
   // Wait until the helper reaches the relay (its log says so) or quits, so a helper that cannot connect
   // fails the command with its reason instead of leaving the technician on "waiting" forever.
@@ -3274,10 +3413,11 @@ std::wstring AgentService::LaunchRemoteHelper(const RemoteCommand& command) {
     }
     remoteHelpers_[sessionId] = process.hProcess;
   }
-  QueueTelemetryEvent(L"remote.session.started", L"remote-access", L"A remote access session was started.",
-                      std::wstring(L"{\"sessionId\":\"") + sessionId + L"\",\"windowsSession\":" + std::to_wstring(windowsSession) +
+  QueueTelemetryEvent(L"remote.session.started", L"remote-access", backstage ? L"A backstage remote session was started." : L"A remote access session was started.",
+                      std::wstring(L"{\"sessionId\":\"") + sessionId + L"\",\"backstage\":" + (backstage ? L"true" : L"false") +
+                          L",\"windowsSession\":" + std::to_wstring(windowsSession) +
                           L",\"technician\":\"" + Utf8ToWide(EscapeJsonString(ExtractPayloadString(command.payloadJson, "technician").value_or(L""))) + L"\"}");
-  return std::wstring(L"{\"started\":true,\"consent\":\"pending\",\"helperPid\":") + std::to_wstring(process.dwProcessId) +
+  return std::wstring(L"{\"started\":true,\"consent\":\"") + (backstage ? L"not_required" : L"pending") + L"\",\"helperPid\":" + std::to_wstring(process.dwProcessId) +
          L",\"windowsSession\":" + std::to_wstring(windowsSession) + L",\"reachedRelay\":" + (reachedRelay ? L"true" : L"false") +
          L",\"logPath\":\"" + Utf8ToWide(EscapeJsonString(logPath.wstring())) + L"\"}";
 }
@@ -3597,18 +3737,26 @@ std::wstring AgentService::RotateLocalAdminPassword(const bool force) {
 
 namespace {
 
+// One approved request: the temporary local administrator made for it, and when it ends. Passwords are never stored.
 struct ElevationGrant {
   std::wstring sid, user, requestId;
   long long until{0};
-  bool wasAdmin{false};
+  bool wasAdmin{false};  // the user is already an administrator: no temporary account was needed
+  std::wstring account, accountSid, kind, target, arguments;
 };
 struct ElevationPending {
   std::wstring sid, requestId;
   long long at{0};
 };
+// Ended sessions whose profile is still in use, or whose end the cloud has not acknowledged yet.
+struct ElevationCleanup {
+  std::wstring requestId, account, accountSid, reason;
+  bool profileRemoved{false}, reported{false};
+};
 struct ElevationState {
   std::vector<ElevationGrant> grants;
   std::vector<ElevationPending> pending;
+  std::vector<ElevationCleanup> cleanup;
 };
 
 ElevationState LoadElevations(const std::filesystem::path& file) {
@@ -3626,31 +3774,51 @@ ElevationState LoadElevations(const std::filesystem::path& file) {
     const auto* f = v.Get(key);
     return f && f->Number() ? static_cast<long long>(*f->Number()) : 0LL;
   };
+  const auto flag = [](const json::Value& v, const char* key) {
+    const auto* f = v.Get(key);
+    return f && f->Bool().value_or(false);
+  };
   if (const auto* grants = parsed->Get("grants"); grants && std::get_if<json::Array>(&grants->v)) {
     for (const auto& g : std::get<json::Array>(grants->v)) {
-      const auto* was = g.Get("wasAdmin");
-      state.grants.push_back({str(g, "sid"), str(g, "user"), str(g, "requestId"), num(g, "until"), was && was->Bool().value_or(false)});
+      state.grants.push_back({str(g, "sid"), str(g, "user"), str(g, "requestId"), num(g, "until"), flag(g, "wasAdmin"),
+                              str(g, "account"), str(g, "accountSid"), str(g, "kind"), str(g, "target"), str(g, "arguments")});
     }
   }
   if (const auto* pending = parsed->Get("pending"); pending && std::get_if<json::Array>(&pending->v)) {
     for (const auto& p : std::get<json::Array>(pending->v)) state.pending.push_back({str(p, "sid"), str(p, "requestId"), num(p, "at")});
+  }
+  if (const auto* cleanup = parsed->Get("cleanup"); cleanup && std::get_if<json::Array>(&cleanup->v)) {
+    for (const auto& c : std::get<json::Array>(cleanup->v)) {
+      state.cleanup.push_back({str(c, "requestId"), str(c, "account"), str(c, "accountSid"), str(c, "reason"), flag(c, "profileRemoved"),
+                               flag(c, "reported")});
+    }
   }
   return state;
 }
 
 void SaveElevations(const std::filesystem::path& file, const ElevationState& state) {
   const auto q = [](const std::wstring& v) { return L"\"" + Utf8ToWide(EscapeJsonString(v)) + L"\""; };
+  const auto b = [](bool v) { return std::wstring(v ? L"true" : L"false"); };
   std::wstring body = L"{\"grants\":[";
   for (std::size_t i = 0; i < state.grants.size(); ++i) {
     const auto& g = state.grants[i];
     body += (i ? L"," : L"") + std::wstring(L"{\"sid\":") + q(g.sid) + L",\"user\":" + q(g.user) + L",\"requestId\":" +
-            q(g.requestId) + L",\"until\":" + std::to_wstring(g.until) + L",\"wasAdmin\":" + (g.wasAdmin ? L"true" : L"false") + L"}";
+            q(g.requestId) + L",\"until\":" + std::to_wstring(g.until) + L",\"wasAdmin\":" + b(g.wasAdmin) + L",\"account\":" +
+            q(g.account) + L",\"accountSid\":" + q(g.accountSid) + L",\"kind\":" + q(g.kind) + L",\"target\":" + q(g.target) +
+            L",\"arguments\":" + q(g.arguments) + L"}";
   }
   body += L"],\"pending\":[";
   for (std::size_t i = 0; i < state.pending.size(); ++i) {
     const auto& p = state.pending[i];
     body += (i ? L"," : L"") + std::wstring(L"{\"sid\":") + q(p.sid) + L",\"requestId\":" + q(p.requestId) + L",\"at\":" +
             std::to_wstring(p.at) + L"}";
+  }
+  body += L"],\"cleanup\":[";
+  for (std::size_t i = 0; i < state.cleanup.size(); ++i) {
+    const auto& c = state.cleanup[i];
+    body += (i ? L"," : L"") + std::wstring(L"{\"requestId\":") + q(c.requestId) + L",\"account\":" + q(c.account) +
+            L",\"accountSid\":" + q(c.accountSid) + L",\"reason\":" + q(c.reason) + L",\"profileRemoved\":" + b(c.profileRemoved) +
+            L",\"reported\":" + b(c.reported) + L"}";
   }
   body += L"]}";
   std::ofstream(file, std::ios::binary | std::ios::trunc) << WideToUtf8(body);
@@ -3670,6 +3838,12 @@ std::wstring UnixToIso(const long long seconds) {
   return buffer;
 }
 
+std::wstring Quoted(const std::wstring& value) { return L"\"" + Utf8ToWide(EscapeJsonString(value)) + L"\""; }
+
+// The Windows account expiry is set a few minutes after the session's end: Fenrir deletes the account on time, and
+// Windows stops it working even if the agent is not running to do so.
+constexpr long long kExpiryBackstopSeconds = 5 * 60;
+
 }  // namespace
 
 std::wstring AgentService::RequestElevation(const RemoteCommand& command) {
@@ -3683,8 +3857,17 @@ std::wstring AgentService::RequestElevation(const RemoteCommand& command) {
   }
   const auto user = command.issuedBy.substr(std::wstring(L"local-dashboard:").size());
   const auto reason = ExtractPayloadString(command.payloadJson, "reason").value_or(L"");
-  const std::string body = "{\"user\":\"" + EscapeJsonString(user.substr(0, 200)) + "\",\"userSid\":\"" +
-                           EscapeJsonString(command.callerSid) + "\",\"reason\":\"" + EscapeJsonString(reason.substr(0, 1000)) + "\"}";
+  // run: one program to start as the temporary administrator (from the PAM tray); session: admin access in general.
+  const auto target = ExtractPayloadString(command.payloadJson, "target").value_or(L"");
+  const auto arguments = ExtractPayloadString(command.payloadJson, "arguments").value_or(L"");
+  const bool run = !target.empty();
+  std::string body = "{\"user\":\"" + EscapeJsonString(user.substr(0, 200)) + "\",\"userSid\":\"" +
+                     EscapeJsonString(command.callerSid) + "\",\"reason\":\"" + EscapeJsonString(reason.substr(0, 1000)) +
+                     "\",\"kind\":\"" + (run ? "run" : "session") + "\"";
+  if (run) {
+    body += ",\"target\":\"" + EscapeJsonString(target.substr(0, 1024)) + "\",\"arguments\":\"" + EscapeJsonString(arguments.substr(0, 2000)) + "\"";
+  }
+  body += "}";
   const auto response = controlPlaneClient_->RequestElevation(IdentitySnapshot(), body);
   const auto parsed = json::Parse(response);
   const auto* id = parsed ? parsed->Get("id") : nullptr;
@@ -3697,18 +3880,32 @@ std::wstring AgentService::RequestElevation(const RemoteCommand& command) {
     SaveElevations(file, state);
   }
   QueueTelemetryEvent(L"elevation.requested", L"endpoint-client", user + L" asked for temporary admin access.",
-                      L"{\"user\":\"" + Utf8ToWide(EscapeJsonString(user)) + L"\"}");
+                      L"{\"user\":" + Quoted(user) + L",\"kind\":\"" + (run ? L"run" : L"session") + L"\",\"target\":" + Quoted(target) + L"}");
   return Utf8ToWide(response);
 }
 
 std::wstring AgentService::ElevationStatus(const RemoteCommand& command) {
+  // Only the user the session is for sees its account and password (the local pipe identifies the caller).
   const std::lock_guard lock(elevationMutex_);
   const auto state = LoadElevations(config_.runtimeDatabasePath.parent_path() / L"elevations.json");
   const auto now = static_cast<long long>(std::time(nullptr));
   for (const auto& grant : state.grants) {
-    if (grant.sid == command.callerSid && grant.until > now) {
-      return L"{\"state\":\"granted\",\"until\":\"" + UnixToIso(grant.until) + L"\"}";
+    if (grant.sid != command.callerSid || grant.until <= now) continue;
+    std::wstring out = L"{\"state\":\"granted\",\"until\":\"" + UnixToIso(grant.until) + L"\",\"requestId\":" + Quoted(grant.requestId) +
+                       L",\"kind\":" + Quoted(grant.kind.empty() ? L"session" : grant.kind) + L",\"target\":" + Quoted(grant.target) +
+                       L",\"arguments\":" + Quoted(grant.arguments);
+    if (!grant.account.empty()) {
+      auto& password = elevationPasswords_[grant.requestId];
+      if (password.empty()) {
+        // The service restarted and no longer knows it: give the account a new one.
+        password = laps::GeneratePassword(20);
+        if (tempadmin::SetPassword(grant.account, password) != 0) password.clear();
+      }
+      out += L",\"account\":" + Quoted(L".\\" + grant.account) + L",\"password\":" + Quoted(password);
+    } else {
+      out += L",\"alreadyAdmin\":true";
     }
+    return out + L"}";
   }
   for (const auto& pending : state.pending) {
     if (pending.sid == command.callerSid && now - pending.at < 24 * 3600) return L"{\"state\":\"pending\"}";
@@ -3720,92 +3917,188 @@ std::wstring AgentService::GrantElevation(const RemoteCommand& command) {
   const auto sid = ExtractPayloadString(command.payloadJson, "userSid").value_or(L"");
   const auto user = ExtractPayloadString(command.payloadJson, "user").value_or(sid);
   const auto requestId = ExtractPayloadString(command.payloadJson, "requestId").value_or(L"");
-  long long minutes = 30;
-  if (const auto pos = command.payloadJson.find(L"\"minutes\""); pos != std::wstring::npos) {
-    const auto digits = command.payloadJson.find_first_of(L"0123456789", pos + 9);
-    if (digits != std::wstring::npos) minutes = std::wcstoll(command.payloadJson.c_str() + digits, nullptr, 10);
-  }
+  const auto kind = ExtractPayloadString(command.payloadJson, "kind").value_or(L"session");
+  const auto target = ExtractPayloadString(command.payloadJson, "target").value_or(L"");
+  const auto arguments = ExtractPayloadString(command.payloadJson, "arguments").value_or(L"");
+  long long minutes = static_cast<long long>(ExtractPayloadUInt32(command.payloadJson, "minutes").value_or(30));
   minutes = std::clamp(minutes, 5LL, 480LL);
   if (!PlausibleUserSid(sid)) {
     throw std::runtime_error("The request does not name a valid user account");
   }
+  if (requestId.empty() || requestId.size() > 64) {
+    throw std::runtime_error("The request has no valid id");
+  }
   if (laps::IsDomainController()) {
-    throw std::runtime_error("This is a domain controller; temporary admin rights are never granted on one");
+    throw std::runtime_error("This is a domain controller; temporary admin accounts are never created on one");
   }
   const auto members = laps::ListAdministrators();
   const bool wasAdmin = std::any_of(members.begin(), members.end(), [&](const laps::AdminMember& m) { return _wcsicmp(m.sid.c_str(), sid.c_str()) == 0; });
-  if (!wasAdmin) {
-    if (const auto status = laps::AddAdministrator(sid); status != 0) {
-      throw std::runtime_error("The user could not be added to the Administrators group (error " + std::to_string(status) + ")");
-    }
-  }
   const auto until = static_cast<long long>(std::time(nullptr)) + minutes * 60;
+  std::wstring account, accountSid, password;
   {
+    // Held while the account is created so the expiry pass never sees it before its grant is saved (it would delete it as left over).
     const std::lock_guard lock(elevationMutex_);
+    if (!wasAdmin) {
+      account = tempadmin::AccountName(user, requestId);
+      password = laps::GeneratePassword(20);
+      if (const auto status = tempadmin::Create(account, password, until + kExpiryBackstopSeconds, &accountSid); status != 0) {
+        SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+        throw std::runtime_error("The temporary admin account could not be created (Windows error " + std::to_string(status) + ")");
+      }
+    }
     const auto file = config_.runtimeDatabasePath.parent_path() / L"elevations.json";
     auto state = LoadElevations(file);
-    bool keepWasAdmin = wasAdmin;
-    for (const auto& existing : state.grants) {
-      if (existing.sid == sid) keepWasAdmin = existing.wasAdmin;  // extending a grant keeps the original state
-    }
-    std::erase_if(state.grants, [&](const ElevationGrant& g) { return g.sid == sid; });
+    std::erase_if(state.grants, [&](const ElevationGrant& g) { return g.requestId == requestId; });
     std::erase_if(state.pending, [&](const ElevationPending& p) { return p.sid == sid; });
-    state.grants.push_back({sid, user, requestId, until, keepWasAdmin});
+    state.grants.push_back({sid, user, requestId, until, wasAdmin, account, accountSid, kind, target, arguments});
     SaveElevations(file, state);
+    if (!password.empty()) elevationPasswords_[requestId] = password;
   }
+  SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
   QueueTelemetryEvent(L"elevation.granted", L"local-security",
-                      user + L" has temporary admin rights for " + std::to_wstring(minutes) + L" minutes.",
-                      L"{\"commandId\":\"" + command.commandId + L"\",\"user\":\"" + Utf8ToWide(EscapeJsonString(user)) +
-                          L"\",\"minutes\":" + std::to_wstring(minutes) + L",\"alreadyAdmin\":" + (wasAdmin ? L"true" : L"false") + L"}");
-  return L"{\"granted\":true,\"until\":\"" + UnixToIso(until) + L"\",\"alreadyAdmin\":" + (wasAdmin ? L"true" : L"false") + L"}";
+                      wasAdmin ? user + L" is already an administrator; no temporary account was needed."
+                               : L"Temporary administrator " + account + L" was created for " + user + L" for " + std::to_wstring(minutes) + L" minutes.",
+                      L"{\"commandId\":\"" + command.commandId + L"\",\"requestId\":" + Quoted(requestId) + L",\"user\":" + Quoted(user) +
+                          L",\"account\":" + Quoted(account) + L",\"minutes\":" + std::to_wstring(minutes) + L",\"kind\":" + Quoted(kind) +
+                          L",\"target\":" + Quoted(target) + L",\"alreadyAdmin\":" + (wasAdmin ? L"true" : L"false") + L"}");
+  return L"{\"granted\":true,\"until\":\"" + UnixToIso(until) + L"\",\"alreadyAdmin\":" + (wasAdmin ? L"true" : L"false") +
+         L",\"account\":" + Quoted(account) + L",\"accountSid\":" + Quoted(accountSid) + L"}";
+}
+
+// Deletes a grant's temporary account and profile, reports the end to the cloud and to telemetry. Callers hold the lock.
+void AgentService::EndElevationLocked(ElevationStateRef stateRef, const std::wstring& requestId, const std::wstring& reason) {
+  auto& state = *static_cast<ElevationState*>(stateRef);
+  const auto it = std::find_if(state.grants.begin(), state.grants.end(), [&](const ElevationGrant& g) { return g.requestId == requestId; });
+  if (it == state.grants.end()) return;
+  ElevationCleanup cleanup{it->requestId, it->account, it->accountSid, reason, true, false};
+  unsigned long status = 0;
+  if (!it->account.empty()) {
+    bool profileRemoved = false;
+    status = tempadmin::Remove(it->account, it->accountSid, &profileRemoved);
+    cleanup.profileRemoved = profileRemoved;
+  }
+  if (auto found = elevationPasswords_.find(requestId); found != elevationPasswords_.end()) {
+    SecureZeroMemory(found->second.data(), found->second.size() * sizeof(wchar_t));
+    elevationPasswords_.erase(found);
+  }
+  QueueTelemetryEvent(status == 0 ? L"elevation.ended" : L"elevation.removal.failed", L"local-security",
+                      status == 0 ? L"Temporary admin access for " + it->user + L" ended (" + reason + L")" +
+                                        (it->account.empty() ? L"." : L"; account " + it->account + L" was deleted.")
+                                  : L"Temporary admin account " + it->account + L" could not be deleted (Windows error " +
+                                        std::to_wstring(status) + L"); it expires by itself.",
+                      L"{\"requestId\":" + Quoted(requestId) + L",\"user\":" + Quoted(it->user) + L",\"account\":" + Quoted(it->account) +
+                          L",\"reason\":" + Quoted(reason) + L",\"error\":" + std::to_wstring(status) + L"}");
+  if (status != 0) {
+    return;  // keep the grant: the next expiry pass tries again (Windows' own account expiry still applies)
+  }
+  state.grants.erase(it);
+  cleanup.reported = ReportElevationEnd(&cleanup);
+  if (!cleanup.reported || !cleanup.profileRemoved) state.cleanup.push_back(cleanup);
+}
+
+bool AgentService::ReportElevationEnd(const ElevationCleanupRef& cleanupRef) {
+  const auto& cleanup = *static_cast<const ElevationCleanup*>(cleanupRef);
+  try {
+    controlPlaneClient_->ReportElevationEvent(
+        IdentitySnapshot(), cleanup.requestId,
+        "{\"type\":\"ended\",\"reason\":\"" + EscapeJsonString(cleanup.reason) + "\",\"account\":\"" + EscapeJsonString(cleanup.account) +
+            "\",\"accountRemoved\":true,\"profileRemoved\":" + (cleanup.profileRemoved ? "true" : "false") + "}");
+    return true;
+  } catch (const std::exception& error) {
+    std::wcerr << L"Could not report the end of a temporary admin session: " << Utf8ToWide(error.what()) << std::endl;
+    return false;
+  }
 }
 
 std::wstring AgentService::RevokeElevation(const RemoteCommand& command) {
   const auto sid = ExtractPayloadString(command.payloadJson, "userSid").value_or(L"");
+  const auto requestId = ExtractPayloadString(command.payloadJson, "requestId").value_or(L"");
   const std::lock_guard lock(elevationMutex_);
   const auto file = config_.runtimeDatabasePath.parent_path() / L"elevations.json";
   auto state = LoadElevations(file);
-  bool removed = false;
+  std::vector<std::wstring> ids;
   for (const auto& grant : state.grants) {
-    if (grant.sid == sid && !grant.wasAdmin) removed = laps::RemoveAdministrator(sid) == 0;
+    if ((!requestId.empty() && grant.requestId == requestId) || (requestId.empty() && grant.sid == sid)) ids.push_back(grant.requestId);
   }
-  std::erase_if(state.grants, [&](const ElevationGrant& g) { return g.sid == sid; });
+  for (const auto& id : ids) EndElevationLocked(&state, id, L"revoked from the console");
   std::erase_if(state.pending, [&](const ElevationPending& p) { return p.sid == sid; });
   SaveElevations(file, state);
-  QueueTelemetryEvent(L"elevation.revoked", L"local-security", L"Temporary admin rights were revoked.",
-                      L"{\"commandId\":\"" + command.commandId + L"\",\"removed\":" + (removed ? L"true" : L"false") + L"}");
-  return L"{\"revoked\":true}";
+  return L"{\"revoked\":true,\"ended\":" + std::to_wstring(ids.size()) + L"}";
+}
+
+std::wstring AgentService::FinishElevation(const RemoteCommand& command) {
+  // The user is done (or the program launched as the temporary administrator has closed): end it now.
+  const auto requestId = ExtractPayloadString(command.payloadJson, "requestId").value_or(L"");
+  const auto why = ExtractPayloadString(command.payloadJson, "reason").value_or(L"");
+  const std::lock_guard lock(elevationMutex_);
+  const auto file = config_.runtimeDatabasePath.parent_path() / L"elevations.json";
+  auto state = LoadElevations(file);
+  std::vector<std::wstring> ids;
+  for (const auto& grant : state.grants) {
+    if (grant.sid == command.callerSid && (requestId.empty() || grant.requestId == requestId)) ids.push_back(grant.requestId);
+  }
+  for (const auto& id : ids) {
+    EndElevationLocked(&state, id, why == L"program-closed" ? L"the program closed" : L"finished by the user");
+  }
+  SaveElevations(file, state);
+  return L"{\"ended\":" + std::to_wstring(ids.size()) + L"}";
+}
+
+std::wstring AgentService::ReportElevationLaunch(const RemoteCommand& command) {
+  // The agent window started the requested program as the temporary administrator: audit it in the cloud.
+  const auto requestId = ExtractPayloadString(command.payloadJson, "requestId").value_or(L"");
+  const auto pid = ExtractPayloadUInt32(command.payloadJson, "pid").value_or(0);
+  std::wstring account, target;
+  {
+    const std::lock_guard lock(elevationMutex_);
+    const auto state = LoadElevations(config_.runtimeDatabasePath.parent_path() / L"elevations.json");
+    for (const auto& grant : state.grants) {
+      if (grant.requestId == requestId && grant.sid == command.callerSid) account = grant.account, target = grant.target;
+    }
+  }
+  if (target.empty()) throw std::runtime_error("No temporary admin session to run a program in");
+  QueueTelemetryEvent(L"elevation.program.launched", L"local-security", target + L" was started as temporary administrator " + account + L".",
+                      L"{\"requestId\":" + Quoted(requestId) + L",\"account\":" + Quoted(account) + L",\"target\":" + Quoted(target) +
+                          L",\"pid\":" + std::to_wstring(pid) + L"}");
+  try {
+    controlPlaneClient_->ReportElevationEvent(IdentitySnapshot(), requestId,
+                                              "{\"type\":\"launched\",\"account\":\"" + EscapeJsonString(account) + "\",\"target\":\"" +
+                                                  EscapeJsonString(target) + "\",\"pid\":" + std::to_string(pid) + "}");
+  } catch (const std::exception&) {
+  }
+  return L"{\"recorded\":true}";
 }
 
 void AgentService::ExpireElevations() {
   const std::lock_guard lock(elevationMutex_);
   const auto file = config_.runtimeDatabasePath.parent_path() / L"elevations.json";
-  std::error_code ec;
-  if (!std::filesystem::exists(file, ec)) return;
   auto state = LoadElevations(file);
   const auto now = static_cast<long long>(std::time(nullptr));
-  bool changed = false;
-  for (auto it = state.grants.begin(); it != state.grants.end();) {
-    if (it->until > now) {
-      ++it;
-      continue;
-    }
-    const auto status = it->wasAdmin ? 0UL : laps::RemoveAdministrator(it->sid);
-    QueueTelemetryEvent(status == 0 ? L"elevation.expired" : L"elevation.expiry.failed", L"local-security",
-                        status == 0 ? it->user + L"'s temporary admin rights ended."
-                                    : it->user + L"'s temporary admin rights ended but could not be removed.",
-                        L"{\"user\":\"" + Utf8ToWide(EscapeJsonString(it->user)) + L"\",\"error\":" + std::to_wstring(status) + L"}");
-    if (status == 0) {
-      it = state.grants.erase(it);
-      changed = true;
-    } else {
-      ++it;
+  std::vector<std::wstring> due;
+  for (const auto& grant : state.grants) {
+    if (grant.until <= now) due.push_back(grant.requestId);
+  }
+  for (const auto& id : due) EndElevationLocked(&state, id, L"time limit reached");
+  // Retry what an earlier end could not finish: a profile that was in use, a report the cloud did not get.
+  for (auto& cleanup : state.cleanup) {
+    if (!cleanup.profileRemoved) cleanup.profileRemoved = tempadmin::RemoveProfile(cleanup.accountSid);
+    if (!cleanup.reported) cleanup.reported = ReportElevationEnd(&cleanup);
+  }
+  std::erase_if(state.cleanup, [](const ElevationCleanup& c) { return c.profileRemoved && c.reported; });
+  // A temporary account no session knows about (a crash, a power cut, a restored disk image) is deleted.
+  if (!laps::IsDomainController()) {
+    for (const auto& account : tempadmin::List()) {
+      const bool known = std::any_of(state.grants.begin(), state.grants.end(), [&](const ElevationGrant& g) { return g.account == account.name; });
+      if (known) continue;
+      bool profileRemoved = false;
+      const auto status = tempadmin::Remove(account.name, account.sid, &profileRemoved);
+      QueueTelemetryEvent(L"elevation.orphan.removed", L"local-security",
+                          L"A leftover temporary admin account (" + account.name + L") was " + (status == 0 ? L"deleted." : L"found but could not be deleted."),
+                          L"{\"account\":" + Quoted(account.name) + L",\"error\":" + std::to_wstring(status) + L"}");
     }
   }
-  const auto before = state.pending.size();
   std::erase_if(state.pending, [now](const ElevationPending& p) { return now - p.at > 24 * 3600; });
-  changed = changed || before != state.pending.size();
-  if (changed) SaveElevations(file, state);
+  SaveElevations(file, state);
 }
 
 PolicySnapshot AgentService::EnforcedPolicy() const {
@@ -4657,7 +4950,7 @@ void AgentService::QueueTelemetryRecords(const std::vector<TelemetryRecord>& sou
   std::vector<TelemetryRecord> records;
   records.reserve(source.size());
   for (const auto& record : source) {
-    if (RoutineTelemetryAllowed(filter, record.eventType, record.payloadJson)) {
+    if (RoutineTelemetryAllowed(filter, record.eventType, record.payloadJson) && !RepeatedSnapshot(record)) {
       records.push_back(record);
     }
   }
@@ -4685,6 +4978,39 @@ void AgentService::FlushTelemetryQueue() {
     return;
   }
 
+  // Clean AMSI scans repeat: every PowerShell start scans the same module script blocks again. Each distinct one
+  // (host, content name, preview) is sent once an hour; blocked content always goes.
+  {
+    const auto now = GetTickCount64();
+    std::vector<std::wstring> repeats;
+    std::erase_if(pendingTelemetry_, [&](const TelemetryRecord& record) {
+      if (record.eventType != L"amsi.scan" || record.payloadJson.find(L"\"blocked\":true") != std::wstring::npos) {
+        return false;
+      }
+      const auto key = ExtractPayloadString(record.payloadJson, "appName").value_or(L"") + L"|" +
+                       ExtractPayloadString(record.payloadJson, "contentName").value_or(L"") + L"|" +
+                       ExtractPayloadString(record.payloadJson, "preview").value_or(L"");
+      const auto found = recentAmsiScans_.find(key);
+      if (found != recentAmsiScans_.end() && now - found->second < 60ULL * 60 * 1000) {
+        repeats.push_back(record.eventId);
+        return true;
+      }
+      recentAmsiScans_[key] = now;
+      return false;
+    });
+    if (recentAmsiScans_.size() > 20000) {
+      recentAmsiScans_.clear();
+    }
+    if (!repeats.empty() && telemetryQueueStore_) {
+      telemetryQueueStore_->Remove(repeats);
+    }
+  }
+
+  // Detections first: a busy machine can queue thousands of routine image-load and snapshot events, and a malware
+  // finding must not wait behind them. The partition is stable, so each group keeps its order.
+  std::stable_partition(pendingTelemetry_.begin(), pendingTelemetry_.end(),
+                        [](const TelemetryRecord& record) { return IsPriorityTelemetry(record.eventType); });
+
   lastTelemetryFlushFailed_ = false;
   bool attemptedRecovery = false;
   while (!pendingTelemetry_.empty() && !ShouldStop()) {
@@ -4692,26 +5018,54 @@ void AgentService::FlushTelemetryQueue() {
         std::min<std::size_t>(pendingTelemetry_.size(), static_cast<std::size_t>(config_.telemetryBatchSize));
     const std::vector<TelemetryRecord> batch(pendingTelemetry_.begin(), pendingTelemetry_.begin() + batchSize);
 
+    std::size_t handled = 0;  // records from the front of the batch that were delivered or dropped
+    std::string failure;
     try {
       const auto result = controlPlaneClient_->SendTelemetryBatch(state_, batch);
-      std::vector<std::wstring> delivered;
-      delivered.reserve(batch.size());
-      for (const auto& record : batch) {
-        delivered.push_back(record.eventId);
-      }
-      telemetryQueueStore_->Remove(delivered);
-      pendingTelemetry_.erase(pendingTelemetry_.begin(), pendingTelemetry_.begin() + batchSize);
-      std::wcout << L"Uploaded " << result.accepted << L" telemetry event(s) at " << result.receivedAt
-                 << L". Backend now stores " << result.totalStored << L" event(s)." << std::endl;
+      handled = batchSize;
+      std::wcout << L"Uploaded " << result.accepted << L" telemetry event(s) at " << result.receivedAt << L"."
+                 << std::endl;
     } catch (const std::exception& error) {
-      if (!attemptedRecovery && RecoverDeviceIdentity(error, L"telemetry upload")) {
+      const auto* status = dynamic_cast<const HttpStatusError*>(&error);
+      if (status != nullptr && status->Malformed()) {
+        // The server will never accept this batch as sent. Send its records one at a time and drop only the ones
+        // it refuses, so one bad record cannot hold back everything queued behind it.
+        for (; handled < batch.size(); ++handled) {
+          try {
+            controlPlaneClient_->SendTelemetryBatch(state_, {batch[handled]});
+          } catch (const HttpStatusError& single) {
+            if (!single.Malformed()) {
+              failure = single.what();
+              break;
+            }
+            std::wcerr << L"Dropped a " << batch[handled].eventType << L" telemetry event the server refused: "
+                       << Utf8ToWide(single.what()) << std::endl;
+          } catch (const std::exception& single) {
+            failure = single.what();
+            break;
+          }
+        }
+      } else if (!attemptedRecovery && RecoverDeviceIdentity(error, L"telemetry upload")) {
         attemptedRecovery = true;
         continue;
+      } else {
+        failure = error.what();
       }
+    }
 
+    if (handled > 0) {
+      std::vector<std::wstring> delivered;
+      delivered.reserve(handled);
+      for (std::size_t index = 0; index < handled; ++index) {
+        delivered.push_back(batch[index].eventId);
+      }
+      telemetryQueueStore_->Remove(delivered);
+      pendingTelemetry_.erase(pendingTelemetry_.begin(), pendingTelemetry_.begin() + handled);
+    }
+    if (!failure.empty()) {
       lastTelemetryFlushFailed_ = true;
       std::wcerr << L"Telemetry upload failed, leaving " << pendingTelemetry_.size()
-                 << L" event(s) queued locally: " << Utf8ToWide(error.what()) << std::endl;
+                 << L" event(s) queued locally: " << Utf8ToWide(failure) << std::endl;
       break;
     }
   }

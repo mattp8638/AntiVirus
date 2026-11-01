@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { ago } from "../api";
 import { useApp } from "../app-context";
 import { ErrorNote, PageHead, Pill, Stat, Table, useData } from "../components/ui";
+import { DefenderFleet } from "../components/Defender";
 
 const TONE: Record<string, string> = { protected: "good", outdated: "warn", stale: "warn", unprotected: "bad" };
 
@@ -32,6 +33,7 @@ export default function ProtectionHealth() {
                          { key: "detections30d", label: "Detections (30d)", className: "right" },
                          { key: "quarantined30d", label: "Quarantined (30d)", className: "right" }]} />
       </div>
+      <DefenderFleet />
     </>
   );
 }

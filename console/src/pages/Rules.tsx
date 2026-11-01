@@ -1,4 +1,5 @@
 import { displayValue } from "../components/DisplayValue";
+import { confirmDialog } from "../components/dialogs";
 import { useState } from "react";
 import { api } from "../api";
 import { useApp } from "../app-context";
@@ -94,7 +95,13 @@ function RuleEditor({ rule, onClose }: { rule: any; onClose: () => void }) {
   };
   return (
     <Modal title={rule.isNew ? "New rule" : rule.title} onClose={onClose}
-           footer={<><button onClick={test} disabled={busy}>Test</button>{editable && <button className="primary" onClick={save} disabled={busy}>Save</button>}</>}>
+           footer={<>
+             {editable && !rule.isNew && !rule.builtin && <button className="danger" disabled={busy} onClick={async () => {
+               if (await confirmDialog(`Delete the rule "${rule.title}"? Alerts it already raised stay.`, { confirmLabel: "Delete rule" })
+                   && await run(() => api(`rules/${rule.id}`, { method: "DELETE" }), "Rule deleted")) onClose();
+             }}>Delete</button>}
+             {!rule.isNew && rule.builtin && <span className="small muted">Shipped rule: turn it off in the list instead of deleting it.</span>}
+             <button onClick={test} disabled={busy}>Test</button>{editable && <button className="primary" onClick={save} disabled={busy}>Save</button>}</>}>
       <textarea value={source} onChange={(e) => setSource(e.target.value)} style={{ minHeight: 280 }} readOnly={!editable} />
       <label className="field" style={{ marginTop: 10 }}>Auto-response when this fires (command types, comma separated)
         <input value={response} onChange={(e) => setResponse(e.target.value)} placeholder="e.g. process.tree.terminate, device.isolate" disabled={!editable} />

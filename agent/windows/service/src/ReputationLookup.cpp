@@ -513,16 +513,22 @@ ReputationLookupResult BuildSha256Result(const std::wstring& sha256, const HttpR
   result.source = L"hashlookup";
 
   if (response.statusCode == 200) {
+    // hashlookup is a corpus of known files (largely NIST NSRL), not a list of safe ones: it holds the EICAR test
+    // file and hacking tools. Its trust score is 50 when it knows nothing either way, lower for files reported as
+    // malicious. Only a score above that, with no malicious report, counts as known good.
     result.lookupSucceeded = true;
-    result.knownGood = true;
+    result.trustScore = ExtractJsonUInt(response.body, "hashlookup:trust").value_or(50);
+    const auto reportedMalicious = response.body.find("\"KnownMalicious\"") != std::string::npos;
+    result.knownGood = result.trustScore > 50 && !reportedMalicious;
     result.malicious = false;
-    result.trustScore = ExtractJsonUInt(response.body, "hashlookup:trust").value_or(100);
-    result.verdict = L"known_good";
+    result.verdict = result.knownGood ? L"known_good" : L"known_file";
     if (const auto source = ExtractJsonString(response.body, "source"); source.has_value()) {
       result.source = Utf8ToWide(*source);
     }
-    result.summary = L"Verified known file in CIRCL hashlookup.";
-    result.details = L"The SHA-256 hash matched the public hashlookup corpus.";
+    result.summary = result.knownGood ? L"Verified known file in CIRCL hashlookup."
+                                      : L"Listed in CIRCL hashlookup, which does not vouch for it.";
+    result.details = reportedMalicious ? L"The SHA-256 hash is in the hashlookup corpus with a malicious report."
+                                       : L"The SHA-256 hash matched the public hashlookup corpus.";
     result.expiresAt = IsoExpiryFromResult(result);
     return result;
   }

@@ -109,8 +109,17 @@ export function ago(value?: string | null): string {
   return `${Math.floor(seconds / 86400)}d ago`;
 }
 
-export function money(value: number, currency = "GBP"): string {
-  return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(value || 0);
+// The MSP's default currency (Settings → Region & holidays), loaded after sign-in.
+let defaultCurrency = "GBP";
+export function setDefaultCurrency(code: string) { if (/^[A-Z]{3}$/.test(code)) defaultCurrency = code; }
+export function getDefaultCurrency() { return defaultCurrency; }
+
+export function money(value: number, currency?: string | null): string {
+  try {
+    return new Intl.NumberFormat(undefined, { style: "currency", currency: currency || defaultCurrency }).format(value || 0);
+  } catch {
+    return `${currency || defaultCurrency} ${(value || 0).toFixed(2)}`;  // a code the browser does not know
+  }
 }
 
 /** Upload a file as the raw request body (the server reads metadata from the query string). */

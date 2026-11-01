@@ -4,6 +4,9 @@ import { fmtTime, getToken } from "../api";
 import { useApp } from "../app-context";
 import { ErrorNote, PageHead, Pill, Table, TenantSelect, useData, useListData } from "../components/ui";
 import { AddPhone } from "./AddPhone";
+import { GroupSelect } from "../components/Groups";
+import { Link } from "react-router-dom";
+import { confirmDialog } from "../components/dialogs";
 
 type OsName = "windows" | "linux" | "macos";
 type InstallerStatus = Record<OsName, { ready: boolean; reason: string; extension: string; mode?: string; warning?: string; certificateUrl?: string }>;
@@ -23,7 +26,6 @@ export default function Deploy() {
   const [success, setSuccess] = useState<string | null>(null);
   const { data: status, error: statusError, reload: reloadStatus } = useData<InstallerStatus>("enrollment-installers/status");
   const { data: tokens, error: tokensError, reload } = useListData<any>("enrollment-tokens", { tenant_id: tenantId });
-  const { data: groups } = useListData<any>("groups", { tenant_id: target }, [target]);
   const selected = status?.[os];
   const expires = Number(days);
 
@@ -93,11 +95,8 @@ export default function Deploy() {
             <label className="field">Deployment label
               <input value={label} onChange={(e) => setLabel(e.target.value)} maxLength={200} />
             </label>
-            <label className="field">Place devices in group
-              <select value={groupId} onChange={(e) => setGroupId(e.target.value)}>
-                <option value="">None</option>
-                {groups?.map((g) => <option key={g.id} value={g.id}>{displayValue(g.name)}</option>)}
-              </select>
+            <label className="field">Place devices in group <Link className="small" to="/groups">Manage groups</Link>
+              <GroupSelect tenantId={target} value={groupId} onChange={setGroupId} emptyLabel="None" />
             </label>
             <label className="field">Token expiry (days, 1–365)
               <input type="number" min={1} max={365} value={days} onChange={(e) => setDays(e.target.value)} />
@@ -135,7 +134,7 @@ export default function Deploy() {
                          { key: "expiresAt", label: "Expires", render: (r) => fmtTime(r.expiresAt) },
                          { key: "revoked", label: "", render: (r) => r.revoked ? <Pill value="revoked" tone="muted" /> :
                            can("configure") && <button className="small danger" onClick={async () => {
-                             if (!window.confirm("Revoke this enrollment token? Any unused installers containing it will stop enrolling devices.")) return;
+                             if (!await confirmDialog("Revoke this enrollment token? Any unused installers containing it will stop enrolling devices.")) return;
                              try {
                                const response = await fetch(`/api/console/enrollment-tokens/${encodeURIComponent(r.id)}`, {
                                  method: "DELETE", headers: { Authorization: `Bearer ${getToken() ?? ""}` },

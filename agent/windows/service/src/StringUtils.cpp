@@ -66,7 +66,16 @@ std::string EscapeJsonString(const std::wstring& value) {
         escaped += "\\t";
         break;
       default:
-        escaped.push_back(ch);
+        // JSON forbids raw control characters. One in a service description or file name used to make the
+        // server reject the whole telemetry batch, and the agent then retried that batch forever.
+        if (static_cast<unsigned char>(ch) < 0x20) {
+          static constexpr char kHex[] = "0123456789abcdef";
+          escaped += "\\u00";
+          escaped.push_back(kHex[(static_cast<unsigned char>(ch) >> 4) & 0x0F]);
+          escaped.push_back(kHex[static_cast<unsigned char>(ch) & 0x0F]);
+        } else {
+          escaped.push_back(ch);
+        }
         break;
     }
   }

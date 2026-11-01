@@ -7,6 +7,8 @@ import { ConnectButtons } from "../../components/rmm";
 import { ErrorNote, Modal, Pill, Table, Tabs, useAction, useData, useListData } from "../../components/ui";
 import ServiceRecord from "./ServiceRecord";
 import { PRIORITY_TONE } from "./ServiceBoard";
+import { confirmDialog, noticeDialog } from "../../components/dialogs";
+import { CustomFieldsCard } from "../../components/Customization";
 
 const NOTE_TONE: Record<string, string> = { discussion: "blue", internal: "warn", resolution: "good", system: "muted" };
 
@@ -142,6 +144,7 @@ export default function TicketDetail() {
         </div>
 
         <div>
+          <AiTriageCard ticket={t} onDone={reload} />
           <ServiceRecord ticket={t} onChange={reload} />
           <div className="card">
             <h3>SLA</h3>
@@ -160,6 +163,7 @@ export default function TicketDetail() {
               <dt>Agreement</dt><dd>{t.agreement ? <>{displayValue(t.agreement.name)}<div className="small muted">{displayValue(t.agreement.agreementType)}</div></> : <span className="muted">none (time is billable)</span>}</dd>
             </dl>
           </div>
+          <CustomFieldsCard entity="ticket" recordId={t.id} values={t.customFields} />
           {t.device && <div className="card">
             <h3>Device</h3>
             <p><Link to={`/devices/${t.device.id}`}>{displayValue(t.device.hostname)}</Link><br /><span className="small muted">{displayValue(t.device.osVersion)}</span></p>
@@ -228,7 +232,7 @@ function ScheduleModal({ ticket, meta, onClose }: { ticket: any; meta: any; onCl
     <Modal title={`Schedule #${ticket.number}`} onClose={onClose}
            footer={<><button onClick={onClose}>Cancel</button><button className="primary" disabled={busy} onClick={async () => {
              const r = await run(() => api<any>("psa/schedule", { body: { ...form, ticketId: ticket.id, startAt: new Date(form.startAt).toISOString(), endAt: new Date(form.endAt).toISOString() } }), "Scheduled");
-             if (r) { if (r.conflict) window.alert(`${form.member} already has something booked at that time.`); onClose(); }
+             if (r) { if (r.conflict) noticeDialog(`${form.member} already has something booked at that time.`); onClose(); }
            }}>Schedule</button></>}>
       <div className="form-grid">
         <label className="field">Member<select value={form.member} onChange={(e) => setForm({ ...form, member: e.target.value })}>{meta?.members.map((m: any) => <option key={m.email} value={m.email}>{displayValue(m.name)}</option>)}</select></label>
@@ -250,8 +254,30 @@ function MergeModal({ ticket, onClose }: { ticket: any; onClose: (target?: strin
       <p className="muted small">Notes and time move to the other ticket. This one closes and links to it.</p>
       <input placeholder="Search tickets" value={q} onChange={(e) => setQ(e.target.value)} style={{ width: "100%", marginBottom: 8 }} />
       <Table rows={data?.filter((x) => x.id !== ticket.id)} onRow={async (target) => {
-        if (window.confirm(`Merge #${ticket.number} into #${target.number}?`) && await run(() => api(`tickets/${ticket.id}/merge`, { body: { intoTicketId: target.id } }), "Merged")) onClose(target.id);
+        if (await confirmDialog(`Merge #${ticket.number} into #${target.number}?`) && await run(() => api(`tickets/${ticket.id}/merge`, { body: { intoTicketId: target.id } }), "Merged")) onClose(target.id);
       }} columns={[{ key: "number", label: "#", render: (x) => `#${x.number}` }, { key: "subject", label: "Summary" }, { key: "account", label: "Company" }]} />
     </Modal>
+  );
+}
+
+function AiTriageCard({ ticket, onDone }: { ticket: any; onDone: () => void }) {
+  const { can } = useApp();
+  const { run, busy } = useAction();
+  const triage = ticket.aiTriage;
+  const rerun = async () => { if (await run(() => api(`tickets/${ticket.id}/triage`, { method: "POST" }), "Ticket triaged")) onDone(); };
+  if (!triage && !can("respond")) return null;
+  return (
+    <div className="card">
+      <h3>Triage {triage && <span className="small muted">· {displayValue(triage.engine)} · {ago(triage.at)}</span>}</h3>
+      {triage ? <>
+        <p><Pill value={triage.category} tone="blue" /> <Pill value={triage.priority} tone={PRIORITY_TONE[triage.priority]} />
+          {triage.securityConcern && <Pill value="possible security issue" tone="bad" />}</p>
+        {triage.summary && <p className="small">{displayValue(triage.summary)}</p>}
+        <p className="small muted">{displayValue(triage.reasoning)}</p>
+        {triage.applied?.length > 0 && <p className="small">Applied: {triage.applied.join(", ")}</p>}
+        {triage.suggestedReply && <details><summary className="small">Suggested reply</summary><pre className="small" style={{ whiteSpace: "pre-wrap" }}>{displayValue(triage.suggestedReply)}</pre></details>}
+      </> : <p className="small muted">Not triaged yet.</p>}
+      {can("respond") && <button className="ghost" disabled={busy} onClick={rerun}>{triage ? "Triage again" : "Triage now"}</button>}
+    </div>
   );
 }

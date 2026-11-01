@@ -59,6 +59,10 @@ var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // RunScript executes a library script and captures exit code, stdout and stderr.
 func RunScript(stateDir string, raw string) (map[string]interface{}, error) {
+	return RunScriptContext(context.Background(), stateDir, raw)
+}
+
+func RunScriptContext(ctx context.Context, stateDir string, raw string) (map[string]interface{}, error) {
 	var p scriptPayload
 	if err := json.Unmarshal([]byte(raw), &p); err != nil || p.Body == "" {
 		return nil, errors.New("script payload is missing")
@@ -86,7 +90,7 @@ func RunScript(stateDir string, raw string) (map[string]interface{}, error) {
 	if timeout <= 0 || timeout > 24*time.Hour {
 		timeout = 10 * time.Minute
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, interp[0], append(interp[1:], file.Name())...)
 	// Kill the whole process group on timeout, so children (sleep, curl...) cannot keep the job alive.
@@ -137,9 +141,16 @@ func packageManager() string {
 }
 
 func run(timeout time.Duration, name string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	return runContext(context.Background(), timeout, name, args...)
+}
+
+func runContext(ctx context.Context, timeout time.Duration, name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive", "LC_ALL=C")
 	out, err := cmd.CombinedOutput()
 	return string(out), err
@@ -184,25 +195,27 @@ func ParseDnfCheckUpdate(out string, security map[string]bool, source string) []
 }
 
 // PatchScan lists available package updates.
-func PatchScan() (map[string]interface{}, error) {
+func PatchScan() (map[string]interface{}, error) { return PatchScanContext(context.Background()) }
+
+func PatchScanContext(ctx context.Context) (map[string]interface{}, error) {
 	if IsMacOS {
-		return macPatchScan()
+		return macPatchScanContext(ctx)
 	}
 	pm := packageManager()
 	var patches []map[string]interface{}
 	switch pm {
 	case "apt-get":
-		if out, err := run(10*time.Minute, "apt-get", "update", "-qq"); err != nil {
+		if out, err := runContext(ctx, 10*time.Minute, "apt-get", "update", "-qq"); err != nil {
 			return nil, fmt.Errorf("apt-get update failed: %s", lastLines(out, 3))
 		}
-		out, err := run(5*time.Minute, "apt", "list", "--upgradable")
+		out, err := runContext(ctx, 5*time.Minute, "apt", "list", "--upgradable")
 		if err != nil {
 			return nil, err
 		}
 		patches = ParseAptUpgradable(out)
 	case "dnf", "yum":
 		security := map[string]bool{}
-		if out, err := run(10*time.Minute, pm, "-q", "updateinfo", "list", "--security"); err == nil {
+		if out, err := runContext(ctx, 10*time.Minute, pm, "-q", "updateinfo", "list", "--security"); err == nil {
 			for _, line := range strings.Split(out, "\n") {
 				if f := strings.Fields(line); len(f) >= 3 {
 					pkg := f[2]
@@ -214,14 +227,14 @@ func PatchScan() (map[string]interface{}, error) {
 				}
 			}
 		}
-		out, err := run(10*time.Minute, pm, "-q", "check-update")
+		out, err := runContext(ctx, 10*time.Minute, pm, "-q", "check-update")
 		var exit *exec.ExitError
 		if err != nil && !(errors.As(err, &exit) && exit.ExitCode() == 100) {
 			return nil, fmt.Errorf("%s check-update failed: %s", pm, lastLines(out, 3))
 		}
 		patches = ParseDnfCheckUpdate(out, security, pm)
 	case "zypper":
-		out, err := run(10*time.Minute, "zypper", "-q", "--non-interactive", "list-updates")
+		out, err := runContext(ctx, 10*time.Minute, "zypper", "-q", "--non-interactive", "list-updates")
 		if err != nil {
 			return nil, err
 		}
@@ -251,10 +264,14 @@ type installPayload struct {
 
 // PatchInstall upgrades the listed packages, then reboots according to the policy.
 func PatchInstall(raw string) (map[string]interface{}, error) {
+	return PatchInstallContext(context.Background(), raw)
+}
+
+func PatchInstallContext(ctx context.Context, raw string) (map[string]interface{}, error) {
 	var p installPayload
 	_ = json.Unmarshal([]byte(raw), &p)
 	if IsMacOS {
-		return macPatchInstall(p)
+		return macPatchInstallContext(ctx, p)
 	}
 	pm := packageManager()
 	var names []string
@@ -276,11 +293,11 @@ func PatchInstall(raw string) (map[string]interface{}, error) {
 	var err error
 	switch pm {
 	case "apt-get":
-		out, err = run(60*time.Minute, "apt-get", append([]string{"install", "--only-upgrade", "-y", "-o", "Dpkg::Options::=--force-confold", "--"}, names...)...)
+		out, err = runContext(ctx, 60*time.Minute, "apt-get", append([]string{"install", "--only-upgrade", "-y", "-o", "Dpkg::Options::=--force-confold", "--"}, names...)...)
 	case "dnf", "yum":
-		out, err = run(60*time.Minute, pm, append([]string{"upgrade", "-y", "--"}, names...)...)
+		out, err = runContext(ctx, 60*time.Minute, pm, append([]string{"upgrade", "-y", "--"}, names...)...)
 	case "zypper":
-		out, err = run(60*time.Minute, "zypper", append([]string{"--non-interactive", "update", "--"}, names...)...)
+		out, err = runContext(ctx, 60*time.Minute, "zypper", append([]string{"--non-interactive", "update", "--"}, names...)...)
 	default:
 		return nil, errors.New("no supported package manager")
 	}
@@ -299,7 +316,7 @@ func PatchInstall(raw string) (map[string]interface{}, error) {
 		if delay <= 0 {
 			delay = 5
 		}
-		if _, rerr := run(30*time.Second, "shutdown", "-r", fmt.Sprintf("+%d", delay), "Fenrir: restarting to finish updates"); rerr == nil {
+		if _, rerr := runContext(ctx, 30*time.Second, "shutdown", "-r", fmt.Sprintf("+%d", delay), "Fenrir: restarting to finish updates"); rerr == nil {
 			result["rebootScheduledInMinutes"] = delay
 		}
 	}
@@ -318,10 +335,14 @@ type softwarePayload struct {
 
 // SoftwareInstall installs or removes a package from the software library.
 func SoftwareInstall(raw string, uninstall bool) (map[string]interface{}, error) {
+	return SoftwareInstallContext(context.Background(), raw, uninstall)
+}
+
+func SoftwareInstallContext(ctx context.Context, raw string, uninstall bool) (map[string]interface{}, error) {
 	var p softwarePayload
 	_ = json.Unmarshal([]byte(raw), &p)
 	if IsMacOS {
-		return macSoftware(p, p.SHA256, uninstall)
+		return macSoftwareContext(ctx, p, p.SHA256, uninstall)
 	}
 	if !packageName.MatchString(p.Identifier) {
 		return nil, errors.New("invalid package name")
@@ -349,7 +370,7 @@ func SoftwareInstall(raw string, uninstall bool) (map[string]interface{}, error)
 	default:
 		return nil, fmt.Errorf("%s packages cannot be installed on Linux", p.Installer)
 	}
-	out, err := run(30*time.Minute, args[0], args[1:]...)
+	out, err := runContext(ctx, 30*time.Minute, args[0], args[1:]...)
 	result := map[string]interface{}{"output": lastLines(out, 20)}
 	if err != nil {
 		return result, fmt.Errorf("%s failed: %s", strings.Join(args[:2], " "), lastLines(out, 3))
@@ -359,6 +380,10 @@ func SoftwareInstall(raw string, uninstall bool) (map[string]interface{}, error)
 
 // ServiceControl starts, stops or restarts a systemd unit.
 func ServiceControl(name, raw string) (map[string]interface{}, error) {
+	return ServiceControlContext(context.Background(), name, raw)
+}
+
+func ServiceControlContext(ctx context.Context, name, raw string) (map[string]interface{}, error) {
 	var p struct {
 		Action string `json:"action"`
 	}
@@ -370,20 +395,24 @@ func ServiceControl(name, raw string) (map[string]interface{}, error) {
 		return nil, errors.New("action must be start, stop or restart")
 	}
 	if IsMacOS {
-		return macServiceControl(name, p.Action)
+		return macServiceControlContext(ctx, name, p.Action)
 	}
 	if !packageName.MatchString(name) {
 		return nil, errors.New("invalid service name")
 	}
-	if out, err := run(2*time.Minute, "systemctl", p.Action, "--", name); err != nil {
+	if out, err := runContext(ctx, 2*time.Minute, "systemctl", p.Action, "--", name); err != nil {
 		return nil, fmt.Errorf("systemctl %s %s: %s", p.Action, name, lastLines(out, 3))
 	}
-	status, _ := run(30*time.Second, "systemctl", "is-active", "--", name)
+	status, _ := runContext(ctx, 30*time.Second, "systemctl", "is-active", "--", name)
 	return map[string]interface{}{"service": name, "action": p.Action, "status": strings.TrimSpace(status)}, nil
 }
 
 // PowerAction schedules a reboot or shutdown.
 func PowerAction(reboot bool, raw string) (map[string]interface{}, error) {
+	return PowerActionContext(context.Background(), reboot, raw)
+}
+
+func PowerActionContext(ctx context.Context, reboot bool, raw string) (map[string]interface{}, error) {
 	var p struct {
 		DelayMinutes int    `json:"delayMinutes"`
 		Message      string `json:"message"`
@@ -400,7 +429,7 @@ func PowerAction(reboot bool, raw string) (map[string]interface{}, error) {
 	if message == "" {
 		message = "Fenrir: your IT provider is restarting this computer"
 	}
-	if out, err := run(30*time.Second, "shutdown", flag, fmt.Sprintf("+%d", p.DelayMinutes), message); err != nil {
+	if out, err := runContext(ctx, 30*time.Second, "shutdown", flag, fmt.Sprintf("+%d", p.DelayMinutes), message); err != nil {
 		return nil, fmt.Errorf("shutdown failed: %s", lastLines(out, 2))
 	}
 	return map[string]interface{}{"scheduledInMinutes": p.DelayMinutes, "reboot": reboot}, nil

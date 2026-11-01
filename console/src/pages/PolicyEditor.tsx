@@ -1,6 +1,7 @@
 import { displayValue } from "../components/DisplayValue";
 import { useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
+import { confirmDialog, promptDialog } from "../components/dialogs";
 import { api } from "../api";
 import { useApp } from "../app-context";
 import { ErrorNote, PageHead, Pill, useAction, useData } from "../components/ui";
@@ -18,6 +19,8 @@ export default function PolicyEditor() {
   const [filter, setFilter] = useState("");
   const [dirty, setDirty] = useState(false);
   const { run, busy } = useAction();
+  const navigate = useNavigate();
+  const [problem, setProblem] = useState<string | null>(null);
 
   useEffect(() => {
     if (data) {
@@ -69,7 +72,18 @@ export default function PolicyEditor() {
     <>
       <PageHead title={data.policy.name}
                 subtitle={<>{data.policy.tenantId ? tenantName(data.policy.tenantId) : "Global"} · v{displayValue(data.policy.version)} · {overrideCount} settings set here · {locks.length} locked</>}
-                actions={editable && <button className="primary" disabled={!dirty || busy} onClick={save}>{dirty ? "Save changes" : "Saved"}</button>} />
+                actions={editable && <>
+                  <button disabled={busy} onClick={async () => {
+                    const name = await promptDialog("Policy name", data.policy.name, { title: "Rename policy", required: true });
+                    if (name?.trim() && await run(() => api(`policies/${id}`, { method: "PUT", body: { settings: data.policy.settings, locks: data.policy.locks, name: name.trim(), description: data.policy.description } }), "Renamed")) reload();
+                  }}>Rename</button>
+                  <button className="danger" disabled={busy} onClick={async () => {
+                    if (!(await confirmDialog(`Delete the policy "${data.policy.name}"? Fenrir refuses if a customer, group or device still uses it.`, { confirmLabel: "Delete policy" }))) return;
+                    setProblem(null);
+                    try { await api(`policies/${id}`, { method: "DELETE" }); navigate("/policies"); } catch (err) { setProblem((err as Error).message); }
+                  }}>Delete</button>
+                  <button className="primary" disabled={!dirty || busy} onClick={save}>{dirty ? "Save changes" : "Saved"}</button></>} />
+      <ErrorNote error={problem} />
       <div className="grid" style={{ gridTemplateColumns: "220px minmax(0,1fr)" }}>
         <div className="card" style={{ padding: 8, alignSelf: "start" }}>
           <input placeholder="Search all settings" value={filter} onChange={(e) => setFilter(e.target.value)} style={{ width: "100%", marginBottom: 8 }} />

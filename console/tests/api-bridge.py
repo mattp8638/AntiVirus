@@ -9,6 +9,7 @@ import dataclasses
 import base64
 import hashlib
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -56,6 +57,11 @@ with TestClient(create_app(settings), raise_server_exceptions=False) as client:
     device = post("/api/v1/enroll", {"hostname": "RENDER-SERVER", "osVersion": "Windows Server 2025", "serialNumber": "UI-SERVER"},
                   {"X-Fenrir-Token": enrollment})
     device_id = device["deviceId"]
+    cancellation_device = post("/api/v1/enroll", {"hostname": "CANCEL-SERVER", "osVersion": "Windows Server 2025", "serialNumber": "UI-CANCEL"},
+                               {"X-Fenrir-Token": enrollment})
+    cancellation_job = post("/api/console/rmm/jobs", {"name": "Cancellable UI job", "commandType": "patch.scan",
+                                                     "targets": {"deviceIds": [cancellation_device["deviceId"]]}})
+    client.get(f"/api/v1/devices/{cancellation_device['deviceId']}/commands/pending", headers={"X-Device-Api-Key": cancellation_device["deviceApiKey"]})
     phone = post("/api/v1/enroll", {"hostname": "RENDER-PHONE", "osVersion": "Android 14", "platform": "android", "serialNumber": "UI-PHONE"},
                  {"X-Fenrir-Token": enrollment})
     post(f"/api/v1/devices/{device_id}/profile", {"profile": PROFILE}, {"X-Device-Api-Key": device["deviceApiKey"]})
@@ -78,10 +84,19 @@ with TestClient(create_app(settings), raise_server_exceptions=False) as client:
     programme = post("/api/console/grc/programmes", {"tenantId": tenant["id"], "frameworkKey": "nist-csf-2"})
     policies = client.get("/api/console/grc/policies", headers=admin).json()
     me = client.get("/api/console/auth/me", headers=admin).json()
+    if os.getenv("FENRIR_UI_TEST_LEGACY") == "true":
+        # Recreate the deployed upgrade defect after seeding real records, then
+        # run the repair before sweeping every console route and subpage.
+        from sqlalchemy import text
+        with db.engine().begin() as session:
+            session.execute(text("ALTER TABLE devices DROP COLUMN agent_build"))
+            session.execute(text("DELETE FROM schema_migrations WHERE version=29"))
+        assert 29 in db.migrate(db.engine())
     reply({"ready": True, "me": me, "ids": {"device": device_id, "tenant": tenant["id"], "policy": tenant["defaultPolicyId"],
           "ticket": ticket["id"], "project": project["id"], "incident": incident_id,
           "grcPolicy": policies[0]["id"] if policies else "missing", "framework": "nist-csf-2", "remote": remote["id"],
-          "phone": phone["deviceId"], "recording": recording_id}})
+          "phone": phone["deviceId"], "recording": recording_id,
+          "cancellationDevice": cancellation_device["deviceId"], "cancellationJob": cancellation_job["id"]}})
     for line in sys.stdin:
         request = json.loads(line)
         try:

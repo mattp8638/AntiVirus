@@ -1,11 +1,12 @@
 import { displayValue } from "../components/DisplayValue";
+import { confirmDialog } from "../components/dialogs";
 import { useState } from "react";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
-import { PageHead, Pill, Stat, Table, useAction, useData } from "../components/ui";
+import { PageHead, Pill, Stat, Table, useAction, useData, useListData } from "../components/ui";
 
 export default function Dns() {
-  const { tenantId } = useApp();
+  const { tenantId, can } = useApp();
   const [action, setAction] = useState("");
   const [hours, setHours] = useState(24);
   const { data } = useData<any>("dns/log", { tenant_id: tenantId, action, hours });
@@ -36,6 +37,7 @@ export default function Dns() {
           <Table rows={data?.topCategories.map(([c, n]: [string, number]) => ({ id: c, category: c, count: n }))} empty="—"
                  columns={[{ key: "category", label: "Category" }, { key: "count", label: "Lookups", className: "right" }]} /></div>
       </div>
+      <BlocklistsCard canManage={can("platform")} />
       <div className="card">
         <div className="row" style={{ marginBottom: 10 }}>
           <h3 style={{ margin: 0 }}>Query log</h3><span style={{ flex: 1 }} />
@@ -48,5 +50,49 @@ export default function Dns() {
                          { key: "category", label: "Category" }, { key: "reason", label: "Reason" }]} />
       </div>
     </>
+  );
+}
+
+function BlocklistsCard({ canManage }: { canManage: boolean }) {
+  const { data, reload } = useListData<any>("dns/blocklists");
+  const { run, busy } = useAction();
+  const [adding, setAdding] = useState<any>(null);
+  const toggle = async (row: any) => {
+    if (await run(() => api(`dns/blocklists/${row.id}`, { method: "PATCH", body: { enabled: !row.enabled } }), row.enabled ? "List disabled" : "List enabled")) reload();
+  };
+  const sync = async (row: any) => {
+    const result = await run(() => api<any>(`dns/blocklists/${row.id}/sync`, { method: "POST" }));
+    if (result) reload();
+  };
+  return (
+    <div className="card">
+      <h3>External blocklists</h3>
+      <p className="small muted">Refreshed on a schedule by the server. Malware lists block wherever DNS protection is on; other lists block only where a policy blocks their category. Policy allow lists and allow indicators always win.</p>
+      <Table rows={data ?? undefined} empty="No lists configured."
+             columns={[{ key: "name", label: "List", render: (r) => <><b>{displayValue(r.name)}</b><div className="small muted">{displayValue(r.description)}</div></> },
+                       { key: "category", label: "Category" },
+                       { key: "enabled", label: "State", render: (r) => <Pill value={r.enabled ? "enabled" : "disabled"} /> },
+                       { key: "domainCount", label: "Domains", className: "right", render: (r) => Number(r.domainCount || 0).toLocaleString() },
+                       { key: "lastSuccessAt", label: "Last refresh", render: (r) => r.lastSuccessAt ? fmtTime(r.lastSuccessAt) : "never" },
+                       { key: "lastError", label: "Problem", render: (r) => r.lastError ? <span className="small" style={{ color: "var(--red)" }}>{displayValue(r.lastError)}</span> : "" },
+                       ...(canManage ? [{ key: "actions", label: "", render: (r: any) => <div className="row">
+                         <button className="ghost" disabled={busy} onClick={() => toggle(r)}>{r.enabled ? "Disable" : "Enable"}</button>
+                         <button className="ghost" disabled={busy || !r.enabled} onClick={() => sync(r)}>Refresh now</button>
+                         {!r.builtin && <button className="ghost danger" disabled={busy} onClick={async () => {
+                           if (await confirmDialog(`Remove the list "${r.name}"? Its domains stop being blocked.`, { confirmLabel: "Remove list" }) && await run(() => api(`dns/blocklists/${r.id}`, { method: "DELETE" }), "List removed")) reload();
+                         }}>Remove</button>}</div> }] : [])]} />
+      {canManage && (adding ? (
+        <div className="form-grid" style={{ marginTop: 12 }}>
+          <label className="field">Short id<input value={adding.id} onChange={(e) => setAdding({ ...adding, id: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "") })} placeholder="e.g. our-phishing-list" maxLength={40} /></label>
+          <label className="field">Name<input value={adding.name} onChange={(e) => setAdding({ ...adding, name: e.target.value })} /></label>
+          <label className="field">List address (https)<input value={adding.url} onChange={(e) => setAdding({ ...adding, url: e.target.value })} placeholder="https://example.org/blocklist.txt" /></label>
+          <label className="field">Category<select value={adding.category} onChange={(e) => setAdding({ ...adding, category: e.target.value })}>
+            {["malware", "phishing", "command-and-control", "cryptomining", "newly-registered", "parked", "dga", "adult", "gambling", "piracy", "ads-trackers", "social-media", "streaming", "games", "dating", "proxies-vpn", "doh-bypass"].map((c) => <option key={c}>{c}</option>)}</select></label>
+          <div className="row"><button className="primary" disabled={busy || !adding.id || !adding.url.startsWith("https://")} onClick={async () => {
+            if (await run(() => api("dns/blocklists", { body: { ...adding, name: adding.name || adding.id } }), "List added: it downloads on the next refresh")) { setAdding(null); reload(); }
+          }}>Add list</button><button onClick={() => setAdding(null)}>Cancel</button></div>
+        </div>) : <button style={{ marginTop: 12 }} onClick={() => setAdding({ id: "", name: "", url: "https://", category: "malware" })}>Add a list</button>)}
+      <p className="small muted">Lists can be hosts files, AdBlock-style lists or one domain per line. Malware lists block wherever DNS protection is on; other categories only where a policy blocks them.</p>
+    </div>
   );
 }

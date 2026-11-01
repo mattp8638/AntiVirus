@@ -197,6 +197,7 @@ def add_business_hours(start_utc: datetime, hours: float, business: dict | None)
         return start_utc + timedelta(hours=hours)
     tz = _zone(bh.get("tz"))
     days = {int(d) for d in bh.get("days", [0, 1, 2, 3, 4])} or {0, 1, 2, 3, 4}
+    holidays = set(bh.get("holidays") or ())  # local YYYY-MM-DD dates on which the clock does not run
     day_start, day_end = float(bh.get("start", 9)), float(bh.get("end", 17))
     remaining = timedelta(hours=hours)
     current = start_utc.replace(tzinfo=timezone.utc).astimezone(tz)
@@ -205,7 +206,7 @@ def add_business_hours(start_utc: datetime, hours: float, business: dict | None)
         close_at = current.replace(hour=int(day_end) % 24, minute=int((day_end % 1) * 60), second=0, microsecond=0)
         if day_end >= 24:
             close_at = (current + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        if current.weekday() in days and current < close_at:
+        if current.weekday() in days and current.date().isoformat() not in holidays and current < close_at:
             begin = max(current, open_at)
             available = close_at - begin
             if remaining <= available:
@@ -236,6 +237,12 @@ def sla_targets(db: Session, ticket: Ticket) -> tuple[datetime, datetime]:
     if ticket.priority == "P1" and business.get("p1AllHours", True):
         business["allHours"] = True
     start = ticket.created_at or utcnow()
+    if not business.get("allHours"):
+        from . import regional
+
+        region = regional.get(db, ticket.tenant_id)
+        business.setdefault("tz", region["timeZone"])
+        business["holidays"] = sorted(regional.holiday_dates(region, range(start.year, start.year + 3)))
     return (add_business_hours(start, float(respond.get(ticket.priority, 4)), business),
             add_business_hours(start, float(resolve.get(ticket.priority, 24)), business))
 

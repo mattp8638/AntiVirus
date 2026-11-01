@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only OR MIT
 // +build ignore
 
 #include <linux/bpf.h>
@@ -120,4 +121,5 @@ int kprobe_vfs_write(struct pt_regs *ctx) {
     return 0;
 }
 
-char _license[] SEC("license") = "GPL";
+// The kernel only allows GPL-compatible programs to use these helpers; "Dual MIT/GPL" means MIT or GPL-2.0.
+char _license[] SEC("license") = "Dual MIT/GPL";
