@@ -62,4 +62,4 @@ Overall parity: **not passed**. MVP: **not yet declared**.
 3. CORE-13: load at 10,000 endpoints on declared hardware (AT-27).
 4. AGT-01, AGT-02, AGT-06 to AGT-10: installers on clean VMs, final-package signature, identity, support matrix, SBOM, capability reporting.
 
-Needs the owner: a lab acceptance run with a managed switch (`docs/ACCEPTANCE_LAB.md`), the code-signing certificate on the server, a Microsoft 365 test tenant, (the Windows driver decision is made: D-06, option 1).
+Needs the owner: a lab acceptance run with a managed switch (`docs/ACCEPTANCE_LAB.md`), the code-signing certificate on the server and a Microsoft 365 test tenant. (The Windows driver decision is made: D-06, option 1.)

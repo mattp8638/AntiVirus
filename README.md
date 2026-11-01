@@ -52,6 +52,9 @@ Built user-mode artifacts include Windows x64, Linux amd64/arm64 and macOS amd64
 
 ## New HTTPS installation
 
+For the whole path from a fresh server to the first customer (backups off-site, monitoring, staff access, Windows
+protection, acceptance and rollout), follow the [go-live checklist](docs/GO_LIVE.md).
+
 These steps are for a **new installation**. On an existing server, preserve its database, configuration and keys and use [Updates](#updates). Never regenerate an existing installation's secrets just to upgrade it.
 
 ### 1. Prepare the server
