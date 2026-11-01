@@ -102,3 +102,54 @@ func TestRotateKeyKeepsTheOldKeyWhenTheServerRefuses(t *testing.T) {
 		t.Fatal("state rewritten after a refused rotation")
 	}
 }
+
+func TestTelemetrySpoolSurvivesARestartWhileOffline(t *testing.T) {
+	up := false
+	var mu sync.Mutex
+	received := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !up {
+			http.Error(w, "offline", http.StatusBadGateway)
+			return
+		}
+		var body struct {
+			Events []Event `json:"events"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		received += len(body.Events)
+		json.NewEncoder(w).Encode(map[string]int{"accepted": len(body.Events)})
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	a := New(Config{Server: srv.URL, StateDir: dir})
+	a.client.DeviceID = "dev_1"
+	a.emit("alert.raised", "scanner", "a detection while offline", map[string]interface{}{"n": 1})
+	a.emit("alert.raised", "scanner", "another", map[string]interface{}{"n": 2})
+	if err := a.flushOrSpool(true); err == nil {
+		t.Fatal("upload should fail while offline")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "telemetry-spool.json")); err != nil {
+		t.Fatalf("queue not spooled to disk: %v", err)
+	}
+
+	// The agent restarts (the queue in memory is gone) and the cloud comes back.
+	b := New(Config{Server: srv.URL, StateDir: dir})
+	b.client.DeviceID = "dev_1"
+	if n := b.loadSpool(); n != 2 {
+		t.Fatalf("reloaded %d events, want 2", n)
+	}
+	mu.Lock()
+	up = true
+	mu.Unlock()
+	if err := b.flushOrSpool(false); err != nil {
+		t.Fatal(err)
+	}
+	if received != 2 {
+		t.Fatalf("server received %d events, want 2", received)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "telemetry-spool.json")); !os.IsNotExist(err) {
+		t.Fatal("spool not removed after the queue drained")
+	}
+}

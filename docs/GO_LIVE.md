@@ -78,6 +78,8 @@ run.
 ## 9. First customer
 
 - [ ] Create the customer, then an **enrolment token** for them (Deploy agents). Do not use open enrolment.
+- [ ] If the customer's network needs a web proxy, see [networks with a web proxy](../README.md#agent-installation)
+  before installing.
 - [ ] Install on two or three pilot machines and check each one: it checks in, takes policy, reports inventory, and
   shows **Defender** under Blocks before it runs.
 - [ ] Roll out the rest. Give your pilot machines a policy whose **Updates → channel** is canary or beta: new agent

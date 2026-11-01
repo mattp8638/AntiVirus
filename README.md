@@ -425,6 +425,12 @@ passkeys follow the same rule as passwords: platform administrators only.
 
 Do not run a manual/prototype service beside an installed agent. Keep uninstall-protection credentials and use the normal maintenance/installer flow for upgrades.
 
+**Networks with a web proxy.** Linux and macOS: run the installer with `--proxy http://proxy.example:3128` (a repair
+install keeps the proxy already set; `--proxy none` removes it). Windows: the agent uses the machine's WinHTTP proxy,
+or the WPAD/PAC configuration the network publishes; if there is neither, set one with
+`netsh winhttp set proxy proxy.example:3128` (or `netsh winhttp import proxy source=ie`). While the server is
+unreachable, agents keep their telemetry on disk and send it when they reconnect, including across a reboot.
+
 **Device keys.** Each agent authenticates with its own API key. Agents replace it on their own when it is older than
 `FENRIR_DEVICE_KEY_MAX_AGE_DAYS` (default 90; 0 turns this off), and **Devices → More → Rotate device key** asks one to
 do it at its next check-in. The new key is saved before it is used and the old one keeps working until then, so a

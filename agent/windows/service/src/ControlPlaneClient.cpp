@@ -597,8 +597,13 @@ HttpResponse RequestJson(const wchar_t* method, const std::wstring& url, const s
   const auto secure = components.nScheme == INTERNET_SCHEME_HTTPS;
   const auto* agentName = L"FenrirAgent/0.1";
 
-  auto session = WinHttpOpen(agentName, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
+  // Automatic proxy first (the machine's WinHTTP proxy, or WPAD/PAC where the network publishes one), as the realtime
+  // socket does; the static WinHTTP proxy (netsh winhttp set proxy) on Windows versions without it.
+  auto session = WinHttpOpen(agentName, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
                              WINHTTP_NO_PROXY_BYPASS, 0);
+  if (session == nullptr) {
+    session = WinHttpOpen(agentName, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+  }
   if (session == nullptr) {
     throw std::runtime_error("WinHttpOpen failed");
   }

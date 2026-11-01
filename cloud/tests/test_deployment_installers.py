@@ -196,3 +196,36 @@ def test_enrolment_overlay_keeps_authenticode_signature_valid():
     struct.pack_into("<I", broken, security, 0x10)  # certificate table not at the end
     with pytest.raises(ValueError):
         attach_windows_overlay(bytes(broken), overlay)
+
+
+def _proxy(*args):
+    """Run the installers' shared argument parsing and return (exit code, proxy, stderr)."""
+    run = subprocess.run(["sh", "-c", installers.PROXY_ARGS + '\nprintf %s "$proxy"', "installer", *args],
+                         text=True, capture_output=True, check=False)
+    return run.returncode, run.stdout, run.stderr
+
+
+def test_installers_accept_a_proxy_and_reject_anything_else():
+    assert _proxy() == (0, "", "")
+    assert _proxy("--proxy", "http://proxy.corp:3128")[:2] == (0, "http://proxy.corp:3128")
+    assert _proxy("--proxy=https://user:p%40ss@proxy.corp:8443")[:2] == (0, "https://user:p%40ss@proxy.corp:8443")
+    assert _proxy("--proxy", "none")[:2] == (0, "none")
+    for bad in (["--proxy"], ["--proxy", "proxy.corp:3128"], ["--proxy", "http://x;touch /tmp/pwn"],
+                ["--proxy", "http://x$(id)"], ["--something"]):
+        code, _, err = _proxy(*bad)
+        assert code == 2 and err, bad
+
+
+def test_installers_keep_a_configured_proxy_on_repair(client, admin, tenant, monkeypatch, tmp_path):
+    monkeypatch.setattr(installers, "DOWNLOADS", tmp_path)
+    for name in ("linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64"):
+        (tmp_path / f"fenrir-agent-{name}").write_bytes(b"test-binary-" + name.encode())
+    for os_name, kept, written in (
+            ("linux", "sed -n 's/^HTTPS_PROXY=//p' /etc/fenrir/agent.env", ">> /etc/fenrir/agent.env"),
+            ("macos", "Print :EnvironmentVariables:HTTPS_PROXY", "$proxy_env")):
+        result = client.post("/api/console/enrollment-installers", headers=admin,
+                             json={"tenantId": tenant["id"], "os": os_name, "label": "Pilot", "expiresInDays": 14})
+        assert result.status_code == 200, result.text
+        script = result.content.decode()
+        assert subprocess.run(["sh", "-n"], input=script, text=True, capture_output=True).returncode == 0
+        assert kept in script and written in script and "--proxy" in script

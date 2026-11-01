@@ -66,9 +66,11 @@ type Agent struct {
 	files   *FileMonitor
 	mu      sync.Mutex
 	queue   []Event
-	stop    chan struct{}
-	wake    chan struct{}
-	lastInv time.Time
+	// spoolSaved is when the queue was last written to disk while uploads were failing (see saveSpool).
+	spoolSaved time.Time
+	stop       chan struct{}
+	wake       chan struct{}
+	lastInv    time.Time
 	// System profile (profile.go): last upload and whether one is being collected.
 	lastProfile time.Time
 	profileBusy atomic.Bool
@@ -188,6 +190,9 @@ func (a *Agent) Start() error {
 	}
 	a.client.DeviceID = a.state.DeviceID
 	a.client.SetKey(a.state.APIKey)
+	if n := a.loadSpool(); n > 0 {
+		log.Printf("reloaded %d telemetry events saved while the cloud was unreachable", n)
+	}
 	a.procs = NewProcessSensor(a.cfg.ProcRoot)
 	a.netw = NewNetworkSensor(a.cfg.ProcRoot)
 	globs := a.cfg.PersistenceGlobs
@@ -265,6 +270,71 @@ func (a *Agent) Flush() error {
 	a.queue = a.queue[len(batch):]
 	a.mu.Unlock()
 	return nil
+}
+
+// The offline spool: telemetry queued while the cloud is unreachable is written to the state directory, so a restart
+// or reboot during an outage does not lose it (detections included). It is reloaded at start and removed once the
+// queue has drained.
+const spoolInterval = 5 * time.Minute
+
+func (a *Agent) spoolPath() string { return filepath.Join(a.cfg.StateDir, "telemetry-spool.json") }
+
+func (a *Agent) saveSpool() error {
+	a.mu.Lock()
+	events := append([]Event(nil), a.queue...)
+	a.mu.Unlock()
+	if len(events) == 0 {
+		err := os.Remove(a.spoolPath())
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if len(events) > 40000 {
+		events = events[len(events)-40000:]
+	}
+	data, err := json.Marshal(events)
+	if err != nil {
+		return err
+	}
+	tmp := a.spoolPath() + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	a.spoolSaved = time.Now()
+	return os.Rename(tmp, a.spoolPath())
+}
+
+func (a *Agent) loadSpool() int {
+	data, err := os.ReadFile(a.spoolPath())
+	if err != nil {
+		return 0
+	}
+	var events []Event
+	if err := json.Unmarshal(data, &events); err != nil {
+		log.Printf("telemetry spool unreadable, discarding it: %v", err)
+		_ = os.Remove(a.spoolPath())
+		return 0
+	}
+	a.mu.Lock()
+	a.queue = append(events, a.queue...)
+	a.mu.Unlock()
+	return len(events)
+}
+
+// flushOrSpool uploads what it can; while the cloud is unreachable it keeps the queue on disk (at most every
+// spoolInterval), and once the queue has drained it removes the spool.
+func (a *Agent) flushOrSpool(force bool) error {
+	err := a.Flush()
+	switch {
+	case err != nil && (force || time.Since(a.spoolSaved) >= spoolInterval):
+		if serr := a.saveSpool(); serr != nil {
+			log.Printf("telemetry spool could not be written: %v", serr)
+		}
+	case err == nil && a.QueueLength() == 0:
+		_ = os.Remove(a.spoolPath())
+	}
+	return err
 }
 
 func (a *Agent) QueueLength() int {
@@ -568,14 +638,14 @@ func (a *Agent) Run() {
 		select {
 		case <-a.stop:
 			a.stopDNSProxy() // never leave the system resolver pointing at a proxy that is gone
-			_ = a.Flush()
+			_ = a.flushOrSpool(true)
 			return
 		case <-a.wake:
 			a.RunCommands()
 		case <-sense.C:
 			a.SenseOnce()
 		case <-upload.C:
-			if err := a.Flush(); err != nil {
+			if err := a.flushOrSpool(false); err != nil {
 				log.Printf("telemetry upload failed (%d queued): %v", a.QueueLength(), err)
 			}
 		case <-beat.C:
