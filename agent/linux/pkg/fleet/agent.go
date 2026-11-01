@@ -768,7 +768,7 @@ func (a *Agent) ExecuteContext(ctx context.Context, cmd Command) (map[string]int
 	case "pii.scan":
 		return PIIScanContext(ctx, cmd.PayloadJSON)
 	case "network.discover":
-		return a.DiscoverContext(ctx, cmd.PayloadJSON)
+		return a.DiscoverContext(ctx, cmd.PayloadJSON, func() ([]SnmpCredential, error) { return a.client.FetchSnmpCredentials(cmd.ID) })
 	case "amt.wsman":
 		cred, err := a.client.FetchAmtCredential(cmd.ID)
 		if err != nil {

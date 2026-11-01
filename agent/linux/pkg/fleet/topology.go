@@ -30,6 +30,7 @@ type DiscoverOptions struct {
 	MaxHosts       int   `json:"maxHosts"`
 	ResolveNames   *bool `json:"resolveNames"`
 	TimeoutSeconds int   `json:"timeoutSeconds"`
+	SNMP           bool  `json:"snmp"` // also read switches over SNMP (credentials fetched for this command)
 }
 
 type TopologyInterface struct {
@@ -52,6 +53,8 @@ type TopologyResult struct {
 	Neighbors  []TopologyNeighbor  `json:"neighbors"`
 	Swept      []string            `json:"swept"`
 	Truncated  bool                `json:"truncated"`
+	Switches   []SwitchReport      `json:"switches,omitempty"`
+	SNMPError  string              `json:"snmpError,omitempty"`
 }
 
 var DefaultDiscoveryPorts = []int{22, 23, 53, 80, 135, 139, 443, 445, 515, 554, 631, 3389, 5900, 8080, 8443, 9100, 16992, 16993}
@@ -363,8 +366,8 @@ func defaultGateway(procRoot string) string {
 	return ParseLinuxGateway(string(data))
 }
 
-// DiscoverContext runs the network.discover command.
-func (a *Agent) DiscoverContext(ctx context.Context, raw string) (map[string]interface{}, error) {
+// DiscoverContext runs the network.discover command. fetchSNMP releases the switch credentials for this command.
+func (a *Agent) DiscoverContext(ctx context.Context, raw string, fetchSNMP func() ([]SnmpCredential, error)) (map[string]interface{}, error) {
 	var opts DiscoverOptions
 	if raw != "" {
 		if err := json.Unmarshal([]byte(raw), &opts); err != nil {
@@ -374,6 +377,15 @@ func (a *Agent) DiscoverContext(ctx context.Context, raw string) (map[string]int
 	result, err := a.Discover(ctx, opts)
 	if err != nil {
 		return nil, err
+	}
+	if opts.SNMP && fetchSNMP != nil {
+		if creds, err := fetchSNMP(); err != nil {
+			result.SNMPError = "could not get the switch credentials: " + err.Error()
+		} else {
+			snmpCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			result.Switches = QuerySwitches(snmpCtx, creds, 3*time.Second)
+			cancel()
+		}
 	}
 	data, _ := json.Marshal(result)
 	var out map[string]interface{}

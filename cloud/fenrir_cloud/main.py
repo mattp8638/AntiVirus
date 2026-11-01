@@ -505,6 +505,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(remote_router.sockets)
     app.include_router(oob_router.router)
     app.include_router(oob_router.agent_router)
+    app.include_router(network_router.agent)
     app.include_router(grc_assurance_router.router)
     app.include_router(grc_assurance_router.public)
     app.include_router(protection.router)

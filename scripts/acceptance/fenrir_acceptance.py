@@ -147,6 +147,7 @@ class Context:
     def __init__(self, api: Api, args: argparse.Namespace):
         self.api, self.args = api, args
         self.scripts: dict[str, str] = {}
+        self.started_at = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()  # compares with the server's UTC "...Z" times
 
     def device(self, device_id: str) -> dict:
         return self.api.get(f"devices/{device_id}")
@@ -498,6 +499,34 @@ def isolation(ctx: Context, device: dict) -> tuple[str, dict]:
     ctx.command(device, "device.release")
     released = wait_for("release", lambda: not ctx.device(device["id"])["device"].get("isolated"), ctx.args.timeout)
     return "isolated and released; the device still reports", {"released": bool(released)}
+
+
+@scenario("topology", ("linux", "macos"), "Maps which switch port each device is on (probe with switch access)")
+def topology(ctx: Context, device: dict) -> tuple[str, dict]:
+    tenant_id = device.get("tenantId")
+    graph = ctx.api.get("network/topology", tenant_id=tenant_id)
+    if device["id"] not in (graph.get("settings") or {}).get("probeDeviceIds", []):
+        raise Skip("this device is not a topology probe for its customer (Network > Topology > Schedule)")
+    credentials = ctx.api.get("network/snmp-credentials", tenant_id=tenant_id)
+    if not credentials:
+        raise Skip("no switch access configured for this customer (Network > Topology > Switch access)")
+    ctx.api.post("network/discover", {"deviceId": device["id"], "sweep": False})
+
+    def mapped():
+        rows = ctx.api.get("network/snmp-credentials", tenant_id=tenant_id)
+        results = [r for c in rows for r in (c.get("lastResult") or {}).values()]
+        return results if results and any(r.get("at", "") > ctx.started_at for r in results) else None
+
+    results = wait_for("switch tables from the probe", mapped, max(ctx.args.timeout, 600), interval=10)
+    failed = [r for r in results if not r.get("ok")]
+    graph = ctx.api.get("network/topology", tenant_id=tenant_id)
+    connected = [n for n in graph["nodes"] if n.get("connection")]
+    if failed and not graph.get("switches"):
+        raise Check(f"no switch answered: {failed[0].get('error')}")
+    if not connected:
+        raise Check("switches answered but no device could be placed on a port (check the MAC address table is readable)")
+    sample = {n["label"]: f"{n['connection']['switch']} {n['connection']['port']}" for n in connected[:10]}
+    return f"{len(graph.get('switches') or [])} switches, {len(connected)} devices placed on ports", {"sample": sample, "switchErrors": len(failed)}
 
 
 @scenario("patch_scan", ("windows", "linux"), "Scans for missing updates")

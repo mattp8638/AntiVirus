@@ -136,6 +136,14 @@ Two-person approval is off by default and set per customer or MSP. The nearest a
 
 Pending requests expire after 24 hours. Changing the approval policy needs `configure`, `approve` and a fresh password check.
 
+### D-17: Switch-port topology
+
+The physical map comes from switch tables read over SNMP by a chosen Linux or macOS probe, using gosnmp for v2c and v3.
+
+**Credentials.** They are stored encrypted in the vault (`network_snmp_credentials`) and are never part of a command. The probe fetches them once per command, and only if it is a configured probe for that customer. Each release is audited. Windows probes are excluded: their discovery runs as a PowerShell script, which cannot fetch credentials without putting secrets in the stored script body. Native Windows SNMP in the C++ agent is the follow-up.
+
+**Placement rule.** Each device goes on the non-uplink port with the fewest MACs where it was learned. An uplink is found by LLDP to a known switch, or by another known switch's bridge MAC being learned on that port. A port with more than 64 MACs is not treated as a device port. Links are rebuilt for each switch that answers; a switch that doesn't answer keeps its previous links and shows its error.
+
 ### Other external dependencies (owner action needed when reached)
 
 | Dependency | Needed for |

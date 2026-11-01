@@ -189,3 +189,142 @@ def monitor_node(node_id: str, body: dict = Body(default={}), principal: Princip
     audit.record(db, principal.actor, "network.created", monitor.id, monitor.tenant_id, fromTopology=row.id)
     db.commit()
     return to_dict(monitor)
+
+
+# --------------------------------------------------------------------------- switch-port topology: SNMP credentials
+import ipaddress as _ipaddress  # noqa: E402
+import json as _json  # noqa: E402
+from typing import Literal  # noqa: E402
+
+from fastapi import Request  # noqa: E402
+
+from .. import crypto  # noqa: E402
+from ..deps import current_device, require_reauth  # noqa: E402
+from ..models import Command, NetworkSnmpCredential, utcnow  # noqa: E402
+
+agent = APIRouter(prefix="/api/v1", tags=["Network topology (agent)"])
+
+
+def _snmp_view(row: NetworkSnmpCredential) -> dict:
+    return {"id": row.id, "tenantId": row.tenant_id, "name": row.name, "version": row.version, "username": row.username,
+            "authProtocol": row.auth_protocol, "privProtocol": row.priv_protocol, "hosts": row.hosts or [],
+            "hasSecret": bool(row.secret_envelope), "lastResult": row.last_result or {},
+            "updatedAt": row.updated_at.isoformat() + "Z"}
+
+
+class SnmpCredentialInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    tenantId: str
+    name: str = Field(default="", max_length=200)
+    version: Literal["2c", "3"] = "2c"
+    hosts: list[str] = Field(min_length=1, max_length=64)
+    community: str | None = Field(default=None, max_length=200)
+    username: str = Field(default="", max_length=200)
+    authProtocol: Literal["", "SHA", "SHA256", "SHA512", "MD5"] = ""
+    authPassword: str | None = Field(default=None, max_length=200)
+    privProtocol: Literal["", "AES", "AES256", "DES"] = ""
+    privPassword: str | None = Field(default=None, max_length=200)
+
+    @field_validator("hosts")
+    @classmethod
+    def private_ipv4(cls, hosts: list[str]) -> list[str]:
+        out = []
+        for host in hosts:
+            try:
+                ip = _ipaddress.ip_address(host.strip())
+            except ValueError:
+                raise ValueError(f"{host} is not an IP address")
+            if ip.version != 4 or not ip.is_private:
+                raise ValueError(f"{host} is not a private IPv4 address: Fenrir only reads switches on the customer's own network")
+            out.append(str(ip))
+        return sorted(set(out))
+
+
+def _apply_snmp(row: NetworkSnmpCredential, body: SnmpCredentialInput, existing: dict) -> None:
+    secret = dict(existing)
+    for field in ("community", "authPassword", "privPassword"):
+        value = getattr(body, field)
+        if value is not None:
+            secret[field] = value
+    if body.version == "2c" and not secret.get("community"):
+        raise HTTPException(400, "SNMP v2c needs a community string")
+    if body.version == "3":
+        if not body.username:
+            raise HTTPException(400, "SNMP v3 needs a username")
+        if body.privProtocol and not body.authProtocol:
+            raise HTTPException(400, "SNMP v3 privacy needs authentication too")
+        for proto, key in ((body.authProtocol, "authPassword"), (body.privProtocol, "privPassword")):
+            if proto and len(secret.get(key) or "") < 8:
+                raise HTTPException(400, "SNMP v3 passphrases must be at least 8 characters")
+    row.name, row.version, row.hosts = body.name.strip() or f"SNMP v{body.version}", body.version, body.hosts
+    row.username, row.auth_protocol, row.priv_protocol = body.username.strip(), body.authProtocol, body.privProtocol
+    if body.version == "2c":
+        secret = {"community": secret.get("community", "")}
+    row.secret_envelope = crypto.encrypt(_json.dumps(secret), f"snmp:{row.tenant_id}:{row.id}")
+    row.updated_at = utcnow()
+
+
+@router.get("/snmp-credentials")
+def list_snmp(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("read")
+    principal.check_tenant(tenant_id)
+    rows = db.execute(select(NetworkSnmpCredential).where(NetworkSnmpCredential.tenant_id == tenant_id).order_by(NetworkSnmpCredential.name)).scalars()
+    return [_snmp_view(r) for r in rows]
+
+
+@router.post("/snmp-credentials")
+def create_snmp(body: SnmpCredentialInput, request: Request, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("configure")
+    principal.check_tenant(body.tenantId)
+    require_reauth(request, principal)
+    row = NetworkSnmpCredential(tenant_id=body.tenantId, created_by=principal.actor)
+    db.add(row)
+    db.flush()
+    _apply_snmp(row, body, {})
+    audit.record(db, principal.actor, "topology.snmp_credential_created", row.name, row.tenant_id, version=row.version, hosts=len(row.hosts))
+    db.commit()
+    return _snmp_view(row)
+
+
+@router.put("/snmp-credentials/{credential_id}")
+def update_snmp(credential_id: str, body: SnmpCredentialInput, request: Request, principal: Principal = Depends(current_principal),
+                db: Session = Depends(get_db)):
+    """Secrets left out are kept; send a new one to replace it."""
+    principal.require("configure")
+    row = owned(db, NetworkSnmpCredential, credential_id, principal)
+    if body.tenantId != row.tenant_id:
+        raise HTTPException(400, "A credential cannot move to another customer")
+    require_reauth(request, principal)
+    from .. import topology
+
+    _apply_snmp(row, body, topology.snmp_secret(row))
+    audit.record(db, principal.actor, "topology.snmp_credential_updated", row.name, row.tenant_id, version=row.version, hosts=len(row.hosts))
+    db.commit()
+    return _snmp_view(row)
+
+
+@router.delete("/snmp-credentials/{credential_id}")
+def delete_snmp(credential_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("configure")
+    row = owned(db, NetworkSnmpCredential, credential_id, principal)
+    audit.record(db, principal.actor, "topology.snmp_credential_deleted", row.name, row.tenant_id)
+    db.delete(row)
+    db.commit()
+    return {"ok": True}
+
+
+@agent.post("/devices/{device_id}/commands/{command_id}/snmp-credentials")
+def release_snmp(command_id: str, device: Device = Depends(current_device), db: Session = Depends(get_db)):
+    """Switch credentials for one discovery command, released once, only to the probe device it was sent to."""
+    from .. import topology
+
+    command = db.get(Command, command_id)
+    if command is None:
+        raise HTTPException(404, "Not found")
+    try:
+        credentials = topology.snmp_credentials_for_command(db, device, command)
+    except LookupError as exc:
+        db.commit()
+        raise HTTPException(404, str(exc)) from exc
+    db.commit()
+    return {"credentials": credentials}
