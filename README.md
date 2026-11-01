@@ -189,6 +189,29 @@ The first build compiles the console and agent installers and can take time. Sig
 
 Production checks reject unsafe secrets and SQLite. `/ready` also checks the migration ledger and mapped device columns; container health and server updates use it. Bootstrap credentials create the first administrator; editing the bootstrap password later does not reset an existing account.
 
+### 6. Schedule backups and run the go-live check
+
+Schedule a daily backup ([Backup and restore](#backup-and-restore) explains what it holds), then run the backup
+once by hand so there is one to check:
+
+```bash
+echo "17 2 * * * root cd $PWD && FENRIR_COMPOSE_FILES=$PWD/deploy/docker-compose.https.yml deploy/backup.sh /var/backups/fenrir >> /var/log/fenrir-backup.log 2>&1" \
+  | sudo tee /etc/cron.d/fenrir-backup
+sudo env FENRIR_COMPOSE_FILES="$PWD/deploy/docker-compose.https.yml" deploy/backup.sh /var/backups/fenrir
+```
+
+Then run the go-live check. It reads `deploy/.env` without printing it and checks the secrets, production mode, the
+signing certificate and release key, the HTTPS proxy, the containers, open ports, disk space, backups, and the live
+server's `/health`, `/ready`, `/health/background`, certificate and HTTP-to-HTTPS redirect:
+
+```bash
+sudo deploy/preflight.sh
+```
+
+Every line is PASS, WARN (a risk to decide on) or FAIL (fix before customers depend on the server). It exits non-zero
+if anything failed; `--strict` also fails on warnings. Run it again after every upgrade. `--offline` checks only the
+configuration and host, before the first start. CI runs it against the full stack on every change.
+
 ### Background worker and telemetry volume
 
 The `cloud` container serves the console and the agents (`FENRIR_ROLE=web`). The `worker` container runs everything

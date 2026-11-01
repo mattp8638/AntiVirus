@@ -335,6 +335,35 @@ jobs:
           test "$after" = "$before"
           curl --fail --silent --show-error http://127.0.0.1:8080/ready
           echo "PASS: backup restored devices, tickets, commands and the audit chain; secrets decrypt"
+      - name: Go-live preflight against the running stack
+        shell: bash
+        run: |
+          set -uo pipefail
+          # The CI stack is a lab (plain HTTP, no code-signing certificate), so preflight must report it as not ready;
+          # every check it can pass here must pass, and it must never print a secret.
+          FENRIR_COMPOSE_FILES="$PWD/deploy/docker-compose.lab.yml" FENRIR_BACKUP_DIR=/tmp/fenrir-backups NO_COLOR=1 \
+            deploy/preflight.sh --url http://127.0.0.1:8080 > /tmp/preflight.txt
+          status=$?
+          cat /tmp/preflight.txt
+          { echo '### Go-live preflight (lab stack)'; echo '```'; cat /tmp/preflight.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          test "$status" = 1
+          for expected in \
+            "PASS  .env is readable by its owner only" \
+            "PASS  The four secrets are all different" \
+            "PASS  Release signing key present, Ed25519, owner-only" \
+            "PASS  Containers running: db cloud worker" \
+            "PASS  A backup from the last two days" \
+            "PASS  /ready: database up and schema current" \
+            "PASS  /health/background" \
+            "FAIL  FENRIR_PUBLIC_URL (http://127.0.0.1:8080) is not HTTPS" \
+            "FAIL  No Windows code-signing certificate"; do
+            grep -qF "$expected" /tmp/preflight.txt || { echo "missing: $expected"; exit 1; }
+          done
+          for name in POSTGRES_PASSWORD FENRIR_SECRET_KEY FENRIR_VAULT_KEY FENRIR_ADMIN_PASSWORD; do
+            value="$(sed -n "s/^$name=//p" deploy/.env)"
+            if grep -qF "$value" /tmp/preflight.txt; then echo "preflight printed $name"; exit 1; fi
+          done
+          echo "PASS: preflight checked the live stack and printed no secrets"
       - name: Diagnostics on failure
         if: failure()
         shell: bash

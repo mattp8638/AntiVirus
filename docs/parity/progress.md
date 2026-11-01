@@ -33,6 +33,7 @@ Overall parity: **not passed**. MVP: **not yet declared**.
 | CORE-06 (audit assurance) | (this milestone) | Checkpoints published outside the database, classified verification, redacted verifiable export, retention to an anchor, legal hold; `test_audit_assurance.py`. |
 | CORE-02 (roles) | (this batch) | Custom roles, customer assignments, finer powers. Fixed: a tenant admin could promote anyone, including themselves, to msp_admin. `test_roles.py`. |
 | CORE-14 (production mode) | (this batch) | Unsafe production settings stop the server from starting; `/ready`; readiness warnings for platform admins. `test_production_mode.py`. |
+| CORE-14 (go-live check) | (this batch) | `deploy/preflight.sh` checks a deployment before customers rely on it, without printing secrets; README step 6. `test_preflight.py`; runs against the full stack in the Phase 2 smoke. |
 | CORE-15 (approvals) | (this batch) | Optional two-person approval bound to the exact request and its devices; `test_approvals.py`. |
 | CI | `b5cf672` | Removed the placeholder signing files that the merge brought back. [Run 78](https://github.com/mattp8638/AntiVirus/actions/runs/40649462515) passed, which also verifies FIX-08 in CI. |
 
