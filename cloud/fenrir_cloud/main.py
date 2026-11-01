@@ -450,6 +450,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             threading.Thread(target=_wake_relay_loop, args=(stop,), daemon=True, name="wake-relay").start()
         else:
             start_background(settings, stop)
+        if settings.scheduler_enabled:
+            # Here rather than in the worker, so a worker that has died is still reported (CORE-08).
+            from .health import watch_loop
+
+            threading.Thread(target=watch_loop, args=(settings, stop), daemon=True, name="health-watch").start()
         yield
         stop.set()
 
@@ -528,6 +533,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception:  # noqa: BLE001
             return JSONResponse({"ok": False, "problems": ["database unavailable"]}, status_code=503)
         return result if result["ok"] else JSONResponse(result, status_code=503)
+
+    @app.get("/metrics", include_in_schema=False)
+    def metrics(request: Request):
+        """Prometheus metrics: background jobs, the event outbox, storage and device counts. Only with
+        FENRIR_METRICS_TOKEN (24+ characters) sent as a bearer token; otherwise it does not exist."""
+        import hmac
+
+        from .health import prometheus
+        from .remote import hub
+
+        expected = get_settings().metrics_token
+        supplied = request.headers.get("authorization", "")
+        supplied = supplied[7:].strip() if supplied[:7].lower() == "bearer " else ""
+        if len(expected) < 24 or not hmac.compare_digest(supplied.encode(), expected.encode()):
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        try:
+            with database.session_factory()() as db:
+                schema = db.execute(text("SELECT MAX(version) FROM schema_migrations")).scalar()
+                body = prometheus(db, get_settings(), __version__, schema, len(hub.devices))
+        except Exception:  # noqa: BLE001
+            return PlainTextResponse("fenrir_up 0\n", status_code=503, media_type="text/plain; version=0.0.4")
+        return PlainTextResponse("# TYPE fenrir_up gauge\nfenrir_up 1\n" + body, media_type="text/plain; version=0.0.4")
 
     @app.get("/ready", tags=["System"])
     def ready():

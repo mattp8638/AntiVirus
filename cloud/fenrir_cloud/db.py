@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 54
+LATEST_MIGRATION = 55
 
 def init_engine(url: str) -> Engine:
     global _engine, _session_factory
@@ -422,6 +422,11 @@ def migrate(bind: Engine) -> list[int]:
                 NetworkLink.__table__.create(conn, checkfirst=True)
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (54)"))
                 applied.append(54)
+            if 55 not in versions:
+                from .models import PlatformState
+                PlatformState.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (55)"))
+                applied.append(55)
             conn.commit()
         except Exception:
             conn.rollback()

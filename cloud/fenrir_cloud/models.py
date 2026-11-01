@@ -1569,6 +1569,15 @@ class BackgroundJob(Base):
     running_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # set while it runs: shows a hung job
 
 
+class PlatformState(Base):
+    """Small pieces of platform-wide state that must survive restarts, such as which health problems were last alerted."""
+
+    __tablename__ = "platform_state"
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    value: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class RateLimitBucket(Base):
     """Shared sliding windows, serialized using a database write lock per key."""
     __tablename__ = "rate_limit_buckets"

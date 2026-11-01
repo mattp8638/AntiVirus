@@ -178,6 +178,7 @@ const WEBHOOK_EVENTS: [string, string][] = [
   ["network.down", "Monitored service down"], ["network.recovered", "Monitored service recovered"], ["backup.failed", "Backup failed"],
   ["backup.success", "Backup succeeded"], ["vulnerability.detected", "Vulnerability found"], ["vulnerability.verified_fixed", "Vulnerability fixed"],
   ["grc.drift", "Compliance drift"], ["m365.action_finished", "Microsoft 365 action finished"], ["audit.checkpoint", "Audit checkpoint"],
+  ["platform.health.degraded", "Fenrir platform degraded"], ["platform.health.recovered", "Fenrir platform recovered"],
 ];
 
 function WebhooksTab() {
@@ -636,7 +637,8 @@ function PlatformTab() {
           <h3 style={{ margin: 0 }}>Background work</h3>
           <Pill value={background.ok ? "running" : "needs attention"} tone={background.ok ? "good" : "bad"} />
         </div>
-        <p className="small">Scheduler pass {passAgo("scheduler.pass")} · hourly maintenance {passAgo("maintenance.pass")} · runs in {background.role === "web" ? "the worker container" : "this server process"}</p>
+        <p className="small">Scheduler pass {passAgo("scheduler.pass")} · hourly maintenance {passAgo("maintenance.pass")} · runs in {background.role === "web" ? "the worker container" : "this server process"}
+          {background.checks?.storage?.totalBytes > 0 && <> · artifact storage {(background.checks.storage.freeBytes / 1024 ** 3).toFixed(1)} GiB free of {(background.checks.storage.totalBytes / 1024 ** 3).toFixed(0)}</>}</p>
         {(background.problems ?? []).map((problem: string) => <p key={problem} className="small"><Pill value="problem" tone="bad" /> {problem}</p>)}
         {(background.checks?.jobs?.failingRepeatedly ?? []).length > 0 &&
           <p className="small muted">Failing repeatedly: {background.checks.jobs.failingRepeatedly.join(", ")}. See the error column below.</p>}

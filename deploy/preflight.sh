@@ -203,6 +203,14 @@ legacy="$(envval FENRIR_VAULT_ALLOW_DERIVED_LEGACY)"
 if [ -z "$legacy" ] || truthy "$legacy"; then
   warn "FENRIR_VAULT_ALLOW_DERIVED_LEGACY is on. On a new server set it to false; on an upgraded one, rotate the vault key first."
 fi
+metrics_token="$(envval FENRIR_METRICS_TOKEN)"
+if [ -z "$metrics_token" ]; then
+  note "No FENRIR_METRICS_TOKEN: /metrics is off. Set one to scrape Fenrir with Prometheus."
+elif [ "${#metrics_token}" -lt 24 ]; then
+  warn "FENRIR_METRICS_TOKEN is shorter than 24 characters, so /metrics stays off. Use: openssl rand -hex 24"
+else
+  pass "Prometheus metrics token set"
+fi
 if [ -z "$(envval FENRIR_SMTP_HOST)" ]; then
   warn "No SMTP server: alert and ticket emails are only logged, not sent."
 else

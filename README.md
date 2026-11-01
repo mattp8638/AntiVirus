@@ -222,8 +222,28 @@ reach agents within a couple of seconds: the API wakes connected agents that hav
 container instead, set `FENRIR_ROLE: all` on `cloud` and remove the `worker` service.
 
 Point your uptime monitor at `/health/background` as well as `/ready`. It returns 503, naming the problem, when the
-scheduler or the hourly maintenance has stopped completing, a job has been running for over 30 minutes, or the event
-outbox is falling behind. **Settings → Platform** shows the same, with each job's last run and error.
+scheduler or the hourly maintenance has stopped completing, a job has been running for over 30 minutes, the event
+outbox is falling behind, or the artifacts volume is nearly full. **Settings → Platform** shows the same, with each
+job's last run and error.
+
+Fenrir also tells you itself. The web process checks background health every minute and sends
+`platform.health.degraded` when something new goes wrong (including a job failing three times in a row) and
+`platform.health.recovered` when everything is fine again, once each, to every MSP webhook subscribed to them
+(**Settings → Webhooks**; Slack and Teams formats work). It sends them directly rather than through the event outbox,
+so they still arrive when the worker or the outbox is the problem. Each alert is also in the audit log.
+
+For Prometheus, set `FENRIR_METRICS_TOKEN` (`openssl rand -hex 24`) in `deploy/.env` and scrape `/metrics` with that
+bearer token. Without a token of 24 or more characters the endpoint does not exist. It reports background health, each
+job's last success, failures in a row and duration, the outbox, artifact storage, and device counts; never customer
+names or errors.
+
+```yaml
+scrape_configs:
+  - job_name: fenrir
+    scheme: https
+    authorization: { credentials: "<FENRIR_METRICS_TOKEN>" }
+    static_configs: [{ targets: ["rmm.example.com"] }]
+```
 
 Telemetry settings (in `deploy/.env`, passed through the Compose file's shared environment):
 

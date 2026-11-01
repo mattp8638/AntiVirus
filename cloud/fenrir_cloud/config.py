@@ -99,6 +99,8 @@ class Settings:
         default_factory=lambda: int(os.getenv("FENRIR_ROUTINE_EVENTS_PER_DEVICE_MINUTE", "600")))
     # all: one process serves the API and runs background jobs. web / worker: split them (python -m fenrir_cloud.worker).
     role: str = field(default_factory=lambda: os.getenv("FENRIR_ROLE", "all").strip().lower())
+    # Bearer token for GET /metrics (Prometheus). Unset or shorter than 24 characters: the endpoint answers 404.
+    metrics_token: str = field(default_factory=lambda: os.getenv("FENRIR_METRICS_TOKEN", "").strip())
 
 
 _active: Settings | None = None
