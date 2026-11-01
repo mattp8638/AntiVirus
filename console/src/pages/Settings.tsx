@@ -446,6 +446,24 @@ function MfaCard() {
   );
 }
 
+const HEALTH_TONE: Record<string, string> = { ok: "good", disabled: "muted", stale: "bad", missing: "warn", failing: "bad", low: "bad", unknown: "warn" };
+
+// CORE-08: background components, event queue and storage. Degraded parts are also sent to webhooks.
+function HealthCard() {
+  const { data, reload } = useData<any>("platform/health");
+  if (!data) return null;
+  return (
+    <div className="card" style={{ marginBottom: 14 }}>
+      <div className="row"><b style={{ flex: 1 }}>Service health</b><Pill value={data.status} tone={data.status === "ok" ? "good" : "bad"} />
+        <button className="small" onClick={reload}>Refresh</button></div>
+      <Table rows={[...data.components, { name: "event queue", status: data.queue.status, reason: `${data.queue.pending} pending, ${data.queue.dead} failed permanently` },
+                    ...(data.storage ? [{ name: "artifact storage", status: data.storage.status, reason: data.storage.freeBytes != null ? `${Math.round(data.storage.freeBytes / 1e9)} GB free` : "" }] : [])]}
+             columns={[{ key: "name", label: "Component" }, { key: "status", label: "Status", render: (c: any) => <Pill value={c.status} tone={HEALTH_TONE[c.status] || "warn"} /> },
+                       { key: "reason", label: "Detail", render: (c: any) => <span className="small">{c.reason || (c.lastOkAt ? `last ran ${ago(c.lastOkAt)}` : "")}</span> }]} />
+    </div>
+  );
+}
+
 function ReadinessCard() {
   const { data } = useData<any>("platform/readiness");
   if (!data) return null;
@@ -468,6 +486,7 @@ function PlatformTab() {
   return (
     <>
       {can("platform") && <ReadinessCard />}
+      <HealthCard />
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
         <div className="card"><div className="label muted small">Vault encryption</div>
           <p><b>{displayValue(data?.vault.algorithm ?? "…")}</b></p>

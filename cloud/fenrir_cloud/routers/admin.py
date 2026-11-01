@@ -586,6 +586,18 @@ def audit_log(tenant_id: str | None = None, limit: int = 200, principal: Princip
     return [to_dict(row) for row in db.execute(query).scalars()]
 
 
+@router.get("/platform/health")
+def platform_health(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """CORE-08: background components, event queue, feeds and storage; degraded parts are named."""
+    principal.require("configure")
+    from .. import health
+    from ..config import get_settings
+    from ..main import _enabled_components
+
+    settings = get_settings()
+    return health.report(db, _enabled_components(settings), settings.artifact_dir)
+
+
 @router.get("/platform/readiness")
 def platform_readiness(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     """CORE-14: production safety warnings for platform administrators (errors stop the server from starting)."""

@@ -1748,3 +1748,14 @@ class ApprovalRequest(Base):
     reason: Mapped[str] = mapped_column(String(500), default="")
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class ServiceHeartbeat(Base):
+    """Last successful run of each background component (CORE-08), shared by every API worker."""
+    __tablename__ = "service_heartbeats"
+    name: Mapped[str] = mapped_column(String(60), primary_key=True)
+    last_ok_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str] = mapped_column(String(500), default="")
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    alerted_state: Mapped[str] = mapped_column(String(20), default="ok")  # last state an alert was sent for

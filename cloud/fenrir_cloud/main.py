@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from sqlalchemy import delete, func, select, text
 
 from . import __version__, crypto, audit, db as database, events, policy_schema, psa, ratelimit, remote, rmm, rmm_library
+from . import health as service_health
 from . import vulnmgmt  # noqa: F401 - registers its event handlers
 from .config import Settings, get_settings, set_settings
 from .detection import sync_builtin_rules
@@ -81,6 +82,11 @@ def bootstrap(settings: Settings) -> None:
         db.close()
 
 
+def _enabled_components(settings: Settings) -> dict[str, bool]:
+    return {"scheduler": settings.scheduler_enabled, "vuln-intel": settings.scheduler_enabled and settings.vuln_intel_enabled,
+            "signature-feed": settings.feed_sync_enabled, "maintenance": True}
+
+
 def _maintenance_loop(settings: Settings, stop: threading.Event) -> None:
     """Hourly: purge telemetry past retention, refresh the upstream feed if enabled."""
     delay = 30.0
@@ -94,14 +100,21 @@ def _maintenance_loop(settings: Settings, stop: threading.Event) -> None:
             db.execute(delete(DnsQueryLog).where(DnsQueryLog.at < cutoff))
             db.execute(delete(RateLimitBucket).where(RateLimitBucket.expires_at < utcnow()))
             db.commit()
+            service_health.beat(db, "maintenance")
             if settings.feed_sync_enabled:
                 from .intel import sync_feed
 
                 result = sync_feed(db, settings.feed_url, settings.feed_token)
                 log.info("feed sync: %s", result)
+                summary = {k: v for k, v in (result or {}).items() if isinstance(v, (int, str, bool))} if isinstance(result, dict) else {}
+                service_health.beat(db, "signature-feed", **summary)
         except Exception as exc:  # noqa: BLE001 - keep the loop alive
             log.warning("maintenance cycle failed: %s", exc)
             db.rollback()
+            try:
+                service_health.beat(db, "signature-feed" if settings.feed_sync_enabled else "maintenance", ok=False, error=str(exc))
+            except Exception:  # noqa: BLE001
+                db.rollback()
         finally:
             db.close()
 
@@ -164,9 +177,18 @@ def _scheduler_loop(stop: threading.Event, interval: float = 30.0) -> None:
                         if msp is not None:
                             psa.poll_imap(db, msp.id)
                     db.commit()
+                    service_health.beat(db, "scheduler", passes=passes)
+                    if passes % 10 == 0:  # CORE-08: degraded/recovered alerts to webhooks
+                        settings = get_settings()
+                        service_health.alert_on_change(db, service_health.report(db, _enabled_components(settings), settings.artifact_dir))
+                        db.commit()
                 except Exception as exc:
                     log.warning("scheduler pass failed: %s", exc)
                     db.rollback()
+                    try:
+                        service_health.beat(db, "scheduler", ok=False, error=str(exc))
+                    except Exception:  # noqa: BLE001
+                        db.rollback()
                 finally:
                     db.close()
         except Exception as exc:
@@ -300,6 +322,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/health", tags=["System"])
     def health():
         return {"status": "ok", "version": __version__, "policySettings": len(policy_schema.FIELDS)}
+
+    @app.get("/metrics", include_in_schema=False)
+    def metrics(request: Request):
+        """Prometheus metrics, only with FENRIR_METRICS_TOKEN set and sent as a bearer token."""
+        import hmac
+        import os
+
+        expected = os.getenv("FENRIR_METRICS_TOKEN", "")
+        supplied = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+        if not expected or not hmac.compare_digest(supplied, expected):
+            return JSONResponse({"detail": "Not found"}, status_code=404)
+        with database.session_factory()() as db:
+            current = service_health.report(db, _enabled_components(settings), settings.artifact_dir)
+        return PlainTextResponse(service_health.prometheus(current), media_type="text/plain; version=0.0.4")
 
     @app.get("/ready", tags=["System"])
     def ready():
