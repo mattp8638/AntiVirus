@@ -313,6 +313,12 @@ finished on their own pages.
 
 ### Managed Microsoft Defender
 
+**On Windows, Microsoft Defender is what blocks a malicious program before it runs.** Fenrir does not ship a Windows
+kernel driver, so its own agent stops threats just after they start (process-start verdicts, AMSI, ETW, network
+isolation). Keep Defender's real-time protection on, ideally by managing it as below. **Protection health** has a
+**Blocks before it runs** column for every Windows device (Defender, None or Checking) and warns when any device has
+none.
+
 Most Microsoft 365 Business Premium customers already pay for Defender. In a policy's **Microsoft Defender** section,
 **Manage Microsoft Defender** makes Defender the prevention engine on that policy's Windows devices, with Fenrir's EDR,
 machine learning and DNS filtering on top:

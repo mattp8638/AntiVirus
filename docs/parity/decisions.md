@@ -34,6 +34,14 @@
   4. Lab Windows 10/11 and Server VMs with Secure Boot and HVCI on.
 - Do not disable Secure Boot, HVCI or driver signature enforcement, or use test-signing, to pass acceptance.
 - Scheduled: AV-02 in Phase 4. Until then, the console must not report pre-execution prevention as active (AGT-10/AV-22).
+- **Owner decision, 2026-11-01:** go live without a Fenrir driver. On Windows, blocking before a program runs comes from
+  Microsoft Defender, which Fenrir can manage (policy section "Microsoft Defender") and reads on every Windows device.
+  Protection health shows, per Windows device, "Blocks before it runs": Defender (active, real-time on), None (off,
+  passive or real-time off) or Checking (state not read yet), with a warning when any device has none.
+  "Manage Microsoft Defender" stays off by default: turning it on pushes Defender settings and attack surface rules to
+  customer machines, so it is each MSP's choice per policy. The policy setting "Require the file-system minifilter" is
+  labelled as having no effect. Revisit (option 2: restore or rewrite the driver, with an EV certificate, Partner Center
+  and HLK) only if Fenrir is to replace Defender rather than manage it.
 
 ### D-07: FIX-07, Go agent release authentication (partial)
 

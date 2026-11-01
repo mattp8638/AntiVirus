@@ -152,7 +152,9 @@ SCHEMA: tuple[Section, ...] = (
             F("collectScriptEvents", "bool", True, "Collect script content (AMSI/PowerShell)", platforms=("windows",)),
             F("telemetryUploadSeconds", "int", 30, "Telemetry upload interval (s)", min=5, max=3600),
             F("failServiceStartupIfRealtimeCoverageMissing", "bool", True, "Fail closed if real-time coverage is missing", platforms=("windows",)),
-            F("requireMinifilterBrokerConnection", "bool", True, "Require the file-system minifilter", platforms=("windows",)),
+            F("requireMinifilterBrokerConnection", "bool", True, "Require the file-system minifilter",
+              "No effect yet: Fenrir does not ship its Windows kernel driver, so blocking before a program runs comes from "
+              "Microsoft Defender (see Protection health).", platforms=("windows",)),
         ),
     ),
     Section(
