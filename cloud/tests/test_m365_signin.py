@@ -168,3 +168,20 @@ def _redirect_flow(client, admin, tenant):
 def test_redirect_needs_platform_app(client, admin, tenant):
     reply = client.post("/api/console/m365/signin", headers=stepup(client, admin), json={"tenantId": tenant["id"], "mode": "redirect"})
     assert reply.status_code == 400 and "code instead" in reply.text
+
+
+def test_a_save_failure_after_provisioning_fails_the_signin_instead_of_hanging(client, admin, tenant, monkeypatch):
+    """Seen on an upgraded server: Microsoft finished, Fenrir's save failed, and the sign-in stayed "provisioning" for good."""
+    from fenrir_cloud.routers import m365 as router
+
+    fake_microsoft(monkeypatch, pending_polls=0)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("column m365_connections.log_state does not exist")
+
+    monkeypatch.setattr(router, "_store_connection", broken)
+    signin = client.post("/api/console/m365/signin", headers=stepup(client, admin), json={"tenantId": tenant["id"], "mode": "device"}).json()
+    with pytest.raises(RuntimeError):
+        client.get(f"/api/console/m365/signin/{signin['id']}", headers=admin)
+    after = client.get(f"/api/console/m365/signin/{signin['id']}", headers=admin).json()
+    assert after["status"] == "failed" and "could not save the connection" in after["error"]

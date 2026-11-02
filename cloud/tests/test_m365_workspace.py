@@ -166,3 +166,24 @@ def test_refresh_consent_replaces_an_existing_partner_center_consent(monkeypatch
         assert m365_partner.refresh_consent(row, "00000000-0000-0000-0000-000000000001", client=client) == "consented"
     assert [c[0] for c in calls] == ["POST", "DELETE", "POST"]
     assert calls[1][1].endswith("/applicationconsents/00000000-0000-0000-0000-0000000000aa")
+
+
+def test_an_existing_database_gains_the_workspace_tables_and_column(client, admin, tenant, fake):
+    """A server upgraded from before this release (migration 56) must not fail on m365_connections.log_state (it did: HTTP 500)."""
+    from sqlalchemy import inspect, text
+
+    row = connection(client, admin, tenant)
+    with database.engine().begin() as conn:
+        conn.execute(text("DROP TABLE m365_log_entries"))
+        conn.execute(text("DROP TABLE m365_workflows"))
+        conn.execute(text("ALTER TABLE m365_connections DROP COLUMN log_state"))
+        conn.execute(text("DELETE FROM schema_migrations WHERE version=57"))
+    with pytest.raises(Exception, match="log_state"):  # what the owner's server hit
+        client.get("/api/console/m365/overview", headers=admin)
+    assert database.migrate(database.engine()) == [57]
+    found = inspect(database.engine())
+    assert {"m365_log_entries", "m365_workflows"} <= set(found.get_table_names())
+    assert "log_state" in {c["name"] for c in found.get_columns("m365_connections")}
+    assert client.get("/api/console/m365/overview", headers=admin).status_code == 200
+    assert post(client, admin, "m365/connections/" + row["id"] + "/logs/collect", {})["outcome"]["signin"]["added"] == 7
+    assert database.migrate(database.engine()) == []
