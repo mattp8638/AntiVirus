@@ -74,6 +74,9 @@ CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("remote.session.start", "Start remote session", "Remote access", platforms=ALL,
                 description="Opened from the Connect button; connects the device to the cloud relay."),
     CommandSpec("remote.session.end", "End remote session", "Remote access", platforms=ALL),
+    CommandSpec("remote.backstage.selftest", "Test the backstage desktop", "Remote access",
+                description="Opens the hidden backstage desktop in session 0, shows a test window and Task Manager on it, "
+                            "checks the capture works, and cleans up. Nothing appears on the user's screen."),
     CommandSpec("patch.scan", "Scan for missing patches", "Patching", platforms=ALL),
     CommandSpec("patch.install", "Install approved patches", "Patching", platforms=ALL,
                 description="Installs the patch IDs in the payload, then reboots per the patch policy."),

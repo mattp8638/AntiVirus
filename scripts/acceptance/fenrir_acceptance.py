@@ -529,6 +529,25 @@ def topology(ctx: Context, device: dict) -> tuple[str, dict]:
     return f"{len(graph.get('switches') or [])} switches, {len(connected)} devices placed on ports", {"sample": sample, "switchErrors": len(failed)}
 
 
+@scenario("backstage_desktop", ("windows",), "Opens the hidden backstage desktop in session 0 and captures it, away from the user")
+def backstage_desktop(ctx: Context, device: dict) -> tuple[str, dict]:
+    row = ctx.command(device, "remote.backstage.selftest", timeout=max(ctx.args.timeout, 120))
+    result = row.get("result") or {}
+    if isinstance(result, str):
+        result = json.loads(result)
+    test = result.get("selfTest") or {}
+    if not test.get("opened"):
+        raise Check(f"the hidden desktop could not be created: {test.get('error') or json.dumps(result)[:300]}")
+    if test.get("helperSession") != 0:
+        raise Check(f"the helper ran in session {test.get('helperSession')}, not session 0: it could have been visible to the user")
+    if not test.get("captureWorks"):
+        raise Check(f"the hidden desktop was created but the capture did not show its test window "
+                    f"({test.get('testColourPixels')} matching pixels): {json.dumps(test)[:300]}")
+    screen = test.get("screen") or {}
+    return (f"hidden desktop {screen.get('w')}x{screen.get('h')} in session 0 captured (the user's console session is "
+            f"{test.get('consoleSession')}); Task Manager {'started' if test.get('taskManagerStarted') else 'did not start'} on it", test)
+
+
 @scenario("key_rotation", ("windows", "linux", "macos"), "Replaces its device API key when asked, and keeps reporting")
 def key_rotation(ctx: Context, device: dict) -> tuple[str, dict]:
     before = ctx.device(device["id"])["device"].get("apiKeyRotatedAt")

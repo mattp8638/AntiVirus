@@ -180,6 +180,7 @@ antivirus_apply_portable_runtime(antivirus-agent-core)
 add_executable(fenrir-remote WIN32
   ../tools/remotehelper/src/RemoteHelperMain.cpp
   ../tools/remotehelper/src/RemoteTunnel.cpp
+  ../tools/remotehelper/src/BackstageDesktop.cpp
   src/WebSocketClient.cpp
   src/ExtendedPolicy.cpp
   src/BehaviorRules.cpp

@@ -135,3 +135,32 @@ func TestScannerUsesMLModel(t *testing.T) {
 		t.Fatalf("ML path not exercised: %+v", findings)
 	}
 }
+
+func TestBuildToolsSpawningShellsAreNotWebShells(t *testing.T) {
+	p := policyWith(map[string]map[string]interface{}{"attackSurface": asrAll("block")})
+	sh := ProcInfo{Exe: "/bin/sh", Cmdline: "sh -c tsc --noEmit && vite build"}
+	for _, parent := range []ProcInfo{
+		{Exe: "/usr/local/bin/node", Cmdline: "npm run build"}, // npm as argv0
+		{Exe: "/usr/local/bin/node", Cmdline: "node /usr/local/lib/node_modules/npm/bin/npm-cli.js run build"},
+		{Exe: "/usr/bin/node", Cmdline: "node /usr/bin/yarn install"},
+		{Exe: "/usr/bin/node", Cmdline: "/usr/bin/node /usr/lib/node_modules/corepack/dist/pnpm.js install"},
+		{Exe: "/usr/bin/php", Cmdline: "php /usr/local/bin/composer install"},
+		{Exe: "/usr/bin/java", Cmdline: "java -classpath /usr/share/maven/boot org.codehaus.plexus.classworlds.launcher.Launcher package"},
+		{Exe: "/usr/bin/java", Cmdline: "/usr/lib/jvm/java-17/bin/java -Xmx64m -Dorg.gradle.appname=gradlew -classpath /p/gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain build"},
+	} {
+		if d := EvaluateProcess(p, sh, parent, ""); has(d, "attackSurface.blockWebshellCreation") {
+			t.Fatalf("build step flagged as a web shell: parent %q", parent.Cmdline)
+		}
+	}
+	// A real Node.js server starting a shell is still caught, even if a request smuggles "npm" into its arguments.
+	for _, parent := range []ProcInfo{
+		{Exe: "/usr/bin/node", Cmdline: "node /srv/app/server.js"},
+		{Exe: "/usr/bin/node", Cmdline: "node /srv/app/server.js --port 3000 npm"},
+		{Exe: "/usr/bin/java", Cmdline: "java -jar /srv/app.jar org.gradle.fake"},
+		{Exe: "/usr/bin/java", Cmdline: "java -cp /srv/lib com.example.Server org.codehaus.plexus.classworlds.launcher.Launcher"},
+	} {
+		if d := EvaluateProcess(p, ProcInfo{Exe: "/bin/sh", Cmdline: "sh -c id"}, parent, ""); !has(d, "attackSurface.blockWebshellCreation") {
+			t.Fatalf("web shell from %q not caught", parent.Cmdline)
+		}
+	}
+}

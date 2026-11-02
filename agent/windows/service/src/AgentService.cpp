@@ -2268,6 +2268,9 @@ std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
   if (command.type == L"remote.session.end") {
     return EndRemoteHelper(command);
   }
+  if (command.type == L"remote.backstage.selftest") {
+    return RunBackstageSelfTest();
+  }
   if (command.type == L"patch.posture.refresh") {
     const auto summary = PatchOrchestrator(config_).RefreshPatchState();
     return L"{\"success\":true,\"status\":\"refreshed\",\"summary\":\"Patch inventory refreshed.\",\"windowsUpdateCount\":" +
@@ -3420,6 +3423,46 @@ std::wstring AgentService::LaunchRemoteHelper(const RemoteCommand& command) {
   return std::wstring(L"{\"started\":true,\"consent\":\"") + (backstage ? L"not_required" : L"pending") + L"\",\"helperPid\":" + std::to_wstring(process.dwProcessId) +
          L",\"windowsSession\":" + std::to_wstring(windowsSession) + L",\"reachedRelay\":" + (reachedRelay ? L"true" : L"false") +
          L",\"logPath\":\"" + Utf8ToWide(EscapeJsonString(logPath.wstring())) + L"\"}";
+}
+
+// Proves the backstage hidden desktop on this machine: runs the helper's self-test as SYSTEM in session 0 (where
+// backstage sessions run) and returns what it found. Nothing appears in the signed-in user's session.
+std::wstring AgentService::RunBackstageSelfTest() {
+  const auto helper = config_.installRootPath / L"fenrir-remote.exe";
+  std::error_code ec;
+  if (!std::filesystem::exists(helper, ec)) {
+    throw std::runtime_error("The remote access helper (fenrir-remote.exe) is not installed");
+  }
+  const auto folder = config_.runtimeDatabasePath.parent_path() / L"remote";
+  std::filesystem::create_directories(folder, ec);
+  const auto resultPath = folder / L"backstage-selftest.json";
+  std::filesystem::remove(resultPath, ec);
+  std::wstring commandLine = L"\"" + helper.wstring() + L"\" --backstage-selftest \"" + resultPath.wstring() + L"\"";
+  std::vector<wchar_t> mutableCommand(commandLine.begin(), commandLine.end());
+  mutableCommand.push_back(L'\0');
+  STARTUPINFOW startup{};
+  startup.cb = sizeof(startup);
+  PROCESS_INFORMATION process{};
+  if (!CreateProcessW(helper.c_str(), mutableCommand.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr,
+                      helper.parent_path().c_str(), &startup, &process)) {
+    throw std::runtime_error("Could not start the backstage self-test (error " + std::to_string(GetLastError()) + ")");
+  }
+  CloseHandle(process.hThread);
+  const DWORD waited = WaitForSingleObject(process.hProcess, 30000);
+  DWORD exitCode = 0;
+  if (waited != WAIT_OBJECT_0) {
+    TerminateProcess(process.hProcess, 1);
+  }
+  GetExitCodeProcess(process.hProcess, &exitCode);
+  CloseHandle(process.hProcess);
+  std::ifstream in(resultPath, std::ios::binary);
+  const std::string result((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  in.close();
+  std::filesystem::remove(resultPath, ec);
+  if (result.empty() || result.front() != '{') {
+    throw std::runtime_error("The backstage self-test produced no result (exit code " + std::to_string(exitCode) + ")");
+  }
+  return L"{\"exitCode\":" + std::to_wstring(exitCode) + L",\"selfTest\":" + Utf8ToWide(result) + L"}";
 }
 
 std::wstring AgentService::EndRemoteHelper(const RemoteCommand& command) {

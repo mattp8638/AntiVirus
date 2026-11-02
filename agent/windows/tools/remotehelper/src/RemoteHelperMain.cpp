@@ -5,6 +5,8 @@
 // cloud relay and serves the channels in docs/REMOTE_PROTOCOL.md:
 // desktop (GDI capture + SendInput), terminal (ConPTY), files, processes,
 // services and chat, with a consent prompt and an on-screen session banner.
+// Backstage sessions run in session 0 instead, silently, and stream a hidden
+// SYSTEM desktop there (BackstageDesktop.h) rather than the user's screen.
 
 // ConPTY (CreatePseudoConsole) is declared for Windows 10 1809 and later.
 #undef _WIN32_WINNT
@@ -36,6 +38,7 @@
 #include <thread>
 #include <vector>
 
+#include "BackstageDesktop.h"
 #include "ExtendedPolicy.h"
 #include "RemoteKeymap.h"
 #include "RemotePipeIo.h"
@@ -352,6 +355,9 @@ class Session {
   bool Tunnel() const { return options_.mode == "tunnel"; }
   // Backstage and tunnel sessions run in session 0 and never show or touch the user's desktop.
   bool Silent() const { return Backstage() || Tunnel(); }
+  // A backstage session with its hidden desktop open in session 0 (BackstageDesktop.h): screen and input work on that
+  // desktop only, never on the user's.
+  bool HiddenDesktop() const { return Backstage() && hidden_.IsOpen(); }
 
  private:
   void Dispatch(const json::Value& m);
@@ -369,6 +375,7 @@ class Session {
 
   Options options_;
   WebSocketClient socket_;
+  fenrir::remote::BackstageDesktop hidden_;
   std::unique_ptr<fenrir::remote::TunnelStreams> tunnels_;
   std::atomic<bool> running_{true};
   std::atomic<long long> lastInput_{static_cast<long long>(GetTickCount64())};
@@ -428,12 +435,16 @@ void Session::Info() {
   std::ostringstream out;
   out << "{\"ch\":\"sys\",\"t\":\"info\",\"hostname\":" << Q(std::wstring(host)) << ",\"os\":\"windows\",\"user\":" << Q(user)
       << ",\"home\":\"\",\"quality\":" << options_.quality << ",\"maxFps\":" << options_.maxFps << ",\"capabilities\":[";
-  // Backstage sessions run as SYSTEM in session 0: no screen, input, chat or Ctrl+Alt+Del, and nothing the user sees.
-  out << (Tunnel() ? "\"tunnel\"" : Backstage() ? "\"processes\",\"services\",\"backstage\"" : "\"desktop\",\"processes\",\"services\",\"chat\",\"cad\"");
+  // Backstage sessions run as SYSTEM in session 0: no chat or Ctrl+Alt+Del, and nothing the user sees. With the hidden
+  // desktop open they also have a screen: that desktop's, never the user's.
+  out << (Tunnel() ? "\"tunnel\""
+          : Backstage() ? (HiddenDesktop() ? "\"processes\",\"services\",\"backstage\",\"desktop\",\"backstage-desktop\""
+                                           : "\"processes\",\"services\",\"backstage\"")
+                        : "\"desktop\",\"processes\",\"services\",\"chat\",\"cad\"");
   if (options_.allowTerminal && !Tunnel()) out << ",\"terminal\"";
   if (options_.allowFiles && !Tunnel()) out << ",\"files\"";
   out << "],\"shells\":[\"powershell\",\"cmd\"],\"monitors\":[";
-  const auto monitors = Silent() ? std::vector<Monitor>{} : Monitors();
+  const auto monitors = Silent() && !HiddenDesktop() ? std::vector<Monitor>{} : Monitors();
   for (std::size_t i = 0; i < monitors.size(); ++i) {
     const auto& r = monitors[i].rect;
     out << (i ? "," : "") << "{\"index\":" << i << ",\"x\":" << r.left << ",\"y\":" << r.top << ",\"w\":" << (r.right - r.left)
@@ -1313,8 +1324,21 @@ void Session::Dispatch(const json::Value& m) {
       else if (t == "close") tunnels_->Close(id, false);
     }
     return;  // a tunnel carries only its streams
-  } else if (Backstage() && (ch == "screen" || ch == "input" || ch == "chat")) {
-    return;  // the relay already drops these for backstage sessions; never touch the user's desktop
+  } else if (Backstage() && (ch == "chat" || ((ch == "screen" || ch == "input") && !HiddenDesktop()) ||
+                              (ch == "input" && (t == "cad" || t == "lock" || t == "blank")))) {
+    return;  // the relay drops these too: nothing in a backstage session may reach or alert the user's session
+  } else if (ch == "backstage") {
+    if (!HiddenDesktop()) {
+      Fail("backstage", m, "the hidden desktop is not available in this session");
+    } else if (t == "launch") {
+      const auto error = hidden_.Launch(Str(m, "tool"), Utf8ToWide(Str(m, "command")));
+      if (error.empty()) {
+        HelperLog("Started " + Str(m, "tool") + " on the backstage desktop.");
+        Reply("backstage", m, "\"t\":\"done\"");
+      } else {
+        Fail("backstage", m, error);
+      }
+    }
   } else if (ch == "screen") {
     std::lock_guard lock(screenMutex_);
     if (t == "start" || t == "settings") {
@@ -1381,8 +1405,15 @@ int Session::Run() {
     std::thread ui(UiThread, options_.showBanner);
     ui.detach();
   }
+  if (Backstage()) {
+    if (const auto error = hidden_.Open(); error.empty()) {
+      HelperLog("Backstage desktop ready: hidden, in session 0, invisible to the signed-in user.");
+    } else {
+      HelperLog("Backstage desktop unavailable, so this session has the text tools only: " + error);
+    }
+  }
   Info();
-  if (!Silent()) {
+  if (!Silent() || HiddenDesktop()) {
     screenThread_ = std::thread(&Session::ScreenLoop, this);
   }
   std::thread idle([this] {
@@ -1415,6 +1446,7 @@ int Session::Run() {
     screenThread_.join();
   }
   CloseTerminal();
+  hidden_.Close();  // ends every tool started on the hidden desktop
   if (tunnels_) tunnels_->CloseAll();
   for (auto& [id, upload] : uploads_) {
     if (upload.second != INVALID_HANDLE_VALUE) {
@@ -1430,13 +1462,19 @@ int Session::Run() {
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   int argc = 0;
   LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-  std::wstring optionsPath;
+  std::wstring optionsPath, selfTestPath;
   for (int i = 1; i + 1 < argc; ++i) {
     if (wcscmp(argv[i], L"--options") == 0) {
       optionsPath = argv[i + 1];
+    } else if (wcscmp(argv[i], L"--backstage-selftest") == 0) {
+      selfTestPath = argv[i + 1];
     }
   }
   LocalFree(argv);
+  if (!selfTestPath.empty()) {
+    SetProcessDPIAware();
+    ExitProcess(static_cast<UINT>(fenrir::remote::RunBackstageSelfTest(selfTestPath)));
+  }
   Options options;
   if (!optionsPath.empty()) {
     g_logPath = std::filesystem::path(optionsPath).replace_extension(L".log");

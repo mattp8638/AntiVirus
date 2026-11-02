@@ -29,6 +29,44 @@ var (
 	reverseSh   = regexp.MustCompile(`(?i)/dev/tcp/|\b(nc|ncat|netcat)\b.*\s-(e|c)\s|socat\s.*exec:|pty\.spawn\(`)
 )
 
+// buildTools are package managers and build tools that run their scripts through a shell under node, php or java
+// ("npm run build" is node starting sh). A shell they start is a build step, not a web shell.
+var buildTools = map[string]bool{"npm": true, "npx": true, "npm-cli.js": true, "npx-cli.js": true, "yarn": true, "yarnpkg": true,
+	"yarn.js": true, "yarn.cjs": true, "pnpm": true, "pnpx": true, "pnpm.cjs": true, "pnpm.js": true, "pnpm.mjs": true, "corepack": true, "node-gyp": true,
+	"node-gyp.js": true, "composer": true, "composer.phar": true}
+
+// launchedAsBuildTool reports whether the parent's own command (its first few arguments, not anything a request could
+// put further along) is a package manager or build tool.
+func launchedAsBuildTool(parent ProcInfo) bool {
+	args := strings.Fields(parent.Cmdline)
+	head := args
+	if len(head) > 3 {
+		head = head[:3]
+	}
+	for _, arg := range head {
+		if buildTools[base(arg)] {
+			return true
+		}
+	}
+	// Maven and Gradle: the JVM's main class, which comes after the JVM options and before any program argument.
+	main := ""
+	for i := 1; i < len(args); i++ {
+		switch arg := args[i]; {
+		case arg == "-jar":
+			main = "jar" // the jar is the program; what follows are its own arguments
+		case arg == "-cp" || arg == "-classpath" || arg == "--class-path":
+			i++
+		case strings.HasPrefix(arg, "-"):
+		default:
+			main = arg
+		}
+		if main != "" {
+			break
+		}
+	}
+	return strings.HasPrefix(main, "org.codehaus.plexus.classworlds.") || strings.HasPrefix(main, "org.gradle.")
+}
+
 func ruleMode(p Policy, key string) string {
 	if v, ok := p.Modules["attackSurface"][key].(string); ok {
 		return v
@@ -97,7 +135,7 @@ func EvaluateProcess(p Policy, proc ProcInfo, parent ProcInfo, sha string) []Rul
 		}
 	}
 	cmd := proc.Cmdline
-	add("blockWebshellCreation", webServers[base(parent.Exe)] && shellish[base(proc.Exe)],
+	add("blockWebshellCreation", webServers[base(parent.Exe)] && shellish[base(proc.Exe)] && !launchedAsBuildTool(parent),
 		fmt.Sprintf("%s (web server) spawned %s", base(parent.Exe), base(proc.Exe)), "T1505.003")
 	add("blockLolbinAbuse", downloadRun.MatchString(cmd) || reverseSh.MatchString(cmd),
 		"download-and-execute or reverse shell command line", "T1059.004")
