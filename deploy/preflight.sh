@@ -211,6 +211,9 @@ elif [ "${#metrics_token}" -lt 24 ]; then
 else
   pass "Prometheus metrics token set"
 fi
+if [ -z "$(envval FENRIR_FEED_URL)" ]; then
+  note "No FENRIR_FEED_URL: no threat-feed sync (built-in rules, the malware model and vulnerability intelligence still work)."
+fi
 if [ -z "$(envval FENRIR_SMTP_HOST)" ]; then
   warn "No SMTP server: alert and ticket emails are only logged, not sent."
 else

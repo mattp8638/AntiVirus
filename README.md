@@ -1,27 +1,83 @@
 # Fenrir Platform
 
-Fenrir is a self-hosted project combining endpoint security, RMM, Microsoft 365 administration, vulnerability management and MSP operations. Its aim is to make integrated tooling available without compulsory per-device licence fees.
+Fenrir is a free, self-hosted platform for managed service providers (MSPs) and IT teams. One server and one console
+cover the jobs that usually need several paid products:
 
-**Status: active development and controlled evaluation.** Implemented features are not all independently verified on real endpoints/providers. Windows protection is user mode; the Docker image does not deliver the production kernel minifilter or pre-execution prevention. The current build must not be advertised as a certified replacement for every commercial AV/RMM. Follow the [feature catalogue](docs/parity/catalogue.csv), [acceptance evidence](docs/parity/acceptance.md) and [release gates](docs/parity/release-gates.md).
+- **Endpoint protection:** antivirus, EDR telemetry and detections, quarantine, isolation, DNS filtering, and managed
+  Microsoft Defender on Windows.
+- **RMM:** inventory, monitoring, scripts, patching, software deployment, and remote desktop, terminal and files
+  (including a silent "backstage" session).
+- **Microsoft 365:** customer tenants, users, licences, security posture and reviewed administration.
+- **Exposure:** vulnerabilities with CVE, EPSS and CISA KEV context, external assets and remediation tracking.
+- **MSP operations:** customers, tickets, time, projects, CRM, quotes, contracts, billing and a client portal.
+- **Governance:** compliance programmes, policies, evidence, risks and a credential vault.
 
-Hosting, domains, publicly trusted code-signing certificates and optional providers can still cost money.
+Agents run on Windows, Linux, macOS and Android. You run the server; nothing depends on a service run by the authors.
 
-> **Free, as-is, unsupported.** Fenrir is released free of charge under the [Apache License 2.0](LICENSE). It is provided **"AS IS", without warranty of any kind**, and **no support is offered**: issues and pull requests may not be answered. You are responsible for testing it on your own systems before relying on it (see the [acceptance lab](docs/ACCEPTANCE_LAB.md)), for securing your own installation, and for anything it does on the devices and tenants you connect to it. See [Licence and support](#licence-and-support).
+> **Free, as-is, unsupported.** Fenrir is released free of charge under the [Apache License 2.0](LICENSE). It is
+> provided **"AS IS", without warranty of any kind**, and **no support is offered**: issues and pull requests may not
+> be answered. You are responsible for testing it on your own systems before relying on it (see the
+> [acceptance lab](docs/ACCEPTANCE_LAB.md)), for securing your own installation, and for anything it does on the
+> devices and tenants you connect to it. See [Licence and support](#licence-and-support).
+
+**What is and is not proven.** Continuous integration builds everything, runs the full test suites on SQLite and
+PostgreSQL, and drives real Linux and Windows agents through check-in, policy, scripts, malware detection, temporary
+admin accounts, Defender management, key rotation and telemetry budgets, plus a backup restored onto an empty server.
+Not proven by CI: real network switches, a live Microsoft 365 tenant, fleets beyond 300 devices, and macOS and Android
+on real hardware. On Windows, blocking a program *before* it runs comes from Microsoft Defender (Fenrir ships no kernel
+driver; see [decisions](docs/parity/decisions.md) D-06). Run the [acceptance lab](docs/ACCEPTANCE_LAB.md) on your own
+machines before you rely on it.
+
+Hosting, a domain and a publicly trusted code-signing certificate cost money; everything else is free.
 
 ## Contents
 
+- [Start here: your own copy](#start-here-your-own-copy)
 - [Components](#components)
 - [Requirements](#requirements)
 - [New HTTPS installation](#new-https-installation)
+- [Make it yours (no code changes)](#make-it-yours-no-code-changes)
+- [Your own threat feed](#your-own-threat-feed)
 - [Local evaluation without a signing certificate](#local-evaluation-without-a-signing-certificate)
 - [First sign-in and use](#first-sign-in-and-use)
 - [Agent installation](#agent-installation)
 - [Updates](#updates)
 - [Backup and restore](#backup-and-restore)
 - [Troubleshooting](#troubleshooting)
+- [Changing the code](#changing-the-code)
 - [Development and tests](#development-and-tests)
-- [Public release and contribution](#public-release-and-contribution)
+- [Contributing back](#contributing-back)
 - [Licence and support](#licence-and-support)
+
+## Start here: your own copy
+
+Run Fenrir from **your own fork**, not from this repository. Your server installs and updates from your fork, so you
+decide when changes reach your customers, you can keep your own adjustments, and nothing breaks if this repository
+changes or disappears.
+
+1. **Fork it.** On GitHub, select **Fork** at the top of this repository's page and create the fork under your account
+   or your company's organisation.
+   - Forks of a public repository are public. For a **private** copy, create an empty private repository instead and
+     push this code into it:
+     ```bash
+     git clone --bare https://github.com/ORIGINAL-OWNER/ORIGINAL-REPO.git fenrir-tmp.git
+     cd fenrir-tmp.git && git push --mirror https://github.com/YOUR-ACCOUNT/YOUR-PRIVATE-REPO.git
+     cd .. && rm -rf fenrir-tmp.git
+     ```
+2. **Deploy from your fork.** Follow [New HTTPS installation](#new-https-installation), cloning your fork in step 2.
+   Then follow the [go-live checklist](docs/GO_LIVE.md) and run `sudo deploy/preflight.sh` until it reports no FAIL.
+3. **Make it yours** with settings, not code: your company name, your code-signing certificate, your email, your
+   agent branding. See [Make it yours](#make-it-yours-no-code-changes).
+4. **Keep it updated.** Turn on automatic updates (see [Updates](#updates)); your server then follows your fork's
+   `main` branch. To take new releases from the original repository, use **Sync fork** on your fork's GitHub page (or
+   the commands in [Updates](#updates)); your server picks them up within ten minutes.
+
+**What never goes in Git:** `deploy/.env` (database password, session and vault keys), `deploy/signing/` (your
+code-signing certificate and release key) and your backups. They stay on your server and in your offline safe. The
+repository's `.gitignore` already excludes them; keep it that way in your fork.
+
+Once this is done you do not need to change anything in the code to run Fenrir. Change the code only if you want to
+(see [Changing the code](#changing-the-code)).
 
 ## Components
 
@@ -55,6 +111,8 @@ Built user-mode artifacts include Windows x64, Linux amd64/arm64 and macOS amd64
 For the whole path from a fresh server to the first customer (backups off-site, monitoring, staff access, Windows
 protection, acceptance and rollout), follow the [go-live checklist](docs/GO_LIVE.md).
 
+Clone your own fork in step 2 (see [Start here](#start-here-your-own-copy)); the commands below keep it in `~/AntiVirus`.
+
 These steps are for a **new installation**. On an existing server, preserve its database, configuration and keys and use [Updates](#updates). Never regenerate an existing installation's secrets just to upgrade it.
 
 ### 1. Prepare the server
@@ -80,7 +138,7 @@ Point a hostname such as `rmm.example.com` at the VPS. Remove incorrect AAAA/IPv
 ### 2. Clone and configure
 
 ```bash
-git clone https://github.com/mattp8638/AntiVirus.git ~/AntiVirus
+git clone https://github.com/YOUR-ACCOUNT/YOUR-FORK.git ~/AntiVirus   # your fork (see Start here)
 cd ~/AntiVirus
 (
 umask 077
@@ -259,6 +317,45 @@ Telemetry settings (in `deploy/.env`, passed through the Compose file's shared e
 
 `GET /api/console/platform/telemetry-volume` lists the devices and event types sending most, if the database grows
 faster than expected.
+
+## Make it yours (no code changes)
+
+Everything a customer or technician sees can be set without editing code.
+
+| What | Where | Notes |
+|---|---|---|
+| Your company name | `FENRIR_MSP_NAME` in `deploy/.env` | Names the MSP tenant created on first start. Rename it later in **Settings**. |
+| The address agents and staff use | `FENRIR_PUBLIC_URL` and `FENRIR_DOMAIN` | Your own domain, with HTTPS (README step 4). |
+| Who signed the Windows installers | `deploy/signing/codesign.pfx` | Your code-signing certificate: Windows shows your company as the publisher. See [code signing](docs/CODE_SIGNING.md). |
+| Who signs Linux and macOS updates | `deploy/signing/release-ed25519.pem` | Your own key, created on first build. Agents trust only that key. Back it up. |
+| Name shown in the agent window | Policies → **Experience → Brand name** | White-labels the Windows agent window and tray for that policy's devices. |
+| Alert and ticket email | `FENRIR_SMTP_*` and `FENRIR_IMAP_*` | Your mail server or provider. |
+| Staff sign-in rules | Settings → Platform → **Security** | MFA, the networks the console may be used from, Microsoft sign-in, script review. |
+| Telemetry retention | `FENRIR_TELEMETRY_RETENTION_DAYS`, `FENRIR_ROUTINE_RETENTION_DAYS` | How long events are kept. |
+| Device key age | `FENRIR_DEVICE_KEY_MAX_AGE_DAYS` | How often agents replace their API key (default 90 days). |
+| Monitoring | `FENRIR_METRICS_TOKEN`, Settings → **Webhooks** | Prometheus metrics and platform health alerts to your chat or on-call tool. |
+| Threat feed | `FENRIR_FEED_URL` | Optional; your own feed service. See [Your own threat feed](#your-own-threat-feed). |
+
+`deploy/.env.example` lists every setting with a comment. Changing a setting needs only `dc up -d` (no rebuild),
+except the signing files, which need `dc up -d --build`.
+
+The console itself is called "Fenrir". To rename it, see [Changing the code](#changing-the-code).
+
+## Your own threat feed
+
+Fenrir works without a feed: detection rules, the bundled malware model and vulnerability intelligence (NVD, EPSS,
+CISA KEV and OSV, fetched directly from those public sources) need nothing else. A feed adds a signature and
+reputation service that you run yourself and that your server pulls from every hour.
+
+The feed service is in `components/signaturedb` and runs on Cloudflare Workers (the free plan is enough for most MSPs):
+
+1. In your fork, edit `components/signaturedb/wrangler.toml`: replace the `routes` pattern and `zone_name` with a
+   hostname on your own domain (for example `feed.yourmsp.com`), and the allowed origins in `src/worker.ts` and
+   `src/app.ts` with your Fenrir address.
+2. Deploy it: `cd components/signaturedb && npm install && npx wrangler deploy` (you need a Cloudflare account).
+3. On your Fenrir server, set `FENRIR_FEED_URL=https://feed.yourmsp.com` (and `FENRIR_FEED_TOKEN` if you protected it)
+   in `deploy/.env`, then `dc up -d`. **Settings → Platform** shows the `intel.feed` job's last run; three failures in a
+   row raise the platform-degraded alert.
 
 ## Local evaluation without a signing certificate
 
@@ -442,9 +539,22 @@ Windows remote **Ctrl+Alt+Del** requires a matching updated service and `fenrir-
 
 ## Updates
 
-Back up first. `main` is active development: evaluate a tested commit before customer rollout. Preserve `.env`, vault key and signing material.
+Your server updates from **your fork**. Getting a new version to your server is two steps:
 
-For an operator-managed checkout already following `main`:
+1. **Bring the changes into your fork.** On your fork's GitHub page, select **Sync fork → Update branch**. Or, from a
+   checkout of your fork on your own computer:
+   ```bash
+   git remote add upstream https://github.com/ORIGINAL-OWNER/ORIGINAL-REPO.git   # once
+   git fetch upstream
+   git merge upstream/main     # resolve any conflict with your own changes here, not on the server
+   git push origin main
+   ```
+2. **Update the server.** With automatic updates on (below) this happens by itself within ten minutes. Otherwise, run
+   the manual commands below on the server.
+
+Back up first, and run `sudo deploy/preflight.sh` afterwards. Preserve `.env`, the vault key and the signing material.
+
+Manual update on the server, for a checkout already following `main`:
 
 ```bash
 cd ~/AntiVirus
@@ -606,6 +716,39 @@ Do not drop tables, delete volumes or falsify migration history. Deploy the migr
 
 For support, include the commit, endpoint, browser error, redacted Python traceback, database/schema version, fresh-install versus upgrade history, and reproduction steps. Redact customer data/tokens; never send dumps, signing material or vault keys.
 
+## Changing the code
+
+You do not have to change any code to run Fenrir. If you want to, make the change in your fork, let GitHub Actions
+test it, and merge it into your fork's `main`; your server then updates itself.
+
+**Where things are**
+
+| Folder | What it is |
+|---|---|
+| `cloud/` | The server: FastAPI (Python). `fenrir_cloud/routers/` holds the API, `cloud/tests/` the tests. |
+| `console/` | The web console: React and TypeScript (Vite). `src/pages/` holds one file per page. |
+| `agent/windows/` | The Windows agent service, installer and remote-access helper (C++). |
+| `agent/linux/` | The Linux and macOS agent (Go). |
+| `agent/android/` | The Android app (Kotlin). |
+| `deploy/` | Docker Compose, the Dockerfile, backup, restore, auto-update and the go-live check. |
+| `scripts/acceptance/` | The acceptance harness that drives real agents (see the [acceptance lab](docs/ACCEPTANCE_LAB.md)). |
+| `docs/` | Guides; `docs/parity/` records what is built and what is proven. |
+
+**Renaming the console.** The name "Fenrir" in the console comes from `console/index.html` (page title),
+`console/src/App.tsx` (sidebar and header) and `console/public/` (icons and the installable-app manifest). Installer and
+agent names are in `agent/windows/` (search for `Fenrir`). Keep the [licence](LICENSE) and [NOTICE](NOTICE) files: the
+Apache License requires them in copies and derivatives.
+
+**Testing your change.** GitHub Actions runs every workflow in `.github/workflows/` on pull requests to `main` in your
+fork. Enable Actions once on your fork's **Actions** tab; no secrets are needed (the workflows generate throwaway keys
+and use lab signing). You can also start the "Phase 2 Full-Stack Smoke" and "Acceptance on real agents" workflows by
+hand from that tab. To run the same checks locally, see [Development and tests](#development-and-tests).
+
+**Keeping your changes easy to update.** Keep them small and in their own commits. When you **Sync fork**, Git merges
+the original repository's changes with yours; the fewer lines you have changed, the fewer conflicts you resolve.
+Database changes must be new, additive migrations at the end of `cloud/fenrir_cloud/db.py`, or a later update will
+clash with them.
+
 ## Development and tests
 
 CI uses Python 3.13, Node 22, Go 1.24 and C++20. Windows builds use CMake/MSVC or MinGW. Use the workflows/platform build files for exact dependencies.
@@ -659,9 +802,10 @@ each call, events per second, whether every event was stored, and whether backgr
 `--devices` until something gives; the first thing that does is your capacity limit. CI runs 300 agents for three
 minutes against PostgreSQL with the separate worker on every Phase 2 run.
 
-## Public release and contribution
+## Contributing back
 
-Contributions should include reproduction steps and meaningful tests. Keep migrations additive and exercise upgrades with existing rows. Validate real endpoint/provider outcomes before marking capabilities verified.
+Fixes and improvements are welcome as pull requests to the original repository, though they may not be reviewed (see
+[Licence and support](#licence-and-support)). Contributions should include reproduction steps and meaningful tests. Keep migrations additive and exercise upgrades with existing rows. Validate real endpoint/provider outcomes before marking capabilities verified.
 
 Before relying on a release, review the dependency notices in [NOTICE](NOTICE), the supported-platform matrix and measured limits, and the relevant security/recovery/efficacy gates. Publish limitations alongside features; code presence or a mocked test is not observed parity with another product.
 
@@ -670,7 +814,7 @@ Before relying on a release, review the dependency notices in [NOTICE](NOTICE), 
 - [Code signing](docs/CODE_SIGNING.md), [driver/prevention limits](docs/DRIVER_SIGNING.md), [updates](docs/AUTO_UPDATE.md)
 - [Parity decisions](docs/parity/decisions.md), [acceptance](docs/parity/acceptance.md), [release gates](docs/parity/release-gates.md)
 - [Console rendering](docs/CONSOLE_RENDER_SAFETY.md), [Ctrl+Alt+Del](docs/REMOTE_CTRL_ALT_DEL.md)
-- [Malware model](ml/README.md), [source-component history](components/README.md)
+- [Malware model](ml/README.md), [feed service](components/README.md)
 - Official references: [Docker installation](https://docs.docker.com/engine/install/ubuntu/), [Compose overrides](https://docs.docker.com/reference/compose-file/merge/), [build secrets](https://docs.docker.com/compose/how-tos/use-secrets/), [Caddy HTTPS](https://caddyserver.com/docs/automatic-https)
 
 ## Licence and support
