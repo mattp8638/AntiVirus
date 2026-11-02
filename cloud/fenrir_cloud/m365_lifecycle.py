@@ -172,6 +172,9 @@ def plan_offboard(db: Session, connection: M365Connection, user_id: str, options
             steps.append(_step("mailbox_handover", "Hand over the mailbox", f"{mailbox}: " + ", ".join(parts),
                                [{"mailbox": mailbox, "convert": bool(options.get("convertToShared")),
                                  "delegate": options.get("mailboxDelegate") or None, "forwardTo": options.get("forwardTo") or None}]))
+        if options.get("onedriveDelegate"):
+            steps.append(_step("onedrive_handover", "Share their OneDrive", f"Edit access for {options['onedriveDelegate']} to move what "
+                               "must be kept before the licence's 30-day grace period ends", [{"delegate": options["onedriveDelegate"]}]))
         if options.get("removeLicences"):
             names = _skus(client, headers)
             direct, inherited = [], []
@@ -479,7 +482,8 @@ def _summary(flow: M365Workflow) -> str:
                   "- Rotate any stored credential flagged for them (Credential vault).",
                   *([] if any(s["key"] == "mailbox_handover" for s in flow.steps)
                     else ["- Convert the mailbox to shared and give access to whoever needs it (Exchange)."]),
-                  "- Move OneDrive files that must be kept before the licence's 30-day grace period ends."]
+                  "- Move OneDrive files that must be kept before the licence's 30-day grace period ends"
+                  + (" (shared with the colleague named in the plan)." if any(s["key"] == "onedrive_handover" for s in flow.steps) else ".")]
     return "\n".join(lines)
 
 
@@ -562,6 +566,14 @@ def run_step(db: Session, connection: M365Connection, flow: M365Workflow, step: 
                 raise
             raise StepResult("failed", (("Done before it stopped: " + ", ".join(done) + ". ") if done else "") + str(exc)) from None
         return "Mailbox " + ", ".join(done)
+    if key == "onedrive_handover":
+        from . import m365_collaboration
+
+        try:
+            link = m365_collaboration.share_onedrive(client, headers, uid, step["items"][0]["delegate"], flow.target_name)
+        except m365_collaboration.CollaborationError as exc:
+            raise StepResult("failed", str(exc)) from None
+        return f"OneDrive shared with {step['items'][0]['delegate']}" + (f": {link}" if link else "")
     if key == "review_devices":
         return (f"{len(step['items'])} device(s) to collect, reassign or wipe: " + ", ".join(i["label"] for i in step["items"])
                 if step["items"] else "No managed device to collect")

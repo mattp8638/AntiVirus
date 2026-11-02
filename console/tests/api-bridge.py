@@ -58,6 +58,13 @@ intune.devices = lambda connection: []
 intune.policies = lambda connection: {"compliance": [], "configuration": []}
 intune.apps = lambda connection: []
 intune.autopilot = lambda connection: []
+from fenrir_cloud import m365_collaboration as collaboration  # noqa: E402
+
+collaboration.teams = lambda connection: []
+collaboration.sites = lambda connection: []
+collaboration.sharing_settings = lambda connection: {"sharingCapability": "externalUserSharingOnly", "label": "Guests sign in",
+                                                     "isResharingByExternalUsersEnabled": False, "sharingAllowedDomainList": [],
+                                                     "sharingBlockedDomainList": []}
 from fenrir_cloud import m365_reports as reports_module  # noqa: E402
 
 reports_module.build = lambda connection, key: {"report": key, "title": key, "generatedAt": "2026-01-01T00:00:00Z",

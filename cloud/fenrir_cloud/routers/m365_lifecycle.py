@@ -43,6 +43,7 @@ class OffboardOptions(BaseModel):
     convertToShared: bool = False
     mailboxDelegate: str = Field(default="", max_length=254, pattern=r"^$|^[^@\s'\"`;|&$<>(){}]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
     forwardTo: str = Field(default="", max_length=254, pattern=r"^$|^[^@\s'\"`;|&$<>(){}]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
+    onedriveDelegate: str = Field(default="", max_length=254, pattern=r"^$|^[^@\s'\"`;|&$<>(){}]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 
 
 class AdPlacement(BaseModel):

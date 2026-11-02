@@ -229,6 +229,45 @@ Without it, the Exchange tab says exactly this; nothing else breaks.
    the setting, reads it back, and the next evaluation shows "compliant". Check it in Entra ID > External
    Identities > External collaboration settings.
 
+## 12. Sign-in protection (impossible travel)
+
+1. [ ] Microsoft 365 > your tenant > **Sign-in protection**: turn it on, add your office's public IP to "Ignore", keep
+   "Sign the user out everywhere" and "Open a ticket" ticked (leave "Block their sign-in" off for the test). Save.
+2. [ ] Sign in to Office as `fenrir.test1` from your normal connection, then within an hour from a phone on mobile data
+   with a VPN set to another continent (for example New York). Within about 20 minutes: an **Impossible travel** alert
+   in the inbox and the Findings list, a P1 ticket for Security Operations, and `fenrir.test1` signed out.
+3. [ ] Optional: tick "Block their sign-in" and repeat; the account is blocked (unblock it in Users and groups).
+
+## 13. Intune
+
+Update permissions first (Microsoft 365 > Permissions > Update permissions) so the Intune, BitLocker and LAPS
+permissions are granted.
+1. [ ] **Intune > Devices**: your enrolled devices with compliance; **Sync** one and check its last sync time moves.
+2. [ ] **BitLocker key** and **LAPS password** on a Windows device: each asks you to confirm who you are, shows once,
+   and appears in the audit log without the secret.
+3. [ ] **Policies**, **Apps** (add an "available" assignment to a test group; the existing assignments stay) and
+   **Autopilot** (import one device's hash from `Get-WindowsAutopilotInfo -OutputFile hash.csv`).
+
+## 14. Reports
+
+1. [ ] **Reports**: run each report; Licences shows free and wasted licences, MFA lists users without MFA first.
+2. [ ] **Download CSV** opens in Excel.
+3. [ ] Add an emailed schedule to your own address (needs SMTP configured on the server); the next hourly run emails the
+   CSVs.
+
+## 15. Email security standards
+
+In Security standards, assign DKIM, anti-phishing, malware attachments, Safe Links, Safe Attachments and SPF/DMARC
+in **alert** mode and **Evaluate**: each drifted one says what is wrong (DKIM lists the CNAMEs to publish; SPF/DMARC the
+TXT records). Set anti-phishing to **remediate** and evaluate again: it becomes compliant.
+
+## 16. Teams, SharePoint and OneDrive
+
+1. [ ] **Teams and SharePoint > Teams**: teams without an owner come first; **SharePoint sites** with storage;
+   **Sharing** shows the tenant's external sharing level.
+2. [ ] Offboard `fenrir.test3` with **Share their OneDrive with** your account: you get the sharing email and can open
+   their OneDrive.
+
 ## 6. Clean up
 
 - [ ] Delete `fenrir.test1`, `fenrir.test2` and `fenrir.test3` in Entra (or offboard and then delete them).

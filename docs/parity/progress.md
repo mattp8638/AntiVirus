@@ -52,6 +52,9 @@ Overall parity: **not passed**. MVP: **not yet declared**.
 | FLOW-05 | `6626608` | Leavers: devices to collect, vault credentials flagged for rotation, billing effect; mailbox hand-over (Exchange). |
 | FLOW-09 | `3873aa1` | Customer workspace: tickets, devices needing attention, alerts, incidents, urgent vulnerabilities, M365, backups, onboarding, recent actions. `test_workspace.py`. |
 | M365 batch 3 | `7e5182c`, `3a6bf02` | Exchange administration and 11 directory/Exchange security standards with drift. Awaiting owner test (test plan sections 10 and 11). |
+| Defender control | `6eb9508`, `d9783e4` | Fenrir is the source of truth for Defender: exclusions both ways (optionally authoritative), scanning, schedules, threat actions, UI lockdown, CFA folders/apps, allowed threats, device actions. Verified on Windows Server in CI (schedule bug found there and fixed). |
+| Sign-in protection | `bb77f31` | Impossible travel, new country and password-guessing success from stored sign-in logs, with a playbook (sign out, block, ticket, email). Test plan 12. |
+| M365 batches 5, 7, 8 | `d9d4392`, `2993eba`, `1cb507a` | Intune (devices, actions, BitLocker/LAPS, policies, apps, Autopilot), reports with schedules, email security standards, Teams/SharePoint/OneDrive and sharing standards, OneDrive hand-over. Test plan 13-16. |
 | Detection (found in CI) | `5f6dc90` | Firefox was quarantined as BlackCat on the Windows CI runner: signature "chain" rules fired on any one marker. Rules now take an optional match count (ransomware chains need every marker), and the installer ships the trusted-publisher, known-good and observe-only lists that only a build tree had. `SignatureRuleMatchTests.ps1` in Windows CI. |
 
 ## Microsoft 365 phase (owner request, 2026-11-02)
