@@ -541,11 +541,14 @@ def backstage_desktop(ctx: Context, device: dict) -> tuple[str, dict]:
     if test.get("helperSession") != 0:
         raise Check(f"the helper ran in session {test.get('helperSession')}, not session 0: it could have been visible to the user")
     if not test.get("captureWorks"):
-        raise Check(f"the hidden desktop was created but the capture did not show its test window "
-                    f"({test.get('testColourPixels')} matching pixels): {json.dumps(test)[:300]}")
+        raise Check(f"the hidden desktop was created but its picture did not show the test window: {json.dumps(test)[:400]}")
+    if not test.get("inputWorks"):
+        raise Check(f"the hidden desktop's picture works but a click did not reach its test window: {json.dumps(test)[:400]}")
     screen = test.get("screen") or {}
-    return (f"hidden desktop {screen.get('w')}x{screen.get('h')} in session 0 captured (the user's console session is "
-            f"{test.get('consoleSession')}); Task Manager {'started' if test.get('taskManagerStarted') else 'did not start'} on it", test)
+    method = "SendInput" if test.get("sendInputWorks") else "posted window messages"
+    return (f"hidden desktop {screen.get('w')}x{screen.get('h')} in session 0 (the user is in session {test.get('consoleSession')}): "
+            f"picture shows its windows, clicks reach them ({method}); Task Manager "
+            f"{'started' if test.get('taskManagerStarted') else 'did not start'}", test)
 
 
 @scenario("key_rotation", ("windows", "linux", "macos"), "Replaces its device API key when asked, and keeps reporting")
