@@ -12,6 +12,9 @@ import { safeArray } from "../data-shapes";
 import { ErrorNote, Modal, PageHead, Pill, Stat, Table, Tabs, useAction, useData } from "../components/ui";
 import { M365_SECTION, SectionTabs } from "../components/sections";
 
+const UNAVAILABLE: Record<string, string> = { mfaRegistration: "MFA registration", managedDevices: "Intune devices", domains: "Domains",
+  organization: "Organisation", directoryRoles: "Administrators", serviceIssues: "Service health", signInActivity: "Last sign-in per user",
+  defenderAlerts: "Defender alerts" };
 const MODES: Record<string, string> = { platform: "Fenrir app (admin consent)", provisioned: "Admin sign-in", gdap: "Partner (GDAP)", app: "Manual app" };
 
 function Overview({ ws }: { ws: any }) {
@@ -25,6 +28,10 @@ function Overview({ ws }: { ws: any }) {
       <Stat label="Secure Score" value={score ? `${score.percent}%` : "—"} hint={score ? `${score.current} of ${score.max}` : "not available"} />
     </div>
     {mfa?.adminsWithoutMfa?.length > 0 && <p style={{ color: "#fca5a5" }}><b>Admins without MFA:</b> {displayValue(mfa.adminsWithoutMfa.join(", "))}</p>}
+    {Object.keys(ws.unavailable || {}).length > 0 && <details className="small" style={{ marginBottom: 8 }}>
+      <summary>{Object.keys(ws.unavailable).length} parts of the last sync were not available</summary>
+      <ul>{Object.entries(ws.unavailable as Record<string, string>).map(([k, v]) => <li key={k}><b>{UNAVAILABLE[k] || k}:</b> {displayValue(v)}</li>)}</ul>
+    </details>}
     {i.disabledButLicensed?.length > 0 && <p className="small"><b>Disabled accounts still holding licences ({i.disabledButLicensed.length}):</b> {displayValue(i.disabledButLicensed.join(", "))}</p>}
     <div className="grid k2">
       <div className="card">

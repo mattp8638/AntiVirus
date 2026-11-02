@@ -63,19 +63,48 @@ def synchronize(connection):
             "defenderAlerts": "/security/alerts_v2?$filter=serviceSource%20eq%20'microsoftDefenderForEndpoint'%20and%20status%20ne%20'resolved'"
                               "&$top=200",
         }
+        # The extra reads never fail the sync: each that Microsoft refuses, times out or answers oddly is recorded as
+        # unavailable with its reason (shown on the tenant's Overview), and the next sync asks again.
+        problems = {}
         for key, path in optional.items():
             try:
-                snapshot[key] = collect(client, GRAPH + path, token, deadline)
-            except httpx.HTTPStatusError as exc:
-                if exc.response.status_code not in (400, 401, 403, 404):
-                    raise
+                snapshot[key] = collect(client, GRAPH + path, token, max(deadline, monotonic() + 30))
+            except (httpx.HTTPError, ValueError) as exc:
                 snapshot[key] = None
+                problems[key] = describe_failure(exc)
+        snapshot["unavailable"] = problems
         snapshot["inactiveUsers"] = inactive_users(snapshot.pop("signInActivity", None))
         snapshot["admins"] = admins(snapshot.pop("directoryRoles", None))
         snapshot["serviceIssues"] = service_issues(snapshot.get("serviceIssues"))
         snapshot["permissions"] = permission_check(token)
         snapshot["insights"] = insights(snapshot)
         return snapshot
+
+
+def describe_failure(exc: Exception) -> str:
+    """A short, safe account of a failed Microsoft call: Microsoft's own error code and message, never a secret."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        response = exc.response
+        where = "Microsoft sign-in" if response.request.url.host == "login.microsoftonline.com" else \
+            f"Microsoft Graph ({response.request.url.path.removeprefix('/v1.0')})"
+        try:
+            data = response.json()
+        except ValueError:
+            data = {}
+        error = data.get("error")
+        if isinstance(error, dict):  # Graph
+            said = ": ".join(str(x) for x in (error.get("code"), error.get("message")) if x)
+        else:  # the token endpoint: AADSTS code and description
+            said = str(data.get("error_description") or error or "").split("\r\n")[0]
+        return f"{where} answered HTTP {response.status_code}" + (f": {said[:300]}" if said else "")
+    if isinstance(exc, httpx.TimeoutException):
+        try:
+            return f"Microsoft did not answer in time ({exc.request.url.host}{exc.request.url.path})"
+        except RuntimeError:
+            return "Microsoft did not answer in time"
+    if isinstance(exc, httpx.HTTPError):
+        return f"Could not reach Microsoft: {type(exc).__name__}"
+    return str(exc)[:300]
 
 
 def permission_check(token: str) -> dict:
