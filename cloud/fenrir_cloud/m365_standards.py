@@ -62,6 +62,70 @@ STANDARDS: dict[str, dict] = {
     "intune.windows-compliance": {"title": "Windows device compliance baseline", "kind": "intune",
                                   "permissions": ["DeviceManagementConfiguration.ReadWrite.All"]},
 }
+
+# Directory settings in the tenant's authorization policy (Graph /policies/authorizationPolicy).
+AUTHZ_PERMISSIONS = ["Policy.Read.All", "Policy.ReadWrite.Authorization"]
+RESTRICTED_GUEST_ROLE = "2af84b1e-32c8-42b7-82bc-daa82404023b"
+AUTHZ: dict[str, dict] = {
+    "users.no-app-consent": {
+        "title": "Users cannot consent to applications",
+        "ok": lambda p: not [x for x in ((p.get("defaultUserRolePermissions") or {}).get("permissionGrantPoliciesAssigned") or [])
+                             if str(x).startswith("ManagePermissionGrantsForSelf")],
+        "patch": {"defaultUserRolePermissions": {"permissionGrantPoliciesAssigned": []}},
+        "why": "users can grant applications access to company data (the commonest route for consent phishing)"},
+    "users.no-app-registration": {
+        "title": "Users cannot register applications",
+        "ok": lambda p: (p.get("defaultUserRolePermissions") or {}).get("allowedToCreateApps") is False,
+        "patch": {"defaultUserRolePermissions": {"allowedToCreateApps": False}}, "why": "any user can register applications"},
+    "users.no-tenant-creation": {
+        "title": "Users cannot create new tenants",
+        "ok": lambda p: (p.get("defaultUserRolePermissions") or {}).get("allowedToCreateTenants") is False,
+        "patch": {"defaultUserRolePermissions": {"allowedToCreateTenants": False}}, "why": "any user can create a new Entra tenant"},
+    "guests.restricted": {
+        "title": "Guests have restricted directory access",
+        "ok": lambda p: p.get("guestUserRoleId") == RESTRICTED_GUEST_ROLE,
+        "patch": {"guestUserRoleId": RESTRICTED_GUEST_ROLE}, "why": "guests can read the directory (users, groups) like members"},
+    "guests.invited-by-admins": {
+        "title": "Only admins and guest inviters can invite guests",
+        "ok": lambda p: p.get("allowInvitesFrom") in ("adminsAndGuestInviters", "none"),
+        "patch": {"allowInvitesFrom": "adminsAndGuestInviters"}, "why": "any member can invite guests"},
+    "selfservice.signup-off": {
+        "title": "Email-verified self-service sign-up is off",
+        "ok": lambda p: p.get("allowEmailVerifiedUsersToJoinOrganization") is False,
+        "patch": {"allowEmailVerifiedUsersToJoinOrganization": False}, "why": "anyone with a company email can join the tenant"},
+}
+
+# Exchange Online organisation settings (through the admin endpoint, m365_exchange.py). Each: the cmdlet that reads it,
+# the property and the value wanted, and the cmdlet and parameters that set it.
+EXO: dict[str, dict] = {
+    "exo.unified-audit-log": {
+        "title": "Unified audit log is on", "get": ("Get-AdminAuditLogConfig", {}), "property": "UnifiedAuditLogIngestionEnabled",
+        "want": True, "set": ("Set-AdminAuditLogConfig", {"UnifiedAuditLogIngestionEnabled": True}),
+        "why": "activity is not recorded for investigations"},
+    "exo.mailbox-auditing": {
+        "title": "Mailbox auditing is on", "get": ("Get-OrganizationConfig", {}), "property": "AuditDisabled", "want": False,
+        "set": ("Set-OrganizationConfig", {"AuditDisabled": False}), "why": "mailbox access is not audited"},
+    "exo.no-external-forwarding": {
+        "title": "Automatic forwarding outside the company is blocked",
+        "get": ("Get-HostedOutboundSpamFilterPolicy", {"Identity": "Default"}), "property": "AutoForwardingMode", "want": "Off",
+        "set": ("Set-HostedOutboundSpamFilterPolicy", {"Identity": "Default", "AutoForwardingMode": "Off"}),
+        "why": "mailbox rules can forward mail to outside addresses (a common data-theft step)"},
+    "exo.smtp-auth-off": {
+        "title": "SMTP AUTH is off for the organisation", "get": ("Get-TransportConfig", {}),
+        "property": "SmtpClientAuthenticationDisabled", "want": True,
+        "set": ("Set-TransportConfig", {"SmtpClientAuthenticationDisabled": True}),
+        "why": "basic-auth SMTP submission is allowed (password spraying target)"},
+    "exo.modern-auth": {
+        "title": "Modern authentication is on for Outlook", "get": ("Get-OrganizationConfig", {}),
+        "property": "OAuth2ClientProfileEnabled", "want": True, "set": ("Set-OrganizationConfig", {"OAuth2ClientProfileEnabled": True}),
+        "why": "Outlook clients fall back to basic authentication"},
+}
+for _key, _entry in AUTHZ.items():
+    STANDARDS[_key] = {"title": _entry["title"], "kind": "authz", "permissions": AUTHZ_PERMISSIONS}
+for _key, _entry in EXO.items():
+    STANDARDS[_key] = {"title": _entry["title"], "kind": "exo",
+                       "permissions": ["Exchange.ManageAsApp (Office 365 Exchange Online) and the Exchange Administrator role"]}
+AUTHZ_PATH = "/policies/authorizationPolicy"
 MODES = ("report", "alert", "remediate")
 CA_PATH = "/identity/conditionalAccess/policies"
 COMPLIANCE_PATH = "/deviceManagement/deviceCompliancePolicies"
@@ -126,6 +190,48 @@ def _graph(client: httpx.Client, token: str, method: str, path: str, body: dict 
     return response.json() if response.content else {}
 
 
+def _authz(client, token) -> dict:
+    policy = _graph(client, token, "GET", AUTHZ_PATH)
+    # v1.0 returns the policy itself; some tenants answer with a one-item collection.
+    return (policy.get("value") or [policy])[0] if isinstance(policy.get("value"), list) else policy
+
+
+def _exo_value(connection: M365Connection, standard: str):
+    from . import m365_exchange
+
+    entry = EXO[standard]
+    cmdlet, params = entry["get"]
+    try:
+        with m365_exchange.session(connection) as (client, token):
+            rows = m365_exchange.invoke(client, connection, token, cmdlet, params)
+    except m365_exchange.ExchangeError as exc:
+        raise StandardError(str(exc)) from None
+    return (rows[0] if rows else {}).get(entry["property"])
+
+
+def _exo_evaluate(connection: M365Connection, standard: str) -> dict:
+    entry = EXO[standard]
+    value = _exo_value(connection, standard)
+    if value == entry["want"]:
+        return {"status": "compliant", "detail": entry["title"]}
+    return {"status": "drifted", "detail": f"Not set ({entry['property']} is {value!r}): {entry['why']}."}
+
+
+def _exo_deploy(connection: M365Connection, standard: str) -> dict:
+    from . import m365_exchange
+
+    entry = EXO[standard]
+    cmdlet, params = entry["set"]
+    try:
+        with m365_exchange.session(connection) as (client, token):
+            m365_exchange.invoke(client, connection, token, cmdlet, params)
+    except m365_exchange.ExchangeError as exc:
+        raise StandardError(str(exc)) from None
+    if _exo_value(connection, standard) != entry["want"]:
+        raise StandardError("Exchange accepted the change but the setting still reads as before (it can take a few minutes).")
+    return {"action": "updated", "setting": entry["title"]}
+
+
 def _security_defaults(client, token) -> bool:
     return bool(_graph(client, token, "GET", "/policies/identitySecurityDefaultsEnforcementPolicy").get("isEnabled"))
 
@@ -148,6 +254,17 @@ def evaluate(connection: M365Connection, standard: str, options: dict | None = N
     options = options or {}
     if standard not in STANDARDS:
         raise StandardError(f"Unknown standard '{standard}'")
+    kind = STANDARDS[standard]["kind"]
+    if kind == "exo":
+        return _exo_evaluate(connection, standard)
+    with http_client() as client:
+        token = m365.access_token(client, connection)
+        if kind == "authz":
+            policy = _authz(client, token)
+            entry = AUTHZ[standard]
+            if entry["ok"](policy):
+                return {"status": "compliant", "detail": entry["title"]}
+            return {"status": "drifted", "detail": f"Not set: {entry['why']}."}
     want = desired(standard, options)
     with http_client() as client:
         token = m365.access_token(client, connection)
@@ -182,6 +299,16 @@ def evaluate(connection: M365Connection, standard: str, options: dict | None = N
 def deploy(connection: M365Connection, standard: str, options: dict | None = None) -> dict:
     """Create or update the Fenrir policy for a standard. Conditional Access is report-only unless enforce is set."""
     options = options or {}
+    kind = STANDARDS[standard]["kind"]
+    if kind == "exo":
+        return _exo_deploy(connection, standard)
+    if kind == "authz":
+        with http_client() as client:
+            token = m365.access_token(client, connection)
+            _graph(client, token, "PATCH", AUTHZ_PATH, AUTHZ[standard]["patch"])
+            if not AUTHZ[standard]["ok"](_authz(client, token)):
+                raise StandardError("Microsoft accepted the change but the setting still reads as before; check the tenant.")
+        return {"action": "updated", "setting": AUTHZ[standard]["title"]}
     want = desired(standard, options)
     with http_client() as client:
         token = m365.access_token(client, connection)

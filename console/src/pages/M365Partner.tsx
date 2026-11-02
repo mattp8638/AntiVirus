@@ -11,16 +11,16 @@ const STATUS_TONE: Record<string, string> = { compliant: "good", drifted: "bad",
 
 export default function M365Partner() {
   const { can } = useApp();
-  const tabs = [...(can("manage_tenants") && can("m365_admin") ? ["Partner (GDAP)"] : []), "Identity standards", "Reconciliation"];
+  const tabs = [...(can("manage_tenants") && can("m365_admin") ? ["Partner (GDAP)"] : []), "Security standards", "Reconciliation"];
   const [tab, setTab] = useState(tabs[0]);
   return (
     <>
       <SectionTabs items={M365_SECTION} />
       <PageHead title="Microsoft 365 across customers"
-                subtitle="Partner access through GDAP, MFA and Conditional Access standards deployed to many tenants at once, and reconciliation of each directory with Fenrir's records." />
+                subtitle="Partner access through GDAP, security standards (MFA, Conditional Access, directory and Exchange settings) checked daily and deployed to many tenants at once, and reconciliation of each directory with Fenrir's records." />
       <Tabs tabs={tabs} active={tab} onChange={setTab} />
       {tab === "Partner (GDAP)" && <Partner />}
-      {tab === "Identity standards" && <Standards />}
+      {tab === "Security standards" && <Standards />}
       {tab === "Reconciliation" && <Reconciliation />}
     </>
   );

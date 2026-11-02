@@ -24,6 +24,9 @@ export function DeviceDefender({ deviceId }: { deviceId: string }) {
   if (!data) return <div className="empty">Loading…</div>;
   const s = data.status;
   const check = async () => { if (await run(() => api(`devices/${deviceId}/defender/check`, { method: "POST" }), "Check sent to the device")) reload(); };
+  const act = async (action: string, done: string, threatId?: string) => {
+    if (await run(() => api(`devices/${deviceId}/defender/action`, { body: { action, ...(threatId ? { threatId } : {}) } }), done)) reload();
+  };
   return (
     <>
       <div className="row" style={{ gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
@@ -33,6 +36,12 @@ export function DeviceDefender({ deviceId }: { deviceId: string }) {
         <span className="spacer" />
         {can("respond") && <button disabled={busy || data.checking} onClick={check}>{data.managed ? "Apply and check now" : "Check now"}</button>}
       </div>
+      {can("respond") && s && s.available !== false && <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+        <button className="small" disabled={busy} onClick={() => act("quick_scan", "Quick scan sent")}>Quick scan</button>
+        <button className="small" disabled={busy} onClick={() => act("full_scan", "Full scan started on the device")}>Full scan</button>
+        <button className="small" disabled={busy} onClick={() => act("update_signatures", "Definition update sent")}>Update definitions</button>
+        <button className="small" disabled={busy} onClick={() => act("remove_threats", "Removing active threats")}>Remove active threats</button>
+      </div>}
       {!data.managed && <p className="small muted">Turn on <b>Manage Microsoft Defender</b> in this device's policy to set Defender's protection
         and attack surface rules from Fenrir, and to see its detections as alerts.</p>}
       {data.problems.length > 0 && <div className="card" style={{ borderColor: "rgba(239,68,68,.5)" }}>{data.problems.map((p: string) => <div key={p}>⚠ {p}</div>)}</div>}
@@ -59,6 +68,8 @@ export function DeviceDefender({ deviceId }: { deviceId: string }) {
           { key: "resources", label: "Where", render: (x) => <span className="small mono">{displayValue((x.resources || [])[0] || "")}</span> },
           { key: "actionSuccess", label: "Dealt with", render: (x) => <Pill value={x.actionSuccess ? "yes" : "no"} tone={x.actionSuccess ? "good" : "bad"} /> },
           { key: "at", label: "When", render: (x) => ago(x.at) },
+          ...(can("configure") ? [{ key: "allow", label: "", render: (x: any) => x.threatId ? <button className="small" title="Defender stops acting on this threat ID on this device. To allow it everywhere, add the ID to the policy's allowed threats."
+            onClick={() => act("allow_threat", "Allowed on this device", String(x.threatId))}>Allow (false positive)</button> : null }] : []),
         ]} />
       </>}
     </>

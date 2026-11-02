@@ -217,6 +217,18 @@ Without it, the Exchange tab says exactly this; nothing else breaks.
    **Remove licences**: the mailbox becomes shared and keeps its mail, you get access in Outlook, and the licence is
    freed.
 
+## 11. Security standards (directory and Exchange)
+
+1. [ ] Microsoft 365 > Partner and standards > **Security standards**: the list now includes users cannot consent to
+   applications, users cannot register applications or create tenants, restricted guest access, guest invites by
+   admins only, self-service sign-up off, unified audit log, mailbox auditing, external auto-forwarding blocked,
+   SMTP AUTH off and modern authentication.
+2. [ ] Assign two of them to your customer in **alert** mode and run **Evaluate**: each one that is not set shows
+   "drifted" with the reason and opens one ticket.
+3. [ ] Set one to **remediate** (try "Guests have restricted directory access") and evaluate again: Fenrir changes
+   the setting, reads it back, and the next evaluation shows "compliant". Check it in Entra ID > External
+   Identities > External collaboration settings.
+
 ## 6. Clean up
 
 - [ ] Delete `fenrir.test1`, `fenrir.test2` and `fenrir.test3` in Entra (or offboard and then delete them).

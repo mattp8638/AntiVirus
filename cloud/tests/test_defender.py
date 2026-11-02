@@ -58,7 +58,7 @@ def test_policy_becomes_defender_settings_and_attack_surface_rules(client, admin
         body = command.payload["body"]
         assert command.type == "script.run" and command.payload["defender"] == "apply" and command.payload["runAs"] == "system"
     assert "-CloudBlockLevel HighPlus" in body and "-EnableNetworkProtection Enabled" in body and "-PUAProtection Enabled" in body
-    assert LSASS in body and "Add-MpPreference -ExclusionPath @('C:\\Line of business')" in body
+    assert LSASS in body and "$want = @('C:\\Line of business')" in body and "Add-MpPreference -ExclusionPath $want" in body
     # Fenrir's own attack surface rules decide each Defender rule: PsExec/WMI is audit by default.
     ids = body.split("-AttackSurfaceReductionRules_Ids @(")[1].split(")")[0].replace("'", "").split(",")
     actions = body.split("-AttackSurfaceReductionRules_Actions @(")[1].split(")")[0].replace("'", "").split(",")
@@ -222,3 +222,37 @@ def test_whole_drive_exclusions_are_reported(client, admin, tenant, device):
                                                                                  "processes": [], "extensions": []}))
     view = client.get(f"/api/console/devices/{device['deviceId']}/defender", headers=admin).json()
     assert view["problems"] == ["Defender excludes whole drives (C:\\, D:\\), so it scans almost nothing there"]
+
+
+def test_fenrir_controls_exclusions_scanning_and_schedules(client, admin, tenant, device):
+    """Exclusions follow the policy both ways (removed when they leave it, or every non-policy one when authoritative),
+    and the scanning, threat action, update, schedule and interface settings are all set."""
+    _manage(client, admin, tenant, device, exclusionPaths=["C:\\App"], exclusionsAuthoritative=True, sampleSubmission="never",
+            threatAction="remove", signatureUpdateHours=2, quickScanHour=13, fullScanDay="sunday", fullScanHour=3,
+            hideDefenderInterface=True, blockAtFirstSight=True, allowedThreats=["2147519003", "not-a-number"],
+            controlledFolders=["D:\\Finance"])
+    with database.session_factory()() as db:
+        body = db.get(Command, _check(client, admin, device)).payload["body"]
+    assert "Remove-MpPreference -ExclusionPath $drop" in body and "$current.ExclusionPath" in body  # authoritative
+    assert "-SubmitSamplesConsent NeverSend" in body and "-SevereThreatDefaultAction Remove" in body
+    assert "-SignatureUpdateInterval 2" in body and "-UILockdown $true" in body and "-DisableBlockAtFirstSeen $false" in body
+    assert "-ScanScheduleDay 1" in body and "-ScanScheduleQuickScanTime (New-TimeSpan -Hours 13)" in body
+    assert "-ThreatIDDefaultAction_Ids @('2147519003')" in body and "not-a-number" not in body
+    assert "ControlledFolderAccessProtectedFolders @('D:\\Finance')" in body
+    assert "ManagedExclusions" in body  # the agent remembers what Fenrir added
+
+
+def test_device_actions(client, admin, tenant, device):
+    for name in ("quick_scan", "full_scan", "update_signatures", "remove_threats"):
+        response = client.post(f"/api/console/devices/{device['deviceId']}/defender/action", headers=admin, json={"action": name})
+        assert response.status_code == 200, response.text
+    allowed = client.post(f"/api/console/devices/{device['deviceId']}/defender/action", headers=admin,
+                          json={"action": "allow_threat", "threatId": "2147519003"})
+    assert allowed.status_code == 200
+    assert client.post(f"/api/console/devices/{device['deviceId']}/defender/action", headers=admin,
+                       json={"action": "allow_threat", "threatId": "1; Remove-Item C:\\"}).status_code == 422
+    assert client.post(f"/api/console/devices/{device['deviceId']}/defender/action", headers=admin,
+                       json={"action": "format"}).status_code == 422
+    with database.session_factory()() as db:
+        bodies = [c.payload.get("body", "") for c in db.query(Command).filter_by(device_id=device["deviceId"])]
+    assert any("Start-MpScan -ScanType QuickScan" in b for b in bodies) and any("Update-MpSignature" in b for b in bodies)

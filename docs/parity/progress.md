@@ -43,6 +43,15 @@ Overall parity: **not passed**. MVP: **not yet declared**.
 | RMM-09 (owner request) | (this batch) | Backstage hidden SYSTEM desktop on Windows (session 0) with a tools launcher; nothing reaches the user's session. Self-test command; Windows CI acceptance check passes on Windows Server 2025 (AT-34, [run 41414209548](https://github.com/mattp8638/AntiVirus/actions/runs/41414209548)). |
 | CORE-15 (approvals) | (this batch) | Optional two-person approval bound to the exact request and its devices; `test_approvals.py`. |
 | CI | `b5cf672` | Removed the placeholder signing files that the merge brought back. [Run 78](https://github.com/mattp8638/AntiVirus/actions/runs/40649462515) passed, which also verifies FIX-08 in CI. |
+| Agent health | `bc4455e` | Every agent's build against the server's, why it is not updating (policy, paused rollout, ring), failures reported in 7 days by component until it recovers, failed commands; paused rollouts are shown. |
+| Releases | `51834a6` | Servers follow release tags (stable) or candidates (staging) or a branch; release workflow tests the tag and publishes notes. |
+| False positives (CI) | `37445aa` | Clean-software suite scans 400 installed files on Windows CI; it found a Python wheel quarantined at 99 and four reported scripts; fixed (package archives, compressed bytes, admin-only folders report-only on heuristics). Passes with no quarantine. |
+| FLOW-02 | `6ce7695` | Vulnerability -> ticket (joined per CVE) -> fix (optionally approved) -> rescan -> resolved, with evidence; failed or unconfirmed fixes reopen. `test_flow_vulnerability.py`. |
+| FLOW-04 | `6ce7695` | Monitor tickets close only after recovery and a successful self-heal; recurrences open a new ticket; remediation-package tickets resolve when the check passes. |
+| FLOW-01 | `6626608` | Onboarding checklist per customer from real state, with real failures; duplicate customers refused. `test_onboarding.py`. |
+| FLOW-05 | `6626608` | Leavers: devices to collect, vault credentials flagged for rotation, billing effect; mailbox hand-over (Exchange). |
+| FLOW-09 | `3873aa1` | Customer workspace: tickets, devices needing attention, alerts, incidents, urgent vulnerabilities, M365, backups, onboarding, recent actions. `test_workspace.py`. |
+| M365 batch 3 | `7e5182c`, `3a6bf02` | Exchange administration and 11 directory/Exchange security standards with drift. Awaiting owner test (test plan sections 10 and 11). |
 | Detection (found in CI) | `5f6dc90` | Firefox was quarantined as BlackCat on the Windows CI runner: signature "chain" rules fired on any one marker. Rules now take an optional match count (ransomware chains need every marker), and the installer ships the trusted-publisher, known-good and observe-only lists that only a build tree had. `SignatureRuleMatchTests.ps1` in Windows CI. |
 
 ## Microsoft 365 phase (owner request, 2026-11-02)

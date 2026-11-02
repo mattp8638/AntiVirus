@@ -53,6 +53,11 @@ CLOUD = {"off": ("Disabled", "Default"), "default": ("Advanced", "Default"), "hi
          "highPlus": ("Advanced", "HighPlus"), "zeroTolerance": ("Advanced", "ZeroTolerance")}
 CLOUD_LEVEL_NUMBER = {"default": 0, "high": 2, "highPlus": 4, "zeroTolerance": 6, "off": 0}
 SEVERITY = {5: "critical", 4: "high", 2: "medium", 1: "low"}
+SAMPLES = {"safe": "SendSafeSamples", "all": "SendAllSamples", "never": "NeverSend"}
+THREAT_ACTION = {"quarantine": "Quarantine", "remove": "Remove"}
+DAYS = {"sunday": 1, "monday": 2, "tuesday": 3, "wednesday": 4, "thursday": 5, "friday": 6, "saturday": 7}
+# Where the agent remembers which exclusions Fenrir added, so removing one from policy removes it from Defender.
+MANAGED_KEY = r"HKLM:\SOFTWARE\Fenrir\Defender"
 MARKER = "FENRIR-DEFENDER:"
 CHECK_EVERY = timedelta(hours=6)
 STALE_COMMAND = timedelta(hours=2)
@@ -93,28 +98,84 @@ def _ps_list(values) -> str:
     return "@(" + ",".join(_ps(v) for v in values) + ")"
 
 
+def _bool(value) -> str:
+    return "$true" if value else "$false"
+
+
+def _clean(values, limit: int = 500) -> list[str]:
+    return [str(v).strip()[:400] for v in (values or [])[:limit] if str(v).strip()]
+
+
 def script(settings: dict) -> str:
     """PowerShell that applies the managed settings (when managed) and prints Defender's state as one JSON line."""
     d = settings["defender"]
     lines = ["$ErrorActionPreference = 'Stop'", "$errors = @()"]
     if d.get("managed"):
         maps, level = CLOUD[d.get("cloudProtection", "high")]
+        action = THREAT_ACTION.get(d.get("threatAction", "quarantine"), "Quarantine")
         prefs = (f"-DisableRealtimeMonitoring ${'false' if d.get('realTimeProtection', True) else 'true'} "
-                 f"-MAPSReporting {maps} -SubmitSamplesConsent SendSafeSamples -CloudBlockLevel {level} "
+                 f"-MAPSReporting {maps} -SubmitSamplesConsent {SAMPLES.get(d.get('sampleSubmission', 'safe'), 'SendSafeSamples')} "
+                 f"-CloudBlockLevel {level} "
                  f"-PUAProtection {TRISTATE[d.get('puaProtection', 'block')]} "
                  f"-EnableNetworkProtection {TRISTATE[d.get('networkProtection', 'audit')]} "
                  f"-EnableControlledFolderAccess {TRISTATE[d.get('controlledFolderAccess', 'off')]}")
         lines.append(f"try {{ Set-MpPreference {prefs} }} catch {{ $errors += ('settings: ' + $_.Exception.Message) }}")
+        scanning = (f"-DisableBlockAtFirstSeen {_bool(not d.get('blockAtFirstSight', True))} "
+                    f"-DisableBehaviorMonitoring {_bool(not d.get('behaviorMonitoring', True))} "
+                    f"-DisableScriptScanning {_bool(not d.get('scriptScanning', True))} "
+                    f"-DisableIOAVProtection {_bool(not d.get('downloadScanning', True))} "
+                    f"-DisableArchiveScanning {_bool(not d.get('archiveScanning', True))} "
+                    f"-DisableEmailScanning {_bool(not d.get('emailScanning', True))} "
+                    f"-DisableRemovableDriveScanning {_bool(not d.get('removableDriveScanning', True))} "
+                    f"-LowThreatDefaultAction {action} -ModerateThreatDefaultAction {action} "
+                    f"-HighThreatDefaultAction {action} -SevereThreatDefaultAction {action} "
+                    f"-QuarantinePurgeItemsAfterDelay {int(d.get('quarantineRetentionDays', 90))} "
+                    f"-SignatureUpdateInterval {int(d.get('signatureUpdateHours', 4))} "
+                    f"-UILockdown {_bool(d.get('hideDefenderInterface', False))}")
+        lines.append(f"try {{ Set-MpPreference {scanning} }} catch {{ $errors += ('scanning: ' + $_.Exception.Message) }}")
+        # Scheduled scans: a daily quick scan at the hour chosen; a weekly full scan on the day chosen (8 = never).
+        full_day = DAYS.get(str(d.get("fullScanDay", "off")), 8)
+        schedule = (f"-ScanParameters 2 -ScanScheduleDay {full_day} -ScanScheduleTime (New-TimeSpan -Hours {int(d.get('fullScanHour', 2))})"
+                    + (f" -ScanScheduleQuickScanTime (New-TimeSpan -Hours {int(d.get('quickScanHour', 12))})"
+                       if d.get("quickScanDaily", True) else ""))
+        lines.append(f"try {{ Set-MpPreference {schedule} }} catch {{ $errors += ('scan schedule: ' + $_.Exception.Message) }}")
+        for field, parameter in (("controlledFolders", "ControlledFolderAccessProtectedFolders"),
+                                 ("controlledFolderApps", "ControlledFolderAccessAllowedApplications")):
+            if _clean(d.get(field)):
+                lines.append(f"try {{ Add-MpPreference -{parameter} {_ps_list(_clean(d[field]))} }} "
+                             f"catch {{ $errors += ('{parameter}: ' + $_.Exception.Message) }}")
+        threats = [t for t in _clean(d.get("allowedThreats"), 200) if t.isdigit()]
+        if threats:
+            lines.append(f"try {{ Add-MpPreference -ThreatIDDefaultAction_Ids {_ps_list(threats)} "
+                         f"-ThreatIDDefaultAction_Actions {_ps_list(['Allow'] * len(threats))} }} "
+                         "catch { $errors += ('allowed threats: ' + $_.Exception.Message) }")
         rules = asr_wanted(settings)
         if rules:
             lines.append(f"try {{ Add-MpPreference -AttackSurfaceReductionRules_Ids {_ps_list(rules)} "
                          f"-AttackSurfaceReductionRules_Actions {_ps_list(ASR_ACTION[m] for m in rules.values())} }} "
                          "catch { $errors += ('attack surface rules: ' + $_.Exception.Message) }")
+        # Exclusions follow the policy both ways. The agent remembers what Fenrir added (MANAGED_KEY); an exclusion that
+        # leaves the policy is removed. "Only Fenrir's exclusions" removes every other exclusion as well.
+        authoritative = bool(d.get("exclusionsAuthoritative"))
+        lines.append(f"$key = {_ps(MANAGED_KEY)}; $managed = @{{}}")
+        lines.append("try { $saved = (Get-ItemProperty -Path $key -Name ManagedExclusions -ErrorAction Stop).ManagedExclusions; "
+                     "($saved | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $managed[$_.Name] = @($_.Value) } } catch { }")
+        lines.append("try { $current = Get-MpPreference } catch { $current = $null }")
+        lines.append("$applied = [ordered]@{}; $removed = @()")
         for field, parameter in (("exclusionPaths", "ExclusionPath"), ("exclusionProcesses", "ExclusionProcess"),
                                  ("exclusionExtensions", "ExclusionExtension")):
-            if d.get(field):
-                lines.append(f"try {{ Add-MpPreference -{parameter} {_ps_list(d[field])} }} "
-                             f"catch {{ $errors += ('{parameter}: ' + $_.Exception.Message) }}")
+            wanted = _clean(d.get(field))
+            lines.append(f"$want = {_ps_list(wanted)}")
+            lines.append(f"$had = @($managed['{parameter}'])" if not authoritative else
+                         f"$had = @($current.{parameter} | Where-Object {{ $_ -and -not ([string]$_).StartsWith('N/A') }})")
+            lines.append("$drop = @($had | Where-Object { $_ -and ($want -notcontains $_) })")
+            lines.append(f"if ($drop.Count) {{ try {{ Remove-MpPreference -{parameter} $drop; $removed += $drop }} "
+                         f"catch {{ $errors += ('remove {parameter}: ' + $_.Exception.Message) }} }}")
+            lines.append(f"if ($want.Count) {{ try {{ Add-MpPreference -{parameter} $want }} "
+                         f"catch {{ $errors += ('{parameter}: ' + $_.Exception.Message) }} }}")
+            lines.append(f"$applied['{parameter}'] = $want")
+        lines.append("try { New-Item -Path $key -Force | Out-Null; Set-ItemProperty -Path $key -Name ManagedExclusions "
+                     "-Value ($applied | ConvertTo-Json -Compress) } catch { $errors += ('remember exclusions: ' + $_.Exception.Message) }")
     lines.append(r"""
 try { $status = Get-MpComputerStatus; $pref = Get-MpPreference } catch {
   Write-Output ('FENRIR-DEFENDER:' + (@{ available = $false; error = $_.Exception.Message; errors = $errors } | ConvertTo-Json -Compress))
@@ -146,6 +207,10 @@ try {
     signatureAgeDays = (Days $status.AntivirusSignatureAge); signatureVersion = [string]$status.AntivirusSignatureVersion;
     product = [string]$status.AMProductVersion; quickScanAgeDays = (Days $status.QuickScanAge);
     cloudBlockLevel = [int64]$pref.CloudBlockLevel; maps = [int64]$pref.MAPSReporting; pua = [int64]$pref.PUAProtection;
+    blockAtFirstSight = -not [bool]$pref.DisableBlockAtFirstSeen; behaviorMonitoring = [bool]$status.BehaviorMonitorEnabled;
+    downloadScanning = [bool]$status.IoavProtectionEnabled; uiLockdown = [bool]$pref.UILockdown;
+    signatureUpdateHours = [int64]$pref.SignatureUpdateInterval; fullScanAgeDays = (Days $status.FullScanAge);
+    exclusionsRemoved = @($removed);
     networkProtection = [int64]$pref.EnableNetworkProtection; controlledFolderAccess = [int64]$pref.EnableControlledFolderAccess;
     asr = $asr; exclusions = [ordered]@{ paths = @($pref.ExclusionPath | Where-Object { $_ }); processes = @($pref.ExclusionProcess | Where-Object { $_ });
                                    extensions = @($pref.ExclusionExtension | Where-Object { $_ }) };
@@ -288,6 +353,21 @@ def problems(status: dict, settings: dict) -> list[str]:
     drift = [guid for guid, m in wanted.items() if m != "off" and actual.get(guid) != ASR_ACTION_NUMBER[m]]
     if drift:
         found.append(f"{len(drift)} attack surface rules are not set as policy asks (tamper protection or Intune may be overriding them)")
+    d = settings["defender"]
+    if d.get("managed"):
+        held = [label for key, label, want in (("blockAtFirstSight", "block at first sight", d.get("blockAtFirstSight", True)),
+                                               ("behaviorMonitoring", "behaviour monitoring", d.get("behaviorMonitoring", True)),
+                                               ("downloadScanning", "download scanning", d.get("downloadScanning", True)),
+                                               ("uiLockdown", "hiding Defender's interface", d.get("hideDefenderInterface", False)))
+                if key in status and bool(status[key]) != bool(want)]
+        if held:
+            found.append("Defender is not following policy for " + ", ".join(held) + " (Group Policy, Intune or tamper protection may be overriding it)")
+        if d.get("exclusionsAuthoritative"):
+            wanted_paths = {str(p).lower() for p in d.get("exclusionPaths") or []}
+            extra = [p for p in (status.get("exclusions") or {}).get("paths") or [] if str(p).lower() not in wanted_paths
+                     and not str(p).startswith("N/A")]
+            if extra:
+                found.append(f"Defender still has exclusions policy does not allow: {', '.join(map(str, extra[:5]))}")
     return found
 
 
@@ -354,3 +434,36 @@ def view(db: Session, device: Device) -> dict:
             "rules": [{"key": key, "guid": guid, "wanted": asr_wanted(settings).get(guid, "off"),
                        "actual": next((m for m, n in ASR_ACTION_NUMBER.items() if (status.get("asr") or {}).get(guid) == n), None)}
                       for key, guid in ASR_GUIDS.items()]}
+
+
+# --------------------------------------------------------------------------- one-off actions on a device
+
+ACTIONS = {
+    "quick_scan": ("Run a Microsoft Defender quick scan", "Start-MpScan -ScanType QuickScan"),
+    "full_scan": ("Run a Microsoft Defender full scan", "Start-MpScan -ScanType FullScan -AsJob | Out-Null; 'Full scan started'"),
+    "update_signatures": ("Update Microsoft Defender's definitions", "Update-MpSignature"),
+    "remove_threats": ("Remove the active threats Microsoft Defender found", "Remove-MpThreat"),
+}
+
+
+def action(db: Session, device: Device, name: str, actor: str, threat_id: str = "") -> Command:
+    """Queue one Defender action; the regular report runs after it so the console shows the result. ``allow_threat``
+    allows one threat ID on this device only (a false positive); add it to the policy's allowed threats for everyone."""
+    from . import services
+
+    if name == "allow_threat":
+        if not re.fullmatch(r"\d{1,20}", str(threat_id or "")):
+            raise ValueError("Give the numeric Defender threat ID")
+        title, cmdlet = (f"Allow Microsoft Defender threat {threat_id} on this device",
+                         f"Add-MpPreference -ThreatIDDefaultAction_Ids {threat_id} -ThreatIDDefaultAction_Actions Allow")
+    elif name in ACTIONS:
+        title, cmdlet = ACTIONS[name]
+    else:
+        raise ValueError("Unknown Defender action")
+    body = f"$ErrorActionPreference = 'Stop'\n{cmdlet}\n'{title}: done'"
+    command = services.enqueue_command(db, device, "script.run", actor, reason=title,
+                                       payload={"language": "powershell", "body": body, "timeoutSeconds": 3600, "runAs": "system",
+                                                "scriptName": title})
+    db.flush()
+    request(db, device, actor)  # a fresh report afterwards
+    return command
