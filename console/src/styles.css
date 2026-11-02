@@ -166,9 +166,10 @@ label.field input, label.field select, label.field textarea { color: var(--text)
 .rv-feedback.warning { color: var(--amber); }
 .rv-feedback button { flex-shrink: 0; }
 .rv-screen[hidden] { display: none; }
-.rv-screen { flex: 1; display: flex; align-items: center; justify-content: center; background: #000; }
-.rv-screen canvas { outline: none; image-rendering: auto; }
-.rv-screen canvas.fit { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
+.rv-screen { flex: 1; min-width: 0; min-height: 0; display: flex; background: #000; }
+/* Sized in whole pixels by the viewer (screenDisplaySize); never shrunk by flex. margin:auto centres it and still lets a
+   larger picture scroll from its top-left corner. */
+.rv-screen canvas { outline: none; image-rendering: auto; flex: none; margin: auto; display: block; }
 .rv-pane { flex: 1; padding: 14px; overflow: auto; }
 .rv-term { height: calc(100vh - 140px); background: #05080f; border: 1px solid var(--line); border-radius: 8px; padding: 6px; }
 .rv-wait { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; gap: 10px; padding: 20px; }
