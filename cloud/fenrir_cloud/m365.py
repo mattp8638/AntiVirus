@@ -237,7 +237,7 @@ def insights(snapshot: dict) -> dict:
             "mfa": mfa, "secureScore": secure}
 
 
-def access_token(client, connection):
+def access_token(client, connection, scope: str = "https://graph.microsoft.com/.default"):
     if connection.auth_mode == "gdap":
         # Delegated token for the customer tenant through the MSP's GDAP relationship (m365_partner.py). A rotated
         # partner refresh token is saved with the caller's own transaction.
@@ -254,7 +254,8 @@ def access_token(client, connection):
             if partner is None:
                 raise ValueError("No Microsoft partner connection is configured for GDAP")
             try:
-                token = m365_partner.access_token_for(partner, connection.directory_id, client=client)
+                token = m365_partner.access_token_for(partner, connection.directory_id, client=client,
+                                                      **({} if scope.startswith("https://graph.microsoft.com") else {"scope": scope}))
             except m365_partner.PartnerError as exc:
                 raise ValueError(str(exc)) from exc
             if own:
@@ -276,7 +277,7 @@ def access_token(client, connection):
         secret = crypto.decrypt(connection.credentials_envelope, f"m365:{connection.tenant_id}:{connection.id}")
     response = client.post(f"https://login.microsoftonline.com/{connection.directory_id}/oauth2/v2.0/token",
         data={"client_id": client_id, "client_secret": secret,
-              "grant_type": "client_credentials", "scope": "https://graph.microsoft.com/.default"})
+              "grant_type": "client_credentials", "scope": scope})
     response.raise_for_status()
     return response.json()["access_token"]
 

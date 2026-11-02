@@ -75,6 +75,26 @@ class FakeTenant:
                                              "modifiedProperties": [{"displayName": "Group.DisplayName", "newValue": "\"Sales\""}]}]}
                        for i in range(1, 4)]
         self.premium = True
+        # Exchange Online (adminapi InvokeCommand)
+        self.exo_denied = False
+        self.exo_calls: list[tuple[str, dict]] = []
+        self.mailboxes = {
+            "jo@acme.example": {"DisplayName": "Jo Leaver", "PrimarySmtpAddress": "jo@acme.example", "UserPrincipalName": "jo@acme.example",
+                                "RecipientTypeDetails": "UserMailbox", "ExternalDirectoryObjectId": USER,
+                                "EmailAddresses": ["SMTP:jo@acme.example", "smtp:joanne@acme.example"], "ForwardingSmtpAddress": None,
+                                "DeliverToMailboxAndForward": False, "HiddenFromAddressListsEnabled": False},
+            "info@acme.example": {"DisplayName": "Info", "PrimarySmtpAddress": "info@acme.example", "UserPrincipalName": "info@acme.example",
+                                  "RecipientTypeDetails": "SharedMailbox", "ExternalDirectoryObjectId": "mbx-info",
+                                  "EmailAddresses": ["SMTP:info@acme.example"], "ForwardingSmtpAddress": None,
+                                  "DeliverToMailboxAndForward": False, "HiddenFromAddressListsEnabled": False},
+        }
+        self.mailbox_permissions = {"info@acme.example": [{"User": "NT AUTHORITY\\SELF", "AccessRights": ["FullAccess"], "IsInherited": False},
+                                                         {"User": "max@acme.example", "AccessRights": ["FullAccess"], "IsInherited": False}]}
+        self.inbox_rules = {"jo@acme.example": [{"Identity": "jo@acme.example\\1234", "Name": "Invoices", "Enabled": True,
+                                                 "ForwardTo": ["\"x\" [SMTP:attacker@evil.example]"], "DeleteMessage": False}]}
+        self.quarantined = [{"Identity": "0b5c6f-abcd-1234\\9a8b7c-ffff", "ReceivedTime": iso(now), "SenderAddress": "boss@supplier.example",
+                             "RecipientAddress": ["jo@acme.example"], "Subject": "Invoice", "QuarantineTypes": "HighConfPhish",
+                             "ReleaseStatus": "NOTRELEASED"}]
 
     # --- transport ---
     def client(self, **kwargs):
@@ -86,6 +106,8 @@ class FakeTenant:
     def handle(self, request: httpx.Request) -> httpx.Response:
         if request.url.host == "login.microsoftonline.com":
             return httpx.Response(200, json={"access_token": token(self.roles)})
+        if request.url.host == "outlook.office365.com":
+            return self.exchange(request)
         if request.url.host == "api.partnercenter.microsoft.com":
             self.requests.append((request.method, request.url.path, None))
             return httpx.Response(200, json={})
@@ -100,6 +122,51 @@ class FakeTenant:
             return self.route(request.method, path, query, body)
         except KeyError:
             return httpx.Response(404, json={"error": {"code": "Request_ResourceNotFound", "message": "Resource not found."}})
+
+    def exchange(self, request: httpx.Request) -> httpx.Response:
+        if self.exo_denied:
+            return httpx.Response(403, json={"error": {"code": "Forbidden", "message": "The role assigned to application isn't supported in this scenario."}})
+        cmd = json.loads(request.content)["CmdletInput"]
+        name, p = cmd["CmdletName"], cmd.get("Parameters") or {}
+        self.exo_calls.append((name, p))
+        mbx = self.mailboxes
+        if name == "Get-Mailbox":
+            rows = [mbx[p["Identity"]]] if "Identity" in p else list(mbx.values())
+            return httpx.Response(200, json={"value": rows})
+        if name == "Get-MailboxPermission":
+            return httpx.Response(200, json={"value": self.mailbox_permissions.get(p["Identity"], [])})
+        if name == "Get-RecipientPermission":
+            return httpx.Response(200, json={"value": [{"Trustee": "max@acme.example", "AccessRights": ["SendAs"]}] if p["Identity"] == "info@acme.example" else []})
+        if name == "Get-InboxRule":
+            return httpx.Response(200, json={"value": self.inbox_rules.get(p["Mailbox"], [])})
+        if name == "Get-QuarantineMessage":
+            return httpx.Response(200, json={"value": self.quarantined})
+        if name == "Get-MessageTraceV2":
+            return httpx.Response(200, json={"value": [{"Received": iso(datetime.now(timezone.utc)), "SenderAddress": p.get("SenderAddress", "a@b.example"),
+                                                        "RecipientAddress": p.get("RecipientAddress", "jo@acme.example"), "Subject": "Hello",
+                                                        "Status": "Delivered", "Size": 1024, "MessageId": "<m1@x>"}]})
+        if name == "Get-DistributionGroup":
+            return httpx.Response(200, json={"value": [{"DisplayName": "Newsletter", "PrimarySmtpAddress": "news@acme.example",
+                                                        "RecipientTypeDetails": "MailUniversalDistributionGroup", "ExternalDirectoryObjectId": DL}]})
+        if name == "Set-Mailbox":
+            box = mbx[p["Identity"]]
+            if p.get("Type") == "Shared":
+                box["RecipientTypeDetails"] = "SharedMailbox"
+            if "ForwardingSmtpAddress" in p:
+                box["ForwardingSmtpAddress"], box["DeliverToMailboxAndForward"] = p["ForwardingSmtpAddress"], p.get("DeliverToMailboxAndForward")
+            if "EmailAddresses" in p:
+                for a in p["EmailAddresses"].get("add", []):
+                    box["EmailAddresses"].append(a)
+            return httpx.Response(200, json={"value": []})
+        if name == "Add-MailboxPermission":
+            self.mailbox_permissions.setdefault(p["Identity"], []).append({"User": p["User"], "AccessRights": p["AccessRights"], "IsInherited": False})
+            return httpx.Response(200, json={"value": []})
+        if name == "Release-QuarantineMessage":
+            for q in self.quarantined:
+                if q["Identity"] == p["Identity"]:
+                    q["ReleaseStatus"] = "RELEASED"
+            return httpx.Response(200, json={"value": []})
+        return httpx.Response(200, json={"value": []})
 
     def page(self, rows):
         return httpx.Response(200, json={"value": rows})

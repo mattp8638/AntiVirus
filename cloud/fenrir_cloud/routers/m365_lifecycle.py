@@ -39,6 +39,10 @@ class OffboardOptions(BaseModel):
     hideFromAddressBook: bool = False
     # Fenrir's side: devices they used, their stored credentials (flagged for rotation) and the billing effect.
     reviewEstate: bool = True
+    # Exchange: keep the mailbox (shared, no licence needed), give a colleague access, forward new mail.
+    convertToShared: bool = False
+    mailboxDelegate: str = Field(default="", max_length=254, pattern=r"^$|^[^@\s'\"`;|&$<>(){}]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
+    forwardTo: str = Field(default="", max_length=254, pattern=r"^$|^[^@\s'\"`;|&$<>(){}]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 
 
 class AdPlacement(BaseModel):
