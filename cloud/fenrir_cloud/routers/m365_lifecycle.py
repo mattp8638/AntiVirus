@@ -37,6 +37,8 @@ class OffboardOptions(BaseModel):
     # AD-synced users only: move the account to this OU (a distinguished name) and hide it from the address book.
     adMoveOu: str = Field(default="", max_length=512)
     hideFromAddressBook: bool = False
+    # Fenrir's side: devices they used, their stored credentials (flagged for rotation) and the billing effect.
+    reviewEstate: bool = True
 
 
 class AdPlacement(BaseModel):

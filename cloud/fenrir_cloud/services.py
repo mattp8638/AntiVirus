@@ -217,6 +217,14 @@ def create_customer(db: Session, name: str, parent_id: str, actor: str, template
 
     if template not in policy_schema.TEMPLATES:
         raise ValueError("unknown template")
+    from sqlalchemy import func
+
+    clash = db.execute(select(Tenant).where(Tenant.parent_id == parent_id, Tenant.kind == "customer",
+                                            func.lower(func.trim(Tenant.name)) == name.strip().lower())).scalars().first()
+    if clash is not None:
+        archived = (clash.settings or {}).get("archived")
+        raise ValueError(f"A customer called '{clash.name}' already exists" +
+                         (" (archived: restore it instead of creating a second one)." if archived else "."))
     slug = re.sub(r"[^a-z0-9]+", "-", (slug or name).lower()).strip("-")[:70] or "tenant"
     if db.execute(select(Tenant).where(Tenant.slug == slug)).scalar_one_or_none():
         slug = f"{slug}-{new_secret('x', 3)[2:].lower()}"

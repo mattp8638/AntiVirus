@@ -42,8 +42,54 @@ class PlanError(Exception):
     pass
 
 
+# Steps carried out in Fenrir itself (no Microsoft or domain controller call).
+FENRIR_STEPS = ("mark_contact", "add_contact", "open_ticket", "review_devices", "flag_credentials", "billing_effect")
+CREDENTIAL_FLAG = "Belonged to a leaver: rotate this credential"
+
+
+def _leaver_names(person: dict, upn: str) -> set[str]:
+    """Ways the leaver's account appears on devices and in stored credentials."""
+    names = {upn.lower(), upn.split("@")[0].lower()}
+    for key in ("mail", "mailNickname", "onPremisesSamAccountName"):
+        if person.get(key):
+            names.add(str(person[key]).lower())
+            names.add(str(person[key]).split("@")[0].lower())
+    return {n for n in names if len(n) >= 2}
+
+
+def _devices_used_by(db: Session, tenant_id: str, names: set[str]) -> list[Device]:
+    out = []
+    for device in db.execute(select(Device).where(Device.tenant_id == tenant_id, Device.approved.is_(True))).scalars():
+        metrics = device.metrics or {}
+        seen = [str(metrics.get("loggedOnUser") or "")] + [str(u) for u in metrics.get("users") or []]
+        accounts = {a.lower().split("\\")[-1].split("@")[0] for a in seen if a}
+        if accounts & names:
+            out.append(device)
+    return out
+
+
+def _credentials_of(db: Session, tenant_id: str, names: set[str]) -> list:
+    from .models import VaultCredential
+
+    rows = db.execute(select(VaultCredential).where(VaultCredential.tenant_id == tenant_id, VaultCredential.archived.is_(False))).scalars()
+    return [c for c in rows if c.username and (c.username.lower() in names or c.username.lower().split("\\")[-1].split("@")[0] in names)]
+
+
+def _billing_lines(db: Session, tenant_id: str) -> list[str]:
+    """Agreement lines counted from Microsoft 365 licences or users: they follow on the next invoice by themselves."""
+    from .models import Contract
+
+    lines = []
+    for contract in db.execute(select(Contract).where(Contract.account_tenant_id == tenant_id, Contract.active.is_(True))).scalars():
+        for addition in contract.additions or []:
+            auto = str(addition.get("autoCount") or "")
+            if auto.startswith("m365"):
+                lines.append(f"{contract.name}: {addition.get('product') or auto} (counted from {auto})")
+    return lines
+
+
 def _step(key: str, title: str, detail: str, items: list | None = None, warning: str = "", where: str = "") -> dict:
-    where = where or ("ad" if key.startswith("ad_") else "fenrir" if key in ("mark_contact", "add_contact", "open_ticket") else "m365")
+    where = where or ("ad" if key.startswith("ad_") else "fenrir" if key in FENRIR_STEPS else "m365")
     return {"key": key, "title": title, "detail": detail, "items": items or [], "warning": warning, "status": "pending",
             "result": "", "at": None, "where": where}
 
@@ -134,6 +180,21 @@ def plan_offboard(db: Session, connection: M365Connection, user_id: str, options
         found = _contacts(db, connection.tenant_id, upn, person.get("mail") or "")
         steps.append(_step("mark_contact", "Mark the Fenrir contact as left", ", ".join(c.name for c in found) or "No matching contact",
                            [{"id": c.id, "label": c.name} for c in found]))
+    if options.get("reviewEstate", True):
+        names = _leaver_names(person, upn)
+        devices = _devices_used_by(db, connection.tenant_id, names)
+        steps.append(_step("review_devices", "Devices they used", ", ".join(d.hostname for d in devices) or "No managed device shows them signed in",
+                           [{"id": d.id, "label": d.hostname} for d in devices],
+                           warning="Collect these, or reassign or wipe them (from each device's page); they are listed on the ticket."
+                           if devices else ""))
+        credentials = _credentials_of(db, connection.tenant_id, names)
+        steps.append(_step("flag_credentials", "Flag their stored credentials for rotation",
+                           ", ".join(c.name for c in credentials) or "No credential in the vault uses their account",
+                           [{"id": c.id, "label": c.name} for c in credentials]))
+        billing = _billing_lines(db, connection.tenant_id)
+        steps.append(_step("billing_effect", "Billing", "; ".join(billing) if billing else
+                           "No agreement line is counted from Microsoft 365 licences; nothing changes on invoices",
+                           [{"label": line} for line in billing]))
     if options.get("openTicket"):
         steps.append(_step("open_ticket", "Record it on a ticket", "Opens a ticket with what was done and what is left to do by hand."))
     if not steps:
@@ -400,7 +461,11 @@ def _summary(flow: M365Workflow) -> str:
             continue
         lines.append(f"- {step['title']}: {step['status']}" + (f" ({step['result']})" if step.get("result") else ""))
     if flow.kind == "offboard":
-        lines += ["", "Left to do by hand:", "- Collect the user's devices, or wipe them (Devices).",
+        devices = next((s for s in flow.steps if s["key"] == "review_devices"), None)
+        lines += ["", "Left to do by hand:",
+                  "- Collect, reassign or wipe their devices: " + (", ".join(i["label"] for i in devices["items"]) or "none found")
+                  if devices else "- Collect the user's devices, or wipe them (Devices).",
+                  "- Rotate any stored credential flagged for them (Credential vault).",
                   "- Convert the mailbox to shared and give access to whoever needs it (Exchange).",
                   "- Move OneDrive files that must be kept before the licence's 30-day grace period ends."]
     return "\n".join(lines)
@@ -455,6 +520,23 @@ def run_step(db: Session, connection: M365Connection, flow: M365Workflow, step: 
                 contact.notes = ((contact.notes or "") + "\n" + LEAVER_NOTE).strip()
                 contact.is_primary = False
         return f"{len(step['items'])} contact(s) marked" if step["items"] else "No matching contact"
+    if key == "review_devices":
+        return (f"{len(step['items'])} device(s) to collect, reassign or wipe: " + ", ".join(i["label"] for i in step["items"])
+                if step["items"] else "No managed device to collect")
+    if key == "flag_credentials":
+        from .models import VaultCredential
+
+        flagged = 0
+        for item in step["items"]:
+            credential = db.get(VaultCredential, item["id"])
+            if credential is not None and CREDENTIAL_FLAG not in (credential.notes or ""):
+                credential.notes = ((credential.notes or "") + f"\n{CREDENTIAL_FLAG} ({flow.target_name}, {utcnow():%d %b %Y}).").strip()
+                credential.updated_by = flow.executed_by or "system:offboarding"
+                flagged += 1
+        return f"{flagged} credential(s) flagged for rotation" if step["items"] else "Nothing to flag"
+    if key == "billing_effect":
+        return ("The next invoice counts the licences and users then assigned; issued invoices are not changed"
+                if step["items"] else "No change to billing")
     if key == "add_contact":
         profile = flow.options["profile"]
         if not _contacts(db, connection.tenant_id, profile["userPrincipalName"]):
@@ -563,7 +645,8 @@ def _depends_on_user(flow: M365Workflow) -> bool:
 
 
 # Steps that do not need the Microsoft 365 user to exist yet.
-NO_USER_NEEDED = {"create_user", "add_contact", "open_ticket", "ad_create", "ad_sync", "wait_cloud"}
+NO_USER_NEEDED = {"create_user", "add_contact", "open_ticket", "ad_create", "ad_sync", "wait_cloud", "review_devices", "flag_credentials",
+                  "billing_effect"}
 EXTERNAL = {"wait_cloud"}  # steps that wait on something other than Microsoft Graph
 
 

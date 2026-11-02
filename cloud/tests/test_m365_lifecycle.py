@@ -250,3 +250,37 @@ def test_old_plans_must_be_planned_again_and_need_microsoft_admin_rights(client,
     response = client.post("/api/console/m365/workflows/" + flow["id"] + "/run", headers=stepup(client, admin), json={"confirmed": True})
     assert response.status_code == 409 and not fake.calls("PATCH")
     assert client.post("/api/console/m365/workflows/" + flow["id"] + "/run", headers=admin, json={"confirmed": True}).status_code == 403
+
+
+def test_offboarding_covers_devices_credentials_and_billing(client, admin, tenant, fake):
+    """FLOW-05: a leaver's devices are listed to collect, credentials stored for their account are flagged for rotation,
+    and the billing effect is shown; nothing on issued invoices changes."""
+    from conftest import enroll
+    from fenrir_cloud import crypto
+    from fenrir_cloud.models import Contract, Device, VaultCredential
+
+    conn = connection(client, admin, tenant)
+    laptop = enroll(client, admin, tenant, hostname="JO-LAPTOP", serial="JO-1")
+    other = enroll(client, admin, tenant, hostname="RECEPTION", serial="RC-1")
+    with database.session_factory()() as db:
+        db.get(Device, laptop["deviceId"]).metrics = {"loggedOnUser": "ACME\\jo"}
+        db.get(Device, other["deviceId"]).metrics = {"loggedOnUser": "ACME\\sam"}
+        cred = VaultCredential(tenant_id=tenant["id"], name="Supplier portal", username="jo@acme.example", url="", notes="",
+                               ciphertext=crypto.encrypt("x", "t"), updated_by="admin")
+        db.add(cred)
+        db.add(Contract(tenant_id=tenant["id"], account_tenant_id=tenant["id"], name="Managed IT", plan="complete", active=True,
+                        additions=[{"product": "Microsoft 365 seats", "quantity": 0, "unitPrice": 5, "autoCount": "m365-users"}]))
+        db.commit()
+        cred_id = cred.id
+    flow = plan(client, admin, conn, "offboard", {"markContact": False}, USER).json()
+    steps = {s["key"]: s for s in flow["steps"]}
+    assert [i["label"] for i in steps["review_devices"]["items"]] == ["JO-LAPTOP"]
+    assert [i["label"] for i in steps["flag_credentials"]["items"]] == ["Supplier portal"]
+    assert "m365-users" in steps["billing_effect"]["detail"] and steps["billing_effect"]["where"] == "fenrir"
+
+    done = run(client, admin, flow)["workflow"]
+    assert done["status"] == "completed", done["steps"]
+    with database.session_factory()() as db:
+        assert "rotate this credential" in db.get(VaultCredential, cred_id).notes
+        ticket = db.get(Ticket, done["ticketId"])
+        assert "JO-LAPTOP" in ticket.description and "Rotate any stored credential" in ticket.description

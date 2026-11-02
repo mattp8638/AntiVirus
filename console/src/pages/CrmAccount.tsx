@@ -1,4 +1,5 @@
 import { displayValue } from "../components/DisplayValue";
+import { OnboardingChecklist } from "../components/OnboardingChecklist";
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ago, api, money } from "../api";
@@ -68,6 +69,10 @@ export default function CrmAccount() {
                            { key: "at", label: "When", render: (t) => <>{ago(t.at)}{t.by && <div className="small muted">{displayValue(t.by)}</div>}</> }]} />
         </div>
         <div>
+          <div className="card" style={{ marginBottom: 14 }}>
+            <h3>Onboarding</h3>
+            <OnboardingChecklist tenantId={id} compact />
+          </div>
           <div className="card">
             <h3>Opportunities</h3>
             <Table rows={data?.opportunities} onRow={(o) => setEditing({ kind: "opportunities", row: o })} empty="No deals for this account."
