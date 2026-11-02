@@ -166,3 +166,27 @@ def view(db: Session, rollout: AgentRollout) -> dict:
             "startedAt": rollout.started_at.isoformat() + "Z", "stageStartedAt": rollout.stage_started_at.isoformat() + "Z",
             "devices": counts, "failures": [{"deviceId": o.device_id, "detail": o.detail} for o in offers if o.outcome == "failed"][:50],
             "history": rollout.history or []}
+
+
+def update_status(db: Session, device: Device, platform: str, build: str) -> str:
+    """Read-only, for display: why this device is or is not on the build. Changes nothing (unlike offer)."""
+    from . import services
+
+    if not build:
+        return "This server has no agent build to offer."
+    if device.agent_build == build:
+        return ""
+    try:
+        resolution, _ = services.effective_policy(db, device)
+        settings = resolution["settings"]
+    except Exception:  # noqa: BLE001 - shown as text only
+        settings = {}
+    if not bool((settings.get("updates") or {}).get("autoUpdateAgent", True)):
+        return "Automatic agent updates are turned off in this device's policy (updates.autoUpdateAgent)."
+    rollout = db.execute(select(AgentRollout).where(AgentRollout.platform == platform, AgentRollout.build == build)).scalar_one_or_none()
+    if rollout is not None and rollout.state in ("paused", "stopped"):
+        return f"The agent rollout is {rollout.state}: {rollout.reason or 'see Settings > Agent updates'}. Resume it there."
+    ring = ring_of(settings)
+    if rollout is not None and rollout.state != "complete" and ring > rollout.stage:
+        return f"Waiting for the {STAGES[rollout.stage]} stage of the rollout (this device is in the {STAGES[ring]} ring)."
+    return "The update is offered; the agent installs it the next time it checks (within about 15 minutes) and restarts."

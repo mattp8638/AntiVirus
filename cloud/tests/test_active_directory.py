@@ -141,3 +141,29 @@ def test_decommissioned_controllers_do_not_count_and_snapshot_problems_are_shown
     detail = client.get(f"/api/console/ad/domains/{tenant['id']}/corp.example", headers=admin).json()
     assert detail["snapshotAt"] and detail["problems"] == [] and detail["collectionErrors"][0].startswith("group policies:")
     assert detail["counts"]["users"] == SNAPSHOT["counts"]["users"]
+
+
+def test_a_dc_that_sends_no_directory_says_why(client, admin, tenant):
+    """Seen on a real domain: the page said only "waiting for the first directory snapshot" while the DC's agent was
+    failing to collect its profile, or was an agent too old to read the directory."""
+    role = {"kind": "domain-controller", "domainRole": "Primary domain controller", "domain": "corp.example"}
+    dc = enroll(client, admin, tenant, hostname="PM-DC", os_version="Windows Server 2022 Standard", serial="PM-DC")
+    client.post(f"/api/v1/devices/{dc['deviceId']}/profile", headers=dc["headers"], json={"profile": {"role": role}})
+    [domain] = client.get("/api/console/ad/domains", headers=admin).json()
+    assert "too old to read the directory" in domain["problems"][0]["problem"]
+
+    # The agent's own report of a failed profile run, newer than the profile held, is shown with its reason.
+    send(client, dc, [{"eventId": "pf-1", "eventType": "inventory.profile.failed", "source": "rmm",
+                       "summary": "The system profile could not be collected or sent.", "occurredAt": utcnow().isoformat() + "Z",
+                       "payloadJson": json.dumps({"error": "the system profile collector timed out"})},
+                      ad_event("ad.monitor.degraded", {"error": 5})])
+    detail = client.get(f"/api/console/ad/domains/{tenant['id']}/corp.example", headers=admin).json()
+    assert "collector timed out" in detail["problems"][0]["problem"]
+    [agent] = detail["agents"]
+    assert agent["profileFailure"]["error"] == "the system profile collector timed out"
+    assert agent["monitor"]["type"] == "degraded" and agent["monitor"]["detail"] == "5"
+
+    # A good snapshot afterwards clears both.
+    client.post(f"/api/v1/devices/{dc['deviceId']}/profile", headers=dc["headers"], json={"profile": {"role": role, "activeDirectory": SNAPSHOT}})
+    detail = client.get(f"/api/console/ad/domains/{tenant['id']}/corp.example", headers=admin).json()
+    assert detail["problems"] == [] and detail["agents"][0]["profileFailure"] is None and detail["snapshotAt"]
