@@ -79,7 +79,13 @@ class FakeTenant:
                       "guestUserRoleId": "10dae51f-b6af-4016-8d66-8c2a99b929b3",
                       "defaultUserRolePermissions": {"allowedToCreateApps": True, "allowedToCreateTenants": True,
                                                      "permissionGrantPoliciesAssigned": ["ManagePermissionGrantsForSelf.microsoft-user-default-legacy"]}}
+        self.exo_lists = {"Get-DkimSigningConfig": [{"Domain": "acme.example", "Enabled": False, "Selector1CNAME": "selector1-acme-example._domainkey.acme.onmicrosoft.com",
+                                                     "Selector2CNAME": "selector2-acme-example._domainkey.acme.onmicrosoft.com"},
+                                                    {"Domain": "acme.onmicrosoft.com", "Enabled": True}],
+                          "Get-SafeLinksPolicy": [], "Get-SafeAttachmentPolicy": [{"Name": "Built-In Protection Policy", "Enable": True}]}
         self.exo_org = {"Get-AdminAuditLogConfig": {"UnifiedAuditLogIngestionEnabled": False},
+                        "Get-AntiPhishPolicy": {"EnableSpoofIntelligence": True, "EnableFirstContactSafetyTips": False, "HonorDmarcPolicy": True},
+                        "Get-MalwareFilterPolicy": {"EnableFileFilter": False},
                         "Get-OrganizationConfig": {"AuditDisabled": False, "OAuth2ClientProfileEnabled": True},
                         "Get-HostedOutboundSpamFilterPolicy": {"AutoForwardingMode": "Automatic"},
                         "Get-TransportConfig": {"SmtpClientAuthenticationDisabled": False}}
@@ -156,6 +162,13 @@ class FakeTenant:
         name, p = cmd["CmdletName"], cmd.get("Parameters") or {}
         self.exo_calls.append((name, p))
         mbx = self.mailboxes
+        if name in self.exo_lists:
+            return httpx.Response(200, json={"value": self.exo_lists[name]})
+        if name == "Set-DkimSigningConfig":
+            for row in self.exo_lists["Get-DkimSigningConfig"]:
+                if row["Domain"] == p["Identity"]:
+                    row["Enabled"] = p["Enabled"]
+            return httpx.Response(200, json={"value": []})
         if name in self.exo_org:
             return httpx.Response(200, json={"value": [self.exo_org[name]]})
         if name.startswith("Set-") and name.replace("Set-", "Get-", 1) in self.exo_org:
@@ -344,6 +357,9 @@ class FakeTenant:
             return self.page([{"id": u} for u in self.groups[r.group(1)]["members"]])
         if path == "/subscribedSkus":
             return self.page([{"skuId": SKU, "skuPartNumber": "O365_BUSINESS_PREMIUM", "prepaidUnits": {"enabled": 10}, "consumedUnits": 1}])
+        if path == "/domains" and method == "GET":
+            return self.page([{"id": "acme.example", "isVerified": True, "supportedServices": ["Email"]},
+                              {"id": "acme.onmicrosoft.com", "isVerified": True, "supportedServices": ["Email"]}])
         if r := m(r"/domains/([^/]+)", path):
             if r.group(1) != "acme.example":
                 raise KeyError

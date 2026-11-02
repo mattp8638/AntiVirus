@@ -126,6 +126,12 @@ for _key, _entry in EXO.items():
     STANDARDS[_key] = {"title": _entry["title"], "kind": "exo",
                        "permissions": ["Exchange.ManageAsApp (Office 365 Exchange Online) and the Exchange Administrator role"]}
 AUTHZ_PATH = "/policies/authorizationPolicy"
+from . import m365_email_security as email_security  # noqa: E402
+
+for _key, _entry in email_security.STANDARDS.items():
+    STANDARDS[_key] = {"title": _entry["title"], "kind": "email", "fixable": _entry["fixable"],
+                       "permissions": ["Exchange.ManageAsApp (Office 365 Exchange Online) and the Exchange Administrator role"]
+                       + (["Domain.Read.All"] if _key == "email.spf-dmarc" else [])}
 MODES = ("report", "alert", "remediate")
 CA_PATH = "/identity/conditionalAccess/policies"
 COMPLIANCE_PATH = "/deviceManagement/deviceCompliancePolicies"
@@ -257,6 +263,11 @@ def evaluate(connection: M365Connection, standard: str, options: dict | None = N
     kind = STANDARDS[standard]["kind"]
     if kind == "exo":
         return _exo_evaluate(connection, standard)
+    if kind == "email":
+        try:
+            return email_security.evaluate(connection, standard)
+        except email_security.EmailStandardError as exc:
+            raise StandardError(str(exc)) from None
     with http_client() as client:
         token = m365.access_token(client, connection)
         if kind == "authz":
@@ -302,6 +313,11 @@ def deploy(connection: M365Connection, standard: str, options: dict | None = Non
     kind = STANDARDS[standard]["kind"]
     if kind == "exo":
         return _exo_deploy(connection, standard)
+    if kind == "email":
+        try:
+            return email_security.deploy(connection, standard)
+        except email_security.EmailStandardError as exc:
+            raise StandardError(str(exc)) from None
     if kind == "authz":
         with http_client() as client:
             token = m365.access_token(client, connection)
@@ -364,7 +380,8 @@ def run_for_tenant(db: Session, tenant: Tenant, actor: str = "system:m365-standa
                 results.append({"standard": standard, "connectionId": connection.id, "status": "unknown"})
                 continue
             record(db, connection, standard, "evaluate", outcome["status"], outcome, actor)
-            if outcome["status"] == "drifted" and mode == "alert":
+            fixable = STANDARDS[standard].get("fixable", True)
+            if outcome["status"] == "drifted" and (mode == "alert" or (mode == "remediate" and not fixable)):
                 _alert(db, tenant, connection, standard, outcome)
             elif outcome["status"] == "drifted" and mode == "remediate" and not outcome.get("reportOnly"):
                 try:

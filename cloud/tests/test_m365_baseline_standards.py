@@ -55,3 +55,31 @@ def test_standards_without_exchange_access_report_unknown(client, admin, tenant,
         [result] = m365_standards.run_for_tenant(db, db.get(Tenant, tenant["id"]))
         assert result["status"] == "unknown"
     assert conn
+
+
+def test_email_security_standards(client, admin, tenant, fake, monkeypatch):
+    from fenrir_cloud import m365_email_security
+
+    conn = connection(client, admin, tenant)
+    records = {"acme.example": ["v=spf1 include:spf.protection.outlook.com -all"], "_dmarc.acme.example": ["v=DMARC1; p=none"]}
+    monkeypatch.setattr(m365_email_security, "_txt", lambda name: records.get(name, []))
+    with session_factory()() as db:
+        row = db.get(M365Connection, conn["id"])
+        dkim = m365_standards.evaluate(row, "email.dkim")
+        assert dkim["status"] == "drifted" and "selector1._domainkey.acme.example" in dkim["detail"]
+        assert m365_standards.evaluate(row, "email.anti-phishing")["status"] == "drifted"
+        assert m365_standards.evaluate(row, "email.safe-links")["status"] == "drifted"
+        assert m365_standards.evaluate(row, "email.safe-attachments")["status"] == "compliant"
+        dmarc = m365_standards.evaluate(row, "email.spf-dmarc")
+        assert dmarc["status"] == "drifted" and "p=none" in dmarc["detail"]
+
+        assign(db, tenant["id"], {"email.dkim": "remediate", "email.anti-phishing": "remediate", "email.malware-attachments": "remediate",
+                                  "email.spf-dmarc": "remediate"})
+        m365_standards.run_for_tenant(db, db.get(Tenant, tenant["id"]))
+        db.commit()
+        assert fake.exo_lists["Get-DkimSigningConfig"][0]["Enabled"] is True
+        assert fake.exo_org["Get-AntiPhishPolicy"]["EnableFirstContactSafetyTips"] is True
+        assert fake.exo_org["Get-MalwareFilterPolicy"]["EnableFileFilter"] is True
+        # DNS cannot be fixed from Microsoft 365: "remediate" alerts instead, with the record to publish.
+        tickets = [t.subject for t in db.query(Ticket).filter(Ticket.source == "m365-standards")]
+        assert any("SPF and DMARC" in t for t in tickets)
