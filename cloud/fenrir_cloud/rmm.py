@@ -1095,11 +1095,20 @@ def _trigger(db: Session, condition: MonitorCondition, device: Device, state: Co
     state.alert_id = alert.id
     # Create the linked ticket first, even if it appears after a remediation
     # action in the user's rule order. All remediation jobs then share its ID.
+    # A recurrence after the last ticket was resolved gets a new ticket that points back to it.
+    previous = None
+    if state.ticket_id:
+        from . import psa
+
+        linked = db.get(Ticket, state.ticket_id)
+        if linked is None or psa.is_closed(db, linked):
+            previous, state.ticket_id = linked, None
     for action in condition.actions or []:
         if action.get("type") != "ticket" or state.ticket_id:
             continue
         priority = action.get("priority") or services.PRIORITY_BY_SEVERITY.get(condition.severity, "P3")
-        ticket = services.open_ticket(db, device.tenant_id, title, f"Raised by monitor '{condition.name}'.\n\n{message}",
+        recurrence = f"\n\nThis has happened before: ticket #{previous.number}." if previous is not None else ""
+        ticket = services.open_ticket(db, device.tenant_id, title, f"Raised by monitor '{condition.name}'.\n\n{message}{recurrence}",
                                       priority, "rmm", "rmm-monitor", device_id=device.id,
                                       queue=str(action.get("board") or "Service Desk"))
         db.flush()

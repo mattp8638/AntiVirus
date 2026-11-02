@@ -306,6 +306,7 @@ def _scheduled_jobs() -> list[tuple[str, int, object]]:
         ("condition-remediation", 10, condition_remediation.tick),  # every five minutes
         ("backup.health", 10, backup_health.health_tick),
         ("remediation", 20, remediation.tick),  # every ten minutes
+        ("remediation.verify", 20, remediation.verify_tick),  # rescans after fixes; reports fixes not confirmed in a day
         ("topology", 120, topology.tick),  # hourly
         ("artifacts.purge", 120, artifact_store.purge_expired),
         ("audit.checkpoint", 120, audit.daily_checkpoint),  # CORE-06: daily chain-head checkpoint (published to webhooks)

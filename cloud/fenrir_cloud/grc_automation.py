@@ -229,6 +229,36 @@ def collect(db: Session, tenant: Tenant, actor: str = "system:grc", force: bool 
     return {"evidenceCreated": created, "drift": drift}
 
 
+def record_activity_evidence(db: Session, tenant_id: str, signal: str, title: str, lines: list[str], data: dict,
+                             actor: str = "system:grc") -> GrcEvidence | None:
+    """Evidence of a control operating (a vulnerability fixed and verified, a monitored fault remediated), linked to
+    every requirement the control covers in the customer's adopted frameworks. Nothing is written for a signal no
+    common control uses."""
+    tenant = db.get(Tenant, tenant_id)
+    controls = [c for c in crosswalk() if signal in c["signals"]]
+    if tenant is None or not controls:
+        return None
+    adopted = _adopted(db, tenant)
+    now = utcnow()
+    payload = {"signal": signal, "capturedAt": now.isoformat() + "Z", **data}
+    body = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    row = GrcEvidence(tenant_id=tenant.id, title=title[:300], kind="automated", description="\n".join(lines)[:8000],
+                      content_type="application/json", size=len(body), data=payload,
+                      sha256=hashlib.sha256(body.encode()).hexdigest(), control_id=controls[0]["id"],
+                      valid_until=now + timedelta(days=365), uploaded_by=actor)
+    db.add(row)
+    db.flush()
+    seen = set()
+    for control in controls:
+        for key, ids in control["maps"].items():
+            if key in adopted:
+                for rid in ids:
+                    if (key, rid) not in seen:
+                        seen.add((key, rid))
+                        db.add(GrcEvidenceLink(evidence_id=row.id, tenant_id=tenant.id, framework_key=key, requirement_id=rid))
+    return row
+
+
 def _raise_drift(db: Session, tenant: Tenant, key: str, signal: dict) -> None:
     controls = [c["id"] for c in crosswalk() if key in c["signals"]]
     subject = f"Compliance drift: {label(key)} is now failing"
