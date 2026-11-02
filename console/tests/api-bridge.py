@@ -42,6 +42,16 @@ provider_rows = {
     "licenses": [{"skuId": "00000000-0000-0000-0000-000000000030", "skuPartNumber": "Test licence", "consumedUnits": 1, "prepaidUnits": {"enabled": 2}}],
 }
 microsoft.inventory = lambda connection, collection: provider_rows[collection]
+from fenrir_cloud import m365_exchange as exchange  # noqa: E402  (Exchange Online, with rows shaped as Microsoft returns them)
+
+exchange.mailboxes = lambda connection: [{"id": "mbx-1", "displayName": "Render User", "address": "render@example.test", "type": "user",
+                                          "aliases": [], "forwardingTo": None, "forwardingKeepsCopy": False, "hiddenFromAddressBook": False,
+                                          "litigationHold": False, "userPrincipalName": "render@example.test"}]
+exchange.mailbox_detail = lambda connection, identity: {"mailbox": exchange.mailboxes(connection)[0], "fullAccess": [], "sendAs": [], "rules": []}
+exchange.distribution_groups = lambda connection: []
+exchange.group_members = lambda connection, group: []
+exchange.quarantine = lambda connection: []
+exchange.message_trace = lambda connection, sender="", recipient="", days=2: []
 with TestClient(create_app(settings), raise_server_exceptions=False) as client:
     token = client.post("/api/console/auth/login", json={"email": "admin@fenrir.local", "password": settings.bootstrap_admin_password}).json()["token"]
     admin = {"Authorization": f"Bearer {token}"}

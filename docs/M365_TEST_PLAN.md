@@ -191,6 +191,32 @@ Console only; no agent update needed. Press Ctrl+F5 first.
    click lands where you aimed.
 4. [ ] Hover the size menu: it shows the remote screen's real resolution.
 
+## 10. Exchange (batch 3)
+
+**One-time access (in your tenant).** Exchange is managed through Exchange Online's own admin endpoint, which needs
+more than Graph:
+- *App connection (admin sign-in or manual app):* in Entra ID > App registrations > the Fenrir app > API permissions >
+  Add a permission > APIs my organization uses > **Office 365 Exchange Online** > Application permissions >
+  **Exchange.ManageAsApp** > Grant admin consent. Then Entra ID > Roles and administrators > **Exchange Administrator**
+  > Add assignments > the Fenrir app.
+- *Partner (GDAP) connection:* the relationship must include **Exchange Administrator**.
+
+Without it, the Exchange tab says exactly this; nothing else breaks.
+
+1. [ ] Microsoft 365 > your tenant > **Exchange** > Mailboxes: every mailbox with its type, forwarding, aliases and
+   whether it is hidden from the address book.
+2. [ ] Open a test mailbox: full access and Send As holders, inbox rules (a rule forwarding outside the company is
+   marked **suspicious**). Add `fenrir.test1` as full access, then remove it. Each change shows what it will do
+   first and asks you to confirm who you are.
+3. [ ] Forward the test mailbox to another address (keeping a copy), check in Outlook, then **Stop forwarding**.
+4. [ ] Add an alias, send to it, remove it.
+5. [ ] Distribution lists: open one, add and remove a member.
+6. [ ] Quarantine: release a quarantined message (if any).
+7. [ ] Message trace: trace by a recipient for the last 2 days.
+8. [ ] Offboard `fenrir.test2` with **Convert the mailbox to shared**, **Give full access to** your account and
+   **Remove licences**: the mailbox becomes shared and keeps its mail, you get access in Outlook, and the licence is
+   freed.
+
 ## 6. Clean up
 
 - [ ] Delete `fenrir.test1`, `fenrir.test2` and `fenrir.test3` in Entra (or offboard and then delete them).

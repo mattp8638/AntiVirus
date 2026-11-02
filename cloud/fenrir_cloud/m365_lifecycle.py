@@ -163,6 +163,15 @@ def plan_offboard(db: Session, connection: M365Connection, user_id: str, options
                 steps.append(_step("remove_roles", "Remove admin roles", ", ".join(r["label"] for r in roles) or "No admin roles", roles))
             except httpx.HTTPStatusError as exc:
                 raise PlanError("Could not list the user's admin roles." + m365_admin.microsoft_said(exc.response)) from None
+        if options.get("convertToShared") or options.get("mailboxDelegate") or options.get("forwardTo"):
+            # Before any licence is removed: a shared mailbox keeps the mail without a licence.
+            mailbox = person.get("mail") or upn
+            parts = (["convert to a shared mailbox"] if options.get("convertToShared") else []) + \
+                    ([f"full access for {options['mailboxDelegate']}"] if options.get("mailboxDelegate") else []) + \
+                    ([f"forward new mail to {options['forwardTo']}"] if options.get("forwardTo") else [])
+            steps.append(_step("mailbox_handover", "Hand over the mailbox", f"{mailbox}: " + ", ".join(parts),
+                               [{"mailbox": mailbox, "convert": bool(options.get("convertToShared")),
+                                 "delegate": options.get("mailboxDelegate") or None, "forwardTo": options.get("forwardTo") or None}]))
         if options.get("removeLicences"):
             names = _skus(client, headers)
             direct, inherited = [], []
@@ -172,8 +181,10 @@ def plan_offboard(db: Session, connection: M365Connection, user_id: str, options
             if not person.get("licenseAssignmentStates"):
                 direct = [{"id": l.get("skuId"), "label": names.get(l.get("skuId"), l.get("skuId"))} for l in person.get("assignedLicenses") or []]
             steps.append(_step("remove_licences", "Remove licences", ", ".join(d["label"] for d in direct) or "No directly assigned licences",
-                               direct, warning="Removing the licence deletes the mailbox and OneDrive after 30 days. Convert the mailbox "
-                               "to shared first if its mail must be kept (Exchange batch; until then, do it in the Exchange admin centre)."
+                               direct, warning=("Removing the licence deletes OneDrive after 30 days; the mailbox is kept because it "
+                               "is converted to shared first." if options.get("convertToShared") else
+                               "Removing the licence deletes the mailbox and OneDrive after 30 days. Tick 'Convert the mailbox to "
+                               "shared' if its mail must be kept.")
                                + (" Licences from groups: " + ", ".join(i["label"] for i in inherited) + " (they go when the user leaves those groups)."
                                   if inherited else "")))
     if options.get("markContact"):
@@ -466,10 +477,29 @@ def _summary(flow: M365Workflow) -> str:
                   "- Collect, reassign or wipe their devices: " + (", ".join(i["label"] for i in devices["items"]) or "none found")
                   if devices else "- Collect the user's devices, or wipe them (Devices).",
                   "- Rotate any stored credential flagged for them (Credential vault).",
-                  "- Convert the mailbox to shared and give access to whoever needs it (Exchange).",
+                  *([] if any(s["key"] == "mailbox_handover" for s in flow.steps)
+                    else ["- Convert the mailbox to shared and give access to whoever needs it (Exchange)."]),
                   "- Move OneDrive files that must be kept before the licence's 30-day grace period ends."]
     return "\n".join(lines)
 
+
+
+def _handover(m365_exchange, connection, item: dict, done: list) -> None:
+    """Offboarding's mailbox hand-over, recording each part as it completes."""
+    with m365_exchange.session(connection) as (exo_client, token):
+        if item.get("convert"):
+            m365_exchange.invoke(exo_client, connection, token, "Set-Mailbox", {"Identity": item["mailbox"], "Type": "Shared"})
+            done.append("converted to shared")
+        if item.get("delegate"):
+            m365_exchange.invoke(exo_client, connection, token, "Add-MailboxPermission",
+                                 {"Identity": item["mailbox"], "User": item["delegate"], "AccessRights": ["FullAccess"],
+                                  "AutoMapping": True, "InheritanceType": "All"})
+            done.append(f"full access for {item['delegate']}")
+        if item.get("forwardTo"):
+            m365_exchange.invoke(exo_client, connection, token, "Set-Mailbox",
+                                 {"Identity": item["mailbox"], "ForwardingSmtpAddress": "smtp:" + item["forwardTo"],
+                                  "DeliverToMailboxAndForward": True})
+            done.append(f"forwarded to {item['forwardTo']}")
 
 def run_step(db: Session, connection: M365Connection, flow: M365Workflow, step: dict, client, headers, secrets_out: list) -> str:
     key, uid = step["key"], flow.target_id
@@ -520,6 +550,18 @@ def run_step(db: Session, connection: M365Connection, flow: M365Workflow, step: 
                 contact.notes = ((contact.notes or "") + "\n" + LEAVER_NOTE).strip()
                 contact.is_primary = False
         return f"{len(step['items'])} contact(s) marked" if step["items"] else "No matching contact"
+    if key == "mailbox_handover":
+        from . import m365_exchange
+
+        item = step["items"][0]
+        done = []
+        try:
+            _handover(m365_exchange, connection, item, done)
+        except m365_exchange.ExchangeError as exc:
+            if exc.uncertain:
+                raise
+            raise StepResult("failed", (("Done before it stopped: " + ", ".join(done) + ". ") if done else "") + str(exc)) from None
+        return "Mailbox " + ", ".join(done)
     if key == "review_devices":
         return (f"{len(step['items'])} device(s) to collect, reassign or wipe: " + ", ".join(i["label"] for i in step["items"])
                 if step["items"] else "No managed device to collect")
