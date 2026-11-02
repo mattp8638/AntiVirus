@@ -89,7 +89,9 @@ def invoke(client: httpx.Client, connection, token: str, cmdlet: str, parameters
 # --- reads --------------------------------------------------------------------------------------------------------
 
 READS = {"Get-Mailbox", "Get-MailboxPermission", "Get-RecipientPermission", "Get-InboxRule", "Get-DistributionGroup",
-         "Get-DistributionGroupMember", "Get-QuarantineMessage", "Get-MessageTraceV2", "Get-MailboxStatistics"}
+         "Get-DistributionGroupMember", "Get-QuarantineMessage", "Get-MessageTraceV2", "Get-MailboxStatistics",
+         # organisation settings read by the standards (m365_standards.py)
+         "Get-AdminAuditLogConfig", "Get-OrganizationConfig", "Get-HostedOutboundSpamFilterPolicy", "Get-TransportConfig"}
 
 
 def _mailbox(row: dict) -> dict:
@@ -185,7 +187,9 @@ def message_trace(connection, sender: str = "", recipient: str = "", days: int =
 # --- writes -------------------------------------------------------------------------------------------------------
 
 WRITES = {"Set-Mailbox", "Add-MailboxPermission", "Remove-MailboxPermission", "Add-RecipientPermission", "Remove-RecipientPermission",
-          "Add-DistributionGroupMember", "Remove-DistributionGroupMember", "Release-QuarantineMessage", "Disable-InboxRule"}
+          "Add-DistributionGroupMember", "Remove-DistributionGroupMember", "Release-QuarantineMessage", "Disable-InboxRule",
+          # organisation settings applied by the standards (m365_standards.py)
+          "Set-AdminAuditLogConfig", "Set-OrganizationConfig", "Set-HostedOutboundSpamFilterPolicy", "Set-TransportConfig"}
 
 # operation -> (title, what it needs from the request)
 OPERATIONS = {

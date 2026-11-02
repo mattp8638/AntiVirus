@@ -75,6 +75,14 @@ class FakeTenant:
                                              "modifiedProperties": [{"displayName": "Group.DisplayName", "newValue": "\"Sales\""}]}]}
                        for i in range(1, 4)]
         self.premium = True
+        self.authz = {"id": "authorizationPolicy", "allowInvitesFrom": "everyone", "allowEmailVerifiedUsersToJoinOrganization": True,
+                      "guestUserRoleId": "10dae51f-b6af-4016-8d66-8c2a99b929b3",
+                      "defaultUserRolePermissions": {"allowedToCreateApps": True, "allowedToCreateTenants": True,
+                                                     "permissionGrantPoliciesAssigned": ["ManagePermissionGrantsForSelf.microsoft-user-default-legacy"]}}
+        self.exo_org = {"Get-AdminAuditLogConfig": {"UnifiedAuditLogIngestionEnabled": False},
+                        "Get-OrganizationConfig": {"AuditDisabled": False, "OAuth2ClientProfileEnabled": True},
+                        "Get-HostedOutboundSpamFilterPolicy": {"AutoForwardingMode": "Automatic"},
+                        "Get-TransportConfig": {"SmtpClientAuthenticationDisabled": False}}
         # Exchange Online (adminapi InvokeCommand)
         self.exo_denied = False
         self.exo_calls: list[tuple[str, dict]] = []
@@ -130,6 +138,11 @@ class FakeTenant:
         name, p = cmd["CmdletName"], cmd.get("Parameters") or {}
         self.exo_calls.append((name, p))
         mbx = self.mailboxes
+        if name in self.exo_org:
+            return httpx.Response(200, json={"value": [self.exo_org[name]]})
+        if name.startswith("Set-") and name.replace("Set-", "Get-", 1) in self.exo_org:
+            self.exo_org[name.replace("Set-", "Get-", 1)].update({k: v for k, v in p.items() if k != "Identity"})
+            return httpx.Response(200, json={"value": []})
         if name == "Get-Mailbox":
             rows = [mbx[p["Identity"]]] if "Identity" in p else list(mbx.values())
             return httpx.Response(200, json={"value": rows})
@@ -173,6 +186,15 @@ class FakeTenant:
 
     def route(self, method, path, query, body):
         m = re.fullmatch
+        if path == "/policies/authorizationPolicy":
+            if method == "PATCH":
+                for key, value in body.items():
+                    if isinstance(value, dict):
+                        self.authz.setdefault(key, {}).update(value)
+                    else:
+                        self.authz[key] = value
+                return httpx.Response(204)
+            return httpx.Response(200, json=self.authz)
         if method == "GET" and path == "/users":
             flt = query.get("$filter", "")
             if flt.startswith("mail eq"):
