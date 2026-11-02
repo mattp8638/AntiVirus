@@ -59,7 +59,7 @@ function Op($Operation, $Params, [string]$Secret = '') {
   if ($Secret) { $secretFile = "$request.secret"; [IO.File]::WriteAllText($secretFile, $Secret) }
   $script:calls.Clear()
   $out = & { . $script $request $secretFile }
-  Remove-Item $request, $secretFile -ErrorAction SilentlyContinue
+  foreach ($file in @($request, $secretFile)) { if ($file) { Remove-Item -LiteralPath $file -ErrorAction SilentlyContinue } }
   ($out | Select-Object -Last 1) | ConvertFrom-Json
 }
 function Check([bool]$ok, [string]$what) { if (-not $ok) { throw "FAILED: $what" }; Write-Host "ok: $what" }
