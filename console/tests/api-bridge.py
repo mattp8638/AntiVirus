@@ -52,6 +52,12 @@ exchange.distribution_groups = lambda connection: []
 exchange.group_members = lambda connection, group: []
 exchange.quarantine = lambda connection: []
 exchange.message_trace = lambda connection, sender="", recipient="", days=2: []
+from fenrir_cloud import m365_intune as intune  # noqa: E402
+
+intune.devices = lambda connection: []
+intune.policies = lambda connection: {"compliance": [], "configuration": []}
+intune.apps = lambda connection: []
+intune.autopilot = lambda connection: []
 with TestClient(create_app(settings), raise_server_exceptions=False) as client:
     token = client.post("/api/console/auth/login", json={"email": "admin@fenrir.local", "password": settings.bootstrap_admin_password}).json()["token"]
     admin = {"Authorization": f"Bearer {token}"}

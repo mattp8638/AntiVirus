@@ -83,6 +83,24 @@ class FakeTenant:
                         "Get-OrganizationConfig": {"AuditDisabled": False, "OAuth2ClientProfileEnabled": True},
                         "Get-HostedOutboundSpamFilterPolicy": {"AutoForwardingMode": "Automatic"},
                         "Get-TransportConfig": {"SmtpClientAuthenticationDisabled": False}}
+        # Intune
+        self.managed = {
+            "11111111-aaaa-4aaa-8aaa-000000000001": {"id": "11111111-aaaa-4aaa-8aaa-000000000001", "deviceName": "JO-LAPTOP",
+                "userPrincipalName": "jo@acme.example", "operatingSystem": "Windows", "osVersion": "10.0.26100", "complianceState": "noncompliant",
+                "azureADDeviceId": "22222222-bbbb-4bbb-8bbb-000000000001", "isEncrypted": True, "serialNumber": "SN1",
+                "totalStorageSpaceInBytes": 100, "freeStorageSpaceInBytes": 40},
+            "11111111-aaaa-4aaa-8aaa-000000000002": {"id": "11111111-aaaa-4aaa-8aaa-000000000002", "deviceName": "JO-IPHONE",
+                "userPrincipalName": "jo@acme.example", "operatingSystem": "iOS", "osVersion": "18.1", "complianceState": "compliant",
+                "azureADDeviceId": None}}
+        self.device_actions: list[tuple[str, str]] = []
+        self.bitlocker = {"bk-1": {"id": "bk-1", "deviceId": "22222222-bbbb-4bbb-8bbb-000000000001", "volumeType": "operatingSystemVolume",
+                                   "key": "111111-222222-333333-444444-555555-666666-777777-888888"}}
+        self.laps = {"22222222-bbbb-4bbb-8bbb-000000000001": {"credentials": [
+            {"accountName": "LapsAdmin", "passwordBase64": base64.b64encode(b"S3cret-LAPS!").decode(), "backupDateTime": iso(now)}]}}
+        self.mobile_apps = {"33333333-cccc-4ccc-8ccc-000000000001": {"@odata.type": "#microsoft.graph.winGetApp", "id": "33333333-cccc-4ccc-8ccc-000000000001",
+                                                                     "displayName": "Company Portal", "publisher": "Microsoft",
+                                                                     "assignments": [{"intent": "required", "target": {"@odata.type": "#microsoft.graph.allLicensedUsersAssignmentTarget"}}]}}
+        self.autopilot_imports: list[dict] = []
         # Exchange Online (adminapi InvokeCommand)
         self.exo_denied = False
         self.exo_calls: list[tuple[str, dict]] = []
@@ -186,6 +204,42 @@ class FakeTenant:
 
     def route(self, method, path, query, body):
         m = re.fullmatch
+        if path == "/deviceManagement/managedDevices" and method == "GET":
+            return self.page(list(self.managed.values()))
+        hit = m(r"/deviceManagement/managedDevices/([0-9a-f-]+)(?:/(\w+))?", path)
+        if hit:
+            device = self.managed[hit.group(1)]
+            if hit.group(2) and method == "POST":
+                self.device_actions.append((hit.group(1), hit.group(2)))
+                return httpx.Response(204)
+            return httpx.Response(200, json=device)
+        if path == "/informationProtection/bitlocker/recoveryKeys":
+            wanted = re.search(r"deviceId eq '([0-9a-f-]+)'", query.get("$filter", ""))
+            return self.page([{k: v for k, v in b.items() if k != "key"} for b in self.bitlocker.values()
+                              if not wanted or b["deviceId"] == wanted.group(1)])
+        hit = m(r"/informationProtection/bitlocker/recoveryKeys/([\w-]+)", path)
+        if hit:
+            return httpx.Response(200, json=self.bitlocker[hit.group(1)])
+        hit = m(r"/directory/deviceLocalCredentials/([0-9a-f-]+)", path)
+        if hit:
+            return httpx.Response(200, json=self.laps[hit.group(1)])
+        if path in ("/deviceManagement/deviceCompliancePolicies", "/deviceManagement/deviceConfigurations"):
+            return self.page([{"@odata.type": "#microsoft.graph.windows10CompliancePolicy", "id": "pol-1", "displayName": "Windows baseline",
+                               "assignments": [{}]}] if "Compliance" in path else [])
+        if path == "/deviceAppManagement/mobileApps":
+            return self.page(list(self.mobile_apps.values()))
+        hit = m(r"/deviceAppManagement/mobileApps/([0-9a-f-]+)(/assign)?", path)
+        if hit:
+            app = self.mobile_apps[hit.group(1)]
+            if hit.group(2):
+                app["assignments"] = [{"intent": a["intent"], "target": a["target"]} for a in body["mobileAppAssignments"]]
+                return httpx.Response(204)
+            return httpx.Response(200, json=app)
+        if path == "/deviceManagement/windowsAutopilotDeviceIdentities":
+            return self.page([{"id": "ap-1", "serialNumber": "SN1", "model": "Surface", "deploymentProfileAssignmentStatus": "assigned"}])
+        if path == "/deviceManagement/importedWindowsAutopilotDeviceIdentities" and method == "POST":
+            self.autopilot_imports.append(body)
+            return httpx.Response(201, json={"id": "imp-1", **body})
         if path == "/policies/authorizationPolicy":
             if method == "PATCH":
                 for key, value in body.items():

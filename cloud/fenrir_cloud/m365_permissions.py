@@ -96,6 +96,26 @@ FEATURES: dict[str, dict] = {
                      "delegated": ["Policy.Read.All", "Policy.ReadWrite.ConditionalAccess", "Application.Read.All"]},
     "standards.intune": {"title": "Intune compliance standard", "area": "Standards",
                          "app": ["DeviceManagementConfiguration.ReadWrite.All"], "delegated": ["DeviceManagementConfiguration.ReadWrite.All"]},
+    # --- Intune, directory standards, Teams and SharePoint ---
+    "intune.devices": {"title": "Intune devices and actions", "area": "Devices",
+                       "app": ["DeviceManagementManagedDevices.ReadWrite.All", "DeviceManagementManagedDevices.PrivilegedOperations.All"],
+                       "delegated": ["DeviceManagementManagedDevices.ReadWrite.All", "DeviceManagementManagedDevices.PrivilegedOperations.All"]},
+    "intune.keys": {"title": "BitLocker keys and LAPS passwords", "area": "Devices",
+                    "app": ["BitlockerKey.Read.All", "DeviceLocalCredential.Read.All"],
+                    "delegated": ["BitlockerKey.Read.All", "DeviceLocalCredential.Read.All"]},
+    "intune.policies": {"title": "Intune policies, apps and Autopilot", "area": "Devices",
+                        "app": ["DeviceManagementConfiguration.ReadWrite.All", "DeviceManagementApps.ReadWrite.All",
+                                "DeviceManagementServiceConfig.ReadWrite.All"],
+                        "delegated": ["DeviceManagementConfiguration.ReadWrite.All", "DeviceManagementApps.ReadWrite.All",
+                                      "DeviceManagementServiceConfig.ReadWrite.All"]},
+    "standards.directory": {"title": "Directory security standards", "area": "Security",
+                            "app": ["Policy.Read.All", "Policy.ReadWrite.Authorization"],
+                            "delegated": ["Policy.Read.All", "Policy.ReadWrite.Authorization"]},
+    "collaboration": {"title": "Teams, SharePoint and OneDrive", "area": "Collaboration",
+                      "app": ["Sites.Read.All", "SharePointTenantSettings.ReadWrite.All", "Team.ReadBasic.All", "Files.ReadWrite.All"],
+                      "delegated": ["Sites.Read.All", "SharePointTenantSettings.ReadWrite.All", "Team.ReadBasic.All", "Files.ReadWrite.All"]},
+    "reports.usage": {"title": "Usage and activity reports", "area": "Reports", "app": ["Reports.Read.All", "UserAuthenticationMethod.Read.All"],
+                      "delegated": ["Reports.Read.All", "UserAuthenticationMethod.Read.All"]},
 }
 
 # Operations of reviewed actions -> the feature that gates them.
