@@ -118,3 +118,26 @@ def test_ad_attacks_alert_and_routine_work_does_not(client, admin, tenant):
 
     detail = client.get(f"/api/console/ad/domains/{tenant['id']}/unknown", headers=admin)
     assert detail.status_code == 404  # DC02 sent no profile, so it is not a known DC yet
+
+
+def test_decommissioned_controllers_do_not_count_and_snapshot_problems_are_shown(client, admin, tenant):
+    """Seen on a real domain: a DC deleted and re-enrolled showed "1/2 DC agents online", and a DC whose snapshot failed
+    showed only "waiting for the first directory snapshot"."""
+    role = {"kind": "domain-controller", "domainRole": "Primary domain controller", "domain": "corp.example"}
+    old = enroll(client, admin, tenant, hostname="DC01", os_version="Windows Server 2022 Standard", serial="OLD-DC")
+    client.post(f"/api/v1/devices/{old['deviceId']}/profile", headers=old["headers"], json={"profile": {"role": role}})
+    assert client.delete(f"/api/console/devices/{old['deviceId']}", headers=admin).status_code == 200  # decommission
+    new = enroll(client, admin, tenant, hostname="DC01", os_version="Windows Server 2022 Standard", serial="NEW-DC")
+    problem = {"error": "The ActiveDirectory PowerShell module is not installed on this domain controller, so Fenrir cannot read the "
+                        "directory. Install it (no restart needed): Install-WindowsFeature RSAT-AD-PowerShell"}
+    client.post(f"/api/v1/devices/{new['deviceId']}/profile", headers=new["headers"], json={"profile": {"role": role, "activeDirectory": problem}})
+
+    [domain] = client.get("/api/console/ad/domains", headers=admin).json()
+    assert [a["deviceId"] for a in domain["agents"]] == [new["deviceId"]]
+    assert domain["snapshotAt"] is None and "RSAT-AD-PowerShell" in domain["problems"][0]["problem"]
+
+    partial = {**SNAPSHOT, "collectionErrors": ["group policies: The specified module 'GroupPolicy' was not loaded."]}
+    client.post(f"/api/v1/devices/{new['deviceId']}/profile", headers=new["headers"], json={"profile": {"role": role, "activeDirectory": partial}})
+    detail = client.get(f"/api/console/ad/domains/{tenant['id']}/corp.example", headers=admin).json()
+    assert detail["snapshotAt"] and detail["problems"] == [] and detail["collectionErrors"][0].startswith("group policies:")
+    assert detail["counts"]["users"] == SNAPSHOT["counts"]["users"]

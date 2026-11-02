@@ -229,21 +229,47 @@ $profile.auditPolicy = @(Section {
 })
 
 # --- Active Directory (domain controllers only) ------------------------------------------------------------------------
+# Every part is collected on its own: one that fails (a missing module, an attribute this schema lacks, a timeout) is
+# named in collectionErrors and the rest still arrive. Without the ActiveDirectory module there is no snapshot, and
+# "error" says how to fix it.
 if ($profile.role -and $profile.role.kind -eq 'domain-controller') {
-  $profile.activeDirectory = Section {
-    Import-Module ActiveDirectory -ErrorAction Stop
+  $script:adErrors = New-Object System.Collections.ArrayList
+  function AdPart([string]$Name, [scriptblock]$Block) {
+    try { & $Block } catch { [void]$script:adErrors.Add("${Name}: $($_.Exception.Message)".Substring(0, [Math]::Min(300, "${Name}: $($_.Exception.Message)".Length))); $null }
+  }
+  $profile.activeDirectory = & {
+    try { Import-Module ActiveDirectory -ErrorAction Stop }
+    catch {
+      return [ordered]@{ error = 'The ActiveDirectory PowerShell module is not installed on this domain controller, so Fenrir cannot read the directory. Install it (no restart needed): Install-WindowsFeature RSAT-AD-PowerShell'
+        detail = "$($_.Exception.Message)" }
+    }
     $now = Get-Date
-    $domain = Get-ADDomain; $forest = Get-ADForest
+    $domain = AdPart 'domain' { Get-ADDomain -ErrorAction Stop }
+    if (-not $domain) {
+      return [ordered]@{ error = 'Get-ADDomain failed: Active Directory Web Services (ADWS) may be stopped on this domain controller. Start the "Active Directory Web Services" service.'
+        collectionErrors = @($script:adErrors) }
+    }
+    $forest = AdPart 'forest' { Get-ADForest -ErrorAction Stop }
+    $sid = "$($domain.DomainSID.Value)"
     $ageDays = { param($when) if ($when -is [datetime] -and $when.Year -gt 1601) { [int]($now - $when).TotalDays } else { $null } }
-    $userProps = 'Enabled','LastLogonDate','PasswordLastSet','PasswordNeverExpires','PasswordNotRequired','AllowReversiblePasswordEncryption','DoesNotRequirePreAuth','ServicePrincipalName','AdminCount','TrustedForDelegation','TrustedToAuthForDelegation','SIDHistory','Description','whenCreated','UserPrincipalName','msDS-SupportedEncryptionTypes'
-    $users = @(Get-ADUser -Filter * -Properties $userProps -ResultSetSize 100000)
-    $computers = @(Get-ADComputer -Filter * -Properties Enabled,LastLogonDate,OperatingSystem,OperatingSystemVersion,TrustedForDelegation,TrustedToAuthForDelegation,PrimaryGroupID,'msDS-AllowedToActOnBehalfOfOtherIdentity','ms-Mcs-AdmPwdExpirationTime','msLAPS-PasswordExpirationTime' -ResultSetSize 100000)
+    # LAPS attributes exist only where its schema extension was installed; asking for one that does not exist makes
+    # Active Directory reject the whole query.
+    $schemaAttrs = AdPart 'schema' { $schema = (Get-ADRootDSE -ErrorAction Stop).schemaNamingContext
+      [ordered]@{ legacyLaps = [bool](Get-ADObject -SearchBase $schema -LDAPFilter '(lDAPDisplayName=ms-Mcs-AdmPwd)')
+        windowsLaps = [bool](Get-ADObject -SearchBase $schema -LDAPFilter '(lDAPDisplayName=msLAPS-Password)') } }
+    if (-not $schemaAttrs) { $schemaAttrs = [ordered]@{ legacyLaps = $false; windowsLaps = $false } }
+    $userProps = 'Enabled','LastLogonDate','PasswordLastSet','PasswordNeverExpires','PasswordNotRequired','AllowReversiblePasswordEncryption','DoesNotRequirePreAuth','ServicePrincipalName','AdminCount','TrustedForDelegation','TrustedToAuthForDelegation','SIDHistory','Description','whenCreated','UserPrincipalName'
+    $computerProps = @('Enabled','LastLogonDate','OperatingSystem','OperatingSystemVersion','TrustedForDelegation','TrustedToAuthForDelegation','PrimaryGroupID','msDS-AllowedToActOnBehalfOfOtherIdentity')
+    if ($schemaAttrs.legacyLaps) { $computerProps += 'ms-Mcs-AdmPwdExpirationTime' }
+    if ($schemaAttrs.windowsLaps) { $computerProps += 'msLAPS-PasswordExpirationTime' }
+    $users = @(AdPart 'users' { Get-ADUser -Filter * -Properties $userProps -ResultSetSize 100000 -ErrorAction Stop })
+    $computers = @(AdPart 'computers' { Get-ADComputer -Filter * -Properties $computerProps -ResultSetSize 100000 -ErrorAction Stop })
     $brief = { param($u) [ordered]@{ sam = $u.SamAccountName; name = $u.Name; enabled = [bool]$u.Enabled; lastLogon = Iso $u.LastLogonDate
       passwordLastSet = Iso $u.PasswordLastSet; passwordAgeDays = & $ageDays $u.PasswordLastSet; passwordNeverExpires = [bool]$u.PasswordNeverExpires
       spn = @($u.ServicePrincipalName | Select-Object -First 5); dn = $u.DistinguishedName } }
     # Privileged groups by well-known SID so renamed or localised groups are still found. Enterprise and Schema
     # Admins live in the forest root domain.
-    $rootSid = Section { (Get-ADDomain -Identity $forest.RootDomain).DomainSID.Value }
+    $rootSid = AdPart 'forest root' { (Get-ADDomain -Identity $forest.RootDomain -ErrorAction Stop).DomainSID.Value }
     if (-not $rootSid) { $rootSid = $sid }
     $privileged = [ordered]@{ 'Domain Admins'="$sid-512"; 'Enterprise Admins'="$rootSid-519"; 'Schema Admins'="$rootSid-518"
       'Administrators'='S-1-5-32-544'; 'Account Operators'='S-1-5-32-548'; 'Server Operators'='S-1-5-32-549'; 'Backup Operators'='S-1-5-32-551'
@@ -251,49 +277,36 @@ if ($profile.role -and $profile.role.kind -eq 'domain-controller') {
     $groups = @()
     foreach ($label in @($privileged.Keys)) {
       $server = $domain.DNSRoot
-      if ($privileged[$label].StartsWith("$rootSid-") -and $rootSid -ne $sid) { $server = $forest.RootDomain }
-      $g = Section { Get-ADGroup -Identity $privileged[$label] -Server $server }
+      if ($privileged[$label].StartsWith("$rootSid-") -and $rootSid -ne $sid -and $forest) { $server = $forest.RootDomain }
+      $g = Section { Get-ADGroup -Identity $privileged[$label] -Server $server -ErrorAction Stop }
       if (-not $g) { continue }
-      $members = @(Section { Get-ADGroupMember -Identity $g -Recursive -Server $server })
+      $members = @(AdPart "members of $label" { Get-ADGroupMember -Identity $g -Recursive -Server $server -ErrorAction Stop })
       $groups += [ordered]@{ name = $g.Name; label = $label; sid = $g.SID.Value; memberCount = $members.Count
         members = @($members | Select-Object -First 100 | ForEach-Object { [ordered]@{ sam = $_.SamAccountName; name = $_.Name; type = $_.objectClass } }) }
     }
-    $dnsAdmins = Section { Get-ADGroup -Filter "Name -eq 'DnsAdmins'" }
-    if ($dnsAdmins) { $m = @(Section { Get-ADGroupMember $dnsAdmins -Recursive }); $groups += [ordered]@{ name = $dnsAdmins.Name; label = 'DnsAdmins'; sid = $dnsAdmins.SID.Value; memberCount = $m.Count; members = @($m | Select-Object -First 100 | ForEach-Object { [ordered]@{ sam = $_.SamAccountName; name = $_.Name; type = $_.objectClass } }) } }
-    $protectedUsers = Section { @(Get-ADGroupMember -Identity "$sid-525").Count }
+    $dnsAdmins = Section { Get-ADGroup -Filter "Name -eq 'DnsAdmins'" -ErrorAction Stop }
+    if ($dnsAdmins) { $m = @(Section { Get-ADGroupMember $dnsAdmins -Recursive -ErrorAction Stop }); $groups += [ordered]@{ name = $dnsAdmins.Name; label = 'DnsAdmins'; sid = $dnsAdmins.SID.Value; memberCount = $m.Count; members = @($m | Select-Object -First 100 | ForEach-Object { [ordered]@{ sam = $_.SamAccountName; name = $_.Name; type = $_.objectClass } }) } }
+    $protectedUsers = Section { @(Get-ADGroupMember -Identity "$sid-525" -ErrorAction Stop).Count }
     $privilegedSams = @{}
     foreach ($g in $groups) { foreach ($m in $g.members) { if ($m.type -eq 'user') { $privilegedSams[$m.sam] = $true } } }
     $enabledUsers = @($users | Where-Object { $_.Enabled })
     $staleCutoff = $now.AddDays(-90)
     $isStale = { param($u) (-not $u.LastLogonDate -and $u.whenCreated -lt $staleCutoff) -or ($u.LastLogonDate -and $u.LastLogonDate -lt $staleCutoff) }
     $krbtgt = $users | Where-Object { $_.SamAccountName -eq 'krbtgt' } | Select-Object -First 1
-    $builtinAdmin = $users | Where-Object { $_.SID.Value -eq "$sid-500" } | Select-Object -First 1
-    $guest = $users | Where-Object { $_.SID.Value -eq "$sid-501" } | Select-Object -First 1
-    $policy = Get-ADDefaultDomainPasswordPolicy
-    $dcs = @(Get-ADDomainController -Filter * | ForEach-Object { [ordered]@{ name = $_.HostName; site = $_.Site; os = $_.OperatingSystem; osVersion = $_.OperatingSystemVersion
-      ipv4 = $_.IPv4Address; globalCatalog = [bool]$_.IsGlobalCatalog; readOnly = [bool]$_.IsReadOnly; roles = @($_.OperationMasterRoles | ForEach-Object { "$_" }) } })
+    $builtinAdmin = $users | Where-Object { "$($_.SID.Value)" -eq "$sid-500" } | Select-Object -First 1
+    $guest = $users | Where-Object { "$($_.SID.Value)" -eq "$sid-501" } | Select-Object -First 1
+    $policy = AdPart 'password policy' { Get-ADDefaultDomainPasswordPolicy -ErrorAction Stop }
+    $dcs = @(AdPart 'domain controllers' { Get-ADDomainController -Filter * -ErrorAction Stop | ForEach-Object { [ordered]@{ name = $_.HostName; site = $_.Site; os = $_.OperatingSystem; osVersion = $_.OperatingSystemVersion
+      ipv4 = $_.IPv4Address; globalCatalog = [bool]$_.IsGlobalCatalog; readOnly = [bool]$_.IsReadOnly; roles = @($_.OperationMasterRoles | ForEach-Object { "$_" }) } } })
     $dcNames = @{}; foreach ($dc in $dcs) { $dcNames[("$($dc.name)".Split('.')[0]).ToUpper()] = $true }
-    $recycleBin = Section { [bool]((Get-ADOptionalFeature -Filter "Name -eq 'Recycle Bin Feature'").EnabledScopes.Count -gt 0) }
-    $schemaAttrs = Section { $schema = (Get-ADRootDSE).schemaNamingContext
-      [ordered]@{ legacyLaps = [bool](Get-ADObject -SearchBase $schema -LDAPFilter '(lDAPDisplayName=ms-Mcs-AdmPwd)'); windowsLaps = [bool](Get-ADObject -SearchBase $schema -LDAPFilter '(lDAPDisplayName=msLAPS-Password)') } }
+    $recycleBin = AdPart 'recycle bin' { [bool]((Get-ADOptionalFeature -Filter "Name -eq 'Recycle Bin Feature'" -ErrorAction Stop).EnabledScopes.Count -gt 0) }
     $lapsCovered = @($computers | Where-Object { $_.Enabled -and $_.PrimaryGroupID -ne 516 -and ($_.'ms-Mcs-AdmPwdExpirationTime' -or $_.'msLAPS-PasswordExpirationTime') }).Count
-    $gpos = Section { @(Get-GPO -All | Sort-Object ModificationTime -Descending | ForEach-Object { [ordered]@{ name = $_.DisplayName; id = "$($_.Id)"; modified = Iso $_.ModificationTime; status = "$($_.GpoStatus)" } }) }
-    $trusts = Section { @(Get-ADTrust -Filter * | ForEach-Object { [ordered]@{ name = $_.Name; direction = "$($_.Direction)"; type = "$($_.TrustType)"; sidFilteringQuarantined = [bool]$_.SIDFilteringQuarantined; sidFilteringForestAware = [bool]$_.SIDFilteringForestAware; selectiveAuth = [bool]$_.SelectiveAuthentication; forestTransitive = [bool]$_.ForestTransitive } }) }
-    $fgpp = Section { @(Get-ADFineGrainedPasswordPolicy -Filter *).Count }
-    [ordered]@{
-      domain = [ordered]@{ dnsName = $domain.DNSRoot; netbios = $domain.NetBIOSName; dn = $domain.DistinguishedName; sid = $sid; mode = "$($domain.DomainMode)"
-        forest = $forest.Name; forestMode = "$($forest.ForestMode)"; pdcEmulator = $domain.PDCEmulator; ridMaster = $domain.RIDMaster; infrastructureMaster = $domain.InfrastructureMaster
-        schemaMaster = $forest.SchemaMaster; domainNamingMaster = $forest.DomainNamingMaster; sites = @($forest.Sites); domains = @($forest.Domains) }
-      domainControllers = $dcs
-      counts = [ordered]@{ users = $users.Count; enabledUsers = $enabledUsers.Count; computers = $computers.Count; enabledComputers = @($computers | Where-Object { $_.Enabled }).Count
-        groups = Section { @(Get-ADGroup -Filter * -ResultSetSize 100000).Count }; gpos = @($gpos).Count; protectedUsers = $protectedUsers; fineGrainedPolicies = $fgpp }
-      privilegedGroups = $groups
-      passwordPolicy = [ordered]@{ minLength = $policy.MinPasswordLength; complexity = [bool]$policy.ComplexityEnabled; maxAgeDays = [int]$policy.MaxPasswordAge.TotalDays
-        historyCount = $policy.PasswordHistoryCount; lockoutThreshold = $policy.LockoutThreshold; lockoutMinutes = [int]$policy.LockoutDuration.TotalMinutes; reversibleEncryption = [bool]$policy.ReversibleEncryptionEnabled }
-      krbtgt = [ordered]@{ passwordLastSet = Iso $krbtgt.PasswordLastSet; passwordAgeDays = & $ageDays $krbtgt.PasswordLastSet }
-      builtinAdministrator = $(if ($builtinAdmin) { [ordered]@{ sam = $builtinAdmin.SamAccountName; enabled = [bool]$builtinAdmin.Enabled; lastLogon = Iso $builtinAdmin.LastLogonDate; passwordAgeDays = & $ageDays $builtinAdmin.PasswordLastSet } })
-      guestEnabled = [bool]$guest.Enabled
-      risky = [ordered]@{
+    $gpos = AdPart 'group policies' { Import-Module GroupPolicy -ErrorAction Stop
+      @(Get-GPO -All -ErrorAction Stop | Sort-Object ModificationTime -Descending | ForEach-Object { [ordered]@{ name = $_.DisplayName; id = "$($_.Id)"; modified = Iso $_.ModificationTime; status = "$($_.GpoStatus)" } }) }
+    $trusts = AdPart 'trusts' { @(Get-ADTrust -Filter * -ErrorAction Stop | ForEach-Object { [ordered]@{ name = $_.Name; direction = "$($_.Direction)"; type = "$($_.TrustType)"; sidFilteringQuarantined = [bool]$_.SIDFilteringQuarantined; sidFilteringForestAware = [bool]$_.SIDFilteringForestAware; selectiveAuth = [bool]$_.SelectiveAuthentication; forestTransitive = [bool]$_.ForestTransitive } }) }
+    $fgpp = Section { @(Get-ADFineGrainedPasswordPolicy -Filter * -ErrorAction Stop).Count }
+    $groupCount = AdPart 'group count' { @(Get-ADGroup -Filter * -ResultSetSize 100000 -ErrorAction Stop).Count }
+    $risky = AdPart 'risky accounts' { [ordered]@{
         kerberoastable = @($enabledUsers | Where-Object { $_.ServicePrincipalName -and $_.SamAccountName -ne 'krbtgt' } | Select-Object -First 200 | ForEach-Object { $b = & $brief $_; $b.privileged = [bool]$privilegedSams[$_.SamAccountName]; $b })
         asrepRoastable = @($enabledUsers | Where-Object { $_.DoesNotRequirePreAuth } | Select-Object -First 200 | ForEach-Object { & $brief $_ })
         passwordNotRequired = @($enabledUsers | Where-Object { $_.PasswordNotRequired } | Select-Object -First 200 | ForEach-Object { & $brief $_ })
@@ -308,12 +321,27 @@ if ($profile.role -and $profile.role.kind -eq 'domain-controller') {
         unconstrainedDelegation = @($computers | Where-Object { $_.Enabled -and $_.TrustedForDelegation -and -not $dcNames[("$($_.Name)").ToUpper()] } | Select-Object -First 200 | ForEach-Object { [ordered]@{ sam = $_.SamAccountName; name = $_.Name; os = $_.OperatingSystem; dn = $_.DistinguishedName } }) + @($enabledUsers | Where-Object { $_.TrustedForDelegation } | Select-Object -First 50 | ForEach-Object { & $brief $_ })
         resourceBasedDelegation = @($computers | Where-Object { $_.'msDS-AllowedToActOnBehalfOfOtherIdentity' } | Select-Object -First 200 | ForEach-Object { [ordered]@{ sam = $_.SamAccountName; name = $_.Name; dn = $_.DistinguishedName } })
         unsupportedOs = @($computers | Where-Object { $_.Enabled -and $_.OperatingSystem -match 'Windows (XP|Vista|7|8 |8\.1|Server 2003|Server 2008|Server 2012)' } | Select-Object -First 200 | ForEach-Object { [ordered]@{ name = $_.Name; os = $_.OperatingSystem; lastLogon = Iso $_.LastLogonDate } })
-      }
-      laps = [ordered]@{ legacySchema = $schemaAttrs.legacyLaps; windowsSchema = $schemaAttrs.windowsLaps; coveredComputers = $lapsCovered
+      } }
+    [ordered]@{
+      domain = [ordered]@{ dnsName = $domain.DNSRoot; netbios = $domain.NetBIOSName; dn = $domain.DistinguishedName; sid = $sid; mode = "$($domain.DomainMode)"
+        forest = $forest.Name; forestMode = "$($forest.ForestMode)"; pdcEmulator = $domain.PDCEmulator; ridMaster = $domain.RIDMaster; infrastructureMaster = $domain.InfrastructureMaster
+        schemaMaster = $forest.SchemaMaster; domainNamingMaster = $forest.DomainNamingMaster; sites = @($forest.Sites | ForEach-Object { "$_" }); domains = @($forest.Domains | ForEach-Object { "$_" }) }
+      domainControllers = $dcs
+      counts = [ordered]@{ users = $users.Count; enabledUsers = $enabledUsers.Count; computers = $computers.Count; enabledComputers = @($computers | Where-Object { $_.Enabled }).Count
+        groups = $groupCount; gpos = @($gpos).Count; protectedUsers = $protectedUsers; fineGrainedPolicies = $fgpp }
+      privilegedGroups = $groups
+      passwordPolicy = $(if ($policy) { [ordered]@{ minLength = $policy.MinPasswordLength; complexity = [bool]$policy.ComplexityEnabled; maxAgeDays = [int]$policy.MaxPasswordAge.TotalDays
+        historyCount = $policy.PasswordHistoryCount; lockoutThreshold = $policy.LockoutThreshold; lockoutMinutes = [int]$policy.LockoutDuration.TotalMinutes; reversibleEncryption = [bool]$policy.ReversibleEncryptionEnabled } })
+      krbtgt = [ordered]@{ passwordLastSet = Iso $krbtgt.PasswordLastSet; passwordAgeDays = & $ageDays $krbtgt.PasswordLastSet }
+      builtinAdministrator = $(if ($builtinAdmin) { [ordered]@{ sam = $builtinAdmin.SamAccountName; enabled = [bool]$builtinAdmin.Enabled; lastLogon = Iso $builtinAdmin.LastLogonDate; passwordAgeDays = & $ageDays $builtinAdmin.PasswordLastSet } })
+      guestEnabled = [bool]$guest.Enabled
+      risky = $risky
+      laps = [ordered]@{ legacySchema = [bool]$schemaAttrs.legacyLaps; windowsSchema = [bool]$schemaAttrs.windowsLaps; coveredComputers = $lapsCovered
         eligibleComputers = @($computers | Where-Object { $_.Enabled -and $_.PrimaryGroupID -ne 516 }).Count }
       recycleBin = $recycleBin
       gpos = @($gpos | Select-Object -First 300)
       trusts = $trusts
+      collectionErrors = @($script:adErrors)
     }
   }
 }
