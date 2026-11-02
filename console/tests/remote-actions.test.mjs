@@ -32,3 +32,24 @@ test("a legacy helper response cannot certify the silently ignored SendSAS call"
   const failure = cadResult({ ch: "sys", t: "error", message: "Ctrl+Alt+Del could not be sent" }, "click-1");
   assert.equal(failure.tone, "error");
 });
+
+test("the remote screen keeps its shape in every size mode", async () => {
+  const { screenDisplaySize } = await import("../src/remote-actions.ts");
+  const ratio = (s) => s.w / s.h;
+  for (const remote of [{ w: 1920, h: 1080 }, { w: 1024, h: 768 }, { w: 5120, h: 1440 }, { w: 1280, h: 1024 }]) {
+    for (const mode of ["fit", "actual", "1920x1080", "1600x900", "1366x768", "1280x720"]) {
+      const shown = screenDisplaySize(mode, remote, { w: 1500, h: 700 });
+      assert.ok(Math.abs(ratio(shown) - remote.w / remote.h) < 0.01, `${mode} ${remote.w}x${remote.h} -> ${shown.w}x${shown.h}`);
+    }
+  }
+});
+
+test("fixed sizes fit inside exactly that box; fit fills the window; actual is 1:1", async () => {
+  const { screenDisplaySize } = await import("../src/remote-actions.ts");
+  assert.deepEqual(screenDisplaySize("1280x720", { w: 1920, h: 1080 }, { w: 300, h: 300 }), { w: 1280, h: 720, scale: 1280 / 1920 });
+  const square = screenDisplaySize("1920x1080", { w: 1280, h: 1024 }, { w: 300, h: 300 });
+  assert.ok(square.w <= 1920 && square.h === 1080);
+  const fit = screenDisplaySize("fit", { w: 1920, h: 1080 }, { w: 1000, h: 1000 });
+  assert.equal(fit.w, 1000);
+  assert.deepEqual(screenDisplaySize("actual", { w: 1024, h: 768 }, { w: 10, h: 10 }), { w: 1024, h: 768, scale: 1 });
+});

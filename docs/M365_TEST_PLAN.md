@@ -178,6 +178,19 @@ Fenrir also starts the sync itself.
 2. [ ] Optional: on PM-DC's device page, run **Test remote Ctrl+Alt+Del**. Only do this when nobody minds the security screen
    opening there. The result shows `"worked": true`.
 
+## 9. Remote screen size
+
+Console only; no agent update needed. Press Ctrl+F5 first.
+
+1. [ ] Open a remote session. The toolbar has a size menu (it replaced the Fit/1:1 button). With **Fit window**, resize the
+   browser window narrow and then wide: the remote screen shrinks and grows but never stretches or squashes. Black bars fill
+   the spare space.
+2. [ ] Choose **1280 × 720** (or 1920 × 1080). The picture stays that size whatever you do to the window, scrolling if the
+   window is smaller. Close and reopen a session: the choice is remembered.
+3. [ ] In each mode, click a small target near a corner of the remote screen (a taskbar icon, a window's close button): the
+   click lands where you aimed.
+4. [ ] Hover the size menu: it shows the remote screen's real resolution.
+
 ## 6. Clean up
 
 - [ ] Delete `fenrir.test1`, `fenrir.test2` and `fenrir.test3` in Entra (or offboard and then delete them).
