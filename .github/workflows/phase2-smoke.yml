@@ -156,6 +156,9 @@ jobs:
       - name: Signature rules need every marker of a ransomware chain (no BlackCat verdict on browsers)
         shell: pwsh
         run: powershell.exe -NoProfile -File agent/windows/tests/SignatureRuleMatchTests.ps1
+      - name: Clean-software false-positive suite (installed signed software on the runner)
+        shell: pwsh
+        run: powershell.exe -NoProfile -File agent/windows/tests/CleanSoftwareFalsePositiveTests.ps1
       - name: Verify unsigned binaries and their trusted build digests
         shell: pwsh
         run: |
