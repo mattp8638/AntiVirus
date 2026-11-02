@@ -226,6 +226,19 @@ bool IsNoisyCachePath(const std::filesystem::path& path) {
 bool ExecutableExt(const std::wstring& ext);
 bool ScriptExt(const std::wstring& ext);
 
+// Developer and application package formats: zip archives that contain scripts by design (Python wheels, Java
+// archives, NuGet packages, VS Code and Firefox extensions). Finding scripts inside one is not evidence of anything.
+bool PackageArchive(const std::wstring& ext) {
+  return ext == L".whl" || ext == L".jar" || ext == L".war" || ext == L".ear" || ext == L".nupkg" || ext == L".vsix" ||
+         ext == L".egg" || ext == L".xpi";
+}
+
+// Program Files and Windows outside the temp folders: only administrators can write there. A heuristic score alone
+// does not quarantine a file there (remediation never removes files from these folders anyway); it is reported.
+bool AdminProtectedLocation(const FileData& file) {
+  return file.trustedPath && !file.userPath;
+}
+
 bool IsHighRiskExecutionSurface(const FileData& file) {
   return file.pe || file.zip || file.ole || file.lnk || ExecutableExt(file.extension) ||
          ScriptExt(file.extension) || file.extension == L".hta" || file.extension == L".url";
@@ -895,7 +908,8 @@ bool RuleApplies(const Rule& rule, const FileData& file) {
     return file.pe || ExecutableExt(file.extension);
   }
   if (rule.scope == L"zip") {
-    return file.zip;
+    // Package archives (wheels, JARs, NuGet...) hold scripts and tooling by design: only strong archive rules apply.
+    return file.zip && (!PackageArchive(file.extension) || rule.score >= 50);
   }
   if (rule.scope == L"script") {
     return ScriptExt(file.extension);
@@ -1448,7 +1462,8 @@ std::optional<ScanFinding> ScanFile(const std::filesystem::path& path, const Pol
                      L"Content resembles a ransom note with file-recovery and payment instructions.", L"TA0040",
                      L"T1486", 68});
   }
-  if (!trustedSystemBinary && !file.pe) {
+  // Text heuristics read text: compressed archive and document bytes contain '^' and '`' and base64-like runs by chance.
+  if (!trustedSystemBinary && !file.pe && !file.zip && !file.ole) {
     if (LongBase64(file.textLower)) {
       AddHit(hits,
              Hit{L"LONG_BASE64_BLOB", L"Content contains a long encoded payload blob.", L"TA0005", L"T1027", 30});
@@ -1495,7 +1510,7 @@ std::optional<ScanFinding> ScanFile(const std::filesystem::path& path, const Pol
     AddHit(hits, Hit{L"ARCHIVE_EXECUTABLE_PAYLOAD", L"Archive contains executable payload content.", L"TA0002",
                      L"T1204.002", 48});
   }
-  if (file.zip && (Contains(archiveText, L".ps1") || Contains(archiveText, L".js") ||
+  if (file.zip && !PackageArchive(file.extension) && (Contains(archiveText, L".ps1") || Contains(archiveText, L".js") ||
                    Contains(archiveText, L".vbs") || Contains(archiveText, L".hta") ||
                    Contains(archiveText, L".bat") || Contains(archiveText, L".cmd"))) {
     AddHit(hits, Hit{L"ARCHIVE_SCRIPT_PAYLOAD", L"Archive contains script payload content.", L"TA0002", L"T1059",
@@ -1638,6 +1653,11 @@ std::optional<ScanFinding> ScanFile(const std::filesystem::path& path, const Pol
     }
   }
 
+  // Scripts, archives and documents installed in admin-only folders (Program Files, Windows) are judged on stronger
+  // evidence: their text heuristics match installers, SDK tooling and language files far more often than attacks.
+  if (AdminProtectedLocation(file) && !file.pe && !exactIndicatorMatch && !maliciousCloudSignal && !highSeverity) {
+    detectThreshold = std::min(95, detectThreshold + 25);
+  }
   const auto netPressure = std::clamp(maliciousPressure - benignPressure, 0, 99);
   const auto shouldSurfaceFinding = netPressure >= detectThreshold ||
                                     (highSeverity && maliciousPressure >= detectThreshold);
@@ -1677,8 +1697,9 @@ std::optional<ScanFinding> ScanFile(const std::filesystem::path& path, const Pol
   // Quarantine only at the policy's quarantine score or on hard evidence (a known-malicious hash or signature, or a
   // malicious cloud verdict). A moderate heuristic score is reported for review and the file is left alone: on clean
   // machines those are mostly unsigned installers, admin tools and scripts.
+  const auto heldInProtectedLocation = AdminProtectedLocation(file) && !exactIndicatorMatch && !maliciousCloudSignal;
   if (disposition == VerdictDisposition::Block && quarantineCandidate &&
-      (netPressure >= quarantineThreshold || exactIndicatorMatch || maliciousCloudSignal)) {
+      ((netPressure >= quarantineThreshold && !heldInProtectedLocation) || exactIndicatorMatch || maliciousCloudSignal)) {
     disposition = VerdictDisposition::Quarantine;
   }
 
@@ -1743,6 +1764,12 @@ std::optional<ScanFinding> ScanFile(const std::filesystem::path& path, const Pol
   if (finding.verdict.disposition == VerdictDisposition::Allow && policy.archiveObserveOnly && archiveSurface) {
     finding.verdict.reasons.push_back(
         {L"ARCHIVE_OBSERVE_ONLY", L"Archive policy is observe-only for this confidence tier."});
+  }
+  if (finding.verdict.disposition == VerdictDisposition::Block && heldInProtectedLocation && netPressure >= quarantineThreshold) {
+    finding.verdict.reasons.push_back(
+        {L"PROTECTED_LOCATION_REPORT_ONLY",
+         L"The score alone reached the quarantine level, but the file is in a folder only administrators can write to and "
+         L"no known-malicious hash, signature or cloud verdict matched, so it is reported for review."});
   }
   if (finding.verdict.disposition == VerdictDisposition::Quarantine) {
     finding.verdict.reasons.push_back({L"BLOCK_FIRST",
