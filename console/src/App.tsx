@@ -62,6 +62,7 @@ import ActiveDirectory from "./pages/ActiveDirectory";
 import { ProgrammeDetail } from "./pages/grc/Programmes";
 import { PolicyEditor as GrcPolicyEditor } from "./pages/grc/Policies";
 import ProtectionHealth from "./pages/ProtectionHealth";
+import AgentHealth from "./pages/AgentHealth";
 import Quarantine from "./pages/Quarantine";
 import EdrExclusions from "./pages/EdrExclusions";
 import Exposure from "./pages/Exposure";
@@ -110,6 +111,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; al
       { to: "/automation", label: "Jobs & schedules", icon: "⏱" },
       { to: "/policies", label: "Protection policies", icon: "⚙" },
       { to: "/protection-health", label: "Protection health", icon: "⛨" },
+      { to: "/agent-health", label: "Agent health", icon: "✚" },
       { to: "/quarantine", label: "Quarantine", icon: "⊘" },
       { to: "/vulnerabilities", label: "Vulnerabilities", icon: "⚠" },
       { to: "/out-of-band", label: "Out-of-band (Intel AMT)", icon: "⏻" },
@@ -319,6 +321,7 @@ function Shell() {
             <Route path="/deploy" element={<Deploy />} />
             <Route path="/alerts" element={<Alerts />} />
             <Route path="/protection-health" element={<ProtectionHealth />} />
+            <Route path="/agent-health" element={<AgentHealth />} />
             <Route path="/quarantine" element={<Quarantine />} />
             <Route path="/edr-exclusions" element={<EdrExclusions />} />
             <Route path="/admin-requests" element={<Elevation />} />
