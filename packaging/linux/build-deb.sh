@@ -17,7 +17,7 @@ for ARCH in amd64 arm64; do
 Package: fenrir-agent
 Version: $VERSION
 Architecture: $ARCH
-Maintainer: Fenrir contributors <fenrir@example.invalid>
+Maintainer: Palmertech <support@palmertech.example>
 Depends: nftables
 Section: admin
 Priority: optional

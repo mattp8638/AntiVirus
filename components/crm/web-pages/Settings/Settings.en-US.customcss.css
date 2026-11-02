@@ -1,0 +1,12 @@
+/* Settings Page Custom CSS */
+
+.color-preset-bubble:hover {
+  transform: scale(1.12);
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.2);
+}
+
+.color-preset-bubble.active {
+  border-color: #ffffff !important;
+  transform: scale(1.15);
+  box-shadow: 0 0 15px rgba(255, 255, 255, 0.3);
+}

@@ -1,0 +1,84 @@
+<div class="crm-body-container">
+  
+  <!-- Breadcrumbs & Heading -->
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; flex-wrap: wrap; gap: 20px;">
+    <div>
+      <ul class="breadcrumb" style="margin-bottom: 10px;">
+        <li class="breadcrumb-item"><a href="/dashboard/">Admin</a></li>
+        <li class="breadcrumb-item active">Projects</li>
+      </ul>
+      <h1 style="font-size: 2.25rem; font-weight: 800; font-family: var(--font-heading); letter-spacing: -0.5px; margin: 0;">Projects Tracking</h1>
+    </div>
+    
+    <!-- View Switcher Toggle -->
+    <div style="display: flex; background: var(--bg-card); border: 1px solid var(--border-glass); border-radius: 10px; padding: 5px;">
+      <button id="viewTableBtn" class="btn-primary" style="padding: 8px 18px; font-size: 0.8rem; border-radius: 8px; font-weight: bold; cursor: pointer; border: none; outline: none; background: var(--accent-blue); color: #fff;">Table View</button>
+      <button id="viewKanbanBtn" class="btn-default" style="padding: 8px 18px; font-size: 0.8rem; border-radius: 8px; font-weight: bold; cursor: pointer; border: none; outline: none; background: transparent; color: var(--text-sub);">Kanban View</button>
+    </div>
+  </div>
+
+  <!-- ERP Project Metrics -->
+  <div class="crm-metrics-grid" id="projects-metrics-grid" style="margin-bottom: 40px;">
+    <!-- Rendered dynamically by crm-config.js -->
+  </div>
+
+  <!-- Wrapper A: Projects Data Table -->
+  <div id="projects-table-view" class="crm-card" style="padding: 0; overflow: hidden;">
+    <div class="crm-table-container">
+      <table class="crm-table">
+        <thead>
+          <tr>
+            <th>Project Detail</th>
+            <th>Target Date</th>
+            <th style="width: 250px;">Progress</th>
+            <th>Status</th>
+            <th>Active Phase</th>
+            <th style="text-align: right;">Action</th>
+          </tr>
+        </thead>
+        <tbody id="projectsTableBody">
+          <!-- Rendered dynamically by crm-config.js -->
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Wrapper B: Projects Kanban Board (Initially Hidden) -->
+  <div id="projects-kanban-view" style="display: none; gap: 25px; align-items: flex-start; justify-content: stretch;">
+    
+    <!-- Column 1: To Do -->
+    <div class="crm-card kanban-column" style="flex: 1; min-width: 250px; padding: 20px 25px; border-top: 3px solid var(--accent-rose);">
+      <h3 style="font-size: 1.1rem; font-weight: 800; color: #fff; margin-top: 0; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; text-transform: uppercase; letter-spacing: 0.5px;">
+        <span>To Do</span>
+        <span class="crm-badge danger" id="kanban-todo-count" style="font-size: 0.7rem; padding: 3px 8px;">0</span>
+      </h3>
+      <div class="kanban-cards-list" id="kanban-todo-list" style="display: flex; flex-direction: column; gap: 15px; min-height: 300px;">
+        <!-- Rendered dynamically -->
+      </div>
+    </div>
+
+    <!-- Column 2: In Progress -->
+    <div class="crm-card kanban-column" style="flex: 1; min-width: 250px; padding: 20px 25px; border-top: 3px solid var(--accent-amber);">
+      <h3 style="font-size: 1.1rem; font-weight: 800; color: #fff; margin-top: 0; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; text-transform: uppercase; letter-spacing: 0.5px;">
+        <span>In Progress</span>
+        <span class="crm-badge warning" id="kanban-progress-count" style="font-size: 0.7rem; padding: 3px 8px;">0</span>
+      </h3>
+      <div class="kanban-cards-list" id="kanban-progress-list" style="display: flex; flex-direction: column; gap: 15px; min-height: 300px;">
+        <!-- Rendered dynamically -->
+      </div>
+    </div>
+
+    <!-- Column 3: Completed -->
+    <div class="crm-card kanban-column" style="flex: 1; min-width: 250px; padding: 20px 25px; border-top: 3px solid var(--accent-green);">
+      <h3 style="font-size: 1.1rem; font-weight: 800; color: #fff; margin-top: 0; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; text-transform: uppercase; letter-spacing: 0.5px;">
+        <span>Done</span>
+        <span class="crm-badge success" id="kanban-done-count" style="font-size: 0.7rem; padding: 3px 8px;">0</span>
+      </h3>
+      <div class="kanban-cards-list" id="kanban-done-list" style="display: flex; flex-direction: column; gap: 15px; min-height: 300px;">
+        <!-- Rendered dynamically -->
+      </div>
+    </div>
+
+  </div>
+
+</div>

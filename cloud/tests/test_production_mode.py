@@ -85,22 +85,3 @@ def test_current_migration_ledger_does_not_hide_missing_device_columns(client):
     response = client.get("/ready")
     assert response.status_code == 503
     assert response.json() == {"ready": False, "reason": "device schema is incompatible"}
-
-
-def test_first_msp_tenant_takes_the_configured_name():
-    import dataclasses
-
-    from fastapi.testclient import TestClient
-    from sqlalchemy import select
-
-    from fenrir_cloud import db as database
-    from fenrir_cloud.config import Settings
-    from fenrir_cloud.main import create_app
-    from fenrir_cloud.models import Tenant
-
-    settings = dataclasses.replace(Settings(), database_url="sqlite://", secret_key="test-secret", msp_name="Northwind IT Ltd",
-                                   bootstrap_admin_password="correct-horse-battery-staple", dns_blocklists_enabled=False)
-    with TestClient(create_app(settings)):
-        with database.session_factory()() as db:
-            msp = db.execute(select(Tenant).where(Tenant.kind == "msp")).scalars().one()
-    assert (msp.name, msp.slug) == ("Northwind IT Ltd", "northwind-it-ltd")

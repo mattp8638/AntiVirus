@@ -1,0 +1,7 @@
+/* Projects Page Custom CSS */
+
+.crm-btn-project-edit:hover {
+  background: rgba(255, 255, 255, 0.1) !important;
+  border-color: #fff !important;
+  transform: translateY(-1px);
+}

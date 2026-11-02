@@ -1,0 +1,17 @@
+/* Support Page Custom CSS */
+
+.crm-ticket-item {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  border: 1px solid var(--border-glass);
+}
+
+.crm-ticket-item:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+
+.crm-ticket-item.active {
+  background: rgba(255, 255, 255, 0.03) !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+}

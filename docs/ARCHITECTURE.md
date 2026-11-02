@@ -42,7 +42,7 @@
 2. **Detect.** The built-in Sigma engine supports selections, keyword lists, the modifiers `contains`, `startswith`, `endswith`, `all`, `re`, `cidr`, `windash`, `exists` and `gt/gte/lt/lte`, full boolean conditions, and `1 of` / `all of`. It ships 42 rules in `rules/sigma/`, and tenants can add their own.
 3. **Correlate.** Sigma v2 correlation rules (`event_count`, `value_count`, `temporal`) catch behaviour such as mass encryption or brute-force bursts.
 4. **Alert.** Hits are de-duplicated per rule and device over 10 minutes.
-5. **Group into incidents.** Alerts on a device within 2 hours share an incident. The incident gets a guided playbook and upgrades to a more specific one (ransomware, credential theft) as evidence arrives. Closure gates block closing an incident until its checklist is done.
+5. **Group into incidents.** Alerts on a device within 2 hours share an incident. The incident gets a guided playbook (from Sentinel) and upgrades to a more specific one (ransomware, credential theft) as evidence arrives. Closure gates block closing an incident until its checklist is done.
 6. **Respond.**
    - Policy-driven: kill the process tree, isolate, roll back ransomware, open a ticket.
    - Per-rule response lists.

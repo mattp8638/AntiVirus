@@ -1,0 +1,95 @@
+{
+  "name": "Fenrir Native AV Seed Rules",
+  "version": "2026.04.28.1",
+  "description": "Seed behavioural/static signatures for the Sentinel-native AV engine. These rules are defensive heuristics and should be tuned with false-positive review.",
+  "rules": [
+    {
+      "rule_id": "PS_ENCODED_COMMAND",
+      "name": "PowerShell encoded command",
+      "severity": "high",
+      "confidence": 82,
+      "patterns": ["-enc", "encodedcommand", "frombase64string"],
+      "reason": "PowerShell encoded command indicators were found.",
+      "tactic_id": "TA0005",
+      "technique_id": "T1027",
+      "source": "fenrir_native_seed"
+    },
+    {
+      "rule_id": "DOWNLOAD_CRADLE",
+      "name": "Script download cradle",
+      "severity": "high",
+      "confidence": 78,
+      "patterns": ["downloadstring", "invoke-webrequest", "iwr ", "curl ", "wget "],
+      "reason": "Script contains network download or execution behaviour.",
+      "tactic_id": "TA0011",
+      "technique_id": "T1105",
+      "source": "fenrir_native_seed"
+    },
+    {
+      "rule_id": "SHADOW_COPY_DELETE",
+      "name": "Shadow copy deletion",
+      "severity": "critical",
+      "confidence": 90,
+      "patterns": ["vssadmin delete shadows", "wmic shadowcopy delete", "delete shadows /all"],
+      "reason": "Shadow copy deletion is commonly used by ransomware.",
+      "tactic_id": "TA0040",
+      "technique_id": "T1490",
+      "source": "fenrir_native_seed"
+    },
+    {
+      "rule_id": "DEFENDER_TAMPER_COMMANDS",
+      "name": "Defender tampering command",
+      "severity": "high",
+      "confidence": 84,
+      "patterns": ["set-mppreference", "disablerealtimemonitoring", "disableioavprotection", "disablebehaviormonitoring"],
+      "reason": "Commands that attempt to weaken Microsoft Defender were found.",
+      "tactic_id": "TA0005",
+      "technique_id": "T1562.001",
+      "source": "fenrir_native_seed"
+    },
+    {
+      "rule_id": "RUN_KEY_PERSISTENCE",
+      "name": "Run key persistence",
+      "severity": "medium",
+      "confidence": 65,
+      "patterns": ["currentversion\\run", "currentversion\\runonce", "reg add hkcu\\software\\microsoft\\windows\\currentversion\\run"],
+      "reason": "Registry run-key persistence indicators were found.",
+      "tactic_id": "TA0003",
+      "technique_id": "T1547.001",
+      "source": "fenrir_native_seed"
+    },
+    {
+      "rule_id": "LOLBIN_EXECUTION",
+      "name": "Suspicious LOLBin usage",
+      "severity": "medium",
+      "confidence": 60,
+      "patterns": ["mshta", "regsvr32", "rundll32", "certutil -urlcache", "bitsadmin"],
+      "reason": "Living-off-the-land binary usage indicators were found.",
+      "tactic_id": "TA0002",
+      "technique_id": "T1218",
+      "source": "fenrir_native_seed"
+    },
+    {
+      "rule_id": "CREDENTIAL_DUMPING_KEYWORDS",
+      "name": "Credential dumping keywords",
+      "severity": "high",
+      "confidence": 72,
+      "patterns": ["sekurlsa", "logonpasswords", "lsass", "procdump", "minidump"],
+      "reason": "Credential dumping strings or tooling indicators were found.",
+      "tactic_id": "TA0006",
+      "technique_id": "T1003",
+      "source": "fenrir_native_seed"
+    },
+    {
+      "rule_id": "SUSPICIOUS_ARCHIVE_LURE",
+      "name": "Suspicious archive or shortcut lure",
+      "severity": "medium",
+      "confidence": 58,
+      "patterns": [".lnk", "powershell", "cmd.exe /c", "wscript", "mshta"],
+      "reason": "Archive/shortcut lure style indicators were found.",
+      "tactic_id": "TA0002",
+      "technique_id": "T1204.001",
+      "source": "fenrir_native_seed"
+    }
+  ]
+}

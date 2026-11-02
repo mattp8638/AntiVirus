@@ -1,0 +1,5 @@
+{
+  "siem_endpoint": "http://localhost:8000",
+  "api_key": "your-api-key-here",
+  "reporting_interval_secs": 10
+}

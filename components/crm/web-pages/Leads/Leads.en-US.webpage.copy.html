@@ -1,0 +1,113 @@
+<div class="crm-body-container">
+  
+  <!-- Breadcrumbs & Heading -->
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; flex-wrap: wrap; gap: 20px;">
+    <div>
+      <ul class="breadcrumb" style="margin-bottom: 10px;">
+        <li class="breadcrumb-item"><a href="/dashboard/">Admin</a></li>
+        <li class="breadcrumb-item active">Leads</li>
+      </ul>
+      <h1 style="font-size: 2.25rem; font-weight: 800; font-family: var(--font-heading); letter-spacing: -0.5px; margin: 0;">Leads Pipeline</h1>
+    </div>
+    
+    <button id="toggleIntakeBtn" class="btn-primary" style="padding: 12px 25px; font-size: 0.9rem; display: flex; align-items: center; gap: 8px;">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+      Add New Lead
+    </button>
+  </div>
+
+  <!-- Collapsible Lead Intake Form -->
+  <div id="leadIntakeCard" class="crm-card" style="display: none; margin-bottom: 40px; border-top: 3px solid var(--accent-green); position: relative; animation: slideDown 0.4s ease forwards;">
+    <h3 style="font-size: 1.4rem; font-weight: 800; margin-top: 0; margin-bottom: 25px; color: #fff;">Lead Registration Form</h3>
+    
+    <form id="newLeadForm">
+      <div style="display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 20px;">
+        <div style="flex: 1; min-width: 200px;" class="crm-form-group">
+          <label class="crm-label" for="leadName">Contact Name *</label>
+          <input type="text" id="leadName" class="crm-input" placeholder="Sarah Connor" required>
+        </div>
+        <div style="flex: 1; min-width: 200px;" class="crm-form-group">
+          <label class="crm-label" for="leadCompany">Company Name *</label>
+          <input type="text" id="leadCompany" class="crm-input" placeholder="Cyberdyne Systems" required>
+        </div>
+      </div>
+
+      <div style="display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 20px;">
+        <div style="flex: 1; min-width: 200px;" class="crm-form-group">
+          <label class="crm-label" for="leadEmail">Email Address *</label>
+          <input type="email" id="leadEmail" class="crm-input" placeholder="sarah@cyberdyne.com" required>
+        </div>
+        <div style="flex: 1; min-width: 200px;" class="crm-form-group">
+          <label class="crm-label" for="leadPhone">Phone Number</label>
+          <input type="tel" id="leadPhone" class="crm-input" placeholder="+44 7700 900077">
+        </div>
+      </div>
+
+      <div style="display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 25px;">
+        <div style="flex: 1; min-width: 200px;" class="crm-form-group">
+          <label class="crm-label" for="leadStatus">Pipeline Stage</label>
+          <select id="leadStatus" class="crm-input" style="appearance: none; cursor: pointer;">
+            <option value="New">New / Uncontacted</option>
+            <option value="Contacted">Contacted / Active</option>
+            <option value="Qualified">Qualified / Proposal Sent</option>
+          </select>
+        </div>
+        <div style="flex: 1; min-width: 200px;" class="crm-form-group">
+          <label class="crm-label" for="leadValue">Estimated Contract Value ($)</label>
+          <input type="number" id="leadValue" class="crm-input" placeholder="5000">
+        </div>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 15px;">
+        <button type="button" id="cancelIntakeBtn" class="btn-default" style="padding: 10px 24px;">Cancel</button>
+        <button type="submit" class="btn-primary" style="padding: 10px 28px;">Save Lead</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- Pipeline Filters Card -->
+  <div class="crm-card" style="padding: 20px 30px; margin-bottom: 30px;">
+    <div style="display: flex; gap: 20px; align-items: center; flex-wrap: wrap; width: 100%;">
+      
+      <!-- Search Input -->
+      <div style="flex: 1.5; min-width: 250px; position: relative;">
+        <input type="text" id="leadSearchInput" class="crm-input" placeholder="Search leads by name, company, or email..." style="padding-left: 45px !important;">
+        <svg style="position: absolute; left: 15px; top: 50%; transform: translateY(-50%); color: var(--text-sub);" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+      </div>
+
+      <!-- Filter dropdown -->
+      <div style="flex: 0.8; min-width: 180px;">
+        <select id="stageFilter" class="crm-input" style="appearance: none; cursor: pointer;">
+          <option value="All">All Pipeline Stages</option>
+          <option value="New">New</option>
+          <option value="Contacted">Contacted</option>
+          <option value="Qualified">Qualified</option>
+          <option value="Lost">Lost</option>
+        </select>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Pipeline Leads Table -->
+  <div class="crm-card" style="padding: 0; overflow: hidden;">
+    <div class="crm-table-container">
+      <table class="crm-table" id="leadsTable">
+        <thead>
+          <tr>
+            <th>Company / Contact</th>
+            <th>Email</th>
+            <th>Value</th>
+            <th>Stage</th>
+            <th>Registered Date</th>
+            <th style="text-align: right;">Action</th>
+          </tr>
+        </thead>
+        <tbody id="leadsTableBody">
+          <!-- Rendered dynamically by crm-config.js -->
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>

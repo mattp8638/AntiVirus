@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: MVP-0 Baseline Check
+        run: |
+          echo "MVP-0 baseline locked. No builds defined yet."
+
+  agent-clean-build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install vcpkg dependencies
+        shell: pwsh
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
+          cd $env:VCPKG_ROOT
+          .\bootstrap-vcpkg.bat
+          .\vcpkg.exe install openssl:x64-windows curl:x64-windows
+
+      - name: Configure agent (clean build)
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force agent\build-ci -ErrorAction SilentlyContinue
+          cmake -S agent -B agent\build-ci -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" -DBUILD_ALL_SERVICES=ON
+
+      - name: Build agent execution target
+        shell: pwsh
+        run: |
+          cmake --build agent\build-ci --config Release --target agent_execution

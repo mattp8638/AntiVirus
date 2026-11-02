@@ -1,0 +1,4 @@
+// Microsoft Visual C++ generated resource script.
+#include <windows.h>
+
+IDI_AGENT_ICON ICON "tamsilsiem.ico"

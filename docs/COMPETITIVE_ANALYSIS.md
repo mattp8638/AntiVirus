@@ -38,7 +38,7 @@ Status key: **Built** = working in this repo and covered by tests or an end-to-e
 | Tamper protection | All | **Built** (Windows); policy-driven | `HardeningManager.cpp` |
 | Multi-tenant MSP console | Heimdal, ESET PROTECT, S1 | **Built**: tenant tree, RBAC, per-tenant policy, tuning and reports | `deps.py`, `console/` |
 | SOAR / automated response | Defender AIR, S1 | **Built**: policy auto-response, rule responses, automation rules, webhooks | `detection.py` |
-| Guided incident playbooks | — (rare in SMB tools) | **Built**: guided playbooks with closure gates | `playbooks/` |
+| Guided incident playbooks | — (rare in SMB tools) | **Built**: Sentinel playbooks with closure gates | `playbooks/` |
 | PSA ticketing + SLAs | ConnectWise, Autotask (not AV vendors) | **Built** and wired to incidents and monitors | `psa.py` |
 | CRM + billing | HubSpot/Xero (not AV vendors) | **Built**: lead → customer conversion, per-device invoices | `business.py` |
 | Signed agent updates with rings | All | **Partial**: release registry and update-check; Windows updater verifies manifests | `agent_api.py` `update-check` |

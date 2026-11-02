@@ -1,0 +1,115 @@
+<div class="crm-body-container">
+  
+  <!-- Breadcrumbs & Heading -->
+  <div style="margin-bottom: 30px;">
+    <ul class="breadcrumb" style="margin-bottom: 10px;">
+      <li class="breadcrumb-item"><a href="/dashboard/">Admin</a></li>
+      <li class="breadcrumb-item active">Settings</li>
+    </ul>
+    <h1 style="font-size: 2.25rem; font-weight: 800; font-family: var(--font-heading); letter-spacing: -0.5px; margin: 0;">System Settings</h1>
+  </div>
+
+  <div style="display: flex; gap: 30px; flex-wrap: wrap;">
+    
+    <!-- Left Column: Branding Customizer Form -->
+    <div class="crm-card" style="flex: 2; min-width: 350px;">
+      <h2 style="font-size: 1.4rem; font-weight: 800; margin-top: 0; margin-bottom: 25px; color: #fff; display: flex; align-items: center; gap: 10px;">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--accent-blue)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"></path><path d="M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8z"></path></svg>
+        Branding & Theme Editor
+      </h2>
+
+      <form id="settingsCustomizerForm">
+        
+        <!-- Brand Name -->
+        <div style="display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 25px;">
+          <div style="flex: 2; min-width: 200px;" class="crm-form-group">
+            <label class="crm-label" for="settingsBrandName">Branding Portal Title</label>
+            <input type="text" id="settingsBrandName" class="crm-input" placeholder="Palmertech CRM" required>
+          </div>
+          <div style="flex: 1; min-width: 100px;" class="crm-form-group">
+            <label class="crm-label" for="settingsBrandShort">Branding Initials</label>
+            <input type="text" id="settingsBrandShort" class="crm-input" placeholder="PT" maxlength="3" required>
+          </div>
+        </div>
+
+        <!-- Custom Color Presets Selector -->
+        <div class="crm-form-group" style="margin-bottom: 30px;">
+          <label class="crm-label">Theme Accent Color</label>
+          <div style="display: flex; gap: 15px; flex-wrap: wrap; margin-top: 10px;" id="theme-color-selectors">
+            
+            <!-- Color option 1: Blue -->
+            <div class="color-preset-bubble" data-color="#3b82f6" style="background-color: #3b82f6; width: 36px; height: 36px; border-radius: 50%; cursor: pointer; position: relative; border: 3px solid transparent; transition: all 0.3s ease;">
+              <div style="position: absolute; inset: -4px; border: 1px solid rgba(255,255,255,0.1); border-radius: 50%;"></div>
+            </div>
+
+            <!-- Color option 2: Emerald Green -->
+            <div class="color-preset-bubble" data-color="#10b981" style="background-color: #10b981; width: 36px; height: 36px; border-radius: 50%; cursor: pointer; position: relative; border: 3px solid transparent; transition: all 0.3s ease;">
+              <div style="position: absolute; inset: -4px; border: 1px solid rgba(255,255,255,0.1); border-radius: 50%;"></div>
+            </div>
+
+            <!-- Color option 3: Indigo -->
+            <div class="color-preset-bubble" data-color="#6366f1" style="background-color: #6366f1; width: 36px; height: 36px; border-radius: 50%; cursor: pointer; position: relative; border: 3px solid transparent; transition: all 0.3s ease;">
+              <div style="position: absolute; inset: -4px; border: 1px solid rgba(255,255,255,0.1); border-radius: 50%;"></div>
+            </div>
+
+            <!-- Color option 4: Orange -->
+            <div class="color-preset-bubble" data-color="#f97316" style="background-color: #f97316; width: 36px; height: 36px; border-radius: 50%; cursor: pointer; position: relative; border: 3px solid transparent; transition: all 0.3s ease;">
+              <div style="position: absolute; inset: -4px; border: 1px solid rgba(255,255,255,0.1); border-radius: 50%;"></div>
+            </div>
+
+            <!-- Color option 5: Rose -->
+            <div class="color-preset-bubble" data-color="#f43f5e" style="background-color: #f43f5e; width: 36px; height: 36px; border-radius: 50%; cursor: pointer; position: relative; border: 3px solid transparent; transition: all 0.3s ease;">
+              <div style="position: absolute; inset: -4px; border: 1px solid rgba(255,255,255,0.1); border-radius: 50%;"></div>
+            </div>
+
+            <!-- Hidden Custom Hex color input -->
+            <input type="hidden" id="selectedThemeColor" value="#3b82f6">
+
+          </div>
+        </div>
+
+        <!-- User Information Customization -->
+        <h3 style="font-size: 1.1rem; font-weight: 800; color: #fff; margin-top: 30px; margin-bottom: 20px; text-transform: uppercase; letter-spacing: 0.5px; border-top: 1px solid var(--border-glass); padding-top: 25px;">
+          User Session Profile
+        </h3>
+
+        <div style="display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 30px;">
+          <div style="flex: 1; min-width: 200px;" class="crm-form-group">
+            <label class="crm-label" for="settingsUsername">Profile Display Name</label>
+            <input type="text" id="settingsUsername" class="crm-input" placeholder="Matt Admin" required>
+          </div>
+          <div style="flex: 1; min-width: 200px;" class="crm-form-group">
+            <label class="crm-label" for="settingsUserRole">Profile Subtitle Role</label>
+            <input type="text" id="settingsUserRole" class="crm-input" placeholder="Super Administrator" required>
+          </div>
+        </div>
+
+        <div style="display: flex; justify-content: flex-end; gap: 15px;">
+          <button type="button" id="resetDefaultsBtn" class="btn-default" style="padding: 10px 24px;">Reset Defaults</button>
+          <button type="submit" class="btn-primary" style="padding: 10px 28px;">Save Settings</button>
+        </div>
+
+      </form>
+    </div>
+
+    <!-- Right Column: Settings Documentation Card -->
+    <div class="crm-card" style="flex: 1; min-width: 300px;">
+      <h3 style="font-size: 1.25rem; font-weight: 800; margin-top: 0; margin-bottom: 20px; color: #fff;">Template Info</h3>
+      
+      <p style="font-size: 0.9rem; line-height: 1.6; color: var(--text-sub); margin-bottom: 20px;">
+        This Settings Panel directly manipulates the browser's <code>localStorage</code> database to override global configurations in <code>crm-config.js</code>.
+      </p>
+
+      <div style="background: rgba(0,0,0,0.2); border: 1px solid var(--border-glass); border-radius: 12px; padding: 15px; font-size: 0.8rem; line-height: 1.6; color: var(--text-sub);">
+        <strong style="color:#fff; display:block; margin-bottom: 8px;">Key details:</strong>
+        <ul style="padding-left: 15px; margin: 0; display: flex; flex-direction: column; gap: 6px;">
+          <li>Settings updates are applied <strong>instantly</strong> across all routes.</li>
+          <li>CSS custom theme variables are rewritten on document root.</li>
+          <li>Clicking "Reset Defaults" clears local settings, reverting to standard variables.</li>
+        </ul>
+      </div>
+    </div>
+
+  </div>
+
+</div>
