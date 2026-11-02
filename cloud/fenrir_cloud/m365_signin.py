@@ -21,6 +21,7 @@ from urllib.parse import urlencode
 
 import httpx
 
+from . import m365_permissions
 from .config import get_settings
 from .models import utcnow
 
@@ -31,11 +32,7 @@ MANAGED_TAG = "fenrir-managed"
 
 # Application permissions Fenrir uses: sync (users, licences, Secure Score, MFA registration) and the allowlisted
 # admin actions in m365_admin.CAPABILITIES. Nothing broader (no mail, files or directory-wide write).
-APP_PERMISSIONS = [
-    "User.Read.All", "Organization.Read.All", "Directory.Read.All", "Domain.Read.All", "SecurityEvents.Read.All",
-    "AuditLog.Read.All", "Reports.Read.All", "User.ReadWrite.All", "User.RevokeSessions.All", "User.EnableDisableAccount.All",
-    "LicenseAssignment.ReadWrite.All", "GroupMember.ReadWrite.All", "SecurityAlert.Read.All",
-]
+APP_PERMISSIONS = m365_permissions.APP_PERMISSIONS
 # What the signing-in admin must allow for the code flow (to create the app registration and consent to it).
 DEVICE_SCOPES = ["https://graph.microsoft.com/Application.ReadWrite.All", "https://graph.microsoft.com/AppRoleAssignment.ReadWrite.All",
                  "https://graph.microsoft.com/Organization.Read.All", "https://graph.microsoft.com/User.Read"]

@@ -46,6 +46,10 @@ class Settings:
     m365_client_secret: str = field(default_factory=lambda: os.getenv("FENRIR_M365_CLIENT_SECRET", ""))
     # Public client used for the device-code sign-in (default: Microsoft Graph Command Line Tools).
     m365_public_client_id: str = field(default_factory=lambda: os.getenv("FENRIR_M365_PUBLIC_CLIENT_ID", "14d82eec-204b-4c2f-b7e8-296a70dab67e"))
+    # How long Microsoft 365 sign-in and audit logs are kept (Microsoft itself keeps 7 to 30 days), and how often each
+    # connection's directory snapshot is refreshed in the background (0 turns the background sync off).
+    m365_log_retention_days: int = field(default_factory=lambda: int(os.getenv("FENRIR_M365_LOG_RETENTION_DAYS", "730")))
+    m365_sync_hours: int = field(default_factory=lambda: int(os.getenv("FENRIR_M365_SYNC_HOURS", "6")))
 
     bootstrap_admin_email: str = field(default_factory=lambda: os.getenv("FENRIR_ADMIN_EMAIL", "admin@fenrir.local"))
     bootstrap_admin_password: str | None = field(default_factory=lambda: os.getenv("FENRIR_ADMIN_PASSWORD"))
