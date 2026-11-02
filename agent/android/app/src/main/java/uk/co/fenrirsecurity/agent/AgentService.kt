@@ -224,7 +224,18 @@ class AgentService : Service() {
         store.lastContact = store.lastHeartbeat
         reply.lostMode?.let { if (it != store.lostMode) applyLostMode(it) }
         Notifications.updateStatus(this, statusText())
+        if (reply.rotateKey) rotateKey()
         if (reply.commandsPending > 0) runCommands()
+    }
+
+    /** Replaces the device API key: saved before use, so a failure leaves a working key and the next heartbeat asks again. */
+    private fun rotateKey() {
+        try {
+            val key = api().rotateKey()
+            if (!store.saveApiKey(key)) store.lastError = "Could not save a new device key; keeping the current one"
+        } catch (error: Exception) {
+            store.lastError = "Key rotation failed: ${error.message ?: error.javaClass.simpleName}"
+        }
     }
 
     private fun runCommands() {

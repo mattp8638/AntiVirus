@@ -52,6 +52,9 @@ Built user-mode artifacts include Windows x64, Linux amd64/arm64 and macOS amd64
 
 ## New HTTPS installation
 
+For the whole path from a fresh server to the first customer (backups off-site, monitoring, staff access, Windows
+protection, acceptance and rollout), follow the [go-live checklist](docs/GO_LIVE.md).
+
 These steps are for a **new installation**. On an existing server, preserve its database, configuration and keys and use [Updates](#updates). Never regenerate an existing installation's secrets just to upgrade it.
 
 ### 1. Prepare the server
@@ -189,6 +192,29 @@ The first build compiles the console and agent installers and can take time. Sig
 
 Production checks reject unsafe secrets and SQLite. `/ready` also checks the migration ledger and mapped device columns; container health and server updates use it. Bootstrap credentials create the first administrator; editing the bootstrap password later does not reset an existing account.
 
+### 6. Schedule backups and run the go-live check
+
+Schedule a daily backup ([Backup and restore](#backup-and-restore) explains what it holds), then run the backup
+once by hand so there is one to check:
+
+```bash
+echo "17 2 * * * root cd $PWD && FENRIR_COMPOSE_FILES=$PWD/deploy/docker-compose.https.yml deploy/backup.sh /var/backups/fenrir >> /var/log/fenrir-backup.log 2>&1" \
+  | sudo tee /etc/cron.d/fenrir-backup
+sudo env FENRIR_COMPOSE_FILES="$PWD/deploy/docker-compose.https.yml" deploy/backup.sh /var/backups/fenrir
+```
+
+Then run the go-live check. It reads `deploy/.env` without printing it and checks the secrets, production mode, the
+signing certificate and release key, the HTTPS proxy, the containers, open ports, disk space, backups, and the live
+server's `/health`, `/ready`, `/health/background`, certificate and HTTP-to-HTTPS redirect:
+
+```bash
+sudo deploy/preflight.sh
+```
+
+Every line is PASS, WARN (a risk to decide on) or FAIL (fix before customers depend on the server). It exits non-zero
+if anything failed; `--strict` also fails on warnings. Run it again after every upgrade. `--offline` checks only the
+configuration and host, before the first start. CI runs it against the full stack on every change.
+
 ### Background worker and telemetry volume
 
 The `cloud` container serves the console and the agents (`FENRIR_ROLE=web`). The `worker` container runs everything
@@ -199,8 +225,28 @@ reach agents within a couple of seconds: the API wakes connected agents that hav
 container instead, set `FENRIR_ROLE: all` on `cloud` and remove the `worker` service.
 
 Point your uptime monitor at `/health/background` as well as `/ready`. It returns 503, naming the problem, when the
-scheduler or the hourly maintenance has stopped completing, a job has been running for over 30 minutes, or the event
-outbox is falling behind. **Settings → Platform** shows the same, with each job's last run and error.
+scheduler or the hourly maintenance has stopped completing, a job has been running for over 30 minutes, the event
+outbox is falling behind, the artifacts volume is nearly full, or the Windows code-signing certificate expires within 30 days. **Settings → Platform** shows the same, with each
+job's last run and error.
+
+Fenrir also tells you itself. The web process checks background health every minute and sends
+`platform.health.degraded` when something new goes wrong (including a job, such as the threat or vulnerability feed sync, failing three times in a row) and
+`platform.health.recovered` when everything is fine again, once each, to every MSP webhook subscribed to them
+(**Settings → Webhooks**; Slack and Teams formats work). It sends them directly rather than through the event outbox,
+so they still arrive when the worker or the outbox is the problem. Each alert is also in the audit log.
+
+For Prometheus, set `FENRIR_METRICS_TOKEN` (`openssl rand -hex 24`) in `deploy/.env` and scrape `/metrics` with that
+bearer token. Without a token of 24 or more characters the endpoint does not exist. It reports background health, each
+job's last success, failures in a row and duration, the outbox, artifact storage, and device counts; never customer
+names or errors.
+
+```yaml
+scrape_configs:
+  - job_name: fenrir
+    scheme: https
+    authorization: { credentials: "<FENRIR_METRICS_TOKEN>" }
+    static_configs: [{ targets: ["rmm.example.com"] }]
+```
 
 Telemetry settings (in `deploy/.env`, passed through the Compose file's shared environment):
 
@@ -269,6 +315,12 @@ until they change (another device failing the same update brings it back). Decis
 finished on their own pages.
 
 ### Managed Microsoft Defender
+
+**On Windows, Microsoft Defender is what blocks a malicious program before it runs.** Fenrir does not ship a Windows
+kernel driver, so its own agent stops threats just after they start (process-start verdicts, AMSI, ETW, network
+isolation). Keep Defender's real-time protection on, ideally by managing it as below. **Protection health** has a
+**Blocks before it runs** column for every Windows device (Defender, None or Checking) and warns when any device has
+none.
 
 Most Microsoft 365 Business Premium customers already pay for Defender. In a policy's **Microsoft Defender** section,
 **Manage Microsoft Defender** makes Defender the prevention engine on that policy's Windows devices, with Fenrir's EDR,
@@ -372,6 +424,18 @@ passkeys follow the same rule as passwords: platform administrators only.
 | iPhone, iPad, Mac (no agent) | Use phone enrolment: the code installs a Fenrir DNS profile for web and phishing protection. There is no app, Intune or Apple MDM, and so no remote actions. See [Apple web protection](docs/APPLE_WEB_PROTECTION.md). |
 
 Do not run a manual/prototype service beside an installed agent. Keep uninstall-protection credentials and use the normal maintenance/installer flow for upgrades.
+
+**Networks with a web proxy.** Linux and macOS: run the installer with `--proxy http://proxy.example:3128` (a repair
+install keeps the proxy already set; `--proxy none` removes it). Windows: the agent uses the machine's WinHTTP proxy,
+or the WPAD/PAC configuration the network publishes; if there is neither, set one with
+`netsh winhttp set proxy proxy.example:3128` (or `netsh winhttp import proxy source=ie`). While the server is
+unreachable, agents keep their telemetry on disk and send it when they reconnect, including across a reboot.
+
+**Device keys.** Each agent authenticates with its own API key. Agents replace it on their own when it is older than
+`FENRIR_DEVICE_KEY_MAX_AGE_DAYS` (default 90; 0 turns this off), and **Devices → More → Rotate device key** asks one to
+do it at its next check-in. The new key is saved before it is used and the old one keeps working until then, so a
+failed rotation never strands a device; once the agent uses the new key, the old one is refused. If you believe a key
+has leaked, decommission the device instead: that revokes it at once.
 
 Windows remote **Ctrl+Alt+Del** requires a matching updated service and `fenrir-remote.exe`, followed by a new remote session. Windows SAS policy must permit services. An acknowledgement confirms the request, not the screen transition; see [the SAS guide](docs/REMOTE_CTRL_ALT_DEL.md).
 

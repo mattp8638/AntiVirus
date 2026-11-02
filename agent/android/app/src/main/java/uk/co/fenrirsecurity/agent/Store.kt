@@ -30,6 +30,8 @@ class Store(context: Context) {
     var apiKey: String
         get() = prefs.getString("apiKey", null)?.let { Secrets.decrypt(it) } ?: ""
         set(value) = prefs.edit().putString("apiKey", Secrets.encrypt(value)).apply()
+    /** Saves a rotated key synchronously; it must be on disk before the agent first uses it. */
+    fun saveApiKey(value: String): Boolean = prefs.edit().putString("apiKey", Secrets.encrypt(value)).commit()
     /** Set when the cloud rejects the key (the device was decommissioned): the agent stops until re-enrolled. */
     var removed: Boolean
         get() = prefs.getBoolean("removed", false)

@@ -156,6 +156,11 @@ class Device(Base):
     exposure_flags: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # Phones: lost mode ({"enabled", "message", "phone", "since", "by"}); the agent re-reads it on every heartbeat.
     lost_mode: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    # CORE-04 key rotation (devicekeys.py): the new key until its first use, when the key was last rotated, and a
+    # technician's request to rotate at the next heartbeat.
+    pending_api_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    api_key_rotated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    key_rotation_requested: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
     # Last maintenance window in which protection-policy patching ran on this device ("2026-10-25T22:00").
     patch_window_run: Mapped[str | None] = mapped_column(String(20), nullable=True)
     # Values of the MSP's custom device fields ({key: value}); definitions in CustomField.
@@ -1569,6 +1574,15 @@ class BackgroundJob(Base):
     running_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # set while it runs: shows a hung job
 
 
+class PlatformState(Base):
+    """Small pieces of platform-wide state that must survive restarts, such as which health problems were last alerted."""
+
+    __tablename__ = "platform_state"
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    value: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class RateLimitBucket(Base):
     """Shared sliding windows, serialized using a database write lock per key."""
     __tablename__ = "rate_limit_buckets"
@@ -2196,6 +2210,42 @@ class NetworkNode(Base):
     last_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     ignored: Mapped[bool] = mapped_column(Boolean, default=False)
     __table_args__ = (UniqueConstraint("tenant_id", "key", name="uq_network_node"),)
+
+
+class NetworkSnmpCredential(Base):
+    """Read-only SNMP access to a customer's switches and routers, for switch-port topology (topology.py).
+    Secrets (community, or v3 auth/priv passphrases) are in the encrypted envelope and only ever released to a
+    probe device, for one discovery command."""
+    __tablename__ = "network_snmp_credentials"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("snc"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200), default="")
+    version: Mapped[str] = mapped_column(String(4), default="2c")  # 2c | 3
+    username: Mapped[str] = mapped_column(String(200), default="")
+    auth_protocol: Mapped[str] = mapped_column(String(10), default="")  # SHA | SHA256 | SHA512 | MD5
+    priv_protocol: Mapped[str] = mapped_column(String(10), default="")  # AES | AES256 | DES
+    hosts: Mapped[list] = mapped_column(JSON, default=list)  # switch/router IPv4 addresses
+    secret_envelope: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_result: Mapped[dict] = mapped_column(JSON, default=dict)  # host -> {ok, error, at}
+
+
+class NetworkLink(Base):
+    """A physical connection inferred from switch tables: a node on a switch port (access), several nodes behind one
+    port (shared: an unmanaged switch or access point), or one switch to another (uplink)."""
+    __tablename__ = "network_links"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("lnk"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    switch_node_id: Mapped[str] = mapped_column(String(32), index=True)
+    port: Mapped[str] = mapped_column(String(120), default="")
+    node_id: Mapped[str] = mapped_column(String(32), index=True)
+    peer_port: Mapped[str] = mapped_column(String(120), default="")  # the far end's port, for uplinks
+    kind: Mapped[str] = mapped_column(String(20), default="access")  # access | shared | uplink
+    vlan: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source: Mapped[str] = mapped_column(String(20), default="fdb")  # fdb | lldp
+    last_seen: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class ConditionPackage(Base):

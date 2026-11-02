@@ -299,6 +299,7 @@ label.field input, label.field select, label.field textarea { color: var(--text)
 .action-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 10px; }
 .action-grid button { justify-content: center; min-height: 42px; }
 button.warn { background: rgba(245,158,11,.12); border-color: rgba(245,158,11,.45); color: #fde68a; }
+.card.warn-card { border-left: 4px solid var(--amber); }
 .qr-box { background: #fff; padding: 12px; border-radius: 12px; display: inline-block; }
 .qr-box canvas, .qr-box img { display: block; width: 220px !important; height: 220px !important; max-width: 100%; }
 .add-phone { display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-start; }

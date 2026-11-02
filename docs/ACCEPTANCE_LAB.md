@@ -86,6 +86,10 @@ still waiting to upload.
 - [ ] **Isolation:** the VM cannot browse while isolated but still shows online in the console; release restores it.
 - [ ] **Reboot and upgrade:** the service comes back after a restart, and an agent update from **Settings → Agent
   releases** reaches the VM through its ring.
+- [ ] **Switch-port topology:** on a network with a managed switch, make the Ubuntu VM the customer's probe (**Network →
+  Topology → Schedule**) and add the switch under **Switch access** (read-only SNMP v3, or a v2c community). Run the
+  `topology` check, or **Discover now**. **Physical connections** should show each lab VM on the switch port its host
+  is plugged into, and any uplink to another switch. A switch that doesn't answer is listed with the reason.
 
 ## 3. Your own machines first
 

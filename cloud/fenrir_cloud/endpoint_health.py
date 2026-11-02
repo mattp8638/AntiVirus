@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import audit, presence
-from .models import AgentRelease, Alert, Device, Event, utcnow
+from .models import AgentRelease, Alert, DefenderState, Device, Event, utcnow
 
 UNHEALTHY = {"degraded", "unprotected", "disabled", "error", "tampered"}
 HEALTH_RULE = "fenrir.health.protection-degraded"
@@ -45,6 +45,25 @@ def on_heartbeat(db: Session, device: Device, previous_state: str) -> None:
         open_alert.details = {**(open_alert.details or {}), "resolvedBy": "agent reported healthy"}
 
 
+def pre_execution(device: Device, defender_status: dict | None) -> str | None:
+    """What blocks a malicious program on this Windows device before it runs (decisions.md D-06).
+
+    Fenrir ships no kernel driver, so its Windows agent stops threats just after they start. Blocking beforehand comes
+    from Microsoft Defender: "defender" when Defender's antivirus and real-time protection are on in an active mode,
+    "none" when it reported otherwise, "unknown" before Fenrir has read its state. None for other platforms.
+    """
+    from .defender import ACTIVE_MODES
+
+    if (device.platform or "").lower() != "windows":
+        return None
+    status = defender_status or {}
+    if not status:
+        return "unknown"
+    mode = str(status.get("mode") or "").lower()
+    active = status.get("available", True) and status.get("antivirus") and status.get("realTime") and (not mode or mode in ACTIVE_MODES)
+    return "defender" if active else "none"
+
+
 def summary(db: Session, tenant_ids: list[str]) -> dict:
     now = utcnow()
     devices = db.execute(select(Device).where(Device.tenant_id.in_(tenant_ids), Device.approved.is_(True))).scalars().all()
@@ -60,6 +79,8 @@ def summary(db: Session, tenant_ids: list[str]) -> dict:
         Event.device_id.in_(ids), Event.event_type.like("%quarantin%"), Event.occurred_at >= since).group_by(Event.device_id)).all()) if ids else {}
     detections = dict(db.execute(select(Alert.device_id, func.count()).where(
         Alert.device_id.in_(ids), Alert.created_at >= since, Alert.rule_id != HEALTH_RULE).group_by(Alert.device_id)).all()) if ids else {}
+    defender = {s.device_id: s.status or {} for s in db.execute(
+        select(DefenderState).where(DefenderState.device_id.in_(ids))).scalars()} if ids else {}
     rows = []
     for d in devices:
         online = presence.is_up(d, now)
@@ -75,8 +96,10 @@ def summary(db: Session, tenant_ids: list[str]) -> dict:
                      "lastSeenAt": d.last_seen_at.isoformat(timespec="seconds") + "Z" if d.last_seen_at else None,
                      "lastScanAt": scan_at.isoformat(timespec="seconds") + "Z" if scan_at else None,
                      "noRecentScan": not scan_at or scan_at < now - timedelta(days=7),
-                     "quarantined30d": quarantined.get(d.id, 0), "detections30d": detections.get(d.id, 0)})
+                     "quarantined30d": quarantined.get(d.id, 0), "detections30d": detections.get(d.id, 0),
+                     "preExecution": pre_execution(d, defender.get(d.id))})
     totals = {key: sum(1 for r in rows if r["status"] == key) for key in ("protected", "outdated", "stale", "unprotected")}
+    totals["preExecution"] = {key: sum(1 for r in rows if r["preExecution"] == key) for key in ("defender", "none", "unknown")}
     totals.update({"devices": len(rows), "online": sum(1 for r in rows if r["online"]),
                    "noRecentScan": sum(1 for r in rows if r["noRecentScan"]), "isolated": sum(1 for r in rows if r["isolated"])})
     order = {"unprotected": 0, "stale": 1, "outdated": 2, "protected": 3}

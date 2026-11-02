@@ -245,6 +245,9 @@ export default function DeviceDetail() {
             <div className="menu-label">Other</div>
             <button role="menuitem" onClick={() => { close(); setAction(""); }}>All remote actions…</button>
             <button role="menuitem" onClick={() => { close(); navigator.clipboard?.writeText(d.id); }}>Copy device ID</button>
+            {can("configure") && <button role="menuitem" title={d.apiKeyRotatedAt ? `Key last replaced ${new Date(d.apiKeyRotatedAt).toLocaleString()}` : "Key not replaced since enrolment"}
+              onClick={() => { close(); run(() => api(`devices/${d.id}/rotate-key`, { method: "POST" }), "The agent will replace its key at its next check-in"); }}>
+              {d.keyRotationRequested ? "Key rotation requested" : "Rotate device key"}</button>}
             {can("configure") && <><div className="menu-sep" />
               <button role="menuitem" className="danger-text" onClick={() => { close(); setRetireName(""); setRetiring(true); }}>Decommission device…</button></>}
           </>}</Menu>

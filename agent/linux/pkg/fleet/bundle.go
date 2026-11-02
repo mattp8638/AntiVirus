@@ -86,7 +86,7 @@ func (c *Client) UploadArtifact(commandID, filename string, data []byte) (string
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/gzip")
-	req.Header.Set("X-Device-Api-Key", c.APIKey)
+	req.Header.Set("X-Device-Api-Key", c.Key())
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return "", err

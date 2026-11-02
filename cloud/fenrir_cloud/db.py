@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 53
+LATEST_MIGRATION = 56
 
 def init_engine(url: str) -> Engine:
     global _engine, _session_factory
@@ -416,6 +416,22 @@ def migrate(bind: Engine) -> list[int]:
                 MobileApp.__table__.create(conn, checkfirst=True)
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (53)"))
                 applied.append(53)
+            if 54 not in versions:
+                from .models import NetworkLink, NetworkSnmpCredential
+                NetworkSnmpCredential.__table__.create(conn, checkfirst=True)
+                NetworkLink.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (54)"))
+                applied.append(54)
+            if 55 not in versions:
+                from .models import PlatformState
+                PlatformState.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (55)"))
+                applied.append(55)
+            if 56 not in versions:
+                ensure_columns(Base, conn)  # devices.pending_api_key_hash, api_key_rotated_at, key_rotation_requested
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_devices_pending_api_key_hash ON devices (pending_api_key_hash)"))
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (56)"))
+                applied.append(56)
             conn.commit()
         except Exception:
             conn.rollback()

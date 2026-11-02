@@ -123,6 +123,24 @@ def _digest(file: Path) -> str:
     return checksum.hexdigest()
 
 
+# Shared by the Linux and macOS installers: an optional web proxy for networks that require one. A repair install keeps
+# the proxy already configured unless --proxy is given; --proxy none removes it. Only the agent's own traffic uses it.
+PROXY_ARGS = """proxy=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --proxy) [ $# -ge 2 ] || { echo "--proxy needs a URL, for example --proxy http://proxy.example:3128" >&2; exit 2; }
+             proxy="$2"; shift 2 ;;
+    --proxy=*) proxy="${1#*=}"; shift ;;
+    *) echo "Unknown option: $1 (the only option is --proxy URL)" >&2; exit 2 ;;
+  esac
+done
+case "$proxy" in
+  ""|none|http://*|https://*) ;;
+  *) echo "--proxy must look like http://host:port (or none to remove a configured proxy)" >&2; exit 2 ;;
+esac
+case "$proxy" in *[!A-Za-z0-9:/._@%-]*) echo "--proxy contains characters a proxy address cannot have" >&2; exit 2 ;; esac"""
+
+
 def _linux_script(base: str, token: str) -> bytes:
     bins = {arch: release_file(f"fenrir-agent-linux-{arch}") for arch in ("amd64", "arm64")}
     if not all(bins.values()):
@@ -138,6 +156,11 @@ for tool in base64 gzip sha256sum install systemctl mktemp; do
   command -v "$tool" >/dev/null 2>&1 || {{ echo "Missing dependency: $tool" >&2; exit 1; }}
 done
 [ -d /run/systemd/system ] || {{ echo "systemd is required for a persistent installation." >&2; exit 1; }}
+{PROXY_ARGS}
+if [ -z "$proxy" ] && [ -f /etc/fenrir/agent.env ]; then
+  proxy="$(sed -n 's/^HTTPS_PROXY=//p' /etc/fenrir/agent.env | tail -1)"
+fi
+[ "$proxy" = none ] && proxy=""
 case "$(uname -m)" in
   x86_64|amd64) arch=amd64; expected={digests['amd64']} ;;
   aarch64|arm64) arch=arm64; expected={digests['arm64']} ;;
@@ -171,6 +194,9 @@ FENRIR_SERVER=$base
 FENRIR_ENROLLMENT_TOKEN=$token
 FENRIR_STATE_DIR=/var/lib/fenrir
 EOF
+if [ -n "$proxy" ]; then
+  printf 'HTTPS_PROXY=%s\\nHTTP_PROXY=%s\\nNO_PROXY=localhost,127.0.0.1,::1\\n' "$proxy" "$proxy" >> /etc/fenrir/agent.env
+fi
 chmod 600 /etc/fenrir/agent.env
 cat > /etc/systemd/system/fenrir-agent.service <<'EOF'
 [Unit]
@@ -210,6 +236,16 @@ def _macos_script(base: str, token: str) -> bytes:
 # Fenrir macOS customer installer. Treat this file as a secret until enrollment completes.
 set -eu
 if [ "$(id -u)" -ne 0 ]; then echo "Run this installer with sudo." >&2; exit 1; fi
+{PROXY_ARGS}
+plist=/Library/LaunchDaemons/com.fenrir.agent.plist
+if [ -z "$proxy" ] && [ -f "$plist" ]; then
+  proxy="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:HTTPS_PROXY' "$plist" 2>/dev/null || true)"
+fi
+[ "$proxy" = none ] && proxy=""
+proxy_env=""
+if [ -n "$proxy" ]; then
+  proxy_env="<key>HTTPS_PROXY</key><string>$proxy</string><key>HTTP_PROXY</key><string>$proxy</string><key>NO_PROXY</key><string>localhost,127.0.0.1,::1</string>"
+fi
 case "$(uname -m)" in
   x86_64) arch=amd64; expected={digests['amd64']} ;;
   arm64) arch=arm64; expected={digests['arm64']} ;;
@@ -237,7 +273,6 @@ printf '%s  %s\\n' "$expected" "$tmp/fenrir-agent" | /usr/bin/shasum -a 256 -c -
 /usr/bin/install -m 0755 "$tmp/fenrir-agent" /usr/local/bin/fenrir-agent.new
 /bin/mv -f /usr/local/bin/fenrir-agent.new /usr/local/bin/fenrir-agent
 /usr/bin/xattr -d com.apple.quarantine /usr/local/bin/fenrir-agent 2>/dev/null || true
-plist=/Library/LaunchDaemons/com.fenrir.agent.plist
 umask 077
 cat > "$plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -251,6 +286,7 @@ cat > "$plist" <<EOF
     <key>FENRIR_SERVER</key><string>$base</string>
     <key>FENRIR_ENROLLMENT_TOKEN</key><string>$token</string>
     <key>FENRIR_STATE_DIR</key><string>/var/db/fenrir</string>
+    $proxy_env
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

@@ -11,6 +11,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from . import devicekeys
 from . import presence
 from .config import get_settings
 from .db import get_db
@@ -153,7 +154,7 @@ def current_device(
 ) -> Device:
     if not x_device_api_key:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing X-Device-Api-Key")
-    device = db.execute(select(Device).where(Device.api_key_hash == digest(x_device_api_key))).scalar_one_or_none()
+    device = devicekeys.find(db, x_device_api_key)
     if device is None or device.id != device_id:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unknown device credentials")
     presence.touch(device)
@@ -169,7 +170,7 @@ def current_command_device(
         raise HTTPException(401, "Missing X-Device-Api-Key")
     key_hash = digest(x_device_api_key)
     device = db.get(Device, device_id)
-    if device is not None and hmac.compare_digest(device.api_key_hash, key_hash):
+    if device is not None and devicekeys.matches(db, device, x_device_api_key):
         presence.touch(device)
         return device
     command = db.get(Command, command_id)
@@ -203,7 +204,7 @@ def current_device_by_key(x_device_api_key: str | None = Header(default=None), d
     """Device authentication for agent endpoints that have no device id in the path."""
     if not x_device_api_key:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing X-Device-Api-Key")
-    device = db.execute(select(Device).where(Device.api_key_hash == digest(x_device_api_key))).scalar_one_or_none()
+    device = devicekeys.find(db, x_device_api_key)
     if device is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unknown device credentials")
     presence.touch(device)

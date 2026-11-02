@@ -206,7 +206,7 @@ def retire_device(device_id: str, principal: Principal = Depends(current_princip
         asset.status = "Retired"
         asset.updated_at = utcnow()
     device.approved = False
-    device.api_key_hash = f"retired-{device.id}"
+    device.api_key_hash, device.pending_api_key_hash = f"retired-{device.id}", None
     if web_profile.agentless(device):
         web_profile.resolve_silent(db, device, utcnow(), "The device was decommissioned.")
     audit.record(db, principal.actor, "device.retired", device.hostname, device.tenant_id, **cancellation)
@@ -214,6 +214,20 @@ def retire_device(device_id: str, principal: Principal = Depends(current_princip
     for session in active_support:
         remote.notify_session_end(session.id, principal.actor)
     return {"ok": True, **cancellation, "sessionsEnded": len(active_support)}
+
+
+@router.post("/devices/{device_id}/rotate-key")
+def request_key_rotation(device_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Ask the agent to replace its API key at its next heartbeat (CORE-04). For a key you believe is compromised,
+    decommission the device instead: that revokes it immediately."""
+    principal.require("configure")
+    device = _get_device(db, principal, device_id)
+    if device.api_key_hash == f"retired-{device.id}" or device.api_key_hash.startswith("profile-"):
+        raise HTTPException(409, "This device has no agent key to rotate.")
+    device.key_rotation_requested = True
+    audit.record(db, principal.actor, "device.key_rotation_requested", device.hostname, device.tenant_id)
+    db.commit()
+    return {"ok": True, "keyRotationRequested": True}
 
 
 @router.post("/devices/{device_id}/purge")

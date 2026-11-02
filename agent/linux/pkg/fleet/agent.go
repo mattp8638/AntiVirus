@@ -66,9 +66,11 @@ type Agent struct {
 	files   *FileMonitor
 	mu      sync.Mutex
 	queue   []Event
-	stop    chan struct{}
-	wake    chan struct{}
-	lastInv time.Time
+	// spoolSaved is when the queue was last written to disk while uploads were failing (see saveSpool).
+	spoolSaved time.Time
+	stop       chan struct{}
+	wake       chan struct{}
+	lastInv    time.Time
 	// System profile (profile.go): last upload and whether one is being collected.
 	lastProfile time.Time
 	profileBusy atomic.Bool
@@ -120,8 +122,10 @@ func New(cfg Config) *Agent {
 
 func (a *Agent) statePath() string { return filepath.Join(a.cfg.StateDir, "state.json") }
 
-func (a *Agent) saveState() error {
-	data, _ := json.MarshalIndent(a.state, "", "  ")
+func (a *Agent) saveState() error { return a.writeState(a.state) }
+
+func (a *Agent) writeState(state State) error {
+	data, _ := json.MarshalIndent(state, "", "  ")
 	tmp := a.statePath() + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
@@ -184,7 +188,11 @@ func (a *Agent) Start() error {
 		}
 		log.Printf("enrolled as %s (approved=%v)", resp.DeviceID, resp.Approved)
 	}
-	a.client.DeviceID, a.client.APIKey = a.state.DeviceID, a.state.APIKey
+	a.client.DeviceID = a.state.DeviceID
+	a.client.SetKey(a.state.APIKey)
+	if n := a.loadSpool(); n > 0 {
+		log.Printf("reloaded %d telemetry events saved while the cloud was unreachable", n)
+	}
 	a.procs = NewProcessSensor(a.cfg.ProcRoot)
 	a.netw = NewNetworkSensor(a.cfg.ProcRoot)
 	globs := a.cfg.PersistenceGlobs
@@ -262,6 +270,71 @@ func (a *Agent) Flush() error {
 	a.queue = a.queue[len(batch):]
 	a.mu.Unlock()
 	return nil
+}
+
+// The offline spool: telemetry queued while the cloud is unreachable is written to the state directory, so a restart
+// or reboot during an outage does not lose it (detections included). It is reloaded at start and removed once the
+// queue has drained.
+const spoolInterval = 5 * time.Minute
+
+func (a *Agent) spoolPath() string { return filepath.Join(a.cfg.StateDir, "telemetry-spool.json") }
+
+func (a *Agent) saveSpool() error {
+	a.mu.Lock()
+	events := append([]Event(nil), a.queue...)
+	a.mu.Unlock()
+	if len(events) == 0 {
+		err := os.Remove(a.spoolPath())
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if len(events) > 40000 {
+		events = events[len(events)-40000:]
+	}
+	data, err := json.Marshal(events)
+	if err != nil {
+		return err
+	}
+	tmp := a.spoolPath() + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	a.spoolSaved = time.Now()
+	return os.Rename(tmp, a.spoolPath())
+}
+
+func (a *Agent) loadSpool() int {
+	data, err := os.ReadFile(a.spoolPath())
+	if err != nil {
+		return 0
+	}
+	var events []Event
+	if err := json.Unmarshal(data, &events); err != nil {
+		log.Printf("telemetry spool unreadable, discarding it: %v", err)
+		_ = os.Remove(a.spoolPath())
+		return 0
+	}
+	a.mu.Lock()
+	a.queue = append(events, a.queue...)
+	a.mu.Unlock()
+	return len(events)
+}
+
+// flushOrSpool uploads what it can; while the cloud is unreachable it keeps the queue on disk (at most every
+// spoolInterval), and once the queue has drained it removes the spool.
+func (a *Agent) flushOrSpool(force bool) error {
+	err := a.Flush()
+	switch {
+	case err != nil && (force || time.Since(a.spoolSaved) >= spoolInterval):
+		if serr := a.saveSpool(); serr != nil {
+			log.Printf("telemetry spool could not be written: %v", serr)
+		}
+	case err == nil && a.QueueLength() == 0:
+		_ = os.Remove(a.spoolPath())
+	}
+	return err
 }
 
 func (a *Agent) QueueLength() int {
@@ -501,6 +574,9 @@ func (a *Agent) heartbeat() {
 		log.Printf("heartbeat failed: %v", err)
 		return
 	}
+	if resp.RotateKey {
+		a.rotateKey()
+	}
 	if resp.EffectivePolicyRevision != a.state.Policy.Revision {
 		a.refreshPolicy()
 	}
@@ -508,6 +584,26 @@ func (a *Agent) heartbeat() {
 	if resp.CommandsPending > 0 {
 		a.RunCommands()
 	}
+}
+
+// rotateKey replaces the device API key. The new key is saved before it is used: until its first use the cloud
+// still accepts the old one, so a failure at any point leaves a working key and the next heartbeat asks again.
+func (a *Agent) rotateKey() {
+	key, err := a.client.RotateKey()
+	if err != nil {
+		log.Printf("key rotation: could not get a new key: %v", err)
+		return
+	}
+	next := a.state
+	next.APIKey = key
+	if err := a.writeState(next); err != nil {
+		log.Printf("key rotation: could not save the new key, keeping the current one: %v", err)
+		return
+	}
+	a.state.APIKey = key
+	a.client.SetKey(key)
+	a.emit("device.key.rotated", "control-plane-client", "The device API key was replaced", nil)
+	log.Printf("device API key rotated")
 }
 
 // Run blocks until Stop is called.
@@ -542,14 +638,14 @@ func (a *Agent) Run() {
 		select {
 		case <-a.stop:
 			a.stopDNSProxy() // never leave the system resolver pointing at a proxy that is gone
-			_ = a.Flush()
+			_ = a.flushOrSpool(true)
 			return
 		case <-a.wake:
 			a.RunCommands()
 		case <-sense.C:
 			a.SenseOnce()
 		case <-upload.C:
-			if err := a.Flush(); err != nil {
+			if err := a.flushOrSpool(false); err != nil {
 				log.Printf("telemetry upload failed (%d queued): %v", a.QueueLength(), err)
 			}
 		case <-beat.C:
@@ -768,7 +864,7 @@ func (a *Agent) ExecuteContext(ctx context.Context, cmd Command) (map[string]int
 	case "pii.scan":
 		return PIIScanContext(ctx, cmd.PayloadJSON)
 	case "network.discover":
-		return a.DiscoverContext(ctx, cmd.PayloadJSON)
+		return a.DiscoverContext(ctx, cmd.PayloadJSON, func() ([]SnmpCredential, error) { return a.client.FetchSnmpCredentials(cmd.ID) })
 	case "amt.wsman":
 		cred, err := a.client.FetchAmtCredential(cmd.ID)
 		if err != nil {

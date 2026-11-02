@@ -335,6 +335,57 @@ jobs:
           test "$after" = "$before"
           curl --fail --silent --show-error http://127.0.0.1:8080/ready
           echo "PASS: backup restored devices, tickets, commands and the audit chain; secrets decrypt"
+      - name: Go-live preflight against the running stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The CI stack is a lab (plain HTTP, no code-signing certificate), so preflight must report it as not ready;
+          # every check it can pass here must pass, and it must never print a secret.
+          status=0
+          FENRIR_COMPOSE_FILES="$PWD/deploy/docker-compose.lab.yml" FENRIR_BACKUP_DIR=/tmp/fenrir-backups NO_COLOR=1 \
+            deploy/preflight.sh --url http://127.0.0.1:8080 > /tmp/preflight.txt || status=$?
+          cat /tmp/preflight.txt
+          { echo '### Go-live preflight (lab stack)'; echo '```'; cat /tmp/preflight.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          test "$status" = 1 || { echo "preflight exited $status, expected 1"; exit 1; }
+          for expected in \
+            "PASS  .env is readable by its owner only" \
+            "PASS  The four secrets are all different" \
+            "PASS  Release signing key present, Ed25519, owner-only" \
+            "PASS  Containers running: db cloud worker" \
+            "PASS  A backup from the last two days" \
+            "PASS  /ready: database up and schema current" \
+            "PASS  /health/background" \
+            "FAIL  FENRIR_PUBLIC_URL (http://127.0.0.1:8080) is not HTTPS" \
+            "FAIL  No Windows code-signing certificate"; do
+            grep -qF "$expected" /tmp/preflight.txt || { echo "missing: $expected"; exit 1; }
+          done
+          for name in POSTGRES_PASSWORD FENRIR_SECRET_KEY FENRIR_VAULT_KEY FENRIR_ADMIN_PASSWORD; do
+            value="$(sed -n "s/^$name=//p" deploy/.env)"
+            if grep -qF "$value" /tmp/preflight.txt; then echo "preflight printed $name"; exit 1; fi
+          done
+          echo "PASS: preflight checked the live stack and printed no secrets"
+      - name: Restore into a brand-new server and measure the recovery time (AT-24)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export FENRIR_COMPOSE_FILES="$PWD/deploy/docker-compose.lab.yml"
+          c() { docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.lab.yml --env-file deploy/.env "$@"; }
+          count() { c exec -T db psql -U fenrir -d fenrir -tAc "SELECT (SELECT count(*) FROM devices) || ',' || (SELECT count(*) FROM psa_tickets) || ',' || (SELECT count(*) FROM audit_log WHERE actor <> 'system:health-watch') || ',' || (SELECT count(*) FROM commands)" | tr -d '[:space:]'; }
+          before="$(count)"
+          deploy/backup.sh /tmp/fenrir-fresh
+          backup="$(ls -d /tmp/fenrir-fresh/fenrir-backup-* | tail -1)"
+          # Lose the whole server: containers, database and artifact volumes. Only the backup, .env and signing remain.
+          c down -v --remove-orphans
+          started=$(date +%s)
+          c up -d --wait --wait-timeout 300
+          deploy/restore.sh "$backup" --yes
+          curl --fail --silent --show-error --retry 20 --retry-delay 3 --retry-all-errors http://127.0.0.1:8080/health/background > /dev/null
+          rto=$(( $(date +%s) - started ))
+          after="$(count)"
+          echo "before=$before after=$after recovery=${rto}s"
+          test "$after" = "$before"
+          echo "### Fresh-server restore: ${rto} s from empty server to background jobs healthy (counts $after)" >> "$GITHUB_STEP_SUMMARY"
+          echo "PASS: a brand-new server restored from backup in ${rto} s with identical devices, tickets, audit entries and commands"
       - name: Diagnostics on failure
         if: failure()
         shell: bash

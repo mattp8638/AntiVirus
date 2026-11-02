@@ -345,8 +345,12 @@ std::optional<HttpResponse> ExecuteHttpGet(const std::wstring& path) {
   }
   requestPath += path.starts_with(L"/") ? path.substr(1) : path;
 
-  const auto session = WinHttpOpen(L"Fenrir ThreatIntel/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-                                   WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+  auto session = WinHttpOpen(L"Fenrir ThreatIntel/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
+                             WINHTTP_NO_PROXY_BYPASS, 0);
+  if (session == nullptr) {
+    session = WinHttpOpen(L"Fenrir ThreatIntel/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
+                          WINHTTP_NO_PROXY_BYPASS, 0);
+  }
   if (session == nullptr) {
     return std::nullopt;
   }

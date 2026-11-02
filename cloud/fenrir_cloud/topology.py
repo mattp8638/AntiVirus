@@ -20,8 +20,14 @@ import json
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import audit, services
-from .models import Command, Device, NetworkNode, NetworkSubnet, Tenant, utcnow
+from datetime import timedelta
+
+from . import audit, crypto, services
+from .models import Command, Device, NetworkLink, NetworkNode, NetworkSnmpCredential, NetworkSubnet, Tenant, utcnow
+
+crypto.register_encrypted(NetworkSnmpCredential, "secret_envelope", lambda row: f"snmp:{row.tenant_id}:{row.id}")
+CREDENTIAL_WINDOW = timedelta(hours=2)
+SHARED_PORT_LIMIT = 64  # MACs on one non-uplink port beyond this are not attributed (likely an unlabelled uplink)
 
 MARKER = "FENRIR-TOPOLOGY-RESULT:"
 MAX_NEIGHBOURS = 4096
@@ -69,9 +75,19 @@ $result = [ordered]@{ interfaces = $interfaces; gateway = $gateway; neighbors = 
 """
 
 
+def snmp_enabled(db: Session, device: Device) -> bool:
+    """Switches are queried only from the customer's chosen probe devices, and only when credentials exist."""
+    tenant = db.get(Tenant, device.tenant_id)
+    probes = ((tenant.settings or {}).get("topology") or {}).get("probeDeviceIds") or [] if tenant else []
+    if device.id not in probes or device.platform not in ("linux", "macos"):
+        return False  # Windows probes run discovery as a script, which cannot fetch credentials safely (decisions.md D-17)
+    return db.execute(select(NetworkSnmpCredential.id).where(NetworkSnmpCredential.tenant_id == device.tenant_id).limit(1)).first() is not None
+
+
 def request_discovery(db: Session, device: Device, actor: str, sweep: bool = True) -> Command:
+    snmp = snmp_enabled(db, device)
     if device.platform in {"linux", "macos"}:
-        return services.enqueue_command(db, device, "network.discover", actor, payload={"sweep": sweep, "topologyScan": True},
+        return services.enqueue_command(db, device, "network.discover", actor, payload={"sweep": sweep, "topologyScan": True, "snmp": snmp},
                                         reason="Network topology discovery")
     if device.platform == "windows":
         body = WINDOWS_SCRIPT if sweep else WINDOWS_SCRIPT.replace("$targets.Count -lt 1024", "$false")
@@ -247,7 +263,164 @@ def on_command_complete(db: Session, device: Device, command: Command) -> None:
     if data is None:
         return
     summary = ingest(db, device, data)
+    if data.get("switches"):
+        summary.update(ingest_switches(db, device, data["switches"]))
+    if data.get("snmpError"):
+        summary["snmpError"] = str(data["snmpError"])[:300]
     audit.record(db, "system", "topology.discovered", device.hostname, device.tenant_id, **summary)
+
+
+# --------------------------------------------------------------------------- switch-port topology over SNMP
+
+def snmp_secret(row: NetworkSnmpCredential) -> dict:
+    return json.loads(crypto.decrypt(row.secret_envelope, f"snmp:{row.tenant_id}:{row.id}")) if row.secret_envelope else {}
+
+
+def snmp_credentials_for_command(db: Session, device: Device, command: Command) -> list[dict]:
+    """The customer's switch credentials for one discovery command, released once, to the probe it was sent to."""
+    payload = command.payload or {}
+    if (command.device_id != device.id or not payload.get("topologyScan") or not payload.get("snmp")
+            or command.status not in ("pending", "dispatched") or payload.get("snmpReleased")
+            or utcnow() - command.created_at > CREDENTIAL_WINDOW or not snmp_enabled(db, device)):
+        raise LookupError("No switch credentials are available for this command")
+    rows = db.execute(select(NetworkSnmpCredential).where(NetworkSnmpCredential.tenant_id == device.tenant_id)).scalars().all()
+    out = []
+    for row in rows:
+        secret = snmp_secret(row)
+        out.append({"credentialId": row.id, "version": row.version, "hosts": [h for h in row.hosts or [] if _private(h)],
+                    "community": secret.get("community", ""), "username": row.username, "authProtocol": row.auth_protocol,
+                    "authPassword": secret.get("authPassword", ""), "privProtocol": row.priv_protocol, "privPassword": secret.get("privPassword", "")})
+    command.payload = {**payload, "snmpReleased": utcnow().isoformat() + "Z"}
+    audit.record(db, f"device:{device.hostname}", "topology.snmp_credentials_released", f"{len(out)} credentials", device.tenant_id,
+                 command=command.id)
+    return out
+
+
+def _short(name: str) -> str:
+    return (name or "").strip().lower().split(".")[0]
+
+
+def ingest_switches(db: Session, device: Device, switches: list) -> dict:
+    """Turn switch tables into links. Each MAC is placed on the switch port where it was learned that is not an
+    uplink (a port facing another known switch, by LLDP or by that switch's MAC being learned there); if it was
+    learned on several such ports, the one with the fewest MACs wins (closest to the device). A port with one MAC
+    is an access link; with several, a shared link (an unmanaged switch, hub or access point behind it)."""
+    now = utcnow()
+    tenant_id = device.tenant_id
+    reports = [r for r in switches if isinstance(r, dict) and r.get("host")][:64]
+    credential_results: dict[str, dict] = {}
+    good = []
+    for r in reports:
+        credential_results.setdefault(str(r.get("credentialId") or ""), {})[str(r["host"])] = {
+            "ok": not r.get("error"), "error": str(r.get("error") or "")[:300], "at": now.isoformat() + "Z", "sysName": str(r.get("sysName") or "")[:120]}
+        if not r.get("error"):
+            good.append(r)
+    for cred_id, results in credential_results.items():
+        row = db.get(NetworkSnmpCredential, cred_id) if cred_id else None
+        if row is not None and row.tenant_id == tenant_id:
+            row.last_result = {**(row.last_result or {}), **results}
+    # 1. A node for every switch that answered.
+    switch_nodes: dict[str, NetworkNode] = {}
+    by_mac: dict[str, NetworkNode] = {}
+    by_name: dict[str, NetworkNode] = {}
+    for r in good:
+        host, bridge = str(r["host"]), _mac(r.get("bridgeMac"))
+        key = f"mac:{bridge}" if bridge else f"ip:{host}"
+        node = db.execute(select(NetworkNode).where(NetworkNode.tenant_id == tenant_id, NetworkNode.key == key)).scalar_one_or_none()
+        if node is None and bridge:
+            node = db.execute(select(NetworkNode).where(NetworkNode.tenant_id == tenant_id, NetworkNode.key == f"ip:{host}")).scalar_one_or_none()
+            if node is not None:
+                node.key = key
+        if node is None:
+            node = NetworkNode(tenant_id=tenant_id, key=key)
+            db.add(node)
+        node.ip, node.mac = host, bridge or node.mac
+        node.hostname = str(r.get("sysName") or node.hostname or "")[:255]
+        node.vendor = (str(r.get("sysDescr") or "").split(",")[0][:120]) or node.vendor
+        node.kind = "gateway" if node.kind == "gateway" else "network"
+        node.last_seen, node.seen_by = now, sorted(set(node.seen_by or []) | {device.id})
+        if not node.subnet:
+            subnets = [ipaddress.ip_network(s.cidr) for s in db.execute(select(NetworkSubnet).where(NetworkSubnet.tenant_id == tenant_id)).scalars()]
+            node.subnet = _subnet_for(host, subnets)
+        db.flush()
+        switch_nodes[host] = node
+        if bridge:
+            by_mac[bridge] = node
+        if r.get("sysName"):
+            by_name[_short(str(r["sysName"]))] = node
+    # 2. Port names, uplinks and where each MAC was learned.
+    arp: dict[str, str] = {}
+    learned: dict[str, list[tuple[str, str, int | None]]] = {}  # mac -> [(switch host, port, vlan)]
+    port_macs: dict[tuple[str, str], set[str]] = {}
+    uplinks: dict[tuple[str, str], tuple[NetworkNode, str]] = {}  # (host, port) -> (peer switch node, peer port)
+    for r in good:
+        host = str(r["host"])
+        ports, bridge_ports = r.get("ports") or {}, r.get("bridgePorts") or {}
+
+        def port_name(bridge_port: str, ports=ports, bridge_ports=bridge_ports) -> str:
+            if_index = str(bridge_ports.get(str(bridge_port)) or bridge_port)
+            return str(ports.get(if_index) or f"port {bridge_port}")[:120]
+        for entry in r.get("arp") or []:
+            if _mac(entry.get("mac")) and _private(str(entry.get("ip") or "")):
+                arp[_mac(entry.get("mac"))] = str(entry["ip"])
+        for n in r.get("lldp") or []:
+            peer = by_mac.get(_mac(n.get("remoteChassis"))) or by_name.get(_short(str(n.get("remoteSysName") or "")))
+            local = str(n.get("localPortName") or ports.get(str(n.get("localPort"))) or f"port {n.get('localPort')}")[:120]
+            if peer is not None and peer is not switch_nodes[host]:
+                uplinks[(host, local)] = (peer, str(n.get("remotePortDesc") or n.get("remotePort") or "")[:120])
+        for entry in r.get("fdb") or []:
+            mac = _mac(entry.get("mac"))
+            if not mac:
+                continue
+            port = port_name(str(entry.get("bridgePort")))
+            vlan = entry.get("vlan") if isinstance(entry.get("vlan"), int) and entry.get("vlan") > 0 else None
+            learned.setdefault(mac, []).append((host, port, vlan))
+            port_macs.setdefault((host, port), set()).add(mac)
+    # A port where another switch's MAC is learned faces that switch.
+    for mac, places in learned.items():
+        peer = by_mac.get(mac)
+        if peer is None:
+            continue
+        for host, port, _vlan in places:
+            if switch_nodes.get(host) is not peer:
+                uplinks.setdefault((host, port), (peer, ""))
+    # 3. Rebuild links for the switches that answered.
+    switch_ids = [n.id for n in switch_nodes.values()]
+    if switch_ids:
+        db.query(NetworkLink).filter(NetworkLink.tenant_id == tenant_id, NetworkLink.switch_node_id.in_(switch_ids)).delete(synchronize_session=False)
+    links = 0
+    for (host, port), (peer, peer_port) in uplinks.items():
+        db.add(NetworkLink(tenant_id=tenant_id, switch_node_id=switch_nodes[host].id, port=port, node_id=peer.id, peer_port=peer_port,
+                           kind="uplink", source="lldp" if peer_port else "fdb", last_seen=now))
+        links += 1
+    placed = 0
+    for mac, places in learned.items():
+        if mac in by_mac:
+            continue
+        edge = [(host, port, vlan) for host, port, vlan in places if (host, port) not in uplinks
+                and len(port_macs.get((host, port), ())) <= SHARED_PORT_LIMIT]
+        if not edge:
+            continue  # only seen through uplinks: it sits behind a switch Fenrir cannot read
+        host, port, vlan = min(edge, key=lambda p: len(port_macs[(p[0], p[1])]))
+        node = db.execute(select(NetworkNode).where(NetworkNode.tenant_id == tenant_id, NetworkNode.key == f"mac:{mac}")).scalar_one_or_none()
+        ip = arp.get(mac, "")
+        if node is None and ip:
+            node = db.execute(select(NetworkNode).where(NetworkNode.tenant_id == tenant_id, NetworkNode.key == f"ip:{ip}")).scalar_one_or_none()
+            if node is not None:
+                node.key = f"mac:{mac}"
+        if node is None:
+            node = NetworkNode(tenant_id=tenant_id, key=f"mac:{mac}", ip=ip, mac=mac, vendor=vendor(mac), kind="unknown")
+            db.add(node)
+        node.mac = mac
+        node.ip = node.ip or ip
+        node.last_seen = now
+        db.flush()
+        db.add(NetworkLink(tenant_id=tenant_id, switch_node_id=switch_nodes[host].id, port=port, node_id=node.id,
+                           kind="access" if len(port_macs[(host, port)]) == 1 else "shared", vlan=vlan, last_seen=now))
+        placed += 1
+        links += 1
+    db.flush()
+    return {"switches": len(good), "switchErrors": len(reports) - len(good), "links": links, "placed": placed}
 
 
 def graph(db: Session, tenant_id: str) -> dict:
@@ -271,11 +444,36 @@ def graph(db: Session, tenant_id: str) -> dict:
         gw = by_ip.get(s.gateway_ip)
         if gw is not None:
             edges.append({"from": gw.id, "to": f"subnet:{s.cidr}", "kind": "gateway"})
+    # Physical connections from switch tables (switch-port topology).
+    links = db.execute(select(NetworkLink).where(NetworkLink.tenant_id == tenant_id)).scalars().all()
+    by_id = {n["id"]: n for n in out_nodes}
+    for link in links:
+        edges.append({"from": link.switch_node_id, "to": link.node_id, "kind": link.kind, "port": link.port, "peerPort": link.peer_port,
+                      "vlan": link.vlan})
+        target, switch = by_id.get(link.node_id), by_id.get(link.switch_node_id)
+        if target is not None and switch is not None and link.kind != "uplink":
+            target["connection"] = {"switchId": switch["id"], "switch": switch["label"], "port": link.port, "kind": link.kind, "vlan": link.vlan}
+    switches = []
+    for n in out_nodes:
+        if n["type"] != "node" or not any(l.switch_node_id == n["id"] for l in links):
+            continue
+        mine = [l for l in links if l.switch_node_id == n["id"]]
+        switches.append({"id": n["id"], "label": n["label"], "ip": n["ip"],
+                         "uplinks": [{"port": l.port, "to": l.node_id, "toLabel": by_id.get(l.node_id, {}).get("label", ""), "peerPort": l.peer_port}
+                                     for l in mine if l.kind == "uplink"],
+                         "ports": sorted({l.port for l in mine if l.kind != "uplink"}, key=_port_sort)})
     unmanaged = [n for n in out_nodes if n["type"] == "node" and not n["managed"] and not n["ignored"]]
-    return {"nodes": out_nodes, "edges": edges,
+    return {"nodes": out_nodes, "edges": edges, "switches": switches,
             "summary": {"subnets": len(subnets), "nodes": len(nodes), "managed": sum(1 for n in nodes if n.device_id),
-                        "unmanaged": len(unmanaged),
+                        "unmanaged": len(unmanaged), "switches": len(switches),
+                        "connected": sum(1 for n in out_nodes if n.get("connection")),
                         "deployable": sum(1 for n in unmanaged if n["kind"] in ("workstation", "server"))}}
+
+
+def _port_sort(name: str):
+    import re
+
+    return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", name)]
 
 
 def tick(db: Session) -> int:

@@ -47,7 +47,7 @@ func (c *Client) DownloadFile(path string, limit int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("X-Device-Api-Key", c.APIKey)
+	req.Header.Set("X-Device-Api-Key", c.Key())
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, err

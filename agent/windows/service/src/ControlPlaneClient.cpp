@@ -597,8 +597,13 @@ HttpResponse RequestJson(const wchar_t* method, const std::wstring& url, const s
   const auto secure = components.nScheme == INTERNET_SCHEME_HTTPS;
   const auto* agentName = L"FenrirAgent/0.1";
 
-  auto session = WinHttpOpen(agentName, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
+  // Automatic proxy first (the machine's WinHTTP proxy, or WPAD/PAC where the network publishes one), as the realtime
+  // socket does; the static WinHTTP proxy (netsh winhttp set proxy) on Windows versions without it.
+  auto session = WinHttpOpen(agentName, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
                              WINHTTP_NO_PROXY_BYPASS, 0);
+  if (session == nullptr) {
+    session = WinHttpOpen(agentName, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+  }
   if (session == nullptr) {
     throw std::runtime_error("WinHttpOpen failed");
   }
@@ -1143,7 +1148,23 @@ HeartbeatResult ControlPlaneClient::SendHeartbeat(const AgentState& state, const
       .receivedAt = RequireString(ExtractJsonString(response.body, "receivedAt"), "receivedAt"),
       .effectivePolicyRevision =
           RequireString(ExtractJsonString(response.body, "effectivePolicyRevision"), "effectivePolicyRevision"),
-      .commandsPending = ExtractJsonInt(response.body, "commandsPending").value_or(0)};
+      .commandsPending = ExtractJsonInt(response.body, "commandsPending").value_or(0),
+      .rotateKey = ExtractJsonBool(response.body, "rotateKey").value_or(false)};
+}
+
+std::wstring ControlPlaneClient::RotateDeviceKey(const AgentState& state) const {
+  if (state.deviceId.empty()) {
+    throw std::runtime_error("Cannot rotate the key of a device that is not enrolled");
+  }
+  const auto deviceApiKey = ExtractDeviceApiKeyFromCommandChannelUrl(state.commandChannelUrl);
+  const auto response = RequestJson(L"POST", JoinUrl(baseUrl_, L"/api/v1/devices/" + state.deviceId + L"/rotate-key"),
+                                    "{}", deviceApiKey);
+  const auto commandChannelUrl = RequireString(ExtractJsonString(response.body, "commandChannelUrl"), "commandChannelUrl");
+  const auto newKey = ExtractDeviceApiKeyFromCommandChannelUrl(commandChannelUrl);
+  if (newKey.size() < 16 || newKey == deviceApiKey) {
+    throw std::runtime_error("The control plane did not return a usable new device key");
+  }
+  return commandChannelUrl;
 }
 
 PolicyCheckInResult ControlPlaneClient::CheckInPolicy(const AgentState& state) const {

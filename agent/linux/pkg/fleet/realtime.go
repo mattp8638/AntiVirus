@@ -53,7 +53,7 @@ func (a *Agent) listenRealtime() {
 
 func (a *Agent) realtimeOnce() error {
 	dialer := websocket.Dialer{HandshakeTimeout: 20 * time.Second, Proxy: http.ProxyFromEnvironment}
-	conn, _, err := dialer.Dial(RealtimeURL(a.cfg.Server, a.state.DeviceID), http.Header{"X-Device-Api-Key": {a.state.APIKey}})
+	conn, _, err := dialer.Dial(RealtimeURL(a.cfg.Server, a.state.DeviceID), http.Header{"X-Device-Api-Key": {a.client.Key()}})
 	if err != nil {
 		return err
 	}

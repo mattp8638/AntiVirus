@@ -115,6 +115,7 @@ class AgentService {
   std::wstring ExecutePathRemediationCommand(const RemoteCommand& command);
   std::wstring ExecuteScriptCommand(const RemoteCommand& command);
   void PublishHeartbeat(int cycle);
+  void RotateDeviceKey();
   void PersistState();
   void LoadLocalPolicyCache();
   void StartTelemetrySpool() const;

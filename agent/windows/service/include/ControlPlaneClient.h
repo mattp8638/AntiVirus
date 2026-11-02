@@ -23,6 +23,7 @@ struct HeartbeatResult {
   std::wstring receivedAt;
   std::wstring effectivePolicyRevision;
   int commandsPending{0};
+  bool rotateKey{false};  // the control plane wants this device to replace its API key
 };
 
 struct PolicyCheckInResult {
@@ -126,6 +127,9 @@ class ControlPlaneClient {
   EnrollmentResult Enroll(const AgentState& state, const std::wstring& enrollmentToken = {}) const;
   // metricsJson: the RMM health object (CPU, memory, disks...) or empty.
   HeartbeatResult SendHeartbeat(const AgentState& state, const std::string& metricsJson = "") const;
+  // Asks for a new device API key and returns the command channel URL that carries it. The current key keeps working
+  // until the new one is first used, so the caller saves the URL before switching to it.
+  std::wstring RotateDeviceKey(const AgentState& state) const;
   // 'Request support' from the agent window; returns the ticket number. bodyJson: {summary, details, user, contact}.
   std::wstring SubmitSupportRequest(const AgentState& state, const std::string& bodyJson) const;
   // POST /elevation-requests; returns the response body ({"id","status","minutes"}).
