@@ -2,9 +2,20 @@
 
 Two pieces keep everything current without merging, pulling and rebuilding by hand.
 
-## 1. The server follows a branch
+## 1. The server follows releases (or a branch)
 
-`deploy/auto-update.sh` checks the branch every 10 minutes. When it has new commits, the script:
+A server follows one of three tracks:
+
+| Track | Follows | Use for |
+| --- | --- | --- |
+| `stable` | the newest release tag `vX.Y.Z` | production |
+| `candidate` | release candidates `vX.Y.Z-rc.N` as well as releases | a staging server that gets each release first |
+| `branch` | every commit on a branch (`main` by default) | development; this was the only option before |
+
+Releases are cut from `main` (see "Cutting a release" below). Tags sort as versions, so `v1.10.0` is newer than
+`v1.9.2`, and a release is newer than its candidates.
+
+`deploy/auto-update.sh` checks every 10 minutes. When there is something new to deploy, the script:
 1. pulls them;
 2. builds the new image while the old one keeps serving;
 3. restarts the containers;
@@ -16,9 +27,23 @@ One-time setup on the server:
 
 ```
 cd ~/AntiVirus
-sudo deploy/install-auto-update.sh            # follows main
-sudo deploy/install-auto-update.sh my-branch  # or follow another branch
+sudo deploy/install-auto-update.sh --stable     # production: release tags
+sudo deploy/install-auto-update.sh --candidate  # staging: candidates too
+sudo deploy/install-auto-update.sh              # every commit on main
+sudo deploy/install-auto-update.sh my-branch    # every commit on another branch
 ```
+
+The deployed release is written to `deploy/.deployed-release`.
+
+### Cutting a release
+
+1. Merge the work into `main` (a pull request).
+2. Tag a candidate and push it: `git tag v1.4.0-rc.1 origin/main && git push origin v1.4.0-rc.1`. The release workflow
+   runs the server and console tests on the tag and publishes a pre-release with notes; the staging server deploys it.
+3. When staging looks right, tag the same commit as the release: `git tag v1.4.0 v1.4.0-rc.1 && git push origin v1.4.0`.
+   Production servers deploy it within 10 minutes, and agents follow their server as below.
+
+A failed tag never deploys: if its build or health check fails, the server stays on the previous release.
 
 | What | Command |
 | --- | --- |

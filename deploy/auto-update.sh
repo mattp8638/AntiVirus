@@ -7,7 +7,10 @@
 # the server's differs (Windows within about 30 minutes, Linux/macOS likewise).
 #
 # Settings (environment, or deploy/auto-update.env next to this script):
-#   FENRIR_DEPLOY_BRANCH   branch to follow (default: main)
+#   FENRIR_DEPLOY_TRACK    what to follow: "stable" (the newest release tag vX.Y.Z), "candidate" (the newest tag
+#                          including release candidates vX.Y.Z-rc.N, for a staging server that takes a release a day
+#                          before production) or "branch" (every commit on FENRIR_DEPLOY_BRANCH; the default, as before)
+#   FENRIR_DEPLOY_BRANCH   branch to follow when the track is "branch" (default: main)
 #   FENRIR_COMPOSE_FILES   compose files (default: docker-compose.yml, plus docker-compose.https.yml if present)
 #   FENRIR_ENV_FILE        env file (default: deploy/.env)
 set -euo pipefail
@@ -16,6 +19,7 @@ DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$DEPLOY_DIR/.." && pwd)"
 [ -f "$DEPLOY_DIR/auto-update.env" ] && . "$DEPLOY_DIR/auto-update.env"
 BRANCH="${FENRIR_DEPLOY_BRANCH:-main}"
+TRACK="${FENRIR_DEPLOY_TRACK:-branch}"
 ENV_FILE="${FENRIR_ENV_FILE:-$DEPLOY_DIR/.env}"
 LOG_FILE="${FENRIR_UPDATE_LOG:-/var/log/fenrir-auto-update.log}"
 
@@ -113,9 +117,29 @@ exec 9>/tmp/fenrir-auto-update.lock
 flock -n 9 || exit 0  # a previous run is still building
 
 cd "$REPO_DIR"
-git_ fetch --quiet origin "$BRANCH"
-current="$(git_ rev-parse HEAD)"
-target="$(git_ rev-parse "origin/$BRANCH")"
+# The newest release tag for a track, by version order (v1.10.0 after v1.9.2; a release after its candidates).
+newest_tag() {
+  local pattern='^v[0-9]+\.[0-9]+\.[0-9]+$'
+  [ "$1" = "candidate" ] && pattern='^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$'
+  git_ tag --list 'v*' | grep -E "$pattern" | sed -E 's/^(v[0-9.]+)$/\1-~/' | sort -V | tail -1 | sed 's/-~$//'
+}
+case "$TRACK" in
+  stable|candidate)
+    git_ fetch --quiet --tags --force origin
+    RELEASE="$(newest_tag "$TRACK")"
+    if [ -z "$RELEASE" ]; then
+      log "No release tag for the $TRACK track yet (vX.Y.Z$([ "$TRACK" = candidate ] && echo ' or vX.Y.Z-rc.N')); nothing to deploy."
+      exit 0
+    fi
+    BRANCH="fenrir-release"  # local branch the deployed release is checked out on
+    current="$(git_ rev-parse HEAD)"
+    target="$(git_ rev-parse "$RELEASE^{commit}")" ;;
+  branch)
+    git_ fetch --quiet origin "$BRANCH"
+    current="$(git_ rev-parse HEAD)"
+    target="$(git_ rev-parse "origin/$BRANCH")" ;;
+  *) log "ERROR: FENRIR_DEPLOY_TRACK must be stable, candidate or branch (got '$TRACK')"; exit 1 ;;
+esac
 [ "$current" = "$target" ] && [ "${1:-}" != "--force" ] && exit 0
 
 FAILED_FILE="${FENRIR_FAILED_FILE:-/var/tmp/fenrir-auto-update.failed}"
@@ -128,10 +152,11 @@ if ! git_ diff --quiet || ! git_ diff --cached --quiet; then
   exit 1
 fi
 
-log "Updating $BRANCH ${current:0:8} -> ${target:0:8}"
+log "Updating ${RELEASE:-$BRANCH} ${current:0:8} -> ${target:0:8}"
 git_ checkout --quiet -B "$BRANCH" "$target"
 if deploy; then
-  log "Deployed ${target:0:8}: $(git_ log -1 --format=%s)"
+  log "Deployed ${RELEASE:+$RELEASE }${target:0:8}: $(git_ log -1 --format=%s)"
+  echo "${RELEASE:-$BRANCH@${target:0:8}}" > "$DEPLOY_DIR/.deployed-release" 2>/dev/null || true
   rm -f "$FAILED_FILE"
   docker image prune -f >/dev/null 2>&1 || true
   exit 0
