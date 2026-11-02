@@ -4,6 +4,7 @@
 #include "TemporaryAdmin.h"
 #include "CrashReporter.h"
 #include "SystemProfile.h"
+#include "ActiveDirectoryOps.h"
 #include "ExtendedPolicy.h"
 #include "FirewallPolicy.h"
 #include "AmtWsman.h"
@@ -2114,6 +2115,28 @@ std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
     SecureZeroMemory(credential.password.data(), credential.password.size() * sizeof(wchar_t));
     return Utf8ToWide(result);
   }
+  if (command.type == L"ad.directory") {
+    // Hybrid identity: one allowlisted Active Directory operation (or an Entra Connect delta sync) on this server.
+    std::wstring secret;
+    const auto request = json::Parse(WideToUtf8(command.payloadJson));
+    if (request && request->IsObject() && request->Get("secret") && request->Get("secret")->Bool().value_or(false)) {
+      const auto released = json::Parse(controlPlaneClient_->FetchCommandSecret(IdentitySnapshot(), command.commandId));
+      if (!released || !released->IsObject() || !released->Get("secret")) {
+        throw std::runtime_error("The one-time secret for this Active Directory change could not be read");
+      }
+      secret = Utf8ToWide(released->Get("secret")->String().value_or(""));
+    }
+    const auto workRoot = config_.runtimeDatabasePath.parent_path() / L"ad";
+    std::string result;
+    try {
+      result = RunActiveDirectoryOperation(WideToUtf8(command.payloadJson), secret, workRoot);
+    } catch (...) {
+      SecureZeroMemory(secret.data(), secret.size() * sizeof(wchar_t));
+      throw;
+    }
+    SecureZeroMemory(secret.data(), secret.size() * sizeof(wchar_t));
+    return Utf8ToWide(result);
+  }
   if (command.type == L"amsi.telemetry.submit") {
     return ExecuteAmsiTelemetrySubmitCommand(command);
   }
@@ -3094,7 +3117,19 @@ std::string AllowServiceSas() {
   return value == 1 || value == 3 ? "" : "blocked by the 'Disable or enable software Secure Attention Sequence' Group Policy";
 }
 
-std::string SendSasFromService(HANDLE pipe, DWORD helperPid, DWORD windowsSession) {
+// How SendSAS is called. CI on Windows Server 2025 showed that calling it while impersonating the SYSTEM helper of
+// the target session is accepted and silently ignored, so the default is a direct call from the service, which Windows
+// honours for the console session. The others stay available for the self-test, which reports which one works.
+enum class SasMethod { Automatic, Direct, ImpersonateHelper, ImpersonateUser };
+
+SasMethod ParseSasMethod(const std::string& request) {
+  if (request == "sas:direct") return SasMethod::Direct;
+  if (request == "sas:impersonate") return SasMethod::ImpersonateHelper;
+  if (request == "sas:user") return SasMethod::ImpersonateUser;
+  return SasMethod::Automatic;
+}
+
+std::string SendSasFromService(HANDLE pipe, DWORD helperPid, DWORD windowsSession, SasMethod method = SasMethod::Automatic) {
   using SendSasFn = VOID(WINAPI*)(BOOL);
   if (auto error = AllowServiceSas(); !error.empty()) {
     return error;
@@ -3129,13 +3164,34 @@ std::string SendSasFromService(HANDLE pipe, DWORD helperPid, DWORD windowsSessio
   const auto denied = remote::ValidateSasCaller(helperPid, callerPid, windowsSession, tokenSession,
                                                system, identity && level >= SecurityImpersonation);
   if (token) CloseHandle(token);
-  if (denied.empty()) {
-    fn(FALSE);  // A real service, impersonating the SYSTEM helper in the target session.
+  if (method == SasMethod::Automatic) {
+    method = windowsSession == WTSGetActiveConsoleSessionId() ? SasMethod::Direct : SasMethod::ImpersonateHelper;
+  }
+  if (denied.empty() && method == SasMethod::ImpersonateHelper) {
+    fn(FALSE);  // still impersonating the SYSTEM helper in the target session
   }
   const bool reverted = RevertToSelf() != FALSE;
+  if (!reverted) {
+    FreeLibrary(sas);
+    return "could not restore the service security context after Ctrl+Alt+Del";
+  }
+  std::string failure(denied);
+  if (failure.empty() && method == SasMethod::Direct) {
+    fn(FALSE);  // as the service itself: Windows sends it to the console session
+  } else if (failure.empty() && method == SasMethod::ImpersonateUser) {
+    HANDLE userToken = nullptr;
+    if (!WTSQueryUserToken(windowsSession, &userToken)) {
+      failure = "nobody is signed in to that Windows session (error " + std::to_string(GetLastError()) + ")";
+    } else if (!ImpersonateLoggedOnUser(userToken)) {
+      failure = "could not act as the signed-in user";
+    } else {
+      fn(FALSE);
+      if (!RevertToSelf()) failure = "could not restore the service security context after Ctrl+Alt+Del";
+    }
+    if (userToken) CloseHandle(userToken);
+  }
   FreeLibrary(sas);
-  if (!reverted) return "could not restore the service security context after Ctrl+Alt+Del";
-  return std::string(denied);
+  return failure;
 }
 
 std::wstring SasPipeName(const std::wstring& sessionId) {
@@ -3186,10 +3242,10 @@ void ServeSasRequests(std::wstring pipeName, DWORD helperPid, DWORD windowsSessi
     std::string reply;
     if (clientPid != helperPid) {
       reply = "error: only the remote session's helper may request Ctrl+Alt+Del";
-    } else if (!received || std::string(request, read) != "sas") {
+    } else if (!received || std::string(request, read).rfind("sas", 0) != 0 || read > 16) {
       reply = "error: unknown request";
     } else {
-      const auto failure = SendSasFromService(pipe, helperPid, windowsSession);
+      const auto failure = SendSasFromService(pipe, helperPid, windowsSession, ParseSasMethod(std::string(request, read)));
       reply = failure.empty() ? "ok" : "error: " + failure;
     }
     overlapped = {};
@@ -3470,12 +3526,16 @@ std::wstring AgentService::RunSasSelfTest() {
   }
   const auto folder = config_.runtimeDatabasePath.parent_path() / L"remote";
   std::filesystem::create_directories(folder, ec);
+  std::wstring attempts;
+  bool worked = false;
+  const int logonUiBefore = CountProcessesInSession(L"LogonUI.exe", windowsSession);
+  int logonUiAfter = logonUiBefore;
+  for (const wchar_t* method : {L"auto", L"direct", L"impersonate", L"user"}) {
   const auto id = L"sas-selftest-" + GenerateGuidString();
   const auto resultPath = folder / (id + L".json");
-  std::wstring commandLine = L"\"" + helper.wstring() + L"\" --sas-selftest " + id + L" \"" + resultPath.wstring() + L"\"";
+  std::wstring commandLine = L"\"" + helper.wstring() + L"\" --sas-selftest " + id + L" \"" + resultPath.wstring() + L"\" " + method;
   std::vector<wchar_t> mutableCommand(commandLine.begin(), commandLine.end());
   mutableCommand.push_back(L'\0');
-  const int logonUiBefore = CountProcessesInSession(L"LogonUI.exe", windowsSession);
   HANDLE self = nullptr, primary = nullptr;
   if (!OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID, &self) ||
       !DuplicateTokenEx(self, MAXIMUM_ALLOWED, nullptr, SecurityImpersonation, TokenPrimary, &primary)) {
@@ -3513,7 +3573,7 @@ std::wstring AgentService::RunSasSelfTest() {
   DWORD exitCode = 0;
   GetExitCodeProcess(process.hProcess, &exitCode);
   CloseHandle(process.hProcess);
-  int logonUiAfter = CountProcessesInSession(L"LogonUI.exe", windowsSession);
+  logonUiAfter = CountProcessesInSession(L"LogonUI.exe", windowsSession);
   for (int i = 0; i < 12 && logonUiAfter <= logonUiBefore; ++i) {
     Sleep(250);
     logonUiAfter = CountProcessesInSession(L"LogonUI.exe", windowsSession);
@@ -3523,11 +3583,18 @@ std::wstring AgentService::RunSasSelfTest() {
   in.close();
   std::filesystem::remove(resultPath, ec);
   if (result.empty() || result.front() != '{') result = "null";
+  attempts += std::wstring(attempts.empty() ? L"" : L",") + L"{\"method\":\"" + method + L"\",\"exitCode\":" + std::to_wstring(exitCode) +
+              L",\"logonUiAfter\":" + std::to_wstring(logonUiAfter) + L",\"selfTest\":" + Utf8ToWide(result) + L"}";
+  if (exitCode == 0 || logonUiAfter > logonUiBefore) {
+    worked = true;
+    break;  // the security screen is open now; later methods could not be told apart
+  }
+  }
   const DWORD policy = SasPolicyValue();
-  return L"{\"exitCode\":" + std::to_wstring(exitCode) + L",\"windowsSession\":" + std::to_wstring(windowsSession) +
+  return L"{\"worked\":" + std::wstring(worked ? L"true" : L"false") + L",\"windowsSession\":" + std::to_wstring(windowsSession) +
          L",\"consoleSession\":" + std::to_wstring(WTSGetActiveConsoleSessionId()) + L",\"logonUiBefore\":" + std::to_wstring(logonUiBefore) +
-         L",\"logonUiAfter\":" + std::to_wstring(logonUiAfter) + L",\"softwareSasGeneration\":" +
-         (policy == 0xFFFFFFFF ? std::wstring(L"null") : std::to_wstring(policy)) + L",\"selfTest\":" + Utf8ToWide(result) + L"}";
+         L",\"softwareSasGeneration\":" + (policy == 0xFFFFFFFF ? std::wstring(L"null") : std::to_wstring(policy)) +
+         L",\"attempts\":[" + attempts + L"]}";
 }
 
 // Proves the backstage hidden desktop on this machine: runs the helper's self-test as SYSTEM in session 0 (where

@@ -138,6 +138,8 @@ class ControlPlaneClient {
   void ReportElevationEvent(const AgentState& state, const std::wstring& requestId, const std::string& bodyJson) const;
   // POST /commands/<id>/amt-credential: the AMT connection details for one amt.wsman command, released once.
   std::string FetchAmtCredential(const AgentState& state, const std::wstring& commandId) const;
+  // POST /commands/<id>/secret: the one-time secret of one ad.directory command ({"secret": "..."}), released once.
+  std::string FetchCommandSecret(const AgentState& state, const std::wstring& commandId) const;
   // POST /profile with the system profile document ({"profile":..., "recoveryKeys":[...]}).
   void SendSystemProfile(const AgentState& state, const std::string& bodyJson) const;
   // ws(s)://.../api/v1/devices/<id>/realtime and the device key that authenticates it.

@@ -12,7 +12,10 @@ import httpx
 from . import m365, m365_permissions
 from .models import utcnow
 
-USER_FIELDS = "id,displayName,userPrincipalName,accountEnabled,department,jobTitle,usageLocation,assignedLicenses,userType,mail"
+USER_FIELDS = ("id,displayName,userPrincipalName,accountEnabled,department,jobTitle,usageLocation,assignedLicenses,userType,mail,"
+               "givenName,surname,onPremisesSyncEnabled,onPremisesSamAccountName,onPremisesUserPrincipalName,onPremisesDomainName")
+# What Microsoft refuses to change in the cloud for a user synced from Active Directory (it belongs to AD).
+SYNCED_MASTERED = {"user.update", "user.signin", "user.reset_password"}
 GROUP_FIELDS = "id,displayName,groupTypes,mailEnabled,securityEnabled,isAssignableToRole,onPremisesSyncEnabled,mailNickname"
 # What each operation needs on an app connection (GDAP connections: m365_permissions.FEATURES[...]["delegated"]).
 CAPABILITIES = {op: list(m365_permissions.FEATURES[feature]["app"] or []) for op, feature in m365_permissions.OPERATION_FEATURE.items()}
@@ -146,6 +149,10 @@ def preview(connection, operation, target, parameters):
         validate_license(operation, parameters, current)
         if operation in ("user.revoke_sessions", "user.tap", "user.reset_mfa", "user.reset_password"):
             _member(current)
+        if current.get("onPremisesSyncEnabled") and operation in SYNCED_MASTERED:
+            raise ProviderError("This user is synced from Active Directory, so Microsoft only accepts this change in AD. Use "
+                                "Offboarding (Fenrir makes the AD changes on the domain controller), or change it in Active "
+                                "Directory Users and Computers; Entra Connect brings it across within 30 minutes.")
         result = {"user": current, "changes": parameters, "requiredPermissions": required}
         if operation.startswith("group."):
             result["group"] = group(client, headers, parameters["groupId"])

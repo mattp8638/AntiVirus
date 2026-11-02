@@ -34,10 +34,22 @@ class OffboardOptions(BaseModel):
     removeLicences: bool = False
     markContact: bool = True
     openTicket: bool = True
+    # AD-synced users only: move the account to this OU (a distinguished name) and hide it from the address book.
+    adMoveOu: str = Field(default="", max_length=512)
+    hideFromAddressBook: bool = False
+
+
+class AdPlacement(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    sam: str = Field(default="", max_length=20, pattern=r"^[A-Za-z0-9._-]*$")
+    ou: str = Field(default="", max_length=512)
+    groups: list[str] = Field(default_factory=list, max_length=50)
 
 
 class OnboardOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    createIn: Literal["cloud", "ad"] = "cloud"  # ad: created in Active Directory and synced by Entra Connect
+    ad: AdPlacement | None = None
     profile: NewUserProfile
     managerId: UUID | None = None
     skuIds: list[UUID] = Field(default_factory=list, max_length=10)
@@ -149,7 +161,8 @@ def run(workflow_id: str, body: RunInput, request: Request, principal: Principal
         outcome = lifecycle.run(db, connection, flow, principal.actor)
     except (httpx.HTTPError, ValueError, KeyError, crypto.VaultError) as exc:
         raise _failure(exc) from None
-    return {"workflow": to_dict(outcome["workflow"]), "secrets": outcome["secrets"], "more": outcome["more"]}
+    return {"workflow": to_dict(outcome["workflow"]), "secrets": outcome["secrets"], "more": outcome["more"],
+            "waiting": outcome.get("waiting", "")}
 
 
 @router.post("/workflows/{workflow_id}/steps/{index}/resolve")

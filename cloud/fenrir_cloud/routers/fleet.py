@@ -383,6 +383,8 @@ def _require_fine(principal: Principal, spec) -> None:
         principal.require("remote")
     if spec.type == "amt.wsman":
         raise HTTPException(400, "Intel AMT requests are sent from Out-of-band management")
+    if spec.type == "ad.directory":
+        raise HTTPException(400, "Active Directory changes are made from Microsoft 365 onboarding and offboarding")
 
 
 @router.post("/devices/{device_id}/commands")

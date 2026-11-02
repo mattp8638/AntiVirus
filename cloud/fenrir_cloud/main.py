@@ -45,6 +45,7 @@ from .routers import defender as defender_router
 from .routers import mobile_apps as mobile_apps_router
 from .routers import web_profile as web_profile_router
 from .routers import oob as oob_router
+from .routers import hybrid as hybrid_router
 from .routers import customization as customization_router
 from .routers import grc_assurance as grc_assurance_router
 from .routers import admin, agent_api, artifacts as artifacts_router, business, crm as crm_router, fleet, portal, protection, service_mgmt, soc
@@ -297,6 +298,7 @@ def _scheduled_jobs() -> list[tuple[str, int, object]]:
         ("psa.timed-workflows", 1, psa.timed_workflows),
         ("remote.expire-sessions", 1, remote.expire_sessions),
         ("m365.temp-admin-expiry", 2, m365_lifecycle.expire_temp_admins),  # every minute
+        ("m365.workflows-waiting", 2, m365_lifecycle.advance_waiting),  # hybrid AD steps and Entra Connect sync
         ("events.outbox", 1, events.process),  # after the jobs above, so their events go out in the same pass
         ("network", 1, network.tick),
         ("psa.mailbox", 4, _poll_msp_mailbox),  # every two minutes
@@ -515,6 +517,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(remote_router.sockets)
     app.include_router(oob_router.router)
     app.include_router(oob_router.agent_router)
+    app.include_router(hybrid_router.router)
+    app.include_router(hybrid_router.agent_router)
     app.include_router(network_router.agent)
     app.include_router(grc_assurance_router.router)
     app.include_router(grc_assurance_router.public)

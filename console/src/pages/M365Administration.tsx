@@ -103,7 +103,9 @@ export function M365Administration({ connection }: { connection: any }) {
     {can("m365_admin") && tab === "Users" && <div className="row" style={{ gap: 8 }}><button onClick={() => startCreate("user")}>New user</button><button onClick={() => startCreate("guest")}>Invite guest</button></div>}
     {can("m365_admin") && tab === "Groups" && <button onClick={() => startCreate("group")}>New group</button>}
     {tab === "Users" && <Table rows={users?.filter((r) => `${r.displayName} ${r.userPrincipalName}`.toLowerCase().includes(query.toLowerCase()))} onRow={can("m365_admin") ? choose : undefined}
-      columns={[{ key: "displayName", label: "Name" }, { key: "userPrincipalName", label: "Sign-in" }, { key: "userType", label: "Type" }, { key: "accountEnabled", label: "Sign-in enabled" }, { key: "department", label: "Department" }]} />}
+      columns={[{ key: "displayName", label: "Name" }, { key: "userPrincipalName", label: "Sign-in" }, { key: "userType", label: "Type" },
+        { key: "source", label: "Managed in", render: (r) => r.onPremisesSyncEnabled ? <Pill value="Active Directory" tone="blue" /> : <span className="small muted">Microsoft 365</span> },
+        { key: "accountEnabled", label: "Sign-in enabled" }, { key: "department", label: "Department" }]} />}
     {tab === "Groups" && <><p className="small muted">Change membership from a user. Dynamic, role-assignable, synced and Exchange-managed groups need other tools.</p>
       <Table rows={groups?.filter((r) => r.displayName?.toLowerCase().includes(query.toLowerCase()))} columns={[{ key: "displayName", label: "Group" }, { key: "groupTypes", label: "Type", render: (r) => safeArray<string>(r.groupTypes).includes("Unified") ? "Microsoft 365" : safeArray<string>(r.groupTypes).join(", ") || (r.mailEnabled ? "Mail-enabled" : "Security") }, { key: "isAssignableToRole", label: "Role assignable" }, { key: "onPremisesSyncEnabled", label: "Synced" }]} /></>}
     {tab === "Licences" && <Table rows={licenses?.filter((r) => r.skuPartNumber?.toLowerCase().includes(query.toLowerCase()))} columns={[{ key: "skuPartNumber", label: "Product" }, { key: "consumedUnits", label: "Assigned" }, { key: "available", label: "Available", render: (r) => Math.max(0, (r.prepaidUnits?.enabled || 0) - (r.consumedUnits || 0)) }]} />}
@@ -122,6 +124,7 @@ export function M365Administration({ connection }: { connection: any }) {
     </Modal>}
 
     {selected && !job && <Modal title={selected.userPrincipalName} onClose={() => setSelected(null)}>
+      {selected.onPremisesSyncEnabled && <p className="small" style={{ color: "#93c5fd" }}>Synced from Active Directory ({displayValue(selected.onPremisesSamAccountName)}): its name, sign-in and password belong to AD, so Microsoft refuses those changes here. Use <b>Offboarding</b>, which makes them on the domain controller, or change them in AD.</p>}
       <label className="field">Action<select value={operation} onChange={(e) => { setOperation(e.target.value); setValue(""); setExtra({}); fresh(); }}>
         {OPERATIONS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></label>
       {operation === "user.update" && <label className="field">Profile field<select value={profileField} onChange={(e) => { setProfileField(e.target.value); setValue(selected[e.target.value] || ""); fresh(); }}><option value="displayName">Display name</option><option value="department">Department</option><option value="jobTitle">Job title</option><option value="usageLocation">Usage location</option></select></label>}

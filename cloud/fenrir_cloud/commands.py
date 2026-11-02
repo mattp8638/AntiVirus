@@ -77,6 +77,9 @@ CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("remote.backstage.selftest", "Test the backstage desktop", "Remote access",
                 description="Opens the hidden backstage desktop in session 0, shows a test window and Task Manager on it, "
                             "checks the capture works, and cleans up. Nothing appears on the user's screen."),
+    CommandSpec("ad.directory", "Active Directory change", "Identity", permission="configure",
+                description="One allowlisted Active Directory change (create, disable, password, groups, move) or an Entra "
+                            "Connect delta sync, sent by Microsoft 365 onboarding and offboarding for AD-synced users."),
     CommandSpec("remote.cad.selftest", "Test remote Ctrl+Alt+Del", "Remote access",
                 description="Sends Ctrl+Alt+Del to the signed-in Windows session the way a remote desktop session does, and "
                             "checks Windows opened its security screen. The user sees that screen: run it when that is fine."),
@@ -140,6 +143,8 @@ CATALOG: tuple[CommandSpec, ...] = (
 BY_TYPE = {spec.type: spec for spec in CATALOG}
 # Sent by a person from the device page only: never from automations, monitors, bulk actions or the API's batch paths.
 INTERACTIVE_ONLY = {"device.wipe", "device.lostmode"}
+# Sent only by the feature that owns them, never from a device's command menu or an RMM job.
+SERVER_ONLY = {"amt.wsman", "ad.directory"}
 
 
 def catalog_document() -> list[dict]:

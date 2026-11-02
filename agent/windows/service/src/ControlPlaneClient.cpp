@@ -1120,6 +1120,16 @@ std::string ControlPlaneClient::FetchAmtCredential(const AgentState& state, cons
       .body;
 }
 
+std::string ControlPlaneClient::FetchCommandSecret(const AgentState& state, const std::wstring& commandId) const {
+  if (state.deviceId.empty()) {
+    throw std::runtime_error("This device is not enrolled");
+  }
+  const auto deviceApiKey = ExtractDeviceApiKeyFromCommandChannelUrl(state.commandChannelUrl);
+  return RequestJson(L"POST", JoinUrl(baseUrl_, L"/api/v1/devices/" + state.deviceId + L"/commands/" + commandId + L"/secret"),
+                     "{}", deviceApiKey)
+      .body;
+}
+
 HeartbeatResult ControlPlaneClient::SendHeartbeat(const AgentState& state, const std::string& metricsJson) const {
   if (state.deviceId.empty()) {
     throw std::runtime_error("Cannot send heartbeat without a device identifier");
