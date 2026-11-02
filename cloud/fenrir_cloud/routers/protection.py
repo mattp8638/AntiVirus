@@ -280,8 +280,6 @@ def intel_sync(principal: Principal = Depends(current_principal), db: Session = 
     principal.require("platform")
     settings = get_settings()
     try:
-        if not settings.feed_url:
-            raise HTTPException(409, "No threat feed is configured: set FENRIR_FEED_URL to your own feed service")
         result = intel.sync_feed(db, settings.feed_url, settings.feed_token)
     except httpx.HTTPError as exc:
         raise HTTPException(502, f"Feed sync failed: {exc}") from exc

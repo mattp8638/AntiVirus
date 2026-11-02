@@ -5,8 +5,6 @@ page only says what to do and how you know it is done.
 
 ## 1. Before you start
 
-- [ ] Your own fork (or private copy) of the repository: your server installs and updates from it
-  ([README: Start here](../README.md#start-here-your-own-copy)).
 - [ ] A Linux server that meets the [requirements](../README.md#requirements), with SSH restricted to your addresses.
 - [ ] A DNS name (for example `rmm.yourmsp.co.uk`) pointing at it, and TCP 80 and 443 open to the internet.
 - [ ] Your Windows code-signing certificate (`.pfx`) and its password. See [code signing](CODE_SIGNING.md).

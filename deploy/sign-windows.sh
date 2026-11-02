@@ -60,13 +60,13 @@ sign_one() {
   fi
   # A timestamp keeps the signature valid after the certificate expires; try two services, then sign without.
   for ts in http://timestamp.digicert.com http://timestamp.sectigo.com; do
-    if osslsigncode sign -certs "$WORK/cert.pem" -key "$WORK/key.pem" -n "Fenrir Endpoint" \
+    if osslsigncode sign -certs "$WORK/cert.pem" -key "$WORK/key.pem" -n "Fenrir Endpoint" -i "https://fenrir-security.co.uk" \
          -h sha256 -ts "$ts" -in "$f" -out "$f.signed" >/dev/null 2>&1; then
       mv "$f.signed" "$f"; echo "sign-windows: signed (timestamped): $f"; return 0
     fi
     rm -f "$f.signed"
   done
-  osslsigncode sign -certs "$WORK/cert.pem" -key "$WORK/key.pem" -n "Fenrir Endpoint" \
+  osslsigncode sign -certs "$WORK/cert.pem" -key "$WORK/key.pem" -n "Fenrir Endpoint" -i "https://fenrir-security.co.uk" \
     -h sha256 -in "$f" -out "$f.signed" >/dev/null
   mv "$f.signed" "$f"
   echo "sign-windows: signed WITHOUT a timestamp (no timestamp service reachable): $f"

@@ -54,9 +54,8 @@ class Settings:
     # wait for approval. Turn off to require an enrollment token.
     open_enrollment: bool = field(default_factory=lambda: _bool("FENRIR_OPEN_ENROLLMENT", True))
 
-    # Upstream signature feed: your own deployment of components/signaturedb (README, "Your own threat feed"). Empty: no
-    # feed sync; the built-in rules, malware model and vulnerability intelligence still work.
-    feed_url: str = field(default_factory=lambda: os.getenv("FENRIR_FEED_URL", "").strip())
+    # Upstream signature feed (the signaturedb-fenrir Cloudflare worker).
+    feed_url: str = field(default_factory=lambda: os.getenv("FENRIR_FEED_URL", "https://api.fenrir-security.co.uk"))
     feed_token: str = field(default_factory=lambda: os.getenv("FENRIR_FEED_TOKEN", ""))
     feed_sync_enabled: bool = field(default_factory=lambda: _bool("FENRIR_FEED_SYNC", False))
 
