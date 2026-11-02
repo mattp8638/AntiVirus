@@ -35,6 +35,7 @@ import AttackSurface from "./pages/AttackSurface";
 import Compliance from "./pages/Compliance";
 import Crm from "./pages/Crm";
 import CrmAccount from "./pages/CrmAccount";
+import Onboarding from "./pages/Onboarding";
 import Billing from "./pages/Billing";
 import Portal from "./pages/Portal";
 
@@ -143,6 +144,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; al
     group: "Business",
     items: [
       { to: "/crm", label: "CRM & projects", icon: "☺" },
+      { to: "/onboarding", label: "Customer onboarding", icon: "✓" },
       { to: "/quotes", label: "Products & quotes", icon: "❖" },
       { to: "/billing", label: "Agreements & billing", icon: "£" },
     ],
@@ -339,6 +341,7 @@ function Shell() {
             <Route path="/attack-surface" element={<AttackSurface />} />
             <Route path="/compliance" element={<Compliance />} />
             <Route path="/crm" element={<Crm />} />
+            <Route path="/onboarding" element={<Onboarding />} />
             <Route path="/crm/accounts/:id" element={<CrmAccount />} />
             <Route path="/service-desk" element={<Navigate to="/service-board" replace />} />
             <Route path="/service-board" element={<ServiceBoard />} />

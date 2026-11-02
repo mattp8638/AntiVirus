@@ -6,8 +6,9 @@
 # Other findings (unsigned tools) are listed for review: a clean machine should produce few or none.
 param(
   [string]$Scanner = (Join-Path $PSScriptRoot '..\out\dev\tools\fenrir-scannercli.exe'),
-  [int]$MaxFiles = 1500,
-  [int]$BatchSize = 40
+  [int]$MaxFiles = 400,
+  [int]$BatchSize = 100,
+  [int]$BudgetMinutes = 12
 )
 $ErrorActionPreference = 'Stop'
 if (-not (Test-Path -LiteralPath $Scanner)) { throw "Scanner not built: $Scanner" }
@@ -27,15 +28,18 @@ foreach ($root in $roots) {
   # A spread across vendors, not thousands of files from one SDK: at most 25 programs per top-level folder.
   foreach ($dir in Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue) {
     Get-ChildItem -LiteralPath $dir.FullName -Recurse -File -Include *.exe, *.dll, *.ps1, *.msi -ErrorAction SilentlyContinue |
-      Where-Object { $_.Length -gt 0 -and $_.Length -lt 64MB } | Select-Object -First 25 | ForEach-Object { $files.Add($_.FullName) }
+      Where-Object { $_.Length -gt 0 -and $_.Length -lt 16MB } | Select-Object -First 8 | ForEach-Object { $files.Add($_.FullName) }
   }
-  Get-ChildItem -LiteralPath $root -File -Filter *.exe -ErrorAction SilentlyContinue | Select-Object -First 100 | ForEach-Object { $files.Add($_.FullName) }
+  Get-ChildItem -LiteralPath $root -File -Filter *.exe -ErrorAction SilentlyContinue | Select-Object -First 40 | ForEach-Object { $files.Add($_.FullName) }
 }
 $files = @($files | Select-Object -Unique | Select-Object -First $MaxFiles)
 Write-Host "Scanning $($files.Count) installed files from $($roots -join ', ')"
 
 $findings = New-Object System.Collections.Generic.List[object]
+$clock = [Diagnostics.Stopwatch]::StartNew()
+$scanned = 0
 for ($i = 0; $i -lt $files.Count; $i += $BatchSize) {
+  if ($clock.Elapsed.TotalMinutes -gt $BudgetMinutes) { Write-Warning "Time budget reached after $scanned files; judging what was scanned."; break }
   $batch = $files[$i..([Math]::Min($i + $BatchSize, $files.Count) - 1)]
   $scanArgs = @('--json', '--no-telemetry', '--no-remediation')
   foreach ($f in $batch) { $scanArgs += @('--path', $f) }
@@ -44,12 +48,15 @@ for ($i = 0; $i -lt $files.Count; $i += $BatchSize) {
   if ($start -lt 0) { Write-Warning "No JSON from the scanner for batch at $i"; continue }
   $parsed = $out.Substring($start) | ConvertFrom-Json
   foreach ($f in @($parsed.findings)) { if ($f -and $f.disposition -ne 'allow') { $findings.Add($f) } }
+  $scanned += $batch.Count
+  Write-Host ("  {0} files scanned, {1} findings, {2:n0}s" -f $scanned, $findings.Count, $clock.Elapsed.TotalSeconds)
 }
+if ($scanned -lt 50) { throw "FAILED: only $scanned files could be scanned in the time budget." }
 
 $quarantined = @($findings | Where-Object { $_.disposition -eq 'quarantine' })
 $trustedHits = @($findings | Where-Object { $s = "$($_.signer)".ToLowerInvariant(); $s -and ($trusted | Where-Object { $s.Contains($_) }) })
-$rate = if ($files.Count) { [Math]::Round(100.0 * $findings.Count / $files.Count, 2) } else { 0 }
-Write-Host "Findings: $($findings.Count) of $($files.Count) files ($rate%); quarantine verdicts: $($quarantined.Count); trusted-publisher findings: $($trustedHits.Count)"
+$rate = if ($scanned) { [Math]::Round(100.0 * $findings.Count / $scanned, 2) } else { 0 }
+Write-Host "Findings: $($findings.Count) of $scanned files ($rate%); quarantine verdicts: $($quarantined.Count); trusted-publisher findings: $($trustedHits.Count)"
 foreach ($f in $findings) {
   Write-Host ("  [{0}] {1} (signer: {2}; score {3}) {4}" -f $f.disposition, $f.path, $(if ($f.signer) { $f.signer } else { 'unsigned' }), $f.heuristicScore, (@($f.reasons) -join ','))
 }

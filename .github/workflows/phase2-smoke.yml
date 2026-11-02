@@ -158,6 +158,7 @@ jobs:
         run: powershell.exe -NoProfile -File agent/windows/tests/SignatureRuleMatchTests.ps1
       - name: Clean-software false-positive suite (installed signed software on the runner)
         shell: pwsh
+        timeout-minutes: 16
         run: powershell.exe -NoProfile -File agent/windows/tests/CleanSoftwareFalsePositiveTests.ps1
       - name: Verify unsigned binaries and their trusted build digests
         shell: pwsh

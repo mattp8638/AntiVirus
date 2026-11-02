@@ -10,10 +10,11 @@ const STEP_TONE: Record<string, string> = { done: "good", skipped: "muted", pend
 const WHERE: Record<string, string> = { ad: "Active Directory", m365: "Microsoft 365", fenrir: "Fenrir" };
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const OFFBOARD_DEFAULTS = { blockSignIn: true, revokeSessions: true, resetPassword: true, removeMfa: true, outOfOffice: false, outOfOfficeMessage: "",
-  removeGroups: true, removeRoles: true, removeLicences: false, markContact: true, openTicket: true };
+  removeGroups: true, removeRoles: true, removeLicences: false, markContact: true, reviewEstate: true, openTicket: true };
 const OFFBOARD_STEPS: [string, string][] = [["blockSignIn", "Block sign-in"], ["revokeSessions", "Sign out everywhere"], ["resetPassword", "Reset the password to a random one"],
   ["removeMfa", "Remove MFA methods"], ["outOfOffice", "Set an out-of-office reply (app connections only)"], ["removeGroups", "Remove from groups"],
   ["removeRoles", "Remove admin roles"], ["removeLicences", "Remove licences (read the warning in the review)"], ["markContact", "Mark the Fenrir contact as left"],
+  ["reviewEstate", "List their devices, flag their stored credentials for rotation and show the billing effect"],
   ["openTicket", "Record it all on a ticket"]];
 const USER_FIELDS: [string, string][] = [["displayName", "Display name"], ["userPrincipalName", "Sign-in name (user@domain)"], ["mailNickname", "Mail alias"],
   ["givenName", "First name"], ["surname", "Surname"], ["jobTitle", "Job title"], ["department", "Department"], ["usageLocation", "Usage location (e.g. GB)"]];
