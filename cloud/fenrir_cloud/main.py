@@ -30,6 +30,7 @@ from .routers import active_directory as ad_router
 from .routers import agent_health as agent_health_router
 from .routers import onboarding as onboarding_router
 from .routers import m365_exchange as m365_exchange_router
+from .routers import m365_signin as m365_signin_router
 from .routers import grc_programme as grc_programme_router
 from .routers import rollouts as rollouts_router
 from .routers import apikeys as apikeys_router
@@ -292,7 +293,7 @@ def _poll_msp_mailbox(db) -> None:
 
 def _scheduled_jobs() -> list[tuple[str, int, object]]:
     """(name, every N passes of 30 seconds, job), in the order they run within a pass."""
-    from . import condition_remediation, m365_lifecycle, network, remediation, topology
+    from . import condition_remediation, m365_lifecycle, m365_signin_security, network, remediation, topology
     from .routers import artifacts as artifact_store
     from .routers import backup as backup_health
 
@@ -302,6 +303,7 @@ def _scheduled_jobs() -> list[tuple[str, int, object]]:
         ("remote.expire-sessions", 1, remote.expire_sessions),
         ("m365.temp-admin-expiry", 2, m365_lifecycle.expire_temp_admins),  # every minute
         ("m365.workflows-waiting", 2, m365_lifecycle.advance_waiting),  # hybrid AD steps and Entra Connect sync
+        ("m365.signin-protection", 20, m365_signin_security.tick),  # every ten minutes: impossible travel and unusual sign-ins
         ("events.outbox", 1, events.process),  # after the jobs above, so their events go out in the same pass
         ("network", 1, network.tick),
         ("psa.mailbox", 4, _poll_msp_mailbox),  # every two minutes
@@ -494,7 +496,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     for module in (agent_api, admin, fleet, soc, crm_router, business, rmm_router, service_mgmt, psa_router, remote_router, portal):
         app.include_router(module.router)
     app.include_router(onboarding_router.workspace_router)
-    for module in (m365_admin_router, m365_router, network_router, grc_router, backup_router, soc_workflows, ad_router, agent_health_router, onboarding_router, m365_exchange_router, grc_programme_router,
+    for module in (m365_admin_router, m365_router, network_router, grc_router, backup_router, soc_workflows, ad_router, agent_health_router, onboarding_router, m365_exchange_router, m365_signin_router, grc_programme_router,
                    rollouts_router, apikeys_router, roles_router, approvals_router, exclusions_router,
                    exposure_intel_router, m365_partner_router, m365_workspace_router, m365_lifecycle_router, condition_packages_router, triage_router, clients_router, search_router, defender_router, mobile_apps_router):
         app.include_router(module.router)
