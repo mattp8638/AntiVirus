@@ -294,6 +294,21 @@ Use incident/job evidence to verify outcomes. Secret reveals and sensitive actio
 
 Where two-person approval is configured, high-impact actions are held for a different authorised operator to review in **Settings → Approvals**. An approval request is not an executed action: check the eventual job/endpoint result.
 
+### Managing customers
+
+Open a customer from **CRM → Accounts**, **Companies** or **Settings → Tenants**. Changing customers needs the `manage_tenants` permission.
+
+- **Edit customer**: name, plan, account owner, default protection policy, phone, website, address and notes.
+- **Archive**: hides the customer from customer lists and stops new devices enrolling. Nothing is deleted. **Restore** brings it
+  back. Archived customers appear when you tick **Show archived**.
+- **Delete**: permanent. Fenrir first shows what will be removed (devices, tickets, invoices, contacts, telemetry and so on). It
+  needs the customer's exact name and your password.
+  - Devices that still report are decommissioned first. Their agents stop reporting but stay installed: uninstall them on the
+    machines (Windows: `fenrir-agent-service.exe --uninstall`).
+  - The audit log keeps its entries about the customer, so its integrity check still holds.
+  - Fenrir's app or GDAP relationship in the customer's Microsoft 365 is not removed.
+  - A customer with sub-customers, the MSP itself and the Unassigned area cannot be deleted.
+
 ### The inbox
 
 **Inbox** is the one list of everything that needs someone, so nobody has to check ten pages:

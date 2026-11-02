@@ -187,3 +187,37 @@ def test_an_existing_database_gains_the_workspace_tables_and_column(client, admi
     assert client.get("/api/console/m365/overview", headers=admin).status_code == 200
     assert post(client, admin, "m365/connections/" + row["id"] + "/logs/collect", {})["outcome"]["signin"]["added"] == 7
     assert database.migrate(database.engine()) == []
+
+
+def test_extra_reads_never_fail_the_sync_and_failures_say_why(client, admin, tenant, fake):
+    import httpx as _httpx
+
+    row = connection(client, admin, tenant)
+    fake.fail[("GET", r"^/directoryRoles$")] = 503
+    original = fake.route
+
+    def slow_health(method, path, query, body):
+        if path == "/admin/serviceAnnouncement/issues":
+            raise _httpx.ReadTimeout("timed out")
+        return original(method, path, query, body)
+
+    fake.route = slow_health
+    synced = post(client, admin, "m365/connections/" + row["id"] + "/sync", {})
+    assert synced["status"] == "synced" and synced["snapshot"]["admins"] is None
+    ws = client.get("/api/console/m365/connections/" + row["id"] + "/workspace", headers=admin).json()
+    assert "HTTP 503" in ws["unavailable"]["directoryRoles"] and "Insufficient privileges" in ws["unavailable"]["directoryRoles"]
+    assert "did not answer in time" in ws["unavailable"]["serviceIssues"]
+
+    # A refused sign-in fails the sync with Microsoft's reason, and never the secret.
+    real_handle = fake.handle
+
+    def refuse_token(request):
+        if request.url.host == "login.microsoftonline.com":
+            return _httpx.Response(401, json={"error": "invalid_client", "error_description":
+                                              "AADSTS7000215: Invalid client secret provided.\r\nTrace ID: x"})
+        return real_handle(request)
+
+    fake.handle = refuse_token
+    failed = client.post("/api/console/m365/connections/" + row["id"] + "/sync", headers=admin)
+    assert failed.status_code == 502 and "AADSTS7000215: Invalid client secret provided." in failed.json()["detail"]
+    assert "Trace ID" not in failed.text and "private-client-secret" not in failed.text

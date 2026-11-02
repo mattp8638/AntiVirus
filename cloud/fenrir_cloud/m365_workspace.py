@@ -46,10 +46,18 @@ def sync_connection(db: Session, row: M365Connection, actor: str) -> M365Connect
     the previous snapshot is kept."""
     try:
         snapshot = m365.synchronize(row)
-    except (httpx.HTTPError, ValueError, KeyError, crypto.VaultError):
-        # Never keep provider bodies, token URLs with secrets, or raw exceptions.
-        row.status, row.last_error = "failed", "Sync failed. Check application credentials, Graph permissions and connectivity."
-        audit.record(db, actor, "m365.sync_failed", row.id, row.tenant_id)
+    except (httpx.HTTPError, ValueError, KeyError, crypto.VaultError) as exc:
+        # Microsoft's own error code and message say what to fix; secrets never appear in them (they travel in request
+        # bodies, which are not kept).
+        if isinstance(exc, crypto.VaultError):
+            reason = "Fenrir could not decrypt this connection's stored secret (was the vault key changed?). Replace the secret."
+        elif isinstance(exc, KeyError):
+            reason = "Microsoft's answer was missing an expected field."
+        else:
+            reason = m365.describe_failure(exc)
+        log.warning("M365 sync for %s failed: %s", row.id, reason)
+        row.status, row.last_error = "failed", ("Sync failed. " + reason)[:300]
+        audit.record(db, actor, "m365.sync_failed", row.id, row.tenant_id, reason=reason[:300])
         raise ValueError(row.last_error) from None
     defender = m365.ingest_defender_alerts(db, row, snapshot.pop("defenderAlerts", None))
     snapshot["defenderAlerts"] = defender
@@ -335,6 +343,7 @@ def workspace(db: Session, row: M365Connection) -> dict:
                                                     "onPremisesLastSyncDateTime")} if org else None,
             "domains": snap.get("domains"), "admins": snap.get("admins"), "serviceIssues": snap.get("serviceIssues"),
             "inactiveUsers": snap.get("inactiveUsers"), "insights": snap.get("insights") or {}, "permissions": snap.get("permissions"),
+            "unavailable": snap.get("unavailable") or {},
             "logState": row.log_state or {},
             "logCounts": {"stored": {k: counts.get(k, 0) for k in LOG_KINDS}, "oldest": _iso(oldest) if oldest else None,
                           "signins24h": sum(n for (k, _), n in recent.items() if k == "signin"),

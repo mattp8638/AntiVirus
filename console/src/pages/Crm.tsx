@@ -17,7 +17,8 @@ export default function Crm() {
   const { can, tenantName } = useApp();
   const navigate = useNavigate();
   const [tab, setTab] = useState("Accounts");
-  const { data: accounts, reload: reloadAccounts } = useListData<any>("crm/accounts");
+  const [showArchived, setShowArchived] = useState(false);
+  const { data: accounts, reload: reloadAccounts } = useListData<any>("crm/accounts", { include_archived: showArchived || undefined }, [showArchived]);
   const { data: opps, reload: reloadOpps } = useListData<any>("crm/opportunities");
   const { data: oppPipeline, reload: reloadPipeline } = useData<any>("crm/opportunity-pipeline");
   const { data: activities, reload: reloadActivities } = useListData<any>("crm/activities");
@@ -42,8 +43,9 @@ export default function Crm() {
       <Tabs tabs={TABS} active={tab} onChange={setTab} />
       {tab === "Accounts" && (
         <div className="card">
+          <label className="small" style={{ display: "block", marginBottom: 8 }}><input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} /> Show archived customers</label>
           <Table rows={accounts} onRow={(a) => navigate(`/crm/accounts/${a.id}`)} empty="No customer accounts yet. Convert a won lead or add a customer tenant."
-                 columns={[{ key: "name", label: "Account", render: (a) => <><b>{displayValue(a.name)}</b><div className="small muted">{displayValue(a.plan)} · {displayValue(a.devices)} devices</div></> },
+                 columns={[{ key: "name", label: "Account", render: (a) => <><b>{displayValue(a.name)}</b>{a.archived && <> <Pill value="archived" tone="muted" /></>}<div className="small muted">{displayValue(a.plan)} · {displayValue(a.devices)} devices</div></> },
                            { key: "accountOwner", label: "Owner", render: (a) => a.accountOwner || <span className="muted">unassigned</span> },
                            { key: "mrr", label: "Contracted MRR", className: "right", render: (a) => money(a.mrr) },
                            { key: "openPipeline", label: "Open deals", className: "right", render: (a) => a.openPipeline ? money(a.openPipeline) : "—" },

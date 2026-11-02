@@ -8,6 +8,7 @@ from datetime import timedelta
 import dns.exception
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Request, Response
+from starlette.requests import ClientDisconnect
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -71,7 +72,11 @@ def doh_get(token: str, request: Request, dns_param: str = Query(alias="dns"), d
 async def doh_post(token: str, request: Request, db: Session = Depends(get_db)):
     if request.headers.get("content-type", "").split(";")[0] != DNS_MESSAGE:
         raise HTTPException(415, f"Content-Type must be {DNS_MESSAGE}")
-    wire = await request.body()
+    try:
+        wire = await request.body()
+    except ClientDisconnect:
+        # The device gave up on this lookup (it retries); nothing to answer and nothing worth a traceback.
+        return Response(status_code=499)
     if len(wire) > 4096:
         raise HTTPException(413, "DNS message too large")
     return _doh(db, _dns_device(db, token), wire, request)

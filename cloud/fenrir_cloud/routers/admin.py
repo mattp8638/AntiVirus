@@ -614,8 +614,10 @@ def _slugify(text: str) -> str:
 
 @router.get("/tenants")
 def list_tenants(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    from .. import customers
+
     rows = db.execute(select(Tenant).where(Tenant.id.in_(principal.tenant_ids)).order_by(Tenant.name)).scalars().all()
-    return [to_dict(t) for t in rows]
+    return [{**to_dict(t), "archived": customers.archived(t)} for t in rows]
 
 
 @router.post("/tenants")
@@ -653,10 +655,77 @@ def update_tenant(tenant_id: str, body: dict = Body(...), principal: Principal =
         policy = db.get(Policy, body["defaultPolicyId"])
         if policy is None or policy.tenant_id not in (None, tenant.id):
             raise HTTPException(400, "That policy belongs to another customer")
+    if "name" in body:
+        body["name"] = str(body["name"]).strip()[:200]
     changed = apply_fields(tenant, body, {"name", "plan", "settings", "default_policy_id"})
+    if "accountOwner" in body:
+        tenant.account_owner = str(body.get("accountOwner") or "").strip()[:200] or None
+        changed = [*changed, "account_owner"]
+    if isinstance(body.get("profile"), dict):
+        # Company details, the same fields the Companies page edits: phone, website, address, notes, type.
+        profile = {k: str(v or "").strip()[:2000 if k in ("address", "notes") else 300]
+                   for k, v in body["profile"].items() if k in PROFILE_FIELDS}
+        tenant.settings = {**(tenant.settings or {}), **profile}
+        changed = [*changed, *profile]
     audit.record(db, principal.actor, "tenant.updated", tenant.id, tenant.id, fields=changed)
     db.commit()
-    return to_dict(tenant)
+    from .. import customers
+
+    return {**to_dict(tenant), "archived": customers.archived(tenant)}
+
+
+PROFILE_FIELDS = ("phone", "website", "address", "notes", "companyType")
+
+
+def _customer(db: Session, principal: Principal, tenant_id: str) -> Tenant:
+    principal.require("manage_tenants")
+    principal.check_tenant(tenant_id)
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(404, "Not found")
+    return tenant
+
+
+@router.post("/tenants/{tenant_id}/archive")
+def archive_tenant(tenant_id: str, body: dict = Body(default={}), principal: Principal = Depends(current_principal),
+                   db: Session = Depends(get_db)):
+    """Archive (``{"archived": true}``) or restore (``false``) a customer. Nothing is deleted."""
+    from .. import customers
+
+    tenant = _customer(db, principal, tenant_id)
+    try:
+        customers.set_archived(db, tenant, body.get("archived", True) is not False, principal.actor)
+    except customers.CustomerError as exc:
+        raise HTTPException(409, str(exc)) from None
+    db.commit()
+    return {**to_dict(tenant), "archived": customers.archived(tenant)}
+
+
+@router.get("/tenants/{tenant_id}/deletion")
+def deletion_preview(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """What deleting this customer would remove, and anything that stops it. Changes nothing."""
+    from .. import customers
+
+    return customers.deletion_report(db, _customer(db, principal, tenant_id), principal.user.tenant_id)
+
+
+@router.delete("/tenants/{tenant_id}")
+def delete_tenant(tenant_id: str, request: Request, body: dict = Body(default={}), principal: Principal = Depends(current_principal),
+                  db: Session = Depends(get_db)):
+    """Permanently delete a customer and everything it owns (see customers.py). Needs fresh authentication and the
+    customer's exact name."""
+    from .. import customers
+
+    tenant = _customer(db, principal, tenant_id)
+    require_reauth(request, principal)
+    if str(body.get("confirmName") or "").strip() != tenant.name.strip():
+        raise HTTPException(422, "Type the customer's name exactly to confirm.")
+    ratelimit.check(f"tenant-delete:{principal.user.id}", 5, 600)
+    try:
+        return customers.delete_customer(db, tenant, principal.actor, principal.user.tenant_id)
+    except customers.CustomerError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from None
 
 
 # --------------------------------------------------------------------------- users

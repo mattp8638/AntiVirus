@@ -115,10 +115,13 @@ def timeline(db: Session, account_id: str, limit: int = 100) -> list[dict]:
 
 
 @router.get("/crm/accounts")
-def list_accounts(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+def list_accounts(include_archived: bool = False, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    from .. import customers
+
     principal.require("read")
-    accounts = db.execute(select(Tenant).where(Tenant.id.in_(principal.tenant_ids), Tenant.kind == "customer")
-                          .order_by(Tenant.name)).scalars().all()
+    accounts = [a for a in db.execute(select(Tenant).where(Tenant.id.in_(principal.tenant_ids), Tenant.kind == "customer")
+                                      .order_by(Tenant.name)).scalars().all()
+                if include_archived or not customers.archived(a)]
     ids = [a.id for a in accounts]
     if not ids:
         return []
@@ -133,7 +136,8 @@ def list_accounts(principal: Principal = Depends(current_principal), db: Session
     open_tasks = dict(db.execute(select(Activity.account_tenant_id, func.count()).where(
         Activity.account_tenant_id.in_(ids), Activity.kind == "task", Activity.completed_at.is_(None))
         .group_by(Activity.account_tenant_id)).all())
-    return [{"id": a.id, "name": a.name, "plan": a.plan, "accountOwner": a.account_owner or "", "devices": devices.get(a.id, 0),
+    return [{"id": a.id, "name": a.name, "plan": a.plan, "accountOwner": a.account_owner or "", "archived": customers.archived(a),
+             "devices": devices.get(a.id, 0),
              "openTickets": tickets.get(a.id, 0), "openPipeline": round(pipeline.get(a.id) or 0, 2),
              "mrr": contracted_mrr(db, a.id), "lastActivityAt": last_touch.get(a.id), "openTasks": open_tasks.get(a.id, 0)}
             for a in accounts]
@@ -148,7 +152,10 @@ def account_detail(tenant_id: str, days: int = Query(90, ge=7, le=730), principa
     finance = principal.can("billing") or principal.can("crm")
     return {
         "account": {"id": account.id, "name": account.name, "plan": account.plan, "accountOwner": account.account_owner or "",
-                    "createdAt": account.created_at},
+                    "createdAt": account.created_at, "defaultPolicyId": account.default_policy_id, "parentId": account.parent_id,
+                    "archived": (account.settings or {}).get("archived") or None,
+                    "profile": {k: (account.settings or {}).get(k) for k in ("phone", "website", "address", "notes", "companyType")
+                                if (account.settings or {}).get(k)}},
         "devices": db.scalar(select(func.count()).select_from(Device).where(Device.tenant_id == account.id)) or 0,
         "contacts": [to_dict(c) for c in db.execute(select(Contact).where(Contact.account_tenant_id == account.id,
                                                                           Contact.tenant_id.in_(scope))).scalars()],
