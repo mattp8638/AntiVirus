@@ -551,6 +551,24 @@ def backstage_desktop(ctx: Context, device: dict) -> tuple[str, dict]:
             f"{'started' if test.get('taskManagerStarted') else 'did not start'}", test)
 
 
+@scenario("remote_cad", ("windows",), "Sends remote Ctrl+Alt+Del to the signed-in session and sees Windows' security screen open")
+def remote_cad(ctx: Context, device: dict) -> tuple[str, dict]:
+    row = ctx.command(device, "remote.cad.selftest", timeout=max(ctx.args.timeout, 120))
+    result = row.get("result") or {}
+    if isinstance(result, str):
+        result = json.loads(result)
+    test = result.get("selfTest") or {}
+    reply = test.get("reply")
+    if reply != "ok":
+        raise Check(f"the Fenrir service refused or failed Ctrl+Alt+Del: {reply or json.dumps(result)[:400]}")
+    if not (test.get("switchedToSecureDesktop") or result.get("logonUiAfter", 0) > result.get("logonUiBefore", 0)):
+        raise Check("the service said it sent Ctrl+Alt+Del but Windows did not open its security screen in session "
+                    f"{result.get('windowsSession')}: {json.dumps(result)[:500]}")
+    return (f"Ctrl+Alt+Del reached session {result.get('windowsSession')}: input desktop {test.get('desktopBefore')} -> "
+            f"{test.get('desktopAfter')}, LogonUI {result.get('logonUiBefore')} -> {result.get('logonUiAfter')} "
+            f"(SoftwareSASGeneration={result.get('softwareSasGeneration')})", result)
+
+
 @scenario("key_rotation", ("windows", "linux", "macos"), "Replaces its device API key when asked, and keeps reporting")
 def key_rotation(ctx: Context, device: dict) -> tuple[str, dict]:
     before = ctx.device(device["id"])["device"].get("apiKeyRotatedAt")
