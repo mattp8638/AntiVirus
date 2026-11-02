@@ -5,14 +5,27 @@ Three ways to reach a customer machine beyond the remote desktop. All of them ar
 ## Backstage access
 
 A silent administrative session: a SYSTEM (Windows) or root (Linux/macOS) terminal, plus file transfer, processes and services.
+On Windows it also has its own **hidden SYSTEM desktop**, like NinjaOne's backstage, for the graphical tools.
 
-- **Nothing appears on the user's screen.** There is no consent prompt, no banner, no screen capture and no input.
+- **Nothing appears on the user's screen, and they cannot tell it is happening.** There is no consent prompt, no
+  banner and no chat, and nothing is captured from or sent to the user's screen. Ctrl+Alt+Del, Lock and Blank screen,
+  which would act on the user's session, are refused by the relay and by the agent.
 - **It works when nobody is signed in,** or when the desktop is hung.
-- **On Windows,** the service starts `fenrir-remote.exe` with its own token in session 0 instead of the user's console session.
+- **On Windows,** the service starts `fenrir-remote.exe` with its own token in session 0 instead of the user's console
+  session. Nobody ever sees session 0: the signed-in user works in session 1 or later.
+- **The hidden desktop (Windows):** the helper creates a private desktop in session 0, makes it session 0's active
+  desktop, and streams it in the viewer's **Desktop** tab with full mouse and keyboard. **Open tool…** starts Task
+  Manager, Services, Event Viewer, Registry Editor, Computer Management, Device Manager, Command Prompt or PowerShell
+  there as SYSTEM, or **Run a program…** any command; each one is in the audit log. Everything started on it is
+  closed when the session ends. There is no Start menu or taskbar (no Explorer shell), so use the tools menu. If the
+  hidden desktop cannot be created, the session still opens with the text tools.
+- **Check it works on a machine:** run the **Test the backstage desktop** command (`remote.backstage.selftest`). It
+  opens the hidden desktop, shows a test window and Task Manager on it, checks the capture and cleans up, without
+  anything appearing for the user. CI runs it on a Windows Server agent on every change.
 - **Turn it on per policy:** Policies → Remote access → Backstage access (`remoteAccess.backstage = "on"`). It is off by default.
 - **Both sides check the policy.** The Windows service and the Linux/macOS agent refuse a backstage start that their own policy does not allow.
 - **Each session needs** a fresh password (and MFA) check and a reason or a linked ticket. Analyst roles cannot open one.
-- **Backstage sessions are always recorded,** whatever `recordSessions` says. The recording is kept with the device's artifacts.
+- **Backstage sessions are always recorded** (the hidden desktop's screen and the terminal), whatever `recordSessions` says. The recording is kept with the device's artifacts.
 - **In the console,** use the **Backstage** button next to Connect on the device page.
 
 ## Cross-platform session routing

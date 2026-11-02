@@ -121,7 +121,7 @@ export function ConnectButtons({ device, ticketId, compact }: { device: any; tic
       {!compact && <>
         <button disabled={busy} onClick={() => connect(device.id, "terminal", ticketId)}>{device.platform === "windows" ? "PowerShell" : "Terminal"}</button>
         <button disabled={busy} onClick={() => connect(device.id, "files", ticketId)}>Files</button>
-        <button disabled={busy} title="Silent SYSTEM/root terminal, files, processes and services: nothing shows on the user's screen" onClick={() => connect(device.id, "backstage", ticketId)}>Backstage</button>
+        <button disabled={busy} title="Silent SYSTEM/root access: a hidden SYSTEM desktop (Windows), terminal, files, processes and services. Nothing shows on the user's screen" onClick={() => connect(device.id, "backstage", ticketId)}>Backstage</button>
       </>}
     </span>
   );

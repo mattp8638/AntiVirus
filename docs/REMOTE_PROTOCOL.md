@@ -94,6 +94,16 @@ Both sockets close when either side sends `{"ch":"sys","t":"end"}` or disconnect
 ### `chat`
 - `msg {text}` in both directions. The Windows helper shows a small chat window to the signed-in user.
 
+## Backstage desktop (`backstage` channel, Windows)
+
+When a backstage helper has created its hidden desktop, its `info` capabilities include `desktop` and `backstage-desktop`,
+and `screen` / `input` work as in a desktop session, on that desktop only.
+
+- `launch {tool, command?, req}` (viewer → agent): start a tool on the hidden desktop as SYSTEM. `tool` is one of
+  `taskmgr`, `services`, `eventvwr`, `regedit`, `compmgmt`, `devmgmt`, `cmd`, `powershell`, or `run` with `command`
+  (up to 2048 characters). Audited as `backstage.launch` with the tool or command.
+- `done {req, error?}` (agent → viewer): started, or why not.
+
 ## Modes
 
 The start payload's `mode` decides which channels a session may use. The relay enforces this, and the agent enforces it again.
@@ -102,7 +112,7 @@ The start payload's `mode` decides which channels a session may use. The relay e
 |---|---|---|
 | `desktop` | all | Windows: helper in the signed-in user's session. Consent and banner follow policy. |
 | `terminal` / `files` | all | Windows: helper in the user's session, with the banner per policy but no consent prompt. |
-| `backstage` | `sys`, `term`, `files`, `procs`, `svc` | Windows: helper as SYSTEM in session 0. Works with nobody signed in. No prompt, banner, screen, input or chat. Linux/macOS: the agent (root). |
+| `backstage` | `sys`, `term`, `files`, `procs`, `svc`, `screen`, `input`, `backstage` | Windows: helper as SYSTEM in session 0. Works with nobody signed in. No prompt, banner or chat. `screen` and `input` are a hidden desktop in session 0, never the user's; `input` `cad`, `lock` and `blank` are refused. Linux/macOS: the agent (root), no screen. |
 | `tunnel` | `sys`, `tunnel` | As `backstage`. |
 
 ## Security
@@ -114,5 +124,5 @@ The start payload's `mode` decides which channels a session may use. The relay e
   - Each needs a fresh sign-in check (`X-Fenrir-Reauth`) and a stated reason or linked ticket.
   - Analyst roles cannot open them.
   - Both are off by default (`remoteAccess.backstage`, `remoteAccess.allowTunnels`). The cloud and the device's own agent both check the policy, so a compromised console alone cannot open one.
-  - Backstage sessions are always recorded (terminal output).
+  - Backstage sessions are always recorded (the hidden desktop's screen and the terminal output).
   - Tunnels reach private addresses on allowed ports only (`remoteAccess.tunnelPorts`). The agent checks the target again before connecting, and every stream open is audited.

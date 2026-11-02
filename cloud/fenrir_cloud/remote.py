@@ -39,11 +39,14 @@ VIEWER_TOKEN_MINUTES = 15
 MAX_SESSION_HOURS = 12
 INPUT_TYPES = {"mm", "md", "mu", "wh", "kd", "ku", "type", "cad", "clip.set", "blank", "lock"}
 CHANNEL_POLICY = {"term": "allowTerminal", "files": "allowFileTransfer"}
-AUDITED = {("files", "get"), ("files", "put"), ("files", "delete"), ("files", "mkdir"), ("input", "cad"), ("term", "open"),
+AUDITED = {("backstage", "launch"), ("files", "get"), ("files", "put"), ("files", "delete"), ("files", "mkdir"), ("input", "cad"), ("term", "open"),
            ("sys", "blank"), ("input", "lock"), ("sys", "reboot"), ("tunnel", "open")}
 MODES = {"desktop", "terminal", "files", "backstage", "tunnel"}
 # Channels each mode may use. Backstage never touches the user's desktop; a tunnel carries only its TCP streams.
-MODE_CHANNELS = {"backstage": {"sys", "term", "files", "procs", "svc"}, "tunnel": {"sys", "tunnel"}}
+MODE_CHANNELS = {"backstage": {"sys", "term", "files", "procs", "svc", "screen", "input", "backstage"}, "tunnel": {"sys", "tunnel"}}
+# In backstage the screen and input are the hidden SYSTEM desktop in session 0 (never the user's). These act on the
+# user's real session, so they never reach a backstage session: the user must not be able to tell it is happening.
+BACKSTAGE_BLOCKED_INPUT = {"cad", "lock", "blank"}
 DEFAULT_TUNNEL_PORTS = (22, 23, 80, 443, 3389, 5900, 8080, 8443, 16992, 16993, 16994, 16995)
 
 
@@ -101,8 +104,9 @@ def remote_policy(db: Session, device: Device) -> dict:
 
 def start_session(db: Session, device: Device, technician: str, mode: str = "desktop", view_only: bool = False,
                   ticket_id: str | None = None, reason: str = "", target: dict | None = None) -> RemoteSession:
-    """Start a session. ``backstage`` is a silent SYSTEM/root session (terminal, files, processes, services) with no
-    prompt, banner or screen; ``tunnel`` relays TCP from this device to ``target`` ({host, port, nodeId}) on its LAN."""
+    """Start a session. ``backstage`` is a silent SYSTEM/root session (terminal, files, processes, services and, on
+    Windows, a hidden SYSTEM desktop in session 0 with its own screen and tools) with no prompt or banner and nothing
+    on the user's screen; ``tunnel`` relays TCP from this device to ``target`` ({host, port, nodeId}) on its LAN."""
     from . import services
 
     if mode not in MODES:
@@ -386,11 +390,17 @@ class RelayHub:
             return False, None
         if channel == "input" and kind in INPUT_TYPES and room.view_only:
             return False, None
+        if room.mode == "backstage" and channel == "input" and kind in BACKSTAGE_BLOCKED_INPUT:
+            return False, None
+        if channel == "backstage" and room.mode != "backstage":
+            return False, None
         if channel in CHANNEL_POLICY and not room.allow.get(CHANNEL_POLICY[channel], True):
             return False, None
         audit_event = None
         if (channel, kind) in AUDITED:
             audit_event = {"type": f"{channel}.{kind}", "path": str(message.get("path", ""))[:300]}
+            if channel == "backstage":  # which tool, or the exact command, the technician started as SYSTEM
+                audit_event["path"] = str(message.get("command") or message.get("tool") or "")[:300]
         return True, audit_event
 
     @staticmethod

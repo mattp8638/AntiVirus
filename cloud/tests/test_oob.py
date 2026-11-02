@@ -39,10 +39,18 @@ def test_backstage_is_silent_gated_and_recorded(client, admin, tenant, device):
         with client.websocket_connect(f"{viewer['path']}?token={viewer['token']}") as browser:
             assert json.loads(browser.receive_text())["mode"] == "backstage"
             agent.receive_text()  # viewer.joined
-            for blocked in ({"ch": "screen", "t": "start"}, {"ch": "input", "t": "kd", "code": "KeyA"}, {"ch": "chat", "t": "msg", "text": "hi"}):
+            # Nothing that reaches the user's real session: chat, Ctrl+Alt+Del, lock and blank screen never arrive.
+            for blocked in ({"ch": "chat", "t": "msg", "text": "hi"}, {"ch": "input", "t": "cad"}, {"ch": "input", "t": "lock"},
+                            {"ch": "input", "t": "blank", "on": True}):
                 browser.send_text(json.dumps(blocked))
             browser.send_text(json.dumps({"ch": "term", "t": "open", "cols": 80, "rows": 24}))
             assert json.loads(agent.receive_text()) == {"ch": "term", "t": "open", "cols": 80, "rows": 24}  # the others never arrived
+            # The hidden SYSTEM desktop in session 0: its screen, input and tool launcher do reach the agent.
+            for allowed in ({"ch": "screen", "t": "start", "quality": 70, "fps": 10, "monitor": 0},
+                            {"ch": "input", "t": "kd", "code": "KeyA"},
+                            {"ch": "backstage", "t": "launch", "tool": "taskmgr", "req": "r1"}):
+                browser.send_text(json.dumps(allowed))
+                assert json.loads(agent.receive_text()) == allowed
             browser.send_text(json.dumps({"ch": "sys", "t": "end"}))
         agent.receive_text()
 
@@ -198,3 +206,18 @@ def test_routes_for_an_agentless_node(client, admin, tenant, device):
     assert tunnel["available"] and tunnel["via"] == "ACME-WS-01" and {p["port"] for p in tunnel["ports"]} == {22, 16993}
     suggestion = next(r for r in routes if r["kind"] == "amt")
     assert suggestion["suggestHost"] == "192.168.10.60" and suggestion["suggestPort"] == 16993 and not suggestion["available"]
+
+
+def test_backstage_launcher_only_in_backstage_sessions():
+    from types import SimpleNamespace
+
+    from fenrir_cloud.remote import hub
+
+    launch = json.dumps({"ch": "backstage", "t": "launch", "tool": "cmd"})
+    desktop = SimpleNamespace(mode="desktop", view_only=False, allow={})
+    backstage = SimpleNamespace(mode="backstage", view_only=False, allow={})
+    assert hub.filter_viewer_message(desktop, launch) == (False, None)
+    forward, audit = hub.filter_viewer_message(backstage, json.dumps({"ch": "backstage", "t": "launch", "tool": "run",
+                                                                      "command": "regedit.exe /s fix.reg"}))
+    assert forward and audit == {"type": "backstage.launch", "path": "regedit.exe /s fix.reg"}
+    assert hub.filter_viewer_message(backstage, json.dumps({"ch": "input", "t": "cad"}))[0] is False

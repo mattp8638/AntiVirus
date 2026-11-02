@@ -58,6 +58,13 @@ export function waitingHint(detail: any, waitedSeconds: number): string {
   return "";
 }
 
+// Tools the agent can open on a backstage session's hidden SYSTEM desktop (BackstageDesktop.cpp).
+const BACKSTAGE_TOOLS: [string, string][] = [
+  ["taskmgr", "Task Manager"], ["services", "Services"], ["eventvwr", "Event Viewer"], ["regedit", "Registry Editor"],
+  ["compmgmt", "Computer Management"], ["devmgmt", "Device Manager"], ["cmd", "Command Prompt"], ["powershell", "PowerShell"],
+  ["run", "Run a program…"],
+];
+
 export default function RemoteViewer() {
   const { id } = useParams();
   const [session, setSession] = useState<any>(null);
@@ -256,6 +263,11 @@ export default function RemoteViewer() {
       if (tabRef.current !== "Chat") setUnreadChat((n) => n + 1);
       return;
     }
+    if (m.ch === "backstage" && m.t === "done") {
+      setFeedback(m.error ? { tone: "error", message: `Could not start it on the hidden desktop: ${m.error}` }
+                          : { tone: "notice", message: "Started on the hidden desktop." });
+      return;
+    }
     if (m.ch === "clip" && m.t === "text" && m.text) {
       navigator.clipboard?.writeText(m.text).catch(() => undefined);
       return;
@@ -371,6 +383,17 @@ export default function RemoteViewer() {
   };
 
   const caps: string[] = info?.capabilities || [];
+  // Backstage with the hidden SYSTEM desktop (Windows): the screen is a private desktop in session 0, never the user's.
+  const hiddenDesktop = caps.includes("backstage-desktop");
+  const launchTool = async (tool: string) => {
+    if (!tool) return;
+    let command = "";
+    if (tool === "run") {
+      command = ((await promptDialog("Command to run as SYSTEM on the hidden desktop (kept in the audit log):")) || "").trim();
+      if (!command) return;
+    }
+    send({ ch: "backstage", t: "launch", tool, ...(command ? { command } : {}), req: `bs-${Date.now()}` });
+  };
   const requestCad = () => {
     if (viewOnly || state !== "live" || cadPending.current) return;
     if (ws.current?.readyState !== WebSocket.OPEN) {
@@ -441,7 +464,14 @@ export default function RemoteViewer() {
             {hello?.allowBlank && caps.includes("blank") && (
               <button onClick={() => { send({ ch: "input", t: "blank", on: !blank }); setBlank(!blank); }}>{blank ? "Unblank" : "Blank screen"}</button>
             )}
-            <button title="Lock the remote workstation" disabled={viewOnly} onClick={() => send({ ch: "input", t: "lock" })}>Lock</button>
+            {hiddenDesktop && (
+              <select title="Open a tool on the hidden SYSTEM desktop" value="" disabled={viewOnly}
+                      onChange={(e) => { launchTool(e.target.value); e.target.value = ""; }}>
+                <option value="">Open tool…</option>
+                {BACKSTAGE_TOOLS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+              </select>
+            )}
+            {!hiddenDesktop && <button title="Lock the remote workstation" disabled={viewOnly} onClick={() => send({ ch: "input", t: "lock" })}>Lock</button>}
             <button onClick={screenshot}>Screenshot</button>
             <button onClick={goFullscreen}>Fullscreen</button>
           </div>

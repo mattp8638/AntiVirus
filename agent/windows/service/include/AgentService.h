@@ -143,6 +143,7 @@ class AgentService {
   std::wstring ExecuteRmmCommand(const RemoteCommand& command);
   std::wstring LaunchRemoteHelper(const RemoteCommand& command);
   std::wstring EndRemoteHelper(const RemoteCommand& command);
+  std::wstring RunBackstageSelfTest();
   void StartRealtimeChannel();
   void StopRealtimeChannel();
   void RealtimeLoop();
