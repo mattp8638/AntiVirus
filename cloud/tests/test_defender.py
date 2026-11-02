@@ -236,7 +236,7 @@ def test_fenrir_controls_exclusions_scanning_and_schedules(client, admin, tenant
     assert "Remove-MpPreference -ExclusionPath $drop" in body and "$current.ExclusionPath" in body  # authoritative
     assert "-SubmitSamplesConsent NeverSend" in body and "-SevereThreatDefaultAction Remove" in body
     assert "-SignatureUpdateInterval 2" in body and "-UILockdown $true" in body and "-DisableBlockAtFirstSeen $false" in body
-    assert "-ScanScheduleDay 1" in body and "-ScanScheduleQuickScanTime (New-TimeSpan -Hours 13)" in body
+    assert "-ScanScheduleDay 1" in body and "-ScanScheduleQuickScanTime (Get-Date -Hour 13 -Minute 0 -Second 0)" in body
     assert "-ThreatIDDefaultAction_Ids @('2147519003')" in body and "not-a-number" not in body
     assert "ControlledFolderAccessProtectedFolders @('D:\\Finance')" in body
     assert "ManagedExclusions" in body  # the agent remembers what Fenrir added

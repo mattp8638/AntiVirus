@@ -45,7 +45,7 @@ def _deliver(message: EmailMessage) -> None:
 
 
 def send(to: str, subject: str, body: str, *, reply_to: str | None = None, in_reply_to: str | None = None,
-         html: str | None = None) -> str:
+         html: str | None = None, attachments: list[tuple[str, str, bytes]] | None = None) -> str:
     """Queue an email. Returns its Message-ID so replies can be threaded back to a ticket."""
     message = EmailMessage()
     message["From"] = sender()
@@ -61,7 +61,11 @@ def send(to: str, subject: str, body: str, *, reply_to: str | None = None, in_re
     message.set_content(body)
     if html:
         message.add_alternative(html, subtype="html")
-    OUTBOX.append({"to": to, "subject": subject, "body": body, "messageId": message["Message-ID"]})
+    for filename, content_type, data in attachments or []:  # (name, "text/csv", bytes)
+        maintype, _, subtype = content_type.partition("/")
+        message.add_attachment(data, maintype=maintype, subtype=subtype or "octet-stream", filename=filename)
+    OUTBOX.append({"to": to, "subject": subject, "body": body, "messageId": message["Message-ID"],
+                   "attachments": [a[0] for a in attachments or []]})
     if configured():
         threading.Thread(target=_deliver, args=(message,), daemon=True).start()
     else:

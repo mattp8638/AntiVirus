@@ -128,7 +128,11 @@ def _signin(item: dict) -> dict:
                         "interactive": item.get("isInteractive"), "risk": item.get("riskLevelDuringSignIn"), "riskState": item.get("riskState"),
                         "device": device.get("displayName"), "os": device.get("operatingSystem"), "browser": device.get("browser"),
                         "compliant": device.get("isCompliant"), "managed": device.get("isManaged"),
-                        "additional": _text(status.get("additionalDetails"), 300), "userId": item.get("userId")}}
+                        "additional": _text(status.get("additionalDetails"), 300), "userId": item.get("userId"),
+                        # For sign-in protection (m365_signin_security.py): where it happened.
+                        "country": _text(place.get("countryOrRegion"), 8),
+                        "lat": (place.get("geoCoordinates") or {}).get("latitude"),
+                        "lon": (place.get("geoCoordinates") or {}).get("longitude")}}
 
 
 def _audit(item: dict) -> dict:
