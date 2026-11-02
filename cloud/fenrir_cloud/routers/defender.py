@@ -40,6 +40,26 @@ def check_now(device_id: str, principal: Principal = Depends(current_principal),
     return {"commandId": command.id}
 
 
+@router.post("/devices/{device_id}/defender/action")
+def device_action(device_id: str, body: dict, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """quick_scan | full_scan | update_signatures | remove_threats | allow_threat (with threatId)."""
+    name = str(body.get("action") or "")
+    principal.require("configure" if name == "allow_threat" else "respond")
+    device = _get_device(db, principal, device_id)
+    if (device.platform or "").lower() != "windows":
+        raise HTTPException(404, "Microsoft Defender is only on Windows devices")
+    try:
+        command = defender.action(db, device, name, principal.actor, str(body.get("threatId") or ""))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    except services.CommandError as exc:
+        raise HTTPException(400, str(exc)) from None
+    audit.record(db, principal.actor, f"defender.{name}", device.hostname, device.tenant_id, command=command.id,
+                 threat=body.get("threatId"))
+    db.commit()
+    return {"commandId": command.id}
+
+
 @router.get("/defender/fleet")
 def fleet(tenant_id: str | None = None, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     """Every Windows device in scope: is Defender managed, active, current and tamper protected."""
