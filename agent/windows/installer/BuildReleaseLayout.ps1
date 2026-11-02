@@ -341,7 +341,12 @@ $artifactMap = @(
     @{ Source = (Join-Path $windowsRoot 'service\README.md'); Target = (Join-Path $outputRoot 'docs\service-README.md') },
     @{ Source = (Join-Path $windowsRoot 'tools\endpointui\README.md'); Target = (Join-Path $outputRoot 'docs\endpoint-client-README.md') },
     @{ Source = (Join-Path $windowsRoot 'installer\README.md'); Target = (Join-Path $outputRoot 'docs\installer-README.md') },
-    @{ Source = (Join-Path $windowsRoot 'signatures\default-signatures.tsv'); Target = (Join-Path $outputRoot 'signatures\default-signatures.tsv') }
+    @{ Source = (Join-Path $windowsRoot 'signatures\default-signatures.tsv'); Target = (Join-Path $outputRoot 'signatures\default-signatures.tsv') },
+    @{ Source = (Join-Path $windowsRoot 'signatures\default-signatures-malicious.tsv'); Target = (Join-Path $outputRoot 'signatures\default-signatures-malicious.tsv') },
+    @{ Source = (Join-Path $windowsRoot 'signatures\default-signatures-observe.tsv'); Target = (Join-Path $outputRoot 'signatures\default-signatures-observe.tsv') },
+    @{ Source = (Join-Path $windowsRoot 'signatures\default-cleanware-signers.tsv'); Target = (Join-Path $outputRoot 'signatures\default-cleanware-signers.tsv') },
+    @{ Source = (Join-Path $windowsRoot 'signatures\default-known-good-hashes.tsv'); Target = (Join-Path $outputRoot 'signatures\default-known-good-hashes.tsv') },
+    @{ Source = (Join-Path $windowsRoot 'signatures\default-observe-only.tsv'); Target = (Join-Path $outputRoot 'signatures\default-observe-only.tsv') }
 )
 
 foreach ($artifact in $artifactMap) {

@@ -44,6 +44,22 @@ retry, or skipped.
 - Bulk import from CSV: up to 200 users, with rows that cannot be created listed and skipped. It runs in time-boxed passes so no web
   request is held open, and the passwords are downloadable once.
 
+**Hybrid identity (AD-synced users).** For users that Entra Connect syncs from on-premises Active Directory, AD is in charge:
+Microsoft refuses cloud changes to the account's name, sign-in and password, and to synced groups. Fenrir:
+
+- marks each user as managed in Active Directory or Microsoft 365, and explains a refused change instead of failing silently;
+- offboards a synced user on the customer's domain controller through the Fenrir agent: disable, a random password generated on the
+  DC, removal from AD groups, an optional move to a leavers OU, optional hiding from the address book, the leaving date in the
+  description, then an Entra Connect delta sync on the server that runs it. The Microsoft 365 steps follow (sessions, MFA,
+  out-of-office, cloud groups, licences);
+- creates a new starter in AD (OU, AD groups, manager) with a temporary password shown once, starts a sync, waits for the user to
+  appear in Microsoft 365, then sets the usage location, licences and Microsoft 365 groups.
+
+AD changes are an allowlisted agent command (`ad.directory`) that can only be sent by these runs. A new starter's password travels
+encrypted and is released once to the domain controller the command went to. Steps waiting on a server or on Entra Connect
+continue in the background every minute. Needs the Fenrir agent on a domain controller (and, to sync at once, on the Entra Connect
+server); without it the AD part is listed for doing by hand.
+
 Users with the `m365_admin` permission can run changes. Viewing needs `configure`.
 
 ## Phase plan and exit

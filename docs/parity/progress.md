@@ -43,6 +43,7 @@ Overall parity: **not passed**. MVP: **not yet declared**.
 | RMM-09 (owner request) | (this batch) | Backstage hidden SYSTEM desktop on Windows (session 0) with a tools launcher; nothing reaches the user's session. Self-test command; Windows CI acceptance check passes on Windows Server 2025 (AT-34, [run 41414209548](https://github.com/mattp8638/AntiVirus/actions/runs/41414209548)). |
 | CORE-15 (approvals) | (this batch) | Optional two-person approval bound to the exact request and its devices; `test_approvals.py`. |
 | CI | `b5cf672` | Removed the placeholder signing files that the merge brought back. [Run 78](https://github.com/mattp8638/AntiVirus/actions/runs/40649462515) passed, which also verifies FIX-08 in CI. |
+| Detection (found in CI) | `5f6dc90` | Firefox was quarantined as BlackCat on the Windows CI runner: signature "chain" rules fired on any one marker. Rules now take an optional match count (ransomware chains need every marker), and the installer ships the trusted-publisher, known-good and observe-only lists that only a build tree had. `SignatureRuleMatchTests.ps1` in Windows CI. |
 
 ## Microsoft 365 phase (owner request, 2026-11-02)
 
@@ -57,6 +58,7 @@ are required but do not count as the exit.
 |---|---|---|
 | 1 | Tenant workspace: cross-tenant overview, per-tenant workspace (organisation, domains, admins, service health, inactive licensed users), per-feature permission check and Update permissions, background sync, sign-in and audit log store (730 days, search, CSV export) | Built, mock-tested; **awaiting owner test** (AT-35) |
 | 2 | Identity: password reset, MFA reset, Temporary Access Pass, temporary admin roles with automatic removal, manager, guests, new groups; resumable new-starter, offboarding and bulk CSV import with PSA ticket and CRM contact | Built, mock-tested; **awaiting owner test** (AT-35) |
+| 2b | Hybrid identity (owner request): users synced from AD by Entra Connect are offboarded and created on the domain controller through the Fenrir agent (disable, random password, AD groups, leavers OU, address book, sync; create with OU, groups and manager), then finished in Microsoft 365; waiting steps continue in the background | Built, mock-tested, AD script tested in Windows CI; **awaiting owner test** (AT-37) |
 | 3 | Exchange: mailboxes, shared mailboxes, permissions, forwarding, out-of-office, aliases, distribution lists, mail rules, quarantine, message trace; mailbox steps in offboarding | Planned |
 | 4 | Security: Conditional Access templates and named locations, compromised-account check, SPF/DKIM/DMARC check, alert rules on audit events feeding the SOC | Planned |
 | 5 | Intune: device actions, BitLocker and LAPS keys, app deployment, Autopilot | Planned |

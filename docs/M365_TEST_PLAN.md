@@ -144,6 +144,40 @@ confirm.
    and the third skipped because it already exists.
 3. [ ] **Confirm and run.** Two passwords appear. **Download as CSV** and check the file. In Entra, both users exist and are in the group.
 
+## 7. Hybrid users: synced from Active Directory (changes AD and the tenant)
+
+This needs the Fenrir agent on a domain controller of the same customer (PM-DC). If Entra Connect runs on a server with the agent,
+Fenrir also starts the sync itself.
+
+1. [ ] **Users and groups**: users synced from AD show **Active Directory** under "Managed in". Pick one and choose **Enable or block
+   sign-in**. Fenrir refuses with an explanation (Microsoft only accepts that change in AD).
+2. [ ] **New starter**: under "Where the account lives", choose **Active Directory, synced to Microsoft 365**, then
+   **Load them from the domain controller**. Expect to see your OUs, AD groups and UPN suffixes.
+3. [ ] Create `Fenrir Hybrid` (`fenrir.hybrid@<your domain>`):
+   - pick a test OU and one AD group, plus one spare licence;
+   - plan it: the steps show **Active Directory** or **Microsoft 365** against each;
+   - run it: the temporary password appears once, marked "Account in: Active Directory".
+4. [ ] Watch the run. It creates the account on PM-DC, syncs, waits for the user to appear in Microsoft 365 (a minute or two with
+   the sync step, up to 30 minutes without), then applies the usage location and licence. You can close the window: it carries on
+   by itself. Then check:
+   - the account is in the chosen OU and AD group (Active Directory Users and Computers);
+   - the user is in Microsoft 365 with the licence;
+   - signing in with the temporary password asks for a new one.
+5. [ ] **Offboard** `Fenrir Hybrid`:
+   - choose a leavers OU under "Move the account to";
+   - run it. The AD steps run on PM-DC, then the sync, then the Microsoft 365 steps.
+   - In AD, the account is disabled, has no groups besides Domain Users, sits in the leavers OU and has "Left <date>" in its
+     description.
+   - In Microsoft 365, sign-in shows as blocked after the sync, and the licence is gone if you ticked it.
+6. [ ] Delete `Fenrir Hybrid` in AD when done. Entra Connect removes it from Microsoft 365.
+
+## 8. Remote Ctrl+Alt+Del on a server
+
+1. [ ] After the agent on PM-DC has updated, connect to it while it shows "Press Ctrl+Alt+Delete to unlock" and press
+   **Ctrl+Alt+Del**. The password box appears.
+2. [ ] Optional: on PM-DC's device page, run **Test remote Ctrl+Alt+Del**. Only do this when nobody minds the security screen
+   opening there. The result shows `"worked": true`.
+
 ## 6. Clean up
 
 - [ ] Delete `fenrir.test1`, `fenrir.test2` and `fenrir.test3` in Entra (or offboard and then delete them).
