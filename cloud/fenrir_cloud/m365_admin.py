@@ -74,6 +74,34 @@ def microsoft_said(response: httpx.Response) -> str:
     return f" Microsoft said: {text[:300]}" if text else ""
 
 
+def unexpected(exc: Exception, service: str):
+    """An HTTPException for a failure a Microsoft 365 page did not expect: what went wrong in plain words (never a bare
+    500), with the full traceback in the server log."""
+    import logging
+
+    from fastapi import HTTPException
+
+    if isinstance(exc, HTTPException):
+        return exc
+    if isinstance(exc, httpx.HTTPStatusError):
+        if exc.response.status_code in (400, 401) and "login.microsoftonline.com" in str(exc.request.url):
+            said = microsoft_said(exc.response) or (": " + exc.response.text[:300] if exc.response.text else "")
+            return HTTPException(400, f"Microsoft would not issue a token for {service}; check the connection's consent and "
+                                      f"secret (Microsoft 365 > Permissions).{said}")
+        if exc.response.status_code in (401, 403):
+            return HTTPException(400, f"Microsoft refused access to {service}; the connection needs more permissions "
+                                      f"(Microsoft 365 > Permissions > Update permissions)." + microsoft_said(exc.response))
+        return HTTPException(502, f"{service} returned HTTP {exc.response.status_code}." + microsoft_said(exc.response))
+    if isinstance(exc, httpx.TimeoutException):
+        return HTTPException(504, f"{service} did not answer in time ({exc.request.url.host}); try again.")
+    if isinstance(exc, httpx.HTTPError):
+        host = getattr(getattr(exc, "request", None), "url", None)
+        return HTTPException(502, f"Fenrir could not reach {service}" + (f" at {host.host}" if host else "")
+                                  + f" ({type(exc).__name__}); check the server can connect out to it.")
+    logging.getLogger("fenrir.m365").exception("Unexpected %s failure", service)
+    return HTTPException(500, f"{service}: unexpected error ({type(exc).__name__}: {str(exc)[:200]}). It is in the server log.")
+
+
 def user(client, headers, ident):
     return request(client, headers, "GET", f"/users/{UUID(ident)}?$select={USER_FIELDS}")
 

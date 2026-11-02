@@ -359,7 +359,9 @@ def problems(status: dict, settings: dict) -> list[str]:
                                                ("behaviorMonitoring", "behaviour monitoring", d.get("behaviorMonitoring", True)),
                                                ("downloadScanning", "download scanning", d.get("downloadScanning", True)),
                                                ("uiLockdown", "hiding Defender's interface", d.get("hideDefenderInterface", False)))
-                if key in status and bool(status[key]) != bool(want)]
+                if key in status and bool(status[key]) != bool(want)
+                # Both run inside real-time protection and read as off whenever it is; that is reported above.
+                and not (key in ("behaviorMonitoring", "downloadScanning") and not status.get("realTime"))]
         if held:
             found.append("Defender is not following policy for " + ", ".join(held) + " (Group Policy, Intune or tamper protection may be overriding it)")
         if d.get("exclusionsAuthoritative"):

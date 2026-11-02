@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from .. import crypto, m365_collaboration as collab
+from ..m365_admin import unexpected
 from ..db import get_db
 from ..deps import Principal, current_principal
 from ..models import M365Connection
@@ -25,6 +26,8 @@ def _call(fn, row):
         raise HTTPException(400, str(exc)) from None
     except (ValueError, crypto.VaultError) as exc:
         raise HTTPException(400, f"The connection cannot sign in: {exc}") from None
+    except Exception as exc:
+        raise unexpected(exc, "SharePoint and Teams") from None
 
 
 @router.get("/teams")
