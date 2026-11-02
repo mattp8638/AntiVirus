@@ -58,6 +58,10 @@ intune.devices = lambda connection: []
 intune.policies = lambda connection: {"compliance": [], "configuration": []}
 intune.apps = lambda connection: []
 intune.autopilot = lambda connection: []
+from fenrir_cloud import m365_reports as reports_module  # noqa: E402
+
+reports_module.build = lambda connection, key: {"report": key, "title": key, "generatedAt": "2026-01-01T00:00:00Z",
+                                                 "columns": ["name"], "rows": [{"name": "Render"}], "summary": "1 row."}
 with TestClient(create_app(settings), raise_server_exceptions=False) as client:
     token = client.post("/api/console/auth/login", json={"email": "admin@fenrir.local", "password": settings.bootstrap_admin_password}).json()["token"]
     admin = {"Authorization": f"Bearer {token}"}

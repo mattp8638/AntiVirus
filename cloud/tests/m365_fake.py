@@ -249,8 +249,23 @@ class FakeTenant:
                         self.authz[key] = value
                 return httpx.Response(204)
             return httpx.Response(200, json=self.authz)
+        if path == "/reports/authenticationMethods/userRegistrationDetails":
+            return self.page([{"userPrincipalName": "jo@acme.example", "userDisplayName": "Jo Leaver", "isAdmin": False, "isMfaRegistered": True,
+                               "methodsRegistered": ["microsoftAuthenticatorPush"], "userType": "member"},
+                              {"userPrincipalName": "max@acme.example", "userDisplayName": "Max Manager", "isAdmin": True, "isMfaRegistered": False,
+                               "methodsRegistered": [], "userType": "member"}])
+        if path.startswith("/reports/getMailboxUsageDetail"):
+            return httpx.Response(200, content=("\ufeffReport Refresh Date,User Principal Name,Display Name,Is Deleted,Item Count,"
+                                                "Storage Used (Byte),Issue Warning Quota (Byte),Last Activity Date\n"
+                                                "2026-11-01,jo@acme.example,Jo Leaver,False,1200,47000000000,49392123904,2026-10-31\n").encode("utf-8"))
+        if path.startswith("/reports/getOneDriveUsageAccountDetail"):
+            return httpx.Response(200, content=("Report Refresh Date,Owner Display Name,Owner Principal Name,Is Deleted,File Count,"
+                                                "Storage Used (Byte),Last Activity Date\n2026-11-01,Jo Leaver,jo@acme.example,False,300,2147483648,2026-10-30\n").encode())
         if method == "GET" and path == "/users":
             flt = query.get("$filter", "")
+            if flt.startswith("userType eq 'Guest'"):
+                return self.page([{"displayName": "Gus Guest", "mail": "gus@partner.example", "createdDateTime": "2025-01-01T00:00:00Z",
+                                   "externalUserState": "Accepted", "signInActivity": {"lastSignInDateTime": "2025-02-01T00:00:00Z"}}])
             if flt.startswith("mail eq"):
                 mail = flt.split("'")[1]
                 return self.page([u for u in self.users.values() if u.get("mail") == mail])

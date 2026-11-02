@@ -32,6 +32,7 @@ from .routers import onboarding as onboarding_router
 from .routers import m365_exchange as m365_exchange_router
 from .routers import m365_signin as m365_signin_router
 from .routers import m365_intune as m365_intune_router
+from .routers import m365_reports as m365_reports_router
 from .routers import grc_programme as grc_programme_router
 from .routers import rollouts as rollouts_router
 from .routers import apikeys as apikeys_router
@@ -218,7 +219,7 @@ def _purge_telemetry(db, settings: Settings) -> dict:
 
 def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
     """Hourly jobs, in order."""
-    from . import (autodoc, billing_sync, client360, darkweb, defender, grc_automation, m365_partner, m365_standards, m365_workspace,
+    from . import (autodoc, billing_sync, client360, darkweb, defender, grc_automation, m365_partner, m365_reports, m365_standards, m365_workspace,
                    tprm, web_profile)
 
     jobs: list[tuple[str, object]] = [("telemetry.retention", lambda db: _purge_telemetry(db, settings))]
@@ -228,7 +229,7 @@ def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
         jobs.append(("intel.feed", lambda db: log.info("feed sync: %s", sync_feed(db, settings.feed_url, settings.feed_token))))
     jobs += [("m365.partner", m365_partner.tick), ("documentation.auto", autodoc.tick), ("tprm", tprm.tick),
              ("grc.automation", grc_automation.tick), ("darkweb", darkweb.tick), ("m365.standards", m365_standards.tick),
-             ("m365.workspace", m365_workspace.tick),
+             ("m365.workspace", m365_workspace.tick), ("m365.reports", m365_reports.send_schedules),
              ("billing.sync", billing_sync.tick), ("clients.health", client360.tick),
              ("defender", defender.tick), ("web.profiles", web_profile.tick)]
     if settings.dns_blocklists_enabled:
@@ -497,7 +498,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     for module in (agent_api, admin, fleet, soc, crm_router, business, rmm_router, service_mgmt, psa_router, remote_router, portal):
         app.include_router(module.router)
     app.include_router(onboarding_router.workspace_router)
-    for module in (m365_admin_router, m365_router, network_router, grc_router, backup_router, soc_workflows, ad_router, agent_health_router, onboarding_router, m365_exchange_router, m365_signin_router, m365_intune_router, grc_programme_router,
+    for module in (m365_admin_router, m365_router, network_router, grc_router, backup_router, soc_workflows, ad_router, agent_health_router, onboarding_router, m365_exchange_router, m365_signin_router, m365_intune_router, m365_reports_router, grc_programme_router,
                    rollouts_router, apikeys_router, roles_router, approvals_router, exclusions_router,
                    exposure_intel_router, m365_partner_router, m365_workspace_router, m365_lifecycle_router, condition_packages_router, triage_router, clients_router, search_router, defender_router, mobile_apps_router):
         app.include_router(module.router)

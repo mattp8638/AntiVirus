@@ -4,6 +4,7 @@ import { M365Lifecycle } from "./M365Lifecycle";
 import M365Exchange from "./M365Exchange";
 import M365SigninProtection from "./M365SigninProtection";
 import M365Intune from "./M365Intune";
+import M365Reports from "./M365Reports";
 import { M365Logs } from "./M365Logs";
 import { M365Connect } from "../components/M365Connect";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -156,12 +157,13 @@ export default function M365Tenant() {
     <ErrorNote error={error || ws.lastError || null} />
     {missing > 0 && <p className="small" style={{ color: "#fcd34d" }}>{missing} features need permissions this connection does not have. <button className="link" onClick={() => setTab("Permissions")}>See which</button></p>}
     {ws.secretExpiresAt && <p className="small muted">App secret expires {fmtTime(ws.secretExpiresAt)}.</p>}
-    <Tabs tabs={["Overview", "Users and groups", "Exchange", "Intune", "Sign-in protection", "Onboarding and offboarding", "Logs", "Permissions"]} active={tab} onChange={setTab} />
+    <Tabs tabs={["Overview", "Users and groups", "Exchange", "Intune", "Sign-in protection", "Reports", "Onboarding and offboarding", "Logs", "Permissions"]} active={tab} onChange={setTab} />
     {tab === "Overview" && <Overview ws={ws} />}
     {tab === "Users and groups" && <M365Administration key={ws.id} connection={ws} />}
     {tab === "Exchange" && <M365Exchange key={ws.id} connection={ws} />}
     {tab === "Intune" && <M365Intune key={ws.id} connection={ws} />}
     {tab === "Sign-in protection" && <M365SigninProtection key={ws.id} connection={ws} />}
+    {tab === "Reports" && <M365Reports key={ws.id} connection={ws} />}
     {tab === "Onboarding and offboarding" && <M365Lifecycle key={ws.id} connection={ws} />}
     {tab === "Logs" && <M365Logs key={ws.id} connection={ws} onCollected={reload} />}
     {tab === "Permissions" && <Permissions ws={ws} reload={reload} onSignIn={() => setSignIn(true)} />}
