@@ -139,3 +139,50 @@ def test_metrics_content(client, device, metrics_token):
         if line and not line.startswith("#"):
             name_and_labels, value = line.rsplit(" ", 1)
             float(value)
+
+
+def test_vulnerability_intelligence_failures_are_recorded_and_alerted(sent, monkeypatch):
+    from fenrir_cloud import cveintel
+
+    def broken(db, client):
+        raise RuntimeError("NVD answered 503")
+
+    monkeypatch.setattr(cveintel, "run_once", broken)
+    healthy()
+    with database.session_factory()() as db:
+        for _ in range(3):
+            assert cveintel.run_recorded(db) is False
+        row = db.get(BackgroundJob, "vuln.intel")
+        assert row.failures == 3 and "NVD answered 503" in row.error
+    assert watch() == "platform.health.degraded"
+    assert sent[-1][1]["data"]["new"] == ["failing:vuln.intel"]
+
+
+def test_an_expiring_code_signing_certificate_is_reported(client, monkeypatch, tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    def cert(days_left):
+        key = ec.generate_private_key(ec.SECP256R1())
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Fenrir Test Signing")])
+        now = datetime.now(timezone.utc)
+        built = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+                 .serial_number(1).not_valid_before(now - timedelta(days=365)).not_valid_after(now + timedelta(days=days_left))
+                 .sign(key, hashes.SHA256()))
+        path = tmp_path / f"cert-{days_left}.cer"
+        path.write_bytes(built.public_bytes(serialization.Encoding.DER))
+        return path
+
+    healthy()
+    monkeypatch.setattr(health, "CODE_SIGNING_CERT", cert(200))
+    assert client.get("/health/background").status_code == 200
+    monkeypatch.setattr(health, "CODE_SIGNING_CERT", cert(10))
+    body = client.get("/health/background").json()
+    assert any("code-signing certificate expires in" in p for p in body["problems"])
+    assert "code-signing" in health.problem_keys(body)
+    monkeypatch.setattr(health, "CODE_SIGNING_CERT", tmp_path / "missing.cer")  # an unsigned lab build: nothing to say
+    assert client.get("/health/background").status_code == 200

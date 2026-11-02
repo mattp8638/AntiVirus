@@ -513,10 +513,21 @@ def loop(stop: threading.Event, first_delay: float = 120.0, interval: float = 90
         delay = interval
         session = database.session_factory()()
         try:
-            with httpx.Client(timeout=60, headers={"User-Agent": "FenrirCloud/1.0 (vulnerability intelligence)"}) as client:
-                log.info("vulnerability intelligence: %s", run_once(session, client))
+            run_recorded(session)
         except Exception as exc:  # noqa: BLE001 - keep the loop alive
             log.warning("vulnerability intelligence pass failed: %s", exc)
             session.rollback()
         finally:
             session.close()
+
+
+def run_recorded(db) -> bool:
+    """One pass, recorded as the background job "vuln.intel": its last run and error show in Settings > Platform, and
+    three failures in a row raise the platform-degraded alert (health.py)."""
+    from .main import _run_job
+
+    def job(session):
+        with httpx.Client(timeout=60, headers={"User-Agent": "FenrirCloud/1.0 (vulnerability intelligence)"}) as client:
+            log.info("vulnerability intelligence: %s", run_once(session, client))
+
+    return _run_job(db, "vuln.intel", job)

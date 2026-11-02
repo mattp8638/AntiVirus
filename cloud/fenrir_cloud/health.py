@@ -77,8 +77,38 @@ def background_health(db: Session, settings: Settings) -> dict:
         problems.append(f"artifact storage is nearly full: {storage['freeBytes'] / 1024**3:.1f} GiB free "
                         f"({storage['freeBytes'] * 100 // storage['totalBytes']}%)")
 
+    signing = code_signing_expiry()
+    if signing is not None:
+        days = (signing - now).days
+        checks["codeSigning"] = {"ok": days >= CODE_SIGNING_WARN_DAYS, "expiresInDays": days}
+        if days < 0:
+            problems.append("the Windows code-signing certificate has expired: new installers and updates cannot be signed")
+        elif days < CODE_SIGNING_WARN_DAYS:
+            problems.append(f"the Windows code-signing certificate expires in {days} days")
+
     return {"ok": not problems, "role": settings.role, "problems": problems, "checks": checks,
             "checkedAt": now.isoformat(timespec="seconds") + "Z"}
+
+
+CODE_SIGNING_WARN_DAYS = 30
+CODE_SIGNING_CERT = Path(__file__).resolve().parents[1] / "downloads" / "windows" / "fenrir-codesign.cer"
+
+
+def code_signing_expiry(path: Path | None = None) -> datetime | None:
+    """When the Windows code-signing certificate the running build was signed with expires (UTC, naive), or None for
+    an unsigned build. The image publishes its public half; the private key never reaches the server."""
+    target = path or CODE_SIGNING_CERT
+    try:
+        data = target.read_bytes()
+    except OSError:
+        return None
+    from cryptography import x509
+
+    try:
+        cert = x509.load_der_x509_certificate(data) if not data.lstrip().startswith(b"-----") else x509.load_pem_x509_certificate(data)
+    except ValueError:
+        return None
+    return cert.not_valid_after_utc.replace(tzinfo=None)
 
 
 def storage_usage(path) -> dict | None:
@@ -114,6 +144,8 @@ def problem_keys(report: dict) -> list[str]:
         keys.append("outbox")
     if not checks.get("storage", {}).get("ok", True):
         keys.append("storage")
+    if not checks.get("codeSigning", {}).get("ok", True):
+        keys.append("code-signing")
     return sorted(set(keys))
 
 

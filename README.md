@@ -226,11 +226,11 @@ container instead, set `FENRIR_ROLE: all` on `cloud` and remove the `worker` ser
 
 Point your uptime monitor at `/health/background` as well as `/ready`. It returns 503, naming the problem, when the
 scheduler or the hourly maintenance has stopped completing, a job has been running for over 30 minutes, the event
-outbox is falling behind, or the artifacts volume is nearly full. **Settings → Platform** shows the same, with each
+outbox is falling behind, the artifacts volume is nearly full, or the Windows code-signing certificate expires within 30 days. **Settings → Platform** shows the same, with each
 job's last run and error.
 
 Fenrir also tells you itself. The web process checks background health every minute and sends
-`platform.health.degraded` when something new goes wrong (including a job failing three times in a row) and
+`platform.health.degraded` when something new goes wrong (including a job, such as the threat or vulnerability feed sync, failing three times in a row) and
 `platform.health.recovered` when everything is fine again, once each, to every MSP webhook subscribed to them
 (**Settings → Webhooks**; Slack and Teams formats work). It sends them directly rather than through the event outbox,
 so they still arrive when the worker or the outbox is the problem. Each alert is also in the audit log.
