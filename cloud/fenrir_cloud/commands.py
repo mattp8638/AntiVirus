@@ -77,6 +77,9 @@ CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("remote.backstage.selftest", "Test the backstage desktop", "Remote access",
                 description="Opens the hidden backstage desktop in session 0, shows a test window and Task Manager on it, "
                             "checks the capture works, and cleans up. Nothing appears on the user's screen."),
+    CommandSpec("remote.cad.selftest", "Test remote Ctrl+Alt+Del", "Remote access",
+                description="Sends Ctrl+Alt+Del to the signed-in Windows session the way a remote desktop session does, and "
+                            "checks Windows opened its security screen. The user sees that screen: run it when that is fine."),
     CommandSpec("patch.scan", "Scan for missing patches", "Patching", platforms=ALL),
     CommandSpec("patch.install", "Install approved patches", "Patching", platforms=ALL,
                 description="Installs the patch IDs in the payload, then reboots per the patch policy."),

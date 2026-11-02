@@ -12,6 +12,7 @@
 #include "RemotePipeIo.h"
 #include "RemoteSasRequest.h"
 
+#include <tlhelp32.h>
 #include <wtsapi32.h>
 
 #include "RmmExecutors.h"
@@ -2271,6 +2272,9 @@ std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
   if (command.type == L"remote.backstage.selftest") {
     return RunBackstageSelfTest();
   }
+  if (command.type == L"remote.cad.selftest") {
+    return RunSasSelfTest();
+  }
   if (command.type == L"patch.posture.refresh") {
     const auto summary = PatchOrchestrator(config_).RefreshPatchState();
     return L"{\"success\":true,\"status\":\"refreshed\",\"summary\":\"Patch inventory refreshed.\",\"windowsUpdateCount\":" +
@@ -3423,6 +3427,107 @@ std::wstring AgentService::LaunchRemoteHelper(const RemoteCommand& command) {
   return std::wstring(L"{\"started\":true,\"consent\":\"") + (backstage ? L"not_required" : L"pending") + L"\",\"helperPid\":" + std::to_wstring(process.dwProcessId) +
          L",\"windowsSession\":" + std::to_wstring(windowsSession) + L",\"reachedRelay\":" + (reachedRelay ? L"true" : L"false") +
          L",\"logPath\":\"" + Utf8ToWide(EscapeJsonString(logPath.wstring())) + L"\"}";
+}
+
+namespace {
+int CountProcessesInSession(const wchar_t* exe, DWORD session) {
+  HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if (snapshot == INVALID_HANDLE_VALUE) return -1;
+  PROCESSENTRY32W entry{};
+  entry.dwSize = sizeof(entry);
+  int count = 0;
+  for (BOOL more = Process32FirstW(snapshot, &entry); more; more = Process32NextW(snapshot, &entry)) {
+    DWORD owner = 0;
+    if (_wcsicmp(entry.szExeFile, exe) == 0 && ProcessIdToSessionId(entry.th32ProcessID, &owner) && owner == session) ++count;
+  }
+  CloseHandle(snapshot);
+  return count;
+}
+
+DWORD SasPolicyValue() {
+  DWORD value = 0, size = sizeof(value);
+  if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System", L"SoftwareSASGeneration",
+                   RRF_RT_REG_DWORD, nullptr, &value, &size) != ERROR_SUCCESS) {
+    return 0xFFFFFFFF;
+  }
+  return value;
+}
+}  // namespace
+
+// Proves remote Ctrl+Alt+Del on this machine through the real path: the helper is started in the interactive
+// Windows session exactly as for a remote desktop session, asks this service over its pipe, and reports whether
+// Windows switched that session to its secure desktop. The service also watches for LogonUI.exe in that session.
+// It shows the Windows security screen on that session, so run it only where that is acceptable.
+std::wstring AgentService::RunSasSelfTest() {
+  const auto helper = config_.installRootPath / L"fenrir-remote.exe";
+  std::error_code ec;
+  if (!std::filesystem::exists(helper, ec)) {
+    throw std::runtime_error("The remote access helper (fenrir-remote.exe) is not installed");
+  }
+  const DWORD windowsSession = InteractiveSessionId();
+  if (windowsSession == 0 || windowsSession == 0xFFFFFFFF) {
+    throw std::runtime_error("No interactive Windows session is available to test Ctrl+Alt+Del");
+  }
+  const auto folder = config_.runtimeDatabasePath.parent_path() / L"remote";
+  std::filesystem::create_directories(folder, ec);
+  const auto id = L"sas-selftest-" + GenerateGuidString();
+  const auto resultPath = folder / (id + L".json");
+  std::wstring commandLine = L"\"" + helper.wstring() + L"\" --sas-selftest " + id + L" \"" + resultPath.wstring() + L"\"";
+  std::vector<wchar_t> mutableCommand(commandLine.begin(), commandLine.end());
+  mutableCommand.push_back(L'\0');
+  const int logonUiBefore = CountProcessesInSession(L"LogonUI.exe", windowsSession);
+  HANDLE self = nullptr, primary = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID, &self) ||
+      !DuplicateTokenEx(self, MAXIMUM_ALLOWED, nullptr, SecurityImpersonation, TokenPrimary, &primary)) {
+    if (self) CloseHandle(self);
+    throw std::runtime_error("Could not prepare the helper token");
+  }
+  CloseHandle(self);
+  DWORD target = windowsSession;
+  if (!SetTokenInformation(primary, TokenSessionId, &target, sizeof(target))) {
+    const DWORD error = GetLastError();
+    CloseHandle(primary);
+    throw std::runtime_error("Could not target the interactive Windows session (error " + std::to_string(error) + ")");
+  }
+  STARTUPINFOW startup{};
+  startup.cb = sizeof(startup);
+  wchar_t desktop[] = L"winsta0\\default";
+  startup.lpDesktop = desktop;
+  PROCESS_INFORMATION process{};
+  const BOOL created = CreateProcessAsUserW(primary, helper.c_str(), mutableCommand.data(), nullptr, nullptr, FALSE,
+                                            CREATE_NEW_PROCESS_GROUP, nullptr, helper.parent_path().c_str(), &startup, &process);
+  CloseHandle(primary);
+  if (!created) {
+    throw std::runtime_error("Could not start the helper in the interactive session (error " + std::to_string(GetLastError()) + ")");
+  }
+  CloseHandle(process.hThread);
+  HANDLE watched = nullptr;
+  if (!DuplicateHandle(GetCurrentProcess(), process.hProcess, GetCurrentProcess(), &watched, SYNCHRONIZE, FALSE, 0)) {
+    TerminateProcess(process.hProcess, 1);
+    CloseHandle(process.hProcess);
+    throw std::runtime_error("Could not start the Ctrl+Alt+Del service channel");
+  }
+  std::thread(ServeSasRequests, SasPipeName(id), process.dwProcessId, windowsSession, watched).detach();
+  const DWORD waited = WaitForSingleObject(process.hProcess, 20000);
+  if (waited != WAIT_OBJECT_0) TerminateProcess(process.hProcess, 1);
+  DWORD exitCode = 0;
+  GetExitCodeProcess(process.hProcess, &exitCode);
+  CloseHandle(process.hProcess);
+  int logonUiAfter = CountProcessesInSession(L"LogonUI.exe", windowsSession);
+  for (int i = 0; i < 12 && logonUiAfter <= logonUiBefore; ++i) {
+    Sleep(250);
+    logonUiAfter = CountProcessesInSession(L"LogonUI.exe", windowsSession);
+  }
+  std::ifstream in(resultPath, std::ios::binary);
+  std::string result((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  in.close();
+  std::filesystem::remove(resultPath, ec);
+  if (result.empty() || result.front() != '{') result = "null";
+  const DWORD policy = SasPolicyValue();
+  return L"{\"exitCode\":" + std::to_wstring(exitCode) + L",\"windowsSession\":" + std::to_wstring(windowsSession) +
+         L",\"consoleSession\":" + std::to_wstring(WTSGetActiveConsoleSessionId()) + L",\"logonUiBefore\":" + std::to_wstring(logonUiBefore) +
+         L",\"logonUiAfter\":" + std::to_wstring(logonUiAfter) + L",\"softwareSasGeneration\":" +
+         (policy == 0xFFFFFFFF ? std::wstring(L"null") : std::to_wstring(policy)) + L",\"selfTest\":" + Utf8ToWide(result) + L"}";
 }
 
 // Proves the backstage hidden desktop on this machine: runs the helper's self-test as SYSTEM in session 0 (where

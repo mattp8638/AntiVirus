@@ -654,6 +654,43 @@ std::string SendCtrlAltDel(const std::string& sessionId) {
   return reply.rfind("error: ", 0) == 0 ? reply.substr(7) : "invalid reply from the Ctrl+Alt+Del service channel";
 }
 
+// The name of this session's input desktop: "Default" for the user's desktop, "Winlogon" for the secure desktop that
+// Ctrl+Alt+Del, the lock screen and the sign-in screen use. "" when it cannot be opened.
+std::string InputDesktopName() {
+  HDESK desk = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS);
+  if (!desk) return "";
+  wchar_t name[256]{};
+  DWORD needed = 0;
+  const bool ok = GetUserObjectInformationW(desk, UOI_NAME, name, sizeof(name), &needed) != FALSE;
+  CloseDesktop(desk);
+  return ok ? WideToUtf8(name) : "";
+}
+
+// Proves Ctrl+Alt+Del on this machine through the real path: this helper (started by the service in the signed-in
+// session, as for a remote session) asks the service over the session's pipe, then watches whether Windows switched
+// this session to its secure desktop. Writes JSON to resultPath; returns 0 when the secure desktop appeared.
+int RunSasSelfTest(const std::string& sessionId, const std::wstring& resultPath) {
+  DWORD session = 0;
+  ProcessIdToSessionId(GetCurrentProcessId(), &session);
+  const auto before = InputDesktopName();
+  const auto reply = RequestSasFromService(sessionId);
+  std::string after;
+  for (int waited = 0; waited < 5000; waited += 250) {
+    Sleep(250);
+    after = InputDesktopName();
+    if (after != before || _stricmp(after.c_str(), "Winlogon") == 0) break;
+  }
+  const bool secure = _stricmp(after.c_str(), "Winlogon") == 0;
+  const bool switched = secure && _stricmp(before.c_str(), "Winlogon") != 0;
+  std::ostringstream out;
+  out << "{\"helperSession\":" << session << ",\"reply\":" << Q(reply) << ",\"desktopBefore\":" << Q(before)
+      << ",\"desktopAfter\":" << Q(after) << ",\"secureDesktop\":" << (secure ? "true" : "false")
+      << ",\"switchedToSecureDesktop\":" << (switched ? "true" : "false") << "}";
+  std::ofstream file(std::filesystem::path(resultPath), std::ios::binary | std::ios::trunc);
+  file << out.str();
+  return reply == "ok" && switched ? 0 : 1;
+}
+
 void Session::HandleInput(const std::string& type, const json::Value& m) {
   if (options_.viewOnly) {
     return;
@@ -1482,15 +1519,21 @@ int Session::Run() {
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   int argc = 0;
   LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-  std::wstring optionsPath, selfTestPath;
+  std::wstring optionsPath, selfTestPath, sasSession, sasResult;
   for (int i = 1; i + 1 < argc; ++i) {
     if (wcscmp(argv[i], L"--options") == 0) {
       optionsPath = argv[i + 1];
     } else if (wcscmp(argv[i], L"--backstage-selftest") == 0) {
       selfTestPath = argv[i + 1];
+    } else if (wcscmp(argv[i], L"--sas-selftest") == 0 && i + 2 < argc) {
+      sasSession = argv[i + 1];
+      sasResult = argv[i + 2];
     }
   }
   LocalFree(argv);
+  if (!sasSession.empty()) {
+    ExitProcess(static_cast<UINT>(RunSasSelfTest(WideToUtf8(sasSession), sasResult)));
+  }
   if (!selfTestPath.empty()) {
     SetProcessDPIAware();
     ExitProcess(static_cast<UINT>(fenrir::remote::RunBackstageSelfTest(selfTestPath)));
