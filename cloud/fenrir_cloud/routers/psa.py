@@ -579,7 +579,8 @@ def companies(principal: Principal = Depends(current_principal), db: Session = D
     return [{**to_dict(t), "companyType": (t.settings or {}).get("companyType", "Client" if t.kind == "customer" else t.kind.title()),
              "phone": (t.settings or {}).get("phone", ""), "website": (t.settings or {}).get("website", ""),
              "emailDomains": (t.settings or {}).get("emailDomains", []), "openTickets": open_tickets.get(t.id, 0),
-             "devices": devices.get(t.id, 0), "contacts": contacts.get(t.id, 0), "agreements": agreements.get(t.id, 0)}
+             "devices": devices.get(t.id, 0), "contacts": contacts.get(t.id, 0), "agreements": agreements.get(t.id, 0),
+             "archived": bool((t.settings or {}).get("archived"))}
             for t in tenants]
 
 

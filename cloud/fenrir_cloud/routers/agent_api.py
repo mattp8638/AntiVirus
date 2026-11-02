@@ -110,6 +110,8 @@ def enroll(
         raise HTTPException(403, "An enrollment token is required")
 
     tenant = db.get(Tenant, token.tenant_id) if token else _unassigned_tenant(db)
+    if tenant is None or (tenant.settings or {}).get("archived"):
+        raise HTTPException(403, "This customer is archived or deleted; it cannot enrol devices")
     api_key = new_secret("fdk", 32)
     device = None
     target_id = reinstatement_target(raw_token) if token else None

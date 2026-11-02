@@ -6,6 +6,7 @@ import { useApp } from "../app-context";
 import { ErrorNote, PageHead, Pill, Stat, Table, useAction, useData } from "../components/ui";
 import { CrmEditor } from "./Crm";
 import { promptDialog } from "../components/dialogs";
+import { CustomerActions } from "../components/CustomerManage";
 
 const TIMELINE_TONE: Record<string, string> = { ticket: "warn", invoice: "muted", opportunity: "good", task: "blue" };
 
@@ -33,12 +34,18 @@ export default function CrmAccount() {
                 subtitle={a ? <>Plan {displayValue(a.plan)} · {displayValue(data.devices)} devices · owner <b>{displayValue(a.accountOwner || "unassigned")}</b>
                   {can("crm") && <> · <button className="small" onClick={setOwner}>Change owner</button></>}
                   {" · "}<Link to={`/companies/${id}`}>Health and reports</Link></> : undefined}
-                actions={can("crm") && <span style={{ display: "inline-flex", gap: 6 }}>
+                actions={<span style={{ display: "inline-flex", gap: 6, flexWrap: "wrap" }}>
+                  {a && <CustomerActions customer={{ ...a, kind: "customer" }} onChanged={reload} />}
+                  {can("crm") && <>
                   <button onClick={() => blank("activities", { kind: "call", direction: "outbound" })}>Log activity</button>
                   <button onClick={() => blank("activities", { kind: "task" })}>Add task</button>
-                  <button className="primary" onClick={() => blank("opportunities", { kind: "Upsell", stage: "Prospecting" })}>New opportunity</button>
+                  <button className="primary" onClick={() => blank("opportunities", { kind: "Upsell", stage: "Prospecting" })}>New opportunity</button></>}
                 </span>} />
       <ErrorNote error={error} />
+      {a?.archived && <p style={{ color: "#fcd34d" }}>This customer is archived: it is hidden from customer lists and cannot enrol new devices. Press <b>Restore</b> to bring it back.</p>}
+      {a && Object.keys(a.profile || {}).length > 0 && <p className="small muted">
+        {[a.profile.phone, a.profile.website, a.profile.address].filter(Boolean).map((v: string) => displayValue(v)).join(" · ")}
+        {a.profile.notes && <><br />{displayValue(a.profile.notes)}</>}</p>}
       <div className="grid k4">
         <Stat label="Contracted MRR" value={data ? money(data.mrr) : "—"} />
         <Stat label={`Revenue (${days} days)`} value={p ? money(p.revenue) : "—"} hint={p ? `${p.invoiceCount} invoices · ${money(p.outstanding)} outstanding` : undefined} />

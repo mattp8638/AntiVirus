@@ -185,21 +185,16 @@ def update_device(device_id: str, body: dict = Body(...), principal: Principal =
     return _device_view(device)
 
 
-@router.delete("/devices/{device_id}")
-def retire_device(device_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    principal.require("configure")
-    device = _get_device(db, principal, device_id)
-    device = db.execute(select(Device).where(Device.id == device.id).with_for_update()
-                        .execution_options(populate_existing=True)).scalar_one()
-    if device.api_key_hash == f"retired-{device.id}":
-        return {"ok": True}
+def retire(db: Session, device: Device, actor: str) -> tuple[dict, list]:
+    """Decommission one device: end its remote sessions, cancel its commands, retire its CMDB entry and revoke its key.
+    Does not commit. Returns (cancellation counts, the remote sessions ended, to notify after the commit)."""
     active_support = list(db.scalars(select(RemoteSession).where(
         RemoteSession.device_id == device.id,
         RemoteSession.status.in_(("waiting", "connected")))))
     for session in active_support:
-        remote.end_session(db, session, principal.actor, "device decommissioned")
+        remote.end_session(db, session, actor, "device decommissioned")
     db.flush()
-    cancellation = command_control.cancel_commands(db, principal.actor, device=device, retiring=True)
+    cancellation = command_control.cancel_commands(db, actor, device=device, retiring=True)
     # Preserve historical ownership; never leave retired endpoints active in CMDB.
     for asset in db.execute(select(Configuration).where(
             Configuration.device_id == device.id)).scalars():
@@ -209,7 +204,19 @@ def retire_device(device_id: str, principal: Principal = Depends(current_princip
     device.api_key_hash, device.pending_api_key_hash = f"retired-{device.id}", None
     if web_profile.agentless(device):
         web_profile.resolve_silent(db, device, utcnow(), "The device was decommissioned.")
-    audit.record(db, principal.actor, "device.retired", device.hostname, device.tenant_id, **cancellation)
+    audit.record(db, actor, "device.retired", device.hostname, device.tenant_id, **cancellation)
+    return cancellation, active_support
+
+
+@router.delete("/devices/{device_id}")
+def retire_device(device_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("configure")
+    device = _get_device(db, principal, device_id)
+    device = db.execute(select(Device).where(Device.id == device.id).with_for_update()
+                        .execution_options(populate_existing=True)).scalar_one()
+    if device.api_key_hash == f"retired-{device.id}":
+        return {"ok": True}
+    cancellation, active_support = retire(db, device, principal.actor)
     db.commit()
     for session in active_support:
         remote.notify_session_end(session.id, principal.actor)

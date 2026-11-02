@@ -1,3 +1,4 @@
+import { CustomerActions } from "../components/CustomerManage";
 import { displayValue } from "../components/DisplayValue";
 import { GroupsManager } from "../components/Groups";
 import { useState } from "react";
@@ -69,9 +70,12 @@ function TenantsTab() {
   return (
     <div className="card">
       {can("manage_tenants") && <button className="primary" style={{ marginBottom: 10 }} onClick={() => setForm({ name: "", template: "balanced", plan: "complete" })}>New tenant</button>}
-      <Table rows={data} columns={[{ key: "name", label: "Tenant" }, { key: "kind", label: "Type", render: (t) => <Pill value={t.kind} tone={t.kind === "msp" ? "blue" : "muted"} /> },
+      <Table rows={data} columns={[{ key: "name", label: "Tenant", render: (t) => <>{displayValue(t.name)}{t.archived && <> <Pill value="archived" tone="muted" /></>}</> }, { key: "kind", label: "Type", render: (t) => <Pill value={t.kind} tone={t.kind === "msp" ? "blue" : "muted"} /> },
         { key: "plan", label: "Plan" }, { key: "parentId", label: "Managed by", render: (t) => t.parentId ? tenantName(t.parentId) : "—" }, { key: "createdAt", label: "Created", render: (t) => fmtTime(t.createdAt) },
-        { key: "edit", label: "", render: (t) => can("manage_tenants") && t.kind !== "unassigned" && <button className="small" onClick={() => setEditing({ id: t.id, name: t.name, plan: t.plan, defaultPolicyId: t.defaultPolicyId ?? "" })}>Edit</button> }]} />
+        { key: "edit", label: "", render: (t) => !can("manage_tenants") || t.kind === "unassigned" ? null : t.kind === "customer"
+          ? <CustomerActions small customer={{ ...t, accountOwner: t.accountOwner ?? "", profile: { phone: t.settings?.phone, website: t.settings?.website, address: t.settings?.address, notes: t.settings?.notes } }}
+              onChanged={reload} onDeleted={reload} />
+          : <button className="small" onClick={() => setEditing({ id: t.id, name: t.name, plan: t.plan, defaultPolicyId: t.defaultPolicyId ?? "" })}>Edit</button> }]} />
       {editing && <TenantEdit tenant={editing} onClose={(saved) => { setEditing(null); if (saved) { reload(); refreshMe(); } }} />}
       {form && (
         <Modal title="New tenant" onClose={() => setForm(null)} footer={<button className="primary" disabled={busy || !form.name}

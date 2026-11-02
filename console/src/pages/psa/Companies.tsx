@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { ago, api, money } from "../../api";
 import { useApp } from "../../app-context";
 import { Modal, PageHead, Pill, Table, Tabs, useAction, useData, useListData } from "../../components/ui";
+import { CustomerActions } from "../../components/CustomerManage";
 import { NewTicket, PRIORITY_TONE } from "./ServiceBoard";
 import { noticeDialog } from "../../components/dialogs";
 import { ClientHealth, HealthBadge } from "../../components/ClientHealth";
@@ -13,13 +14,17 @@ export default function Companies() {
   const { data } = useListData<any>("psa/companies");
   const { data: health } = useData<Record<string, { score: number | null }>>("clients/health");
   const [q, setQ] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
   return (
     <>
       <PageHead title="Companies" subtitle="Customers with their sites, contacts, agreements, configurations and service history." />
-      <input placeholder="Search companies" value={q} onChange={(e) => setQ(e.target.value)} style={{ minWidth: 280, marginBottom: 12 }} />
+      <div className="row" style={{ gap: 12, marginBottom: 12, alignItems: "center" }}>
+        <input placeholder="Search companies" value={q} onChange={(e) => setQ(e.target.value)} style={{ minWidth: 280 }} />
+        <label className="small"><input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} /> Show archived</label>
+      </div>
       <div className="card">
-        <Table rows={data?.filter((c) => !q || c.name.toLowerCase().includes(q.toLowerCase()))} onRow={(c) => navigate(`/companies/${c.id}`)} empty="No companies."
-               columns={[{ key: "name", label: "Company", render: (c) => <><b>{displayValue(c.name)}</b><div className="small muted">{displayValue(c.website)}</div></> },
+        <Table rows={data?.filter((c) => (showArchived || !c.archived) && (!q || c.name.toLowerCase().includes(q.toLowerCase())))} onRow={(c) => navigate(`/companies/${c.id}`)} empty="No companies."
+               columns={[{ key: "name", label: "Company", render: (c) => <><b>{displayValue(c.name)}</b>{c.archived && <> <Pill value="archived" tone="muted" /></>}<div className="small muted">{displayValue(c.website)}</div></> },
                          { key: "health", label: "Health", render: (c) => <HealthBadge score={health?.[c.id]?.score} /> },
                          { key: "companyType", label: "Type", render: (c) => <Pill value={c.companyType} tone={c.companyType === "Client" ? "good" : "muted"} /> },
                          { key: "phone", label: "Phone" }, { key: "openTickets", label: "Open tickets" }, { key: "devices", label: "Devices" },
@@ -48,7 +53,11 @@ export function CompanyDetail() {
                   <button className="primary" onClick={() => setTicket(true)}>New ticket</button>
                   {can("crm") && <button onClick={() => setEditing(true)}>Edit company</button>}
                   <button onClick={() => { setTenantId(c.id); navigate("/devices"); }}>Devices</button>
+                  <CustomerActions customer={{ id: c.id, name: c.name, plan: c.plan, kind: c.kind, accountOwner: c.accountOwner ?? "",
+                    defaultPolicyId: c.defaultPolicyId, archived: c.archived,
+                    profile: { phone: c.phone, website: c.website, address: c.address, notes: c.notes } }} onChanged={reload} afterDelete="/companies" />
                 </>} />
+      {c.archived && <p style={{ color: "#fcd34d" }}>This company is archived: it is hidden from lists and cannot enrol new devices. Press <b>Restore</b> to bring it back.</p>}
       <Tabs tabs={["Overview", "Tickets", "Contacts", "Sites", "Agreements", "Configurations", "Projects"]} active={tab} onChange={setTab} />
       <div className="card">
         {tab === "Overview" && (c.kind === "customer" ? <ClientHealth tenantId={c.id} />
