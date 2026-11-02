@@ -213,6 +213,16 @@ def poll_signin(signin_id: str, principal: Principal = Depends(current_principal
         except IntegrityError:
             db.rollback()
             raise HTTPException(409, "This directory is already connected for this customer")
+        except Exception:
+            # Microsoft has the app and its new secret, but Fenrir could not save them: say so rather than stay "provisioning".
+            db.rollback()
+            row = db.get(M365SignIn, signin_id)
+            row.status = "failed"
+            row.error = ("Microsoft finished setting up the Fenrir app, but Fenrir could not save the connection. Check the server log, "
+                         "then sign in again; the unused app secret can be deleted in Entra (App registrations > Fenrir > Certificates & secrets).")
+            row.secret_envelope = None
+            db.commit()
+            raise
         row.secret_envelope = None  # the device code is spent
         audit.record(db, principal.actor, "m365.connected", connection.id, connection.tenant_id, mode="provisioned",
                      signedInAs=made["signedInAs"], missingPermissions=made["missing"])
