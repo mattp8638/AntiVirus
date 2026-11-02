@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import mimetypes
+import re
 import secrets
 import sys
 import threading
@@ -65,7 +66,9 @@ def bootstrap(settings: Settings) -> None:
     try:
         msp = db.execute(select(Tenant).where(Tenant.kind == "msp")).scalars().first()
         if msp is None:
-            msp = Tenant(name="Palmertech", slug="palmertech", kind="msp", plan="mdr")
+            name = (settings.msp_name or "My MSP").strip()[:200] or "My MSP"
+            slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:60] or "msp"
+            msp = Tenant(name=name, slug=slug, kind="msp", plan="mdr")
             db.add(msp)
             db.flush()
         if db.get(Policy, GLOBAL_POLICY_ID) is None:
@@ -605,8 +608,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return JSONResponse({"detail": "Not found"}, status_code=404)
         return FileResponse(target)
 
-    if settings.enable_legacy:
-        _mount_legacy(app)
 
     console_dir = settings.console_dir
     if console_dir.is_dir() and (console_dir / "index.html").is_file():
@@ -624,25 +625,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return FileResponse(console_dir / "index.html", headers={"Cache-Control": "no-cache"})
 
     return app
-
-
-def _mount_legacy(app: FastAPI) -> None:
-    """Mount the vendored Sentinel investigation API at /legacy/sentinel."""
-    sentinel = Path(__file__).resolve().parents[2] / "components" / "sentinel"
-    if not sentinel.is_dir():
-        log.warning("legacy Sentinel not found at %s", sentinel)
-        return
-    sys.path.insert(0, str(sentinel))
-    try:
-        import importlib
-
-        legacy = importlib.import_module("main")
-        app.mount("/legacy/sentinel", legacy.app)
-        log.info("mounted legacy Sentinel API at /legacy/sentinel")
-    except Exception as exc:  # noqa: BLE001 - legacy code is optional
-        log.warning("could not mount legacy Sentinel: %s", exc)
-    finally:
-        sys.path.remove(str(sentinel))
 
 
 def run() -> None:  # pragma: no cover - CLI entry

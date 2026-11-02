@@ -108,6 +108,7 @@ Also set these values, replacing the hostname and email:
 FENRIR_PUBLIC_URL=https://rmm.example.com
 FENRIR_DOMAIN=rmm.example.com
 FENRIR_ADMIN_EMAIL=admin@example.com
+FENRIR_MSP_NAME=Your Company Ltd
 FENRIR_OPEN_ENROLLMENT=false
 FENRIR_BUILD_PROFILE=production
 FENRIR_RELEASE_KEY=./signing/release-ed25519.pem
@@ -133,7 +134,7 @@ chmod 600 deploy/signing/release-ed25519.pem
 From your workstation, upload the Windows certificate using your SSH account/server:
 
 ```powershell
-scp "C:\path\Certificate.pfx" pmadmin@YOUR_SERVER:~/AntiVirus/deploy/signing/codesign.pfx
+scp "C:\path\Certificate.pfx" you@YOUR_SERVER:~/AntiVirus/deploy/signing/codesign.pfx
 ```
 
 In the server's Bash terminal, enter its password without recording it in shell history:
@@ -274,7 +275,7 @@ sudo env COMPOSE_BAKE=false docker compose \
 Open `http://localhost:8080`. For a VPS, run this on your workstation and browse that address locally:
 
 ```bash
-ssh -L 8080:127.0.0.1:8080 pmadmin@YOUR_SERVER
+ssh -L 8080:127.0.0.1:8080 you@YOUR_SERVER
 ```
 
 The local override keeps HTTP on loopback. Use the same three Compose files for subsequent evaluation commands. Unsigned Windows artifacts are labelled `unsigned-lab`; serving one additionally requires the explicit allow setting and matching digest in [code signing](docs/CODE_SIGNING.md). Do not disable installer verification. Use signed builds for customer endpoints.
@@ -685,6 +686,6 @@ each bundled dependency keeps its own licence.
 - **Your installation, your responsibility.** An RMM/EDR controls every device it manages. Keep the server patched and
   behind HTTPS, use MFA for every console account, restrict who can reach the console, protect the signing and vault keys,
   and test changes on a small group of devices first.
-- **Security problems.** If you find a vulnerability, report it privately through GitHub's
-  [security advisories](https://github.com/mattp8638/AntiVirus/security/advisories/new) rather than a public issue. There
-  is no promise of a fix or a response time.
+- **Security problems.** If you find a vulnerability, report it privately with **Report a vulnerability** on this
+  repository's **Security** tab rather than in a public issue (see [SECURITY.md](SECURITY.md)). There is no promise of
+  a fix or a response time.

@@ -92,7 +92,7 @@ def test_workflow_rules_on_create_and_idle(client, admin, tenant):
     client.post("/api/console/psa/workflows", headers=admin, json={
         "name": "Security tickets to Sam", "boardId": desk["id"], "trigger": "ticket.created",
         "conditions": [{"field": "subject", "op": "contains", "value": "phish"}],
-        "actions": [{"type": "assign", "member": "sam@palmertech.test"}, {"type": "set", "field": "priority", "value": "P2"},
+        "actions": [{"type": "assign", "member": "sam@northwind-it.test"}, {"type": "set", "field": "priority", "value": "P2"},
                     {"type": "note", "text": "Auto-routed to security", "kind": "internal"}]})
     client.post("/api/console/psa/workflows", headers=admin, json={
         "name": "Close waiting tickets", "trigger": "ticket.idle", "idleHours": 72,
@@ -100,7 +100,7 @@ def test_workflow_rules_on_create_and_idle(client, admin, tenant):
         "actions": [{"type": "set", "field": "status", "value": "Closed"},
                     {"type": "note", "text": "Closed after 3 days without a reply.", "kind": "discussion"}]})
     phish = client.post("/api/console/tickets", headers=admin, json={"accountTenantId": tenant["id"], "subject": "Possible phishing email"}).json()
-    assert phish["assignee"] == "sam@palmertech.test" and phish["priority"] == "P2"
+    assert phish["assignee"] == "sam@northwind-it.test" and phish["priority"] == "P2"
     other = client.post("/api/console/tickets", headers=admin, json={"accountTenantId": tenant["id"], "subject": "Mouse broken"}).json()
     assert other["assignee"] == ""
     client.patch(f"/api/console/tickets/{other['id']}", headers=admin, json={"status": "Waiting Customer"})
@@ -125,7 +125,7 @@ def test_email_to_ticket_and_threaded_reply(client, admin, tenant):
     rotated = client.post("/api/console/psa/inbound-token", headers=admin).json()
     assert client.post(rotated["url"].replace(rotated["token"], "wrong"), json={}).status_code == 401
     mailer.OUTBOX.clear()
-    created = client.post(rotated["url"], json={"from": "Jo@AcmeDental.test", "fromName": "Jo Bloggs", "to": "help@palmertech.test",
+    created = client.post(rotated["url"], json={"from": "Jo@AcmeDental.test", "fromName": "Jo Bloggs", "to": "help@northwind-it.test",
                                                  "subject": "Scanner not working", "text": "The scanner says offline.",
                                                  "messageId": "<abc@mail.test>"}).json()
     assert created["action"] == "created"
@@ -192,15 +192,15 @@ def test_dispatch_schedule_and_conflicts(client, admin, tenant):
     ticket = client.post("/api/console/tickets", headers=admin, json={"accountTenantId": tenant["id"], "subject": "Install printer"}).json()
     start = datetime(2026, 10, 26, 9, 0)
     first = client.post("/api/console/psa/schedule", headers=admin, json={
-        "ticketId": ticket["id"], "member": "eng@palmertech.test", "startAt": start.isoformat(),
+        "ticketId": ticket["id"], "member": "eng@northwind-it.test", "startAt": start.isoformat(),
         "endAt": (start + timedelta(hours=2)).isoformat(), "kind": "Onsite"}).json()
     assert first["conflict"] is False
     clash = client.post("/api/console/psa/schedule", headers=admin, json={
-        "member": "eng@palmertech.test", "title": "Team meeting", "startAt": (start + timedelta(hours=1)).isoformat(),
+        "member": "eng@northwind-it.test", "title": "Team meeting", "startAt": (start + timedelta(hours=1)).isoformat(),
         "endAt": (start + timedelta(hours=3)).isoformat(), "kind": "Meeting"}).json()
     assert clash["conflict"] is True
     detail = client.get(f"/api/console/tickets/{ticket['id']}", headers=admin).json()
-    assert detail["status"] == "Scheduled" and detail["assignee"] == "eng@palmertech.test" and detail["schedule"]
+    assert detail["status"] == "Scheduled" and detail["assignee"] == "eng@northwind-it.test" and detail["schedule"]
     day = client.get("/api/console/psa/schedule", headers=admin, params={"start": "2026-10-26T00:00:00", "end": "2026-10-27T00:00:00"}).json()
     assert [e["kind"] for e in day] == ["Onsite", "Meeting"] and day[0]["ticketNumber"] == ticket["number"]
     moved = client.patch(f"/api/console/psa/schedule/{clash['id']}", headers=admin, json={"startAt": "2026-10-26T13:00:00",

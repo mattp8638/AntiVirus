@@ -87,8 +87,8 @@ class Settings:
     nvd_api_key: str = field(default_factory=lambda: os.getenv("FENRIR_NVD_API_KEY", ""))
     rules_dir: Path = field(default_factory=lambda: Path(__file__).resolve().parent / "rules" / "sigma")
 
-    # Mount the vendored Sentinel investigation API under /legacy/sentinel.
-    enable_legacy: bool = field(default_factory=lambda: _bool("FENRIR_ENABLE_LEGACY", False))
+    # Name of the MSP tenant created on first start (your company). Rename it later in Settings.
+    msp_name: str = field(default_factory=lambda: os.getenv("FENRIR_MSP_NAME", "My MSP"))
     telemetry_retention_days: int = field(default_factory=lambda: int(os.getenv("FENRIR_TELEMETRY_RETENTION_DAYS", "90")))
     max_telemetry_batch: int = field(default_factory=lambda: int(os.getenv("FENRIR_MAX_TELEMETRY_BATCH", "2000")))
     # Routine activity (process, image-load, network, DNS, file, registry, script-scan events at "info") is kept for less time
