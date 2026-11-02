@@ -485,7 +485,7 @@ void Session::ScreenLoop() {
     SyncInputDesktop();  // follow switches to the sign-in screen or a UAC prompt
     const auto rect = TargetRect(monitorIndex);
     int w = 0, h = 0;
-    if (!CaptureMonitor(rect, &current, &w, &h)) {
+    if (!(HiddenDesktop() ? hidden_.Capture(rect, &current, &w, &h) : CaptureMonitor(rect, &current, &w, &h))) {
       Sleep(500);
       continue;
     }
@@ -665,6 +665,26 @@ void Session::HandleInput(const std::string& type, const json::Value& m) {
     index = monitor_;
   }
   const auto rect = TargetRect(index);
+  if (HiddenDesktop() && !hidden_.SendInputWorks()) {
+    const int x = rect.left + static_cast<int>(Num(m, "x")), y = rect.top + static_cast<int>(Num(m, "y"));
+    if (type == "mm") {
+      hidden_.Mouse(x, y, 0, 0);
+    } else if (type == "md" || type == "mu") {
+      hidden_.Mouse(x, y, static_cast<int>(Num(m, "b")), type == "md" ? 1 : 2);
+    } else if (type == "wh") {
+      const double dy = Num(m, "dy"), dx = Num(m, "dx");
+      POINT cursor{};
+      GetCursorPos(&cursor);
+      if (dy != 0) hidden_.Mouse(cursor.x, cursor.y, dy > 0 ? -1 : 1, 3);
+      else hidden_.Mouse(cursor.x, cursor.y, dx > 0 ? 1 : -1, 4);
+    } else if (type == "kd" || type == "ku") {
+      const auto scan = remote::ScanCodeForKey(Str(m, "code"));
+      if (scan.code != 0) hidden_.Key(scan.code, scan.extended, type == "kd");
+    } else if (type == "type") {
+      for (const wchar_t ch : Utf8ToWide(Str(m, "text"))) hidden_.Char(ch);
+    }
+    if (type != "clip.set") return;  // the clipboard is per session: the code below handles it the same way
+  }
   auto moveTo = [&](double x, double y) {
     const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
     const int vw = std::max(1, GetSystemMetrics(SM_CXVIRTUALSCREEN) - 1), vh = std::max(1, GetSystemMetrics(SM_CYVIRTUALSCREEN) - 1);
