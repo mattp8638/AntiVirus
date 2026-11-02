@@ -107,6 +107,8 @@ class FakeTenant:
                                                                      "displayName": "Company Portal", "publisher": "Microsoft",
                                                                      "assignments": [{"intent": "required", "target": {"@odata.type": "#microsoft.graph.allLicensedUsersAssignmentTarget"}}]}}
         self.autopilot_imports: list[dict] = []
+        self.sharepoint = {"sharingCapability": "externalUserAndGuestSharing", "isResharingByExternalUsersEnabled": True}
+        self.onedrive_shares: list = []
         # Exchange Online (adminapi InvokeCommand)
         self.exo_denied = False
         self.exo_calls: list[tuple[str, dict]] = []
@@ -217,6 +219,9 @@ class FakeTenant:
 
     def route(self, method, path, query, body):
         m = re.fullmatch
+        if path == "/groups" and "resourceProvisioningOptions" in query.get("$filter", ""):
+            return self.page([{"id": GROUP, "displayName": "Sales team", "visibility": "Private"},
+                              {"id": DL, "displayName": "Orphan team", "visibility": "Public"}])
         if path == "/deviceManagement/managedDevices" and method == "GET":
             return self.page(list(self.managed.values()))
         hit = m(r"/deviceManagement/managedDevices/([0-9a-f-]+)(?:/(\w+))?", path)
@@ -357,6 +362,20 @@ class FakeTenant:
             return self.page([{"id": u} for u in self.groups[r.group(1)]["members"]])
         if path == "/subscribedSkus":
             return self.page([{"skuId": SKU, "skuPartNumber": "O365_BUSINESS_PREMIUM", "prepaidUnits": {"enabled": 10}, "consumedUnits": 1}])
+        if r := m(r"/groups/([^/]+)/owners", path):
+            return self.page([{"id": MANAGER, "userPrincipalName": "max@acme.example"}] if r.group(1) == GROUP else [])
+        if path == "/admin/sharepoint/settings":
+            if method == "PATCH":
+                self.sharepoint.update(body)
+                return httpx.Response(200, json=self.sharepoint)
+            return httpx.Response(200, json=self.sharepoint)
+        if path.startswith("/reports/getSharePointSiteUsageDetail"):
+            return httpx.Response(200, content=("Report Refresh Date,Site Id,Site URL,Owner Display Name,Is Deleted,File Count,Active File Count,"
+                                                "Storage Used (Byte),Last Activity Date,Root Web Template\n2026-11-01,s1,https://acme.sharepoint.com/sites/sales,"
+                                                "Max Manager,False,500,20,5368709120,2026-10-30,Team Site\n").encode())
+        if r := m(r"/users/([^/]+)/drive/root/invite", path):
+            self.onedrive_shares.append((r.group(1), body))
+            return httpx.Response(200, json={"value": [{"link": {"webUrl": "https://acme-my.sharepoint.com/personal/jo"}}]})
         if path == "/domains" and method == "GET":
             return self.page([{"id": "acme.example", "isVerified": True, "supportedServices": ["Email"]},
                               {"id": "acme.onmicrosoft.com", "isVerified": True, "supportedServices": ["Email"]}])

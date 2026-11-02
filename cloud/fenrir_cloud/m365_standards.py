@@ -126,7 +126,10 @@ for _key, _entry in EXO.items():
     STANDARDS[_key] = {"title": _entry["title"], "kind": "exo",
                        "permissions": ["Exchange.ManageAsApp (Office 365 Exchange Online) and the Exchange Administrator role"]}
 AUTHZ_PATH = "/policies/authorizationPolicy"
-from . import m365_email_security as email_security  # noqa: E402
+from . import m365_collaboration as collaboration, m365_email_security as email_security  # noqa: E402
+
+for _key, _entry in collaboration.STANDARDS.items():
+    STANDARDS[_key] = {"title": _entry["title"], "kind": "sharing", "permissions": ["SharePointTenantSettings.ReadWrite.All"]}
 
 for _key, _entry in email_security.STANDARDS.items():
     STANDARDS[_key] = {"title": _entry["title"], "kind": "email", "fixable": _entry["fixable"],
@@ -268,6 +271,11 @@ def evaluate(connection: M365Connection, standard: str, options: dict | None = N
             return email_security.evaluate(connection, standard)
         except email_security.EmailStandardError as exc:
             raise StandardError(str(exc)) from None
+    if kind == "sharing":
+        try:
+            return collaboration.evaluate(connection, standard)
+        except collaboration.CollaborationError as exc:
+            raise StandardError(str(exc)) from None
     with http_client() as client:
         token = m365.access_token(client, connection)
         if kind == "authz":
@@ -317,6 +325,11 @@ def deploy(connection: M365Connection, standard: str, options: dict | None = Non
         try:
             return email_security.deploy(connection, standard)
         except email_security.EmailStandardError as exc:
+            raise StandardError(str(exc)) from None
+    if kind == "sharing":
+        try:
+            return collaboration.deploy(connection, standard)
+        except collaboration.CollaborationError as exc:
             raise StandardError(str(exc)) from None
     if kind == "authz":
         with http_client() as client:

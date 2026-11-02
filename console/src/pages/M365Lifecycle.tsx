@@ -11,7 +11,7 @@ const WHERE: Record<string, string> = { ad: "Active Directory", m365: "Microsoft
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const OFFBOARD_DEFAULTS = { blockSignIn: true, revokeSessions: true, resetPassword: true, removeMfa: true, outOfOffice: false, outOfOfficeMessage: "",
   removeGroups: true, removeRoles: true, removeLicences: false, markContact: true, reviewEstate: true, openTicket: true,
-  convertToShared: false, mailboxDelegate: "", forwardTo: "" };
+  convertToShared: false, mailboxDelegate: "", forwardTo: "", onedriveDelegate: "" };
 const OFFBOARD_STEPS: [string, string][] = [["blockSignIn", "Block sign-in"], ["revokeSessions", "Sign out everywhere"], ["resetPassword", "Reset the password to a random one"],
   ["removeMfa", "Remove MFA methods"], ["outOfOffice", "Set an out-of-office reply (app connections only)"], ["removeGroups", "Remove from groups"],
   ["removeRoles", "Remove admin roles"], ["removeLicences", "Remove licences (read the warning in the review)"], ["markContact", "Mark the Fenrir contact as left"],
@@ -157,10 +157,11 @@ export function M365Lifecycle({ connection }: { connection: any }) {
       {OFFBOARD_STEPS.map(([k, l]) => <label key={k} style={{ display: "block" }}><input type="checkbox" checked={!!off[k]} onChange={(e) => setOff({ ...off, [k]: e.target.checked })} /> {l}</label>)}
       {off.outOfOffice && <label className="field">Out-of-office message<textarea rows={3} value={off.outOfOfficeMessage} onChange={(e) => setOff({ ...off, outOfOfficeMessage: e.target.value })} placeholder="Jo has left Acme. Please contact sales@acme.example." /></label>}
       <div className="card" style={{ margin: "8px 0" }}>
-        <b className="small">Mailbox hand-over (Exchange)</b>
+        <b className="small">Mailbox and OneDrive hand-over</b>
         <label style={{ display: "block" }}><input type="checkbox" checked={!!off.convertToShared} onChange={(e) => setOff({ ...off, convertToShared: e.target.checked })} /> Convert the mailbox to shared (keeps the mail; no licence needed)</label>
         <label className="field">Give full access to (optional)<input placeholder="manager@domain" value={off.mailboxDelegate || ""} onChange={(e) => setOff({ ...off, mailboxDelegate: e.target.value.trim() })} /></label>
         <label className="field">Forward new mail to (optional)<input placeholder="colleague@domain" value={off.forwardTo || ""} onChange={(e) => setOff({ ...off, forwardTo: e.target.value.trim() })} /></label>
+        <label className="field">Share their OneDrive with (optional)<input placeholder="manager@domain" value={off.onedriveDelegate || ""} onChange={(e) => setOff({ ...off, onedriveDelegate: e.target.value.trim() })} /></label>
       </div>
       <button className="primary" disabled={busy || !target || (off.outOfOffice && !off.outOfOfficeMessage.trim())} onClick={plan}>Plan offboarding</button>
     </Modal>}
