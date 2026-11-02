@@ -249,6 +249,8 @@ def _dc_profiles(db: Session, tenant_ids: list[str]):
     rows = db.execute(select(Device, DeviceProfile).join(DeviceProfile, DeviceProfile.device_id == Device.id)
                       .where(Device.tenant_id.in_(tenant_ids))).all()
     for device, profile in rows:
+        if device.api_key_hash == f"retired-{device.id}":
+            continue  # decommissioned: no longer one of the domain's controllers
         data = profile.profile or {}
         if ((data.get("role") or {}).get("kind") == "domain-controller") or isinstance(data.get("activeDirectory"), dict):
             yield device, profile, data
@@ -258,7 +260,10 @@ def domains(db: Session, tenant_ids: list[str]) -> list[dict]:
     """One entry per (tenant, AD domain) with the freshest snapshot and every DC that reports it."""
     grouped: dict[tuple[str, str], dict] = {}
     for device, profile, data in _dc_profiles(db, tenant_ids):
-        ad = data.get("activeDirectory") if isinstance(data.get("activeDirectory"), dict) else None
+        raw = data.get("activeDirectory") if isinstance(data.get("activeDirectory"), dict) else None
+        # The agent reports why it could not read the directory instead of a snapshot (no ActiveDirectory module, ADWS stopped).
+        problem = str(raw.get("error") or "") if raw and not isinstance(raw.get("domain"), dict) else ""
+        ad = raw if raw and not problem else None
         name = str(((ad or {}).get("domain") or {}).get("dnsName") or (data.get("role") or {}).get("domain") or "unknown").lower()
         entry = grouped.setdefault((device.tenant_id, name), {"tenantId": device.tenant_id, "domain": name, "snapshot": None,
                                                               "snapshotAt": None, "auditPolicy": None, "agents": []})
@@ -266,7 +271,8 @@ def domains(db: Session, tenant_ids: list[str]) -> list[dict]:
         entry["agents"].append({"deviceId": device.id, "hostname": device.hostname, "online": online,
                                 "lastSeen": device.last_seen_at.isoformat() + "Z" if device.last_seen_at else None,
                                 "profileAt": profile.collected_at.isoformat() + "Z" if profile.collected_at else None,
-                                "snapshot": ad is not None})
+                                "snapshot": ad is not None, "problem": problem or None,
+                                "collectionErrors": [str(e)[:300] for e in (ad or {}).get("collectionErrors") or []][:30]})
         if ad is not None and (entry["snapshotAt"] is None or (profile.collected_at and profile.collected_at > entry["snapshotAt"])):
             entry["snapshot"], entry["snapshotAt"], entry["auditPolicy"] = ad, profile.collected_at, data.get("auditPolicy")
     out = []

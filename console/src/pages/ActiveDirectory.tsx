@@ -1,9 +1,9 @@
 import { displayValue } from "../components/DisplayValue";
 import { Fragment, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { ago, fmtTime } from "../api";
+import { ago, api, fmtTime } from "../api";
 import { useApp } from "../app-context";
-import { PageHead, Pill, Sev, Stat, Table, Tabs, useData, useListData } from "../components/ui";
+import { PageHead, Pill, Sev, Stat, Table, Tabs, useAction, useData, useListData } from "../components/ui";
 
 // Active Directory, per customer domain. Built from what the Fenrir agent on each domain controller reports:
 // a directory snapshot every 6 hours (system profile) and live Security-log events.
@@ -87,17 +87,38 @@ function Names({ rows, keyName = "sam" }: { rows: any[]; keyName?: string }) {
 function DomainDetail({ tenantId, domain }: { tenantId: string; domain: string }) {
   const { data } = useData<any>(`ad/domains/${tenantId}/${encodeURIComponent(domain)}`);
   const [tab, setTab] = useState("Findings");
+  const { run, busy } = useAction();
+  const { can, toast } = useApp();
   if (!data) return null;
+  const online = (data.agents || []).filter((a: any) => a.online);
+  const readNow = async () => {
+    for (const agent of online) await run(() => api(`devices/${agent.deviceId}/profile/refresh`, { method: "POST" }));
+    if (online.length) toast(`Asked ${online.length} domain controller(s) to read the directory now; it takes a minute or two. Reload this page then.`);
+  };
   const counts = data.counts || {};
   const openAlerts = (data.alerts || []).filter((a: any) => !["resolved", "closed", "false_positive"].includes(a.status));
   return (
     <>
       <div className="grid k4" style={{ marginBottom: 14 }}>
-        <Stat label="Health score" value={data.score ?? "—"} hint={data.snapshotAt ? `checked ${ago(data.snapshotAt)}` : "waiting for the first directory snapshot"} />
+        <Stat label="Health score" value={data.score ?? "—"} hint={data.snapshotAt ? `checked ${ago(data.snapshotAt)}` : (data.problems || []).length ? "the directory could not be read (see below)" : "waiting for the first directory snapshot"} />
         <Stat label="Users" value={counts.enabledUsers ?? "—"} hint={counts.users !== undefined ? `${counts.users} in total` : undefined} />
         <Stat label="Computers" value={counts.enabledComputers ?? counts.computers ?? "—"} hint={counts.gpos !== undefined ? `${counts.gpos} group policies` : undefined} />
         <Stat label="Open AD alerts" value={openAlerts.length} accent={openAlerts.length ? "#f87171" : undefined} hint={`${(data.activity || []).length} directory events in 7 days`} />
       </div>
+      {(data.problems || []).map((p: any) => (
+        <div key={p.hostname} className="card" style={{ marginBottom: 14, borderColor: "#fcd34d" }}>
+          <b>{displayValue(p.hostname)} could not read the directory.</b>
+          <div className="small" style={{ marginTop: 4 }}>{displayValue(p.problem)}</div>
+        </div>
+      ))}
+      {(data.collectionErrors || []).length > 0 && (
+        <details className="small" style={{ marginBottom: 14 }}>
+          <summary>{data.collectionErrors.length} part(s) of the last snapshot could not be read; the rest is shown.</summary>
+          <ul>{data.collectionErrors.map((e: string) => <li key={e}>{displayValue(e)}</li>)}</ul>
+        </details>
+      )}
+      {can("respond") && online.length > 0 && <p className="small"><button className="small" disabled={busy} onClick={readNow}>Read the directory now</button>
+        <span className="muted"> Otherwise each domain controller reads it a few minutes after starting, then every 6 hours.</span></p>}
       {openAlerts.length > 0 && (
         <div className="card" style={{ marginBottom: 14 }}>
           <h3 style={{ marginTop: 0 }}>Active Directory alerts</h3>
@@ -111,7 +132,7 @@ function DomainDetail({ tenantId, domain }: { tenantId: string; domain: string }
       <Tabs tabs={["Findings", "Privileged groups", "Accounts at risk", "Activity", "Domain controllers", "Policies"]} active={tab} onChange={setTab} />
       {tab === "Findings" && (
         <div className="card">
-          {!data.snapshotAt && <p className="muted">The domain controller has not sent its directory snapshot yet (it does within a few minutes of starting, then every 6 hours).</p>}
+          {!data.snapshotAt && !(data.problems || []).length && <p className="muted">The domain controller has not sent its directory snapshot yet (it does within a few minutes of starting, then every 6 hours). Press <b>Read the directory now</b> to ask for it.</p>}
           {data.findingsList.length === 0 && data.snapshotAt && <p className="muted">No findings. Nice work.</p>}
           {data.findingsList.map((f: any) => (
             <div key={f.id} className="finding" style={{ padding: "10px 0", borderBottom: "1px solid var(--line)" }}>

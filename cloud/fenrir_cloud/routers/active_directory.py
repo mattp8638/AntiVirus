@@ -20,7 +20,9 @@ def _summary(entry: dict) -> dict:
     return {"tenantId": entry["tenantId"], "domain": entry["domain"], "netbios": (ad.get("domain") or {}).get("netbios"),
             "forest": (ad.get("domain") or {}).get("forest"), "mode": (ad.get("domain") or {}).get("mode"),
             "score": entry["score"], "findings": counts, "snapshotAt": entry["snapshotAt"], "counts": ad.get("counts") or {},
-            "domainControllers": len(ad.get("domainControllers") or []), "agents": entry["agents"]}
+            "domainControllers": len(ad.get("domainControllers") or []), "agents": entry["agents"],
+            "problems": [{"hostname": a["hostname"], "problem": a["problem"]} for a in entry["agents"] if a.get("problem")],
+            "collectionErrors": ad.get("collectionErrors") or []}
 
 
 @router.get("/domains")
