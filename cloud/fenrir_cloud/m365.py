@@ -1,4 +1,5 @@
 """Bounded, read-only Microsoft Graph v1.0 synchronisation."""
+import re
 from urllib.parse import urlparse
 import httpx
 from time import monotonic
@@ -94,8 +95,8 @@ def describe_failure(exc: Exception) -> str:
         error = data.get("error")
         if isinstance(error, dict):  # Graph
             said = ": ".join(str(x) for x in (error.get("code"), error.get("message")) if x)
-        else:  # the token endpoint: AADSTS code and description
-            said = str(data.get("error_description") or error or "").split("\r\n")[0]
+        else:  # the token endpoint: AADSTS code and description, without Microsoft's trace and correlation IDs
+            said = re.split(r"\s*(?:\r?\n|Trace ID:|Correlation ID:|Timestamp:)", str(data.get("error_description") or error or ""))[0]
         return f"{where} answered HTTP {response.status_code}" + (f": {said[:300]}" if said else "")
     if isinstance(exc, httpx.TimeoutException):
         try:
@@ -181,6 +182,20 @@ def service_issues(rows: list | None) -> list | None:
     return [{k: row.get(k) for k in keep} for row in rows if isinstance(row, dict)][:100]
 
 
+# Free, trial and self-service products Microsoft lists with thousands of seats (Power BI free, Power Automate free,
+# Teams Exploratory...). Counting them would bury real unused licences.
+FREE_SKUS = {"FLOW_FREE", "POWER_BI_STANDARD", "POWERAPPS_VIRAL", "POWERAPPS_DEV", "TEAMS_EXPLORATORY", "STREAM", "WINDOWS_STORE",
+             "RIGHTSMANAGEMENT_ADHOC", "MCOPSTNC", "CCIBOTS_PRIVPREV_VIRAL", "POWER_PAGES_VTRIAL_FOR_MAKERS", "DEVELOPERPACK_E5",
+             "MICROSOFT_BUSINESS_CENTER", "PROJECT_MADEIRA_PREVIEW_IW_SKU", "FORMS_PRO", "Microsoft_Teams_Exploratory_Dept"}
+
+
+def paid_sku(sku: dict) -> bool:
+    part = str(sku.get("skuPartNumber") or "")
+    enabled = int(((sku.get("prepaidUnits") or {}).get("enabled")) or 0)
+    return part not in FREE_SKUS and "FREE" not in part.upper() and "TRIAL" not in part.upper() and "VIRAL" not in part.upper() \
+        and enabled < 10000
+
+
 def insights(snapshot: dict) -> dict:
     """What an MSP acts on: licences paid for but unused, accounts without MFA, Secure Score."""
     users = [u for u in snapshot.get("users") or [] if isinstance(u, dict)]
@@ -189,7 +204,7 @@ def insights(snapshot: dict) -> dict:
                                if u.get("accountEnabled") is False and u.get("assignedLicenses"))
     purchased = assigned = 0
     for sku in snapshot.get("licenses") or []:
-        if isinstance(sku, dict):
+        if isinstance(sku, dict) and paid_sku(sku):
             purchased += int(((sku.get("prepaidUnits") or {}).get("enabled")) or 0)
             assigned += int(sku.get("consumedUnits") or 0)
     mfa = None

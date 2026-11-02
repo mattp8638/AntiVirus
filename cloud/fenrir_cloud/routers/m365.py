@@ -1,7 +1,7 @@
 """Tenant-scoped Microsoft 365 connections and snapshots."""
 from uuid import UUID
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -60,6 +60,63 @@ def replace_secret(connection_id: str, body: SecretInput, request: Request, prin
     audit.record(db, principal.actor, "m365.secret_replaced", row.id, row.tenant_id)
     db.commit()
     return {"ok": True}
+
+class ConnectionEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    clientId: UUID | None = None
+    clientSecret: str | None = Field(default=None, min_length=1, max_length=10000)
+
+
+@router.patch("/connections/{connection_id}")
+def edit_connection(connection_id: str, body: ConnectionEdit, request: Request, principal: Principal = Depends(current_principal),
+                    db: Session = Depends(get_db)):
+    """Rename a connection, or correct a manual app's application ID and secret (use the secret's Value, not its ID)."""
+    principal.require("configure")
+    row = owned(db, M365Connection, connection_id, principal)
+    changed = []
+    if body.name is not None:
+        row.name, changed = body.name.strip(), [*changed, "name"]
+    if body.clientId is not None or body.clientSecret is not None:
+        if (row.auth_mode or "app") != "app":
+            raise HTTPException(409, "Only a manually registered app has an application ID and secret to edit here. "
+                                     "Use Reconnect to sign in again instead.")
+        require_reauth(request, principal)
+        if body.clientId is not None:
+            row.client_id, changed = str(body.clientId), [*changed, "clientId"]
+        if body.clientSecret is not None:
+            row.credentials_envelope = crypto.encrypt(body.clientSecret.strip(), f"m365:{row.tenant_id}:{row.id}")
+            changed = [*changed, "clientSecret"]
+        row.status, row.last_error = "not_synced", ""
+    row.updated_at = utcnow()
+    audit.record(db, principal.actor, "m365.connection_edited", row.id, row.tenant_id, fields=changed)
+    db.commit()
+    return to_dict(row)
+
+
+@router.delete("/connections/{connection_id}")
+def remove_connection(connection_id: str, request: Request, body: dict = Body(default={}), principal: Principal = Depends(current_principal),
+                      db: Session = Depends(get_db)):
+    """Remove a Microsoft 365 connection from Fenrir: its stored secret, snapshot, collected logs, action and run history.
+    Nothing changes in Microsoft 365; the app registration stays in the tenant until someone deletes it there."""
+    from sqlalchemy import delete as sql_delete, update as sql_update
+    from ..models import M365Action, M365LogEntry, M365StandardRun, M365Workflow
+
+    principal.require("configure")
+    row = owned(db, M365Connection, connection_id, principal)
+    require_reauth(request, principal)
+    if str(body.get("confirmName") or "").strip() != row.name.strip():
+        raise HTTPException(422, "Type the connection's name exactly to confirm.")
+    removed = {}
+    for model in (M365LogEntry, M365Workflow, M365Action, M365StandardRun):
+        removed[model.__tablename__] = db.execute(sql_delete(model).where(model.connection_id == row.id)).rowcount or 0
+    db.execute(sql_update(M365SignIn).where(M365SignIn.connection_id == row.id).values(connection_id=None))
+    name, tenant_id, directory = row.name, row.tenant_id, row.directory_id
+    db.delete(row)
+    audit.record(db, principal.actor, "m365.disconnected", connection_id, tenant_id, name=name, directoryId=directory, removed=removed)
+    db.commit()
+    return {"ok": True, "removed": removed}
+
 
 @router.post("/connections/{connection_id}/sync")
 def sync(connection_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):

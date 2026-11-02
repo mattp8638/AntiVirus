@@ -214,10 +214,41 @@ def test_extra_reads_never_fail_the_sync_and_failures_say_why(client, admin, ten
     def refuse_token(request):
         if request.url.host == "login.microsoftonline.com":
             return _httpx.Response(401, json={"error": "invalid_client", "error_description":
-                                              "AADSTS7000215: Invalid client secret provided.\r\nTrace ID: x"})
+                                              "AADSTS7000215: Invalid client secret provided. Trace ID: e646f18c Correlation ID: 1"})
         return real_handle(request)
 
     fake.handle = refuse_token
     failed = client.post("/api/console/m365/connections/" + row["id"] + "/sync", headers=admin)
     assert failed.status_code == 502 and "AADSTS7000215: Invalid client secret provided." in failed.json()["detail"]
     assert "Trace ID" not in failed.text and "private-client-secret" not in failed.text
+
+
+def test_a_connection_can_be_corrected_or_removed_and_free_licences_do_not_count(client, admin, tenant, fake):
+    from test_documentation_vault import stepup
+    from fenrir_cloud import m365 as graph
+
+    row = connection(client, admin, tenant)
+    url = "/api/console/m365/connections/" + row["id"]
+    assert client.patch(url, headers=admin, json={"clientSecret": "new"}).status_code == 403  # needs a fresh sign-in
+    proof = stepup(client, admin)
+    edited = client.patch(url, headers=proof, json={"name": "Palmer CSP", "clientId": "00000000-0000-0000-0000-0000000000ab",
+                                                    "clientSecret": "the-secret-value"})
+    assert edited.status_code == 200 and edited.json()["name"] == "Palmer CSP" and edited.json()["clientId"].endswith("ab")
+    assert "the-secret-value" not in edited.text
+    post(client, admin, "m365/connections/" + row["id"] + "/logs/collect", {})
+
+    assert client.request("DELETE", url, headers=proof, json={"confirmName": "Customer M365"}).status_code == 422
+    gone = client.request("DELETE", url, headers=proof, json={"confirmName": "Palmer CSP"})
+    assert gone.status_code == 200 and gone.json()["removed"]["m365_log_entries"] == 10
+    assert client.get("/api/console/m365/connections", headers=admin).json() == []
+    with database.session_factory()() as db:
+        assert db.query(M365LogEntry).count() == 0
+    again = connection(client, admin, tenant)  # the same directory can be connected again
+    assert again["id"] != row["id"]
+
+    numbers = graph.insights({"users": [], "licenses": [
+        {"skuPartNumber": "O365_BUSINESS_PREMIUM", "prepaidUnits": {"enabled": 5}, "consumedUnits": 3},
+        {"skuPartNumber": "FLOW_FREE", "prepaidUnits": {"enabled": 10000}, "consumedUnits": 0},
+        {"skuPartNumber": "POWER_BI_STANDARD", "prepaidUnits": {"enabled": 1000000}, "consumedUnits": 1},
+        {"skuPartNumber": "SOMETHING_ODD", "prepaidUnits": {"enabled": 10000}, "consumedUnits": 0}]})
+    assert (numbers["licencesPurchased"], numbers["licencesAssigned"], numbers["licencesUnused"]) == (5, 3, 2)
