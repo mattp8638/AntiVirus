@@ -22,6 +22,10 @@ On Windows it also has its own **hidden SYSTEM desktop**, like NinjaOne's backst
 - **Check it works on a machine:** run the **Test the backstage desktop** command (`remote.backstage.selftest`). It
   opens the hidden desktop, shows a test window and Task Manager on it, checks the capture and cleans up, without
   anything appearing for the user. CI runs it on a Windows Server agent on every change.
+- **How it is drawn and driven:** Windows does not draw session 0 to any screen, so a plain screen copy of it is
+  blank. The helper asks each window on the hidden desktop to draw itself and stacks them in order. Clicks and
+  keys use normal input when a check at the start shows it reaches the hidden desktop (it does on Windows Server
+  2025), otherwise the equivalent window messages.
 - **Turn it on per policy:** Policies → Remote access → Backstage access (`remoteAccess.backstage = "on"`). It is off by default.
 - **Both sides check the policy.** The Windows service and the Linux/macOS agent refuse a backstage start that their own policy does not allow.
 - **Each session needs** a fresh password (and MFA) check and a reason or a linked ticket. Analyst roles cannot open one.

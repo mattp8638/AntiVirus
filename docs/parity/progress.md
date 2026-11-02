@@ -40,7 +40,7 @@ Overall parity: **not passed**. MVP: **not yet declared**.
 | D-06 (owner decision) | (this batch) | Go live without a Windows driver; Defender provides pre-execution blocking. Protection health shows it per Windows device and warns where there is none. `test_pre_execution.py`. |
 | AGT-05 (proxy, offline) | (this batch) | Installer `--proxy` for Linux/macOS (kept on repair), Windows automatic WinHTTP proxy for every control-plane call, Go agent offline telemetry spool across restarts. |
 | CORE-01 (background jobs) | (this batch) | Every scheduled and hourly job run over two customers' data, including a hostile cross-customer schedule: nothing crosses. `test_background_scope.py` (fails when the target filter is broken). |
-| RMM-09 (owner request) | (this batch) | Backstage hidden SYSTEM desktop on Windows (session 0) with a tools launcher; nothing reaches the user's session. Self-test command and Windows CI acceptance check. |
+| RMM-09 (owner request) | (this batch) | Backstage hidden SYSTEM desktop on Windows (session 0) with a tools launcher; nothing reaches the user's session. Self-test command; Windows CI acceptance check passes on Windows Server 2025 (AT-34, [run 41414209548](https://github.com/mattp8638/AntiVirus/actions/runs/41414209548)). |
 | CORE-15 (approvals) | (this batch) | Optional two-person approval bound to the exact request and its devices; `test_approvals.py`. |
 | CI | `b5cf672` | Removed the placeholder signing files that the merge brought back. [Run 78](https://github.com/mattp8638/AntiVirus/actions/runs/40649462515) passed, which also verifies FIX-08 in CI. |
 
