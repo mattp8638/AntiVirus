@@ -3,7 +3,7 @@ import { M365Administration } from "./M365Administration";
 import { M365Lifecycle } from "./M365Lifecycle";
 import { M365Logs } from "./M365Logs";
 import { M365Connect } from "../components/M365Connect";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { useState } from "react";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
@@ -83,11 +83,48 @@ function Permissions({ ws, reload, onSignIn }: { ws: any; reload: () => void; on
         { key: "available", label: "Status", render: (r: any) => <Pill value={r.available ? "available" : r.unsupported ? "not possible here" : "missing"} tone={r.available ? "good" : r.unsupported ? "muted" : "warn"} /> },
         { key: "missing", label: "Needs", render: (r: any) => <span className="small mono">{safeArray<string>(r.missing).join(", ")}</span> },
         { key: "note", label: "Note", render: (r: any) => <span className="small">{displayValue(r.note)}</span> }]} />}
-    {answer && <Modal title="Update permissions" onClose={() => setAnswer(null)} footer={answer.action === "consent" ? <button className="primary" onClick={() => { setAnswer(null); onSignIn(); }}>Sign in with Microsoft</button> : undefined}>
+    {answer && <Modal title="Update permissions" onClose={() => setAnswer(null)} footer={["consent", "manual"].includes(answer.action) ? <button className="primary" onClick={() => { setAnswer(null); onSignIn(); }}>{answer.action === "manual" ? "Switch to admin sign-in instead" : "Sign in with Microsoft"}</button> : undefined}>
       <p>{displayValue(answer.message)}</p>
       <div className="row small" style={{ flexWrap: "wrap" }}>{safeArray<string>(answer.permissions).map((p) => <span key={p} className="chip mono">{p}</span>)}</div>
     </Modal>}
   </>;
+}
+
+function EditConnection({ ws, onClose }: { ws: any; onClose: (saved: boolean) => void }) {
+  const manual = ws.authMode === "app";
+  const [form, setForm] = useState({ name: ws.name, clientId: "", clientSecret: "" });
+  const { run, busy } = useAction();
+  const save = async () => {
+    const body: any = { name: form.name.trim() };
+    if (manual && form.clientId.trim()) body.clientId = form.clientId.trim();
+    if (manual && form.clientSecret.trim()) body.clientSecret = form.clientSecret.trim();
+    if (await run(() => api(`m365/connections/${ws.id}`, { method: "PATCH", body }), "Connection saved")) onClose(true);
+  };
+  return <Modal title="Edit connection" onClose={() => onClose(false)} footer={<button className="primary" disabled={busy || !form.name.trim()} onClick={save}>Save</button>}>
+    <label className="field">Name<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} maxLength={200} /></label>
+    {manual ? <>
+      <p className="small">This connection uses an app registration you made yourself. Leave a field empty to keep it.</p>
+      <label className="field">Application (client) ID<input value={form.clientId} onChange={(e) => setForm({ ...form, clientId: e.target.value })} placeholder="Unchanged" /></label>
+      <label className="field">Client secret<input type="password" autoComplete="new-password" value={form.clientSecret} onChange={(e) => setForm({ ...form, clientSecret: e.target.value })} placeholder="Unchanged" />
+        <span className="small muted">Paste the secret's <b>Value</b> (shown once when you create it in Entra), not its Secret ID. AADSTS7000215 means the ID or an expired secret was used.</span></label>
+    </> : <p className="small muted">Connected by {ws.authMode === "gdap" ? "your partner tenant (GDAP)" : "Fenrir's app"}: its credentials are managed for you. Use Reconnect to sign in again.</p>}
+  </Modal>;
+}
+
+function RemoveConnection({ ws, onClose }: { ws: any; onClose: () => void }) {
+  const navigate = useNavigate();
+  const [typed, setTyped] = useState("");
+  const { run, busy } = useAction();
+  const remove = async () => {
+    if (await run(() => api(`m365/connections/${ws.id}`, { method: "DELETE", body: { confirmName: typed } }), "Connection removed")) navigate("/m365");
+  };
+  return <Modal title={`Remove ${ws.name}`} onClose={onClose}
+    footer={<button className="danger primary" disabled={busy || typed.trim() !== ws.name.trim()} onClick={remove}>Remove connection</button>}>
+    <p>Fenrir forgets this Microsoft 365 connection: its stored secret, snapshot, collected sign-in and audit logs, and its action and
+      onboarding history. <b>Nothing changes in Microsoft 365.</b> The customer itself stays in Fenrir, and you can connect the tenant again.</p>
+    <p className="small muted">The app registration stays in the tenant. If you no longer want it, delete it in Entra admin centre → App registrations.</p>
+    <label className="field">Type <b>{ws.name}</b> to confirm<input value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" /></label>
+  </Modal>;
 }
 
 export default function M365Tenant() {
@@ -96,6 +133,8 @@ export default function M365Tenant() {
   const { data: ws, error, reload } = useData<any>(can("configure") && connectionId ? `m365/connections/${connectionId}/workspace` : null);
   const [tab, setTab] = useState("Overview");
   const [secret, setSecret] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [removing, setRemoving] = useState(false);
   const [signIn, setSignIn] = useState(false);
   const { run, busy } = useAction();
   if (!can("configure")) return <PageHead title="Microsoft 365" subtitle="Configuration access is required." />;
@@ -105,7 +144,10 @@ export default function M365Tenant() {
     <SectionTabs items={M365_SECTION} />
     <PageHead title={ws.name} subtitle={<><Link to="/m365">All tenants</Link> · {MODES[ws.authMode] || ws.authMode}{ws.consentedBy ? ` by ${ws.consentedBy}` : ""} · synced {fmtTime(ws.syncedAt)}</>}
       actions={<>
-        {["app", "provisioned"].includes(ws.authMode) && <button onClick={() => setSecret(true)}>Replace secret</button>}
+        <button onClick={() => setEditing(true)}>Edit connection</button>
+        {ws.authMode === "provisioned" && <button onClick={() => setSecret(true)}>Replace secret</button>}
+        {ws.authMode !== "gdap" && can("configure") && <button onClick={() => setSignIn(true)} title="Sign in as a Global Administrator of this tenant; Fenrir sets up and manages its own app">Reconnect</button>}
+        <button className="danger" onClick={() => setRemoving(true)}>Remove</button>
         <button className="primary" disabled={busy} onClick={async () => { if (await run(() => api(`m365/connections/${ws.id}/sync`, { method: "POST" }), "Directory synchronised")) reload(); }}>Sync now</button>
       </>} />
     <ErrorNote error={error || ws.lastError || null} />
@@ -119,6 +161,8 @@ export default function M365Tenant() {
     {tab === "Permissions" && <Permissions ws={ws} reload={reload} onSignIn={() => setSignIn(true)} />}
     {secret && <RecordEditor title="Replace application secret" tenant={false} fields={[{ key: "clientSecret", label: "New client secret", type: "password", required: true }]}
       onSave={({ clientSecret }) => api(`m365/connections/${ws.id}/secret`, { method: "PUT", body: { clientSecret } })} onClose={() => setSecret(false)} />}
+    {editing && <EditConnection ws={ws} onClose={(saved) => { setEditing(false); if (saved) reload(); }} />}
+    {removing && <RemoveConnection ws={ws} onClose={() => setRemoving(false)} />}
     {signIn && <M365Connect reconnect customerId={ws.tenantId} presetName={ws.name} onClose={() => { setSignIn(false); reload(); }} />}
   </>;
 }
