@@ -82,3 +82,22 @@ def test_offboarding_hands_over_the_mailbox_before_licences_go(client, admin, te
     assert done["status"] == "completed", done["steps"]
     assert fake.mailboxes["jo@acme.example"]["RecipientTypeDetails"] == "SharedMailbox"
     assert any(p["User"] == "max@acme.example" for p in fake.mailbox_permissions["jo@acme.example"])
+
+
+def test_unexpected_failures_say_what_went_wrong_not_a_bare_500(client, admin, tenant, fake, monkeypatch):
+    conn = connection(client, admin, tenant)
+    from fenrir_cloud import m365_exchange
+
+    def unreachable(*args, **kwargs):
+        raise httpx.ConnectError("connection refused", request=httpx.Request("POST", "https://outlook.office365.com/adminapi"))
+
+    monkeypatch.setattr(m365_exchange, "invoke", unreachable)
+    response = client.get(base(conn) + "/mailboxes", headers=admin)
+    assert response.status_code == 502 and "outlook.office365.com" in response.json()["detail"]
+
+    def broken(*args, **kwargs):
+        raise AttributeError("'list' object has no attribute 'get'")
+
+    monkeypatch.setattr(m365_exchange, "invoke", broken)
+    response = client.get(base(conn) + "/quarantine", headers=admin)
+    assert response.status_code == 500 and "AttributeError" in response.json()["detail"]

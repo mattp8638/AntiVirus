@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from .. import audit, crypto, m365_exchange as exo, ratelimit
+from ..m365_admin import unexpected
 from ..db import get_db
 from ..deps import Principal, current_principal, require_reauth
 from ..models import M365Connection
@@ -33,6 +34,8 @@ def _read(fn, *args):
         raise HTTPException(502 if exc.uncertain else 400, str(exc)) from None
     except (ValueError, crypto.VaultError) as exc:
         raise HTTPException(400, f"The connection cannot sign in to Exchange: {exc}") from None
+    except Exception as exc:
+        raise unexpected(exc, "Exchange Online") from None
 
 
 @router.get("/mailboxes")
@@ -88,6 +91,11 @@ def action(connection_id: str, body: ExchangeAction, request: Request, principal
                      operation=body.operation, uncertain=exc.uncertain, error=str(exc)[:300])
         db.commit()
         raise HTTPException(502 if exc.uncertain else 400, str(exc)) from None
+    except Exception as exc:
+        audit.record(db, principal.actor, "m365.exchange.failed", description, row.tenant_id, connection=row.id,
+                     operation=body.operation, uncertain=True, error=type(exc).__name__)
+        db.commit()
+        raise unexpected(exc, "Exchange Online") from None
     audit.record(db, principal.actor, "m365.exchange." + body.operation, description, row.tenant_id, connection=row.id)
     db.commit()
     return {"status": "succeeded", "message": result}

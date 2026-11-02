@@ -3,13 +3,13 @@ from __future__ import annotations
 
 from typing import Literal
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from .. import audit, crypto, m365_reports as reports
+from ..m365_admin import unexpected
 from ..db import get_db
 from ..deps import Principal, current_principal
 from ..models import M365Connection, Tenant
@@ -41,8 +41,10 @@ def _build(row, key):
         return reports.build(row, key)
     except reports.ReportError as exc:
         raise HTTPException(400, str(exc)) from None
-    except (httpx.HTTPError, ValueError, crypto.VaultError):
-        raise HTTPException(502, "Microsoft could not be reached; try again.") from None
+    except (ValueError, crypto.VaultError) as exc:
+        raise HTTPException(400, f"The connection cannot sign in: {exc}") from None
+    except Exception as exc:
+        raise unexpected(exc, "Microsoft 365 reports") from None
 
 
 @router.get("/reports")

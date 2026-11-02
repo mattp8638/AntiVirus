@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from .. import audit, crypto, m365_intune as intune, ratelimit
+from ..m365_admin import unexpected
 from ..db import get_db
 from ..deps import Principal, current_principal, require_reauth
 from ..models import M365Connection
@@ -45,6 +46,8 @@ def _call(fn, *args):
         raise HTTPException(422, f"Invalid request: {exc}") from None
     except crypto.VaultError:
         raise HTTPException(400, "The connection's credentials cannot be read; reconnect it.") from None
+    except Exception as exc:
+        raise unexpected(exc, "Intune") from None
 
 
 @router.get("/devices")
