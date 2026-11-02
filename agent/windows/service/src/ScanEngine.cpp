@@ -54,6 +54,9 @@ struct Rule {
   std::wstring techniqueId;
   int score{0};
   std::vector<std::wstring> patterns;
+  // How many patterns must appear for the rule to match. 1 (the default) treats them as alternatives; "chain" and
+  // "family" rules need several markers together, or one common API name in a clean program would be enough.
+  std::size_t minMatches{1};
 };
 
 struct FileData {
@@ -945,8 +948,9 @@ void AddRuleHits(const std::vector<Rule>& rules, const FileData& file, const Pol
       continue;
     }
     const auto haystack = RuleHaystack(rule, file);
+    std::size_t matched = 0;
     for (const auto& pattern : rule.patterns) {
-      if (Contains(haystack, pattern)) {
+      if (Contains(haystack, pattern) && ++matched >= rule.minMatches) {
         AddHit(hits, Hit{rule.code, rule.message, rule.tacticId, rule.techniqueId,
                          ScaleRuleScoreForPolicy(rule, policy), IsExactIndicatorRule(rule)});
         break;
@@ -1009,6 +1013,20 @@ std::vector<Rule> LoadExternalRules() {
         continue;
       }
       rule.patterns = SplitPatterns(columns[6], L';');
+      if (columns.size() >= 8) {
+        // Optional eighth column: "all", or how many of the patterns must match.
+        const auto match = ToLowerCopy(TrimWide(columns[7]));
+        if (match == L"all") {
+          rule.minMatches = rule.patterns.size();
+        } else if (!match.empty()) {
+          try {
+            rule.minMatches = static_cast<std::size_t>(std::stoul(match));
+          } catch (...) {
+            rule.minMatches = 1;  // an unknown value keeps the rule with its default behaviour
+          }
+        }
+        rule.minMatches = std::clamp<std::size_t>(rule.minMatches, 1, std::max<std::size_t>(rule.patterns.size(), 1));
+      }
       if (!rule.code.empty() && !rule.patterns.empty()) {
         refreshedRules.push_back(std::move(rule));
       }

@@ -64,6 +64,11 @@ constexpr wchar_t kWebView2LoaderDllName[] = L"WebView2Loader.dll";
 constexpr wchar_t kWebView2RuntimeInstallerName[] = L"MicrosoftEdgeWebView2Setup.exe";
 constexpr wchar_t kSetupExeName[] = L"FenrirSetup.exe";
 constexpr wchar_t kSignatureBundleRelativePath[] = L"signatures\\default-signatures.tsv";
+constexpr wchar_t kSignatureMaliciousRelativePath[] = L"signatures\\default-signatures-malicious.tsv";
+constexpr wchar_t kSignatureObserveRelativePath[] = L"signatures\\default-signatures-observe.tsv";
+constexpr wchar_t kSignatureCleanwareSignersRelativePath[] = L"signatures\\default-cleanware-signers.tsv";
+constexpr wchar_t kSignatureKnownGoodHashesRelativePath[] = L"signatures\\default-known-good-hashes.tsv";
+constexpr wchar_t kSignatureObserveOnlyRelativePath[] = L"signatures\\default-observe-only.tsv";
 constexpr wchar_t kDriverInfRelativePath[] = L"driver\\AntivirusMinifilter.inf";
 constexpr wchar_t kDriverSysRelativePath[] = L"driver\\AntivirusMinifilter.sys";
 constexpr wchar_t kDriverCatRelativePath[] = L"driver\\AntivirusMinifilter.cat";
@@ -2510,6 +2515,11 @@ bool InstallPayloadFiles(HWND hwnd, UiContext* context, const bool repair, std::
       {IDR_PAYLOAD_WINPTHREAD, kToolsWinpthreadRelativePath, 76, L"Installing tool runtime dependencies", kRequiresWinpthreadRuntime},
       {IDR_PAYLOAD_WEBVIEW2_LOADER, kWebView2LoaderDllName, 80, L"Installing WebView2 runtime loader", true},
       {IDR_PAYLOAD_SIGNATURES, kSignatureBundleRelativePath, 84, L"Installing signature bundle", true},
+      {IDR_PAYLOAD_SIGNATURES_MALICIOUS, kSignatureMaliciousRelativePath, 85, L"Installing ransomware chain signatures", true},
+      {IDR_PAYLOAD_SIGNATURES_OBSERVE, kSignatureObserveRelativePath, 85, L"Installing observe-only signatures", true},
+      {IDR_PAYLOAD_SIGNATURES_CLEANWARE_SIGNERS, kSignatureCleanwareSignersRelativePath, 85, L"Installing trusted publisher list", true},
+      {IDR_PAYLOAD_SIGNATURES_KNOWN_GOOD_HASHES, kSignatureKnownGoodHashesRelativePath, 85, L"Installing known-good file list", true},
+      {IDR_PAYLOAD_SIGNATURES_OBSERVE_ONLY, kSignatureObserveOnlyRelativePath, 85, L"Installing observe-only rule list", true},
       {IDR_PAYLOAD_DRIVER_INF, kDriverInfRelativePath, 88, L"Installing minifilter deployment metadata", false},
       {IDR_PAYLOAD_DRIVER_SYS, kDriverSysRelativePath, 90, L"Installing minifilter driver payload", false},
       {IDR_PAYLOAD_DRIVER_CAT, kDriverCatRelativePath, 92, L"Installing minifilter catalog payload", false},

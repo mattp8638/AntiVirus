@@ -6,6 +6,15 @@ The default bundle format is `default-signatures.tsv` with one rule per line:
 
 `scope|code|message|tacticId|techniqueId|score|pattern1;pattern2;pattern3`
 
+An optional eighth column, `match`, says how many of the patterns must appear: `all`, or a number. Without it, any one
+pattern is enough (the patterns are alternatives). Rules that describe a chain or family of markers must set it: a
+single common marker on its own (for example `WriteProcessMemory`, which browsers and updaters import) is not evidence
+of ransomware. Agents older than this column ignore it.
+
+The installer ships every file in this folder: `default-signatures.tsv`, `default-signatures-malicious.tsv`,
+`default-signatures-observe.tsv`, and the trusted-publisher, known-good hash and observe-only lists the scan engine
+uses to dampen verdicts on signed software.
+
 Supported scopes:
 
 - `any`
