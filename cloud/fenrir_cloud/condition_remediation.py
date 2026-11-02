@@ -319,6 +319,7 @@ def on_command_complete(db: Session, device: Device, command: Command) -> None:
             row.status = "remediated" if phase == "verify" else "compliant"
             if phase == "verify":
                 row.last_remediated_at = now
+            _maybe_resolve_ticket(db, package, device, row, output)
         elif exit_code == 1 and phase == "detect":
             row.status = "noncompliant"
             if package.auto_remediate and package.remediation_script.strip():
@@ -345,6 +346,24 @@ def on_command_complete(db: Session, device: Device, command: Command) -> None:
                  status=row.status, exitCode=exit_code)
 
 
+def _maybe_resolve_ticket(db: Session, package: ConditionPackage, device: Device, row: ConditionResult, output: str) -> None:
+    """The condition is gone (a later fix worked, or someone fixed it by hand): the ticket raised for the failure
+    resolves, unless a technician has taken it."""
+    from . import psa
+    from .models import Ticket
+
+    ticket = db.get(Ticket, row.ticket_id) if row.ticket_id else None
+    if ticket is None or psa.is_closed(db, ticket):
+        return
+    how = "after an automatic remediation" if row.status == "remediated" else "on the latest check"
+    text = f"'{package.name}' passed {how} on {device.hostname}: {output[-300:] or 'compliant'}"
+    if ticket.assignee:
+        psa.add_note(db, ticket, "system:condition-remediation", text + ". Left open for its assigned technician.", kind="internal")
+        return
+    psa.add_note(db, ticket, "system:condition-remediation", text + ".", kind="resolution")
+    psa.set_status(db, ticket, "Resolved", "system:condition-remediation")
+
+
 def _maybe_ticket(db: Session, package: ConditionPackage, device: Device, row: ConditionResult) -> None:
     from . import psa
     from .models import Ticket
@@ -354,6 +373,9 @@ def _maybe_ticket(db: Session, package: ConditionPackage, device: Device, row: C
     if row.ticket_id:
         ticket = db.get(Ticket, row.ticket_id)
         if ticket is not None and not psa.is_closed(db, ticket):
+            psa.add_note(db, ticket, "system:condition-remediation",
+                         f"Remediation failed again (attempt {row.attempts or 0}). Last detection output: {row.detect_output[-300:]}",
+                         kind="internal")
             return
     ticket = services.open_ticket(db, device.tenant_id, f"Automatic remediation failed: {package.name} on {device.hostname}",
                                   f"The condition '{package.name}' is still present after remediation.\n\nLast detection output:\n"

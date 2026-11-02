@@ -674,7 +674,8 @@ def set_auto_remediation(body: dict = Body(...), principal: Principal = Depends(
         raise HTTPException(422, "Choose at least one priority")
     settings = {"enabled": bool(body.get("enabled")), "priorities": priorities,
                 "minEpss": max(0.0, min(float(body.get("minEpss") or 0.0), 1.0)),
-                "maxPerRun": max(1, min(int(body.get("maxPerRun") or 25), 200))}
+                "maxPerRun": max(1, min(int(body.get("maxPerRun") or 25), 200)),
+                "requireApproval": bool(body.get("requireApproval"))}
     tenant.settings = {**(tenant.settings or {}), "autoRemediation": settings}
     audit.record(db, principal.actor, "vulnerability.auto_remediation.updated", tenant.name, tenant.id, **settings)
     db.commit()

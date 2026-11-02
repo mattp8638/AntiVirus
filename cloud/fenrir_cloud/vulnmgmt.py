@@ -275,6 +275,29 @@ def _update_ticket(db: Session, event) -> None:
     remaining = db.execute(select(Vulnerability).where(Vulnerability.ticket_id == ticket.id, Vulnerability.status != "fixed")).scalars().first()
     if remaining is None and not psa.is_closed(db, ticket):
         psa.set_status(db, ticket, "Resolved", "system:rescan")
+        _remediation_evidence(db, ticket)
+
+
+def _remediation_evidence(db: Session, ticket: Ticket) -> None:
+    """Control evidence for the compliance programme: the ticket's vulnerabilities, how they were fixed and when a
+    rescan verified each one."""
+    from . import grc_automation
+
+    rows = db.execute(select(Vulnerability).where(Vulnerability.ticket_id == ticket.id)).scalars().all()
+    if not rows:
+        return
+    hosts = dict(db.execute(select(Device.id, Device.hostname).where(Device.id.in_({v.device_id for v in rows}))).all())
+    lines = [f"{v.vuln_id} on {hosts.get(v.device_id, v.device_id)}: {v.package} {v.installed_version}; "
+             f"fix {(v.remediation or {}).get('description') or 'applied outside Fenrir'}; "
+             f"verified {v.verified_at.isoformat() + 'Z' if v.verified_at else 'by rescan'}" for v in rows]
+    grc_automation.record_activity_evidence(
+        db, rows[0].tenant_id, "vulnerabilities", f"Vulnerability remediated and verified: ticket #{ticket.number}",
+        [f"Ticket #{ticket.number}: {ticket.subject}"] + lines,
+        {"ticketId": ticket.id, "ticketNumber": ticket.number,
+         "findings": [{"vulnId": v.vuln_id, "deviceId": v.device_id, "package": v.package,
+                       "verifiedAt": v.verified_at.isoformat() + "Z" if v.verified_at else None,
+                       "remediation": v.remediation} for v in rows]},
+        actor="system:rescan")
 
 
 def cyber_heal_remediate(db: Session, vuln_id: int, actor: str = "system:cyber-heal") -> dict:

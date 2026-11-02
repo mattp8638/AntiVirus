@@ -97,3 +97,29 @@ def test_custom_packages_validate_and_stay_in_scope(client, admin, tenant, devic
     outsider = login(client, "ta@other.test", "a-long-enough-password-1")
     assert client.patch(f"/api/console/rmm/remediation-packages/{created['id']}", json={"enabled": False}, headers=outsider).status_code == 404
     assert all(p["template"] for p in client.get("/api/console/rmm/remediation-packages", headers=outsider).json())
+
+
+def test_ticket_resolves_once_the_condition_passes_again(client, admin, tenant, device):
+    """FLOW-04: the ticket raised for a failed remediation closes only when a later check actually passes."""
+    package = enable(client, admin, tenant, "win-firewall")
+    client.post(f"/api/console/rmm/remediation-packages/{package['id']}/run", json={}, headers=admin)
+    detect = next(c for c in poll(client, device) if c["type"] == "script.run")
+    complete(client, device, detect["id"], 1, "Firewall off for: Public")
+    complete(client, device, next(c for c in poll(client, device) if phase_of(c) == "remediate")["id"], 0)
+    complete(client, device, next(c for c in poll(client, device) if phase_of(c) == "verify")["id"], 1, "Firewall off for: Public")
+    with session_factory()() as db:
+        ticket_id = db.query(ConditionResult).filter_by(package_id=package["id"]).one().ticket_id
+        assert db.get(Ticket, ticket_id).status not in ("Resolved", "Closed")
+
+    # The device is offline: the next check is queued but not answered, so nothing changes.
+    client.post(f"/api/console/rmm/remediation-packages/{package['id']}/run", json={}, headers=admin)
+    with session_factory()() as db:
+        assert db.get(Ticket, ticket_id).status not in ("Resolved", "Closed")
+
+    # It answers: the condition has gone. The ticket resolves with the evidence.
+    detect = next(c for c in poll(client, device) if c["type"] == "script.run" and phase_of(c) == "detect")
+    complete(client, device, detect["id"], 0, "All firewall profiles are on")
+    with session_factory()() as db:
+        ticket = db.get(Ticket, ticket_id)
+        assert ticket.status == "Resolved"
+        assert any("All firewall profiles are on" in c["text"] for c in ticket.comments)

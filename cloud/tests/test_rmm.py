@@ -501,3 +501,38 @@ def test_windows_agent_update_by_build_id(client, admin, tenant, device, tmp_pat
                                                       "settings": {"updates": {"autoUpdateAgent": False}}}, headers=admin).json()["id"]
     client.patch(f"/api/console/devices/{device['deviceId']}", json={"policyId": pid}, headers=admin)
     assert client.get(url, headers=device["headers"]).json()["autoUpdate"] is False
+
+
+def test_monitor_ticket_closes_only_after_recovery_and_successful_self_heal(client, admin, tenant, device):
+    """FLOW-04: a monitor opens a ticket and runs its self-heal; the ticket resolves only when the condition has recovered
+    AND the self-heal completed. A recovery while the fix is still pending (the agent offline) or after a failed fix
+    leaves the ticket open."""
+    script = next(s for s in client.get("/api/console/rmm/scripts", headers=admin).json() if s["name"] == "Clear temporary files")
+    client.post("/api/console/rmm/conditions", headers=admin, json={
+        "name": "Disk nearly full", "metric": "disk_free_percent", "operator": "<", "threshold": 10, "durationMinutes": 0,
+        "severity": "high", "tenantId": tenant["id"], "actions": [{"type": "ticket"}, {"type": "script", "scriptId": script["id"]}]})
+    beat = lambda free: client.post(f"/api/v1/devices/{device['deviceId']}/heartbeat", headers=device["headers"], json={
+        "agentVersion": "2.0", "healthState": "healthy",
+        "metrics": {"cpuPercent": 12, "memoryPercent": 40, "disks": [{"mount": "C:", "totalGb": 100, "freeGb": free, "freePercent": free}]}})
+
+    def ticket():
+        [row] = [t for t in client.get("/api/console/tickets", headers=admin).json() if t["source"] == "rmm"]
+        return client.get(f"/api/console/tickets/{row['id']}", headers=admin).json()
+
+    beat(4)
+    [fix] = [c for c in poll(client, device) if c["type"] == "script.run"]
+    beat(50)  # recovered, but the self-heal has not reported back
+    first = ticket()
+    assert first["status"] not in ("Resolved", "Closed")
+    complete(client, device, fix["id"], {"exitCode": 0, "stdout": "freed 12 GB"})
+    assert ticket()["status"] == "Resolved"
+
+    # Second episode: the self-heal fails. The condition recovering does not close the new ticket.
+    beat(3)
+    tickets = [t for t in client.get("/api/console/tickets", headers=admin).json() if t["source"] == "rmm" and t["status"] not in ("Resolved", "Closed")]
+    assert len(tickets) == 1
+    [fix] = [c for c in poll(client, device) if c["type"] == "script.run"]
+    complete(client, device, fix["id"], {"exitCode": 1, "stderr": "access denied"}, status="failed")
+    beat(60)
+    still = client.get(f"/api/console/tickets/{tickets[0]['id']}", headers=admin).json()
+    assert still["status"] not in ("Resolved", "Closed")

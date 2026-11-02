@@ -90,8 +90,11 @@ function AutoRemediationCard({ tenantId }: { tenantId: string }) {
         {["P1", "P2", "P3"].map((p) => <label key={p} className="small" style={{ display: "flex", gap: 4, alignItems: "center" }}>
           <input type="checkbox" checked={settings.priorities.includes(p)} disabled={busy}
                  onChange={(e) => save({ priorities: e.target.checked ? [...settings.priorities, p] : settings.priorities.filter((x: string) => x !== p) })} />{p}</label>)}
+        <label className="small" style={{ display: "flex", gap: 6, alignItems: "center" }} title="Each fix is proposed on its ticket and runs only when a technician approves it">
+          <input type="checkbox" checked={!!settings.requireApproval} disabled={busy} onChange={(e) => save({ requireApproval: e.target.checked })} /> Ask before each fix</label>
         <span className="small muted">{data.candidates} open vulnerabilit{data.candidates === 1 ? "y" : "ies"} currently qualify</span>
       </div>
+      <p className="small muted" style={{ marginBottom: 0 }}>Every fix is recorded on the vulnerability's ticket (created or joined automatically): queued, applied or failed, then confirmed by a rescan, which resolves the ticket. A fix still not confirmed a day later reopens the vulnerability.</p>
     </div>
   );
 }
@@ -109,10 +112,10 @@ function RemediationBlock({ row, onQueued }: { row: any; onQueued: () => void })
   return (
     <div style={{ marginTop: 10 }}>
       <div className="evidence-title">Silent remediation</div>
-      {last && <div className="small">Last: <Pill value={last.status} /> {displayValue(last.description)}{last.automatic ? " (automatic)" : ""}{last.error ? ` · ${last.error}` : ""}</div>}
+      {last && <div className="small">Last: <Pill value={last.status} tone={last.status === "awaiting-approval" ? "warn" : undefined} /> {displayValue(last.description)}{last.automatic ? " (automatic)" : ""}{last.awaitingVerification ? " · applied, waiting for a rescan to confirm" : ""}{last.error ? ` · ${last.error}` : ""}</div>}
       {update && !update.available && <div className="small muted">{displayValue(update.reason)}</div>}
       <div className="row" style={{ marginTop: 6 }}>
-        {update?.available && can("scripts") && <button disabled={busy} onClick={() => go("update", update.description)}>Update silently</button>}
+        {update?.available && can("scripts") && <button className={last?.status === "awaiting-approval" ? "primary" : ""} disabled={busy} onClick={() => go("update", update.description)}>{last?.status === "awaiting-approval" ? "Approve and run the fix" : "Update silently"}</button>}
         {uninstall?.available && can("destructive") && <button className="danger" disabled={busy} onClick={() => go("uninstall", uninstall.description)}>Uninstall</button>}
       </div>
     </div>

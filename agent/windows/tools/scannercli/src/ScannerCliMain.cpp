@@ -320,7 +320,12 @@ void PrintJson(const std::vector<antivirus::agent::ScanFinding>& findings) {
                << antivirus::agent::Utf8ToWide(antivirus::agent::EscapeJsonString(finding.quarantinedPath.wstring()))
                << L"\",\"remediationError\":\""
                << antivirus::agent::Utf8ToWide(antivirus::agent::EscapeJsonString(finding.remediationError))
-               << L"\"}";
+               << L"\",\"reasons\":[";
+    for (std::size_t r = 0; r < finding.verdict.reasons.size(); ++r) {
+      std::wcout << (r ? L"," : L"") << L"\""
+                 << antivirus::agent::Utf8ToWide(antivirus::agent::EscapeJsonString(finding.verdict.reasons[r].code)) << L"\"";
+    }
+    std::wcout << L"]}";
   }
 
   std::wcout << L"]}" << std::endl;

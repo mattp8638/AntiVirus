@@ -27,6 +27,7 @@ from .routers import m365_admin as m365_admin_router
 from .routers import m365 as m365_router, network as network_router, grc as grc_router, backup as backup_router, soc_workflows
 from .routers import documentation as documentation_router
 from .routers import active_directory as ad_router
+from .routers import agent_health as agent_health_router
 from .routers import grc_programme as grc_programme_router
 from .routers import rollouts as rollouts_router
 from .routers import apikeys as apikeys_router
@@ -305,6 +306,7 @@ def _scheduled_jobs() -> list[tuple[str, int, object]]:
         ("condition-remediation", 10, condition_remediation.tick),  # every five minutes
         ("backup.health", 10, backup_health.health_tick),
         ("remediation", 20, remediation.tick),  # every ten minutes
+        ("remediation.verify", 20, remediation.verify_tick),  # rescans after fixes; reports fixes not confirmed in a day
         ("topology", 120, topology.tick),  # hourly
         ("artifacts.purge", 120, artifact_store.purge_expired),
         ("audit.checkpoint", 120, audit.daily_checkpoint),  # CORE-06: daily chain-head checkpoint (published to webhooks)
@@ -489,7 +491,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     remote.install_wake_hook()
     for module in (agent_api, admin, fleet, soc, crm_router, business, rmm_router, service_mgmt, psa_router, remote_router, portal):
         app.include_router(module.router)
-    for module in (m365_admin_router, m365_router, network_router, grc_router, backup_router, soc_workflows, ad_router, grc_programme_router,
+    for module in (m365_admin_router, m365_router, network_router, grc_router, backup_router, soc_workflows, ad_router, agent_health_router, grc_programme_router,
                    rollouts_router, apikeys_router, roles_router, approvals_router, exclusions_router,
                    exposure_intel_router, m365_partner_router, m365_workspace_router, m365_lifecycle_router, condition_packages_router, triage_router, clients_router, search_router, defender_router, mobile_apps_router):
         app.include_router(module.router)
