@@ -152,7 +152,7 @@ function concrete(path: string) {
     : path.startsWith("/projects/") ? "project" : path.startsWith("/governance/policies/") ? "grcPolicy"
     : path.startsWith("/crm/accounts/") || path.startsWith("/companies/") ? "tenant" : path.startsWith("/remote/") ? "remote"
     : path.startsWith("/recordings/") ? "recording" : "device";
-  return path.replace(":id", ids[kind]).replace(":tenantId", ids.tenant).replace(":framework", ids.framework);
+  return path.replace(":id", ids[kind]).replace(":tenantId", ids.tenant).replace(":framework", ids.framework).replace(":connectionId", ids.m365);
 }
 
 for (const path of paths) test(`renders ${path} and its tabs`, async () => {

@@ -1,37 +1,66 @@
 # Microsoft 365 administration scope
 
-Fenrir is not a like-for-like CIPP replacement. This is a scope record, not a certification of live Microsoft behaviour.
+Fenrir is not yet a like-for-like CIPP replacement. This is a scope record, not a certification of live Microsoft behaviour.
 
 ## Available workflows
 
-Select a connection on the Microsoft 365 page, then select a user in Tenant administration.
-Users with the `m365_admin` permission can prepare and review profile, sign-in,
-licence assignment and supported group-membership changes. Execution requires fresh
-authentication. Profile editing exposes display name, department, job title and usage location.
+**Workspace (batch 1).** Microsoft 365 opens on an overview of every connected tenant: users, guests, MFA registration, Secure Score,
+unused licences, global admins, open Microsoft service issues and licensed users who have not signed in for 90 days. Each tenant has a
+workspace with its organisation, domains, administrators and their roles, service health and inactive users. Snapshots refresh in the
+background every `FENRIR_M365_SYNC_HOURS` (6).
 
-Session revocation is available as `Revoke sign-in sessions`. The application needs
-Microsoft Graph application permission `User.RevokeSessions.All`, plus `User.Read.All`
-for target lookup, with administrator consent. No Microsoft changes happen merely
-by deploying this code. An operator must review and execute an action.
+**Permissions.** The Permissions tab reads the connection's own access token and lists each feature as available or missing, with the
+Microsoft permission it needs (`m365_permissions.py`). **Update permissions** brings a connection up to date:
 
-Revocation invalidates refresh tokens and browser sessions. Microsoft may take
-several minutes to apply it. It does not block future sign-ins, and external users
-must be managed in their home directory. Fenrir rejects guest or unknown user types.
-Unknown write outcomes are not replayed automatically. Check Microsoft before
-preparing another action.
+- GDAP: Fenrir replaces the customer consent through Partner Center.
+- Admin sign-in: sign in again; Fenrir reuses its app and adds the new permissions.
+- Platform app or manual app: Fenrir lists what to add.
 
-## Remaining CIPP parity work
+**Log store.** Sign-in and directory audit records are copied every hour and kept for `FENRIR_M365_LOG_RETENTION_DAYS` (730). Microsoft
+itself keeps 7 days, or 30 with Entra ID P1/P2. They can be searched by user, app, IP, place or activity, filtered by result and date,
+and exported to CSV. A tenant without P1/P2 has no sign-in log from Microsoft; this is shown, and asked again once a day. A busy tenant
+that produces more records than one run fetches catches up through remembered gaps.
 
-- Delegated partner onboarding and GDAP/CPV permission lifecycle.
-- Bulk user creation, guest invitations, password resets and complete onboarding/offboarding.
-- Exchange mailbox administration, permissions, forwarding and mail-flow tooling.
-- Tenant-wide standards, scheduled evaluation, drift alerts and remediation.
-- Full Intune policy/application administration and Conditional Access workflows.
-- Teams, SharePoint and OneDrive administrative workflows.
+**One-off actions (batch 2).** Every change is prepared, shown for review, and needs fresh authentication and an explicit confirmation.
+Fenrir never replays a running or unknown write. Available actions:
 
-Each area needs its own permission model, provider integration, reviewable actions,
-error handling and tests. Existing inventory or posture reporting is not equivalent
-to management of those resources.
+- edit profile, set manager;
+- block or allow sign-in, sign out everywhere;
+- reset password: a random password, shown once and never stored;
+- reset MFA: removes every method except the password, and reports partial results;
+- Temporary Access Pass: shown once;
+- temporary admin role for 1 to 72 hours: removed automatically within a minute of expiry, or early on request; an alert is raised if
+  removal keeps failing, and Fenrir refuses a role the user already holds;
+- assign or remove a licence, add or remove a group member;
+- new user, new security or Microsoft 365 group with an owner, guest invitation.
+
+**Onboarding, offboarding and bulk import.** These are planned first (read-only: every change listed), then run step by step. Each step's
+outcome is recorded. A failed step can be retried. An unknown step waits until a technician checks Microsoft and marks it done, to
+retry, or skipped.
+
+- Offboarding: block, revoke, random password, MFA removal, out-of-office (app connections), ordinary groups, admin roles, licences
+  (with the mailbox warning), the Fenrir contact marked as left, and a ticket listing what was done and what is left by hand.
+- New starter: user, manager, licences, groups, a Fenrir contact and a ticket, with the temporary password shown once.
+- Bulk import from CSV: up to 200 users, with rows that cannot be created listed and skipped. It runs in time-boxed passes so no web
+  request is held open, and the passwords are downloadable once.
+
+Users with the `m365_admin` permission can run changes. Viewing needs `configure`.
+
+## Phase plan and exit
+
+This work is the Microsoft 365 phase in `parity/progress.md`. Each batch exits only when the owner has run
+[the test plan](M365_TEST_PLAN.md) on a real tenant and reported the results (AT-35). Remaining batches:
+
+3. Exchange: mailboxes, shared mailboxes, permissions, forwarding, aliases, distribution lists, mail rules, quarantine, message trace.
+   This uses the Exchange Online admin interface, because Graph does not cover it.
+4. Security: Conditional Access templates and named locations, compromised-account check, SPF/DKIM/DMARC check, audit-event alert rules
+   into the SOC.
+5. Intune: device actions, BitLocker and LAPS keys, app deployment, Autopilot.
+6. Standards: from 4 to about 60, with templates, tenant groups, drift and exceptions.
+7. Reports: licence waste, external sharing, mailbox sizes, Teams/SharePoint usage, scheduled email reports.
+8. Teams, SharePoint and OneDrive.
+
+Not planned here: Purview (DLP, retention, labels) and Copilot administration (catalogue M365-27, M365-29).
 
 ## Verification
 

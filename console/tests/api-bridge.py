@@ -71,8 +71,9 @@ with TestClient(create_app(settings), raise_server_exceptions=False) as client:
     with db.session_factory()() as session:
         incident = Incident(tenant_id=tenant["id"], device_id=device_id, title="Console smoke incident")
         session.add(incident)
-        session.add(M365Connection(tenant_id=tenant["id"], name="Test Microsoft tenant", directory_id="00000000-0000-0000-0000-000000000001",
-                                  client_id="00000000-0000-0000-0000-000000000002", credentials_envelope={}))
+        m365_connection = M365Connection(tenant_id=tenant["id"], name="Test Microsoft tenant", directory_id="00000000-0000-0000-0000-000000000001",
+                                         client_id="00000000-0000-0000-0000-000000000002", credentials_envelope={})
+        session.add(m365_connection)
         content = b"FENREC1\n"
         (settings.artifact_dir / "test-recording").write_bytes(content)
         recording = DeviceArtifact(tenant_id=tenant["id"], device_id=device_id, command_id="test-command", kind="remote.recording",
@@ -80,6 +81,7 @@ with TestClient(create_app(settings), raise_server_exceptions=False) as client:
         session.add(recording)
         session.commit()
         incident_id = incident.id
+        m365_id = m365_connection.id
         recording_id = recording.id
     programme = post("/api/console/grc/programmes", {"tenantId": tenant["id"], "frameworkKey": "nist-csf-2"})
     policies = client.get("/api/console/grc/policies", headers=admin).json()
@@ -95,7 +97,7 @@ with TestClient(create_app(settings), raise_server_exceptions=False) as client:
     reply({"ready": True, "me": me, "ids": {"device": device_id, "tenant": tenant["id"], "policy": tenant["defaultPolicyId"],
           "ticket": ticket["id"], "project": project["id"], "incident": incident_id,
           "grcPolicy": policies[0]["id"] if policies else "missing", "framework": "nist-csf-2", "remote": remote["id"],
-          "phone": phone["deviceId"], "recording": recording_id,
+          "phone": phone["deviceId"], "recording": recording_id, "m365": m365_id,
           "cancellationDevice": cancellation_device["deviceId"], "cancellationJob": cancellation_job["id"]}})
     for line in sys.stdin:
         request = json.loads(line)
