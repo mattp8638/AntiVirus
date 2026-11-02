@@ -690,7 +690,14 @@ def refresh_consent(row: M365Partner, directory_id: str, client: httpx.Client | 
                                  headers={"Authorization": "Bearer " + token, "Accept": "application/json"})
         if response.status_code not in (200, 204, 404):
             raise PartnerError(f"Partner Center refused to replace the app consent: {_error(response)}")
-        if consent_app(row, directory_id, client=client) != "consented":
+        try:
+            again = consent_app(row, directory_id, client=client)
+        except (PartnerError, httpx.HTTPError) as exc:
+            # The old consent is gone: until this succeeds Fenrir cannot reach this customer through GDAP.
+            raise PartnerError("Fenrir removed the old consent, but Partner Center did not accept the new one, so this customer is "
+                               "unreachable until it does. Press Update permissions again in a minute. "
+                               f"Partner Center said: {str(exc)[:200]}") from None
+        if again != "consented":
             raise PartnerError("Partner Center still reports the old consent. Try again in a few minutes.")
         return "consented"
     finally:

@@ -35,7 +35,9 @@ Allow about an hour. Steps marked **(changes the tenant)** only touch the test a
 4. [ ] **Update permissions** (changes the consent, not users):
    - *Connected by admin sign-in:* a sign-in window opens. Get a code, sign in at microsoft.com/devicelogin as a **Global Administrator**
      of your tenant, and wait for "connected". Fenrir reuses its app and adds the new permissions.
-   - *Connected through your partner tenant (GDAP):* Fenrir replaces the consent itself and says so. Wait two or three minutes.
+   - *Connected through your partner tenant (GDAP):* Fenrir replaces the consent itself and says so. Wait two or three minutes. If it
+     says it removed the old consent but Partner Center did not accept the new one, press **Update permissions** again: until it
+     succeeds, Fenrir cannot reach that customer.
    - *Platform app or manual app:* Fenrir lists the permissions to add to the app registration. Add them, grant admin consent, then sign
      in again.
 5. [ ] **Check permissions** again. Everything is available except anything marked "not possible here". Out-of-office is not possible
