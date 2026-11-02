@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import onboarding
+from .. import onboarding, workspace
 from ..db import get_db
 from ..deps import Principal, current_principal
 from ..models import Tenant
@@ -36,3 +36,17 @@ def one_customer(tenant_id: str, principal: Principal = Depends(current_principa
     if tenant is None:
         raise HTTPException(404, "Not found")
     return onboarding.checklist(db, tenant)
+
+
+workspace_router = APIRouter(prefix="/api/console/workspace", tags=["Customer workspace"])
+
+
+@workspace_router.get("/{tenant_id}")
+def customer_workspace(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """One customer's open work and state across modules."""
+    principal.require("read")
+    principal.check_tenant(tenant_id)
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(404, "Not found")
+    return workspace.build(db, tenant)

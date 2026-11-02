@@ -1,5 +1,6 @@
 import { displayValue } from "../components/DisplayValue";
 import { OnboardingChecklist } from "../components/OnboardingChecklist";
+import { CustomerWorkspace } from "../components/CustomerWorkspace";
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ago, api, money } from "../api";
@@ -59,7 +60,12 @@ export default function CrmAccount() {
         {[30, 90, 365].map((d) => <button key={d} className={`small ${d === days ? "primary" : ""}`} onClick={() => setDays(d)}>{d} days</button>)}
       </div>
 
-      <div className="grid k2" style={{ marginTop: 6 }}>
+      <div className="card" style={{ marginTop: 6 }}>
+        <h3 style={{ marginTop: 0 }}>Workspace</h3>
+        <CustomerWorkspace tenantId={id} />
+      </div>
+
+      <div className="grid k2" style={{ marginTop: 14 }}>
         <div className="card">
           <h3>Timeline</h3>
           <Table rows={data?.timeline.map((t: any) => ({ ...t, id: `${t.type}:${t.ref}` }))} empty="No history yet."
