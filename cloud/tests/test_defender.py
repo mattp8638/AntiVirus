@@ -256,3 +256,14 @@ def test_device_actions(client, admin, tenant, device):
     with database.session_factory()() as db:
         bodies = [c.payload.get("body", "") for c in db.query(Command).filter_by(device_id=device["deviceId"])]
     assert any("Start-MpScan -ScanType QuickScan" in b for b in bodies) and any("Update-MpSignature" in b for b in bodies)
+
+
+def test_real_time_off_is_reported_once_not_as_behaviour_and_download_drift():
+    settings = {"defender": {"managed": True}, "attackSurface": {}}
+    status = {"available": True, "antivirus": True, "realTime": False, "behaviorMonitoring": False, "downloadScanning": False,
+              "blockAtFirstSight": True, "uiLockdown": False, "exclusions": {"paths": []}, "asr": {}}
+    found = defender.problems(status, settings)
+    assert len(found) == 1 and "real-time protection is off" in found[0]
+    # With real-time on, a sub-component held off is drift.
+    found = defender.problems({**status, "realTime": True}, settings)
+    assert any("behaviour monitoring" in p and "download scanning" in p for p in found)
