@@ -256,6 +256,39 @@ def _dc_profiles(db: Session, tenant_ids: list[str]):
             yield device, profile, data
 
 
+def _update_status(db: Session, device: Device) -> str:
+    """Why this Windows agent is not on the server's current build, if it is not."""
+    from . import rollouts
+    from .routers.agent_api import _windows_build
+
+    try:
+        build = _windows_build()
+    except Exception:  # noqa: BLE001 - diagnostics only
+        return ""
+    return rollouts.update_status(db, device, "windows", build["buildId"]) if build else ""
+
+
+def _monitor_status(db: Session, device: Device) -> dict | None:
+    """The AD event monitor's latest report about itself (started, cannot read the Security log, error)."""
+    event = db.execute(select(Event).where(Event.device_id == device.id, Event.event_type.like("ad.monitor.%"))
+                       .order_by(Event.occurred_at.desc()).limit(1)).scalar_one_or_none()
+    if event is None:
+        return None
+    detail = (event.fields or {}).get("error")
+    return {"type": event.event_type.removeprefix("ad.monitor."), "summary": event.summary, "at": event.occurred_at.isoformat() + "Z",
+            "detail": str(detail)[:300] if detail not in (None, "") else None}
+
+
+def _profile_failure(db: Session, device: Device, profile: DeviceProfile) -> dict | None:
+    """The agent's own report of its latest failed profile run, when it is newer than the profile we hold."""
+    event = db.execute(select(Event).where(Event.device_id == device.id, Event.event_type == "inventory.profile.failed")
+                       .order_by(Event.occurred_at.desc()).limit(1)).scalar_one_or_none()
+    if event is None or (profile.collected_at and event.occurred_at <= profile.collected_at):
+        return None
+    error = str((event.fields or {}).get("error") or event.summary or "no reason given")[:600]
+    return {"at": event.occurred_at.isoformat() + "Z", "error": error}
+
+
 def domains(db: Session, tenant_ids: list[str]) -> list[dict]:
     """One entry per (tenant, AD domain) with the freshest snapshot and every DC that reports it."""
     grouped: dict[tuple[str, str], dict] = {}
@@ -268,7 +301,16 @@ def domains(db: Session, tenant_ids: list[str]) -> list[dict]:
         entry = grouped.setdefault((device.tenant_id, name), {"tenantId": device.tenant_id, "domain": name, "snapshot": None,
                                                               "snapshotAt": None, "auditPolicy": None, "agents": []})
         online = presence.is_up(device)
+        if raw is None and not problem:
+            # A current agent always sends this section on a domain controller: the directory, or why it could not.
+            problem = ("This domain controller's last system profile has no Active Directory section, so it came from an "
+                       "agent too old to read the directory." + (f" {update}" if (update := _update_status(db, device)) else ""))
+        failure = _profile_failure(db, device, profile)
+        if failure and not ad:
+            problem = (problem + " " if problem else "") + f"The agent could not collect or send its profile ({failure['at']}): {failure['error']}"
         entry["agents"].append({"deviceId": device.id, "hostname": device.hostname, "online": online,
+                                "agentVersion": device.agent_version or None, "profileFailure": failure,
+                                "monitor": _monitor_status(db, device),
                                 "lastSeen": device.last_seen_at.isoformat() + "Z" if device.last_seen_at else None,
                                 "profileAt": profile.collected_at.isoformat() + "Z" if profile.collected_at else None,
                                 "snapshot": ad is not None, "problem": problem or None,

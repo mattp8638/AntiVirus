@@ -85,15 +85,34 @@ function Names({ rows, keyName = "sam" }: { rows: any[]; keyName?: string }) {
 }
 
 function DomainDetail({ tenantId, domain }: { tenantId: string; domain: string }) {
-  const { data } = useData<any>(`ad/domains/${tenantId}/${encodeURIComponent(domain)}`);
+  const { data, reload } = useData<any>(`ad/domains/${tenantId}/${encodeURIComponent(domain)}`);
   const [tab, setTab] = useState("Findings");
+  const [waitingSince, setWaitingSince] = useState<number | null>(null);
+  // After "Read the directory now", check every 15 seconds for up to 6 minutes until each DC has answered.
+  useEffect(() => {
+    if (waitingSince === null) return;
+    const timer = window.setInterval(() => {
+      if (Date.now() - waitingSince > 6 * 60 * 1000) { setWaitingSince(null); return; }
+      reload();
+    }, 15000);
+    return () => window.clearInterval(timer);
+  }, [waitingSince, reload]);
+  useEffect(() => {
+    if (waitingSince === null || !data) return;
+    const answered = (data.agents || []).filter((a: any) => a.online).every((a: any) =>
+      (a.profileAt && Date.parse(a.profileAt) > waitingSince) || (a.profileFailure && Date.parse(a.profileFailure.at) > waitingSince));
+    if (answered) setWaitingSince(null);
+  }, [data, waitingSince]);
   const { run, busy } = useAction();
   const { can, toast } = useApp();
   if (!data) return null;
   const online = (data.agents || []).filter((a: any) => a.online);
   const readNow = async () => {
     for (const agent of online) await run(() => api(`devices/${agent.deviceId}/profile/refresh`, { method: "POST" }));
-    if (online.length) toast(`Asked ${online.length} domain controller(s) to read the directory now; it takes a minute or two. Reload this page then.`);
+    if (online.length) {
+      toast(`Asked ${online.length} domain controller(s) to read the directory now. This page updates when they answer (usually 1-3 minutes).`);
+      setWaitingSince(Date.now() - 5000);
+    }
   };
   const counts = data.counts || {};
   const openAlerts = (data.alerts || []).filter((a: any) => !["resolved", "closed", "false_positive"].includes(a.status));
@@ -118,7 +137,17 @@ function DomainDetail({ tenantId, domain }: { tenantId: string; domain: string }
         </details>
       )}
       {can("respond") && online.length > 0 && <p className="small"><button className="small" disabled={busy} onClick={readNow}>Read the directory now</button>
-        <span className="muted"> Otherwise each domain controller reads it a few minutes after starting, then every 6 hours.</span></p>}
+        <span className="muted"> {waitingSince !== null ? "Waiting for the domain controller to answer…" : "Otherwise each domain controller reads it a few minutes after starting, then every 6 hours."}</span></p>}
+      <div className="small muted" style={{ marginBottom: 14 }}>
+        {(data.agents || []).map((a: any) => (
+          <div key={a.deviceId}>
+            <b>{displayValue(a.hostname)}</b>: {a.online ? "online" : "offline"}{a.agentVersion ? ` · agent ${a.agentVersion}` : ""}
+            {" · "}last profile {a.profileAt ? ago(a.profileAt) : "never received"}
+            {a.snapshot ? " · directory read" : " · no directory data"}
+            {" · event monitor: "}{a.monitor ? `${a.monitor.summary}${a.monitor.detail ? ` (${a.monitor.detail})` : ""} (${ago(a.monitor.at)})` : "no report from it yet"}
+          </div>
+        ))}
+      </div>
       {openAlerts.length > 0 && (
         <div className="card" style={{ marginBottom: 14 }}>
           <h3 style={{ marginTop: 0 }}>Active Directory alerts</h3>
