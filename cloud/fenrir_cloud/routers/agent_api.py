@@ -312,7 +312,7 @@ def pending_commands(limit: int = Query(default=20, ge=1, le=100), types: str | 
         "polledAt": _iso(now),
         "items": [
             {"id": c.id, "type": c.type, "issuedBy": c.issued_by, "createdAt": _iso(c.created_at), "updatedAt": _iso(c.updated_at),
-             "targetPath": c.target_path, "recordId": c.record_id, "payloadJson": json.dumps(c.payload) if c.payload else ""}
+             "targetPath": c.target_path, "recordId": c.record_id, "payloadJson": json.dumps({k: v for k, v in c.payload.items() if k != "secretEnvelope"}) if c.payload else ""}
             for c in commands
         ],
     }

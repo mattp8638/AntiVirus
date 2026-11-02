@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from time import monotonic
 from uuid import UUID
 from urllib.parse import quote
@@ -26,9 +26,9 @@ import httpx
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from . import audit, crypto, events, m365, m365_admin, services
+from . import audit, crypto, events, hybrid_identity, m365, m365_admin, services
 from .entra_reconcile import LEAVER_NOTE
-from .models import Alert, Contact, M365Action, M365Connection, M365Workflow, utcnow
+from .models import Alert, Command, Contact, Device, M365Action, M365Connection, M365Workflow, utcnow
 
 log = logging.getLogger("fenrir.m365.lifecycle")
 
@@ -42,9 +42,13 @@ class PlanError(Exception):
     pass
 
 
-def _step(key: str, title: str, detail: str, items: list | None = None, warning: str = "") -> dict:
+def _step(key: str, title: str, detail: str, items: list | None = None, warning: str = "", where: str = "") -> dict:
+    where = where or ("ad" if key.startswith("ad_") else "fenrir" if key in ("mark_contact", "add_contact", "open_ticket") else "m365")
     return {"key": key, "title": title, "detail": detail, "items": items or [], "warning": warning, "status": "pending",
-            "result": "", "at": None}
+            "result": "", "at": None, "where": where}
+
+
+AD_WAIT = timedelta(hours=1)  # how long a new AD user may take to appear in Microsoft 365
 
 
 def _skus(client, headers) -> dict[str, str]:
@@ -72,12 +76,15 @@ def plan_offboard(db: Session, connection: M365Connection, user_id: str, options
             raise PlanError("Offboarding is for member users of this directory.")
         upn = person.get("userPrincipalName") or user_id
         steps: list[dict] = []
-        if options.get("blockSignIn"):
-            steps.append(_step("block_signin", "Block sign-in", "The account can no longer sign in."))
+        if person.get("onPremisesSyncEnabled"):
+            steps += _hybrid_offboard_steps(db, connection, person, options)
+        else:
+            if options.get("blockSignIn"):
+                steps.append(_step("block_signin", "Block sign-in", "The account can no longer sign in."))
+            if options.get("resetPassword"):
+                steps.append(_step("reset_password", "Reset the password", "Sets a random password nobody is told."))
         if options.get("revokeSessions"):
             steps.append(_step("revoke_sessions", "Sign out everywhere", "Ends existing sessions on every device (takes a few minutes)."))
-        if options.get("resetPassword"):
-            steps.append(_step("reset_password", "Reset the password", "Sets a random password nobody is told."))
         if options.get("removeMfa"):
             try:
                 found = m365_admin.methods(client, headers, user_id)
@@ -134,7 +141,52 @@ def plan_offboard(db: Session, connection: M365Connection, user_id: str, options
     return f"{person.get('displayName') or upn} ({upn})", steps
 
 
+def _hybrid_offboard_steps(db: Session, connection: M365Connection, person: dict, options: dict) -> list[dict]:
+    """A user synced from Active Directory: the account itself is changed in AD on the domain controller, then synced."""
+    sam = person.get("onPremisesSamAccountName") or (person.get("onPremisesUserPrincipalName") or "").split("@")[0]
+    ctx = hybrid_identity.context(db, connection.tenant_id)
+    dc = ctx["controller"]
+    options["adIdentity"] = sam
+    if not dc or not sam:
+        reason = ("no domain controller with the Fenrir agent is known for this customer" if not dc else
+                  "Microsoft did not say which AD account this is")
+        manual = _step("ad_manual", "Disable the account in Active Directory", f"Do this by hand: {reason}.", where="ad",
+                       warning="This user is synced from Active Directory, so Microsoft refuses to block sign-in or reset the "
+                               "password in the cloud. Disable the account and reset its password in Active Directory Users "
+                               "and Computers; Entra Connect carries it to Microsoft 365.")
+        manual.update(status="skipped", result="Needs doing by hand in Active Directory")
+        return [manual]
+    on = f"on {dc['hostname']}" + ("" if dc["online"] else " (its agent is offline now: the step waits for it)")
+    steps = [_step("ad_disable", "Disable the account in Active Directory", f"{sam} {on}", items=[{"deviceId": dc["deviceId"]}])]
+    if options.get("resetPassword", True):
+        steps.append(_step("ad_scramble", "Set a random AD password", "Generated on the domain controller; nobody is told it.",
+                           items=[{"deviceId": dc["deviceId"]}]))
+    if options.get("removeGroups", True):
+        steps.append(_step("ad_remove_groups", "Remove from Active Directory groups", "Every group except the primary one (Domain Users)",
+                           items=[{"deviceId": dc["deviceId"]}]))
+    if options.get("adMoveOu"):
+        steps.append(_step("ad_move", "Move to the leavers OU", str(options["adMoveOu"])[:300], items=[{"deviceId": dc["deviceId"]}]))
+    if options.get("hideFromAddressBook"):
+        steps.append(_step("ad_hide_gal", "Hide from the address book", "Only where AD has Exchange attributes",
+                           items=[{"deviceId": dc["deviceId"]}]))
+    steps.append(_step("ad_describe", "Note the leaving date on the account", "In the account's description",
+                       items=[{"deviceId": dc["deviceId"]}]))
+    sync = ctx["syncServer"]
+    if sync:
+        steps.append(_step("ad_sync", "Sync to Microsoft 365 now", f"Entra Connect delta sync on {sync['hostname']}",
+                           items=[{"deviceId": sync["deviceId"]}]))
+    else:
+        note = _step("ad_sync", "Sync to Microsoft 365", "Entra Connect syncs by itself within 30 minutes", where="ad",
+                     warning="Fenrir has not found the server running Entra Connect (it needs the Fenrir agent), so it cannot "
+                             "start the sync early.")
+        note.update(status="skipped", result="Entra Connect syncs within 30 minutes")
+        steps.append(note)
+    return steps
+
+
 def plan_onboard(db: Session, connection: M365Connection, options: dict) -> tuple[str, list[dict]]:
+    if options.get("createIn") == "ad":
+        return _plan_hybrid_onboard(db, connection, options)
     profile = options["profile"]
     with m365_admin.session(connection) as (client, headers):
         try:
@@ -168,6 +220,74 @@ def plan_onboard(db: Session, connection: M365Connection, options: dict) -> tupl
     if options.get("openTicket"):
         steps.append(_step("open_ticket", "Record it on a ticket", "Opens a ticket with what was done."))
     return f"{profile['displayName']} ({profile['userPrincipalName']})", steps
+
+
+def _plan_hybrid_onboard(db: Session, connection: M365Connection, options: dict) -> tuple[str, list[dict]]:
+    """A new starter created in Active Directory, synced by Entra Connect, then licensed in Microsoft 365."""
+    profile, ad = options["profile"], options.get("ad") or {}
+    ctx = hybrid_identity.context(db, connection.tenant_id)
+    dc = ctx["controller"]
+    if not dc:
+        raise PlanError("No domain controller with the Fenrir agent is known for this customer, so the user cannot be created in AD.")
+    upn = profile["userPrincipalName"]
+    suffixes = [str(x).lower() for x in ((ctx.get("options") or {}).get("upnSuffixes") or [])]
+    if suffixes and upn.rsplit("@", 1)[1].lower() not in suffixes:
+        raise PlanError(f"{upn.rsplit('@', 1)[1]} is not a UPN suffix of this Active Directory ({', '.join(suffixes)}).")
+    with m365_admin.session(connection) as (client, headers):
+        try:
+            m365_admin.request(client, headers, "GET", "/users/" + quote(upn, safe="") + "?$select=id")
+            raise PlanError(f"{upn} already exists in Microsoft 365.")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404:
+                raise PlanError("Could not check the sign-in name." + m365_admin.microsoft_said(exc.response)) from None
+        manager_sam, manager_cloud = "", None
+        if options.get("managerId"):
+            manager = m365_admin.user(client, headers, options["managerId"])
+            if manager.get("onPremisesSyncEnabled") and manager.get("onPremisesSamAccountName"):
+                manager_sam = manager["onPremisesSamAccountName"]
+            else:
+                manager_cloud = manager
+        names = _skus(client, headers) if options.get("skuIds") else {}
+        if any(s not in names for s in options.get("skuIds") or []):
+            raise PlanError("A chosen licence is not in this tenant.")
+        groups = []
+        for gid in options.get("groupIds") or []:
+            try:
+                g = m365_admin.group(client, headers, gid)
+            except m365_admin.ProviderError as exc:
+                raise PlanError(str(exc)) from None
+            groups.append({"id": g.get("id"), "label": g.get("displayName"), "status": "pending"})
+    sam = (ad.get("sam") or upn.split("@")[0])[:20]
+    options["adIdentity"] = sam
+    options["adManager"] = manager_sam
+    ad_groups = [str(g) for g in ad.get("groups") or []][:50]
+    where = ad.get("ou") or (ctx.get("options") or {}).get("usersContainer") or "the default Users container"
+    steps = [_step("ad_create", "Create the account in Active Directory",
+                   f"{profile['displayName']} ({sam}, {upn}) in {where} on {dc['hostname']}" +
+                   (f"; groups: {', '.join(g.split(',')[0].removeprefix('CN=') for g in ad_groups)}" if ad_groups else "") +
+                   ("; manager " + manager_sam if manager_sam else "") + ". Fenrir makes a temporary password and shows it once.",
+                   items=[{"deviceId": dc["deviceId"]}])]
+    sync = ctx["syncServer"]
+    if sync:
+        steps.append(_step("ad_sync", "Sync to Microsoft 365 now", f"Entra Connect delta sync on {sync['hostname']}",
+                           items=[{"deviceId": sync["deviceId"]}]))
+    steps.append(_step("wait_cloud", "Wait for the user in Microsoft 365", "Entra Connect brings the account across "
+                       + ("in a minute or two" if sync else "within 30 minutes (Fenrir cannot start the sync: no agent on the Entra Connect server)")))
+    steps.append(_step("set_usage_location", "Set the usage location", profile["usageLocation"]))
+    if manager_cloud:
+        steps.append(_step("set_manager", "Set their manager", manager_cloud.get("displayName") or "",
+                           [{"id": manager_cloud.get("id"), "label": manager_cloud.get("userPrincipalName")}],
+                           warning="The manager is a cloud-only user, so Microsoft may refuse this for a synced account."))
+    if options.get("skuIds"):
+        steps.append(_step("assign_licences", "Assign licences", ", ".join(names[s] for s in options["skuIds"]),
+                           [{"id": s, "label": names[s]} for s in options["skuIds"]]))
+    if groups:
+        steps.append(_step("add_groups", "Add to Microsoft 365 groups", ", ".join(i["label"] for i in groups), groups))
+    if options.get("addContact"):
+        steps.append(_step("add_contact", "Add a Fenrir contact", f"{profile['displayName']} for this customer"))
+    if options.get("openTicket"):
+        steps.append(_step("open_ticket", "Record it on a ticket", "Opens a ticket with what was done."))
+    return f"{profile['displayName']} ({upn})", steps
 
 
 def plan_bulk(db: Session, connection: M365Connection, options: dict) -> tuple[str, list[dict]]:
@@ -353,6 +473,9 @@ def run_step(db: Session, connection: M365Connection, flow: M365Workflow, step: 
     if key == "create_user":
         profile = (step["items"][0]["profile"] if flow.kind == "bulk_create" else flow.options["profile"])
         return _create(client, headers, flow, step, profile, secrets_out)
+    if key == "set_usage_location":
+        _retry_new_user(lambda: _call(client, headers, "PATCH", f"/users/{UUID(uid)}", {"usageLocation": flow.options["profile"]["usageLocation"]}))
+        return "Usage location set"
     if key == "set_manager":
         _call(client, headers, "PUT", f"/users/{UUID(uid)}/manager/$ref", {"@odata.id": m365.GRAPH + "/users/" + str(UUID(step["items"][0]["id"]))})
         return "Manager set"
@@ -439,24 +562,128 @@ def _depends_on_user(flow: M365Workflow) -> bool:
     return flow.kind == "onboard" and not flow.target_id
 
 
+# Steps that do not need the Microsoft 365 user to exist yet.
+NO_USER_NEEDED = {"create_user", "add_contact", "open_ticket", "ad_create", "ad_sync", "wait_cloud"}
+EXTERNAL = {"wait_cloud"}  # steps that wait on something other than Microsoft Graph
+
+
+def _ad_request(flow: M365Workflow, key: str, actor: str) -> tuple[str, dict, str | None]:
+    """The ad.directory operation, parameters and one-time secret for an AD step."""
+    sam = flow.options.get("adIdentity") or ""
+    if key == "ad_disable":
+        return "disable", {"identity": sam}, None
+    if key == "ad_scramble":
+        return "scramble", {"identity": sam}, None
+    if key == "ad_remove_groups":
+        return "remove_groups", {"identity": sam}, None
+    if key == "ad_move":
+        return "move", {"identity": sam, "ou": flow.options.get("adMoveOu") or ""}, None
+    if key == "ad_hide_gal":
+        return "hide_gal", {"identity": sam}, None
+    if key == "ad_describe":
+        return "describe", {"identity": sam, "text": f"Left {utcnow():%d %b %Y}; offboarded by {actor} with Fenrir"}, None
+    if key == "ad_sync":
+        return "sync", {}, None
+    if key == "ad_create":
+        profile, ad = flow.options["profile"], flow.options.get("ad") or {}
+        params = {"sam": sam, "upn": profile["userPrincipalName"], "givenName": profile.get("givenName", ""),
+                  "surname": profile.get("surname", ""), "displayName": profile["displayName"], "ou": ad.get("ou") or "",
+                  "title": profile.get("jobTitle", ""), "department": profile.get("department", ""),
+                  "manager": flow.options.get("adManager") or "", "groups": ad.get("groups") or [], "mustChange": True}
+        return "create", params, m365_admin.new_password()
+    raise StepResult("failed", "Unknown Active Directory step")
+
+
+def _ad_message(key: str, result: dict) -> str:
+    if key == "ad_remove_groups":
+        removed, kept = result.get("removed") or [], result.get("kept") or []
+        return ("Removed: " + (", ".join(removed) or "no groups")) + (f"; kept: {'; '.join(kept)}" if kept else "")
+    if key == "ad_create":
+        user = result.get("user") or {}
+        notes = result.get("notes") or []
+        return f"Created {user.get('sam')} in {user.get('ou')}" + (f"; {'; '.join(notes)}" if notes else "")
+    if result.get("skipped"):
+        return str(result["skipped"])
+    return {"ad_disable": "Account disabled in Active Directory", "ad_scramble": "Random password set in Active Directory",
+            "ad_move": "Moved", "ad_hide_gal": "Hidden from the address book", "ad_describe": "Leaving date noted",
+            "ad_sync": "Entra Connect delta sync started"}.get(key, "Done")
+
+
+def _external(db: Session, connection: M365Connection, flow: M365Workflow, step: dict, actor: str, client, headers,
+              secrets_out: list) -> tuple[str, str, dict]:
+    """Advance a step that waits on a domain controller or on Entra Connect: (waiting | done | failed, message, step changes)."""
+    key = step["key"]
+    if key == "wait_cloud":
+        upn = flow.options["profile"]["userPrincipalName"]
+        try:
+            found = m365_admin.request(client, headers, "GET", "/users/" + quote(upn, safe="") + "?$select=id,onPremisesSyncEnabled")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404:
+                return "failed", "Could not look the user up." + m365_admin.microsoft_said(exc.response), {}
+            since = step.get("since") or utcnow().isoformat() + "Z"
+            started = datetime.fromisoformat(since.removesuffix("Z"))
+            if utcnow() - started > AD_WAIT:
+                return "failed", ("The user has not appeared in Microsoft 365 after an hour. Check that Entra Connect syncs this OU "
+                                  "(Synchronization Service Manager), then retry this step."), {}
+            return "waiting", "Waiting for Entra Connect to bring the user into Microsoft 365", {"since": since}
+        flow.target_id = found.get("id") or ""
+        return "done", "The user is in Microsoft 365", {}
+    # An Active Directory step: send it once, then wait for the server's answer.
+    if step.get("commandId"):
+        state, result = hybrid_identity.outcome(db.get(Command, step["commandId"]))
+        if state == "waiting":
+            return "waiting", step.get("result") or "Waiting for the server", {}
+        command = db.get(Command, step["commandId"])
+        if command is not None and (command.payload or {}).get("secretEnvelope"):
+            command.payload = {k: v for k, v in command.payload.items() if k != "secretEnvelope"}  # never released: drop it
+        if state == "done":
+            return "done", _ad_message(key, result), {"commandId": None}
+        return "failed", "The server said: " + str(result.get("error") or "unknown error"), {"commandId": None}
+    device_id = (step.get("items") or [{}])[0].get("deviceId")
+    operation, params, secret = _ad_request(flow, key, actor)
+    try:
+        command = hybrid_identity.send(db, flow.tenant_id, device_id, operation, params, actor, secret=secret,
+                                       reason=f"Microsoft 365 {flow.kind.replace('_', ' ')}: {flow.target_name}")
+    except hybrid_identity.HybridError as exc:
+        return "failed", str(exc), {}
+    if secret:
+        profile = flow.options["profile"]
+        secrets_out.append({"userPrincipalName": profile["userPrincipalName"], "displayName": profile.get("displayName", ""),
+                            "password": secret, "where": "Active Directory"})
+    device = db.get(Device, device_id)
+    return "waiting", f"Sent to {device.hostname if device else 'the server'}; waiting for its answer", {"commandId": command.id}
+
+
 def run(db: Session, connection: M365Connection, flow: M365Workflow, actor: str) -> dict:
     """Run pending and failed steps until done or out of time. The workflow must already be claimed (status running)."""
     secrets_out: list[dict] = []
     started = monotonic()
-    more, ran = False, 0
+    more, ran, waiting = False, 0, ""
     try:
         with m365_admin.session(connection) as (client, headers):
             for index, step in enumerate(flow.steps):
-                if step["status"] not in ("pending", "failed"):
+                if step["status"] not in ("pending", "failed", "waiting"):
                     continue
                 if ran and monotonic() - started > RUN_BUDGET:
                     more = True
                     break
-                if step["key"] != "create_user" and step["key"] not in ("add_contact", "open_ticket") and _depends_on_user(flow):
+                if step["key"] not in NO_USER_NEEDED and _depends_on_user(flow):
                     continue  # the user was not created; these wait
-                if step["key"] == "open_ticket" and any(s["status"] in ("pending", "failed") for s in flow.steps[:index]):
+                if step["key"] == "open_ticket" and any(s["status"] in ("pending", "failed", "waiting") for s in flow.steps[:index]):
                     continue  # the ticket records the outcome, so it goes last
                 ran += 1
+                if step["key"].startswith("ad_") or step["key"] in EXTERNAL:
+                    status, message, changes = _external(db, connection, flow, step, actor, client, headers, secrets_out)
+                    steps = [dict(x) for x in flow.steps]
+                    steps[index] = {**step, **changes, "status": status, "result": message[:1000], "at": utcnow().isoformat() + "Z"}
+                    flow.steps = steps
+                    if status != "waiting":
+                        audit.record(db, actor, "m365.workflow_step", flow.id, flow.tenant_id, step=step["key"], status=status)
+                    db.commit()
+                    if status == "waiting":
+                        waiting, more = message, True
+                        break  # later steps follow on from this one
+                    continue
                 _mark(db, flow, index, "running", "")
                 try:
                     message = run_step(db, connection, flow, step, client, headers, secrets_out)
@@ -472,7 +699,7 @@ def run(db: Session, connection: M365Connection, flow: M365Workflow, actor: str)
         _finish(db, flow, actor)
         raise
     _finish(db, flow, actor, more)
-    return {"workflow": flow, "secrets": secrets_out, "more": more}
+    return {"workflow": flow, "secrets": secrets_out, "more": more, "waiting": waiting}
 
 
 def _mark(db: Session, flow: M365Workflow, index: int, status: str, message: str) -> None:
@@ -519,7 +746,7 @@ def resolve(db: Session, flow: M365Workflow, index: int, outcome: str, actor: st
     if not 0 <= index < len(flow.steps):
         raise PlanError("No such step.")
     step = flow.steps[index]
-    allowed = {"unknown": {"done", "retry", "skip"}, "failed": {"done", "retry", "skip"}, "pending": {"skip"}}
+    allowed = {"unknown": {"done", "retry", "skip"}, "failed": {"done", "retry", "skip"}, "pending": {"skip"}, "waiting": {"skip"}}
     if outcome not in allowed.get(step["status"], set()):
         raise PlanError("That step cannot be changed now.")
     if flow.status == "running":
@@ -535,6 +762,36 @@ def resolve(db: Session, flow: M365Workflow, index: int, outcome: str, actor: st
     flow.status = "completed" if not open_steps else "partial"
     audit.record(db, actor, "m365.workflow_step_resolved", flow.id, flow.tenant_id, step=step["key"], outcome=outcome)
     return flow
+
+
+# --- Continuing in the background -------------------------------------------------------------------------------
+
+def advance_waiting(db: Session) -> int:
+    """Every minute: carry on workflows that wait on a domain controller or on Entra Connect, so nobody has to keep the
+    page open. Only steps the technician already confirmed run; nothing new is planned."""
+    advanced = 0
+    flows = db.execute(select(M365Workflow).where(M365Workflow.status == "partial")).scalars().all()
+    for flow in flows:
+        if not any(s.get("status") == "waiting" for s in flow.steps or []):
+            continue
+        connection = db.get(M365Connection, flow.connection_id)
+        if connection is None:
+            continue
+        person = (flow.executed_by or flow.requested_by or "").removesuffix(" (continued by Fenrir)")
+        actor = f"{person} (continued by Fenrir)"
+        if not claim(db, flow, actor):
+            continue
+        try:
+            run(db, connection, flow, actor)
+            advanced += 1
+        except Exception as exc:  # noqa: BLE001 - one workflow must not stop the others
+            log.warning("M365 workflow %s could not continue: %s", flow.id, exc)
+            db.rollback()
+            flow = db.get(M365Workflow, flow.id)
+            if flow is not None and flow.status == "running":
+                flow.status = "partial"
+                db.commit()
+    return advanced
 
 
 # --- Temporary admin expiry ---------------------------------------------------------------------------------------

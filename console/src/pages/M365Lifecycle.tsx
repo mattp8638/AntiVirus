@@ -3,10 +3,12 @@ import { useState } from "react";
 import { api, fmtTime } from "../api";
 import { useApp } from "../app-context";
 import { safeArray } from "../data-shapes";
-import { ErrorNote, Modal, Pill, Table, useAction, useListData } from "../components/ui";
+import { ErrorNote, Modal, Pill, Table, useAction, useData, useListData } from "../components/ui";
 
 const KIND: Record<string, string> = { offboard: "Offboarding", onboard: "New starter", bulk_create: "Bulk import" };
-const STEP_TONE: Record<string, string> = { done: "good", skipped: "muted", pending: "warn", running: "blue", failed: "bad", unknown: "bad" };
+const STEP_TONE: Record<string, string> = { done: "good", skipped: "muted", pending: "warn", running: "blue", waiting: "blue", failed: "bad", unknown: "bad" };
+const WHERE: Record<string, string> = { ad: "Active Directory", m365: "Microsoft 365", fenrir: "Fenrir" };
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const OFFBOARD_DEFAULTS = { blockSignIn: true, revokeSessions: true, resetPassword: true, removeMfa: true, outOfOffice: false, outOfOfficeMessage: "",
   removeGroups: true, removeRoles: true, removeLicences: false, markContact: true, openTicket: true };
 const OFFBOARD_STEPS: [string, string][] = [["blockSignIn", "Block sign-in"], ["revokeSessions", "Sign out everywhere"], ["resetPassword", "Reset the password to a random one"],
@@ -73,7 +75,13 @@ export function M365Lifecycle({ connection }: { connection: any }) {
   const [profile, setProfile] = useState<Record<string, string>>({ usageLocation: "GB" });
   const [extras, setExtras] = useState<{ managerId: string; skuIds: string[]; groupIds: string[]; addContact: boolean; openTicket: boolean }>({ managerId: "", skuIds: [], groupIds: [], addContact: true, openTicket: true });
   const [csv, setCsv] = useState(""), [flow, setFlow] = useState<any>(null), [confirmed, setConfirmed] = useState(false);
-  const [secrets, setSecrets] = useState<any[]>([]), [running, setRunning] = useState(false);
+  const [secrets, setSecrets] = useState<any[]>([]), [running, setRunning] = useState(false), [waiting, setWaiting] = useState("");
+  const { data: directory, reload: reloadDirectory } = useData<any>(form ? base + "/directory" : null);
+  const [createIn, setCreateIn] = useState<"cloud" | "ad">("cloud");
+  const [ad, setAd] = useState<{ sam: string; ou: string; groups: string[] }>({ sam: "", ou: "", groups: [] });
+  const loadDirectory = async () => { if (await run(() => api(base + "/directory/refresh", { method: "POST" }), "Asked the domain controller for its OUs and groups")) {
+    for (let i = 0; i < 15; i++) { await sleep(2000); const d = await api<any>(base + "/directory"); if (d.options && !d.optionsCommandId) break; }
+    reloadDirectory(); } };
   if (!can("m365_admin")) return <p className="muted">Onboarding and offboarding need the Microsoft 365 administration permission.</p>;
   const parsed = form === "bulk" ? parseCsv(csv) : { rows: [], errors: [] };
   const simpleGroups = (groups || []).filter((g: any) => !g.isAssignableToRole && !g.onPremisesSyncEnabled && !safeArray<string>(g.groupTypes).includes("DynamicMembership") && (!g.mailEnabled || safeArray<string>(g.groupTypes).includes("Unified")));
@@ -81,7 +89,8 @@ export function M365Lifecycle({ connection }: { connection: any }) {
   const plan = async () => {
     let body: any;
     if (form === "offboard") body = { kind: "offboard", targetId: target, options: off };
-    else if (form === "onboard") body = { kind: "onboard", options: { profile: { ...profile, mailNickname: profile.mailNickname || String(profile.userPrincipalName || "").split("@")[0] }, ...extras, managerId: extras.managerId || undefined } };
+    else if (form === "onboard") body = { kind: "onboard", options: { profile: { ...profile, mailNickname: profile.mailNickname || String(profile.userPrincipalName || "").split("@")[0] }, ...extras, managerId: extras.managerId || undefined,
+      ...(createIn === "ad" ? { createIn: "ad", ad: { sam: ad.sam || String(profile.userPrincipalName || "").split("@")[0].slice(0, 20), ou: ad.ou, groups: ad.groups } } : {}) } };
     else body = { kind: "bulk_create", options: { rows: parsed.rows, skuIds: extras.skuIds, groupIds: extras.groupIds } };
     const result = await run(() => api<any>(base + "/workflows", { body }), "Plan ready for review");
     if (result) { setForm(""); setFlow(result); setConfirmed(false); setSecrets([]); reload(); }
@@ -90,12 +99,17 @@ export function M365Lifecycle({ connection }: { connection: any }) {
     setRunning(true);
     let current = flow, made: any[] = [];
     try {
-      for (let i = 0; i < 100; i++) {
+      const started = Date.now();
+      for (let i = 0; i < 400; i++) {
         const out = await run(() => api<any>(`m365/workflows/${current.id}/run`, { body: { confirmed: true } }));
         if (!out) break;
         current = out.workflow; made = [...made, ...safeArray<any>(out.secrets)];
-        setFlow(current); setSecrets(made);
+        setFlow(current); setSecrets(made); setWaiting(out.waiting || "");
         if (!out.more) break;
+        if (out.waiting) {
+          if (Date.now() - started > 4 * 60 * 1000) { setWaiting(out.waiting + " — this carries on by itself; you can close this window and check History later."); break; }
+          await sleep(3000);
+        }
       }
     } finally { setRunning(false); setConfirmed(false); reload(); }
   };
@@ -103,7 +117,7 @@ export function M365Lifecycle({ connection }: { connection: any }) {
     const result = await run(() => api<any>(`m365/workflows/${flow.id}/steps/${index}/resolve`, { body: { outcome } }));
     if (result) { setFlow(result); reload(); }
   };
-  const runnable = flow && ["prepared", "partial"].includes(flow.status) && safeArray<any>(flow.steps).some((s: any) => ["pending", "failed"].includes(s.status));
+  const runnable = flow && ["prepared", "partial"].includes(flow.status) && safeArray<any>(flow.steps).some((s: any) => ["pending", "failed", "waiting"].includes(s.status));
 
   return <section>
     <p>Each one is planned first: Fenrir reads the tenant and lists every change. Nothing changes until you confirm. If a step fails, the rest still run
@@ -125,6 +139,19 @@ export function M365Lifecycle({ connection }: { connection: any }) {
       <label className="field">User<select value={target} onChange={(e) => setTarget(e.target.value)}><option value="">Choose…</option>
         {(users || []).filter((u: any) => u.userType === "Member" && `${u.displayName} ${u.userPrincipalName}`.toLowerCase().includes(find.toLowerCase()))
           .map((u: any) => <option key={u.id} value={u.id}>{displayValue(u.displayName)} ({displayValue(u.userPrincipalName)})</option>)}</select></label>
+      {(() => { const person = (users || []).find((u: any) => u.id === target); return person?.onPremisesSyncEnabled ? <div className="card" style={{ borderColor: "#93c5fd", margin: "8px 0" }}>
+        <b>Synced from Active Directory ({displayValue(person.onPremisesSamAccountName)}).</b>
+        {directory?.controller ? <p className="small">Fenrir disables the account, sets a random password and removes its AD groups on <b>{displayValue(directory.controller.hostname)}</b>{directory.controller.online ? "" : " (offline now: those steps wait for it)"},
+          then {directory.syncServer ? <>starts an Entra Connect sync on <b>{displayValue(directory.syncServer.hostname)}</b></> : "Entra Connect syncs within 30 minutes"}. The Microsoft 365 steps follow.</p>
+          : <p className="small" style={{ color: "#fcd34d" }}>No domain controller with the Fenrir agent is known for this customer, so disable the account and reset its password in Active Directory yourself. The Microsoft 365 steps still run.</p>}
+        {directory?.controller && <>
+          <label className="field">Move the account to (optional)<select value={off.adMoveOu || ""} onChange={(e) => setOff({ ...off, adMoveOu: e.target.value })}>
+            <option value="">Leave it where it is</option>
+            {safeArray<any>(directory?.options?.ous).map((o: any) => <option key={o.dn} value={o.dn}>{displayValue(o.name)} — {displayValue(o.dn)}</option>)}</select>
+            {!directory?.options && <span className="small"><button className="link" onClick={loadDirectory}>Load the OUs from the domain controller</button></span>}</label>
+          <label style={{ display: "block" }}><input type="checkbox" checked={!!off.hideFromAddressBook} onChange={(e) => setOff({ ...off, hideFromAddressBook: e.target.checked })} /> Hide from the address book (where AD has Exchange attributes)</label>
+        </>}
+      </div> : null; })()}
       {OFFBOARD_STEPS.map(([k, l]) => <label key={k} style={{ display: "block" }}><input type="checkbox" checked={!!off[k]} onChange={(e) => setOff({ ...off, [k]: e.target.checked })} /> {l}</label>)}
       {off.outOfOffice && <label className="field">Out-of-office message<textarea rows={3} value={off.outOfOfficeMessage} onChange={(e) => setOff({ ...off, outOfOfficeMessage: e.target.value })} placeholder="Jo has left Acme. Please contact sales@acme.example." /></label>}
       <p className="small muted">Coming with the Exchange batch: convert the mailbox to shared, forward mail, give someone access, hide from the address book.</p>
@@ -132,6 +159,25 @@ export function M365Lifecycle({ connection }: { connection: any }) {
     </Modal>}
 
     {form === "onboard" && <Modal title="New starter" onClose={() => setForm("")} wide>
+      {directory?.available && <div className="card" style={{ marginBottom: 10 }}>
+        <b className="small">Where the account lives</b>
+        <label style={{ display: "block" }}><input type="radio" checked={createIn === "cloud"} onChange={() => setCreateIn("cloud")} /> Microsoft 365 only (cloud account)</label>
+        <label style={{ display: "block" }}><input type="radio" checked={createIn === "ad"} onChange={() => setCreateIn("ad")} /> Active Directory, synced to Microsoft 365 by Entra Connect
+          <span className="small muted"> — created on {displayValue(directory.controller?.hostname)}{directory.syncServer ? `, synced from ${directory.syncServer.hostname}` : ""}</span></label>
+        {createIn === "ad" && <>
+          {!directory.options && <p className="small">Fenrir needs this domain's OUs and groups. <button className="small" disabled={busy} onClick={loadDirectory}>Load them from the domain controller</button></p>}
+          {directory.options && <p className="small muted">Sign-in suffixes in this directory: {displayValue(safeArray<string>(directory.options.upnSuffixes).join(", "))}</p>}
+          <div className="form-grid">
+            <label className="field">Logon name (sAMAccountName)<input value={ad.sam} maxLength={20} onChange={(e) => setAd({ ...ad, sam: e.target.value })} placeholder={String(profile.userPrincipalName || "").split("@")[0].slice(0, 20) || "e.g. nnew"} /></label>
+            <label className="field">Organisational unit<select value={ad.ou} onChange={(e) => setAd({ ...ad, ou: e.target.value })}>
+              <option value="">{directory.options?.usersContainer ? `Default (${directory.options.usersContainer})` : "Default Users container"}</option>
+              {safeArray<any>(directory.options?.ous).map((o: any) => <option key={o.dn} value={o.dn}>{displayValue(o.name)} — {displayValue(o.dn)}</option>)}</select></label>
+          </div>
+          {safeArray<any>(directory.options?.groups).length > 0 && <><b className="small">Active Directory groups</b>
+            <Picker items={safeArray<any>(directory.options.groups).map((g: any) => ({ ...g, id: g.dn }))} chosen={ad.groups} onChange={(groups) => setAd({ ...ad, groups })} label={(g) => `${g.name} (${g.category})`} /></>}
+          <p className="small muted">The account is created in AD with a temporary password Fenrir shows once, Entra Connect brings it into Microsoft 365, then the licences and Microsoft 365 groups below are applied. The run carries on by itself while it waits for the sync.</p>
+        </>}
+      </div>}
       <div className="form-grid">{USER_FIELDS.map(([k, l]) => <label className="field" key={k}>{l}<input value={profile[k] || ""} onChange={(e) => setProfile({ ...profile, [k]: k === "usageLocation" ? e.target.value.toUpperCase() : e.target.value })} placeholder={k === "mailNickname" ? "Defaults to the part before @" : undefined} /></label>)}</div>
       <label className="field">Manager<select value={extras.managerId} onChange={(e) => setExtras({ ...extras, managerId: e.target.value })}><option value="">None</option>
         {(users || []).filter((u: any) => u.userType === "Member").map((u: any) => <option key={u.id} value={u.id}>{displayValue(u.displayName)} ({displayValue(u.userPrincipalName)})</option>)}</select></label>
@@ -161,7 +207,7 @@ export function M365Lifecycle({ connection }: { connection: any }) {
     {flow && <Modal title={`${KIND[flow.kind] || flow.kind}: ${flow.targetName}`} onClose={() => { if (!secrets.length || window.confirm("Close? The passwords are not shown again.")) { setFlow(null); setSecrets([]); } }} wide>
       <p><b>Tenant:</b> {displayValue(connection.name)} · <b>Status:</b> <Pill value={flow.status} /> · planned by {displayValue(flow.requestedBy)} {fmtTime(flow.createdAt)}</p>
       <Table rows={safeArray<any>(flow.steps).map((s: any, i: number) => ({ ...s, i }))} columns={[
-        { key: "title", label: "Step", render: (s: any) => <><b>{displayValue(s.title)}</b><div className="small muted">{displayValue(s.detail)}</div>{s.warning && <div className="small" style={{ color: "#fcd34d" }}>{displayValue(s.warning)}</div>}</> },
+        { key: "title", label: "Step", render: (s: any) => <><b>{displayValue(s.title)}</b> {s.where && <Pill value={WHERE[s.where] || s.where} tone={s.where === "ad" ? "blue" : "muted"} />}<div className="small muted">{displayValue(s.detail)}</div>{s.warning && <div className="small" style={{ color: "#fcd34d" }}>{displayValue(s.warning)}</div>}</> },
         { key: "status", label: "Status", render: (s: any) => <Pill value={s.status} tone={STEP_TONE[s.status]} /> },
         { key: "result", label: "Outcome", render: (s: any) => <span className="small">{displayValue(s.result)}</span> },
         { key: "actions", label: "", render: (s: any) => ["failed", "unknown"].includes(s.status) && flow.status !== "running" ? <span className="row" style={{ gap: 4 }}>
@@ -170,9 +216,10 @@ export function M365Lifecycle({ connection }: { connection: any }) {
           <button className="small" onClick={() => resolve(s.i, "skip")}>Skip</button></span> : null }]} />
       {secrets.length > 0 && <div className="card" style={{ borderColor: "#fcd34d", marginTop: 12 }}>
         <p><b>Temporary passwords</b> (shown once; Fenrir does not keep them). They must change them at first sign-in.</p>
-        <Table rows={secrets.map((s) => ({ ...s, id: s.userPrincipalName }))} columns={[{ key: "displayName", label: "Name" }, { key: "userPrincipalName", label: "Sign-in" }, { key: "password", label: "Password", render: (s: any) => <span className="mono">{s.password}</span> }]} />
+        <Table rows={secrets.map((s) => ({ ...s, id: s.userPrincipalName }))} columns={[{ key: "displayName", label: "Name" }, { key: "userPrincipalName", label: "Sign-in" }, { key: "where", label: "Account in", render: (s: any) => s.where || "Microsoft 365" }, { key: "password", label: "Password", render: (s: any) => <span className="mono">{s.password}</span> }]} />
         <button onClick={() => download("new-users.csv", ["displayName,userPrincipalName,password", ...secrets.map((s) => [s.displayName, s.userPrincipalName, s.password].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","))].join("\n"))}>Download as CSV</button>
       </div>}
+      {waiting && <p className="small" style={{ color: "#93c5fd" }}>{displayValue(waiting)}</p>}
       {flow.ticketId && <p className="small">Recorded on a ticket (see Service desk).</p>}
       {runnable && <>
         {flow.status === "prepared" && <p className="small">This changes the customer's tenant. The plan must be run within 30 minutes; after that, plan it again.</p>}

@@ -4,6 +4,7 @@
 #include "TemporaryAdmin.h"
 #include "CrashReporter.h"
 #include "SystemProfile.h"
+#include "ActiveDirectoryOps.h"
 #include "ExtendedPolicy.h"
 #include "FirewallPolicy.h"
 #include "AmtWsman.h"
@@ -2112,6 +2113,28 @@ std::wstring AgentService::ExecuteCommand(const RemoteCommand& command) {
     credential.tlsInsecure = details->Get("tlsInsecure") && details->Get("tlsInsecure")->Bool().value_or(false);
     const auto result = RunAmtWsman(WideToUtf8(command.payloadJson), credential);
     SecureZeroMemory(credential.password.data(), credential.password.size() * sizeof(wchar_t));
+    return Utf8ToWide(result);
+  }
+  if (command.type == L"ad.directory") {
+    // Hybrid identity: one allowlisted Active Directory operation (or an Entra Connect delta sync) on this server.
+    std::wstring secret;
+    const auto request = json::Parse(WideToUtf8(command.payloadJson));
+    if (request && request->IsObject() && request->Get("secret") && request->Get("secret")->Bool().value_or(false)) {
+      const auto released = json::Parse(controlPlaneClient_->FetchCommandSecret(IdentitySnapshot(), command.commandId));
+      if (!released || !released->IsObject() || !released->Get("secret")) {
+        throw std::runtime_error("The one-time secret for this Active Directory change could not be read");
+      }
+      secret = Utf8ToWide(released->Get("secret")->String().value_or(""));
+    }
+    const auto workRoot = config_.runtimeDatabasePath.parent_path() / L"ad";
+    std::string result;
+    try {
+      result = RunActiveDirectoryOperation(WideToUtf8(command.payloadJson), secret, workRoot);
+    } catch (...) {
+      SecureZeroMemory(secret.data(), secret.size() * sizeof(wchar_t));
+      throw;
+    }
+    SecureZeroMemory(secret.data(), secret.size() * sizeof(wchar_t));
     return Utf8ToWide(result);
   }
   if (command.type == L"amsi.telemetry.submit") {
