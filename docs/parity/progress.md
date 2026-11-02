@@ -10,8 +10,8 @@ Baseline of the review: `main` at `790e364`. Work branch: `claude/jolly-goodall-
 |---|---|
 | verified | 6 (FIX-01 to FIX-05, FIX-08) |
 | implemented-unverified | 10 (FIX-07, AGT-04, CORE-03 and 7 requirements the brief marked U) |
-| partial | 96 |
-| missing | 65 |
+| partial | 101 |
+| missing | 60 |
 | externally-blocked | 1 (FIX-06) |
 
 Overall parity: **not passed**. MVP: **not yet declared**.
@@ -44,9 +44,30 @@ Overall parity: **not passed**. MVP: **not yet declared**.
 | CORE-15 (approvals) | (this batch) | Optional two-person approval bound to the exact request and its devices; `test_approvals.py`. |
 | CI | `b5cf672` | Removed the placeholder signing files that the merge brought back. [Run 78](https://github.com/mattp8638/AntiVirus/actions/runs/40649462515) passed, which also verifies FIX-08 in CI. |
 
+## Microsoft 365 phase (owner request, 2026-11-02)
+
+Goal: one place for Microsoft 365 administration, matching what MSPs use CIPP and AdminDroid for, joined up with Fenrir's PSA, CRM, SOC and
+GRC. Delivered in batches; one PR each.
+
+**Exit requirement for every batch:** Claude provides step-by-step test instructions (`docs/M365_TEST_PLAN.md`) and the owner tests
+them on their own tenant. A batch is not done until the owner reports the results and any failures are fixed. Simulated-tenant tests
+are required but do not count as the exit.
+
+| Batch | Scope | State |
+|---|---|---|
+| 1 | Tenant workspace: cross-tenant overview, per-tenant workspace (organisation, domains, admins, service health, inactive licensed users), per-feature permission check and Update permissions, background sync, sign-in and audit log store (730 days, search, CSV export) | Built, mock-tested; **awaiting owner test** (AT-35) |
+| 2 | Identity: password reset, MFA reset, Temporary Access Pass, temporary admin roles with automatic removal, manager, guests, new groups; resumable new-starter, offboarding and bulk CSV import with PSA ticket and CRM contact | Built, mock-tested; **awaiting owner test** (AT-35) |
+| 3 | Exchange: mailboxes, shared mailboxes, permissions, forwarding, out-of-office, aliases, distribution lists, mail rules, quarantine, message trace; mailbox steps in offboarding | Planned |
+| 4 | Security: Conditional Access templates and named locations, compromised-account check, SPF/DKIM/DMARC check, alert rules on audit events feeding the SOC | Planned |
+| 5 | Intune: device actions, BitLocker and LAPS keys, app deployment, Autopilot | Planned |
+| 6 | Standards: from 4 to about 60, templates, tenant groups, drift and exceptions | Planned |
+| 7 | Reports (AdminDroid): inactive users, licence waste, external sharing, mailbox sizes, Teams/SharePoint usage, scheduled email reports | Planned |
+| 8 | Teams, SharePoint and OneDrive | Planned |
+
 ## In progress
 
 - Phase 1 (CORE and AGT).
+- Microsoft 365 phase, batches 1 and 2: awaiting the owner's test on their tenant.
 
 ## Externally blocked
 

@@ -29,7 +29,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import audit, crypto, m365
+from . import audit, crypto, m365, m365_permissions
 from .models import M365Connection, M365Partner, Tenant, utcnow
 
 LOGIN = "https://login.microsoftonline.com"
@@ -449,11 +449,7 @@ PARTNER_CENTER_SCOPE = "https://api.partnercenter.microsoft.com/user_impersonati
 GRAPH_APP_ID = "00000003-0000-0000-c000-000000000000"
 # Delegated Graph permissions consented in each customer tenant (Partner Center application consent). What a technician
 # can actually do is still limited by the GDAP roles of the groups they are in.
-CUSTOMER_GRAPH_SCOPES = ("Directory.Read.All", "Organization.Read.All", "Domain.Read.All", "User.ReadWrite.All", "Group.ReadWrite.All",
-                         "AuditLog.Read.All", "Reports.Read.All", "UserAuthenticationMethod.Read.All", "SecurityEvents.Read.All",
-                         "Policy.Read.All", "Policy.ReadWrite.ConditionalAccess", "Application.Read.All",
-                         "DeviceManagementConfiguration.ReadWrite.All", "DeviceManagementManagedDevices.Read.All",
-                         "SecurityAlert.Read.All")
+CUSTOMER_GRAPH_SCOPES = tuple(m365_permissions.DELEGATED_PERMISSIONS)
 REQUIRED_PARTNER_SCOPES = PARTNER_GRAPH_SCOPES
 IMPORT_EVERY = timedelta(hours=6)
 
@@ -679,6 +675,34 @@ def consent_app(row: M365Partner, directory_id: str, client: httpx.Client | None
     if response.status_code == 409:
         return "already"
     raise PartnerError(f"Partner Center refused the app consent: {_error(response)}")
+
+
+def refresh_consent(row: M365Partner, directory_id: str, client: httpx.Client | None = None) -> str:
+    """Bring a customer's consent up to Fenrir's current permission list. Partner Center cannot change an existing
+    consent, so an existing one is removed and created again with the full list (what CIPP does too). Returns consented."""
+    own = client is None
+    client = client or http_client()
+    try:
+        if consent_app(row, directory_id, client=client) == "consented":
+            return "consented"
+        token = access_token_for(row, client=client, scope=PARTNER_CENTER_SCOPE)
+        response = client.delete(f"{PARTNER_CENTER}/v1/customers/{UUID(directory_id)}/applicationconsents/{UUID(row.client_id)}",
+                                 headers={"Authorization": "Bearer " + token, "Accept": "application/json"})
+        if response.status_code not in (200, 204, 404):
+            raise PartnerError(f"Partner Center refused to replace the app consent: {_error(response)}")
+        try:
+            again = consent_app(row, directory_id, client=client)
+        except (PartnerError, httpx.HTTPError) as exc:
+            # The old consent is gone: until this succeeds Fenrir cannot reach this customer through GDAP.
+            raise PartnerError("Fenrir removed the old consent, but Partner Center did not accept the new one, so this customer is "
+                               "unreachable until it does. Press Update permissions again in a minute. "
+                               f"Partner Center said: {str(exc)[:200]}") from None
+        if again != "consented":
+            raise PartnerError("Partner Center still reports the old consent. Try again in a few minutes.")
+        return "consented"
+    finally:
+        if own:
+            client.close()
 
 
 def import_customers(db: Session, row: M365Partner, actor: str, directory_ids: list[str] | None = None,

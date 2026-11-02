@@ -35,6 +35,8 @@ from .routers import approvals as approvals_router
 from .routers import exclusions as exclusions_router
 from .routers import exposure_intel as exposure_intel_router
 from .routers import m365_partner as m365_partner_router
+from .routers import m365_workspace as m365_workspace_router
+from .routers import m365_lifecycle as m365_lifecycle_router
 from .routers import condition_packages as condition_packages_router
 from .routers import triage as triage_router
 from .routers import clients as clients_router
@@ -210,7 +212,8 @@ def _purge_telemetry(db, settings: Settings) -> dict:
 
 def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
     """Hourly jobs, in order."""
-    from . import autodoc, billing_sync, client360, darkweb, defender, grc_automation, m365_partner, m365_standards, tprm, web_profile
+    from . import (autodoc, billing_sync, client360, darkweb, defender, grc_automation, m365_partner, m365_standards, m365_workspace,
+                   tprm, web_profile)
 
     jobs: list[tuple[str, object]] = [("telemetry.retention", lambda db: _purge_telemetry(db, settings))]
     if settings.feed_sync_enabled:
@@ -219,6 +222,7 @@ def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
         jobs.append(("intel.feed", lambda db: log.info("feed sync: %s", sync_feed(db, settings.feed_url, settings.feed_token))))
     jobs += [("m365.partner", m365_partner.tick), ("documentation.auto", autodoc.tick), ("tprm", tprm.tick),
              ("grc.automation", grc_automation.tick), ("darkweb", darkweb.tick), ("m365.standards", m365_standards.tick),
+             ("m365.workspace", m365_workspace.tick),
              ("billing.sync", billing_sync.tick), ("clients.health", client360.tick),
              ("defender", defender.tick), ("web.profiles", web_profile.tick)]
     if settings.dns_blocklists_enabled:
@@ -284,7 +288,7 @@ def _poll_msp_mailbox(db) -> None:
 
 def _scheduled_jobs() -> list[tuple[str, int, object]]:
     """(name, every N passes of 30 seconds, job), in the order they run within a pass."""
-    from . import condition_remediation, network, remediation, topology
+    from . import condition_remediation, m365_lifecycle, network, remediation, topology
     from .routers import artifacts as artifact_store
     from .routers import backup as backup_health
 
@@ -292,6 +296,7 @@ def _scheduled_jobs() -> list[tuple[str, int, object]]:
         ("rmm", 1, rmm.tick),
         ("psa.timed-workflows", 1, psa.timed_workflows),
         ("remote.expire-sessions", 1, remote.expire_sessions),
+        ("m365.temp-admin-expiry", 2, m365_lifecycle.expire_temp_admins),  # every minute
         ("events.outbox", 1, events.process),  # after the jobs above, so their events go out in the same pass
         ("network", 1, network.tick),
         ("psa.mailbox", 4, _poll_msp_mailbox),  # every two minutes
@@ -484,7 +489,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.include_router(module.router)
     for module in (m365_admin_router, m365_router, network_router, grc_router, backup_router, soc_workflows, ad_router, grc_programme_router,
                    rollouts_router, apikeys_router, roles_router, approvals_router, exclusions_router,
-                   exposure_intel_router, m365_partner_router, condition_packages_router, triage_router, clients_router, search_router, defender_router, mobile_apps_router):
+                   exposure_intel_router, m365_partner_router, m365_workspace_router, m365_lifecycle_router, condition_packages_router, triage_router, clients_router, search_router, defender_router, mobile_apps_router):
         app.include_router(module.router)
     app.include_router(documentation_router.router)
     app.include_router(m365_router.oauth)

@@ -48,7 +48,17 @@ def synchronize(connection):
             "managedDevices": "/deviceManagement/managedDevices?$select=id,deviceName,serialNumber,operatingSystem,userPrincipalName,"
                               "complianceState,lastSyncDateTime",
             # Domain.Read.All
-            "domains": "/domains?$select=id,isVerified,isDefault",
+            "domains": "/domains?$select=id,isVerified,isDefault,authenticationType,supportedServices",
+            # Organization.Read.All: the tenant's own name, country and directory sync state
+            "organization": "/organization?$select=id,displayName,countryLetterCode,createdDateTime,onPremisesSyncEnabled,"
+                            "onPremisesLastSyncDateTime,verifiedDomains",
+            # RoleManagement.Read.Directory (or Directory.Read.All): who holds which admin role
+            "directoryRoles": "/directoryRoles?$select=id,displayName,roleTemplateId&$expand=members",
+            # ServiceHealth.Read.All: open Microsoft incidents and advisories
+            "serviceIssues": "/admin/serviceAnnouncement/issues?$filter=isResolved%20eq%20false",
+            # AuditLog.Read.All with Entra ID P1/P2: last sign-in per user (summarised below, not kept per user)
+            "signInActivity": "/users?$select=id,userPrincipalName,accountEnabled,assignedLicenses,userType,createdDateTime,"
+                              "signInActivity&$top=500",
             # SecurityAlert.Read.All (Defender for Endpoint or Business): open alerts, which become Fenrir alerts
             "defenderAlerts": "/security/alerts_v2?$filter=serviceSource%20eq%20'microsoftDefenderForEndpoint'%20and%20status%20ne%20'resolved'"
                               "&$top=200",
@@ -60,8 +70,86 @@ def synchronize(connection):
                 if exc.response.status_code not in (400, 401, 403, 404):
                     raise
                 snapshot[key] = None
+        snapshot["inactiveUsers"] = inactive_users(snapshot.pop("signInActivity", None))
+        snapshot["admins"] = admins(snapshot.pop("directoryRoles", None))
+        snapshot["serviceIssues"] = service_issues(snapshot.get("serviceIssues"))
+        snapshot["permissions"] = permission_check(token)
         snapshot["insights"] = insights(snapshot)
         return snapshot
+
+
+def permission_check(token: str) -> dict:
+    """What this connection's own token allows, feature by feature (m365_permissions.py)."""
+    from datetime import datetime, timezone
+
+    from . import m365_permissions
+
+    mode, granted = m365_permissions.granted_from_token(token)
+    return {"mode": mode, "granted": granted, "features": m365_permissions.report(mode, granted),
+            "checkedAt": datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + "Z"}
+
+
+INACTIVE_DAYS = 90
+
+
+def inactive_users(rows: list | None) -> dict | None:
+    """Enabled, licensed members with no sign-in for 90 days (or never, for accounts older than that): the licences an
+    MSP can usually reclaim. None when Microsoft would not say (no P1/P2 or no permission)."""
+    from datetime import datetime, timedelta, timezone
+
+    if rows is None:
+        return None
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=INACTIVE_DAYS)
+
+    def when(value):
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00")) if value else None
+        except ValueError:
+            return None
+
+    found = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("accountEnabled") is False or not row.get("assignedLicenses"):
+            continue
+        if row.get("userType") == "Guest":
+            continue
+        activity = row.get("signInActivity") or {}
+        last = max([d for d in (when(activity.get("lastSignInDateTime")), when(activity.get("lastNonInteractiveSignInDateTime"))) if d],
+                   default=None)
+        created = when(row.get("createdDateTime"))
+        if (last and last < cutoff) or (last is None and created and created < cutoff):
+            found.append({"userPrincipalName": row.get("userPrincipalName") or row.get("id") or "",
+                          "lastSignIn": last.isoformat() if last else None,
+                          "days": (now - last).days if last else None, "licences": len(row.get("assignedLicenses") or [])})
+    found.sort(key=lambda r: (r["days"] is not None, -(r["days"] or 0)))
+    return {"days": INACTIVE_DAYS, "count": len(found), "users": found[:500]}
+
+
+def admins(roles: list | None) -> list | None:
+    """Admin role holders: [{role, roleTemplateId, members: [{id, displayName, userPrincipalName, type}]}]."""
+    if roles is None:
+        return None
+    out = []
+    for role in roles:
+        if not isinstance(role, dict):
+            continue
+        members = [{"id": m.get("id"), "displayName": m.get("displayName") or "", "userPrincipalName": m.get("userPrincipalName") or "",
+                    "type": str(m.get("@odata.type") or "").rsplit(".", 1)[-1]} for m in role.get("members") or [] if isinstance(m, dict)]
+        if members:
+            out.append({"role": role.get("displayName") or "", "roleTemplateId": role.get("roleTemplateId") or "", "members": members})
+    out.sort(key=lambda r: (r["roleTemplateId"] != GLOBAL_ADMIN, r["role"]))
+    return out
+
+
+GLOBAL_ADMIN = "62e90394-69f5-4237-9190-012177145e10"
+
+
+def service_issues(rows: list | None) -> list | None:
+    if rows is None:
+        return None
+    keep = ("id", "title", "service", "status", "classification", "feature", "startDateTime", "lastModifiedDateTime", "impactDescription")
+    return [{k: row.get(k) for k in keep} for row in rows if isinstance(row, dict)][:100]
 
 
 def insights(snapshot: dict) -> dict:
@@ -88,8 +176,20 @@ def insights(snapshot: dict) -> dict:
     if score and score.get("maxScore"):
         secure = {"current": score.get("currentScore"), "max": score.get("maxScore"),
                   "percent": round(100 * float(score.get("currentScore") or 0) / float(score["maxScore"]))}
+    admin_roles = snapshot.get("admins")
+    admin_info = None
+    if isinstance(admin_roles, list):
+        people = {m.get("id") for r in admin_roles for m in r.get("members") or []}
+        admin_info = {"count": len(people),
+                      "globalAdmins": sorted(m.get("userPrincipalName") or m.get("displayName") or "" for r in admin_roles
+                                             if r.get("roleTemplateId") == GLOBAL_ADMIN for m in r.get("members") or [])[:50]}
+    issues = snapshot.get("serviceIssues")
+    inactive = snapshot.get("inactiveUsers")
     return {"users": len(users), "enabledUsers": len(enabled), "licencesPurchased": purchased, "licencesAssigned": assigned,
             "licencesUnused": max(purchased - assigned, 0), "disabledButLicensed": disabled_licensed[:100],
+            "guests": sum(1 for u in users if u.get("userType") == "Guest"),
+            "admins": admin_info, "serviceIssues": len(issues) if isinstance(issues, list) else None,
+            "inactiveLicensed": inactive.get("count") if isinstance(inactive, dict) else None,
             "mfa": mfa, "secureScore": secure}
 
 

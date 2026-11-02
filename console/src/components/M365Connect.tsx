@@ -8,11 +8,13 @@ import { Modal, TenantSelect, useAction, useData } from "./ui";
 // "Sign in with Microsoft" (needs the platform's multi-tenant app) redirects to Microsoft and back.
 // "Sign in with a code" works with no setup: Fenrir creates its own app registration in the customer's tenant.
 
-export function M365Connect({ onClose, onManual }: { onClose: () => void; onManual: () => void }) {
+export function M365Connect({ onClose, onManual, customerId, presetName, reconnect }: {
+  onClose: () => void; onManual?: () => void; customerId?: string; presetName?: string; reconnect?: boolean;
+}) {
   const { tenantId, toast } = useApp();
   const { data: options } = useData<any>("m365/signin/options");
-  const [customer, setCustomer] = useState(tenantId);
-  const [name, setName] = useState("");
+  const [customer, setCustomer] = useState(customerId || tenantId);
+  const [name, setName] = useState(presetName || "");
   const [signin, setSignin] = useState<any>(null);
   const { run, busy } = useAction();
   const timer = useRef<number | null>(null);
@@ -37,12 +39,15 @@ export function M365Connect({ onClose, onManual }: { onClose: () => void; onManu
   };
 
   return (
-    <Modal title="Connect Microsoft 365" onClose={onClose} wide>
+    <Modal title={reconnect ? "Update Microsoft 365 permissions" : "Connect Microsoft 365"} onClose={onClose} wide>
+      {!signin && reconnect && <p className="small"><b>Updating an existing connection.</b> Sign in again as a Global Administrator of the same
+        Microsoft tenant. Fenrir reuses its app there, adds the new permissions, and replaces the app's secret. Nothing else changes.</p>}
       {!signin && <>
-        <p>Sign in as a <b>Global Administrator</b> of the customer's Microsoft 365. Fenrir gets read access to users, licences, Secure Score and
-          MFA status, plus the account actions you run from here. No mail or files.</p>
-        <label className="field">Customer<TenantSelect value={customer} onChange={setCustomer} allowAll={false} /></label>
-        <label className="field">Name (optional)<input value={name} onChange={(e) => setName(e.target.value)} placeholder="Defaults to the Microsoft tenant name" /></label>
+        <p>Sign in as a <b>Global Administrator</b> of the customer's Microsoft 365. Fenrir gets read access to users, licences, Secure Score,
+          MFA status, admin roles, service health and the sign-in and audit logs, plus the user, group and role actions you run from here
+          (including out-of-office replies). It cannot read mail or files.</p>
+        {!reconnect && <label className="field">Customer<TenantSelect value={customer} onChange={setCustomer} allowAll={false} /></label>}
+        {!reconnect && <label className="field">Name (optional)<input value={name} onChange={(e) => setName(e.target.value)} placeholder="Defaults to the Microsoft tenant name" /></label>}
         <div className="grid k2" style={{ marginTop: 12 }}>
           <div className="card">
             <h3 style={{ marginTop: 0 }}>Sign in with Microsoft</h3>
@@ -63,7 +68,7 @@ export function M365Connect({ onClose, onManual }: { onClose: () => void; onManu
         <details style={{ marginTop: 12 }}><summary className="small">Permissions Fenrir asks for</summary>
           <div className="row small" style={{ flexWrap: "wrap" }}>{(options?.permissions || []).map((p: string) => <span key={p} className="chip mono">{p}</span>)}</div>
         </details>
-        <p className="small" style={{ marginTop: 12 }}>Already have an app registration? <button className="link" onClick={onManual}>Enter its details instead</button></p>
+        {onManual && <p className="small" style={{ marginTop: 12 }}>Already have an app registration? <button className="link" onClick={onManual}>Enter its details instead</button></p>}
       </>}
       {signin && signin.mode === "device" && (
         <div style={{ textAlign: "center", padding: "12px 0" }}>

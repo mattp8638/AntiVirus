@@ -1,5 +1,6 @@
 import M365 from "./pages/M365";
 import M365Partner from "./pages/M365Partner";
+import M365Tenant from "./pages/M365Tenant";
 import Network from "./pages/Network";
 import NetworkTopology from "./pages/NetworkTopology";
 import OutOfBand from "./pages/OutOfBand";
@@ -359,6 +360,7 @@ function Shell() {
             <Route path="/reports" element={<Reports />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/m365" element={<M365 />} />
+            <Route path="/m365/:connectionId" element={<M365Tenant />} />
             <Route path="/m365-partner" element={<M365Partner />} />
             <Route path="/network" element={<Network />} />
             <Route path="/network-topology" element={<NetworkTopology />} />

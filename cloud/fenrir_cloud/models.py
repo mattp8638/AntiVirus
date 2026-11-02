@@ -1646,6 +1646,8 @@ class M365Connection(Base):
     consented_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     secret_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     granted_permissions: Mapped[list | None] = mapped_column(JSON, nullable=True, default=list)
+    # Sign-in and audit log collection (m365_workspace.py): {"signin": {cursor, lastRunAt, available, error}, "audit": {...}}
+    log_state: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=dict)
     __table_args__ = (UniqueConstraint("tenant_id", "directory_id", name="uq_m365_tenant_directory"),)
 
 
@@ -1932,6 +1934,49 @@ class M365Action(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     __table_args__ = (UniqueConstraint("connection_id", "request_id", name="uq_m365_action_request"),)
+
+
+class M365LogEntry(Base):
+    """One Microsoft 365 sign-in or directory audit record, kept beyond Microsoft's own 7 to 30 days (m365_workspace.py)."""
+    __tablename__ = "m365_log_entries"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("mlog"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    connection_id: Mapped[str] = mapped_column(String(32), index=True)
+    kind: Mapped[str] = mapped_column(String(10))  # signin | audit
+    external_id: Mapped[str] = mapped_column(String(80))
+    at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    actor: Mapped[str] = mapped_column(String(320), default="")  # who signed in / who made the change
+    app: Mapped[str] = mapped_column(String(200), default="")  # application signed in to / service that logged it
+    ip: Mapped[str] = mapped_column(String(64), default="")
+    location: Mapped[str] = mapped_column(String(160), default="")
+    result: Mapped[str] = mapped_column(String(20), default="")  # success | failure | interrupted | ...
+    activity: Mapped[str] = mapped_column(String(200), default="")  # audit activity, or the sign-in failure reason
+    target: Mapped[str] = mapped_column(String(320), default="")
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+    __table_args__ = (UniqueConstraint("connection_id", "kind", "external_id", name="uq_m365_log_entry"),)
+
+
+class M365Workflow(Base):
+    """A reviewed multi-step Microsoft 365 job: offboarding, onboarding or a bulk user import (m365_lifecycle.py).
+
+    Each step records its own outcome, so a run can stop part-way and be resumed. A step whose outcome is unknown is
+    never run again automatically: a technician checks Microsoft and marks it done, to retry or skipped."""
+    __tablename__ = "m365_workflows"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("mwf"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    connection_id: Mapped[str] = mapped_column(String(32), index=True)
+    kind: Mapped[str] = mapped_column(String(20))  # offboard | onboard | bulk_create
+    target_id: Mapped[str] = mapped_column(String(64), default="")
+    target_name: Mapped[str] = mapped_column(String(320), default="")
+    options: Mapped[dict] = mapped_column(JSON, default=dict)
+    steps: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="prepared")  # prepared | running | completed | partial
+    requested_by: Mapped[str] = mapped_column(String(200), default="")
+    executed_by: Mapped[str] = mapped_column(String(200), default="")
+    ticket_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class AgentRollout(Base):

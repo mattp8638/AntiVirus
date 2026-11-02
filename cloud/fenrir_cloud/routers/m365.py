@@ -66,18 +66,13 @@ def sync(connection_id: str, principal: Principal = Depends(current_principal), 
     principal.require("configure")
     row = owned(db, M365Connection, connection_id, principal)
     ratelimit.check(f"m365-sync:{row.id}", 3, 300)
+    from .. import m365_workspace
+
     try:
-        snapshot = m365.synchronize(row)
-    except (httpx.HTTPError, ValueError, KeyError, crypto.VaultError):
-        # Never return provider bodies, token URLs with secrets, or raw exceptions.
-        row.status, row.last_error = "failed", "Sync failed. Check application credentials, Graph permissions and connectivity."
-        audit.record(db, principal.actor, "m365.sync_failed", row.id, row.tenant_id)
+        m365_workspace.sync_connection(db, row, principal.actor)
+    except ValueError as exc:
         db.commit()
-        raise HTTPException(502, row.last_error)
-    defender = m365.ingest_defender_alerts(db, row, snapshot.pop("defenderAlerts", None))
-    snapshot["defenderAlerts"] = defender
-    row.snapshot, row.status, row.last_error, row.synced_at = snapshot, "synced", "", utcnow()
-    audit.record(db, principal.actor, "m365.synced", row.id, row.tenant_id, users=len(snapshot["users"]), licenses=len(snapshot["licenses"]))
+        raise HTTPException(502, str(exc)) from None
     db.commit()
     return to_dict(row)
 
