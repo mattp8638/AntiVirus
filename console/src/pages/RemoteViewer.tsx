@@ -468,7 +468,7 @@ export default function RemoteViewer() {
             <button title="Paste your clipboard as keystrokes" disabled={viewOnly} onClick={sendClipboard}>Send clipboard</button>
             <select title="Monitor" value={monitor} onChange={(e) => changeScreen({ monitor: Number(e.target.value) })}>
               {(info?.monitors?.length ? info.monitors : [{ index: 0 }]).map((m: any) => (
-                <option key={m.index} value={m.index}>Screen {displayValue(m.index + 1)}{m.primary ? " (primary)" : ""}</option>
+                <option key={m.index} value={m.index}>Screen {displayValue(m.index + 1)}{m.primary ? " (primary)" : ""}{m.w && m.h ? ` · ${m.w}×${m.h}${m.scale && m.scale !== 100 ? ` at ${m.scale}%` : ""}` : ""}</option>
               ))}
               {info?.monitors?.length > 1 && String(info?.os).startsWith("windows") && <option value={-1}>All screens</option>}
             </select>

@@ -214,13 +214,60 @@ void SyncInputDesktop() {
 struct Monitor {
   RECT rect{};
   bool primary{false};
+  int scalePercent{100};
 };
+
+// Capture works in real (physical) pixels on every monitor. A "system DPI aware" process is given a scaled-down copy
+// of the screen whenever a monitor's scaling differs from the scaling Windows recorded at sign-in (scaling changed
+// without signing out, a docked laptop, mixed monitors): the viewer then shows a low-resolution desktop with
+// everything oversized. Per-monitor awareness (Windows 10 1703+) avoids that; older systems fall back step by step.
+void UsePhysicalPixels() {
+  using SetContext = BOOL(WINAPI*)(HANDLE);
+  if (const auto user32 = GetModuleHandleW(L"user32.dll")) {
+    if (const auto set = reinterpret_cast<SetContext>(GetProcAddress(user32, "SetProcessDpiAwarenessContext"))) {
+      if (set(reinterpret_cast<HANDLE>(static_cast<LONG_PTR>(-4))) || set(reinterpret_cast<HANDLE>(static_cast<LONG_PTR>(-3)))) {
+        return;  // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, then PER_MONITOR_AWARE
+      }
+    }
+  }
+  using SetAwareness = HRESULT(WINAPI*)(int);
+  if (const auto shcore = LoadLibraryW(L"shcore.dll")) {
+    if (const auto set = reinterpret_cast<SetAwareness>(GetProcAddress(shcore, "SetProcessDpiAwareness"))) {
+      if (SUCCEEDED(set(2))) return;  // PROCESS_PER_MONITOR_DPI_AWARE (Windows 8.1)
+    }
+  }
+  SetProcessDPIAware();
+}
+
+// The banner and chat windows are laid out in fixed sizes; system awareness on their thread lets Windows scale them
+// to the user's display scaling, as before.
+void UseScaledWindowsOnThisThread() {
+  using SetThreadContext = HANDLE(WINAPI*)(HANDLE);
+  if (const auto user32 = GetModuleHandleW(L"user32.dll")) {
+    if (const auto set = reinterpret_cast<SetThreadContext>(GetProcAddress(user32, "SetThreadDpiAwarenessContext"))) {
+      set(reinterpret_cast<HANDLE>(static_cast<LONG_PTR>(-2)));  // DPI_AWARENESS_CONTEXT_SYSTEM_AWARE
+    }
+  }
+}
+
+// The display scaling of a monitor in percent (100 when unknown).
+int MonitorScalePercent(HMONITOR monitor) {
+  using GetDpi = HRESULT(WINAPI*)(HMONITOR, int, UINT*, UINT*);
+  static const auto get = [] {
+    const auto shcore = LoadLibraryW(L"shcore.dll");
+    return shcore ? reinterpret_cast<GetDpi>(GetProcAddress(shcore, "GetDpiForMonitor")) : nullptr;
+  }();
+  UINT x = 96, y = 96;
+  if (get && SUCCEEDED(get(monitor, 0, &x, &y)) && x > 0) return static_cast<int>(x * 100 / 96);
+  return 100;
+}
 
 BOOL CALLBACK CollectMonitor(HMONITOR monitor, HDC, LPRECT, LPARAM data) {
   MONITORINFO info{};
   info.cbSize = sizeof(info);
   if (GetMonitorInfoW(monitor, &info)) {
-    reinterpret_cast<std::vector<Monitor>*>(data)->push_back({info.rcMonitor, (info.dwFlags & MONITORINFOF_PRIMARY) != 0});
+    reinterpret_cast<std::vector<Monitor>*>(data)->push_back({info.rcMonitor, (info.dwFlags & MONITORINFOF_PRIMARY) != 0,
+                                                             MonitorScalePercent(monitor)});
   }
   return TRUE;
 }
@@ -448,7 +495,8 @@ void Session::Info() {
   for (std::size_t i = 0; i < monitors.size(); ++i) {
     const auto& r = monitors[i].rect;
     out << (i ? "," : "") << "{\"index\":" << i << ",\"x\":" << r.left << ",\"y\":" << r.top << ",\"w\":" << (r.right - r.left)
-        << ",\"h\":" << (r.bottom - r.top) << ",\"primary\":" << (monitors[i].primary ? "true" : "false") << "}";
+        << ",\"h\":" << (r.bottom - r.top) << ",\"scale\":" << monitors[i].scalePercent
+        << ",\"primary\":" << (monitors[i].primary ? "true" : "false") << "}";
   }
   out << "]}";
   SendJson(out.str());
@@ -1282,6 +1330,7 @@ LRESULT CALLBACK BannerProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 }
 
 void UiThread(bool showBanner) {
+  UseScaledWindowsOnThisThread();
   WNDCLASSW banner{};
   banner.lpfnWndProc = BannerProc;
   banner.hInstance = GetModuleHandleW(nullptr);
@@ -1536,7 +1585,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     ExitProcess(static_cast<UINT>(RunSasSelfTest(WideToUtf8(sasSession), sasResult, WideToUtf8(sasMethod))));
   }
   if (!selfTestPath.empty()) {
-    SetProcessDPIAware();
+    UsePhysicalPixels();
     ExitProcess(static_cast<UINT>(fenrir::remote::RunBackstageSelfTest(selfTestPath)));
   }
   Options options;
@@ -1547,7 +1596,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     HelperLog("Could not read the session options file.");
     return 1;
   }
-  SetProcessDPIAware();
+  UsePhysicalPixels();
   CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   Gdiplus::GdiplusStartupInput gdiplusInput;
   ULONG_PTR gdiplusToken = 0;
