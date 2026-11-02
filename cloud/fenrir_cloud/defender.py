@@ -135,8 +135,8 @@ def script(settings: dict) -> str:
         lines.append(f"try {{ Set-MpPreference {scanning} }} catch {{ $errors += ('scanning: ' + $_.Exception.Message) }}")
         # Scheduled scans: a daily quick scan at the hour chosen; a weekly full scan on the day chosen (8 = never).
         full_day = DAYS.get(str(d.get("fullScanDay", "off")), 8)
-        schedule = (f"-ScanParameters 2 -ScanScheduleDay {full_day} -ScanScheduleTime (New-TimeSpan -Hours {int(d.get('fullScanHour', 2))})"
-                    + (f" -ScanScheduleQuickScanTime (New-TimeSpan -Hours {int(d.get('quickScanHour', 12))})"
+        schedule = (f"-ScanParameters 2 -ScanScheduleDay {full_day} -ScanScheduleTime (Get-Date -Hour {int(d.get('fullScanHour', 2))} -Minute 0 -Second 0)"
+                    + (f" -ScanScheduleQuickScanTime (Get-Date -Hour {int(d.get('quickScanHour', 12))} -Minute 0 -Second 0)"
                        if d.get("quickScanDaily", True) else ""))
         lines.append(f"try {{ Set-MpPreference {schedule} }} catch {{ $errors += ('scan schedule: ' + $_.Exception.Message) }}")
         for field, parameter in (("controlledFolders", "ControlledFolderAccessProtectedFolders"),
