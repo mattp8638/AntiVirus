@@ -1,0 +1,168 @@
+"""Microsoft 365 workspace: permission catalogue, richer sync, overview, log store (mocked Microsoft; see m365_fake.py)."""
+import httpx
+import pytest
+from datetime import timedelta
+
+from conftest import ADMIN_PASSWORD, login
+from m365_fake import FakeTenant, token
+from test_msp_modules import connection, post
+from fenrir_cloud import db as database, m365_permissions, m365_workspace, m365_partner
+from fenrir_cloud.models import M365Connection, M365LogEntry, utcnow
+
+
+@pytest.fixture
+def fake(monkeypatch):
+    tenant = FakeTenant()
+    monkeypatch.setattr(httpx, "Client", tenant.client)
+    return tenant
+
+
+def test_permission_report_reads_the_token_and_knows_supersets():
+    mode, granted = m365_permissions.granted_from_token(token(["User.ReadWrite.All", "AuditLog.Read.All", "Directory.Read.All"]))
+    assert mode == "app"
+    rows = {r["key"]: r for r in m365_permissions.report(mode, granted)}
+    # User.ReadWrite.All covers sign-in blocking, session revocation, licences and password profiles.
+    for key in ("user.signin", "user.revoke_sessions", "license.assign", "user.reset_password", "logs.signins", "sync.admins"):
+        assert rows[key]["available"], key
+    assert rows["user.tap"]["missing"] == ["UserAuthenticationMethod.ReadWrite.All"]
+    assert not rows["guest.invite"]["available"]
+
+    mode, granted = m365_permissions.granted_from_token(token(scp="Directory.Read.All User.ReadWrite.All AuditLog.Read.All"))
+    rows = {r["key"]: r for r in m365_permissions.report(mode, granted)}
+    assert mode == "delegated"
+    assert rows["user.out_of_office"]["unsupported"] and not rows["user.out_of_office"]["available"]
+    assert rows["user.revoke_sessions"]["available"]
+
+
+def test_new_permissions_reach_provisioning_and_gdap_consent():
+    from fenrir_cloud import m365_signin
+
+    for name in ("UserAuthenticationMethod.ReadWrite.All", "RoleManagement.ReadWrite.Directory", "User.Invite.All",
+                 "ServiceHealth.Read.All", "MailboxSettings.ReadWrite", "Group.ReadWrite.All"):
+        assert name in m365_signin.APP_PERMISSIONS
+    assert "MailboxSettings.ReadWrite" not in m365_partner.CUSTOMER_GRAPH_SCOPES  # only the user's own mailbox when delegated
+    assert "Directory.AccessAsUser.All" in m365_partner.CUSTOMER_GRAPH_SCOPES
+    assert len(set(m365_signin.APP_PERMISSIONS)) == len(m365_signin.APP_PERMISSIONS)
+
+
+def test_sync_adds_admins_health_inactive_users_and_permissions(client, admin, tenant, fake):
+    fake.users["00000000-0000-0000-0000-000000000010"]["signInActivity"] = {"lastSignInDateTime": "2020-01-01T00:00:00Z"}
+    row = connection(client, admin, tenant)
+    synced = post(client, admin, "m365/connections/" + row["id"] + "/sync", {})
+    snap = synced["snapshot"]
+    assert snap["admins"][0]["role"] == "Global Administrator"
+    assert snap["insights"]["admins"]["globalAdmins"] == ["max@acme.example"]
+    assert snap["serviceIssues"] == [{"id": "EX1", "title": "Mail delays", "service": "Exchange Online", "status": "serviceDegradation",
+                                      "classification": "incident", "feature": None, "startDateTime": None, "lastModifiedDateTime": None,
+                                      "impactDescription": None}]
+    assert snap["inactiveUsers"]["count"] == 1 and snap["inactiveUsers"]["users"][0]["userPrincipalName"] == "jo@acme.example"
+    assert "signInActivity" not in snap and "directoryRoles" not in snap
+    assert snap["permissions"]["mode"] == "app" and synced["grantedPermissions"]
+
+    overview = client.get("/api/console/m365/overview", headers=admin).json()
+    assert overview["totals"]["tenants"] == 1 and overview["totals"]["serviceIssues"] == 1 and overview["totals"]["inactiveLicensed"] == 1
+    assert overview["rows"][0]["customer"] == "Acme Dental" and overview["rows"][0]["permissionsMissing"] > 0
+
+    check = post(client, admin, "m365/connections/" + row["id"] + "/permissions/check", {})
+    assert {f["key"] for f in check["features"]} == set(m365_permissions.FEATURES)
+
+
+def test_logs_are_copied_once_kept_and_searchable(client, admin, tenant, fake):
+    row = connection(client, admin, tenant)
+    first = post(client, admin, "m365/connections/" + row["id"] + "/logs/collect", {})["outcome"]
+    assert first["signin"]["added"] == 7 and first["audit"]["added"] == 3
+    again = post(client, admin, "m365/connections/" + row["id"] + "/logs/collect", {})["outcome"]
+    assert again["signin"]["added"] == 0 and again["audit"]["added"] == 0  # the overlap window is deduplicated
+    base = "/api/console/m365/connections/" + row["id"] + "/logs"
+    failures = client.get(base, headers=admin, params={"kind": "signin", "result": "failure"}).json()
+    assert failures["total"] == 2 and failures["rows"][0]["activity"] == "Invalid password"
+    assert failures["rows"][0]["location"] == "Leeds, GB"
+    found = client.get(base, headers=admin, params={"kind": "audit", "q": "add member"}).json()
+    assert found["total"] == 3 and found["rows"][0]["details"]["changes"][0]["name"] == "Group.DisplayName"
+    ws = client.get("/api/console/m365/connections/" + row["id"] + "/workspace", headers=admin).json()
+    assert ws["logCounts"]["stored"] == {"signin": 7, "audit": 3} and ws["logCounts"]["signinFailures24h"] == 2
+
+    # Retention drops what is older than the setting.
+    with database.session_factory()() as db:
+        db.query(M365LogEntry).filter(M365LogEntry.kind == "audit").update({"at": utcnow() - timedelta(days=800)})
+        db.commit()
+        assert m365_workspace.purge_logs(db, 730) == 3
+        db.commit()
+
+
+def test_a_tenant_without_premium_is_marked_and_not_asked_every_hour(client, admin, tenant, fake):
+    fake.premium = False
+    row = connection(client, admin, tenant)
+    outcome = post(client, admin, "m365/connections/" + row["id"] + "/logs/collect", {})["outcome"]
+    assert outcome["signin"]["available"] is False and "P1 or P2" in outcome["signin"]["error"]
+    assert outcome["audit"]["added"] == 3
+    with database.session_factory()() as db:
+        conn = db.get(M365Connection, row["id"])
+        before = len(fake.calls("GET", "/auditLogs/signIns"))
+        assert m365_workspace.collect_logs(db, conn)["signin"].get("skipped")
+        assert len(fake.calls("GET", "/auditLogs/signIns")) == before
+
+
+def test_a_busy_tenant_catches_up_through_gaps(client, admin, tenant, fake, monkeypatch):
+    monkeypatch.setattr(m365_workspace, "PER_RUN", 3)
+    monkeypatch.setattr(m365_workspace, "OVERLAP", timedelta(seconds=0))
+    row = connection(client, admin, tenant)
+    # Microsoft pages of 1000 hold everything here, so make the fake page in threes to stop early.
+    original = fake.route
+
+    def small_pages(method, path, query, body):
+        if path.startswith("/auditLogs/"):
+            query = {**query, "$top": "3"}
+        return original(method, path, query, body)
+
+    fake.route = small_pages
+    with database.session_factory()() as db:
+        conn = db.get(M365Connection, row["id"])
+        first = m365_workspace.collect_logs(db, conn, kinds=("signin",))
+        db.commit()
+        assert first["signin"]["added"] == 3 and first["signin"]["behind"]
+        for _ in range(3):
+            m365_workspace.collect_logs(db, conn, kinds=("signin",), force=True)
+            db.commit()
+        assert db.query(M365LogEntry).filter_by(connection_id=conn.id, kind="signin").count() == 7
+        assert not (conn.log_state["signin"].get("gaps"))
+
+
+def test_logs_and_workspace_respect_customer_boundaries(client, admin, tenant, fake):
+    row = connection(client, admin, tenant)
+    other = post(client, admin, "tenants", {"name": "Other"})
+    post(client, admin, "users", {"tenantId": other["id"], "email": "tech@other.test", "password": ADMIN_PASSWORD, "role": "tenant_admin"})
+    outsider = login(client, "tech@other.test")
+    for path in ("/workspace", "/logs"):
+        assert client.get("/api/console/m365/connections/" + row["id"] + path, headers=outsider).status_code in (403, 404)
+    assert client.get("/api/console/m365/overview", headers=outsider).json()["rows"] == []
+
+
+def test_update_permissions_per_connection_mode(client, admin, tenant, fake, monkeypatch):
+    row = connection(client, admin, tenant)
+    manual = post(client, admin, "m365/connections/" + row["id"] + "/permissions/update", {})
+    assert manual["action"] == "manual" and "RoleManagement.ReadWrite.Directory" in manual["permissions"]
+    with database.session_factory()() as db:
+        db.get(M365Connection, row["id"]).auth_mode = "gdap"
+        db.commit()
+    assert client.post("/api/console/m365/connections/" + row["id"] + "/permissions/update", headers=admin).status_code == 409
+    monkeypatch.setattr(m365_partner, "partner_for", lambda db, tenant_id: object())
+    monkeypatch.setattr(m365_partner, "refresh_consent", lambda partner, directory: "consented")
+    assert post(client, admin, "m365/connections/" + row["id"] + "/permissions/update", {})["action"] == "done"
+
+
+def test_refresh_consent_replaces_an_existing_partner_center_consent(monkeypatch):
+    calls = []
+
+    def handle(request):
+        calls.append((request.method, request.url.path))
+        if request.method == "POST":
+            return httpx.Response(409 if len([c for c in calls if c[0] == "POST"]) == 1 else 201, json={})
+        return httpx.Response(204)
+
+    monkeypatch.setattr(m365_partner, "access_token_for", lambda *a, **k: "pc-token")
+    row = type("Partner", (), {"client_id": "00000000-0000-0000-0000-0000000000aa"})()
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        assert m365_partner.refresh_consent(row, "00000000-0000-0000-0000-000000000001", client=client) == "consented"
+    assert [c[0] for c in calls] == ["POST", "DELETE", "POST"]
+    assert calls[1][1].endswith("/applicationconsents/00000000-0000-0000-0000-0000000000aa")

@@ -26,7 +26,7 @@ GLOBAL_ADMIN = "62e90394-69f5-4237-9190-012177145e10"
 def temp_admin_roles() -> dict[str, str]:
     from .m365_partner import RECOMMENDED_ROLES
 
-    return {GLOBAL_ADMIN: "Global Administrator", **RECOMMENDED_ROLES}
+    return {GLOBAL_ADMIN: "Global Administrator", "729827e3-9c14-49f7-bb1b-9608f156bbb8": "Helpdesk Administrator", **RECOMMENDED_ROLES}
 
 
 # Authentication method types Fenrir removes for an MFA reset (the password is never removed), in a safe order: the

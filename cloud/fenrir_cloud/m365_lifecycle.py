@@ -231,7 +231,7 @@ def plan(db: Session, connection: M365Connection, kind: str, target_id: str | No
                         target_name=name[:320], options=options, steps=steps, requested_by=actor)
     db.add(flow)
     db.flush()
-    audit.record(db, actor, "m365.workflow_planned", flow.id, connection.tenant_id, kind=kind, target=flow.target_name)
+    audit.record(db, actor, "m365.workflow_planned", flow.id, connection.tenant_id, kind=kind, targetName=flow.target_name)
     return flow
 
 
@@ -411,7 +411,8 @@ def _create(client, headers, flow, step, profile, secrets_out) -> str:
     else:
         flow.target_id = created["id"]
     secrets_out.append({"userPrincipalName": upn, "displayName": profile.get("displayName", ""), "password": password})
-    return "Created" + (f"; {step['items'][0].get('extras')}" if step["items"][0].get("extras") else "")
+    extras = step["items"][0].get("extras") if flow.kind == "bulk_create" else ""
+    return "Created" + (f"; {extras}" if extras else "")
 
 
 def _bulk_extras(client, headers, flow, step, user_id):
@@ -442,19 +443,20 @@ def run(db: Session, connection: M365Connection, flow: M365Workflow, actor: str)
     """Run pending and failed steps until done or out of time. The workflow must already be claimed (status running)."""
     secrets_out: list[dict] = []
     started = monotonic()
-    more = False
+    more, ran = False, 0
     try:
         with m365_admin.session(connection) as (client, headers):
             for index, step in enumerate(flow.steps):
                 if step["status"] not in ("pending", "failed"):
                     continue
-                if monotonic() - started > RUN_BUDGET:
+                if ran and monotonic() - started > RUN_BUDGET:
                     more = True
                     break
                 if step["key"] != "create_user" and step["key"] not in ("add_contact", "open_ticket") and _depends_on_user(flow):
                     continue  # the user was not created; these wait
                 if step["key"] == "open_ticket" and any(s["status"] in ("pending", "failed") for s in flow.steps[:index]):
                     continue  # the ticket records the outcome, so it goes last
+                ran += 1
                 _mark(db, flow, index, "running", "")
                 try:
                     message = run_step(db, connection, flow, step, client, headers, secrets_out)
