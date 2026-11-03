@@ -1220,8 +1220,10 @@ void AgentService::RequestStop() {
   if (stopEvent_ != nullptr) {
     SetEvent(stopEvent_);
   }
+  // Never wait here: this runs in Windows' service control handler, and a handler that blocks leaves the service
+  // unable to answer Windows (error 1053) with its work already stopped. Run() joins the channel when it ends.
   if (localControlChannel_) {
-    localControlChannel_->Stop();
+    localControlChannel_->RequestStop();
   }
 }
 

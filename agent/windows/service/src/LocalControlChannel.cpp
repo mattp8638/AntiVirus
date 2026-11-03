@@ -548,13 +548,29 @@ void LocalControlChannel::Start() {
   state->worker = std::thread([this]() { Run(); });
 }
 
-void LocalControlChannel::Stop() {
+void LocalControlChannel::RequestStop() {
   auto* state = state_.get();
   if (state == nullptr || !running_) {
     return;
   }
 
   stopRequested_ = true;
+  // try_lock: the worker may hold the lock; it checks stopRequested_ itself, so never wait for it here.
+  std::unique_lock guard(state->lock, std::try_to_lock);
+  if (guard.owns_lock() && state->activePipe != INVALID_HANDLE_VALUE) {
+    CancelSynchronousIo(reinterpret_cast<HANDLE>(state->worker.native_handle()));
+    CloseHandle(state->activePipe);
+    state->activePipe = INVALID_HANDLE_VALUE;
+  }
+}
+
+void LocalControlChannel::Stop() {
+  auto* state = state_.get();
+  if (state == nullptr || !running_) {
+    return;
+  }
+
+  RequestStop();
   {
     std::lock_guard guard(state->lock);
     if (state->activePipe != INVALID_HANDLE_VALUE) {
