@@ -63,12 +63,34 @@ void UpdateServiceStatus(const DWORD currentState, const DWORD win32ExitCode = N
   }
 }
 
+// How long a requested stop may take before the process ends itself. A shutdown that hangs (a thread that never
+// finishes) must not leave the agent running with its work stopped: it ends, and Windows or the next upgrade starts
+// it again. Under the installer's 20-30 second wait.
+constexpr DWORD kStopDeadlineMs = 20'000;
+HANDLE g_serviceFinished = nullptr;
+
+DWORD WINAPI StopWatchdog(void*) {
+  if (g_serviceFinished != nullptr && WaitForSingleObject(g_serviceFinished, kStopDeadlineMs) == WAIT_OBJECT_0) {
+    return 0;
+  }
+  ReportServiceFailure(L"FenrirAgent did not finish stopping within 20 seconds; the process was ended so it cannot stay "
+                       L"running with its work stopped.");
+  UpdateServiceStatus(SERVICE_STOPPED, ERROR_SERVICE_SPECIFIC_ERROR, 0, ERROR_SERVICE_REQUEST_TIMEOUT);
+  TerminateProcess(GetCurrentProcess(), ERROR_SERVICE_REQUEST_TIMEOUT);
+  return 1;
+}
+
 DWORD WINAPI ServiceControlHandler(const DWORD controlCode, DWORD, void*, void*) {
   switch (controlCode) {
     case SERVICE_CONTROL_STOP:
     case SERVICE_CONTROL_SHUTDOWN:
-      InterlockedExchange(&g_stopRequested, 1);
-      UpdateServiceStatus(SERVICE_STOP_PENDING, NO_ERROR, 15'000);
+      // Answer Windows at once; nothing here may wait (a blocked handler is error 1053 for whoever asked).
+      if (InterlockedExchange(&g_stopRequested, 1) == 0) {
+        if (const auto watchdog = CreateThread(nullptr, 0, StopWatchdog, nullptr, 0, nullptr)) {
+          CloseHandle(watchdog);
+        }
+      }
+      UpdateServiceStatus(SERVICE_STOP_PENDING, NO_ERROR, kStopDeadlineMs);
       if (g_activeService != nullptr) {
         g_activeService->RequestStop();
       }
@@ -90,6 +112,7 @@ void WINAPI ServiceEntry(DWORD, LPWSTR*) {
   }
 
   InterlockedExchange(&g_stopRequested, 0);
+  g_serviceFinished = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   UpdateServiceStatus(SERVICE_START_PENDING, NO_ERROR, 5'000);
 
   antivirus::agent::AgentService service;
@@ -110,6 +133,7 @@ void WINAPI ServiceEntry(DWORD, LPWSTR*) {
   // An unexpected clean exit must count as a service failure so Windows can
   // apply the configured restart policy instead of leaving the agent stopped.
   const DWORD failureCode = exitCode != 0 ? static_cast<DWORD>(exitCode) : 1;
+  if (g_serviceFinished != nullptr) SetEvent(g_serviceFinished);  // the stop watchdog is not needed
   UpdateServiceStatus(SERVICE_STOPPED,
                       (exitCode == 0 && !unexpectedExit) ? NO_ERROR : ERROR_SERVICE_SPECIFIC_ERROR,
                       0, (exitCode == 0 && !unexpectedExit) ? 0 : failureCode);

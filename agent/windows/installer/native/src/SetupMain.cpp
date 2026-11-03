@@ -838,6 +838,9 @@ bool StartServiceByName(const wchar_t* serviceName, DWORD timeoutMs, std::wstrin
                         DWORD* startFailureCode = nullptr);
 bool StopServiceByName(const wchar_t* serviceName, DWORD timeoutMs, std::wstring* errorMessage);
 bool StartInstalledService(std::wstring* errorMessage);
+bool TerminateServiceProcess(const wchar_t* serviceName, DWORD timeoutMs);
+// Set when an upgrade had to end a hung agent's process (see TerminateServiceProcess).
+bool g_forcedServiceStop = false;
 bool StopInstalledService(std::wstring* errorMessage);
 bool ConfigureMinifilterInstanceRegistry(std::wstring* errorMessage);
 bool EnsureMinifilterServiceRegistrationFallback(const std::filesystem::path& windowsRoot,
@@ -1497,6 +1500,32 @@ bool DeleteServiceByName(const wchar_t* serviceName, std::wstring* errorMessage)
 
 bool StartInstalledService(std::wstring* errorMessage) {
   return StartServiceByName(kServiceName, 20'000, errorMessage);
+}
+
+// Ends the service's process directly (for a hung agent that does not answer a stop) and waits for Windows to see
+// the service stopped. Windows' restart-on-failure may start it again a few seconds later.
+bool TerminateServiceProcess(const wchar_t* serviceName, const DWORD timeoutMs) {
+  const auto manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+  if (manager == nullptr) return false;
+  const auto service = OpenServiceW(manager, serviceName, SERVICE_QUERY_STATUS);
+  if (service == nullptr) {
+    CloseServiceHandle(manager);
+    return false;
+  }
+  SERVICE_STATUS_PROCESS status{};
+  DWORD bytesNeeded = 0;
+  const bool queried = QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO, reinterpret_cast<LPBYTE>(&status), sizeof(status),
+                                            &bytesNeeded) != FALSE;
+  CloseServiceHandle(service);
+  CloseServiceHandle(manager);
+  if (!queried) return false;
+  if (status.dwCurrentState == SERVICE_STOPPED || status.dwProcessId == 0) return true;
+  const auto process = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, status.dwProcessId);
+  if (process == nullptr) return false;
+  const bool terminated = TerminateProcess(process, ERROR_SERVICE_REQUEST_TIMEOUT) != FALSE;
+  if (terminated) WaitForSingleObject(process, timeoutMs);
+  CloseHandle(process);
+  return terminated && WaitForServiceStateByName(serviceName, SERVICE_STOPPED, timeoutMs);
 }
 
 
@@ -2468,8 +2497,17 @@ bool InstallPayloadFiles(HWND hwnd, UiContext* context, const bool repair, std::
       std::wstring stopError;
       DWORD stopExitCode = 0;
       PostLog(hwnd, L"Requesting authorised maintenance stop before replacing service files");
-      if (!RunProcessHidden(existingServiceExe, L"--stop", installRoot, &stopExitCode, &stopError) ||
-          !WaitForServiceState(SERVICE_STOPPED, 20'000)) {
+      const bool stopRan = RunProcessHidden(existingServiceExe, L"--stop", installRoot, &stopExitCode, &stopError);
+      bool stopped = stopRan && WaitForServiceState(SERVICE_STOPPED, 20'000);
+      // The stop was authorised but the running agent never answered Windows (1053) or never finished stopping: it
+      // is hung, with its work stopped. End the process so the upgrade can replace it, instead of leaving it that way.
+      if (!stopped && (stopError.find(L"(1053)") != std::wstring::npos ||
+                       stopError.find(L"did not reach STOPPED") != std::wstring::npos)) {
+        PostLog(hwnd, L"The running agent did not respond to the stop request; ending its process");
+        stopped = TerminateServiceProcess(kServiceName, 15'000);
+        g_forcedServiceStop = stopped;
+      }
+      if (!stopped) {
         if (errorMessage) {
           *errorMessage = L"Could not safely stop the protected FenrirAgent service for repair. " +
                           stopError + L" If maintenance protection is enabled, use the approved maintenance token.";
@@ -2793,6 +2831,11 @@ void RunInstallOrRepairSteps(HWND hwnd, UiContext* context, const bool repair) {
   }
 
   PostStatus(hwnd, L"Starting protection service...", 87);
+  if (g_forcedServiceStop && QueryServiceStateByName(kServiceName) != L"stopped") {
+    // Windows restarted the old, hung agent after its process was ended: end it again so the new build starts.
+    PostLog(hwnd, L"Windows restarted the previous agent build; ending it so the new build starts");
+    TerminateServiceProcess(kServiceName, 15'000);
+  }
   PostLog(hwnd, L"Starting the installed protection service");
   if (!StartInstalledService(&errorMessage) ||
       !VerifyInstalledServicePersistence(context->installRoot, &errorMessage)) {

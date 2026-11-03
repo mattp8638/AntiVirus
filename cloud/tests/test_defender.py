@@ -58,7 +58,7 @@ def test_policy_becomes_defender_settings_and_attack_surface_rules(client, admin
         body = command.payload["body"]
         assert command.type == "script.run" and command.payload["defender"] == "apply" and command.payload["runAs"] == "system"
     assert "-CloudBlockLevel HighPlus" in body and "-EnableNetworkProtection Enabled" in body and "-PUAProtection Enabled" in body
-    assert LSASS in body and "$want = @('C:\\Line of business')" in body and "Add-MpPreference -ExclusionPath $want" in body
+    assert LSASS in body and "$want = @(@('C:\\Line of business') + $own['ExclusionPath']" in body and "Add-MpPreference -ExclusionPath $want" in body
     # Fenrir's own attack surface rules decide each Defender rule: PsExec/WMI is audit by default.
     ids = body.split("-AttackSurfaceReductionRules_Ids @(")[1].split(")")[0].replace("'", "").split(",")
     actions = body.split("-AttackSurfaceReductionRules_Actions @(")[1].split(")")[0].replace("'", "").split(",")
@@ -267,3 +267,15 @@ def test_real_time_off_is_reported_once_not_as_behaviour_and_download_drift():
     # With real-time on, a sub-component held off is drift.
     found = defender.problems({**status, "realTime": True}, settings)
     assert any("behaviour monitoring" in p and "download scanning" in p for p in found)
+
+
+def test_fenrirs_own_exclusions_are_never_removed():
+    settings = {"defender": {"managed": True, "exclusionsAuthoritative": True, "exclusionPaths": [r"D:\Data"]}, "attackSurface": {}}
+    body = defender.script(settings)
+    # The agent's own folders and programs are worked out on the device and always kept in what Defender should have.
+    assert r"Services\FenrirAgent" in body and "fenrir-agent-service.exe" in body
+    assert "$own['ExclusionPath']" in body and "$own['ExclusionProcess']" in body
+    status = {"available": True, "antivirus": True, "realTime": True, "asr": {},
+              "exclusions": {"paths": [r"D:\Data", r"C:\Program Files\Fenrir Endpoint", "C:\\ProgramData\\FenrirAgent", r"C:\Temp"]}}
+    found = [p for p in defender.problems(status, settings) if "policy does not allow" in p]
+    assert found and "C:\\Temp" in found[0] and "Fenrir" not in found[0]

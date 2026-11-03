@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <functional>
 #include <string>
@@ -22,6 +23,9 @@ class LocalControlChannel {
   LocalControlChannel& operator=(const LocalControlChannel&) = delete;
 
   void Start();
+  // Asks the worker to finish and returns at once (safe from a service control handler, which must never block).
+  void RequestStop();
+  // RequestStop, then waits for the worker to finish.
   void Stop();
 
  private:
@@ -32,7 +36,7 @@ class LocalControlChannel {
   StopPredicate shouldStop_;
   std::unique_ptr<State> state_;
   bool running_{false};
-  bool stopRequested_{false};
+  std::atomic<bool> stopRequested_{false};
 };
 
 }  // namespace antivirus::agent
