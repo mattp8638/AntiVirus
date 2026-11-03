@@ -87,6 +87,14 @@ class MainActivity : Activity() {
     }
 
     private fun renderSetup() {
+        choosing?.let { target ->
+            content.addView(heading("How should Fenrir manage this phone?"))
+            content.addView(label("Standard: Fenrir manages the whole phone (lock, erase, locate, remote support). Recommended.", muted))
+            content.addView(button("Set up this phone", primary = true) { enrolWholePhone(target) })
+            content.addView(label("Work profile (optional): Fenrir manages a separate work profile and enforces policy there; your personal apps stay private.", muted))
+            content.addView(button("Create a work profile instead") { startWorkProfile(target) })
+            return
+        }
         if (store.pendingEnrolment.isNotBlank()) {
             content.addView(label("This work profile was created but could not enrol with your IT team's server${store.lastError.takeIf { it.isNotBlank() }?.let { ": $it" } ?: ""}.", muted))
             content.addView(button("Try again", primary = true) { WorkProfile.retry(this); message = "Enrolling…"; render() })
@@ -178,15 +186,31 @@ class MainActivity : Activity() {
             .addOnFailureListener { error -> message = "The scanner isn't available (${error.message}). Enter the code by hand."; render() }
     }
 
+    // A code that offers a work profile: the user chooses; nothing requires one.
+    private var choosing: EnrollTarget? = null
+
     private fun enrol(target: EnrollTarget) {
         if (busy) return
-        if (target.workProfile && !PhonePolicy.workProfile(this)) {
-            // A personal phone: Android creates a work profile with Fenrir as its owner, and Fenrir enrols from inside it.
-            val why = WorkProfile.start(this, target.server, target.token)
-            message = why ?: "Follow Android's steps to create the work profile."
+        if (target.workProfile && !PhonePolicy.workProfile(this) && WorkProfile.available(this)) {
+            choosing = target
+            message = null
             render()
             return
         }
+        enrolWholePhone(target)
+    }
+
+    private fun startWorkProfile(target: EnrollTarget) {
+        choosing = null
+        // Android creates a work profile with Fenrir as its owner, and Fenrir enrols from inside it.
+        val why = WorkProfile.start(this, target.server, target.token)
+        message = why ?: "Follow Android's steps to create the work profile."
+        render()
+    }
+
+    private fun enrolWholePhone(target: EnrollTarget) {
+        choosing = null
+        if (busy) return
         busy = true
         message = "Enrolling with ${target.server.removePrefix("https://")}…"
         render()

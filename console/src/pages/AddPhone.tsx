@@ -25,7 +25,7 @@ export function AddPhone() {
   const [owner, setOwner] = useState("");
   // Android: a work profile on a personal phone (Fenrir manages work apps and data, policies are enforced there), or
   // device admin only (lock, erase, locate; policies are checked and reported).
-  const [androidMode, setAndroidMode] = useState<"work" | "admin">("work");
+  const [androidMode, setAndroidMode] = useState<"work" | "admin">("admin");
   const [token, setToken] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -58,8 +58,8 @@ export function AddPhone() {
           <label className="field">Who it's for (optional)<input value={owner} onChange={(e) => setOwner(e.target.value)} maxLength={80} placeholder="Jo Bloggs" /></label>
           <label className="field">Android set-up
             <select value={androidMode} onChange={(e) => setAndroidMode(e.target.value as "work" | "admin")}>
-              <option value="work">Personal phone: work profile (policies enforced on work apps)</option>
-              <option value="admin">Device admin only (lock, erase, locate; policies checked)</option>
+              <option value="admin">Standard: the whole phone (lock, erase, locate, remote support; policies checked)</option>
+              <option value="work">Optional work profile: policies enforced on work apps (personal phones)</option>
             </select>
           </label>
         </div>
