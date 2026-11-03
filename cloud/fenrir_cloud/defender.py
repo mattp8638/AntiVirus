@@ -106,6 +106,26 @@ def _clean(values, limit: int = 500) -> list[str]:
     return [str(v).strip()[:400] for v in (values or [])[:limit] if str(v).strip()]
 
 
+# Fenrir's own Defender exclusions, from where the agent service is installed (the installer adds the same ones).
+OWN_EXCLUSIONS = r"""$own = @{ ExclusionPath = @(); ExclusionProcess = @(); ExclusionExtension = @() }
+try {
+  $image = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\FenrirAgent' -Name ImagePath -ErrorAction Stop).ImagePath
+  $exe = if ($image -match '^\s*"([^"]+)"') { $Matches[1] } else { ($image -split '\s+')[0] }
+  $root = Split-Path -Parent $exe
+  if ($root) {
+    $own.ExclusionPath = @($root, (Join-Path $env:ProgramData 'FenrirAgent'))
+    $own.ExclusionProcess = @('fenrir-agent-service.exe','fenrir-endpoint-client.exe','fenrir-pam.exe','fenrir-remote.exe','FenrirSetup.exe' |
+      ForEach-Object { Join-Path $root $_ })
+  }
+} catch { }"""
+
+
+def fenrir_own(path) -> bool:
+    """One of Fenrir's own folders (kept excluded from Defender whatever the policy says)."""
+    name = str(path).rstrip("\\/").replace("/", "\\").rsplit("\\", 1)[-1].lower()
+    return name.startswith("fenrir")
+
+
 def script(settings: dict) -> str:
     """PowerShell that applies the managed settings (when managed) and prints Defender's state as one JSON line."""
     d = settings["defender"]
@@ -162,10 +182,13 @@ def script(settings: dict) -> str:
                      "($saved | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $managed[$_.Name] = @($_.Value) } } catch { }")
         lines.append("try { $current = Get-MpPreference } catch { $current = $null }")
         lines.append("$applied = [ordered]@{}; $removed = @()")
+        # Fenrir's own folders and programs stay excluded whatever the policy says: the installer adds them so Defender
+        # never scans, blocks or quarantines the agent, and removing them leaves Defender fighting the agent.
+        lines.append(OWN_EXCLUSIONS)
         for field, parameter in (("exclusionPaths", "ExclusionPath"), ("exclusionProcesses", "ExclusionProcess"),
                                  ("exclusionExtensions", "ExclusionExtension")):
             wanted = _clean(d.get(field))
-            lines.append(f"$want = {_ps_list(wanted)}")
+            lines.append(f"$want = @({_ps_list(wanted)} + $own['{parameter}'] | Where-Object {{ $_ }} | Select-Object -Unique)")
             lines.append(f"$had = @($managed['{parameter}'])" if not authoritative else
                          f"$had = @($current.{parameter} | Where-Object {{ $_ -and -not ([string]$_).StartsWith('N/A') }})")
             lines.append("$drop = @($had | Where-Object { $_ -and ($want -notcontains $_) })")
@@ -367,7 +390,7 @@ def problems(status: dict, settings: dict) -> list[str]:
         if d.get("exclusionsAuthoritative"):
             wanted_paths = {str(p).lower() for p in d.get("exclusionPaths") or []}
             extra = [p for p in (status.get("exclusions") or {}).get("paths") or [] if str(p).lower() not in wanted_paths
-                     and not str(p).startswith("N/A")]
+                     and not str(p).startswith("N/A") and not fenrir_own(p)]
             if extra:
                 found.append(f"Defender still has exclusions policy does not allow: {', '.join(map(str, extra[:5]))}")
     return found
