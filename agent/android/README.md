@@ -28,7 +28,7 @@ folder. In GitHub, add the secrets `FENRIR_ANDROID_KEYSTORE_B64` (`base64 -w0 fe
 
 ## Publish
 
-Copy the APK to the server as `cloud/downloads/fenrir-android.apk`. It is then served at
+Copy the APK to the server as `deploy/releases/fenrir-android.apk` (Docker installs; kept across rebuilds) or `cloud/downloads/fenrir-android.apk` (run from source). It is then served at
 `https://<server>/downloads/fenrir-android.apk`, which the enrolment page links to.
 
 ## Enrol a phone

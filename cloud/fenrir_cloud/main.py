@@ -610,8 +610,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/downloads/fenrir-android.apk", include_in_schema=False)
     def android_app():
-        # Built by agent/android (./gradlew assembleRelease) and copied here by the deploy script.
+        # Built by agent/android (./gradlew assembleRelease). On a Docker server put it in deploy/releases (mounted
+        # read-only and kept across rebuilds); cloud/downloads works for a server run from source.
+        from . import deployment_installers
+
         target = downloads / "fenrir-android.apk"
+        kept = deployment_installers.SIGNED_RELEASES / "fenrir-android.apk"
+        if not target.is_file() and kept.is_file() and not kept.is_symlink():
+            target = kept
         if not target.is_file():
             return JSONResponse({"detail": "The Android app has not been published on this server yet"}, status_code=404)
         return FileResponse(target, media_type="application/vnd.android.package-archive", filename="fenrir-android.apk",
