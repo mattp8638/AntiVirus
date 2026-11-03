@@ -91,6 +91,30 @@ when it is beyond the radius plus its own uncertainty, fixes less precise than 5
 after a zone is made only sets its state. Alerts for the same zone are at most one per 10 minutes. The phone needs
 **location all the time** allowed. Up to 20 zones per phone.
 
+## Care: looking after someone
+
+Turn it on from the phone's **Location** tab → **Care**:
+
+- **Tracking**: *Close* reports every minute while the phone is moving, near a safe zone's edge or during a request for
+  help, and every 5 minutes once it has been still for 10 minutes (Android's location service, kept alive by the
+  agent's foreground service). *Standard* is every 5 minutes, *Battery saver* every 15. Close costs the most battery.
+- **Carers**: the people told about every care alert by push notification (and email, if set up). Family members get
+  a **carer** account (Settings → Users, role *carer (family)*, in the person's customer). A carer signs in to the
+  same address and sees only the **Care** page: where their people are, the route, safe zones, alerts, and
+  **Update now**. Nothing else in the console is reachable with that role.
+- **Help button**: once care is on, the Fenrir app shows **Send for help**. After a confirmation the phone sends its
+  location, a critical alert opens and the carers are notified at once. The phone then reports every minute (retrying
+  until the request gets through) until a carer taps **I've got this**, or the person taps **I'm OK now**.
+- **Gone quiet**: an alert when the phone has not checked in for the chosen number of minutes (switched off, flat, no
+  signal); it clears when the phone is back.
+- **Low battery** at the chosen level while not charging, and **location turned off** (always on), each alert once and
+  clear themselves.
+- **Escalation**: a care alert nobody has acknowledged within the chosen minutes is sent to the escalation people too.
+
+Carers acknowledge with **I've got this** (the others are told who is handling it) and close with **All sorted**.
+Staff see the same page under **Care** in the menu. The person always sees on their phone that their location is
+shared.
+
 ## Remote support
 
 **Connect** on a phone shares its screen in the console's remote viewer:

@@ -33,8 +33,13 @@ class ControlPlane(baseUrl: String, var deviceId: String = "", var apiKey: Strin
             .put("healthState", "healthy").put("isolated", false).put("metrics", metrics)
         val reply = request("POST", "/api/v1/devices/$deviceId/heartbeat", body)
         return HeartbeatReply(reply.optInt("commandsPending", 0), reply.optBoolean("approved", true), LostMode.from(reply.optJSONObject("lostMode")),
-            reply.optBoolean("rotateKey", false), reply.optString("effectivePolicyRevision"), Zone.list(reply.optJSONArray("geofences")))
+            reply.optBoolean("rotateKey", false), reply.optString("effectivePolicyRevision"), Zone.list(reply.optJSONArray("geofences")),
+            Tracking.from(reply.optJSONObject("tracking")))
     }
+
+    /** The person pressed Help (with a fix when there is one), or said they are OK (cancel). */
+    fun sos(fix: Fix?, cancel: Boolean = false): JSONObject =
+        request("POST", "/api/v1/devices/$deviceId/sos", if (cancel) JSONObject().put("cancel", true) else (fix?.toJson() ?: JSONObject()))
 
     /** The phone's policy: (revision, the "android" section), from the same check-in the desktop agents use. */
     fun policy(currentRevision: String): Pair<String, JSONObject> {

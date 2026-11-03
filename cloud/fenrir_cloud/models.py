@@ -156,6 +156,8 @@ class Device(Base):
     exposure_flags: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # Phones: lost mode ({"enabled", "message", "phone", "since", "by"}); the agent re-reads it on every heartbeat.
     lost_mode: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    # Phones looked after by family or carers (care.py): tracking level, carers, quiet/battery alerts, escalation, SOS.
+    care: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     # CORE-04 key rotation (devicekeys.py): the new key until its first use, when the key was last rotated, and a
     # technician's request to rotate at the next heartbeat.
     pending_api_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)

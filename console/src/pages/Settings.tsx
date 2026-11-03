@@ -11,7 +11,7 @@ import { CustomFieldsSettings, RegionSettings } from "../components/Customizatio
 import { useSearchParams } from "react-router-dom";
 import { PushCard } from "../components/PushCard";
 
-const ROLES = ["platform_admin", "msp_admin", "soc_analyst", "technician", "billing", "tenant_admin", "tenant_analyst", "viewer"];
+const ROLES = ["platform_admin", "msp_admin", "soc_analyst", "technician", "billing", "tenant_admin", "tenant_analyst", "viewer", "carer"];
 
 export default function Settings() {
   const { can } = useApp();
@@ -102,7 +102,7 @@ function UsersTab() {
   const { run, busy } = useAction();
   const customRoles: any[] = roleData?.custom || [];
   const roleLabel = (role: string) => customRoles.find((r) => r.role === role)?.name || role.replace(/_/g, " ");
-  const roleOptions = [...ROLES.map((r) => ({ value: r, label: r.replace(/_/g, " ") })), ...customRoles.map((r) => ({ value: r.role, label: `${r.name} (custom)` }))];
+  const roleOptions = [...ROLES.map((r) => ({ value: r, label: r === "carer" ? "carer (family: Care page only)" : r.replace(/_/g, " ") })), ...customRoles.map((r) => ({ value: r.role, label: `${r.name} (custom)` }))];
   return (
     <div className="card">
       {can("configure") && roleData && (
