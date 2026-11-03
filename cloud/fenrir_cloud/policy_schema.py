@@ -240,6 +240,67 @@ SCHEMA: tuple[Section, ...] = (
         ),
     ),
     Section(
+        "android",
+        "Android phones",
+        "Passcode, restrictions, apps and network for Android phones. A phone enrolled with a work profile (a personal "
+        "phone) has these enforced inside the work profile, and the passcode on the whole phone. A phone enrolled with "
+        "device admin only is checked against them: what is not met is reported as non-compliant and the user is asked to "
+        "fix it.",
+        (
+            # Passcode and security
+            F("passcodeComplexity", "enum", "none", "Phone passcode",
+              "none: not managed; low: any PIN or pattern; medium: a PIN of 4+ digits without repeats or a password; high: "
+              "a PIN of 8+ digits or a password of 6+ characters.", options=("none", "low", "medium", "high"), platforms=("android",)),
+            F("screenLockMinutes", "int", 0, "Lock the screen after (minutes)",
+              "Longest idle time before the phone locks. 0 leaves it to the user. Enforced with a work profile.",
+              min=0, max=60, platforms=("android",)),
+            F("wipeAfterFailedAttempts", "int", 0, "Erase work data after failed unlock attempts",
+              "With a work profile, this many wrong passcodes removes the work profile (personal data is untouched). 0 is off.",
+              min=0, max=30, platforms=("android",)),
+            F("requireEncryption", "bool", True, "Require storage encryption", "Reported as non-compliant when storage is not encrypted.",
+              platforms=("android",)),
+            F("blockDeveloperOptions", "bool", True, "No developer options or USB debugging",
+              "Blocked in a work profile; on other phones, developer options or USB debugging being on is non-compliant.",
+              platforms=("android",)),
+            F("minSecurityPatchDays", "int", 90, "Security patch no older than (days)",
+              "A phone whose Android security patch is older is non-compliant. 0 turns the check off.", min=0, max=730, platforms=("android",)),
+            F("minAndroidVersion", "int", 0, "Minimum Android version", "For example 13. 0 turns the check off.", min=0, max=30,
+              platforms=("android",)),
+            F("flagRooted", "bool", True, "Flag rooted phones", "A phone that looks rooted (an su binary, test-keys build) is non-compliant.",
+              platforms=("android",)),
+            # Restrictions (work profile)
+            F("disableCamera", "bool", False, "Block the camera in work apps", "Work profile only.", platforms=("android",)),
+            F("disableScreenCapture", "bool", False, "Block screenshots of work apps", "Work profile only.", platforms=("android",)),
+            F("blockUnknownSources", "bool", True, "Block installing apps from outside an app store",
+              "Blocked in a work profile; elsewhere, sideloaded apps are already reported by app protection.", platforms=("android",)),
+            F("blockCopyPasteToPersonal", "bool", True, "Block copying work data to personal apps", "Work profile only.",
+              platforms=("android",)),
+            F("blockAddingAccounts", "bool", False, "Block adding accounts in the work profile", "Work profile only.",
+              platforms=("android",)),
+            F("blockBluetoothSharing", "bool", False, "Block sharing work files over Bluetooth", "Work profile only.",
+              platforms=("android",)),
+            # Apps
+            F("requiredApps", "list", [], "Required apps",
+              "One per line: package name, or package|https URL of a company APK|SHA-256. With a work profile, company APKs install "
+              "silently and store apps are offered to the user; elsewhere a missing app is non-compliant and the user is asked to "
+              "install it.", platforms=("android",)),
+            F("blockedApps", "list", [], "Blocked apps",
+              "Package names. With a work profile they are hidden there; elsewhere having one installed is non-compliant and the user "
+              "is asked to remove it.", platforms=("android",)),
+            F("runtimePermissions", "enum", "prompt", "App permission requests in the work profile",
+              "prompt: the user decides; grant: grant automatically; deny: deny automatically.", options=("prompt", "grant", "deny"),
+              platforms=("android",)),
+            # Network
+            F("wifiNetworks", "list", [], "Wi-Fi networks",
+              "One per line: SSID|WPA2|password or SSID|WPA3|password or SSID|OPEN. Offered to the phone (Android asks the user "
+              "once). The password is stored in the policy, so use a network meant for staff devices.", platforms=("android",)),
+            F("alwaysOnVpnApp", "str", "", "Always-on VPN app",
+              "Package name of a VPN app to keep connected for work apps (work profile).", platforms=("android",)),
+            F("alertOnNonCompliance", "bool", True, "Raise an alert when a phone is not compliant",
+              "One alert per phone, listing what is not met; it closes itself when the phone is compliant again.", platforms=("android",)),
+        ),
+    ),
+    Section(
         "ransomware",
         "Ransomware protection",
         "Behavioural encryption detection, protected folders, canaries and rollback.",

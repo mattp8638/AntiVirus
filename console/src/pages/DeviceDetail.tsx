@@ -30,13 +30,13 @@ const SECTIONS: { key: string; label: string; subs?: string[] }[] = [
   { key: "activity", label: "Activity", subs: ["Scripts & jobs", "Remote actions", "Remote sessions", "Bundles & recordings"] },
   { key: "settings", label: "Settings", subs: ["Effective policy", "Device details"] },
 ];
-// Phones have no patches, scripts, remote desktop or local admin; they get Location instead.
+// Phones have no patches, scripts or local admin; they get Location instead, and screen sharing.
 const PHONE_SECTIONS: { key: string; label: string; subs?: string[] }[] = [
   { key: "overview", label: "Overview" },
   { key: "location", label: "Location" },
-  { key: "security", label: "Security", subs: ["Alerts", "App protection"] },
+  { key: "security", label: "Security", subs: ["Alerts", "Compliance", "App protection"] },
   { key: "software", label: "Apps", subs: ["Installed"] },
-  { key: "activity", label: "Activity", subs: ["Remote actions"] },
+  { key: "activity", label: "Activity", subs: ["Remote actions", "Remote sessions"] },
   { key: "settings", label: "Settings", subs: ["Effective policy", "Device details"] },
 ];
 // iPhones, iPads and Macs with only Fenrir's DNS profile: no agent, so no remote actions, scripts or inventory.
@@ -198,7 +198,8 @@ export default function DeviceDetail() {
         </div>
         {!d.retired && can("respond") && isPhone && <div className="device-actions">
           {!d.approved && can("configure") && <button className="primary" onClick={() => patch({ approved: true }, "Device approved")}>Approve</button>}
-          <button className="primary" onClick={() => { queue("device.locate", "Locate now"); go("location"); setTimeout(reloadWhere, 8000); }}>⌖ Locate</button>
+          <ConnectButtons device={d} />
+          <button onClick={() => { queue("device.locate", "Locate now"); go("location"); setTimeout(reloadWhere, 8000); }}>⌖ Locate</button>
           <button onClick={() => queue("device.alarm", "Play alarm", { seconds: 60 })}>🔊 Alarm</button>
           <button onClick={() => queue("device.lock", "Lock")}>🔒 Lock</button>
           <Menu label="More">{(close) => <>
@@ -319,6 +320,7 @@ export default function DeviceDetail() {
       {sub === "Local admin" && <><TemporaryAdmin device={d} /><LocalAdmin deviceId={d.id} /></>}
       {sub === "Microsoft Defender" && <DeviceDefender deviceId={d.id} />}
       {sub === "App protection" && <MobileApps deviceId={d.id} />}
+      {sub === "Compliance" && <PhoneCompliance metrics={d.metrics || {}} />}
       {sub === "Patches" && <PatchesTab device={d} />}
       {sub === "Installed" && <SoftwareList rows={data.software} />}
       {sub === "Scripts & jobs" && <JobsTab deviceId={d.id} onOpen={setJobId} onRun={can("configure") ? () => setScriptPicker(true) : undefined} />}
@@ -730,6 +732,35 @@ function Bundles({ deviceId }: { deviceId: string }) {
                        { key: "dl", label: "", className: "right", render: (r) => can("respond") ? <span style={{ display: "inline-flex", gap: 6 }}>
                            {r.kind === "remote.recording" && <button className="small" onClick={() => navigate(`/recordings/${r.id}`)}>Play</button>}
                            <button className="small" disabled={busy} onClick={() => download(r)}>Download</button></span> : null }]} />
+    </div>
+  );
+}
+
+
+const MANAGEMENT_MODE: Record<string, string> = {
+  work_profile: "Work profile: policy enforced on work apps and the phone's screen lock",
+  device_owner: "Company-owned: policy enforced on the whole phone",
+  device_admin: "Device admin: policy checked and reported; the user is asked to fix what is not met",
+};
+
+// What the phone reported against its Android policy (Settings > Policies > Android phones).
+function PhoneCompliance({ metrics }: { metrics: any }) {
+  const items: any[] = metrics.compliance || [];
+  return (
+    <div className="card">
+      <div className="row" style={{ gap: 8, marginBottom: 8 }}>
+        {metrics.compliant === undefined ? <Pill value="not reported yet" tone="muted" />
+          : <Pill value={metrics.compliant ? "compliant" : "not compliant"} tone={metrics.compliant ? "good" : "bad"} />}
+        <span className="small muted">{MANAGEMENT_MODE[metrics.managementMode] || MANAGEMENT_MODE.device_admin}</span>
+        {metrics.complianceAt && <span className="small muted">· checked {ago(metrics.complianceAt)}</span>}
+      </div>
+      <Table rows={items.map((i) => ({ ...i, id: i.key }))} empty="The phone has not reported yet (it needs Fenrir 0.2 or later), or its policy asks for nothing."
+        columns={[
+          { key: "label", label: "Requirement", render: (i: any) => <b>{displayValue(i.label)}</b> },
+          { key: "ok", label: "Status", render: (i: any) => <Pill value={i.ok ? "met" : "not met"} tone={i.ok ? "good" : "bad"} /> },
+          { key: "detail", label: "Detail", render: (i: any) => displayValue(i.detail) || "—" },
+          { key: "enforced", label: "", render: (i: any) => <span className="small muted">{i.enforced ? "enforced by Fenrir" : "checked"}</span> },
+        ]} />
     </div>
   );
 }

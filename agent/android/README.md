@@ -41,6 +41,45 @@ Copy the APK to the server as `cloud/downloads/fenrir-android.apk`. It is then s
 
 Each code enrols one phone and expires after 24 hours.
 
+## Work profile (personal phones) or device admin
+
+**Deploy agents → Add a phone** offers two set-ups:
+
+- **Personal phone: work profile.** Scanning the code asks Android to create a work profile with Fenrir as its owner
+  (the user accepts Android's screens). Fenrir then runs inside the work profile (apps with a briefcase badge),
+  enrols from there and enforces the phone policy: the screen lock on the whole phone, and restrictions, apps,
+  permissions and VPN inside the work profile. The personal side stays private. *Erase* removes the work profile
+  only. If the server cannot be reached while the profile is made, open the work Fenrir app and tap **Try again**.
+- **Device admin only.** As before: lock, erase, locate, lost mode. Android no longer lets an app enforce passcode
+  or restriction policy this way, so the policy is *checked*: what is not met is reported and the user is asked
+  (once per policy change) to fix it.
+
+## Phone policy
+
+**Policies → Android phones**: screen lock strength, lock timeout, erasing work data after failed unlocks,
+encryption, developer options, security patch age, minimum Android version, rooted phones; camera, screenshots,
+installs from outside a store, copy and paste to personal apps, adding accounts and Bluetooth sharing (work profile);
+required apps (a company APK from an https URL, checked against its SHA-256, installs silently in a work profile;
+store apps are offered to the user), blocked apps (hidden in a work profile, otherwise the user is asked to remove
+them), automatic permission grants; Wi-Fi networks (Android asks the user once) and an always-on VPN app.
+
+Each heartbeat reports compliance. The device's **Security → Compliance** shows each requirement, met or not, and a
+phone that does not meet its policy raises one alert that closes itself when it does.
+
+## Remote support
+
+**Connect** on a phone shares its screen in the console's remote viewer:
+
+1. The phone shows *"<technician> wants to see your screen"*. Tapping it opens Android's own screen-sharing prompt;
+   ignoring it declines after two minutes. Android requires the user to allow every session.
+2. While shared, a *Sharing your screen* notification stays up with **Stop**.
+3. The technician can tap, swipe, scroll, type and press Back, Home, Recents and Notifications if the user has
+   turned on **Fenrir remote support** in Settings → Accessibility (the app's *Optional* step opens it). Without it
+   the session is view-only.
+
+The app also holds a live connection to the server, so a session (or any action) starts within seconds instead of
+at the next check-in.
+
 ## What each action does
 
 | Console action | On the phone |

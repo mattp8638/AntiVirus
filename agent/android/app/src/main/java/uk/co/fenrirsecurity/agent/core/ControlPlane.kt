@@ -33,7 +33,14 @@ class ControlPlane(baseUrl: String, var deviceId: String = "", var apiKey: Strin
             .put("healthState", "healthy").put("isolated", false).put("metrics", metrics)
         val reply = request("POST", "/api/v1/devices/$deviceId/heartbeat", body)
         return HeartbeatReply(reply.optInt("commandsPending", 0), reply.optBoolean("approved", true), LostMode.from(reply.optJSONObject("lostMode")),
-            reply.optBoolean("rotateKey", false))
+            reply.optBoolean("rotateKey", false), reply.optString("effectivePolicyRevision"))
+    }
+
+    /** The phone's policy: (revision, the "android" section), from the same check-in the desktop agents use. */
+    fun policy(currentRevision: String): Pair<String, JSONObject> {
+        val doc = request("POST", "/api/v1/devices/$deviceId/policy-check-in", JSONObject().put("currentPolicyRevision", currentRevision))
+            .optJSONObject("policy") ?: JSONObject()
+        return doc.optString("revision") to (doc.optJSONObject("modules")?.optJSONObject("android") ?: JSONObject())
     }
 
     /**

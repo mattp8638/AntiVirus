@@ -112,7 +112,14 @@ export function useConnect() {
 export function ConnectButtons({ device, ticketId, compact }: { device: any; ticketId?: string; compact?: boolean }) {
   const { can } = useApp();
   const { connect, busy } = useConnect();
-  if (!can("respond") || !can("remote") || !device?.approved || device.retired || !["windows", "linux", "macos"].includes(device.platform)) return null;
+  if (!can("respond") || !can("remote") || !device?.approved || device.retired || !["windows", "linux", "macos", "android"].includes(device.platform)) return null;
+  if (device.platform === "android") {
+    // Phones: screen sharing and control only. The phone's user allows each session on the phone.
+    return (
+      <button className={compact ? "small primary" : "primary"} disabled={busy} title="View and control the phone's screen (the user allows it on the phone)"
+              onClick={(e) => { e.stopPropagation(); connect(device.id, "desktop", ticketId); }}>⧉ Connect</button>
+    );
+  }
   return (
     <span className="row" style={{ gap: 6 }} onClick={(e) => e.stopPropagation()}>
       <button className={compact ? "small primary" : "primary"} disabled={busy} title="Remote desktop in a new window" onClick={() => connect(device.id, "desktop", ticketId)}>

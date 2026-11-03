@@ -71,9 +71,10 @@ CATALOG: tuple[CommandSpec, ...] = (
                 description="targetPath is the service name; payload action is start, stop or restart."),
     CommandSpec("localadmin.rotate", "Rotate local admin password", "Administration",
                 description="Sets a new random local Administrator password; the old one stays in the history."),
-    CommandSpec("remote.session.start", "Start remote session", "Remote access", platforms=ALL,
-                description="Opened from the Connect button; connects the device to the cloud relay."),
-    CommandSpec("remote.session.end", "End remote session", "Remote access", platforms=ALL),
+    CommandSpec("remote.session.start", "Start remote session", "Remote access", platforms=(*ALL, "android"),
+                description="Opened from the Connect button; connects the device to the cloud relay. Android phones share their "
+                            "screen (the user allows each session) and can be controlled when Fenrir's accessibility service is on."),
+    CommandSpec("remote.session.end", "End remote session", "Remote access", platforms=(*ALL, "android")),
     CommandSpec("remote.backstage.selftest", "Test the backstage desktop", "Remote access",
                 description="Opens the hidden backstage desktop in session 0, shows a test window and Task Manager on it, "
                             "checks the capture works, and cleans up. Nothing appears on the user's screen."),

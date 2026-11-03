@@ -3,4 +3,6 @@
     <string name="app_name">Fenrir</string>
     <string name="admin_label">Fenrir anti-theft</string>
     <string name="admin_description">Lets your IT team lock or erase this phone if it is lost or stolen.</string>
+    <string name="accessibility_label">Fenrir remote support</string>
+    <string name="accessibility_description">Lets your IT team tap, swipe and type on this phone during a remote support session you have allowed. Fenrir does not read your screen\'s content or use this outside a session.</string>
 </resources>

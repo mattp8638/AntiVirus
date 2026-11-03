@@ -464,6 +464,9 @@ export default function RemoteViewer() {
         </nav>
         {tab === "Desktop" && state === "live" && (
           <div className="rv-tools">
+            {caps.includes("nav") && ([["back", "◁ Back"], ["home", "○ Home"], ["recents", "▢ Recents"], ["notifications", "Notifications"]] as const).map(([action, label]) => (
+              <button key={action} title={`Press ${action} on the phone`} disabled={viewOnly} onClick={() => send({ ch: "input", t: "nav", action })}>{label}</button>
+            ))}
             {caps.includes("cad") && <button title="Send Ctrl+Alt+Del" disabled={viewOnly || sendingCad} onClick={requestCad}>{sendingCad ? "Requesting…" : "Ctrl+Alt+Del"}</button>}
             <button title="Paste your clipboard as keystrokes" disabled={viewOnly} onClick={sendClipboard}>Send clipboard</button>
             <select title="Monitor" value={monitor} onChange={(e) => changeScreen({ monitor: Number(e.target.value) })}>

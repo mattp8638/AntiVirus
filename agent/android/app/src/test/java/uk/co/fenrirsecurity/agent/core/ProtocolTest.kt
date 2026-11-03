@@ -9,6 +9,15 @@ import org.junit.Test
 
 class ProtocolTest {
     @Test
+    fun workProfileLinksAskForAWorkProfile() {
+        val page = EnrollLink.parse("https://fenrir.example.com/enroll-phone#t=fet_1&p=work")
+        assertEquals(true, page?.workProfile)
+        val app = EnrollLink.parse("fenrir://enroll?server=fenrir.example.com&token=fet_1&profile=work")
+        assertEquals(true, app?.workProfile)
+        assertEquals(false, EnrollLink.parse("fenrir://enroll?server=fenrir.example.com&token=fet_1")?.workProfile)
+    }
+
+    @Test
     fun parsesConsoleQrLink() {
         val target = EnrollLink.parse("https://www.fenrir-security.co.uk/enroll-phone#t=fet_abc%2B123")
         assertEquals(EnrollTarget("https://www.fenrir-security.co.uk", "fet_abc+123"), target)

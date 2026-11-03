@@ -23,7 +23,7 @@ def test_remote_unsupported_platform_is_validation_error_without_orphan_session(
     from sqlalchemy import select, func
 
     with db.session_factory()() as session:
-        session.get(Device, device["deviceId"]).platform = "android"
+        session.get(Device, device["deviceId"]).platform = "ios"
         session.commit()
     response = client.post("/api/console/remote/sessions", headers=admin, json={"deviceId": device["deviceId"]})
     assert response.status_code == 422
