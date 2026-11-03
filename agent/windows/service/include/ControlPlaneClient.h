@@ -127,6 +127,8 @@ class ControlPlaneClient {
   EnrollmentResult Enroll(const AgentState& state, const std::wstring& enrollmentToken = {}) const;
   // metricsJson: the RMM health object (CPU, memory, disks...) or empty.
   HeartbeatResult SendHeartbeat(const AgentState& state, const std::string& metricsJson = "") const;
+  // A bare "still here" check-in (no state changes), for when the live connection is down and the main loop is busy.
+  void SendPresence(const AgentState& state) const;
   // Asks for a new device API key and returns the command channel URL that carries it. The current key keeps working
   // until the new one is first used, so the caller saves the URL before switching to it.
   std::wstring RotateDeviceKey(const AgentState& state) const;

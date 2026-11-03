@@ -18,13 +18,13 @@ def listed(client, admin, status):
     return {d["hostname"]: d["presence"] for d in client.get("/api/console/devices", headers=admin, params={"status": status}).json()}
 
 
-def test_agents_are_online_for_two_minutes_and_phones_sleep_before_going_offline():
+def test_agents_are_online_for_three_minutes_and_phones_sleep_before_going_offline():
     now = utcnow()
     pc = Device(id="d1", hostname="pc", platform="windows", api_key_hash="h1", dns_token="t1", tenant_id="x")
     phone = Device(id="d2", hostname="phone", platform="android", api_key_hash="h2", dns_token="t2", tenant_id="x")
     iphone = Device(id="d3", hostname="iphone", platform="ios", api_key_hash="profile-x", dns_token="t3", tenant_id="x",
                     metrics={"agentless": True})
-    for device, ago, expected in [(pc, 90, "online"), (pc, 150, "offline"), (phone, 90, "online"), (phone, 20 * 60, "asleep"),
+    for device, ago, expected in [(pc, 150, "online"), (pc, 200, "offline"), (phone, 90, "online"), (phone, 20 * 60, "asleep"),
                                   (phone, 31 * 60, "offline"), (iphone, 10 * 60, "online"), (iphone, 16 * 60, "idle")]:
         device.last_seen_at = now - timedelta(seconds=ago)
         assert presence.state(device, now) == expected, (device.hostname, ago)

@@ -186,6 +186,14 @@ def rotate_key(device: Device = Depends(current_device), db: Session = Depends(g
     return _key_urls(get_settings(), device, key)
 
 
+@router.post("/devices/{device_id}/presence")
+def presence_check_in(device: Device = Depends(current_device), db: Session = Depends(get_db)):
+    """A bare check-in from an agent whose live connection is down and whose main loop is busy (a scan, a long script):
+    it only keeps the device online. Authenticating it records the check-in."""
+    db.commit()
+    return {"ok": True}
+
+
 @router.post("/devices/{device_id}/heartbeat")
 def heartbeat(body: dict = Body(default={}), device: Device = Depends(current_device), db: Session = Depends(get_db)):
     device.agent_version = str(body.get("agentVersion") or device.agent_version)[:64]

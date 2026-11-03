@@ -536,3 +536,25 @@ def test_monitor_ticket_closes_only_after_recovery_and_successful_self_heal(clie
     beat(60)
     still = client.get(f"/api/console/tickets/{tickets[0]['id']}", headers=admin).json()
     assert still["status"] not in ("Resolved", "Closed")
+
+
+def test_presence_check_in_keeps_a_busy_agent_online(client, admin, device):
+    from datetime import timedelta
+
+    from fenrir_cloud import presence
+    from fenrir_cloud.db import session_factory
+    from fenrir_cloud.models import Device, utcnow
+
+    db = session_factory()()
+    try:
+        db.get(Device, device["deviceId"]).last_seen_at = utcnow() - timedelta(minutes=10)
+        db.commit()
+    finally:
+        db.close()
+    assert client.post(f"/api/v1/devices/{device['deviceId']}/presence", headers=device["headers"], json={}).json() == {"ok": True}
+    db = session_factory()()
+    try:
+        assert presence.state(db.get(Device, device["deviceId"])) == "online"
+    finally:
+        db.close()
+    assert client.post(f"/api/v1/devices/{device['deviceId']}/presence", headers={"X-Device-Api-Key": "wrong"}, json={}).status_code == 401
