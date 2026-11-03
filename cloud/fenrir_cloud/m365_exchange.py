@@ -71,7 +71,10 @@ def invoke(client: httpx.Client, connection, token: str, cmdlet: str, parameters
     tenant = connection.directory_id
     url = EXO.format(tenant=tenant)
     headers = {"Authorization": "Bearer " + token, "X-AnchorMailbox": ANCHOR.format(tenant=tenant),
-               "Content-Type": "application/json; charset=utf-8"}
+               "Content-Type": "application/json; charset=utf-8",
+               # Exchange's admin endpoint sends compressed replies httpx cannot always decode (DecodingError seen on
+               # a live tenant): ask for plain JSON.
+               "Accept-Encoding": "identity"}
     body = {"CmdletInput": {"CmdletName": cmdlet, "Parameters": parameters or {}}}
     rows: list[dict] = []
     for _ in range(50):  # pages

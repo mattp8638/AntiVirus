@@ -92,6 +92,8 @@ def unexpected(exc: Exception, service: str):
             return HTTPException(400, f"Microsoft refused access to {service}; the connection needs more permissions "
                                       f"(Microsoft 365 > Permissions > Update permissions)." + microsoft_said(exc.response))
         return HTTPException(502, f"{service} returned HTTP {exc.response.status_code}." + microsoft_said(exc.response))
+    if isinstance(exc, httpx.DecodingError):
+        return HTTPException(502, f"{service} answered, but Fenrir could not read the reply ({exc}).")
     if isinstance(exc, httpx.TimeoutException):
         return HTTPException(504, f"{service} did not answer in time ({exc.request.url.host}); try again.")
     if isinstance(exc, httpx.HTTPError):

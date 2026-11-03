@@ -101,3 +101,17 @@ def test_unexpected_failures_say_what_went_wrong_not_a_bare_500(client, admin, t
     monkeypatch.setattr(m365_exchange, "invoke", broken)
     response = client.get(base(conn) + "/quarantine", headers=admin)
     assert response.status_code == 500 and "AttributeError" in response.json()["detail"]
+
+
+def test_exchange_asks_for_uncompressed_replies(client, admin, tenant, fake, monkeypatch):
+    conn = connection(client, admin, tenant)
+    seen, handle = [], fake.handle
+
+    def spy(request):
+        if "adminapi" in str(request.url):
+            seen.append(request.headers.get("Accept-Encoding"))
+        return handle(request)
+
+    monkeypatch.setattr(fake, "handle", spy)
+    assert client.get(base(conn) + "/mailboxes", headers=admin).status_code == 200
+    assert seen and set(seen) == {"identity"}
