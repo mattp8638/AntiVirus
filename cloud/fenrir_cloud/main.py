@@ -100,6 +100,7 @@ def bootstrap(settings: Settings) -> None:
 
         blocklists.ensure_builtin(db)
         psa.ensure_default_boards(db, msp.id)
+        webpush.public_key(db)  # the push-notification key exists before anyone asks for it (reads never write)
         db.commit()
         sync_builtin_rules(db, settings.rules_dir)
         # Once, after the antimalware precision update: close open alerts the tuned rules no longer raise.

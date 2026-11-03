@@ -22,7 +22,7 @@ def _view(row: PushSubscription) -> dict:
 def application_key(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     """The key the browser subscribes with."""
     key = webpush.public_key(db)
-    db.commit()
+    db.commit()  # normally a read: the key is made at start-up
     return {"publicKey": key}
 
 
