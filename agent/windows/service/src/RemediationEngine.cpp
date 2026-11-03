@@ -97,14 +97,31 @@ std::vector<ProcessRecord> EnumerateProcesses() {
   return records;
 }
 
+// The process and everything below it, deepest first (children are ended before their parents). Iterative and
+// cycle-safe: Windows reuses process IDs, so a recorded parent can be a descendant (and the idle process is its own
+// parent); recursing on that loops until the stack overflows, which crashed the agent at start-up on busy servers.
 void CollectDescendants(const DWORD processId, const std::multimap<DWORD, DWORD>& childrenByParent,
                         std::vector<DWORD>& orderedIds) {
-  const auto range = childrenByParent.equal_range(processId);
-  for (auto it = range.first; it != range.second; ++it) {
-    CollectDescendants(it->second, childrenByParent, orderedIds);
+  std::set<DWORD> seen(orderedIds.begin(), orderedIds.end());
+  if (!seen.insert(processId).second) {
+    return;
   }
-
-  orderedIds.push_back(processId);
+  std::vector<DWORD> preorder{processId};
+  std::vector<DWORD> stack{processId};
+  while (!stack.empty() && preorder.size() < 4096) {
+    const auto current = stack.back();
+    stack.pop_back();
+    const auto range = childrenByParent.equal_range(current);
+    for (auto it = range.first; it != range.second; ++it) {
+      const auto child = it->second;
+      if (child == 0 || child == current || !seen.insert(child).second) {
+        continue;
+      }
+      preorder.push_back(child);
+      stack.push_back(child);
+    }
+  }
+  orderedIds.insert(orderedIds.end(), preorder.rbegin(), preorder.rend());
 }
 
 bool DeleteRegistryValueIfMatches(HKEY rootKey, const wchar_t* subKey, REGSAM wow64Flag,
@@ -490,6 +507,10 @@ RemediationEngine::RemediationEngine(const AgentConfig& config) : config_(config
 
 RemediationOutcome RemediationEngine::TerminateProcessByPid(const DWORD pid, const bool includeChildren) const {
   RemediationOutcome outcome;
+  if (pid <= 4) {  // the idle process and the kernel's System process are never ended
+    outcome.errorMessage = L"Refused to terminate a core Windows process.";
+    return outcome;
+  }
   if (pid == 0) {
     outcome.success = false;
     outcome.errorMessage = L"Realtime containment was requested without a valid process identifier.";
