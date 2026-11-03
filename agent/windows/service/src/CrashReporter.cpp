@@ -15,7 +15,9 @@ namespace {
 
 wchar_t g_reportPath[MAX_PATH * 2]{};
 
-// Everything below runs inside a crashed process: no heap allocation, no C++ streams, only stack buffers.
+// Everything below runs inside a crashed process: no heap allocation, no C++ streams. The large buffers are static
+// (one report per process, guarded below) because after a stack overflow only a few kilobytes of stack are left:
+// an 11 KB frame here faulted again and the report was never written.
 void AppendFrame(wchar_t* out, std::size_t capacity, const DWORD64 address) {
   HMODULE module = nullptr;
   wchar_t name[MAX_PATH]{};
@@ -47,10 +49,13 @@ LONG WINAPI OnUnhandledException(EXCEPTION_POINTERS* pointers) {
   if (InterlockedExchange(&entered, 1) != 0 || pointers == nullptr || pointers->ExceptionRecord == nullptr) {
     return EXCEPTION_CONTINUE_SEARCH;
   }
-  wchar_t stack[2048]{};
+  static wchar_t stack[2048];
+  static wchar_t text[3072];
+  static CONTEXT context;
+  stack[0] = L'\0';
 #if defined(_M_X64) || defined(__x86_64__)
   if (pointers->ContextRecord != nullptr) {
-    CONTEXT context = *pointers->ContextRecord;
+    context = *pointers->ContextRecord;
     for (int depth = 0; depth < 16 && context.Rip != 0; ++depth) {
       AppendFrame(stack, std::size(stack), context.Rip);
       DWORD64 imageBase = 0;
@@ -72,7 +77,6 @@ LONG WINAPI OnUnhandledException(EXCEPTION_POINTERS* pointers) {
   AppendFrame(stack, std::size(stack), reinterpret_cast<DWORD64>(pointers->ExceptionRecord->ExceptionAddress));
 #endif
   const auto* record = pointers->ExceptionRecord;
-  wchar_t text[3072]{};
   swprintf_s(text, L"code=0x%08lx;thread=%lu;build=%s;stack=%s", static_cast<unsigned long>(record->ExceptionCode),
              GetCurrentThreadId(), kFenrirBuildId, stack);
   WriteReport(text);
