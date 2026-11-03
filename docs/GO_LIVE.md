@@ -84,7 +84,10 @@ run.
   shows **Defender** under Blocks before it runs.
 - [ ] Roll out the rest. Give your pilot machines a policy whose **Updates → channel** is canary or beta: new agent
   versions reach that ring first, and a failure there pauses the rollout before anyone else gets it (**Settings → Agent
-  rollouts**, [updates](AUTO_UPDATE.md)).
+  rollouts**, [updates](AUTO_UPDATE.md)). Without rings Fenrir still pilots each build: up to 10% of a platform's
+  devices (at least one, at most five) take it first, and the rest wait until those have come back on the new build and
+  kept checking in for 30 minutes. A device that goes silent after taking a build pauses the rollout within about 20
+  minutes; **Agent health** says which devices are waiting and why.
 - [ ] If they use Microsoft 365, connect their tenant ([Microsoft 365 administration](M365_ADMINISTRATION.md)).
 
 ## Running it
