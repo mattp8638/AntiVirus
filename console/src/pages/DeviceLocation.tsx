@@ -5,6 +5,7 @@ import "leaflet/dist/leaflet.css";
 import { ago, api, fmtTime } from "../api";
 import { useApp } from "../app-context";
 import { ErrorNote, Modal, useAction, useData } from "../components/ui";
+import { SafeZones } from "../components/SafeZones";
 
 // Where a phone is and has been, plus the anti-theft controls: locate, alarm, lock, lost mode and erase.
 // Loaded only for phones (Leaflet + OpenStreetMap tiles), so desktops never download the map.
@@ -12,7 +13,7 @@ import { ErrorNote, Modal, useAction, useData } from "../components/ui";
 const RANGES = [{ hours: 24, label: "24 hours" }, { hours: 168, label: "7 days" }, { hours: 720, label: "30 days" }];
 const km = (m: number) => m >= 1000 ? `${(m / 1000).toFixed(m >= 10000 ? 0 : 1)} km` : `${Math.round(m)} m`;
 
-function TrackMap({ points, latest }: { points: any[]; latest: any }) {
+function TrackMap({ points, latest, zones = [] }: { points: any[]; latest: any; zones?: any[] }) {
   const box = useRef<HTMLDivElement>(null);
   const map = useRef<L.Map | null>(null);
   const layer = useRef<L.LayerGroup | null>(null);
@@ -35,6 +36,10 @@ function TrackMap({ points, latest }: { points: any[]; latest: any }) {
     const group = layer.current;
     if (!map.current || !group) return;
     group.clearLayers();
+    // Safe zones: green while the phone is inside, amber once it has left.
+    zones.filter((z) => z.enabled).forEach((z) => L.circle([z.latitude, z.longitude], {
+      radius: z.radius, color: z.state === "outside" ? "#f59e0b" : "#22c55e", weight: 2, dashArray: "6 4", fillOpacity: 0.06,
+    }).bindTooltip(`Safe zone: ${z.name}`).addTo(group));
     const coords = points.map((p) => [p.lat, p.lon] as [number, number]);
     if (coords.length > 1) L.polyline(coords, { color: "#38bdf8", weight: 3, opacity: 0.7 }).addTo(group);
     points.slice(0, -1).forEach((p) => L.circleMarker([p.lat, p.lon], { radius: 3, color: "#38bdf8", weight: 1, fillOpacity: 0.8 })
@@ -52,7 +57,7 @@ function TrackMap({ points, latest }: { points: any[]; latest: any }) {
       if (all.length === 1) map.current.setView(all[0], 16);
       else if (all.length > 1) map.current.fitBounds(L.latLngBounds(all).pad(0.2), { maxZoom: 17 });
     }
-  }, [points, latest]);
+  }, [points, latest, zones]);
   return <div ref={box} className="track-map" role="img" aria-label="Map of the device's location history" />;
 }
 
@@ -60,6 +65,7 @@ export function LocationTab({ device, onChanged }: { device: any; onChanged: () 
   const { can } = useApp();
   const [hours, setHours] = useState(24);
   const { data, error, reload } = useData<any>(`devices/${device.id}/locations`, { hours }, [hours]);
+  const { data: zoneData, reload: reloadZones } = useData<any>(`devices/${device.id}/geofences`);
   const { run, busy } = useAction();
   const [lostForm, setLostForm] = useState<{ message: string; phone: string } | null>(null);
   const [erasing, setErasing] = useState(false);
@@ -69,9 +75,9 @@ export function LocationTab({ device, onChanged }: { device: any; onChanged: () 
   const lost = data?.lostMode;
   // Watch closely while the phone is lost; otherwise refresh every minute.
   useEffect(() => {
-    const timer = setInterval(() => { if (document.visibilityState === "visible") reload(); }, lost?.enabled ? 15000 : 60000);
+    const timer = setInterval(() => { if (document.visibilityState === "visible") { reload(); reloadZones(); } }, lost?.enabled ? 15000 : 60000);
     return () => clearInterval(timer);
-  }, [reload, lost?.enabled]);
+  }, [reload, reloadZones, lost?.enabled]);
 
   const send = async (type: string, label: string, payload: any = {}) => {
     if (await run(() => api(`devices/${device.id}/commands`, { body: { type, payload, reason: `${label} from the Location tab` } }), `${label} sent; it runs when the phone next checks in`)) {
@@ -101,7 +107,7 @@ export function LocationTab({ device, onChanged }: { device: any; onChanged: () 
             {RANGES.map((r) => <button key={r.hours} className={`small ${hours === r.hours ? "primary" : ""}`} onClick={() => setHours(r.hours)}>{r.label}</button>)}
           </div>
           <ErrorNote error={error} />
-          {data && (data.points.length || latest) ? <TrackMap points={data.points} latest={latest} /> :
+          {data && (data.points.length || latest) ? <TrackMap points={data.points} latest={latest} zones={zoneData?.geofences || []} /> :
             <div className="empty" style={{ minHeight: 260 }}>{data ? "No location yet. Use Locate now, or check the phone allows Fenrir to use location all the time." : "Loading…"}</div>}
         </div>
         <div className="stack">
@@ -129,6 +135,7 @@ export function LocationTab({ device, onChanged }: { device: any; onChanged: () 
             </div>
             <p className="small muted" style={{ marginBottom: 0 }}>Actions reach the phone within a minute when it is online; otherwise as soon as it reconnects.</p>
           </div>}
+          <SafeZones device={device} latest={latest} onChanged={reloadZones} />
         </div>
       </div>
 

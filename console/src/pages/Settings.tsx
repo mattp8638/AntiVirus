@@ -9,6 +9,7 @@ import { confirmDialog, promptDialog } from "../components/dialogs";
 import { addPasskey, passkeysSupported } from "../passkeys";
 import { CustomFieldsSettings, RegionSettings } from "../components/Customization";
 import { useSearchParams } from "react-router-dom";
+import { PushCard } from "../components/PushCard";
 
 const ROLES = ["platform_admin", "msp_admin", "soc_analyst", "technician", "billing", "tenant_admin", "tenant_analyst", "viewer"];
 
@@ -704,6 +705,7 @@ function AccountTab() {
               onClick={async () => { const result = await run(() => api<any>("auth/password", { body: { currentPassword: current, newPassword: next } }), "Password changed. Your other sessions were signed out.");
                 if (result) { if (result.token) setToken(result.token); setCurrent(""); setNext(""); } }}>Change password</button>
     </div>
+    <PushCard />
     <MfaCard />
     <PasskeysCard />
     <SessionsCard />

@@ -224,6 +224,9 @@ def heartbeat(body: dict = Body(default={}), device: Device = Depends(current_de
         # Phones re-sync lost mode from every heartbeat, so a missed command cannot leave it stuck on or off.
         lost = device.lost_mode or {}
         reply["lostMode"] = {"enabled": bool(lost.get("enabled")), "message": lost.get("message", ""), "phone": lost.get("phone", "")}
+        from .. import geofence
+
+        reply["geofences"] = geofence.for_phone(db, device)  # safe zones: proximity alerts and faster location checks
     return reply
 
 

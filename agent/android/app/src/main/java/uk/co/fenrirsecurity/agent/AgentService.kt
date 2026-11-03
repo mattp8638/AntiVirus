@@ -50,7 +50,8 @@ class WakeReceiver : BroadcastReceiver() {
 
 /**
  * The agent: a foreground service (Android's requirement for running continuously) that checks in every minute,
- * runs the console's actions, reports location every 15 minutes (every 5 in lost mode) and the app list every 6 hours.
+ * runs the console's actions, reports location every 15 minutes (every 5 in lost mode or with safe zones, and at once
+ * when Android says a safe zone was crossed) and the app list every 6 hours.
  * App protection checks each app as it is installed or updated, and every app once a day.
  */
 class AgentService : Service() {
@@ -137,6 +138,7 @@ class AgentService : Service() {
             addDataScheme("package")
         })
         realtime = RealtimeLink(store) { worker.execute { runCatching { runCommands() } } }
+        SafeZones.register(this, store)  // Android forgets proximity alerts on restart
         worker.scheduleWithFixedDelay({ cycle(force = false) }, 3, 30, TimeUnit.SECONDS)
     }
 
@@ -145,7 +147,10 @@ class AgentService : Service() {
         when (intent?.action) {
             ACTION_STOP_ALARM -> alarm.stop()
             ACTION_CHECK_NOW -> {
-                if (intent.getStringExtra(EXTRA_REASON) == "boot") bootReason = "boot"
+                when (intent.getStringExtra(EXTRA_REASON)) {
+                    "boot" -> bootReason = "boot"
+                    "geofence" -> bootReason = "geofence"
+                }
                 worker.execute { cycle(force = true) }
             }
         }
@@ -200,7 +205,8 @@ class AgentService : Service() {
             // Every 60 seconds while awake (the server counts a phone online for 2 minutes, asleep for 30).
             if (force || now - store.lastHeartbeat >= (if (lost) 30_000L else 60_000L)) heartbeat()
             val reason = bootReason ?: if (store.lostMode.enabled) "lostmode" else "periodic"
-            if (bootReason != null || now - store.lastLocation >= (if (store.lostMode.enabled) 5 else 15) * 60_000L) {
+            val everyMinutes = if (store.lostMode.enabled || store.zones.isNotEmpty()) 5 else 15
+            if (bootReason != null || now - store.lastLocation >= everyMinutes * 60_000L) {
                 locate(reason)
                 bootReason = null
             }
@@ -230,6 +236,7 @@ class AgentService : Service() {
         store.lastHeartbeat = System.currentTimeMillis()
         store.lastContact = store.lastHeartbeat
         reply.lostMode?.let { if (it != store.lostMode) applyLostMode(it) }
+        reply.zones?.let { if (it != store.zones) { store.zones = it; SafeZones.register(this, store) } }
         Notifications.updateStatus(this, statusText())
         runCatching { PhonePolicy.sync(this, store, api(), reply.policyRevision) }
             .onFailure { store.lastError = "Policy: ${it.message ?: it.javaClass.simpleName}" }

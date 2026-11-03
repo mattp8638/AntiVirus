@@ -36,7 +36,7 @@ def test_phone_enrols_as_android_and_reports_locations(client, admin, tenant):
         {"lat": 51.5014, "lon": -0.1419, "accuracy": 20, "source": "network", "reason": "locate", "at": _iso(5)},
         {"lat": 200, "lon": 0}, {"lat": 0, "lon": 0}, "junk", {"lat": 51.5, "lon": -0.12, "at": _iso(-60)},  # skipped
     ]}).json()
-    assert result == {"stored": 2}
+    assert result == {"stored": 2, "crossings": []}
 
     view = client.get(console + "/locations", headers=admin, params={"hours": 24}).json()
     assert [p["source"] for p in view["points"]] == ["gps", "network"]  # oldest first
