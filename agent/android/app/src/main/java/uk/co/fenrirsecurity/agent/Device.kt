@@ -54,6 +54,14 @@ class FenrirAdminReceiver : DeviceAdminReceiver() {
     }
 
     override fun onEnabled(context: Context, intent: Intent) = AgentService.checkNow(context)
+
+    /** Older Androids finish work-profile set-up here instead of in ProvisioningActivity. */
+    override fun onProfileProvisioningComplete(context: Context, intent: Intent) {
+        val extras: android.os.PersistableBundle? = if (android.os.Build.VERSION.SDK_INT >= 33)
+            intent.getParcelableExtra(DevicePolicyManager.EXTRA_PROVISIONING_ADMIN_EXTRAS_BUNDLE, android.os.PersistableBundle::class.java)
+        else @Suppress("DEPRECATION") intent.getParcelableExtra(DevicePolicyManager.EXTRA_PROVISIONING_ADMIN_EXTRAS_BUNDLE)
+        WorkProfile.finish(context, extras)
+    }
 }
 
 object Device {

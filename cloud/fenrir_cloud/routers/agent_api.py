@@ -210,7 +210,11 @@ def heartbeat(body: dict = Body(default={}), device: Device = Depends(current_de
         rmm.evaluate_device(db, device)
     device.metrics = {**(device.metrics or {}), "commandCancellation": body.get("commandCancellation") is True}
     _sync_cmdb_from_agent(db, device)
-    _, policy_doc = services.effective_policy(db, device)
+    resolution, policy_doc = services.effective_policy(db, device)
+    if device.platform == "android" and isinstance(body.get("metrics"), dict):
+        from .. import android_compliance
+
+        android_compliance.record(db, device, body["metrics"], resolution["settings"])
     pending = db.execute(select(func.count()).where(Command.device_id == device.id, Command.status == "pending")).scalar() or 0
     db.commit()
     reply = {"receivedAt": _iso(utcnow()), "effectivePolicyRevision": policy_doc["revision"], "commandsPending": pending,

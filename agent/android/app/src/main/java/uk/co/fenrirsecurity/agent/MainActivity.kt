@@ -87,6 +87,11 @@ class MainActivity : Activity() {
     }
 
     private fun renderSetup() {
+        if (store.pendingEnrolment.isNotBlank()) {
+            content.addView(label("This work profile was created but could not enrol with your IT team's server${store.lastError.takeIf { it.isNotBlank() }?.let { ": $it" } ?: ""}.", muted))
+            content.addView(button("Try again", primary = true) { WorkProfile.retry(this); message = "Enrolling…"; render() })
+            return
+        }
         if (store.removed) content.addView(label("Your IT team removed this phone from management. Scan a new code to set it up again.", muted))
         content.addView(label("Set up this phone with your IT team. In their Fenrir console: Deploy agents → Add a phone, then scan the code.", muted))
         content.addView(button("Scan enrolment code", primary = true) { scan() })
@@ -107,7 +112,7 @@ class MainActivity : Activity() {
         if (lost.enabled) content.addView(card("Lost mode is on", "This phone was reported lost. It is locked and sharing its location.", Color.rgb(127, 29, 29)))
         val last = store.lastContact
         content.addView(label(
-            "Managed by ${store.server.removePrefix("https://")}\n" +
+            "Managed by ${store.server.removePrefix("https://")}" + (if (PhonePolicy.workProfile(this)) " (work profile)" else "") + "\n" +
                 (if (last > 0) "Last check-in ${DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(last))}" else "Connecting…") +
                 (store.lastError.takeIf { it.isNotBlank() }?.let { "\nProblem: $it" } ?: ""),
             muted,
@@ -141,6 +146,12 @@ class MainActivity : Activity() {
                 startActivity(Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, Uri.parse("package:$packageName")))
             }
         }
+        content.addView(heading("Optional"))
+        step("Remote support control", Remote.accessibilityEnabled(this),
+            "Lets your IT team tap and type on this phone during a support session you allow. Without it they can only see " +
+                "the screen. In the list, choose Fenrir remote support and turn it on.") {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }
         content.addView(label("Version ${BuildConfig.VERSION_NAME} · device ${store.deviceId}", muted))
     }
 
@@ -169,6 +180,13 @@ class MainActivity : Activity() {
 
     private fun enrol(target: EnrollTarget) {
         if (busy) return
+        if (target.workProfile && !PhonePolicy.workProfile(this)) {
+            // A personal phone: Android creates a work profile with Fenrir as its owner, and Fenrir enrols from inside it.
+            val why = WorkProfile.start(this, target.server, target.token)
+            message = why ?: "Follow Android's steps to create the work profile."
+            render()
+            return
+        }
         busy = true
         message = "Enrolling with ${target.server.removePrefix("https://")}…"
         render()
@@ -193,6 +211,16 @@ class MainActivity : Activity() {
                 render()
             }
         }
+    }
+
+    @Deprecated("Activity result callback")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != WorkProfile.REQUEST) return
+        message = if (resultCode == RESULT_OK)
+            "Work profile created. Fenrir now runs in the work profile: open the Fenrir app with the briefcase badge to finish setting it up."
+        else "The work profile was not created. Scan the code again to retry."
+        render()
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {

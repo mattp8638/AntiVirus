@@ -37,7 +37,7 @@ log = logging.getLogger("fenrir.remote")
 AGENT_CONNECT_MINUTES = 10
 VIEWER_TOKEN_MINUTES = 15
 MAX_SESSION_HOURS = 12
-INPUT_TYPES = {"mm", "md", "mu", "wh", "kd", "ku", "type", "cad", "clip.set", "blank", "lock"}
+INPUT_TYPES = {"mm", "md", "mu", "wh", "kd", "ku", "type", "cad", "clip.set", "blank", "lock", "nav"}
 CHANNEL_POLICY = {"term": "allowTerminal", "files": "allowFileTransfer"}
 AUDITED = {("backstage", "launch"), ("files", "get"), ("files", "put"), ("files", "delete"), ("files", "mkdir"), ("input", "cad"), ("term", "open"),
            ("sys", "blank"), ("input", "lock"), ("sys", "reboot"), ("tunnel", "open")}
@@ -111,6 +111,8 @@ def start_session(db: Session, device: Device, technician: str, mode: str = "des
 
     if mode not in MODES:
         raise ValueError(f"mode must be one of {', '.join(sorted(MODES))}")
+    if device.platform == "android" and mode != "desktop":
+        raise ValueError("Android phones support screen sharing and control only (no terminal, files, backstage or tunnels)")
     policy = remote_policy(db, device)
     if not policy.get("enabled", True):
         raise PermissionError("Remote access is turned off by this device's policy")

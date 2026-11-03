@@ -61,6 +61,36 @@ class Store(context: Context) {
         return true
     }
 
+    // Policy ("android" section) and what applying it left behind.
+    var policyRevision: String
+        get() = prefs.getString("policyRevision", "") ?: ""
+        set(value) = prefs.edit().putString("policyRevision", value).apply()
+    var policyJson: String
+        get() = prefs.getString("policyJson", "{}") ?: "{}"
+        set(value) = prefs.edit().putString("policyJson", value).apply()
+    var hiddenApps: Set<String>
+        get() = prefs.getStringSet("hiddenApps", emptySet()).orEmpty()
+        set(value) = prefs.edit().putStringSet("hiddenApps", value).apply()
+    var wifiApplied: String
+        get() = prefs.getString("wifiApplied", "") ?: ""
+        set(value) = prefs.edit().putString("wifiApplied", value).apply()
+    /** A work profile whose enrolment failed (server unreachable): kept so the user can retry from the app. */
+    var pendingEnrolment: String
+        get() = prefs.getString("pendingEnrolment", "") ?: ""
+        set(value) = prefs.edit().putString("pendingEnrolment", value).apply()
+
+    /** True the first time for a key: each policy prompt is shown once per policy revision. */
+    @Synchronized fun promptedOnce(key: String): Boolean = once("prompted", key)
+    /** True once per required app and URL, so a failing install is not retried every minute. */
+    @Synchronized fun installAttempted(key: String): Boolean = once("installs", key)
+
+    private fun once(set: String, key: String): Boolean {
+        val seen = prefs.getStringSet(set, emptySet()).orEmpty()
+        if (key in seen) return false
+        prefs.edit().putStringSet(set, (seen + key).toList().takeLast(300).toSet()).apply()
+        return true
+    }
+
     val enrolled: Boolean get() = server.isNotEmpty() && deviceId.isNotEmpty() && apiKey.isNotEmpty() && !removed
 
     fun saveEnrolment(server: String, deviceId: String, apiKey: String) {

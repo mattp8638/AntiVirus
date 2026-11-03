@@ -13,7 +13,8 @@ import java.util.TimeZone
 // cloud sends, and the JSON the agent posts back. It mirrors agent/linux/pkg/fleet/client.go.
 
 /** Where to enrol: the console's QR code (https://server/enroll-phone#t=TOKEN) or fenrir://enroll?server=&token=. */
-data class EnrollTarget(val server: String, val token: String)
+/** workProfile: set up a work profile (personal phone) instead of device admin only. */
+data class EnrollTarget(val server: String, val token: String, val workProfile: Boolean = false)
 
 object EnrollLink {
     fun parse(text: String): EnrollTarget? {
@@ -25,13 +26,14 @@ object EnrollLink {
                 val query = params(uri.rawQuery)
                 val server = query["server"]?.let(::normaliseServer) ?: return null
                 val token = query["token"]?.takeIf { it.isNotBlank() } ?: return null
-                EnrollTarget(server, token)
+                EnrollTarget(server, token, query["profile"] == "work")
             }
             "https", "http" -> {
                 if (uri.path?.trimEnd('/') != "/enroll-phone") return null
-                val token = params(uri.rawFragment)["t"]?.takeIf { it.isNotBlank() } ?: return null
+                val fragment = params(uri.rawFragment)
+                val token = fragment["t"]?.takeIf { it.isNotBlank() } ?: return null
                 val port = if (uri.port == -1) "" else ":${uri.port}"
-                EnrollTarget("${uri.scheme.lowercase()}://${uri.host}$port", token)
+                EnrollTarget("${uri.scheme.lowercase()}://${uri.host}$port", token, fragment["p"] == "work")
             }
             else -> null
         }
@@ -88,7 +90,8 @@ data class LostMode(val enabled: Boolean, val message: String, val phone: String
     }
 }
 
-data class HeartbeatReply(val commandsPending: Int, val approved: Boolean, val lostMode: LostMode?, val rotateKey: Boolean = false)
+data class HeartbeatReply(val commandsPending: Int, val approved: Boolean, val lostMode: LostMode?, val rotateKey: Boolean = false,
+                          val policyRevision: String = "")
 
 /** One location fix, as posted to /location. */
 data class Fix(

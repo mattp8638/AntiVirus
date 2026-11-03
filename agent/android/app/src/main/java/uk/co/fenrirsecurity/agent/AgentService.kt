@@ -87,6 +87,8 @@ class AgentService : Service() {
     private lateinit var store: Store
     private val worker = Executors.newSingleThreadScheduledExecutor()
     private lateinit var alarm: AlarmPlayer
+    // The live connection: the server pushes "commands" (a remote session above all) instead of waiting for a check-in.
+    private var realtime: RealtimeLink? = null
     private var bootReason: String? = null
     private val screenOn = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -134,6 +136,7 @@ class AgentService : Service() {
             addAction(Intent.ACTION_PACKAGE_FULLY_REMOVED)
             addDataScheme("package")
         })
+        realtime = RealtimeLink(store) { worker.execute { runCatching { runCommands() } } }
         worker.scheduleWithFixedDelay({ cycle(force = false) }, 3, 30, TimeUnit.SECONDS)
     }
 
@@ -156,6 +159,7 @@ class AgentService : Service() {
         runCatching { unregisterReceiver(screenOn) }
         runCatching { unregisterReceiver(packages) }
         alarm.stop()
+        realtime?.stop()
         worker.shutdownNow()
         super.onDestroy()
     }
@@ -203,6 +207,7 @@ class AgentService : Service() {
             if (now - store.lastInventory >= 6 * 3600_000L) sendInventory()
             if (now - store.lastAppScan >= 24 * 3600_000L) checkApps()
             flush()
+            realtime?.ensure()
             store.lastError = ""
         } catch (error: ApiException) {
             if (error.status == 401) {
@@ -219,11 +224,15 @@ class AgentService : Service() {
     }
 
     private fun heartbeat() {
-        val reply = api().heartbeat(BuildConfig.VERSION_NAME, Device.metrics(this))
+        val metrics = Device.metrics(this)
+            .put("compliance", PhonePolicy.compliance(this, store)).put("managementMode", PhonePolicy.mode(this))
+        val reply = api().heartbeat(BuildConfig.VERSION_NAME, metrics)
         store.lastHeartbeat = System.currentTimeMillis()
         store.lastContact = store.lastHeartbeat
         reply.lostMode?.let { if (it != store.lostMode) applyLostMode(it) }
         Notifications.updateStatus(this, statusText())
+        runCatching { PhonePolicy.sync(this, store, api(), reply.policyRevision) }
+            .onFailure { store.lastError = "Policy: ${it.message ?: it.javaClass.simpleName}" }
         if (reply.rotateKey) rotateKey()
         if (reply.commandsPending > 0) runCommands()
     }
@@ -273,7 +282,7 @@ class AgentService : Service() {
             Outcome(true, JSONObject().put("enabled", store.lostMode.enabled))
         }
         "device.wipe" -> if (!Device.adminActive(this)) fail("Fenrir is not a device administrator on this phone")
-        else Outcome(true, JSONObject().put("erasing", true)) {
+        else Outcome(true, JSONObject().put("erasing", true).put("scope", if (PhonePolicy.workProfile(this)) "work profile" else "phone")) {
             // Reported first: once the reset starts the phone never reports again.
             Device.wipe(this)?.let { why ->
                 store.queueEvent(Device.event("agent.wipe.failed", "The phone refused to erase", JSONObject().put("reason", why)))
@@ -293,7 +302,12 @@ class AgentService : Service() {
             val why = if (target.isBlank()) "No app given" else Device.suspendApp(this, target, suspend)
             if (why != null) fail(why) else Outcome(true, JSONObject().put("suspended", suspend))
         }
-        "policy.refresh" -> Outcome(true, JSONObject())
+        "policy.refresh" -> {
+            PhonePolicy.sync(this, store, api(), "", force = true)
+            Outcome(true, JSONObject().put("revision", store.policyRevision).put("mode", PhonePolicy.mode(this)))
+        }
+        "remote.session.start" -> Remote.start(this, command.payload)?.let { fail(it) }
+            ?: Outcome(true, JSONObject().put("started", true).put("control", Remote.controlAvailable()))
         else -> fail("${command.type} is not supported on Android")
     }
 
