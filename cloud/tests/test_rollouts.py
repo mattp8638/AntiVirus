@@ -166,3 +166,55 @@ def test_devices_that_do_not_auto_update_do_not_fail_the_rollout(client, admin, 
     heartbeat(client, canary, "oldbuild0")  # stays on the old build, as configured
     view = client.get("/api/console/agent-rollouts", headers=admin).json()["rollouts"][0]
     assert view["state"] == "active" and view["devices"]["failed"] == 0
+
+
+def _linux_build(tmp_path, monkeypatch, build):
+    from fenrir_cloud import deployment_installers
+
+    rollouts._RING_CACHE.clear()
+    monkeypatch.setattr(deployment_installers, "DOWNLOADS", tmp_path)
+    monkeypatch.setattr(deployment_installers, "SIGNED_RELEASES", tmp_path / "none")
+    (tmp_path / "fenrir-agent-linux-amd64").write_bytes(b"\x7fELF new")
+    (tmp_path / "linux-build.json").write_text(json.dumps({"version": "1.7.0", "buildId": build, "sha256": {"amd64": "a" * 64}}))
+
+
+def test_without_rings_a_pilot_device_goes_first(client, admin, tenant, tmp_path, monkeypatch):
+    _linux_build(tmp_path, monkeypatch, "pilotbuild")
+    devices = [enroll(client, admin, tenant, hostname=f"FLEET-{i}", os_version="Ubuntu 22.04.4 LTS", serial=f"F-{i}") for i in range(3)]
+    for d in devices:
+        heartbeat(client, d, "oldbuild0")
+    first, *rest = devices
+    assert check(client, first)["available"] is True
+    for d in rest:  # everyone else waits for the pilot
+        reply = check(client, d)
+        assert reply["available"] is False and "first" in reply["rollout"]
+    heartbeat(client, first, "pilotbuild")  # the pilot came back on the new build
+    assert check(client, rest[0])["available"] is False  # and must keep checking in for a while
+    db = session_factory()()
+    try:
+        for row in db.query(AgentRolloutDevice):
+            row.resolved_at -= timedelta(minutes=31)
+        db.commit()
+    finally:
+        db.close()
+    assert all(check(client, d)["available"] is True for d in rest)
+
+
+def test_a_device_silent_after_taking_the_build_pauses_the_rollout_early(client, admin, tenant, tmp_path, monkeypatch):
+    from fenrir_cloud.models import Device
+
+    _linux_build(tmp_path, monkeypatch, "silentbuild")
+    devices = [enroll(client, admin, tenant, hostname=f"QUIET-{i}", os_version="Ubuntu 22.04.4 LTS", serial=f"Q-{i}") for i in range(2)]
+    for d in devices:
+        heartbeat(client, d, "oldbuild0")
+    assert check(client, devices[0])["available"] is True
+    backdate(minutes=25)  # offered 25 minutes ago ...
+    db = session_factory()()
+    try:  # ... and not heard from since just after
+        row = db.get(Device, devices[0]["deviceId"])
+        row.last_seen_at = utcnow() - timedelta(minutes=24)
+        db.commit()
+    finally:
+        db.close()
+    reply = check(client, devices[1])
+    assert reply["available"] is False and "paused" in reply["rollout"] and "stopped checking in" in reply["rollout"]

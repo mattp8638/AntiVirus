@@ -159,6 +159,9 @@ if deploy; then
   echo "${RELEASE:-$BRANCH@${target:0:8}}" > "$DEPLOY_DIR/.deployed-release" 2>/dev/null || true
   rm -f "$FAILED_FILE"
   docker image prune -f >/dev/null 2>&1 || true
+  # Every build compiles the agents, and BuildKit keeps each build's layers: without this the cache grows by
+  # gigabytes a deploy. Layers older than three days go; the latest build's stay so the next one is still quick.
+  docker builder prune -f --filter until=72h >/dev/null 2>&1 || true
   exit 0
 fi
 

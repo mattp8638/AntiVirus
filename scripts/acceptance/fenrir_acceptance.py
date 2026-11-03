@@ -593,6 +593,44 @@ def key_rotation(ctx: Context, device: dict) -> tuple[str, dict]:
             {"rotatedAt": row["apiKeyRotatedAt"], "lastSeenAt": seen})
 
 
+@scenario("service_restart", ("windows",), "Stops cleanly when an upgrade asks it to, then starts and reports again")
+def service_restart(ctx: Context, device: dict) -> tuple[str, dict]:
+    """What every silent upgrade does first: the agent's authorised stop (--stop). A stop that hangs left real machines
+    running but silent after an upgrade (error 1053), so it must reach STOPPED quickly, then start and check in."""
+    import subprocess
+
+    if os.name != "nt" or os.environ.get("COMPUTERNAME", "").lower() != str(device.get("hostname", "")).lower():
+        raise Skip("runs on the Windows machine under test only")
+    import winreg
+
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Services\FenrirAgent") as key:
+        image = str(winreg.QueryValueEx(key, "ImagePath")[0]).strip()
+    exe = image[1:image.index('"', 1)] if image.startswith('"') else image.split()[0]
+
+    def state() -> str:
+        out = subprocess.run(["sc.exe", "query", "FenrirAgent"], capture_output=True, text=True).stdout
+        return next((line.split()[-1] for line in out.splitlines() if "STATE" in line), "UNKNOWN")
+
+    first = ctx.device(device["id"])["device"].get("lastSeenAt")
+    started = time.monotonic()
+    stop = subprocess.run([exe, "--stop"], capture_output=True, text=True, timeout=120)
+    took = round(time.monotonic() - started, 1)
+    if stop.returncode != 0 or state() != "STOPPED":
+        raise Check(f"the authorised stop failed after {took}s (exit {stop.returncode}, state {state()}): "
+                    f"{(stop.stdout + stop.stderr).strip()[-300:]}")
+    if took > 30:
+        raise Check(f"the agent took {took}s to stop; an upgrade gives it 20-30 seconds")
+    subprocess.run(["sc.exe", "start", "FenrirAgent"], capture_output=True, text=True)
+    wait_for("the service to be running again", lambda: state() == "RUNNING", 60, interval=3)
+
+    def reported():
+        seen = ctx.device(device["id"])["device"].get("lastSeenAt")
+        return seen if seen and seen != first else None
+
+    seen = wait_for("a check-in after the restart", reported, max(ctx.args.timeout, 180), interval=10)
+    return f"stopped in {took}s when asked, started again and checked in at {seen}", {"stopSeconds": took, "lastSeenAt": seen}
+
+
 @scenario("patch_scan", ("windows", "linux"), "Scans for missing updates")
 def patch_scan(ctx: Context, device: dict) -> tuple[str, dict]:
     row = ctx.command(device, "patch.scan", timeout=max(ctx.args.timeout, 900))
