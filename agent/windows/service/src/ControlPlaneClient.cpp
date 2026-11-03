@@ -1130,6 +1130,14 @@ std::string ControlPlaneClient::FetchCommandSecret(const AgentState& state, cons
       .body;
 }
 
+void ControlPlaneClient::SendPresence(const AgentState& state) const {
+  if (state.deviceId.empty()) {
+    return;
+  }
+  RequestJson(L"POST", JoinUrl(baseUrl_, L"/api/v1/devices/" + state.deviceId + L"/presence"), "{}",
+              ExtractDeviceApiKeyFromCommandChannelUrl(state.commandChannelUrl));
+}
+
 HeartbeatResult ControlPlaneClient::SendHeartbeat(const AgentState& state, const std::string& metricsJson) const {
   if (state.deviceId.empty()) {
     throw std::runtime_error("Cannot send heartbeat without a device identifier");

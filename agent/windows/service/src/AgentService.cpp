@@ -3728,20 +3728,32 @@ void AgentService::RealtimeLoop() {
       SetEvent(wakeEvent_);  // Main loop owns execution and journal persistence.
       if (interactiveWakeEvent_) SetEvent(interactiveWakeEvent_);
       realtimeConnected_ = true;
-      // A watcher closes the socket when the service stops, which unblocks Receive.
+      // A watcher pings every 25 seconds (the server answers "pong") and closes the socket when the service stops or
+      // the server has gone quiet: a connection dropped silently (a router or proxy timing it out, the server
+      // restarting, the network changing) would otherwise leave Receive waiting forever while the agent believes it
+      // is connected and the server shows the device offline.
       std::atomic<bool> done{false};
+      std::atomic<ULONGLONG> lastHeard{GetTickCount64()};
       std::thread watcher([&] {
         while (!done) {
-          if (WaitForSingleObject(stopEvent_, 30000) == WAIT_OBJECT_0) {
+          if (WaitForSingleObject(stopEvent_, 25000) == WAIT_OBJECT_0) {
             socket.Close();
             return;
           }
-          socket.SendText("ping");
+          if (done) return;
+          if (!socket.SendText("ping") || GetTickCount64() - lastHeard.load() > 75000) {
+            socket.Close();  // unblocks Receive; the loop reconnects
+            return;
+          }
         }
       });
       std::string message;
       bool binary = false;
       while (!ShouldStop() && socket.Receive(&message, &binary)) {
+        lastHeard = GetTickCount64();
+        if (message == "pong") {
+          continue;
+        }
         if (message.find("\"commands\"") != std::string::npos || message.find("\"pollNow\":true") != std::string::npos) {
           SetEvent(wakeEvent_);
           if (interactiveWakeEvent_) SetEvent(interactiveWakeEvent_);
@@ -3766,10 +3778,17 @@ void AgentService::RealtimeLoop() {
     if (GetTickCount64() - started > 60000) {
       backoff = 5000;
     }
+    // While the live connection is down, still tell the server the agent is here: the main loop's heartbeat can be
+    // minutes away when it is busy (a scan, a long script, an update), and the device must not show offline for that.
+    try {
+      controlPlaneClient_->SendPresence(IdentitySnapshot());
+    } catch (const std::exception&) {
+      // the server is unreachable too; the next attempt says so
+    }
     if (WaitForSingleObject(stopEvent_, backoff) == WAIT_OBJECT_0) {
       return;
     }
-    backoff = std::min<DWORD>(backoff * 2, 120000);
+    backoff = std::min<DWORD>(backoff * 2, 60000);
   }
 }
 

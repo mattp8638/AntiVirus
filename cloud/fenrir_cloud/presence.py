@@ -22,7 +22,9 @@ from sqlalchemy import and_, or_
 
 from .models import Device, utcnow
 
-ONLINE_AFTER = timedelta(minutes=2)
+# Agents ping every 25 seconds on their live connection (or check in every minute without one): three minutes rides
+# out a missed ping or two, a reconnect or a server restart without showing a working device offline.
+ONLINE_AFTER = timedelta(minutes=3)
 PHONE_ASLEEP_AFTER = timedelta(minutes=30)
 PROFILE_IDLE_AFTER = timedelta(minutes=15)
 TOUCH_EVERY = timedelta(seconds=20)  # the most often one device's last-seen time is written
