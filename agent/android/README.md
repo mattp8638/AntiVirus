@@ -66,6 +66,31 @@ them), automatic permission grants; Wi-Fi networks (Android asks the user once) 
 Each heartbeat reports compliance. The device's **Security → Compliance** shows each requirement, met or not, and a
 phone that does not meet its policy raises one alert that closes itself when it does.
 
+## Safe zones (geofencing)
+
+For looking after someone (an older relative, a child): the phone's **Location** tab → **Safe zones** → **Add safe
+zone**. Place the circle on the map (it starts at the phone's last location), choose its radius, whether to alert when
+the phone **leaves**, **arrives** or both, and optionally only at certain times (for example weekdays 08:30-15:30 for
+school, or 21:00-07:00 for home at night, in the time zone set in Settings → Region).
+
+When the phone crosses the edge Fenrir:
+
+- opens an alert on the phone (`android:geofence`) with a map link; a "left" alert closes itself when the phone is
+  back inside;
+- sends a **push notification** to the people chosen on the zone. Each of them turns notifications on once per phone
+  or computer in **Settings → Account → Notifications on this device** (Chrome, Edge, Firefox; on iPhone and iPad add
+  the console to the home screen first). No email server is needed;
+- emails any addresses on the zone, if email (`FENRIR_SMTP_*`) is set up;
+- sends `geofence.exited` / `geofence.entered` to webhooks (Slack, Teams, ntfy or your own);
+- optionally tells the person on the phone, so they know they are being looked after.
+
+How it works: the phone receives its zones with each check-in, asks Android for proximity alerts (no Google Play
+services needed) so a crossing is reported at once, and reports its location every 5 minutes while it has zones (the
+fallback when Android delays a proximity alert). The server decides inside or outside: a fix counts as outside only
+when it is beyond the radius plus its own uncertainty, fixes less precise than 500 m are ignored, and the first fix
+after a zone is made only sets its state. Alerts for the same zone are at most one per 10 minutes. The phone needs
+**location all the time** allowed. Up to 20 zones per phone.
+
 ## Remote support
 
 **Connect** on a phone shares its screen in the console's remote viewer:

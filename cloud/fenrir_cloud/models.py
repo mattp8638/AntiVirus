@@ -245,6 +245,45 @@ class DeviceLocation(Base):
     received_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class Geofence(Base):
+    """A safe zone for one phone: a circle, and whether leaving or arriving raises an alert (with active hours)."""
+
+    __tablename__ = "geofences"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("geo"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    latitude: Mapped[float] = mapped_column(Float)
+    longitude: Mapped[float] = mapped_column(Float)
+    radius_m: Mapped[float] = mapped_column(Float, default=200)
+    alert_on: Mapped[str] = mapped_column(String(10), default="exit")  # exit | enter | both
+    schedule: Mapped[dict] = mapped_column(JSON, default=dict)  # {} = always, or {"days": [0-6, Monday=0], "start": "HH:MM", "end": "HH:MM"}
+    severity: Mapped[str] = mapped_column(String(10), default="high")
+    notify: Mapped[dict] = mapped_column(JSON, default=dict)  # {"users": [user ids for push], "emails": [...], "phone": bool}
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    state: Mapped[str] = mapped_column(String(10), default="unknown")  # inside | outside | unknown
+    state_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_alert_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class PushSubscription(Base):
+    """A browser or installed console app that receives push notifications for one user (Web Push, RFC 8030)."""
+
+    __tablename__ = "push_subscriptions"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("psh"))
+    user_id: Mapped[str] = mapped_column(String(32), index=True)
+    endpoint: Mapped[str] = mapped_column(String(1000), unique=True)
+    p256dh: Mapped[str] = mapped_column(String(200))
+    auth: Mapped[str] = mapped_column(String(100))
+    label: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    failures: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class DeviceProfile(Base):
     """The agent's full system profile (hardware, disks and SMART, volumes, users, network, battery, security
     posture, event-log problems...), replaced each time the agent reports it (every 6 hours or on demand)."""

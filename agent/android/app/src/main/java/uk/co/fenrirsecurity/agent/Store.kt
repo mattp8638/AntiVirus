@@ -8,6 +8,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import uk.co.fenrirsecurity.agent.core.Fix
 import uk.co.fenrirsecurity.agent.core.LostMode
+import uk.co.fenrirsecurity.agent.core.Zone
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -39,6 +40,15 @@ class Store(context: Context) {
     var lostMode: LostMode
         get() = LostMode.from(prefs.getString("lostMode", null)?.let { runCatching { JSONObject(it) }.getOrNull() }) ?: LostMode.OFF
         set(value) = prefs.edit().putString("lostMode", value.toJson().toString()).apply()
+
+    /** Safe zones from the last heartbeat (re-registered with Android after a restart). */
+    var zones: List<Zone>
+        get() = Zone.list(prefs.getString("zones", null)?.let { runCatching { JSONArray(it) }.getOrNull() }) ?: emptyList()
+        set(value) = prefs.edit().putString("zones", JSONArray().apply { value.forEach { put(it.toJson()) } }.toString()).apply()
+    /** Proximity-alert request codes registered with Android, so old ones are removed when the zones change. */
+    var zoneCodes: Set<String>
+        get() = prefs.getStringSet("zoneCodes", emptySet()).orEmpty()
+        set(value) = prefs.edit().putStringSet("zoneCodes", value).apply()
 
     var lastHeartbeat: Long by LongPref("lastHeartbeat")
     var lastLocation: Long by LongPref("lastLocation")

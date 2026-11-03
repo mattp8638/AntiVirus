@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 57
+LATEST_MIGRATION = 58
 
 def init_engine(url: str) -> Engine:
     global _engine, _session_factory
@@ -441,6 +441,13 @@ def migrate(bind: Engine) -> list[int]:
                 ensure_columns(Base, conn)
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (57)"))
                 applied.append(57)
+            if 58 not in versions:
+                # Phone safe zones (geofences) and push notifications to the console app
+                from .models import Geofence, PushSubscription
+                Geofence.__table__.create(conn, checkfirst=True)
+                PushSubscription.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (58)"))
+                applied.append(58)
             conn.commit()
         except Exception:
             conn.rollback()

@@ -107,6 +107,7 @@
         </service>
 
         <receiver android:name=".WakeReceiver" android:exported="false" />
+        <receiver android:name=".SafeZoneReceiver" android:exported="false" />
         <receiver android:name=".UninstallResultReceiver" android:exported="false" />
         <receiver android:name=".InstallResultReceiver" android:exported="false" />
 

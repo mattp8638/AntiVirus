@@ -44,6 +44,16 @@ self.addEventListener("fetch", (event) => {
   }
 });
 
+// Push notifications (Settings → Account → Notifications on this device): the server sends {title, body, url, tag}.
+self.addEventListener("push", (event) => {
+  let message = {};
+  try { message = event.data ? event.data.json() : {}; } catch (_) { message = { body: event.data ? event.data.text() : "" }; }
+  event.waitUntil(self.registration.showNotification(message.title || "Fenrir", {
+    body: message.body || "", tag: message.tag || undefined, renotify: Boolean(message.tag),
+    icon: "/icon-192.png", badge: "/icon-192.png", data: { url: message.url || "/" },
+  }));
+});
+
 // Notification clicks (alerts pushed to an installed console) open the linked page.
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();

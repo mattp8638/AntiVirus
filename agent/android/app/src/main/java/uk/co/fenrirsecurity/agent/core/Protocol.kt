@@ -91,7 +91,27 @@ data class LostMode(val enabled: Boolean, val message: String, val phone: String
 }
 
 data class HeartbeatReply(val commandsPending: Int, val approved: Boolean, val lostMode: LostMode?, val rotateKey: Boolean = false,
-                          val policyRevision: String = "")
+                          val policyRevision: String = "", val zones: List<Zone>? = null)
+
+/** A safe zone set in the console: a circle; crossing it is reported straight away (the server decides who to alert). */
+data class Zone(val id: String, val name: String, val lat: Double, val lon: Double, val radius: Float, val notifyPhone: Boolean) {
+    fun toJson(): JSONObject = JSONObject().put("id", id).put("name", name).put("lat", lat).put("lon", lon)
+        .put("radius", radius.toDouble()).put("notifyPhone", notifyPhone)
+
+    companion object {
+        fun from(json: JSONObject?): Zone? {
+            json ?: return null
+            val id = json.optString("id").take(40)
+            val lat = json.optDouble("lat", Double.NaN)
+            val lon = json.optDouble("lon", Double.NaN)
+            val radius = json.optDouble("radius", Double.NaN)
+            if (id.isEmpty() || lat.isNaN() || lon.isNaN() || radius.isNaN() || lat !in -90.0..90.0 || lon !in -180.0..180.0 || radius <= 0) return null
+            return Zone(id, json.optString("name", "").take(120), lat, lon, radius.toFloat(), json.optBoolean("notifyPhone", false))
+        }
+
+        fun list(array: org.json.JSONArray?): List<Zone>? = array?.let { a -> (0 until a.length()).mapNotNull { from(a.optJSONObject(it)) }.take(20) }
+    }
+}
 
 /** One location fix, as posted to /location. */
 data class Fix(

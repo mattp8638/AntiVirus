@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from .. import audit, ratelimit, services
 from ..db import get_db
 from ..deps import Principal, current_device, current_principal
-from ..models import Device, DeviceLocation, utcnow
+from ..models import Device, DeviceLocation, Geofence, utcnow
 
 agent = APIRouter(prefix="/api/v1/devices/{device_id}", tags=["Mobile agent"])
 console = APIRouter(prefix="/api/console/devices/{device_id}", tags=["Mobile"])
@@ -25,7 +25,7 @@ console = APIRouter(prefix="/api/console/devices/{device_id}", tags=["Mobile"])
 RETENTION = timedelta(days=90)
 MAX_POINTS_PER_REPORT = 200
 SOURCES = {"gps", "network", "fused", "passive", "wifi"}
-REASONS = {"periodic", "locate", "lostmode", "boot", "sim", "moved"}
+REASONS = {"periodic", "locate", "lostmode", "boot", "sim", "moved", "geofence"}
 
 
 def _parse_time(value) -> datetime | None:
@@ -73,6 +73,7 @@ def report_location(device_id: str, body: dict = Body(...), device: Device = Dep
         raise HTTPException(422, "points must be a non-empty list")
     now = utcnow()
     stored = 0
+    accepted: list[dict] = []
     for raw in points[:MAX_POINTS_PER_REPORT]:
         if not isinstance(raw, dict):
             continue
@@ -91,9 +92,13 @@ def report_location(device_id: str, body: dict = Body(...), device: Device = Dep
                               reason=reason if reason in REASONS else "periodic",
                               battery_percent=int(battery) if battery is not None else None, recorded_at=at))
         stored += 1
+        accepted.append({"lat": lat, "lon": lon, "accuracy": _num(raw.get("accuracy"), 0, 1e6), "at": at})
+    from .. import geofence
+
+    crossings = geofence.check(db, device, accepted)
     db.execute(delete(DeviceLocation).where(DeviceLocation.device_id == device.id, DeviceLocation.recorded_at < now - RETENTION))
     db.commit()
-    return {"stored": stored}
+    return {"stored": stored, "crossings": [{"geofenceId": c["geofenceId"], "crossing": c["crossing"]} for c in crossings]}
 
 
 @console.get("/locations")
@@ -153,3 +158,97 @@ def set_lost_mode(device_id: str, body: dict = Body(...), principal: Principal =
     audit.record(db, principal.actor, "device.lostmode.enabled" if enabled else "device.lostmode.disabled", device.hostname, device.tenant_id)
     db.commit()
     return {"lostMode": _lost_view(device), "commandId": command.id}
+
+
+# --------------------------------------------------------------------------- safe zones (geofences)
+
+
+def _phone(db: Session, principal: Principal, device_id: str) -> Device:
+    device = _device(db, principal, device_id)
+    if device.platform != "android":
+        raise HTTPException(400, "Safe zones are for phones running the Fenrir Android agent")
+    return device
+
+
+def _fence(db: Session, device: Device, fence_id: str) -> Geofence:
+    fence = db.get(Geofence, fence_id)
+    if fence is None or fence.device_id != device.id:
+        raise HTTPException(404, "Not found")
+    return fence
+
+
+def _check_recipients(db: Session, device: Device, notify: dict) -> None:
+    from .. import geofence
+
+    allowed = {p["id"] for p in geofence.recipients(db, device.tenant_id)}
+    unknown = [u for u in notify.get("users") or [] if u not in allowed]
+    if unknown:
+        raise HTTPException(400, "Some of the people chosen cannot see this customer")
+
+
+@console.get("/geofences")
+def list_geofences(device_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    from .. import geofence, mailer
+
+    principal.require("read")
+    device = _device(db, principal, device_id)
+    rows = db.execute(select(Geofence).where(Geofence.device_id == device.id).order_by(Geofence.created_at)).scalars().all()
+    return {"geofences": [geofence.view(f) for f in rows], "recipients": geofence.recipients(db, device.tenant_id),
+            "emailConfigured": mailer.configured()}
+
+
+@console.post("/geofences")
+def create_geofence(device_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    from .. import geofence
+
+    principal.require("respond")
+    device = _phone(db, principal, device_id)
+    count = db.execute(select(Geofence.id).where(Geofence.device_id == device.id)).all()
+    if len(count) >= geofence.MAX_PER_DEVICE:
+        raise HTTPException(409, f"A phone can have up to {geofence.MAX_PER_DEVICE} safe zones")
+    try:
+        fields = geofence.validate(body)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    _check_recipients(db, device, fields["notify"])
+    fence = Geofence(tenant_id=device.tenant_id, device_id=device.id, created_by=principal.actor, **fields)
+    db.add(fence)
+    audit.record(db, principal.actor, "geofence.created", fence.name, device.tenant_id, device=device.hostname, radius=fence.radius_m)
+    db.commit()
+    return geofence.view(fence)
+
+
+@console.patch("/geofences/{fence_id}")
+def update_geofence(device_id: str, fence_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                    db: Session = Depends(get_db)):
+    from .. import geofence
+
+    principal.require("respond")
+    device = _phone(db, principal, device_id)
+    fence = _fence(db, device, fence_id)
+    try:
+        fields = geofence.validate(body, existing=fence)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    if "notify" in fields:
+        _check_recipients(db, device, fields["notify"])
+    moved = any(k in fields for k in ("latitude", "longitude", "radius_m"))
+    for key, value in fields.items():
+        setattr(fence, key, value)
+    if moved:  # the next fix sets the state again rather than counting as a crossing
+        fence.state, fence.state_at = "unknown", None
+    fence.updated_at = utcnow()
+    audit.record(db, principal.actor, "geofence.updated", fence.name, device.tenant_id, device=device.hostname, fields=sorted(fields))
+    db.commit()
+    return geofence.view(fence)
+
+
+@console.delete("/geofences/{fence_id}")
+def delete_geofence(device_id: str, fence_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("respond")
+    device = _phone(db, principal, device_id)
+    fence = _fence(db, device, fence_id)
+    db.delete(fence)
+    audit.record(db, principal.actor, "geofence.deleted", fence.name, device.tenant_id, device=device.hostname)
+    db.commit()
+    return {"ok": True}

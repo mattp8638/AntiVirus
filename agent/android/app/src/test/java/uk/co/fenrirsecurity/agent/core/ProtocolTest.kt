@@ -93,4 +93,17 @@ class ProtocolTest {
         api.telemetry(listOf(Inventory.event("evt-jvm-1", listOf(Inventory.App("Fenrir", "0.1.0", "Fenrir")), "Android", "15", "Google", "Pixel", System.currentTimeMillis())))
         assertEquals(0, api.pendingCommands().size)
     }
+
+    @Test
+    fun safeZonesFromTheHeartbeat() {
+        val zones = Zone.list(org.json.JSONArray("""[
+            {"id":"geo_1","name":"Home","lat":51.5007,"lon":-0.1246,"radius":200,"notifyPhone":true},
+            {"id":"geo_2","name":"Bad","lat":200,"lon":0,"radius":100},
+            {"id":"","name":"No id","lat":1,"lon":1,"radius":100},
+            {"id":"geo_3","name":"School","lat":51.51,"lon":-0.13,"radius":0}
+        ]"""))!!
+        assertEquals(listOf(Zone("geo_1", "Home", 51.5007, -0.1246, 200f, true)), zones)
+        assertEquals(zones, Zone.list(org.json.JSONArray().put(zones[0].toJson())))
+        assertNull(Zone.list(null))
+    }
 }
