@@ -1,5 +1,7 @@
 #include "AgentService.h"
 #include "BuildInfo.h"
+#include "AgentWatchdog.h"
+#include "Liveness.h"
 #include "LocalAdminRotation.h"
 #include "TemporaryAdmin.h"
 #include "CrashReporter.h"
@@ -1102,6 +1104,12 @@ int AgentService::Run(const AgentRunMode mode) {
     }
 
     config_ = LoadAgentConfig();
+    // First, before anything that could hang: the liveness record the watchdog reads, and the stall detector.
+    if (mode == AgentRunMode::Service) {
+      liveness::Start(config_.runtimeDatabasePath.parent_path() / L"liveness.json", &previousLiveness_);
+    }
+    liveness::SetMainThread();
+    liveness::MarkLoop();
     stateStore_ = std::make_unique<LocalStateStore>(config_.runtimeDatabasePath, config_.stateFilePath);
     controlPlaneClient_ = std::make_unique<ControlPlaneClient>(config_.controlPlaneBaseUrl);
     commandJournalStore_ = std::make_unique<CommandJournalStore>(config_.runtimeDatabasePath);
@@ -1167,6 +1175,11 @@ int AgentService::Run(const AgentRunMode mode) {
     StartRealtimeChannel();
     QueueTelemetryEvent(L"service.started", L"agent-service", L"The endpoint agent boot sequence started.",
                         L"{\"phase\":\"bootstrap\"}");
+    liveness::MarkLoop();
+    if (mode == AgentRunMode::Service) {
+      ReportRecoveries();
+      EnsureRecoveryMechanisms();
+    }
 
     RunSyncLoop(mode);
     StopRealtimeChannel();
@@ -1202,6 +1215,7 @@ int AgentService::Run(const AgentRunMode mode) {
     }
 
     PersistState();
+    liveness::Stop();
 
     if (mode == AgentRunMode::Console) {
       std::wcout << L"Agent service is running." << std::endl;
@@ -1256,7 +1270,9 @@ void AgentService::RunSyncLoop(const AgentRunMode mode) {
   const auto configuredIterations = std::max(config_.syncIterations, 1);
   int cycle = 1;
 
+  liveness::SetMainThread();
   while (!ShouldStop()) {
+    liveness::MarkLoop();
     // One bad cycle (a scan, the database, the network) must never stop the agent: log it and carry on.
     try {
     ProcessPamRequests();
@@ -1269,14 +1285,24 @@ void AgentService::RunSyncLoop(const AgentRunMode mode) {
     if (config_.managedMode) {
       // Check in before the scans: a first full-drive scan can take hours.
       SyncWithControlPlane(cycle);
+      liveness::MarkLoop();
       PublishIdentitySnapshot();
       PollAndExecuteCommands(cycle);
+      liveness::MarkLoop();
       FlushTelemetryQueue();
       PublishHeartbeat(cycle);
+      liveness::MarkLoop();
       MaybeSelfUpdate(cycle);
+      liveness::MarkLoop();
       ExpireBreakGlassAccount();
       ExpireElevations();
       MaybeCollectSystemProfile();
+      // Five minutes after start, then every 6 hours.
+      if (lastDefenderCheck_ == 0) lastDefenderCheck_ = GetTickCount64() - (6ULL * 60 - 5) * 60 * 1000;
+      if (GetTickCount64() - lastDefenderCheck_ > 6ULL * 60 * 60 * 1000) {
+        lastDefenderCheck_ = GetTickCount64();
+        CheckDefenderSelfProtection();
+      }
       if (GetTickCount64() - lastLocalAdminCheck_ > 60ULL * 60 * 1000 || lastLocalAdminCheck_ == 0) {
         lastLocalAdminCheck_ = GetTickCount64();
         EnforceLocalAdminPolicy();
@@ -1289,7 +1315,9 @@ void AgentService::RunSyncLoop(const AgentRunMode mode) {
       }
     }
     SyncUpdateOnly(cycle);
+    liveness::MarkLoop();
     RunAutomatedRiskAssessments(cycle);
+    liveness::MarkLoop();
     DrainProcessTelemetry();
     DrainRansomwareTelemetry();
     DrainRealtimeProtectionTelemetry();
@@ -1526,6 +1554,7 @@ bool AgentService::WaitForNextCycle(const AgentRunMode mode, const int nextCycle
 
   const auto deadline = GetTickCount64() + static_cast<ULONGLONG>(std::max(config_.syncIntervalSeconds, 1)) * 1000;
   for (;;) {
+    liveness::MarkLoop();  // waiting for the next cycle is the loop working as intended
     const auto now = GetTickCount64();
     if (now >= deadline) {
       return true;
@@ -3687,6 +3716,7 @@ void AgentService::StartRealtimeChannel() {
     return;
   }
   realtimeThread_ = std::thread([this] { RealtimeLoop(); });
+  if (!keepaliveThread_.joinable()) keepaliveThread_ = std::thread([this] { KeepaliveLoop(); });
   if (!interactiveThread_.joinable()) {
     interactiveWakeEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (interactiveWakeEvent_ != nullptr) {
@@ -3702,6 +3732,9 @@ void AgentService::StopRealtimeChannel() {
   }
   if (realtimeThread_.joinable()) {
     realtimeThread_.join();
+  }
+  if (keepaliveThread_.joinable()) {
+    keepaliveThread_.join();
   }
   if (interactiveThread_.joinable()) {
     interactiveThread_.join();
@@ -3751,6 +3784,7 @@ void AgentService::RealtimeLoop() {
       bool binary = false;
       while (!ShouldStop() && socket.Receive(&message, &binary)) {
         lastHeard = GetTickCount64();
+        liveness::MarkContactOk(101);  // the server is answering on the live connection
         if (message == "pong") {
           continue;
         }
@@ -3789,6 +3823,64 @@ void AgentService::RealtimeLoop() {
       return;
     }
     backoff = std::min<DWORD>(backoff * 2, 60000);
+  }
+}
+
+// "Still here", independent of everything else: the main loop's heartbeat can be held up by a long step and the live
+// connection can be down or stuck connecting, but the device must never show offline while the agent is running.
+// Sends a presence only when nothing has reached the server for a minute.
+void AgentService::KeepaliveLoop() {
+  while (WaitForSingleObject(stopEvent_, 60'000) == WAIT_TIMEOUT) {
+    if (liveness::Now() - liveness::LastContactOk() < 55) continue;
+    try {
+      const auto identity = IdentitySnapshot();
+      if (!identity.deviceId.empty()) controlPlaneClient_->SendPresence(identity);
+    } catch (const std::exception&) {
+      // recorded in the liveness record; the watchdog and the stall detector act on it
+    }
+  }
+}
+
+// Every start: make sure the watchdog task exists and points at this program (installs older than the watchdog get
+// it here), and that Windows restarts the service after any failure.
+void AgentService::EnsureRecoveryMechanisms() {
+  wchar_t path[MAX_PATH]{};
+  const auto length = GetModuleFileNameW(nullptr, path, MAX_PATH);
+  std::wstring error;
+  if (length > 0 && !watchdog::RegisterTask(std::filesystem::path(std::wstring(path, length)), &error)) {
+    QueueTelemetryEvent(L"agent.watchdog.register_failed", L"agent-service",
+                        L"The agent could not register its watchdog task; it relies on Windows' restart-on-failure alone.",
+                        L"{\"error\":\"" + Utf8ToWide(EscapeJsonString(error)) + L"\"}");
+  }
+  if (const auto manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT)) {
+    if (const auto service = OpenServiceW(manager, L"FenrirAgent", SERVICE_CHANGE_CONFIG)) {
+      watchdog::ApplyRecoverySettings(service, &error);
+      CloseServiceHandle(service);
+    }
+    CloseServiceHandle(manager);
+  }
+}
+
+// What happened before this start, for the device's activity: a restart by the watchdog, or by the agent itself.
+void AgentService::ReportRecoveries() {
+  const auto runtime = config_.runtimeDatabasePath.parent_path();
+  const auto actionFile = runtime / L"watchdog-action.json";
+  std::ifstream in(actionFile, std::ios::binary);
+  if (in) {
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    in.close();
+    const auto json = buffer.str();
+    if (json.find("\"action\"") != std::string::npos) {
+      QueueTelemetryEvent(L"agent.watchdog.recovered", L"agent-watchdog",
+                          L"The watchdog found the agent stopped or stuck and brought it back.", Utf8ToWide(json));
+    }
+    std::error_code ec;
+    std::filesystem::remove(actionFile, ec);
+  }
+  if (previousLiveness_ && !previousLiveness_->selfRestartReason.empty() && previousLiveness_->selfRestartAt >= previousLiveness_->startedAt) {
+    QueueTelemetryEvent(L"agent.self_restarted", L"agent-service", L"The agent restarted itself because it was stuck.",
+                        L"{\"reason\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(previousLiveness_->selfRestartReason))) + L"\"}");
   }
 }
 
@@ -4717,6 +4809,97 @@ void AgentService::WriteExperienceFile() {
     std::error_code ec;
     std::filesystem::rename(temp, path, ec);
   } catch (...) {
+  }
+}
+
+// Microsoft Defender stays on next to Fenrir and can mistake the agent (it runs commands and scripts for the
+// console) for a remote-access Trojan, quarantining fenrir-agent-service.exe and taking the device offline. Checks
+// that Fenrir's folders and programs are still excluded (and adds them back), whether a domain/Intune policy makes
+// Defender ignore local exclusions, and whether Defender flagged any Fenrir file in the last week; reports each.
+void AgentService::CheckDefenderSelfProtection() {
+  const auto installRoot = config_.installRootPath.empty() ? std::filesystem::path() : config_.installRootPath;
+  const auto runtimeRoot = config_.runtimeDatabasePath.parent_path();
+  if (installRoot.empty()) return;
+  const auto quote = [](const std::wstring& value) {
+    std::wstring out = L"'";
+    for (const auto c : value) {
+      out += c;
+      if (c == L'\'') out += L'\'';
+    }
+    return out + L"'";
+  };
+  const std::wstring script =
+      L"$ErrorActionPreference = 'SilentlyContinue'\r\n"
+      L"if (-not (Get-Command Get-MpPreference)) { '{\"defender\":false}'; exit 0 }\r\n"
+      L"$root = " + quote(installRoot.wstring()) + L"\r\n"
+      L"$paths = @($root, " + quote(runtimeRoot.wstring()) + L")\r\n"
+      L"$procs = @('fenrir-agent-service.exe','fenrir-endpoint-client.exe','fenrir-pam.exe','fenrir-remote.exe') | ForEach-Object { Join-Path $root $_ }\r\n"
+      L"$out = [ordered]@{ defender = $true; localMergeDisabled = $false; added = @(); detections = @() }\r\n"
+      L"$policy = Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows Defender' -Name DisableLocalAdminMerge\r\n"
+      L"if ($policy.DisableLocalAdminMerge -eq 1) { $out.localMergeDisabled = $true }\r\n"
+      L"$pref = Get-MpPreference\r\n"
+      L"$missing = @($paths | Where-Object { $pref.ExclusionPath -notcontains $_ })\r\n"
+      L"if ($missing.Count) { Add-MpPreference -ExclusionPath $missing; $out.added += $missing }\r\n"
+      L"$missing = @($procs | Where-Object { $pref.ExclusionProcess -notcontains $_ })\r\n"
+      L"if ($missing.Count) { Add-MpPreference -ExclusionProcess $missing; $out.added += $missing }\r\n"
+      L"$since = (Get-Date).AddDays(-7)\r\n"
+      L"$out.detections = @(Get-MpThreatDetection | Where-Object { $_.InitialDetectionTime -gt $since -and (($_.Resources -join ' ') -like ('*' + $root + '*')) } | ForEach-Object {\r\n"
+      L"  $threat = Get-MpThreat -ThreatID $_.ThreatID\r\n"
+      L"  [ordered]@{ threat = [string]$threat.ThreatName; at = $_.InitialDetectionTime.ToUniversalTime().ToString('o'); action = [string]$_.ActionSuccess; resources = ($_.Resources -join '; ') }\r\n"
+      L"})\r\n"
+      L"$out | ConvertTo-Json -Compress -Depth 4\r\n";
+  const auto workRoot = runtimeRoot / L"rmm" / L"defender";
+  try {
+    std::error_code ec;
+    std::filesystem::create_directories(workRoot, ec);
+    const auto path = workRoot / L"self-protection.ps1";
+    {
+      std::ofstream file(path, std::ios::binary | std::ios::trunc);
+      file << "\xEF\xBB\xBF" << WideToUtf8(script);
+    }
+    wchar_t systemDir[MAX_PATH]{};
+    GetSystemDirectoryW(systemDir, MAX_PATH);
+    const std::wstring command = L"\"" + std::wstring(systemDir) +
+                                 L"\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" +
+                                 path.wstring() + L"\"";
+    const auto result = rmm::RunProcess(command, workRoot.wstring(), {}, 2 * 60 * 1000);
+    std::filesystem::remove(path, ec);
+    auto output = result.stdoutText;
+    while (!output.empty() && (output.back() == '\n' || output.back() == '\r' || output.back() == ' ')) output.pop_back();
+    const auto parsed = json::Parse(output);
+    if (result.timedOut || !parsed || !parsed->IsObject()) return;  // checked again in 6 hours
+    const auto payload = Utf8ToWide(output);
+    if (output.find("\"defender\":false") != std::string::npos) return;
+    // Report each detection once: only those newer than the last one reported.
+    const auto marker = runtimeRoot / L"defender-last-detection.txt";
+    std::string lastReported;
+    {
+      std::ifstream in(marker);
+      std::getline(in, lastReported);
+    }
+    std::string newest = lastReported;
+    for (std::size_t at = output.find("\"at\":\""); at != std::string::npos; at = output.find("\"at\":\"", at + 6)) {
+      const auto value = output.substr(at + 6, output.find('"', at + 6) - (at + 6));
+      if (value > newest) newest = value;
+    }
+    if (newest != lastReported) {
+      QueueTelemetryEvent(L"agent.defender.flagged", L"agent-service",
+                          L"Microsoft Defender flagged a Fenrir program as a threat. If it quarantined the agent, the device goes "
+                          L"offline until the program is restored.",
+                          payload);
+      std::ofstream(marker, std::ios::trunc) << newest;
+    }
+    if (output.find("\"localMergeDisabled\":true") != std::string::npos) {
+      QueueTelemetryEvent(L"agent.defender.exclusions_refused", L"agent-service",
+                          L"A domain or Intune policy makes Microsoft Defender ignore exclusions set on this PC, so it may quarantine "
+                          L"the Fenrir agent. Add Fenrir's folder to the exclusions in that policy.",
+                          payload);
+    }
+    if (output.find("\"added\":[\"") != std::string::npos || output.find("\"added\":\"") != std::string::npos) {
+      QueueTelemetryEvent(L"agent.defender.exclusions_restored", L"agent-service",
+                          L"Microsoft Defender's exclusions for Fenrir were missing and have been added back.", payload);
+    }
+  } catch (const std::exception&) {
   }
 }
 

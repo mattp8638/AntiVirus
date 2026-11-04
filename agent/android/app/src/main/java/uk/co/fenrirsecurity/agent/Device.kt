@@ -252,7 +252,7 @@ object Locator {
         return best?.let { toFix(it, reason, Device.battery(context)) }
     }
 
-    private fun toFix(location: Location, reason: String, battery: Int?) = Fix(
+    fun toFix(location: Location, reason: String, battery: Int?) = Fix(
         lat = location.latitude, lon = location.longitude,
         accuracy = if (location.hasAccuracy()) location.accuracy else null,
         altitude = if (location.hasAltitude()) location.altitude else null,

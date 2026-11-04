@@ -99,8 +99,10 @@ def current_principal(
     path = request.url.path
     if user.role == "client" and not (path.startswith("/api/portal") or path.startswith("/api/console/auth")):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Client accounts can only use the client portal")
+    if user.role == "carer" and not path.startswith(CARER_PATHS):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Carer accounts can only use the Care page")
     if user.role != "client":
-        staff_access_check(db, user, request, session_row.method)
+        staff_access_check(db, user, request, session_row.method, allowlist=user.role != "carer")
     if user.role == "platform_admin":
         scope = {tid for (tid,) in db.execute(select(Tenant.id)).all()}
     else:
@@ -125,13 +127,17 @@ MFA_SETUP_PATHS = ("/api/console/auth/me", "/api/console/auth/mfa/setup", "/api/
                    "/api/console/auth/logout", "/api/console/auth/reauth", "/api/console/auth/passkeys")
 
 
-def staff_access_check(db: Session, user: User, request: Request, session_method: str | None = None) -> None:
-    """The install's staff controls: console networks and required MFA (platform_security)."""
+CARER_PATHS = ("/api/console/care", "/api/console/auth", "/api/console/push", "/api/console/region")
+
+
+def staff_access_check(db: Session, user: User, request: Request, session_method: str | None = None, allowlist: bool = True) -> None:
+    """The install's staff controls: console networks and required MFA (platform_security). Carers sign in from
+    home, so the console network allowlist does not apply to them; MFA does."""
     from . import platform_security
 
     security = platform_security.get(db)
     client_ip = request.client.host if request.client else ""
-    if (not get_settings().ignore_console_allowlist
+    if (allowlist and not get_settings().ignore_console_allowlist
             and not platform_security.ip_allowed(security.get("consoleAllowedNetworks") or [], client_ip)):
         raise HTTPException(status.HTTP_403_FORBIDDEN, f"Console access is not allowed from this network ({client_ip})")
     if platform_security.mfa_required(db, user, session_method) and not request.url.path.startswith(MFA_SETUP_PATHS):

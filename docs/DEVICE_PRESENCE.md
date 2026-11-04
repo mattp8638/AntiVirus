@@ -35,3 +35,67 @@ The device list and device page refresh every 15 seconds while they are on scree
 
 "Offline for N minutes" monitor conditions measure from the last check-in, so they now see agents within 30 seconds of
 the truth. Profile-only Apple devices are left out of offline monitors.
+
+## Windows: how the agent keeps itself connected
+
+Several independent layers, so a Windows agent that is running never stays silent:
+
+1. **Keep-alive thread.** Separate from the agent's main work, it tells the server "still here" whenever nothing else
+   has reached it for a minute. A long scan, script, patch install or a live connection stuck reconnecting no longer
+   makes the device show offline.
+2. **Liveness record.** The agent writes `liveness.json` in its runtime folder every 30 seconds: when its main loop
+   last made progress, when the server last answered, the last HTTP status and error.
+3. **Self-restart.** A thread in the agent ends the process (Windows then restarts it) when the main loop has made no
+   progress for 45 minutes, or when the server has not answered for 30 minutes while the agent keeps trying (at most
+   once every 2 hours). Supervised waits (a script or patch install within its own time limit) and inline scans count
+   as progress.
+4. **Watchdog task** (`Fenrir\Agent watchdog`: `fenrir-agent-service.exe --watchdog`, as SYSTEM, every 5 minutes and 3
+   minutes after boot). The agent registers it every time it starts, so existing installs get it with the next agent
+   update. Each run it:
+   - starts the service if it is stopped (or resumes it if paused);
+   - ends and restarts it if it is stuck starting or stopping for over 10 minutes;
+   - ends and restarts it if it is running but frozen (no liveness update for 10 minutes), its main loop has been
+     stuck for an hour, or the server has not answered for 20 minutes **while this machine can reach the server**
+     itself (so a laptop that is simply offline is left alone);
+   - repairs the service registration if it is missing, and after 3 restarts in 6 hours that did not help (at most
+     every 12 hours);
+   - re-applies Windows' restart-on-failure settings.
+
+   Forced restarts are at most one every 30 minutes, nothing happens during an install or upgrade, and every action
+   is written to `watchdog.log` in the runtime folder.
+5. **Backup watchdog task** (`Fenrir\Agent watchdog (backup)`, PowerShell, every 5 minutes), registered by the
+   installer and independent of the agent program: starts a stopped agent, and restarts one whose liveness record has
+   not changed for 20 minutes.
+6. **Windows restart-on-failure**: restart after 5, 15 and 60 seconds for every crash or error exit.
+
+When the agent comes back after a watchdog action or a self-restart it reports why
+(`agent.watchdog.recovered`, `agent.self_restarted`) in the device's activity.
+
+## Windows: Microsoft Defender quarantining the agent
+
+Defender stays on next to Fenrir, and because the agent runs commands and scripts sent by the console it can be
+mistaken for a remote-access Trojan ("This program is dangerous and executes commands from an attacker"). If Defender
+quarantines `fenrir-agent-service.exe` the device goes offline, and the agent's own watchdog cannot run either (it is
+the same program). What Fenrir does about it:
+
+- The installer, and the server whenever it manages Defender, exclude Fenrir's folders and programs.
+- Every 6 hours the agent checks those exclusions are still there (adding them back if not), whether a Group Policy or
+  Intune setting (`DisableLocalAdminMerge`) makes Defender ignore exclusions set on the PC, and whether Defender
+  flagged a Fenrir file in the last week. It raises an alert in the console for a detection or for that policy.
+- The backup watchdog (PowerShell, every 5 minutes, which Defender does not quarantine) restores the agent program
+  from quarantine, excludes it again, starts the agent and records it (`watchdog.log`, and in the device's activity).
+
+What you should do once:
+
+1. **Report the false positive to Microsoft** at https://www.microsoft.com/en-us/wdsi/filesubmission ("Software
+   developer", the file `fenrir-agent-service.exe`, "Incorrectly detected as malware"). Microsoft usually clears it
+   within a day or two for every PC, not just yours.
+2. **Sign the agent** with a publicly trusted code-signing certificate (see `docs/CODE_SIGNING.md`). Signed programs
+   build reputation and are flagged far less often. Each new build is otherwise a new, unknown file.
+3. **On a domain** (or with Intune), add the exclusions in the Defender policy itself: the install folder (usually
+   `C:\Program Files\Fenrir Endpoint`), `C:\ProgramData\FenrirAgent`, and the processes `fenrir-agent-service.exe`,
+   `fenrir-endpoint-client.exe`, `fenrir-pam.exe` and `fenrir-remote.exe`. Policy exclusions apply even where local
+   ones are ignored.
+
+To bring back an agent Defender already quarantined, run `agent/windows/installer/Repair-FenrirDefender.ps1` on that
+PC as administrator: it shows the detection, adds the exclusions, restores the program and starts the agent.

@@ -91,7 +91,7 @@ data class LostMode(val enabled: Boolean, val message: String, val phone: String
 }
 
 data class HeartbeatReply(val commandsPending: Int, val approved: Boolean, val lostMode: LostMode?, val rotateKey: Boolean = false,
-                          val policyRevision: String = "", val zones: List<Zone>? = null)
+                          val policyRevision: String = "", val zones: List<Zone>? = null, val tracking: Tracking? = null)
 
 /** A safe zone set in the console: a circle; crossing it is reported straight away (the server decides who to alert). */
 data class Zone(val id: String, val name: String, val lat: Double, val lon: Double, val radius: Float, val notifyPhone: Boolean) {

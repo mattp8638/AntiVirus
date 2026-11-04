@@ -8,6 +8,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import uk.co.fenrirsecurity.agent.core.Fix
 import uk.co.fenrirsecurity.agent.core.LostMode
+import uk.co.fenrirsecurity.agent.core.Tracking
 import uk.co.fenrirsecurity.agent.core.Zone
 import java.security.KeyStore
 import javax.crypto.Cipher
@@ -45,6 +46,18 @@ class Store(context: Context) {
     var zones: List<Zone>
         get() = Zone.list(prefs.getString("zones", null)?.let { runCatching { JSONArray(it) }.getOrNull() }) ?: emptyList()
         set(value) = prefs.edit().putString("zones", JSONArray().apply { value.forEach { put(it.toJson()) } }.toString()).apply()
+    /** How often to report location, from the last heartbeat. */
+    var tracking: Tracking
+        get() = Tracking.from(prefs.getString("tracking", null)?.let { runCatching { JSONObject(it) }.getOrNull() }) ?: Tracking.DEFAULT
+        set(value) = prefs.edit().putString("tracking", value.toJson().toString()).apply()
+    /** True from pressing Help until a carer acknowledges or the person says they are OK. */
+    var sosActive: Boolean
+        get() = prefs.getBoolean("sosActive", false)
+        set(value) = prefs.edit().putBoolean("sosActive", value).apply()
+    /** The help request reached the server (it is retried until it does). */
+    var sosHelpSent: Boolean
+        get() = prefs.getBoolean("sosHelpSent", false)
+        set(value) = prefs.edit().putBoolean("sosHelpSent", value).apply()
     /** Proximity-alert request codes registered with Android, so old ones are removed when the zones change. */
     var zoneCodes: Set<String>
         get() = prefs.getStringSet("zoneCodes", emptySet()).orEmpty()

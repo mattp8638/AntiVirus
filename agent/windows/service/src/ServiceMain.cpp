@@ -10,6 +10,7 @@
 #include "CrashReporter.h"
 #include "AgentService.h"
 #include "AgentConfig.h"
+#include "AgentWatchdog.h"
 #include "EnrollmentPersistence.h"
 #include "HardeningManager.h"
 #include "LocalStateStore.h"
@@ -725,6 +726,7 @@ bool SaveCloudSettingsFromArguments(int argc, wchar_t* argv[]) {
 void PrintUsage() {
   std::wcout << L"Usage: fenrir-agent-service.exe [--console|--install [--elam-driver <path>]|--repair [--elam-driver <path>]|--upgrade <manifest>|--rollback-update <transaction>|--uninstall [--token <token>]|--wsc-status|--self-test|--register-amsi-provider|--unregister-amsi-provider|--help]" << std::endl;
   std::wcout << L"  --console   Run the agent loop interactively instead of under the SCM." << std::endl;
+  std::wcout << L"  --watchdog  Check the agent once: start it if stopped, restart it if stuck (run by the watchdog task)." << std::endl;
   std::wcout << L"  --server <url> --enroll-token <token>  With --install or --console: connect this PC to your Fenrir cloud." << std::endl;
   std::wcout << L"  --install   Register the agent as an auto-start Windows service and apply hardening." << std::endl;
   std::wcout << L"  --repair    Reapply service hardening, AMSI registration, protected runtime settings, and runtime trust markers." << std::endl;
@@ -786,6 +788,10 @@ int wmain(int argc, wchar_t* argv[]) {
 
     if (command == L"--uninstall") {
       return UninstallService(token) ? 0 : 1;
+    }
+
+    if (command == L"--watchdog") {
+      return antivirus::agent::watchdog::Run();  // run by the scheduled task every 5 minutes
     }
 
     if (command == L"--wsc-status") {

@@ -1,3 +1,4 @@
+#include "Liveness.h"
 #include "RmmExecutors.h"
 #include "CommandCancellation.h"
 
@@ -194,6 +195,7 @@ ProcessResult RunProcessAs(const std::wstring& commandLine, const std::wstring& 
   std::thread errThread(Drain, errRead, &result.stderrText, maxOutputBytes, &droppedErr);
   bool cancelled = false;
   while (WaitForSingleObject(process.hProcess, 100) == WAIT_TIMEOUT) {
+    liveness::MarkProgress();  // a supervised wait (it has its own time limit) is progress, not a stall
     cancelled = command_control::Requested();
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
     if (cancelled || elapsed >= timeoutMs) {

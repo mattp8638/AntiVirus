@@ -215,6 +215,10 @@ def heartbeat(body: dict = Body(default={}), device: Device = Depends(current_de
         from .. import android_compliance
 
         android_compliance.record(db, device, body["metrics"], resolution["settings"])
+    if device.platform == "android":
+        from .. import care
+
+        care.on_heartbeat(db, device, body.get("metrics"))
     pending = db.execute(select(func.count()).where(Command.device_id == device.id, Command.status == "pending")).scalar() or 0
     db.commit()
     reply = {"receivedAt": _iso(utcnow()), "effectivePolicyRevision": policy_doc["revision"], "commandsPending": pending,
@@ -227,6 +231,9 @@ def heartbeat(body: dict = Body(default={}), device: Device = Depends(current_de
         from .. import geofence
 
         reply["geofences"] = geofence.for_phone(db, device)  # safe zones: proximity alerts and faster location checks
+        from .. import care
+
+        reply["tracking"] = care.tracking_reply(device)  # how often to report location (care level, SOS)
     return reply
 
 
@@ -282,6 +289,42 @@ async def _lenient_json(request: Request) -> dict:
     return body
 
 
+# The agent reporting a problem with itself that needs a person: Microsoft Defender flagging or quarantining it (the
+# device goes offline until the program is restored), or a policy that makes Defender ignore its exclusions.
+AGENT_SELF_ALERTS = {
+    "agent.defender.flagged": ("agent:defender-flagged", "high", "Microsoft Defender flagged the Fenrir agent on {host}",
+                               "Defender treated a Fenrir program as a threat (details below). If it quarantined the agent, the "
+                               "device stays offline until the program is restored: the backup watchdog tries this every 5 "
+                               "minutes. Report the file to Microsoft as a false positive, and make sure Fenrir's folder is "
+                               "excluded in any Defender policy (Group Policy or Intune)."),
+    "agent.defender.exclusions_refused": ("agent:defender-exclusions-refused", "medium",
+                                          "Defender ignores Fenrir's exclusions on {host}",
+                                          "A Group Policy or Intune setting (DisableLocalAdminMerge) makes Microsoft Defender "
+                                          "ignore exclusions set on the PC, so it can quarantine the Fenrir agent. Add Fenrir's "
+                                          "install folder and fenrir-agent-service.exe to the exclusions in that policy."),
+}
+
+
+def _agent_self_alerts(db: Session, device: Device, events: list) -> None:
+    from ..models import Alert
+
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        rule = AGENT_SELF_ALERTS.get(str(event.get("eventType") or ""))
+        if rule is None:
+            continue
+        rule_id, severity, title, description = rule
+        open_alert = db.execute(select(Alert).where(Alert.device_id == device.id, Alert.rule_id == rule_id,
+                                                    Alert.status.in_(("new", "triaged")))).scalars().first()
+        if open_alert is not None:
+            continue
+        db.add(Alert(tenant_id=device.tenant_id, device_id=device.id, rule_id=rule_id, severity=severity, mitre=[], event_ids=[],
+                     title=title.format(host=device.hostname)[:300],
+                     details={"category": "agent-health", "source": "Fenrir agent", "description": description,
+                              "report": str(event.get("payloadJson") or "")[:4000]}))
+
+
 @router.post("/devices/{device_id}/telemetry")
 def telemetry(body: dict = Depends(_lenient_json), device: Device = Depends(current_device), db: Session = Depends(get_db)):
     events = body.get("events")
@@ -291,6 +334,7 @@ def telemetry(body: dict = Depends(_lenient_json), device: Device = Depends(curr
     if len(events) > limit:
         raise HTTPException(413, f"at most {limit} events per batch")
     result = ingest(db, device, events)
+    _agent_self_alerts(db, device, events)
     db.commit()
     # No running total: counting a device's whole history on every batch got slower as the table grew.
     return {"receivedAt": _iso(utcnow()), "accepted": result.accepted, "duplicates": result.duplicates,

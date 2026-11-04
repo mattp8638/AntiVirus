@@ -106,4 +106,31 @@ class ProtocolTest {
         assertEquals(zones, Zone.list(org.json.JSONArray().put(zones[0].toJson())))
         assertNull(Zone.list(null))
     }
+
+    @Test
+    fun trackingPaceFollowsTheCareLevel() {
+        val close = Tracking.from(JSONObject("""{"mode":"close","intervalSeconds":60,"adaptive":true,"sos":false}"""))!!
+        assertTrue(close.continuous)
+        assertEquals(60_000L, Pace.minTimeMs(close, moving = true, nearEdge = false))
+        assertEquals(60_000L, Pace.minTimeMs(close, moving = false, nearEdge = true))
+        assertEquals(300_000L, Pace.minTimeMs(close, moving = false, nearEdge = false))
+        assertEquals(60_000L, Pace.minTimeMs(close.copy(sos = true), moving = false, nearEdge = false))
+        val standard = Tracking.from(JSONObject("""{"mode":"standard","intervalSeconds":300}"""))!!
+        assertFalse(standard.continuous)
+        assertEquals(5, Pace.periodicMinutes(standard, lostMode = false, hasZones = false))
+        assertEquals(15, Pace.periodicMinutes(Tracking.DEFAULT, lostMode = false, hasZones = false))
+        assertEquals(5, Pace.periodicMinutes(Tracking.DEFAULT, lostMode = false, hasZones = true))
+        assertEquals(5, Pace.periodicMinutes(Tracking("saver", 900, false, false), lostMode = true, hasZones = false))
+        assertEquals(15, Pace.periodicMinutes(Tracking("saver", 900, false, false), lostMode = false, hasZones = true))
+        assertEquals(Tracking.DEFAULT, Tracking.from(Tracking.DEFAULT.toJson()))
+    }
+
+    @Test
+    fun nearTheEdgeOfASafeZone() {
+        val home = Zone("geo_1", "Home", 51.5007, -0.1246, 200f, false)
+        assertTrue(Pace.nearEdge(51.5025, -0.1246, listOf(home)))   // ~200 m out: on the edge
+        assertFalse(Pace.nearEdge(51.5007, -0.1246, listOf(home)))  // the centre
+        assertFalse(Pace.nearEdge(51.52, -0.1246, listOf(home)))    // 2 km away
+        assertTrue(kotlin.math.abs(Pace.distance(51.5007, -0.1246, 51.5014, -0.1419) - 1200) < 50)
+    }
 }
