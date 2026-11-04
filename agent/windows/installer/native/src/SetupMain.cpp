@@ -2640,10 +2640,25 @@ void RegisterAgentWatchdog(HWND hwnd, const std::filesystem::path& installRoot) 
         << L"if ((Test-Path $flag) -and (((Get-Date) - (Get-Item $flag).LastWriteTime).TotalMinutes -lt 30)) { exit 0 }\r\n"
         << L"$service = Get-Service -Name 'FenrirAgent' -ErrorAction SilentlyContinue\r\n"
         << L"if (-not $service) { exit 0 }\r\n"
-        << L"if ($service.Status -eq 'Stopped') { Start-Service -Name 'FenrirAgent' -ErrorAction SilentlyContinue; exit 0 }\r\n"
-        << L"if ($service.Status -ne 'Running') { exit 0 }\r\n"
         << L"$root = (Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\FenrirAgent' -Name RuntimeRoot -ErrorAction SilentlyContinue).RuntimeRoot\r\n"
         << L"if (-not $root) { $root = '" << (installRoot / L"runtime").wstring() << L"' }\r\n"
+        << L"function Note($text) { Add-Content -Path (Join-Path $root 'watchdog.log') -Value ((Get-Date).ToUniversalTime().ToString('s') + 'Z backup watchdog: ' + $text) }\r\n"
+        // Microsoft Defender can mistake the agent for a Trojan and quarantine it: put it back, keep it excluded.
+        << L"$install = '" << installRoot.wstring() << L"'\r\n"
+        << L"$exe = Join-Path $install '" << kServiceExeName << L"'\r\n"
+        << L"if (-not (Test-Path $exe)) {\r\n"
+        << L"  try { Add-MpPreference -ExclusionPath $install, $root -ExclusionProcess $exe -ErrorAction Stop } catch { }\r\n"
+        << L"  $mp = Join-Path $env:ProgramFiles 'Windows Defender\\MpCmdRun.exe'\r\n"
+        << L"  if (Test-Path $mp) { & $mp -Restore -FilePath $exe | Out-Null }\r\n"
+        << L"  if (Test-Path $exe) {\r\n"
+        << L"    Note 'restored the agent program from Microsoft Defender quarantine'\r\n"
+        << L"    Set-Content -Path (Join-Path $root 'watchdog-action.json') -Value ('{\"at\":' + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + ',\"action\":\"restored\",\"reason\":\"Microsoft Defender had quarantined fenrir-agent-service.exe; it was restored and excluded again\"}')\r\n"
+        << L"    Start-Service -Name 'FenrirAgent' -ErrorAction SilentlyContinue\r\n"
+        << L"  } else { Note 'the agent program is missing and could not be restored from quarantine; reinstall the agent' }\r\n"
+        << L"  exit 0\r\n"
+        << L"}\r\n"
+        << L"if ($service.Status -eq 'Stopped') { Start-Service -Name 'FenrirAgent' -ErrorAction SilentlyContinue; exit 0 }\r\n"
+        << L"if ($service.Status -ne 'Running') { exit 0 }\r\n"
         << L"$live = Join-Path $root 'liveness.json'\r\n"
         << L"if (-not (Test-Path $live)) { exit 0 }\r\n"
         << L"if (((Get-Date) - (Get-Item $live).LastWriteTime).TotalMinutes -lt 20) { exit 0 }\r\n"
@@ -2651,7 +2666,7 @@ void RegisterAgentWatchdog(HWND hwnd, const std::filesystem::path& installRoot) 
         << L"if ($agentPid) { Stop-Process -Id $agentPid -Force -ErrorAction SilentlyContinue }\r\n"
         << L"Start-Sleep -Seconds 10\r\n"
         << L"Start-Service -Name 'FenrirAgent' -ErrorAction SilentlyContinue\r\n"
-        << L"Add-Content -Path (Join-Path $root 'watchdog.log') -Value ((Get-Date).ToUniversalTime().ToString('s') + 'Z backup watchdog: restarted a frozen agent')\r\n";
+        << L"Note 'restarted a frozen agent'\r\n";
   }
   wchar_t systemDir[MAX_PATH]{};
   GetSystemDirectoryW(systemDir, MAX_PATH);

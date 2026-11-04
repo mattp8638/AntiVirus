@@ -65,3 +65,17 @@ def test_scoped_to_the_customer(client, admin, tenant):
     enroll(client, admin, other, hostname="THEIRS", serial="T-1")
     hosts = {d["hostname"] for d in report(client, admin, tenant_id=tenant["id"])["devices"]}
     assert "MINE" in hosts and "THEIRS" not in hosts
+
+
+def test_defender_flagging_the_agent_raises_one_alert(client, admin, tenant):
+    pc = enroll(client, admin, tenant, hostname="PM-NUC", serial="NUC-1")
+    url = f"/api/v1/devices/{pc['deviceId']}/telemetry"
+    flagged = event("agent.defender.flagged", 5, threat="Trojan:Win32/Wacatac.B!ml",
+                    resources="file:_C:\\Program Files\\Fenrir Endpoint\\fenrir-agent-service.exe")
+    assert client.post(url, headers=pc["headers"], json={"events": [flagged]}).status_code == 200
+    again = dict(flagged, eventId="again")
+    client.post(url, headers=pc["headers"], json={"events": [again, event("agent.defender.exclusions_refused", 4)]})
+    alerts = client.get("/api/console/alerts", headers=admin, params={"device_id": pc["deviceId"]}).json()
+    alerts = alerts.get("items", alerts) if isinstance(alerts, dict) else alerts
+    titles = sorted(a["title"] for a in alerts if str(a.get("ruleId", a.get("rule_id", ""))).startswith("agent:defender"))
+    assert titles == ["Defender ignores Fenrir's exclusions on PM-NUC", "Microsoft Defender flagged the Fenrir agent on PM-NUC"]

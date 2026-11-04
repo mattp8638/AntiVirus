@@ -70,3 +70,32 @@ Several independent layers, so a Windows agent that is running never stays silen
 
 When the agent comes back after a watchdog action or a self-restart it reports why
 (`agent.watchdog.recovered`, `agent.self_restarted`) in the device's activity.
+
+## Windows: Microsoft Defender quarantining the agent
+
+Defender stays on next to Fenrir, and because the agent runs commands and scripts sent by the console it can be
+mistaken for a remote-access Trojan ("This program is dangerous and executes commands from an attacker"). If Defender
+quarantines `fenrir-agent-service.exe` the device goes offline, and the agent's own watchdog cannot run either (it is
+the same program). What Fenrir does about it:
+
+- The installer, and the server whenever it manages Defender, exclude Fenrir's folders and programs.
+- Every 6 hours the agent checks those exclusions are still there (adding them back if not), whether a Group Policy or
+  Intune setting (`DisableLocalAdminMerge`) makes Defender ignore exclusions set on the PC, and whether Defender
+  flagged a Fenrir file in the last week. It raises an alert in the console for a detection or for that policy.
+- The backup watchdog (PowerShell, every 5 minutes, which Defender does not quarantine) restores the agent program
+  from quarantine, excludes it again, starts the agent and records it (`watchdog.log`, and in the device's activity).
+
+What you should do once:
+
+1. **Report the false positive to Microsoft** at https://www.microsoft.com/en-us/wdsi/filesubmission ("Software
+   developer", the file `fenrir-agent-service.exe`, "Incorrectly detected as malware"). Microsoft usually clears it
+   within a day or two for every PC, not just yours.
+2. **Sign the agent** with a publicly trusted code-signing certificate (see `docs/CODE_SIGNING.md`). Signed programs
+   build reputation and are flagged far less often. Each new build is otherwise a new, unknown file.
+3. **On a domain** (or with Intune), add the exclusions in the Defender policy itself: the install folder (usually
+   `C:\Program Files\Fenrir Endpoint`), `C:\ProgramData\FenrirAgent`, and the processes `fenrir-agent-service.exe`,
+   `fenrir-endpoint-client.exe`, `fenrir-pam.exe` and `fenrir-remote.exe`. Policy exclusions apply even where local
+   ones are ignored.
+
+To bring back an agent Defender already quarantined, run `agent/windows/installer/Repair-FenrirDefender.ps1` on that
+PC as administrator: it shows the detection, adds the exclusions, restores the program and starts the agent.

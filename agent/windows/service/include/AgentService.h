@@ -183,6 +183,7 @@ class AgentService {
   void ExpireBreakGlassAccount();
   // System profile (SystemProfile.h).
   void MaybeCollectSystemProfile();
+  void CheckDefenderSelfProtection();  // Defender must not quarantine the agent (every 6 hours)
   std::atomic<bool> profileRequested_{false};
   std::shared_ptr<std::atomic<bool>> profileBusy_{std::make_shared<std::atomic<bool>>(false)};
   unsigned long long lastProfileMs_{0};
@@ -221,6 +222,7 @@ class AgentService {
   std::vector<std::wstring> LocalAdminKeepList(const std::wstring& payloadJson) const;
   std::wstring ExecuteInventoryUninstall(const RemoteCommand& command);
   unsigned long long lastLocalAdminCheck_{0};
+  unsigned long long lastDefenderCheck_{0};
   unsigned long long lastSelfUpdateCheck_{0};
   bool ScanNetworkDrives() const;
   int ScheduledScanCpuLimit() const;

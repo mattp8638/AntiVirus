@@ -1297,6 +1297,12 @@ void AgentService::RunSyncLoop(const AgentRunMode mode) {
       ExpireBreakGlassAccount();
       ExpireElevations();
       MaybeCollectSystemProfile();
+      // Five minutes after start, then every 6 hours.
+      if (lastDefenderCheck_ == 0) lastDefenderCheck_ = GetTickCount64() - (6ULL * 60 - 5) * 60 * 1000;
+      if (GetTickCount64() - lastDefenderCheck_ > 6ULL * 60 * 60 * 1000) {
+        lastDefenderCheck_ = GetTickCount64();
+        CheckDefenderSelfProtection();
+      }
       if (GetTickCount64() - lastLocalAdminCheck_ > 60ULL * 60 * 1000 || lastLocalAdminCheck_ == 0) {
         lastLocalAdminCheck_ = GetTickCount64();
         EnforceLocalAdminPolicy();
@@ -4803,6 +4809,97 @@ void AgentService::WriteExperienceFile() {
     std::error_code ec;
     std::filesystem::rename(temp, path, ec);
   } catch (...) {
+  }
+}
+
+// Microsoft Defender stays on next to Fenrir and can mistake the agent (it runs commands and scripts for the
+// console) for a remote-access Trojan, quarantining fenrir-agent-service.exe and taking the device offline. Checks
+// that Fenrir's folders and programs are still excluded (and adds them back), whether a domain/Intune policy makes
+// Defender ignore local exclusions, and whether Defender flagged any Fenrir file in the last week; reports each.
+void AgentService::CheckDefenderSelfProtection() {
+  const auto installRoot = config_.installRootPath.empty() ? std::filesystem::path() : config_.installRootPath;
+  const auto runtimeRoot = config_.runtimeDatabasePath.parent_path();
+  if (installRoot.empty()) return;
+  const auto quote = [](const std::wstring& value) {
+    std::wstring out = L"'";
+    for (const auto c : value) {
+      out += c;
+      if (c == L'\'') out += L'\'';
+    }
+    return out + L"'";
+  };
+  const std::wstring script =
+      L"$ErrorActionPreference = 'SilentlyContinue'\r\n"
+      L"if (-not (Get-Command Get-MpPreference)) { '{\"defender\":false}'; exit 0 }\r\n"
+      L"$root = " + quote(installRoot.wstring()) + L"\r\n"
+      L"$paths = @($root, " + quote(runtimeRoot.wstring()) + L")\r\n"
+      L"$procs = @('fenrir-agent-service.exe','fenrir-endpoint-client.exe','fenrir-pam.exe','fenrir-remote.exe') | ForEach-Object { Join-Path $root $_ }\r\n"
+      L"$out = [ordered]@{ defender = $true; localMergeDisabled = $false; added = @(); detections = @() }\r\n"
+      L"$policy = Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows Defender' -Name DisableLocalAdminMerge\r\n"
+      L"if ($policy.DisableLocalAdminMerge -eq 1) { $out.localMergeDisabled = $true }\r\n"
+      L"$pref = Get-MpPreference\r\n"
+      L"$missing = @($paths | Where-Object { $pref.ExclusionPath -notcontains $_ })\r\n"
+      L"if ($missing.Count) { Add-MpPreference -ExclusionPath $missing; $out.added += $missing }\r\n"
+      L"$missing = @($procs | Where-Object { $pref.ExclusionProcess -notcontains $_ })\r\n"
+      L"if ($missing.Count) { Add-MpPreference -ExclusionProcess $missing; $out.added += $missing }\r\n"
+      L"$since = (Get-Date).AddDays(-7)\r\n"
+      L"$out.detections = @(Get-MpThreatDetection | Where-Object { $_.InitialDetectionTime -gt $since -and (($_.Resources -join ' ') -like ('*' + $root + '*')) } | ForEach-Object {\r\n"
+      L"  $threat = Get-MpThreat -ThreatID $_.ThreatID\r\n"
+      L"  [ordered]@{ threat = [string]$threat.ThreatName; at = $_.InitialDetectionTime.ToUniversalTime().ToString('o'); action = [string]$_.ActionSuccess; resources = ($_.Resources -join '; ') }\r\n"
+      L"})\r\n"
+      L"$out | ConvertTo-Json -Compress -Depth 4\r\n";
+  const auto workRoot = runtimeRoot / L"rmm" / L"defender";
+  try {
+    std::error_code ec;
+    std::filesystem::create_directories(workRoot, ec);
+    const auto path = workRoot / L"self-protection.ps1";
+    {
+      std::ofstream file(path, std::ios::binary | std::ios::trunc);
+      file << "\xEF\xBB\xBF" << WideToUtf8(script);
+    }
+    wchar_t systemDir[MAX_PATH]{};
+    GetSystemDirectoryW(systemDir, MAX_PATH);
+    const std::wstring command = L"\"" + std::wstring(systemDir) +
+                                 L"\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" +
+                                 path.wstring() + L"\"";
+    const auto result = rmm::RunProcess(command, workRoot.wstring(), {}, 2 * 60 * 1000);
+    std::filesystem::remove(path, ec);
+    auto output = result.stdoutText;
+    while (!output.empty() && (output.back() == '\n' || output.back() == '\r' || output.back() == ' ')) output.pop_back();
+    const auto parsed = json::Parse(output);
+    if (result.timedOut || !parsed || !parsed->IsObject()) return;  // checked again in 6 hours
+    const auto payload = Utf8ToWide(output);
+    if (output.find("\"defender\":false") != std::string::npos) return;
+    // Report each detection once: only those newer than the last one reported.
+    const auto marker = runtimeRoot / L"defender-last-detection.txt";
+    std::string lastReported;
+    {
+      std::ifstream in(marker);
+      std::getline(in, lastReported);
+    }
+    std::string newest = lastReported;
+    for (std::size_t at = output.find("\"at\":\""); at != std::string::npos; at = output.find("\"at\":\"", at + 6)) {
+      const auto value = output.substr(at + 6, output.find('"', at + 6) - (at + 6));
+      if (value > newest) newest = value;
+    }
+    if (newest != lastReported) {
+      QueueTelemetryEvent(L"agent.defender.flagged", L"agent-service",
+                          L"Microsoft Defender flagged a Fenrir program as a threat. If it quarantined the agent, the device goes "
+                          L"offline until the program is restored.",
+                          payload);
+      std::ofstream(marker, std::ios::trunc) << newest;
+    }
+    if (output.find("\"localMergeDisabled\":true") != std::string::npos) {
+      QueueTelemetryEvent(L"agent.defender.exclusions_refused", L"agent-service",
+                          L"A domain or Intune policy makes Microsoft Defender ignore exclusions set on this PC, so it may quarantine "
+                          L"the Fenrir agent. Add Fenrir's folder to the exclusions in that policy.",
+                          payload);
+    }
+    if (output.find("\"added\":[\"") != std::string::npos || output.find("\"added\":\"") != std::string::npos) {
+      QueueTelemetryEvent(L"agent.defender.exclusions_restored", L"agent-service",
+                          L"Microsoft Defender's exclusions for Fenrir were missing and have been added back.", payload);
+    }
+  } catch (const std::exception&) {
   }
 }
 
