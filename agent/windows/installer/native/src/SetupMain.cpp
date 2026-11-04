@@ -2626,17 +2626,32 @@ void RecoverServiceAfterFailure(HWND hwnd) {
   }
 }
 
-// A scheduled task (as SYSTEM, every 5 minutes) that starts the agent if it has stopped, unless an install or
-// upgrade is in progress (maintenance.flag younger than 30 minutes).
+// The backup watchdog: a scheduled PowerShell task (as SYSTEM, every 5 minutes) that starts the agent if it has
+// stopped, and ends and restarts it if it is running but frozen (its liveness record not updated for 20 minutes),
+// unless an install or upgrade is in progress (maintenance.flag younger than 30 minutes). The agent itself registers
+// the main watchdog ("Fenrir\Agent watchdog": fenrir-agent-service.exe --watchdog) every time it starts; this one is
+// independent of the agent program, in case that program is the problem.
 void RegisterAgentWatchdog(HWND hwnd, const std::filesystem::path& installRoot) {
   const auto script = installRoot / L"tools" / L"fenrir-watchdog.ps1";
   {
     std::wofstream out(script, std::ios::trunc);
-    out << L"# Fenrir agent watchdog: starts the protection service if it has stopped.\r\n"
+    out << L"# Fenrir backup watchdog: starts the agent if it stopped; restarts it if it is frozen.\r\n"
         << L"$flag = '" << MaintenanceFlagPath(installRoot).wstring() << L"'\r\n"
         << L"if ((Test-Path $flag) -and (((Get-Date) - (Get-Item $flag).LastWriteTime).TotalMinutes -lt 30)) { exit 0 }\r\n"
         << L"$service = Get-Service -Name 'FenrirAgent' -ErrorAction SilentlyContinue\r\n"
-        << L"if ($service -and $service.Status -eq 'Stopped') { Start-Service -Name 'FenrirAgent' -ErrorAction SilentlyContinue }\r\n";
+        << L"if (-not $service) { exit 0 }\r\n"
+        << L"if ($service.Status -eq 'Stopped') { Start-Service -Name 'FenrirAgent' -ErrorAction SilentlyContinue; exit 0 }\r\n"
+        << L"if ($service.Status -ne 'Running') { exit 0 }\r\n"
+        << L"$root = (Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\FenrirAgent' -Name RuntimeRoot -ErrorAction SilentlyContinue).RuntimeRoot\r\n"
+        << L"if (-not $root) { $root = '" << (installRoot / L"runtime").wstring() << L"' }\r\n"
+        << L"$live = Join-Path $root 'liveness.json'\r\n"
+        << L"if (-not (Test-Path $live)) { exit 0 }\r\n"
+        << L"if (((Get-Date) - (Get-Item $live).LastWriteTime).TotalMinutes -lt 20) { exit 0 }\r\n"
+        << L"$agentPid = (Get-CimInstance Win32_Service -Filter \"Name='FenrirAgent'\").ProcessId\r\n"
+        << L"if ($agentPid) { Stop-Process -Id $agentPid -Force -ErrorAction SilentlyContinue }\r\n"
+        << L"Start-Sleep -Seconds 10\r\n"
+        << L"Start-Service -Name 'FenrirAgent' -ErrorAction SilentlyContinue\r\n"
+        << L"Add-Content -Path (Join-Path $root 'watchdog.log') -Value ((Get-Date).ToUniversalTime().ToString('s') + 'Z backup watchdog: restarted a frozen agent')\r\n";
   }
   wchar_t systemDir[MAX_PATH]{};
   GetSystemDirectoryW(systemDir, MAX_PATH);
@@ -2646,11 +2661,11 @@ void RegisterAgentWatchdog(HWND hwnd, const std::filesystem::path& installRoot) 
                               L"-WindowStyle Hidden -File \\\"" + script.wstring() + L"\\\"";
   DWORD exitCode = 0;
   std::wstring error;
-  const bool ok = RunProcessHidden(schtasks, L"/Create /F /TN \"Fenrir\\Agent watchdog\" /SC MINUTE /MO 5 /RU SYSTEM /RL HIGHEST /TR \"" +
+  const bool ok = RunProcessHidden(schtasks, L"/Create /F /TN \"Fenrir\\Agent watchdog (backup)\" /SC MINUTE /MO 5 /RU SYSTEM /RL HIGHEST /TR \"" +
                                        action + L"\"",
                                    installRoot, &exitCode, &error) &&
                   exitCode == 0;
-  PostLog(hwnd, ok ? L"Registered the agent watchdog task (restarts the agent if it stops)."
+  PostLog(hwnd, ok ? L"Registered the backup watchdog task (restarts the agent if it stops or freezes)."
                    : L"Warning: could not register the agent watchdog task. " + error);
 }
 
@@ -2661,6 +2676,8 @@ void RemoveAgentWatchdog(const std::filesystem::path& installRoot) {
   std::wstring error;
   RunProcessHidden(std::filesystem::path(systemDir) / L"schtasks.exe", L"/Delete /F /TN \"Fenrir\\Agent watchdog\"", installRoot,
                    &exitCode, &error);
+  RunProcessHidden(std::filesystem::path(systemDir) / L"schtasks.exe", L"/Delete /F /TN \"Fenrir\\Agent watchdog (backup)\"",
+                   installRoot, &exitCode, &error);
 }
 
 // Microsoft Defender stays active next to Fenrir (only Microsoft-approved products can take over from it), and

@@ -1,3 +1,4 @@
+#include "Liveness.h"
 #include "ScanEngine.h"
 #include "CommandCancellation.h"
 
@@ -1300,6 +1301,7 @@ ScanFinding BuildAllowOverrideFindingInternal(const std::filesystem::path& path,
 std::optional<ScanFinding> ScanFile(const std::filesystem::path& path, const PolicySnapshot& policy,
                                     const std::vector<std::filesystem::path>& excludedPaths,
                                     const ContentOriginContext& originContext) {
+  liveness::MarkProgress();  // an inline scan on the main loop is progress, not a stall
   if (IsExcludedPath(path, excludedPaths)) {
     return std::nullopt;
   }

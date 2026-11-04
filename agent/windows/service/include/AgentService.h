@@ -9,6 +9,7 @@
 #include <set>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -16,6 +17,7 @@
 #include "AgentConfig.h"
 #include "AgentState.h"
 #include "ControlPlaneClient.h"
+#include "Liveness.h"
 #include "ExtendedPolicy.h"
 #include "RansomwareShield.h"
 #include "AdMonitor.h"
@@ -249,6 +251,11 @@ class AgentService {
   // Set by the realtime channel when the cloud queues a command.
   HANDLE wakeEvent_{nullptr};
   std::thread realtimeThread_{};
+  std::optional<liveness::Snapshot> previousLiveness_{};
+  std::thread keepaliveThread_{};  // tells the server "still here" when nothing else has for a minute
+  void KeepaliveLoop();
+  void EnsureRecoveryMechanisms();  // the watchdog task and Windows' restart-on-failure settings
+  void ReportRecoveries();          // what the watchdog or a self-restart did, shown in the device's activity
   std::thread interactiveThread_{};
   HANDLE interactiveWakeEvent_{nullptr};
   std::atomic<bool> interactiveLoopRunning_{false};

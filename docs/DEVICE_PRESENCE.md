@@ -35,3 +35,38 @@ The device list and device page refresh every 15 seconds while they are on scree
 
 "Offline for N minutes" monitor conditions measure from the last check-in, so they now see agents within 30 seconds of
 the truth. Profile-only Apple devices are left out of offline monitors.
+
+## Windows: how the agent keeps itself connected
+
+Several independent layers, so a Windows agent that is running never stays silent:
+
+1. **Keep-alive thread.** Separate from the agent's main work, it tells the server "still here" whenever nothing else
+   has reached it for a minute. A long scan, script, patch install or a live connection stuck reconnecting no longer
+   makes the device show offline.
+2. **Liveness record.** The agent writes `liveness.json` in its runtime folder every 30 seconds: when its main loop
+   last made progress, when the server last answered, the last HTTP status and error.
+3. **Self-restart.** A thread in the agent ends the process (Windows then restarts it) when the main loop has made no
+   progress for 45 minutes, or when the server has not answered for 30 minutes while the agent keeps trying (at most
+   once every 2 hours). Supervised waits (a script or patch install within its own time limit) and inline scans count
+   as progress.
+4. **Watchdog task** (`Fenrir\Agent watchdog`: `fenrir-agent-service.exe --watchdog`, as SYSTEM, every 5 minutes and 3
+   minutes after boot). The agent registers it every time it starts, so existing installs get it with the next agent
+   update. Each run it:
+   - starts the service if it is stopped (or resumes it if paused);
+   - ends and restarts it if it is stuck starting or stopping for over 10 minutes;
+   - ends and restarts it if it is running but frozen (no liveness update for 10 minutes), its main loop has been
+     stuck for an hour, or the server has not answered for 20 minutes **while this machine can reach the server**
+     itself (so a laptop that is simply offline is left alone);
+   - repairs the service registration if it is missing, and after 3 restarts in 6 hours that did not help (at most
+     every 12 hours);
+   - re-applies Windows' restart-on-failure settings.
+
+   Forced restarts are at most one every 30 minutes, nothing happens during an install or upgrade, and every action
+   is written to `watchdog.log` in the runtime folder.
+5. **Backup watchdog task** (`Fenrir\Agent watchdog (backup)`, PowerShell, every 5 minutes), registered by the
+   installer and independent of the agent program: starts a stopped agent, and restarts one whose liveness record has
+   not changed for 20 minutes.
+6. **Windows restart-on-failure**: restart after 5, 15 and 60 seconds for every crash or error exit.
+
+When the agent comes back after a watchdog action or a self-restart it reports why
+(`agent.watchdog.recovered`, `agent.self_restarted`) in the device's activity.

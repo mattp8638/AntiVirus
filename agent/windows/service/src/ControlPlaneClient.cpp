@@ -1,5 +1,6 @@
 #include "ControlPlaneClient.h"
 #include "BuildInfo.h"
+#include "Liveness.h"
 
 #include <fstream>
 #include "CryptoUtils.h"
@@ -575,8 +576,8 @@ std::wstring ExtractDeviceApiKeyFromCommandChannelUrl(const std::wstring& comman
   return ExtractQueryParameter(commandChannelUrl, L"deviceApiKey");
 }
 
-HttpResponse RequestJson(const wchar_t* method, const std::wstring& url, const std::string& body = {},
-                         const std::wstring& deviceApiKey = {}, const std::wstring& sharedToken = {}, int timeoutMs = 30000) {
+HttpResponse RequestJsonOnce(const wchar_t* method, const std::wstring& url, const std::string& body,
+                             const std::wstring& deviceApiKey, const std::wstring& sharedToken, int timeoutMs) {
   URL_COMPONENTS components{};
   components.dwStructSize = sizeof(components);
   components.dwSchemeLength = static_cast<DWORD>(-1);
@@ -702,6 +703,31 @@ HttpResponse RequestJson(const wchar_t* method, const std::wstring& url, const s
   }
 
   return HttpResponse{.statusCode = statusCode, .body = std::move(responseBody)};
+}
+
+// Every request also records, for the watchdog, whether the server answered (liveness.json): an answer that shows the
+// server accepts this device counts as contact; a refused device key (401/403), a server error or no connection does not.
+HttpResponse RequestJson(const wchar_t* method, const std::wstring& url, const std::string& body = {},
+                         const std::wstring& deviceApiKey = {}, const std::wstring& sharedToken = {}, int timeoutMs = 30000) {
+  try {
+    auto response = RequestJsonOnce(method, url, body, deviceApiKey, sharedToken, timeoutMs);
+    liveness::MarkContactOk(response.statusCode);
+    return response;
+  } catch (const HttpStatusError& error) {
+    const auto status = error.StatusCode();
+    if (status < 500 && status != 401 && status != 403 && status != 407 && status != 429) {
+      liveness::MarkContactOk(status);
+    } else {
+      liveness::MarkContactFailed(status, error.what());
+    }
+    throw;
+  } catch (const DeviceIdentityRejectedError& error) {
+    liveness::MarkContactFailed(404, error.what());
+    throw;
+  } catch (const std::exception& error) {
+    liveness::MarkContactFailed(0, std::string(error.what()) + " (error " + std::to_string(GetLastError()) + ")");
+    throw;
+  }
 }
 
 RemoteCommand ParseRemoteCommand(const std::string& json) {

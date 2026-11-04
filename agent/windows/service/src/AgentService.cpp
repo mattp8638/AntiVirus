@@ -1,5 +1,7 @@
 #include "AgentService.h"
 #include "BuildInfo.h"
+#include "AgentWatchdog.h"
+#include "Liveness.h"
 #include "LocalAdminRotation.h"
 #include "TemporaryAdmin.h"
 #include "CrashReporter.h"
@@ -1102,6 +1104,12 @@ int AgentService::Run(const AgentRunMode mode) {
     }
 
     config_ = LoadAgentConfig();
+    // First, before anything that could hang: the liveness record the watchdog reads, and the stall detector.
+    if (mode == AgentRunMode::Service) {
+      liveness::Start(config_.runtimeDatabasePath.parent_path() / L"liveness.json", &previousLiveness_);
+    }
+    liveness::SetMainThread();
+    liveness::MarkLoop();
     stateStore_ = std::make_unique<LocalStateStore>(config_.runtimeDatabasePath, config_.stateFilePath);
     controlPlaneClient_ = std::make_unique<ControlPlaneClient>(config_.controlPlaneBaseUrl);
     commandJournalStore_ = std::make_unique<CommandJournalStore>(config_.runtimeDatabasePath);
@@ -1167,6 +1175,11 @@ int AgentService::Run(const AgentRunMode mode) {
     StartRealtimeChannel();
     QueueTelemetryEvent(L"service.started", L"agent-service", L"The endpoint agent boot sequence started.",
                         L"{\"phase\":\"bootstrap\"}");
+    liveness::MarkLoop();
+    if (mode == AgentRunMode::Service) {
+      ReportRecoveries();
+      EnsureRecoveryMechanisms();
+    }
 
     RunSyncLoop(mode);
     StopRealtimeChannel();
@@ -1202,6 +1215,7 @@ int AgentService::Run(const AgentRunMode mode) {
     }
 
     PersistState();
+    liveness::Stop();
 
     if (mode == AgentRunMode::Console) {
       std::wcout << L"Agent service is running." << std::endl;
@@ -1256,7 +1270,9 @@ void AgentService::RunSyncLoop(const AgentRunMode mode) {
   const auto configuredIterations = std::max(config_.syncIterations, 1);
   int cycle = 1;
 
+  liveness::SetMainThread();
   while (!ShouldStop()) {
+    liveness::MarkLoop();
     // One bad cycle (a scan, the database, the network) must never stop the agent: log it and carry on.
     try {
     ProcessPamRequests();
@@ -1269,11 +1285,15 @@ void AgentService::RunSyncLoop(const AgentRunMode mode) {
     if (config_.managedMode) {
       // Check in before the scans: a first full-drive scan can take hours.
       SyncWithControlPlane(cycle);
+      liveness::MarkLoop();
       PublishIdentitySnapshot();
       PollAndExecuteCommands(cycle);
+      liveness::MarkLoop();
       FlushTelemetryQueue();
       PublishHeartbeat(cycle);
+      liveness::MarkLoop();
       MaybeSelfUpdate(cycle);
+      liveness::MarkLoop();
       ExpireBreakGlassAccount();
       ExpireElevations();
       MaybeCollectSystemProfile();
@@ -1289,7 +1309,9 @@ void AgentService::RunSyncLoop(const AgentRunMode mode) {
       }
     }
     SyncUpdateOnly(cycle);
+    liveness::MarkLoop();
     RunAutomatedRiskAssessments(cycle);
+    liveness::MarkLoop();
     DrainProcessTelemetry();
     DrainRansomwareTelemetry();
     DrainRealtimeProtectionTelemetry();
@@ -1526,6 +1548,7 @@ bool AgentService::WaitForNextCycle(const AgentRunMode mode, const int nextCycle
 
   const auto deadline = GetTickCount64() + static_cast<ULONGLONG>(std::max(config_.syncIntervalSeconds, 1)) * 1000;
   for (;;) {
+    liveness::MarkLoop();  // waiting for the next cycle is the loop working as intended
     const auto now = GetTickCount64();
     if (now >= deadline) {
       return true;
@@ -3687,6 +3710,7 @@ void AgentService::StartRealtimeChannel() {
     return;
   }
   realtimeThread_ = std::thread([this] { RealtimeLoop(); });
+  if (!keepaliveThread_.joinable()) keepaliveThread_ = std::thread([this] { KeepaliveLoop(); });
   if (!interactiveThread_.joinable()) {
     interactiveWakeEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (interactiveWakeEvent_ != nullptr) {
@@ -3702,6 +3726,9 @@ void AgentService::StopRealtimeChannel() {
   }
   if (realtimeThread_.joinable()) {
     realtimeThread_.join();
+  }
+  if (keepaliveThread_.joinable()) {
+    keepaliveThread_.join();
   }
   if (interactiveThread_.joinable()) {
     interactiveThread_.join();
@@ -3751,6 +3778,7 @@ void AgentService::RealtimeLoop() {
       bool binary = false;
       while (!ShouldStop() && socket.Receive(&message, &binary)) {
         lastHeard = GetTickCount64();
+        liveness::MarkContactOk(101);  // the server is answering on the live connection
         if (message == "pong") {
           continue;
         }
@@ -3789,6 +3817,64 @@ void AgentService::RealtimeLoop() {
       return;
     }
     backoff = std::min<DWORD>(backoff * 2, 60000);
+  }
+}
+
+// "Still here", independent of everything else: the main loop's heartbeat can be held up by a long step and the live
+// connection can be down or stuck connecting, but the device must never show offline while the agent is running.
+// Sends a presence only when nothing has reached the server for a minute.
+void AgentService::KeepaliveLoop() {
+  while (WaitForSingleObject(stopEvent_, 60'000) == WAIT_TIMEOUT) {
+    if (liveness::Now() - liveness::LastContactOk() < 55) continue;
+    try {
+      const auto identity = IdentitySnapshot();
+      if (!identity.deviceId.empty()) controlPlaneClient_->SendPresence(identity);
+    } catch (const std::exception&) {
+      // recorded in the liveness record; the watchdog and the stall detector act on it
+    }
+  }
+}
+
+// Every start: make sure the watchdog task exists and points at this program (installs older than the watchdog get
+// it here), and that Windows restarts the service after any failure.
+void AgentService::EnsureRecoveryMechanisms() {
+  wchar_t path[MAX_PATH]{};
+  const auto length = GetModuleFileNameW(nullptr, path, MAX_PATH);
+  std::wstring error;
+  if (length > 0 && !watchdog::RegisterTask(std::filesystem::path(std::wstring(path, length)), &error)) {
+    QueueTelemetryEvent(L"agent.watchdog.register_failed", L"agent-service",
+                        L"The agent could not register its watchdog task; it relies on Windows' restart-on-failure alone.",
+                        L"{\"error\":\"" + Utf8ToWide(EscapeJsonString(error)) + L"\"}");
+  }
+  if (const auto manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT)) {
+    if (const auto service = OpenServiceW(manager, L"FenrirAgent", SERVICE_CHANGE_CONFIG)) {
+      watchdog::ApplyRecoverySettings(service, &error);
+      CloseServiceHandle(service);
+    }
+    CloseServiceHandle(manager);
+  }
+}
+
+// What happened before this start, for the device's activity: a restart by the watchdog, or by the agent itself.
+void AgentService::ReportRecoveries() {
+  const auto runtime = config_.runtimeDatabasePath.parent_path();
+  const auto actionFile = runtime / L"watchdog-action.json";
+  std::ifstream in(actionFile, std::ios::binary);
+  if (in) {
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    in.close();
+    const auto json = buffer.str();
+    if (json.find("\"action\"") != std::string::npos) {
+      QueueTelemetryEvent(L"agent.watchdog.recovered", L"agent-watchdog",
+                          L"The watchdog found the agent stopped or stuck and brought it back.", Utf8ToWide(json));
+    }
+    std::error_code ec;
+    std::filesystem::remove(actionFile, ec);
+  }
+  if (previousLiveness_ && !previousLiveness_->selfRestartReason.empty() && previousLiveness_->selfRestartAt >= previousLiveness_->startedAt) {
+    QueueTelemetryEvent(L"agent.self_restarted", L"agent-service", L"The agent restarted itself because it was stuck.",
+                        L"{\"reason\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(previousLiveness_->selfRestartReason))) + L"\"}");
   }
 }
 

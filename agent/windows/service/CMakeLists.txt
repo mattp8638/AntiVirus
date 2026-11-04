@@ -97,6 +97,7 @@ add_library(antivirus-agent-core STATIC
   src/DestinationProtection.cpp
   src/DestinationVerdictEngine.cpp
   src/DeviceInventoryCollector.cpp
+  src/AgentWatchdog.cpp
   src/EndpointClient.cpp
   src/EvidenceRecorder.cpp
   src/FileDeltaTracker.cpp
@@ -106,6 +107,7 @@ add_library(antivirus-agent-core STATIC
   src/LocalScanRunner.cpp
   src/LocalControlChannel.cpp
   src/LocalSecurity.cpp
+  src/Liveness.cpp
   src/LocalStateStore.cpp
   src/PatchOrchestrator.cpp
   src/PhishingHeuristics.cpp
