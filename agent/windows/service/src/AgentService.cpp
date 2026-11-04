@@ -1141,6 +1141,9 @@ int AgentService::Run(const AgentRunMode mode) {
 
     LoadLocalPolicyCache();
     PublishIdentitySnapshot();
+    // "Still here" from now on, before the protection components start: a start-up step that hangs or is slow must
+    // not leave the device showing offline.
+    if (!keepaliveThread_.joinable() && mode == AgentRunMode::Service) keepaliveThread_ = std::thread([this] { KeepaliveLoop(); });
     ApplyProtectionPolicy();
     RelaunchClientAfterUpgrade();
     realtimeProtectionBroker_->SetPolicy(EnforcedPolicy());

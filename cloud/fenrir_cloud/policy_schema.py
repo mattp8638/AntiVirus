@@ -309,7 +309,7 @@ SCHEMA: tuple[Section, ...] = (
             F("mode", "enum", "block", "Response", options=("audit", "block", "block-and-rollback")),
             F("massEncryptionFilesPerMinute", "int", 40, "Files changed per minute that trigger detection", min=5, max=1000),
             F("entropyDetection", "bool", True, "High-entropy write detection"),
-            F("canaryFiles", "bool", True, "Canary (honey) files"),
+            F("canaryFiles", "bool", True, "Canary (honey) files (not placed while Microsoft Defender runs: it treats them as ransomware)"),
             F("blockShadowCopyDeletion", "bool", True, "Block shadow copy and backup deletion"),
             F("protectedFolders", "list", ["%USERPROFILE%\\Documents", "%USERPROFILE%\\Desktop", "%USERPROFILE%\\Pictures"],
               "Protected folders", "Only allowed apps may modify these folders."),
