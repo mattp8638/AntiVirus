@@ -160,6 +160,10 @@ def enqueue_command(
         resolution, _ = effective_policy(db, device)
         if not resolution["settings"]["privilege"].get("breakGlassAllowed", True):
             raise CommandError("The break-glass admin account is turned off by this device's policy")
+    if command_type == "script.run":
+        resolution, _ = effective_policy(db, device)
+        if not resolution["settings"]["response"].get("scriptExecution", True):
+            raise CommandError("Script execution is turned off by device policy")
     # Don't stack identical pending actions (e.g. two auto-isolations). Different payloads (another remote
     # session, a script with other parameters) are different actions.
     for existing in db.execute(

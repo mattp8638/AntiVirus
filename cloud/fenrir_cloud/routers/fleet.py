@@ -413,7 +413,7 @@ def issue_command(device_id: str, request: Request, body: dict = Body(...), prin
     if command_type == "script.run":
         script_review.guard_direct_run(db)
     if spec.destructive:  # CORE-15: optional second-person approval
-        approvals.gate(db, principal, "device.command", f"{spec.label} on {device.hostname}", {"deviceId": device.id, **body}, [device],
+        approvals.gate(db, principal, "device.command", f"{spec.label} on {device.hostname}", {**body, "deviceId": device.id}, [device],
                        destructive=True, route=f"devices/{device.id}/commands")
     arguments = _command_arguments(body)
     try:

@@ -684,3 +684,32 @@ def test_schedule_rejects_unrelated_customer_library_item(client, admin, tenant)
         "tenantId": tenant["id"], "schedule": {"type": "daily"},
         "actions": [{"type": "script", "scriptId": item_id}]})
     assert response.status_code == 400
+
+
+def test_device_history_is_filtered_before_limit(client, admin, tenant):
+    first = enroll(client, admin, tenant, hostname="Same", serial="ONE")
+    second = enroll(client, admin, tenant, hostname="Same", serial="TWO")
+    url = "/api/console/rmm/jobs"
+    def queue(device):
+        return client.post(url, headers=admin, json={"commandType": "inventory.refresh",
+                           "targets": {"deviceIds": [device["deviceId"]]}}).json()["id"]
+    older = queue(first)
+    queue(second)
+    rows = client.get(url, headers=admin, params={"deviceId": first["deviceId"], "limit": 1}).json()
+    assert [row["id"] for row in rows] == [older]
+
+
+def test_invalid_patch_policy_is_rejected_before_scheduler(client, admin, tenant):
+    url = "/api/console/rmm/patch-policies"
+    for settings in [{"window": {"tz": "Europe/Londn"}}, {"window": {"days": [7]}},
+                     {"window": {"durationMinutes": 0}}, {"rings": [{"delayDays": -1}]}, {"reboot": ["never"]}]:
+        assert client.post(url, headers=admin, json={"tenantId": tenant["id"], **settings}).status_code == 400
+
+
+def test_patch_window_has_one_elapsed_deadline_across_uk_clock_change():
+    window = {"tz": "Europe/London", "days": [6], "start": "01:30", "durationMinutes": 60}
+    inside, key = rmm.in_window(window, datetime(2026, 10, 25, 1, 10))
+    assert inside
+    assert rmm.window_deadline(window, key) == int(datetime(2026, 10, 25, 1, 30, tzinfo=rmm.timezone.utc).timestamp())
+    assert not rmm.in_window(window, datetime(2026, 10, 25, 1, 30))[0]
+    assert not rmm.in_window({**window, "durationMinutes": "invalid"}, datetime(2026, 10, 25, 1, 10))[0]

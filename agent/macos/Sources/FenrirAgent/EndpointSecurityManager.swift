@@ -1,5 +1,6 @@
 import Foundation
 import EndpointSecurity
+import FenrirAuditToken
 
 /// Pure ES sensor: intercepts kernel events and delegates all logic to RealtimeProtectionBroker.
 class EndpointSecurityManager {
@@ -11,8 +12,8 @@ class EndpointSecurityManager {
     }
 
     func start() -> Bool {
-        let res = es_new_client(&client) { [weak self] (_, message) in
-            self?.handleMessage(message: message.pointee)
+        let res = es_new_client(&client) { [broker] client, message in
+            Self.handleMessage(client: client, message: message, broker: broker)
         }
 
         guard res == ES_NEW_CLIENT_RESULT_SUCCESS, let client = client else {
@@ -26,6 +27,8 @@ class EndpointSecurityManager {
         ]
 
         guard es_subscribe(client, events, UInt32(events.count)) == ES_RETURN_SUCCESS else {
+            es_delete_client(client)
+            self.client = nil
             print("[ESManager] Failed to subscribe to ES events.")
             return false
         }
@@ -44,43 +47,25 @@ class EndpointSecurityManager {
 
     // MARK: - Private
 
-    private func handleMessage(message: es_message_t) {
-        guard message.action_type == ES_ACTION_TYPE_AUTH else { return }
-
-        var verdict: es_auth_result_t = ES_AUTH_RESULT_ALLOW
-
-        switch message.event_type {
+    private static func handleMessage(client: OpaquePointer, message: UnsafePointer<es_message_t>,
+                                      broker: RealtimeProtectionBroker) {
+        let event = message.pointee
+        guard event.action_type == ES_ACTION_TYPE_AUTH else { return }
+        switch event.event_type {
         case ES_EVENT_TYPE_AUTH_EXEC:
-            verdict = handleExec(message: message)
+            let target = event.event.exec.target.pointee
+            let path = String(cString: target.executable.pointee.path.data)
+            let decision = broker.handleExec(executablePath: path, pid: fenrir_audit_pid(target.audit_token))
+            es_respond_auth_result(client, message, decision == .allow ? ES_AUTH_RESULT_ALLOW : ES_AUTH_RESULT_DENY, false)
         case ES_EVENT_TYPE_AUTH_OPEN:
-            verdict = handleOpen(message: message)
+            let open = event.event.open
+            let path = String(cString: open.file.pointee.path.data)
+            let pid = fenrir_audit_pid(event.process.pointee.audit_token)
+            let decision = broker.handleFileOpen(filePath: path, pid: pid, isWrite: (open.fflag & FWRITE) != 0)
+            let flags = decision == .allow ? UInt32(bitPattern: open.fflag) : 0
+            es_respond_flags_result(client, message, flags, false)
         default:
-            break
-        }
-
-        es_respond_auth_result(client!, message, verdict, false)
-    }
-
-    private func handleExec(message: es_message_t) -> es_auth_result_t {
-        let path = String(cString: message.event.exec.target.pointee.executable.pointee.path.data)
-        let pid = message.event.exec.target.pointee.audit_token.pid
-
-        let decision = broker.handleExec(executablePath: path, pid: pid)
-        return decision == .allow ? ES_AUTH_RESULT_ALLOW : ES_AUTH_RESULT_DENY
-    }
-
-    private func handleOpen(message: es_message_t) -> es_auth_result_t {
-        let filePath = String(cString: message.event.open.file.pointee.path.data)
-        let pid = message.process.pointee.audit_token.pid
-        let isWrite = (message.event.open.fflag & FWRITE) != 0
-
-        let decision = broker.handleFileOpen(filePath: filePath, pid: pid, isWrite: isWrite)
-
-        switch decision {
-        case .allow:
-            return ES_AUTH_RESULT_ALLOW
-        case .block:
-            return ES_AUTH_RESULT_DENY
+            es_respond_auth_result(client, message, ES_AUTH_RESULT_ALLOW, false)
         }
     }
 }
