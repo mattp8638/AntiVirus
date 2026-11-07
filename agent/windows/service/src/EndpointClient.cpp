@@ -7,7 +7,7 @@
 #include <fstream>
 #include <memory>
 #include <optional>
-#include <regex>
+#include "RegexOptions.h"
 #include <set>
 #include <string>
 
@@ -189,7 +189,7 @@ std::string UnescapeJsonString(const std::string& value) {
 
 std::optional<std::wstring> ExtractJsonString(const std::wstring& json, const std::string& key) {
   const auto utf8Json = WideToUtf8(json);
-  const std::regex pattern("\"" + EscapeRegex(key) + "\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"");
+  const std::regex pattern("\"" + EscapeRegex(key) + "\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"", kAgentRegexOptions);
   std::smatch match;
   if (!std::regex_search(utf8Json, match, pattern)) {
     return std::nullopt;
@@ -200,7 +200,7 @@ std::optional<std::wstring> ExtractJsonString(const std::wstring& json, const st
 
 std::optional<int> ExtractJsonInt(const std::wstring& json, const std::string& key) {
   const auto utf8Json = WideToUtf8(json);
-  const std::regex pattern("\"" + EscapeRegex(key) + "\"\\s*:\\s*(\\d+)");
+  const std::regex pattern("\"" + EscapeRegex(key) + "\"\\s*:\\s*(\\d+)", kAgentRegexOptions);
   std::smatch match;
   if (!std::regex_search(utf8Json, match, pattern)) {
     return std::nullopt;
@@ -211,7 +211,7 @@ std::optional<int> ExtractJsonInt(const std::wstring& json, const std::string& k
 
 std::optional<bool> ExtractJsonBool(const std::wstring& json, const std::string& key) {
   const auto utf8Json = WideToUtf8(json);
-  const std::regex pattern("\"" + EscapeRegex(key) + "\"\\s*:\\s*(true|false|1|0)");
+  const std::regex pattern("\"" + EscapeRegex(key) + "\"\\s*:\\s*(true|false|1|0)", kAgentRegexOptions);
   std::smatch match;
   if (!std::regex_search(utf8Json, match, pattern)) {
     return std::nullopt;

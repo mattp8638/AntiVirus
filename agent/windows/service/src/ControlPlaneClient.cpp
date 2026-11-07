@@ -11,7 +11,7 @@
 #include <algorithm>
 #include <cwctype>
 #include <optional>
-#include <regex>
+#include "RegexOptions.h"
 #include <sstream>
 #include <stdexcept>
 
@@ -173,7 +173,7 @@ std::wstring ToLowerCopy(std::wstring value) {
 }
 
 std::optional<std::string> ExtractJsonString(const std::string& json, const std::string& key) {
-  const std::regex pattern("\"" + EscapeRegex(key) + "\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"");
+  const std::regex pattern("\"" + EscapeRegex(key) + "\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"", kAgentRegexOptions);
   std::smatch match;
   if (std::regex_search(json, match, pattern)) {
     return UnescapeJsonString(match[1].str());
@@ -183,7 +183,7 @@ std::optional<std::string> ExtractJsonString(const std::string& json, const std:
 }
 
 std::optional<bool> ExtractJsonBool(const std::string& json, const std::string& key) {
-  const std::regex pattern("\"" + EscapeRegex(key) + "\"\\s*:\\s*(true|false)");
+  const std::regex pattern("\"" + EscapeRegex(key) + "\"\\s*:\\s*(true|false)", kAgentRegexOptions);
   std::smatch match;
   if (std::regex_search(json, match, pattern)) {
     return match[1].str() == "true";
@@ -193,7 +193,7 @@ std::optional<bool> ExtractJsonBool(const std::string& json, const std::string& 
 }
 
 std::optional<int> ExtractJsonInt(const std::string& json, const std::string& key) {
-  const std::regex pattern("\"" + EscapeRegex(key) + "\"\\s*:\\s*(\\d+)");
+  const std::regex pattern("\"" + EscapeRegex(key) + "\"\\s*:\\s*(\\d+)", kAgentRegexOptions);
   std::smatch match;
   if (std::regex_search(json, match, pattern)) {
     return std::stoi(match[1].str());
