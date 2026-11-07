@@ -19,7 +19,7 @@ let package = Package(
             name: "FenrirAgent",
             dependencies: ["FenrirAuditToken"],
             linkerSettings: [
-                .linkedFramework("EndpointSecurity"),
+                .linkedLibrary("EndpointSecurity"),
                 .linkedFramework("Foundation"),
                 .linkedFramework("CoreServices"),
                 .linkedFramework("CryptoKit")
