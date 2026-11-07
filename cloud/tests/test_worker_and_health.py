@@ -62,8 +62,15 @@ def test_the_web_process_wakes_agents_for_commands_queued_by_the_worker(client, 
         db.commit()
     woken: dict[str, float] = {}
     assert main._wake_pending(woken) == {device["deviceId"]}
-    assert main._wake_pending(woken) == set()  # woken once per command
-    assert woken_devices == [{device["deviceId"]}]
+    assert main._wake_pending(woken) == set()  # suppress immediate duplicates
+    woken["cmd_from_worker"] -= 31
+    assert main._wake_pending(woken) == {device["deviceId"]}
+    assert woken_devices == [{device["deviceId"]}] * 2
+    with database.session_factory()() as db:
+        db.get(Command, "cmd_from_worker").status = "dispatched"
+        db.commit()
+    assert main._wake_pending(woken) == set()
+    assert not woken
 
 
 def test_retention_deletes_in_batches_and_keeps_routine_events_a_rule_matched(client, device, monkeypatch):

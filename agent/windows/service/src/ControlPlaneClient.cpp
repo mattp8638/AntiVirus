@@ -712,11 +712,7 @@ HttpResponse RequestJson(const wchar_t* method, const std::wstring& url, const s
     return response;
   } catch (const HttpStatusError& error) {
     const auto status = error.StatusCode();
-    if (status < 500 && status != 401 && status != 403 && status != 407 && status != 429) {
-      liveness::MarkContactOk(status);
-    } else {
-      liveness::MarkContactFailed(status, error.what());
-    }
+    liveness::MarkContactFailed(status, error.what());
     throw;
   } catch (const DeviceIdentityRejectedError& error) {
     liveness::MarkContactFailed(404, error.what());

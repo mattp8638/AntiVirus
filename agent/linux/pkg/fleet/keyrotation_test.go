@@ -153,3 +153,31 @@ func TestTelemetrySpoolSurvivesARestartWhileOffline(t *testing.T) {
 		t.Fatal("spool not removed after the queue drained")
 	}
 }
+
+func TestShutdownSpoolsRemainderAfterBatchSizeRejection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Events []Event }
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+			return
+		}
+		if len(body.Events) > 2 {
+			http.Error(w, "batch too large", 413)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]int{"accepted": len(body.Events)})
+	}))
+	defer srv.Close()
+	cfg := Config{Server: srv.URL, StateDir: t.TempDir()}
+	a := New(cfg)
+	for _, id := range []string{"a", "b", "c", "d"} {
+		a.queue = append(a.queue, Event{EventID: id})
+	}
+	if err := a.flushOrSpool(true); err != nil {
+		t.Fatal(err)
+	}
+	restored := New(cfg)
+	if n := restored.loadSpool(); n != 2 || restored.queue[0].EventID != "c" || restored.queue[1].EventID != "d" {
+		t.Fatalf("unexpected persisted remainder: %v", restored.queue)
+	}
+}

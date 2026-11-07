@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from dataclasses import dataclass, field
 from datetime import timedelta
 
@@ -328,6 +329,7 @@ class Room:
 class RelayHub:
     def __init__(self) -> None:
         self.rooms: dict[str, Room] = {}
+        self._devices_lock = threading.Lock()
         self.devices: dict[str, set[Peer]] = {}
         self.loop: asyncio.AbstractEventLoop | None = None
         self.revoked_sessions: set[str] = set()
@@ -344,24 +346,32 @@ class RelayHub:
     # -- device wake channel ------------------------------------------------
     def register_device(self, device_id: str, peer: Peer) -> None:
         self.loop = asyncio.get_running_loop()
-        self.devices.setdefault(device_id, set()).add(peer)
+        with self._devices_lock:
+            self.devices.setdefault(device_id, set()).add(peer)
 
     def unregister_device(self, device_id: str, peer: Peer) -> None:
-        peers = self.devices.get(device_id)
-        if peers:
-            peers.discard(peer)
-            if not peers:
-                self.devices.pop(device_id, None)
+        with self._devices_lock:
+            peers = self.devices.get(device_id)
+            if peers:
+                peers.discard(peer)
+                if not peers:
+                    self.devices.pop(device_id, None)
 
     def device_online(self, device_id: str) -> bool:
-        return bool(self.devices.get(device_id))
+        with self._devices_lock:
+            return bool(self.devices.get(device_id))
+
+    def connected_devices(self) -> list[str]:
+        with self._devices_lock:
+            return list(self.devices)
 
     def wake(self, device_ids: set[str]) -> None:
         """Tell connected agents to poll for commands now. Safe to call from any thread."""
         loop = self.loop
         if loop is None or loop.is_closed():
             return
-        targets = [peer for device_id in device_ids for peer in self.devices.get(device_id, ())]
+        with self._devices_lock:
+            targets = [peer for device_id in device_ids for peer in self.devices.get(device_id, ())]
         if not targets:
             return
         message = json.dumps({"type": "commands"})

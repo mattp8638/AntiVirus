@@ -3782,7 +3782,9 @@ void AgentService::RealtimeLoop() {
         if (message == "pong") {
           continue;
         }
-        if (message.find("\"commands\"") != std::string::npos || message.find("\"pollNow\":true") != std::string::npos) {
+        if (binary || message.size() > 4096) continue;
+        const auto type = FindRawJsonStringField(message, "type");
+        if (type == "commands" || ExtractPayloadBool(Utf8ToWide(message), "pollNow").value_or(false)) {
           SetEvent(wakeEvent_);
           if (interactiveWakeEvent_) SetEvent(interactiveWakeEvent_);
         }
