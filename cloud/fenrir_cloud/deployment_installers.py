@@ -299,9 +299,9 @@ EOF
 /usr/sbin/chown root:wheel "$plist"
 /bin/chmod 600 "$plist"
 /bin/launchctl bootout system/com.fenrir.agent 2>/dev/null || true
-/bin/launchctl bootstrap system "$plist"
 /bin/launchctl enable system/com.fenrir.agent
-/bin/launchctl kickstart -k system/com.fenrir.agent
+/bin/launchctl bootstrap system "$plist"
+/bin/launchctl kickstart system/com.fenrir.agent
 echo "Fenrir agent installed as a LaunchDaemon. Confirm the device checks in to your tenant."
 echo "In System Settings > Privacy & Security, allow /usr/local/bin/fenrir-agent under:"
 echo "  - Full Disk Access (complete scanning)"

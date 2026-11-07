@@ -7,6 +7,7 @@
 #include <fstream>
 #include <mutex>
 #include <sstream>
+#include <system_error>
 #include <thread>
 
 namespace antivirus::agent::liveness {
@@ -14,6 +15,8 @@ namespace {
 
 std::atomic<long long> g_started{0};
 std::atomic<long long> g_loop{0};
+std::atomic<long long> g_loopAwake{0};
+std::atomic<long long> g_attemptAwake{0};
 std::atomic<long long> g_contactOk{0};
 std::atomic<long long> g_contactAttempt{0};
 std::atomic<long long> g_lastStatus{0};
@@ -66,6 +69,9 @@ Snapshot Current() {
   s.pid = static_cast<long long>(GetCurrentProcessId());
   s.startedAt = g_started.load();
   s.writtenAt = Now();
+  s.writtenAwake = AwakeSeconds();
+  s.loopAwake = g_loopAwake.load();
+  s.contactAttemptAwake = g_attemptAwake.load();
   s.loopAt = g_loop.load();
   s.contactOkAt = g_contactOk.load();
   s.contactAttemptAt = g_contactAttempt.load();
@@ -104,23 +110,10 @@ void Loop() {
     if (WaitForSingleObject(g_stop, 30'000) == WAIT_OBJECT_0) return;
     Write(g_file, Current());
     if (++ticks % 2 != 0) continue;  // stall checks once a minute
-    const auto now = Now();
-    const auto loop = g_loop.load();
-    if (loop > 0 && now - loop > kMainLoopStallMinutes * 60LL) {
-      RestartSelf("the main loop made no progress for " + std::to_string((now - loop) / 60) + " minutes");
-    }
-    const auto started = g_started.load();
-    const auto lastOk = std::max(g_contactOk.load(), started);
-    const auto lastRestart = g_selfRestartAt.load();
-    const bool trying = now - g_contactAttempt.load() < 10 * 60;
-    if (trying && now - lastOk > kNoContactMinutes * 60LL && now - started > kNoContactMinutes * 60LL &&
-        (lastRestart == 0 || now - lastRestart > kSelfRestartGapMinutes * 60LL)) {
-      std::string error;
-      {
-        std::lock_guard<std::mutex> lock(g_textMutex);
-        error = g_lastError;
-      }
-      RestartSelf("no answer from the server for " + std::to_string((now - lastOk) / 60) + " minutes (" + error + ")");
+    const auto now = AwakeSeconds();
+    const auto loop = g_loopAwake.load();
+    if (Stalled(now, loop, kMainLoopStallMinutes * 60LL)) {
+      RestartSelf("the main loop made no progress for " + std::to_string((now - loop) / 60) + " awake minutes");
     }
   }
 }
@@ -131,24 +124,34 @@ long long Now() {
   return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
-void MarkLoop() { g_loop = Now(); }
+long long AwakeSeconds() {
+  ULONGLONG ticks = 0;
+  return QueryUnbiasedInterruptTime(&ticks) ? static_cast<long long>(ticks / 10'000'000) : 0;
+}
+
+void MarkLoop() {
+  g_loop = Now();
+  g_loopAwake = AwakeSeconds();
+}
 
 void SetMainThread() { g_mainThread = GetCurrentThreadId(); }
 
 long long LastContactOk() { return g_contactOk.load(); }
 
 void MarkProgress() {
-  if (g_mainThread.load() == GetCurrentThreadId()) g_loop = Now();
+  if (g_mainThread.load() == GetCurrentThreadId()) MarkLoop();
 }
 
 void MarkContactOk(const unsigned long status) {
   const auto now = Now();
+  g_attemptAwake = AwakeSeconds();
   g_contactAttempt = now;
   g_contactOk = now;
   g_lastStatus = static_cast<long long>(status);
 }
 
 void MarkContactFailed(const unsigned long status, const std::string& why) {
+  g_attemptAwake = AwakeSeconds();
   g_contactAttempt = Now();
   g_lastStatus = static_cast<long long>(status);
   std::lock_guard<std::mutex> lock(g_textMutex);
@@ -160,15 +163,23 @@ void Start(const std::filesystem::path& file, std::optional<Snapshot>* previous)
   g_file = file;
   const auto last = Read(file);
   if (previous != nullptr) *previous = last;
-  if (last) g_selfRestartAt = last->selfRestartAt;  // the 2-hour gap survives the restart it caused
+  if (last) g_selfRestartAt = last->selfRestartAt;  // retain the previous restart timestamp for diagnostics
   const auto now = Now();
   g_started = now;
-  g_loop = now;
+  MarkLoop();
+  g_attemptAwake = AwakeSeconds();
   std::error_code ec;
   std::filesystem::create_directories(file.parent_path(), ec);
   Write(file, Current());
   g_stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-  g_thread = std::thread(Loop);
+  if (!g_stop) throw std::system_error(GetLastError(), std::system_category(), "create liveness event");
+  try {
+    g_thread = std::thread(Loop);
+  } catch (...) {
+    CloseHandle(g_stop);
+    g_stop = nullptr;
+    throw;
+  }
 }
 
 void Stop() {
@@ -190,6 +201,9 @@ std::optional<Snapshot> Read(const std::filesystem::path& file) {
   s.pid = NumberField(json, "pid");
   s.startedAt = NumberField(json, "startedAt");
   s.writtenAt = NumberField(json, "writtenAt");
+  s.writtenAwake = NumberField(json, "writtenAwake");
+  s.loopAwake = NumberField(json, "loopAwake");
+  s.contactAttemptAwake = NumberField(json, "contactAttemptAwake");
   s.loopAt = NumberField(json, "loopAt");
   s.contactOkAt = NumberField(json, "contactOkAt");
   s.contactAttemptAt = NumberField(json, "contactAttemptAt");
@@ -203,6 +217,8 @@ std::optional<Snapshot> Read(const std::filesystem::path& file) {
 bool Write(const std::filesystem::path& file, const Snapshot& s) {
   std::ostringstream json;
   json << "{\"pid\":" << s.pid << ",\"startedAt\":" << s.startedAt << ",\"writtenAt\":" << s.writtenAt
+       << ",\"writtenAwake\":" << s.writtenAwake << ",\"loopAwake\":" << s.loopAwake
+       << ",\"contactAttemptAwake\":" << s.contactAttemptAwake
        << ",\"loopAt\":" << s.loopAt << ",\"contactOkAt\":" << s.contactOkAt << ",\"contactAttemptAt\":" << s.contactAttemptAt
        << ",\"lastStatus\":" << s.lastStatus << ",\"selfRestartAt\":" << s.selfRestartAt << ",\"lastError\":\""
        << Escape(s.lastError) << "\",\"selfRestartReason\":\"" << Escape(s.selfRestartReason) << "\"}";

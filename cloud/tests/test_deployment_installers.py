@@ -75,7 +75,8 @@ def test_macos_installer_is_customer_bound_launchdaemon(client, admin, tenant, m
     syntax = subprocess.run(["sh", "-n"], input=script, text=True, capture_output=True, check=False)
     assert syntax.returncode == 0, syntax.stderr
     assert "/Library/LaunchDaemons/com.fenrir.agent.plist" in script
-    assert "launchctl bootstrap system" in script
+    assert script.index("launchctl enable system/com.fenrir.agent") < script.index("launchctl bootstrap system")
+    assert "kickstart -k" not in script
     assert "shasum -a 256 -c -s" in script
     assert "fet_" in script and "Full Disk Access" in script
     for arch in ("amd64", "arm64"):
