@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
@@ -913,31 +914,54 @@ def patch_compliance(db: Session, tenant_ids: list[str]) -> dict:
 
 def next_run(schedule: dict, after: datetime) -> datetime | None:
     """Next UTC run time strictly after ``after`` for once/interval/daily/weekly/monthly schedules."""
+    if not isinstance(schedule, dict):
+        raise ValueError("Schedule must be an object")
     kind = schedule.get("type", "daily")
-    tz = _tz(schedule.get("tz"))
+    if kind not in ("interval", "daily", "once", "monthly", "weekly"):
+        raise ValueError("Unknown schedule type")
+    try:
+        tz = ZoneInfo(schedule.get("tz") or "UTC")
+    except (ValueError, TypeError, ZoneInfoNotFoundError) as exc:
+        raise ValueError("Use a recognised time zone such as Europe/London") from exc
     if kind == "interval":
-        minutes = max(5, int(schedule.get("everyMinutes") or 60))
-        return after + timedelta(minutes=minutes)
-    hour, minute = (int(x) for x in str(schedule.get("at") or "02:00").split(":")[:2])
+        minutes = schedule.get("everyMinutes", 60)
+        if type(minutes) is not int or minutes < 5:
+            raise ValueError("Interval must be a whole number of at least five minutes")
+        try:
+            return after + timedelta(minutes=minutes)
+        except OverflowError as exc:
+            raise ValueError("Interval exceeds the supported date range") from exc
+    clock = schedule.get("at", "02:00")
+    if not isinstance(clock, str) or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", clock):
+        raise ValueError("Time must be HH:MM on a 24-hour clock")
+    hour, minute = map(int, clock.split(":"))
+    days = schedule.get("days", [0])
+    if kind == "weekly" and (not isinstance(days, list) or not days or
+                             any(type(day) is not int or not 0 <= day <= 6 for day in days)):
+        raise ValueError("Choose at least one valid weekday")
+    month_day = schedule.get("dayOfMonth", 1)
+    if kind == "monthly" and (type(month_day) is not int or not 1 <= month_day <= 31):
+        raise ValueError("Day of month must be between 1 and 31")
     local_after = after.replace(tzinfo=timezone.utc).astimezone(tz)
     if kind == "once":
         try:
-            day = datetime.fromisoformat(str(schedule.get("date")))
-        except ValueError:
-            return None
+            day = datetime.strptime(schedule.get("date", ""), "%Y-%m-%d")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Choose a valid date for a one-off schedule") from exc
         candidate = day.replace(hour=hour, minute=minute, tzinfo=tz)
         utc = candidate.astimezone(timezone.utc).replace(tzinfo=None)
         return utc if utc > after else None
     for offset in range(0, 400):
         day = local_after + timedelta(days=offset)
         candidate = day.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if candidate <= local_after:
+        utc = candidate.astimezone(timezone.utc).replace(tzinfo=None)
+        if utc <= after:
             continue
-        if kind == "weekly" and candidate.weekday() not in [int(d) for d in schedule.get("days", [0])]:
+        if kind == "weekly" and candidate.weekday() not in days:
             continue
-        if kind == "monthly" and candidate.day != int(schedule.get("dayOfMonth") or 1):
+        if kind == "monthly" and candidate.day != month_day:
             continue
-        return candidate.astimezone(timezone.utc).replace(tzinfo=None)
+        return utc
     return None
 
 
@@ -950,12 +974,17 @@ def run_scheduled_task(db: Session, task: ScheduledTask, actor: str | None = Non
         return []  # deletion won the race with the scheduler
     allowed = tenant_subtree(db, task.tenant_id)
     devices = resolve_targets(db, allowed, task.targets or {})
+    skipped = {}
+    if task.run_offline_on_reconnect is False:
+        skipped = {d.id: "Offline when the schedule ran" for d in devices if presence.state(d) != "online"}
+        devices = [d for d in devices if d.id not in skipped]
     jobs: list[Job] = []
     who = actor or f"schedule:{task.name}"
     for action in task.actions or []:
         if action.get("type") == "script":
             script = db.get(Script, action.get("scriptId"))
-            if script is None:
+            if script is None or (script.tenant_id is not None and script.tenant_id not in allowed):
+                audit.record(db, who, "rmm.task.asset_unavailable", task.name, task.tenant_id, taskId=task.id, kind="script")
                 continue
             try:
                 jobs.append(run_script(db, script=script, devices=devices, actor=who, tenant_id=task.tenant_id,
@@ -970,8 +999,13 @@ def run_scheduled_task(db: Session, task: ScheduledTask, actor: str | None = Non
                                    targets=task.targets, target_path=str(action.get("targetPath") or ""), scheduled_task_id=task.id))
         elif action.get("type") == "software":
             package = db.get(SoftwarePackage, action.get("packageId"))
-            if package is not None:
+            if package is None or (package.tenant_id is not None and package.tenant_id not in allowed):
+                audit.record(db, who, "rmm.task.asset_unavailable", task.name, task.tenant_id, taskId=task.id, kind="software")
+            else:
                 jobs.append(deploy_software(db, package, devices, who, task.tenant_id, scheduled_task_id=task.id))
+    if skipped:
+        for job in jobs:
+            job.payload = {**job.payload, "skipped": {**job.payload.get("skipped", {}), **skipped}}
     task.last_run_at = utcnow()
     return jobs
 
@@ -981,8 +1015,15 @@ def run_due_tasks(db: Session, now: datetime | None = None) -> int:
     count = 0
     for task in db.execute(select(ScheduledTask).where(ScheduledTask.enabled.is_(True), ScheduledTask.next_run_at <= now)
                             .with_for_update(skip_locked=True).execution_options(populate_existing=True)).scalars():
+        try:
+            following = next_run(task.schedule, now)
+        except ValueError as exc:
+            task.enabled, task.next_run_at = False, None
+            audit.record(db, "scheduler", "rmm.task.invalid_schedule", task.name, task.tenant_id,
+                         taskId=task.id, reason=str(exc))
+            continue
         run_scheduled_task(db, task)
-        task.next_run_at = next_run(task.schedule or {}, now)
+        task.next_run_at = following
         if task.next_run_at is None:
             task.enabled = False
         count += 1
