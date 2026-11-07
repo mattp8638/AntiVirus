@@ -386,18 +386,23 @@ def _wake_pending(woken: dict[str, float]) -> set[str]:
     from .models import Command
     from .remote import hub
 
-    connected = list(hub.devices)
+    connected = hub.connected_devices()
     if not connected:
+        woken.clear()
         return set()
     with database.session_factory()() as db:
         rows = [row for start in range(0, len(connected), 500) for row in db.execute(
             select(Command.id, Command.device_id).where(Command.status == "pending",
                                                         Command.device_id.in_(connected[start:start + 500]))).all()]
     now = time.monotonic()
-    due = {device_id for command_id, device_id in rows if command_id not in woken}
-    woken.update({command_id: woken.get(command_id, now) for command_id, _ in rows})
-    for command_id in [c for c, at in woken.items() if now - at > 600]:
+    pending = dict(rows)
+    for command_id in woken.keys() - pending.keys():
         del woken[command_id]
+    due = set()
+    for command_id, device_id in pending.items():
+        if command_id not in woken or now - woken[command_id] >= 30:
+            due.add(device_id)
+            woken[command_id] = now
     if due:
         hub.wake(due)
     return due
