@@ -253,6 +253,8 @@ def heartbeat(body: dict = Body(default={}), device: Device = Depends(current_de
                 db.flush()
         except IntegrityError:
             pass  # Another device owns this proof. Keep both records and continue the heartbeat.
+    if body.get("healthState"):
+        device.health_reported_at = utcnow()
     previous_health = device.health_state
     device.health_state = str(body.get("healthState") or device.health_state)[:40]
     endpoint_health.on_heartbeat(db, device, previous_health)
@@ -387,6 +389,8 @@ def telemetry(body: dict = Depends(_lenient_json), device: Device = Depends(curr
     if len(events) > limit:
         raise HTTPException(413, f"at most {limit} events per batch")
     result = ingest(db, device, events)
+    if events:
+        device.telemetry_at = utcnow()
     _agent_self_alerts(db, device, events)
     db.commit()
     # No running total: counting a device's whole history on every batch got slower as the table grew.
@@ -416,7 +420,14 @@ def pending_commands(limit: int = Query(default=20, ge=1, le=100), types: str | 
     commands = db.execute(query.order_by(Command.created_at).limit(limit).with_for_update()
                           .execution_options(populate_existing=True)).scalars().all()
     now = utcnow()
+    if not wanted:
+        device.command_poll_at = now
+    deliver = []
     for command in commands:
+        if command.type == "patch.install" and command.status == "pending" and rmm.patch_window_closed(command, now):
+            rmm.defer_window_install(db, command, now)
+            continue
+        deliver.append(command)
         if command.status == "pending":
             command.status, command.dispatched_at, command.updated_at = "dispatched", now, now
     db.commit()
@@ -425,7 +436,7 @@ def pending_commands(limit: int = Query(default=20, ge=1, le=100), types: str | 
         "items": [
             {"id": c.id, "type": c.type, "issuedBy": c.issued_by, "createdAt": _iso(c.created_at), "updatedAt": _iso(c.updated_at),
              "targetPath": c.target_path, "recordId": c.record_id, "payloadJson": json.dumps({k: v for k, v in c.payload.items() if k != "secretEnvelope"}) if c.payload else ""}
-            for c in commands
+            for c in deliver
         ],
     }
 

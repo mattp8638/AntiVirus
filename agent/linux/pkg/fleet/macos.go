@@ -444,6 +444,9 @@ func macPatchInstallContext(ctx context.Context, p installPayload) (map[string]i
 	var failures []string
 	restart := false
 	for _, id := range p.PatchIDs {
+		if p.WindowEndEpoch != nil && time.Now().Unix() >= *p.WindowEndEpoch {
+			break
+		}
 		if strings.HasPrefix(id, "brew:") {
 			entry := map[string]interface{}{"id": id, "success": true}
 			if err := brewUpgradeContext(ctx, id); err != nil {
@@ -475,7 +478,9 @@ func macPatchInstallContext(ctx context.Context, p installPayload) (map[string]i
 		if delay <= 0 {
 			delay = 5
 		}
-		if _, err := runContext(ctx, 30*time.Second, "shutdown", "-r", fmt.Sprintf("+%d", delay)); err == nil {
+		if p.WindowEndEpoch != nil && time.Now().Unix()+int64(delay)*60 >= *p.WindowEndEpoch {
+			result["rebootDeferred"] = true
+		} else if _, err := runContext(ctx, 30*time.Second, "shutdown", "-r", fmt.Sprintf("+%d", delay)); err == nil {
 			result["rebootScheduledInMinutes"] = delay
 		}
 	}

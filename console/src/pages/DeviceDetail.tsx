@@ -536,7 +536,7 @@ function HealthTab({ deviceId }: { deviceId: string }) {
       <div className="card">
         <h3>Monitors</h3>
         {(data.monitors || []).length === 0 ? <p className="muted small">No monitor has evaluated this device yet.</p> :
-          data.monitors.map((m: any, i: number) => <div key={i} className="row small"><Pill value={m.triggered ? "triggered" : "ok"} tone={m.triggered ? "bad" : "good"} /> {displayValue(m.condition)} <span className="muted">{displayValue(m.message)}</span></div>)}
+          data.monitors.map((m: any, i: number) => <div key={i} className="row small"><Pill value={m.value == null ? "No data" : m.triggered ? "triggered" : "ok"} tone={m.value == null ? "muted" : m.triggered ? "bad" : "good"} /> {displayValue(m.condition)} <span className="muted">{displayValue(m.message)}</span></div>)}
       </div>
     </div>
   ); }

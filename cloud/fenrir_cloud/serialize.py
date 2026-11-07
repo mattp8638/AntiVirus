@@ -12,7 +12,7 @@ def _camel(name: str) -> str:
 
 
 # Never serialised, whatever the model: hashes, keys and encrypted envelopes.
-SECRET_COLUMNS = {"password_hash", "api_key_hash", "token_hash", "secret", "mfa_secret", "ciphertext", "secret_envelope",
+SECRET_COLUMNS = {"reinstall_hash", "password_hash", "api_key_hash", "token_hash", "secret", "mfa_secret", "ciphertext", "secret_envelope",
                   "credentials_envelope", "cancel_api_key_hash", "pending_api_key_hash"}
 
 

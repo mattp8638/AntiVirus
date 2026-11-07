@@ -168,6 +168,7 @@ function PolicyEditor({ policy, classifications, onClose }: { policy: any; class
         <label className="field">Time zone<input value={win.tz || "UTC"} onChange={(e) => setForm({ ...form, window: { ...win, tz: e.target.value } })} /></label>
         <label className="field">Restart<select value={form.reboot.mode} onChange={(e) => setForm({ ...form, reboot: { ...form.reboot, mode: e.target.value } })}>
           <option value="if_required">If required</option><option value="never">Never</option><option value="always">Always</option></select></label>
+        <label><input type="checkbox" checked={!!form.reboot.holdDomainControllerReboot} onChange={(e) => setForm({ ...form, reboot: { ...form.reboot, holdDomainControllerReboot: e.target.checked } })} /> Require a technician to restart domain controllers</label>
         <label className="field">Restart delay (minutes)<input type="number" value={form.reboot.deferMinutes} onChange={(e) => setForm({ ...form, reboot: { ...form.reboot, deferMinutes: Number(e.target.value) } })} /></label>
       </div>
       <h3 style={{ marginTop: 14 }}>Rings</h3>

@@ -205,6 +205,10 @@ def retry_failed(db: Session, job: Job, actor: str) -> int:
     history = list((job.payload or {}).get("retryHistory") or [])
     retried = 0
     for old in failed:
+        if isinstance(old.result, dict) and old.result.get("outcomeUncertain"):
+            continue
+        if old.type == "patch.install" and patch_window_closed(old, utcnow()):
+            continue
         device = db.get(Device, old.device_id)
         if device is None:
             continue
@@ -233,8 +237,12 @@ def job_summary(db: Session, job: Job) -> dict:
     commands = db.execute(select(Command).where(Command.id.in_(ids))).scalars().all() if ids else []
     counts: dict[str, int] = {}
     for command in commands:
-        counts[command.status] = counts.get(command.status, 0) + 1
-    return {"total": len(ids), "skipped": len((job.payload or {}).get("skipped") or {}), **counts}
+        status = command.status
+        if status == "completed" and command.type == "patch.install" and isinstance(command.result, dict) and command.result.get("patchesOutstanding"):
+            status = "partial"
+        counts[status] = counts.get(status, 0) + 1
+    skipped = len((job.payload or {}).get("skipped") or {})
+    return {"total": len(ids), "targeted": len(ids) + skipped, "skipped": skipped, **counts}
 
 
 def _ticket_remediation_finished(db: Session, ticket: Ticket) -> bool:
@@ -271,6 +279,8 @@ def refresh_job(db: Session, job_id: str) -> None:
     skipped = summary.get("skipped", 0)
     if done == 0 and failed == 0 and cancelled and not skipped:
         job.status = "cancelled"
+    elif summary.get("partial"):
+        job.status = "partial"
     elif failed == 0 and cancelled == 0 and skipped == 0:
         job.status = "completed"
     elif done == 0 and failed:
@@ -415,7 +425,7 @@ def ingest_patch_scan(db: Session, device: Device, result: dict) -> int:
                 for source, value in raw_coverage.items() if isinstance(value, dict)} if isinstance(raw_coverage, dict) else {}
     for key, row in existing.items():
         source_complete = not has_coverage or coverage.get(row.source, {}).get("success", False)
-        if source_complete and key not in seen and row.status in {"missing", "installing", "failed"}:
+        if source_complete and key not in seen and row.status in {"missing", "installing", "failed", "unverified"}:
             row.status, row.installed_at = "installed", now
     db.flush()
     sync_update_vulnerabilities(db, device, now, row_cves)
@@ -545,17 +555,34 @@ def _known_exploited_cves(db: Session) -> set[str]:
 
 def apply_patch_install_result(db: Session, device: Device, command: Command, result: dict) -> None:
     now = utcnow()
-    outcomes = {str(o.get("id")): o for o in result.get("results", []) if isinstance(o, dict) and o.get("id")}
+    items = result.get("results")
+    outcomes = {str(o.get("id")): o for o in (items if isinstance(items, list) else []) if isinstance(o, dict) and o.get("id")}
     requested = [str(i) for i in (command.payload or {}).get("patchIds", [])]
+    outstanding = []
     for key in requested or outcomes:
         row = db.execute(select(DevicePatch).where(DevicePatch.device_id == device.id, DevicePatch.patch_key == key)).scalar_one_or_none()
         if row is None:
             continue
         outcome = outcomes.get(key)
-        ok = command.status == "completed" and (outcome is None or outcome.get("success", True))
-        row.status = "installed" if ok else "failed"
-        row.installed_at = now if ok else row.installed_at
-        row.error = "" if ok else str((outcome or {}).get("error") or result.get("error") or "install failed")[:300]
+        success = (outcome or {}).get("success")
+        if success is True:
+            row.status, row.installed_at, row.error = "installed", now, ""
+        elif success is False:
+            row.status, row.error = "failed", str(outcome.get("error") or "install failed")[:300]
+        else:
+            row.status, row.error = "unverified", "Awaiting provider verification"
+        if row.status != "installed":
+            outstanding.append(key)
+    command.result = {**result, "patchesOutstanding": outstanding}
+    db.flush()
+    if db.scalar(select(DevicePatch.id).where(DevicePatch.device_id == device.id, DevicePatch.status == "unverified").limit(1)) is not None:
+        pending = db.scalar(select(Command.id).where(Command.device_id == device.id, Command.type == "patch.scan",
+                                                     Command.status == "pending").limit(1))
+        if not pending:
+            try:
+                services.enqueue_command(db, device, "patch.scan", "patch-policy", reason="Verify patch install result")
+            except services.CommandError:
+                pass  # The regular patch scheduler also retries scans.
     if result.get("rebootRequired"):
         device.metrics = {**(device.metrics or {}), "rebootPending": True}
 
@@ -734,9 +761,38 @@ def in_window(window: dict, now_utc: datetime) -> tuple[bool, str]:
     return False, ""
 
 
+def window_deadline(window: dict, key: str) -> int:
+    start = datetime.fromisoformat(key).replace(tzinfo=_tz(window.get("tz")))
+    return int((start + timedelta(minutes=int(window.get("durationMinutes") or 180))).timestamp())
+
+
+def patch_window_closed(command: Command, now: datetime) -> bool:
+    deadline = (command.payload or {}).get("windowEndEpoch")
+    if deadline is None:
+        # Policy installs queued by an older server have no provable execution window.
+        return command.issued_by in {"patch-policy", "protection-policy"}
+    return type(deadline) not in (int, float) or deadline <= now.replace(tzinfo=timezone.utc).timestamp()
+
+
+def defer_window_install(db: Session, command: Command, now: datetime) -> None:
+    command.status, command.completed_at, command.updated_at = "expired", now, now
+    command.result = {"error": "Deferred to next maintenance window", "expiredWithoutExecution": True}
+    keys = (command.payload or {}).get("patchIds") or []
+    for patch in db.scalars(select(DevicePatch).where(DevicePatch.device_id == command.device_id,
+                            DevicePatch.patch_key.in_(keys), DevicePatch.status == "installing")):
+        patch.status = "missing"
+    if job_id := (command.payload or {}).get("jobId"):
+        refresh_job(db, job_id)
+
+
 def run_patch_windows(db: Session, now: datetime | None = None) -> int:
     """Queue patch.install for devices whose policy window is open and have approved missing patches."""
     now = now or utcnow()
+    stale = select(Command).where(Command.status == "pending", Command.type == "patch.install",
+                                  Command.issued_by.in_(("patch-policy", "protection-policy"))).with_for_update(skip_locked=True)
+    for command in db.scalars(stale):
+        if patch_window_closed(command, now):
+            defer_window_install(db, command, now)
     queued = 0
     policies = db.execute(select(PatchPolicy).where(PatchPolicy.enabled.is_(True))).scalars().all()
     for policy in policies:
@@ -753,9 +809,11 @@ def run_patch_windows(db: Session, now: datetime | None = None) -> int:
             if not patches:
                 continue
             reboot = {**DEFAULT_REBOOT, **(policy.reboot or {})}
+            if reboot.get("holdDomainControllerReboot") and (device.inventory or {}).get("role") == "domain-controller":
+                reboot["mode"] = "never"
             payload = {"patchIds": [p.patch_key for p in patches],
                        "patches": [{"id": p.patch_key, "source": p.source, "title": p.title} for p in patches],
-                       "reboot": reboot, "policyId": policy.id}
+                       "windowEndEpoch": window_deadline(policy.window, key), "reboot": reboot, "policyId": policy.id}
             try:
                 services.enqueue_command(db, device, "patch.install", "patch-policy", payload=payload,
                                          reason=f"Maintenance window {key} ({policy.name})")
@@ -787,7 +845,7 @@ def _run_protection_policy_windows(db: Session, rmm_policies: list[PatchPolicy],
             continue
         payload = {"patchIds": [p.patch_key for p in patches],
                    "patches": [{"id": p.patch_key, "source": p.source, "title": p.title} for p in patches],
-                   "reboot": dict(policy.reboot), "policyId": policy.id}
+                   "windowEndEpoch": window_deadline(policy.window, key), "reboot": dict(policy.reboot), "policyId": policy.id}
         try:
             services.enqueue_command(db, device, "patch.install", "protection-policy", payload=payload,
                                      reason=f"Maintenance window {key} (protection policy)")
@@ -832,7 +890,7 @@ def patch_compliance(db: Session, tenant_ids: list[str]) -> dict:
     missing_by_device: dict[str, dict[str, int]] = {}
     for device_id, classification, count in db.execute(
             select(DevicePatch.device_id, DevicePatch.classification, func.count())
-            .where(DevicePatch.tenant_id.in_(tenant_ids), DevicePatch.status.in_(("missing", "failed", "installing")))
+            .where(DevicePatch.tenant_id.in_(tenant_ids), DevicePatch.status.in_(("missing", "failed", "installing", "unverified")))
             .group_by(DevicePatch.device_id, DevicePatch.classification)).all():
         missing_by_device.setdefault(device_id, {})[classification] = count
     failed = db.execute(select(func.count()).where(DevicePatch.tenant_id.in_(tenant_ids), DevicePatch.status == "failed")).scalar() or 0
@@ -944,17 +1002,26 @@ def deploy_software(db: Session, package: SoftwarePackage, devices: list[Device]
                     action: str = "install", scheduled_task_id: str | None = None) -> Job:
     matching = [d for d in devices if d.platform == package.platform]
     command = "software.install" if action == "install" else "software.uninstall"
-    return create_job(db, tenant_id=tenant_id, actor=actor, name=f"{action.title()} {package.name}", devices=matching,
+    job = create_job(db, tenant_id=tenant_id, actor=actor, name=f"{action.title()} {package.name}", devices=matching,
                       command_type=command, kind="software", payload=software_payload(package, action),
                       record_id=package.identifier if action == "uninstall" else "", scheduled_task_id=scheduled_task_id)
 
 
+    skipped = {d.id: f"Package requires {package.platform}, device runs {d.platform}" for d in devices if d.platform != package.platform}
+    if skipped:
+        job.payload = {**job.payload, "skipped": {**job.payload.get("skipped", {}), **skipped}}
+    return job
+
+
 # --------------------------------------------------------------------------- monitoring
+
+AGE_METRICS = ("offline_minutes", "command_poll_age", "telemetry_age")
 
 OPS = {">": lambda a, b: a > b, "<": lambda a, b: a < b, ">=": lambda a, b: a >= b, "<=": lambda a, b: a <= b,
        "==": lambda a, b: a == b, "!=": lambda a, b: a != b}
 METRICS = {
     "cpu": "CPU usage (%)", "memory": "Memory usage (%)", "disk_free_percent": "Disk free (%)", "disk_free_gb": "Disk free (GB)",
+    "command_poll_age": "Minutes since general command poll", "telemetry_age": "Minutes since telemetry upload",
     "offline_minutes": "Offline for (minutes)", "service_stopped": "Service not running", "process_missing": "Process not running",
     "reboot_pending": "Reboot pending", "pending_patches": "Missing patches (count)", "uptime_days": "Uptime (days)",
     "av_unhealthy": "Protection unhealthy",
@@ -972,6 +1039,13 @@ def metric_value(db: Session, condition: MonitorCondition, device: Device, now: 
     """Current value of the condition's metric for this device, and a human description."""
     metrics = device.metrics or {}
     m, target = condition.metric, condition.target.strip()
+    if m in {"command_poll_age", "telemetry_age"}:
+        if metrics.get("agentless") or device.platform not in {"windows", "linux", "macos"}:
+            return None, "Not an endpoint agent"
+        seen = device.command_poll_at if m == "command_poll_age" else device.telemetry_at
+        minutes = max(0, (now - (seen or device.enrolled_at)).total_seconds() / 60)
+        label = "general command poll" if m == "command_poll_age" else "telemetry upload"
+        return round(minutes, 1), f"No {label} for {int(minutes)} minutes"
     if m == "offline_minutes":
         # Profile-only iPhones and Macs are seen only while they look names up: web_profile raises its own alert.
         if device.last_seen_at is None or (device.metrics or {}).get("agentless"):
@@ -985,6 +1059,8 @@ def metric_value(db: Session, condition: MonitorCondition, device: Device, now: 
         count = db.execute(query).scalar() or 0
         return float(count), f"{count} missing {target or ''} patches".replace("  ", " ")
     if m == "av_unhealthy":
+        if device.health_state == "unknown":
+            return None, "Agent health has not been reported"
         bad = device.health_state not in {"healthy", "unknown", "isolated"}
         return (1.0 if bad else 0.0), f"agent health is {device.health_state}"
     if not metrics or not metrics.get("reportedAt"):
@@ -1002,10 +1078,18 @@ def metric_value(db: Session, condition: MonitorCondition, device: Device, now: 
         unit = "%" if m == "disk_free_percent" else " GB"
         return float(worst.get(key, 0)), f"{worst.get('mount')} has {float(worst.get(key, 0)):.1f}{unit} free"
     if m == "service_stopped":
+        if target and isinstance(metrics.get("serviceStates"), dict):
+            status = metrics["serviceStates"].get(target.lower())
+            if status is None and metrics.get("serviceListComplete"):
+                return 1.0, f"service {target} is missing"
+            if status is not None:
+                return float(status != 4), f"service {target} is " + {1: "stopped", 4: "running"}.get(status, "not running")
+        if not isinstance(metrics.get("stoppedServices"), list):
+            return None, "Service status has not been reported"
         stopped = [str(s).lower() for s in metrics.get("stoppedServices", [])]
         if target:
             hit = target.lower() in stopped
-            return (1.0 if hit else 0.0), f"service {target} is not running"
+            return (1.0, f"service {target} is not running") if hit else (None, "Named service state unavailable")
         return float(len(stopped)), f"{len(stopped)} automatic services are not running"
     if m == "process_missing":
         if not target:
@@ -1053,25 +1137,29 @@ def evaluate_device(db: Session, device: Device, now: datetime | None = None, of
     now = now or utcnow()
     fired: list[str] = []
     for condition in _conditions_for(db, device):
-        if (condition.metric == "offline_minutes") != offline_only:
+        if (condition.metric in AGE_METRICS) != offline_only:
             continue
         value, message = metric_value(db, condition, device, now)
         state = db.execute(select(ConditionState).where(ConditionState.condition_id == condition.id,
                                                         ConditionState.device_id == device.id)).scalar_one_or_none()
-        if value is None:
-            continue
-        failing = OPS.get(condition.operator, OPS[">"])(value, condition.threshold)
         if state is None:
             state = ConditionState(condition_id=condition.id, device_id=device.id, tenant_id=device.tenant_id)
             db.add(state)
         state.last_value = value
+        if value is None:
+            state.message = message or "No data"
+            if not state.triggered:
+                state.failing_since = None
+            continue
+        state.last_observed_at = now
+        failing = OPS.get(condition.operator, OPS[">"])(value, condition.threshold)
         if failing:
             state.message = message[:300]
             if state.failing_since is None:
                 state.failing_since = now
             elapsed = (now - state.failing_since).total_seconds() / 60
             # Offline checks measure their own duration, so they trigger as soon as the threshold is crossed.
-            needed = 0 if condition.metric == "offline_minutes" else condition.duration_minutes
+            needed = 0 if condition.metric in AGE_METRICS else condition.duration_minutes
             if not state.triggered and elapsed >= needed:
                 _trigger(db, condition, device, state, message, now)
                 fired.append(condition.id)
@@ -1080,6 +1168,7 @@ def evaluate_device(db: Session, device: Device, now: datetime | None = None, of
                 _clear(db, condition, device, state, now)
             state.failing_since = None
             state.triggered = False
+            state.message = message[:300]
     return fired
 
 
@@ -1188,6 +1277,10 @@ def record_heartbeat_metrics(db: Session, device: Device, metrics: dict) -> None
     for key in ("loggedOnUser", "lastBootAt", "publicIp", "domain", "manufacturer", "model", "cpuModel", "timezone"):
         if metrics.get(key):
             clean[key] = str(metrics[key])[:200]
+    if isinstance(metrics.get("serviceStates"), dict):
+        clean["serviceStates"] = {str(k)[:256].lower(): v for k, v in list(metrics["serviceStates"].items())[:4096]
+                                  if type(v) is int and 1 <= v <= 7}
+        clean["serviceListComplete"] = len(metrics["serviceStates"]) == len(clean["serviceStates"])
     for key in ("stoppedServices", "processNames", "users"):
         if isinstance(metrics.get(key), list):
             clean[key] = [str(x)[:120] for x in metrics[key][:400]]
@@ -1244,7 +1337,7 @@ def evaluate_offline(db: Session, now: datetime | None = None) -> int:
     now = now or utcnow()
     count = 0
     has_offline = db.execute(select(MonitorCondition.id).where(MonitorCondition.enabled.is_(True),
-                                                               MonitorCondition.metric == "offline_minutes")).first()
+                                                               MonitorCondition.metric.in_(AGE_METRICS))).first()
     if not has_offline:
         return 0
     for device in db.execute(select(Device).where(Device.approved.is_(True), Device.last_seen_at.is_not(None))).scalars():

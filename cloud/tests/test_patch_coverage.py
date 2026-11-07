@@ -78,3 +78,22 @@ def test_reboot_pending_is_not_verified_fully_patched(client, admin, tenant, dev
         db.commit()
     response = client.get("/api/console/rmm/patches/compliance", headers=admin).json()
     assert response["pendingReboot"] == 1 and response["fullyPatched"] == 0
+
+
+def test_omitted_and_malformed_patch_receipts_require_verification(client, admin, device):
+    from fenrir_cloud.models import Command
+    with database.session_factory()() as db:
+        row = db.get(Device, device["deviceId"])
+        rmm.ingest_patch_scan(db, row, {"patches": [{"id": key} for key in ("a", "b", "c")]})
+        command = Command(status="completed", payload={"patchIds": ["a", "b", "c"]})
+        result = {"results": [{"id": "a", "success": True}, {"id": "b", "success": "true"}]}
+        for _ in range(2):
+            rmm.apply_patch_install_result(db, row, command, result)
+        db.commit()
+        states = dict(db.execute(select(DevicePatch.patch_key, DevicePatch.status)).all())
+        assert states == {"a": "installed", "b": "unverified", "c": "unverified"}
+        assert len(db.scalars(select(Command).where(Command.type == "patch.scan")).all()) == 1
+        assert rmm.patch_compliance(db, [row.tenant_id])["fullyPatched"] == 0
+        rmm.ingest_patch_scan(db, row, {"patches": [], "coverage": {"windows-update": {"success": True}}})
+        db.commit()
+        assert set(db.scalars(select(DevicePatch.status))) == {"installed"}
