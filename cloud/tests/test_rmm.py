@@ -618,3 +618,69 @@ def test_attention_filter_ignores_remote_only_polls_and_clears_after_general_pol
     assert device["deviceId"] in attention()
     client.get(endpoint, headers=device["headers"])
     assert device["deviceId"] not in attention()
+
+
+def test_invalid_schedule_edits_preserve_existing_task(client, admin, tenant):
+    url = "/api/console/rmm/tasks"
+    body = {"tenantId": tenant["id"], "schedule": {"type": "daily", "at": "09:00"},
+            "actions": [{"type": "command", "command": "inventory.refresh"}]}
+    task = client.post(url, headers=admin, json=body).json()
+    for schedule in [{"type": "weekly", "days": []}, {"type": "daily", "at": "24:00"},
+                     {"type": "daily", "tz": "Europe/Londn"}, {"type": "once", "date": "2000-01-01"},
+                     {"type": "interval", "everyMinutes": 1}]:
+        assert client.patch(f"{url}/{task['id']}", headers=admin, json={"schedule": schedule}).status_code == 400
+    [saved] = client.get(url, headers=admin, params={"tenant_id": tenant["id"]}).json()
+    assert saved["nextRunAt"] == task["nextRunAt"] and saved["schedule"] == body["schedule"]
+
+
+def test_schedule_offline_setting_and_customer_filter(client, admin, tenant, device):
+    url = "/api/console/rmm/tasks"
+    other = client.post("/api/console/tenants", headers=admin, json={"name": "Other customer"}).json()
+    task = client.post(url, headers=admin, json={"tenantId": tenant["id"], "schedule": {"type": "daily"},
+                       "actions": [{"type": "command", "command": "inventory.refresh"}],
+                       "targets": {"deviceIds": [device["deviceId"]]}, "runOfflineOnReconnect": False}).json()
+    assert client.get(url, headers=admin, params={"tenant_id": other["id"]}).json() == []
+    with database.session_factory()() as db:
+        db.get(Device, device["deviceId"]).last_seen_at = utcnow() - timedelta(days=1)
+        db.commit()
+    assert client.post(f"{url}/{task['id']}/run", headers=admin).json()[0]["summary"]["total"] == 0
+    assert client.patch(f"{url}/{task['id']}", headers=admin, json={"runOfflineOnReconnect": True}).status_code == 200
+    assert client.post(f"{url}/{task['id']}/run", headers=admin).json()[0]["summary"]["total"] == 1
+
+
+def test_repeated_london_hour_never_returns_a_past_run():
+    after = datetime(2026, 10, 25, 1, 10)  # 01:10 GMT, after the first 01:30 BST
+    assert rmm.next_run({"type": "daily", "at": "01:30", "tz": "Europe/London"}, after) == datetime(2026, 10, 26, 1, 30)
+
+
+def test_invalid_legacy_schedule_does_not_block_neighbour(client, admin, tenant, device):
+    from fenrir_cloud.models import ScheduledTask
+    task = client.post("/api/console/rmm/tasks", headers=admin, json={"tenantId": tenant["id"],
+                       "schedule": {"type": "daily"}, "targets": {"deviceIds": [device["deviceId"]]},
+                       "actions": [{"type": "command", "command": "inventory.refresh"}]}).json()
+    with database.session_factory()() as db:
+        now = utcnow()
+        valid = db.get(ScheduledTask, task["id"])
+        valid.next_run_at = now
+        bad = ScheduledTask(tenant_id=valid.tenant_id, name="Invalid legacy task", schedule={"type": "weekly", "days": []},
+                            targets=valid.targets, actions=valid.actions, next_run_at=now)
+        db.add(bad)
+        db.commit()
+        assert rmm.run_due_tasks(db, now) == 1
+        db.commit()
+        assert not bad.enabled and valid.next_run_at > now
+    assert [c["type"] for c in poll(client, device)] == ["inventory.refresh"]
+
+
+def test_schedule_rejects_unrelated_customer_library_item(client, admin, tenant):
+    from fenrir_cloud.models import Script
+    other = client.post("/api/console/tenants", headers=admin, json={"name": "Other library owner"}).json()
+    with database.session_factory()() as db:
+        item = Script(tenant_id=other["id"], name="Other customer's inventory")
+        db.add(item)
+        db.commit()
+        item_id = item.id
+    response = client.post("/api/console/rmm/tasks", headers=admin, json={
+        "tenantId": tenant["id"], "schedule": {"type": "daily"},
+        "actions": [{"type": "script", "scriptId": item_id}]})
+    assert response.status_code == 400

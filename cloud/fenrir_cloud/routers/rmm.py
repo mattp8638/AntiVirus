@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from .. import approvals, audit, presence, rmm, script_review, services
 from ..commands import BY_TYPE, INTERACTIVE_ONLY, SERVER_ONLY
 from ..db import get_db
-from ..deps import Principal, current_principal, require_reauth, scoped_tenant
+from ..deps import Principal, current_principal, require_reauth, scoped_tenant, tenant_subtree
 from ..models import (Alert, Command, ConditionState, Device, DeviceMetric, DevicePatch, Job, MonitorCondition, PatchApproval,
                       PatchPolicy, RemoteSession, ScheduledTask, Script, SoftwarePackage, Tenant, utcnow)
 from ..serialize import apply_fields, to_dict
@@ -317,21 +317,44 @@ TASK_FIELDS = {"name", "enabled", "schedule", "targets", "actions", "run_offline
 
 
 @router.get("/tasks")
-def list_tasks(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    return [to_dict(t) for t in db.execute(select(ScheduledTask).where(ScheduledTask.tenant_id.in_(principal.tenant_ids))
+def list_tasks(tenant_id: str | None = None, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    return [to_dict(t) for t in db.execute(select(ScheduledTask).where(ScheduledTask.tenant_id.in_(scoped_tenant(principal, tenant_id)))
                                            .order_by(ScheduledTask.name)).scalars()]
 
 
-def _validate_task(task: ScheduledTask) -> None:
-    if task.schedule.get("type") not in {"once", "interval", "daily", "weekly", "monthly"}:
+def _validate_task(db: Session, task: ScheduledTask) -> None:
+    if not isinstance(task.schedule, dict) or task.schedule.get("type") not in ("once", "interval", "daily", "weekly", "monthly"):
         raise HTTPException(400, "schedule type must be once, interval, daily, weekly or monthly")
-    if not task.actions:
+    if not isinstance(task.actions, list) or not task.actions:
         raise HTTPException(400, "add at least one action")
+    if not isinstance(task.targets, dict):
+        raise HTTPException(400, "Targets must be an object")
+    for field in ("deviceIds", "groupIds", "tenantIds", "platforms", "tags"):
+        values = task.targets.get(field, [])
+        if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+            raise HTTPException(400, f"{field} must be a list of strings")
+    allowed = tenant_subtree(db, task.tenant_id)
     for action in task.actions:
-        if action.get("type") not in {"script", "command", "software"}:
+        if not isinstance(action, dict) or action.get("type") not in ("script", "command", "software"):
             raise HTTPException(400, "actions are script, command or software")
-        if action.get("type") == "command" and (action.get("command") not in BY_TYPE or action.get("command") in INTERACTIVE_ONLY | SERVER_ONLY):
+        if action["type"] in ("script", "software"):
+            model, key = (Script, "scriptId") if action["type"] == "script" else (SoftwarePackage, "packageId")
+            asset_id = action.get(key)
+            asset = db.get(model, asset_id) if isinstance(asset_id, str) and asset_id else None
+            if asset is None or (asset.tenant_id is not None and asset.tenant_id not in allowed):
+                raise HTTPException(400, "Choose a library item available to this schedule's customer")
+        if action.get("type") == "command" and (not isinstance(action.get("command"), str) or action.get("command") not in BY_TYPE or action.get("command") in INTERACTIVE_ONLY | SERVER_ONLY):
             raise HTTPException(400, f"unknown or unsupported command {action.get('command')}")
+
+
+def _next_task_run(task: ScheduledTask):
+    try:
+        following = rmm.next_run(task.schedule, utcnow())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if following is None and task.enabled is not False:
+        raise HTTPException(400, "The enabled schedule must have a future run")
+    return following
 
 
 @router.post("/tasks")
@@ -342,8 +365,8 @@ def create_task(body: dict = Body(...), principal: Principal = Depends(current_p
     task = ScheduledTask(tenant_id=tenant_id, name=str(body.get("name") or "Scheduled task"), created_by=principal.actor)
     apply_fields(task, body, TASK_FIELDS)
     task.schedule, task.targets, task.actions = task.schedule or {}, task.targets or {}, task.actions or []
-    _validate_task(task)
-    task.next_run_at = rmm.next_run(task.schedule, utcnow())
+    _validate_task(db, task)
+    task.next_run_at = _next_task_run(task)
     db.add(task)
     audit.record(db, principal.actor, "rmm.task.created", task.name, tenant_id)
     db.commit()
@@ -357,9 +380,9 @@ def update_task(task_id: str, body: dict = Body(...), principal: Principal = Dep
     if task is None or task.tenant_id not in principal.tenant_ids:
         raise HTTPException(404, "Not found")
     changed = apply_fields(task, body, TASK_FIELDS)
-    _validate_task(task)
+    _validate_task(db, task)
     if "schedule" in changed or ("enabled" in changed and task.enabled):
-        task.next_run_at = rmm.next_run(task.schedule, utcnow())
+        task.next_run_at = _next_task_run(task)
     audit.record(db, principal.actor, "rmm.task.updated", task.name, task.tenant_id, fields=changed)
     db.commit()
     return to_dict(task)
