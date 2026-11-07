@@ -40,6 +40,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include "JsonStringField.h"
 #include "RegexOptions.h"
 #include <set>
 #include <sstream>
@@ -242,13 +243,9 @@ std::optional<std::wstring> ExtractPayloadString(const std::wstring& json, const
   }
 
   const auto utf8Json = WideToUtf8(json);
-  const std::regex pattern("\\\"" + EscapeRegex(key) + "\\\"\\s*:\\s*\\\"((?:\\\\\\\\.|[^\\\"])*)\\\"", kAgentRegexOptions);
-  std::smatch match;
-  if (std::regex_search(utf8Json, match, pattern)) {
-    return Utf8ToWide(UnescapeJsonString(match[1].str()));
-  }
-
-  return std::nullopt;
+  const auto raw = FindRawJsonStringField(utf8Json, key);
+  if (!raw) return std::nullopt;
+  return Utf8ToWide(UnescapeJsonString(std::string(*raw)));
 }
 
 std::optional<std::uint32_t> ExtractPayloadUInt32(const std::wstring& json, const std::string& key) {
