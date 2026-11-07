@@ -3,6 +3,7 @@
 
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -116,11 +117,11 @@ void WINAPI ServiceEntry(DWORD, LPWSTR*) {
   g_serviceFinished = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   UpdateServiceStatus(SERVICE_START_PENDING, NO_ERROR, 5'000);
 
-  antivirus::agent::AgentService service;
-  g_activeService = &service;
+  auto service = std::make_unique<antivirus::agent::AgentService>();
+  g_activeService = service.get();
 
   UpdateServiceStatus(SERVICE_RUNNING);
-  const auto exitCode = service.Run(antivirus::agent::AgentRunMode::Service);
+  const auto exitCode = service->Run(antivirus::agent::AgentRunMode::Service);
   const bool requestedStop = InterlockedCompareExchange(&g_stopRequested, 0, 0) != 0;
   const bool unexpectedExit = !requestedStop;
   if (exitCode != 0 || unexpectedExit) {
@@ -131,6 +132,7 @@ void WINAPI ServiceEntry(DWORD, LPWSTR*) {
                          L"). Review the installation, signature trust and agent runtime diagnostics.");
   }
   g_activeService = nullptr;
+  service.reset();  // finish joining workers while the stop deadline is still active
   // An unexpected clean exit must count as a service failure so Windows can
   // apply the configured restart policy instead of leaving the agent stopped.
   const DWORD failureCode = exitCode != 0 ? static_cast<DWORD>(exitCode) : 1;

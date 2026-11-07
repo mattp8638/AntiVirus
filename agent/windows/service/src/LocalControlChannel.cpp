@@ -11,7 +11,7 @@
 #include <fstream>
 #include <mutex>
 #include <optional>
-#include <regex>
+#include "RegexOptions.h"
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -151,7 +151,7 @@ std::string UnescapeJsonString(const std::string& value) {
 
 std::optional<std::wstring> ExtractPayloadString(const std::wstring& json, const std::string& key) {
   const auto utf8Json = WideToUtf8(json);
-  const std::regex pattern("\"" + EscapeRegex(key) + "\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"");
+  const std::regex pattern("\"" + EscapeRegex(key) + "\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"", kAgentRegexOptions);
   std::smatch match;
   if (!std::regex_search(utf8Json, match, pattern)) {
     return std::nullopt;

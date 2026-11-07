@@ -192,12 +192,11 @@ class Watchdog {
     }
     state_.lastRestartAt = now_;
     ++state_.restartsInWindow;
+    if (!Kill(pid)) return;
     if (state_.restartsInWindow > 3 && now_ - state_.lastRepairAt > kRepairGap) {
-      Kill(pid);
       Repair(reason + "; restarting did not help " + std::to_string(state_.restartsInWindow - 1) + " times");
       return;
     }
-    Kill(pid);
     Start(service, reason, true);
   }
 
@@ -205,7 +204,19 @@ class Watchdog {
     // After a kill, Windows' own restart-on-failure may already be starting it: give it a moment, then make sure.
     if (afterKill) Sleep(8000);
     if (StartServiceW(service, 0, nullptr) != FALSE || GetLastError() == ERROR_SERVICE_ALREADY_RUNNING) {
-      Act(afterKill ? "restarted" : "started", reason);
+      SERVICE_STATUS_PROCESS status{};
+      DWORD needed = 0;
+      for (int attempt = 0; attempt < 20; ++attempt) {
+        if (!QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO, reinterpret_cast<LPBYTE>(&status),
+                                  sizeof(status), &needed)) break;
+        if (status.dwCurrentState == SERVICE_RUNNING && status.dwProcessId != 0) {
+          Act(afterKill ? "restarted" : "started", reason);
+          return;
+        }
+        if (status.dwCurrentState != SERVICE_START_PENDING) break;
+        Sleep(500);
+      }
+      Log("start requested but running state was not confirmed: " + reason);
     } else {
       Log("could not start the agent (error " + std::to_string(GetLastError()) + "): " + reason);
     }
@@ -223,17 +234,19 @@ class Watchdog {
     CloseHandle(token);
   }
 
-  void Kill(const DWORD pid) {
-    if (pid == 0) return;
+  bool Kill(const DWORD pid) {
+    if (pid == 0) return false;
     EnableDebugPrivilege();
     const auto process = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
     if (process == nullptr) {
       Log("could not open the agent process " + std::to_string(pid) + " to end it (error " + std::to_string(GetLastError()) + ")");
-      return;
+      return false;
     }
-    TerminateProcess(process, 0x46454E02);
-    WaitForSingleObject(process, 20'000);
+    const bool terminated = TerminateProcess(process, 0x46454E02) != FALSE;
+    const bool exited = WaitForSingleObject(process, terminated ? 20'000 : 0) == WAIT_OBJECT_0;
     CloseHandle(process);
+    if (!exited) Log("could not confirm exit of agent process " + std::to_string(pid));
+    return exited;
   }
 
   void Repair(const std::string& reason) {

@@ -12,7 +12,7 @@
 #include <fstream>
 #include <mutex>
 #include <optional>
-#include <regex>
+#include "RegexOptions.h"
 #include <string>
 #include <unordered_map>
 
@@ -273,7 +273,7 @@ struct HttpResponse {
 };
 
 std::optional<std::string> ExtractJsonString(const std::string& json, const std::string& key) {
-  const std::regex pattern("\"" + key + "\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"");
+  const std::regex pattern("\"" + key + "\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"", kAgentRegexOptions);
   std::smatch match;
   if (!std::regex_search(json, match, pattern)) {
     return std::nullopt;
@@ -321,7 +321,7 @@ std::optional<std::string> ExtractJsonString(const std::string& json, const std:
 }
 
 std::optional<std::uint32_t> ExtractJsonUInt(const std::string& json, const std::string& key) {
-  const std::regex pattern("\"" + key + "\"\\s*:\\s*(\\d+)");
+  const std::regex pattern("\"" + key + "\"\\s*:\\s*(\\d+)", kAgentRegexOptions);
   std::smatch match;
   if (!std::regex_search(json, match, pattern)) {
     return std::nullopt;

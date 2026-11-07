@@ -40,7 +40,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
-#include <regex>
+#include "RegexOptions.h"
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -242,7 +242,7 @@ std::optional<std::wstring> ExtractPayloadString(const std::wstring& json, const
   }
 
   const auto utf8Json = WideToUtf8(json);
-  const std::regex pattern("\\\"" + EscapeRegex(key) + "\\\"\\s*:\\s*\\\"((?:\\\\\\\\.|[^\\\"])*)\\\"");
+  const std::regex pattern("\\\"" + EscapeRegex(key) + "\\\"\\s*:\\s*\\\"((?:\\\\\\\\.|[^\\\"])*)\\\"", kAgentRegexOptions);
   std::smatch match;
   if (std::regex_search(utf8Json, match, pattern)) {
     return Utf8ToWide(UnescapeJsonString(match[1].str()));
@@ -257,7 +257,7 @@ std::optional<std::uint32_t> ExtractPayloadUInt32(const std::wstring& json, cons
   }
 
   const auto utf8Json = WideToUtf8(json);
-  const std::regex pattern("\\\"" + EscapeRegex(key) + "\\\"\\s*:\\s*(\\d+)");
+  const std::regex pattern("\\\"" + EscapeRegex(key) + "\\\"\\s*:\\s*(\\d+)", kAgentRegexOptions);
   std::smatch match;
   if (std::regex_search(utf8Json, match, pattern)) {
     try {
@@ -276,7 +276,7 @@ std::optional<bool> ExtractPayloadBool(const std::wstring& json, const std::stri
   }
 
   const auto utf8Json = WideToUtf8(json);
-  const std::regex pattern("\\\"" + EscapeRegex(key) + "\\\"\\s*:\\s*(true|false|1|0)");
+  const std::regex pattern("\\\"" + EscapeRegex(key) + "\\\"\\s*:\\s*(true|false|1|0)", kAgentRegexOptions);
   std::smatch match;
   if (!std::regex_search(utf8Json, match, pattern)) {
     return std::nullopt;
@@ -293,13 +293,13 @@ std::vector<std::wstring> ExtractPayloadStringArray(const std::wstring& json, co
   }
 
   const auto utf8Json = WideToUtf8(json);
-  const std::regex arrayPattern("\\\"" + EscapeRegex(key) + "\\\"\\s*:\\s*\\[(.*?)\\]");
+  const std::regex arrayPattern("\\\"" + EscapeRegex(key) + "\\\"\\s*:\\s*\\[(.*?)\\]", kAgentRegexOptions);
   std::smatch arrayMatch;
   if (!std::regex_search(utf8Json, arrayMatch, arrayPattern)) {
     return values;
   }
 
-  const std::regex itemPattern("\\\"((?:\\\\\\\\.|[^\\\"])*)\\\"");
+  const std::regex itemPattern("\\\"((?:\\\\\\\\.|[^\\\"])*)\\\"", kAgentRegexOptions);
   auto begin = std::sregex_iterator(arrayMatch[1].first, arrayMatch[1].second, itemPattern);
   const auto end = std::sregex_iterator();
   for (auto iterator = begin; iterator != end; ++iterator) {
@@ -315,7 +315,7 @@ bool PayloadContainsKey(const std::wstring& json, const std::string& key) {
   }
 
   const auto utf8Json = WideToUtf8(json);
-  const std::regex pattern("\\\"" + EscapeRegex(key) + "\\\"\\s*:");
+  const std::regex pattern("\\\"" + EscapeRegex(key) + "\\\"\\s*:", kAgentRegexOptions);
   return std::regex_search(utf8Json, pattern);
 }
 
@@ -461,7 +461,7 @@ bool RepeatedSnapshot(const TelemetryRecord& record) {
   if (type != L"service.sync.cycle" && type.find(L".snapshot") == std::wstring::npos) {
     return false;
   }
-  static const std::wregex cycleField(LR"("cycle":\d+,?)");
+  static const std::wregex cycleField(LR"("cycle":\d+,?)", kAgentRegexOptions);
   const auto key = type + L"|" + record.summary + L"|" + std::regex_replace(record.payloadJson, cycleField, L"");
   static std::mutex mutex;
   static std::unordered_map<std::wstring, ULONGLONG> sent;
@@ -767,7 +767,7 @@ std::wstring NormalizeRuleName(std::wstring value) {
 }
 
 std::wstring ExtractYaraRuleName(const std::wstring& ruleText) {
-  static const std::wregex pattern(LR"(rule\s+([A-Za-z0-9_]+))", std::regex_constants::icase);
+  static const std::wregex pattern(LR"(rule\s+([A-Za-z0-9_]+))", kAgentRegexOptions | std::regex_constants::icase);
   std::wsmatch match;
   if (!std::regex_search(ruleText, match, pattern) || match.size() < 2) {
     return {};
