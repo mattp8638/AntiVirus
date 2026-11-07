@@ -1058,7 +1058,7 @@ bool IsPendingSoftwareVulnerability(const SoftwarePatchRecord& record) {
 
 }  // namespace
 
-AgentService::AgentService() = default;
+AgentService::AgentService() : stopEvent_(CreateEventW(nullptr, TRUE, FALSE, nullptr)) {}
 
 AgentService::~AgentService() {
   if (localControlChannel_) {
@@ -1087,10 +1087,7 @@ int AgentService::Run(const AgentRunMode mode) {
   mainThreadId_ = std::this_thread::get_id();
   try {
     if (stopEvent_ == nullptr) {
-      stopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-      if (stopEvent_ == nullptr) {
-        throw std::runtime_error("Unable to create the agent stop event");
-      }
+      throw std::runtime_error("Unable to create the agent stop event");
     }
 
     if (pamRequestEvent_ == nullptr) {
@@ -1221,6 +1218,7 @@ int AgentService::Run(const AgentRunMode mode) {
     return 0;
   } catch (const std::exception& error) {
     std::wcerr << L"Agent service failed to initialize: " << Utf8ToWide(error.what()) << std::endl;
+    liveness::Stop();
     StopRealtimeChannel();  // a running thread left behind would crash the process on exit
     return 1;  // non-zero: Windows' recovery actions restart the service
   }
@@ -1231,11 +1229,7 @@ void AgentService::RequestStop() {
   if (stopEvent_ != nullptr) {
     SetEvent(stopEvent_);
   }
-  // Never wait here: this runs in Windows' service control handler, and a handler that blocks leaves the service
-  // unable to answer Windows (error 1053) with its work already stopped. Run() joins the channel when it ends.
-  if (localControlChannel_) {
-    localControlChannel_->RequestStop();
-  }
+  // Run owns the control channel and cancels its pending pipe operation in Stop().
 }
 
 std::wstring AgentService::BuildCyclePayload(const int cycle, const std::wstring& extraFields) {
@@ -3762,17 +3756,20 @@ void AgentService::RealtimeLoop() {
       // the server has gone quiet: a connection dropped silently (a router or proxy timing it out, the server
       // restarting, the network changing) would otherwise leave Receive waiting forever while the agent believes it
       // is connected and the server shows the device offline.
-      std::atomic<bool> done{false};
       std::atomic<ULONGLONG> lastHeard{GetTickCount64()};
-      std::thread watcher([&] {
-        while (!done) {
-          if (WaitForSingleObject(stopEvent_, 25000) == WAIT_OBJECT_0) {
+      std::jthread watcher([&](std::stop_token stop) {
+        auto nextPing = GetTickCount64() + 25000;
+        while (!stop.stop_requested()) {
+          if (WaitForSingleObject(stopEvent_, 500) == WAIT_OBJECT_0) {
             socket.Close();
             return;
           }
-          if (done) return;
-          if (!socket.SendText("ping") || GetTickCount64() - lastHeard.load() > 75000) {
-            socket.Close();  // unblocks Receive; the loop reconnects
+          const auto now = GetTickCount64();
+          if (stop.stop_requested() || now < nextPing) continue;
+          nextPing = now + 25000;
+          const auto heard = lastHeard.load();
+          if ((now >= heard && now - heard > 75000) || !socket.SendText("ping")) {
+            socket.Close();
             return;
           }
         }
@@ -3791,7 +3788,7 @@ void AgentService::RealtimeLoop() {
         }
       }
       realtimeConnected_ = false;
-      done = true;
+      watcher.request_stop();
       socket.Close();
       watcher.join();
     } catch (const std::exception& error) {

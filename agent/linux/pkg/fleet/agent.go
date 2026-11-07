@@ -174,6 +174,8 @@ func (a *Agent) Start() error {
 		if err := json.Unmarshal(data, &a.state); err != nil {
 			return fmt.Errorf("corrupt state file: %w", err)
 		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("cannot read saved device identity: %w", err)
 	}
 	if a.state.DeviceID == "" {
 		host, _ := os.Hostname()

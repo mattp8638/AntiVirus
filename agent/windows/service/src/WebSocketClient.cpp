@@ -4,6 +4,26 @@
 
 namespace antivirus::agent {
 
+// An in-flight operation retains its handles until WinHTTP returns. Close
+// detaches the connection first, then interrupts the outstanding receive.
+struct WebSocketClient::Connection {
+  HINTERNET session{};
+  HINTERNET connection{};
+  HINTERNET socket{};
+  ~Connection() {
+    if (socket) WinHttpCloseHandle(socket);
+    if (connection) WinHttpCloseHandle(connection);
+    if (session) WinHttpCloseHandle(session);
+  }
+};
+
+std::shared_ptr<WebSocketClient::Connection> WebSocketClient::Current() const {
+  std::lock_guard lock(stateMutex_);
+  return active_;
+}
+
+bool WebSocketClient::Connected() const { return static_cast<bool>(Current()); }
+
 WebSocketClient::~WebSocketClient() { Close(); }
 
 void WebSocketClient::Connect(const std::wstring& url, const std::wstring& headers, const DWORD timeoutMs) {
@@ -33,36 +53,35 @@ void WebSocketClient::Connect(const std::wstring& url, const std::wstring& heade
     throw std::runtime_error("Invalid WebSocket URL");
   }
   const bool secure = parts.nScheme == INTERNET_SCHEME_HTTPS;
-  session_ = WinHttpOpen(L"Fenrir-Agent/1.1", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-  if (!session_) {
-    session_ = WinHttpOpen(L"Fenrir-Agent/1.1", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+  auto handles = std::make_shared<Connection>();
+  handles->session = WinHttpOpen(L"Fenrir-Agent/1.1", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+  if (!handles->session) {
+    handles->session = WinHttpOpen(L"Fenrir-Agent/1.1", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
   }
-  if (!session_) {
+  if (!handles->session) {
     throw std::runtime_error("WinHttpOpen failed");
   }
-  WinHttpSetTimeouts(session_, static_cast<int>(timeoutMs), static_cast<int>(timeoutMs), static_cast<int>(timeoutMs), 0);
-  connection_ = WinHttpConnect(session_, host, parts.nPort, 0);
-  if (!connection_) {
-    Close();
+  WinHttpSetTimeouts(handles->session, static_cast<int>(timeoutMs), static_cast<int>(timeoutMs), static_cast<int>(timeoutMs), 0);
+  handles->connection = WinHttpConnect(handles->session, host, parts.nPort, 0);
+  if (!handles->connection) {
     throw std::runtime_error("WinHttpConnect failed");
   }
   const std::wstring target = std::wstring(path) + extra;
-  HINTERNET request = WinHttpOpenRequest(connection_, L"GET", target.c_str(), nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+  HINTERNET request = WinHttpOpenRequest(handles->connection, L"GET", target.c_str(), nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
                                          secure ? WINHTTP_FLAG_SECURE : 0);
   if (!request) {
-    Close();
     throw std::runtime_error("WinHttpOpenRequest failed");
   }
-  if (!WinHttpSetOption(request, WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, nullptr, 0)) {
+  DWORD responseTimeout = timeoutMs;
+  if (!WinHttpSetOption(request, WINHTTP_OPTION_RECEIVE_TIMEOUT, &responseTimeout, sizeof(responseTimeout)) ||
+      !WinHttpSetOption(request, WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, nullptr, 0)) {
     WinHttpCloseHandle(request);
-    Close();
     throw std::runtime_error("This version of Windows does not support WebSockets");
   }
   const BOOL sent = WinHttpSendRequest(request, headers.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : headers.c_str(),
                                        headers.empty() ? 0 : static_cast<DWORD>(-1L), WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
   if (!sent || !WinHttpReceiveResponse(request, nullptr)) {
     WinHttpCloseHandle(request);
-    Close();
     throw std::runtime_error("The relay could not be reached");
   }
   DWORD status = 0, size = sizeof(status);
@@ -70,23 +89,31 @@ void WebSocketClient::Connect(const std::wstring& url, const std::wstring& heade
                       WINHTTP_NO_HEADER_INDEX);
   if (status != 101) {
     WinHttpCloseHandle(request);
-    Close();
     throw std::runtime_error("The relay refused the connection (HTTP " + std::to_string(status) + ")");
   }
-  socket_ = WinHttpWebSocketCompleteUpgrade(request, 0);
+  // The upgrade response is bounded. Once upgraded an idle channel is valid;
+  // its owner drives the keepalive and cancellation policy.
+  DWORD idleTimeout = 0;
+  if (!WinHttpSetOption(request, WINHTTP_OPTION_RECEIVE_TIMEOUT, &idleTimeout, sizeof(idleTimeout))) {
+    WinHttpCloseHandle(request);
+    throw std::runtime_error("Could not configure the upgraded WebSocket timeout");
+  }
+  handles->socket = WinHttpWebSocketCompleteUpgrade(request, 0);
   WinHttpCloseHandle(request);
-  if (!socket_) {
-    Close();
+  if (!handles->socket) {
     throw std::runtime_error("WebSocket upgrade failed");
   }
+  std::lock_guard lock(stateMutex_);
+  active_ = std::move(handles);
 }
 
 bool WebSocketClient::Send(const WINHTTP_WEB_SOCKET_BUFFER_TYPE type, const void* data, const std::size_t size) {
   std::lock_guard lock(sendMutex_);
-  if (!socket_) {
+  const auto handles = Current();
+  if (!handles) {
     return false;
   }
-  return WinHttpWebSocketSend(socket_, type, const_cast<void*>(data), static_cast<DWORD>(size)) == ERROR_SUCCESS;
+  return WinHttpWebSocketSend(handles->socket, type, const_cast<void*>(data), static_cast<DWORD>(size)) == ERROR_SUCCESS;
 }
 
 bool WebSocketClient::SendText(const std::string& utf8) {
@@ -100,13 +127,12 @@ bool WebSocketClient::SendBinary(const void* data, const std::size_t size) {
 bool WebSocketClient::Receive(std::string* message, bool* binary) {
   message->clear();
   std::vector<char> buffer(64 * 1024);
+  const auto handles = Current();
+  if (!handles) return false;
   for (;;) {
-    if (!socket_) {
-      return false;
-    }
     DWORD read = 0;
     WINHTTP_WEB_SOCKET_BUFFER_TYPE type{};
-    if (WinHttpWebSocketReceive(socket_, buffer.data(), static_cast<DWORD>(buffer.size()), &read, &type) != ERROR_SUCCESS) {
+    if (WinHttpWebSocketReceive(handles->socket, buffer.data(), static_cast<DWORD>(buffer.size()), &read, &type) != ERROR_SUCCESS) {
       return false;
     }
     if (type == WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE) {
@@ -124,18 +150,14 @@ bool WebSocketClient::Receive(std::string* message, bool* binary) {
 }
 
 void WebSocketClient::Close(const unsigned short status, const std::string& reason) {
-  if (socket_) {
-    WinHttpWebSocketClose(socket_, status, reason.empty() ? nullptr : const_cast<char*>(reason.data()), static_cast<DWORD>(reason.size()));
-    WinHttpCloseHandle(socket_);
-    socket_ = nullptr;
+  std::shared_ptr<Connection> handles;
+  {
+    std::lock_guard lock(stateMutex_);
+    handles = std::move(active_);
   }
-  if (connection_) {
-    WinHttpCloseHandle(connection_);
-    connection_ = nullptr;
-  }
-  if (session_) {
-    WinHttpCloseHandle(session_);
-    session_ = nullptr;
+  if (handles) {
+    WinHttpWebSocketClose(handles->socket, status, reason.empty() ? nullptr : const_cast<char*>(reason.data()),
+                          static_cast<DWORD>(reason.size()));
   }
 }
 

@@ -25,6 +25,12 @@ jobs:
     - name: Build Windows agent and real native FenrirSetup
       run: cmake --build build --config Release --target antivirus-setup
 
+    - name: Test stalled upgrades, simultaneous closes and reconnects on Windows
+      run: |
+        cmake --build build --config Release --target fenrir-agent-connection-tests
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        python agent/windows/tests/agent_connection_test.py build/Release/fenrir-agent-connection-tests.exe
+
     - name: Verify installer and agent binary outputs
       shell: pwsh
       run: |

@@ -650,3 +650,8 @@ add_executable(fenrir-json-field-tests ../tests/JsonStringFieldTests.cpp)
 target_include_directories(fenrir-json-field-tests PRIVATE include)
 enable_testing()
 add_test(NAME json-string-fields COMMAND fenrir-json-field-tests)
+
+add_executable(fenrir-agent-connection-tests ../tests/AgentConnectionTests.cpp src/WebSocketClient.cpp)
+target_include_directories(fenrir-agent-connection-tests PRIVATE include)
+target_link_libraries(fenrir-agent-connection-tests PRIVATE winhttp)
+antivirus_apply_portable_runtime(fenrir-agent-connection-tests)

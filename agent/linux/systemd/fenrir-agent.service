@@ -12,7 +12,7 @@ RestartSec=5
 User=root
 ProtectHome=false
 ProtectSystem=full
-ReadWritePaths=/var/lib/fenrir /etc/nftables.d
+ReadWritePaths=/var/lib/fenrir -/etc/nftables.d
 
 [Install]
 WantedBy=multi-user.target

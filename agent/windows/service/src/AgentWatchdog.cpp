@@ -160,16 +160,17 @@ class Watchdog {
   void CheckRunning(SC_HANDLE service, const DWORD pid) {
     const auto age = ProcessAge(pid);
     const auto record = liveness::Read(runtime_ / L"liveness.json");
+    const auto awake = liveness::AwakeSeconds();
     std::string reason;
     if (!record || record->pid != static_cast<long long>(pid)) {
       if (age > 15 * kMinute) reason = "the running agent has not written its liveness record";
-    } else if (now_ - record->writtenAt > kFrozenLimit) {
-      reason = "the agent is frozen (no liveness update for " + std::to_string((now_ - record->writtenAt) / kMinute) + " minutes)";
-    } else if (record->loopAt > 0 && now_ - record->loopAt > kLoopLimit) {
-      reason = "the agent's main loop has been stuck for " + std::to_string((now_ - record->loopAt) / kMinute) + " minutes";
+    } else if (liveness::Stalled(awake, record->writtenAwake, kFrozenLimit)) {
+      reason = "the agent is frozen (no liveness update for " + std::to_string((awake - record->writtenAwake) / kMinute) + " minutes)";
+    } else if (liveness::Stalled(awake, record->loopAwake, kLoopLimit)) {
+      reason = "the agent's main loop has been stuck for " + std::to_string((awake - record->loopAwake) / kMinute) + " minutes";
     } else {
       const auto lastOk = std::max(record->contactOkAt, record->startedAt);
-      if (now_ - lastOk > kContactLimit && age > kContactLimit) {
+      if (liveness::Stalled(awake, record->contactAttemptAwake, kContactLimit) && now_ - lastOk > kContactLimit && age > kContactLimit) {
         const auto reachable = ServerReachable();
         if (reachable) {
           reason = "no answer from the server for " + std::to_string((now_ - lastOk) / kMinute) +
@@ -190,9 +191,9 @@ class Watchdog {
       state_.windowStart = now_;
       state_.restartsInWindow = 0;
     }
+    if (!Kill(service, pid)) return;
     state_.lastRestartAt = now_;
     ++state_.restartsInWindow;
-    if (!Kill(pid)) return;
     if (state_.restartsInWindow > 3 && now_ - state_.lastRepairAt > kRepairGap) {
       Repair(reason + "; restarting did not help " + std::to_string(state_.restartsInWindow - 1) + " times");
       return;
@@ -234,12 +235,21 @@ class Watchdog {
     CloseHandle(token);
   }
 
-  bool Kill(const DWORD pid) {
+  bool Kill(SC_HANDLE service, const DWORD pid) {
     if (pid == 0) return false;
     EnableDebugPrivilege();
     const auto process = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
     if (process == nullptr) {
       Log("could not open the agent process " + std::to_string(pid) + " to end it (error " + std::to_string(GetLastError()) + ")");
+      return false;
+    }
+    // Holding the process handle prevents PID reuse during the second SCM check.
+    SERVICE_STATUS_PROCESS current{};
+    DWORD needed = 0;
+    if (!QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO, reinterpret_cast<LPBYTE>(&current),
+                              sizeof(current), &needed) || current.dwProcessId != pid || InMaintenance()) {
+      CloseHandle(process);
+      Log("skipped restart because the service changed or maintenance started");
       return false;
     }
     const bool terminated = TerminateProcess(process, 0x46454E02) != FALSE;
@@ -297,7 +307,7 @@ class Watchdog {
           DWORD code = 0, size = sizeof(code);
           WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &code, &size,
                               WINHTTP_NO_HEADER_INDEX);
-          reachable = code >= 200 && code < 500;
+          reachable = code >= 200 && code < 300;
         }
         WinHttpCloseHandle(request);
       }
