@@ -74,3 +74,28 @@ def test_ordinary_enrollment_cannot_reactivate_retired_device(client,admin,devic
     raw,generate,enroll=reinstatement
     token=client.post('/api/console/enrollment-tokens',headers=admin,json={'tenantId':device['tenantId']}).json()['token']
     assert enroll(token=token).status_code==409
+
+
+def test_legacy_windows_installation_guid_can_change_with_bound_installer(device, reinstatement):
+    from fenrir_cloud.models import Device
+    _, generate, enroll = reinstatement
+    with database.session_factory()() as db:
+        db.get(Device, device["deviceId"]).serial_number = "{fab04687-9120-4cf2-a9a1-4c0fb89abfbd}"
+        db.commit()
+    assert generate().status_code == 200
+    body = {"serialNumber": "{fab04687-9120-4cf2-a9a1-4c0fb89abfbe}", "reinstallProof": "12" * 32}
+    assert enroll(hostname="OTHER", **body).status_code == 409
+    assert enroll(**body).json()["deviceId"] == device["deviceId"]
+
+
+def test_reinstating_original_transfers_proof_only_from_retired_duplicate(client, admin, tenant, device, reinstatement):
+    _, generate, enroll = reinstatement
+    proof = "ef" * 32
+    token = client.post("/api/console/enrollment-tokens", headers=admin,
+                        json={"tenantId": tenant["id"], "label": "duplicate"}).json()["token"]
+    dup = client.post("/api/v1/enroll", json={"hostname": "ACME-WS-01", "platform": "windows", "serialNumber": "OTHER",
+                                              "enrollmentToken": token, "reinstallProof": proof}).json()
+    assert generate().status_code == 200
+    assert enroll(reinstallProof=proof).status_code == 409
+    assert client.delete("/api/console/devices/" + dup["deviceId"], headers=admin).status_code == 200
+    assert enroll(reinstallProof=proof).json()["deviceId"] == device["deviceId"]

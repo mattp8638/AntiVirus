@@ -366,7 +366,7 @@ export default function DeviceDetail() {
       </Modal>}
       {reinstating && <Modal title={`Reinstate ${d.hostname}`} onClose={()=>{if(!busy)setReinstating(false);}}>
         <p>Generate a replacement installer bound to this device record and customer. Run it on the original endpoint as administrator. The device stays decommissioned until enrollment succeeds; its history, group and policy are retained.</p>
-        <p>The installer expires after 24 hours and can be used once. Generating another replaces the previous reinstatement token. Old agent credentials remain revoked.</p>
+        <p>The installer expires after 24 hours and can be used once. For a duplicate Windows installation, first decommission the duplicate, then generate this installer from the record whose history and policy you want to keep using. Generating another replaces the previous reinstatement token. Old agent credentials remain revoked.</p>
         <button disabled={busy} onClick={async()=>{
           const ok=await run(async()=>{
             const token=getToken();

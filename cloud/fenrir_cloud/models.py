@@ -125,6 +125,7 @@ class Device(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("dev"))
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
     group_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    reinstall_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
     hostname: Mapped[str] = mapped_column(String(255))
     platform: Mapped[str] = mapped_column(String(20), default="windows")
     os_version: Mapped[str] = mapped_column(String(255), default="")
