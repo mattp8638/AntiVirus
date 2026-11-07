@@ -13,7 +13,7 @@ from ..commands import BY_TYPE, catalog_document
 from ..config import get_settings
 from ..db import get_db
 from ..deps import Principal, current_principal, require_reauth, scoped_tenant
-from ..models import (AgentRelease, Alert, Command, Configuration, Device, DeviceGroup, Event, Policy, RemoteSession, SoftwareItem, Tenant, Vulnerability,
+from ..models import (AgentRelease, Alert, Command, Configuration, Device, DeviceGroup, DevicePatch, Event, Policy, RemoteSession, SoftwareItem, Tenant, Vulnerability,
                       utcnow)
 from ..serialize import apply_fields, to_dict
 
@@ -114,6 +114,15 @@ def list_devices(
         query = query.where(presence.up_clause())
     elif status == "offline":
         query = query.where(or_(Device.last_seen_at.is_(None), ~presence.up_clause()))
+    elif status == "attention":
+        cutoff = utcnow() - timedelta(minutes=15)
+        desktops = Device.platform.in_(("windows", "linux", "macos")) & ~func.coalesce(Device.metrics["agentless"].as_boolean(), False)
+        stale_poll = desktops & presence.up_clause() & (Device.enrolled_at < cutoff) & or_(
+            Device.command_poll_at.is_(None), Device.command_poll_at < cutoff)
+        patch_issue = select(DevicePatch.id).where(DevicePatch.device_id == Device.id,
+                                                  DevicePatch.status.in_(("failed", "unverified"))).exists()
+        critical_offline = Device.inventory["role"].as_string().in_(("server", "domain-controller")) & ~presence.up_clause()
+        query = query.where(or_(stale_poll, patch_issue, critical_offline))
     elif status == "isolated":
         query = query.where(Device.isolated.is_(True))
     elif status == "pending":

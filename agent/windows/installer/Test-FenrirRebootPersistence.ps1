@@ -4,6 +4,7 @@
 [CmdletBinding()]
 param(
     [ValidateSet('Baseline', 'Verify')][string]$Mode = 'Baseline',
+    [string]$DeviceId,  # optional cloud check using FENRIR_ACCEPTANCE_CONSOLE_TOKEN
     [string]$StateFile = (Join-Path $env:ProgramData 'FenrirAgent\Phase1\reboot-check.json')
 )
 
@@ -46,6 +47,36 @@ $record = [ordered]@{
     lastCheckUtc = (Get-Date).ToUniversalTime().ToString('o')
 }
 
+if ($Mode -eq 'Verify' -and (Test-Path -LiteralPath $StateFile)) {
+    $baseline = Get-Content -LiteralPath $StateFile -Raw | ConvertFrom-Json
+    if ($baseline.cloudServer -ne $record.cloudServer) { throw 'The enrolled server changed.' }
+    if ($baseline.deviceId) {
+        if ($DeviceId -and $DeviceId -ne $baseline.deviceId) { throw 'The selected device differs from the baseline.' }
+        $DeviceId = $baseline.deviceId
+    }
+}
+if ($DeviceId) {
+    if ($DeviceId -notmatch '^dev_[a-zA-Z0-9]+$' -or -not $env:FENRIR_ACCEPTANCE_CONSOLE_TOKEN) {
+        throw 'Supply a device ID and a console token authorised to request inventory.'
+    }
+    $headers = @{ Authorization = "Bearer $env:FENRIR_ACCEPTANCE_CONSOLE_TOKEN" }
+    $console = "$($record.cloudServer)/api/console"
+    $detail = Invoke-RestMethod -Uri "$console/devices/$DeviceId" -Headers $headers
+    if ($detail.device.hostname -ne $env:COMPUTERNAME) { throw 'Device hostname differs from this test machine.' }
+    $request = @{ type = 'inventory.refresh'; reason = 'Windows reboot acceptance' } | ConvertTo-Json
+    $command = Invoke-RestMethod -Method Post -Uri "$console/devices/$DeviceId/commands" -Headers $headers -ContentType 'application/json' -Body $request
+    $until = [DateTime]::UtcNow.AddMinutes(5)
+    do {
+        Start-Sleep -Seconds 3
+        $commands = Invoke-RestMethod -Uri "$console/commands?device_id=$DeviceId" -Headers $headers
+        $result = $commands | Where-Object { $_.id -eq $command.id } | Select-Object -First 1
+        if ($result.status -in @('failed','cancelled','expired')) { throw "Inventory command $($result.status)." }
+    } until ($result.status -eq 'completed' -or [DateTime]::UtcNow -ge $until)
+    if ($result.status -ne 'completed') { throw 'The original device did not complete its inventory request.' }
+    $record.deviceId = $DeviceId
+    $record.inventoryCommandId = $command.id
+}
+
 if ($Mode -eq 'Baseline') {
     $directory = Split-Path -Parent $StateFile
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
@@ -68,5 +99,6 @@ $record.verifiedReboots = [int]$previous.verifiedReboots + 1
 $record | ConvertTo-Json | Set-Content -LiteralPath $StateFile -Encoding UTF8 -Force
 Write-Host "Fenrir remained installed, automatically started, and retained its server and enrollment token after reboot $($record.verifiedReboots)/2."
 if ($record.verifiedReboots -ge 2) {
+    if ($record.inventoryCommandId) { Write-Host 'Cloud check passed on the original device ID after reboot.'; return }
     Write-Host 'LOCAL reboot stability checkpoint passed twice. Verify cloud check-in, unchanged device ID and real RMM command completion separately.'
 }

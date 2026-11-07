@@ -139,7 +139,7 @@ export function JobStatus({ job }: { job: any }) {
   return (
     <span className="row" style={{ gap: 4 }}>
       <Pill value={job.status === "cancelling" ? "Stopping" : job.status} tone={job.status === "completed" ? "good" : job.status === "running" ? "blue" : ["partial", "cancelling"].includes(job.status) ? "warn" : job.status === "cancelled" ? "muted" : "bad"} />
-      <span className="small muted">{displayValue(s.completed || 0)}✓ {displayValue(s.failed || 0)}✗ {displayValue((s.pending || 0) + (s.dispatched || 0))} waiting{s.cancelling ? ` · ${s.cancelling} awaiting stop acknowledgement` : ""}{s.skipped ? ` · ${s.skipped} skipped` : ""}</span>
+      <span className="small muted">{s.targeted ?? s.total} targeted · {displayValue(s.completed || 0)}✓ {displayValue(s.failed || 0)}✗ {displayValue((s.pending || 0) + (s.dispatched || 0))} waiting{s.cancelling ? ` · ${s.cancelling} awaiting stop acknowledgement` : ""}{s.partial ? ` · ${s.partial} partial` : ""}{s.skipped ? ` · ${s.skipped} skipped` : ""}</span>
     </span>
   );
 }
@@ -164,7 +164,7 @@ export function JobDetail({ jobId, onClose }: { jobId: string; onClose: () => vo
                          if (await run(() => api(`rmm/jobs/${jobId}`, { method: "DELETE" }), "Job removed; outstanding work cancelled or stopping")) onClose();
                        }
                      }}>Remove job</button>}
-                     {["failed", "partial"].includes(data.status) && <button title="Run again on the devices where it failed" onClick={async () => { await run(() => api(`rmm/jobs/${jobId}/retry`, { method: "POST" }), "Retry queued"); reload(); }}>Retry failed devices</button>}
+                     {can(data.commandType === "script.run" ? "configure" : "respond") && ((data.summary?.failed || 0) + (data.summary?.expired || 0) > 0) && ["failed", "partial"].includes(data.status) && <button title="Run again on the devices where it failed" onClick={async () => { await run(() => api(`rmm/jobs/${jobId}/retry`, { method: "POST" })); reload(); }}>Retry failed devices</button>}
                    <button onClick={reload}>Refresh</button><button className="primary" onClick={onClose}>Close</button></>}>
       <p className="small muted">{displayValue(data.createdBy)} · {fmtTime(data.createdAt)} · {displayValue(data.commandType)}{data.script ? ` · ${data.script.language}` : ""}</p>
       <JobStatus job={data} />
@@ -173,7 +173,7 @@ export function JobDetail({ jobId, onClose }: { jobId: string; onClose: () => vo
         {data.results.map((r: any) => (
           <div key={r.deviceId} className="card" style={{ padding: 10, marginTop: 8 }}>
             <div className="row" style={{ cursor: "pointer" }} onClick={() => setOpen(open === r.deviceId ? null : r.deviceId)}>
-              <b>{displayValue(r.hostname)}</b><Pill value={r.status} />{r.exitCode !== undefined && r.exitCode !== null && <span className="small muted">exit {displayValue(r.exitCode)}</span>}
+              <b>{displayValue(r.hostname)}</b><Pill value={r.result?.outcomeUncertain ? "Outcome unknown" : r.result?.patchesOutstanding?.length && r.status === "completed" ? "Partial install" : r.status} />{r.exitCode !== undefined && r.exitCode !== null && <span className="small muted">exit {displayValue(r.exitCode)}</span>}
               {r.durationMs && <span className="small muted">{(r.durationMs / 1000).toFixed(1)}s</span>}
               <span style={{ flex: 1 }} /><span className="small muted">{open === r.deviceId ? "▲" : "▼"}</span>
             </div>

@@ -25,7 +25,7 @@ export default function Monitoring() {
       <div style={{ marginTop: 16 }}><Tabs tabs={["Triggered", "Conditions"]} active={tab} onChange={setTab} /></div>
       {tab === "Triggered" ? (
         <div className="card">
-          <Table rows={active} empty="Everything is healthy."
+          <Table rows={active} empty="No monitoring conditions are currently triggered."
                  columns={[{ key: "severity", label: "Sev", render: (r) => <Sev level={r.severity} /> },
                            { key: "hostname", label: "Device", render: (r) => <Link to={`/devices/${r.deviceId}`}>{displayValue(r.hostname)}</Link> },
                            { key: "account", label: "Customer" },

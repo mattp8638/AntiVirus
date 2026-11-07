@@ -70,3 +70,9 @@ func TestMetricsCollect(t *testing.T) {
 		t.Fatal("no uptime")
 	}
 }
+
+func TestExpiredMaintenanceWindowPreventsPatchExecution(t *testing.T) {
+	if _, err := PatchInstall(`{"windowEndEpoch":1,"patchIds":[]}`); err == nil || !strings.Contains(err.Error(), "window ended") {
+		t.Fatalf("expired window returned %v", err)
+	}
+}

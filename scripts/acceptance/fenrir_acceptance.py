@@ -628,6 +628,7 @@ def service_restart(ctx: Context, device: dict) -> tuple[str, dict]:
         return seen if seen and seen != first else None
 
     seen = wait_for("a check-in after the restart", reported, max(ctx.args.timeout, 180), interval=10)
+    inventory(ctx, device)  # Require a fresh command result on the same device ID after restart.
     return f"stopped in {took}s when asked, started again and checked in at {seen}", {"stopSeconds": took, "lastSeenAt": seen}
 
 

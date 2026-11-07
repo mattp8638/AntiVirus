@@ -209,7 +209,7 @@ def _job_view(db: Session, job: Job, detail: bool = False) -> dict:
         for device_id, command_id in (job.command_ids or {}).items():
             command = commands.get(command_id)
             device = devices.get(device_id)
-            result = (command.result if command else {}) or {}
+            result = command.result if command and isinstance(command.result, dict) else {}
             results.append({"deviceId": device_id, "hostname": device.hostname if device else device_id,
                             "platform": device.platform if device else "", "commandId": command_id,
                             "status": command.status if command else "unknown",
@@ -534,7 +534,7 @@ def device_metrics(device_id: str, hours: int = Query(default=24, ge=1, le=720),
     return {"current": device.metrics or {}, "hours": hours,
             "series": series,
             "monitors": [{"condition": conditions.get(s.condition_id, s.condition_id), "triggered": s.triggered, "value": s.last_value,
-                          "message": s.message} for s in states]}
+                          "lastObservedAt": to_dict(s)["lastObservedAt"], "message": s.message} for s in states]}
 
 
 # --------------------------------------------------------------------------- patching

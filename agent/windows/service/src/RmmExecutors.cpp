@@ -1,3 +1,4 @@
+#include <ctime>
 #include "Liveness.h"
 #include "RmmExecutors.h"
 #include "CommandCancellation.h"
@@ -419,19 +420,18 @@ if ($wu.Count -gt 0) {
     }
     if ($coll.Count -gt 0) {
       $downloader = $session.CreateUpdateDownloader(); $downloader.Updates = $coll; [void]$downloader.Download()
+      if ($env:FENRIR_WINDOW_END -and [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -ge [long]$env:FENRIR_WINDOW_END) { throw "Maintenance window ended before installation" }
       $installer = $session.CreateUpdateInstaller(); $installer.Updates = $coll; $outcome = $installer.Install()
       $rebootRequired = [bool]$outcome.RebootRequired
       for ($i = 0; $i -lt $coll.Count; $i++) {
         $r = $outcome.GetUpdateResult($i)
-        $ok = ($r.ResultCode -eq 2 -or $r.ResultCode -eq 3)
+        $ok = ($r.ResultCode -eq 2)
         $err = ''
         if (-not $ok) { $err = 'Windows Update result {0}, HRESULT 0x{1:X8}' -f $r.ResultCode, $r.HResult }
         Add-Result $names[$i] $ok $err
       }
     }
-    foreach ($id in $wu) {
-      if (-not $done.ContainsKey([string]$id)) { Add-Result $id $true 'already installed or superseded' }
-    }
+    # Omitted updates are verified by the following scan.
   } catch {
     $failure = "$_"
     foreach ($id in $wu) { if (-not $done.ContainsKey([string]$id)) { Add-Result $id $false $failure } }
@@ -439,6 +439,7 @@ if ($wu.Count -gt 0) {
 }
 $winget = $env:FENRIR_WINGET
 foreach ($pkg in $wg) {
+  if ($env:FENRIR_WINDOW_END -and [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -ge [long]$env:FENRIR_WINDOW_END) { break }
   if (-not $winget -or -not (Test-Path $winget)) { Add-Result "winget:$pkg" $false 'WinGet/App Installer is unavailable to the service'; continue }
   $LASTEXITCODE = $null
   $output = ''
@@ -462,9 +463,13 @@ std::string ScheduleReboot(const json::Value& payload, bool rebootRequired) {
     return "";
   }
   const int minutes = static_cast<int>(std::clamp(reboot ? Num(*reboot, "deferMinutes", 5) : 5, 1.0, 1440.0));
+  if (payload.Get("windowEndEpoch") && std::time(nullptr) + minutes * 60 >= Num(payload, "windowEndEpoch", 0)) {
+    return ",\"rebootDeferred\":true";
+  }
   const auto command = L"\"" + SystemPath(L"shutdown.exe") + L"\" /r /t " + std::to_wstring(minutes * 60) +
                        L" /d p:2:17 /c \"Your IT provider is restarting this computer to finish installing updates. Save your work.\"";
-  RunProcess(command, L"", {}, 30000);
+  const auto rebootResult = RunProcess(command, L"", {}, 30000);
+  if (rebootResult.timedOut || rebootResult.exitCode != 0) return ",\"rebootScheduleFailed\":true";
   return ",\"rebootScheduledInMinutes\":" + std::to_string(minutes);
 }
 
@@ -642,16 +647,22 @@ std::string CollectHealthMetricsJson() {
     out << ",\"model\":" << Q(model);
   }
   // Automatic services that are not running (trigger-start and delayed services are expected to stop).
-  out << ",\"stoppedServices\":[";
+  std::ostringstream stopped, serviceStates;
+  bool servicesComplete = false;
   if (SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_ENUMERATE_SERVICE)) {
     DWORD needed = 0, count = 0, resume = 0;
-    EnumServicesStatusExW(scm, SC_ENUM_PROCESS_INFO, SERVICE_WIN32, SERVICE_INACTIVE, nullptr, 0, &needed, &count, &resume, nullptr);
+    EnumServicesStatusExW(scm, SC_ENUM_PROCESS_INFO, SERVICE_WIN32, SERVICE_STATE_ALL, nullptr, 0, &needed, &count, &resume, nullptr);
     std::vector<BYTE> buffer(needed + 1024);
     first = true;
-    if (EnumServicesStatusExW(scm, SC_ENUM_PROCESS_INFO, SERVICE_WIN32, SERVICE_INACTIVE, buffer.data(), static_cast<DWORD>(buffer.size()),
+    resume = 0;
+    if (EnumServicesStatusExW(scm, SC_ENUM_PROCESS_INFO, SERVICE_WIN32, SERVICE_STATE_ALL, buffer.data(), static_cast<DWORD>(buffer.size()),
                               &needed, &count, &resume, nullptr)) {
+      servicesComplete = true;
       const auto* services = reinterpret_cast<const ENUM_SERVICE_STATUS_PROCESSW*>(buffer.data());
       for (DWORD i = 0; i < count; ++i) {
+        const auto state = services[i].ServiceStatusProcess.dwCurrentState;
+        serviceStates << (i ? "," : "") << Q(std::wstring(services[i].lpServiceName)) << ":" << state;
+        if (state == SERVICE_RUNNING) continue;
         SC_HANDLE service = OpenServiceW(scm, services[i].lpServiceName, SERVICE_QUERY_CONFIG);
         if (!service) {
           continue;
@@ -672,14 +683,17 @@ std::string CollectHealthMetricsJson() {
         }
         CloseServiceHandle(service);
         if (automatic && !delayed && !triggered) {
-          out << (first ? "" : ",") << Q(std::wstring(services[i].lpServiceName));
+          stopped << (first ? "" : ",") << Q(std::wstring(services[i].lpServiceName));
           first = false;
         }
       }
     }
     CloseServiceHandle(scm);
   }
-  out << "],\"processNames\":[";
+  if (servicesComplete) {
+    out << ",\"stoppedServices\":[" << stopped.str() << "],\"serviceStates\":{" << serviceStates.str() << "}";
+  }
+  out << ",\"processNames\":[";
   std::set<std::wstring> names;
   HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
   if (snapshot != INVALID_HANDLE_VALUE) {
@@ -721,6 +735,8 @@ std::string PatchScan(const std::filesystem::path& workRoot) {
 
 std::string PatchInstall(const std::wstring& payloadJson, const std::filesystem::path& workRoot) {
   const auto payload = ParsePayload(payloadJson);
+  if (payload.Get("windowEndEpoch") && std::time(nullptr) >= Num(payload, "windowEndEpoch", 0))
+    throw std::runtime_error("Maintenance window ended before patch installation");
   std::string ids;
   static const std::regex allowed(R"(^(KB\d{4,10}|[0-9a-fA-F-]{36}|winget:[A-Za-z0-9][A-Za-z0-9.+_-]{0,199})$)");
   if (const auto* list = payload.Get("patchIds")) {
@@ -735,7 +751,8 @@ std::string PatchInstall(const std::wstring& payloadJson, const std::filesystem:
   }
   const auto file = WriteScript(workRoot / L"patching", kPatchInstallScript, L".ps1", true);
   const auto result = RunProcess(PowerShellCommand(file), (workRoot / L"patching").wstring(),
-                                 {{L"FENRIR_PATCH_IDS", Utf8ToWide(ids)}, {L"FENRIR_WINGET", FindWinget()}}, 3 * 60 * 60 * 1000, 4 * 1024 * 1024);
+                                 {{L"FENRIR_WINDOW_END", payload.Get("windowEndEpoch") ? std::to_wstring(static_cast<long long>(Num(payload, "windowEndEpoch", 0))) : L""},
+                                  {L"FENRIR_PATCH_IDS", Utf8ToWide(ids)}, {L"FENRIR_WINGET", FindWinget()}}, 3 * 60 * 60 * 1000, 4 * 1024 * 1024);
   std::error_code ec;
   std::filesystem::remove(file, ec);
   const auto parsed = json::Parse(result.stdoutText);
