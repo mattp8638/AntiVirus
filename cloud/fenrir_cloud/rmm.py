@@ -16,7 +16,8 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import audit, presence, services
+from . import approvals, audit, presence, services
+from .commands import BY_TYPE, INTERACTIVE_ONLY, SERVER_ONLY
 from .models import (Alert, Command, ConditionState, Device, DeviceGroup, DeviceMetric, DevicePatch, DiskTelemetryHistory, Job, MonitorCondition,
                      PatchApproval, PatchPolicy, ScheduledTask, Script, SoftwarePackage, Ticket, Vulnerability, utcnow)
 
@@ -194,15 +195,23 @@ def _record_held_script(db: Session, exc: ValueError, actor: str, tenant_id: str
         audit.record(db, actor, "rmm.script.held_for_review", script.name, tenant_id, scriptId=script.id, **details)
 
 
-def retry_failed(db: Session, job: Job, actor: str) -> int:
+def retry_candidates(db: Session, job: Job) -> list[Command]:
+    command_ids = dict(job.command_ids or {})
+    failed = db.execute(select(Command).where(Command.id.in_(list(command_ids.values())),
+                                              Command.status.in_(("failed", "expired")))).scalars().all()
+    now = utcnow()
+    return [old for old in failed if not (isinstance(old.result, dict) and old.result.get("outcomeUncertain"))
+            and not (old.type == "patch.install" and patch_window_closed(old, now))]
+
+
+def retry_failed(db: Session, job: Job, actor: str, candidates: list[Command] | None = None) -> int:
     """Queue the job's command again on the devices where it failed or expired. Returns how many."""
     from . import script_review
 
     if job.command_type == "script.run" and script_review.required(db) and not (job.payload or {}).get("reviewedHash"):
         raise ValueError("This job ran a script version nobody reviewed. Run the reviewed script again from the library.")
     command_ids = dict(job.command_ids or {})
-    failed = db.execute(select(Command).where(Command.id.in_(list(command_ids.values())),
-                                              Command.status.in_(("failed", "expired")))).scalars().all()
+    failed = retry_candidates(db, job) if candidates is None else candidates
     history = list((job.payload or {}).get("retryHistory") or [])
     retried = 0
     for old in failed:
@@ -734,7 +743,7 @@ def installable_patches(db: Session, device: Device, policy: PatchPolicy | None,
             delay = 0  # "Install now" from a technician is never deferred by the protection policy
         # Manual approvals install straight away; auto-approvals respect the ring delay.
         reference = patch.released_at or patch.first_seen_at
-        if patch.patch_key not in decisions and delay and reference + timedelta(days=delay) > now:
+        if patch.patch_key not in decisions and delay and (now - reference).days < delay:
             continue
         out.append(patch)
     return out
@@ -751,20 +760,31 @@ def _tz(name: str | None):
 
 def in_window(window: dict, now_utc: datetime) -> tuple[bool, str]:
     """(inside?, window key) for a maintenance window like {"days": [5,6], "start": "02:00", "durationMinutes": 180}."""
+    if window is not None and not isinstance(window, dict):
+        return False, ""
     window = {**DEFAULT_WINDOW, **(window or {})}
-    local = now_utc.replace(tzinfo=timezone.utc).astimezone(_tz(window.get("tz")))
-    hour, minute = (int(x) for x in str(window.get("start", "02:00")).split(":")[:2])
-    duration = timedelta(minutes=int(window.get("durationMinutes") or 180))
+    try:
+        zone = ZoneInfo(window["tz"])
+        hour, minute = map(int, window["start"].split(":"))
+        duration = timedelta(minutes=int(window["durationMinutes"]))
+        days = {int(day) for day in window["days"]}
+        if not 0 <= hour < 24 or not 0 <= minute < 60 or not timedelta(0) < duration <= timedelta(days=1):
+            return False, ""
+    except (AttributeError, OverflowError, TypeError, ValueError, ZoneInfoNotFoundError):
+        return False, ""  # A malformed stored policy must not stop other customers' patch windows.
+    instant = now_utc.replace(tzinfo=timezone.utc)
+    local = instant.astimezone(zone)
     for days_back in (0, 1):
-        start = (local - timedelta(days=days_back)).replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if start.weekday() in [int(d) for d in window.get("days", [])] and start <= local < start + duration:
+        start = (local - timedelta(days=days_back)).replace(hour=hour, minute=minute, second=0, microsecond=0, fold=0)
+        start_utc = start.astimezone(timezone.utc)
+        if start.weekday() in days and start_utc <= instant < start_utc + duration:
             return True, start.strftime("%Y-%m-%dT%H:%M")
     return False, ""
 
 
 def window_deadline(window: dict, key: str) -> int:
     start = datetime.fromisoformat(key).replace(tzinfo=_tz(window.get("tz")))
-    return int((start + timedelta(minutes=int(window.get("durationMinutes") or 180))).timestamp())
+    return int(start.timestamp()) + 60 * int(window.get("durationMinutes") or 180)
 
 
 def patch_window_closed(command: Command, now: datetime) -> bool:
@@ -981,7 +1001,17 @@ def run_scheduled_task(db: Session, task: ScheduledTask, actor: str | None = Non
     jobs: list[Job] = []
     who = actor or f"schedule:{task.name}"
     for action in task.actions or []:
-        if action.get("type") == "script":
+        kind = action.get("type")
+        spec = BY_TYPE.get(action.get("command")) if kind == "command" and isinstance(action.get("command"), str) else None
+        if kind == "command" and (spec is None or spec.type in INTERACTIVE_ONLY | SERVER_ONLY | {"script.run", "remote.session.start", "remote.session.end"}):
+            audit.record(db, who, "rmm.task.action_held", task.name, task.tenant_id, taskId=task.id,
+                         reason="Action requires its dedicated workflow")
+            continue
+        if approvals.needed(db, devices, bool(spec and spec.destructive)):
+            audit.record(db, who, "rmm.task.action_held", task.name, task.tenant_id, taskId=task.id,
+                         reason="Current customer policy requires an individually approved job")
+            continue
+        if kind == "script":
             script = db.get(Script, action.get("scriptId"))
             if script is None or (script.tenant_id is not None and script.tenant_id not in allowed):
                 audit.record(db, who, "rmm.task.asset_unavailable", task.name, task.tenant_id, taskId=task.id, kind="script")
@@ -1247,6 +1277,10 @@ def _trigger(db: Session, condition: MonitorCondition, device: Device, state: Co
         kind = action.get("type")
         if kind == "ticket":
             continue
+        elif kind in {"command", "script"} and approvals.needed(
+                db, [device], bool(kind == "command" and (spec := BY_TYPE.get(action.get("command"))) and spec.destructive)):
+            audit.record(db, "rmm-monitor", "rmm.monitor.action_held", condition.name, device.tenant_id,
+                         deviceId=device.id, reason="Current customer policy requires individual approval")
         elif kind == "script":
             script = db.get(Script, action.get("scriptId"))
             if script is not None and device.platform in (script.platforms or []):

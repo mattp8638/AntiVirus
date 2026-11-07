@@ -14,9 +14,10 @@ let package = Package(
         // TODO: Add YARA Swift wrapper dependency here
     ],
     targets: [
+        .target(name: "FenrirAuditToken", linkerSettings: [.linkedLibrary("bsm")]),
         .executableTarget(
             name: "FenrirAgent",
-            dependencies: [],
+            dependencies: ["FenrirAuditToken"],
             linkerSettings: [
                 .linkedFramework("EndpointSecurity"),
                 .linkedFramework("Foundation"),

@@ -14,6 +14,7 @@ from datetime import timedelta
 
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from . import audit
@@ -81,7 +82,11 @@ def gate(db: Session, principal, kind: str, summary: str, request: dict, devices
             raise HTTPException(409, "The approval has expired; ask again")
         if row.fingerprint != print_:
             raise HTTPException(409, "The request changed since it was approved (body or target devices); it needs a new approval")
-        row.status, row.executed_at = "executed", now
+        claimed = db.execute(update(ApprovalRequest).where(ApprovalRequest.id == row.id,
+                             ApprovalRequest.status == "approved", ApprovalRequest.expires_at > now)
+                             .values(status="executed", executed_at=now))
+        if claimed.rowcount != 1:
+            raise HTTPException(409, "Approval is no longer available")
         audit.record(db, principal.actor, "approval.executed", row.id, row.tenant_id, kind=kind)
         return
     tenant_ids = sorted({d.tenant_id for d in devices})
@@ -107,10 +112,14 @@ def decide(db: Session, principal, row: ApprovalRequest, approve: bool, reason: 
     targets = [db.get(Device, i) for i in row.device_ids]
     if any(d is None or d.tenant_id not in principal.tenant_ids for d in targets):
         raise HTTPException(403, "You cannot decide on devices outside your customers")
-    row.status = "approved" if approve else "rejected"
-    row.decided_by, row.decided_at, row.reason = principal.actor, now, reason[:500]
+    values = {"status": "approved" if approve else "rejected", "decided_by": principal.actor,
+              "decided_at": now, "reason": reason[:500]}
     if approve:
-        row.expires_at = now + VALID_AFTER_APPROVAL
+        values["expires_at"] = now + VALID_AFTER_APPROVAL
+    decision = db.execute(update(ApprovalRequest).where(ApprovalRequest.id == row.id,
+                          ApprovalRequest.status == "pending", ApprovalRequest.expires_at > now).values(**values))
+    if decision.rowcount != 1:
+        raise HTTPException(409, "Approval already decided or expired")
     audit.record(db, principal.actor, f"approval.{row.status}", row.id, row.tenant_id, kind=row.kind, requestedBy=row.requested_by, reason=reason)
     return row
 
