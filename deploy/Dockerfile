@@ -1,14 +1,14 @@
 # Fenrir Platform: cloud API + console + agent downloads in one image.
 # Build from the repository root:  docker build -f deploy/Dockerfile -t fenrir-cloud .
 
-FROM node:22.11-bookworm-slim AS console
+FROM node:24.22.1-bookworm-slim AS console
 WORKDIR /src/console
 COPY console/package.json console/package-lock.json* ./
-RUN npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+RUN npm ci --no-audit --no-fund
 COPY console/ ./
 RUN npm run build
 
-FROM golang:1.24-bookworm AS agents
+FROM golang:1.27.3-bookworm AS agents
 WORKDIR /src/agent/linux
 COPY agent/linux/ ./
 # Release signing (FIX-07/AGT-03). The Ed25519 release key arrives as a BuildKit secret (never in a layer); its
