@@ -645,3 +645,8 @@ target_include_directories(fenrir-rmm-tests PRIVATE include ../shared/include)
 target_link_libraries(fenrir-rmm-tests PRIVATE wtsapi32 userenv urlmon advapi32 bcrypt crypt32 wintrust)
 antivirus_apply_portable_runtime(fenrir-rmm-tests)
 target_include_directories(fenrir-policy-tests PRIVATE include)
+
+add_executable(fenrir-json-field-tests ../tests/JsonStringFieldTests.cpp)
+target_include_directories(fenrir-json-field-tests PRIVATE include)
+enable_testing()
+add_test(NAME json-string-fields COMMAND fenrir-json-field-tests)

@@ -17,6 +17,11 @@ jobs:
     - name: Configure CMake (development build without signed minifilter)
       run: cmake -B build -S agent/windows/service -DANTIVIRUS_REQUIRE_MINIFILTER_PAYLOAD=OFF
 
+    - name: Exercise Windows JSON field parsing
+      run: |
+        cmake --build build --config Release --target fenrir-json-field-tests
+        ctest --test-dir build -C Release -R '^json-string-fields$' --output-on-failure --no-tests=error
+
     - name: Build Windows agent and real native FenrirSetup
       run: cmake --build build --config Release --target antivirus-setup
 

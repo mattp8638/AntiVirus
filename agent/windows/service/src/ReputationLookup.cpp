@@ -12,6 +12,7 @@
 #include <fstream>
 #include <mutex>
 #include <optional>
+#include "JsonStringField.h"
 #include "RegexOptions.h"
 #include <string>
 #include <unordered_map>
@@ -273,16 +274,12 @@ struct HttpResponse {
 };
 
 std::optional<std::string> ExtractJsonString(const std::string& json, const std::string& key) {
-  const std::regex pattern("\"" + key + "\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"", kAgentRegexOptions);
-  std::smatch match;
-  if (!std::regex_search(json, match, pattern)) {
-    return std::nullopt;
-  }
-
+  const auto raw = FindRawJsonStringField(json, key);
+  if (!raw) return std::nullopt;
   std::string result;
-  result.reserve(match[1].str().size());
+  result.reserve(raw->size());
   bool escaping = false;
-  for (const auto ch : match[1].str()) {
+  for (const auto ch : *raw) {
     if (!escaping) {
       if (ch == '\\') {
         escaping = true;

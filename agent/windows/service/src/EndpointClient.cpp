@@ -7,6 +7,7 @@
 #include <fstream>
 #include <memory>
 #include <optional>
+#include "JsonStringField.h"
 #include "RegexOptions.h"
 #include <set>
 #include <string>
@@ -189,13 +190,9 @@ std::string UnescapeJsonString(const std::string& value) {
 
 std::optional<std::wstring> ExtractJsonString(const std::wstring& json, const std::string& key) {
   const auto utf8Json = WideToUtf8(json);
-  const std::regex pattern("\"" + EscapeRegex(key) + "\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"", kAgentRegexOptions);
-  std::smatch match;
-  if (!std::regex_search(utf8Json, match, pattern)) {
-    return std::nullopt;
-  }
-
-  return Utf8ToWide(UnescapeJsonString(match[1].str()));
+  const auto raw = FindRawJsonStringField(utf8Json, key);
+  if (!raw) return std::nullopt;
+  return Utf8ToWide(UnescapeJsonString(std::string(*raw)));
 }
 
 std::optional<int> ExtractJsonInt(const std::wstring& json, const std::string& key) {
