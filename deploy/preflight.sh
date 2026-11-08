@@ -222,10 +222,24 @@ section "Signing material (deploy/signing; contents are never printed)"
 profile="$(envval FENRIR_BUILD_PROFILE)"; profile="${profile:-production}"
 pfx="$DEPLOY_DIR/signing/codesign.pfx"
 pfx_pw="$DEPLOY_DIR/signing/codesign.password"
+azure_ts="$(envval FENRIR_CODESIGN_AZURE)"; azure_ts="${azure_ts:-$DEPLOY_DIR/signing/azure-trusted-signing.env}"
+case "$azure_ts" in /*) ;; *) azure_ts="$DEPLOY_DIR/${azure_ts#./}" ;; esac
 if [ "$profile" != "production" ]; then
   warn "FENRIR_BUILD_PROFILE is '$profile': Windows installers are not signed with your certificate. Not for customer machines."
+elif [ -s "$azure_ts" ]; then
+  missing=""
+  for key in AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET TRUSTED_SIGNING_ENDPOINT TRUSTED_SIGNING_ACCOUNT TRUSTED_SIGNING_PROFILE; do
+    grep -Eq "^[[:space:]]*$key[[:space:]]*=[[:space:]]*[^[:space:]]" "$azure_ts" || missing="$missing $key"
+  done
+  if [ -n "$missing" ]; then
+    fail "Azure Trusted Signing settings ($azure_ts) are missing:$missing (docs/CODE_SIGNING.md)."
+  elif loose_perms "$azure_ts"; then
+    fail "The Azure Trusted Signing settings hold a client secret and can be read by other accounts. Run: chmod 600 $azure_ts"
+  else
+    pass "Azure Trusted Signing set up, owner-only (the build checks the credentials before compiling)"
+  fi
 elif [ ! -s "$pfx" ]; then
-  fail "No Windows code-signing certificate ($pfx). Production builds need it (README, step 3)."
+  fail "No Windows code signing: neither Azure Trusted Signing ($azure_ts) nor a certificate ($pfx). Production builds need one (docs/CODE_SIGNING.md)."
 elif [ ! -f "$pfx_pw" ]; then
   fail "No $pfx_pw. Create it, empty if the certificate has no password (README, step 3)."
 else

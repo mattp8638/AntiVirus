@@ -46,17 +46,28 @@ healthy() {
   return 1
 }
 
-# Build profile: FENRIR_BUILD_PROFILE in the env file. production requires deploy/signing/codesign.pfx; lab builds
-# unsigned agents. When it is not set, a server with a certificate builds production and one without builds lab
+# Windows code signing: Azure Trusted Signing settings (deploy/signing/azure-trusted-signing.env) or a certificate
+# (deploy/signing/codesign.pfx). Exports the compose secret paths so either one works without the other.
+signing_ready() {
+  local azure="$DEPLOY_DIR/signing/azure-trusted-signing.env" pfx="$DEPLOY_DIR/signing/codesign.pfx"
+  if [ -s "$azure" ] && [ -z "${FENRIR_CODESIGN_AZURE:-}" ]; then export FENRIR_CODESIGN_AZURE="$azure"; fi
+  if [ ! -s "$pfx" ] && [ -z "${FENRIR_CODESIGN_PFX:-}" ]; then
+    export FENRIR_CODESIGN_PFX="$DEPLOY_DIR/lab/no-certificate" FENRIR_CODESIGN_PASSWORD_FILE="$DEPLOY_DIR/lab/no-certificate"
+  fi
+  [ -s "$azure" ] || [ -s "$pfx" ]
+}
+
+# Build profile: FENRIR_BUILD_PROFILE in the env file. production requires code signing (above); lab builds
+# unsigned agents. When it is not set, a server with signing set up builds production and one without builds lab
 # (and says so every run), so an existing unsigned test server keeps updating.
 build_profile() {
   local profile
   profile="$(sed -n 's/^FENRIR_BUILD_PROFILE=//p' "$ENV_FILE" 2>/dev/null | tail -1 | tr -d '"'"'"' \r')"
   if [ -z "$profile" ]; then
-    if [ -s "$DEPLOY_DIR/signing/codesign.pfx" ]; then profile=production; else
+    if signing_ready; then profile=production; else
       profile=lab
-      log "WARNING: no code-signing certificate and FENRIR_BUILD_PROFILE is not set: building UNSIGNED lab agents." \
-          "Set FENRIR_BUILD_PROFILE=production in $ENV_FILE once deploy/signing/codesign.pfx is in place."
+      log "WARNING: no code signing set up and FENRIR_BUILD_PROFILE is not set: building UNSIGNED lab agents." \
+          "Set FENRIR_BUILD_PROFILE=production in $ENV_FILE once code signing is set up (docs/CODE_SIGNING.md)."
     fi
   fi
   echo "$profile"
@@ -92,12 +103,15 @@ deploy() {  # build first so the running server keeps serving during the (slow) 
   release_key
   case "$profile" in
     production)
-      if [ ! -s "$DEPLOY_DIR/signing/codesign.pfx" ]; then
-        log "ERROR: FENRIR_BUILD_PROFILE=production but deploy/signing/codesign.pfx is missing or empty; not building." \
-            "Add the certificate, or set FENRIR_BUILD_PROFILE=lab for a test server. See docs/CODE_SIGNING.md."
+      if ! signing_ready; then
+        log "ERROR: FENRIR_BUILD_PROFILE=production but no code signing is set up (deploy/signing/azure-trusted-signing.env" \
+            "or deploy/signing/codesign.pfx); not building. Set one up, or set FENRIR_BUILD_PROFILE=lab for a test server." \
+            "See docs/CODE_SIGNING.md."
         return 1
       fi
-      [ -f "$DEPLOY_DIR/signing/codesign.password" ] || (umask 077; : > "$DEPLOY_DIR/signing/codesign.password")
+      if [ -s "$DEPLOY_DIR/signing/codesign.pfx" ] && [ ! -f "$DEPLOY_DIR/signing/codesign.password" ]; then
+        (umask 077; : > "$DEPLOY_DIR/signing/codesign.password")
+      fi
       FENRIR_BUILD_PROFILE=production compose build && compose up -d && healthy ;;
     lab)
       # The lab override swaps the signing secrets for an empty placeholder, so every compose command needs it.

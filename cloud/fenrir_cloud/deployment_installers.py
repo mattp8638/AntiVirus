@@ -82,6 +82,9 @@ def _windows_warning(mode: str | None) -> str:
         return "Unsigned hobby build: user-mode testing only; no signed Windows kernel driver or full antivirus protection."
     if mode == "signed":
         sig = windows_signature()
+        if sig["method"] == "azure-trusted-signing":
+            return (f"Signed by {sig['signer'] or 'your organisation'} through Azure Trusted Signing. Windows trusts it "
+                    "without installing any certificate on devices.")
         text = (f"Signed by {sig['signer'] or 'your code-signing certificate'}. If that certificate is self-signed, Windows "
                 "trusts it only after the certificate (download below) is installed on each device under Trusted "
                 "Publishers and Trusted Root Certification Authorities, for example by Group Policy or Intune.")
@@ -355,7 +358,8 @@ def windows_signature() -> dict:
     if not isinstance(meta, dict):
         meta = {}
     return {"signed": bool(meta.get("signed")), "signer": str(meta.get("signer") or ""),
-            "thumbprint": str(meta.get("signerSha1") or ""), "timestamped": bool(meta.get("timestamped"))}
+            "thumbprint": str(meta.get("signerSha1") or ""), "timestamped": bool(meta.get("timestamped")),
+            "method": str(meta.get("method") or ("pfx" if meta.get("signed") else ""))}
 
 
 def _windows_executable(base: str, token: str) -> tuple[bytes, str, str]:

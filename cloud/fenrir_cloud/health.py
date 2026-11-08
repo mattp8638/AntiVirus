@@ -8,6 +8,7 @@ The report names jobs and counts, never errors or customers: the endpoint needs 
 from __future__ import annotations
 
 import logging
+import json
 import shutil
 import threading
 from datetime import datetime, timedelta
@@ -78,7 +79,10 @@ def background_health(db: Session, settings: Settings) -> dict:
                         f"({storage['freeBytes'] * 100 // storage['totalBytes']}%)")
 
     signing = code_signing_expiry()
-    if signing is not None:
+    if signing is not None and managed_code_signing():
+        # Azure Trusted Signing issues a fresh three-day certificate for every build, and every file is timestamped.
+        checks["codeSigning"] = {"ok": True, "method": "azure-trusted-signing"}
+    elif signing is not None:
         days = (signing - now).days
         checks["codeSigning"] = {"ok": days >= CODE_SIGNING_WARN_DAYS, "expiresInDays": days}
         if days < 0:
@@ -92,6 +96,15 @@ def background_health(db: Session, settings: Settings) -> dict:
 
 CODE_SIGNING_WARN_DAYS = 30
 CODE_SIGNING_CERT = Path(__file__).resolve().parents[1] / "downloads" / "windows" / "fenrir-codesign.cer"
+
+
+def managed_code_signing(path: Path | None = None) -> bool:
+    """Whether the running build was signed by Azure Trusted Signing (from the Windows build manifest)."""
+    target = path or CODE_SIGNING_CERT.with_name("build.json")
+    try:
+        return json.loads(target.read_text()).get("method") == "azure-trusted-signing"
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
 def code_signing_expiry(path: Path | None = None) -> datetime | None:

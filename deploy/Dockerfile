@@ -58,9 +58,9 @@ COPY deploy/sign-windows.sh deploy/sign-windows.sh
 # lab: no certificate needed; the agents are built unsigned and labelled "unsigned-lab".
 ARG FENRIR_BUILD_PROFILE=production
 ENV FENRIR_BUILD_PROFILE=${FENRIR_BUILD_PROFILE}
-# Code signing (optional): deploy/signing/codesign.pfx is passed as a BuildKit secret, so the key never lands in
-# a layer. Components are signed first, the installer is rebuilt to embed the signed copies, then it is signed.
-RUN --mount=type=secret,id=codesign_pfx --mount=type=secret,id=codesign_password \
+# Code signing: Azure Trusted Signing settings (deploy/signing/azure-trusted-signing.env) or deploy/signing/codesign.pfx
+# are passed as BuildKit secrets, so no key or credential lands in a layer. Components are signed first, the installer is rebuilt to embed the signed copies, then it is signed.
+RUN --mount=type=secret,id=codesign_pfx --mount=type=secret,id=codesign_password --mount=type=secret,id=codesign_azure \
     SIGN_OUT=/tmp/signing-preflight sh deploy/sign-windows.sh \
  && find agent/windows third_party/sqlite deploy/mingw-x64.cmake -type f -not -path 'agent/windows/out/*' -print0 \
       | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16 > /build-id \

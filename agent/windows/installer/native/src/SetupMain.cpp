@@ -669,8 +669,8 @@ bool BootstrapMinifilterSigningTrust(const std::filesystem::path& driverCatPath,
 
 // Trusts the certificate that signed this installer, so Windows (SmartScreen, UAC, application control)
 // recognises Fenrir's programs as coming from a known publisher. Only a code-signing certificate that
-// cannot issue other certificates is accepted. It always goes into Trusted Publishers. A self-signed
-// certificate also goes into Trusted Root, which lets only that one certificate validate. With remove,
+// cannot issue other certificates is accepted. A certificate that already chains to a publicly trusted root is left
+// alone; otherwise it goes into Trusted Publishers, and a self-signed certificate also goes into Trusted Root, which lets only that one certificate validate. With remove,
 // the same certificate is taken out of both stores (full uninstall).
 std::wstring TrustOwnCodeSigningCertificate(const std::filesystem::path& setupPath, const bool remove) {
   WINTRUST_FILE_INFO fileInfo{};
@@ -746,6 +746,10 @@ std::wstring TrustOwnCodeSigningCertificate(const std::filesystem::path& setupPa
       }
     }
     result = L"Removed the Fenrir code-signing certificate (" + subject + L") from the trusted stores.";
+  } else if (status == ERROR_SUCCESS && !selfSigned) {
+    // Issued by a publicly trusted CA (an EV/OV certificate or Azure Trusted Signing): Windows already trusts it,
+    // and Trusted Signing certificates change every few days, so adding each one would only pile them up.
+    result = L"The installer is signed by " + subject + L", which Windows already trusts; no certificate added.";
   } else {
     std::wstring storeError;
     const bool publisher = EnsureCertificateInMachineStore(certificate, L"TrustedPublisher", &storeError);

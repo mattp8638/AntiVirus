@@ -13,3 +13,5 @@ secrets:
     file: ./lab/no-certificate
   codesign_password:
     file: ./lab/no-certificate
+  codesign_azure:
+    file: ./lab/no-certificate
