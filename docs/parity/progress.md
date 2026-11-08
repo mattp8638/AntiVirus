@@ -9,12 +9,20 @@ Baseline of the review: `main` at `790e364`. Work branch: `claude/jolly-goodall-
 | State | Count |
 |---|---|
 | verified | 6 (FIX-01 to FIX-05, FIX-08) |
-| implemented-unverified | 10 (FIX-07, AGT-04, CORE-03 and 7 requirements the brief marked U) |
-| partial | 101 |
-| missing | 60 |
+| implemented-unverified | 14 (FIX-07, AGT-04, CORE-03, FLOW-01/02/04/09 and 7 requirements the brief marked U) |
+| partial | 118 |
+| missing | 39 |
 | externally-blocked | 1 (FIX-06) |
 
 Overall parity: **not passed**. MVP: **not yet declared**.
+
+## 2026-11-08 re-assessment
+
+21 entries recorded as missing were built in later batches and are now `partial` or `implemented-unverified`, each
+citing its code and tests in `catalogue.csv`: VULN-14 (PII discovery), VULN-18 (dark web), GRC-06 (supplier risk),
+FLOW-01/02/04/05/08/09, M365-02 (GDAP), M365-12/13 (Conditional Access and standards), M365-18 to 21 (Exchange),
+M365-22 to 24 (Intune), M365-25/26 (Teams, SharePoint). No entry became `verified`: that still needs the acceptance
+scenario run against real agents or tenants. AGT-02 notes Azure Trusted Signing.
 
 ## Completed
 

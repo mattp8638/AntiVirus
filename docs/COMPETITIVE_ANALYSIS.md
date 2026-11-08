@@ -33,7 +33,7 @@ Status key: **Built** = working in this repo and covered by tests or an end-to-e
 | Time, agreements and invoicing | ConnectWise Manage, Autotask | **Built**: time entries, timesheet approval, agreement coverage and included hours, after-hours rates, additions counted from RMM, invoices | `psa.py`, `routers/business.py` |
 | CMDB and client portal | ConnectWise configurations, IT Glue, HaloPSA portal | **Built**: configurations synced from RMM; customer portal for requests, KB, invoices and devices | `routers/psa.py`, `routers/portal.py` |
 | Vulnerability management | ConnectSecure, RoboShadow, Defender TVM | **Built**: inventory → OSV.dev, CISA KEV prioritisation, status workflow | `exposure.py` |
-| External attack surface scanning | RoboShadow, ConnectSecure | **Built** (ownership attestation required) | `exposure.py` `scan_external` |
+| External attack surface scanning | RoboShadow, ConnectSecure | **Partial**: common ports and TLS checks from the cloud server, ownership attestation required. Missing: service/version fingerprinting matched to CVEs, subdomain discovery, an isolated scanner | `exposure.py` `scan_external` |
 | Compliance reporting | ConnectSecure, RoboShadow (Cyber Essentials) | **Built**: 5 frameworks scored from live evidence | `compliance.py` |
 | Tamper protection | All | **Built** (Windows); policy-driven | `HardeningManager.cpp` |
 | Multi-tenant MSP console | Heimdal, ESET PROTECT, S1 | **Built**: tenant tree, RBAC, per-tenant policy, tuning and reports | `deps.py`, `console/` |
@@ -41,10 +41,10 @@ Status key: **Built** = working in this repo and covered by tests or an end-to-e
 | Guided incident playbooks | — (rare in SMB tools) | **Built**: Sentinel playbooks with closure gates | `playbooks/` |
 | PSA ticketing + SLAs | ConnectWise, Autotask (not AV vendors) | **Built** and wired to incidents and monitors | `psa.py` |
 | CRM + billing | HubSpot/Xero (not AV vendors) | **Built**: lead → customer conversion, per-device invoices | `business.py` |
-| Signed agent updates with rings | All | **Partial**: release registry and update-check; Windows updater verifies manifests | `agent_api.py` `update-check` |
-| Email security / M365 posture | Heimdal Email, RoboShadow M365 | **Planned** | — |
-| Dark-web credential monitoring | RoboShadow | **Planned** (needs a licensed breach-data source) | — |
-| Network discovery of unmanaged devices | SentinelOne Ranger | **Planned** | — |
+| Signed agent updates with rings | All | **Partial**: signed Linux/macOS releases, rings with soak times and automatic pause; Windows updater verifies manifests. Windows code signing through Azure Trusted Signing or a certificate | `agent_api.py` `update-check`, `rollouts.py`, `deploy/sign-windows.sh` |
+| Email security / M365 posture | Heimdal Email, RoboShadow M365, CIPP | **Built**: identity, device, Exchange, email-security (DKIM, SPF/DMARC, anti-phishing, Safe Links/Attachments) and sharing standards with report/alert/remediate and drift; Exchange, Intune, Teams/SharePoint administration; GDAP. Mail filtering itself stays with Microsoft | `m365_standards.py`, `m365_email_security.py`, `m365_exchange.py`, `m365_intune.py`, `m365_partner.py` |
+| Dark-web credential monitoring | RoboShadow | **Built** with Have I Been Pwned domain search (needs a subscription key), correlated with directory accounts, MFA and devices | `darkweb.py` |
+| Network discovery of unmanaged devices | SentinelOne Ranger, ConnectSecure probe | **Partial**: ARP/neighbour tables and a TCP sweep from managed devices, SNMP v2c/v3 switch reads with a physical port map. No agentless vulnerability scanning of what it finds yet | `topology.py`, `fleet/topology.go` |
 | Remote shell for analysts | SentinelOne, Defender Live Response | **Built** through remote access (PowerShell/ConPTY on Windows, PTY on Linux), gated by `remoteAccess.allowTerminal` | `pkg/remote`, `fenrir-remote.exe` |
 | Kernel-level macOS protection | All | **Partial**: Endpoint Security framework agent in Swift | `agent/macos` |
 
@@ -62,3 +62,23 @@ Status key: **Built** = working in this repo and covered by tests or an end-to-e
 - **Ransomware file rollback on Windows** (the command and policy exist; the agent executor does not yet).
 - **Pre-execution blocking** needs the signed minifilter driver; see [DRIVER_SIGNING.md](DRIVER_SIGNING.md).
 - **SOC 2 / ISO 27001 for the service itself.**
+
+### Against NinjaOne and N-able (RMM), 2026-11 review
+
+- **Remote access speed.** Sessions go through the cloud relay over WebSockets. Add WebRTC with a relay fallback,
+  hardware video encoding and multi-monitor.
+- **Third-party patching** relies on winget and Chocolatey. The leaders ship a curated, tested catalogue of a few hundred apps.
+- **Automation depth.** 19 library scripts plus 20 condition-remediation packages. Device and ticket custom fields exist, but scripts and conditions cannot yet read or write them (NinjaOne's main automation pattern).
+- **Not built:** hypervisor/VM monitoring (RMM-14), backup (BDR-01 to 06; integrate a provider first), Apple MDM (MDM-02).
+- **Integrations and API.** No ConnectWise, Autotask, Halo, IT Glue or Hudu connectors; no published API reference.
+- **Identity.** Staff single sign-on is Microsoft Entra only; no generic OIDC/SAML or SCIM.
+- **Reports and branding.** No PDF/executive reports and no white-labelling.
+
+### Against RoboShadow and ConnectSecure (vulnerability and compliance)
+
+- **Agentless network vulnerability scanning** (credentialed SNMP/WMI/SSH scans of printers, switches, firewalls, NAS) is
+  ConnectSecure's core and is not built.
+- **CIS benchmark content** with per-asset scores; endpoint baselines exist but no CIS library.
+- **Not built:** web application scanning (VULN-08), firewall configuration audit (VULN-13), attack paths (VULN-19),
+  Google Workspace posture (VULN-12), board-level reports (VULN-20).
+
