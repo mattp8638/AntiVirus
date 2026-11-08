@@ -58,11 +58,11 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-      # Windows code signing: put the certificate at deploy/signing/codesign.pfx (and its password, if any, in
-      # deploy/signing/codesign.password). The production profile refuses to build without it. See docs/CODE_SIGNING.md.
+      # Windows code signing: Azure Trusted Signing settings in deploy/signing/azure-trusted-signing.env (recommended),
+      # or a certificate at deploy/signing/codesign.pfx (and its password, if any, in deploy/signing/codesign.password). The production profile refuses to build without it. See docs/CODE_SIGNING.md.
       # Linux/macOS agent release signing: an Ed25519 key at deploy/signing/release-ed25519.pem (auto-update.sh
       # creates one). See docs/AUTO_UPDATE.md, "Signed agent releases".
-      secrets: [codesign_pfx, codesign_password, release_key]
+      secrets: [codesign_pfx, codesign_password, codesign_azure, release_key]
       # production needs the certificate above; lab builds unsigned agents (see docker-compose.lab.yml).
       args:
         FENRIR_BUILD_PROFILE: ${FENRIR_BUILD_PROFILE:-production}
@@ -105,6 +105,8 @@ secrets:
     file: ${FENRIR_CODESIGN_PFX:-./signing/codesign.pfx}
   codesign_password:
     file: ${FENRIR_CODESIGN_PASSWORD_FILE:-./signing/codesign.password}
+  codesign_azure:  # unset: no Azure Trusted Signing (an empty file)
+    file: ${FENRIR_CODESIGN_AZURE:-./lab/no-certificate}
   release_key:  # unset: no key, so agents keep the hash-only check (auto-update.sh creates a key and sets this)
     file: ${FENRIR_RELEASE_KEY:-./lab/no-certificate}
 

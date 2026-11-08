@@ -97,4 +97,6 @@ jobs:
     needs: [cloud, console, linux-agent, ml, windows-agent]
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -f deploy/Dockerfile -t fenrir-cloud:${{ github.sha }} .
+      # CI has no code-signing certificate, so it builds the clearly-labelled unsigned lab profile. The production
+      # profile's refusal to build unsigned agents is checked by phase2-smoke.yml.
+      - run: docker build --build-arg FENRIR_BUILD_PROFILE=lab -f deploy/Dockerfile -t fenrir-cloud:${{ github.sha }} .

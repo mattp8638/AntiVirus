@@ -186,3 +186,29 @@ def test_an_expiring_code_signing_certificate_is_reported(client, monkeypatch, t
     assert "code-signing" in health.problem_keys(body)
     monkeypatch.setattr(health, "CODE_SIGNING_CERT", tmp_path / "missing.cer")  # an unsigned lab build: nothing to say
     assert client.get("/health/background").status_code == 200
+
+
+def test_azure_trusted_signing_short_lived_certificates_are_not_reported(client, monkeypatch, tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Fenrir Test Signing")])
+    now = datetime.now(timezone.utc)
+    built = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+             .serial_number(1).not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=2))
+             .sign(key, hashes.SHA256()))
+    cer = tmp_path / "fenrir-codesign.cer"
+    cer.write_bytes(built.public_bytes(serialization.Encoding.DER))
+    healthy()
+    monkeypatch.setattr(health, "CODE_SIGNING_CERT", cer)
+    body = client.get("/health/background").json()
+    assert any("code-signing certificate expires in" in p for p in body["problems"])  # a .pfx this close is a problem
+    (tmp_path / "build.json").write_text('{"signed": true, "method": "azure-trusted-signing"}')
+    body = client.get("/health/background").json()
+    assert not any("code-signing" in p for p in body["problems"])
+    assert body["checks"]["codeSigning"] == {"ok": True, "method": "azure-trusted-signing"}

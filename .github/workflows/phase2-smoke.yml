@@ -214,7 +214,7 @@ jobs:
           FENRIR_BUILD_PROFILE=production CODESIGN_PFX=/tmp/empty CODESIGN_PASSWORD_FILE=/tmp/empty SIGN_OUT=/tmp/sig sh deploy/sign-windows.sh 2>/tmp/sign.err
           code=$?
           set -e
-          test "$code" -eq 3 && grep -q "production build profile needs a Windows code-signing certificate" /tmp/sign.err
+          test "$code" -eq 3 && grep -q "production build profile needs Windows code signing" /tmp/sign.err
           FENRIR_BUILD_PROFILE=lab CODESIGN_PFX=/tmp/empty CODESIGN_PASSWORD_FILE=/tmp/empty SIGN_OUT=/tmp/sig sh deploy/sign-windows.sh
           grep -q '"profile": "lab"' /tmp/sig/signing.json
           echo "PASS: production refuses unsigned; lab builds unsigned and says so"

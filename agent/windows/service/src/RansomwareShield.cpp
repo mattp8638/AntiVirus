@@ -152,6 +152,22 @@ bool ReadSmallFile(const std::wstring& path, std::string& out, std::size_t limit
   return ok;
 }
 
+// Microsoft Defender running (its antivirus service). Defender reads a SYSTEM program writing the same hidden file
+// into every user's folders as ransomware dropping its notes, and ends the agent on every start, so canary files are
+// left to Defender's own ransomware protection while it runs; the rest of the shield (watching) carries on.
+bool MicrosoftDefenderRunning() {
+  const auto manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+  if (manager == nullptr) return false;
+  bool running = false;
+  if (const auto service = OpenServiceW(manager, L"WinDefend", SERVICE_QUERY_STATUS)) {
+    SERVICE_STATUS status{};
+    running = QueryServiceStatus(service, &status) && status.dwCurrentState == SERVICE_RUNNING;
+    CloseServiceHandle(service);
+  }
+  CloseServiceHandle(manager);
+  return running;
+}
+
 bool WriteCanary(const std::wstring& path, const std::string& content) {
   SetFileAttributesW(path.c_str(), FILE_ATTRIBUTE_NORMAL);
   const auto file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_HIDDEN, nullptr);
@@ -380,8 +396,23 @@ void RansomwareShield::Reconfigure() {
   // Remove our canaries where they are no longer wanted (feature off, folder dropped from policy).
   const auto content = CanaryContent();
   std::vector<std::wstring> canaries;
-  if (settings.enabled && settings.canaryFiles) {
+  std::vector<std::wstring> leftovers;
+  const bool defenderRunning = MicrosoftDefenderRunning();
+  if (settings.enabled && settings.canaryFiles && !defenderRunning) {
     for (const auto& root : canaryRoots) canaries.push_back(root + L"\\" + kCanaryName);
+  } else {
+    // Canaries an earlier run (or an earlier policy) placed: removed slowly, so the clean-up is not a burst either.
+    for (const auto& root : canaryRoots) {
+      const auto path = root + L"\\" + kCanaryName;
+      if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) leftovers.push_back(path);
+    }
+    if (settings.enabled && settings.canaryFiles && defenderRunning && !canariesPausedReported_) {
+      canariesPausedReported_ = true;
+      Queue(L"ransomware.canary.paused",
+            L"Canary files are not placed while Microsoft Defender is running (it treats them as ransomware activity); "
+            L"Defender's own ransomware protection covers them and the shield keeps watching.",
+            L"{\"folders\":" + std::to_wstring(canaryRoots.size()) + L"}", false);
+    }
   }
   for (const auto& old : canaryPaths_) {
     if (std::find(canaries.begin(), canaries.end(), old) == canaries.end()) {
@@ -434,6 +465,7 @@ void RansomwareShield::Reconfigure() {
     deviceToDos_ = std::move(deviceMap);
     dosRoots_ = roots;
     canaryPaths_ = canaries;
+    leftoverCanaries_ = leftovers;
   }
   lastCanaryCheckMs_ = 0;  // place canaries straight away
 
@@ -1013,12 +1045,24 @@ void RansomwareShield::RetryDeletes() {
 
 void RansomwareShield::MaintainCanaries() {
   std::vector<std::wstring> canaries;
+  std::wstring leftover;
   {
     const std::scoped_lock lock(mutex_);
     canaries = canaryPaths_;
+    if (!leftoverCanaries_.empty()) {
+      leftover = leftoverCanaries_.back();
+      leftoverCanaries_.pop_back();
+    }
+  }
+  static const auto content = CanaryContent();
+  if (!leftover.empty()) {  // one a minute, and only a file that is still exactly ours
+    std::string existing;
+    if (ReadSmallFile(leftover, existing, content.size() + 1) && existing == content) {
+      SetFileAttributesW(leftover.c_str(), FILE_ATTRIBUTE_NORMAL);
+      DeleteFileW(leftover.c_str());
+    }
   }
   if (canaries.empty()) return;
-  static const auto content = CanaryContent();
   const auto now = GetTickCount64();
   for (const auto& path : canaries) {
     std::string existing;

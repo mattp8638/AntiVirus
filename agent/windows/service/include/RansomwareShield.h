@@ -109,6 +109,8 @@ class RansomwareShield {
   std::vector<std::pair<std::wstring, std::wstring>> deviceToDos_;  // lower "\device\harddiskvolume3" -> "C:"
   std::vector<std::wstring> dosRoots_;                              // protected folders (DOS form)
   std::vector<std::wstring> canaryPaths_;                           // DOS form
+  std::vector<std::wstring> leftoverCanaries_;                      // ours, no longer wanted: removed one a minute
+  bool canariesPausedReported_{false};
   std::vector<std::wstring> profiles_;
 
   // ETW thread state. The filter is swapped under filterMutex_; the file-object map is ETW-thread only.

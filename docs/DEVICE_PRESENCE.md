@@ -99,3 +99,13 @@ What you should do once:
 
 To bring back an agent Defender already quarantined, run `agent/windows/installer/Repair-FenrirDefender.ps1` on that
 PC as administrator: it shows the detection, adds the exclusions, restores the program and starts the agent.
+
+### Defender's ransomware engine and Fenrir's canary files
+
+Defender's behaviour engine flagged the agent as `Ransom:Win64/Filecoder.VDB!MTB` and ended it within seconds of every
+start (over 1,200 restarts on one PC). The cause was the ransomware shield's canary files: at start-up the agent wrote
+the same hidden 24 KB decoy document into every user's protected folders at once, which is exactly what ransomware
+does when it drops its note in every folder. Process exclusions do not stop that engine. While Microsoft Defender is
+running the agent now places no canary files (Defender's own ransomware protection covers that), removes ones it
+placed earlier at one a minute, and keeps the rest of the shield (watching for mass changes) on. The keep-alive also
+starts before the protection components, so a slow or stuck start-up no longer shows the device offline.
