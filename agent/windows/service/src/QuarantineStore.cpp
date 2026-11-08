@@ -10,7 +10,8 @@
 #include <fstream>
 #include <mutex>
 #include <optional>
-#include <regex>
+#include "JsonStringField.h"
+#include "RegexOptions.h"
 #include <sstream>
 #include <stdexcept>
 #include <vector>
@@ -100,17 +101,13 @@ std::string UnescapeJsonString(const std::string& value) {
 }
 
 std::optional<std::string> ExtractJsonString(const std::string& json, const std::string& key) {
-  const std::regex pattern("\"" + EscapeRegex(key) + "\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"");
-  std::smatch match;
-  if (std::regex_search(json, match, pattern)) {
-    return UnescapeJsonString(match[1].str());
-  }
-
-  return std::nullopt;
+  const auto raw = FindRawJsonStringField(json, key);
+  if (!raw) return std::nullopt;
+  return UnescapeJsonString(std::string(*raw));
 }
 
 std::optional<std::uintmax_t> ExtractJsonNumber(const std::string& json, const std::string& key) {
-  const std::regex pattern("\"" + EscapeRegex(key) + "\"\\s*:\\s*(\\d+)");
+  const std::regex pattern("\"" + EscapeRegex(key) + "\"\\s*:\\s*(\\d+)", kAgentRegexOptions);
   std::smatch match;
   if (std::regex_search(json, match, pattern)) {
     return static_cast<std::uintmax_t>(std::stoull(match[1].str()));

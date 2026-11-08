@@ -11,7 +11,7 @@
 #include <fstream>
 #include <mutex>
 #include <optional>
-#include <regex>
+#include "JsonStringField.h"
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -72,37 +72,6 @@ bool RequiresSessionApproval(const std::wstring& type) {
          type == L"local.household.roles.plan" || type == L"local.household.roles.apply";
 }
 
-std::string EscapeRegex(const std::string& value) {
-  std::string escaped;
-  escaped.reserve(value.size() * 2);
-
-  for (const auto ch : value) {
-    switch (ch) {
-      case '\\':
-      case '^':
-      case '$':
-      case '.':
-      case '|':
-      case '?':
-      case '*':
-      case '+':
-      case '(':
-      case ')':
-      case '[':
-      case ']':
-      case '{':
-      case '}':
-        escaped.push_back('\\');
-        break;
-      default:
-        break;
-    }
-    escaped.push_back(ch);
-  }
-
-  return escaped;
-}
-
 std::string UnescapeJsonString(const std::string& value) {
   std::string result;
   result.reserve(value.size());
@@ -151,13 +120,9 @@ std::string UnescapeJsonString(const std::string& value) {
 
 std::optional<std::wstring> ExtractPayloadString(const std::wstring& json, const std::string& key) {
   const auto utf8Json = WideToUtf8(json);
-  const std::regex pattern("\"" + EscapeRegex(key) + "\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"");
-  std::smatch match;
-  if (!std::regex_search(utf8Json, match, pattern)) {
-    return std::nullopt;
-  }
-
-  return Utf8ToWide(UnescapeJsonString(match[1].str()));
+  const auto raw = FindRawJsonStringField(utf8Json, key);
+  if (!raw) return std::nullopt;
+  return Utf8ToWide(UnescapeJsonString(std::string(*raw)));
 }
 
 std::wstring EscapeJsonValue(const std::wstring& value) {

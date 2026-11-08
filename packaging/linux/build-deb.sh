@@ -33,12 +33,20 @@ if [ ! -f /etc/fenrir/agent.env ]; then
   umask 077
   printf 'FENRIR_SERVER=%s\nFENRIR_ENROLLMENT_TOKEN=%s\nFENRIR_STATE_DIR=/var/lib/fenrir\n' "${FENRIR_SERVER:-}" "${FENRIR_TOKEN:-}" > /etc/fenrir/agent.env
 fi
-systemctl daemon-reload || true
-if grep -q '^FENRIR_SERVER=.\+' /etc/fenrir/agent.env; then systemctl enable --now fenrir-agent || true;
+# Image builds and chroots may have no running service manager.
+if [ ! -d /run/systemd/system ]; then
+  if grep -q '^FENRIR_SERVER=.' /etc/fenrir/agent.env; then systemctl enable fenrir-agent; fi
+  exit 0
+fi
+systemctl daemon-reload
+if grep -q '^FENRIR_SERVER=.\+' /etc/fenrir/agent.env; then
+  systemctl enable fenrir-agent
+  systemctl restart fenrir-agent
 else echo "Edit /etc/fenrir/agent.env then: systemctl enable --now fenrir-agent"; fi
 POST
   cat > "$PKG/DEBIAN/prerm" <<'PRE'
 #!/bin/sh
+case "$1" in remove|deconfigure) ;; *) exit 0 ;; esac
 systemctl disable --now fenrir-agent 2>/dev/null || true
 nft delete table inet fenrir_isolation 2>/dev/null || true
 PRE

@@ -7,11 +7,15 @@
 
 #include <windows.h>
 #include <winhttp.h>
+#include <bcrypt.h>
+#include <sddl.h>
+#include <array>
 
 #include <algorithm>
 #include <cwctype>
 #include <optional>
-#include <regex>
+#include "JsonStringField.h"
+#include "RegexOptions.h"
 #include <sstream>
 #include <stdexcept>
 
@@ -19,6 +23,43 @@
 
 namespace antivirus::agent {
 namespace {
+
+// Retain only a machine-local random seed across uninstall. It cannot authenticate
+// device API calls. Derive separate reinstall proofs for each configured server.
+std::wstring ReinstallProof(const std::wstring& server) {
+  static const auto seed = [] {
+    std::array<unsigned char, 32> secret{};
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            L"D:P(A;;KA;;;SY)(A;;KA;;;BA)", SDDL_REVISION_1, &descriptor, nullptr)) return secret;
+    SECURITY_ATTRIBUTES attrs{sizeof(SECURITY_ATTRIBUTES), descriptor, FALSE};
+    HKEY key{};
+    DWORD disposition{};
+    auto status = RegCreateKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\FenrirEndpointIdentity", 0, nullptr,
+        REG_OPTION_NON_VOLATILE, KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_WOW64_64KEY, &attrs, &key, &disposition);
+    LocalFree(descriptor);
+    if (status != ERROR_SUCCESS) return secret;
+    DWORD size = static_cast<DWORD>(secret.size());
+    status = RegGetValueW(key, nullptr, L"Seed", RRF_RT_REG_BINARY, nullptr, secret.data(), &size);
+    if (status == ERROR_FILE_NOT_FOUND &&
+        BCryptGenRandom(nullptr, secret.data(), sizeof(secret), BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0) {
+      size = sizeof(secret);
+      status = RegSetValueExW(key, L"Seed", 0, REG_BINARY, secret.data(), size);
+    }
+    RegCloseKey(key);
+    if (status != ERROR_SUCCESS || size != secret.size()) secret.fill(0);
+    return secret;
+  }();
+  if (std::all_of(seed.begin(), seed.end(), [](auto b) { return b == 0; })) return {};
+  wchar_t guid[64]{};
+  DWORD size = sizeof(guid);
+  if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Cryptography", L"MachineGuid",
+      RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY, nullptr, guid, &size) != ERROR_SUCCESS || !guid[0]) return {};
+  auto binding = WideToUtf8(std::wstring(guid) + L"|" + server);
+  std::vector<unsigned char> material(seed.begin(), seed.end());
+  material.insert(material.end(), binding.begin(), binding.end());
+  return ComputeBufferSha256(material);
+}
 
 struct HttpResponse {
   DWORD statusCode{0};
@@ -173,17 +214,13 @@ std::wstring ToLowerCopy(std::wstring value) {
 }
 
 std::optional<std::string> ExtractJsonString(const std::string& json, const std::string& key) {
-  const std::regex pattern("\"" + EscapeRegex(key) + "\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"");
-  std::smatch match;
-  if (std::regex_search(json, match, pattern)) {
-    return UnescapeJsonString(match[1].str());
-  }
-
-  return std::nullopt;
+  const auto raw = FindRawJsonStringField(json, key);
+  if (!raw) return std::nullopt;
+  return UnescapeJsonString(std::string(*raw));
 }
 
 std::optional<bool> ExtractJsonBool(const std::string& json, const std::string& key) {
-  const std::regex pattern("\"" + EscapeRegex(key) + "\"\\s*:\\s*(true|false)");
+  const std::regex pattern("\"" + EscapeRegex(key) + "\"\\s*:\\s*(true|false)", kAgentRegexOptions);
   std::smatch match;
   if (std::regex_search(json, match, pattern)) {
     return match[1].str() == "true";
@@ -193,7 +230,7 @@ std::optional<bool> ExtractJsonBool(const std::string& json, const std::string& 
 }
 
 std::optional<int> ExtractJsonInt(const std::string& json, const std::string& key) {
-  const std::regex pattern("\"" + EscapeRegex(key) + "\"\\s*:\\s*(\\d+)");
+  const std::regex pattern("\"" + EscapeRegex(key) + "\"\\s*:\\s*(\\d+)", kAgentRegexOptions);
   std::smatch match;
   if (std::regex_search(json, match, pattern)) {
     return std::stoi(match[1].str());
@@ -715,11 +752,7 @@ HttpResponse RequestJson(const wchar_t* method, const std::wstring& url, const s
     return response;
   } catch (const HttpStatusError& error) {
     const auto status = error.StatusCode();
-    if (status < 500 && status != 401 && status != 403 && status != 407 && status != 429) {
-      liveness::MarkContactOk(status);
-    } else {
-      liveness::MarkContactFailed(status, error.what());
-    }
+    liveness::MarkContactFailed(status, error.what());
     throw;
   } catch (const DeviceIdentityRejectedError& error) {
     liveness::MarkContactFailed(404, error.what());
@@ -1042,6 +1075,7 @@ EnrollmentResult ControlPlaneClient::Enroll(const AgentState& state, const std::
        << "\"platform\":\"windows\","
        << "\"agentVersion\":\"" << EscapeJsonString(state.agentVersion) << "\","
        << "\"enrollmentToken\":\"" << EscapeJsonString(enrollmentToken) << "\","
+       << "\"reinstallProof\":\"" << EscapeJsonString(ReinstallProof(baseUrl_)) << "\","
        << "\"serialNumber\":\"" << EscapeJsonString(state.serialNumber) << "\""
        << "}";
 
@@ -1175,6 +1209,7 @@ HeartbeatResult ControlPlaneClient::SendHeartbeat(const AgentState& state, const
   body << "{"
        << "\"agentVersion\":\"" << EscapeJsonString(state.agentVersion) << "\","
        << "\"platformVersion\":\"" << EscapeJsonString(state.platformVersion) << "\","
+       << "\"reinstallProof\":\"" << EscapeJsonString(ReinstallProof(baseUrl_)) << "\","
        << "\"commandCancellation\":true,"
        << "\"buildId\":\"" << EscapeJsonString(std::wstring(kFenrirBuildId)) << "\","
        << "\"healthState\":\"" << EscapeJsonString(state.healthState) << "\","

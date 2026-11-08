@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 59
+LATEST_MIGRATION = 61
 
 def init_engine(url: str) -> Engine:
     global _engine, _session_factory
@@ -452,6 +452,15 @@ def migrate(bind: Engine) -> list[int]:
                 ensure_columns(Base, conn)  # devices.care: care settings and SOS state for looked-after phones
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (59)"))
                 applied.append(59)
+            if 60 not in versions:
+                ensure_columns(Base, conn)
+                conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_device_reinstall ON devices (reinstall_hash)"))
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (60)"))
+                applied.append(60)
+            if 61 not in versions:
+                ensure_columns(Base, conn)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (61)"))
+                applied.append(61)
             conn.commit()
         except Exception:
             conn.rollback()

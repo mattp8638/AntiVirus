@@ -366,7 +366,7 @@ export default function DeviceDetail() {
       </Modal>}
       {reinstating && <Modal title={`Reinstate ${d.hostname}`} onClose={()=>{if(!busy)setReinstating(false);}}>
         <p>Generate a replacement installer bound to this device record and customer. Run it on the original endpoint as administrator. The device stays decommissioned until enrollment succeeds; its history, group and policy are retained.</p>
-        <p>The installer expires after 24 hours and can be used once. Generating another replaces the previous reinstatement token. Old agent credentials remain revoked.</p>
+        <p>The installer expires after 24 hours and can be used once. For a duplicate Windows installation, first decommission the duplicate, then generate this installer from the record whose history and policy you want to keep using. Generating another replaces the previous reinstatement token. Old agent credentials remain revoked.</p>
         <button disabled={busy} onClick={async()=>{
           const ok=await run(async()=>{
             const token=getToken();
@@ -536,7 +536,7 @@ function HealthTab({ deviceId }: { deviceId: string }) {
       <div className="card">
         <h3>Monitors</h3>
         {(data.monitors || []).length === 0 ? <p className="muted small">No monitor has evaluated this device yet.</p> :
-          data.monitors.map((m: any, i: number) => <div key={i} className="row small"><Pill value={m.triggered ? "triggered" : "ok"} tone={m.triggered ? "bad" : "good"} /> {displayValue(m.condition)} <span className="muted">{displayValue(m.message)}</span></div>)}
+          data.monitors.map((m: any, i: number) => <div key={i} className="row small"><Pill value={m.value == null ? "No data" : m.triggered ? "triggered" : "ok"} tone={m.value == null ? "muted" : m.triggered ? "bad" : "good"} /> {displayValue(m.condition)} <span className="muted">{displayValue(m.message)}</span></div>)}
       </div>
     </div>
   ); }

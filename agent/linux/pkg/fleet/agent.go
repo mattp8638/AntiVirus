@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -68,6 +69,7 @@ type Agent struct {
 	queue   []Event
 	// spoolSaved is when the queue was last written to disk while uploads were failing (see saveSpool).
 	spoolSaved time.Time
+	uploadMu   sync.Mutex
 	stop       chan struct{}
 	wake       chan struct{}
 	lastInv    time.Time
@@ -174,6 +176,8 @@ func (a *Agent) Start() error {
 		if err := json.Unmarshal(data, &a.state); err != nil {
 			return fmt.Errorf("corrupt state file: %w", err)
 		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("cannot read saved device identity: %w", err)
 	}
 	if a.state.DeviceID == "" {
 		host, _ := os.Hostname()
@@ -254,6 +258,12 @@ func (a *Agent) emit(eventType, source, summary string, payload map[string]inter
 
 // Flush uploads queued telemetry; failed batches stay queued.
 func (a *Agent) Flush() error {
+	a.uploadMu.Lock()
+	defer a.uploadMu.Unlock()
+	return a.flushBatch()
+}
+
+func (a *Agent) flushBatch() error {
 	a.mu.Lock()
 	batch := a.queue
 	if len(batch) > 1000 {
@@ -263,11 +273,26 @@ func (a *Agent) Flush() error {
 	if len(batch) == 0 {
 		return nil
 	}
-	if _, err := a.client.SendTelemetry(batch); err != nil {
-		return err
+	for {
+		_, err := a.client.SendTelemetry(batch)
+		if err == nil {
+			break
+		}
+		var apiErr *APIError
+		if len(batch) == 1 || !errors.As(err, &apiErr) || apiErr.Status != http.StatusRequestEntityTooLarge {
+			return err
+		}
+		batch = batch[:len(batch)/2]
 	}
 	a.mu.Lock()
-	a.queue = a.queue[len(batch):]
+	// Offline queue eviction may have removed some or all of the uploaded prefix.
+	// Only discard through the last acknowledged ID if it is still present.
+	for i := 0; i < len(a.queue) && i < len(batch); i++ {
+		if a.queue[i].EventID == batch[len(batch)-1].EventID {
+			a.queue = a.queue[i+1:]
+			break
+		}
+	}
 	a.mu.Unlock()
 	return nil
 }
@@ -301,8 +326,11 @@ func (a *Agent) saveSpool() error {
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
+	if err := os.Rename(tmp, a.spoolPath()); err != nil {
+		return err
+	}
 	a.spoolSaved = time.Now()
-	return os.Rename(tmp, a.spoolPath())
+	return nil
 }
 
 func (a *Agent) loadSpool() int {
@@ -325,8 +353,14 @@ func (a *Agent) loadSpool() int {
 // flushOrSpool uploads what it can; while the cloud is unreachable it keeps the queue on disk (at most every
 // spoolInterval), and once the queue has drained it removes the spool.
 func (a *Agent) flushOrSpool(force bool) error {
-	err := a.Flush()
+	a.uploadMu.Lock()
+	defer a.uploadMu.Unlock()
+	err := a.flushBatch()
 	switch {
+	case force && a.QueueLength() > 0:
+		if saveErr := a.saveSpool(); saveErr != nil {
+			return errors.Join(err, saveErr)
+		}
 	case err != nil && (force || time.Since(a.spoolSaved) >= spoolInterval):
 		if serr := a.saveSpool(); serr != nil {
 			log.Printf("telemetry spool could not be written: %v", serr)
@@ -608,6 +642,8 @@ func (a *Agent) rotateKey() {
 
 // Run blocks until Stop is called.
 func (a *Agent) Run() {
+	go a.listenRealtime()
+	go a.reportPresence(time.Minute)
 	restoreStaleResolver(a.cfg.StateDir) // a previous run that crashed may have left the resolver pointed at its proxy
 	a.refreshPolicy()
 	a.applyDNSProxy()
@@ -633,7 +669,6 @@ func (a *Agent) Run() {
 	}()
 	a.metrics.Collect() // prime the CPU counters so the first heartbeat has a real value
 	a.heartbeat()
-	go a.listenRealtime()
 	for {
 		select {
 		case <-a.stop:

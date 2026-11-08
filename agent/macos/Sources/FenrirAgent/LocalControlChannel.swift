@@ -23,8 +23,14 @@ class LocalControlChannel {
 
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
-        withUnsafeMutablePointer(to: &addr.sun_path.0) { ptr in
-            _ = socketPath.withCString { strncpy(ptr, $0, MemoryLayout.size(ofValue: addr.sun_path)) }
+        let path = Array(socketPath.utf8) + [0]
+        guard path.count <= MemoryLayout.size(ofValue: addr.sun_path) else {
+            close(serverSocket)
+            serverSocket = -1
+            return
+        }
+        withUnsafeMutableBytes(of: &addr.sun_path) { buffer in
+            buffer.copyBytes(from: path)
         }
 
         let bindResult = withUnsafePointer(to: &addr) {
@@ -34,12 +40,16 @@ class LocalControlChannel {
         }
 
         guard bindResult == 0 else {
+            close(serverSocket)
+            serverSocket = -1
             print("[IPC] Failed to bind socket: \(String(cString: strerror(errno)))")
             return
         }
 
-        chmod(socketPath, 0o600)
-        listen(serverSocket, 5)
+        guard chmod(socketPath, 0o600) == 0, listen(serverSocket, 5) == 0 else {
+            stop()
+            return
+        }
         print("[IPC] LocalControlChannel listening on \(socketPath)")
 
         queue.async { [weak self] in self?.acceptLoop() }
@@ -63,6 +73,9 @@ class LocalControlChannel {
 
     private func handleClient(fd: Int32) {
         defer { close(fd) }
+
+        var enabled: Int32 = 1
+        guard setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, socklen_t(MemoryLayout<Int32>.size)) == 0 else { return }
 
         var buffer = [UInt8](repeating: 0, count: 4096)
         let bytesRead = read(fd, &buffer, buffer.count - 1)

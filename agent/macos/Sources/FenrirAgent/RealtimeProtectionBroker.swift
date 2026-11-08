@@ -1,7 +1,7 @@
 import Foundation
 import EndpointSecurity
 
-enum ProtectionVerdict {
+enum ProtectionVerdict: Equatable {
     case allow
     case block(reason: String)
 }
@@ -105,7 +105,7 @@ class RealtimeProtectionBroker {
 
             emitTelemetry(eventType: "FileWrite", payload: [
                 "eventType": "FileWrite",
-                "processName": (processInventory.get(pid: pid)?.executablePath ?? "unknown" as NSString).lastPathComponent,
+                "processName": ((processInventory.get(pid: pid)?.executablePath ?? "unknown") as NSString).lastPathComponent,
                 "pid": pid,
                 "filePath": filePath
             ])

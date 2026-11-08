@@ -40,7 +40,8 @@
 #include <map>
 #include <mutex>
 #include <optional>
-#include <regex>
+#include "JsonStringField.h"
+#include "RegexOptions.h"
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -242,13 +243,9 @@ std::optional<std::wstring> ExtractPayloadString(const std::wstring& json, const
   }
 
   const auto utf8Json = WideToUtf8(json);
-  const std::regex pattern("\\\"" + EscapeRegex(key) + "\\\"\\s*:\\s*\\\"((?:\\\\\\\\.|[^\\\"])*)\\\"");
-  std::smatch match;
-  if (std::regex_search(utf8Json, match, pattern)) {
-    return Utf8ToWide(UnescapeJsonString(match[1].str()));
-  }
-
-  return std::nullopt;
+  const auto raw = FindRawJsonStringField(utf8Json, key);
+  if (!raw) return std::nullopt;
+  return Utf8ToWide(UnescapeJsonString(std::string(*raw)));
 }
 
 std::optional<std::uint32_t> ExtractPayloadUInt32(const std::wstring& json, const std::string& key) {
@@ -257,7 +254,7 @@ std::optional<std::uint32_t> ExtractPayloadUInt32(const std::wstring& json, cons
   }
 
   const auto utf8Json = WideToUtf8(json);
-  const std::regex pattern("\\\"" + EscapeRegex(key) + "\\\"\\s*:\\s*(\\d+)");
+  const std::regex pattern("\\\"" + EscapeRegex(key) + "\\\"\\s*:\\s*(\\d+)", kAgentRegexOptions);
   std::smatch match;
   if (std::regex_search(utf8Json, match, pattern)) {
     try {
@@ -276,7 +273,7 @@ std::optional<bool> ExtractPayloadBool(const std::wstring& json, const std::stri
   }
 
   const auto utf8Json = WideToUtf8(json);
-  const std::regex pattern("\\\"" + EscapeRegex(key) + "\\\"\\s*:\\s*(true|false|1|0)");
+  const std::regex pattern("\\\"" + EscapeRegex(key) + "\\\"\\s*:\\s*(true|false|1|0)", kAgentRegexOptions);
   std::smatch match;
   if (!std::regex_search(utf8Json, match, pattern)) {
     return std::nullopt;
@@ -293,13 +290,13 @@ std::vector<std::wstring> ExtractPayloadStringArray(const std::wstring& json, co
   }
 
   const auto utf8Json = WideToUtf8(json);
-  const std::regex arrayPattern("\\\"" + EscapeRegex(key) + "\\\"\\s*:\\s*\\[(.*?)\\]");
+  const std::regex arrayPattern("\\\"" + EscapeRegex(key) + "\\\"\\s*:\\s*\\[(.*?)\\]", kAgentRegexOptions);
   std::smatch arrayMatch;
   if (!std::regex_search(utf8Json, arrayMatch, arrayPattern)) {
     return values;
   }
 
-  const std::regex itemPattern("\\\"((?:\\\\\\\\.|[^\\\"])*)\\\"");
+  const std::regex itemPattern("\\\"((?:\\\\\\\\.|[^\\\"])*)\\\"", kAgentRegexOptions);
   auto begin = std::sregex_iterator(arrayMatch[1].first, arrayMatch[1].second, itemPattern);
   const auto end = std::sregex_iterator();
   for (auto iterator = begin; iterator != end; ++iterator) {
@@ -315,7 +312,7 @@ bool PayloadContainsKey(const std::wstring& json, const std::string& key) {
   }
 
   const auto utf8Json = WideToUtf8(json);
-  const std::regex pattern("\\\"" + EscapeRegex(key) + "\\\"\\s*:");
+  const std::regex pattern("\\\"" + EscapeRegex(key) + "\\\"\\s*:", kAgentRegexOptions);
   return std::regex_search(utf8Json, pattern);
 }
 
@@ -461,7 +458,7 @@ bool RepeatedSnapshot(const TelemetryRecord& record) {
   if (type != L"service.sync.cycle" && type.find(L".snapshot") == std::wstring::npos) {
     return false;
   }
-  static const std::wregex cycleField(LR"("cycle":\d+,?)");
+  static const std::wregex cycleField(LR"("cycle":\d+,?)", kAgentRegexOptions);
   const auto key = type + L"|" + record.summary + L"|" + std::regex_replace(record.payloadJson, cycleField, L"");
   static std::mutex mutex;
   static std::unordered_map<std::wstring, ULONGLONG> sent;
@@ -767,7 +764,7 @@ std::wstring NormalizeRuleName(std::wstring value) {
 }
 
 std::wstring ExtractYaraRuleName(const std::wstring& ruleText) {
-  static const std::wregex pattern(LR"(rule\s+([A-Za-z0-9_]+))", std::regex_constants::icase);
+  static const std::wregex pattern(LR"(rule\s+([A-Za-z0-9_]+))", kAgentRegexOptions | std::regex_constants::icase);
   std::wsmatch match;
   if (!std::regex_search(ruleText, match, pattern) || match.size() < 2) {
     return {};
@@ -1061,7 +1058,7 @@ bool IsPendingSoftwareVulnerability(const SoftwarePatchRecord& record) {
 
 }  // namespace
 
-AgentService::AgentService() = default;
+AgentService::AgentService() : stopEvent_(CreateEventW(nullptr, TRUE, FALSE, nullptr)) {}
 
 AgentService::~AgentService() {
   if (localControlChannel_) {
@@ -1090,10 +1087,7 @@ int AgentService::Run(const AgentRunMode mode) {
   mainThreadId_ = std::this_thread::get_id();
   try {
     if (stopEvent_ == nullptr) {
-      stopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-      if (stopEvent_ == nullptr) {
-        throw std::runtime_error("Unable to create the agent stop event");
-      }
+      throw std::runtime_error("Unable to create the agent stop event");
     }
 
     if (pamRequestEvent_ == nullptr) {
@@ -1227,6 +1221,7 @@ int AgentService::Run(const AgentRunMode mode) {
     return 0;
   } catch (const std::exception& error) {
     std::wcerr << L"Agent service failed to initialize: " << Utf8ToWide(error.what()) << std::endl;
+    liveness::Stop();
     StopRealtimeChannel();  // a running thread left behind would crash the process on exit
     return 1;  // non-zero: Windows' recovery actions restart the service
   }
@@ -1237,11 +1232,7 @@ void AgentService::RequestStop() {
   if (stopEvent_ != nullptr) {
     SetEvent(stopEvent_);
   }
-  // Never wait here: this runs in Windows' service control handler, and a handler that blocks leaves the service
-  // unable to answer Windows (error 1053) with its work already stopped. Run() joins the channel when it ends.
-  if (localControlChannel_) {
-    localControlChannel_->RequestStop();
-  }
+  // Run owns the control channel and cancels its pending pipe operation in Stop().
 }
 
 std::wstring AgentService::BuildCyclePayload(const int cycle, const std::wstring& extraFields) {
@@ -1278,6 +1269,13 @@ void AgentService::RunSyncLoop(const AgentRunMode mode) {
     liveness::MarkLoop();
     // One bad cycle (a scan, the database, the network) must never stop the agent: log it and carry on.
     try {
+    if (config_.managedMode) {
+      SyncWithControlPlane(cycle);
+      PublishIdentitySnapshot();
+      // Report before inventory, command execution or spool processing can delay this cycle.
+      PublishHeartbeat(cycle);
+      liveness::MarkLoop();
+    }
     ProcessPamRequests();
     QueueCycleTelemetry(cycle);
     DrainProcessTelemetry();
@@ -1286,14 +1284,9 @@ void AgentService::RunSyncLoop(const AgentRunMode mode) {
     DrainNetworkTelemetry();
     DrainDeferredTelemetry();
     if (config_.managedMode) {
-      // Check in before the scans: a first full-drive scan can take hours.
-      SyncWithControlPlane(cycle);
-      liveness::MarkLoop();
-      PublishIdentitySnapshot();
       PollAndExecuteCommands(cycle);
       liveness::MarkLoop();
       FlushTelemetryQueue();
-      PublishHeartbeat(cycle);
       liveness::MarkLoop();
       MaybeSelfUpdate(cycle);
       liveness::MarkLoop();
@@ -1705,7 +1698,6 @@ void AgentService::SyncUpdateOnly(const int cycle) {
 
     const auto updateCheck = controlPlaneClient_->CheckForUpdates(state_, signaturesVersion);
     state_.lastPolicySyncAt = updateCheck.checkedAt;
-    state_.lastHeartbeatAt = updateCheck.checkedAt;
 
     if (!updateCheck.items.empty()) {
       QueueTelemetryEvent(L"updates.polled", L"control-plane-client",
@@ -3768,17 +3760,20 @@ void AgentService::RealtimeLoop() {
       // the server has gone quiet: a connection dropped silently (a router or proxy timing it out, the server
       // restarting, the network changing) would otherwise leave Receive waiting forever while the agent believes it
       // is connected and the server shows the device offline.
-      std::atomic<bool> done{false};
       std::atomic<ULONGLONG> lastHeard{GetTickCount64()};
-      std::thread watcher([&] {
-        while (!done) {
-          if (WaitForSingleObject(stopEvent_, 25000) == WAIT_OBJECT_0) {
+      std::jthread watcher([&](std::stop_token stop) {
+        auto nextPing = GetTickCount64() + 25000;
+        while (!stop.stop_requested()) {
+          if (WaitForSingleObject(stopEvent_, 500) == WAIT_OBJECT_0) {
             socket.Close();
             return;
           }
-          if (done) return;
-          if (!socket.SendText("ping") || GetTickCount64() - lastHeard.load() > 75000) {
-            socket.Close();  // unblocks Receive; the loop reconnects
+          const auto now = GetTickCount64();
+          if (stop.stop_requested() || now < nextPing) continue;
+          nextPing = now + 25000;
+          const auto heard = lastHeard.load();
+          if ((now >= heard && now - heard > 75000) || !socket.SendText("ping")) {
+            socket.Close();
             return;
           }
         }
@@ -3791,13 +3786,15 @@ void AgentService::RealtimeLoop() {
         if (message == "pong") {
           continue;
         }
-        if (message.find("\"commands\"") != std::string::npos || message.find("\"pollNow\":true") != std::string::npos) {
+        if (binary || message.size() > 4096) continue;
+        const auto type = FindRawJsonStringField(message, "type");
+        if (type == "commands" || ExtractPayloadBool(Utf8ToWide(message), "pollNow").value_or(false)) {
           SetEvent(wakeEvent_);
           if (interactiveWakeEvent_) SetEvent(interactiveWakeEvent_);
         }
       }
       realtimeConnected_ = false;
-      done = true;
+      watcher.request_stop();
       socket.Close();
       watcher.join();
     } catch (const std::exception& error) {

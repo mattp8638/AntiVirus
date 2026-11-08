@@ -130,3 +130,33 @@ def test_approver_needs_authority_over_the_targets(client, admin, tenant, setup)
     assert client.get("/api/console/approvals", headers=outsider).json() == []
     # Changing the policy needs approve + configure and a fresh password check.
     assert client.put(f"/api/console/tenants/{tenant['id']}/approval-policy", headers=admin, json={"twoPerson": False}).json()["detail"] == "reauth_required"
+
+
+def test_approved_library_job_cannot_run_changed_script(client, admin, tenant, setup):
+    devices, requester, script = setup
+    set_policy(client, admin, tenant["id"], threshold=1)
+    body = {"targets": {"deviceIds": [devices[0]["deviceId"]]}}
+    route = f"/api/console/rmm/scripts/{script['id']}"
+    held = client.post(route + "/run", headers=requester, json=body).json()["approval"]
+    assert client.post(f"/api/console/approvals/{held['id']}/approve", headers=stepup(client, admin)).status_code == 200
+    assert client.patch(route, headers=admin, json={"body": "Write-Output 2"}).status_code == 200
+    assert client.post(route + "/run", headers=requester, json={**body, "approvalId": held["id"]}).status_code == 409
+
+
+def test_retry_rechecks_current_customer_approval_policy(client, admin, tenant, setup):
+    from fenrir_cloud.models import Command
+    devices, requester, script = setup
+    original = client.post(f"/api/console/rmm/scripts/{script['id']}/run", headers=requester,
+                           json={"targets": {"deviceIds": [devices[0]["deviceId"]]}}).json()
+    with session_factory()() as db:
+        db.get(Command, next(iter(original["commandIds"].values()))).status = "failed"
+        db.commit()
+    set_policy(client, admin, tenant["id"], threshold=1)
+    route = f"/api/console/rmm/jobs/{original['id']}/retry"
+    held = client.post(route, headers=requester)
+    assert held.status_code == 202, held.text
+    approval_id = held.json()["approval"]["id"]
+    assert client.post(f"/api/console/approvals/{approval_id}/approve", headers=stepup(client, admin)).status_code == 200
+    rerun = client.post(route, headers=requester, json={"approvalId": approval_id})
+    assert rerun.status_code == 200 and rerun.json()["retried"] == 1
+    assert client.post(route, headers=requester).json()["retried"] == 0

@@ -141,12 +141,12 @@ def test_patch_scan_approval_and_install(client, admin, tenant, device):
     patches = {p["patchKey"]: p for p in client.get(f"/api/console/rmm/devices/{device['deviceId']}/patches", headers=admin).json()["patches"]}
     assert patches["KB5048685"]["status"] == "installed"
     assert patches["winget:Mozilla.Firefox"]["status"] == "failed" and "1603" in patches["winget:Mozilla.Firefox"]["error"]
-    assert client.get(f"/api/console/rmm/jobs/{install['id']}", headers=admin).json()["status"] == "completed"
+    assert client.get(f"/api/console/rmm/jobs/{install['id']}", headers=admin).json()["status"] == "partial"
     detail = client.get(f"/api/console/devices/{device['deviceId']}", headers=admin).json()
     assert detail["device"]["metrics"]["rebootPending"] is True
 
 
-def test_maintenance_window_queues_installs_once(client, admin, tenant, device):
+def test_maintenance_window_queues_installs_once(client, admin, tenant, device, monkeypatch):
     client.post("/api/console/rmm/patch-policies", headers=admin, json={
         "tenantId": tenant["id"], "name": "Weeknights", "window": {"days": [0, 1, 2, 3, 4, 5, 6], "start": "02:00",
                                                                     "durationMinutes": 120, "tz": "UTC"},
@@ -165,6 +165,8 @@ def test_maintenance_window_queues_installs_once(client, admin, tenant, device):
         assert session.query(PatchPolicy).one().last_window_run == "2026-10-21T02:00"
     finally:
         session.close()
+    from fenrir_cloud.routers import agent_api
+    monkeypatch.setattr(agent_api, "utcnow", lambda: inside)
     commands = [c for c in poll(client, device) if c["type"] == "patch.install"]
     assert len(commands) == 1 and json.loads(commands[0]["payloadJson"])["patchIds"] == ["KB1"]
 
@@ -228,6 +230,8 @@ def test_software_deploy_targets_matching_platform(client, admin, tenant):
     job = client.post(f"/api/console/rmm/software/{chrome['id']}/deploy", headers=admin,
                       json={"targets": {"tenantIds": [tenant["id"]]}}).json()
     assert job["summary"]["total"] == 1
+    assert job["summary"]["targeted"] == 2 and job["summary"]["skipped"] == 1
+    assert linux["deviceId"] in job["payload"]["skipped"]
     [command] = poll(client, windows)
     assert command["type"] == "software.install" and json.loads(command["payloadJson"])["identifier"] == "Google.Chrome"
     assert poll(client, linux) == []
@@ -558,3 +562,154 @@ def test_presence_check_in_keeps_a_busy_agent_online(client, admin, device):
     finally:
         db.close()
     assert client.post(f"/api/v1/devices/{device['deviceId']}/presence", headers={"X-Device-Api-Key": "wrong"}, json={}).status_code == 401
+
+
+def test_outcome_unknown_excluded_from_bulk_retry(client, device):
+    from fenrir_cloud.models import Command
+    with database.session_factory()() as db:
+        endpoint = db.get(Device, device["deviceId"])
+        job = rmm.create_job(db, tenant_id=endpoint.tenant_id, actor="operator", name="Inventory",
+                             devices=[endpoint], command_type="inventory.refresh")
+        cmd = db.get(Command, job.command_ids[endpoint.id])
+        cmd.status, cmd.result = "failed", {"outcomeUncertain": True}
+        db.commit()
+        assert rmm.retry_failed(db, job, "operator") == 0
+        assert job.command_ids[endpoint.id] == cmd.id
+
+
+def test_reconnecting_after_window_defers_patch_without_dispatch(client, device):
+    from fenrir_cloud.models import Command
+    with database.session_factory()() as db:
+        row = db.get(Device, device["deviceId"])
+        cmd = Command(tenant_id=row.tenant_id, device_id=row.id, type="patch.install", status="pending",
+                      issued_by="patch-policy", payload={"windowEndEpoch": 1, "patchIds": ["KB1"]})
+        db.add(cmd)
+        db.commit()
+        cid = cmd.id
+    assert not poll(client, device)
+    with database.session_factory()() as db:
+        cmd = db.get(Command, cid)
+        assert cmd.status == "expired" and cmd.dispatched_at is None
+        assert db.get(Device, device["deviceId"]).command_poll_at
+
+
+def test_missing_named_service_is_distinct_from_no_data(client, device):
+    from fenrir_cloud.models import MonitorCondition
+    with database.session_factory()() as db:
+        row = db.get(Device, device["deviceId"])
+        monitor = MonitorCondition(metric="service_stopped", target="DNS")
+        for evidence, expected in [({}, None), ({"serviceStates": {"dns": 4}}, 0),
+                                   ({"serviceStates": {"dns": 1}}, 1), ({"serviceStates": {}}, 1)]:
+            rmm.record_heartbeat_metrics(db, row, {"cpuPercent": 0, **evidence})
+            assert rmm.metric_value(db, monitor, row, utcnow())[0] == expected
+
+
+def test_attention_filter_ignores_remote_only_polls_and_clears_after_general_poll(client, admin, device):
+    endpoint = f"/api/v1/devices/{device['deviceId']}/commands/pending"
+    with database.session_factory()() as db:
+        row = db.get(Device, device["deviceId"])
+        row.enrolled_at = utcnow() - timedelta(hours=1)
+        db.commit()
+    def attention():
+        response = client.get("/api/console/devices?status=attention", headers=admin)
+        assert response.status_code == 200, response.text
+        return {d["id"] for d in response.json()}
+    client.get(endpoint, headers=device["headers"], params={"types": "remote.session.start"})
+    assert device["deviceId"] in attention()
+    client.get(endpoint, headers=device["headers"])
+    assert device["deviceId"] not in attention()
+
+
+def test_invalid_schedule_edits_preserve_existing_task(client, admin, tenant):
+    url = "/api/console/rmm/tasks"
+    body = {"tenantId": tenant["id"], "schedule": {"type": "daily", "at": "09:00"},
+            "actions": [{"type": "command", "command": "inventory.refresh"}]}
+    task = client.post(url, headers=admin, json=body).json()
+    for schedule in [{"type": "weekly", "days": []}, {"type": "daily", "at": "24:00"},
+                     {"type": "daily", "tz": "Europe/Londn"}, {"type": "once", "date": "2000-01-01"},
+                     {"type": "interval", "everyMinutes": 1}]:
+        assert client.patch(f"{url}/{task['id']}", headers=admin, json={"schedule": schedule}).status_code == 400
+    [saved] = client.get(url, headers=admin, params={"tenant_id": tenant["id"]}).json()
+    assert saved["nextRunAt"] == task["nextRunAt"] and saved["schedule"] == body["schedule"]
+
+
+def test_schedule_offline_setting_and_customer_filter(client, admin, tenant, device):
+    url = "/api/console/rmm/tasks"
+    other = client.post("/api/console/tenants", headers=admin, json={"name": "Other customer"}).json()
+    task = client.post(url, headers=admin, json={"tenantId": tenant["id"], "schedule": {"type": "daily"},
+                       "actions": [{"type": "command", "command": "inventory.refresh"}],
+                       "targets": {"deviceIds": [device["deviceId"]]}, "runOfflineOnReconnect": False}).json()
+    assert client.get(url, headers=admin, params={"tenant_id": other["id"]}).json() == []
+    with database.session_factory()() as db:
+        db.get(Device, device["deviceId"]).last_seen_at = utcnow() - timedelta(days=1)
+        db.commit()
+    assert client.post(f"{url}/{task['id']}/run", headers=admin).json()[0]["summary"]["total"] == 0
+    assert client.patch(f"{url}/{task['id']}", headers=admin, json={"runOfflineOnReconnect": True}).status_code == 200
+    assert client.post(f"{url}/{task['id']}/run", headers=admin).json()[0]["summary"]["total"] == 1
+
+
+def test_repeated_london_hour_never_returns_a_past_run():
+    after = datetime(2026, 10, 25, 1, 10)  # 01:10 GMT, after the first 01:30 BST
+    assert rmm.next_run({"type": "daily", "at": "01:30", "tz": "Europe/London"}, after) == datetime(2026, 10, 26, 1, 30)
+
+
+def test_invalid_legacy_schedule_does_not_block_neighbour(client, admin, tenant, device):
+    from fenrir_cloud.models import ScheduledTask
+    task = client.post("/api/console/rmm/tasks", headers=admin, json={"tenantId": tenant["id"],
+                       "schedule": {"type": "daily"}, "targets": {"deviceIds": [device["deviceId"]]},
+                       "actions": [{"type": "command", "command": "inventory.refresh"}]}).json()
+    with database.session_factory()() as db:
+        now = utcnow()
+        valid = db.get(ScheduledTask, task["id"])
+        valid.next_run_at = now
+        bad = ScheduledTask(tenant_id=valid.tenant_id, name="Invalid legacy task", schedule={"type": "weekly", "days": []},
+                            targets=valid.targets, actions=valid.actions, next_run_at=now)
+        db.add(bad)
+        db.commit()
+        assert rmm.run_due_tasks(db, now) == 1
+        db.commit()
+        assert not bad.enabled and valid.next_run_at > now
+    assert [c["type"] for c in poll(client, device)] == ["inventory.refresh"]
+
+
+def test_schedule_rejects_unrelated_customer_library_item(client, admin, tenant):
+    from fenrir_cloud.models import Script
+    other = client.post("/api/console/tenants", headers=admin, json={"name": "Other library owner"}).json()
+    with database.session_factory()() as db:
+        item = Script(tenant_id=other["id"], name="Other customer's inventory")
+        db.add(item)
+        db.commit()
+        item_id = item.id
+    response = client.post("/api/console/rmm/tasks", headers=admin, json={
+        "tenantId": tenant["id"], "schedule": {"type": "daily"},
+        "actions": [{"type": "script", "scriptId": item_id}]})
+    assert response.status_code == 400
+
+
+def test_device_history_is_filtered_before_limit(client, admin, tenant):
+    first = enroll(client, admin, tenant, hostname="Same", serial="ONE")
+    second = enroll(client, admin, tenant, hostname="Same", serial="TWO")
+    url = "/api/console/rmm/jobs"
+    def queue(device):
+        return client.post(url, headers=admin, json={"commandType": "inventory.refresh",
+                           "targets": {"deviceIds": [device["deviceId"]]}}).json()["id"]
+    older = queue(first)
+    queue(second)
+    rows = client.get(url, headers=admin, params={"deviceId": first["deviceId"], "limit": 1}).json()
+    assert [row["id"] for row in rows] == [older]
+
+
+def test_invalid_patch_policy_is_rejected_before_scheduler(client, admin, tenant):
+    url = "/api/console/rmm/patch-policies"
+    for settings in [{"window": {"tz": "Europe/Londn"}}, {"window": {"days": [7]}},
+                     {"window": {"durationMinutes": 0}}, {"rings": [{"delayDays": -1}]}, {"reboot": ["never"]}]:
+        assert client.post(url, headers=admin, json={"tenantId": tenant["id"], **settings}).status_code == 400
+
+
+def test_patch_window_has_one_elapsed_deadline_across_uk_clock_change():
+    window = {"tz": "Europe/London", "days": [6], "start": "01:30", "durationMinutes": 60}
+    inside, key = rmm.in_window(window, datetime(2026, 10, 25, 1, 10))
+    assert inside
+    assert rmm.window_deadline(window, key) == int(datetime(2026, 10, 25, 1, 30, tzinfo=rmm.timezone.utc).timestamp())
+    assert not rmm.in_window(window, datetime(2026, 10, 25, 1, 30))[0]
+    assert not rmm.in_window({**window, "durationMinutes": "invalid"}, datetime(2026, 10, 25, 1, 10))[0]

@@ -8,6 +8,11 @@ import { ConnectButtons, pct } from "../components/rmm";
 import { SavedViews } from "../components/Customization";
 import { GroupSelect, groupTree, type Group } from "../components/Groups";
 
+function freshHealth(device: any) {
+  const reported = Date.parse(device.healthReportedAt || "");
+  return device.online && Number.isFinite(reported) && Date.now() - reported < 15 * 60_000;
+}
+
 export default function Devices() {
   const { tenantId, tenantName, can } = useApp();
   const navigate = useNavigate();
@@ -50,7 +55,7 @@ export default function Devices() {
         <input placeholder="Search hostname, OS, IP" value={q} onChange={(e) => setQ(e.target.value)} style={{ minWidth: 260 }} />
         <select value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Status">
           <option value="">Active devices</option><option value="retired">Decommissioned</option><option value="online">Online</option><option value="offline">Offline</option>
-          <option value="isolated">Isolated</option><option value="pending">Awaiting approval</option><option value="at-risk">At risk</option>
+          <option value="isolated">Isolated</option><option value="pending">Awaiting approval</option><option value="at-risk">At risk</option><option value="attention">Needs attention</option>
         </select>
         <select value={platform} onChange={(e) => setPlatform(e.target.value)} aria-label="Platform">
           <option value="">All platforms</option><option value="windows">Windows</option><option value="linux">Linux</option><option value="macos">macOS</option><option value="android">Android</option><option value="ios">iPhone / iPad</option>
@@ -66,6 +71,7 @@ export default function Devices() {
         <SavedViews page="devices" filters={{ q, status, platform, role, group }}
                     onApply={(f) => { setQ(f.q ?? ""); setStatus(f.status ?? ""); setPlatform(f.platform ?? ""); setRole(f.role ?? ""); setGroup(f.group ?? ""); }} />
       </div>
+      {status === "attention" && <p className="small muted">Offline servers, reachable computers with no general command poll for 15 minutes, and devices with failed or unverified patch installs.</p>}
       <ErrorNote error={error} />
       <div className="card">
         <Table rows={data} onRow={(r) => navigate(`/devices/${r.id}`)} empty="No devices match. Deploy the agent to get started."
@@ -80,12 +86,13 @@ export default function Devices() {
                      {r.retired && <Pill value="decommissioned" />}
                      {!r.retired && !r.approved && <Pill value="pending approval" tone="warn" />}
                      {r.isolated && <Pill value="isolated" tone="bad" />}
-                     <Pill value={r.healthState || "unknown"} tone={r.healthState === "healthy" ? "good" : "muted"} />
+                     <Pill value={freshHealth(r) ? r.healthState || "unknown" : `Last reported ${r.healthState || "unknown"}`} tone={freshHealth(r) && r.healthState === "healthy" ? "good" : "muted"} />
                    </div> },
-                 { key: "health", label: "CPU · Mem · Disk free", render: (r) => r.metrics?.reportedAt ? <span className="small mono">{pct(r.metrics.cpuPercent)} · {pct(r.metrics.memoryPercent)} · <span style={{ color: r.metrics.diskFreePercent < 10 ? "#fecaca" : undefined }}>{pct(r.metrics.diskFreePercent)}</span></span> : <span className="muted small">—</span> },
+                 { key: "health", label: "CPU · Mem · Disk free", render: (r) => r.metrics?.reportedAt ? <span className="small mono">{pct(r.metrics.cpuPercent)} · {pct(r.metrics.memoryPercent)} · <span style={{ color: r.metrics.diskFreePercent < 10 ? "#fecaca" : undefined }}>{pct(r.metrics.diskFreePercent)}</span> · {ago(r.metrics.reportedAt)}</span> : <span className="muted small">—</span> },
                  { key: "user", label: "User", render: (r) => <span className="small">{displayValue(r.metrics?.loggedOnUser || "—")}{r.metrics?.rebootPending && <> <Pill value="restart" tone="warn" /></>}</span> },
                  { key: "riskScore", label: "Risk", render: (r) => <div style={{ minWidth: 90 }}><Meter value={r.riskScore} /><span className="small muted">{displayValue(r.riskScore)}</span></div> },
                  { key: "lastSeenAt", label: "Last seen", render: (r) => <span title={presenceOf(r).title}>{presenceOf(r).label === "Online" ? ago(r.lastSeenAt) : `${presenceOf(r).label} · ${ago(r.lastSeenAt)}`}</span> },
+                 { key: "readiness", label: "Command poll · Telemetry", render: (r) => r.agentless ? "—" : <span className="small">{r.commandPollAt ? ago(r.commandPollAt) : "Unreported"} · {r.telemetryAt ? ago(r.telemetryAt) : "Unreported"}</span> },
                  { key: "connect", label: "", render: (r) => r.online && <ConnectButtons device={r} compact /> },
                ]} />
       </div>

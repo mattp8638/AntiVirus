@@ -22,7 +22,7 @@ def _build_name(common_name: str) -> x509.Name:
     return x509.Name(
         [
             x509.NameAttribute(NameOID.COUNTRY_NAME, "GB"),
-            x509.NameAttribute(NameOID.ORGANISATION_NAME, "Palmertech"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Palmertech"),
             x509.NameAttribute(NameOID.COMMON_NAME, common_name),
         ]
     )

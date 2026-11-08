@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import re
 from datetime import timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from .. import approvals, audit, presence, rmm, script_review, services
 from ..commands import BY_TYPE, INTERACTIVE_ONLY, SERVER_ONLY
 from ..db import get_db
-from ..deps import Principal, current_principal, require_reauth, scoped_tenant
+from ..deps import Principal, current_principal, require_reauth, scoped_tenant, tenant_subtree
 from ..models import (Alert, Command, ConditionState, Device, DeviceMetric, DevicePatch, Job, MonitorCondition, PatchApproval,
                       PatchPolicy, RemoteSession, ScheduledTask, Script, SoftwarePackage, Tenant, utcnow)
 from ..serialize import apply_fields, to_dict
@@ -33,6 +35,10 @@ def _editable(principal: Principal, obj) -> None:
 def _targets(principal: Principal, db: Session, targets: dict) -> list[Device]:
     if not isinstance(targets, dict) or not any(targets.get(k) for k in ("deviceIds", "groupIds", "tenantIds")):
         raise HTTPException(400, "choose at least one device, group or customer")
+    for field in ("deviceIds", "groupIds", "tenantIds", "platforms", "tags"):
+        values = targets.get(field, [])
+        if not isinstance(values, list) or any(not isinstance(v, str) or not v.strip() for v in values):
+            raise HTTPException(400, f"{field} must be a list of non-empty strings")
     devices = rmm.resolve_targets(db, principal.tenant_ids, targets)
     if not devices:
         raise HTTPException(400, "no approved devices match those targets")
@@ -174,15 +180,15 @@ def run_script(script_id: str, body: dict = Body(...), principal: Principal = De
     if not _visible(principal, script):
         raise HTTPException(404, "Not found")
     devices = _targets(principal, db, body.get("targets") or {})
-    blocked = []
+    blocked = set()
     for device in devices:
         resolution, _ = services.effective_policy(db, device)
         if not resolution["settings"]["response"].get("scriptExecution", True):
-            blocked.append(device.hostname)
+            blocked.add(device.id)
     if blocked and len(blocked) == len(devices):
         raise HTTPException(403, "Script execution is turned off by policy on the selected devices")
-    allowed = [d for d in devices if d.hostname not in blocked]
-    approvals.gate(db, principal, "script.run", f"Run {script.name} on {len(allowed)} devices", {"scriptId": script_id, **body}, allowed,
+    allowed = [d for d in devices if d.id not in blocked]
+    approvals.gate(db, principal, "script.run", f"Run {script.name} on {len(allowed)} devices", {**body, "scriptId": script_id, "contentHash": script_review.content_hash(script)}, allowed,
                    route=f"rmm/scripts/{script_id}/run")
     try:
         job = rmm.run_script(db, script=script, devices=allowed, actor=principal.actor, tenant_id=_job_tenant(principal, allowed),
@@ -209,7 +215,7 @@ def _job_view(db: Session, job: Job, detail: bool = False) -> dict:
         for device_id, command_id in (job.command_ids or {}).items():
             command = commands.get(command_id)
             device = devices.get(device_id)
-            result = (command.result if command else {}) or {}
+            result = command.result if command and isinstance(command.result, dict) else {}
             results.append({"deviceId": device_id, "hostname": device.hostname if device else device_id,
                             "platform": device.platform if device else "", "commandId": command_id,
                             "status": command.status if command else "unknown",
@@ -229,10 +235,10 @@ def list_jobs(tenant_id: str | None = None, device_id: str | None = Query(defaul
     scope = scoped_tenant(principal, tenant_id)
     # Creator identity never overrides current tenant authorisation: access
     # may be revoked or the technician reassigned to another MSP.
-    rows = db.execute(select(Job).where(Job.tenant_id.in_(scope), Job.payload["removedAt"].as_string().is_(None))
-                      .order_by(Job.created_at.desc()).limit(min(limit, 1000))).scalars().all()
+    query = select(Job).where(Job.tenant_id.in_(scope), Job.payload["removedAt"].as_string().is_(None))
     if device_id:
-        rows = [r for r in rows if device_id in (r.command_ids or {})]
+        query = query.where(Job.command_ids[device_id].as_string().is_not(None))
+    rows = db.scalars(query.order_by(Job.created_at.desc(), Job.id.desc()).limit(max(1, min(limit, 1000)))).all()
     return [_job_view(db, r) for r in rows if not (r.payload or {}).get("removedAt")]
 
 
@@ -251,10 +257,14 @@ def create_command_job(body: dict = Body(...), principal: Principal = Depends(cu
     spec = BY_TYPE.get(command_type)
     if spec is None or command_type in {"remote.session.start", "remote.session.end", "script.run"} | INTERACTIVE_ONLY | SERVER_ONLY:
         raise HTTPException(400, "unknown or unsupported command for a bulk job")
-    principal.require("configure" if spec.permission == "configure" else "respond")
+    principal.require(spec.permission)
     if spec.destructive:
         principal.require("destructive")
     devices = _targets(principal, db, body.get("targets") or {})
+    if not isinstance(body.get("payload", {}), dict):
+        raise HTTPException(422, "Command payload must be an object")
+    if any(not isinstance(body.get(field, ""), str) for field in ("recordId", "targetPath")):
+        raise HTTPException(422, "Command target path and record ID must be strings")
     approvals.gate(db, principal, "command.job", f"{spec.label} on {len(devices)} devices", body, devices, destructive=spec.destructive, route="rmm/jobs")
     job = rmm.create_job(db, tenant_id=_job_tenant(principal, devices), actor=principal.actor,
                          name=str(body.get("name") or spec.label), devices=devices, command_type=command_type,
@@ -264,17 +274,46 @@ def create_command_job(body: dict = Body(...), principal: Principal = Depends(cu
     return _job_view(db, job)
 
 
-@router.post("/jobs/{job_id}/retry")
-def retry_job(job_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    """Run the job again on the devices where it failed (same script, parameters and payload)."""
-    job = db.get(Job, job_id)
-    if job is None or job.tenant_id not in principal.tenant_ids:
+def _job_for_change(db: Session, principal: Principal, job_id: str) -> Job:
+    # A no-op UPDATE also serialises competing writers on SQLite, where FOR UPDATE is ignored.
+    locked = db.execute(update(Job).where(Job.id == job_id, Job.tenant_id.in_(principal.tenant_ids))
+                        .values(status=Job.status))
+    if not locked.rowcount:
         raise HTTPException(404, "Not found")
+    return db.get(Job, job_id, populate_existing=True)
+
+
+@router.post("/jobs/{job_id}/retry")
+def retry_job(job_id: str, body: dict = Body(default={}), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Run the job again on the devices where it failed (same script, parameters and payload)."""
+    job = _job_for_change(db, principal, job_id)
     if (job.payload or {}).get("removedAt") or job.status == "cancelling":
         raise HTTPException(409, "This job was removed or is still stopping; create a new job when appropriate")
-    principal.require("configure" if job.command_type == "script.run" else "respond")
+    spec = BY_TYPE.get(job.command_type)
+    if spec is None or spec.type in INTERACTIVE_ONLY | SERVER_ONLY | {"remote.session.start", "remote.session.end"}:
+        raise HTTPException(409, "Use the dedicated workflow for this action")
+    principal.require(spec.permission)
+    if spec.destructive:
+        principal.require("destructive")
+    if job.command_type in {"script.run", "software.install", "software.uninstall", "patch.install"}:
+        principal.require("configure")
+        principal.require("scripts")
+    candidates = rmm.retry_candidates(db, job)
+    devices = []
+    for command in candidates:
+        principal.check_tenant(command.tenant_id)
+        device = db.get(Device, command.device_id)
+        if device is not None:
+            principal.check_tenant(device.tenant_id)
+            if device.approved:
+                devices.append(device)
+    allowed_ids = {d.id for d in devices}
+    candidates = [c for c in candidates if c.device_id in allowed_ids]
+    approvals.gate(db, principal, "job.retry", f"Retry {job.name} on {len(devices)} devices",
+                   {"jobId": job.id, "commands": sorted(c.id for c in candidates), "approvalId": body.get("approvalId")},
+                   devices, destructive=spec.destructive, route=f"rmm/jobs/{job_id}/retry")
     try:
-        retried = rmm.retry_failed(db, job, principal.actor)
+        retried = rmm.retry_failed(db, job, principal.actor, candidates)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
     db.commit()
@@ -284,9 +323,7 @@ def retry_job(job_id: str, principal: Principal = Depends(current_principal), db
 @router.post("/jobs/{job_id}/cancel")
 def cancel_job(job_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("respond")
-    job = db.get(Job, job_id)
-    if job is None or job.tenant_id not in principal.tenant_ids:
-        raise HTTPException(404, "Not found")
+    job = _job_for_change(db, principal, job_id)
     from ..command_control import cancel_commands
     cancellation = cancel_commands(db, principal.actor, ids=list((job.command_ids or {}).values()))
     rmm.refresh_job(db, job.id)
@@ -300,9 +337,7 @@ def cancel_job(job_id: str, principal: Principal = Depends(current_principal), d
 def remove_job(job_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     """Remove from activity immediately, retaining the commands until their stop acknowledgement arrives."""
     principal.require("respond")
-    job = db.get(Job, job_id)
-    if job is None or job.tenant_id not in principal.tenant_ids:
-        raise HTTPException(404, "Not found")
+    job = _job_for_change(db, principal, job_id)
     from ..command_control import cancel_commands
     result = cancel_commands(db, principal.actor, ids=list((job.command_ids or {}).values()))
     job.payload = {**(job.payload or {}), "removedAt": utcnow().isoformat(), "removedBy": principal.actor}
@@ -317,21 +352,52 @@ TASK_FIELDS = {"name", "enabled", "schedule", "targets", "actions", "run_offline
 
 
 @router.get("/tasks")
-def list_tasks(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    return [to_dict(t) for t in db.execute(select(ScheduledTask).where(ScheduledTask.tenant_id.in_(principal.tenant_ids))
+def list_tasks(tenant_id: str | None = None, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    return [to_dict(t) for t in db.execute(select(ScheduledTask).where(ScheduledTask.tenant_id.in_(scoped_tenant(principal, tenant_id)))
                                            .order_by(ScheduledTask.name)).scalars()]
 
 
-def _validate_task(task: ScheduledTask) -> None:
-    if task.schedule.get("type") not in {"once", "interval", "daily", "weekly", "monthly"}:
+def _validate_task(db: Session, task: ScheduledTask, principal: Principal) -> None:
+    if not isinstance(task.schedule, dict) or task.schedule.get("type") not in ("once", "interval", "daily", "weekly", "monthly"):
         raise HTTPException(400, "schedule type must be once, interval, daily, weekly or monthly")
-    if not task.actions:
+    if not isinstance(task.actions, list) or not task.actions:
         raise HTTPException(400, "add at least one action")
+    if not isinstance(task.targets, dict):
+        raise HTTPException(400, "Targets must be an object")
+    for field in ("deviceIds", "groupIds", "tenantIds", "platforms", "tags"):
+        values = task.targets.get(field, [])
+        if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+            raise HTTPException(400, f"{field} must be a list of strings")
+    allowed = tenant_subtree(db, task.tenant_id)
     for action in task.actions:
-        if action.get("type") not in {"script", "command", "software"}:
+        if not isinstance(action, dict) or action.get("type") not in ("script", "command", "software"):
             raise HTTPException(400, "actions are script, command or software")
-        if action.get("type") == "command" and (action.get("command") not in BY_TYPE or action.get("command") in INTERACTIVE_ONLY | SERVER_ONLY):
+        if action["type"] in ("script", "software"):
+            principal.require("scripts")
+            model, key = (Script, "scriptId") if action["type"] == "script" else (SoftwarePackage, "packageId")
+            asset_id = action.get(key)
+            asset = db.get(model, asset_id) if isinstance(asset_id, str) and asset_id else None
+            if asset is None or (asset.tenant_id is not None and asset.tenant_id not in allowed):
+                raise HTTPException(400, "Choose a library item available to this schedule's customer")
+        if action.get("type") == "command" and (not isinstance(action.get("command"), str) or action.get("command") not in BY_TYPE or action.get("command") in INTERACTIVE_ONLY | SERVER_ONLY | {"script.run", "remote.session.start", "remote.session.end"}):
             raise HTTPException(400, f"unknown or unsupported command {action.get('command')}")
+        if action["type"] == "command":
+            spec = BY_TYPE[action["command"]]
+            principal.require(spec.permission)
+            if spec.destructive:
+                principal.require("destructive")
+            if not isinstance(action.get("payload", {}), dict):
+                raise HTTPException(400, "Command payload must be an object")
+
+
+def _next_task_run(task: ScheduledTask):
+    try:
+        following = rmm.next_run(task.schedule, utcnow())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if following is None and task.enabled is not False:
+        raise HTTPException(400, "The enabled schedule must have a future run")
+    return following
 
 
 @router.post("/tasks")
@@ -342,8 +408,8 @@ def create_task(body: dict = Body(...), principal: Principal = Depends(current_p
     task = ScheduledTask(tenant_id=tenant_id, name=str(body.get("name") or "Scheduled task"), created_by=principal.actor)
     apply_fields(task, body, TASK_FIELDS)
     task.schedule, task.targets, task.actions = task.schedule or {}, task.targets or {}, task.actions or []
-    _validate_task(task)
-    task.next_run_at = rmm.next_run(task.schedule, utcnow())
+    _validate_task(db, task, principal)
+    task.next_run_at = _next_task_run(task)
     db.add(task)
     audit.record(db, principal.actor, "rmm.task.created", task.name, tenant_id)
     db.commit()
@@ -357,9 +423,9 @@ def update_task(task_id: str, body: dict = Body(...), principal: Principal = Dep
     if task is None or task.tenant_id not in principal.tenant_ids:
         raise HTTPException(404, "Not found")
     changed = apply_fields(task, body, TASK_FIELDS)
-    _validate_task(task)
+    _validate_task(db, task, principal)
     if "schedule" in changed or ("enabled" in changed and task.enabled):
-        task.next_run_at = rmm.next_run(task.schedule, utcnow())
+        task.next_run_at = _next_task_run(task)
     audit.record(db, principal.actor, "rmm.task.updated", task.name, task.tenant_id, fields=changed)
     db.commit()
     return to_dict(task)
@@ -388,6 +454,7 @@ def run_task_now(task_id: str, principal: Principal = Depends(current_principal)
     task = db.get(ScheduledTask, task_id)
     if task is None or task.tenant_id not in principal.tenant_ids:
         raise HTTPException(404, "Not found")
+    _validate_task(db, task, principal)
     jobs = rmm.run_scheduled_task(db, task, actor=principal.actor)
     db.commit()
     return [_job_view(db, j) for j in jobs]
@@ -425,6 +492,7 @@ def _check_condition(cond: MonitorCondition, db: Session, principal: Principal) 
         if kind not in {"ticket", "script", "command", "webhook", "email"}:
             raise HTTPException(400, f"unsupported monitor action: {kind}")
         if kind == "script":
+            principal.require("scripts")
             script = db.get(Script, action.get("scriptId")) if action.get("scriptId") else None
             if script is None or not _visible(principal, script):
                 raise HTTPException(400, "monitor self-heal script does not exist or is not accessible")
@@ -442,6 +510,9 @@ def _check_condition(cond: MonitorCondition, db: Session, principal: Principal) 
             spec = BY_TYPE.get(action.get("command"))
             if spec is None or action.get("command") in {"script.run", "remote.session.start", "remote.session.end"} | INTERACTIVE_ONLY | SERVER_ONLY:
                 raise HTTPException(400, "invalid command in monitor action")
+            principal.require(spec.permission)
+            if spec.destructive:
+                principal.require("destructive")
             if "targetPath" in spec.needs and not (action.get("targetPath") or cond.target):
                 raise HTTPException(400, "monitor command needs a target path")
             if "recordId" in spec.needs:
@@ -534,7 +605,7 @@ def device_metrics(device_id: str, hours: int = Query(default=24, ge=1, le=720),
     return {"current": device.metrics or {}, "hours": hours,
             "series": series,
             "monitors": [{"condition": conditions.get(s.condition_id, s.condition_id), "triggered": s.triggered, "value": s.last_value,
-                          "message": s.message} for s in states]}
+                          "lastObservedAt": to_dict(s)["lastObservedAt"], "message": s.message} for s in states]}
 
 
 # --------------------------------------------------------------------------- patching
@@ -701,18 +772,41 @@ def list_patch_policies(principal: Principal = Depends(current_principal), db: S
 
 
 def _check_patch_policy(policy: PatchPolicy) -> None:
-    for classification, rule in (policy.approvals or {}).items():
-        if rule not in {"auto", "manual", "reject"}:
-            raise HTTPException(400, f"approval for {classification} must be auto, manual or reject")
-    window = policy.window or {}
-    if window:
-        try:
-            hour, minute = (int(x) for x in str(window.get("start", "02:00")).split(":")[:2])
-            assert 0 <= hour < 24 and 0 <= minute < 60
-        except (ValueError, AssertionError) as exc:
-            raise HTTPException(400, "window start must be HH:MM") from exc
-    if (policy.reboot or {}).get("mode", "if_required") not in {"if_required", "never", "always"}:
-        raise HTTPException(400, "reboot mode must be if_required, never or always")
+    def integer(value, low, high, label):
+        if type(value) is not int or not low <= value <= high:
+            raise HTTPException(400, f"{label} must be a whole number between {low} and {high}")
+
+    for value in (policy.approvals, policy.window, policy.reboot):
+        if not isinstance(value, dict):
+            raise HTTPException(400, "Approvals, maintenance window and reboot settings must be objects")
+    for classification, rule in policy.approvals.items():
+        if rule not in ("auto", "manual", "reject"):
+            raise HTTPException(400, f"Invalid approval for {classification}")
+    window = {**rmm.DEFAULT_WINDOW, **policy.window}
+    if not isinstance(window["start"], str) or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", window["start"]):
+        raise HTTPException(400, "Window start must be HH:MM")
+    if not isinstance(window["days"], list) or any(type(d) is not int or not 0 <= d <= 6 for d in window["days"]):
+        raise HTTPException(400, "Window days must be weekdays numbered 0 to 6")
+    integer(window["durationMinutes"], 1, 1440, "Window duration in minutes")
+    try:
+        ZoneInfo(window["tz"])
+    except (TypeError, ValueError, ZoneInfoNotFoundError) as exc:
+        raise HTTPException(400, "Unrecognised maintenance time zone") from exc
+    if policy.reboot.get("mode", "if_required") not in ("if_required", "never", "always"):
+        raise HTTPException(400, "Invalid reboot mode")
+    if "deferMinutes" in policy.reboot:
+        integer(policy.reboot["deferMinutes"], 0, 1440, "Reboot delay")
+    if not isinstance(policy.rings, list):
+        raise HTTPException(400, "Deployment rings must be a list")
+    for ring in policy.rings:
+        if not isinstance(ring, dict) or not isinstance(ring.get("groupIds", []), list) or any(
+                not isinstance(g, str) for g in ring.get("groupIds", [])):
+            raise HTTPException(400, "Invalid deployment ring or group list")
+        integer(ring.get("delayDays", 0), 0, 3652058, "Ring delay in days")
+    if policy.delay_days is not None:
+        integer(policy.delay_days, 0, 3652058, "Policy delay in days")
+    if policy.scan_interval_hours is not None:
+        integer(policy.scan_interval_hours, 1, 87600, "Scan interval in hours")
 
 
 @router.post("/patch-policies")

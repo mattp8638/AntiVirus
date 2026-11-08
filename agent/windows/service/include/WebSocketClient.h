@@ -7,6 +7,7 @@
 #include <winhttp.h>
 
 #include <mutex>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -26,13 +27,14 @@ class WebSocketClient {
   // Blocks until a full message arrives. Returns false when the socket closed.
   bool Receive(std::string* message, bool* binary);
   void Close(unsigned short status = 1000, const std::string& reason = "");
-  bool Connected() const { return socket_ != nullptr; }
+  bool Connected() const;
 
  private:
   bool Send(WINHTTP_WEB_SOCKET_BUFFER_TYPE type, const void* data, std::size_t size);
-  HINTERNET session_{nullptr};
-  HINTERNET connection_{nullptr};
-  HINTERNET socket_{nullptr};
+  struct Connection;
+  std::shared_ptr<Connection> Current() const;
+  mutable std::mutex stateMutex_;
+  std::shared_ptr<Connection> active_;
   std::mutex sendMutex_;
 };
 

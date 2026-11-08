@@ -46,7 +46,7 @@ func (a *Agent) listenRealtime() {
 		case <-time.After(backoff):
 		}
 		if backoff < 2*time.Minute {
-			backoff *= 2
+			backoff = min(backoff*2, 2*time.Minute)
 		}
 	}
 }
@@ -71,7 +71,9 @@ func (a *Agent) realtimeOnce() error {
 				_ = conn.Close()
 				return
 			case <-ticker.C:
+				_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 				if conn.WriteMessage(websocket.TextMessage, []byte("ping")) != nil {
+					_ = conn.Close()
 					return
 				}
 			}
@@ -91,6 +93,22 @@ func (a *Agent) realtimeOnce() error {
 			select {
 			case a.wake <- struct{}{}:
 			default:
+			}
+		}
+	}
+}
+
+// Presence remains independent of scans, inventory, command execution and WebSocket availability.
+func (a *Agent) reportPresence(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-a.stop:
+			return
+		case <-ticker.C:
+			if err := a.client.do("POST", "/api/v1/devices/"+a.client.DeviceID+"/presence", nil, nil, nil); err != nil {
+				log.Printf("presence check-in failed: %v", err)
 			}
 		}
 	}

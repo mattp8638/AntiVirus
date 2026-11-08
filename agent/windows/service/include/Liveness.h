@@ -19,12 +19,20 @@ struct Snapshot {
   long long contactOkAt{0};      // last answer from the server (any 2xx, or a pong on the live connection)
   long long contactAttemptAt{0}; // last attempt to reach it
   long long lastStatus{0};       // last HTTP status from the server (401/403: the device key is refused)
+  long long writtenAwake{0};
+  long long loopAwake{0};
+  long long contactAttemptAwake{0};
   long long selfRestartAt{0};    // when the agent last restarted itself
   std::string lastError;
   std::string selfRestartReason;
 };
 
 long long Now();
+long long AwakeSeconds();  // monotonic time since boot, excluding sleep and hibernation
+
+inline bool Stalled(long long now, long long last, long long limit) {
+  return last > 0 && now > last && now - last > limit;
+}
 
 // Agent side. Cheap, thread-safe, callable from anywhere.
 void MarkLoop();
@@ -37,9 +45,7 @@ void MarkContactOk(unsigned long status = 200);
 long long LastContactOk();
 void MarkContactFailed(unsigned long status, const std::string& why);
 
-// Starts the writer thread (every 30 s) and the stall detector (main loop silent for kMainLoopStallMinutes, or the
-// server unreachable for kNoContactMinutes while trying, at most once every 2 hours: the process ends so Windows
-// restarts it). previous is the record the last process left, read before it is overwritten.
+// The writer restarts the process only when its main loop stops making progress while awake.
 void Start(const std::filesystem::path& file, std::optional<Snapshot>* previous = nullptr);
 void Stop();
 
@@ -47,7 +53,5 @@ std::optional<Snapshot> Read(const std::filesystem::path& file);
 bool Write(const std::filesystem::path& file, const Snapshot& snapshot);
 
 constexpr int kMainLoopStallMinutes = 45;
-constexpr int kNoContactMinutes = 30;
-constexpr int kSelfRestartGapMinutes = 120;
 
 }  // namespace antivirus::agent::liveness

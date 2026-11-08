@@ -162,7 +162,9 @@ func (a *Agent) selfUpdate(force bool) (map[string]interface{}, error) {
 	go func() {
 		// Leave time for the command result and the event above to reach the cloud.
 		time.Sleep(a.restartDelay)
-		_ = a.Flush()
+		if err := a.flushOrSpool(true); err != nil {
+			log.Printf("telemetry before update restart: %v", err)
+		}
 		log.Printf("restarting into agent %s", info.Version)
 		a.exit(0)
 	}()

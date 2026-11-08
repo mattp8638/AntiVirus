@@ -44,8 +44,7 @@ class BootReceiver : BroadcastReceiver() {
 /** Android suspends timers while the phone sleeps; this alarm wakes the agent every ~10 minutes even in Doze. */
 class WakeReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        AgentService.scheduleWake(context)
-        AgentService.checkNow(context)
+        if (Store(context).enrolled) AgentService.checkNow(context)
     }
 }
 
@@ -151,7 +150,14 @@ class AgentService : Service() {
         SafeZones.register(this, store)  // Android forgets proximity alerts on restart
         tracker = Tracker(this, store) { fix -> store.queueFix(fix); store.lastLocation = System.currentTimeMillis(); worker.execute { runCatching { flush() } } }
         tracker.apply(store.tracking)
-        worker.scheduleWithFixedDelay({ cycle(force = false) }, 3, 30, TimeUnit.SECONDS)
+        worker.scheduleWithFixedDelay({
+            // ScheduledExecutor suppresses all future runs if one invocation escapes.
+            try {
+                cycle(force = false)
+            } catch (error: Exception) {
+                Log.w(TAG, "Check-in failed; the next scheduled cycle will retry", error)
+            }
+        }, 3, 30, TimeUnit.SECONDS)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -161,11 +167,11 @@ class AgentService : Service() {
             ACTION_SOS -> { store.sosActive = true; worker.execute { sendSos() } }
             ACTION_SOS_CANCEL -> { store.sosActive = false; worker.execute { cancelSos() } }
             ACTION_CHECK_NOW -> {
-                when (intent.getStringExtra(EXTRA_REASON)) {
-                    "boot" -> bootReason = "boot"
-                    "geofence" -> bootReason = "geofence"
+                val reason = intent.getStringExtra(EXTRA_REASON)
+                worker.execute {
+                    if (reason == "boot" || reason == "geofence") bootReason = reason
+                    cycle(force = true)
                 }
-                worker.execute { cycle(force = true) }
             }
         }
         return START_STICKY

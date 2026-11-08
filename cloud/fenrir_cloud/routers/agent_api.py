@@ -15,6 +15,7 @@ import secrets
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Query, Request
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .. import devicekeys
@@ -91,6 +92,13 @@ def _sync_cmdb_from_agent(db: Session, device: Device) -> None:
                      reason=str(exc))
 
 
+def _reinstall_hash(body: dict, tenant_id: str, platform: str) -> str | None:
+    proof = body.get("reinstallProof")
+    if platform == "windows" and isinstance(proof, str) and re.fullmatch(r"[0-9a-fA-F]{64}", proof):
+        return digest(f"{tenant_id}|windows|{proof.lower()}")
+    return None
+
+
 @router.post("/enroll")
 def enroll(
     request: Request,
@@ -117,6 +125,9 @@ def enroll(
     target_id = reinstatement_target(raw_token) if token else None
     # Only a token issued for reinstating exactly this device counts (an ordinary token cannot pose as one).
     reinstating = target_id is not None and token.label == f"Reinstate {target_id}"
+    platform = _platform(os_version, body.get("platform"))
+    proof = _reinstall_hash(body, tenant.id, platform)
+    resumed = False
     if reinstating:
         device = db.scalar(select(Device).where(Device.id == target_id).with_for_update())
         if device is None or device.tenant_id != tenant.id:
@@ -125,17 +136,45 @@ def enroll(
             raise HTTPException(409, "Device is no longer decommissioned")
         if device.platform != _platform(os_version, body.get("platform")):
             raise HTTPException(409, "Device platform does not match the reinstatement target")
-        if device.serial_number and device.serial_number != serial:
+        # Old Windows releases generated a brace-wrapped v4 GUID per installation.
+        # A device-specific, single-use installer can bridge the first reinstall.
+        legacy_guid = r"(?i)\{[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\}"
+        legacy_windows = (platform == "windows" and proof and not device.reinstall_hash
+                          and device.hostname.casefold() == hostname.casefold()
+                          and re.fullmatch(legacy_guid, device.serial_number or "") and re.fullmatch(legacy_guid, serial))
+        if device.reinstall_hash and device.reinstall_hash != proof:
+            raise HTTPException(409, "Reinstallation identity does not match the reinstatement target")
+        if device.serial_number and device.serial_number != serial and not (proof and device.reinstall_hash == proof or legacy_windows):
             raise HTTPException(409, "Device serial number does not match the reinstatement target")
-    elif token and serial:
+        if proof:
+            owner = db.scalar(select(Device).where(Device.tenant_id == tenant.id, Device.reinstall_hash == proof)
+                              .with_for_update())
+            if owner and owner.id != device.id:
+                if owner.api_key_hash != f"retired-{owner.id}":
+                    raise HTTPException(409, "Decommission the duplicate device before reinstating this record")
+                owner.reinstall_hash = None
+                db.flush()
+                audit.record(db, f"device:{hostname}", "device.duplicate_identity_transferred", device.id,
+                             tenant.id, previousDeviceId=owner.id)
+    elif token and proof:
+        device = db.scalar(select(Device).where(Device.tenant_id == tenant.id, Device.platform == platform,
+                                                Device.reinstall_hash == proof).with_for_update())
+        resumed = device is not None
+    if not reinstating and device is None and token and serial and serial != "SERIAL-UNAVAILABLE":
         # Re-imaged or reinstalled machine: keep its history, rotate its key.
-        device = db.execute(select(Device).where(Device.tenant_id == tenant.id, Device.serial_number == serial)).scalars().first()
+        matches = db.scalars(select(Device).where(Device.tenant_id == tenant.id, Device.platform == platform,
+                                                  Device.serial_number == serial).limit(2).with_for_update()).all()
+        if len(matches) > 1 or (matches and matches[0].reinstall_hash and matches[0].reinstall_hash != proof):
+            raise HTTPException(409, "Device identity conflict")
+        device = matches[0] if matches else None
     if not reinstating and device is not None and device.api_key_hash == f"retired-{device.id}":
         raise HTTPException(409, "Use a reinstatement installer for this decommissioned device")
     if device is None:
         device = Device(tenant_id=tenant.id, hostname=hostname, serial_number=serial, dns_token=secrets.token_urlsafe(24),
                         api_key_hash=digest(api_key))
         db.add(device)
+    if token and proof:
+        device.reinstall_hash = proof
     device.api_key_hash = digest(api_key)
     device.pending_api_key_hash, device.api_key_rotated_at, device.key_rotation_requested = None, utcnow(), False
     if reinstating:
@@ -143,13 +182,19 @@ def enroll(
     device.hostname, device.os_version = hostname, os_version
     device.platform = _platform(os_version, body.get("platform"))
     device.agent_version = str(body.get("agentVersion") or device.agent_version or "")[:64]
-    device.group_id = token.group_id if token and token.group_id else device.group_id
+    device.group_id = token.group_id if token and token.group_id and not resumed else device.group_id
     device.approved = token is not None
     device.ip_address = request.client.host if request.client else ""
     device.last_seen_at = utcnow()
     if token:
         token.uses += 1
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "Concurrent enrolment or conflicting device identity")
+    if resumed:
+        audit.record(db, f"device:{hostname}", "device.reinstalled", device.id, tenant.id)
     _, policy_doc = services.effective_policy(db, device)
     device.applied_policy_revision = policy_doc["revision"]
     _sync_cmdb_from_agent(db, device)
@@ -200,6 +245,16 @@ def heartbeat(body: dict = Body(default={}), device: Device = Depends(current_de
     device.platform_version = str(body.get("platformVersion") or device.platform_version)[:64]
     if re.fullmatch(r"[a-z0-9]{1,64}", str(body.get("buildId") or "")):
         device.agent_build = str(body["buildId"])
+    proof = _reinstall_hash(body, device.tenant_id, device.platform)
+    if device.approved and proof and not device.reinstall_hash:
+        try:
+            with db.begin_nested():
+                device.reinstall_hash = proof
+                db.flush()
+        except IntegrityError:
+            pass  # Another device owns this proof. Keep both records and continue the heartbeat.
+    if body.get("healthState"):
+        device.health_reported_at = utcnow()
     previous_health = device.health_state
     device.health_state = str(body.get("healthState") or device.health_state)[:40]
     endpoint_health.on_heartbeat(db, device, previous_health)
@@ -334,6 +389,8 @@ def telemetry(body: dict = Depends(_lenient_json), device: Device = Depends(curr
     if len(events) > limit:
         raise HTTPException(413, f"at most {limit} events per batch")
     result = ingest(db, device, events)
+    if events:
+        device.telemetry_at = utcnow()
     _agent_self_alerts(db, device, events)
     db.commit()
     # No running total: counting a device's whole history on every batch got slower as the table grew.
@@ -363,7 +420,14 @@ def pending_commands(limit: int = Query(default=20, ge=1, le=100), types: str | 
     commands = db.execute(query.order_by(Command.created_at).limit(limit).with_for_update()
                           .execution_options(populate_existing=True)).scalars().all()
     now = utcnow()
+    if not wanted:
+        device.command_poll_at = now
+    deliver = []
     for command in commands:
+        if command.type == "patch.install" and command.status == "pending" and rmm.patch_window_closed(command, now):
+            rmm.defer_window_install(db, command, now)
+            continue
+        deliver.append(command)
         if command.status == "pending":
             command.status, command.dispatched_at, command.updated_at = "dispatched", now, now
     db.commit()
@@ -372,7 +436,7 @@ def pending_commands(limit: int = Query(default=20, ge=1, le=100), types: str | 
         "items": [
             {"id": c.id, "type": c.type, "issuedBy": c.issued_by, "createdAt": _iso(c.created_at), "updatedAt": _iso(c.updated_at),
              "targetPath": c.target_path, "recordId": c.record_id, "payloadJson": json.dumps({k: v for k, v in c.payload.items() if k != "secretEnvelope"}) if c.payload else ""}
-            for c in commands
+            for c in deliver
         ],
     }
 

@@ -255,8 +255,9 @@ func PatchScanContext(ctx context.Context) (map[string]interface{}, error) {
 }
 
 type installPayload struct {
-	PatchIDs []string `json:"patchIds"`
-	Reboot   struct {
+	WindowEndEpoch *int64   `json:"windowEndEpoch"`
+	PatchIDs       []string `json:"patchIds"`
+	Reboot         struct {
 		Mode         string `json:"mode"`
 		DeferMinutes int    `json:"deferMinutes"`
 	} `json:"reboot"`
@@ -269,7 +270,12 @@ func PatchInstall(raw string) (map[string]interface{}, error) {
 
 func PatchInstallContext(ctx context.Context, raw string) (map[string]interface{}, error) {
 	var p installPayload
-	_ = json.Unmarshal([]byte(raw), &p)
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return nil, err
+	}
+	if p.WindowEndEpoch != nil && time.Now().Unix() >= *p.WindowEndEpoch {
+		return nil, errors.New("maintenance window ended before patch installation")
+	}
 	if IsMacOS {
 		return macPatchInstallContext(ctx, p)
 	}
@@ -316,7 +322,9 @@ func PatchInstallContext(ctx context.Context, raw string) (map[string]interface{
 		if delay <= 0 {
 			delay = 5
 		}
-		if _, rerr := runContext(ctx, 30*time.Second, "shutdown", "-r", fmt.Sprintf("+%d", delay), "Fenrir: restarting to finish updates"); rerr == nil {
+		if p.WindowEndEpoch != nil && time.Now().Unix()+int64(delay)*60 >= *p.WindowEndEpoch {
+			result["rebootDeferred"] = true
+		} else if _, rerr := runContext(ctx, 30*time.Second, "shutdown", "-r", fmt.Sprintf("+%d", delay), "Fenrir: restarting to finish updates"); rerr == nil {
 			result["rebootScheduledInMinutes"] = delay
 		}
 	}

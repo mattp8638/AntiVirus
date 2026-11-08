@@ -117,3 +117,14 @@ func TestScannerDetectsEicarWithoutABundle(t *testing.T) {
 		t.Fatalf("verdict after bundle load: %v %q", bad, family)
 	}
 }
+
+func TestStartupPreservesUnreadableIdentity(t *testing.T) {
+	a := New(Config{StateDir: t.TempDir(), Server: "http://127.0.0.1:1"})
+	// A directory at the identity path also fails to read under a root test runner.
+	if err := os.Mkdir(a.statePath(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Start(); err == nil || !strings.Contains(err.Error(), "cannot read saved device identity") {
+		t.Fatalf("expected a local identity error before enrolment, got %v", err)
+	}
+}
