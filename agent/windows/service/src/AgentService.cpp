@@ -1266,6 +1266,13 @@ void AgentService::RunSyncLoop(const AgentRunMode mode) {
     liveness::MarkLoop();
     // One bad cycle (a scan, the database, the network) must never stop the agent: log it and carry on.
     try {
+    if (config_.managedMode) {
+      SyncWithControlPlane(cycle);
+      PublishIdentitySnapshot();
+      // Report before inventory, command execution or spool processing can delay this cycle.
+      PublishHeartbeat(cycle);
+      liveness::MarkLoop();
+    }
     ProcessPamRequests();
     QueueCycleTelemetry(cycle);
     DrainProcessTelemetry();
@@ -1274,14 +1281,9 @@ void AgentService::RunSyncLoop(const AgentRunMode mode) {
     DrainNetworkTelemetry();
     DrainDeferredTelemetry();
     if (config_.managedMode) {
-      // Check in before the scans: a first full-drive scan can take hours.
-      SyncWithControlPlane(cycle);
-      liveness::MarkLoop();
-      PublishIdentitySnapshot();
       PollAndExecuteCommands(cycle);
       liveness::MarkLoop();
       FlushTelemetryQueue();
-      PublishHeartbeat(cycle);
       liveness::MarkLoop();
       MaybeSelfUpdate(cycle);
       liveness::MarkLoop();
@@ -1693,7 +1695,6 @@ void AgentService::SyncUpdateOnly(const int cycle) {
 
     const auto updateCheck = controlPlaneClient_->CheckForUpdates(state_, signaturesVersion);
     state_.lastPolicySyncAt = updateCheck.checkedAt;
-    state_.lastHeartbeatAt = updateCheck.checkedAt;
 
     if (!updateCheck.items.empty()) {
       QueueTelemetryEvent(L"updates.polled", L"control-plane-client",
