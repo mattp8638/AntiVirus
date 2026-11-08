@@ -648,6 +648,8 @@ class ClientReport(Base):
     kind: Mapped[str] = mapped_column(String(20))  # monthly | quarterly
     period: Mapped[str] = mapped_column(String(10))  # 2026-09 | 2026-Q3
     html: Mapped[str] = mapped_column(Text)
+    # The same report as structured data (report_render), so it can also be downloaded as a PDF exactly as sent.
+    document: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_by: Mapped[str] = mapped_column(String(200), default="system")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 

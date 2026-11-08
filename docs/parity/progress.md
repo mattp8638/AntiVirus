@@ -10,11 +10,18 @@ Baseline of the review: `main` at `790e364`. Work branch: `claude/jolly-goodall-
 |---|---|
 | verified | 6 (FIX-01 to FIX-05, FIX-08) |
 | implemented-unverified | 14 (FIX-07, AGT-04, CORE-03, FLOW-01/02/04/09 and 7 requirements the brief marked U) |
-| partial | 118 |
-| missing | 39 |
+| partial | 119 |
+| missing | 38 |
 | externally-blocked | 1 (FIX-06) |
 
 Overall parity: **not passed**. MVP: **not yet declared**.
+
+## Reports and branding (roadmap 0-30 days)
+
+Branded PDF and HTML reports (executive, monthly, quarterly business review, vulnerability) built from one structured
+document, kept as sent, and emailed on a schedule; MSP branding of the console, sign-in page, reports and Windows agent
+window. VULN-20 moves to `partial`; VULN-21 and M365-31 record the progress. `docs/REPORTS_AND_BRANDING.md`,
+`tests/test_branding_reports.py`.
 
 ## 2026-11-08 re-assessment
 

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { BrandMark } from "../brand";
 import QRCode from "qrcode";
 import { api } from "../api";
 import { useApp } from "../app-context";
@@ -97,7 +98,7 @@ export function EnrollPhonePage() {
     <div className="login">
       <div className="card" style={{ width: "min(440px, 94vw)" }}>
         <div className="brand" style={{ padding: 0, marginBottom: 16 }}>
-          <div className="brand-mark">F</div>
+          <BrandMark />
           <div><b>Set up Fenrir on this {apple === "mac" ? "Mac" : apple === "ipad" ? "iPad" : "phone"}</b><small>{server.replace(/^https?:\/\//, "")}</small></div>
         </div>
         {!token ? <p>This link is missing its enrolment code. Ask IT for a new one.</p> : apple ? <AppleEnrol token={token} kind={apple} /> : <>

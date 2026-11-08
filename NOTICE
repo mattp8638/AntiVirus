@@ -14,6 +14,8 @@ Third-party components keep their own licences:
 - Compliance frameworks (cloud/fenrir_cloud/grc_library) paraphrase requirement wording. The standards themselves
   (ISO/IEC 27001, PCI DSS, SOC 2, NIST CSF, CIS Controls, Cyber Essentials and others) are published by their owners,
   and you need their official texts to certify against them.
+- DejaVu Sans (cloud/fenrir_cloud/fonts), used for PDF reports, is under the Bitstream Vera licence with DejaVu changes
+  in the public domain; see cloud/fenrir_cloud/fonts/LICENSE.txt.
 - Go, npm, Python and Rust dependencies are listed in agent/linux/go.mod, console/package.json,
   cloud/requirements.txt, ml/requirements.txt and password_manager/Cargo.toml. Each is distributed under the
   licence included with that package.

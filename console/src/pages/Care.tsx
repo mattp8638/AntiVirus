@@ -1,4 +1,5 @@
 // The Care page: the people being looked after (their phones), where they are, their safe zones and care alerts
+import { BrandMark } from "../brand";
 // (asked for help, left a safe zone, gone quiet, low battery, location off). Family members and carers (role "carer")
 // see only this; staff reach it from the menu.
 import { useEffect, useRef, useState } from "react";
@@ -134,7 +135,7 @@ export default function Care({ standalone = false }: { standalone?: boolean }) {
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto", padding: 16 }}>
       <div className="row" style={{ marginBottom: 16, gap: 8 }}>
-        <div className="brand-mark">F</div>
+        <BrandMark />
         <div style={{ flex: 1 }}><b style={{ fontSize: 18 }}>Care</b><div className="small muted">{displayValue(me?.user.email)}</div></div>
         <button className="small" onClick={logout}>Sign out</button>
       </div>

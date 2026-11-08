@@ -1,7 +1,7 @@
 // Client 360: one health score for a customer from every module, its trend, and the reports built from the same data.
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { api, fmtTime, getToken } from "../api";
+import { api, downloadFile, fmtTime, getToken } from "../api";
 import { useApp } from "../app-context";
 import { displayValue } from "./DisplayValue";
 import { Sparkline } from "./rmm";
@@ -77,7 +77,9 @@ export function ClientHealth({ tenantId }: { tenantId: string }) {
              onRow={(r) => run(() => openReport(`clients/${tenantId}/reports/${r.id}.html`))}
              columns={[{ key: "kind", label: "Report", render: (r) => (r.kind === "monthly" ? "What we did for you" : "Quarterly review") },
                        { key: "period", label: "Period" }, { key: "createdBy", label: "By" },
-                       { key: "createdAt", label: "Kept", render: (r) => fmtTime(r.createdAt) }]} />
+                       { key: "createdAt", label: "Kept", render: (r) => fmtTime(r.createdAt) },
+                       { key: "pdf", label: "", render: (r) => r.hasPdf ? <button className="small" disabled={busy} onClick={(e) => {
+                           e.stopPropagation(); run(() => downloadFile(`clients/${tenantId}/reports/${r.id}.pdf`, "report.pdf")); }}>PDF</button> : null }]} />
     </>
   );
 }
