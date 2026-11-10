@@ -155,9 +155,15 @@ def create_job(db: Session, *, tenant_id: str, actor: str, name: str, devices: l
         if script and device.platform not in (script.platforms or []):
             skipped[device.id] = f"script does not support {device.platform}"
             continue
+        device_payload = {**(payload or {}), "jobId": job.id}
+        if command_type == "script.run":  # the device's own custom fields, as FENRIR_CF_<KEY> environment variables
+            from . import custom_fields
+
+            device_payload["environment"] = {**(device_payload.get("environment") or {}),
+                                             **custom_fields.script_environment(db, device)}
         try:
             command = services.enqueue_command(db, device, command_type, actor, target_path=target_path, record_id=record_id,
-                                               payload={**(payload or {}), "jobId": job.id}, reason=f"Job: {name}")
+                                               payload=device_payload, reason=f"Job: {name}")
         except services.CommandError as exc:
             skipped[device.id] = str(exc)
             continue
@@ -316,6 +322,10 @@ def refresh_job(db: Session, job_id: str) -> None:
 def on_command_complete(db: Session, device: Device, command: Command) -> None:
     """Fold agent results into RMM state. Called from the agent API after a command completes."""
     result = command.result or {}
+    if command.type == "script.run" and (command.payload or {}).get("jobId"):
+        from . import custom_fields
+
+        custom_fields.apply_script_output(db, device, command)  # FENRIR-FIELD key=value lines in the output
     if command.type == "patch.scan" and command.status == "completed":
         ingest_patch_scan(db, device, result)
     elif command.type == "patch.install":
@@ -1095,7 +1105,7 @@ METRICS = {
     "command_poll_age": "Minutes since general command poll", "telemetry_age": "Minutes since telemetry upload",
     "offline_minutes": "Offline for (minutes)", "service_stopped": "Service not running", "process_missing": "Process not running",
     "reboot_pending": "Reboot pending", "pending_patches": "Missing patches (count)", "uptime_days": "Uptime (days)",
-    "av_unhealthy": "Protection unhealthy",
+    "av_unhealthy": "Protection unhealthy", "custom_field": "Custom field (number, yes/no, days until a date, or key=text)",
 }
 
 
@@ -1134,6 +1144,10 @@ def metric_value(db: Session, condition: MonitorCondition, device: Device, now: 
             return None, "Agent health has not been reported"
         bad = device.health_state not in {"healthy", "unknown", "isolated"}
         return (1.0 if bad else 0.0), f"agent health is {device.health_state}"
+    if m == "custom_field":
+        from . import custom_fields
+
+        return custom_fields.condition_value(db, device, target, now.date())
     if not metrics or not metrics.get("reportedAt"):
         return None, ""
     if m == "cpu" and "cpuPercent" in metrics:
