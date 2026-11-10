@@ -131,17 +131,20 @@ func (st *screenStreamer) frame(quality int, full bool) (bool, error) {
 	if len(tiles) == 0 {
 		return false, nil
 	}
+	direct := true
 	for _, r := range tiles {
 		data, err := EncodeTile(pixels, w, r, quality)
 		if err != nil {
 			return false, err
 		}
-		if err := st.s.sendBinary(TileFrame(r, w, h, data)); err != nil {
+		viaRTC, err := st.s.sendFrame(TileFrame(r, w, h, data))
+		if err != nil {
 			return false, err
 		}
+		direct = direct && viaRTC
 	}
 	st.seq++
-	return true, st.s.send(Message{"ch": "screen", "t": "frame.end", "seq": st.seq, "tiles": len(tiles)})
+	return true, st.s.sendScreenText(Message{"ch": "screen", "t": "frame.end", "seq": st.seq, "tiles": len(tiles)}, direct)
 }
 
 // ChangedTiles compares two BGRA frames tile by tile.

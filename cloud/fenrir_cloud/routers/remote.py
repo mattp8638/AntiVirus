@@ -143,7 +143,8 @@ def mint_viewer_token(session_id: str, principal: Principal = Depends(current_pr
     session = _owned_session(db, principal, session_id)
     if session.status in {"ended", "failed", "denied"}:
         raise HTTPException(409, f"Session {session.status}")
-    return {"token": remote.viewer_token(session, principal.actor, principal.session_id), "path": f"/ws/remote/{session.id}/viewer"}
+    return {"token": remote.viewer_token(session, principal.actor, principal.session_id), "path": f"/ws/remote/{session.id}/viewer",
+            "iceServers": remote.ice_servers()}
 
 
 @router.post("/sessions/{session_id}/end")

@@ -499,7 +499,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             from .health import watch_loop
 
             threading.Thread(target=watch_loop, args=(settings, stop), daemon=True, name="health-watch").start()
+        from . import stun
+
+        stun_transport = await stun.serve(stun.port()) if stun.port() else None  # direct (peer-to-peer) remote sessions
         yield
+        if stun_transport is not None:
+            stun_transport.close()
         stop.set()
 
     app = FastAPI(title="Fenrir Cloud", version=__version__, lifespan=lifespan,

@@ -104,6 +104,32 @@ and `screen` / `input` work as in a desktop session, on that desktop only.
   (up to 2048 characters). Audited as `backstage.launch` with the tool or command.
 - `done {req, error?}` (agent → viewer): started, or why not.
 
+## Direct connections (`rtc` channel, WebRTC)
+
+Screen sharing can go peer-to-peer instead of through the relay, which is faster and takes load off the server. It is
+tried automatically and falls back to the relay on its own; technicians see **Direct** or **Relayed** in the viewer's
+toolbar.
+
+- **When.** The start payload carries `direct` (true when policy `remoteAccess.allowDirect` is on, the default, and
+  `remoteAccess.recordSessions` is off, because recordings are made at the relay) and `iceServers`. An agent that
+  supports it adds `webrtc` to its `info` capabilities. Today that is the Linux and macOS agent; the Windows helper stays
+  on the relay.
+- **Finding a path.** The Fenrir server answers STUN itself on UDP 3478 (`FENRIR_STUN_PORT`, 0 turns it off), so no
+  outside service is involved. Open UDP 3478 to the server for this to work; without it both sides still connect
+  directly on the same network, and otherwise use the relay. There is no TURN server: when no direct path exists
+  (symmetric NAT, strict firewalls), the relay is the fallback.
+- **Set-up, over the relay.** Viewer → agent `offer {sdp}`; agent → viewer `answer {sdp}`; both ways
+  `candidate {candidate, sdpMid?, sdpMLineIndex?}`. Agent → viewer `open` when the data channel is up,
+  `closed {reason}` when it drops and `unavailable {reason}` when it cannot start. Viewer → agent `close` to stop.
+  The viewer gives up after 8 seconds without `open`.
+- **What goes direct.** One ordered, reliable data channel labelled `fenrir`. Agent → viewer: screen tiles (the `0x01`
+  frame, cut into chunks of `0xFE id:u32 index:u16 count:u16 <bytes>` with at most 16,000 bytes each) and the
+  `screen` `frame.end` that follows them. Viewer → agent: `screen` messages and `input` `mm`, `md`, `mu`, `wh`, `kd`,
+  `ku`, `type` and `nav`. The agent drops anything else that arrives on the data channel.
+- **What stays on the relay.** Everything audited or sensitive: Ctrl+Alt+Del, lock, blank, clipboard, terminal, files,
+  processes, services, chat, and session start and end. Policy is still enforced and audited there.
+- When the path changes in either direction the agent resends the whole screen, so no stale tile survives.
+
 ## Modes
 
 The start payload's `mode` decides which channels a session may use. The relay enforces this, and the agent enforces it again.
@@ -120,6 +146,7 @@ The start payload's `mode` decides which channels a session may use. The relay e
 - The agent token is bound to the device id. A viewer token cannot be used as an agent token, and an agent token cannot be used as a viewer token.
 - Policy (`remoteAccess.*`) is enforced twice: by the cloud before the session starts and by the relay on every message. The agent applies consent, the banner and the idle timeout.
 - Every session start and end, file transfer, Ctrl+Alt+Del, terminal open and screen blank is written to the session's event list and to the hash-chained audit log.
+- Direct connections are encrypted end to end by WebRTC (DTLS) and are only set up through an authenticated relay session; the data channel carries screen and ordinary input only (see "Direct connections").
 - **Backstage and tunnel sessions** are silent, so they carry extra checks:
   - Each needs a fresh sign-in check (`X-Fenrir-Reauth`) and a stated reason or linked ticket.
   - Analyst roles cannot open them.

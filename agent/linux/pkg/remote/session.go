@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -43,6 +44,9 @@ type Options struct {
 	TargetHost   string `json:"targetHost"`
 	TargetPort   int    `json:"targetPort"`
 	AllowedPorts []int  `json:"allowedPorts"`
+	// Direct screen sharing: the server allows a WebRTC data channel, and these STUN servers find public addresses.
+	Direct     bool        `json:"direct"`
+	ICEServers []ICEServer `json:"iceServers"`
 }
 
 // Message is a JSON control frame.
@@ -96,6 +100,9 @@ type Session struct {
 	files      *fileTransfers
 	procs      *procSampler
 	tunnels    *tunnels
+	rtc        atomic.Pointer[rtcLink]
+	// dispatchMu serialises messages from the relay and from the direct channel.
+	dispatchMu sync.Mutex
 	logf       func(string, ...interface{})
 }
 
@@ -153,6 +160,23 @@ func (s *Session) sendBinary(data []byte) error {
 	return s.conn.WriteMessage(websocket.BinaryMessage, data)
 }
 
+// sendFrame sends a screen frame directly when a data channel is open, otherwise over the relay.
+// It reports whether the frame went direct.
+func (s *Session) sendFrame(frame []byte) (bool, error) {
+	if l := s.rtc.Load(); l != nil && l.sendFrame(frame) {
+		return true, nil
+	}
+	return false, s.sendBinary(frame)
+}
+
+// sendScreenText sends a screen control message by the same path as the tiles before it.
+func (s *Session) sendScreenText(m Message, direct bool) error {
+	if l := s.rtc.Load(); direct && l != nil && l.sendText(m) {
+		return nil
+	}
+	return s.send(m)
+}
+
 func (s *Session) reply(req interface{}, ch string, m Message) {
 	m["ch"] = ch
 	if req != nil {
@@ -196,6 +220,9 @@ func (s *Session) capabilities() []string {
 	}
 	if s.desktop != nil {
 		caps = append([]string{"desktop"}, caps...)
+		if s.opts.Direct {
+			caps = append(caps, "webrtc")
+		}
 	}
 	return caps
 }
@@ -260,7 +287,10 @@ func (s *Session) Serve() error {
 		if json.Unmarshal(data, &m) != nil {
 			continue
 		}
-		if done := s.dispatch(m); done {
+		s.dispatchMu.Lock()
+		done := s.dispatch(m)
+		s.dispatchMu.Unlock()
+		if done {
 			return nil
 		}
 	}
@@ -331,8 +361,74 @@ func (s *Session) dispatch(m Message) bool {
 		_ = s.send(Message{"ch": "sys", "t": "error", "message": "chat is not available on this device"})
 	case "tunnel":
 		s.tunnels.handle(t, m)
+	case "rtc":
+		s.handleRTC(t, m)
 	}
 	return false
+}
+
+// handleRTC sets up or tears down the direct channel. Failures are reported and the session carries on over the relay.
+func (s *Session) handleRTC(t string, m Message) {
+	if !s.opts.Direct || s.desktop == nil {
+		if t == "offer" {
+			_ = s.send(Message{"ch": "rtc", "t": "unavailable", "reason": "direct connections are off for this session"})
+		}
+		return
+	}
+	switch t {
+	case "offer":
+		if old := s.rtc.Swap(nil); old != nil {
+			old.close()
+		}
+		link, err := newRTCLink(s.opts.ICEServers, s.rtcSignal, s.rtcDeliver, s.logf)
+		if err == nil {
+			s.rtc.Store(link)
+			err = link.handle(t, m)
+		}
+		if err != nil {
+			s.logf("remote: direct connection: %v", err)
+			_ = s.send(Message{"ch": "rtc", "t": "unavailable", "reason": err.Error()})
+		}
+	case "candidate":
+		if l := s.rtc.Load(); l != nil {
+			if err := l.handle(t, m); err != nil {
+				s.logf("remote: ICE candidate: %v", err)
+			}
+		}
+	case "close":
+		if old := s.rtc.Swap(nil); old != nil {
+			old.close()
+		}
+		s.refreshScreen()
+	}
+}
+
+// rtcSignal relays set-up messages; when the path changes the whole screen is resent so no stale tile survives.
+func (s *Session) rtcSignal(m Message) {
+	_ = s.send(m)
+	if t := m.str("t"); t == "open" || t == "closed" {
+		go func() {
+			s.dispatchMu.Lock()
+			defer s.dispatchMu.Unlock()
+			s.refreshScreen()
+		}()
+	}
+}
+
+func (s *Session) rtcDeliver(m Message) {
+	if !DirectAllowed(m) {
+		return
+	}
+	s.dispatchMu.Lock()
+	defer s.dispatchMu.Unlock()
+	s.dispatch(m)
+}
+
+// refreshScreen must be called with dispatchMu held (or from dispatch).
+func (s *Session) refreshScreen() {
+	if s.screen != nil {
+		s.screen.refresh()
+	}
 }
 
 func channelAllowed(mode, ch string) bool {
@@ -423,6 +519,9 @@ func (s *Session) handleInput(t string, m Message) {
 
 func (s *Session) cleanup() {
 	s.cancel()
+	if l := s.rtc.Swap(nil); l != nil {
+		l.close()
+	}
 	if s.screen != nil {
 		s.screen.stop()
 	}

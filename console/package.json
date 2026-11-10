@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test:shapes": "node --experimental-strip-types --test tests/data-shapes.test.mjs",
-    "test:remote": "node --experimental-strip-types --test tests/remote-actions.test.mjs",
+    "test:remote": "node --experimental-strip-types --test tests/remote-actions.test.mjs tests/remote-direct.test.mjs",
     "test:pages": "vitest run"
   },
   "dependencies": {

@@ -229,5 +229,6 @@ if [ -n "${admin_password:-}" ]; then
 else
   printf '  Password:  the FENRIR_ADMIN_PASSWORD in %s/deploy/.env when it was first installed\n' "$root"
 fi
+printf '\n  Firewall:  allow TCP 80 and 443, and UDP 3478 for direct (peer-to-peer) remote sessions.\n'
 printf '\n  Next: Deploy agents > Deploy from your RMM, Group Policy or Intune.\n'
 printf '  Keep %s/deploy/.env and deploy/signing/ backed up offline: they cannot be recreated.\n\n' "$root"

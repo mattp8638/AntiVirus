@@ -44,7 +44,7 @@ AUDITED = {("backstage", "launch"), ("files", "get"), ("files", "put"), ("files"
            ("sys", "blank"), ("input", "lock"), ("sys", "reboot"), ("tunnel", "open")}
 MODES = {"desktop", "terminal", "files", "backstage", "tunnel"}
 # Channels each mode may use. Backstage never touches the user's desktop; a tunnel carries only its TCP streams.
-MODE_CHANNELS = {"backstage": {"sys", "term", "files", "procs", "svc", "screen", "input", "backstage"}, "tunnel": {"sys", "tunnel"}}
+MODE_CHANNELS = {"backstage": {"sys", "term", "files", "procs", "svc", "screen", "input", "backstage", "rtc"}, "tunnel": {"sys", "tunnel"}}
 # In backstage the screen and input are the hidden SYSTEM desktop in session 0 (never the user's). These act on the
 # user's real session, so they never reach a backstage session: the user must not be able to tell it is happening.
 BACKSTAGE_BLOCKED_INPUT = {"cad", "lock", "blank"}
@@ -94,6 +94,12 @@ def relay_url(session: RemoteSession, role: str = "agent") -> str:
 
 
 # --------------------------------------------------------------------------- session lifecycle
+
+
+def ice_servers() -> list[dict]:
+    from . import stun
+
+    return stun.ice_servers(get_settings().public_base_url)
 
 
 def remote_policy(db: Session, device: Device) -> dict:
@@ -154,6 +160,10 @@ def start_session(db: Session, device: Device, technician: str, mode: str = "des
         "allowTerminal": policy.get("allowTerminal", True), "allowFileTransfer": policy.get("allowFileTransfer", True),
         "showBanner": policy.get("showBanner", True) and not silent, "maxFps": policy.get("maxFps", 15),
         "quality": policy.get("defaultQuality", 70), "idleTimeoutMinutes": policy.get("idleTimeoutMinutes", 30),
+        # Direct (peer-to-peer) screen and input when both ends can reach each other; the relay otherwise.
+        # Recorded sessions stay on the relay, which is where the recording is made.
+        "iceServers": ice_servers(), "direct": bool(policy.get("allowDirect", True)) and not policy.get("recordSessions", False)
+                                                and mode in ("desktop", "backstage"),
     }
     if mode == "tunnel":
         payload.update({"targetHost": session.target_host, "targetPort": session.target_port,
