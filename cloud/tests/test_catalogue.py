@@ -53,3 +53,11 @@ def test_bad_headers_are_rejected(tmp_path):
         except ValueError:
             continue
         raise AssertionError(f"accepted: {text!r}")
+
+
+def test_a_windows_checkout_with_crlf_line_endings_still_loads(tmp_path):
+    root = tmp_path / "catalogue"
+    shutil.copytree(catalogue.ROOT, root)
+    for path in list(root.glob("scripts/**/*.*")) + list(root.glob("apps/*.yml")):
+        path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+    assert len(catalogue.load_apps(root)) == len(catalogue.load_apps()) and len(catalogue.load_scripts(root)) == len(catalogue.load_scripts())
