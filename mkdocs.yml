@@ -54,3 +54,5 @@ nav:
       - Architecture: ARCHITECTURE.md
       - Remote protocol: REMOTE_PROTOCOL.md
       - Remote Ctrl+Alt+Del: REMOTE_CTRL_ALT_DEL.md
+  - Project:
+      - Hand-off checklist: HANDOFF.md

@@ -62,7 +62,7 @@ class FakeXero:
             self.refresh_tokens.append(form["refresh_token"][0])
             return httpx.Response(200, json={"access_token": "at-2", "refresh_token": f"rt-{len(self.refresh_tokens) + 1}"})
         if request.url.path == "/connections":
-            return httpx.Response(200, json=[{"tenantId": "xero-org-1", "tenantName": "Palmertech Ltd", "tenantType": "ORGANISATION"}])
+            return httpx.Response(200, json=[{"tenantId": "xero-org-1", "tenantName": "Contoso Ltd", "tenantType": "ORGANISATION"}])
         assert request.headers["xero-tenant-id"] == "xero-org-1"
         if request.method == "POST":
             body = json.loads(request.content)["Invoices"][0]
@@ -89,7 +89,7 @@ def test_xero_connect_push_and_pull(client, admin, tenant, xero):
         == "/billing?xero=failed"
     done = client.get("/api/billing/xero/callback", params={"state": state, "code": "auth-code"}, follow_redirects=False)
     assert done.headers["location"] == "/billing?xero=connected"
-    assert client.get("/api/console/billing/accounting", headers=admin).json()["organisation"] == "Palmertech Ltd"
+    assert client.get("/api/console/billing/accounting", headers=admin).json()["organisation"] == "Contoso Ltd"
     # The state is single-use.
     assert client.get("/api/billing/xero/callback", params={"state": state, "code": "again"}, follow_redirects=False).headers["location"] \
         == "/billing?xero=failed"
