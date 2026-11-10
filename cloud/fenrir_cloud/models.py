@@ -125,6 +125,8 @@ class Device(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("dev"))
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
     group_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    # How the device got its group (group_rules.py): the group's id when rules placed it, "manual" when a person did.
+    group_rule_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     reinstall_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
     health_reported_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     command_poll_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

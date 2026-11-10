@@ -70,12 +70,16 @@ def enrol(db: Session, tenant: Tenant, token, name: str, kind: str, user_agent: 
     hostname = (name or "").strip()[:255] or label
     device = Device(tenant_id=tenant.id, hostname=hostname, platform=platform, os_version=os_version(kind, user_agent),
                     dns_token=secrets.token_urlsafe(24), api_key_hash=f"profile-{secrets.token_hex(24)}",
-                    group_id=token.group_id if token is not None and token.group_id else None, approved=True,
+                    group_id=token.group_id if token is not None and token.group_id else None, group_rule_id="manual" if token is not None and token.group_id else None, approved=True,
                     ip_address=ip[:64], agent_version="", health_state="unknown",
                     inventory={"role": role, "roleLabel": "Web protection profile", "model": label},
                     metrics={"agentless": True, "protection": "dns-profile", "kind": kind})
     db.add(device)
     db.flush()
+    if device.group_id is None:
+        from . import group_rules
+
+        group_rules.evaluate(db, device)
     return device
 
 

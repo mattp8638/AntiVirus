@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { ago, api } from "../api";
 import { useApp } from "../app-context";
 import { displayValue } from "../components/DisplayValue";
-import { ErrorNote, PageHead, Pill, Stat, Table, Tabs, useAction, useData } from "../components/ui";
+import { ErrorNote, Modal, PageHead, Pill, Stat, Table, Tabs, TenantSelect, useAction, useData } from "../components/ui";
 import { M365_SECTION, SectionTabs } from "../components/sections";
 
 const STATUS_TONE: Record<string, string> = { compliant: "good", drifted: "bad", deployed: "blue", failed: "bad", unknown: "muted", active: "good" };
@@ -136,6 +136,8 @@ function Customers({ partner, onChanged }: { partner: any; onChanged: () => void
   const { data, error, reload } = useData<any>("m365/partner/discover");
   const { run, busy } = useAction();
   const [results, setResults] = useState<any[] | null>(null);
+  const [linking, setLinking] = useState<any>(null);
+  const [linkTo, setLinkTo] = useState("");
   const customers: any[] = data?.customers ?? [];
   const importNow = async (directoryIds?: string[], createRelationships = false) => {
     const r = await run(() => api<any[]>("m365/partner/import", { body: { directoryIds, createRelationships } }));
@@ -169,7 +171,16 @@ function Customers({ partner, onChanged }: { partner: any; onChanged: () => void
                        { key: "fenrir", label: "Fenrir", render: (c) => c.connectionId ? <Pill value={`linked: ${c.fenrirTenantName}`} tone="good" /> : <span className="small muted">not linked</span> },
                        { key: "act", label: "", className: "right", render: (c) => !c.connectionId && <span className="row" style={{ gap: 6, justifyContent: "flex-end" }}>
                          <button className="small" disabled={busy} onClick={() => importNow([c.tenantId])}>Import</button>
+                         {c.gdap === "active" && <button className="small ghost" disabled={busy} title="This customer already exists in Fenrir: connect it instead of creating a new one" onClick={() => setLinking(c)}>Link to existing…</button>}
                          {c.gdap !== "active" && c.gdap !== "pending" && <button className="small ghost" disabled={busy} onClick={() => importNow([c.tenantId], true)}>Import and invite to GDAP</button>}</span> }]} />
+      {linking && <Modal title={`Link ${linking.displayName || linking.defaultDomain}`} onClose={() => { setLinking(null); setLinkTo(""); }}
+        footer={<button className="primary" disabled={busy || !linkTo} onClick={async () => {
+          const done = await run(() => api(`m365/partner/customers/${linking.tenantId}/onboard`, { body: { tenantId: linkTo, name: linking.displayName || linking.defaultDomain } }), "Linked: Microsoft 365 is connected through GDAP");
+          if (done) { setLinking(null); setLinkTo(""); reload(); }
+        }}>Link</button>}>
+        <p className="small muted">Connects this Microsoft 365 tenant to a customer you already have in Fenrir, through your active GDAP relationship. Nothing is installed in the customer's tenant.</p>
+        <label className="field">Fenrir customer<TenantSelect value={linkTo} onChange={setLinkTo} allowAll={false} /></label>
+      </Modal>}
     </div>
   );
 }

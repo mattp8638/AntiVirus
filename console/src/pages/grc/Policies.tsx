@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { ago, api, downloadFile, fmtTime } from "../../api";
 import { useApp } from "../../app-context";
 import { Markdown } from "../../components/Markdown";
-import { Modal, PageHead, Pill, Table, TenantSelect, useAction, useData, useListData } from "../../components/ui";
+import { ErrorNote, Modal, PageHead, Pill, Table, TenantSelect, useAction, useData, useListData } from "../../components/ui";
 import { confirmDialog } from "../../components/dialogs";
 
 const TONE: Record<string, string> = { draft: "muted", in_review: "warn", approved: "good", retired: "muted" };
@@ -56,6 +56,7 @@ function AddPolicy({ onClose }: { onClose: (id?: string) => void }) {
       <label className="field">From the library<select value={template} onChange={(e) => setTemplate(e.target.value)}>
         <option value="">Blank policy</option>{(library?.policies || []).map((p: any) => <option key={p.key} value={p.key}>{displayValue(p.title)}</option>)}</select></label>
       {template && <p className="small muted">{displayValue(library?.policies.find((p: any) => p.key === template)?.summary)}</p>}
+      {template && <TemplatePreview templateKey={template} owner={owner} contact={contact} />}
       {!template && <label className="field">Title<input value={title} onChange={(e) => setTitle(e.target.value)} /></label>}
       <div className="grid k2">
         <label className="field">Owner<input value={owner} onChange={(e) => setOwner(e.target.value)} /></label>
@@ -146,5 +147,21 @@ export function PolicyEditor() {
       {viewing && <Modal title={`${viewing.title} - v${viewing.version}`} onClose={() => setViewing(null)} wide>
         {viewing.note && <p className="small muted">{displayValue(viewing.note)}</p>}<Markdown text={viewing.body} /></Modal>}
     </>
+  );
+}
+
+// The library policy as it will read once adopted: the customer's name and the owner fill in when it is created.
+function TemplatePreview({ templateKey, owner, contact }: { templateKey: string; owner: string; contact: string }) {
+  const { data, error } = useData<any>(`grc/library/policies/${templateKey}`, {}, [templateKey]);
+  if (error) return <ErrorNote error={error} />;
+  if (!data) return null;
+  const text = String(data.body || "").replace(/\{\{owner\}\}/g, owner || "{{owner}}").replace(/\{\{securityContact\}\}/g, contact || "{{securityContact}}");
+  const frameworks = Object.keys(data.maps || {});
+  return (
+    <details style={{ margin: "8px 0" }}>
+      <summary className="small">Read the policy before adding it{frameworks.length ? ` · covers ${frameworks.length} framework${frameworks.length === 1 ? "" : "s"}` : ""}</summary>
+      <div className="card" style={{ maxHeight: 360, overflow: "auto", marginTop: 6 }}><Markdown text={text} /></div>
+      <p className="small muted">Placeholders such as {"{{organisation}}"} are filled in from the customer when the policy is created.</p>
+    </details>
   );
 }

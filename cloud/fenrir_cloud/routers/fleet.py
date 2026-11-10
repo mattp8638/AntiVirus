@@ -178,7 +178,7 @@ def update_device(device_id: str, body: dict = Body(...), principal: Principal =
         raise HTTPException(409, "Retired devices require fresh enrollment credentials.")
     if body.get("approved") is True:
         device.approved = True
-    if body.get("groupId"):
+    if body.get("groupId") and body["groupId"] != "auto":
         group = db.get(DeviceGroup, body["groupId"])
         if group is None or group.tenant_id != device.tenant_id:
             raise HTTPException(400, "Group belongs to another tenant")
@@ -188,7 +188,21 @@ def update_device(device_id: str, body: dict = Body(...), principal: Principal =
             raise HTTPException(400, "Policy belongs to another tenant")
     if "criticality" in body and body["criticality"] not in {"low", "medium", "high", "critical"}:
         raise HTTPException(400, "criticality must be low, medium, high or critical")
-    changed = apply_fields(device, body, {"group_id", "policy_id", "tags", "approved", "criticality"})
+    if body.get("groupId") == "auto":
+        from .. import group_rules
+
+        group_rules.hand_back(db, device)
+        body = {k: v for k, v in body.items() if k != "groupId"}
+        auto = ["groupId"]
+    else:
+        auto = []
+    changed = apply_fields(device, body, {"group_id", "policy_id", "tags", "approved", "criticality"}) + auto
+    if "groupId" in body:
+        device.group_rule_id = "manual"  # chosen by a person (group_rules.MANUAL): rules leave it alone
+    if "tags" in changed:
+        from .. import group_rules
+
+        group_rules.evaluate(db, device)
     audit.record(db, principal.actor, "device.updated", device.hostname, device.tenant_id, fields=changed)
     db.commit()
     return _device_view(device)
@@ -356,13 +370,24 @@ def command_catalog(principal: Principal = Depends(current_principal)):
 
 @router.get("/commands")
 def list_commands(tenant_id: str | None = None, device_id: str | None = None, status: str | None = None,
+                  type: str | None = None, issued_by: str | None = None,
                   principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Every remote action across the fleet, newest first: who sent what to which device, and what happened."""
     query = select(Command).where(Command.tenant_id.in_(scoped_tenant(principal, tenant_id)))
     if device_id:
         query = query.where(Command.device_id == device_id)
-    if status:
+    if status == "open":
+        query = query.where(Command.status.in_(("pending", "dispatched", "running", "cancelling")))
+    elif status:
         query = query.where(Command.status == status)
-    return [to_dict(c) for c in db.execute(query.order_by(Command.created_at.desc()).limit(500)).scalars()]
+    if type:
+        query = query.where(Command.type == type)
+    if issued_by:
+        query = query.where(Command.issued_by == (principal.actor if issued_by == "me" else issued_by))
+    rows = db.execute(query.order_by(Command.created_at.desc()).limit(500)).scalars().all()
+    ids = {c.device_id for c in rows}
+    names = dict(db.execute(select(Device.id, Device.hostname).where(Device.id.in_(ids))).all()) if ids else {}
+    return [{**to_dict(c), "hostname": names.get(c.device_id, "")} for c in rows]
 
 
 def _command_arguments(body: dict) -> dict:

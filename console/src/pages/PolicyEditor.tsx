@@ -4,7 +4,8 @@ import { useNavigate, useParams } from "react-router-dom";
 import { confirmDialog, promptDialog } from "../components/dialogs";
 import { api } from "../api";
 import { useApp } from "../app-context";
-import { ErrorNote, PageHead, Pill, useAction, useData } from "../components/ui";
+import { ErrorNote, Modal, PageHead, Pill, Table, useAction, useData, useListData } from "../components/ui";
+import { flattenSettings, settingDifferences, showSetting } from "./Policies";
 
 type Settings = Record<string, Record<string, any>>;
 
@@ -21,6 +22,7 @@ export default function PolicyEditor() {
   const { run, busy } = useAction();
   const navigate = useNavigate();
   const [problem, setProblem] = useState<string | null>(null);
+  const [previewing, setPreviewing] = useState(false);
 
   useEffect(() => {
     if (data) {
@@ -82,7 +84,9 @@ export default function PolicyEditor() {
                     setProblem(null);
                     try { await api(`policies/${id}`, { method: "DELETE" }); navigate("/policies"); } catch (err) { setProblem((err as Error).message); }
                   }}>Delete</button>
+                  <button disabled={busy} onClick={() => setPreviewing(true)} title="See what a device would end up with if these settings applied, before saving">Preview on a device</button>
                   <button className="primary" disabled={!dirty || busy} onClick={save}>{dirty ? "Save changes" : "Saved"}</button></>} />
+      {previewing && <PolicyPreview tenantId={data.policy.tenantId} settings={settings} locks={locks} onClose={() => setPreviewing(false)} />}
       <ErrorNote error={problem} />
       <div className="grid" style={{ gridTemplateColumns: "220px minmax(0,1fr)" }}>
         <div className="card" style={{ padding: 8, alignSelf: "start" }}>
@@ -161,4 +165,37 @@ function FieldInput({ field, value, onChange, disabled }: { field: any; value: a
                      onChange={(e) => onChange(e.target.value.split("\n"))} />;
   }
   return <input value={value ?? ""} disabled={disabled} onChange={(e) => onChange(e.target.value)} />;
+}
+
+// "What if": the chosen device's effective policy now, against what it would be with these (unsaved) settings on top.
+function PolicyPreview({ tenantId, settings, locks, onClose }: { tenantId: string | null; settings: Settings; locks: string[]; onClose: () => void }) {
+  const { data: devices } = useListData<any>("devices", { tenant_id: tenantId || undefined });
+  const [deviceId, setDeviceId] = useState("");
+  const { data: device } = useData<any>(deviceId ? `devices/${deviceId}` : null, {}, [deviceId]);
+  const [result, setResult] = useState<any>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    setResult(null); setError(null);
+    if (!deviceId) return;
+    api<any>("policies/preview", { body: { deviceId, settings, locks } }).then(setResult).catch((err) => setError((err as Error).message));
+  }, [deviceId, settings, locks]);
+  const rows = device && result ? settingDifferences(flattenSettings(device.policy.settings), flattenSettings(result.resolution.settings)) : [];
+  return (
+    <Modal wide title="Preview on a device" onClose={onClose}>
+      <label className="field">Device
+        <select value={deviceId} onChange={(e) => setDeviceId(e.target.value)}>
+          <option value="">Choose a device…</option>
+          {(devices || []).filter((d) => !d.retired).map((d) => <option key={d.id} value={d.id}>{displayValue(d.hostname)}</option>)}
+        </select></label>
+      <ErrorNote error={error} />
+      {deviceId && !result && !error && <div className="empty">Working it out…</div>}
+      {result && device && <>
+        <p className="small muted">Compared with what {displayValue(device.device.hostname)} has now. Settings locked by a higher policy cannot change, so they do not appear.</p>
+        <Table rows={rows} empty="No difference: this device would end up with exactly what it has now."
+               columns={[{ key: "setting", label: "Setting", render: (r) => <span className="mono small">{r.setting}</span> },
+                         { key: "before", label: "Now", render: (r) => <span className="small">{displayValue(showSetting(r.before))}</span> },
+                         { key: "after", label: "With these settings", render: (r) => <span className="small"><b>{displayValue(showSetting(r.after))}</b></span> }]} />
+      </>}
+    </Modal>
+  );
 }

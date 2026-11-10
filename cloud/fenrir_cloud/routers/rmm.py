@@ -935,33 +935,60 @@ def deploy_package(package_id: str, body: dict = Body(...), principal: Principal
 
 
 @router.get("/alerts")
-def monitoring_alerts(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    rows = db.execute(select(Alert).where(Alert.tenant_id.in_(principal.tenant_ids), Alert.rule_id.like("monitor:%"))
-                      .order_by(Alert.created_at.desc()).limit(500)).scalars()
-    return [to_dict(r) for r in rows]
+def monitoring_alerts(tenant_id: str | None = None, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Alerts raised by monitoring conditions, newest first, open and resolved: the history behind Monitoring."""
+    rows = db.execute(select(Alert).where(Alert.tenant_id.in_(scoped_tenant(principal, tenant_id)), Alert.rule_id.like("monitor:%"))
+                      .order_by(Alert.created_at.desc()).limit(500)).scalars().all()
+    names = _device_names(db, {r.device_id for r in rows if r.device_id})
+    return [{**to_dict(r), "hostname": names.get(r.device_id, "")} for r in rows]
 
 
 # --------------------------------------------------------------------------- Predictive Analytics & Anomaly Endpoints
 
 
+def _device_names(db: Session, ids: set[str]) -> dict[str, str]:
+    if not ids:
+        return {}
+    return dict(db.execute(select(Device.id, Device.hostname).where(Device.id.in_(ids))).all())
+
+
+def _analytics_devices(db: Session, principal: Principal, tenant_id: str | None) -> dict[str, Device]:
+    """Active (not decommissioned) devices in scope, by id."""
+    rows = db.execute(select(Device).where(Device.tenant_id.in_(scoped_tenant(principal, tenant_id)),
+                                           Device.api_key_hash != ("retired-" + Device.id))).scalars().all()
+    return {d.id: d for d in rows}
+
+
+def _with_device(row, devices: dict[str, Device]) -> dict:
+    device = devices.get(row.device_id)
+    return {**to_dict(row), "hostname": device.hostname if device else "", "tenantId": device.tenant_id if device else None}
+
+
+STATUS_ORDER = {"exhausted": 0, "critical": 1, "warning": 2, "ok": 3, "stable": 4}
+
+
 @router.get("/analytics/storage-exhaustion")
 def storage_exhaustion_predictions(
-    status: str | None = Query(default=None),
+    status: str | None = Query(default=None, description="ok | warning | critical | exhausted | stable; 'attention' = warning, critical or exhausted"),
+    tenant_id: str | None = None,
     principal: Principal = Depends(current_principal),
     db: Session = Depends(get_db)
 ):
-    """List predictive storage exhaustion analytics across managed devices."""
-    devices = db.execute(select(Device.id).where(Device.tenant_id.in_(principal.tenant_ids))).scalars().all()
+    """Disk-full forecasts across managed devices, most urgent first."""
+    devices = _analytics_devices(db, principal, tenant_id)
     if not devices:
         return []
 
     from ..models import DiskExhaustionPrediction
-    query = select(DiskExhaustionPrediction).where(DiskExhaustionPrediction.device_id.in_(devices))
-    if status:
+    query = select(DiskExhaustionPrediction).where(DiskExhaustionPrediction.device_id.in_(list(devices)))
+    if status == "attention":
+        query = query.where(DiskExhaustionPrediction.status.in_(("warning", "critical", "exhausted")))
+    elif status:
         query = query.where(DiskExhaustionPrediction.status == status)
 
-    rows = db.execute(query.order_by(DiskExhaustionPrediction.predicted_at.desc())).scalars().all()
-    return [to_dict(r) for r in rows]
+    rows = db.execute(query).scalars().all()
+    rows = sorted(rows, key=lambda r: (STATUS_ORDER.get(r.status, 9), r.days_remaining if r.days_remaining is not None else 1e9))
+    return [_with_device(r, devices) for r in rows[:500]]
 
 
 @router.get("/devices/{device_id}/analytics/disk-predictions")
@@ -988,23 +1015,24 @@ def device_disk_predictions(
 def resource_anomalies(
     metric: str | None = Query(default=None),
     sustained_only: bool = Query(default=False),
+    tenant_id: str | None = None,
     principal: Principal = Depends(current_principal),
     db: Session = Depends(get_db)
 ):
-    """List detected CPU and RAM resource anomalies across managed devices."""
-    devices = db.execute(select(Device.id).where(Device.tenant_id.in_(principal.tenant_ids))).scalars().all()
+    """CPU and memory use far above a device's own normal, newest first."""
+    devices = _analytics_devices(db, principal, tenant_id)
     if not devices:
         return []
 
     from ..models import ResourceAnomaly
-    query = select(ResourceAnomaly).where(ResourceAnomaly.device_id.in_(devices))
+    query = select(ResourceAnomaly).where(ResourceAnomaly.device_id.in_(list(devices)))
     if metric:
         query = query.where(ResourceAnomaly.metric == metric)
     if sustained_only:
         query = query.where(ResourceAnomaly.is_sustained.is_(True))
 
     rows = db.execute(query.order_by(ResourceAnomaly.at.desc()).limit(200)).scalars().all()
-    return [to_dict(r) for r in rows]
+    return [_with_device(r, devices) for r in rows]
 
 
 @router.get("/devices/{device_id}/analytics/anomalies")

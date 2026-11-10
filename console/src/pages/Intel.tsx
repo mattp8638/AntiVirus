@@ -1,6 +1,6 @@
 import { displayValue } from "../components/DisplayValue";
 import { useState } from "react";
-import { api, fmtTime } from "../api";
+import { api, fmtTime, uploadFile } from "../api";
 import { useApp } from "../app-context";
 import { Modal, PageHead, Pill, Table, Tabs, TenantSelect, useAction, useData, useListData } from "../components/ui";
 
@@ -23,7 +23,8 @@ export default function Intel() {
                   {can("platform") && <button disabled={busy} onClick={async () => { const r = await run(() => api<any>("intel/sync", { body: {} })); if (r) { reload(); reloadYara(); } }}>Sync feed now</button>}
                   {can("configure") && <button className="primary" onClick={() => setAdding(true)}>Add indicators</button>}
                 </>} />
-      <Tabs tabs={["Lookup", "Indicators", "YARA rules"]} active={tab} onChange={setTab} />
+      <Tabs tabs={["Lookup", "Check a file", "Indicators", "YARA rules"]} active={tab} onChange={setTab} />
+      {tab === "Check a file" && <FileCheck />}
       {tab === "Lookup" && (
         <div className="card">
           <div className="row">
@@ -109,5 +110,42 @@ function AddYara({ onClose }: { onClose: () => void }) {
       <label className="field">Name<input value={name} onChange={(e) => setName(e.target.value)} /></label>
       <textarea style={{ marginTop: 10 }} value={source} onChange={(e) => setSource(e.target.value)} />
     </Modal>
+  );
+}
+
+const ML_TONE: Record<string, string> = { malicious: "bad", "likely-malicious": "bad", suspicious: "warn", clean: "good" };
+
+// Score a Windows program with Fenrir's static machine-learning model (the one agents use) and look its hash up in
+// threat intelligence. The file is read in memory on the server and not kept.
+function FileCheck() {
+  const { data: model } = useData<any>("ml/model");
+  const [result, setResult] = useState<any>(null);
+  const [intelHit, setIntelHit] = useState<any>(null);
+  const [name, setName] = useState("");
+  const { run, busy } = useAction();
+  const check = async (file: File | undefined) => {
+    if (!file) return;
+    setName(file.name); setResult(null); setIntelHit(null);
+    const scored = await run(() => uploadFile<any>("ml/score", file));
+    if (!scored) return;
+    setResult(scored);
+    if (scored.sha256) setIntelHit(await api<any>("intel/lookup", { query: { value: scored.sha256 } }).catch(() => null));
+  };
+  return (
+    <div className="card">
+      <p className="small muted" style={{ marginTop: 0 }}>
+        {model?.available ? <>Model {displayValue(model.version)} · {(Number(model.size || 0) / 1024).toFixed(0)} KB{model.metrics?.auc ? ` · AUC ${model.metrics.auc}` : ""}. </> : "No model is installed on this server, so only the threat intelligence lookup works. "}
+        Windows programs (.exe, .dll) up to 64 MB. The file is scored in memory and not stored.
+      </p>
+      <input type="file" disabled={busy} onChange={(e) => check(e.target.files?.[0])} />
+      {busy && <p className="small muted">Checking {displayValue(name)}…</p>}
+      {result && <div style={{ marginTop: 12 }}>
+        {!result.available ? <p>No model is installed: {displayValue(result.reason)}.</p>
+          : !result.pe ? <p>{displayValue(name)} is not a Windows program, so the model does not apply. Look its hash up instead.</p>
+          : <p><b>{displayValue(name)}</b>: <Pill value={result.verdict} tone={ML_TONE[result.verdict]} /> score {result.score} (model {displayValue(result.model)})</p>}
+        {result.sha256 && <p className="small mono" style={{ wordBreak: "break-all" }}>SHA-256 {result.sha256}</p>}
+        {intelHit && <p className="small">Threat intelligence: {intelHit.matches?.length ? <><Pill value={intelHit.verdict} tone={intelHit.verdict === "malicious" ? "bad" : "muted"} /> {displayValue(intelHit.source || "")}</> : "no match"}{intelHit.sightings?.length ? ` · seen on ${intelHit.sightings.length} device(s)` : ""}</p>}
+      </div>}
+    </div>
   );
 }

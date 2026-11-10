@@ -161,23 +161,26 @@ function MoveToGroup({ ids, devices, onClose }: { ids: string[]; devices: any[];
   const { tenantName } = useApp();
   const [tenant, setTenant] = useState(tenants[0] ?? "");
   const [groupId, setGroupId] = useState("");
+  const [automatic, setAutomatic] = useState(false);
   const [result, setResult] = useState<any>(null);
   const { run, busy } = useAction();
   const move = async () => {
-    const reply = await run(() => api<any>("groups/members", { body: { deviceIds: chosen.filter((d) => d.tenantId === tenant).map((d) => d.id), groupId: groupId || null } }),
-                            groupId ? "Moved to the group" : "Taken out of their group");
+    const reply = await run(() => api<any>("groups/members", { body: { deviceIds: chosen.filter((d) => d.tenantId === tenant).map((d) => d.id), groupId: automatic ? "auto" : groupId || null } }),
+                            automatic ? "Handed back to the group rules" : groupId ? "Moved to the group" : "Taken out of their group");
     if (reply) { if (reply.skipped?.length) setResult(reply); else onClose(true); }
   };
   return (
     <Modal title={`Move ${ids.length} device${ids.length === 1 ? "" : "s"} to a group`} onClose={() => onClose(Boolean(result))}
-           footer={!result && <button className="primary" disabled={busy || !tenant} onClick={move}>{groupId ? "Move" : "Take out of group"}</button>}>
+           footer={!result && <button className="primary" disabled={busy || !tenant} onClick={move}>{automatic ? "Use the rules" : groupId ? "Move" : "Take out of group"}</button>}>
       {result ? <p>{result.moved.length} moved. Not moved: {result.skipped.map((s: any) => `${s.deviceId} (${s.reason})`).join(", ")}</p> : <>
         {tenants.length > 1 && <label className="field">Customer
           <select value={tenant} onChange={(e) => { setTenant(e.target.value); setGroupId(""); }}>
             {tenants.map((t) => <option key={t} value={t}>{tenantName(t)} ({chosen.filter((d) => d.tenantId === t).length})</option>)}
           </select>
           <span className="small muted">A group belongs to one customer: only that customer's selected devices move.</span></label>}
-        <label className="field">Group<GroupSelect tenantId={tenant} value={groupId} onChange={setGroupId} emptyLabel="No group (take them out)" /></label>
+        <label className="small" style={{ display: "block", marginBottom: 8 }}><input type="checkbox" checked={automatic} onChange={(e) => setAutomatic(e.target.checked)} /> Automatic: let the group rules decide</label>
+        {!automatic && <label className="field">Group<GroupSelect tenantId={tenant} value={groupId} onChange={setGroupId} emptyLabel="No group (take them out)" /></label>}
+        <p className="small muted">{automatic ? "Each device goes to the group whose rules it matches, or to no group if none match." : "Devices you place by hand stay there: group rules leave them alone."}</p>
       </>}
     </Modal>
   );
