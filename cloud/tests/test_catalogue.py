@@ -61,3 +61,9 @@ def test_a_windows_checkout_with_crlf_line_endings_still_loads(tmp_path):
     for path in list(root.glob("scripts/**/*.*")) + list(root.glob("apps/*.yml")):
         path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
     assert len(catalogue.load_apps(root)) == len(catalogue.load_apps()) and len(catalogue.load_scripts(root)) == len(catalogue.load_scripts())
+
+
+def test_catalogue_scripts_count_as_shipped_until_edited(client, admin):
+    rows = client.get("/api/console/rmm/scripts", headers=admin).json()
+    community = [s for s in rows if s["builtin"] and s.get("updatedBy") == "catalogue"]
+    assert community and all(s["review"]["status"] == "shipped" for s in community)
