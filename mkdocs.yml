@@ -1,0 +1,56 @@
+site_name: Fenrir
+site_description: Free, self-hosted RMM, endpoint protection and MSP platform
+repo_url: https://github.com/mattp8638/AntiVirus
+edit_uri: edit/main/docs/
+docs_dir: docs
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - search.suggest
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle: {icon: material/weather-night, name: Dark mode}
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle: {icon: material/weather-sunny, name: Light mode}
+markdown_extensions:
+  - admonition
+  - tables
+  - toc: {permalink: true}
+  - pymdownx.superfences
+validation:
+  links:
+    not_found: info
+    unrecognized_links: info
+    anchors: info
+not_in_nav: |
+  /parity/
+  /*.md
+nav:
+  - Home: index.md
+  - Getting started:
+      - Migrating from another RMM: MIGRATING.md
+      - Deploy from your RMM, GPO or Intune: DEPLOY_FROM_YOUR_RMM.md
+      - macOS without notarisation: MACOS_INSTALL.md
+      - Go-live checklist: GO_LIVE.md
+      - Modules and Essentials layout: MSP_MODULES.md
+  - Running the server:
+      - Automatic updates: AUTO_UPDATE.md
+      - Backup and restore: BACKUP_AND_RESTORE.md
+      - Code signing: CODE_SIGNING.md
+      - Server-generated installers: SERVER_GENERATED_INSTALLERS.md
+  - Features:
+      - RMM and service desk: RMM_PSA.md
+      - Windows patching: WINDOWS_PATCHING.md
+      - Vulnerabilities and exposure: VULNERABILITY_REMEDIATION_AND_EXPOSURE.md
+      - Microsoft 365 administration: M365_ADMINISTRATION.md
+      - Reports and branding: REPORTS_AND_BRANDING.md
+      - Network topology: NETWORK_TOPOLOGY.md
+      - Governance: GOVERNANCE.md
+  - Reference:
+      - Architecture: ARCHITECTURE.md
+      - Remote protocol: REMOTE_PROTOCOL.md
+      - Remote Ctrl+Alt+Del: REMOTE_CTRL_ALT_DEL.md

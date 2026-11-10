@@ -3,7 +3,7 @@
 services:
   cloud:
     # Replace the base file's public HTTP binding; keep it available for local diagnostics.
-    ports: !override ["127.0.0.1:8080:8080"]
+    ports: !override ["127.0.0.1:8080:8080", "3478:3478/udp"]   # 3478/udp: STUN for direct remote sessions
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped

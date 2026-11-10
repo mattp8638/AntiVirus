@@ -9,6 +9,7 @@ import "@xterm/xterm/css/xterm.css";
 import { api } from "../api";
 import { cadResult, isScreenSizeMode, SCREEN_SIZE_MODES, screenDisplaySize, type RemoteFeedback, type ScreenSizeMode } from "../remote-actions";
 import { confirmDialog, promptDialog, noticeDialog } from "../components/dialogs";
+import { DirectLink, type DirectState } from "../remote-direct";
 
 type Tab = "Desktop" | "Terminal" | "Files" | "Processes" | "Services" | "Chat";
 type Msg = { ch: string; t: string; [key: string]: any };
@@ -109,8 +110,13 @@ export default function RemoteViewer() {
   const pendingMove = useRef<{ x: number; y: number } | null>(null);
   const tabRef = useRef<Tab>("Desktop");
   tabRef.current = tab;
+  const direct = useRef<DirectLink | null>(null);
+  const iceServers = useRef<RTCIceServer[]>([]);
+  const [directState, setDirectState] = useState<DirectState>("relay");
+  const [directDetail, setDirectDetail] = useState("");
 
   const send = useCallback((message: Msg) => {
+    if (direct.current?.send(message)) return;
     if (ws.current?.readyState === WebSocket.OPEN) ws.current.send(JSON.stringify(message));
   }, []);
   const sendBinary = useCallback((data: Uint8Array) => {
@@ -151,7 +157,8 @@ export default function RemoteViewer() {
           setStatus(`This session has ${detail.status}. Start a new one from the device page.`);
           return;
         }
-        const { token, path } = await api(`remote/sessions/${id}/viewer-token`, { method: "POST" });
+        const { token, path, iceServers: servers } = await api(`remote/sessions/${id}/viewer-token`, { method: "POST" });
+        iceServers.current = Array.isArray(servers) ? servers : [];
         const proto = window.location.protocol === "https:" ? "wss" : "ws";
         const socket = new WebSocket(`${proto}://${window.location.host}${path}?token=${encodeURIComponent(token)}`);
         socket.binaryType = "arraybuffer";
@@ -185,6 +192,8 @@ export default function RemoteViewer() {
       window.clearInterval(fpsTimer);
       window.clearTimeout(cadTimer.current);
       cadPending.current = null;
+      direct.current?.stop("", false);
+      direct.current = null;
       ws.current?.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -241,6 +250,7 @@ export default function RemoteViewer() {
           if (tabRef.current === "Desktop" && (m.capabilities || []).includes("desktop")) {
             send({ ch: "screen", t: "start", quality: m.quality || 70, fps: m.maxFps || 15, monitor: 0 });
           }
+          if ((m.capabilities || []).includes("webrtc") && !direct.current && DirectLink.supported()) startDirect();
           return;
         case "consent":
           setStatus(m.state === "pending" ? "Waiting for the user to accept the connection…" : m.state === "denied" ? "The user declined the connection." : "Connected");
@@ -259,10 +269,16 @@ export default function RemoteViewer() {
           return;
         case "agent.disconnected":
         case "end":
+          direct.current?.stop("", false);
+          direct.current = null;
           setState("ended");
           setStatus(`Session ended${m.reason ? ` (${m.reason})` : ""}.`);
           return;
       }
+    }
+    if (m.ch === "rtc") {
+      direct.current?.handle(m);
+      return;
     }
     if (m.ch === "screen" && m.t === "frame.end") {
       decodeQueue.current = decodeQueue.current.then(() => { frames.current += 1; send({ ch: "screen", t: "ack", seq: m.seq }); });
@@ -284,6 +300,22 @@ export default function RemoteViewer() {
     }
     const key = `${m.ch}:${m.req ?? m.id ?? ""}`;
     (listeners.current.get(key) || listeners.current.get(`${m.ch}:*`))?.(m);
+  };
+
+  // Direct connection: offered once the device says it can; on failure or close the session stays on the relay.
+  const startDirect = () => {
+    const link = new DirectLink(iceServers.current, {
+      signal: (m) => { if (ws.current?.readyState === WebSocket.OPEN) ws.current.send(JSON.stringify(m)); },
+      text: (m) => handleText(m as Msg),
+      binary: (data) => handleBinary(data),
+      state: (s, detail) => {
+        setDirectState(s);
+        setDirectDetail(detail || "");
+        if (s === "relay" && direct.current === link) direct.current = null;
+      },
+    });
+    direct.current = link;
+    void link.start();
   };
 
   const handleBinary = (data: Uint8Array) => {
@@ -504,6 +536,14 @@ export default function RemoteViewer() {
         )}
         <span className="spacer" />
         <span className="muted small">{state === "live" ? `${latency ?? "–"} ms${tab === "Desktop" ? ` · ${fps} fps` : ""}` : status}</span>
+        {state === "live" && caps.includes("desktop") && (
+          <span className={`badge ${directState === "direct" ? "tone-good" : "tone-muted"}`} data-testid="remote-path"
+            title={directState === "direct" ? `Screen and input go straight to the device${directDetail ? ` (${directDetail})` : ""}. Audited actions still use the relay.`
+              : directState === "connecting" ? "Trying a direct connection…"
+              : `Through the Fenrir relay${directDetail ? ` (${directDetail})` : ""}`}>
+            {directState === "direct" ? "Direct" : directState === "connecting" ? "Connecting…" : "Relayed"}
+          </span>
+        )}
         {state !== "ended" ? <button className="danger" onClick={() => setShowEnd(true)}>End session</button>
                            : <button onClick={() => window.close()}>Close window</button>}
       </header>

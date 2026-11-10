@@ -296,6 +296,9 @@ jobs:
                   assert manifest["sha256"] == hashlib.sha256(data).hexdigest() and manifest["size"] == len(data), (platform, arch)
           print("PASS: unsigned-lab Windows installer and Linux/macOS agents match their build metadata and signed manifests")
           PY
+          # Apple Silicon kills arm64 code with no signature; the linker's ad-hoc one must survive packaging.
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.lab.yml --env-file deploy/.env exec -T cloud cat /app/cloud/downloads/fenrir-agent-darwin-arm64 > /tmp/fenrir-agent-darwin-arm64
+          python3 scripts/ci/check_macho_signature.py /tmp/fenrir-agent-darwin-arm64
           # Signatures checked independently of Fenrir's code, with OpenSSL and the run's public key.
           openssl pkey -in "$FENRIR_RELEASE_KEY" -pubout -out /tmp/release-pub.pem
           pub=$(openssl pkey -in "$FENRIR_RELEASE_KEY" -pubout -outform DER | tail -c 32 | base64)

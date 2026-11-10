@@ -44,3 +44,4 @@ deploy/signing/*
 agent/windows/service/build-quiet*
 *.zip
 !components/**/*.zip
+/site/

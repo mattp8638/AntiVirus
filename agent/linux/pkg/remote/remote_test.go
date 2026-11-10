@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 
 // fakeDesktop is a 300x200 screen whose pixels change when the mouse moves.
 type fakeDesktop struct {
+	mu     sync.Mutex
 	moves  [][2]int
 	keys   []string
 	pixels []byte
@@ -34,9 +36,13 @@ func newFakeDesktop() *fakeDesktop {
 }
 func (f *fakeDesktop) Size() (int, int) { return 300, 200 }
 func (f *fakeDesktop) Capture() ([]byte, int, int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return append([]byte(nil), f.pixels...), 300, 200, nil
 }
 func (f *fakeDesktop) MouseMove(x, y int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.moves = append(f.moves, [2]int{x, y})
 	f.pixels[(y*300+x)*4] = 0xff
 	return nil

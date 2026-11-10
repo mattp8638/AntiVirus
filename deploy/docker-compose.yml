@@ -9,6 +9,7 @@ x-fenrir-environment: &fenrir-environment
   FENRIR_PUBLIC_URL: ${FENRIR_PUBLIC_URL:?set FENRIR_PUBLIC_URL}
   FENRIR_ADMIN_EMAIL: ${FENRIR_ADMIN_EMAIL:-admin@fenrir.local}
   FENRIR_MSP_NAME: ${FENRIR_MSP_NAME:-My MSP}   # first run only: your company, as the MSP tenant
+  FENRIR_STUN_PORT: ${FENRIR_STUN_PORT:-3478}     # UDP STUN for direct remote sessions; 0 turns it off
   FENRIR_ADMIN_PASSWORD: ${FENRIR_ADMIN_PASSWORD:?set FENRIR_ADMIN_PASSWORD}
   FENRIR_OPEN_ENROLLMENT: ${FENRIR_OPEN_ENROLLMENT:-true}
   FENRIR_FEED_URL: ${FENRIR_FEED_URL:-https://api.fenrir-security.co.uk}
@@ -79,7 +80,7 @@ services:
       FENRIR_ROLE: web
     # deploy/releases: agent release manifests signed off the server (docs/AUTO_UPDATE.md); read-only.
     volumes: [artifacts:/data, ./releases:/app/cloud/releases:ro]
-    ports: ["8080:8080"]
+    ports: ["8080:8080", "3478:3478/udp"]   # 3478/udp: STUN, so remote sessions can go peer-to-peer
 
   worker:
     # Background jobs: RMM schedules, automations, webhooks, the PSA mailbox, Microsoft 365 and accounting syncs,

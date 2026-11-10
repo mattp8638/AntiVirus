@@ -44,7 +44,7 @@ Deployment consists of **PostgreSQL + Fenrir Cloud**, which serves the compiled 
 | Capacity | For an initial source-build evaluation, plan roughly 4 vCPUs, 8 GB RAM and 80 GB SSD; 16 GB RAM gives more build headroom. These are estimates, not measured fleet-capacity guarantees. Event volume and retention determine storage needs. |
 | Containers | Docker Engine, BuildKit/buildx and **Docker Compose 2.24.4+**. The HTTPS/local templates use `!override`. Use `docker compose`, not legacy `docker-compose`. |
 | Tools | Git, curl, OpenSSL and Bash; Python 3 for the host backup/restore utilities. The image build supplies the application runtimes and Windows cross-toolchain. |
-| Network | DNS hostname pointing at the server; TCP 80/443 for HTTPS, optional UDP 443 for HTTP/3, and restricted SSH access. Keep PostgreSQL private. |
+| Network | DNS hostname pointing at the server; TCP 80/443 for HTTPS, optional UDP 443 for HTTP/3, UDP 3478 for direct (peer-to-peer) remote sessions, and restricted SSH access. Keep PostgreSQL private. |
 | Outbound access | Container/package registries during builds; TLS/signing timestamp services; configured threat feeds, CVE sources and providers during operation. |
 | Signing | Production Windows builds need a usable code-signing PFX/password. Signed Linux/macOS updates need a persistent Ed25519 release key. Preserve and back up both. |
 
@@ -456,7 +456,7 @@ passkeys follow the same rule as passwords: platform administrators only.
 |---|---|
 | Windows | Download the customer-specific `FenrirSetup.exe` from **Deploy agents** and run as administrator. It bundles the service, helper and associated user-mode components. Check the signer and successful check-in. See [Windows persistence](docs/WINDOWS_AGENT_PERSISTENCE.md). |
 | Linux | Download the generated customer installer, inspect it and run `sudo sh /path/to/installer.sh`. It installs a systemd service. Desktop remote control needs X11; terminal/files are separate capabilities. |
-| macOS | Use the generated macOS installer with administrator rights. It installs the Go agent as a LaunchDaemon; grant required OS permissions, including Full Disk Access where needed. This is not the older Swift prototype. |
+| macOS | Use the generated macOS installer with administrator rights. It installs the Go agent as a LaunchDaemon; grant required OS permissions, including Full Disk Access where needed. No notarisation or Apple Developer account is needed: see [installing on macOS](docs/MACOS_INSTALL.md). This is not the older Swift prototype. |
 | Android | Use phone enrolment and grant requested device/location permissions. Capabilities differ from desktop agents. |
 | iPhone, iPad, Mac (no agent) | Use phone enrolment: the code installs a Fenrir DNS profile for web and phishing protection. There is no app, Intune or Apple MDM, and so no remote actions. See [Apple web protection](docs/APPLE_WEB_PROTECTION.md). |
 
@@ -727,4 +727,5 @@ each bundled dependency keeps its own licence.
   and test changes on a small group of devices first.
 - **Security problems.** If you find a vulnerability, report it privately through GitHub's
   [security advisories](https://github.com/mattp8638/AntiVirus/security/advisories/new) rather than a public issue. There
-  is no promise of a fix or a response time.
+  is no promise of a fix or a response time. See [SECURITY.md](SECURITY.md) for the free scanning every change goes
+  through (CodeQL, OpenSSF Scorecard, SBOMs).

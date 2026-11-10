@@ -498,6 +498,8 @@ SCHEMA: tuple[Section, ...] = (
             F("consentTimeoutSeconds", "int", 30, "Consent prompt timeout (seconds)", min=10, max=300),
             F("onConsentTimeout", "enum", "deny", "If nobody answers", options=("deny", "allow")),
             F("allowControl", "bool", True, "Technicians can control mouse and keyboard", "Off = view only."),
+            F("allowDirect", "bool", True, "Direct (peer-to-peer) screen sharing",
+              "Screen and mouse/keyboard go straight between the technician's browser and the device when they can reach each other (faster); otherwise through the server. Terminal, files and chat always go through the server."),
             F("recordSessions", "bool", False, "Record remote sessions (screen and terminal output)",
               help="Recordings are kept with device bundles for the retention period; only responders can play them back."),
             F("allowTerminal", "bool", True, "Allow remote terminal (PowerShell / shell)"),
