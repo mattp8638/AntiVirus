@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Postman'
+publisher: 'Postman'
+category: 'Development'
+windows:
+  winget: 'Postman.Postman'
+macos:
+  brew: 'postman'
+detect: '^Postman'   # matches the installed program's name in inventory

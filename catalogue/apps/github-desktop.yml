@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'GitHub Desktop'
+publisher: 'GitHub'
+category: 'Development'
+windows:
+  winget: 'GitHub.GitHubDesktop'
+macos:
+  brew: 'github'
+detect: '^GitHub Desktop'   # matches the installed program's name in inventory

@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Zoom Workplace'
+publisher: 'Zoom'
+category: 'Communication'
+windows:
+  winget: 'Zoom.Zoom'
+macos:
+  brew: 'zoom'
+detect: '^Zoom( Workplace)?'   # matches the installed program's name in inventory

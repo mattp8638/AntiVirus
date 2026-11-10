@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'balenaEtcher'
+publisher: 'Balena'
+category: 'Utilities'
+windows:
+  winget: 'Balena.Etcher'
+macos:
+  brew: 'balenaetcher'
+detect: '^balenaEtcher'   # matches the installed program's name in inventory

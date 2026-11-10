@@ -1,0 +1,7 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'HWiNFO'
+publisher: 'REALiX'
+category: 'Utilities'
+windows:
+  winget: 'REALiX.HWiNFO'
+detect: '^HWiNFO'   # matches the installed program's name in inventory

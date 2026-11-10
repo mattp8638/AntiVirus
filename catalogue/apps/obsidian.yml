@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Obsidian'
+publisher: 'Obsidian'
+category: 'Productivity'
+windows:
+  winget: 'Obsidian.Obsidian'
+macos:
+  brew: 'obsidian'
+detect: '^Obsidian'   # matches the installed program's name in inventory

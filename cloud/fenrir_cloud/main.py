@@ -101,6 +101,9 @@ def bootstrap(settings: Settings) -> None:
                 # Printed once so the first operator can sign in; change it straight away.
                 print(f"\n[fenrir] Created admin {settings.bootstrap_admin_email} with password: {password}\n", file=sys.stderr)
         rmm_library.seed(db)
+        from . import catalogue
+
+        catalogue.seed(db)  # community apps and scripts (catalogue/), new entries only
         from . import condition_remediation
 
         condition_remediation.seed(db)

@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Dropbox'
+publisher: 'Dropbox'
+category: 'Cloud storage'
+windows:
+  winget: 'Dropbox.Dropbox'
+macos:
+  brew: 'dropbox'
+detect: '^Dropbox'   # matches the installed program's name in inventory

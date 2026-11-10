@@ -84,6 +84,7 @@ WORKDIR /app/cloud
 COPY cloud/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt "psycopg[binary]>=3.2"
 COPY cloud/ ./
+COPY catalogue/ /app/catalogue/
 COPY ml/fenrir_ml /app/ml/fenrir_ml
 COPY ml/models /app/ml/models
 COPY --from=console /src/console/dist /app/console/dist

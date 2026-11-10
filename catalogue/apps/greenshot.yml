@@ -1,0 +1,7 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Greenshot'
+publisher: 'Greenshot'
+category: 'Utilities'
+windows:
+  winget: 'Greenshot.Greenshot'
+detect: '^Greenshot'   # matches the installed program's name in inventory

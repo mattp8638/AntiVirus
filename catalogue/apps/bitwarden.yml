@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Bitwarden'
+publisher: 'Bitwarden'
+category: 'Security'
+windows:
+  winget: 'Bitwarden.Bitwarden'
+macos:
+  brew: 'bitwarden'
+detect: '^Bitwarden'   # matches the installed program's name in inventory

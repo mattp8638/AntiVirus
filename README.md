@@ -705,7 +705,7 @@ Before relying on a release, review the dependency notices in [NOTICE](NOTICE), 
 
 - [Architecture](docs/ARCHITECTURE.md), [RMM/PSA](docs/RMM_PSA.md), [RMM/PSA intelligence](docs/RMM_PSA_INTELLIGENCE.md), [zero-trust remote administration](docs/ZERO_TRUST_REMOTE_ADMINISTRATION.md), [continuous GRC](docs/CONTINUOUS_GRC.md), [remote protocol](docs/REMOTE_PROTOCOL.md)
 - [Acceptance lab: prove it works before you rely on it](docs/ACCEPTANCE_LAB.md)
-- [Reports and branding](docs/REPORTS_AND_BRANDING.md), [deploy from your RMM, Group Policy or Intune](docs/DEPLOY_FROM_YOUR_RMM.md)
+- [Reports and branding](docs/REPORTS_AND_BRANDING.md), [deploy from your RMM, Group Policy or Intune](docs/DEPLOY_FROM_YOUR_RMM.md), [community app and script catalogue](catalogue/README.md)
 - [Code signing](docs/CODE_SIGNING.md), [driver/prevention limits](docs/DRIVER_SIGNING.md), [updates](docs/AUTO_UPDATE.md)
 - [Parity decisions](docs/parity/decisions.md), [acceptance](docs/parity/acceptance.md), [release gates](docs/parity/release-gates.md)
 - [Console rendering](docs/CONSOLE_RENDER_SAFETY.md), [Ctrl+Alt+Del](docs/REMOTE_CTRL_ALT_DEL.md)

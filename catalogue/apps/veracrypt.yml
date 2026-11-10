@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'VeraCrypt'
+publisher: 'IDRIX'
+category: 'Security'
+windows:
+  winget: 'IDRIX.VeraCrypt'
+macos:
+  brew: 'veracrypt'
+detect: '^VeraCrypt'   # matches the installed program's name in inventory

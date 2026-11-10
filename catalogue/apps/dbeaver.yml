@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'DBeaver'
+publisher: 'DBeaver'
+category: 'Development'
+windows:
+  winget: 'DBeaver.DBeaver.Community'
+macos:
+  brew: 'dbeaver-community'
+detect: '^DBeaver'   # matches the installed program's name in inventory

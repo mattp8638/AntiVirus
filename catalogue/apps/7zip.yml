@@ -1,0 +1,7 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: '7-Zip'
+publisher: 'Igor Pavlov'
+category: 'Utilities'
+windows:
+  winget: '7zip.7zip'
+detect: '^7-Zip'   # matches the installed program's name in inventory

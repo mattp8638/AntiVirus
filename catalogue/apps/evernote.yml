@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Evernote'
+publisher: 'Evernote'
+category: 'Productivity'
+windows:
+  winget: 'Evernote.Evernote'
+macos:
+  brew: 'evernote'
+detect: '^Evernote'   # matches the installed program's name in inventory

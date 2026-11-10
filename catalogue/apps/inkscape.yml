@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Inkscape'
+publisher: 'Inkscape'
+category: 'Media'
+windows:
+  winget: 'Inkscape.Inkscape'
+macos:
+  brew: 'inkscape'
+detect: '^Inkscape'   # matches the installed program's name in inventory

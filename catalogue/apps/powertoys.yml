@@ -1,0 +1,7 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'PowerToys'
+publisher: 'Microsoft'
+category: 'Utilities'
+windows:
+  winget: 'Microsoft.PowerToys'
+detect: '^PowerToys'   # matches the installed program's name in inventory

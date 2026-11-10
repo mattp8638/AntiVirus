@@ -1,0 +1,7 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'ASP.NET Core Runtime 8'
+publisher: 'Microsoft'
+category: 'Runtimes'
+windows:
+  winget: 'Microsoft.DotNet.AspNetCore.8'
+detect: '^Microsoft ASP\.NET Core 8\.'   # matches the installed program's name in inventory

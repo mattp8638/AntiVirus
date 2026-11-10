@@ -1,0 +1,7 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'ShareX'
+publisher: 'ShareX Team'
+category: 'Utilities'
+windows:
+  winget: 'ShareX.ShareX'
+detect: '^ShareX'   # matches the installed program's name in inventory

@@ -1,0 +1,7 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Git'
+publisher: 'Git'
+category: 'Development'
+windows:
+  winget: 'Git.Git'
+detect: '^Git( version|$)'   # matches the installed program's name in inventory

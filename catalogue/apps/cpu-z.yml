@@ -1,0 +1,7 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'CPU-Z'
+publisher: 'CPUID'
+category: 'Utilities'
+windows:
+  winget: 'CPUID.CPU-Z'
+detect: '^CPU-Z'   # matches the installed program's name in inventory

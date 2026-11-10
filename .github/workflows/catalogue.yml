@@ -1,0 +1,60 @@
+name: Community catalogue
+
+# Checks every change to catalogue/: the manifest matches the files, every script parses, and every winget package ID
+# and Homebrew cask exists in the public winget and Homebrew catalogues.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ["catalogue/**", ".github/workflows/catalogue.yml"]
+  schedule:
+    - cron: "23 5 * * 1"   # weekly: catch apps removed from winget or Homebrew
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Manifest matches the files
+        run: python3 catalogue/manifest.py --check
+      - name: Shell scripts parse
+        run: for f in catalogue/scripts/unix/*.sh; do sh -n "$f" || { echo "::error file=$f::does not parse"; exit 1; }; done
+      - name: PowerShell scripts parse
+        shell: pwsh
+        run: |
+          $bad = 0
+          Get-ChildItem catalogue/scripts/windows/*.ps1 | ForEach-Object {
+            $errors = $null; $tokens = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors) { $bad++; "::error file=$($_.FullName)::$($errors[0].Message)" }
+          }
+          if ($bad) { exit 1 }
+      - name: Package IDs exist in winget and Homebrew
+        run: |
+          git clone -q --filter=blob:none --no-checkout --depth 1 https://github.com/microsoft/winget-pkgs.git /tmp/winget
+          git clone -q --filter=blob:none --no-checkout --depth 1 https://github.com/Homebrew/homebrew-cask.git /tmp/cask
+          git -C /tmp/winget ls-tree -r -d --name-only HEAD manifests > /tmp/winget-dirs.txt
+          git -C /tmp/cask ls-tree -r --name-only HEAD Casks | sed 's|.*/||; s|\.rb$||' > /tmp/casks.txt
+          python3 - <<'PY'
+          import collections, pathlib, re, sys, yaml
+          dirs = [d for d in open("/tmp/winget-dirs.txt").read().split("\n") if d]
+          children = collections.defaultdict(list)
+          for d in dirs:
+              parent, _, leaf = d.rpartition("/")
+              children[parent].append(leaf)
+          casks = set(open("/tmp/casks.txt").read().split())
+          bad = []
+          for path in sorted(pathlib.Path("catalogue/apps").glob("*.yml")):
+              data = yaml.safe_load(path.read_text())
+              winget = data["windows"]["winget"]
+              folder = "manifests/" + winget[0].lower() + "/" + winget.replace(".", "/")
+              if not any(re.match(r"^\d", c) for c in children.get(folder, [])):
+                  bad.append(f"{path}: winget package {winget} not found")
+              brew = (data.get("macos") or {}).get("brew")
+              if brew and brew not in casks:
+                  bad.append(f"{path}: Homebrew cask {brew} not found")
+          for line in bad:
+              print(f"::error::{line}")
+          sys.exit(1 if bad else 0)
+          PY

@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'HandBrake'
+publisher: 'HandBrake Team'
+category: 'Media'
+windows:
+  winget: 'HandBrake.HandBrake'
+macos:
+  brew: 'handbrake-app'
+detect: '^HandBrake'   # matches the installed program's name in inventory

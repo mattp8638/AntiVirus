@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Thunderbird'
+publisher: 'Mozilla'
+category: 'Communication'
+windows:
+  winget: 'Mozilla.Thunderbird'
+macos:
+  brew: 'thunderbird'
+detect: '^Mozilla Thunderbird'   # matches the installed program's name in inventory

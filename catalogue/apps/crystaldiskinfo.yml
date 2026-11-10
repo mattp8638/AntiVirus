@@ -1,0 +1,7 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'CrystalDiskInfo'
+publisher: 'Crystal Dew World'
+category: 'Utilities'
+windows:
+  winget: 'CrystalDewWorld.CrystalDiskInfo'
+detect: '^CrystalDiskInfo'   # matches the installed program's name in inventory

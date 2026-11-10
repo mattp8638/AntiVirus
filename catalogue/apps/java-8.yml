@@ -1,0 +1,7 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Java 8 (Oracle JRE)'
+publisher: 'Oracle'
+category: 'Runtimes'
+windows:
+  winget: 'Oracle.JavaRuntimeEnvironment'
+detect: '^Java 8 Update'   # matches the installed program's name in inventory

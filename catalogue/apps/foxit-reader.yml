@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Foxit PDF Reader'
+publisher: 'Foxit'
+category: 'Documents'
+windows:
+  winget: 'Foxit.FoxitReader'
+macos:
+  brew: 'foxitreader'
+detect: '^Foxit PDF Reader'   # matches the installed program's name in inventory

@@ -1,0 +1,7 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Everything'
+publisher: 'voidtools'
+category: 'Utilities'
+windows:
+  winget: 'voidtools.Everything'
+detect: '^Everything'   # matches the installed program's name in inventory

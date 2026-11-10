@@ -1,0 +1,7 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Visual C++ Redistributable 2015-2022 (x64)'
+publisher: 'Microsoft'
+category: 'Runtimes'
+windows:
+  winget: 'Microsoft.VCRedist.2015+.x64'
+detect: '^Microsoft Visual C\+\+ 2015-20\d\d Redistributable \(x64\)'   # matches the installed program's name in inventory
