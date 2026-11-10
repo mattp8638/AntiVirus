@@ -468,12 +468,43 @@ def _existing_users() -> int:
         return 0
 
 
+class RequestGate:
+    """Let at most ``limit`` HTTP requests into the app at once; the rest wait in the event loop, holding nothing.
+
+    Without it a burst of agents deadlocked the server: a sync dependency took a database connection on one worker
+    thread, then the request waited for a thread to run its endpoint, while every thread waited for a connection.
+    Requests inside the gate never outnumber threads or connections. WebSockets (the remote relay) are not gated.
+    """
+
+    def __init__(self, app, limit: int) -> None:
+        import asyncio
+
+        self.app, self.limit = app, limit
+        self.slots = asyncio.Semaphore(limit)
+        self.waiting = 0
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("path", "").startswith(("/health", "/ready")):
+            await self.app(scope, receive, send)  # health checks must answer even when the server is busy
+            return
+        self.waiting += 1
+        try:
+            await self.slots.acquire()
+        finally:
+            self.waiting -= 1
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            self.slots.release()
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     if settings.role not in ("all", "web", "worker"):
         raise RuntimeError(f"FENRIR_ROLE must be all, web or worker, not {settings.role!r}")
     set_settings(settings)
-    database.init_engine(settings.database_url)
+    # Every request inside the gate may hold a connection; background threads and the odd second session need a few more.
+    database.init_engine(settings.database_url, pool_size=settings.http_concurrency + 8, max_overflow=16)
     from . import platform_security
 
     platform_security.invalidate()  # cached for the previous database, if any
@@ -488,6 +519,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        import anyio.to_thread
+
+        # Enough threads for every request inside the gate (sync endpoints and dependencies run on them).
+        anyio.to_thread.current_default_thread_limiter().total_tokens = settings.http_concurrency + 8
         bootstrap(settings)
         if settings.role == "web":
             # The worker queues commands; this process holds the agents' live connections, so it wakes them.
@@ -511,6 +546,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                   description="Unified control plane: antivirus/EDR fleet, SIEM, DNS protection, exposure management, CRM/PSA.")
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=True,
                        allow_methods=["*"], allow_headers=["*"])
+    app.add_middleware(RequestGate, limit=settings.http_concurrency)
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
