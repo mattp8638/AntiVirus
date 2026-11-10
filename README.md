@@ -456,7 +456,7 @@ passkeys follow the same rule as passwords: platform administrators only.
 |---|---|
 | Windows | Download the customer-specific `FenrirSetup.exe` from **Deploy agents** and run as administrator. It bundles the service, helper and associated user-mode components. Check the signer and successful check-in. See [Windows persistence](docs/WINDOWS_AGENT_PERSISTENCE.md). |
 | Linux | Download the generated customer installer, inspect it and run `sudo sh /path/to/installer.sh`. It installs a systemd service. Desktop remote control needs X11; terminal/files are separate capabilities. |
-| macOS | Use the generated macOS installer with administrator rights. It installs the Go agent as a LaunchDaemon; grant required OS permissions, including Full Disk Access where needed. This is not the older Swift prototype. |
+| macOS | Use the generated macOS installer with administrator rights. It installs the Go agent as a LaunchDaemon; grant required OS permissions, including Full Disk Access where needed. No notarisation or Apple Developer account is needed: see [installing on macOS](docs/MACOS_INSTALL.md). This is not the older Swift prototype. |
 | Android | Use phone enrolment and grant requested device/location permissions. Capabilities differ from desktop agents. |
 | iPhone, iPad, Mac (no agent) | Use phone enrolment: the code installs a Fenrir DNS profile for web and phishing protection. There is no app, Intune or Apple MDM, and so no remote actions. See [Apple web protection](docs/APPLE_WEB_PROTECTION.md). |
 
