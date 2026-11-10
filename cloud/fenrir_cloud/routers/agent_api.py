@@ -19,7 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .. import devicekeys
-from .. import rollouts, audit, endpoint_health, intel, psa, rmm, services
+from .. import rollouts, audit, endpoint_health, group_rules, intel, psa, rmm, services
 from ..config import get_settings
 from ..db import get_db
 from ..deps import current_command_device, current_device, current_device_by_key
@@ -182,7 +182,8 @@ def enroll(
     device.hostname, device.os_version = hostname, os_version
     device.platform = _platform(os_version, body.get("platform"))
     device.agent_version = str(body.get("agentVersion") or device.agent_version or "")[:64]
-    device.group_id = token.group_id if token and token.group_id and not resumed else device.group_id
+    if token and token.group_id and not resumed:
+        group_rules.place_by_hand(device, token.group_id)  # the code's group is a person's choice: rules leave it alone
     device.approved = token is not None
     device.ip_address = request.client.host if request.client else ""
     device.last_seen_at = utcnow()
@@ -193,6 +194,7 @@ def enroll(
     except IntegrityError:
         db.rollback()
         raise HTTPException(409, "Concurrent enrolment or conflicting device identity")
+    group_rules.evaluate(db, device)  # no-op when the code (or a person earlier) chose the group
     if resumed:
         audit.record(db, f"device:{hostname}", "device.reinstalled", device.id, tenant.id)
     _, policy_doc = services.effective_policy(db, device)

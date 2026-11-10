@@ -178,7 +178,7 @@ def update_device(device_id: str, body: dict = Body(...), principal: Principal =
         raise HTTPException(409, "Retired devices require fresh enrollment credentials.")
     if body.get("approved") is True:
         device.approved = True
-    if body.get("groupId"):
+    if body.get("groupId") and body["groupId"] != "auto":
         group = db.get(DeviceGroup, body["groupId"])
         if group is None or group.tenant_id != device.tenant_id:
             raise HTTPException(400, "Group belongs to another tenant")
@@ -188,7 +188,21 @@ def update_device(device_id: str, body: dict = Body(...), principal: Principal =
             raise HTTPException(400, "Policy belongs to another tenant")
     if "criticality" in body and body["criticality"] not in {"low", "medium", "high", "critical"}:
         raise HTTPException(400, "criticality must be low, medium, high or critical")
-    changed = apply_fields(device, body, {"group_id", "policy_id", "tags", "approved", "criticality"})
+    if body.get("groupId") == "auto":
+        from .. import group_rules
+
+        group_rules.hand_back(db, device)
+        body = {k: v for k, v in body.items() if k != "groupId"}
+        auto = ["groupId"]
+    else:
+        auto = []
+    changed = apply_fields(device, body, {"group_id", "policy_id", "tags", "approved", "criticality"}) + auto
+    if "groupId" in body:
+        device.group_rule_id = "manual"  # chosen by a person (group_rules.MANUAL): rules leave it alone
+    if "tags" in changed:
+        from .. import group_rules
+
+        group_rules.evaluate(db, device)
     audit.record(db, principal.actor, "device.updated", device.hostname, device.tenant_id, fields=changed)
     db.commit()
     return _device_view(device)

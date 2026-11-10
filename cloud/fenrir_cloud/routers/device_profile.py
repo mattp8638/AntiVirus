@@ -78,6 +78,9 @@ def report_profile(request: Request, body: dict = Body(...), device: Device = De
     if summary:
         inventory = {k: v for k, v in (device.inventory or {}).items() if k not in ("serverRoles", "workloads", "domainRole")}
         device.inventory = {**inventory, **summary}
+        from .. import group_rules
+
+        group_rules.evaluate(db, device)  # its role or OS may now match a group's rules
     if hardware.get("serial") and not device.serial_number:
         device.serial_number = str(hardware["serial"])[:255]
 

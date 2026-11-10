@@ -224,8 +224,8 @@ def _purge_telemetry(db, settings: Settings) -> dict:
 
 def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
     """Hourly jobs, in order."""
-    from . import (autodoc, billing_sync, client360, darkweb, defender, grc_automation, m365_partner, m365_reports, m365_standards, m365_workspace,
-                   tprm, web_profile)
+    from . import (autodoc, billing_sync, client360, darkweb, defender, grc_automation, group_rules, m365_partner, m365_reports,
+                   m365_standards, m365_workspace, tprm, web_profile)
 
     jobs: list[tuple[str, object]] = [("telemetry.retention", lambda db: _purge_telemetry(db, settings))]
     if settings.feed_sync_enabled:
@@ -236,7 +236,7 @@ def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
              ("grc.automation", grc_automation.tick), ("darkweb", darkweb.tick), ("m365.standards", m365_standards.tick),
              ("m365.workspace", m365_workspace.tick), ("m365.reports", m365_reports.send_schedules),
              ("billing.sync", billing_sync.tick), ("clients.health", client360.tick),
-             ("defender", defender.tick), ("web.profiles", web_profile.tick)]
+             ("defender", defender.tick), ("web.profiles", web_profile.tick), ("groups.rules", group_rules.tick)]
     if settings.dns_blocklists_enabled:
         from . import blocklists
 

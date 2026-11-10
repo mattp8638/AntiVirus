@@ -15,7 +15,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.orm import Session
 
-from .. import roles, sessions, sso, audit, crypto, deployment_installers, passkeys, platform_security, ratelimit
+from .. import roles, sessions, sso, audit, crypto, deployment_installers, group_rules, passkeys, platform_security, ratelimit
 from ..config import get_settings
 from ..db import get_db
 from ..deps import REAUTH_MINUTES, Principal, current_principal, require_reauth, scoped_tenant, tenant_subtree
@@ -866,12 +866,15 @@ def create_group(body: dict = Body(...), principal: Principal = Depends(current_
     principal.check_tenant(tenant_id)
     body = {"name": "", **body}
     _check_group_fields(db, tenant_id, body)
+    rules = _clean_rules(body.get("matchRules"))
     group = DeviceGroup(tenant_id=tenant_id, name=str(body["name"]).strip()[:200], parent_id=body.get("parentId") or None,
-                        policy_id=body.get("policyId") or None, match_rules=body.get("matchRules") or {})
+                        policy_id=body.get("policyId") or None, match_rules=rules)
     db.add(group)
-    audit.record(db, principal.actor, "group.created", group.name, tenant_id)
+    db.flush()
+    moved = group_rules.apply_tenant(db, tenant_id) if rules.get("enabled") else 0
+    audit.record(db, principal.actor, "group.created", group.name, tenant_id, rulesMoved=moved)
     db.commit()
-    return _group_view(group, {}, {})
+    return {**_group_view(group, {}, {}), "rulesMoved": moved}
 
 
 @router.patch("/groups/{group_id}")
@@ -884,11 +887,34 @@ def update_group(group_id: str, body: dict = Body(...), principal: Principal = D
     _check_group_fields(db, group.tenant_id, body, group)
     if "name" in body:
         body = {**body, "name": str(body["name"]).strip()[:200]}
+    if "matchRules" in body:
+        body = {**body, "matchRules": _clean_rules(body["matchRules"])}
     body = {k: (v or None) if k in ("parentId", "policyId") else v for k, v in body.items()}
     changed = apply_fields(group, body, {"name", "parent_id", "policy_id", "match_rules"})
-    audit.record(db, principal.actor, "group.updated", group.name, group.tenant_id, fields=changed)
+    moved = group_rules.apply_tenant(db, group.tenant_id) if "match_rules" in changed or "matchRules" in changed else 0
+    audit.record(db, principal.actor, "group.updated", group.name, group.tenant_id, fields=changed, rulesMoved=moved)
     db.commit()
-    return to_dict(group)
+    return {**to_dict(group), "rulesMoved": moved}
+
+
+def _clean_rules(rules) -> dict:
+    try:
+        return group_rules.clean(rules)
+    except group_rules.RuleError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/groups/rules/preview")
+def preview_group_rules(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Which of a customer's devices these rules would match (before saving)."""
+    tenant_id = body.get("tenantId")
+    principal.check_tenant(tenant_id)
+    rules = _clean_rules(body.get("matchRules"))
+    rules = {**rules, "enabled": bool(rules.get("conditions"))}
+    devices = group_rules.preview(db, tenant_id, rules)
+    hand_placed = [d for d in devices if group_rules.placed_by_hand(d) and d.group_id != body.get("groupId")]
+    return {"count": len(devices), "devices": [{"id": d.id, "hostname": d.hostname, "platform": d.platform} for d in devices[:50]],
+            "placedByHand": len(hand_placed)}
 
 
 def group_uses(db: Session, group: DeviceGroup) -> list[str]:
@@ -920,7 +946,10 @@ def delete_group(group_id: str, principal: Principal = Depends(current_principal
         raise HTTPException(409, "Change these first, so they do not quietly cover more or fewer devices: " + "; ".join(uses))
     moved = 0
     for device in db.execute(select(Device).where(Device.group_id == group.id)).scalars():
-        device.group_id = group.parent_id
+        if group_rules.placed_by_rule(device):
+            device.group_id = device.group_rule_id = None  # its rule is going: the remaining rules place it again below
+        else:
+            device.group_id = group.parent_id
         moved += 1
     for child in db.execute(select(DeviceGroup).where(DeviceGroup.parent_id == group.id)).scalars():
         child.parent_id = group.parent_id
@@ -928,6 +957,8 @@ def delete_group(group_id: str, principal: Principal = Depends(current_principal
         token.group_id = group.parent_id
     db.flush()
     db.delete(group)
+    db.flush()
+    group_rules.apply_tenant(db, group.tenant_id)
     audit.record(db, principal.actor, "group.deleted", group.name, group.tenant_id, devicesMoved=moved, movedTo=group.parent_id or "no group")
     db.commit()
     return {"ok": True, "devicesMoved": moved, "movedTo": group.parent_id}
@@ -941,7 +972,8 @@ def set_group_members(body: dict = Body(...), principal: Principal = Depends(cur
     if not isinstance(ids, list) or not ids or len(ids) > 5000:
         raise HTTPException(422, "deviceIds must list between 1 and 5000 devices")
     group = None
-    if body.get("groupId"):
+    automatic = body.get("groupId") == "auto"
+    if body.get("groupId") and not automatic:
         group = db.get(DeviceGroup, body["groupId"])
         if group is None:
             raise HTTPException(404, "Group not found")
@@ -953,11 +985,14 @@ def set_group_members(body: dict = Body(...), principal: Principal = Depends(cur
             skipped.append({"deviceId": device_id, "reason": "not found"})
         elif group is not None and device.tenant_id != group.tenant_id:
             skipped.append({"deviceId": device_id, "reason": "belongs to another customer than the group"})
-        else:
-            device.group_id = group.id if group else None
+        elif automatic:
+            group_rules.hand_back(db, device)
             moved.append(device_id)
-    audit.record(db, principal.actor, "group.members.set", group.name if group else "no group", group.tenant_id if group else None,
-                 devices=len(moved))
+        else:
+            group_rules.place_by_hand(device, group.id if group else None)
+            moved.append(device_id)
+    audit.record(db, principal.actor, "group.members.set", "automatic" if automatic else group.name if group else "no group",
+                 group.tenant_id if group else None, devices=len(moved))
     db.commit()
     return {"moved": moved, "skipped": skipped}
 
