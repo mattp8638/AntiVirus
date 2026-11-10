@@ -83,7 +83,10 @@ def bootstrap(settings: Settings) -> None:
         if msp is None:
             name = (settings.msp_name or "My MSP").strip()[:200] or "My MSP"
             slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:80] or "msp"
-            msp = Tenant(name=name, slug=slug, kind="msp", plan="mdr")
+            from . import modules
+
+            # A new installation starts with the short Essentials menu (Settings > Modules adds the rest).
+            msp = Tenant(name=name, slug=slug, kind="msp", plan="mdr", settings={"modules": list(modules.ESSENTIALS)})
             db.add(msp)
             db.flush()
         if db.get(Policy, GLOBAL_POLICY_ID) is None:

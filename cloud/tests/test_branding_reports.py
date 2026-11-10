@@ -246,3 +246,32 @@ def test_only_configurers_change_schedules(client, admin, tenant):
     assert client.get("/api/console/reports/schedules", headers=viewer, params=params).status_code == 200
     assert client.put("/api/console/reports/schedules", headers=viewer, params=params, json={"schedules": [
         {"kind": "executive", "every": "monthly", "to": ["x@y.example"]}]}).status_code == 403
+
+
+# --------------------------------------------------------------------------- modules (Essentials layout)
+
+
+def test_new_installs_start_with_essentials_and_admins_choose_modules(client, admin, tenant):
+    from fenrir_cloud import modules
+
+    shown = client.get("/api/console/modules", headers=admin).json()
+    assert shown["enabled"] == modules.ESSENTIALS and shown["editable"] is True
+    assert {m["key"] for m in shown["modules"]} == set(modules.MODULES)
+    saved = client.put("/api/console/modules", headers=admin, json={"enabled": ["identity", "service"]}).json()
+    assert saved["enabled"] == ["service", "identity"]  # kept in the catalogue's order
+    assert client.put("/api/console/modules", headers=admin, json={"enabled": ["nonsense"]}).status_code == 400
+    assert client.put("/api/console/modules", headers=admin, json={"enabled": "service"}).status_code == 400
+    ops = _customer_admin(client, admin, tenant)
+    mine = client.get("/api/console/modules", headers=ops).json()
+    assert mine["enabled"] == ["service", "identity"] and mine["editable"] is False
+    assert client.put("/api/console/modules", headers=ops, json={"enabled": []}).status_code == 403
+
+
+def test_existing_installs_keep_every_module(client, admin):
+    from fenrir_cloud import modules
+
+    with database.session_factory()() as session:
+        msp = branding.default_msp(session)
+        msp.settings = {k: v for k, v in (msp.settings or {}).items() if k != "modules"}  # an install from before modules
+        session.commit()
+    assert client.get("/api/console/modules", headers=admin).json()["enabled"] == list(modules.MODULES)

@@ -11,12 +11,13 @@ import { CustomFieldsSettings, RegionSettings } from "../components/Customizatio
 import { useSearchParams } from "react-router-dom";
 import { PushCard } from "../components/PushCard";
 import { BrandingSettings } from "../components/BrandingSettings";
+import { ModulesSettings } from "../components/ModulesSettings";
 
 const ROLES = ["platform_admin", "msp_admin", "soc_analyst", "technician", "billing", "tenant_admin", "tenant_analyst", "viewer", "carer"];
 
 export default function Settings() {
   const { can } = useApp();
-  const tabs = ["Tenants", "Users", "Groups", ...(can("manage_tenants") ? ["Branding"] : []), "Custom fields", "Region & holidays", "Webhooks", ...(can("configure") ? ["API credentials"] : []), "Approvals", "Agent releases", "Audit log", ...(can("configure") ? ["Platform"] : []), "Account"];
+  const tabs = ["Tenants", "Users", "Groups", ...(can("manage_tenants") ? ["Branding", "Modules"] : []), "Custom fields", "Region & holidays", "Webhooks", ...(can("configure") ? ["API credentials"] : []), "Approvals", "Agent releases", "Audit log", ...(can("configure") ? ["Platform"] : []), "Account"];
   const [params] = useSearchParams();
   const [tab, setTab] = useState(() => { const asked = params.get("tab"); return asked && tabs.includes(asked) ? asked : "Tenants"; });
   return (
@@ -27,6 +28,7 @@ export default function Settings() {
       {tab === "Users" && <UsersTab />}
       {tab === "Groups" && <GroupsTab />}
       {tab === "Branding" && <BrandingSettings />}
+      {tab === "Modules" && <ModulesSettings />}
       {tab === "Custom fields" && <CustomFieldsSettings />}
       {tab === "Region & holidays" && <RegionSettings />}
       {tab === "Webhooks" && <WebhooksTab />}

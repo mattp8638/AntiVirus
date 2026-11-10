@@ -10,7 +10,7 @@ import Governance from "./pages/Governance";
 import Assurance from "./pages/grc/Assurance";
 import Backup from "./pages/Backup";
 import SocWorkflows from "./pages/SocWorkflows";
-import { FormEvent, lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { FormEvent, lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { useApp } from "./app-context";
 import { PageBoundary } from "./components/PageBoundary";
@@ -78,17 +78,17 @@ import { api, setDefaultCurrency } from "./api";
 // `also`: other pages of the same section (they switch with section tabs), so the entry stays highlighted on them.
 // Grouped by the job in hand rather than by module: work the queue, look after a client, look after their endpoints,
 // their identity and cloud, run the service desk and the business, prove compliance, then administration.
-const NAV: { group: string; items: { to: string; label: string; icon: string; also?: string[] }[] }[] = [
+const NAV: { group: string; items: { to: string; label: string; icon: string; also?: string[]; module?: string }[] }[] = [
   {
     group: "Triage",
     items: [
       { to: "/", label: "Dashboard", icon: "◎" },
       { to: "/inbox", label: "Inbox", icon: "☰" },
       { to: "/alerts", label: "Alerts", icon: "△" },
-      { to: "/incidents", label: "Incidents", icon: "⚑" },
-      { to: "/admin-requests", label: "Admin requests", icon: "⇡" },
-      { to: "/hunt", label: "Threat hunting", icon: "⌕" },
-      { to: "/intel", label: "Threat intel", icon: "✦" },
+      { module: "security", to: "/incidents", label: "Incidents", icon: "⚑" },
+      { module: "security", to: "/admin-requests", label: "Admin requests", icon: "⇡" },
+      { module: "security", to: "/hunt", label: "Threat hunting", icon: "⌕" },
+      { module: "security", to: "/intel", label: "Threat intel", icon: "✦" },
     ],
   },
   {
@@ -96,16 +96,16 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; al
     items: [
       { to: "/companies", label: "Companies", icon: "⌂" },
       { to: "/reports", label: "Reports", icon: "▤" },
-      { to: "/configurations", label: "Configurations", icon: "⚿" },
-      { to: "/knowledge", label: "Knowledge base", icon: "❏" },
-      { to: "/vault", label: "Credential vault", icon: "⚿" },
+      { module: "documentation", to: "/configurations", label: "Configurations", icon: "⚿" },
+      { module: "documentation", to: "/knowledge", label: "Knowledge base", icon: "❏" },
+      { module: "documentation", to: "/vault", label: "Credential vault", icon: "⚿" },
     ],
   },
   {
     group: "Endpoints",
     items: [
       { to: "/devices", label: "Devices", icon: "▣" },
-      { to: "/care", label: "Care", icon: "♡" },
+      { module: "care", to: "/care", label: "Care", icon: "♡" },
       { to: "/groups", label: "Device groups", icon: "⧉" },
       { to: "/monitoring", label: "Monitoring", icon: "♥" },
       { to: "/patching", label: "Patching", icon: "⟳" },
@@ -113,59 +113,63 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; al
       { to: "/scripts", label: "Scripts", icon: "❯" },
       { to: "/remediation-packages", label: "Remediation packages", icon: "✚" },
       { to: "/automation", label: "Jobs & schedules", icon: "⏱" },
-      { to: "/policies", label: "Protection policies", icon: "⚙" },
-      { to: "/protection-health", label: "Protection health", icon: "⛨" },
+      { module: "protection", to: "/policies", label: "Protection policies", icon: "⚙" },
+      { module: "protection", to: "/protection-health", label: "Protection health", icon: "⛨" },
       { to: "/agent-health", label: "Agent health", icon: "✚" },
-      { to: "/quarantine", label: "Quarantine", icon: "⊘" },
-      { to: "/vulnerabilities", label: "Vulnerabilities", icon: "⚠" },
-      { to: "/out-of-band", label: "Out-of-band (Intel AMT)", icon: "⏻" },
+      { module: "protection", to: "/quarantine", label: "Quarantine", icon: "⊘" },
+      { module: "vulnerabilities", to: "/vulnerabilities", label: "Vulnerabilities", icon: "⚠" },
+      { module: "network", to: "/out-of-band", label: "Out-of-band (Intel AMT)", icon: "⏻" },
       { to: "/deploy", label: "Deploy agents", icon: "⇩" },
     ],
   },
   {
     group: "Identity, cloud & network",
     items: [
-      { to: "/m365", label: "Microsoft 365", icon: "▦", also: ["/m365-partner"] },
-      { to: "/active-directory", label: "Active Directory", icon: "⌘" },
-      { to: "/exposure", label: "Data & identity exposure", icon: "⚇" },
-      { to: "/backup", label: "Backup & recovery", icon: "⟳" },
-      { to: "/network", label: "Network", icon: "⌁", also: ["/network-topology"] },
-      { to: "/dns", label: "DNS protection", icon: "◈" },
-      { to: "/attack-surface", label: "Attack surface", icon: "◍" },
+      { module: "identity", to: "/m365", label: "Microsoft 365", icon: "▦", also: ["/m365-partner"] },
+      { module: "identity", to: "/active-directory", label: "Active Directory", icon: "⌘" },
+      { module: "identity", to: "/exposure", label: "Data & identity exposure", icon: "⚇" },
+      { module: "backup", to: "/backup", label: "Backup & recovery", icon: "⟳" },
+      { module: "network", to: "/network", label: "Network", icon: "⌁", also: ["/network-topology"] },
+      { module: "security", to: "/dns", label: "DNS protection", icon: "◈" },
+      { module: "network", to: "/attack-surface", label: "Attack surface", icon: "◍" },
     ],
   },
   {
     group: "Service desk",
     items: [
-      { to: "/service-board", label: "Service board", icon: "✉" },
-      { to: "/dispatch", label: "Dispatch", icon: "▦" },
-      { to: "/workload", label: "Workload & changes", icon: "⚖" },
-      { to: "/time", label: "Time & timesheets", icon: "◷" },
+      { module: "service", to: "/service-board", label: "Service board", icon: "✉" },
+      { module: "service", to: "/dispatch", label: "Dispatch", icon: "▦" },
+      { module: "service", to: "/workload", label: "Workload & changes", icon: "⚖" },
+      { module: "service", to: "/time", label: "Time & timesheets", icon: "◷" },
     ],
   },
   {
     group: "Business",
     items: [
-      { to: "/crm", label: "CRM & projects", icon: "☺" },
-      { to: "/onboarding", label: "Customer onboarding", icon: "✓" },
-      { to: "/quotes", label: "Products & quotes", icon: "❖" },
-      { to: "/billing", label: "Agreements & billing", icon: "£" },
+      { module: "business", to: "/crm", label: "CRM & projects", icon: "☺" },
+      { module: "business", to: "/onboarding", label: "Customer onboarding", icon: "✓" },
+      { module: "business", to: "/quotes", label: "Products & quotes", icon: "❖" },
+      { module: "business", to: "/billing", label: "Agreements & billing", icon: "£" },
     ],
   },
-  { group: "Governance", items: [{ to: "/governance", label: "Compliance & GRC", icon: "✓", also: ["/continuous-compliance", "/compliance"] }] },
+  { group: "Governance", items: [{ module: "governance", to: "/governance", label: "Compliance & GRC", icon: "✓", also: ["/continuous-compliance", "/compliance"] }] },
   {
     group: "Admin",
     items: [
       { to: "/settings", label: "Settings", icon: "⚒" },
-      { to: "/service-settings", label: "Service settings", icon: "⚙" },
-      { to: "/rules", label: "Detection rules", icon: "≡" },
-      { to: "/automations", label: "Response rules", icon: "↯" },
-      { to: "/edr-exclusions", label: "EDR exclusions", icon: "⊜" },
-      { to: "/soc-workflows", label: "SOC maintenance", icon: "◷" },
+      { module: "service", to: "/service-settings", label: "Service settings", icon: "⚙" },
+      { module: "security", to: "/rules", label: "Detection rules", icon: "≡" },
+      { module: "security", to: "/automations", label: "Response rules", icon: "↯" },
+      { module: "protection", to: "/edr-exclusions", label: "EDR exclusions", icon: "⊜" },
+      { module: "security", to: "/soc-workflows", label: "SOC maintenance", icon: "◷" },
     ],
   },
 ];
-const PAGES = NAV.flatMap((g) => g.items.map((i) => ({ to: i.to, label: i.label, group: g.group })));
+// Settings > Modules: pages of switched-off modules leave the menu and search (they still open by link).
+function visibleNav(enabled: string[] | null) {
+  return NAV.map((g) => ({ ...g, items: g.items.filter((i) => !i.module || !enabled || enabled.includes(i.module)) }))
+    .filter((g) => g.items.length > 0);
+}
 
 function Login() {
   const { login, completeSso, loginWithPasskey } = useApp();
@@ -261,6 +265,15 @@ function Shell() {
   const { me, tenantId, setTenantId, logout } = useApp();
   const location = useLocation();
   useEffect(() => { api<{ currency: string }>("region").then((r) => setDefaultCurrency(r.currency)).catch(() => undefined); }, [me?.user.id]);
+  const [enabledModules, setEnabledModules] = useState<string[] | null>(null);
+  useEffect(() => {
+    const load = () => api<{ enabled: string[] }>("modules").then((r) => setEnabledModules(r.enabled)).catch(() => setEnabledModules(null));
+    load();
+    window.addEventListener("fenrir:modules-changed", load);
+    return () => window.removeEventListener("fenrir:modules-changed", load);
+  }, [me?.user.id]);
+  const nav = useMemo(() => visibleNav(enabledModules), [enabledModules]);
+  const pages = useMemo(() => nav.flatMap((g) => g.items.map((i) => ({ to: i.to, label: i.label, group: g.group }))), [nav]);
   const [navOpen, setNavOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const openSearch = useCallback(() => setSearchOpen(true), []);
@@ -285,7 +298,7 @@ function Shell() {
           <div className="small muted">{me.user.role.replace(/_/g, " ")}</div>
           <button className="small" onClick={logout}>Sign out</button>
         </div>
-        {NAV.map((group) => (
+        {nav.map((group) => (
           <div key={group.group}>
             <div className="nav-group">{group.group}</div>
             {group.items.map((item) => (
@@ -385,7 +398,7 @@ function Shell() {
           </Routes>
           </PageBoundary>
         </main>
-        {searchOpen && <CommandPalette pages={PAGES} onClose={() => setSearchOpen(false)} />}
+        {searchOpen && <CommandPalette pages={pages} onClose={() => setSearchOpen(false)} />}
         <nav className="bottom-nav" aria-label="Quick navigation">
           {BOTTOM_NAV.map((item) => (
             <NavLink key={item.to} to={item.to} end={item.to === "/"} className={({ isActive }) => isActive ? "active" : ""}>

@@ -113,3 +113,32 @@ def delete_logo(principal: Principal = Depends(current_principal), db: Session =
     audit.record(db, principal.actor, "branding.logo_removed", msp.name, msp.id)
     db.commit()
     return get_branding(principal, db)
+
+
+# --------------------------------------------------------------------------- modules (Essentials layout)
+
+
+@router.get("/modules")
+def get_modules(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    from .. import modules
+
+    msp = branding.msp_of(db, principal.user.tenant_id)
+    return {"enabled": modules.enabled(db, principal.user.tenant_id),
+            "modules": [{"key": k, "label": label, "description": text} for k, (label, text) in modules.MODULES.items()],
+            "essentials": modules.ESSENTIALS,
+            "editable": principal.can("manage_tenants") and msp is not None and principal.user.tenant_id == msp.id}
+
+
+@router.put("/modules")
+def put_modules(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    from .. import modules
+
+    msp = _editable_msp(db, principal)
+    try:
+        chosen = modules.validate(body.get("enabled"))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    msp.settings = {**(msp.settings or {}), "modules": chosen}
+    audit.record(db, principal.actor, "modules.updated", msp.name, msp.id, enabled=chosen)
+    db.commit()
+    return get_modules(principal, db)
