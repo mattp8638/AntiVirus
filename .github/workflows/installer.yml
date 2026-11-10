@@ -30,11 +30,7 @@ jobs:
           ! sudo grep -q 'change-me' deploy/.env
           sudo test -s deploy/signing/codesign.pfx && sudo test -s deploy/signing/release-ed25519.pem
           password=$(sudo sed -n 's/^FENRIR_ADMIN_PASSWORD=//p' deploy/.env)
-          token=$(curl -fsS http://127.0.0.1:8080/api/console/auth/login -H 'Content-Type: application/json' \
-            -d "{\"email\":\"ci-admin@example.com\",\"password\":\"$password\"}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
-          curl -fsS http://127.0.0.1:8080/api/console/tenants -H "Authorization: Bearer $token" | grep -q '"CI Test MSP"'
-          curl -fsS http://127.0.0.1:8080/api/console/enrollment-installers/status -H "Authorization: Bearer $token" | tee status.json
-          python3 -c 'import json; s=json.load(open("status.json")); assert s["windows"]["ready"] and s["windows"]["mode"]=="signed", s["windows"]'
+          python3 scripts/ci/installer_check.py http://127.0.0.1:8080 ci-admin@example.com "$password" "CI Test MSP"
       - name: Running it again changes nothing
         run: |
           before=$(sudo sha256sum deploy/.env deploy/signing/codesign.pfx)

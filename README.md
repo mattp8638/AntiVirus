@@ -727,4 +727,5 @@ each bundled dependency keeps its own licence.
   and test changes on a small group of devices first.
 - **Security problems.** If you find a vulnerability, report it privately through GitHub's
   [security advisories](https://github.com/mattp8638/AntiVirus/security/advisories/new) rather than a public issue. There
-  is no promise of a fix or a response time.
+  is no promise of a fix or a response time. See [SECURITY.md](SECURITY.md) for the free scanning every change goes
+  through (CodeQL, OpenSSF Scorecard, SBOMs).
