@@ -187,6 +187,7 @@ def run(args: argparse.Namespace) -> dict:
             heapq.heappush(queue, (start + random.uniform(0, every), n, id(agent), kind, every))
     background: list[dict] = []
     next_sample = start
+    next_progress = start + 60
     lock = threading.Lock()
     lag: list[float] = []
     # At most --concurrency calls in flight: when the server slows down the generator waits too, so the lag below
@@ -218,15 +219,32 @@ def run(args: argparse.Namespace) -> dict:
             if time.monotonic() >= next_sample:
                 next_sample = time.monotonic() + 30
                 pool.submit(lambda: background.append(_background(args)))
+            if time.monotonic() >= next_progress:
+                next_progress = time.monotonic() + 60
+                with lock:
+                    recent = sorted(lag[-2000:])
+                served = sum(len(v) for k, v in recorder.calls.items() if k != "enrol")
+                errors = sum(len(v) for k, v in recorder.errors.items() if k != "enrol")
+                print(f"  {int(time.monotonic() - start) // 60} min: {served} calls ({errors} errors), "
+                      f"schedule lag p95 {recent[int(len(recent) * 0.95)] if recent else 0:.1f} s", flush=True)
     finally:
         pool.shutdown(wait=True, cancel_futures=True)  # only the calls already in flight finish
     elapsed = time.monotonic() - start
 
-    stored = api.get("platform/telemetry-volume", tenant_id=tenant["id"], minutes=int(elapsed // 60) + 2)
+    # The server may still be working through the last minute's load: give the count a few minutes.
+    stored = None
+    api.timeout = 120
+    for attempt in range(4):
+        try:
+            stored = api.get("platform/telemetry-volume", tenant_id=tenant["id"], minutes=int(elapsed // 60) + 2)
+            break
+        except Exception as exc:  # noqa: BLE001 - a slow count must not lose the report
+            print(f"Counting stored events failed ({type(exc).__name__}); retrying", flush=True)
+            time.sleep(30)
     return {
         "devices": len(enrolled), "minutes": round(elapsed / 60, 1), "eventsPerMinutePerDevice": args.events_per_minute,
         "eventsSent": recorder.events_sent, "eventsPerSecond": round(recorder.events_sent / elapsed, 1),
-        "eventsStoredOrChecked": stored["events"] + stored.get("notStored", 0),
+        "eventsStoredOrChecked": (stored["events"] + stored.get("notStored", 0)) if stored else None,
         "schedulerLagSeconds": {"p95": round(sorted(lag)[int(len(lag) * 0.95)] if lag else 0, 2),
                                 "max": round(max(lag) if lag else 0, 2)},
         "requestsPerSecond": round(sum(len(v) for k, v in recorder.calls.items() if k != "enrol") / elapsed, 1),
@@ -269,7 +287,8 @@ def main() -> int:
     report = run(args)
     calls = report["calls"]
     lines = [f"Fenrir load test: {report['devices']} agents for {report['minutes']} min, "
-             f"{report['eventsPerSecond']} events/s ({report['eventsSent']} sent, {report['eventsStoredOrChecked']} stored or checked)",
+             f"{report['eventsPerSecond']} events/s ({report['eventsSent']} sent, "
+             f"{report['eventsStoredOrChecked'] if report['eventsStoredOrChecked'] is not None else 'unknown (the count timed out)'} stored or checked)",
              "", "| Call | Calls | Errors | p50 ms | p95 ms | p99 ms | max ms |", "|---|---|---|---|---|---|---|"]
     lines += [f"| {name} | {c['calls']} | {c['errors']} | {c['p50']} | {c['p95']} | {c['p99']} | {c['max']} |" for name, c in calls.items()]
     background = report["background"]
