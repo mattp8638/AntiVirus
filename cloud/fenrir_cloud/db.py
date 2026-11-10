@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 62
+LATEST_MIGRATION = 63
 
 def init_engine(url: str) -> Engine:
     global _engine, _session_factory
@@ -465,6 +465,10 @@ def migrate(bind: Engine) -> list[int]:
                 ensure_columns(Base, conn)  # devices.group_rule_id
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (62)"))
                 applied.append(62)
+            if 63 not in versions:
+                ensure_columns(Base, conn)  # client_reports.document: the report as structured data, for PDF copies
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (63)"))
+                applied.append(63)
             conn.commit()
         except Exception:
             conn.rollback()

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Body, Depends, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -50,8 +50,8 @@ def list_reports(tenant_id: str, principal: Principal = Depends(current_principa
     tenant = _customer(db, principal, tenant_id)
     rows = db.execute(select(ClientReport).where(ClientReport.tenant_id == tenant.id).order_by(ClientReport.created_at.desc())
                       .limit(48)).scalars().all()
-    return [{"id": r.id, "kind": r.kind, "period": r.period, "createdBy": r.created_by, "createdAt": r.created_at.isoformat() + "Z"}
-            for r in rows]
+    return [{"id": r.id, "kind": r.kind, "period": r.period, "createdBy": r.created_by, "createdAt": r.created_at.isoformat() + "Z",
+             "hasPdf": bool(r.document)} for r in rows]
 
 
 @router.get("/{tenant_id}/reports/monthly.html", response_class=HTMLResponse)
@@ -84,14 +84,14 @@ def save_report(tenant_id: str, body: dict = Body(...), principal: Principal = D
     rate, msp = client360.cost_rate_for(db, tenant), client360._msp_name(db, tenant)
     try:
         if kind == "monthly":
-            key, html = client360.monthly_report(db, tenant, msp, rate, period)
+            key, html, document = client360.monthly_report(db, tenant, msp, rate, period, with_document=True)
         elif kind == "quarterly":
-            key, html = client360.quarterly_review(db, tenant, msp, rate, period)
+            key, html, document = client360.quarterly_review(db, tenant, msp, rate, period, with_document=True)
         else:
             raise HTTPException(400, "kind must be monthly or quarterly")
     except ValueError:
         raise HTTPException(400, "period must look like 2026-09 or 2026-Q3") from None
-    row = ClientReport(tenant_id=tenant.id, kind=kind, period=key, html=html, created_by=principal.actor)
+    row = ClientReport(tenant_id=tenant.id, kind=kind, period=key, html=html, document=document, created_by=principal.actor)
     db.add(row)
     db.flush()
     audit.record(db, principal.actor, "client.report_saved", tenant.name, tenant.id, kind=kind, period=key)
@@ -106,3 +106,19 @@ def saved_report(tenant_id: str, report_id: str, principal: Principal = Depends(
     if row is None or row.tenant_id != tenant.id:
         raise HTTPException(404, "Not found")
     return HTMLResponse(row.html)
+
+
+@router.get("/{tenant_id}/reports/{report_id}.pdf")
+def saved_report_pdf(tenant_id: str, report_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """A kept report as a PDF, drawn from the document stored when it was made (reports kept before PDFs existed have
+    only their HTML: open that and print it)."""
+    from .. import reports
+
+    tenant = _customer(db, principal, tenant_id)
+    row = db.get(ClientReport, report_id)
+    if row is None or row.tenant_id != tenant.id:
+        raise HTTPException(404, "Not found")
+    if not row.document:
+        raise HTTPException(409, "This report was kept before PDF copies existed; open the HTML version and print it")
+    return Response(reports.pdf(db, tenant, row.document), media_type="application/pdf", headers={
+        "Content-Disposition": f'attachment; filename="{reports.filename(tenant, row.kind, row.period)}"'})
