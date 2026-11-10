@@ -1,4 +1,5 @@
 import M365 from "./pages/M365";
+import { BrandHeader } from "./brand";
 import M365Partner from "./pages/M365Partner";
 import M365Tenant from "./pages/M365Tenant";
 import Network from "./pages/Network";
@@ -225,8 +226,7 @@ function Login() {
     <div className="login">
       <form className="card" onSubmit={submit}>
         <div className="brand" style={{ padding: 0, marginBottom: 20 }}>
-          <div className="brand-mark">F</div>
-          <div><b>Fenrir Console</b><small>Endpoint · SIEM · Exposure · PSA</small></div>
+          <BrandHeader size={40} />
         </div>
         {microsoft}
         {sso?.required && !showPassword && <p className="small muted" style={{ marginTop: 12 }}>
@@ -278,7 +278,7 @@ function Shell() {
     <div className={`shell ${navOpen ? "nav-open" : ""}`}>
       <div className="nav-backdrop" onClick={() => setNavOpen(false)} aria-hidden />
       <aside className="sidebar" aria-label="Main menu">
-        <div className="brand"><div className="brand-mark">F</div><div><b>Fenrir</b><small>Unified security platform</small></div>
+        <div className="brand"><BrandHeader />
           <button className="ghost nav-close" aria-label="Close menu" onClick={() => setNavOpen(false)}>✕</button></div>
         <div className="nav-account">
           <div className="small">{me.user.email}</div>

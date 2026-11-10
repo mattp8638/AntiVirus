@@ -1,6 +1,7 @@
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import { AppProvider } from "./app-context";
+import { BrandProvider } from "./brand";
 import { Root } from "./App";
 import { ReauthDialog } from "./components/ui";
 import "./styles.css";
@@ -11,10 +12,12 @@ if ("serviceWorker" in navigator && import.meta.env.PROD) {
 }
 
 createRoot(document.getElementById("root")!).render(
-  <AppProvider>
-    <BrowserRouter>
-      <Root />
-    </BrowserRouter>
-    <ReauthDialog />
-  </AppProvider>,
+  <BrandProvider>
+    <AppProvider>
+      <BrowserRouter>
+        <Root />
+      </BrowserRouter>
+      <ReauthDialog />
+    </AppProvider>
+  </BrandProvider>,
 );

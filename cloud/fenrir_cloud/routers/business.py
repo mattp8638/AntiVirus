@@ -2,20 +2,18 @@
 
 from __future__ import annotations
 
-import html
 from datetime import date, datetime, timedelta, timezone
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from .. import audit, billing_sync, compliance, policy_schema, psa, services
+from .. import audit, billing_sync, policy_schema, psa, services
 from ..db import get_db
 from ..deps import Principal, current_principal, require_reauth, scoped_tenant
-from ..models import (AccountingConnection, Activity, Alert, Contact, Contract, Device, DnsQueryLog, Event, Incident, Invoice, Lead, Opportunity, Policy, Project, Tenant,
-                      Ticket, TimeEntry, Vulnerability, Webhook, utcnow)
+from ..models import (AccountingConnection, Activity, Contact, Contract, Device, Invoice, Lead, Opportunity, Policy, Project, Tenant,
+                      TimeEntry, Webhook, utcnow)
 from ..security import new_secret
 from ..serialize import apply_fields, to_dict
 
@@ -545,128 +543,13 @@ def delete_webhook(hook_id: str, principal: Principal = Depends(current_principa
 # --------------------------------------------------------------------------- reports
 
 
-def _report_data(db: Session, tenant: Tenant, days: int) -> dict:
-    since = utcnow() - timedelta(days=days)
-    devices = db.execute(select(Device).where(Device.tenant_id == tenant.id)).scalars().all()
-    alerts = dict(db.execute(select(Alert.severity, func.count()).where(Alert.tenant_id == tenant.id, Alert.created_at >= since)
-                             .group_by(Alert.severity)).all())
-    incidents = db.execute(select(Incident).where(Incident.tenant_id == tenant.id, Incident.created_at >= since)).scalars().all()
-    threats = db.execute(select(func.count()).where(Event.tenant_id == tenant.id, Event.occurred_at >= since,
-                                                    Event.category == "malware")).scalar() or 0
-    dns_blocked = db.execute(select(func.count()).where(DnsQueryLog.tenant_id == tenant.id, DnsQueryLog.at >= since,
-                                                        DnsQueryLog.action == "block")).scalar() or 0
-    from ..vulnmgmt import UNRESOLVED
-
-    vulns = dict(db.execute(select(Vulnerability.severity, func.count()).where(Vulnerability.tenant_id == tenant.id,
-                                                                               Vulnerability.status.in_(UNRESOLVED))
-                            .group_by(Vulnerability.severity)).all())
-    treatment = dict(db.execute(select(Vulnerability.status, func.count()).where(Vulnerability.tenant_id == tenant.id,
-                                                                                 Vulnerability.status.in_(UNRESOLVED))
-                                .group_by(Vulnerability.status)).all())
-    frameworks = compliance.evaluate(db, tenant)
-    tickets = db.execute(select(Ticket).where(Ticket.account_tenant_id == tenant.id, Ticket.created_at >= since)).scalars().all()
-    return {
-        "tenant": tenant.name, "periodDays": days, "generatedAt": utcnow().isoformat() + "Z",
-        "devices": {"total": len(devices), "isolatedNow": sum(d.isolated for d in devices),
-                    "highRisk": sum(1 for d in devices if d.risk_score >= 40)},
-        "alerts": alerts, "incidents": {"total": len(incidents), "resolved": sum(i.status in ("resolved", "closed") for i in incidents)},
-        "threatEvents": threats, "dnsBlocked": dns_blocked, "openVulnerabilities": vulns, "vulnerabilityTreatment": treatment,
-        "compliance": [{"name": f["name"], "score": f["score"]} for f in frameworks],
-        "service": _service_summary(db, tenant, tickets, since),
-    }
-
-
-def _hours(deltas: list[timedelta]) -> float | None:
-    return round(sum(d.total_seconds() for d in deltas) / 3600 / len(deltas), 1) if deltas else None
-
-
-def _service_summary(db: Session, tenant: Tenant, tickets: list[Ticket], since) -> dict:
-    """Service-desk section of the customer report: volume, SLA, speed, effort and change activity."""
-    from collections import Counter
-
-    resolved = [t for t in tickets if t.resolved_at]
-    within_sla = [t for t in resolved if t.sla_due_at and t.resolved_at <= t.sla_due_at]
-    by_priority = {}
-    for priority in ("P1", "P2", "P3", "P4"):
-        group = [t for t in tickets if t.priority == priority]
-        done = [t for t in group if t.resolved_at]
-        met = [t for t in done if t.sla_due_at and t.resolved_at <= t.sla_due_at]
-        if group:
-            by_priority[priority] = {"tickets": len(group), "resolved": len(done),
-                                     "slaMet": round(100 * len(met) / len(done)) if done else None}
-    hours = db.execute(select(func.sum(TimeEntry.hours)).where(TimeEntry.account_tenant_id == tenant.id,
-                                                               TimeEntry.started_at >= since)).scalar() or 0
-    changes = db.execute(select(Ticket).where(Ticket.account_tenant_id == tenant.id, Ticket.record_type == "change",
-                                              Ticket.updated_at >= since)).scalars().all()
-    open_now = db.execute(select(func.count()).select_from(Ticket).where(
-        Ticket.account_tenant_id == tenant.id, Ticket.resolved_at.is_(None))).scalar() or 0
-    return {
-        "tickets": len(tickets), "resolved": len(resolved), "openNow": open_now,
-        "slaMet": round(100 * len(within_sla) / len(resolved)) if resolved else None,
-        "byPriority": by_priority,
-        "avgFirstResponseHours": _hours([t.responded_at - t.created_at for t in tickets if t.responded_at]),
-        "avgResolutionHours": _hours([t.resolved_at - t.created_at for t in resolved]),
-        "hoursWorked": round(hours, 1),
-        "topCategories": [{"name": name, "tickets": count} for name, count in
-                          Counter(t.type or t.queue or "General" for t in tickets).most_common(5)],
-        "changesImplemented": sum(1 for c in changes if c.change_state in ("Implemented", "Closed")),
-        "changesFailed": sum(1 for c in changes if c.change_state == "Failed"),
-        "problemsOpen": db.execute(select(func.count()).select_from(Ticket).where(
-            Ticket.account_tenant_id == tenant.id, Ticket.record_type == "problem", Ticket.resolved_at.is_(None))).scalar() or 0,
-    }
-
-
 @router.get("/reports/executive")
 def executive_report(tenant_id: str | None = None, days: int = 30, principal: Principal = Depends(current_principal),
                      db: Session = Depends(get_db)):
     tid = tenant_id or principal.user.tenant_id
     principal.check_tenant(tid)
-    return _report_data(db, db.get(Tenant, tid), days)
+    from .. import reports
+
+    return reports.executive_data(db, db.get(Tenant, tid), days)
 
 
-@router.get("/reports/executive.html", response_class=HTMLResponse)
-def executive_report_html(tenant_id: str | None = None, days: int = 30, principal: Principal = Depends(current_principal),
-                          db: Session = Depends(get_db)):
-    tid = tenant_id or principal.user.tenant_id
-    principal.check_tenant(tid)
-    data = _report_data(db, db.get(Tenant, tid), days)
-    e = html.escape
-
-    def rows(mapping: dict) -> str:
-        return "".join(f"<tr><td>{e(str(k)).title()}</td><td>{v}</td></tr>" for k, v in mapping.items()) or "<tr><td colspan=2>None</td></tr>"
-
-    compliance_rows = "".join(f"<tr><td>{e(c['name'])}</td><td>{c['score']}%</td></tr>" for c in data["compliance"])
-    sla = "n/a" if data["service"]["slaMet"] is None else f"{data['service']['slaMet']}%"
-    svc = data["service"]
-
-    def hours(value) -> str:
-        return "n/a" if value is None else f"{value} h"
-
-    priority_rows = "".join(
-        f"<tr><td>{p}</td><td>{v['tickets']}</td><td>{v['resolved']}</td><td>{'n/a' if v['slaMet'] is None else str(v['slaMet']) + '%'}</td></tr>"
-        for p, v in svc["byPriority"].items()) or "<tr><td colspan=4>No tickets</td></tr>"
-    category_rows = "".join(f"<tr><td>{e(c['name'])}</td><td>{c['tickets']}</td></tr>" for c in svc["topCategories"]) \
-        or "<tr><td colspan=2>No tickets</td></tr>"
-    body = f"""<!doctype html><html><head><meta charset="utf-8"><title>Security report - {e(data['tenant'])}</title>
-<style>body{{font-family:system-ui,sans-serif;max-width:860px;margin:32px auto;color:#1b2430;padding:0 16px}}
-h1{{margin-bottom:4px}}.sub{{color:#5b6675}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:24px 0}}
-.card{{border:1px solid #dde3ea;border-radius:10px;padding:14px}}.card b{{display:block;font-size:28px}}
-table{{width:100%;border-collapse:collapse;margin:8px 0 24px}}td{{border-bottom:1px solid #eef1f4;padding:6px 4px}}</style></head>
-<body><h1>Security report: {e(data['tenant'])}</h1><div class="sub">Last {days} days &middot; generated {e(data['generatedAt'])}</div>
-<div class="grid"><div class="card"><b>{data['devices']['total']}</b>protected devices</div>
-<div class="card"><b>{data['threatEvents']}</b>threat events stopped</div>
-<div class="card"><b>{data['dnsBlocked']}</b>malicious domains blocked</div>
-<div class="card"><b>{data['incidents']['total']}</b>incidents ({data['incidents']['resolved']} resolved)</div></div>
-<h2>Alerts by severity</h2><table>{rows(data['alerts'])}</table>
-<h2>Open vulnerabilities</h2><table>{rows(data['openVulnerabilities'])}</table>
-<h2>Compliance posture</h2><table>{compliance_rows}</table>
-<h2>Service desk</h2><table><tr><td>Tickets raised</td><td>{svc['tickets']} ({svc['resolved']} resolved, {svc['openNow']} open now)</td></tr>
-<tr><td>Resolved within SLA</td><td>{sla}</td></tr>
-<tr><td>Average first response</td><td>{hours(svc['avgFirstResponseHours'])}</td></tr>
-<tr><td>Average time to resolve</td><td>{hours(svc['avgResolutionHours'])}</td></tr>
-<tr><td>Engineer time</td><td>{svc['hoursWorked']} hours</td></tr>
-<tr><td>Changes implemented</td><td>{svc['changesImplemented']} ({svc['changesFailed']} failed)</td></tr>
-<tr><td>Open problems under investigation</td><td>{svc['problemsOpen']}</td></tr></table>
-<h3>By priority</h3><table><tr><td><b>Priority</b></td><td><b>Tickets</b></td><td><b>Resolved</b></td><td><b>Within SLA</b></td></tr>{priority_rows}</table>
-<h3>Top categories</h3><table>{category_rows}</table></body></html>"""
-    return HTMLResponse(body)

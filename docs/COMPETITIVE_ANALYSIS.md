@@ -72,7 +72,7 @@ Status key: **Built** = working in this repo and covered by tests or an end-to-e
 - **Not built:** hypervisor/VM monitoring (RMM-14), backup (BDR-01 to 06; integrate a provider first), Apple MDM (MDM-02).
 - **Integrations and API.** No ConnectWise, Autotask, Halo, IT Glue or Hudu connectors; no published API reference.
 - **Identity.** Staff single sign-on is Microsoft Entra only; no generic OIDC/SAML or SCIM.
-- **Reports and branding.** No PDF/executive reports and no white-labelling.
+- ~~**Reports and branding.**~~ Done (2026-11): branded PDF executive, monthly, quarterly and vulnerability reports, emailed on a schedule, and MSP branding of the console, sign-in page, reports and agent window. See [REPORTS_AND_BRANDING.md](REPORTS_AND_BRANDING.md).
 
 ### Against RoboShadow and ConnectSecure (vulnerability and compliance)
 
@@ -80,5 +80,6 @@ Status key: **Built** = working in this repo and covered by tests or an end-to-e
   ConnectSecure's core and is not built.
 - **CIS benchmark content** with per-asset scores; endpoint baselines exist but no CIS library.
 - **Not built:** web application scanning (VULN-08), firewall configuration audit (VULN-13), attack paths (VULN-19),
-  Google Workspace posture (VULN-12), board-level reports (VULN-20).
+  Google Workspace posture (VULN-12). Board-level reports (VULN-20) are partly met by the branded executive and
+  vulnerability PDFs.
 

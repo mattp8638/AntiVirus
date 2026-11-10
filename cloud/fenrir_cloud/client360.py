@@ -20,7 +20,6 @@ first run each month, last month's "what we did for you" report is archived for 
 
 from __future__ import annotations
 
-import html
 from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
@@ -284,69 +283,25 @@ def quarter_bounds(quarter: str | None, now: datetime | None = None) -> tuple[da
     return start, end, f"Q{q} {year}"
 
 
-_STYLE = """body{font-family:system-ui,sans-serif;max-width:860px;margin:32px auto;color:#1b2430;padding:0 16px}
-h1{margin-bottom:4px}.sub{color:#5b6675}.score{font-size:56px;font-weight:700}.good{color:#15803d}.warn{color:#b45309}
-.bad{color:#b91c1c}.none{color:#6b7280}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:20px 0}
-.card{border:1px solid #dde3ea;border-radius:10px;padding:14px}.card b{display:block;font-size:26px}
-table{width:100%;border-collapse:collapse;margin:8px 0 24px}td,th{border-bottom:1px solid #eef1f4;padding:6px 4px;text-align:left}
-@media print{body{margin:0}}"""
+def monthly_report(db: Session, tenant: Tenant, msp_name: str = "", cost_rate: float = 0.0, month: str | None = None,
+                   *, with_document: bool = False):
+    """("2026-09", HTML): what we did for the customer that month, and where their health stands (reports.monthly_doc).
+    With ``with_document`` also the structured document, for a PDF copy."""
+    from . import reports
+
+    key, doc = reports.monthly_doc(db, tenant, month)
+    page = reports.html(db, tenant, doc)
+    return (key, page, doc) if with_document else (key, page)
 
 
-def _parts_table(report: dict) -> str:
-    e = html.escape
-    rows = "".join(
-        f"<tr><td>{e(p['label'])}</td><td class='{p['status']}'>{'not set up' if p['score'] is None else round(p['score'])}</td>"
-        f"<td>{e(p['value'])}</td><td>{e(p['detail'])}</td></tr>" for p in report["parts"])
-    return f"<table><tr><th>Area</th><th>Score</th><th>Now</th><th>Detail</th></tr>{rows}</table>"
+def quarterly_review(db: Session, tenant: Tenant, msp_name: str = "", cost_rate: float = 0.0, quarter: str | None = None,
+                     *, with_document: bool = False):
+    """("2026-Q3", HTML): a quarterly business review (reports.quarterly_doc)."""
+    from . import reports
 
-
-def _activity_cards(work: dict) -> str:
-    return "".join(f"<div class='card'><b>{work[key]}</b>{html.escape(label)}</div>" for key, label in ACTIVITY_LABELS if work.get(key))
-
-
-def monthly_report(db: Session, tenant: Tenant, msp_name: str, cost_rate: float, month: str | None = None) -> tuple[str, str]:
-    """("2026-09", HTML): what we did for the customer that month, and where their health stands."""
-    start, end, label = month_bounds(month)
-    work = activity(db, tenant, start, end)
-    report = health(db, tenant, cost_rate, finance=False)
-    e = html.escape
-    score = "n/a" if report["score"] is None else report["score"]
-    sla = "" if work["slaMet"] is None else f" {work['slaMet']}% of them were resolved within the agreed time."
-    body = f"""<!doctype html><html><head><meta charset="utf-8"><title>What we did for you - {e(tenant.name)} - {e(label)}</title>
-<style>{_STYLE}</style></head><body><h1>What we did for you in {e(label)}</h1>
-<div class="sub">{e(tenant.name)} &middot; prepared by {e(msp_name)}</div>
-<div class="grid">{_activity_cards(work) or "<div class='card'>A quiet month: nothing needed our attention.</div>"}</div>
-<p>We resolved {work['ticketsResolved']} support requests ({work['ticketsOpened']} new ones came in).{sla}</p>
-<h2>Your IT health today: <span class="score {report['status']}">{score}</span><span class="sub"> / 100</span></h2>
-{_parts_table(report)}
-<p class="sub">Areas marked "not set up" are not measured yet and do not count towards the score.</p></body></html>"""
-    return start.strftime("%Y-%m"), body
-
-
-def quarterly_review(db: Session, tenant: Tenant, msp_name: str, cost_rate: float, quarter: str | None = None) -> tuple[str, str]:
-    """("2026-Q3", HTML): a quarterly business review: health and how it moved, the work done, and what to do next."""
-    start, end, label = quarter_bounds(quarter)
-    work = activity(db, tenant, start, end)
-    report = health(db, tenant, cost_rate, finance=False)
-    points = [p for p in trend(db, tenant.id, 400) if start.isoformat() <= p["at"] < end.isoformat() + "Z"]
-    e = html.escape
-    moved = ""
-    if len(points) >= 2:
-        moved = f"<p>Health moved from <b>{points[0]['score']}</b> to <b>{points[-1]['score']}</b> over the quarter.</p>"
-    priorities = sorted((p for p in report["parts"] if p["score"] is not None and p["status"] != "good"), key=lambda p: p["score"])
-    next_steps = "".join(f"<li><b>{e(p['label'])}</b>: {e(p['value'])}. {e(p['detail'])}</li>" for p in priorities[:5]) \
-        or "<li>Everything measured is in good shape. Keep it that way.</li>"
-    missing = [p["label"] for p in report["parts"] if p["score"] is None]
-    gaps = f"<p class='sub'>Not measured yet: {e(', '.join(missing))}. Setting these up gives a fuller picture.</p>" if missing else ""
-    score = "n/a" if report["score"] is None else report["score"]
-    body = f"""<!doctype html><html><head><meta charset="utf-8"><title>Quarterly review - {e(tenant.name)} - {e(label)}</title>
-<style>{_STYLE}</style></head><body><h1>Quarterly review: {e(label)}</h1>
-<div class="sub">{e(tenant.name)} &middot; prepared by {e(msp_name)}</div>
-<h2>IT health: <span class="score {report['status']}">{score}</span><span class="sub"> / 100</span></h2>{moved}
-{_parts_table(report)}{gaps}
-<h2>What we did this quarter</h2><div class="grid">{_activity_cards(work) or "<div class='card'>No recorded work.</div>"}</div>
-<h2>Recommended next steps</h2><ol>{next_steps}</ol></body></html>"""
-    return f"{start.year}-Q{(start.month - 1) // 3 + 1}", body
+    key, doc = reports.quarterly_doc(db, tenant, quarter)
+    page = reports.html(db, tenant, doc)
+    return (key, page, doc) if with_document else (key, page)
 
 
 # --------------------------------------------------------------------------- daily snapshot and monthly archive
@@ -387,8 +342,8 @@ def tick(db: Session, now: datetime | None = None) -> dict:
         archived = db.scalar(select(func.count()).select_from(ClientReport).where(
             ClientReport.tenant_id == tenant.id, ClientReport.kind == "monthly", ClientReport.period == period_key))
         if not archived and tenant.created_at < period + timedelta(days=32):
-            key, body = monthly_report(db, tenant, _msp_name(db, tenant), rate, period_key)
-            db.add(ClientReport(tenant_id=tenant.id, kind="monthly", period=key, html=body, created_by="system"))
+            key, body, document = monthly_report(db, tenant, month=period_key, with_document=True)
+            db.add(ClientReport(tenant_id=tenant.id, kind="monthly", period=key, html=body, document=document, created_by="system"))
             reports += 1
         db.commit()
     return {"snapshots": snapshots, "reports": reports}

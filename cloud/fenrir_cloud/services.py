@@ -80,6 +80,13 @@ def effective_policy(db: Session, device: Device) -> tuple[dict, dict]:
     tenant = db.get(Tenant, device.tenant_id)
     layers = policy_layers(db, tenant, device=device)
     resolution = policy_schema.resolve(layers)
+    experience = resolution["settings"].get("experience") or {}
+    if experience.get("brandName") in (None, "", "Fenrir"):  # left at the default: show the MSP's own brand
+        from . import branding
+
+        brand = branding.get(db, device.tenant_id)
+        if brand["customised"]:
+            resolution["settings"]["experience"] = {**experience, "brandName": brand["companyName"]}
     name = layers[-1].name if layers else "Fenrir baseline"
     doc = policy_schema.to_agent_policy(policy_id=device.policy_id or (tenant.default_policy_id if tenant else None) or GLOBAL_POLICY_ID,
                                         name=name, settings=resolution["settings"], botnet_ips=botnet_ips(db, device.tenant_id),
