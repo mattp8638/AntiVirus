@@ -47,6 +47,35 @@ Export the device list to a spreadsheet if the old tool allows it: you will use 
   `FENRIR_DEVICE_NAME`, `FENRIR_CUSTOMER` and `FENRIR_CF_<KEY>`.
 - Level automations triggered by monitors map to Fenrir monitoring rules that run a script or open a ticket.
 
+#### Moving your Level scripts automatically
+
+`scripts/migrate/level_scripts.py` copies your Level script library into Fenrir using the Level CLI. Run it where
+`lvl` is signed in (`lvl auth login`, then `lvl auth status`). It needs Python 3 only.
+
+1. In Fenrir: **Settings → API credentials**, create one with the **configure** permission for your MSP (or the
+   customer the scripts should belong to). Copy the key; it is shown once.
+2. Export from Level (bodies included):
+   `python3 scripts/migrate/level_scripts.py export`
+   It runs `lvl script list --limit all -o json`, then fetches any script whose body the list leaves out
+   (`--show-cmd` changes that command if your CLI version names it differently). Already have the JSON? Use
+   `export --from level-list.json`.
+3. Plan: `python3 scripts/migrate/level_scripts.py plan` writes `level-plan.csv` with one row per script:
+   - **group** and **category**: Level's folder or tag when it has one, otherwise worked out from what the script
+     does (Security, Patching, Software, Networking, Users and identity, Maintenance, Monitoring, Inventory, Backup).
+     In Fenrir they show as one category, `Level / Security`. Use `--group ""` for no group, or any name you like.
+   - **language** and **platforms**, **run_as**, **timeout_seconds**, and the **parameters** found.
+   - **notes**: custom fields to create in Fenrir, single-quoted variables to check, renamed duplicates.
+   - **import**: set to `no` for scripts you do not want to bring over.
+   Open it in a spreadsheet and change anything, then save it as CSV.
+4. Import: `FENRIR_URL=https://your-server FENRIR_API_KEY=fak_... python3 scripts/migrate/level_scripts.py import --dry-run`,
+   then the same without `--dry-run`.
+
+Level variables written as `{{name}}` become Fenrir script parameters: when the script runs, Fenrir shows them as
+a form and sets them as variables (`$name` in PowerShell, `${name}` in shell). Custom-field variables such as
+`{{cf_owner}}` read the device's Fenrir custom field instead (`$env:FENRIR_CF_OWNER`). Importing again updates
+scripts that changed and leaves the rest alone (`--skip-existing` never touches existing ones). As with any library
+change, imported scripts wait for a second person to review them under **Scripts** before they can run.
+
 ## 3. Deploy the Fenrir agent with the old RMM
 
 The fastest way onto existing machines is the RMM you are leaving:
