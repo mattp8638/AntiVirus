@@ -20,12 +20,12 @@ function Import-Module { param([string]$Name) if ($Name -eq 'ActiveDirectory' -a
   if ($Name -eq 'GroupPolicy') { throw "The specified module 'GroupPolicy' was not loaded." } }
 function Get-ADDomain { [CmdletBinding()] param($Identity, $Server)
   if ($script:noAdws) { throw 'Unable to find a default server with Active Directory Web Services running.' }
-  [pscustomobject]@{ DNSRoot = 'palmertech.co.uk'; NetBIOSName = 'PALMERTECH'; DistinguishedName = 'DC=palmertech,DC=co,DC=uk'; DomainSID = (Sid $domainSid)
-    DomainMode = 'Windows2016Domain'; PDCEmulator = 'DC01.palmertech.co.uk'; RIDMaster = 'DC01.palmertech.co.uk'; InfrastructureMaster = 'DC01.palmertech.co.uk' } }
+  [pscustomobject]@{ DNSRoot = 'contoso.example'; NetBIOSName = 'CONTOSO'; DistinguishedName = 'DC=contoso,DC=example'; DomainSID = (Sid $domainSid)
+    DomainMode = 'Windows2016Domain'; PDCEmulator = 'DC01.contoso.example'; RIDMaster = 'DC01.contoso.example'; InfrastructureMaster = 'DC01.contoso.example' } }
 function Get-ADForest { [CmdletBinding()] param()
-  [pscustomobject]@{ Name = 'palmertech.co.uk'; RootDomain = 'palmertech.co.uk'; ForestMode = 'Windows2016Forest'; SchemaMaster = 'DC01.palmertech.co.uk'
-    DomainNamingMaster = 'DC01.palmertech.co.uk'; Sites = @('Default-First-Site-Name'); Domains = @('palmertech.co.uk') } }
-function Get-ADRootDSE { [CmdletBinding()] param() [pscustomobject]@{ schemaNamingContext = 'CN=Schema,CN=Configuration,DC=palmertech,DC=co,DC=uk' } }
+  [pscustomobject]@{ Name = 'contoso.example'; RootDomain = 'contoso.example'; ForestMode = 'Windows2016Forest'; SchemaMaster = 'DC01.contoso.example'
+    DomainNamingMaster = 'DC01.contoso.example'; Sites = @('Default-First-Site-Name'); Domains = @('contoso.example') } }
+function Get-ADRootDSE { [CmdletBinding()] param() [pscustomobject]@{ schemaNamingContext = 'CN=Schema,CN=Configuration,DC=contoso,DC=example' } }
 function Get-ADObject { [CmdletBinding()] param($SearchBase, $LDAPFilter)
   if ($LDAPFilter -match 'ms-Mcs-AdmPwd' -and $script:legacyLaps) { [pscustomobject]@{ Name = 'ms-Mcs-AdmPwd' } }
   if ($LDAPFilter -match 'msLAPS-Password' -and $script:windowsLaps) { [pscustomobject]@{ Name = 'msLAPS-Password' } } }
@@ -33,7 +33,7 @@ function User($sam, $rid, [bool]$enabled = $true, $spn = $null, $lastLogon = (Ge
   [pscustomobject]@{ SamAccountName = $sam; Name = $sam; Enabled = $enabled; SID = (Sid "$domainSid-$rid"); LastLogonDate = $lastLogon
     PasswordLastSet = (Get-Date).AddDays(-400); PasswordNeverExpires = $false; PasswordNotRequired = $false; AllowReversiblePasswordEncryption = $false
     DoesNotRequirePreAuth = $false; ServicePrincipalName = $spn; AdminCount = 0; TrustedForDelegation = $false; SIDHistory = @()
-    whenCreated = (Get-Date).AddDays(-900); DistinguishedName = "CN=$sam,CN=Users,DC=palmertech,DC=co,DC=uk" } }
+    whenCreated = (Get-Date).AddDays(-900); DistinguishedName = "CN=$sam,CN=Users,DC=contoso,DC=example" } }
 function Get-ADUser { [CmdletBinding()] param($Filter, $Properties, $ResultSetSize)
   User 'Administrator' 500; User 'Guest' 501 $false; User 'krbtgt' 502 $false; User 'svc-sql' 1105 $true @('MSSQLSvc/sql01:1433'); User 'jo' 1106 }
 function Get-ADComputer { [CmdletBinding()] param($Filter, $Properties, $ResultSetSize)
@@ -57,7 +57,7 @@ function Get-ADDefaultDomainPasswordPolicy { [CmdletBinding()] param()
   [pscustomobject]@{ MinPasswordLength = 7; ComplexityEnabled = $true; MaxPasswordAge = [timespan]::FromDays(42); PasswordHistoryCount = 24; LockoutThreshold = 0
     LockoutDuration = [timespan]::FromMinutes(10); ReversibleEncryptionEnabled = $false } }
 function Get-ADDomainController { [CmdletBinding()] param($Filter)
-  [pscustomobject]@{ HostName = 'DC01.palmertech.co.uk'; Site = 'Default-First-Site-Name'; OperatingSystem = 'Windows Server 2022'; OperatingSystemVersion = '10.0 (20348)'
+  [pscustomobject]@{ HostName = 'DC01.contoso.example'; Site = 'Default-First-Site-Name'; OperatingSystem = 'Windows Server 2022'; OperatingSystemVersion = '10.0 (20348)'
     IPv4Address = '10.0.0.10'; IsGlobalCatalog = $true; IsReadOnly = $false; OperationMasterRoles = @('PDCEmulator', 'RIDMaster') } }
 function Get-ADOptionalFeature { [CmdletBinding()] param($Filter) [pscustomobject]@{ EnabledScopes = @() } }
 function Get-ADTrust { [CmdletBinding()] param($Filter) }
@@ -75,13 +75,13 @@ function Check([bool]$ok, [string]$what) { if (-not $ok) { throw "FAILED: $what"
 $script:legacyLaps = $false; $script:windowsLaps = $false; $script:noModule = $false; $script:noAdws = $false
 $ad = Snapshot
 Check ($null -ne $ad -and -not $ad.error) 'a domain without the LAPS schema still sends a snapshot'
-Check ($ad.domain.dnsName -eq 'palmertech.co.uk' -and $ad.domain.sid -eq $domainSid) 'the domain and its SID are reported'
+Check ($ad.domain.dnsName -eq 'contoso.example' -and $ad.domain.sid -eq $domainSid) 'the domain and its SID are reported'
 Check ($ad.counts.users -eq 5 -and $ad.counts.computers -eq 2 -and $ad.counts.groups -eq 7) 'users, computers and groups are counted'
 $admins = $ad.privilegedGroups | Where-Object { $_.label -eq 'Domain Admins' }
 Check ($admins.memberCount -eq 1 -and $admins.members[0].sam -eq 'Administrator') 'Domain Admins is found by its SID, with its members'
 Check ($ad.risky.kerberoastable.Count -eq 1 -and $ad.risky.kerberoastable[0].sam -eq 'svc-sql') 'Kerberoastable accounts are found'
 Check ($ad.builtinAdministrator.sam -eq 'Administrator') 'the built-in Administrator is found by its SID'
-Check ($ad.passwordPolicy.minLength -eq 7 -and $ad.domainControllers[0].name -eq 'DC01.palmertech.co.uk') 'password policy and domain controllers are reported'
+Check ($ad.passwordPolicy.minLength -eq 7 -and $ad.domainControllers[0].name -eq 'DC01.contoso.example') 'password policy and domain controllers are reported'
 Check ($ad.laps.windowsSchema -eq $false -and $ad.laps.coveredComputers -eq 0) 'LAPS is reported as not deployed'
 Check (@($ad.collectionErrors | Where-Object { $_ -like 'group policies:*' }).Count -eq 1) 'a missing GroupPolicy module is named, not fatal'
 Check (@($ad.collectionErrors | Where-Object { $_ -like 'computers:*' }).Count -eq 0) 'computers are read without asking for missing attributes'

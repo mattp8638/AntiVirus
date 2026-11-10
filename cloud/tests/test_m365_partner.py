@@ -81,7 +81,7 @@ class FakeMicrosoft:
                 import base64
 
                 amr = ["pwd", "mfa"] if self.mfa_done else ["pwd"]
-                id_token = "e30." + base64.urlsafe_b64encode(json.dumps({"upn": "admin@palmertech.co.uk", "amr": amr}).encode()).decode().rstrip("=") + ".x"
+                id_token = "e30." + base64.urlsafe_b64encode(json.dumps({"upn": "admin@contoso.example", "amr": amr}).encode()).decode().rstrip("=") + ".x"
                 return httpx.Response(200, json={"access_token": "partner-token", "refresh_token": "rt-1", "id_token": id_token})
             if directory == CUSTOMER_DIR and self.customer_requires_mfa and not (self.mfa_done and self.customer_trusts_partner_mfa):
                 return httpx.Response(400, json={"error": "invalid_grant", "error_description": (
@@ -114,10 +114,10 @@ class FakeMicrosoft:
             next(g for g in self.grants if g["id"] == path.rsplit("/", 1)[1]).update(body)
             return httpx.Response(204)
         if path == "/organization":
-            return httpx.Response(200, json={"value": [{"displayName": "Palmertech", "partnerTenantType": self.partner_tenant_type,
-                                                        "verifiedDomains": [{"name": "palmertech.co.uk"}]}]})
+            return httpx.Response(200, json={"value": [{"displayName": "Contoso", "partnerTenantType": self.partner_tenant_type,
+                                                        "verifiedDomains": [{"name": "contoso.example"}]}]})
         if path == "/me":
-            return httpx.Response(200, json={"userPrincipalName": "admin@palmertech.co.uk", "userType": self.user_type})
+            return httpx.Response(200, json={"userPrincipalName": "admin@contoso.example", "userType": self.user_type})
         if path == "/me/memberOf":
             return httpx.Response(200, json={"value": [{"displayName": g} for g in self.member_of]})
         if path == "/contracts":
@@ -369,7 +369,7 @@ def test_partner_token_requests_match_the_app_client_type(client, admin, microso
 def test_partner_check_explains_what_blocks_gdap(client, admin, microsoft):
     connect_partner(client, admin)
     ok = client.get("/api/console/m365/partner/check", headers=admin).json()
-    assert ok["problems"] == [] and ok["organization"] == "Palmertech" and ok["adminAgent"] and ok["partnerCenter"]
+    assert ok["problems"] == [] and ok["organization"] == "Contoso" and ok["adminAgent"] and ok["partnerCenter"]
     microsoft.partner_tenant_type, microsoft.user_type, microsoft.member_of = None, "Guest", []
     bad = client.get("/api/console/m365/partner/check", headers=admin).json()["problems"]
     assert any("not registered as a Microsoft partner" in p for p in bad)
@@ -478,7 +478,7 @@ def test_customer_mfa_requirement_is_met_by_an_mfa_partner_sign_in(client, admin
     assert client.post("/api/console/m365/partner/import", headers=proof, json={"directoryIds": [CUSTOMER_DIR]}).json()[0]["status"] == "linked"
     after = client.get("/api/console/m365/partner/check", headers=admin).json()
     assert not after["actions"]["signInWithMfa"] and after["problems"] == [] and after["mfa"] is True
-    assert client.get("/api/console/m365/partner", headers=admin).json()["partner"]["signedInAs"] == "admin@palmertech.co.uk"
+    assert client.get("/api/console/m365/partner", headers=admin).json()["partner"]["signedInAs"] == "admin@contoso.example"
 
 
 def test_mfa_verified_sign_in_refused_by_customer_points_to_trust_settings(client, admin, microsoft):
