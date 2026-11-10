@@ -1,0 +1,49 @@
+name: One-command install
+
+# Runs deploy/install.sh on a fresh Ubuntu runner, as a new MSP would on a new server, and fails if the server is not
+# ready at the end. Let's Encrypt cannot issue for a test name, so HTTPS itself is checked by phase2-smoke.yml instead.
+# The summary records how long the install took (the target is under 15 minutes).
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: ["main"]
+    paths: ["deploy/**", "cloud/requirements.txt", ".github/workflows/installer.yml"]
+
+jobs:
+  install:
+    name: deploy/install.sh on a fresh server
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install
+        run: |
+          start=$(date +%s)
+          sudo deploy/install.sh --domain fenrir-ci.example.com --email ci-admin@example.com --company "CI Test MSP" \
+            --skip-dns-check --no-auto-update --yes 2>&1 | tee install.log
+          echo "INSTALL_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+      - name: The server is up, secrets are new and the MSP is named
+        run: |
+          curl -fsS http://127.0.0.1:8080/ready
+          sudo grep -q '^FENRIR_SECRET_KEY=[0-9a-f]\{64\}$' deploy/.env
+          ! sudo grep -q 'change-me' deploy/.env
+          sudo test -s deploy/signing/codesign.pfx && sudo test -s deploy/signing/release-ed25519.pem
+          password=$(sudo sed -n 's/^FENRIR_ADMIN_PASSWORD=//p' deploy/.env)
+          token=$(curl -fsS http://127.0.0.1:8080/api/console/auth/login -H 'Content-Type: application/json' \
+            -d "{\"email\":\"ci-admin@example.com\",\"password\":\"$password\"}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+          curl -fsS http://127.0.0.1:8080/api/console/tenants -H "Authorization: Bearer $token" | grep -q '"CI Test MSP"'
+          curl -fsS http://127.0.0.1:8080/api/console/enrollment-installers/status -H "Authorization: Bearer $token" | tee status.json
+          python3 -c 'import json; s=json.load(open("status.json")); assert s["windows"]["ready"] and s["windows"]["mode"]=="signed", s["windows"]'
+      - name: Running it again changes nothing
+        run: |
+          before=$(sudo sha256sum deploy/.env deploy/signing/codesign.pfx)
+          sudo deploy/install.sh --domain fenrir-ci.example.com --email ci-admin@example.com --skip-dns-check --no-auto-update --yes > rerun.log 2>&1
+          [ "$before" = "$(sudo sha256sum deploy/.env deploy/signing/codesign.pfx)" ]
+          grep -q "kept the existing deploy/.env" rerun.log
+      - name: Summary
+        if: always()
+        run: |
+          echo "### One-command install" >> "$GITHUB_STEP_SUMMARY"
+          echo "Took ${INSTALL_SECONDS:-?} seconds (target: under 900)." >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"; tail -25 install.log >> "$GITHUB_STEP_SUMMARY" 2>/dev/null; echo '```' >> "$GITHUB_STEP_SUMMARY"

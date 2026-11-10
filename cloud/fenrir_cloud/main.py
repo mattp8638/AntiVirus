@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import mimetypes
 import secrets
+import re
 import sys
 import threading
 import time
@@ -80,7 +81,9 @@ def bootstrap(settings: Settings) -> None:
     try:
         msp = db.execute(select(Tenant).where(Tenant.kind == "msp")).scalars().first()
         if msp is None:
-            msp = Tenant(name="Palmertech", slug="palmertech", kind="msp", plan="mdr")
+            name = (settings.msp_name or "My MSP").strip()[:200] or "My MSP"
+            slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:80] or "msp"
+            msp = Tenant(name=name, slug=slug, kind="msp", plan="mdr")
             db.add(msp)
             db.flush()
         if db.get(Policy, GLOBAL_POLICY_ID) is None:

@@ -52,6 +52,7 @@ class Settings:
     m365_sync_hours: int = field(default_factory=lambda: int(os.getenv("FENRIR_M365_SYNC_HOURS", "6")))
 
     bootstrap_admin_email: str = field(default_factory=lambda: os.getenv("FENRIR_ADMIN_EMAIL", "admin@fenrir.local"))
+    msp_name: str = field(default_factory=lambda: os.getenv("FENRIR_MSP_NAME", "My MSP"))  # first run only: the MSP tenant's name
     bootstrap_admin_password: str | None = field(default_factory=lambda: os.getenv("FENRIR_ADMIN_PASSWORD"))
 
     # Devices that enroll without a token land in the "Unassigned" tenant and
