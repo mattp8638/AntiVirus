@@ -1,0 +1,7 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'WireGuard'
+publisher: 'WireGuard'
+category: 'Networking'
+windows:
+  winget: 'WireGuard.WireGuard'
+detect: '^WireGuard'   # matches the installed program's name in inventory

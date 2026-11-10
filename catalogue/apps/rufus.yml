@@ -1,0 +1,7 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Rufus'
+publisher: 'Pete Batard'
+category: 'Utilities'
+windows:
+  winget: 'Rufus.Rufus'
+detect: '^Rufus'   # matches the installed program's name in inventory

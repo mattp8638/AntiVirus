@@ -84,6 +84,7 @@ WORKDIR /app/cloud
 COPY cloud/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt "psycopg[binary]>=3.2"
 COPY cloud/ ./
+COPY catalogue/ /app/catalogue/
 COPY ml/fenrir_ml /app/ml/fenrir_ml
 COPY ml/models /app/ml/models
 COPY --from=console /src/console/dist /app/console/dist
@@ -93,6 +94,8 @@ COPY --from=windows-agents /out/windows/ /app/cloud/downloads/windows/
 # root-owned and unreadable to fenrir. Keep packaged code/assets readable and
 # directories traversable, preserve executable agents, and remove group/other
 # write access. Build secrets are mounted separately and never copied here.
+# wixl (msitools) builds each customer's MSI on request (rmm_deploy.py).
+RUN apt-get update && apt-get install -y --no-install-recommends wixl && rm -rf /var/lib/apt/lists/*
 RUN useradd --system --uid 10001 fenrir \
  && chmod -R a+rX,go-w /app \
  && mkdir -p /data && chown fenrir /data

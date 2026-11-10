@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'VirtualBox'
+publisher: 'Oracle'
+category: 'Development'
+windows:
+  winget: 'Oracle.VirtualBox'
+macos:
+  brew: 'virtualbox'
+detect: '^Oracle VirtualBox'   # matches the installed program's name in inventory

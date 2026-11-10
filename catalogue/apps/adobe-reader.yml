@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Adobe Acrobat Reader'
+publisher: 'Adobe'
+category: 'Documents'
+windows:
+  winget: 'Adobe.Acrobat.Reader.64-bit'
+macos:
+  brew: 'adobe-acrobat-reader'
+detect: '^Adobe Acrobat( Reader)?( \(64-bit\)| DC|$)'   # matches the installed program's name in inventory

@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Google Chrome'
+publisher: 'Google'
+category: 'Browsers'
+windows:
+  winget: 'Google.Chrome'
+macos:
+  brew: 'google-chrome'
+detect: '^Google Chrome$'   # matches the installed program's name in inventory

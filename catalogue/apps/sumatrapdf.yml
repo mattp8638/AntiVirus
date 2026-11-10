@@ -1,0 +1,7 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'SumatraPDF'
+publisher: 'Krzysztof Kowalczyk'
+category: 'Documents'
+windows:
+  winget: 'SumatraPDF.SumatraPDF'
+detect: '^SumatraPDF'   # matches the installed program's name in inventory

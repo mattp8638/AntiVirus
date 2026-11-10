@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Tailscale'
+publisher: 'Tailscale'
+category: 'Networking'
+windows:
+  winget: 'Tailscale.Tailscale'
+macos:
+  brew: 'tailscale-app'
+detect: '^Tailscale'   # matches the installed program's name in inventory

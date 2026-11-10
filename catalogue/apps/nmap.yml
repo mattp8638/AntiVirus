@@ -1,0 +1,7 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Nmap'
+publisher: 'Insecure.org'
+category: 'Networking'
+windows:
+  winget: 'Insecure.Nmap'
+detect: '^Nmap'   # matches the installed program's name in inventory

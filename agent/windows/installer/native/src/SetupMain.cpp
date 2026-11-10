@@ -1,4 +1,6 @@
 #include <windows.h>
+
+#include <cstdio>
 #include <commctrl.h>
 #include <dwmapi.h>
 #include <shlobj.h>
@@ -2408,6 +2410,8 @@ bool WriteArpEntry(const std::filesystem::path& installRoot) {
 // While an install, repair or upgrade runs, every log line also goes to <install>\runtime\setup-last.log, so a
 // silent upgrade that went wrong can be diagnosed (and reported by the agent afterwards).
 std::filesystem::path g_setupLogPath;
+// Process exit code in quiet and silent modes: 0 installed, 1 failed (RMM tools and msiexec read it).
+int g_exitCode = 0;
 
 void PostLog(HWND hwnd, const std::wstring& text) {
   if (!g_setupLogPath.empty()) {
@@ -2751,7 +2755,7 @@ void RunInstallOrRepair(HWND hwnd, UiContext* context, const bool repair) {
   std::filesystem::remove(g_setupLogPath, ec);
   // Tells the watchdog not to start the service while files are being replaced.
   std::ofstream(MaintenanceFlagPath(context->installRoot)) << "1";
-  PostLog(hwnd, std::wstring(context->silent ? L"Silent upgrade" : (repair ? L"Repair" : L"Install")) + L" started.");
+  PostLog(hwnd, std::wstring(context->silent ? (repair ? L"Silent upgrade" : L"Quiet install") : (repair ? L"Repair" : L"Install")) + L" started.");
   if (IsProcessElevated()) {
     ConfigureDefenderExclusions(hwnd, context->installRoot, true);  // before any agent file is written
   }
@@ -3398,6 +3402,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
           std::wstring text(static_cast<std::size_t>(length) + 1, L'\0');
           GetWindowTextW(context->logEdit, text.data(), length + 1);
           log << (payload->success ? L"OK: " : L"FAILED: ") << payload->message << L"\r\n\r\n" << text.c_str();
+          g_exitCode = payload->success ? 0 : 1;
           delete payload;
           DestroyWindow(hwnd);
           return 0;
@@ -3442,7 +3447,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         delete context;
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
       }
-      PostQuitMessage(0);
+      PostQuitMessage(g_exitCode);
       return 0;
     }
   }
@@ -3506,6 +3511,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     return 1;
   }
 
+  // --quiet (without --uninstall): install or repair with no window and no prompts, for RMM tools, Group Policy, Intune
+  // and the MSI, which run as SYSTEM with nobody to answer a dialog. The result is the exit code and
+  // runtime\last-upgrade.log; nothing is ever shown.
+  const bool quietInstall = argv != nullptr && HasArgument(argc, argv, L"--quiet") && !HasArgument(argc, argv, L"--uninstall");
+  const auto refuse = [&](const wchar_t* text) {
+    if (quietInstall) {
+      std::fwprintf(stderr, L"%ls\n", text);
+    } else {
+      MessageBoxW(hwnd, text, kWindowTitle, MB_OK | MB_ICONERROR);
+    }
+  };
   if (argv != nullptr) {
     auto server = InstallerArgument(argc, argv, L"--server");
     auto token = InstallerArgument(argc, argv, L"--enroll-token");
@@ -3518,7 +3534,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
         token = embeddedToken;
       }
     } catch (const std::exception&) {
-      MessageBoxW(hwnd, L"Invalid embedded enrollment configuration. Generate a new installer from Fenrir.", kWindowTitle, MB_OK | MB_ICONERROR);
+      refuse(L"Invalid embedded enrollment configuration. Generate a new installer from Fenrir.");
       DestroyWindow(hwnd);
       LocalFree(argv);
       CoUninitialize();
@@ -3528,7 +3544,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
       if (server.rfind(L"https://", 0) != 0 || token.rfind(L"fet_", 0) != 0 ||
           server.find_first_of(L" \r\n\t\"") != std::wstring::npos ||
           token.find_first_not_of(L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") != std::wstring::npos) {
-        MessageBoxW(hwnd, L"Invalid cloud URL or enrollment token provided.", kWindowTitle, MB_OK | MB_ICONERROR);
+        refuse(L"Invalid cloud URL or enrollment token provided.");
         DestroyWindow(hwnd);
         LocalFree(argv);
         CoUninitialize();
@@ -3542,7 +3558,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
   }
 
   const bool silentUpgrade = argv != nullptr && HasArgument(argc, argv, L"--silent-upgrade");
-  if (silentUpgrade) {
+  if (quietInstall && !silentUpgrade) {
+    auto* context = GetContext(hwnd);
+    if (context == nullptr || (!context->installed && (context->controlPlaneBaseUrl.empty() || context->enrollmentToken.empty()))) {
+      refuse(L"A quiet install needs the server and enrolment token: use an installer downloaded from Fenrir, or pass --server and --enroll-token.");
+      DestroyWindow(hwnd);
+      if (argv != nullptr) LocalFree(argv);
+      CoUninitialize();
+      return 3;
+    }
+    context->silent = true;
+    PostMessageW(hwnd, WM_COMMAND, IDC_PRIMARY_BUTTON, 0);
+  } else if (silentUpgrade) {
     auto* context = GetContext(hwnd);
     if (context == nullptr || !context->installed) {
       DestroyWindow(hwnd);  // only upgrades an existing installation, never installs one silently

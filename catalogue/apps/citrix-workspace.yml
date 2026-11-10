@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Citrix Workspace'
+publisher: 'Citrix'
+category: 'Remote access'
+windows:
+  winget: 'Citrix.Workspace'
+macos:
+  brew: 'citrix-workspace'
+detect: '^Citrix Workspace'   # matches the installed program's name in inventory

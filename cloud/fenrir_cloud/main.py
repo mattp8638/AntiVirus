@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import mimetypes
 import secrets
+import re
 import sys
 import threading
 import time
@@ -55,6 +56,7 @@ from .routers import defender as defender_router
 from .routers import mobile_apps as mobile_apps_router
 from .routers import web_profile as web_profile_router
 from .routers import reports as reports_router, branding as branding_router
+from .routers import deploy as deploy_router
 from .routers import oob as oob_router
 from .routers import hybrid as hybrid_router
 from .routers import customization as customization_router
@@ -79,7 +81,12 @@ def bootstrap(settings: Settings) -> None:
     try:
         msp = db.execute(select(Tenant).where(Tenant.kind == "msp")).scalars().first()
         if msp is None:
-            msp = Tenant(name="Palmertech", slug="palmertech", kind="msp", plan="mdr")
+            name = (settings.msp_name or "My MSP").strip()[:200] or "My MSP"
+            slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:80] or "msp"
+            from . import modules
+
+            # A new installation starts with the short Essentials menu (Settings > Modules adds the rest).
+            msp = Tenant(name=name, slug=slug, kind="msp", plan="mdr", settings={"modules": list(modules.ESSENTIALS)})
             db.add(msp)
             db.flush()
         if db.get(Policy, GLOBAL_POLICY_ID) is None:
@@ -94,6 +101,9 @@ def bootstrap(settings: Settings) -> None:
                 # Printed once so the first operator can sign in; change it straight away.
                 print(f"\n[fenrir] Created admin {settings.bootstrap_admin_email} with password: {password}\n", file=sys.stderr)
         rmm_library.seed(db)
+        from . import catalogue
+
+        catalogue.seed(db)  # community apps and scripts (catalogue/), new entries only
         from . import condition_remediation
 
         condition_remediation.seed(db)
@@ -520,8 +530,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     for module in (m365_admin_router, m365_router, network_router, grc_router, backup_router, soc_workflows, ad_router, agent_health_router, onboarding_router, m365_exchange_router, m365_signin_router, m365_intune_router, m365_reports_router, m365_collaboration_router, grc_programme_router,
                    rollouts_router, apikeys_router, roles_router, approvals_router, exclusions_router,
                    exposure_intel_router, m365_partner_router, m365_workspace_router, m365_lifecycle_router, condition_packages_router, triage_router, clients_router, search_router, defender_router, mobile_apps_router, push_router, care_router,
-                   reports_router, branding_router):
+                   reports_router, branding_router, deploy_router):
         app.include_router(module.router)
+    app.include_router(deploy_router.public)
     app.include_router(documentation_router.router)
     app.include_router(m365_router.oauth)
     app.include_router(psa_router.inbound)

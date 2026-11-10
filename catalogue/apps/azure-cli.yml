@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Azure CLI'
+publisher: 'Microsoft'
+category: 'Development'
+windows:
+  winget: 'Microsoft.AzureCLI'
+macos:
+  brew: 'azure-cli'
+detect: '^Microsoft Azure CLI'   # matches the installed program's name in inventory

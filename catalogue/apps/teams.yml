@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Microsoft Teams'
+publisher: 'Microsoft'
+category: 'Communication'
+windows:
+  winget: 'Microsoft.Teams'
+macos:
+  brew: 'microsoft-teams'
+detect: '^Microsoft Teams'   # matches the installed program's name in inventory

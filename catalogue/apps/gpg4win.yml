@@ -1,0 +1,7 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Gpg4win'
+publisher: 'g10 Code'
+category: 'Security'
+windows:
+  winget: 'GnuPG.Gpg4win'
+detect: '^Gpg4win'   # matches the installed program's name in inventory

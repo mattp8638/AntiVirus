@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Krita'
+publisher: 'Krita'
+category: 'Media'
+windows:
+  winget: 'KDE.Krita'
+macos:
+  brew: 'krita'
+detect: '^Krita'   # matches the installed program's name in inventory

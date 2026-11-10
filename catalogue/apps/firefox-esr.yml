@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Mozilla Firefox ESR'
+publisher: 'Mozilla'
+category: 'Browsers'
+windows:
+  winget: 'Mozilla.Firefox.ESR'
+macos:
+  brew: 'firefox@esr'
+detect: '^Mozilla Firefox .*ESR'   # matches the installed program's name in inventory

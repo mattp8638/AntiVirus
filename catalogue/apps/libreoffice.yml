@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'LibreOffice'
+publisher: 'The Document Foundation'
+category: 'Documents'
+windows:
+  winget: 'TheDocumentFoundation.LibreOffice'
+macos:
+  brew: 'libreoffice'
+detect: '^LibreOffice'   # matches the installed program's name in inventory

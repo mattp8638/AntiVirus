@@ -1,0 +1,7 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: '.NET Desktop Runtime 8'
+publisher: 'Microsoft'
+category: 'Runtimes'
+windows:
+  winget: 'Microsoft.DotNet.DesktopRuntime.8'
+detect: '^Microsoft Windows Desktop Runtime - 8\.'   # matches the installed program's name in inventory

@@ -136,25 +136,12 @@ def delete_custom_field(field_id: str, principal: Principal = Depends(current_pr
 
 def _coerce(field: CustomField, value):
     """The value to store for this field, or None to clear it. Raises 400 for a value that does not fit."""
-    if value is None or value == "":
-        return None
-    kind = field.field_type
-    if kind == "checkbox":
-        if isinstance(value, bool):
-            return value
-        raise HTTPException(400, f"{field.label} must be true or false")
-    if kind == "number":
-        try:
-            number = float(value)
-        except (TypeError, ValueError):
-            raise HTTPException(400, f"{field.label} must be a number") from None
-        return int(number) if number.is_integer() else number
-    text = str(value).strip()
-    if kind == "date" and not _DATE.fullmatch(text):
-        raise HTTPException(400, f"{field.label} must be a date (YYYY-MM-DD)")
-    if kind == "select" and text not in (field.options or []):
-        raise HTTPException(400, f"{field.label} must be one of: {', '.join(field.options or [])}")
-    return text[:500]
+    from .. import custom_fields
+
+    try:
+        return custom_fields.coerce(field, value)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
 
 
 @router.put("/custom-fields/values/{entity}/{record_id}")

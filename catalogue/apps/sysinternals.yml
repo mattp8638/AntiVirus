@@ -1,0 +1,7 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Sysinternals Suite'
+publisher: 'Microsoft'
+category: 'Utilities'
+windows:
+  winget: 'Microsoft.Sysinternals.Suite'
+detect: '^Sysinternals'   # matches the installed program's name in inventory

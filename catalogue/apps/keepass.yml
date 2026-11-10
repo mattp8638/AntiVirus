@@ -1,0 +1,7 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'KeePass'
+publisher: 'Dominik Reichl'
+category: 'Security'
+windows:
+  winget: 'DominikReichl.KeePass'
+detect: '^KeePass Password Safe'   # matches the installed program's name in inventory

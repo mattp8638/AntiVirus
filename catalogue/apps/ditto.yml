@@ -1,0 +1,7 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Ditto'
+publisher: 'Ditto'
+category: 'Utilities'
+windows:
+  winget: 'Ditto.Ditto'
+detect: '^Ditto'   # matches the installed program's name in inventory

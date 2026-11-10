@@ -1,0 +1,7 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Python 3.12'
+publisher: 'Python Software Foundation'
+category: 'Development'
+windows:
+  winget: 'Python.Python.3.12'
+detect: '^Python 3\.12'   # matches the installed program's name in inventory

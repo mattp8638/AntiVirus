@@ -1,0 +1,7 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'WinSCP'
+publisher: 'Martin Prikryl'
+category: 'Remote access'
+windows:
+  winget: 'WinSCP.WinSCP'
+detect: '^WinSCP'   # matches the installed program's name in inventory

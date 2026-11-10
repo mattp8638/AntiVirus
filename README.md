@@ -50,6 +50,28 @@ Deployment consists of **PostgreSQL + Fenrir Cloud**, which serves the compiled 
 
 Built user-mode artifacts include Windows x64, Linux amd64/arm64 and macOS amd64/arm64. This is not a declaration of equal feature coverage or a completed supported-platform acceptance matrix. Self-signed Windows certificates require deliberate trust on managed endpoints; public trust and SmartScreen reputation are separate matters.
 
+## Quick install (one command)
+
+On a fresh Ubuntu or Debian server with 2 GB of memory and 15 GB of free disk, once a DNS A record points your
+hostname at it:
+
+```bash
+git clone <this repository's URL> /opt/fenrir && cd /opt/fenrir
+sudo deploy/install.sh --domain rmm.example.com --email you@example.com --company "Your Company"
+```
+
+It does the whole setup in about 10-15 minutes:
+- installs Docker;
+- writes new random secrets;
+- creates your server's own free code-signing certificate;
+- sets up HTTPS with Let's Encrypt;
+- builds and starts the server;
+- schedules backups and automatic updates;
+- runs the go-live check.
+
+At the end it prints the console address and the first sign-in. Running it again changes nothing that already exists.
+The manual steps below show what it does, for anyone who wants to set things up differently.
+
 ## New HTTPS installation
 
 For the whole path from a fresh server to the first customer (backups off-site, monitoring, staff access, Windows
@@ -438,6 +460,8 @@ passkeys follow the same rule as passwords: platform administrators only.
 | Android | Use phone enrolment and grant requested device/location permissions. Capabilities differ from desktop agents. |
 | iPhone, iPad, Mac (no agent) | Use phone enrolment: the code installs a Fenrir DNS profile for web and phishing protection. There is no app, Intune or Apple MDM, and so no remote actions. See [Apple web protection](docs/APPLE_WEB_PROTECTION.md). |
 
+**Many devices at once:** deploy from your existing RMM (Itarian, Level, NinjaOne...), Group Policy or Intune with generated scripts or an MSI. See [Deploy from your RMM](docs/DEPLOY_FROM_YOUR_RMM.md).
+
 Do not run a manual/prototype service beside an installed agent. Keep uninstall-protection credentials and use the normal maintenance/installer flow for upgrades.
 
 **Networks with a web proxy.** Linux and macOS: run the installer with `--proxy http://proxy.example:3128` (a repair
@@ -681,7 +705,7 @@ Before relying on a release, review the dependency notices in [NOTICE](NOTICE), 
 
 - [Architecture](docs/ARCHITECTURE.md), [RMM/PSA](docs/RMM_PSA.md), [RMM/PSA intelligence](docs/RMM_PSA_INTELLIGENCE.md), [zero-trust remote administration](docs/ZERO_TRUST_REMOTE_ADMINISTRATION.md), [continuous GRC](docs/CONTINUOUS_GRC.md), [remote protocol](docs/REMOTE_PROTOCOL.md)
 - [Acceptance lab: prove it works before you rely on it](docs/ACCEPTANCE_LAB.md)
-- [Reports and branding](docs/REPORTS_AND_BRANDING.md)
+- [Reports and branding](docs/REPORTS_AND_BRANDING.md), [deploy from your RMM, Group Policy or Intune](docs/DEPLOY_FROM_YOUR_RMM.md), [community app and script catalogue](catalogue/README.md)
 - [Code signing](docs/CODE_SIGNING.md), [driver/prevention limits](docs/DRIVER_SIGNING.md), [updates](docs/AUTO_UPDATE.md)
 - [Parity decisions](docs/parity/decisions.md), [acceptance](docs/parity/acceptance.md), [release gates](docs/parity/release-gates.md)
 - [Console rendering](docs/CONSOLE_RENDER_SAFETY.md), [Ctrl+Alt+Del](docs/REMOTE_CTRL_ALT_DEL.md)

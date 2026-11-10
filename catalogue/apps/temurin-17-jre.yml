@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Eclipse Temurin JRE 17'
+publisher: 'Eclipse Adoptium'
+category: 'Runtimes'
+windows:
+  winget: 'EclipseAdoptium.Temurin.17.JRE'
+macos:
+  brew: 'temurin@17'
+detect: '^Eclipse Temurin JRE .*17'   # matches the installed program's name in inventory

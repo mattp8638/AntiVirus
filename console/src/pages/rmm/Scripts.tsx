@@ -106,6 +106,9 @@ function ScriptEditor({ script, onClose, onRun }: { script: any; onClose: () => 
       <h3 style={{ marginTop: 14 }}>Script</h3>
       <textarea value={form.body || ""} disabled={readOnly} spellCheck={false} onChange={(e) => setForm({ ...form, body: e.target.value })}
                 style={{ width: "100%", minHeight: 280, fontFamily: "var(--mono)", fontSize: 12.5 }} />
+      <p className="small muted">Device custom fields arrive as environment variables: <code>{form.language === "powershell" ? "$env:FENRIR_CF_ASSET_TAG" : "$FENRIR_CF_ASSET_TAG"}</code>,
+        plus <code>FENRIR_DEVICE_NAME</code> and <code>FENRIR_CUSTOMER</code>. To set a field, print a line such as <code>FENRIR-FIELD warranty_end=2027-03-01</code>
+        (an empty value clears it). Monitors can test fields with the "Custom field" condition.</p>
       {readOnly && script.builtin && <p className="small muted">Built-in scripts are read-only. Duplicate one to change it.</p>}
     </Modal>
   );

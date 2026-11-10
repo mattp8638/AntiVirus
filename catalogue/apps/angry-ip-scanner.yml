@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Angry IP Scanner'
+publisher: 'Anton Keks'
+category: 'Networking'
+windows:
+  winget: 'angryziber.AngryIPScanner'
+macos:
+  brew: 'angry-ip-scanner'
+detect: '^Angry IP Scanner'   # matches the installed program's name in inventory

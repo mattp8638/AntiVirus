@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'GIMP'
+publisher: 'GIMP Team'
+category: 'Media'
+windows:
+  winget: 'GIMP.GIMP.3'
+macos:
+  brew: 'gimp'
+detect: '^GIMP'   # matches the installed program's name in inventory

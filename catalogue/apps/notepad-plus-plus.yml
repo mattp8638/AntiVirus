@@ -1,0 +1,7 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Notepad++'
+publisher: 'Notepad++ Team'
+category: 'Utilities'
+windows:
+  winget: 'Notepad++.Notepad++'
+detect: '^Notepad\+\+'   # matches the installed program's name in inventory

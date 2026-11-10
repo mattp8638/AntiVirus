@@ -1,0 +1,9 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'PDFsam Basic'
+publisher: 'Sober Lemur'
+category: 'Documents'
+windows:
+  winget: 'PDFsam.PDFsam'
+macos:
+  brew: 'pdfsam-basic'
+detect: '^PDFsam Basic'   # matches the installed program's name in inventory

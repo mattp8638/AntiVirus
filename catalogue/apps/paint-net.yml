@@ -1,0 +1,7 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'Paint.NET'
+publisher: 'dotPDN'
+category: 'Media'
+windows:
+  winget: 'dotPDN.PaintDotNet'
+detect: '^paint\.net'   # matches the installed program's name in inventory

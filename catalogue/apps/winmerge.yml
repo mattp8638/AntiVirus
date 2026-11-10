@@ -1,0 +1,7 @@
+# Fenrir community app catalogue: see catalogue/README.md before changing this file.
+name: 'WinMerge'
+publisher: 'WinMerge'
+category: 'Utilities'
+windows:
+  winget: 'WinMerge.WinMerge'
+detect: '^WinMerge'   # matches the installed program's name in inventory
