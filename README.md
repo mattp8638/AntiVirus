@@ -44,7 +44,7 @@ Deployment consists of **PostgreSQL + Fenrir Cloud**, which serves the compiled 
 | Capacity | For an initial source-build evaluation, plan roughly 4 vCPUs, 8 GB RAM and 80 GB SSD; 16 GB RAM gives more build headroom. These are estimates, not measured fleet-capacity guarantees. Event volume and retention determine storage needs. |
 | Containers | Docker Engine, BuildKit/buildx and **Docker Compose 2.24.4+**. The HTTPS/local templates use `!override`. Use `docker compose`, not legacy `docker-compose`. |
 | Tools | Git, curl, OpenSSL and Bash; Python 3 for the host backup/restore utilities. The image build supplies the application runtimes and Windows cross-toolchain. |
-| Network | DNS hostname pointing at the server; TCP 80/443 for HTTPS, optional UDP 443 for HTTP/3, and restricted SSH access. Keep PostgreSQL private. |
+| Network | DNS hostname pointing at the server; TCP 80/443 for HTTPS, optional UDP 443 for HTTP/3, UDP 3478 for direct (peer-to-peer) remote sessions, and restricted SSH access. Keep PostgreSQL private. |
 | Outbound access | Container/package registries during builds; TLS/signing timestamp services; configured threat feeds, CVE sources and providers during operation. |
 | Signing | Production Windows builds need a usable code-signing PFX/password. Signed Linux/macOS updates need a persistent Ed25519 release key. Preserve and back up both. |
 
