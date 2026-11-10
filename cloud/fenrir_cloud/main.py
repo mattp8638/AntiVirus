@@ -55,6 +55,7 @@ from .routers import defender as defender_router
 from .routers import mobile_apps as mobile_apps_router
 from .routers import web_profile as web_profile_router
 from .routers import reports as reports_router, branding as branding_router
+from .routers import deploy as deploy_router
 from .routers import oob as oob_router
 from .routers import hybrid as hybrid_router
 from .routers import customization as customization_router
@@ -520,8 +521,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     for module in (m365_admin_router, m365_router, network_router, grc_router, backup_router, soc_workflows, ad_router, agent_health_router, onboarding_router, m365_exchange_router, m365_signin_router, m365_intune_router, m365_reports_router, m365_collaboration_router, grc_programme_router,
                    rollouts_router, apikeys_router, roles_router, approvals_router, exclusions_router,
                    exposure_intel_router, m365_partner_router, m365_workspace_router, m365_lifecycle_router, condition_packages_router, triage_router, clients_router, search_router, defender_router, mobile_apps_router, push_router, care_router,
-                   reports_router, branding_router):
+                   reports_router, branding_router, deploy_router):
         app.include_router(module.router)
+    app.include_router(deploy_router.public)
     app.include_router(documentation_router.router)
     app.include_router(m365_router.oauth)
     app.include_router(psa_router.inbound)

@@ -93,6 +93,8 @@ COPY --from=windows-agents /out/windows/ /app/cloud/downloads/windows/
 # root-owned and unreadable to fenrir. Keep packaged code/assets readable and
 # directories traversable, preserve executable agents, and remove group/other
 # write access. Build secrets are mounted separately and never copied here.
+# wixl (msitools) builds each customer's MSI on request (rmm_deploy.py).
+RUN apt-get update && apt-get install -y --no-install-recommends wixl && rm -rf /var/lib/apt/lists/*
 RUN useradd --system --uid 10001 fenrir \
  && chmod -R a+rX,go-w /app \
  && mkdir -p /data && chown fenrir /data

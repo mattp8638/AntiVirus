@@ -438,6 +438,8 @@ passkeys follow the same rule as passwords: platform administrators only.
 | Android | Use phone enrolment and grant requested device/location permissions. Capabilities differ from desktop agents. |
 | iPhone, iPad, Mac (no agent) | Use phone enrolment: the code installs a Fenrir DNS profile for web and phishing protection. There is no app, Intune or Apple MDM, and so no remote actions. See [Apple web protection](docs/APPLE_WEB_PROTECTION.md). |
 
+**Many devices at once:** deploy from your existing RMM (Itarian, Level, NinjaOne...), Group Policy or Intune with generated scripts or an MSI. See [Deploy from your RMM](docs/DEPLOY_FROM_YOUR_RMM.md).
+
 Do not run a manual/prototype service beside an installed agent. Keep uninstall-protection credentials and use the normal maintenance/installer flow for upgrades.
 
 **Networks with a web proxy.** Linux and macOS: run the installer with `--proxy http://proxy.example:3128` (a repair
@@ -681,7 +683,7 @@ Before relying on a release, review the dependency notices in [NOTICE](NOTICE), 
 
 - [Architecture](docs/ARCHITECTURE.md), [RMM/PSA](docs/RMM_PSA.md), [RMM/PSA intelligence](docs/RMM_PSA_INTELLIGENCE.md), [zero-trust remote administration](docs/ZERO_TRUST_REMOTE_ADMINISTRATION.md), [continuous GRC](docs/CONTINUOUS_GRC.md), [remote protocol](docs/REMOTE_PROTOCOL.md)
 - [Acceptance lab: prove it works before you rely on it](docs/ACCEPTANCE_LAB.md)
-- [Reports and branding](docs/REPORTS_AND_BRANDING.md)
+- [Reports and branding](docs/REPORTS_AND_BRANDING.md), [deploy from your RMM, Group Policy or Intune](docs/DEPLOY_FROM_YOUR_RMM.md)
 - [Code signing](docs/CODE_SIGNING.md), [driver/prevention limits](docs/DRIVER_SIGNING.md), [updates](docs/AUTO_UPDATE.md)
 - [Parity decisions](docs/parity/decisions.md), [acceptance](docs/parity/acceptance.md), [release gates](docs/parity/release-gates.md)
 - [Console rendering](docs/CONSOLE_RENDER_SAFETY.md), [Ctrl+Alt+Del](docs/REMOTE_CTRL_ALT_DEL.md)
