@@ -1,0 +1,86 @@
+# Capacity check: 2,000 simulated agents (by default) against the real Docker image, PostgreSQL and the separate worker,
+# on a standard 4-vCPU GitHub runner that also runs the load generator. Run it by hand with other sizes from Actions.
+name: Load test (2,000 agents)
+
+on:
+  workflow_dispatch:
+    inputs:
+      devices:
+        description: Simulated agents
+        default: "2000"
+      minutes:
+        description: Minutes of steady load after enrolment
+        default: "10"
+      events_per_minute:
+        description: Telemetry events each agent sends a minute (a real idle Windows agent sends about 30)
+        default: "30"
+  schedule:
+    - cron: "17 3 * * 0"
+  pull_request:
+    paths:
+      - ".github/workflows/loadtest.yml"
+      - "scripts/loadtest/**"
+
+permissions:
+  contents: read
+
+jobs:
+  load:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      DEVICES: ${{ inputs.devices || '2000' }}
+      MINUTES: ${{ inputs.minutes || '10' }}
+      EPM: ${{ inputs.events_per_minute || '30' }}
+      COMPOSE_BAKE: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - name: One-run secrets and a throwaway release key
+        run: |
+          set -euo pipefail
+          umask 077
+          {
+            printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 20)"
+            printf 'FENRIR_SECRET_KEY=%s\n' "$(openssl rand -hex 32)"
+            printf 'FENRIR_VAULT_KEY=%s\n' "$(openssl rand -base64 32 | tr -d '\n')"
+            printf 'FENRIR_ADMIN_PASSWORD=%s\n' "$(openssl rand -hex 24)"
+            printf 'FENRIR_PUBLIC_URL=http://127.0.0.1:8080\n'
+            printf 'FENRIR_OPEN_ENROLLMENT=false\n'
+            printf 'FENRIR_FEED_SYNC=false\n'
+            printf 'FENRIR_REQUIRE_MFA=false\n'
+          } > deploy/.env
+          mkdir -p deploy/signing deploy/releases
+          openssl genpkey -algorithm ed25519 -out deploy/signing/release-ed25519.pem
+          echo "FENRIR_RELEASE_KEY=$PWD/deploy/signing/release-ed25519.pem" >> "$GITHUB_ENV"
+          echo "FENRIR_RELEASE_SEQ=$(git log -1 --format=%ct -- agent/linux)" >> "$GITHUB_ENV"
+      - name: Build and start the stack (PostgreSQL, web, worker)
+        run: |
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.lab.yml --env-file deploy/.env up -d --build --wait --wait-timeout 300
+          curl --fail --silent --show-error --retry 20 --retry-delay 6 --retry-all-errors http://127.0.0.1:8080/health/background
+      - name: Run the load
+        run: |
+          set -euo pipefail
+          set -a; source deploy/.env; set +a
+          ( while sleep 30; do docker stats --no-stream --format '{{.Name}} cpu={{.CPUPerc}} mem={{.MemUsage}}' >> /tmp/stats.log; done ) &
+          python3 scripts/loadtest/fenrir_load.py --server http://127.0.0.1:8080 --email admin@fenrir.local \
+            --password "$FENRIR_ADMIN_PASSWORD" --devices "$DEVICES" --minutes "$MINUTES" --events-per-minute "$EPM" \
+            --concurrency 128 --wait-healthy 300 --out /tmp/load
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo "## Load test: $DEVICES agents, $MINUTES min, $EPM events a minute each"
+            cat /tmp/load/report.md 2>/dev/null || echo "No report (the run failed before finishing)."
+            echo; echo "Container use (sampled every 30 s, last 12 samples):"; echo '```'
+            tail -36 /tmp/stats.log 2>/dev/null; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.lab.yml --env-file deploy/.env logs --tail 80 cloud worker > /tmp/load-logs.txt 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: load-test
+          path: |
+            /tmp/load
+            /tmp/stats.log
+            /tmp/load-logs.txt
+          retention-days: 30
