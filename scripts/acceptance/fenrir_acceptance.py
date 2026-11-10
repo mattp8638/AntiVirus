@@ -421,8 +421,10 @@ def defender(ctx: Context, device: dict) -> tuple[str, dict]:
         # GitHub's image holds real-time protection off by policy, which Set-MpPreference cannot override. Fenrir must
         # report it and raise the protection alert: that is what an MSP needs to see on a machine like this.
         realtime_held_off = not status.get("realTime")
-        # The same image excludes whole drives from Defender; Fenrir must report that too.
-        other = [p for p in view.get("problems") or [] if "real-time" not in p and "excludes whole drives" not in p]
+        # The same image excludes whole drives from Defender, and its Group Policy holds download scanning off (seen once
+        # the stress run turns real-time protection on); Fenrir must report both, and they are the image's, not Fenrir's.
+        image_holds = ("real-time", "excludes whole drives", "download scanning")
+        other = [p for p in view.get("problems") or [] if not any(hold in p for hold in image_holds)]
         if not_set or other:
             raise Check(f"Defender reports problems {view.get('problems')}; rules not in audit: {not_set}")
         if realtime_held_off:
