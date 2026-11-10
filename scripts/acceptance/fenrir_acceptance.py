@@ -632,6 +632,208 @@ def service_restart(ctx: Context, device: dict) -> tuple[str, dict]:
     return f"stopped in {took}s when asked, started again and checked in at {seen}", {"stopSeconds": took, "lastSeenAt": seen}
 
 
+# --------------------------------------------------------------------------- Windows stress (field failure modes)
+# Each one recreates a way real agents went silent and checks the agent comes back by itself and reports again.
+# Reboots and sleep cannot be done on a CI runner: the field test on real machines covers those.
+
+
+def _local_windows(device: dict) -> None:
+    if os.name != "nt" or os.environ.get("COMPUTERNAME", "").lower() != str(device.get("hostname", "")).lower():
+        raise Skip("runs on the Windows machine under test only")
+
+
+def _service_exe() -> str:
+    import winreg
+
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Services\FenrirAgent") as key:
+        image = str(winreg.QueryValueEx(key, "ImagePath")[0]).strip()
+    return image[1:image.index('"', 1)] if image.startswith('"') else image.split()[0]
+
+
+def _service() -> tuple[str, int]:
+    """(state, pid) of the FenrirAgent service."""
+    import subprocess
+
+    out = subprocess.run(["sc.exe", "queryex", "FenrirAgent"], capture_output=True, text=True).stdout
+    state = next((line.split()[-1] for line in out.splitlines() if "STATE" in line), "UNKNOWN")
+    pid = next((int(line.split()[-1]) for line in out.splitlines() if line.strip().startswith("PID")), 0)
+    return state, pid
+
+
+def _reports_again(ctx: Context, device: dict, after: str | None, what: str, timeout: float | None = None) -> str:
+    def reported():
+        seen = ctx.device(device["id"])["device"].get("lastSeenAt")
+        return seen if seen and seen != after else None
+
+    return wait_for(what, reported, timeout or max(ctx.args.timeout, 240), interval=10)
+
+
+@scenario("crash_recovery", ("windows",), "Comes back by itself when its process is killed (a crash)")
+def crash_recovery(ctx: Context, device: dict) -> tuple[str, dict]:
+    import subprocess
+
+    _local_windows(device)
+    recovery = subprocess.run(["sc.exe", "qfailure", "FenrirAgent"], capture_output=True, text=True).stdout
+    if "RESTART" not in recovery.upper():
+        raise Check(f"Windows is not set to restart the agent after a failure: {recovery.strip()[-300:]}")
+    state, pid = _service()
+    if state != "RUNNING" or not pid:
+        raise Check(f"the agent is not running before the test ({state})")
+    first = ctx.device(device["id"])["device"].get("lastSeenAt")
+    started = time.monotonic()
+    kill = subprocess.run(["taskkill.exe", "/F", "/PID", str(pid)], capture_output=True, text=True)
+    if kill.returncode != 0:
+        # Tamper protection refusing an administrator's kill is also a pass: nothing short of the authorised stop ends it.
+        return ("tamper protection refused the kill; Windows restart-on-failure is configured",
+                {"kill": (kill.stdout + kill.stderr).strip()[:200], "recovery": recovery.strip()[-200:]})
+
+    def back():
+        new_state, new_pid = _service()
+        return new_pid if new_state == "RUNNING" and new_pid and new_pid != pid else None
+
+    new_pid = wait_for("Windows to restart the killed agent", back, 180, interval=3)
+    restarted = round(time.monotonic() - started, 1)
+    seen = _reports_again(ctx, device, first, "a check-in after the crash")
+    inventory(ctx, device)
+    return f"killed; running again after {restarted}s (pid {pid} -> {new_pid}) and checked in at {seen}", {
+        "restartSeconds": restarted, "lastSeenAt": seen}
+
+
+@scenario("watchdog_repair", ("windows",), "The scheduled watchdog starts an agent that was left stopped")
+def watchdog_repair(ctx: Context, device: dict) -> tuple[str, dict]:
+    import subprocess
+
+    _local_windows(device)
+    task = r"\Fenrir\Agent watchdog"
+    if subprocess.run(["schtasks.exe", "/Query", "/TN", task], capture_output=True, text=True).returncode != 0:
+        raise Check(f"the watchdog task {task} is not registered")
+    first = ctx.device(device["id"])["device"].get("lastSeenAt")
+    stop = subprocess.run([_service_exe(), "--stop"], capture_output=True, text=True, timeout=120)
+    if _service()[0] != "STOPPED":
+        raise Check(f"could not stop the agent for the test: {(stop.stdout + stop.stderr).strip()[-200:]}")
+    started = time.monotonic()
+    run = subprocess.run(["schtasks.exe", "/Run", "/TN", task], capture_output=True, text=True)
+    if run.returncode != 0:
+        subprocess.run(["sc.exe", "start", "FenrirAgent"], capture_output=True)
+        raise Check(f"the watchdog task would not run: {(run.stdout + run.stderr).strip()[:200]}")
+    try:
+        wait_for("the watchdog to start the agent", lambda: _service()[0] == "RUNNING", 180, interval=3)
+    except Check:
+        subprocess.run(["sc.exe", "start", "FenrirAgent"], capture_output=True)  # leave the machine usable for later checks
+        raise
+    took = round(time.monotonic() - started, 1)
+    seen = _reports_again(ctx, device, first, "a check-in after the watchdog started the agent")
+    return f"left stopped; the watchdog started it in {took}s and it checked in at {seen}", {"startSeconds": took, "lastSeenAt": seen}
+
+
+def _restart_server(down_seconds: int) -> float:
+    """Stops the Fenrir server this job started (FENRIR_SERVER_PID), waits, and starts it again with the same settings."""
+    import subprocess
+
+    pid = os.environ.get("FENRIR_SERVER_PID")
+    root = Path(__file__).resolve().parents[2] / "cloud"
+    if not pid:
+        raise Skip("needs FENRIR_SERVER_PID: the workflow that started the server sets it")
+    subprocess.run(["taskkill.exe", "/F", "/T", "/PID", pid] if os.name == "nt" else ["kill", "-9", pid], capture_output=True)
+    time.sleep(down_seconds)
+    log = open(Path(os.environ.get("RUNNER_TEMP", ".")) / "server-restarted.log", "ab")
+    flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+    proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "--factory", "fenrir_cloud.main:create_app", "--host", "127.0.0.1",
+                             "--port", "8080"], cwd=root, stdout=log, stderr=log, creationflags=flags)
+    os.environ["FENRIR_SERVER_PID"] = str(proc.pid)
+    started = time.monotonic()
+    while time.monotonic() - started < 120:
+        try:
+            urllib.request.urlopen("http://127.0.0.1:8080/health", timeout=3)
+            return time.monotonic()
+        except (urllib.error.URLError, OSError):
+            time.sleep(2)
+    raise Check("the server did not come back after the outage test")
+
+
+@scenario("server_outage", ("windows", "linux"), "Reconnects by itself after the server is down for five minutes")
+def server_outage(ctx: Context, device: dict) -> tuple[str, dict]:
+    if is_windows(device):
+        _local_windows(device)
+    first = ctx.device(device["id"])["device"].get("lastSeenAt")
+    back_at = _restart_server(300)
+    ctx.api.login(ctx.args.email, ctx.args.password)  # sessions survive in the database; sign in again to be sure
+    seen = _reports_again(ctx, device, first, "a check-in after the outage", timeout=420)
+    reconnect = round(time.monotonic() - back_at, 1)
+    if reconnect > 300:
+        raise Check(f"took {reconnect}s to reconnect after the server came back; agents should be back within 5 minutes")
+    inventory(ctx, device)
+    return f"server down 5 minutes; the agent reported again {reconnect}s after it returned", {"reconnectSeconds": reconnect,
+                                                                                              "lastSeenAt": seen}
+
+
+@scenario("upgrade_mid_job", ("windows",), "A restart in the middle of a script never leaves the job hanging")
+def upgrade_mid_job(ctx: Context, device: dict) -> tuple[str, dict]:
+    """Upgrades restart the agent whenever they arrive, including halfway through a technician's script. The job must
+    still end with an outcome (finished again, or failed with a reason), never stuck as running."""
+    import subprocess
+
+    _local_windows(device)
+    if "slow" not in ctx.scripts:
+        name = "Fenrir acceptance: slow"
+        body = 'Start-Sleep -Seconds 60; Write-Output "fenrir-acceptance-slow-done"; exit 0'
+        existing = next((s for s in ctx.api.get("rmm/scripts") if s.get("name") == name), None)
+        ctx.scripts["slow"] = (existing or ctx.api.post("rmm/scripts", {
+            "name": name, "language": "powershell", "body": body, "platforms": ["windows"], "category": "Acceptance",
+            "timeoutSeconds": 300, "description": "Created by scripts/acceptance/fenrir_acceptance.py"}))["id"]
+    job = ctx.api.post(f"rmm/scripts/{ctx.scripts['slow']}/run", {"targets": {"deviceIds": [device["id"]]}})
+
+    def running():
+        rows = ctx.api.get(f"rmm/jobs/{job['id']}").get("results") or []
+        return rows and rows[0]["status"] == "dispatched" and rows[0]  # the agent has taken it
+
+    wait_for("the slow script to start", running, 180, interval=3)
+    time.sleep(10)
+    subprocess.run([_service_exe(), "--stop"], capture_output=True, text=True, timeout=120)
+    subprocess.run(["sc.exe", "start", "FenrirAgent"], capture_output=True, text=True)
+    wait_for("the agent to be running again", lambda: _service()[0] == "RUNNING", 90, interval=3)
+
+    def ended():
+        rows = ctx.api.get(f"rmm/jobs/{job['id']}").get("results") or []
+        return rows[0] if rows and rows[0]["status"] in TERMINAL_COMMAND_STATES else None
+
+    row = wait_for("the interrupted job to end with an outcome", ended, 600, interval=10)
+    reason = row.get("error") or row.get("stderr") or ""
+    if row["status"] == "completed" and "fenrir-acceptance-slow-done" not in (row.get("stdout") or ""):
+        raise Check(f"reported completed without the script's output: {(row.get('stdout') or '')[:200]!r}")
+    if row["status"] != "completed" and not reason:
+        raise Check(f"ended {row['status']} without saying why")
+    return f"restarted mid-script; the job ended {row['status']}" + (f" ({reason[:120]})" if reason else ""), {
+        "status": row["status"], "reason": reason[:200]}
+
+
+@scenario("defender_coexistence", ("windows",), "Microsoft Defender is running and has not flagged or removed Fenrir")
+def defender_coexistence(ctx: Context, device: dict) -> tuple[str, dict]:
+    """Run late, after the other checks have exercised the agent. Defender quarantining the agent, or killing it as
+    ransomware, is what took real machines offline."""
+    import subprocess
+
+    _local_windows(device)
+    ps = ("$s = Get-MpComputerStatus; $d = @(Get-MpThreatDetection -ErrorAction SilentlyContinue | "
+          "Where-Object { ($_.Resources -join ' ') -match 'Fenrir' }); "
+          "[pscustomobject]@{ service = (Get-Service WinDefend).Status.ToString(); realtime = $s.RealTimeProtectionEnabled; "
+          "behavior = $s.BehaviorMonitorEnabled; detections = @($d | ForEach-Object { ($_.Resources -join '; ') + ' ' + $_.ThreatID }) } "
+          "| ConvertTo-Json -Compress")
+    out = subprocess.run(["powershell.exe", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=120)
+    try:
+        status = json.loads(out.stdout.strip() or "{}")
+    except ValueError:
+        raise Check(f"could not read Defender's state: {(out.stdout + out.stderr).strip()[:300]}") from None
+    if status.get("service") != "Running":
+        raise Skip(f"Microsoft Defender is not running on this machine ({status.get('service')})")
+    if status.get("detections"):
+        raise Check(f"Defender flagged Fenrir files: {status['detections'][:3]}")
+    if _service()[0] != "RUNNING":
+        raise Check("the agent is not running at the end of the run")
+    note = "" if status.get("realtime") else " (real-time protection is held off by this machine's policy)"
+    return "Defender running, no Fenrir detections, agent still running" + note, status
+
+
 @scenario("patch_scan", ("windows", "linux"), "Scans for missing updates")
 def patch_scan(ctx: Context, device: dict) -> tuple[str, dict]:
     row = ctx.command(device, "patch.scan", timeout=max(ctx.args.timeout, 900))

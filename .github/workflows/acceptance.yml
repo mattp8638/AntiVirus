@@ -4,6 +4,9 @@ name: Acceptance on real agents
 # and checks real outcomes with scripts/acceptance/fenrir_acceptance.py: check-ins, policy, inventory, a script's
 # output, EICAR detection and, on Windows, a temporary admin account created and removed. The report is attached to
 # the run and shown in its summary. Network isolation is only exercised as a dry run (it would cut the runner off).
+# Stress checks recreate how real agents went silent: a killed process, a stopped service left for the watchdog, the
+# server down for five minutes, an upgrade restart in the middle of a script, and Defender switched on. Reboots and
+# sleep cannot be done on a runner; the field test on real machines covers those.
 
 on:
   workflow_dispatch:
@@ -42,6 +45,9 @@ jobs:
         run: |
           export FENRIR_DATABASE_URL="sqlite:///$RUNNER_TEMP/fenrir.db" FENRIR_ARTIFACT_DIR="$RUNNER_TEMP/artifacts"
           nohup python -m uvicorn --factory fenrir_cloud.main:create_app --host 127.0.0.1 --port 8080 > "$RUNNER_TEMP/server.log" 2>&1 &
+          echo "FENRIR_SERVER_PID=$!" >> "$GITHUB_ENV"   # the outage check stops and restarts it
+          echo "FENRIR_DATABASE_URL=$FENRIR_DATABASE_URL" >> "$GITHUB_ENV"
+          echo "FENRIR_ARTIFACT_DIR=$FENRIR_ARTIFACT_DIR" >> "$GITHUB_ENV"
       - name: Enrol the agent as root
         run: |
           eval "$(python scripts/acceptance/bootstrap.py --server "$FENRIR_PUBLIC_URL" --email "$FENRIR_ADMIN_EMAIL" --password "$FENRIR_ADMIN_PASSWORD" | sed 's/^/export /')"
@@ -66,7 +72,7 @@ jobs:
   windows:
     name: Windows agent service on Windows Server
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -89,20 +95,25 @@ jobs:
           $temp = $env:RUNNER_TEMP -replace '\\', '/'
           $env:FENRIR_DATABASE_URL = "sqlite:///$temp/fenrir.db"
           $env:FENRIR_ARTIFACT_DIR = "$temp/artifacts"
-          Start-Process -FilePath python -WorkingDirectory cloud -NoNewWindow `
+          $server = Start-Process -FilePath python -WorkingDirectory cloud -NoNewWindow -PassThru `
             -ArgumentList '-m', 'uvicorn', '--factory', 'fenrir_cloud.main:create_app', '--host', '127.0.0.1', '--port', '8080' `
             -RedirectStandardOutput "$env:RUNNER_TEMP\server.log" -RedirectStandardError "$env:RUNNER_TEMP\server.err.log"
+          $env:FENRIR_SERVER_PID = $server.Id   # the outage check stops and restarts it
           $boot = python scripts/acceptance/bootstrap.py --server $env:FENRIR_PUBLIC_URL --email $env:FENRIR_ADMIN_EMAIL --password $env:FENRIR_ADMIN_PASSWORD
           if ($LASTEXITCODE -ne 0) { Get-Content "$env:RUNNER_TEMP\server.err.log" -Tail 40; exit $LASTEXITCODE }
           $token = (($boot | Where-Object { $_ -like 'TOKEN=*' }) -replace '^TOKEN=', '').Trim()
           # Defender would take the EICAR file first; the check is whether Fenrir catches it.
           Add-MpPreference -ExclusionPath 'C:\ProgramData\FenrirAcceptance' -ErrorAction SilentlyContinue
+          # Stress: run with Defender's real-time and behaviour monitoring on where the image's policy allows it, as on
+          # real machines (Defender killing the agent as ransomware is what took them offline).
+          Set-MpPreference -DisableRealtimeMonitoring $false -DisableBehaviorMonitoring $false -ErrorAction SilentlyContinue
+          Get-MpComputerStatus | Format-List RealTimeProtectionEnabled, BehaviorMonitorEnabled
           & agent/windows/out/dev/fenrir-agent-service.exe --install --server $env:FENRIR_PUBLIC_URL --enroll-token $token
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Start-Service FenrirAgent -ErrorAction SilentlyContinue
           Get-Service FenrirAgent | Format-List Name, Status, StartType
           python scripts/acceptance/fenrir_acceptance.py --server $env:FENRIR_PUBLIC_URL --email $env:FENRIR_ADMIN_EMAIL `
-            --password $env:FENRIR_ADMIN_PASSWORD --device $env:COMPUTERNAME --scenario checks_in,policy,inventory,script,eicar,pam,defender,backstage_desktop,key_rotation,telemetry_volume,false_positives,remote_cad,service_restart `
+            --password $env:FENRIR_ADMIN_PASSWORD --device $env:COMPUTERNAME --scenario checks_in,policy,inventory,script,eicar,pam,defender,backstage_desktop,key_rotation,telemetry_volume,remote_cad,service_restart,crash_recovery,watchdog_repair,upgrade_mid_job,server_outage,false_positives,defender_coexistence `
             --wait-for-device 300 --timeout 240 --out acceptance-windows
           exit $LASTEXITCODE
       - name: Report and diagnostics
