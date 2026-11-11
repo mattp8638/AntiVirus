@@ -67,6 +67,7 @@ import { PolicyEditor as GrcPolicyEditor } from "./pages/grc/Policies";
 import ProtectionHealth from "./pages/ProtectionHealth";
 import AgentHealth from "./pages/AgentHealth";
 import Quarantine from "./pages/Quarantine";
+import EmailSecurity from "./pages/EmailSecurity";
 import EdrExclusions from "./pages/EdrExclusions";
 import Exposure from "./pages/Exposure";
 import Elevation from "./pages/Elevation";
@@ -126,6 +127,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; al
     group: "Identity, cloud & network",
     items: [
       { module: "identity", to: "/m365", label: "Microsoft 365", icon: "▦", also: ["/m365-partner"] },
+      { module: "email", to: "/email-security", label: "Email security", icon: "✉" },
       { module: "identity", to: "/active-directory", label: "Active Directory", icon: "⌘" },
       { module: "identity", to: "/exposure", label: "Data & identity exposure", icon: "⚇" },
       { module: "backup", to: "/backup", label: "Backup & recovery", icon: "⟳" },
@@ -358,6 +360,7 @@ function Shell() {
             <Route path="/protection-health" element={<ProtectionHealth />} />
             <Route path="/agent-health" element={<AgentHealth />} />
             <Route path="/quarantine" element={<Quarantine />} />
+            <Route path="/email-security" element={<EmailSecurity />} />
             <Route path="/edr-exclusions" element={<EdrExclusions />} />
             <Route path="/admin-requests" element={<Elevation />} />
             <Route path="/recordings/:id" element={<RecordingPlayer />} />
