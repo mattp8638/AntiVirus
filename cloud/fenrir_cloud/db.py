@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 64
+LATEST_MIGRATION = 65
 
 def init_engine(url: str, pool_size: int = 5, max_overflow: int = 10) -> Engine:
     global _engine, _session_factory
@@ -474,6 +474,12 @@ def migrate(bind: Engine) -> list[int]:
                 IntelFeed.__table__.create(conn, checkfirst=True)  # free threat-intel feeds pulled by the server
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (64)"))
                 applied.append(64)
+            if 65 not in versions:
+                from .models import EmailScan, EmailScanSetting
+                for model in (EmailScanSetting, EmailScan):  # email security: shadow-mode scanning of Microsoft 365 mail
+                    model.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (65)"))
+                applied.append(65)
             conn.commit()
         except Exception:
             conn.rollback()

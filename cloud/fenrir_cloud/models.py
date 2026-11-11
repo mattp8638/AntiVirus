@@ -2006,6 +2006,55 @@ class M365LogEntry(Base):
     __table_args__ = (UniqueConstraint("connection_id", "kind", "external_id", name="uq_m365_log_entry"),)
 
 
+class EmailScanSetting(Base):
+    """Email security for one Microsoft 365 connection (email_scan.py): off, or shadow mode (scan and compare, act on
+    nothing). ``state`` keeps each mailbox's cursor: {"<user id>": {"inbox": iso, "junkemail": iso}}."""
+    __tablename__ = "email_scan_settings"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("emset"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    connection_id: Mapped[str] = mapped_column(String(32), unique=True)
+    mode: Mapped[str] = mapped_column(String(10), default="off")  # off | shadow
+    retention_days: Mapped[int] = mapped_column(Integer, default=90)
+    state: Mapped[dict] = mapped_column(JSON, default=dict)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str] = mapped_column(String(300), default="")
+    last_scanned: Mapped[int] = mapped_column(Integer, default=0)
+    updated_by: Mapped[str] = mapped_column(String(320), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class EmailScan(Base):
+    """One message in one mailbox: Microsoft's verdict, Fenrir's verdict and why, and a technician's label if given.
+    Keeps the sender, subject and link domains for the console; never the message body."""
+    __tablename__ = "email_scans"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("emsc"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    connection_id: Mapped[str] = mapped_column(String(32), index=True)
+    mailbox: Mapped[str] = mapped_column(String(320))
+    message_id: Mapped[str] = mapped_column(String(200))  # Microsoft Graph id in that mailbox
+    internet_message_id: Mapped[str] = mapped_column(String(300), default="")
+    received_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    folder: Mapped[str] = mapped_column(String(20), default="inbox")  # inbox | junkemail
+    sender_address: Mapped[str] = mapped_column(String(320), default="")
+    sender_name: Mapped[str] = mapped_column(String(200), default="")
+    sender_domain: Mapped[str] = mapped_column(String(255), default="", index=True)
+    subject: Mapped[str] = mapped_column(String(300), default="")
+    attachments: Mapped[list] = mapped_column(JSON, default=list)  # [{name, size, sha256}]
+    link_domains: Mapped[list] = mapped_column(JSON, default=list)
+    microsoft_verdict: Mapped[str] = mapped_column(String(10), default="unknown")  # unknown|clean|bulk|spam|phish|malware
+    microsoft: Mapped[dict] = mapped_column(JSON, default=dict)  # SCL, BCL, PCL, SFV, CAT, SPF, DKIM, DMARC, compauth
+    verdict: Mapped[str] = mapped_column(String(12), default="clean", index=True)  # clean|suspicious|phish|malware
+    score: Mapped[int] = mapped_column(Integer, default=0)
+    reasons: Mapped[list] = mapped_column(JSON, default=list)
+    agreement: Mapped[str] = mapped_column(String(16), default="neither", index=True)  # both|fenrir_only|microsoft_only|neither
+    features: Mapped[dict] = mapped_column(JSON, default=dict)  # numbers for training, no content
+    label: Mapped[str] = mapped_column(String(10), default="")  # "" | phish | malware | spam | safe (a technician's call)
+    labelled_by: Mapped[str] = mapped_column(String(320), default="")
+    labelled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    scanned_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    __table_args__ = (UniqueConstraint("connection_id", "mailbox", "message_id", name="uq_email_scan_message"),)
+
+
 class M365Workflow(Base):
     """A reviewed multi-step Microsoft 365 job: offboarding, onboarding or a bulk user import (m365_lifecycle.py).
 

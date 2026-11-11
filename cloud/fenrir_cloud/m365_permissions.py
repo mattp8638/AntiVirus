@@ -114,6 +114,10 @@ FEATURES: dict[str, dict] = {
     "collaboration": {"title": "Teams, SharePoint and OneDrive", "area": "Collaboration",
                       "app": ["Sites.Read.All", "SharePointTenantSettings.ReadWrite.All", "Team.ReadBasic.All", "Files.ReadWrite.All"],
                       "delegated": ["Sites.Read.All", "SharePointTenantSettings.ReadWrite.All", "Team.ReadBasic.All", "Files.ReadWrite.All"]},
+    "email.security": {"title": "Email security: scan mail (shadow mode)", "area": "Security", "app": ["Mail.Read", "User.Read.All"],
+                       "delegated": None,
+                       "note": "Reads every mailbox's new mail to score it; nothing is changed. Microsoft only allows this with "
+                               "an app connection, not GDAP. To limit which mailboxes, add an Exchange application access policy."},
     "reports.usage": {"title": "Usage and activity reports", "area": "Reports", "app": ["Reports.Read.All", "UserAuthenticationMethod.Read.All"],
                       "delegated": ["Reports.Read.All", "UserAuthenticationMethod.Read.All"]},
 }

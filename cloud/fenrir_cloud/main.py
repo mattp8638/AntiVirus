@@ -47,6 +47,7 @@ from .routers import exclusions as exclusions_router
 from .routers import exposure_intel as exposure_intel_router
 from .routers import m365_partner as m365_partner_router
 from .routers import m365_workspace as m365_workspace_router
+from .routers import email_security as email_security_router
 from .routers import m365_lifecycle as m365_lifecycle_router
 from .routers import condition_packages as condition_packages_router
 from .routers import triage as triage_router
@@ -374,7 +375,8 @@ def _scheduler_loop(stop: threading.Event, interval: float = 30.0) -> None:
 
 
 def start_background(settings: Settings, stop: threading.Event) -> list[threading.Thread]:
-    """Starts the background loops: hourly maintenance, the 30-second scheduler and vulnerability intel. The web
+    """Starts the background loops: hourly maintenance, the 30-second scheduler, vulnerability intel and email
+    security scanning. The web
     process runs them itself (FENRIR_ROLE=all) or leaves them to ``python -m fenrir_cloud.worker`` (web/worker)."""
     threads = [threading.Thread(target=_maintenance_loop, args=(settings, stop), daemon=True, name="maintenance")]
     if settings.scheduler_enabled:
@@ -383,6 +385,10 @@ def start_background(settings: Settings, stop: threading.Event) -> list[threadin
         from . import cveintel
 
         threads.append(threading.Thread(target=cveintel.loop, args=(stop,), daemon=True, name="vuln-intel"))
+    if settings.scheduler_enabled:
+        from . import email_scan
+
+        threads.append(threading.Thread(target=email_scan.loop, args=(stop,), daemon=True, name="email-security"))
     for thread in threads:
         thread.start()
     return threads
@@ -581,7 +587,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(onboarding_router.workspace_router)
     for module in (m365_admin_router, m365_router, network_router, grc_router, backup_router, soc_workflows, ad_router, agent_health_router, onboarding_router, m365_exchange_router, m365_signin_router, m365_intune_router, m365_reports_router, m365_collaboration_router, grc_programme_router,
                    rollouts_router, apikeys_router, roles_router, approvals_router, exclusions_router,
-                   exposure_intel_router, m365_partner_router, m365_workspace_router, m365_lifecycle_router, condition_packages_router, triage_router, clients_router, search_router, defender_router, mobile_apps_router, push_router, care_router,
+                   exposure_intel_router, m365_partner_router, m365_workspace_router, email_security_router, m365_lifecycle_router, condition_packages_router, triage_router, clients_router, search_router, defender_router, mobile_apps_router, push_router, care_router,
                    reports_router, branding_router, deploy_router):
         app.include_router(module.router)
     app.include_router(deploy_router.public)

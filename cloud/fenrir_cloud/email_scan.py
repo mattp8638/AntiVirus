@@ -1,0 +1,432 @@
+"""Email security in shadow mode: read new Microsoft 365 mail, record Microsoft's verdict and Fenrir's, act on nothing.
+
+Every five minutes, for each Microsoft 365 connection with email security set to ``shadow``:
+
+1. Each licensed, enabled member mailbox is read through Microsoft Graph (application permission ``Mail.Read``):
+   new messages in Inbox and Junk Email since the last run, with their headers and body, and the names, sizes and
+   SHA-256 hashes of up to three attachments of 5 MB or less.
+2. ``email_security.analyse`` gives Microsoft's verdict (from its headers) and Fenrir's (with reasons).
+3. One ``EmailScan`` row is stored per message and mailbox: sender, subject, link domains, attachment names and
+   hashes, both verdicts and the reasons. The body is never stored.
+
+Nothing in the mailbox changes: shadow mode only compares. Technicians can label a message phish, malware, spam or
+safe; those labels, with Microsoft's verdicts, are what a model is trained on later.
+
+The first run looks back 24 hours. Each mailbox reads at most ``PER_MAILBOX`` messages per folder per run and the
+whole pass stops after ``RUN_SECONDS``; the rest follows next run, oldest first, so nothing is skipped. Rows older
+than the connection's retention (default 90 days) are deleted.
+"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import logging
+from datetime import datetime, timedelta, timezone
+from time import monotonic
+from urllib.parse import quote
+
+import httpx
+from sqlalchemy import delete, func, select
+from sqlalchemy.orm import Session
+
+from . import audit, crypto, email_security, m365
+from .models import EmailScan, EmailScanSetting, Indicator, M365Connection, utcnow
+
+log = logging.getLogger("fenrir.email")
+
+FOLDERS = ("inbox", "junkemail")
+FIRST_WINDOW = timedelta(hours=24)
+OVERLAP = timedelta(minutes=10)  # Microsoft can file a message a little after its received time
+PER_MAILBOX = 100
+MAX_MAILBOXES = 500
+RUN_SECONDS = 60
+ATTACHMENT_HASH_LIMIT = 5 * 1024 * 1024
+ATTACHMENTS_HASHED = 3
+SELECT = ("id,internetMessageId,receivedDateTime,subject,from,sender,replyTo,hasAttachments,internetMessageHeaders,"
+          "body")
+MODES = ("off", "shadow")
+LABELS = ("phish", "malware", "spam", "safe")
+
+
+class ScanError(Exception):
+    pass
+
+
+# --------------------------------------------------------------------------- what Fenrir knows
+
+def load_intel(db: Session) -> dict:
+    """Threat intel for every customer, read once per run: {tenant_id or None: {urls, domains, hashes, allow}}."""
+    now = utcnow()
+    out: dict = {}
+    rows = db.execute(select(Indicator.tenant_id, Indicator.type, Indicator.value, Indicator.verdict, Indicator.category)
+                      .where(Indicator.type.in_(("url", "domain", "sha256")))
+                      .where((Indicator.expires_at.is_(None)) | (Indicator.expires_at > now))).all()
+    for tenant_id, kind, value, verdict, category in rows:
+        bucket = out.setdefault(tenant_id, {"urls": set(), "domains": {}, "hashes": {}, "allow": set()})
+        value = str(value or "").strip().lower()
+        if not value:
+            continue
+        if verdict == "allow":
+            if kind == "domain":
+                bucket["allow"].add(email_security.registrable(value))
+            continue
+        if kind == "url":
+            bucket["urls"].add(value.rstrip("/"))
+        elif kind == "domain":
+            bucket["domains"][value.rstrip(".")] = category or "malicious"
+        elif kind == "sha256":
+            bucket["hashes"][value] = category or "malware"
+    return out
+
+
+def build_context(db: Session, connection: M365Connection, intel: dict) -> email_security.Context:
+    snapshot = connection.snapshot or {}
+    domains = {str(d.get("id") or "").lower() for d in snapshot.get("domains") or [] if d.get("isVerified")}
+    for org in snapshot.get("organization") or []:
+        domains |= {str(d.get("name") or "").lower() for d in org.get("verifiedDomains") or []}
+    domains.discard("")
+    people = {}
+    for user in snapshot.get("users") or []:
+        name = email_security.normalise_name(user.get("displayName") or "")
+        if name and len(name) >= 5 and (user.get("userType") or "Member") == "Member":
+            people[name] = str(user.get("mail") or user.get("userPrincipalName") or "")
+    merged = {"urls": set(), "domains": {}, "hashes": {}, "allow": set()}
+    for key in (None, connection.tenant_id):
+        bucket = intel.get(key) or {}
+        merged["urls"] |= bucket.get("urls", set())
+        merged["domains"].update(bucket.get("domains", {}))
+        merged["hashes"].update(bucket.get("hashes", {}))
+        merged["allow"] |= bucket.get("allow", set())
+    known = set(db.execute(select(EmailScan.sender_domain).where(
+        EmailScan.connection_id == connection.id, EmailScan.received_at >= utcnow() - timedelta(days=90))
+        .distinct().limit(50000)).scalars())
+    return email_security.Context(own_domains=domains, people=people, bad_urls=merged["urls"],
+                                  bad_domains=merged["domains"], bad_hashes=merged["hashes"],
+                                  allowed_domains=merged["allow"], known_senders={k for k in known if k})
+
+
+def mailboxes(connection: M365Connection) -> list[dict]:
+    """Licensed, enabled member accounts with a mailbox address, from the last directory sync."""
+    out = []
+    for user in (connection.snapshot or {}).get("users") or []:
+        if user.get("accountEnabled") is False or not user.get("assignedLicenses") or not user.get("mail"):
+            continue
+        if (user.get("userType") or "Member") != "Member":
+            continue
+        out.append({"id": str(user.get("id") or ""), "address": str(user.get("mail")).lower()})
+    return [m for m in out if m["id"]][:MAX_MAILBOXES]
+
+
+# --------------------------------------------------------------------------- reading mail
+
+def _iso(value: datetime) -> str:
+    return value.replace(microsecond=0).isoformat() + "Z"
+
+
+def _when(value) -> datetime | None:
+    """A Microsoft timestamp as naive UTC (how Fenrir stores times)."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.astimezone(timezone.utc).replace(tzinfo=None) if parsed.tzinfo else parsed
+
+
+def _address(value) -> tuple[str, str]:
+    email = (value or {}).get("emailAddress") or {}
+    return str(email.get("address") or "").strip().lower(), str(email.get("name") or "").strip()
+
+
+def _get(client: httpx.Client, url: str, token: str) -> dict:
+    response = client.get(url, headers={"Authorization": "Bearer " + token, "Prefer": 'outlook.body-content-type="html"'})
+    response.raise_for_status()
+    return response.json()
+
+
+def _attachments(client: httpx.Client, token: str, user_id: str, message_id: str) -> list[dict]:
+    base = f"{m365.GRAPH}/users/{quote(user_id)}/messages/{quote(message_id, safe='')}/attachments"
+    listed = _get(client, base + "?$select=id,name,contentType,size,isInline", token).get("value") or []
+    out, hashed = [], 0
+    for item in listed[:20]:
+        if item.get("isInline"):
+            continue
+        entry = {"name": str(item.get("name") or "")[:200], "contentType": str(item.get("contentType") or "")[:100],
+                 "size": int(item.get("size") or 0)}
+        is_file = str(item.get("@odata.type") or "").endswith("fileAttachment")
+        if is_file and hashed < ATTACHMENTS_HASHED and 0 < entry["size"] <= ATTACHMENT_HASH_LIMIT:
+            try:
+                full = _get(client, f"{base}/{quote(str(item.get('id')), safe='')}", token)
+                content = base64.b64decode(full.get("contentBytes") or "", validate=False)
+                entry["sha256"] = hashlib.sha256(content).hexdigest()
+                hashed += 1
+            except (httpx.HTTPError, ValueError):
+                pass
+        out.append(entry)
+    return out
+
+
+def _message(item: dict, mailbox: str, folder: str, attachments: list[dict]) -> email_security.Message:
+    sender, name = _address(item.get("from") or item.get("sender"))
+    headers = {}
+    for header in item.get("internetMessageHeaders") or []:
+        if isinstance(header, dict) and header.get("name"):
+            headers[str(header["name"]).lower()] = str(header.get("value") or "")
+    return email_security.Message(
+        mailbox=mailbox, folder=folder, sender_address=sender, sender_name=name,
+        reply_to=[_address(r)[0] for r in item.get("replyTo") or [] if _address(r)[0]],
+        subject=str(item.get("subject") or ""), headers=headers,
+        body_html=str(((item.get("body") or {}).get("content")) or "")[:500_000], attachments=attachments)
+
+
+def scan_connection(db: Session, setting: EmailScanSetting, connection: M365Connection, intel: dict,
+                    client: httpx.Client, deadline: float) -> int:
+    """Read and score new mail for one connection. Returns how many messages were stored."""
+    token = m365.access_token(client, connection)
+    ctx = build_context(db, connection, intel)
+    state = dict(setting.state or {})
+    boxes = mailboxes(connection)
+    if not boxes:
+        raise ScanError("No licensed mailboxes found yet. Sync the Microsoft 365 connection first.")
+    start = int(state.get("_next") or 0) % len(boxes)
+    order = boxes[start:] + boxes[:start]
+    stored = 0
+    now = utcnow()
+    for index, box in enumerate(order):
+        if monotonic() >= deadline:
+            state["_next"] = (start + index) % len(boxes)
+            break
+        cursors = dict(state.get(box["id"]) or {})
+        if cursors.get("skip") and now - (_when(cursors.get("skippedAt")) or now) < timedelta(hours=24):
+            continue
+        skipped = False
+        for folder in FOLDERS:
+            since = (_when(cursors.get(folder)) or (now - FIRST_WINDOW + OVERLAP)) - OVERLAP
+            condition = quote(f"receivedDateTime ge {_iso(since)}", safe="")
+            url = (f"{m365.GRAPH}/users/{quote(box['id'])}/mailFolders/{folder}/messages?$filter={condition}"
+                   f"&$orderby=receivedDateTime%20asc&$top=25&$select={SELECT}")
+            try:
+                seen = set(db.execute(select(EmailScan.message_id).where(
+                    EmailScan.connection_id == connection.id, EmailScan.mailbox == box["address"],
+                    EmailScan.received_at >= since - timedelta(minutes=1))).scalars())
+                taken, newest = 0, None
+                while url and taken < PER_MAILBOX and monotonic() < deadline:
+                    page = _get(client, url, token)
+                    for item in page.get("value") or []:
+                        received = _when(item.get("receivedDateTime"))
+                        if not received or not item.get("id"):
+                            continue
+                        newest = received if newest is None or received > newest else newest
+                        if item["id"] in seen:
+                            continue
+                        seen.add(item["id"])
+                        attachments = _attachments(client, token, box["id"], item["id"]) if item.get("hasAttachments") else []
+                        result = email_security.analyse(_message(item, box["address"], folder, attachments), ctx)
+                        db.add(_row(connection, box["address"], folder, item, received, attachments, result))
+                        ctx.known_senders.add(result["sender_domain"])
+                        stored += 1
+                        taken += 1
+                    url = page.get("@odata.nextLink")
+                    if url and not url.startswith(m365.GRAPH + "/"):
+                        raise ScanError("Microsoft returned an unexpected paging link.")
+                if newest:
+                    cursors[folder] = _iso(newest)
+                elif folder not in cursors:
+                    cursors[folder] = _iso(now)
+            except httpx.HTTPStatusError as exc:
+                code = exc.response.status_code
+                if code == 403:
+                    raise ScanError("Fenrir does not have permission to read mail (Mail.Read). In Microsoft 365, "
+                                    "update this connection's permissions and have an admin approve them.") from None
+                if code == 404:  # no Exchange mailbox (licence without Exchange, or not provisioned yet)
+                    cursors.update(skip=True, skippedAt=_iso(now))
+                    skipped = True
+                    break
+                if code == 429:
+                    state[box["id"]] = cursors
+                    setting.state = state
+                    raise ScanError("Microsoft is throttling mail reads for this tenant; Fenrir carries on next run.") from None
+                raise
+        if not skipped:
+            cursors.pop("skip", None)
+            cursors.pop("skippedAt", None)
+        state[box["id"]] = cursors
+    else:
+        state["_next"] = 0
+    setting.state = state
+    return stored
+
+
+def _row(connection: M365Connection, mailbox: str, folder: str, item: dict, received: datetime, attachments: list[dict],
+         result: dict) -> EmailScan:
+    ms = result["microsoft"]
+    sender, name = _address(item.get("from") or item.get("sender"))
+    return EmailScan(
+        tenant_id=connection.tenant_id, connection_id=connection.id, mailbox=mailbox[:320], message_id=str(item["id"])[:200],
+        internet_message_id=str(item.get("internetMessageId") or "")[:300], received_at=received, folder=folder,
+        sender_address=sender[:320], sender_name=name[:200], sender_domain=result["sender_domain"][:255],
+        subject=str(item.get("subject") or "")[:300],
+        attachments=[{k: a[k] for k in ("name", "size", "sha256") if k in a} for a in attachments][:20],
+        link_domains=result["link_domains"], microsoft_verdict=ms["verdict"],
+        microsoft={k: v for k, v in ms.items() if k != "verdict"}, verdict=result["verdict"], score=result["score"],
+        reasons=result["reasons"], agreement=email_security.agreement(result["verdict"], ms["verdict"]),
+        features=result["features"])
+
+
+# --------------------------------------------------------------------------- the background job
+
+def loop(stop, first_delay: float = 60.0, interval: float = 300.0) -> None:
+    """Every five minutes, in its own thread, so reading mail never holds up the main scheduler. Each pass is recorded
+    as the background job "email.shadow-scan" (Settings > Platform shows its last run and error)."""
+    from . import db as database
+    from .main import _run_job
+
+    delay = first_delay
+    while not stop.wait(delay):
+        delay = interval
+        session = database.session_factory()()
+        try:
+            _run_job(session, "email.shadow-scan", tick)
+        except Exception as exc:  # noqa: BLE001 - keep the loop alive
+            log.warning("email security pass failed: %s", exc)
+            session.rollback()
+        finally:
+            session.close()
+
+
+def tick(db: Session) -> None:
+    """Every five minutes: scan connections in shadow mode, least recently scanned first; drop rows past retention."""
+    settings = db.execute(select(EmailScanSetting).where(EmailScanSetting.mode == "shadow")
+                          .order_by(EmailScanSetting.last_run_at.is_not(None), EmailScanSetting.last_run_at)).scalars().all()
+    if settings:
+        intel = load_intel(db)
+        deadline = monotonic() + RUN_SECONDS
+        with httpx.Client(timeout=20, follow_redirects=False) as client:
+            for setting in settings:
+                if monotonic() >= deadline:
+                    break
+                run_one(db, setting, intel, client, deadline)
+    purge(db)
+
+
+def run_one(db: Session, setting: EmailScanSetting, intel: dict, client: httpx.Client, deadline: float) -> dict:
+    connection = db.get(M365Connection, setting.connection_id)
+    setting.last_run_at = utcnow()
+    if connection is None:
+        setting.mode, setting.last_error = "off", "The Microsoft 365 connection was removed."
+        db.commit()
+        return {"stored": 0, "error": setting.last_error}
+    try:
+        stored = scan_connection(db, setting, connection, intel, client, deadline)
+        setting.last_error, setting.last_scanned = "", stored
+        db.commit()
+        return {"stored": stored, "error": ""}
+    except (ScanError, ValueError, KeyError, crypto.VaultError, httpx.HTTPError) as exc:
+        db.rollback()
+        setting = db.get(EmailScanSetting, setting.id)
+        setting.last_run_at = utcnow()
+        setting.last_error = (str(exc) if isinstance(exc, ScanError) else m365.describe_failure(exc))[:300]
+        db.commit()
+        return {"stored": 0, "error": setting.last_error}
+
+
+def purge(db: Session) -> int:
+    removed = 0
+    for setting in db.execute(select(EmailScanSetting)).scalars().all():
+        days = max(7, min(int(setting.retention_days or 90), 730))
+        removed += db.execute(delete(EmailScan).where(EmailScan.connection_id == setting.connection_id,
+                                                      EmailScan.received_at < utcnow() - timedelta(days=days))).rowcount or 0
+    if removed:
+        db.commit()
+    return removed
+
+
+# --------------------------------------------------------------------------- settings, labels and views
+
+def configure(db: Session, connection: M365Connection, mode: str, retention_days: int | None, actor: str) -> EmailScanSetting:
+    if mode not in MODES:
+        raise ValueError(f"mode must be one of {', '.join(MODES)}")
+    setting = db.execute(select(EmailScanSetting).where(EmailScanSetting.connection_id == connection.id)).scalar_one_or_none()
+    if setting is None:
+        setting = EmailScanSetting(tenant_id=connection.tenant_id, connection_id=connection.id, state={})
+        db.add(setting)
+    if retention_days is not None:
+        if not 7 <= int(retention_days) <= 730:
+            raise ValueError("Keep scans for between 7 and 730 days")
+        setting.retention_days = int(retention_days)
+    setting.mode, setting.updated_by, setting.updated_at = mode, actor, utcnow()
+    if mode == "shadow":
+        setting.last_error = ""
+    audit.record(db, actor, "email_security.configured", connection.id, connection.tenant_id, mode=mode,
+                 retention_days=setting.retention_days)
+    return setting
+
+
+def label(db: Session, scan: EmailScan, value: str, actor: str) -> EmailScan:
+    if value not in (*LABELS, ""):
+        raise ValueError(f"label must be one of {', '.join(LABELS)} (or empty to clear it)")
+    scan.label, scan.labelled_by, scan.labelled_at = value, actor if value else "", utcnow() if value else None
+    audit.record(db, actor, "email_security.labelled", scan.id, scan.tenant_id, label=value or "cleared")
+    return scan
+
+
+def setting_view(setting: EmailScanSetting | None, connection: M365Connection) -> dict:
+    from . import m365_permissions
+
+    allowed = m365_permissions.feature_available(connection.snapshot, "email.security")
+    return {
+        "connectionId": connection.id, "tenantId": connection.tenant_id, "name": connection.tenant_name or connection.name,
+        "authMode": connection.auth_mode or "app", "mode": setting.mode if setting else "off",
+        "retentionDays": setting.retention_days if setting else 90,
+        "lastRunAt": setting.last_run_at.isoformat() + "Z" if setting and setting.last_run_at else None,
+        "lastScanned": setting.last_scanned if setting else 0, "lastError": setting.last_error if setting else "",
+        "mailboxes": len(mailboxes(connection)), "permission": allowed,
+        "supported": (connection.auth_mode or "app") != "gdap",
+    }
+
+
+def scan_view(row: EmailScan, full: bool = False) -> dict:
+    out = {
+        "id": row.id, "tenantId": row.tenant_id, "connectionId": row.connection_id, "mailbox": row.mailbox,
+        "receivedAt": row.received_at.isoformat() + "Z", "folder": row.folder, "sender": row.sender_address,
+        "senderName": row.sender_name, "subject": row.subject, "verdict": row.verdict, "score": row.score,
+        "microsoftVerdict": row.microsoft_verdict, "agreement": row.agreement, "label": row.label,
+        "topReason": (row.reasons or [{}])[0].get("detail", "") if row.reasons else "",
+        "attachments": len(row.attachments or []),
+    }
+    if full:
+        out.update(reasons=row.reasons or [], microsoft=row.microsoft or {}, attachmentDetails=row.attachments or [],
+                   linkDomains=row.link_domains or [], internetMessageId=row.internet_message_id,
+                   labelledBy=row.labelled_by, labelledAt=row.labelled_at.isoformat() + "Z" if row.labelled_at else None)
+    return out
+
+
+def overview(db: Session, tenant_ids: list[str], days: int = 7) -> dict:
+    """How Fenrir and Microsoft compare across the customers shown."""
+    since = utcnow() - timedelta(days=days)
+    base = select(EmailScan.agreement, EmailScan.verdict, EmailScan.microsoft_verdict, EmailScan.label,
+                  func.count()).where(EmailScan.tenant_id.in_(tenant_ids), EmailScan.received_at >= since) \
+        .group_by(EmailScan.agreement, EmailScan.verdict, EmailScan.microsoft_verdict, EmailScan.label)
+    totals = {"scanned": 0, "fenrirFlagged": 0, "microsoftFlagged": 0, "both": 0, "fenrirOnly": 0, "microsoftOnly": 0,
+              "suspicious": 0, "microsoftSpam": 0, "labelled": 0, "labelledFenrirRight": 0, "labelledMicrosoftRight": 0}
+    for agreement, verdict, microsoft, labelled, count in db.execute(base).all():
+        totals["scanned"] += count
+        totals["fenrirFlagged"] += count if verdict in email_security.FLAGGED else 0
+        totals["microsoftFlagged"] += count if microsoft in email_security.FLAGGED else 0
+        totals["both"] += count if agreement == "both" else 0
+        totals["fenrirOnly"] += count if agreement == "fenrir_only" else 0
+        totals["microsoftOnly"] += count if agreement == "microsoft_only" else 0
+        totals["suspicious"] += count if verdict == "suspicious" else 0
+        totals["microsoftSpam"] += count if microsoft in {"spam", "bulk"} else 0
+        if labelled:
+            bad = labelled in {"phish", "malware"}
+            totals["labelled"] += count
+            totals["labelledFenrirRight"] += count if (verdict in email_security.FLAGGED) == bad else 0
+            totals["labelledMicrosoftRight"] += count if (microsoft in email_security.FLAGGED) == bad else 0
+    flagged_any = totals["both"] + totals["fenrirOnly"] + totals["microsoftOnly"]
+    totals["agreementPercent"] = round(100 * totals["both"] / flagged_any) if flagged_any else None
+    top = db.execute(select(EmailScan.sender_domain, func.count()).where(
+        EmailScan.tenant_id.in_(tenant_ids), EmailScan.received_at >= since, EmailScan.verdict.in_(email_security.FLAGGED))
+        .group_by(EmailScan.sender_domain).order_by(func.count().desc()).limit(10)).all()
+    return {"days": days, **totals, "topFlaggedSenders": [{"domain": d, "count": c} for d, c in top]}
