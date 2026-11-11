@@ -19,7 +19,7 @@ _session_factory: sessionmaker[Session] | None = None
 # The newest schema version this build creates. Bump it with every new migration below.
 LATEST_MIGRATION = 63
 
-def init_engine(url: str) -> Engine:
+def init_engine(url: str, pool_size: int = 5, max_overflow: int = 10) -> Engine:
     global _engine, _session_factory
     kwargs: dict = {"future": True}
     if url.startswith("sqlite"):
@@ -29,7 +29,7 @@ def init_engine(url: str) -> Engine:
 
             kwargs["poolclass"] = StaticPool
     else:
-        kwargs["pool_pre_ping"] = True
+        kwargs.update(pool_pre_ping=True, pool_size=pool_size, max_overflow=max_overflow, pool_timeout=30)
     _engine = create_engine(url, **kwargs)
 
     if url.startswith("sqlite"):

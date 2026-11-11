@@ -231,7 +231,10 @@ jobs:
           for name in ('https', 'local'):
               config = json.load(open(f'/tmp/fenrir-{name}.json'))
               ports = config['services']['cloud']['ports']
-              assert len(ports) == 1 and ports[0]['host_ip'] == '127.0.0.1', ports
+              # The API stays on loopback; UDP 3478 (STUN for direct remote sessions) may be public.
+              tcp = [p for p in ports if p.get('protocol', 'tcp') == 'tcp']
+              assert len(tcp) == 1 and tcp[0]['host_ip'] == '127.0.0.1', ports
+              assert all(p.get('protocol') == 'udp' and str(p['target']) == '3478' for p in ports if p not in tcp), ports
           secure = json.load(open('/tmp/fenrir-https.json'))
           assert {str(p['published']) for p in secure['services']['caddy']['ports']} == {'80', '443'}
           print('HTTPS and local evaluation profiles keep the API port on loopback.')
@@ -370,7 +373,7 @@ jobs:
             "PASS  /ready: database up and schema current" \
             "PASS  /health/background" \
             "FAIL  FENRIR_PUBLIC_URL (http://127.0.0.1:8080) is not HTTPS" \
-            "FAIL  No Windows code-signing certificate"; do
+            "FAIL  No Windows code signing"; do
             grep -qF "$expected" /tmp/preflight.txt || { echo "missing: $expected"; exit 1; }
           done
           for name in POSTGRES_PASSWORD FENRIR_SECRET_KEY FENRIR_VAULT_KEY FENRIR_ADMIN_PASSWORD; do

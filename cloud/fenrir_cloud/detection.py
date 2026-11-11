@@ -211,12 +211,14 @@ def ingest(db: Session, device: Device, raw_events: list[dict], *, apply_device_
     cap = get_settings().routine_events_per_device_minute
     minute = int(utcnow().timestamp() // 60)
 
+    # Pass 1: normalise, match rules and apply the routine budget; collect what should be stored.
+    pending: list[tuple[Event, dict, list]] = []
     for raw in raw_events:
         if not isinstance(raw, dict):
             continue
         norm = normalize(raw, device.platform)
         if not norm["event_id"]:
-            norm["event_id"] = f"auto-{device.id}-{utcnow().timestamp()}-{result.accepted}"
+            norm["event_id"] = f"auto-{device.id}-{utcnow().timestamp()}-{len(pending)}"
         fields = norm["fields"]
         fields.setdefault("Hostname", device.hostname)
         fields.setdefault("DeviceId", device.id)
@@ -230,19 +232,50 @@ def ingest(db: Session, device: Device, raw_events: list[dict], *, apply_device_
             result.not_stored += 1
             result.accepted += 1
             continue
-
         event = Event(
             tenant_id=device.tenant_id, device_id=device.id, event_id=norm["event_id"], event_type=norm["event_type"],
             category=norm["category"], source=norm["source"], summary=norm["summary"], severity=norm["severity"],
             occurred_at=norm["occurred_at"], fields=fields,
         )
-        try:
-            with db.begin_nested():
-                db.add(event)
-                db.flush()
-        except IntegrityError:
+        pending.append((event, norm, matched))
+
+    # Pass 2: store them. Duplicates (an agent re-sending a batch) are found with one query, and the rest go in with
+    # one flush; only if a concurrent upload races us does it fall back to one savepoint per event.
+    ids = [e.event_id for e, _, _ in pending]
+    existing = set()
+    for chunk in range(0, len(ids), 500):
+        existing |= set(db.execute(select(Event.event_id).where(Event.device_id == device.id,
+                                                                Event.event_id.in_(ids[chunk:chunk + 500]))).scalars())
+    fresh, seen = [], set()
+    for item in pending:
+        event_id = item[0].event_id
+        if event_id in existing or event_id in seen:
             result.duplicates += 1
             continue
+        seen.add(event_id)
+        fresh.append(item)
+    stored: list[tuple[Event, dict, list]] = []
+    try:
+        with db.begin_nested():
+            db.add_all([e for e, _, _ in fresh])
+            db.flush()
+        stored = fresh
+    except IntegrityError:
+        for item in fresh:
+            event = Event(**{c: getattr(item[0], c) for c in ("tenant_id", "device_id", "event_id", "event_type", "category",
+                                                               "source", "summary", "severity", "occurred_at", "fields")})
+            try:
+                with db.begin_nested():
+                    db.add(event)
+                    db.flush()
+            except IntegrityError:
+                result.duplicates += 1
+                continue
+            stored.append((event, item[1], item[2]))
+
+    # Pass 3: side effects, rule matches and alerts for what was stored, in the order the agent sent it.
+    for event, norm, matched in stored:
+        fields = event.fields
         result.accepted += 1
         if apply_device_effects:
             _apply_side_effects(db, device, norm)

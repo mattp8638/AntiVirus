@@ -187,16 +187,24 @@ def run(args: argparse.Namespace) -> dict:
             heapq.heappush(queue, (start + random.uniform(0, every), n, id(agent), kind, every))
     background: list[dict] = []
     next_sample = start
+    next_progress = start + 60
     lock = threading.Lock()
     lag: list[float] = []
+    # At most --concurrency calls in flight: when the server slows down the generator waits too, so the lag below
+    # shows how far behind the fleet's schedule the server fell instead of an unbounded queue piling up.
+    slots = threading.BoundedSemaphore(args.concurrency)
 
     def execute(agent: Agent, kind: str, due: float) -> None:
-        with lock:
-            lag.append(max(0.0, time.monotonic() - due))
-        getattr(agent, kind)()
+        try:
+            with lock:
+                lag.append(max(0.0, time.monotonic() - due))
+            getattr(agent, kind)()
+        finally:
+            slots.release()
 
-    with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
-        while queue and queue[0][0] < end:
+    pool = ThreadPoolExecutor(max_workers=args.concurrency + 2)
+    try:
+        while queue and queue[0][0] < end and time.monotonic() < end:
             due, n, _, kind, every = heapq.heappop(queue)
             wait = due - time.monotonic()
             if wait > 0:
@@ -204,20 +212,43 @@ def run(args: argparse.Namespace) -> dict:
                 if due - time.monotonic() > 0:
                     heapq.heappush(queue, (due, n, id(enrolled[n]), kind, every))
                     continue
+            if not slots.acquire(timeout=max(0.0, end - time.monotonic())):
+                break
             pool.submit(execute, enrolled[n], kind, due)
             heapq.heappush(queue, (due + every, n, id(enrolled[n]), kind, every))
             if time.monotonic() >= next_sample:
                 next_sample = time.monotonic() + 30
                 pool.submit(lambda: background.append(_background(args)))
+            if time.monotonic() >= next_progress:
+                next_progress = time.monotonic() + 60
+                with lock:
+                    recent = sorted(lag[-2000:])
+                served = sum(len(v) for k, v in recorder.calls.items() if k != "enrol")
+                errors = sum(len(v) for k, v in recorder.errors.items() if k != "enrol")
+                print(f"  {int(time.monotonic() - start) // 60} min: {served} calls ({errors} errors), "
+                      f"schedule lag p95 {recent[int(len(recent) * 0.95)] if recent else 0:.1f} s", flush=True)
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)  # only the calls already in flight finish
     elapsed = time.monotonic() - start
 
-    stored = api.get("platform/telemetry-volume", tenant_id=tenant["id"], minutes=int(elapsed // 60) + 2)
+    # The server may still be working through the last minute's load: give the count a few minutes.
+    stored = None
+    api.timeout = 120
+    for attempt in range(4):
+        try:
+            stored = api.get("platform/telemetry-volume", tenant_id=tenant["id"], minutes=int(elapsed // 60) + 2)
+            break
+        except Exception as exc:  # noqa: BLE001 - a slow count must not lose the report
+            print(f"Counting stored events failed ({type(exc).__name__}); retrying", flush=True)
+            time.sleep(30)
     return {
         "devices": len(enrolled), "minutes": round(elapsed / 60, 1), "eventsPerMinutePerDevice": args.events_per_minute,
         "eventsSent": recorder.events_sent, "eventsPerSecond": round(recorder.events_sent / elapsed, 1),
-        "eventsStoredOrChecked": stored["events"] + stored.get("notStored", 0),
+        "eventsStoredOrChecked": (stored["events"] + stored.get("notStored", 0)) if stored else None,
         "schedulerLagSeconds": {"p95": round(sorted(lag)[int(len(lag) * 0.95)] if lag else 0, 2),
                                 "max": round(max(lag) if lag else 0, 2)},
+        "requestsPerSecond": round(sum(len(v) for k, v in recorder.calls.items() if k != "enrol") / elapsed, 1),
+        "plannedRequestsPerSecond": round(len(enrolled) * sum(1 / every for _, every in actions), 1),
         "calls": recorder.summary(),
         "background": {"samples": len(background), "allOk": all(b.get("ok") for b in background),
                        "problems": sorted({p for b in background for p in b.get("problems", [])}),
@@ -256,13 +287,16 @@ def main() -> int:
     report = run(args)
     calls = report["calls"]
     lines = [f"Fenrir load test: {report['devices']} agents for {report['minutes']} min, "
-             f"{report['eventsPerSecond']} events/s ({report['eventsSent']} sent, {report['eventsStoredOrChecked']} stored or checked)",
+             f"{report['eventsPerSecond']} events/s ({report['eventsSent']} sent, "
+             f"{report['eventsStoredOrChecked'] if report['eventsStoredOrChecked'] is not None else 'unknown (the count timed out)'} stored or checked)",
              "", "| Call | Calls | Errors | p50 ms | p95 ms | p99 ms | max ms |", "|---|---|---|---|---|---|---|"]
     lines += [f"| {name} | {c['calls']} | {c['errors']} | {c['p50']} | {c['p95']} | {c['p99']} | {c['max']} |" for name, c in calls.items()]
     background = report["background"]
     lines += ["", f"Background work: {'kept up' if background['allOk'] else 'FELL BEHIND: ' + ', '.join(background['problems'])} "
                   f"({background['samples']} samples, outbox peak {background['maxOutboxPending']})",
-              f"Load generator lag: p95 {report['schedulerLagSeconds']['p95']} s (high means the generator, not the server, was the limit)"]
+              f"Requests: {report['requestsPerSecond']}/s served of {report['plannedRequestsPerSecond']}/s the fleet asks for; "
+              f"schedule lag p95 {report['schedulerLagSeconds']['p95']} s (calls wait for a free slot, so high lag means the "
+              f"server could not keep up at --concurrency {args.concurrency})"]
     text = "\n".join(lines)
     print(text)
     if args.out:
@@ -273,14 +307,16 @@ def main() -> int:
     total = sum(c["calls"] for c in calls.values()) or 1
     failed = sum(c["errors"] for c in calls.values())
     slow = [name for name, c in calls.items() if name != "enrol" and c["p95"] > args.max_p95_ms]
-    ok = failed / total <= 0.01 and not slow and background["allOk"]
+    behind = report["schedulerLagSeconds"]["p95"] > COMMANDS_EVERY  # agents would see their check-ins slip
+    ok = failed / total <= 0.01 and not slow and background["allOk"] and not behind
     if os.environ.get("GITHUB_ACTIONS") == "true":  # readable from the run's API, like the acceptance results
         headline = (f"{report['devices']} agents, {report['eventsPerSecond']} events/s, {failed}/{total} calls failed; p95 ms: "
                     + ", ".join(f"{name} {c['p95']}" for name, c in calls.items())
                     + f"; background {'kept up' if background['allOk'] else 'fell behind'}")
         print(f"::{'notice' if ok else 'error'} title=Load test::{headline}", flush=True)
     if not ok:
-        print(f"FAIL: {failed}/{total} calls failed; slow: {slow or 'none'}; background ok: {background['allOk']}", file=sys.stderr)
+        print(f"FAIL: {failed}/{total} calls failed; slow: {slow or 'none'}; background ok: {background['allOk']}; "
+              f"fell behind schedule: {behind}", file=sys.stderr)
         return 1
     return 0
 

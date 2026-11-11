@@ -44,7 +44,8 @@ def content_hash(item) -> str:
 def _shipped(item) -> bool:
     """Exactly as Fenrir shipped it: built-in library scripts nobody has edited, and packages matching their template."""
     if isinstance(item, Script):
-        return bool(item.builtin) and item.updated_by == "system"
+        # "catalogue": community scripts, reviewed in pull requests and loaded only when their checksum matches.
+        return bool(item.builtin) and item.updated_by in ("system", "catalogue")
     if not item.builtin_key:
         return False
     from .condition_remediation import BUILTIN

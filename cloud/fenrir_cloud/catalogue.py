@@ -52,7 +52,9 @@ def _verified(root: Path, pattern: str) -> list[Path]:
     good = []
     for path in sorted(root.glob(pattern)):
         rel = path.relative_to(root).as_posix()
-        if manifest.get(rel) != hashlib.sha256(path.read_bytes()).hexdigest():
+        data = path.read_bytes()
+        # A Windows checkout may turn LF into CRLF; the reviewed content is the same, so accept that copy too.
+        if manifest.get(rel) not in (hashlib.sha256(data).hexdigest(), hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()):
             log.warning("catalogue: %s does not match MANIFEST.sha256; skipped (run catalogue/manifest.py --write after review)", rel)
             continue
         good.append(path)

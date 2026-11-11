@@ -13,6 +13,13 @@ from functools import lru_cache
 from pathlib import Path
 
 
+def _int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
 def _bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -104,6 +111,9 @@ class Settings:
         default_factory=lambda: int(os.getenv("FENRIR_ROUTINE_EVENTS_PER_DEVICE_MINUTE", "600")))
     # all: one process serves the API and runs background jobs. web / worker: split them (python -m fenrir_cloud.worker).
     role: str = field(default_factory=lambda: os.getenv("FENRIR_ROLE", "all").strip().lower())
+    # Requests handled at once; the rest wait their turn. Threads and database connections are sized from it so a
+    # burst of agents can never leave every thread waiting for a connection held by a request waiting for a thread.
+    http_concurrency: int = field(default_factory=lambda: max(4, min(256, _int("FENRIR_HTTP_CONCURRENCY", 48))))
     # Device API keys older than this are rotated at the next heartbeat by agents that support it (0 = never).
     device_key_max_age_days: int = field(default_factory=lambda: int(os.getenv("FENRIR_DEVICE_KEY_MAX_AGE_DAYS", "90")))
     # Bearer token for GET /metrics (Prometheus). Unset or shorter than 24 characters: the endpoint answers 404.

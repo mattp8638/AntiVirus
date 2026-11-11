@@ -812,12 +812,13 @@ def upgrade_mid_job(ctx: Context, device: dict) -> tuple[str, dict]:
 @scenario("defender_coexistence", ("windows",), "Microsoft Defender is running and has not flagged or removed Fenrir")
 def defender_coexistence(ctx: Context, device: dict) -> tuple[str, dict]:
     """Run late, after the other checks have exercised the agent. Defender quarantining the agent, or killing it as
-    ransomware, is what took real machines offline."""
+    ransomware, is what took real machines offline. The EICAR files the other checks plant (in FenrirAcceptance*
+    folders) are meant to be caught, so they do not count."""
     import subprocess
 
     _local_windows(device)
     ps = ("$s = Get-MpComputerStatus; $d = @(Get-MpThreatDetection -ErrorAction SilentlyContinue | "
-          "Where-Object { ($_.Resources -join ' ') -match 'Fenrir' }); "
+          "Where-Object { $r = $_.Resources -join ' '; $r -match 'Fenrir' -and $r -notmatch 'FenrirAcceptance' }); "
           "[pscustomobject]@{ service = (Get-Service WinDefend).Status.ToString(); realtime = $s.RealTimeProtectionEnabled; "
           "behavior = $s.BehaviorMonitorEnabled; detections = @($d | ForEach-Object { ($_.Resources -join '; ') + ' ' + $_.ThreatID }) } "
           "| ConvertTo-Json -Compress")

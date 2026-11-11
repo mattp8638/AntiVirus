@@ -1,3 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
 *.ttf binary
+# Catalogue files are verified against MANIFEST.sha256 byte for byte: keep LF endings on every platform.
+catalogue/** text eol=lf
