@@ -11,6 +11,16 @@ from test_msp_modules import connection
 from fenrir_cloud import db as database, mail_gateway
 from fenrir_cloud.models import EmailGatewayDomain, EmailQuarantine, EmailScan, Indicator, M365Connection
 
+
+@pytest.fixture(autouse=True)
+def fresh_model_cache():
+    """The active model is cached per process for a minute; each test has its own database, so start clean."""
+    from fenrir_cloud import email_model
+
+    email_model.forget_cache()
+    yield
+    email_model.forget_cache()
+
 BASE = "/api/console/email-security"
 PASS_AUTH = {"spf": "pass", "dkim": "pass", "dkimDomain": "supplier.example", "dmarc": "pass", "policy": "reject",
              "header": "spf=pass smtp.mailfrom=supplier.example; dkim=pass header.d=supplier.example; dmarc=pass action=none header.from=supplier.example"}
