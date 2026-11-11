@@ -10,22 +10,38 @@ from typing import Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from .. import email_scan, ratelimit
+from .. import audit, email_actions, email_model, email_scan, ratelimit
 from ..db import get_db
 from ..deps import Principal, current_principal, scoped_tenant
-from ..models import EmailScan, EmailScanSetting, M365Connection
+from ..models import EmailListEntry, EmailModel, EmailScan, EmailScanSetting, M365Connection
 from .documentation import owned
 
 router = APIRouter(prefix="/api/console/email-security", tags=["Email security"])
+public = APIRouter(prefix="/api/public/email-release", tags=["Email security"])
 
 
 class SettingIn(BaseModel):
-    mode: Literal["off", "shadow"]
+    mode: Literal["off", "shadow", "protect"]
     retentionDays: int | None = Field(default=None, ge=7, le=730)
+    actions: dict[str, Literal["quarantine", "junk", "tag", "none"]] | None = None
+    notify: dict | None = None
+
+
+class ReleaseIn(BaseModel):
+    allowSender: bool = False
+
+
+class ListIn(BaseModel):
+    tenantId: str
+    kind: Literal["allow", "block"]
+    match: Literal["sender", "domain"]
+    value: str = Field(min_length=3, max_length=320)
+    note: str = Field(default="", max_length=300)
 
 
 class LabelIn(BaseModel):
@@ -55,11 +71,11 @@ def configure(connection_id: str, body: SettingIn, principal: Principal = Depend
               db: Session = Depends(get_db)):
     principal.require("configure")
     connection = owned(db, M365Connection, connection_id, principal)
-    if body.mode == "shadow" and (connection.auth_mode or "app") == "gdap":
+    if body.mode != "off" and (connection.auth_mode or "app") == "gdap":
         raise HTTPException(409, "Reading mail needs an app connection (admin sign-in or the Fenrir app). Microsoft does "
                                  "not let a partner (GDAP) connection read mailboxes.")
     try:
-        setting = email_scan.configure(db, connection, body.mode, body.retentionDays, principal.actor)
+        setting = email_scan.configure(db, connection, body.mode, body.retentionDays, principal.actor, body.actions, body.notify)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
     db.commit()
@@ -72,7 +88,7 @@ def scan_now(connection_id: str, principal: Principal = Depends(current_principa
     principal.require("configure")
     connection = owned(db, M365Connection, connection_id, principal)
     setting = db.execute(select(EmailScanSetting).where(EmailScanSetting.connection_id == connection.id)).scalar_one_or_none()
-    if setting is None or setting.mode != "shadow":
+    if setting is None or setting.mode not in ("shadow", "protect"):
         raise HTTPException(409, "Turn on email security for this customer first.")
     ratelimit.check(f"email-scan:{connection.id}", 4, 300)
     from time import monotonic
@@ -122,3 +138,152 @@ def set_label(scan_id: str, body: LabelIn, principal: Principal = Depends(curren
     email_scan.label(db, row, body.label, principal.actor)
     db.commit()
     return email_scan.scan_view(row, full=True)
+
+
+@router.post("/messages/{scan_id}/release")
+def release(scan_id: str, body: ReleaseIn, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Bring a quarantined or junked message back to the user's Inbox (and optionally allow its sender from now on)."""
+    principal.require("respond")
+    row = owned(db, EmailScan, scan_id, principal)
+    try:
+        email_actions.release(db, row, principal.actor)
+    except email_actions.ActionError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from None
+    except httpx.HTTPError:
+        db.rollback()
+        raise HTTPException(502, "Microsoft did not accept the release. Try again in a minute.") from None
+    if body.allowSender and row.sender_address:
+        _add_entry(db, row.tenant_id, "allow", "sender", row.sender_address, f"Released by {principal.actor}", principal.actor)
+    db.commit()
+    return email_scan.scan_view(row, full=True)
+
+
+def _add_entry(db: Session, tenant_id: str, kind: str, match: str, value: str, note: str, actor: str) -> EmailListEntry:
+    value = value.strip().lower().lstrip("@")
+    if match == "sender" and ("@" not in value or " " in value):
+        raise HTTPException(400, "Enter a full email address, like accounts@supplier.co.uk")
+    if match == "domain" and ("@" in value or "." not in value or " " in value):
+        raise HTTPException(400, "Enter a domain, like supplier.co.uk")
+    existing = db.execute(select(EmailListEntry).where(EmailListEntry.tenant_id == tenant_id, EmailListEntry.kind == kind,
+                                                       EmailListEntry.match == match, EmailListEntry.value == value)).scalar_one_or_none()
+    if existing:
+        return existing
+    other = "block" if kind == "allow" else "allow"
+    db.query(EmailListEntry).filter_by(tenant_id=tenant_id, kind=other, match=match, value=value).delete()
+    entry = EmailListEntry(tenant_id=tenant_id, kind=kind, match=match, value=value, note=note[:300], created_by=actor)
+    db.add(entry)
+    audit.record(db, actor, f"email_security.{kind}_listed", value, tenant_id, match=match)
+    return entry
+
+
+def _entry_view(entry: EmailListEntry) -> dict:
+    return {"id": entry.id, "tenantId": entry.tenant_id, "kind": entry.kind, "match": entry.match, "value": entry.value,
+            "note": entry.note, "createdBy": entry.created_by, "createdAt": entry.created_at.isoformat() + "Z"}
+
+
+@router.get("/lists")
+def lists(tenant_id: str | None = None, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("respond")
+    rows = db.execute(select(EmailListEntry).where(EmailListEntry.tenant_id.in_(scoped_tenant(principal, tenant_id)))
+                      .order_by(EmailListEntry.kind, EmailListEntry.value)).scalars().all()
+    return [_entry_view(r) for r in rows]
+
+
+@router.post("/lists")
+def add_list_entry(body: ListIn, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Allow or block a sender address or domain for a customer. An entry on the MSP's own tenant covers every customer."""
+    principal.require("configure")
+    principal.check_tenant(body.tenantId)
+    entry = _add_entry(db, body.tenantId, body.kind, body.match, body.value, body.note, principal.actor)
+    db.commit()
+    return _entry_view(entry)
+
+
+@router.delete("/lists/{entry_id}")
+def remove_list_entry(entry_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("configure")
+    entry = owned(db, EmailListEntry, entry_id, principal)
+    audit.record(db, principal.actor, f"email_security.{entry.kind}_unlisted", entry.value, entry.tenant_id, match=entry.match)
+    db.delete(entry)
+    db.commit()
+    return {"ok": True}
+
+
+# --------------------------------------------------------------------------- mailbox owners asking for a message back
+
+PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex"><title>Held-back message</title>
+<style>body{{font-family:system-ui,sans-serif;max-width:560px;margin:48px auto;padding:0 16px;color:#1f2937}}
+button{{font-size:16px;padding:10px 18px;border-radius:6px;border:0;background:#2563eb;color:#fff;cursor:pointer}}
+.muted{{color:#6b7280}}</style></head><body>{body}</body></html>"""
+
+
+def _page(body: str, status: int = 200) -> HTMLResponse:
+    return HTMLResponse(PAGE.format(body=body), status_code=status, headers={"Cache-Control": "no-store"})
+
+
+def _requested_scan(db: Session, scan_id: str, t: str) -> EmailScan | None:
+    row = db.get(EmailScan, scan_id)
+    return row if row is not None and email_actions.valid_token(scan_id, t) else None
+
+
+@public.get("/{scan_id}", response_class=HTMLResponse)
+def release_page(scan_id: str, t: str = "", db: Session = Depends(get_db)):
+    """Shows the message and a button. Opening the link changes nothing, so link scanners cannot request releases."""
+    from html import escape
+
+    row = _requested_scan(db, scan_id, t)
+    if row is None:
+        return _page("<h1>Link not valid</h1><p>This link has expired or is incomplete. Ask your IT team for help.</p>", 404)
+    if row.action_status == "release_requested":
+        return _page("<h1>Already requested</h1><p>Your IT team has been asked to check this message.</p>")
+    if row.action_status == "released":
+        return _page("<h1>Released</h1><p>This message is back in your Inbox.</p>")
+    return _page(f"<h1>Ask for this message back?</h1><p><b>From:</b> {escape(row.sender_address)}<br><b>Subject:</b> "
+                 f"{escape(row.subject)}<br><b>Received:</b> {row.received_at:%d %b %Y %H:%M} UTC</p>"
+                 "<p class=\"muted\">It was held back because it looks like phishing or malware. Only ask for it if you "
+                 "were expecting it. IT will check it before it reaches your Inbox.</p>"
+                 f"<form method=\"post\" action=\"?t={escape(t)}\">"
+                 "<button type=\"submit\">Ask IT to release it</button></form>")
+
+
+@public.post("/{scan_id}", response_class=HTMLResponse)
+def request_release(scan_id: str, t: str = "", db: Session = Depends(get_db)):
+    ratelimit.check(f"email-release:{scan_id}", 5, 3600)
+    row = _requested_scan(db, scan_id, t)
+    if row is None:
+        return _page("<h1>Link not valid</h1><p>This link has expired or is incomplete. Ask your IT team for help.</p>", 404)
+    if email_actions.request_release(db, row):
+        db.commit()
+    return _page("<h1>Request sent</h1><p>Your IT team has been asked to check this message. If it is safe they will "
+                 "release it to your Inbox.</p>")
+
+
+# --------------------------------------------------------------------------- the learned model
+
+@router.get("/model")
+def model(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """The model in use (if any), the latest version and its measurements, and the history."""
+    principal.require("respond")
+    rows = db.execute(select(EmailModel).order_by(EmailModel.version.desc()).limit(20)).scalars().all()
+    current = next((r for r in rows if r.active), None)
+    labels = dict(db.execute(select(EmailScan.label, func.count()).where(EmailScan.label != "").group_by(EmailScan.label)).all())
+    return {"active": email_model.view(current), "latest": email_model.view(rows[0] if rows else None),
+            "history": [email_model.view(r) for r in rows], "labels": labels,
+            "requirements": {"samples": email_model.MIN_SAMPLES, "positives": email_model.MIN_POSITIVES,
+                             "precision": email_model.MIN_PRECISION, "recall": email_model.MIN_RECALL,
+                             "threshold": email_model.THRESHOLD}}
+
+
+@router.post("/model/train")
+def train_model(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Train a new version now. It is used only if it measures well enough on messages it did not learn from."""
+    principal.require("configure")
+    if not principal.can("platform") and not principal.can("manage_tenants"):
+        raise HTTPException(403, "Only MSP administrators can retrain the shared model")
+    ratelimit.check("email-model-train", 3, 600)
+    row = email_model.train(db, principal.actor)
+    audit.record(db, principal.actor, "email_security.model_trained", row.id, None, version=row.version, active=row.active)
+    db.commit()
+    return email_model.view(row)

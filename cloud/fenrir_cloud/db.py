@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 65
+LATEST_MIGRATION = 67
 
 def init_engine(url: str, pool_size: int = 5, max_overflow: int = 10) -> Engine:
     global _engine, _session_factory
@@ -480,6 +480,17 @@ def migrate(bind: Engine) -> list[int]:
                     model.__table__.create(conn, checkfirst=True)
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (65)"))
                 applied.append(65)
+            if 66 not in versions:
+                from .models import EmailListEntry
+                EmailListEntry.__table__.create(conn, checkfirst=True)  # email security: allow and block lists
+                ensure_columns(Base, conn)  # protect mode: actions, release and notification fields
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (66)"))
+                applied.append(66)
+            if 67 not in versions:
+                from .models import EmailModel
+                EmailModel.__table__.create(conn, checkfirst=True)  # email security: the learned model's versions
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (67)"))
+                applied.append(67)
             conn.commit()
         except Exception:
             conn.rollback()

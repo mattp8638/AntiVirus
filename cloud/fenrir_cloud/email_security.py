@@ -89,6 +89,11 @@ class Context:
     bad_hashes: dict[str, str] = field(default_factory=dict)     # threat-intel sha256 -> family/category
     allowed_domains: set[str] = field(default_factory=set)       # indicators marked "allow"
     known_senders: set[str] = field(default_factory=set)         # sender domains seen before at this customer
+    allow_senders: set[str] = field(default_factory=set)         # customer allow list: addresses
+    allow_sender_domains: set[str] = field(default_factory=set)  # customer allow list: domains
+    block_senders: set[str] = field(default_factory=set)         # customer block list: addresses
+    block_sender_domains: set[str] = field(default_factory=set)  # customer block list: domains
+    model: object | None = None                                  # the learned model (email_model.py), when active
 
 
 @dataclass
@@ -272,6 +277,17 @@ def analyse(message: Message, ctx: Context) -> dict:
 
     ms = microsoft_verdict(message.headers, message.folder)
     sender_domain = domain_of(message.sender_address)
+    sender = (message.sender_address or "").lower()
+
+    # The customer's own lists come first. Allow is only honoured when the sender is not obviously forged.
+    forged = ms["dmarc"] == "fail" or ms["compauth"] == "fail"
+    on_allow = sender in ctx.allow_senders or _in_domains(sender_domain, ctx.allow_sender_domains)
+    if on_allow and not forged:
+        return _result(ms, "clean", 0, [{"code": "list.allow", "points": 0,
+                                         "detail": f"{sender or sender_domain} is on this customer's allow list"}],
+                       {"codes": ["list.allow"]}, sender_domain, [])
+    if sender in ctx.block_senders or _in_domains(sender_domain, ctx.block_sender_domains):
+        add("list.block", 100, f"{sender or sender_domain} is on this customer's block list")
     own = {d.lower() for d in ctx.own_domains}
     external = sender_domain not in own
     urls, anchors = links(message.body_html)
@@ -384,16 +400,6 @@ def analyse(message: Message, ctx: Context) -> dict:
     if first_contact and reasons:
         add("sender.first-contact", 5, f"First message from {sender_domain} to this customer")
 
-    score = max(0, min(100, sum(r["points"] for r in reasons)))
-    if score >= PHISH_AT:
-        verdict = "malware" if "malware" in kinds else "phish"
-    elif score >= SUSPICIOUS_AT:
-        verdict = "suspicious"
-    else:
-        verdict = "clean"
-    if any(r["code"] == "intel.attachment" for r in reasons):
-        verdict = "malware"
-
     features = {
         "intel_url": intel_hits, "intel_attachment": int(any(r["code"] == "intel.attachment" for r in reasons)),
         "attachments": len(message.attachments), "url_count": len(urls), "link_mismatch": mismatched,
@@ -404,6 +410,41 @@ def analyse(message: Message, ctx: Context) -> dict:
         "ms_scl": ms["scl"] if ms["scl"] is not None else -1, "ms_bcl": ms["bcl"] if ms["bcl"] is not None else -1,
         "codes": sorted({r["code"] for r in reasons}),
     }
+
+    # The learned model (email_model.py) can only add evidence, and only when it has proved itself.
+    model_score = None
+    if ctx.model is not None:
+        model_score = round(ctx.model.probability(features), 4)
+        rules_score = sum(r["points"] for r in reasons)
+        if model_score >= ctx.model.threshold and rules_score < PHISH_AT:
+            add("model.learned", 30 if model_score >= 0.95 else 20,
+                f"Looks like the phishing flagged here before ({round(model_score * 100)}% sure, model v{ctx.model.version})")
+
+    score = max(0, min(100, sum(r["points"] for r in reasons)))
+    if score >= PHISH_AT:
+        verdict = "malware" if "malware" in kinds else "phish"
+    elif score >= SUSPICIOUS_AT:
+        verdict = "suspicious"
+    else:
+        verdict = "clean"
+    if any(r["code"] == "intel.attachment" for r in reasons):
+        verdict = "malware"
+
+    if on_allow and forged:
+        reasons.append({"code": "list.allow-ignored", "points": 0,
+                        "detail": "On the allow list, but ignored because the sender failed authentication"})
+    result = _result(ms, verdict, score, reasons, features, sender_domain, sorted({registrable(h) for h in hosts})[:30])
+    result["model_score"] = model_score
+    return result
+
+
+def _in_domains(domain: str, domains: set[str]) -> bool:
+    parts = (domain or "").split(".")
+    return any(".".join(parts[i:]) in domains for i in range(len(parts) - 1))
+
+
+def _result(ms: dict, verdict: str, score: int, reasons: list[dict], features: dict, sender_domain: str,
+            link_domains: list[str]) -> dict:
     return {
         "microsoft": ms,
         "verdict": verdict,
@@ -411,7 +452,7 @@ def analyse(message: Message, ctx: Context) -> dict:
         "reasons": sorted(reasons, key=lambda r: -r["points"]),
         "features": features,
         "sender_domain": sender_domain,
-        "link_domains": sorted({registrable(h) for h in hosts})[:30],
+        "link_domains": link_domains,
     }
 
 
