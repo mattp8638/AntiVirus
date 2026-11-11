@@ -2092,6 +2092,24 @@ class EmailListEntry(Base):
     __table_args__ = (UniqueConstraint("tenant_id", "kind", "match", "value", name="uq_email_list_entry"),)
 
 
+class EmailModel(Base):
+    """One trained version of the email model (email_model.py): weights, how it scored on held-back messages, and
+    whether it is the one in use."""
+    __tablename__ = "email_models"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("emmod"))
+    version: Mapped[int] = mapped_column(Integer, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    samples: Mapped[int] = mapped_column(Integer, default=0)
+    positives: Mapped[int] = mapped_column(Integer, default=0)
+    labelled: Mapped[int] = mapped_column(Integer, default=0)
+    threshold: Mapped[float] = mapped_column(Float, default=0.8)
+    weights: Mapped[dict] = mapped_column(JSON, default=dict)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    active: Mapped[bool] = mapped_column(Boolean, default=False)
+    reason: Mapped[str] = mapped_column(String(400), default="")
+    trained_by: Mapped[str] = mapped_column(String(320), default="")
+
+
 class M365Workflow(Base):
     """A reviewed multi-step Microsoft 365 job: offboarding, onboarding or a bulk user import (m365_lifecycle.py).
 

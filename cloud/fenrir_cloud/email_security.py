@@ -400,16 +400,6 @@ def analyse(message: Message, ctx: Context) -> dict:
     if first_contact and reasons:
         add("sender.first-contact", 5, f"First message from {sender_domain} to this customer")
 
-    score = max(0, min(100, sum(r["points"] for r in reasons)))
-    if score >= PHISH_AT:
-        verdict = "malware" if "malware" in kinds else "phish"
-    elif score >= SUSPICIOUS_AT:
-        verdict = "suspicious"
-    else:
-        verdict = "clean"
-    if any(r["code"] == "intel.attachment" for r in reasons):
-        verdict = "malware"
-
     features = {
         "intel_url": intel_hits, "intel_attachment": int(any(r["code"] == "intel.attachment" for r in reasons)),
         "attachments": len(message.attachments), "url_count": len(urls), "link_mismatch": mismatched,
@@ -420,10 +410,32 @@ def analyse(message: Message, ctx: Context) -> dict:
         "ms_scl": ms["scl"] if ms["scl"] is not None else -1, "ms_bcl": ms["bcl"] if ms["bcl"] is not None else -1,
         "codes": sorted({r["code"] for r in reasons}),
     }
+
+    # The learned model (email_model.py) can only add evidence, and only when it has proved itself.
+    model_score = None
+    if ctx.model is not None:
+        model_score = round(ctx.model.probability(features), 4)
+        rules_score = sum(r["points"] for r in reasons)
+        if model_score >= ctx.model.threshold and rules_score < PHISH_AT:
+            add("model.learned", 30 if model_score >= 0.95 else 20,
+                f"Looks like the phishing flagged here before ({round(model_score * 100)}% sure, model v{ctx.model.version})")
+
+    score = max(0, min(100, sum(r["points"] for r in reasons)))
+    if score >= PHISH_AT:
+        verdict = "malware" if "malware" in kinds else "phish"
+    elif score >= SUSPICIOUS_AT:
+        verdict = "suspicious"
+    else:
+        verdict = "clean"
+    if any(r["code"] == "intel.attachment" for r in reasons):
+        verdict = "malware"
+
     if on_allow and forged:
         reasons.append({"code": "list.allow-ignored", "points": 0,
                         "detail": "On the allow list, but ignored because the sender failed authentication"})
-    return _result(ms, verdict, score, reasons, features, sender_domain, sorted({registrable(h) for h in hosts})[:30])
+    result = _result(ms, verdict, score, reasons, features, sender_domain, sorted({registrable(h) for h in hosts})[:30])
+    result["model_score"] = model_score
+    return result
 
 
 def _in_domains(domain: str, domains: set[str]) -> bool:

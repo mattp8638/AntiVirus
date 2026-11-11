@@ -12,13 +12,13 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from .. import audit, email_actions, email_scan, ratelimit
+from .. import audit, email_actions, email_model, email_scan, ratelimit
 from ..db import get_db
 from ..deps import Principal, current_principal, scoped_tenant
-from ..models import EmailListEntry, EmailScan, EmailScanSetting, M365Connection
+from ..models import EmailListEntry, EmailModel, EmailScan, EmailScanSetting, M365Connection
 from .documentation import owned
 
 router = APIRouter(prefix="/api/console/email-security", tags=["Email security"])
@@ -258,3 +258,32 @@ def request_release(scan_id: str, t: str = "", db: Session = Depends(get_db)):
         db.commit()
     return _page("<h1>Request sent</h1><p>Your IT team has been asked to check this message. If it is safe they will "
                  "release it to your Inbox.</p>")
+
+
+# --------------------------------------------------------------------------- the learned model
+
+@router.get("/model")
+def model(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """The model in use (if any), the latest version and its measurements, and the history."""
+    principal.require("respond")
+    rows = db.execute(select(EmailModel).order_by(EmailModel.version.desc()).limit(20)).scalars().all()
+    current = next((r for r in rows if r.active), None)
+    labels = dict(db.execute(select(EmailScan.label, func.count()).where(EmailScan.label != "").group_by(EmailScan.label)).all())
+    return {"active": email_model.view(current), "latest": email_model.view(rows[0] if rows else None),
+            "history": [email_model.view(r) for r in rows], "labels": labels,
+            "requirements": {"samples": email_model.MIN_SAMPLES, "positives": email_model.MIN_POSITIVES,
+                             "precision": email_model.MIN_PRECISION, "recall": email_model.MIN_RECALL,
+                             "threshold": email_model.THRESHOLD}}
+
+
+@router.post("/model/train")
+def train_model(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Train a new version now. It is used only if it measures well enough on messages it did not learn from."""
+    principal.require("configure")
+    if not principal.can("platform") and not principal.can("manage_tenants"):
+        raise HTTPException(403, "Only MSP administrators can retrain the shared model")
+    ratelimit.check("email-model-train", 3, 600)
+    row = email_model.train(db, principal.actor)
+    audit.record(db, principal.actor, "email_security.model_trained", row.id, None, version=row.version, active=row.active)
+    db.commit()
+    return email_model.view(row)

@@ -308,7 +308,7 @@ def _row(connection: M365Connection, mailbox: str, folder: str, item: dict, rece
         link_domains=result["link_domains"], microsoft_verdict=ms["verdict"],
         microsoft={k: v for k, v in ms.items() if k != "verdict"}, verdict=result["verdict"], score=result["score"],
         reasons=result["reasons"], agreement=email_security.agreement(result["verdict"], ms["verdict"]),
-        features=result["features"])
+        features=result["features"], model_score=result.get("model_score"))
 
 
 # --------------------------------------------------------------------------- the background job
@@ -346,6 +346,10 @@ def tick(db: Session) -> None:
                     break
                 run_one(db, setting, intel, client, deadline)
     purge(db)
+    from . import email_model
+
+    if email_model.maybe_retrain(db):
+        db.commit()
 
 
 def run_one(db: Session, setting: EmailScanSetting, intel: dict, client: httpx.Client, deadline: float) -> dict:

@@ -482,3 +482,77 @@ def test_new_intel_rescans_recent_mail_and_quarantines_it(client, admin, tenant,
     order = client.get(f"{BASE}/messages/{_by_subject(client, admin)['Order dispatched']['id']}", headers=admin).json()
     assert order["verdict"] == "phish" and order["reasons"][0]["code"] == "intel.retro" and order["action"] == "quarantine"
     assert ("m1", "qfolder-1") in mail.moves
+
+
+# --------------------------------------------------------------------------- phase 3: the learned model
+
+from fenrir_cloud import email_model  # noqa: E402
+from fenrir_cloud.models import EmailModel  # noqa: E402
+
+
+def _seed_history(db, tenant_id, bad=60, good=400, labelled_safe_lookalikes=0):
+    """Past scans: phishing with a link mismatch and scam wording, flagged by Microsoft; ordinary mail it passed."""
+    import random
+
+    rng = random.Random(3)
+    now = utcnow()
+    rows = []
+    for i in range(bad):
+        codes = ["link.mismatch", "language.scam"] + (["reply-to.mismatch"] if i % 2 else []) + (["sender.first-contact"] if i % 3 else [])
+        rows.append(EmailScan(tenant_id=tenant_id, connection_id="c1", mailbox="jo@acme.co.uk", message_id=f"b{i}",
+                              received_at=now - timedelta(hours=i), microsoft_verdict="phish", microsoft={"scl": 9},
+                              features={"external": 1, "url_count": 2, "link_mismatch": 1, "scam_phrases": 2,
+                                        "first_contact": int(i % 3 > 0), "codes": codes}))
+    for i in range(good):
+        codes = ["language.scam"] if rng.random() < 0.05 else []
+        rows.append(EmailScan(tenant_id=tenant_id, connection_id="c1", mailbox="jo@acme.co.uk", message_id=f"g{i}",
+                              received_at=now - timedelta(minutes=i), microsoft_verdict="clean", microsoft={"scl": 1},
+                              features={"external": 1, "url_count": rng.randint(0, 4), "dkim_pass": 1,
+                                        "scam_phrases": len(codes), "codes": codes}))
+    db.add_all(rows)
+    db.commit()
+
+
+def test_the_model_waits_for_enough_examples(client, admin, tenant):
+    with database.session_factory()() as db:
+        row = email_model.train(db)
+        db.commit()
+        assert not row.active and "Not enough examples" in row.reason
+    view = client.get(BASE + "/model", headers=admin).json()
+    assert view["active"] is None and view["latest"]["version"] == 1 and view["requirements"]["samples"] == 200
+
+
+def test_the_model_learns_activates_and_only_adds_evidence(client, admin, tenant):
+    with database.session_factory()() as db:
+        _seed_history(db, tenant["id"])
+    trained = client.post(BASE + "/model/train", headers=admin).json()
+    assert trained["active"], trained["reason"]
+    assert trained["metrics"]["precision"] >= email_model.MIN_PRECISION and trained["metrics"]["recall"] >= email_model.MIN_RECALL
+    assert {s["input"] for s in trained["strongestSignals"]} >= {"code:link.mismatch"}
+    assert not any(w["input"].startswith("ms_") for w in trained["strongestSignals"])  # Microsoft's scores are not inputs
+
+    with database.session_factory()() as db:
+        email_model.forget_cache()
+        model = email_model.active(db)
+        assert model is not None and model.version == trained["version"]
+    # Below the rules' phish line (link mismatch 25 + scam wording 20 = 45) but just like past phishing: the model adds.
+    lookalike = message(sender_address="billing@newvendor.example", subject="Invoice overdue: urgent action required",
+                        body_html="<a href='https://evil.example/pay'>https://www.supplier.example/invoices</a>")
+    result = es.analyse(lookalike, ctx(model=model))
+    codes = {r["code"] for r in result["reasons"]}
+    assert "model.learned" in codes and result["verdict"] == "phish" and result["model_score"] >= model.threshold
+    # Ordinary mail: the model has a say but adds nothing, and never lowers a score.
+    plain = es.analyse(message(), ctx(model=model))
+    assert plain["verdict"] == "clean" and plain["model_score"] < model.threshold
+    assert all(r["points"] >= 0 for r in result["reasons"])
+
+
+def test_only_msp_admins_retrain_and_technicians_cannot(client, admin, tenant):
+    from conftest import login
+
+    created = client.post("/api/console/users", json={"email": "tech@acme.example", "password": "Technician-pass-123",
+                                                      "role": "tenant_admin", "tenantId": tenant["id"]}, headers=admin)
+    assert created.status_code == 200, created.text
+    tech = login(client, "tech@acme.example", "Technician-pass-123")
+    assert client.post(BASE + "/model/train", headers=tech).status_code == 403
+    assert client.get(BASE + "/model", headers=tech).status_code == 200
