@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 63
+LATEST_MIGRATION = 64
 
 def init_engine(url: str, pool_size: int = 5, max_overflow: int = 10) -> Engine:
     global _engine, _session_factory
@@ -469,6 +469,11 @@ def migrate(bind: Engine) -> list[int]:
                 ensure_columns(Base, conn)  # client_reports.document: the report as structured data, for PDF copies
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (63)"))
                 applied.append(63)
+            if 64 not in versions:
+                from .models import IntelFeed
+                IntelFeed.__table__.create(conn, checkfirst=True)  # free threat-intel feeds pulled by the server
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (64)"))
+                applied.append(64)
             conn.commit()
         except Exception:
             conn.rollback()

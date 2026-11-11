@@ -69,6 +69,10 @@ class Settings:
     # Upstream signature feed (the signaturedb-fenrir Cloudflare worker).
     feed_url: str = field(default_factory=lambda: os.getenv("FENRIR_FEED_URL", "https://api.fenrir-security.co.uk"))
     feed_token: str = field(default_factory=lambda: os.getenv("FENRIR_FEED_TOKEN", ""))
+    # Free threat-intel feeds the server pulls itself (threat_feeds.py). abuse.ch may ask for a free Auth-Key
+    # (https://auth.abuse.ch); without one its feeds report the error and the others carry on.
+    intel_feeds_enabled: bool = field(default_factory=lambda: _bool("FENRIR_INTEL_FEEDS", True))
+    abusech_auth_key: str = field(default_factory=lambda: os.getenv("FENRIR_ABUSECH_AUTH_KEY", "").strip())
     feed_sync_enabled: bool = field(default_factory=lambda: _bool("FENRIR_FEED_SYNC", False))
 
     # Have I Been Pwned subscription key for dark-web credential exposure monitoring (darkweb.py).

@@ -2168,6 +2168,23 @@ class DnsBlocklist(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class IntelFeed(Base):
+    """A free threat-intelligence feed the server pulls itself (threat_feeds.py): abuse.ch, IPsum and the like.
+    Its indicators live in ``indicators`` with source ``feed:<id>`` and are replaced on every successful sync."""
+    __tablename__ = "intel_feeds"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    url: Mapped[str] = mapped_column(String(500))
+    description: Mapped[str] = mapped_column(String(500), default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    refresh_hours: Mapped[int] = mapped_column(Integer, default=1)
+    indicator_count: Mapped[int] = mapped_column(Integer, default=0)
+    etag: Mapped[str] = mapped_column(String(200), default="")
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str] = mapped_column(String(500), default="")
+
+
 class EdrExclusion(Base):
     """A strict EDR exclusion (see edr_exclusions.py).
 

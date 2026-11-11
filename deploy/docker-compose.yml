@@ -19,6 +19,8 @@ x-fenrir-environment: &fenrir-environment
   FENRIR_VAULT_ALLOW_DERIVED_LEGACY: ${FENRIR_VAULT_ALLOW_DERIVED_LEGACY:-true}
   FENRIR_VAULT_OLD_KEYS: ${FENRIR_VAULT_OLD_KEYS:-}
   FENRIR_FEED_SYNC: ${FENRIR_FEED_SYNC:-true}
+  FENRIR_INTEL_FEEDS: ${FENRIR_INTEL_FEEDS:-true}            # free feeds (abuse.ch, IPsum) pulled hourly by the server
+  FENRIR_ABUSECH_AUTH_KEY: ${FENRIR_ABUSECH_AUTH_KEY:-}        # optional free key from https://auth.abuse.ch
   FENRIR_CORS_ORIGINS: ${FENRIR_PUBLIC_URL}
   FENRIR_SMTP_HOST: ${FENRIR_SMTP_HOST:-}
   FENRIR_SMTP_PORT: ${FENRIR_SMTP_PORT:-587}

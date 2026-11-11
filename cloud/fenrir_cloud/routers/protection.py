@@ -9,7 +9,7 @@ import dns.exception
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Request, Response
 from starlette.requests import ClientDisconnect
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from .. import audit, blocklists, compliance, dnsfilter, exposure, intel, services, vulnmgmt, web_profile
@@ -282,15 +282,56 @@ def delete_indicator(indicator_id: int, principal: Principal = Depends(current_p
 
 @console.post("/intel/sync")
 def intel_sync(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Refresh every enabled free feed now (and the optional hosted Fenrir feed, where it is turned on)."""
     principal.require("platform")
+    from .. import threat_feeds
+
     settings = get_settings()
-    try:
-        result = intel.sync_feed(db, settings.feed_url, settings.feed_token)
-    except httpx.HTTPError as exc:
-        raise HTTPException(502, f"Feed sync failed: {exc}") from exc
-    audit.record(db, principal.actor, "intel.feed.synced", settings.feed_url, None, **result)
+    feeds = threat_feeds.sync(db, settings.abusech_auth_key, only_due=False)
+    result: dict = {"feeds": feeds, "ok": sum(1 for f in feeds if f.get("ok")), "failed": sum(1 for f in feeds if not f.get("ok"))}
+    if settings.feed_sync_enabled:
+        try:
+            result["fenrirFeed"] = intel.sync_feed(db, settings.feed_url, settings.feed_token)
+        except httpx.HTTPError as exc:
+            result["fenrirFeed"] = {"error": str(exc)[:200]}
+    audit.record(db, principal.actor, "intel.feeds.synced", f"{result['ok']} feeds", None, failed=result["failed"])
     db.commit()
+    dnsfilter.INTEL.invalidate()
     return result
+
+
+@console.get("/intel/feeds")
+def intel_feeds(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    from .. import threat_feeds
+    from ..models import IntelFeed
+
+    threat_feeds.seed(db)
+    db.commit()
+    settings = get_settings()
+    rows = db.execute(select(IntelFeed).order_by(IntelFeed.name)).scalars().all()
+    return {"feeds": [threat_feeds.view(f) for f in rows], "abusechKey": bool(settings.abusech_auth_key),
+            "scheduled": settings.intel_feeds_enabled, "editable": principal.can("platform")}
+
+
+@console.patch("/intel/feeds/{feed_id}")
+def update_intel_feed(feed_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                      db: Session = Depends(get_db)):
+    principal.require("platform")
+    from .. import threat_feeds
+    from ..models import Indicator, IntelFeed
+
+    feed = db.get(IntelFeed, feed_id)
+    if feed is None:
+        raise HTTPException(404, "Not found")
+    if "enabled" in body:
+        feed.enabled = bool(body["enabled"])
+        if not feed.enabled:  # off means its indicators stop blocking now, not at their expiry
+            db.execute(delete(Indicator).where(Indicator.source == threat_feeds.SOURCE_PREFIX + feed.id, Indicator.tenant_id.is_(None)))
+            feed.indicator_count, feed.etag = 0, ""
+    audit.record(db, principal.actor, "intel.feed.updated", feed.id, None, enabled=feed.enabled)
+    db.commit()
+    dnsfilter.INTEL.invalidate()
+    return threat_feeds.view(feed)
 
 
 @console.get("/intel/yara")

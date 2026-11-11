@@ -111,14 +111,18 @@ class IntelCache:
         cached = self._loaded.get(tenant_id)
         if cached and time.time() - cached[0] < self.ttl:
             return cached[1]
+        from .threat_feeds import SOURCE_PREFIX, is_shared_host
+
         rows = db.execute(
-            select(Indicator.value, Indicator.verdict, Indicator.category, Indicator.type).where(
+            select(Indicator.value, Indicator.verdict, Indicator.category, Indicator.type, Indicator.source).where(
                 Indicator.type.in_(("domain", "url")), (Indicator.tenant_id.is_(None)) | (Indicator.tenant_id == tenant_id)
             )
         ).all()
         mapping: dict[str, tuple[str, str]] = {}
-        for value, verdict, category, kind in rows:
+        for value, verdict, category, kind, source in rows:
             host = value.lower().strip(".")
+            if kind == "url" and verdict != "allow" and (source or "").startswith(SOURCE_PREFIX):
+                continue  # a malware link from a public feed blocks that link (agents), not its whole site
             if kind == "url":
                 match = re.match(r"^[a-z]+://([^/:?#]+)", host)
                 if match:
@@ -131,7 +135,7 @@ class IntelCache:
             if len(parts) >= 2 and parts[0] in {"0.0.0.0", "127.0.0.1"}:
                 host = parts[1]
             host = host.strip(".^/ ")
-            if not host:
+            if not host or (verdict != "allow" and kind == "url" and is_shared_host(host)):
                 continue
             # A tenant "allow" overrides a global "malicious".
             if verdict == "allow" or host not in mapping:
