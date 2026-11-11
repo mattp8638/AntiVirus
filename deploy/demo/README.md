@@ -31,7 +31,7 @@ sudo deploy/demo/setup.sh --domain demo.example.com --live /opt/fenrir --connect
 ```
 
 - Point a DNS record for `demo.example.com` at the server first.
-- `--connect-live` makes the only change to the live install: one site block appended to its `deploy/Caddyfile`
+- `--connect-live` makes the only change to the live install: one site block appended to the Caddyfile its Caddy container actually reads (found from the container's mounts)
   (backed up, validated before reloading; restored if it does not validate) and the live Caddy container joined to
   the `fenrir-edge` network. Leave it out and the script prints both steps for you to do by hand.
 - To keep that network link when the live Caddy container is recreated, add to the `caddy` service in the live

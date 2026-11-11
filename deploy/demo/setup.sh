@@ -98,8 +98,13 @@ step "Publishing through the live Caddy"
 if [ "$connect" = 1 ]; then
   [ -n "$live" ] || die "--connect-live needs --live <path of the live install>"
   [ -n "$caddy_container" ] || die "no running live Caddy container found"
-  caddyfile="$live/deploy/Caddyfile"
-  [ -f "$caddyfile" ] || die "$caddyfile not found"
+  # The Caddyfile the live container really reads: a file mounted at /etc/caddy/Caddyfile, or one inside a folder
+  # mounted at /etc/caddy. Fall back to the standard deploy/Caddyfile only if neither is mounted.
+  caddyfile="$(docker inspect "$caddy_container" --format '{{range .Mounts}}{{.Source}}|{{.Destination}}{{"\n"}}{{end}}' \
+    | awk -F'|' '$2 == "/etc/caddy/Caddyfile" {print $1; exit} $2 == "/etc/caddy" {print $1 "/Caddyfile"; exit}')"
+  [ -n "$caddyfile" ] || caddyfile="$live/deploy/Caddyfile"
+  [ -f "$caddyfile" ] || die "$caddyfile not found (the live Caddy's config file)"
+  ok "live Caddy reads $caddyfile"
   if ! grep -q "reverse_proxy fenrir-demo:8080" "$caddyfile"; then
     cp "$caddyfile" "$caddyfile.before-demo.$(date +%s)"
     printf '\n%s\n' "$block" >> "$caddyfile"
@@ -107,7 +112,9 @@ if [ "$connect" = 1 ]; then
   docker network connect fenrir-edge "$caddy_container" 2>/dev/null || true
   if docker exec "$caddy_container" caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
     docker exec "$caddy_container" caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
-    ok "live Caddy now also serves https://$domain (certificate is issued on first visit)"
+    docker exec "$caddy_container" grep -q "reverse_proxy fenrir-demo:8080" /etc/caddy/Caddyfile \
+      || die "the live Caddy container does not see the demo entry in /etc/caddy/Caddyfile; nothing else was changed"
+    ok "live Caddy now also serves https://$domain (it requests the certificate straight away)"
   else
     latest="$(ls -t "$caddyfile".before-demo.* | head -1)"; cp "$latest" "$caddyfile"
     die "the new Caddyfile did not validate; restored $caddyfile and left the live site unchanged"
