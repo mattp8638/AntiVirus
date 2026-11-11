@@ -395,7 +395,7 @@ database, and publish two MX records with the same priority.
   flagged" counts.
 - **Labels:** a few minutes a week on disagreements keeps the model improving.
 - **Logs:** `dc logs --tail=100 worker` (mailbox scanning), `dcm logs --tail=100 mailgateway` (gateway).
-- **Gateway queue:** `dcm exec mailgateway ls /spool | wc -l` shows messages waiting. A growing number means
+- **Gateway queue:** `dcm exec mailgateway ls /data/mail-spool | grep -c json` shows messages waiting. A growing number means
   Microsoft 365 is refusing or deferring delivery; the reason is on each message's detail.
 - **Settings → Platform** shows the background jobs `email.shadow-scan` and `email.gateway`, their last run and any
   error.
