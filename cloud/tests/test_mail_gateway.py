@@ -48,8 +48,11 @@ class Microsoft365:
     def __init__(self):
         self.received = []
         self.defer = False
+        self.refuse = False
 
     async def handle_RCPT(self, server, session, envelope, address, rcpt_options):
+        if self.refuse:
+            return "550 5.4.1 Recipient address rejected: Access denied. AS(201806281)"
         if self.defer:
             return "451 4.3.0 Try again later"
         envelope.rcpt_tos.append(address)
@@ -308,3 +311,33 @@ def test_quarantined_gateway_mail_can_be_downloaded_for_analysis(client, admin, 
         scan_id = db.query(EmailScan).one().id
     original = client.get(f"{BASE}/messages/{scan_id}/original", headers=admin)
     assert original.status_code == 200 and b"Subject: Remittance" in original.content
+
+
+
+def test_a_refused_message_is_kept_with_microsofts_reason_and_can_be_retried(client, admin, gateway):
+    gateway.m365.refuse = True
+    gateway.send(mail())
+    assert run(gateway) == 1 and gateway.spool.size() == 0
+    with database.session_factory()() as db:
+        scan = db.query(EmailScan).one()
+        assert scan.action_status == "failed" and "550 5.4.1 Recipient address rejected" in scan.action_error
+        assert "Access denied" in scan.details["delivery"]["lastError"]
+        assert db.query(EmailQuarantine).filter_by(scan_id=scan.id).count() == 1  # kept, encrypted
+        scan_id = scan.id
+    detail = client.get(f"{BASE}/messages/{scan_id}", headers=admin).json()
+    assert detail["canDownload"]
+    gateway.m365.refuse = False  # the cause is fixed (for example the recipient or connector)
+    retried = client.post(f"{BASE}/messages/{scan_id}/release", json={}, headers=admin)
+    assert retried.status_code == 200 and retried.json()["actionStatus"] == "released"
+    assert len(gateway.m365.received) == 1 and retried.json()["details"]["delivery"]["response"].startswith("250")
+
+
+def test_the_mailbox_scan_interval_is_configurable(monkeypatch):
+    from fenrir_cloud import email_scan
+
+    monkeypatch.delenv("FENRIR_EMAIL_SCAN_SECONDS", raising=False)
+    assert email_scan.scan_interval() == 60
+    monkeypatch.setenv("FENRIR_EMAIL_SCAN_SECONDS", "5")
+    assert email_scan.scan_interval() == 30  # never more often than every 30 seconds
+    monkeypatch.setenv("FENRIR_EMAIL_SCAN_SECONDS", "300")
+    assert email_scan.scan_interval() == 300

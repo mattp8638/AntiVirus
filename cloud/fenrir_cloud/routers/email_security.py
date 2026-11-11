@@ -84,7 +84,7 @@ def configure(connection_id: str, body: SettingIn, principal: Principal = Depend
 
 @router.post("/connections/{connection_id}/scan")
 def scan_now(connection_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    """Run one scan of this connection now (it also runs every five minutes on its own)."""
+    """Run one scan of this connection now (it also runs every minute on its own)."""
     principal.require("configure")
     connection = owned(db, M365Connection, connection_id, principal)
     setting = db.execute(select(EmailScanSetting).where(EmailScanSetting.connection_id == connection.id)).scalar_one_or_none()

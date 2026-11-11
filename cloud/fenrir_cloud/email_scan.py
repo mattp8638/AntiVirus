@@ -1,6 +1,7 @@
 """Email security in shadow mode: read new Microsoft 365 mail, record Microsoft's verdict and Fenrir's, act on nothing.
 
-Every five minutes, for each Microsoft 365 connection with email security set to ``shadow``:
+Every minute (``FENRIR_EMAIL_SCAN_SECONDS``, 30 to 3600, default 60), for each Microsoft 365 connection with email
+security in shadow or protect mode:
 
 1. Each licensed, enabled member mailbox is read through Microsoft Graph (application permission ``Mail.Read``):
    new messages in Inbox and Junk Email since the last run, with their headers and body, and the names, sizes and
@@ -331,12 +332,23 @@ def _row(connection: M365Connection, mailbox: str, folder: str, item: dict, rece
 
 # --------------------------------------------------------------------------- the background job
 
-def loop(stop, first_delay: float = 60.0, interval: float = 300.0) -> None:
-    """Every five minutes, in its own thread, so reading mail never holds up the main scheduler. Each pass is recorded
-    as the background job "email.shadow-scan" (Settings > Platform shows its last run and error)."""
+def scan_interval() -> float:
+    """Seconds between scans: FENRIR_EMAIL_SCAN_SECONDS (30 to 3600), default 60."""
+    import os
+
+    try:
+        return float(min(3600, max(30, int(os.getenv("FENRIR_EMAIL_SCAN_SECONDS", "60")))))
+    except ValueError:
+        return 60.0
+
+
+def loop(stop, first_delay: float = 30.0, interval: float | None = None) -> None:
+    """Every minute by default, in its own thread, so reading mail never holds up the main scheduler. Each pass is
+    recorded as the background job "email.shadow-scan" (Settings > Platform shows its last run and error)."""
     from . import db as database
     from .main import _run_job
 
+    interval = interval or scan_interval()
     delay = first_delay
     while not stop.wait(delay):
         delay = interval
@@ -351,13 +363,12 @@ def loop(stop, first_delay: float = 60.0, interval: float = 300.0) -> None:
 
 
 def tick(db: Session) -> None:
-    """Every five minutes: scan connections in shadow or protect mode, least recently scanned first; drop rows past
-    retention."""
+    """Each pass: scan connections in shadow or protect mode, least recently scanned first; drop rows past retention."""
     settings = db.execute(select(EmailScanSetting).where(EmailScanSetting.mode.in_(("shadow", "protect")))
                           .order_by(EmailScanSetting.last_run_at.is_not(None), EmailScanSetting.last_run_at)).scalars().all()
     if settings:
         intel = load_intel(db)
-        deadline = monotonic() + RUN_SECONDS
+        deadline = monotonic() + min(RUN_SECONDS, max(20.0, scan_interval() - 10))
         with httpx.Client(timeout=20, follow_redirects=False) as client:
             for setting in settings:
                 if monotonic() >= deadline:
@@ -487,7 +498,8 @@ def scan_view(row: EmailScan, full: bool = False) -> dict:
                    releasedBy=row.released_by or "", releasedAt=row.released_at.isoformat() + "Z" if row.released_at else None,
                    releaseRequestedAt=row.release_requested_at.isoformat() + "Z" if row.release_requested_at else None,
                    recipients=row.recipients or [], details=row.details or {},
-                   canDownload=bool((row.source or "graph") == "graph" or row.action == "quarantine"))
+                   canDownload=bool((row.source or "graph") == "graph" or row.action == "quarantine"
+                                    or row.action_status == "failed"))
     return out
 
 
