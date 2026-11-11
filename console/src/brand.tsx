@@ -9,6 +9,7 @@ export interface Brand {
   accentColour: string;
   onPrimary: string;
   logoUrl: string | null;
+  demo?: { login?: string; resets?: string } | null;  // set on a read-only public demo
 }
 
 export const DEFAULT_BRAND: Brand = {

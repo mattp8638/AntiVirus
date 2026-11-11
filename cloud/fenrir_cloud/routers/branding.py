@@ -20,7 +20,13 @@ router = APIRouter(prefix="/api/console", tags=["Branding"])
 @router.get("/auth/branding")
 def public_branding(db: Session = Depends(get_db)):
     """Name, colours and logo for the sign-in page (no contact details): needs no sign-in."""
-    return branding.public(branding.get(db))
+    from ..config import get_settings
+
+    settings = get_settings()
+    result = branding.public(branding.get(db))
+    if settings.demo_mode:
+        result["demo"] = {"login": settings.demo_login, "resets": settings.demo_reset_note}
+    return result
 
 
 @router.get("/auth/branding/logo")

@@ -554,6 +554,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=True,
                        allow_methods=["*"], allow_headers=["*"])
     app.add_middleware(RequestGate, limit=settings.http_concurrency)
+    if settings.demo_mode:  # outermost: nothing reaches the app that the demo does not allow
+        from .demo_mode import DemoGuard
+
+        app.add_middleware(DemoGuard, seed_token=settings.demo_seed_token)
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):

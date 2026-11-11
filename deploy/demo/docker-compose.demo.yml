@@ -1,0 +1,29 @@
+# Read-only public demo, running side by side with a live Fenrir on the same host (deploy/demo/README.md).
+# Always used as:  docker compose -p fenrir-demo -f deploy/docker-compose.yml -f deploy/docker-compose.lab.yml \
+#                    -f deploy/demo/docker-compose.demo.yml --env-file deploy/.env ...
+# from a separate checkout (e.g. /opt/fenrir-demo). The project name keeps its containers and volumes apart from the
+# live ones; FENRIR_IMAGE (set by setup.sh) keeps its image apart; it publishes no host ports at all. The live Caddy
+# reaches it over the shared "fenrir-edge" network as fenrir-demo:8080.
+services:
+  cloud:
+    ports: !override []
+    environment:
+      FENRIR_DEMO_MODE: "true"
+      FENRIR_DEMO_SEED_TOKEN: ${FENRIR_DEMO_SEED_TOKEN:?run deploy/demo/setup.sh}
+      FENRIR_DEMO_LOGIN: ${FENRIR_DEMO_LOGIN:-}
+      FENRIR_DEMO_RESET_NOTE: ${FENRIR_DEMO_RESET_NOTE:-}
+      FENRIR_STUN_PORT: "0"
+    networks:
+      default: {}
+      fenrir-edge:
+        aliases: [fenrir-demo]
+  worker:
+    environment:
+      FENRIR_DEMO_MODE: "true"
+      FENRIR_DEMO_SEED_TOKEN: ${FENRIR_DEMO_SEED_TOKEN:?run deploy/demo/setup.sh}
+      FENRIR_STUN_PORT: "0"
+
+networks:
+  fenrir-edge:
+    external: true
+    name: fenrir-edge

@@ -1,5 +1,5 @@
 import M365 from "./pages/M365";
-import { BrandHeader } from "./brand";
+import { BrandHeader, useBrand } from "./brand";
 import M365Partner from "./pages/M365Partner";
 import M365Tenant from "./pages/M365Tenant";
 import Network from "./pages/Network";
@@ -232,6 +232,7 @@ function Login() {
         <div className="brand" style={{ padding: 0, marginBottom: 20 }}>
           <BrandHeader size={40} />
         </div>
+        <DemoNote signIn />
         {microsoft}
         {sso?.required && !showPassword && <p className="small muted" style={{ marginTop: 12 }}>
           <button type="button" className="ghost small" onClick={() => setShowPassword(true)}>Platform administrator? Use a password</button></p>}
@@ -249,6 +250,21 @@ function Login() {
                                                         disabled={busy} onClick={signInWithPasskey}>Sign in with a passkey</button>}
         {!passwordForm && busy && <p className="small muted">Signing in…</p>}
       </form>
+    </div>
+  );
+}
+
+// On a public read-only demo: say so, with the shared login on the sign-in page.
+function DemoNote({ signIn = false }: { signIn?: boolean }) {
+  const { brand } = useBrand();
+  if (!brand.demo) return null;
+  const resets = brand.demo.resets ? ` ${brand.demo.resets}` : "";
+  return (
+    <div role="note" data-testid="demo-note" className="small"
+         style={{ background: "var(--warn-bg, rgba(234,179,8,.15))", border: "1px solid rgba(234,179,8,.45)", borderRadius: 8,
+                  padding: "8px 12px", margin: signIn ? "0 0 14px" : "8px 12px 0" }}>
+      <b>Demo.</b> Everything here is sample data and read-only: changes, agent downloads and remote sessions are turned off.{resets}
+      {signIn && brand.demo.login && <div style={{ marginTop: 4 }}>Sign in with <span className="mono">{brand.demo.login}</span></div>}
     </div>
   );
 }
@@ -311,6 +327,7 @@ function Shell() {
         ))}
       </aside>
       <div className="main">
+        <DemoNote />
         <header className="topbar">
           <button className="ghost nav-toggle" aria-label="Open menu" aria-expanded={navOpen} onClick={() => setNavOpen(true)}>☰</button>
           <span className="muted small hide-phone">Viewing</span>
