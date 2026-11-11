@@ -104,6 +104,9 @@ def bootstrap(settings: Settings) -> None:
         from . import catalogue
 
         catalogue.seed(db)  # community apps and scripts (catalogue/), new entries only
+        from . import threat_feeds
+
+        threat_feeds.seed(db)  # free threat-intel feeds (abuse.ch, IPsum), synced by the maintenance loop
         from . import condition_remediation
 
         condition_remediation.seed(db)
@@ -249,6 +252,10 @@ def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
              ("reports.schedules", reports.send_schedules),
              ("billing.sync", billing_sync.tick), ("clients.health", client360.tick),
              ("defender", defender.tick), ("web.profiles", web_profile.tick), ("groups.rules", group_rules.tick)]
+    if settings.intel_feeds_enabled:
+        from . import threat_feeds
+
+        jobs.append(("intel.feeds", lambda db: [log.info("intel feed: %s", r) for r in threat_feeds.sync(db, settings.abusech_auth_key)]))
     if settings.dns_blocklists_enabled:
         from . import blocklists
 

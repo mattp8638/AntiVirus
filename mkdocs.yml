@@ -46,6 +46,7 @@ nav:
       - RMM and service desk: RMM_PSA.md
       - Windows patching: WINDOWS_PATCHING.md
       - Vulnerabilities and exposure: VULNERABILITY_REMEDIATION_AND_EXPOSURE.md
+      - Threat intelligence: THREAT_INTEL.md
       - Microsoft 365 administration: M365_ADMINISTRATION.md
       - Reports and branding: REPORTS_AND_BRANDING.md
       - Network topology: NETWORK_TOPOLOGY.md

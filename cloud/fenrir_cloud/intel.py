@@ -174,10 +174,16 @@ def agent_bundle(db: Session, tenant_id: str | None, hashes_limit: int = 50000, 
     hashes = [{"id": f"ind-{r.id}", "type": r.type, "value": r.value, "malwareFamily": r.description, "source": r.source,
                "category": "pua" if is_pua(r.category, r.description) else "malware",
                "firstSeen": r.created_at.isoformat()} for r in hash_rows]
+    from .threat_feeds import SOURCE_PREFIX, is_shared_host
+
     urls = []
     for r in url_rows:
         url = r.value if r.type == "url" else f"http://{r.value}/"
-        host = re.sub(r"^[a-z]+://", "", url.lower()).split("/")[0]
+        host = re.sub(r"^[a-z]+://", "", url.lower()).split("/")[0].split(":")[0]
+        # Agents also block the host of each URL. A link from a public feed, or one on a shared platform (GitHub,
+        # Drive, Discord...), is blocked as that exact link only, never as the whole site.
+        if is_shared_host(host) or (r.type == "url" and (r.source or "").startswith(SOURCE_PREFIX)):
+            host = ""
         urls.append({"id": f"ind-{r.id}", "url": url, "host": host, "status": "online", "threat": r.category, "source": r.source,
                      "firstSeen": r.created_at.isoformat()})
     rules = [{"id": r.id, "ruleType": "yara", "name": r.name, "content": r.source, "source": r.origin} for r in yara_rows]
