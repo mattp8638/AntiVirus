@@ -45,7 +45,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from email import policy
 from email.parser import BytesParser
 from email.utils import formatdate, getaddresses, parseaddr
@@ -247,7 +247,7 @@ class Handler:
         spool_id = self.spool.put(raw, {
             "receivedAt": utcnow().isoformat(), "peer": (session.peer or ("", 0))[0], "helo": session.host_name or "",
             "mailFrom": envelope.mail_from or "", "rcpts": list(envelope.rcpt_tos), "attempts": 0, "nextAttempt": None,
-            "groups": {}})
+            "groups": {}, "tls": bool(getattr(session, "ssl", None))})
         return f"250 2.0.0 Queued as {spool_id}"
 
 
@@ -299,24 +299,33 @@ def _txt(name: str) -> list[str]:
     return [b"".join(r.strings).decode("utf-8", "replace") for r in answers]
 
 
-def dmarc_policy(domain: str) -> str | None:
-    """The domain's DMARC policy (none/quarantine/reject), falling back to its organisational domain; None if none."""
+def dmarc_record(domain: str) -> str:
+    """The domain's DMARC record, falling back to its organisational domain; "" if it has none."""
     for name in dict.fromkeys([domain, email_security.registrable(domain)]):
         for record in _txt(f"_dmarc.{name}"):
             if record.lower().startswith("v=dmarc1"):
-                match = re.search(r"\bp\s*=\s*(none|quarantine|reject)", record, re.I)
-                return match.group(1).lower() if match else "none"
-    return None
+                return record[:500]
+    return ""
+
+
+def dmarc_policy(domain: str) -> str | None:
+    """The domain's DMARC policy (none/quarantine/reject); None if it has no DMARC record."""
+    record = dmarc_record(domain)
+    if not record:
+        return None
+    match = re.search(r"\bp\s*=\s*(none|quarantine|reject)", record, re.I)
+    return match.group(1).lower() if match else "none"
 
 
 def authenticate(raw: bytes, ip: str, helo: str, mail_from: str, from_domain: str) -> dict:
     """SPF, DKIM and DMARC for one message: {"spf", "dkim", "dkimDomain", "dmarc", "policy", "header"}."""
-    spf_result, dkim_result, dkim_domain = "none", "none", ""
+    spf_result, spf_detail, dkim_result, dkim_domain = "none", "", "none", ""
     envelope_domain = email_security.domain_of(mail_from) or (helo or "").lower()
     try:
         import spf
 
-        spf_result = spf.check2(i=ip, s=mail_from or f"postmaster@{helo}", h=helo or "unknown", timeout=10)[0] or "none"
+        checked = spf.check2(i=ip, s=mail_from or f"postmaster@{helo}", h=helo or "unknown", timeout=10)
+        spf_result, spf_detail = checked[0] or "none", str(checked[2] if len(checked) > 2 else "")[:300]
     except Exception as exc:  # noqa: BLE001 - DNS trouble is a temporary error, never a crash
         log.debug("SPF check failed: %s", exc)
         spf_result = "temperror"
@@ -334,12 +343,13 @@ def authenticate(raw: bytes, ip: str, helo: str, mail_from: str, from_domain: st
     org = email_security.registrable(from_domain)
     aligned = (spf_result == "pass" and email_security.registrable(envelope_domain) == org) or \
               (dkim_result == "pass" and email_security.registrable(dkim_domain) == org)
+    record = dmarc_record(from_domain) if from_domain else ""
     chosen = dmarc_policy(from_domain) if from_domain else None
     dmarc = "none" if chosen is None else ("pass" if aligned else "fail")
     header = (f"spf={spf_result} smtp.mailfrom={envelope_domain or 'unknown'}; dkim={dkim_result} header.d={dkim_domain or 'none'}; "
               f"dmarc={dmarc} action={(chosen or 'none') if dmarc == 'fail' else 'none'} header.from={from_domain or 'unknown'}")
-    return {"spf": spf_result, "dkim": dkim_result, "dkimDomain": dkim_domain, "dmarc": dmarc, "policy": chosen or "",
-            "header": header}
+    return {"spf": spf_result, "spfDetail": spf_detail, "dkim": dkim_result, "dkimDomain": dkim_domain, "dmarc": dmarc,
+            "policy": chosen or "", "dmarcRecord": record, "aligned": aligned, "header": header}
 
 
 def clamav(raw: bytes) -> str | None:
@@ -442,31 +452,49 @@ class PermanentFailure(Exception):
     pass
 
 
-def deliver(data: bytes, mail_from: str, recipients: list[str], host: str, port: int, require_tls: bool) -> None:
-    """Hand the message to the customer's Microsoft 365 host. 4xx and network trouble are temporary; 5xx permanent."""
+def deliver(data: bytes, mail_from: str, recipients: list[str], host: str, port: int, require_tls: bool) -> dict:
+    """Hand the message to the customer's Microsoft 365 host and return what happened: {host, port, tls, response, at}.
+    4xx and network trouble raise TemporaryFailure; 5xx PermanentFailure."""
+    from datetime import timezone
+
     try:
         with smtplib.SMTP(host, port, local_hostname=hostname(), timeout=60) as smtp:
             smtp.ehlo()
+            tls = False
             if smtp.has_extn("starttls"):
                 context = ssl.create_default_context()
                 if env("FENRIR_GATEWAY_INSECURE_TLS") == "1":  # only for lab destinations with self-signed certificates
                     context.check_hostname, context.verify_mode = False, ssl.CERT_NONE
                 smtp.starttls(context=context)
                 smtp.ehlo()
+                tls = True
             elif require_tls:
                 raise TemporaryFailure(f"{host} did not offer TLS, and this domain requires it")
-            refused = smtp.sendmail(mail_from or "<>", recipients, data)
+            code, reply = smtp.mail(mail_from or "")
+            if code >= 400:
+                raise smtplib.SMTPResponseException(code, reply)
+            refused = {}
+            for rcpt in recipients:
+                code, reply = smtp.rcpt(rcpt)
+                if code >= 400:
+                    refused[rcpt] = (code, reply)
+            if len(refused) == len(recipients):
+                codes = {c for c, _ in refused.values()}
+                raise (PermanentFailure if all(500 <= c < 600 for c in codes) else TemporaryFailure)(
+                    f"{host} refused {', '.join(refused)}: {next(iter(refused.values()))[1].decode('utf-8', 'replace')[:150]}")
+            code, reply = smtp.data(data)
+            if code >= 400:
+                raise smtplib.SMTPResponseException(code, reply)
+            text = reply.decode("utf-8", "replace") if isinstance(reply, bytes) else str(reply)
             if refused:
-                codes = {code for code, _ in refused.values()}
-                if all(500 <= c < 600 for c in codes):
-                    raise PermanentFailure(f"{host} refused {', '.join(refused)}")
-                raise TemporaryFailure(f"{host} deferred {', '.join(refused)}")
-    except smtplib.SMTPRecipientsRefused as exc:
-        codes = {code for code, _ in exc.recipients.values()}
-        raise (PermanentFailure if all(500 <= c < 600 for c in codes) else TemporaryFailure)(f"{host} refused the recipients") from None
+                text += " (refused: " + ", ".join(refused) + ")"
+            return {"host": host, "port": port, "tls": tls, "response": f"{code} {text}"[:500],
+                    "at": datetime.now(timezone.utc).isoformat()}
     except smtplib.SMTPResponseException as exc:
         text = exc.smtp_error.decode("utf-8", "replace") if isinstance(exc.smtp_error, bytes) else str(exc.smtp_error)
         raise (PermanentFailure if 500 <= exc.smtp_code < 600 else TemporaryFailure)(f"{host} said {exc.smtp_code} {text[:200]}") from None
+    except (TemporaryFailure, PermanentFailure):
+        raise
     except (OSError, smtplib.SMTPException) as exc:
         raise TemporaryFailure(f"Could not deliver to {host}: {type(exc).__name__}: {str(exc)[:150]}") from None
 
@@ -575,12 +603,16 @@ class Worker:
                 continue
             data = raw if not (state["action"] == "tag" and route.tag_subject) else _tag_subject(raw)
             try:
-                deliver(_headers(meta, scan, auth["header"]) + data, meta.get("mailFrom", ""), rcpts, route.destination,
-                        route.port, route.require_tls)
+                handed = deliver(_headers(meta, scan, auth["header"]) + data, meta.get("mailFrom", ""), rcpts, route.destination,
+                                 route.port, route.require_tls)
                 scan.action_status, scan.action_error, scan.acted_at = "done", "", utcnow()
+                scan.details = {**(scan.details or {}), "delivery": {**handed, "attempts": int(meta.get("attempts") or 0) + 1}}
                 state["done"] = True
             except TemporaryFailure as exc:
                 scan.action_error = str(exc)[:300]
+                scan.details = {**(scan.details or {}), "delivery": {"host": route.destination, "port": route.port,
+                                                                     "attempts": int(meta.get("attempts") or 0) + 1,
+                                                                     "lastError": str(exc)[:300], "at": utcnow().isoformat() + "Z"}}
                 pending = True
                 if datetime.fromisoformat(meta["receivedAt"]) < utcnow() - GIVE_UP_AFTER:
                     scan.action_status = "failed"
@@ -632,7 +664,8 @@ class Worker:
             verdict=result["verdict"], score=result["score"], reasons=result["reasons"],
             agreement=email_security.agreement(result["verdict"], "unknown"), features=result["features"],
             model_score=result.get("model_score"), source="gateway", recipients=[r.lower() for r in rcpts],
-            action=action, action_status="", acted_at=None)
+            action=action, action_status="", acted_at=None,
+            details=self._details(raw, meta, rcpts, auth, ctx))
         db.add(scan)
         db.flush()
         if action == "quarantine":
@@ -645,6 +678,38 @@ class Worker:
         db.commit()
         ctx.known_senders.add(result["sender_domain"])
         return scan
+
+    def _details(self, raw: bytes, meta: dict, rcpts: list[str], auth: dict, ctx: email_security.Context) -> dict:
+        from email import message_from_bytes
+
+        from . import email_forensics
+
+        try:
+            original = message_from_bytes(raw)
+            headers = email_forensics.header_list(list(original.items()))
+            message, _ = parse(raw, auth.get("header", ""))
+            details = email_forensics.build(headers=headers, html=message.body_html, attachments=message.attachments, ctx=ctx,
+                                            bad_ips=self.directory.bad_ips, peer=meta.get("peer", ""), helo=meta.get("helo", ""),
+                                            envelope_from=meta.get("mailFrom", ""), recipients=rcpts, gateway_auth=auth,
+                                            size=len(raw), tls=meta.get("tls"))
+            # The gateway's own hop: who handed the message to Fenrir, and when.
+            path = details.get("path") or []
+            last = next((h["at"] for h in reversed(path) if h.get("at")), None)
+            received = datetime.fromisoformat(meta["receivedAt"]).replace(tzinfo=timezone.utc)
+            delay = None
+            if last:
+                try:
+                    delay = max(0, int((received - datetime.fromisoformat(last)).total_seconds()))
+                except ValueError:
+                    delay = None
+            path.append({"from": meta.get("helo") or "", "by": hostname(), "with": "ESMTPS" if meta.get("tls") else "ESMTP",
+                         "ip": meta.get("peer") or "", "at": received.isoformat(), "delaySeconds": delay,
+                         "raw": "received by Fenrir's mail gateway"})
+            details["path"] = path
+            return details
+        except Exception as exc:  # noqa: BLE001 - evidence is a bonus; never stop mail for it
+            log.warning("gateway evidence could not be built: %s", exc)
+            return {}
 
     def _undeliverable(self, db: Session, route: Route, scan: EmailScan, why: str) -> None:
         from .models import Alert

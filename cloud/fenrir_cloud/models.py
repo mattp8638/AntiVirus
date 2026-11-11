@@ -2074,6 +2074,9 @@ class EmailScan(Base):
     released_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     release_requested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     model_score: Mapped[float | None] = mapped_column(Float, nullable=True)  # the learned model's probability (phase 3)
+    # The evidence (email_forensics.py): headers, delivery path, originating IP, addresses, authentication, links,
+    # attachments and, for the gateway, the hand-over to Microsoft 365.
+    details: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=dict)
     __table_args__ = (UniqueConstraint("connection_id", "mailbox", "message_id", name="uq_email_scan_message"),)
 
 
