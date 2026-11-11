@@ -28,6 +28,10 @@ ESSENTIALS = ["service", "protection", "vulnerabilities"]
 
 def enabled(db: Session, tenant_id: str | None) -> list[str]:
     from . import branding
+    from .config import get_settings
+
+    if get_settings().demo_mode:
+        return list(MODULES)  # a public demo shows everything (and nobody can change it there)
 
     msp = branding.msp_of(db, tenant_id) if tenant_id else branding.default_msp(db)
     stored = (msp.settings or {}).get("modules") if msp is not None else None

@@ -79,3 +79,18 @@ def test_public_branding_says_it_is_a_demo(client):
     finally:
         config.set_settings(original)
     assert "demo" not in client.get("/api/console/auth/branding").json()
+
+
+def test_demo_shows_every_module(client, admin):
+    import dataclasses
+
+    from fenrir_cloud import config, modules
+
+    client.put("/api/console/modules", json={"enabled": list(modules.ESSENTIALS)}, headers=admin)
+    assert client.get("/api/console/modules", headers=admin).json()["enabled"] == list(modules.ESSENTIALS)
+    original = config.get_settings()
+    config.set_settings(dataclasses.replace(original, demo_mode=True))
+    try:
+        assert client.get("/api/console/modules", headers=admin).json()["enabled"] == list(modules.MODULES)
+    finally:
+        config.set_settings(original)
