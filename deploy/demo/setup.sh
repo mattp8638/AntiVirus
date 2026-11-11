@@ -46,6 +46,7 @@ FENRIR_DEMO_LOGIN=demo@$domain / $password
 FENRIR_DEMO_RESET_NOTE=It resets to fresh sample data every $hours hours.
 FENRIR_IMAGE=fenrir-demo-cloud:local
 FENRIR_BUILD_PROFILE=lab
+FENRIR_AGENTS=none
 POSTGRES_PASSWORD=$(rand 20)
 FENRIR_SECRET_KEY=$(rand 32)
 FENRIR_VAULT_KEY=$(openssl rand -base64 32 | tr -d '\n')
@@ -63,6 +64,7 @@ CONF
   ok "new demo secrets and visitor login written"
 else
   ok "keeping the existing demo configuration"
+  grep -q '^FENRIR_AGENTS=' "$env_file" || { echo "FENRIR_AGENTS=none" >> "$env_file"; ok "demo builds skip agents from now on"; }
 fi
 require_demo_env
 
@@ -70,7 +72,7 @@ step "Network shared with the live Caddy"
 docker network inspect fenrir-edge >/dev/null 2>&1 || docker network create fenrir-edge >/dev/null
 ok "fenrir-edge"
 
-step "Building and starting the demo (first build: 5-15 minutes)"
+step "Building and starting the demo (no agents are built: a few minutes)"
 mkdir -p "$root/deploy/releases"
 dc up -d --build --wait --wait-timeout 600
 ok "demo containers running (project $DEMO_PROJECT, no host ports)"

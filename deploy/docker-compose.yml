@@ -70,6 +70,7 @@ services:
       # production needs the certificate above; lab builds unsigned agents (see docker-compose.lab.yml).
       args:
         FENRIR_BUILD_PROFILE: ${FENRIR_BUILD_PROFILE:-production}
+        FENRIR_AGENTS: ${FENRIR_AGENTS:-build}  # "none" (the demo) skips building agents and installers
         FENRIR_RELEASE_PUBLIC_KEYS: ${FENRIR_RELEASE_PUBLIC_KEYS:-}
         FENRIR_RELEASE_SEQ: ${FENRIR_RELEASE_SEQ:-}
     image: ${FENRIR_IMAGE:-fenrir-cloud:local}

@@ -5,7 +5,8 @@ A second Fenrir on the same host, for prospects to click around. It is locked do
 
 - **No changes.** Every save, delete, run, approve or setting change is refused, whatever the visitor's role.
   Signing in and out are the only writes allowed.
-- **No agents.** Installer and agent downloads, enrolment, the agent API and remote sessions are all closed.
+- **No agents.** The demo image is built without any agents or installers (`FENRIR_AGENTS=none`), and enrolment,
+  the agent API, downloads and remote sessions are closed as well.
 - **Fresh every few hours.** `reset.sh` wipes the demo's own database and reloads the sample customers, devices,
   attacks, alerts and tickets. `setup.sh` schedules it (every 6 hours by default).
 

@@ -1,5 +1,8 @@
 # Fenrir Platform: cloud API + console + agent downloads in one image.
 # Build from the repository root:  docker build -f deploy/Dockerfile -t fenrir-cloud .
+# FENRIR_AGENTS=none builds the server without any agents or installers (the read-only demo uses it): the agent
+# stages are then skipped entirely and /app/cloud/downloads holds only a note.
+ARG FENRIR_AGENTS=build
 
 FROM node:24.22.1-bookworm-slim AS console
 WORKDIR /src/console
@@ -78,6 +81,17 @@ RUN --mount=type=secret,id=codesign_pfx --mount=type=secret,id=codesign_password
 RUN x86_64-w64-mingw32-objdump -p /out/windows/FenrirSetup.exe > /out/windows/imports.txt && if grep -Ei 'DLL Name:.*(libwinpthread|libgcc|libstdc[+][+])' /out/windows/imports.txt; then echo "ERROR: setup depends on an external compiler runtime"; exit 1; fi
 RUN python3 -c 'import hashlib,json,pathlib; p=pathlib.Path("/out/windows/FenrirSetup.exe"); sig=json.loads(pathlib.Path("/out/windows/signing.json").read_text()); p.with_name("build.json").write_text(json.dumps({"sha256":hashlib.sha256(p.read_bytes()).hexdigest(),"buildId":pathlib.Path("/build-id").read_text().strip(),"platform":"windows-x64","mode":"signed" if sig.get("signed") else "unsigned-lab","profile":"'"$FENRIR_BUILD_PROFILE"'",**sig}))'
 
+# Pick the agents to package: the stages above (build) or an empty placeholder (none). BuildKit skips any stage the
+# final image does not use, so "none" never compiles an agent.
+FROM scratch AS agents-none
+COPY deploy/demo/no-agents/ /out/
+FROM agents AS linux-agents-build
+FROM agents-none AS linux-agents-none
+FROM windows-agents AS windows-agents-build
+FROM agents-none AS windows-agents-none
+FROM linux-agents-${FENRIR_AGENTS} AS linux-agents
+FROM windows-agents-${FENRIR_AGENTS} AS windows-agents-selected
+
 FROM python:3.13-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 FENRIR_CONSOLE_DIR=/app/console/dist
 WORKDIR /app/cloud
@@ -88,8 +102,8 @@ COPY catalogue/ /app/catalogue/
 COPY ml/fenrir_ml /app/ml/fenrir_ml
 COPY ml/models /app/ml/models
 COPY --from=console /src/console/dist /app/console/dist
-COPY --from=agents /out/ /app/cloud/downloads/
-COPY --from=windows-agents /out/windows/ /app/cloud/downloads/windows/
+COPY --from=linux-agents /out/ /app/cloud/downloads/
+COPY --from=windows-agents-selected /out/windows/ /app/cloud/downloads/windows/
 # COPY preserves checkout permissions: a pull under umask 077 can leave source
 # root-owned and unreadable to fenrir. Keep packaged code/assets readable and
 # directories traversable, preserve executable agents, and remove group/other
