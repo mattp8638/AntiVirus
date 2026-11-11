@@ -289,7 +289,7 @@ def intel_sync(principal: Principal = Depends(current_principal), db: Session = 
     settings = get_settings()
     feeds = threat_feeds.sync(db, settings.abusech_auth_key, only_due=False)
     result: dict = {"feeds": feeds, "ok": sum(1 for f in feeds if f.get("ok")), "failed": sum(1 for f in feeds if not f.get("ok"))}
-    if settings.feed_sync_enabled:
+    if settings.feed_sync_enabled and settings.feed_url:
         try:
             result["fenrirFeed"] = intel.sync_feed(db, settings.feed_url, settings.feed_token)
         except httpx.HTTPError as exc:

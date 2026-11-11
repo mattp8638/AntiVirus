@@ -1,7 +1,7 @@
 # Fenrir: why does this machine show offline? Read-only; run in an elevated PowerShell on the machine while the console
 # shows it offline, then send the output to your Fenrir administrator.
 #   powershell -ExecutionPolicy Bypass -File Get-FenrirOfflineReport.ps1 -Server www.example.com
-param([string]$Server = 'www.fenrir-security.co.uk')
+param([Parameter(Mandatory = $true)][string]$Server)  # your Fenrir server's host name
 $ErrorActionPreference = 'Continue'
 "== Fenrir offline report $(Get-Date -Format s) on $env:COMPUTERNAME"
 

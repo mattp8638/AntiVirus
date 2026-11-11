@@ -6,6 +6,23 @@ on:
     branches: ["main"]
 
 jobs:
+  demo-image:
+    name: Demo image builds without agents (FENRIR_AGENTS=none)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the server image with no agents and check none are inside
+        shell: bash
+        run: |
+          set -euo pipefail
+          DOCKER_BUILDKIT=1 docker build -f deploy/Dockerfile --build-arg FENRIR_AGENTS=none --build-arg FENRIR_BUILD_PROFILE=lab \
+            -t fenrir-demo-check:ci . 2>&1 | tee /tmp/demo-build.log
+          ! grep -E "mingw|Building CXX|go build" /tmp/demo-build.log
+          files=$(docker run --rm --entrypoint sh fenrir-demo-check:ci -c 'find /app/cloud/downloads -type f | sort')
+          echo "$files"
+          test "$files" = "$(printf '/app/cloud/downloads/README.txt\n/app/cloud/downloads/windows/README.txt')"
+          echo "PASS: the demo image contains no agents or installers"
   cloud-regressions:
     name: Cloud API and Phase 2 regressions (SQLite + PostgreSQL)
     runs-on: ubuntu-latest

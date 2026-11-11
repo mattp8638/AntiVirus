@@ -47,7 +47,7 @@ def main() -> None:
     apply(ROOT / "README.md", text)
     docs_home = ROOT / "docs" / "index.md"
     if docs_home.exists():
-        apply(docs_home, text.replace("(FORKING.md)", "(https://github.com/mattp8638/AntiVirus/blob/main/FORKING.md)"))
+        apply(docs_home, text.replace("(FORKING.md)", "(https://github.com/Palmertech-Webdev/fenrir-security/blob/main/FORKING.md)"))
 
 
 if __name__ == "__main__":

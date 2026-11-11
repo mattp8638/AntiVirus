@@ -69,7 +69,11 @@ def main() -> None:
     parser.add_argument("--password", required=True)
     args = parser.parse_args()
 
-    http = httpx.Client(base_url=args.url, timeout=60)
+    import os
+
+    # On a read-only demo (FENRIR_DEMO_MODE) only the loader may write, with the seed token, from inside the container.
+    seed = os.getenv("FENRIR_DEMO_SEED_TOKEN", "").strip()
+    http = httpx.Client(base_url=args.url, timeout=60, headers={"X-Fenrir-Demo-Seed": seed} if seed else None)
     token = http.post("/api/console/auth/login", json={"email": args.email, "password": args.password}).raise_for_status().json()["token"]
     admin = {"Authorization": f"Bearer {token}"}
 

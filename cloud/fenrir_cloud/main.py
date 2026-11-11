@@ -86,7 +86,7 @@ def bootstrap(settings: Settings) -> None:
             from . import modules
 
             # A new installation starts with the short Essentials menu (Settings > Modules adds the rest).
-            msp = Tenant(name=name, slug=slug, kind="msp", plan="mdr", settings={"modules": list(modules.ESSENTIALS)})
+            msp = Tenant(name=name, slug=slug, kind="msp", plan="mdr", settings={"modules": list(modules.MODULES if settings.demo_mode else modules.ESSENTIALS)})
             db.add(msp)
             db.flush()
         if db.get(Policy, GLOBAL_POLICY_ID) is None:
@@ -242,7 +242,7 @@ def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
                    m365_standards, m365_workspace, reports, tprm, web_profile)
 
     jobs: list[tuple[str, object]] = [("telemetry.retention", lambda db: _purge_telemetry(db, settings))]
-    if settings.feed_sync_enabled:
+    if settings.feed_sync_enabled and settings.feed_url:
         from .intel import sync_feed
 
         jobs.append(("intel.feed", lambda db: log.info("feed sync: %s", sync_feed(db, settings.feed_url, settings.feed_token))))
@@ -554,6 +554,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=True,
                        allow_methods=["*"], allow_headers=["*"])
     app.add_middleware(RequestGate, limit=settings.http_concurrency)
+    if settings.demo_mode:  # outermost: nothing reaches the app that the demo does not allow
+        from .demo_mode import DemoGuard
+
+        app.add_middleware(DemoGuard, seed_token=settings.demo_seed_token)
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):

@@ -67,10 +67,15 @@ class Settings:
     open_enrollment: bool = field(default_factory=lambda: _bool("FENRIR_OPEN_ENROLLMENT", True))
 
     # Upstream signature feed (the signaturedb-fenrir Cloudflare worker).
-    feed_url: str = field(default_factory=lambda: os.getenv("FENRIR_FEED_URL", "https://api.fenrir-security.co.uk"))
+    feed_url: str = field(default_factory=lambda: os.getenv("FENRIR_FEED_URL", ""))
     feed_token: str = field(default_factory=lambda: os.getenv("FENRIR_FEED_TOKEN", ""))
     # Free threat-intel feeds the server pulls itself (threat_feeds.py). abuse.ch may ask for a free Auth-Key
     # (https://auth.abuse.ch); without one its feeds report the error and the others carry on.
+    # Public read-only demo (demo_mode.py): no changes, no agents, no downloads.
+    demo_mode: bool = field(default_factory=lambda: _bool("FENRIR_DEMO_MODE", False))
+    demo_seed_token: str = field(default_factory=lambda: os.getenv("FENRIR_DEMO_SEED_TOKEN", "").strip())
+    demo_login: str = field(default_factory=lambda: os.getenv("FENRIR_DEMO_LOGIN", "").strip())  # shown on the sign-in page
+    demo_reset_note: str = field(default_factory=lambda: os.getenv("FENRIR_DEMO_RESET_NOTE", "").strip())
     intel_feeds_enabled: bool = field(default_factory=lambda: _bool("FENRIR_INTEL_FEEDS", True))
     abusech_auth_key: str = field(default_factory=lambda: os.getenv("FENRIR_ABUSECH_AUTH_KEY", "").strip())
     feed_sync_enabled: bool = field(default_factory=lambda: _bool("FENRIR_FEED_SYNC", False))
