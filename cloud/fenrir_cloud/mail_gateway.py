@@ -481,7 +481,8 @@ def deliver(data: bytes, mail_from: str, recipients: list[str], host: str, port:
             if len(refused) == len(recipients):
                 codes = {c for c, _ in refused.values()}
                 raise (PermanentFailure if all(500 <= c < 600 for c in codes) else TemporaryFailure)(
-                    f"{host} refused {', '.join(refused)}: {next(iter(refused.values()))[1].decode('utf-8', 'replace')[:150]}")
+                    f"{host} refused {', '.join(refused)}: {next(iter(refused.values()))[0]} "
+                    f"{next(iter(refused.values()))[1].decode('utf-8', 'replace')[:200]}")
             code, reply = smtp.data(data)
             if code >= 400:
                 raise smtplib.SMTPResponseException(code, reply)
@@ -616,10 +617,15 @@ class Worker:
                 pending = True
                 if datetime.fromisoformat(meta["receivedAt"]) < utcnow() - GIVE_UP_AFTER:
                     scan.action_status = "failed"
+                    self._keep(db, scan, raw, meta)
                     self._undeliverable(db, route, scan, str(exc))
                     state["done"], pending = True, False
             except PermanentFailure as exc:
                 scan.action_status, scan.action_error = "failed", str(exc)[:300]
+                scan.details = {**(scan.details or {}), "delivery": {"host": route.destination, "port": route.port,
+                                                                     "attempts": int(meta.get("attempts") or 0) + 1,
+                                                                     "lastError": str(exc)[:300], "at": utcnow().isoformat() + "Z"}}
+                self._keep(db, scan, raw, meta)
                 self._undeliverable(db, route, scan, str(exc))
                 state["done"] = True
             db.commit()
@@ -711,6 +717,14 @@ class Worker:
             log.warning("gateway evidence could not be built: %s", exc)
             return {}
 
+    def _keep(self, db: Session, scan: EmailScan, raw: bytes, meta: dict) -> None:
+        """Keep an undeliverable message (encrypted) so it can be retried from the console once the cause is fixed."""
+        exists = db.execute(select(EmailQuarantine).where(EmailQuarantine.scan_id == scan.id)).scalar_one_or_none()
+        if exists is None:
+            db.add(EmailQuarantine(scan_id=scan.id, tenant_id=scan.tenant_id, mail_from=meta.get("mailFrom", "")[:320],
+                                   recipients=list(scan.recipients or []), size=len(raw),
+                                   envelope=crypto.encrypt(raw, f"email-quarantine:{scan.id}")))
+
     def _undeliverable(self, db: Session, route: Route, scan: EmailScan, why: str) -> None:
         from .models import Alert
 
@@ -718,7 +732,7 @@ class Worker:
                      title=f"Gateway could not deliver mail for {scan.mailbox}"[:300], severity="medium", status="new",
                      details={"category": "email", "scanIds": [scan.id], "key": f"email-undeliverable:{scan.id}",
                               "summary": f"\"{scan.subject[:80]}\" from {scan.sender_address} to {', '.join(scan.recipients or [])}: "
-                                         f"{why}. Check the domain's destination under Email security > Gateway."}))
+                                         f"{why}. Fenrir kept the message: fix the cause, then press Retry delivery on it in Email security > Messages."}))
 
     def _retry(self, meta: dict, why: str) -> None:
         attempts = int(meta.get("attempts") or 0) + 1
@@ -739,10 +753,13 @@ def release(db: Session, scan: EmailScan, actor: str) -> None:
     header = (f"X-Fenrir-Released-By: {actor}\r\nX-Fenrir-Verdict: released; was={scan.verdict}\r\n"
               f"X-Fenrir-Scan-Id: {scan.id}\r\n").encode()
     try:
-        deliver(header + raw, held.mail_from, list(held.recipients or [scan.mailbox]), route.destination,
-                route.destination_port or 25, bool(route.require_tls))
+        handed = deliver(header + raw, held.mail_from, list(held.recipients or [scan.mailbox]), route.destination,
+                         route.destination_port or 25, bool(route.require_tls))
     except (TemporaryFailure, PermanentFailure) as exc:
         raise email_actions.ActionError(str(exc)) from None
+    previous = (scan.details or {}).get("delivery") or {}
+    scan.details = {**(scan.details or {}), "delivery": {**handed, "attempts": int(previous.get("attempts") or 0) + 1,
+                                                         "releasedBy": actor}}
 
 
 def purge(db: Session) -> int:

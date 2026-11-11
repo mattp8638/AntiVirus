@@ -21,6 +21,7 @@ x-fenrir-environment: &fenrir-environment
   FENRIR_FEED_SYNC: ${FENRIR_FEED_SYNC:-false}       # the free feeds (FENRIR_INTEL_FEEDS) need no hosted feed
   FENRIR_INTEL_FEEDS: ${FENRIR_INTEL_FEEDS:-true}            # free feeds (abuse.ch, IPsum) pulled hourly by the server
   FENRIR_ABUSECH_AUTH_KEY: ${FENRIR_ABUSECH_AUTH_KEY:-}        # optional free key from https://auth.abuse.ch
+  FENRIR_EMAIL_SCAN_SECONDS: ${FENRIR_EMAIL_SCAN_SECONDS:-60}  # email security: how often mailboxes are checked (30-3600)
   FENRIR_GATEWAY_HOSTNAME: ${FENRIR_GATEWAY_HOSTNAME:-}      # email security mail gateway: the name in customers' MX records
   FENRIR_GATEWAY_PUBLIC_IPS: ${FENRIR_GATEWAY_PUBLIC_IPS:-}  # its public IPs, for the Microsoft 365 inbound connector
   FENRIR_CORS_ORIGINS: ${FENRIR_PUBLIC_URL}

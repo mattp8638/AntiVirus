@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { ago, api, downloadFile } from "../api";
 import { useApp } from "../app-context";
 import { ErrorNote, Modal, PageHead, Pill, Stat, Table, Tabs, useAction, useData, useListData } from "../components/ui";
@@ -65,6 +65,14 @@ const MAILBOX_ACTIONS = ["quarantine", "junk", "tag", "none"];
 const GATEWAY_ACTIONS = ["quarantine", "tag", "deliver"];
 const ACTION_TEXT: Record<string, string> = { quarantine: "Quarantined", junk: "Moved to Junk", tag: "Tagged", deliver: "Delivered" };
 
+/** Re-read a tab's data every 30 seconds while it is open, so new mail and verdicts appear without a refresh. */
+function useAutoRefresh(reload: () => unknown, seconds = 30) {
+  useEffect(() => {
+    const timer = window.setInterval(() => { if (!document.hidden) reload(); }, seconds * 1000);
+    return () => window.clearInterval(timer);
+  }, [reload, seconds]);
+}
+
 export default function EmailSecurity() {
   const [tab, setTab] = useState("Overview");
   return (
@@ -85,7 +93,8 @@ export default function EmailSecurity() {
 function OverviewTab() {
   const { tenantId } = useApp();
   const [days, setDays] = useState(7);
-  const { data: d, error } = useData<Overview>("email-security/overview", { tenant_id: tenantId, days }, [days]);
+  const { data: d, error, reload } = useData<Overview>("email-security/overview", { tenant_id: tenantId, days }, [days]);
+  useAutoRefresh(reload);
   return (
     <>
       <ErrorNote error={error} />
@@ -132,6 +141,7 @@ function MessagesTab() {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState<string | null>(null);
   const { data, error, reload } = useListData<Scan>("email-security/messages", { tenant_id: tenantId, verdict, agreement, q }, [verdict, agreement, q]);
+  useAutoRefresh(reload);
   return (
     <>
       <ErrorNote error={error} />
@@ -186,7 +196,8 @@ function MessageDetail({ id, onClose, onChanged }: { id: string; onClose: () => 
     after();
   };
   const release = async () => {
-    await run(() => api(`email-security/messages/${id}/release`, { method: "POST", body: { allowSender } }), "Released to the Inbox.");
+    await run(() => api(`email-security/messages/${id}/release`, { method: "POST", body: { allowSender } }),
+              retry ? "Delivered to Microsoft 365." : "Released to the Inbox.");
     after();
   };
   const block = async (match: "sender" | "domain") => {
@@ -196,7 +207,8 @@ function MessageDetail({ id, onClose, onChanged }: { id: string; onClose: () => 
               `Blocked ${value} for this customer.`);
   };
   const m = data?.microsoft ?? {};
-  const releasable = data && ["quarantine", "junk"].includes(data.action) && ["done", "release_requested"].includes(data.actionStatus);
+  const retry = data?.source === "gateway" && data.actionStatus === "failed";
+  const releasable = data && (retry || (["quarantine", "junk"].includes(data.action) && ["done", "release_requested"].includes(data.actionStatus)));
   return (
     <Modal title={data?.subject || "Message"} onClose={onClose} wide
            footer={<span style={{ display: "inline-flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
@@ -218,7 +230,7 @@ function MessageDetail({ id, onClose, onChanged }: { id: string; onClose: () => 
             {releasable && can("respond") && <>
               <label className="small" style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
                 <input type="checkbox" checked={allowSender} onChange={(e) => setAllowSender(e.target.checked)} /> and allow this sender</label>
-              <button className="primary" disabled={busy} onClick={release}>Release to Inbox</button>
+              <button className="primary" disabled={busy} onClick={release}>{retry ? "Retry delivery" : "Release to Inbox"}</button>
             </>}
           </div>}
           <Tabs tabs={["Summary", "Origin & path", "Headers", "Authentication", "Links & attachments", ...(data.source === "gateway" ? ["Delivery"] : [])]}
@@ -436,6 +448,7 @@ function NotifyEditor({ value, onSave, disabled }: { value: Notify; onSave: (v: 
 function CustomersTab() {
   const { tenantId, can } = useApp();
   const { data, error, reload } = useListData<Connection>("email-security/connections", { tenant_id: tenantId });
+  useAutoRefresh(reload, 60);
   const { run, busy } = useAction();
   const save = async (c: Connection, body: Record<string, unknown>, message: string) => {
     await run(() => api(`email-security/connections/${c.connectionId}`, { method: "PUT", body: { mode: c.mode, ...body } }), message);
@@ -496,6 +509,7 @@ function GatewayTab() {
   const { tenantId, me, can } = useApp();
   const tenants = me?.tenants ?? [];
   const { data, error, reload } = useData<Gateway>("email-security/gateway", { tenant_id: tenantId });
+  useAutoRefresh(reload);
   const { run, busy } = useAction();
   const [adding, setAdding] = useState<{ tenantId: string; domain: string } | null>(null);
   const update = async (d: GatewayDomain, body: Record<string, unknown>, message = "Saved.") => {

@@ -5,7 +5,7 @@ Fenrir checks each customer's mail for phishing and malware in two places, and e
 | | Where | What it does | Needs |
 |---|---|---|---|
 | **Shadow mode** | In the Microsoft 365 mailbox, after delivery | Scores new mail and compares with Microsoft's verdict. Changes nothing. | Graph `Mail.Read` |
-| **Protect mode** | In the Microsoft 365 mailbox, after delivery | Also quarantines, moves to Junk or tags new mail, within about five minutes | Graph `Mail.ReadWrite` |
+| **Protect mode** | In the Microsoft 365 mailbox, after delivery | Also quarantines, moves to Junk or tags new mail, within about a minutes | Graph `Mail.ReadWrite` |
 | **Mail gateway** | In front of Microsoft 365 (the domain's MX points at Fenrir) | Checks mail **before** it reaches the mailbox; holds threats back | Port 25, an MX change, Exchange admin for the connector |
 
 All three use the same detection engine, allow/block lists, threat intel and learned model, and they share one console
@@ -27,7 +27,7 @@ protect mode, then (optionally) the gateway.
    (Microsoft does not allow it): use an admin sign-in connection for those customers.
    To limit which mailboxes Fenrir can reach, add an Exchange Online *application access policy* for the app.
 3. **Email security → Customers:** choose **Shadow** or **Protect**. The first scan looks back 24 hours; then new
-   Inbox and Junk Email messages are checked every five minutes. **Scan now** runs one straight away.
+   Inbox and Junk Email messages are checked every minute (set `FENRIR_EMAIL_SCAN_SECONDS` to change it). **Scan now** runs one straight away.
 
 ## 2. The verdicts
 
@@ -196,7 +196,7 @@ Before relying on it for a customer:
 - [ ] Shadow mode on a test tenant: the first scan lists the last 24 hours; Microsoft's verdicts look right.
 - [ ] Send a test phish to a test mailbox (a lookalike sender domain and a link whose text shows another site):
       Fenrir flags it with reasons.
-- [ ] Protect mode: a fresh test phish is moved to the hidden quarantine folder within five minutes; **Release** brings
+- [ ] Protect mode: a fresh test phish is moved to the hidden quarantine folder within a minute or two; **Release** brings
       it back to the Inbox.
 - [ ] Turn on the digest, check the email arrives, and that "Ask IT to release it" raises a release request.
 - [ ] Missing `Mail.ReadWrite` shows "action failed" with the reason.

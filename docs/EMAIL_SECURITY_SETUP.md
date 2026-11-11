@@ -140,7 +140,7 @@ as **granted**.
 
 ## C. Shadow mode (compare only)
 
-Shadow mode reads new mail every five minutes and records Fenrir's and Microsoft's verdicts. **Nothing in any mailbox
+Shadow mode reads new mail every minute and records Fenrir's and Microsoft's verdicts. **Nothing in any mailbox
 changes.**
 
 1. **Email security → Customers →** the customer **→** set the mode to **Shadow (compare only).**
@@ -167,7 +167,7 @@ mailbox at the customer:
 - Subject: `Verify your account within 24 hours`
 - Body: a link whose **text** is `https://www.microsoft.com` but whose **address** is `http://192.0.2.1/login`
 
-Within five minutes it should show as **phish**, with reasons such as *A link shows microsoft.com but goes to
+Within a minute or two it should show as **phish**, with reasons such as *A link shows microsoft.com but goes to
 192.0.2.1*, *Links to a bare IP address* and *Wording typical of scams*.
 
 ---
@@ -188,7 +188,7 @@ Within five minutes it should show as **phish**, with reasons such as *A link sh
    - **Open a ticket:** a service desk ticket per quarantine run.
    Press **Save** after changing them.
 
-**Test it:** send the test phish from Part C again. Within five minutes it disappears from the Inbox, the Messages tab
+**Test it:** send the test phish from Part C again. Within a minute or two it disappears from the Inbox, the Messages tab
 shows **Quarantined**, and an alert appears under **Alerts**. Open the message and press **Release to Inbox**: it comes
 back.
 
@@ -419,6 +419,8 @@ database, and publish two MX records with the same priority.
 | Add a domain: *not a verified domain in this customer's Microsoft 365* | Verify the domain in Microsoft 365, then **Sync** the connection. |
 | Gateway messages stay **queued** | Microsoft 365 refuses or defers them. Check the destination host, and that the connector exists and allows the gateway IP. The reason is on the message. |
 | *Gateway could not deliver mail* alert | Microsoft 365 refused it permanently, or it failed for 3 days. Fix the destination or connector, then ask the sender to resend. |
+| Gateway message shows **action failed** with *550 5.4.1 Recipient address rejected: Access denied* | Microsoft 365 says the recipient doesn't exist in the tenant at the destination host. Check the address is a real mailbox or alias in that tenant, and that the domain's destination (Gateway tab) is that tenant's Microsoft host. Fenrir keeps the message: fix the cause, then press **Retry delivery**. |
+| Gateway messages have no evidence on their tabs, or errors without Microsoft's reason | The gateway container is still on an older build. Run updates with the mailgateway file included (`dcm up -d --build`), not plain `dc up`. |
 | Legitimate mail quarantined | Release it with *and allow this sender*, or add the domain to the allow list; label it **safe**. |
 
 ---

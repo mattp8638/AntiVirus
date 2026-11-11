@@ -134,8 +134,9 @@ def act(client: httpx.Client, token: str, setting: EmailScanSetting, user_id: st
 
 
 def release(db: Session, row: EmailScan, actor: str, client: httpx.Client | None = None) -> EmailScan:
-    """Bring a quarantined (or junked) message back to the Inbox."""
-    if row.action not in ("quarantine", "junk") or row.action_status not in ("done", "release_requested"):
+    """Bring a quarantined (or junked) message back to the Inbox; for the gateway, also retry one it could not deliver."""
+    gateway_retry = (row.source or "graph") == "gateway" and row.action_status == "failed"
+    if not gateway_retry and (row.action not in ("quarantine", "junk") or row.action_status not in ("done", "release_requested")):
         raise ActionError("Only quarantined or junked messages can be released.")
     if (row.source or "graph") == "gateway":
         from . import mail_gateway
