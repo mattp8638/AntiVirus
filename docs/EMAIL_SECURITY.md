@@ -11,6 +11,8 @@ Fenrir checks each customer's mail for phishing and malware in two places, and e
 All three use the same detection engine, allow/block lists, threat intel and learned model, and they share one console
 page: **Email security** (switch it on under **Settings → Modules**).
 
+**Setting it up step by step:** [EMAIL_SECURITY_SETUP.md](EMAIL_SECURITY_SETUP.md).
+
 A sensible rollout per customer: shadow mode for one to two weeks while you label what the two sides disagree on, then
 protect mode, then (optionally) the gateway.
 
