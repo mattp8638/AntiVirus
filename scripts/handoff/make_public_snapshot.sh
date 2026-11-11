@@ -19,6 +19,8 @@ mkdir -p "$out"
 git -C "$root" archive --format=tar HEAD | tar -x -C "$out"
 # Snapshots of other private repositories, kept only for reference in the development repository.
 rm -rf "$out/components"
+# This script names the private words it looks for, so it stays in the development repository.
+rm -f "$out/scripts/handoff/make_public_snapshot.sh"
 # Internal evidence pages link to CI runs of the development repository: keep the text, drop those links.
 python3 - "$out" <<'PY'
 import pathlib, re, sys
