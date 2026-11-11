@@ -138,6 +138,10 @@ def create_script(body: dict = Body(...), principal: Principal = Depends(current
                     parameters=[], category="General", description="", version=1, review_editors=[principal.actor])
     apply_fields(script, body, SCRIPT_FIELDS)
     script.platforms = script.platforms or list(rmm.LANGUAGES.get(script.language, ("windows",)))
+    if not (body.get("category") or "").strip() or body.get("category") == "General":
+        from .. import script_taxonomy  # no category given: file it as Operating system / Area / Kind
+
+        script.category = script_taxonomy.classify_script(script)["category"]
     db.add(script)
     audit.record(db, principal.actor, "rmm.script.created", script.name, tenant_id)
     db.commit()
@@ -170,6 +174,51 @@ def delete_script(script_id: str, principal: Principal = Depends(current_princip
     audit.record(db, principal.actor, "rmm.script.deleted", script.name, script.tenant_id)
     db.commit()
     return {"ok": True}
+
+
+def _organisable(principal: Principal, db: Session) -> list[Script]:
+    """Scripts this person may re-file: their customers' scripts, plus built-ins for platform admins."""
+    query = select(Script).where(Script.tenant_id.in_(principal.tenant_ids))
+    if principal.can("platform"):
+        query = select(Script).where(or_(Script.tenant_id.is_(None), Script.tenant_id.in_(principal.tenant_ids)))
+    return db.execute(query.order_by(Script.name)).scalars().all()
+
+
+@router.get("/script-categories")
+def preview_script_categories(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Proposed "Operating system / Area / Kind" categories for every script you can re-file (nothing changes)."""
+    principal.require("configure")
+    from .. import script_taxonomy
+
+    changes = []
+    for script in _organisable(principal, db):
+        proposed = script_taxonomy.classify_script(script)
+        if proposed["category"] != script.category:
+            changes.append({"id": script.id, "name": script.name, "current": script.category, "proposed": proposed["category"],
+                            "builtin": script.builtin, **{k: proposed[k] for k in ("os", "area", "kind")}})
+    return {"changes": changes, "kinds": script_taxonomy.KINDS, "separator": script_taxonomy.SEP}
+
+
+@router.post("/script-categories")
+def apply_script_categories(body: dict = Body(default={}), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """File scripts under their proposed categories. Only the category changes: versions, reviews and the built-in
+    status of shipped scripts are untouched. ``ids`` limits it to some scripts; ``overrides`` maps id -> category."""
+    principal.require("configure")
+    from .. import script_taxonomy
+
+    wanted = set(body.get("ids") or [])
+    overrides = {str(k): str(v).strip()[:80] for k, v in (body.get("overrides") or {}).items() if str(v).strip()}
+    changed = 0
+    for script in _organisable(principal, db):
+        if wanted and script.id not in wanted:
+            continue
+        category = overrides.get(script.id) or script_taxonomy.classify_script(script)["category"]
+        if category != script.category:
+            script.category = category[:80]
+            changed += 1
+    audit.record(db, principal.actor, "rmm.scripts.recategorised", f"{changed} scripts", principal.user.tenant_id, count=changed)
+    db.commit()
+    return {"changed": changed}
 
 
 @router.post("/scripts/{script_id}/run")

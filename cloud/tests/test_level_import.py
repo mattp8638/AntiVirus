@@ -32,3 +32,9 @@ def test_variables_become_parameters_and_custom_fields():
 def test_list_shapes_are_accepted():
     assert len(lvl.as_list({"data": [{"id": 1}, {"id": 2}]})) == 2
     assert len(lvl.as_list([{"id": 1}])) == 1 and lvl.as_list("nope") == []
+
+
+def test_nested_and_json_lines_outputs_are_found():
+    assert len(lvl.as_list({"data": {"scripts": {"nodes": [{"id": "1", "name": "A"}, {"id": "2", "name": "B"}]}}})) == 2
+    assert len(lvl.as_list({"edges": [{"node": {"id": "1", "name": "A"}}], "pageInfo": {}})) == 1
+    assert len(lvl.as_list(lvl.parse_json('{"id": "1", "name": "A"}\n{"id": "2", "name": "B"}\n'))) == 2

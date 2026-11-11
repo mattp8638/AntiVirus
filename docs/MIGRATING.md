@@ -67,7 +67,7 @@ Export the device list to a spreadsheet if the old tool allows it: you will use 
    - **notes**: custom fields to create in Fenrir, single-quoted variables to check, renamed duplicates.
    - **import**: set to `no` for scripts you do not want to bring over.
    Open it in a spreadsheet and change anything, then save it as CSV.
-4. Import: `FENRIR_URL=https://your-server FENRIR_API_KEY=fak_... python3 scripts/migrate/level_scripts.py import --dry-run`,
+4. Import: `FENRIR_URL=https://your-server FENRIR_API_KEY=<your key> python3 scripts/migrate/level_scripts.py import --dry-run`,
    then the same without `--dry-run`.
 
 Level variables written as `{{name}}` become Fenrir script parameters: when the script runs, Fenrir shows them as
@@ -75,6 +75,10 @@ a form and sets them as variables (`$name` in PowerShell, `${name}` in shell). C
 `{{cf_owner}}` read the device's Fenrir custom field instead (`$env:FENRIR_CF_OWNER`). Importing again updates
 scripts that changed and leaves the rest alone (`--skip-existing` never touches existing ones). As with any library
 change, imported scripts wait for a second person to review them under **Scripts** before they can run.
+
+To file every script by **Operating system › Area › Kind** (for example *Linux › Networking › Fix*), open **Scripts →
+Organise categories**. It previews the new category for each script; untick or retype any, then apply. Only the
+category changes, so reviews stay as they are. New scripts saved without a category are filed the same way.
 
 ## 3. Deploy the Fenrir agent with the old RMM
 

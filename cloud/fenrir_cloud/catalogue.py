@@ -152,7 +152,11 @@ def seed(db: Session, root: Path = ROOT) -> dict:
     for item in scripts:
         if item["name"] in present:
             continue
-        db.add(Script(tenant_id=None, builtin=True, updated_by="catalogue", **item))
+        from .script_taxonomy import classify
+
+        filed = {**item, "category": classify(item["name"], item["description"], item["body"], item["platforms"],
+                                              item["category"])["category"]}
+        db.add(Script(tenant_id=None, builtin=True, updated_by="catalogue", **filed))
         added_scripts += 1
     if added_apps or added_scripts:
         log.info("catalogue: added %d software packages and %d scripts", added_apps, added_scripts)

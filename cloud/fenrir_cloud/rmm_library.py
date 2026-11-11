@@ -191,8 +191,12 @@ def seed(db: Session) -> None:
     for item in SCRIPTS:
         if item["name"] in present:
             continue
-        db.add(Script(tenant_id=None, builtin=True, updated_by="system", parameters=item.get("parameters", []),
-                      **{k: v for k, v in item.items() if k != "parameters"}))
+        from .script_taxonomy import classify
+
+        fields = {k: v for k, v in item.items() if k != "parameters"}
+        fields["category"] = classify(item["name"], item.get("description", ""), item.get("body", ""),
+                                      item.get("platforms"), item.get("category", ""))["category"]
+        db.add(Script(tenant_id=None, builtin=True, updated_by="system", parameters=item.get("parameters", []), **fields))
     if db.execute(select(MonitorCondition.id)).first() is None:
         for item in MONITORS:
             db.add(MonitorCondition(tenant_id=None, target=item.get("target", ""), scope=item.get("scope", {}),
