@@ -96,7 +96,9 @@ READS = {"Get-Mailbox", "Get-MailboxPermission", "Get-RecipientPermission", "Get
          # organisation settings read by the standards (m365_standards.py)
          "Get-AdminAuditLogConfig", "Get-OrganizationConfig", "Get-HostedOutboundSpamFilterPolicy", "Get-TransportConfig",
          # email security standards (m365_email_security.py)
-         "Get-DkimSigningConfig", "Get-AntiPhishPolicy", "Get-MalwareFilterPolicy", "Get-SafeLinksPolicy", "Get-SafeAttachmentPolicy"}
+         "Get-DkimSigningConfig", "Get-AntiPhishPolicy", "Get-MalwareFilterPolicy", "Get-SafeLinksPolicy", "Get-SafeAttachmentPolicy",
+         # Fenrir's mail gateway (mail_gateway.py)
+         "Get-InboundConnector"}
 
 
 def _mailbox(row: dict) -> dict:
@@ -195,7 +197,9 @@ WRITES = {"Set-Mailbox", "Add-MailboxPermission", "Remove-MailboxPermission", "A
           "Add-DistributionGroupMember", "Remove-DistributionGroupMember", "Release-QuarantineMessage", "Disable-InboxRule",
           # organisation settings applied by the standards (m365_standards.py)
           "Set-AdminAuditLogConfig", "Set-OrganizationConfig", "Set-HostedOutboundSpamFilterPolicy", "Set-TransportConfig",
-          "Set-DkimSigningConfig", "Set-AntiPhishPolicy", "Set-MalwareFilterPolicy"}
+          "Set-DkimSigningConfig", "Set-AntiPhishPolicy", "Set-MalwareFilterPolicy",
+          # the inbound connector for Fenrir's mail gateway (mail_gateway.connect_m365)
+          "New-InboundConnector", "Set-InboundConnector"}
 
 # operation -> (title, what it needs from the request)
 OPERATIONS = {

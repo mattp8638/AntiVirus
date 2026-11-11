@@ -1,0 +1,40 @@
+# Fenrir's mail gateway (email security, phase 4): receives mail for the domains added under Email security > Gateway,
+# checks it and passes it to each customer's Microsoft 365. See docs/EMAIL_SECURITY.md, "The mail gateway".
+#
+#   docker compose -f docker-compose.yml -f docker-compose.mailgateway.yml up -d
+#   docker compose -f docker-compose.yml -f docker-compose.mailgateway.yml --profile clamav up -d   # with ClamAV
+#
+# Needs: FENRIR_GATEWAY_HOSTNAME and FENRIR_GATEWAY_PUBLIC_IPS in .env, TCP port 25 open to the internet (many VPS
+# providers block it until asked), and a reverse DNS (PTR) record for the IP that matches FENRIR_GATEWAY_HOSTNAME.
+services:
+  mailgateway:
+    extends: { file: docker-compose.yml, service: worker }
+    command: ["python", "-m", "fenrir_cloud.mail_gateway"]
+    depends_on: { cloud: { condition: service_healthy } }  # the API creates and upgrades the database
+    environment:
+      FENRIR_ROLE: mailgateway
+      FENRIR_GATEWAY_HOSTNAME: ${FENRIR_GATEWAY_HOSTNAME:?set FENRIR_GATEWAY_HOSTNAME to the name in customers' MX records}
+      FENRIR_GATEWAY_PORT: "2525"
+      FENRIR_GATEWAY_SPOOL: /spool
+      FENRIR_GATEWAY_TLS_CERT: ${FENRIR_GATEWAY_TLS_CERT:-}
+      FENRIR_GATEWAY_TLS_KEY: ${FENRIR_GATEWAY_TLS_KEY:-}
+      FENRIR_CLAMD_HOST: ${FENRIR_CLAMD_HOST:-}
+    ports: ["25:2525"]
+    volumes: [mailspool:/spool]  # the queue: survives restarts and upgrades
+    healthcheck:
+      test: ["CMD", "python", "-m", "fenrir_cloud.mail_gateway", "--check"]
+      interval: 30s
+      timeout: 15s
+      start_period: 60s
+      retries: 3
+    stop_grace_period: 60s
+
+  clamav:
+    image: clamav/clamav:1.4
+    profiles: ["clamav"]  # optional virus scanning; set FENRIR_CLAMD_HOST=clamav
+    restart: unless-stopped
+    volumes: [clamav:/var/lib/clamav]
+
+volumes:
+  mailspool: {}
+  clamav: {}
