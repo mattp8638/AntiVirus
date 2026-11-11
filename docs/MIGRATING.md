@@ -67,7 +67,7 @@ Export the device list to a spreadsheet if the old tool allows it: you will use 
    - **notes**: custom fields to create in Fenrir, single-quoted variables to check, renamed duplicates.
    - **import**: set to `no` for scripts you do not want to bring over.
    Open it in a spreadsheet and change anything, then save it as CSV.
-4. Import: `FENRIR_URL=https://your-server FENRIR_API_KEY=fak_... python3 scripts/migrate/level_scripts.py import --dry-run`,
+4. Import: `FENRIR_URL=https://your-server FENRIR_API_KEY=<your key> python3 scripts/migrate/level_scripts.py import --dry-run`,
    then the same without `--dry-run`.
 
 Level variables written as `{{name}}` become Fenrir script parameters: when the script runs, Fenrir shows them as

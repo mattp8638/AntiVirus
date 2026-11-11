@@ -12,8 +12,8 @@ Run it on the machine where the Level CLI (`lvl`) is signed in. Standard library
     python3 level_scripts.py plan
 
     # 3. Import into Fenrir (an API credential with the "configure" scope: Settings > API credentials)
-    FENRIR_URL=https://rmm.example.com FENRIR_API_KEY=fak_... python3 level_scripts.py import --dry-run
-    FENRIR_URL=https://rmm.example.com FENRIR_API_KEY=fak_... python3 level_scripts.py import
+    FENRIR_URL=https://rmm.example.com FENRIR_API_KEY=<key> python3 level_scripts.py import --dry-run
+    FENRIR_URL=https://rmm.example.com FENRIR_API_KEY=<key> python3 level_scripts.py import
 
 How it maps Level to Fenrir:
 - Category: Level's own folder/category/tags when present, otherwise from what the script does (keywords in its
@@ -364,6 +364,10 @@ def import_scripts(args) -> None:
     url, key = os.getenv("FENRIR_URL", args.url or ""), os.getenv("FENRIR_API_KEY", "")
     if not url or not key:
         raise SystemExit("Set FENRIR_URL and FENRIR_API_KEY (an API credential with the configure scope).")
+    if not Path(args.export).exists():
+        raise SystemExit(f"{args.export} not found: run `export` first.")
+    if not Path(args.plan).exists():
+        raise SystemExit(f"{args.plan} not found: run `plan` first, check the CSV (group, category, import), then import.")
     by_id = {str(first(s, "id", "uuid", default="")): s for s in json.loads(Path(args.export).read_text())}
     by_name = {str(first(s, "name", "title", default="")).strip(): s for s in by_id.values()}
     rows = [r for r in csv.DictReader(open(args.plan, newline="")) if r["import"].strip().lower() in ("yes", "y", "1", "true")]
