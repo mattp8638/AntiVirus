@@ -10,7 +10,7 @@
 namespace antivirus::agent {
 
 struct AgentConfig {
-  std::wstring controlPlaneBaseUrl{L"https://api.fenrir-security.co.uk"};
+  std::wstring controlPlaneBaseUrl{};  // the server comes from the installer (or ANTIVIRUS_CONTROL_PLANE_URL); none = standalone
   // Managed mode enrolls with the Fenrir cloud, sends heartbeats and telemetry, and runs commands.
   // Off by default (standalone, update-only); turned on when a cloud URL is configured.
   bool managedMode{false};

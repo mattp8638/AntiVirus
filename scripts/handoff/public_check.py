@@ -24,6 +24,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILT_IN_PRIVATE = ["palmertech", "palmer tech"]
+# The public repository's own address is allowed to appear (install command, docs site, signing info link).
+ALLOWED = ["Palmertech-Webdev/fenrir-security"]
 STATIC = [r"fenrir-security\.co\.uk", r"api\.fenrir-security", r"palmertech\.co\.uk"]
 SKIP_PARTS = ("third_party/", "node_modules/", "/vendor/", "components/", "dist/")
 SKIP_SUFFIX = (".png", ".jpg", ".ico", ".exe", ".dll", ".zip", ".pfx", ".onnx", ".bin", ".gz", ".woff", ".woff2", ".pdf", ".jar")
@@ -45,6 +47,8 @@ def scan(private: list[str]) -> list[tuple[str, str, int, str]]:
         except (UnicodeDecodeError, OSError):
             continue
         for number, line in enumerate(text.splitlines(), 1):
+            for allowed in ALLOWED:
+                line = re.sub(re.escape(allowed), "", line, flags=re.I)
             for kind, pattern in patterns:
                 if pattern.search(line):
                     findings.append((kind, path, number, line.strip()[:140]))

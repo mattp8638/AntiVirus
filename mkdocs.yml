@@ -1,6 +1,6 @@
 site_name: Fenrir
 site_description: Free, self-hosted RMM, endpoint protection and MSP platform
-repo_url: https://github.com/mattp8638/AntiVirus
+repo_url: https://github.com/Palmertech-Webdev/fenrir-security
 edit_uri: edit/main/docs/
 docs_dir: docs
 theme:

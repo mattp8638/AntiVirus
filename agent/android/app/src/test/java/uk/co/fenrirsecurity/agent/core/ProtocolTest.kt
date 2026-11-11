@@ -19,8 +19,8 @@ class ProtocolTest {
 
     @Test
     fun parsesConsoleQrLink() {
-        val target = EnrollLink.parse("https://www.fenrir-security.co.uk/enroll-phone#t=fet_abc%2B123")
-        assertEquals(EnrollTarget("https://www.fenrir-security.co.uk", "fet_abc+123"), target)
+        val target = EnrollLink.parse("https://rmm.example.com/enroll-phone#t=fet_abc%2B123")
+        assertEquals(EnrollTarget("https://rmm.example.com", "fet_abc+123"), target)
         assertEquals("http://localhost:8080", EnrollLink.parse("http://localhost:8080/enroll-phone#t=x")?.server)
     }
 

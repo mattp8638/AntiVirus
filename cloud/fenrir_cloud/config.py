@@ -67,7 +67,7 @@ class Settings:
     open_enrollment: bool = field(default_factory=lambda: _bool("FENRIR_OPEN_ENROLLMENT", True))
 
     # Upstream signature feed (the signaturedb-fenrir Cloudflare worker).
-    feed_url: str = field(default_factory=lambda: os.getenv("FENRIR_FEED_URL", "https://api.fenrir-security.co.uk"))
+    feed_url: str = field(default_factory=lambda: os.getenv("FENRIR_FEED_URL", ""))
     feed_token: str = field(default_factory=lambda: os.getenv("FENRIR_FEED_TOKEN", ""))
     # Free threat-intel feeds the server pulls itself (threat_feeds.py). abuse.ch may ask for a free Auth-Key
     # (https://auth.abuse.ch); without one its feeds report the error and the others carry on.
