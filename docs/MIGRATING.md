@@ -76,6 +76,10 @@ a form and sets them as variables (`$name` in PowerShell, `${name}` in shell). C
 scripts that changed and leaves the rest alone (`--skip-existing` never touches existing ones). As with any library
 change, imported scripts wait for a second person to review them under **Scripts** before they can run.
 
+To file every script by **Operating system › Area › Kind** (for example *Linux › Networking › Fix*), open **Scripts →
+Organise categories**. It previews the new category for each script; untick or retype any, then apply. Only the
+category changes, so reviews stay as they are. New scripts saved without a category are filed the same way.
+
 ## 3. Deploy the Fenrir agent with the old RMM
 
 The fastest way onto existing machines is the RMM you are leaving:

@@ -26,21 +26,29 @@ export default function Scripts() {
     const script = wanted && data?.find((s) => s.id === wanted);
     if (script) { setEditing(script); setParams({}, { replace: true }); }
   }, [data, params, setParams]);
-  const categories = [...new Set((data || []).map((s) => s.category))].sort();
-  const rows = (data || []).filter((s) => (!category || s.category === category) &&
-    (!q || `${s.name} ${s.description}`.toLowerCase().includes(q.toLowerCase())));
+  const [organising, setOrganising] = useState(false);
+  const inCategory = (c: string) => !category || c === category || (c || "").startsWith(category + SEP);
+  const rows = (data || []).filter((s) => inCategory(s.category) &&
+    (!q || `${s.name} ${s.description} ${s.category}`.toLowerCase().includes(q.toLowerCase())));
   return (
     <>
       <PageHead title="Script library" subtitle="Reusable PowerShell, Bash and Python with typed parameters. Run on one device, a group or a whole customer."
-                actions={can("configure") && <button className="primary" onClick={() => setEditing({ language: "powershell", platforms: ["windows"], parameters: [], body: "", category: "General", timeoutSeconds: 600 })}>New script</button>} />
+                actions={can("configure") && <>
+                  <button onClick={() => setOrganising(true)}>Organise categories</button>
+                  <button className="primary" onClick={() => setEditing({ language: "powershell", platforms: ["windows"], parameters: [], body: "", category: "", timeoutSeconds: 600 })}>New script</button>
+                </>} />
       <div className="row" style={{ marginBottom: 12 }}>
         <input placeholder="Search scripts" value={q} onChange={(e) => setQ(e.target.value)} style={{ minWidth: 260 }} />
-        <select value={category} onChange={(e) => setCategory(e.target.value)}><option value="">All categories</option>{categories.map((c) => <option key={c}>{displayValue(c)}</option>)}</select>
+        {category && <span className="small">In <b>{categoryLabel(category)}</b> <button className="small ghost" onClick={() => setCategory("")}>Show all</button></span>}
       </div>
-      <div className="card">
+      <div className="row" style={{ alignItems: "flex-start", gap: 12 }}>
+      <div className="card" style={{ width: 270, flexShrink: 0, maxHeight: "75vh", overflow: "auto" }} data-testid="script-tree">
+        <CategoryTree scripts={data || []} selected={category} onSelect={setCategory} />
+      </div>
+      <div className="card" style={{ flex: 1, minWidth: 0 }}>
         <Table rows={rows} empty="No scripts." onRow={(s) => setEditing(s)}
                columns={[{ key: "name", label: "Script", render: (s) => <><b>{displayValue(s.name)}</b> <ReviewPill review={s.review} /><div className="small muted">{displayValue(s.description)}</div></> },
-                         { key: "category", label: "Category" },
+                         { key: "category", label: "Category", render: (s) => <span className="small">{categoryLabel(s.category)}</span> },
                          { key: "language", label: "Language", render: (s) => <span className="mono small">{displayValue(s.language)}</span> },
                          { key: "platforms", label: "Runs on", render: (s) => s.platforms.join(", ") },
                          { key: "parameters", label: "Params", render: (s) => s.parameters.length || "—" },
@@ -49,6 +57,8 @@ export default function Scripts() {
                              title={needsReview(s.review) ? "A second person has to review this version first" : undefined}
                              onClick={(e) => { e.stopPropagation(); setRunning(s); }}>Run</button> }]} />
       </div>
+      </div>
+      {organising && <OrganiseCategories onClose={(changed) => { setOrganising(false); if (changed) reload(); }} />}
       {editing && <ScriptEditor script={editing} onClose={() => { setEditing(null); reload(); }} onRun={(s) => { setEditing(null); setRunning(s); }} />}
       {running && <RunScript script={running} onClose={() => setRunning(null)} onStarted={(id) => { setRunning(null); setJobId(id); }} />}
       {jobId && <JobDetail jobId={jobId} onClose={() => setJobId(null)} />}
@@ -83,7 +93,8 @@ function ScriptEditor({ script, onClose, onRun }: { script: any; onClose: () => 
       {form.id && <ReviewPanel review={review} path={`rmm/scripts/${form.id}`} dirty={dirty} shared={!script.tenantId} onReviewed={reload} />}
       <div className="form-grid">
         <label className="field">Name<input value={form.name || ""} disabled={readOnly} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
-        <label className="field">Category<input value={form.category || ""} disabled={readOnly} onChange={(e) => setForm({ ...form, category: e.target.value })} /></label>
+        <label className="field">Category<input value={form.category || ""} disabled={readOnly} list="script-categories" placeholder="Left empty: worked out from the script"
+          onChange={(e) => setForm({ ...form, category: e.target.value })} title="Operating system / Area / Kind, e.g. Linux / Networking / Fix" /></label>
         <label className="field">Language<select value={form.language} disabled={readOnly} onChange={(e) => setForm({ ...form, language: e.target.value, platforms: LANG_PLATFORMS[e.target.value] })}>
           {LANGS.map((l) => <option key={l}>{l}</option>)}</select></label>
         <label className="field">Timeout (seconds)<input type="number" value={form.timeoutSeconds} disabled={readOnly} onChange={(e) => setForm({ ...form, timeoutSeconds: e.target.value })} /></label>
@@ -110,6 +121,94 @@ function ScriptEditor({ script, onClose, onRun }: { script: any; onClose: () => 
         plus <code>FENRIR_DEVICE_NAME</code> and <code>FENRIR_CUSTOMER</code>. To set a field, print a line such as <code>FENRIR-FIELD warranty_end=2027-03-01</code>
         (an empty value clears it). Monitors can test fields with the "Custom field" condition.</p>
       {readOnly && script.builtin && <p className="small muted">Built-in scripts are read-only. Duplicate one to change it.</p>}
+    </Modal>
+  );
+}
+
+const SEP = " / ";
+export const categoryLabel = (c: string) => (c || "").split(SEP).join(" › ");
+
+type TreeNode = { name: string; path: string; count: number; children: Map<string, TreeNode> };
+
+// Scripts grouped by category path ("Windows / Security / Check"), with a count at each level.
+export function buildCategoryTree(scripts: { category: string }[]): TreeNode {
+  const root: TreeNode = { name: "All scripts", path: "", count: 0, children: new Map() };
+  for (const script of scripts) {
+    root.count += 1;
+    let node = root;
+    for (const part of (script.category || "Uncategorised").split(SEP).map((p) => p.trim()).filter(Boolean)) {
+      const path = node.path ? node.path + SEP + part : part;
+      if (!node.children.has(part)) node.children.set(part, { name: part, path, count: 0, children: new Map() });
+      node = node.children.get(part)!;
+      node.count += 1;
+    }
+  }
+  return root;
+}
+
+const OS_ORDER = ["Windows", "macOS", "Linux", "Linux & macOS", "All platforms"];
+const KIND_ORDER = ["Check", "Fix", "Action", "Response"];
+const sortNodes = (nodes: TreeNode[]) => nodes.sort((a, b) => {
+  const rank = (n: TreeNode) => { const i = OS_ORDER.indexOf(n.name); const k = KIND_ORDER.indexOf(n.name); return i >= 0 ? i : k >= 0 ? k : 99; };
+  return rank(a) - rank(b) || a.name.localeCompare(b.name);
+});
+
+function CategoryTree({ scripts, selected, onSelect }: { scripts: any[]; selected: string; onSelect: (path: string) => void }) {
+  const root = buildCategoryTree(scripts);
+  const [open, setOpen] = useState<Set<string>>(() => new Set(OS_ORDER));
+  const toggle = (path: string) => setOpen((o) => { const n = new Set(o); if (n.has(path)) n.delete(path); else n.add(path); return n; });
+  const row = (node: TreeNode, depth: number): React.ReactNode => {
+    const kids = sortNodes([...node.children.values()]);
+    const expanded = depth === 0 || open.has(node.path) || (selected && selected.startsWith(node.path));
+    return (
+      <div key={node.path || "root"}>
+        <div className="row" style={{ paddingLeft: depth * 14, gap: 4, cursor: "pointer", borderRadius: 6,
+                                      background: selected === node.path ? "var(--hover, rgba(127,127,127,.15))" : undefined }}
+             onClick={() => onSelect(node.path)}>
+          {kids.length > 0 && depth > 0
+            ? <button className="ghost small" style={{ padding: "0 4px" }} aria-label={expanded ? "Collapse" : "Expand"}
+                      onClick={(e) => { e.stopPropagation(); toggle(node.path); }}>{expanded ? "▾" : "▸"}</button>
+            : <span style={{ width: 18 }} />}
+          <span style={{ flex: 1, fontWeight: depth <= 1 ? 600 : 400 }}>{displayValue(node.name)}</span>
+          <span className="small muted">{node.count}</span>
+        </div>
+        {expanded && kids.map((k) => row(k, depth + 1))}
+      </div>
+    );
+  };
+  return <>{row(root, 0)}
+    <datalist id="script-categories">{[...new Set(scripts.map((s) => s.category))].sort().map((c) => <option key={c} value={c} />)}</datalist></>;
+}
+
+// Re-file scripts as Operating system / Area / Kind, previewed first. Only categories change.
+function OrganiseCategories({ onClose }: { onClose: (changed: boolean) => void }) {
+  const { data } = useData<any>("rmm/script-categories");
+  const { run, busy } = useAction();
+  const [skip, setSkip] = useState<Set<string>>(new Set());
+  const [edits, setEdits] = useState<Record<string, string>>({});
+  const changes: any[] = data?.changes ?? [];
+  const chosen = changes.filter((c) => !skip.has(c.id));
+  const apply = async () => {
+    const overrides = Object.fromEntries(Object.entries(edits).filter(([id]) => !skip.has(id)));
+    const result = await run(() => api<any>("rmm/script-categories", { body: { ids: chosen.map((c) => c.id), overrides } }),
+                             `${chosen.length} scripts re-filed`);
+    if (result) onClose(true);
+  };
+  return (
+    <Modal wide title="Organise script categories" onClose={() => onClose(false)}
+           footer={<><button onClick={() => onClose(false)}>Cancel</button>
+                     <button className="primary" disabled={busy || !chosen.length} onClick={apply}>Apply {chosen.length} changes</button></>}>
+      <p className="small muted">Each script is filed as <b>Operating system › Area › Kind</b>: Check (reports only), Fix (repairs a problem),
+        Action (makes a change) or Response (isolate, erase). Only the category changes: reviews and versions stay as they are.
+        Untick any you want to leave, or type a different category.</p>
+      {data == null ? <div className="empty">Working out categories…</div> : !changes.length ? <div className="empty">Every script is already filed.</div> :
+        <Table rows={changes} columns={[
+          { key: "use", label: "", render: (c) => <input type="checkbox" checked={!skip.has(c.id)} aria-label={`Re-file ${c.name}`}
+              onChange={(e) => setSkip((s) => { const n = new Set(s); if (e.target.checked) n.delete(c.id); else n.add(c.id); return n; })} /> },
+          { key: "name", label: "Script", render: (c) => <><b>{displayValue(c.name)}</b>{c.builtin && <> <Pill value="built-in" tone="blue" /></>}</> },
+          { key: "current", label: "Now", render: (c) => <span className="small muted">{categoryLabel(c.current) || "—"}</span> },
+          { key: "proposed", label: "Will be", render: (c) => <input value={edits[c.id] ?? c.proposed} style={{ width: "100%" }}
+              onChange={(e) => setEdits({ ...edits, [c.id]: e.target.value })} /> }]} />}
     </Modal>
   );
 }
