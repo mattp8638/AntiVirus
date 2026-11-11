@@ -268,9 +268,21 @@ def model(principal: Principal = Depends(current_principal), db: Session = Depen
     principal.require("respond")
     rows = db.execute(select(EmailModel).order_by(EmailModel.version.desc()).limit(20)).scalars().all()
     current = next((r for r in rows if r.active), None)
-    labels = dict(db.execute(select(EmailScan.label, func.count()).where(EmailScan.label != "").group_by(EmailScan.label)).all())
-    return {"active": email_model.view(current), "latest": email_model.view(rows[0] if rows else None),
-            "history": [email_model.view(r) for r in rows], "labels": labels,
+    # Labels: only the customers this user can see. The shared model's example counts span every customer, so only
+    # MSP staff see them; a customer's own users see whether a model is in use and how accurate it is.
+    labels = dict(db.execute(select(EmailScan.label, func.count()).where(
+        EmailScan.label != "", EmailScan.tenant_id.in_(list(principal.tenant_ids))).group_by(EmailScan.label)).all())
+    msp = principal.can("manage_tenants")
+
+    def shown(row):
+        out = email_model.view(row)
+        if out is not None and not msp:
+            out.update(samples=None, positives=None, labelled=None, strongestSignals=[],
+                       metrics={k: v for k, v in (out.get("metrics") or {}).items() if k in ("precision", "recall")})
+        return out
+
+    return {"active": shown(current), "latest": shown(rows[0] if rows else None),
+            "history": [shown(r) for r in rows], "labels": labels,
             "requirements": {"samples": email_model.MIN_SAMPLES, "positives": email_model.MIN_POSITIVES,
                              "precision": email_model.MIN_PRECISION, "recall": email_model.MIN_RECALL,
                              "threshold": email_model.THRESHOLD}}

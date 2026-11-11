@@ -161,7 +161,14 @@ class Spool:
 
     def __init__(self, folder: str | Path):
         self.folder = Path(folder)
-        self.folder.mkdir(parents=True, exist_ok=True)
+        try:
+            self.folder.mkdir(parents=True, exist_ok=True)
+            probe = self.folder / ".write-test"
+            probe.write_bytes(b"ok")
+            probe.unlink()
+        except OSError as exc:
+            raise SystemExit(f"The mail queue folder {self.folder} is not writable by this user ({exc}). "
+                             "Set FENRIR_GATEWAY_SPOOL to a folder on the data volume, e.g. /data/mail-spool.") from None
 
     def put(self, raw: bytes, meta: dict) -> str:
         spool_id = meta.get("id") or uuid.uuid4().hex

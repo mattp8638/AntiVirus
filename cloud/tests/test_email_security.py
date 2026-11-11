@@ -315,6 +315,16 @@ def test_the_background_pass_scans_every_customer_in_shadow_mode(client, admin, 
 from fenrir_cloud import email_actions  # noqa: E402
 from fenrir_cloud.models import Alert, EmailListEntry  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def fresh_model_cache():
+    """The active model is cached per process for a minute; each test has its own database, so start clean."""
+    from fenrir_cloud import email_model
+
+    email_model.forget_cache()
+    yield
+    email_model.forget_cache()
+
 BASE = "/api/console/email-security"
 
 
