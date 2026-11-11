@@ -373,7 +373,7 @@ jobs:
             "PASS  /ready: database up and schema current" \
             "PASS  /health/background" \
             "FAIL  FENRIR_PUBLIC_URL (http://127.0.0.1:8080) is not HTTPS" \
-            "FAIL  No Windows code-signing certificate"; do
+            "FAIL  No Windows code signing"; do
             grep -qF "$expected" /tmp/preflight.txt || { echo "missing: $expected"; exit 1; }
           done
           for name in POSTGRES_PASSWORD FENRIR_SECRET_KEY FENRIR_VAULT_KEY FENRIR_ADMIN_PASSWORD; do
