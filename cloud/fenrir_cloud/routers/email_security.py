@@ -15,10 +15,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from .. import audit, email_actions, email_model, email_scan, ratelimit
+from .. import audit, email_actions, email_model, email_scan, mail_gateway, ratelimit
 from ..db import get_db
 from ..deps import Principal, current_principal, scoped_tenant
-from ..models import EmailListEntry, EmailModel, EmailScan, EmailScanSetting, M365Connection
+from ..models import BackgroundJob, EmailGatewayDomain, EmailListEntry, EmailModel, EmailScan, EmailScanSetting, M365Connection
 from .documentation import owned
 
 router = APIRouter(prefix="/api/console/email-security", tags=["Email security"])
@@ -287,3 +287,140 @@ def train_model(principal: Principal = Depends(current_principal), db: Session =
     audit.record(db, principal.actor, "email_security.model_trained", row.id, None, version=row.version, active=row.active)
     db.commit()
     return email_model.view(row)
+
+
+# --------------------------------------------------------------------------- the mail gateway
+
+class GatewayDomainIn(BaseModel):
+    tenantId: str | None = None
+    domain: str | None = Field(default=None, max_length=253)
+    destination: str | None = Field(default=None, max_length=255)
+    destinationPort: int | None = Field(default=None, ge=1, le=65535)
+    requireTls: bool | None = None
+    rejectUnknownRecipients: bool | None = None
+    tagSubject: bool | None = None
+    actions: dict[str, Literal["quarantine", "tag", "deliver"]] | None = None
+    notify: dict | None = None
+    retentionDays: int | None = Field(default=None, ge=7, le=730)
+    enabled: bool | None = None
+
+
+class ConnectIn(BaseModel):
+    lockdown: bool = False
+
+
+def _is_ip(value: str) -> bool:
+    import ipaddress
+
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
+def _gateway_ips() -> list[str]:
+    import ipaddress
+
+    out = []
+    for part in mail_gateway.env("FENRIR_GATEWAY_PUBLIC_IPS").split(","):
+        try:
+            out.append(str(ipaddress.ip_address(part.strip())))
+        except ValueError:
+            continue
+    return out
+
+
+@router.get("/gateway")
+def gateway(tenant_id: str | None = None, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """The domains routed through the gateway, and whether the gateway process is running."""
+    principal.require("respond")
+    rows = db.execute(select(EmailGatewayDomain).where(EmailGatewayDomain.tenant_id.in_(scoped_tenant(principal, tenant_id)))
+                      .order_by(EmailGatewayDomain.domain)).scalars().all()
+    job = db.get(BackgroundJob, "email.gateway")
+    return {"domains": [mail_gateway.domain_view(r) for r in rows],
+            "status": {"lastRunAt": job.last_run_at.isoformat() + "Z" if job and job.last_run_at else None,
+                       "ok": bool(job.ok) if job else None, "error": job.error if job else "",
+                       "hostname": mail_gateway.env("FENRIR_GATEWAY_HOSTNAME") or None, "publicIps": _gateway_ips()}}
+
+
+def _apply(row: EmailGatewayDomain, body: GatewayDomainIn) -> None:
+    if body.destination is not None:
+        destination = body.destination.strip().lower().rstrip(".")
+        if not mail_gateway.DOMAIN.match(destination) and not _is_ip(destination):
+            raise HTTPException(400, "The destination must be a host name, like contoso-co-uk.mail.protection.outlook.com")
+        row.destination = destination
+    for field, attribute in (("destinationPort", "destination_port"), ("requireTls", "require_tls"),
+                             ("rejectUnknownRecipients", "reject_unknown_recipients"), ("tagSubject", "tag_subject"),
+                             ("retentionDays", "retention_days"), ("enabled", "enabled")):
+        value = getattr(body, field)
+        if value is not None:
+            setattr(row, attribute, value)
+    if body.actions is not None:
+        row.actions = {**mail_gateway.actions_for(row), **{k: v for k, v in body.actions.items() if k in mail_gateway.DEFAULT_ACTIONS}}
+    if body.notify is not None:
+        email = str(body.notify.get("alertEmail") or "").strip()
+        if email and "@" not in email:
+            raise HTTPException(400, "The alert email address is not valid")
+        row.notify = {"digest": bool(body.notify.get("digest")), "alertEmail": email, "openTicket": bool(body.notify.get("openTicket"))}
+
+
+@router.post("/gateway/domains")
+def add_gateway_domain(body: GatewayDomainIn, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Route a customer domain through the gateway. The domain must be verified in the customer's Microsoft 365."""
+    principal.require("configure")
+    if not body.tenantId or not body.domain:
+        raise HTTPException(400, "Choose the customer and enter the domain")
+    principal.check_tenant(body.tenantId)
+    domain = body.domain.strip().lower().rstrip(".")
+    if not mail_gateway.DOMAIN.match(domain):
+        raise HTTPException(400, "Enter a domain, like contoso.co.uk")
+    if domain not in mail_gateway.verified_domains(db, body.tenantId):
+        raise HTTPException(400, f"{domain} is not a verified domain in this customer's Microsoft 365. Sync the Microsoft 365 "
+                                 "connection, or verify the domain in Microsoft 365 first.")
+    if db.execute(select(EmailGatewayDomain).where(EmailGatewayDomain.domain == domain)).scalar_one_or_none():
+        raise HTTPException(409, f"{domain} is already routed through the gateway")
+    row = EmailGatewayDomain(tenant_id=body.tenantId, domain=domain, destination=mail_gateway.default_destination(domain),
+                             actions=dict(mail_gateway.DEFAULT_ACTIONS), notify={}, m365_connector={}, created_by=principal.actor)
+    _apply(row, body)
+    db.add(row)
+    audit.record(db, principal.actor, "email_security.gateway_domain_added", domain, body.tenantId, destination=row.destination)
+    db.commit()
+    return mail_gateway.domain_view(row)
+
+
+@router.put("/gateway/domains/{domain_id}")
+def update_gateway_domain(domain_id: str, body: GatewayDomainIn, principal: Principal = Depends(current_principal),
+                          db: Session = Depends(get_db)):
+    principal.require("configure")
+    row = owned(db, EmailGatewayDomain, domain_id, principal)
+    _apply(row, body)
+    audit.record(db, principal.actor, "email_security.gateway_domain_changed", row.domain, row.tenant_id)
+    db.commit()
+    return mail_gateway.domain_view(row)
+
+
+@router.delete("/gateway/domains/{domain_id}")
+def remove_gateway_domain(domain_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Stop accepting mail for the domain. Change its MX record back to Microsoft 365 first."""
+    principal.require("configure")
+    row = owned(db, EmailGatewayDomain, domain_id, principal)
+    audit.record(db, principal.actor, "email_security.gateway_domain_removed", row.domain, row.tenant_id)
+    db.delete(row)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/gateway/domains/{domain_id}/connect-m365")
+def connect_m365(domain_id: str, body: ConnectIn, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Create the customer's Microsoft 365 inbound connector for the gateway (Exchange Online admin access needed)."""
+    principal.require("m365_admin")
+    row = owned(db, EmailGatewayDomain, domain_id, principal)
+    ratelimit.check(f"email-gateway-connect:{row.id}", 3, 600)
+    try:
+        result = mail_gateway.connect_m365(db, row, _gateway_ips(), body.lockdown, principal.actor)
+    except email_actions.ActionError as exc:
+        db.commit()  # keep the failure on the domain
+        raise HTTPException(409, str(exc)) from None
+    db.commit()
+    return {"m365Connector": result, "domain": mail_gateway.domain_view(row)}

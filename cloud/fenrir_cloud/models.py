@@ -2110,6 +2110,41 @@ class EmailModel(Base):
     trained_by: Mapped[str] = mapped_column(String(320), default="")
 
 
+class EmailGatewayDomain(Base):
+    """A customer domain whose mail comes through Fenrir's mail gateway (mail_gateway.py) before Microsoft 365."""
+    __tablename__ = "email_gateway_domains"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("emgw"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    domain: Mapped[str] = mapped_column(String(255), unique=True)
+    # Where clean mail goes: the tenant's Microsoft 365 MX host, e.g. contoso-co-uk.mail.protection.outlook.com
+    destination: Mapped[str] = mapped_column(String(255))
+    destination_port: Mapped[int] = mapped_column(Integer, default=25)
+    require_tls: Mapped[bool] = mapped_column(Boolean, default=True)
+    reject_unknown_recipients: Mapped[bool] = mapped_column(Boolean, default=False)
+    tag_subject: Mapped[bool] = mapped_column(Boolean, default=False)  # "[Suspicious]" prefix (breaks DKIM without ARC)
+    actions: Mapped[dict] = mapped_column(JSON, default=dict)  # {"malware": "quarantine", "phish": "quarantine", "suspicious": "tag"}
+    notify: Mapped[dict] = mapped_column(JSON, default=dict)
+    retention_days: Mapped[int] = mapped_column(Integer, default=90)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    m365_connector: Mapped[dict] = mapped_column(JSON, default=dict)  # {"status", "lockdown", "at", "error"}
+    last_message_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(320), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class EmailQuarantine(Base):
+    """The original message the gateway held back, encrypted with the vault key, so it can be released later."""
+    __tablename__ = "email_quarantine"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("emq"))
+    scan_id: Mapped[str] = mapped_column(String(32), unique=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    mail_from: Mapped[str] = mapped_column(String(320), default="")
+    recipients: Mapped[list] = mapped_column(JSON, default=list)
+    size: Mapped[int] = mapped_column(Integer, default=0)
+    envelope: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
 class M365Workflow(Base):
     """A reviewed multi-step Microsoft 365 job: offboarding, onboarding or a bulk user import (m365_lifecycle.py).
 

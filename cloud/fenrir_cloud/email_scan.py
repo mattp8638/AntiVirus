@@ -368,7 +368,11 @@ def run_one(db: Session, setting: EmailScanSetting, intel: dict, client: httpx.C
         db.rollback()
         setting = db.get(EmailScanSetting, setting.id)
         setting.last_run_at = utcnow()
-        setting.last_error = (str(exc) if isinstance(exc, ScanError) else m365.describe_failure(exc))[:300]
+        if isinstance(exc, crypto.VaultError):
+            message = "Fenrir could not read this connection's stored credentials. Reconnect the customer under Microsoft 365."
+        else:
+            message = str(exc) if isinstance(exc, ScanError) else m365.describe_failure(exc)
+        setting.last_error = message[:300]
         db.commit()
         return {"stored": 0, "error": setting.last_error}
 

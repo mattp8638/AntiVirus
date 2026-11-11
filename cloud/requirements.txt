@@ -9,3 +9,7 @@ tzdata>=2024.1
 cryptography>=42.0
 anthropic>=2.3,<3
 fpdf2>=2.8.4,<3
+# Email security mail gateway (mail_gateway.py)
+aiosmtpd>=1.4.6,<2
+dkimpy>=1.1.8,<2
+pyspf>=2.0.14,<3
