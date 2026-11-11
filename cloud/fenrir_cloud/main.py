@@ -591,6 +591,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                    reports_router, branding_router, deploy_router):
         app.include_router(module.router)
     app.include_router(deploy_router.public)
+    app.include_router(email_security_router.public)
     app.include_router(documentation_router.router)
     app.include_router(m365_router.oauth)
     app.include_router(psa_router.inbound)

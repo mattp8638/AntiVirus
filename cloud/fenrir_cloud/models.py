@@ -2013,8 +2013,16 @@ class EmailScanSetting(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("emset"))
     tenant_id: Mapped[str] = mapped_column(String(32), index=True)
     connection_id: Mapped[str] = mapped_column(String(32), unique=True)
-    mode: Mapped[str] = mapped_column(String(10), default="off")  # off | shadow
+    mode: Mapped[str] = mapped_column(String(10), default="off")  # off | shadow | protect
     retention_days: Mapped[int] = mapped_column(Integer, default=90)
+    # Protect mode (email_actions.py): what to do per verdict, e.g. {"malware": "quarantine", "phish": "quarantine",
+    # "suspicious": "tag"}; when protect mode started (older mail is never touched); why it paused itself, if it did.
+    actions: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=dict)
+    protect_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    paused_reason: Mapped[str | None] = mapped_column(String(300), nullable=True, default="")
+    # {"digest": true, "alertEmail": "soc@msp.example", "openTicket": false}
+    notify: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=dict)
+    digest_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     state: Mapped[dict] = mapped_column(JSON, default=dict)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_error: Mapped[str] = mapped_column(String(300), default="")
@@ -2052,7 +2060,36 @@ class EmailScan(Base):
     labelled_by: Mapped[str] = mapped_column(String(320), default="")
     labelled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     scanned_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # Where it came from: "graph" (read from the mailbox) or "gateway" (passed through Fenrir's mail gateway).
+    source: Mapped[str | None] = mapped_column(String(10), nullable=True, default="graph")
+    recipients: Mapped[list | None] = mapped_column(JSON, nullable=True, default=list)  # gateway: every recipient
+    # What Fenrir did (protect mode): "" | quarantine | junk | tag | deliver; and how that went:
+    # "" | done | failed | released | release_requested | skipped
+    action: Mapped[str | None] = mapped_column(String(12), nullable=True, default="")
+    action_status: Mapped[str | None] = mapped_column(String(20), nullable=True, default="")
+    action_error: Mapped[str | None] = mapped_column(String(300), nullable=True, default="")
+    acted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    moved_message_id: Mapped[str | None] = mapped_column(String(200), nullable=True, default="")  # its id after a move
+    released_by: Mapped[str | None] = mapped_column(String(320), nullable=True, default="")
+    released_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    release_requested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    model_score: Mapped[float | None] = mapped_column(Float, nullable=True)  # the learned model's probability (phase 3)
     __table_args__ = (UniqueConstraint("connection_id", "mailbox", "message_id", name="uq_email_scan_message"),)
+
+
+class EmailListEntry(Base):
+    """An allow or block entry for email security: a sender address or a whole domain, for one customer or (tenant_id
+    of the MSP's root) every customer below it. Allow wins over Fenrir's checks; block makes the message malicious."""
+    __tablename__ = "email_list_entries"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("emlst"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    kind: Mapped[str] = mapped_column(String(5))  # allow | block
+    match: Mapped[str] = mapped_column(String(10))  # sender | domain
+    value: Mapped[str] = mapped_column(String(320))
+    note: Mapped[str] = mapped_column(String(300), default="")
+    created_by: Mapped[str] = mapped_column(String(320), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    __table_args__ = (UniqueConstraint("tenant_id", "kind", "match", "value", name="uq_email_list_entry"),)
 
 
 class M365Workflow(Base):

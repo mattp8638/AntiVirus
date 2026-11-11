@@ -160,6 +160,10 @@ class FakeMail:
                  "body": {"content": "<p>Verify your account within 24 hours</p><a href='https://acrne.co.uk/login'>https://acme.co.uk</a>"}},
             ],
         }
+        self.moves: list[tuple[str, str]] = []  # (message id, destination)
+        self.patches: list[tuple[str, dict]] = []
+        self.write_denied = False
+        self.hidden_folders: dict[str, str] = {}
         self.attachment = {"@odata.type": "#microsoft.graph.fileAttachment", "id": "att1", "name": "Remittance.pdf.exe",
                            "contentType": "application/octet-stream", "size": len(exe), "isInline": False,
                            "contentBytes": base64.b64encode(exe).decode()}
@@ -175,6 +179,23 @@ class FakeMail:
         if self.denied:
             return httpx.Response(403, json={"error": {"code": "ErrorAccessDenied", "message": "Access is denied."}})
         parts = path.strip("/").split("/")
+        if request.method in ("POST", "PATCH") and self.write_denied and parts[-1] != "mailFolders":
+            return httpx.Response(403, json={"error": {"code": "ErrorAccessDenied", "message": "Access is denied."}})
+        if parts[:2] == ["users", USER] and parts[2:] == ["mailFolders"]:
+            if request.method == "POST":
+                body = json.loads(request.content)
+                assert body["isHidden"] is True
+                self.hidden_folders[body["displayName"]] = "qfolder-1"
+                return httpx.Response(201, json={"id": "qfolder-1", "displayName": body["displayName"]})
+            assert request.url.params.get("includeHiddenFolders") == "true"
+            return httpx.Response(200, json={"value": [{"id": v, "displayName": k} for k, v in self.hidden_folders.items()]})
+        if parts[:2] == ["users", USER] and parts[2] == "messages" and len(parts) == 5 and parts[4] == "move":
+            destination = json.loads(request.content)["destinationId"]
+            self.moves.append((parts[3], destination))
+            return httpx.Response(201, json={"id": f"{parts[3]}-in-{destination}"})
+        if parts[:2] == ["users", USER] and parts[2] == "messages" and len(parts) == 4 and request.method == "PATCH":
+            self.patches.append((parts[3], json.loads(request.content)))
+            return httpx.Response(200, json={"id": parts[3]})
         if parts[:2] == ["users", USER] and parts[2] == "mailFolders" and parts[4] == "messages":
             query = {k: v[0] for k, v in parse_qs(urlparse(str(request.url)).query).items()}
             since = datetime.fromisoformat(query["$filter"].split(" ge ")[1].replace("Z", "+00:00"))
@@ -286,3 +307,178 @@ def test_the_background_pass_scans_every_customer_in_shadow_mode(client, admin, 
         assert db.query(EmailScan).count() == 3
         setting = db.query(EmailScanSetting).one()
         assert setting.last_scanned == 3 and setting.last_error == "" and setting.last_run_at is not None
+
+
+
+# --------------------------------------------------------------------------- phase 2: protect mode
+
+from fenrir_cloud import email_actions  # noqa: E402
+from fenrir_cloud.models import Alert, EmailListEntry  # noqa: E402
+
+BASE = "/api/console/email-security"
+
+
+def _protect(client, admin, row, **body):
+    """Turn protect mode on, as if three hours ago, so the fake mailbox's messages count as new."""
+    response = client.put(f"{BASE}/connections/{row['id']}", json={"mode": "protect", **body}, headers=admin)
+    assert response.status_code == 200, response.text
+    with database.session_factory()() as db:
+        db.query(EmailScanSetting).update({"protect_since": utcnow() - timedelta(hours=3)})
+        db.commit()
+    return response.json()
+
+
+def _by_subject(client, admin):
+    return {m["subject"]: m for m in client.get(BASE + "/messages", params={"verdict": ""}, headers=admin).json()}
+
+
+def test_protect_mode_quarantines_threats_tags_suspicious_and_reports_once(client, admin, tenant, mail):
+    row = _prepare(client, admin, tenant, mail)
+    view = _protect(client, admin, row)
+    assert view["mode"] == "protect" and view["actions"] == {"malware": "quarantine", "phish": "quarantine", "suspicious": "tag"}
+    assert client.post(f"{BASE}/connections/{row['id']}/scan", headers=admin).json()["error"] == ""
+
+    assert mail.hidden_folders == {"Fenrir Quarantine": "qfolder-1"}
+    assert sorted(mail.moves) == [("m2", "qfolder-1"), ("m3", "qfolder-1")]  # malware (inbox) and phish (junk)
+    msgs = _by_subject(client, admin)
+    assert msgs["Remittance advice"]["action"] == "quarantine" and msgs["Remittance advice"]["actionStatus"] == "done"
+    assert msgs["Order dispatched"]["action"] == "" and msgs["Order dispatched"]["actionStatus"] == ""
+    with database.session_factory()() as db:
+        alerts = db.query(Alert).filter(Alert.rule_id.like("email:%")).all()
+        assert len(alerts) == 1 and alerts[0].severity == "high" and "quarantined 2 messages" in alerts[0].title
+        assert "Remittance advice" in alerts[0].details["summary"]
+    overview = client.get(BASE + "/overview", headers=admin).json()
+    assert overview["quarantined"] == 2 and overview["releaseRequests"] == 0
+
+
+def test_suspicious_mail_is_tagged_and_old_mail_is_never_touched(client, admin, tenant, mail):
+    row = _prepare(client, admin, tenant, mail)
+    mail.folders["inbox"][0]["subject"] = "Your password will expire"  # scam wording only: suspicious, not phish
+    mail.folders["inbox"][0]["body"] = {"content": "<p>Your password will expire within 24 hours. Click here to sign in.</p>"}
+    client.put(f"{BASE}/connections/{row['id']}", json={"mode": "protect"}, headers=admin)
+    with database.session_factory()() as db:  # protect mode started 90 minutes ago: m1 (two hours old) is older
+        db.query(EmailScanSetting).update({"protect_since": utcnow() - timedelta(minutes=90)})
+        db.commit()
+    client.post(f"{BASE}/connections/{row['id']}/scan", headers=admin)
+    msgs = _by_subject(client, admin)
+    old = msgs["Your password will expire"]
+    assert old["verdict"] == "suspicious" and old["action"] == ""  # received before protect mode started
+    assert [m for m, _ in mail.moves] == ["m2", "m3"]
+
+    mail.folders["inbox"].append({**mail.folders["inbox"][0], "id": "m5", "receivedDateTime": iso(NOW - timedelta(minutes=5)),
+                                  "categories": ["Blue"]})
+    client.post(f"{BASE}/connections/{row['id']}/scan", headers=admin)
+    assert mail.patches == [("m5", {"categories": ["Blue", "Fenrir: suspicious"]})]
+
+
+def test_release_brings_mail_back_and_can_allow_the_sender(client, admin, tenant, mail):
+    row = _prepare(client, admin, tenant, mail)
+    _protect(client, admin, row)
+    client.post(f"{BASE}/connections/{row['id']}/scan", headers=admin)
+    scan = _by_subject(client, admin)["Remittance advice"]
+    released = client.post(f"{BASE}/messages/{scan['id']}/release", json={"allowSender": True}, headers=admin).json()
+    assert released["actionStatus"] == "released" and released["releasedBy"]
+    assert mail.moves[-1] == ("m2-in-qfolder-1", "inbox")  # the moved copy's new id goes back to the Inbox
+    again = client.post(f"{BASE}/messages/{scan['id']}/release", json={}, headers=admin)
+    assert again.status_code == 409
+    entries = client.get(BASE + "/lists", headers=admin).json()
+    assert [(e["kind"], e["match"], e["value"]) for e in entries] == [("allow", "sender", "pay@evil.example")]
+    with database.session_factory()() as db:  # the sender is now allowed: its next message is clean
+        conn = db.get(M365Connection, row["id"])
+        ctx = email_scan.build_context(db, conn, email_scan.load_intel(db))
+        result = es.analyse(message(sender_address="pay@evil.example", attachments=[{"name": "invoice.pdf.exe"}]), ctx)
+        assert result["verdict"] == "clean" and result["reasons"][0]["code"] == "list.allow"
+        forged = es.analyse(message(sender_address="pay@evil.example", headers=dict(PHISH_HEADERS)), ctx)
+        assert forged["verdict"] != "clean"  # an allow-listed sender that fails DMARC is not trusted
+
+
+def test_block_list_and_list_api(client, admin, tenant, mail):
+    row = _prepare(client, admin, tenant, mail)
+    bad = client.post(BASE + "/lists", json={"tenantId": tenant["id"], "kind": "block", "match": "domain", "value": "not a domain"}, headers=admin)
+    assert bad.status_code == 400
+    entry = client.post(BASE + "/lists", json={"tenantId": tenant["id"], "kind": "block", "match": "domain",
+                                               "value": "@Supplier.Example", "note": "test"}, headers=admin).json()
+    assert entry["value"] == "supplier.example"
+    client.put(f"{BASE}/connections/{row['id']}", json={"mode": "shadow"}, headers=admin)
+    client.post(f"{BASE}/connections/{row['id']}/scan", headers=admin)
+    order = _by_subject(client, admin)["Order dispatched"]
+    assert order["verdict"] == "phish" and "block list" in order["topReason"]
+    assert client.delete(f"{BASE}/lists/{entry['id']}", headers=admin).json() == {"ok": True}
+    assert client.get(BASE + "/lists", headers=admin).json() == []
+
+
+def test_the_brake_stops_mass_quarantine_and_asks_a_person(client, admin, tenant, mail, monkeypatch):
+    monkeypatch.setattr(email_actions, "BRAKE", 1)
+    row = _prepare(client, admin, tenant, mail)
+    _protect(client, admin, row)
+    client.post(f"{BASE}/connections/{row['id']}/scan", headers=admin)
+    assert len(mail.moves) == 1  # the second threat was recorded but not moved
+    view = client.get(BASE + "/connections", headers=admin).json()[0]
+    assert "Paused automatically" in view["pausedReason"]
+    with database.session_factory()() as db:
+        assert db.query(Alert).filter_by(rule_id="email:brake").count() == 1
+    resumed = client.put(f"{BASE}/connections/{row['id']}", json={"mode": "protect"}, headers=admin).json()
+    assert resumed["pausedReason"] == ""
+
+
+def test_missing_write_permission_is_recorded_on_the_message(client, admin, tenant, mail):
+    row = _prepare(client, admin, tenant, mail)
+    mail.write_denied = True
+    _protect(client, admin, row)
+    client.post(f"{BASE}/connections/{row['id']}/scan", headers=admin)
+    scan = _by_subject(client, admin)["Remittance advice"]
+    detail = client.get(f"{BASE}/messages/{scan['id']}", headers=admin).json()
+    assert detail["actionStatus"] == "failed" and "Mail.ReadWrite" in detail["actionError"]
+    assert client.get(BASE + "/overview", headers=admin).json()["actionFailures"] == 2
+
+
+def test_users_ask_for_a_message_back_through_a_button_not_a_link(client, admin, tenant, mail):
+    row = _prepare(client, admin, tenant, mail)
+    _protect(client, admin, row)
+    client.post(f"{BASE}/connections/{row['id']}/scan", headers=admin)
+    scan = _by_subject(client, admin)["Remittance advice"]
+    link = email_actions.release_link(scan["id"])
+    path = urlparse(link).path + "?" + urlparse(link).query
+    page = client.get(path)
+    assert page.status_code == 200 and "Ask IT to release it" in page.text and "pay@evil.example" in page.text
+    assert _by_subject(client, admin)["Remittance advice"]["actionStatus"] == "done"  # opening the link changed nothing
+    assert client.get(f"/api/public/email-release/{scan['id']}?t=wrong").status_code == 404
+    assert client.post(f"/api/public/email-release/{scan['id']}?t=wrong").status_code == 404
+    done = client.post(path)
+    assert done.status_code == 200 and "Request sent" in done.text
+    assert _by_subject(client, admin)["Remittance advice"]["actionStatus"] == "release_requested"
+    with database.session_factory()() as db:
+        assert db.query(Alert).filter_by(rule_id="email:release-request").count() == 1
+    released = client.post(f"{BASE}/messages/{scan['id']}/release", json={}, headers=admin)
+    assert released.status_code == 200 and released.json()["actionStatus"] == "released"
+
+
+def test_daily_digest_lists_held_mail_with_release_links(client, admin, tenant, mail, monkeypatch):
+    from fenrir_cloud import mailer
+
+    sent = []
+    monkeypatch.setattr(mailer, "configured", lambda: True)
+    monkeypatch.setattr(mailer, "send", lambda to, subject, body, **kw: sent.append((to, subject, body, kw.get("html"))) or "<id>")
+    row = _prepare(client, admin, tenant, mail)
+    _protect(client, admin, row, notify={"digest": True, "alertEmail": "soc@msp.example"})
+    client.post(f"{BASE}/connections/{row['id']}/scan", headers=admin)
+    digests = [s for s in sent if s[0] == "jo@acme.co.uk"]
+    assert len(digests) == 1 and digests[0][1] == "Messages held back for you (2)"
+    assert "/api/public/email-release/" in digests[0][2] and "Remittance advice" in digests[0][3]
+    assert any(s[0] == "soc@msp.example" and "quarantined 2" in s[1] for s in sent)
+    client.post(f"{BASE}/connections/{row['id']}/scan", headers=admin)
+    assert len([s for s in sent if s[0] == "jo@acme.co.uk"]) == 1  # once a day
+
+
+def test_new_intel_rescans_recent_mail_and_quarantines_it(client, admin, tenant, mail):
+    row = _prepare(client, admin, tenant, mail)
+    _protect(client, admin, row)
+    client.post(f"{BASE}/connections/{row['id']}/scan", headers=admin)
+    assert _by_subject(client, admin)["Order dispatched"]["verdict"] == "clean"
+    with database.session_factory()() as db:
+        db.add(Indicator(tenant_id=None, type="domain", value="supplier.example", verdict="malicious", category="phishing", source="test"))
+        db.commit()
+    client.post(f"{BASE}/connections/{row['id']}/scan", headers=admin)
+    order = client.get(f"{BASE}/messages/{_by_subject(client, admin)['Order dispatched']['id']}", headers=admin).json()
+    assert order["verdict"] == "phish" and order["reasons"][0]["code"] == "intel.retro" and order["action"] == "quarantine"
+    assert ("m1", "qfolder-1") in mail.moves
