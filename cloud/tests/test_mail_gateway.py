@@ -21,6 +21,16 @@ def fresh_model_cache():
     yield
     email_model.forget_cache()
 
+
+@pytest.fixture(autouse=True)
+def no_dns_lookups(monkeypatch):
+    """IP evidence (reverse DNS, ASN) comes from DNS; tests use fixed answers instead of the network."""
+    from fenrir_cloud import email_forensics
+
+    email_forensics._ip_cache.clear()
+    monkeypatch.setattr(email_forensics, "_lookups", lambda ip: {"ptr": "mail.example.net", "asn": "64500",
+                                                                  "network": "203.0.113.0/24", "owner": "EXAMPLE-NET", "country": "GB"})
+
 BASE = "/api/console/email-security"
 PASS_AUTH = {"spf": "pass", "dkim": "pass", "dkimDomain": "supplier.example", "dmarc": "pass", "policy": "reject",
              "header": "spf=pass smtp.mailfrom=supplier.example; dkim=pass header.d=supplier.example; dmarc=pass action=none header.from=supplier.example"}
@@ -271,3 +281,30 @@ def test_a_message_that_keeps_failing_is_dropped_after_three_days(gateway, monke
     monkeypatch.setattr(mail_gateway, "parse", lambda raw, header: (_ for _ in ()).throw(ValueError("unreadable")))
     run(gateway)
     assert gateway.spool.size() == 0
+
+
+
+def test_gateway_scans_keep_the_evidence_and_microsofts_reply(client, admin, gateway):
+    gateway.send(mail())
+    run(gateway)
+    with database.session_factory()() as db:
+        scan = db.query(EmailScan).one()
+        details, scan_id = scan.details, scan.id
+    assert details["origin"]["ip"] == "127.0.0.1" and details["origin"]["public"] is False
+    assert details["addresses"]["envelopeFrom"] == "accounts@supplier.example" and details["addresses"]["recipients"] == ["jo@acme.co.uk"]
+    assert details["auth"]["spf"] == "pass" and details["size"] > 100 and details["tls"] is False
+    assert any(name == "Subject" and value == "Order dispatched" for name, value in details["headers"])
+    assert details["delivery"]["response"].startswith("250") and details["delivery"]["attempts"] == 1
+    assert details["delivery"]["host"] == "127.0.0.1"
+    assert details["path"][-1]["ip"] == "127.0.0.1" and "gateway" in details["path"][-1]["raw"]
+    # Delivered gateway mail is not kept, so there is no original to download.
+    assert client.get(f"{BASE}/messages/{scan_id}/original", headers=admin).status_code == 404
+
+
+def test_quarantined_gateway_mail_can_be_downloaded_for_analysis(client, admin, gateway):
+    gateway.send(mail(subject="Remittance", attachment=("remittance.pdf.exe", b"MZ fake program")))
+    run(gateway)
+    with database.session_factory()() as db:
+        scan_id = db.query(EmailScan).one().id
+    original = client.get(f"{BASE}/messages/{scan_id}/original", headers=admin)
+    assert original.status_code == 200 and b"Subject: Remittance" in original.content

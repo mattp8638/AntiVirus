@@ -14,7 +14,7 @@ from fenrir_cloud import db as database, email_scan, email_security as es, m365_
 from fenrir_cloud.models import EmailScan, EmailScanSetting, Indicator, M365Connection, utcnow
 
 PHISH_HEADERS = {
-    "x-forefront-antispam-report": "CIP:203.0.113.9;CTRY:RU;LANG:en;SCL:5;SRV:;IPV:NLI;SFV:SPM;H:mx;CAT:PHSH;SFS:(1);DIR:INB;",
+    "x-forefront-antispam-report": "CIP:81.2.69.160;CTRY:RU;LANG:en;SCL:5;SRV:;IPV:NLI;SFV:SPM;H:mx;CAT:PHSH;SFS:(1);DIR:INB;",
     "x-microsoft-antispam": "BCL:0;",
     "authentication-results": "spf=fail (sender IP is 203.0.113.9) smtp.mailfrom=acrne.co.uk; dkim=none (message not signed) "
                               "header.d=none;dmarc=fail action=quarantine header.from=acrne.co.uk;compauth=fail reason=000",
@@ -201,6 +201,9 @@ class FakeMail:
             since = datetime.fromisoformat(query["$filter"].split(" ge ")[1].replace("Z", "+00:00"))
             rows = [m for m in self.folders[parts[3]] if datetime.fromisoformat(m["receivedDateTime"].replace("Z", "+00:00")) >= since]
             return httpx.Response(200, json={"value": rows})
+        if parts[:2] == ["users", USER] and parts[2] == "messages" and parts[-1] == "$value":
+            return httpx.Response(200, content=b"From: pay@evil.example\r\nSubject: Remittance advice\r\n\r\nSee attached.",
+                                  headers={"Content-Type": "message/rfc822"})
         if parts[:2] == ["users", USER] and parts[2] == "messages" and parts[4] == "attachments":
             if len(parts) == 5:
                 return httpx.Response(200, json={"value": [{k: v for k, v in self.attachment.items() if k != "contentBytes"}]})
@@ -324,6 +327,16 @@ def fresh_model_cache():
     email_model.forget_cache()
     yield
     email_model.forget_cache()
+
+
+@pytest.fixture(autouse=True)
+def no_dns_lookups(monkeypatch):
+    """IP evidence (reverse DNS, ASN) comes from DNS; tests use fixed answers instead of the network."""
+    from fenrir_cloud import email_forensics
+
+    email_forensics._ip_cache.clear()
+    monkeypatch.setattr(email_forensics, "_lookups", lambda ip: {"ptr": "mail.example.net", "asn": "64500",
+                                                                  "network": "203.0.113.0/24", "owner": "EXAMPLE-NET", "country": "GB"})
 
 BASE = "/api/console/email-security"
 
@@ -566,3 +579,52 @@ def test_only_msp_admins_retrain_and_technicians_cannot(client, admin, tenant):
     tech = login(client, "tech@acme.example", "Technician-pass-123")
     assert client.post(BASE + "/model/train", headers=tech).status_code == 403
     assert client.get(BASE + "/model", headers=tech).status_code == 200
+
+
+
+# --------------------------------------------------------------------------- the evidence behind a verdict
+
+from fenrir_cloud import email_forensics  # noqa: E402
+
+
+def test_the_received_path_is_read_oldest_first_with_delays():
+    headers = [["Received", "from mx.example.net (mx.example.net [81.2.69.142]) by relay.example.org with ESMTPS id 1; Wed, 11 Nov 2026 20:00:30 +0000"],
+               ["Received", "from laptop ([192.168.1.20]) by mx.example.net with ESMTPSA id 0; Wed, 11 Nov 2026 20:00:00 +0000"]]
+    hops = email_forensics.path(headers)
+    assert [h["from"] for h in hops] == ["laptop", "mx.example.net"] and hops[1]["ip"] == "81.2.69.142"
+    assert hops[1]["delaySeconds"] == 30 and hops[0]["with"] == "ESMTPSA"
+    assert email_forensics.originating_ip(headers, hops) == "81.2.69.142"  # the first public hop, not the private laptop
+    assert email_forensics.originating_ip([["X-Forefront-Antispam-Report", "CIP:198.51.100.9;CTRY:RU;"]], []) == "198.51.100.9"
+
+
+def test_addresses_explain_mismatches_and_links_say_what_is_wrong():
+    headers = [["From", "Accounts <accounts@supplier.example>"], ["Reply-To", "pay@gmail.com"],
+               ["Return-Path", "<bounce@bulkmailer.example>"], ["X-Mailer", "PHPMailer 6.1"]]
+    found = email_forensics.addresses(headers)
+    assert found["envelopeFrom"] == "bounce@bulkmailer.example" and found["mailer"] == "PHPMailer 6.1"
+    assert any("different domain than the From" in n for n in found["notes"]) and any("Replies go to pay@gmail.com" in n for n in found["notes"])
+    links = email_forensics.links("<a href='http://198.51.100.20/login'>https://www.microsoft.com</a> <a href='https://bit.ly/x'>x</a>"
+                                  "<a href='https://bad.example/p'>p</a>", ctx(bad_domains={"bad.example": "phishing"}))
+    flags = {l["host"]: l["flags"] for l in links}
+    assert flags["198.51.100.20"] == ["bare IP", "text shows another site"] and flags["bit.ly"] == ["shortener"]
+    assert flags["bad.example"] == ["threat intel"]
+    assert email_forensics.ip_info("10.0.0.5") == {"ip": "10.0.0.5", "public": False, "ptr": "", "asn": "", "network": "",
+                                                   "owner": "", "country": "", "listed": False}
+
+
+def test_mailbox_scans_keep_headers_origin_and_can_download_the_original(client, admin, tenant, mail):
+    row = _prepare(client, admin, tenant, mail)
+    client.put(f"{BASE}/connections/{row['id']}", json={"mode": "shadow"}, headers=admin)
+    client.post(f"{BASE}/connections/{row['id']}/scan", headers=admin)
+    junk = _by_subject(client, admin)["Verify your account"]
+    detail = client.get(f"{BASE}/messages/{junk['id']}", headers=admin).json()
+    evidence = detail["details"]
+    assert ["x-forefront-antispam-report", PHISH_HEADERS["x-forefront-antispam-report"]] in evidence["headers"]
+    assert evidence["origin"] == {"ip": "81.2.69.160", "public": True, "ptr": "mail.example.net", "asn": "64500",
+                                  "network": "203.0.113.0/24", "owner": "EXAMPLE-NET", "country": "GB", "listed": False}
+    assert evidence["auth"]["spf"] == "fail" and evidence["auth"]["dmarc"] == "fail" and evidence["auth"]["compauth"] == "fail"
+    assert any("text shows another site" in l["flags"] for l in evidence["links"]) and detail["canDownload"]
+    remittance = _by_subject(client, admin)["Remittance advice"]
+    original = client.get(f"{BASE}/messages/{remittance['id']}/original", headers=admin)
+    assert original.status_code == 200 and original.headers["content-type"].startswith("message/rfc822")
+    assert b"Subject: Remittance advice" in original.content and "attachment" in original.headers["content-disposition"]

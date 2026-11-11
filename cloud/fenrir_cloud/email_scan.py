@@ -59,10 +59,10 @@ def load_intel(db: Session) -> dict:
     now = utcnow()
     out: dict = {}
     rows = db.execute(select(Indicator.tenant_id, Indicator.type, Indicator.value, Indicator.verdict, Indicator.category)
-                      .where(Indicator.type.in_(("url", "domain", "sha256")))
+                      .where(Indicator.type.in_(("url", "domain", "sha256", "ip")))
                       .where((Indicator.expires_at.is_(None)) | (Indicator.expires_at > now))).all()
     for tenant_id, kind, value, verdict, category in rows:
-        bucket = out.setdefault(tenant_id, {"urls": set(), "domains": {}, "hashes": {}, "allow": set()})
+        bucket = out.setdefault(tenant_id, {"urls": set(), "domains": {}, "hashes": {}, "allow": set(), "ips": set()})
         value = str(value or "").strip().lower()
         if not value:
             continue
@@ -76,6 +76,8 @@ def load_intel(db: Session) -> dict:
             bucket["domains"][value.rstrip(".")] = category or "malicious"
         elif kind == "sha256":
             bucket["hashes"][value] = category or "malware"
+        elif kind == "ip" and verdict == "malicious":
+            bucket["ips"].add(value)
     return out
 
 
@@ -207,6 +209,7 @@ def scan_connection(db: Session, setting: EmailScanSetting, connection: M365Conn
     """Read and score new mail for one connection. Returns how many messages were stored."""
     token = m365.access_token(client, connection)
     ctx = build_context(db, connection, intel)
+    bad_ips = set((intel.get(None) or {}).get("ips", set())) | set((intel.get(connection.tenant_id) or {}).get("ips", set()))
     state = dict(setting.state or {})
     boxes = mailboxes(connection)
     if not boxes:
@@ -247,6 +250,7 @@ def scan_connection(db: Session, setting: EmailScanSetting, connection: M365Conn
                         attachments = _attachments(client, token, box["id"], item["id"]) if item.get("hasAttachments") else []
                         result = email_security.analyse(_message(item, box["address"], folder, attachments), ctx)
                         row = _row(connection, box["address"], folder, item, received, attachments, result)
+                        row.details = _details(item, attachments, ctx, bad_ips)
                         db.add(row)
                         new_rows.append(row)
                         ctx.known_senders.add(result["sender_domain"])
@@ -293,6 +297,20 @@ def scan_connection(db: Session, setting: EmailScanSetting, connection: M365Conn
     email_actions.report_run(db, setting, new_rows + changed)
     email_actions.send_digests(db, setting)
     return stored
+
+
+def _details(item: dict, attachments: list[dict], ctx: email_security.Context, bad_ips: set[str]) -> dict:
+    """The evidence for the console: headers, path, originating IP and so on (email_forensics.py). Never fails a scan."""
+    from . import email_forensics
+
+    try:
+        headers = email_forensics.header_list([(h.get("name", ""), h.get("value", ""))
+                                               for h in item.get("internetMessageHeaders") or [] if isinstance(h, dict)])
+        return email_forensics.build(headers=headers, html=str(((item.get("body") or {}).get("content")) or ""),
+                                     attachments=attachments, ctx=ctx, bad_ips=bad_ips)
+    except Exception as exc:  # noqa: BLE001 - evidence is a bonus; the verdict is already stored
+        log.warning("email evidence could not be built: %s", exc)
+        return {}
 
 
 def _row(connection: M365Connection, mailbox: str, folder: str, item: dict, received: datetime, attachments: list[dict],
@@ -468,7 +486,8 @@ def scan_view(row: EmailScan, full: bool = False) -> dict:
                    actionError=row.action_error or "", actedAt=row.acted_at.isoformat() + "Z" if row.acted_at else None,
                    releasedBy=row.released_by or "", releasedAt=row.released_at.isoformat() + "Z" if row.released_at else None,
                    releaseRequestedAt=row.release_requested_at.isoformat() + "Z" if row.release_requested_at else None,
-                   recipients=row.recipients or [])
+                   recipients=row.recipients or [], details=row.details or {},
+                   canDownload=bool((row.source or "graph") == "graph" or row.action == "quarantine"))
     return out
 
 

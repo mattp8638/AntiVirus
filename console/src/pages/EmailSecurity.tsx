@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { ago, api } from "../api";
+import { useState, type ReactNode } from "react";
+import { ago, api, downloadFile } from "../api";
 import { useApp } from "../app-context";
 import { ErrorNote, Modal, PageHead, Pill, Stat, Table, Tabs, useAction, useData, useListData } from "../components/ui";
 
@@ -26,6 +26,20 @@ interface ScanDetail extends Scan {
   microsoft: Record<string, string | number | null>; attachmentDetails: { name: string; size?: number; sha256?: string }[];
   linkDomains: string[]; internetMessageId: string; labelledBy: string; labelledAt: string | null; actionError: string;
   actedAt: string | null; releasedBy: string; releasedAt: string | null; releaseRequestedAt: string | null; recipients: string[];
+  details: Evidence; canDownload: boolean;
+}
+interface Evidence {
+  headers?: [string, string][];
+  path?: { from: string; by: string; with: string; ip: string; at: string | null; delaySeconds: number | null; raw: string }[];
+  origin?: { ip: string; public: boolean; ptr: string; asn: string; network: string; owner: string; country: string; listed: boolean };
+  addresses?: { envelopeFrom: string; headerFrom: string; headerFromName: string; sender: string; replyTo: string[]; returnPath: string;
+    to: string[]; cc: string[]; recipients: string[]; messageId: string; date: string; mailer: string; helo: string; notes: string[] };
+  auth?: { spf: string; spfDomain: string; spfDetail: string; dkim: string; dkimDomain: string; dkimSelector: string; dkimAlgorithm: string;
+    dmarc: string; dmarcPolicy: string; dmarcRecord: string; compauth: string; compauthReason: string; arc: boolean; results: string };
+  links?: { url: string; host: string; text: string; flags: string[] }[];
+  attachments?: { name: string; contentType?: string; size?: number; sha256?: string }[];
+  size?: number | null; tls?: boolean | null;
+  delivery?: { host: string; port: number; tls?: boolean; response?: string; at?: string; attempts?: number; lastError?: string };
 }
 interface ListEntry { id: string; tenantId: string; kind: string; match: string; value: string; note: string; createdBy: string; createdAt: string }
 interface GatewayDomain {
@@ -165,6 +179,7 @@ function MessageDetail({ id, onClose, onChanged }: { id: string; onClose: () => 
   const { data, error, reload } = useData<ScanDetail>(`email-security/messages/${id}`, {}, [id]);
   const { run, busy } = useAction();
   const [allowSender, setAllowSender] = useState(false);
+  const [tab, setTab] = useState("Summary");
   const after = () => { reload(); onChanged(); };
   const setLabel = async (label: string) => {
     await run(() => api(`email-security/messages/${id}/label`, { method: "PUT", body: { label } }), label ? `Labelled ${label}.` : "Label removed.");
@@ -206,40 +221,188 @@ function MessageDetail({ id, onClose, onChanged }: { id: string; onClose: () => 
               <button className="primary" disabled={busy} onClick={release}>Release to Inbox</button>
             </>}
           </div>}
-          <div className="grid k2">
-            <div>
-              <h3>Fenrir: <Pill value={data.verdict} tone={TONE[data.verdict]} /> <span className="small muted">score {data.score}{data.modelScore != null ? ` · model ${Math.round(data.modelScore * 100)}%` : ""}</span></h3>
-              {data.reasons.length ? <ul>{data.reasons.map((r, i) => <li key={i}><b>+{r.points}</b> {r.detail}</li>)}</ul> : <p className="muted">Nothing suspicious found.</p>}
-            </div>
-            <div>
-              {data.source === "gateway" ? <h3>Sender checks (gateway)</h3> : <h3>Microsoft: <Pill value={data.microsoftVerdict} tone={TONE[data.microsoftVerdict]} /></h3>}
-              <table className="small"><tbody>
-                {data.source !== "gateway" && <>
-                  <tr><td>Spam confidence (SCL)</td><td>{m.scl ?? "—"}</td></tr>
-                  <tr><td>Bulk (BCL)</td><td>{m.bcl ?? "—"}</td></tr>
-                  <tr><td>Category</td><td>{m.cat || "—"}</td></tr>
-                </>}
-                <tr><td>SPF / DKIM / DMARC</td><td>{[m.spf, m.dkim, m.dmarc].map((v) => v || "—").join(" / ")}</td></tr>
-                {data.source !== "gateway" ? <><tr><td>Composite authentication</td><td>{m.compauth || "—"}</td></tr>
-                  <tr><td>Sending country</td><td>{m.country || "—"}</td></tr></>
-                  : <><tr><td>Sender's DMARC policy</td><td>{m.dmarcPolicy || "none"}</td></tr><tr><td>Sending IP</td><td>{m.peer || "—"}</td></tr></>}
-              </tbody></table>
-            </div>
-          </div>
-          {data.attachmentDetails.length > 0 && <>
-            <h3>Attachments</h3>
-            <ul>{data.attachmentDetails.map((a, i) => <li key={i}>{a.name}{a.sha256 && <span className="small muted mono"> {a.sha256}</span>}</li>)}</ul>
-          </>}
-          {data.linkDomains.length > 0 && <p className="small"><b>Links go to:</b> {data.linkDomains.join(", ")}</p>}
+          <Tabs tabs={["Summary", "Origin & path", "Headers", "Authentication", "Links & attachments", ...(data.source === "gateway" ? ["Delivery"] : [])]}
+                active={tab} onChange={setTab} />
+          {tab === "Summary" && <SummaryView data={data} m={m} />}
+          {tab === "Origin & path" && <OriginView e={data.details} />}
+          {tab === "Headers" && <HeadersView e={data.details} />}
+          {tab === "Authentication" && <AuthView e={data.details} m={m} gateway={data.source === "gateway"} />}
+          {tab === "Links & attachments" && <LinksView e={data.details} fallback={data} />}
+          {tab === "Delivery" && <DeliveryView e={data.details} />}
           {can("configure") && data.sender && <p style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             <button disabled={busy} onClick={() => block("sender")}>Block sender</button>
             <button disabled={busy} onClick={() => block("domain")}>Block {data.sender.split("@").pop()}</button>
           </p>}
           {data.label && <p className="small muted">Labelled {data.label} by {data.labelledBy}{data.labelledAt ? `, ${ago(data.labelledAt)}` : ""}.</p>}
           <p className="small muted mono">{data.internetMessageId}</p>
+          {data.canDownload && can("respond") && <p className="small">
+            <button disabled={busy} onClick={() => run(() => downloadFile(`email-security/messages/${id}/original`, `fenrir-${id}.eml`), "Downloaded. It may contain malware: open it only somewhere safe.")}>
+              Download original (.eml)</button> <span className="muted">Recorded in the audit log.</span></p>}
         </>
       )}
     </Modal>
+  );
+}
+
+function Row({ label, children }: { label: string; children: ReactNode }) {
+  return <tr><td className="muted" style={{ whiteSpace: "nowrap", paddingRight: 12, verticalAlign: "top" }}>{label}</td><td style={{ wordBreak: "break-word" }}>{children || "—"}</td></tr>;
+}
+
+function NoEvidence() {
+  return <p className="muted small">Not recorded for this message (it was scanned before Fenrir kept this detail).</p>;
+}
+
+function SummaryView({ data, m }: { data: ScanDetail; m: Record<string, string | number | null> }) {
+  const o = data.details?.origin;
+  const a = data.details?.addresses;
+  return (
+    <>
+      <div className="grid k2">
+        <div>
+          <h3>Fenrir: <Pill value={data.verdict} tone={TONE[data.verdict]} /> <span className="small muted">score {data.score}{data.modelScore != null ? ` · model ${Math.round(data.modelScore * 100)}%` : ""}</span></h3>
+          {data.reasons.length ? <ul>{data.reasons.map((r, i) => <li key={i}><b>+{r.points}</b> {r.detail}</li>)}</ul> : <p className="muted">Nothing suspicious found.</p>}
+        </div>
+        <div>
+          {data.source === "gateway" ? <h3>Gateway checks</h3> : <h3>Microsoft: <Pill value={data.microsoftVerdict} tone={TONE[data.microsoftVerdict]} /></h3>}
+          <table className="small"><tbody>
+            <Row label="Originating IP">{o?.ip ? <>{o.ip}{o.listed && <> <Pill value="on a threat list" tone="bad" /></>}</> : (m.peer as string)}</Row>
+            <Row label="Network">{o?.owner ? `${o.owner}${o.asn ? ` (AS${o.asn})` : ""}` : ""}</Row>
+            <Row label="Country">{o?.country || (m.country as string) || ""}</Row>
+            <Row label="Reverse DNS">{o?.ptr}</Row>
+            <Row label="SPF / DKIM / DMARC">{[m.spf, m.dkim, m.dmarc].map((v) => v || "—").join(" / ")}</Row>
+            {data.source !== "gateway" && <Row label="Spam / bulk / category">{`${m.scl ?? "—"} / ${m.bcl ?? "—"} / ${m.cat || "—"}`}</Row>}
+            <Row label="Envelope sender">{a?.envelopeFrom}</Row>
+          </tbody></table>
+        </div>
+      </div>
+      {a?.notes?.length ? <div className="card small" style={{ borderColor: "rgba(245,158,11,.5)" }}>{a.notes.map((n, i) => <div key={i}>⚠ {n}</div>)}</div> : null}
+    </>
+  );
+}
+
+function OriginView({ e }: { e: Evidence }) {
+  if (!e?.origin && !e?.path) return <NoEvidence />;
+  const o = e.origin;
+  const a = e.addresses;
+  return (
+    <>
+      <div className="grid k2">
+        <div>
+          <h3>Where it came from</h3>
+          <table className="small"><tbody>
+            <Row label="Originating IP">{o?.ip ? <>{o.ip} {o.public === false && <span className="muted">(private address)</span>} {o.listed && <Pill value="on a threat list" tone="bad" />}</> : ""}</Row>
+            <Row label="Reverse DNS">{o?.ptr}</Row>
+            <Row label="Network">{o?.owner ? `${o.owner}${o.asn ? ` · AS${o.asn}` : ""}` : ""}</Row>
+            <Row label="IP range">{o?.network}</Row>
+            <Row label="Country">{o?.country}</Row>
+            <Row label="Server greeting (HELO)">{a?.helo}</Row>
+            <Row label="Encrypted (TLS)">{e.tls == null ? "" : e.tls ? "yes" : "no"}</Row>
+            <Row label="Size">{e.size ? (e.size < 1024 ? `${e.size} bytes` : `${Math.round(e.size / 1024)} KB`) : ""}</Row>
+          </tbody></table>
+        </div>
+        <div>
+          <h3>Addresses</h3>
+          <table className="small"><tbody>
+            <Row label="From">{a?.headerFromName ? `${a.headerFromName} <${a.headerFrom}>` : a?.headerFrom}</Row>
+            <Row label="Envelope sender">{a?.envelopeFrom}</Row>
+            <Row label="Return-Path">{a?.returnPath}</Row>
+            <Row label="Sender">{a?.sender}</Row>
+            <Row label="Reply-To">{a?.replyTo?.join(", ")}</Row>
+            <Row label="To">{a?.to?.join(", ")}</Row>
+            <Row label="Cc">{a?.cc?.join(", ")}</Row>
+            <Row label="Delivered to">{a?.recipients?.join(", ")}</Row>
+            <Row label="Date">{a?.date}</Row>
+            <Row label="Mail client">{a?.mailer}</Row>
+          </tbody></table>
+          {a?.notes?.map((n, i) => <p key={i} className="small" style={{ color: "#fbbf24" }}>⚠ {n}</p>)}
+        </div>
+      </div>
+      <h3>Path (oldest hop first)</h3>
+      <Table rows={(e.path ?? []).map((h, i) => ({ ...h, id: String(i) }))} empty="No Received headers."
+             columns={[
+               { key: "id", label: "#", render: (h) => Number(h.id) + 1 },
+               { key: "from", label: "From", render: (h) => <><span className="mono">{h.from || "—"}</span>{h.ip && <div className="small muted mono">{h.ip}</div>}</> },
+               { key: "by", label: "By", render: (h) => <span className="mono">{h.by || "—"}</span> },
+               { key: "with", label: "Protocol", render: (h) => h.with || "—" },
+               { key: "at", label: "Time (UTC)", render: (h) => h.at ? h.at.replace("T", " ").slice(0, 19) : "—" },
+               { key: "delaySeconds", label: "Delay", render: (h) => h.delaySeconds == null ? "" : `${h.delaySeconds}s` },
+             ]} />
+    </>
+  );
+}
+
+function HeadersView({ e }: { e: Evidence }) {
+  const { toast } = useApp();
+  const [filter, setFilter] = useState("");
+  if (!e?.headers?.length) return <NoEvidence />;
+  const text = e.headers.map(([k, v]) => `${k}: ${v}`).join("\n");
+  const shown = e.headers.filter(([k, v]) => !filter || k.toLowerCase().includes(filter.toLowerCase()) || v.toLowerCase().includes(filter.toLowerCase()));
+  return (
+    <>
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <input placeholder="Filter headers" value={filter} onChange={(ev) => setFilter(ev.target.value)} style={{ flex: 1 }} />
+        <button onClick={() => { navigator.clipboard?.writeText(text); toast("Headers copied."); }}>Copy all</button>
+      </div>
+      <div className="mono small" style={{ maxHeight: 420, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+        {shown.map(([k, v], i) => <div key={i} style={{ marginBottom: 4 }}><b>{k}:</b> {v}</div>)}
+      </div>
+    </>
+  );
+}
+
+function AuthView({ e, m, gateway }: { e: Evidence; m: Record<string, string | number | null>; gateway: boolean }) {
+  const a = e?.auth;
+  if (!a) return <NoEvidence />;
+  const tone = (v: string) => v === "pass" ? "good" : v === "fail" || v === "softfail" ? "bad" : "muted";
+  return (
+    <table className="small"><tbody>
+      <Row label="SPF"><Pill value={a.spf || "none"} tone={tone(a.spf)} /> {a.spfDomain && <>for <span className="mono">{a.spfDomain}</span></>} {a.spfDetail && <div className="muted">{a.spfDetail}</div>}</Row>
+      <Row label="DKIM"><Pill value={a.dkim || "none"} tone={tone(a.dkim)} /> {a.dkimDomain && <>signed by <span className="mono">{a.dkimDomain}</span></>}
+        {a.dkimSelector && <span className="muted"> (selector {a.dkimSelector}{a.dkimAlgorithm ? `, ${a.dkimAlgorithm}` : ""})</span>}</Row>
+      <Row label="DMARC"><Pill value={a.dmarc || "none"} tone={tone(a.dmarc)} /> {a.dmarcPolicy && <>policy <b>{a.dmarcPolicy}</b></>}
+        {a.dmarcRecord && <div className="muted mono">{a.dmarcRecord}</div>}</Row>
+      {!gateway && <Row label="Composite authentication"><Pill value={a.compauth || (m.compauth as string) || "none"} tone={tone(a.compauth)} />{a.compauthReason && <span className="muted"> reason {a.compauthReason}</span>}</Row>}
+      <Row label="ARC">{a.arc ? "present (forwarded through another service)" : "none"}</Row>
+      <Row label="Authentication-Results"><span className="mono">{a.results}</span></Row>
+    </tbody></table>
+  );
+}
+
+function LinksView({ e, fallback }: { e: Evidence; fallback: ScanDetail }) {
+  const links = e?.links;
+  const files = e?.attachments?.length ? e.attachments : fallback.attachmentDetails;
+  return (
+    <>
+      <h3>Links {links ? `(${links.length})` : ""}</h3>
+      {links ? <Table rows={links.map((l, i) => ({ ...l, id: String(i) }))} empty="No links."
+                      columns={[
+                        { key: "url", label: "Link", render: (l) => <><span className="mono small" style={{ wordBreak: "break-all" }}>{l.url}</span>{l.text && <div className="small muted">shown as: {l.text}</div>}</> },
+                        { key: "flags", label: "", render: (l) => l.flags.map((f) => <Pill key={f} value={f} tone="bad" />) },
+                      ]} />
+        : fallback.linkDomains.length ? <p className="small">Links go to: {fallback.linkDomains.join(", ")}</p> : <p className="muted small">No links.</p>}
+      <h3>Attachments ({files.length})</h3>
+      {files.length ? <Table rows={files.map((f, i) => ({ ...f, id: String(i) }))} columns={[
+        { key: "name", label: "Name", render: (f) => <b>{f.name}</b> },
+        { key: "contentType", label: "Type", render: (f) => (f as { contentType?: string }).contentType || "—" },
+        { key: "size", label: "Size", render: (f) => f.size ? `${Math.max(1, Math.round(f.size / 1024))} KB` : "—" },
+        { key: "sha256", label: "SHA-256", render: (f) => <span className="mono small" style={{ wordBreak: "break-all" }}>{f.sha256 || "—"}</span> },
+      ]} /> : <p className="muted small">No attachments.</p>}
+    </>
+  );
+}
+
+function DeliveryView({ e }: { e: Evidence }) {
+  const d = e?.delivery;
+  if (!d) return <p className="muted small">Not handed on: quarantined messages stay with Fenrir until released.</p>;
+  return (
+    <table className="small"><tbody>
+      <Row label="Handed to">{`${d.host}:${d.port}`}</Row>
+      <Row label="When">{d.at ? `${ago(d.at)} (${d.at.replace("T", " ").slice(0, 19)} UTC)` : ""}</Row>
+      <Row label="Encrypted (TLS)">{d.tls == null ? "" : d.tls ? "yes" : "no"}</Row>
+      <Row label="Attempts">{d.attempts}</Row>
+      <Row label="Reply from Microsoft 365"><span className="mono">{d.response}</span></Row>
+      {d.lastError && <Row label="Last problem"><span style={{ color: "#fca5a5" }}>{d.lastError}</span></Row>}
+    </tbody></table>
   );
 }
 

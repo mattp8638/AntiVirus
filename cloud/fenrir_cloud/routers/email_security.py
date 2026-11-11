@@ -10,7 +10,7 @@ from typing import Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -436,3 +436,53 @@ def connect_m365(domain_id: str, body: ConnectIn, principal: Principal = Depends
         raise HTTPException(409, str(exc)) from None
     db.commit()
     return {"m365Connector": result, "domain": mail_gateway.domain_view(row)}
+
+
+# --------------------------------------------------------------------------- the original message, for analysis
+
+@router.get("/messages/{scan_id}/original")
+def original(scan_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """The message exactly as received (.eml), for analysis in a mail client or sandbox. Mailbox messages are fetched
+    from Microsoft 365 on demand; gateway messages are available while Fenrir holds them in quarantine. Every download
+    is in the audit log. It may contain malware: open it only somewhere safe."""
+    principal.require("respond")
+    row = owned(db, EmailScan, scan_id, principal)
+    ratelimit.check(f"email-original:{principal.actor}", 30, 600)
+    if (row.source or "graph") == "gateway":
+        from ..models import EmailQuarantine
+        from .. import crypto
+
+        held = db.execute(select(EmailQuarantine).where(EmailQuarantine.scan_id == row.id)).scalar_one_or_none()
+        if held is None:
+            raise HTTPException(404, "Fenrir only keeps gateway messages it holds in quarantine; this one was delivered.")
+        raw = crypto.decrypt_bytes(held.envelope, f"email-quarantine:{row.id}")
+    else:
+        from urllib.parse import quote
+
+        from .. import m365
+
+        connection = db.get(M365Connection, row.connection_id)
+        if connection is None:
+            raise HTTPException(404, "The customer's Microsoft 365 connection no longer exists.")
+        try:
+            user_id = email_actions._user_id(connection, row.mailbox)
+            with httpx.Client(timeout=30, follow_redirects=True) as client:
+                token = m365.access_token(client, connection)
+                response = client.get(f"{m365.GRAPH}/users/{quote(user_id)}/messages/"
+                                      f"{quote(row.moved_message_id or row.message_id, safe='')}/$value",
+                                      headers={"Authorization": "Bearer " + token})
+        except email_actions.ActionError as exc:
+            raise HTTPException(404, str(exc)) from None
+        except httpx.HTTPError:
+            raise HTTPException(502, "Microsoft 365 could not be reached.") from None
+        if response.status_code == 404:
+            raise HTTPException(404, "The message is no longer in the mailbox.")
+        if response.status_code >= 400:
+            raise HTTPException(502, f"Microsoft 365 would not provide the message (HTTP {response.status_code}).")
+        raw = response.content
+    audit.record(db, principal.actor, "email_security.original_downloaded", row.id, row.tenant_id, mailbox=row.mailbox,
+                 subject=row.subject[:120])
+    db.commit()
+    return Response(raw, media_type="message/rfc822",
+                    headers={"Content-Disposition": f'attachment; filename="fenrir-{row.id}.eml"', "Cache-Control": "no-store",
+                             "X-Content-Type-Options": "nosniff"})
