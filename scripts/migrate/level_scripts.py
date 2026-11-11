@@ -80,24 +80,77 @@ def first(d: dict, *keys, default=None):
 # --------------------------------------------------------------------------- export
 
 
+def parse_json(text: str):
+    """JSON, or JSON Lines (one object per line), as some CLIs print for lists."""
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except ValueError:
+        rows = []
+        for line in text.splitlines():
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+        return rows
+
+
 def run_lvl(command: str) -> object:
     out = subprocess.run(shlex.split(command), capture_output=True, text=True)
     if out.returncode != 0:
         raise SystemExit(f"`{command}` failed ({out.returncode}): {out.stderr.strip()[:500]}")
     try:
-        return json.loads(out.stdout)
+        return parse_json(out.stdout)
     except ValueError:
         raise SystemExit(f"`{command}` did not print JSON. First output: {out.stdout[:300]!r}") from None
 
 
+def _looks_like_script(d: dict) -> bool:
+    keys = {k.lower() for k in d}
+    return bool(keys & {"name", "title"}) and bool(keys & {"id", "uuid", "scriptid", "content", "body", "script", "code",
+                                                           "language", "shell", "scripttype", "description"})
+
+
 def as_list(data) -> list[dict]:
+    """The scripts in whatever shape the CLI printed: a list, or a list somewhere inside wrapper objects
+    (data, items, nodes, edges[].node...). Picks the largest list of script-like objects found."""
+    best: list[dict] = []
+
+    def walk(node, depth=0):
+        nonlocal best
+        if depth > 6:
+            return
+        if isinstance(node, list):
+            items = [x.get("node", x) if isinstance(x, dict) and isinstance(x.get("node"), dict) else x for x in node]
+            dicts = [x for x in items if isinstance(x, dict)]
+            if dicts and sum(_looks_like_script(x) for x in dicts) >= max(1, len(dicts) // 2) and len(dicts) > len(best):
+                best = dicts
+            for x in items:
+                walk(x, depth + 1)
+        elif isinstance(node, dict):
+            for value in node.values():
+                walk(value, depth + 1)
+
+    if isinstance(data, dict) and _looks_like_script(data):
+        return [data]
+    walk(data)
+    if best:
+        return best
+    # Nothing obviously script-shaped: fall back to a plain list, or one under a usual wrapper key.
     if isinstance(data, list):
         return [d for d in data if isinstance(d, dict)]
     if isinstance(data, dict):
         for key in ("scripts", "data", "items", "results", "nodes"):
-            if isinstance(data.get(key), list):
+            if isinstance(data.get(key), (list, dict)):
                 return as_list(data[key])
     return []
+
+
+def describe(data) -> str:
+    if isinstance(data, list):
+        return f"a list of {len(data)} items" + (f"; first item keys: {sorted(data[0])[:15]}" if data and isinstance(data[0], dict) else "")
+    if isinstance(data, dict):
+        return f"an object with keys {sorted(data)[:15]}"
+    return type(data).__name__
 
 
 def body_of(script: dict) -> str:
@@ -105,18 +158,24 @@ def body_of(script: dict) -> str:
 
 
 def export(args) -> None:
-    scripts = as_list(run_lvl(args.list_cmd))
+    raw = run_lvl(args.list_cmd)
+    scripts = as_list(raw)
     if not scripts:
-        raise SystemExit("The list came back empty or in an unexpected shape. Save it yourself with "
-                         "`lvl script list --limit all -o json > level-list.json` and run: export --from level-list.json")
+        raise SystemExit(f"No scripts found in the output of `{args.list_cmd}` (it printed {describe(raw)}). "
+                         "If Level has scripts, run that command yourself and send the first lines of its output.")
     print(f"{len(scripts)} scripts listed")
     missing = [s for s in scripts if not body_of(s)]
     for n, script in enumerate(missing, 1):
         sid = first(script, "id", "uuid", "scriptId")
         if not sid:
             continue
-        detail = run_lvl(args.show_cmd.format(id=shlex.quote(str(sid))))
-        detail = as_list(detail)[0] if as_list(detail) else (detail.get("script", detail) if isinstance(detail, dict) else {})
+        try:
+            detail = run_lvl(args.show_cmd.format(id=shlex.quote(str(sid))))
+        except SystemExit as exc:
+            print(f"  could not fetch {first(script, 'name', 'title', default=sid)}: {exc}", flush=True)
+            continue
+        found = as_list(detail)
+        detail = found[0] if found else (detail.get("script", detail) if isinstance(detail, dict) else {})
         script.update({k: v for k, v in detail.items() if v not in (None, "", [])})
         print(f"  fetched {n}/{len(missing)}: {first(script, 'name', 'title', default=sid)}", flush=True)
     Path(args.out).write_text(json.dumps(scripts, indent=2))
@@ -125,7 +184,10 @@ def export(args) -> None:
 
 
 def export_from_file(args) -> None:
-    scripts = as_list(json.loads(Path(args.from_file).read_text()))
+    raw = parse_json(Path(args.from_file).read_text())
+    scripts = as_list(raw)
+    if not scripts:
+        raise SystemExit(f"No scripts found in {args.from_file} (it holds {describe(raw)}).")
     Path(args.out).write_text(json.dumps(scripts, indent=2))
     print(f"Copied {len(scripts)} scripts to {args.out}")
 
