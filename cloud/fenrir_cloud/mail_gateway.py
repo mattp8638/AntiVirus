@@ -523,6 +523,11 @@ class Worker:
             except Exception as exc:  # noqa: BLE001 - one bad message never blocks the queue
                 db.rollback()
                 log.exception("gateway could not process %s", meta.get("id"))
+                received = meta.get("receivedAt")
+                if received and datetime.fromisoformat(received) < utcnow() - GIVE_UP_AFTER:
+                    log.error("gateway gave up on %s after %s: %s", meta.get("id"), GIVE_UP_AFTER, exc)
+                    self.spool.remove(meta["id"])  # never retried forever; the error is in the log and the job record
+                    continue
                 self._retry(meta, f"{type(exc).__name__}: {exc}")
         return finished
 
@@ -592,6 +597,11 @@ class Worker:
 
     def _scan(self, db: Session, meta: dict, raw: bytes, route: Route, rcpts: list[str], auth: dict,
               signature: str | None) -> EmailScan:
+        message_id = f"gw-{meta['id']}-{route.domain_id}"[:200]
+        existing = db.execute(select(EmailScan).where(EmailScan.connection_id == route.domain_id,
+                                                      EmailScan.message_id == message_id)).scalar_one_or_none()
+        if existing is not None:  # scanned before a crash or restart: decide the same way again
+            return existing
         message, info = parse(raw, auth["header"])
         message.mailbox = rcpts[0].lower()
         ctx = self._context(db, route.tenant_id)
@@ -605,7 +615,7 @@ class Worker:
         ms = result["microsoft"]
         scan = EmailScan(
             tenant_id=route.tenant_id, connection_id=route.domain_id, mailbox=rcpts[0].lower()[:320],
-            message_id=f"gw-{meta['id']}-{route.domain_id}"[:200], internet_message_id=info["messageId"], received_at=received,
+            message_id=message_id, internet_message_id=info["messageId"], received_at=received,
             folder="gateway", sender_address=message.sender_address[:320], sender_name=message.sender_name[:200],
             sender_domain=result["sender_domain"][:255], subject=message.subject[:300],
             attachments=[{k: a[k] for k in ("name", "size", "sha256") if k in a} for a in message.attachments][:20],

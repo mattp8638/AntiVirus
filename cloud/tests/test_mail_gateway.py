@@ -240,3 +240,24 @@ def test_clamav_finds_what_the_rules_miss(gateway, monkeypatch):
     with database.session_factory()() as db:
         scan = db.query(EmailScan).one()
         assert scan.verdict == "malware" and scan.reasons[0]["detail"] == "ClamAV found Win.Test.EICAR_HDB-1"
+
+
+def test_a_crash_after_scanning_does_not_scan_twice_or_get_stuck(gateway):
+    gateway.send(mail())
+    meta = gateway.spool.items()[0]
+    with database.session_factory()() as db:  # scanned, then the process died before noting it in the spool
+        route = gateway.directory.routes["acme.co.uk"]
+        gateway.worker._scan(db, meta, gateway.spool.raw(meta["id"]), route, ["jo@acme.co.uk"], dict(PASS_AUTH), None)
+    assert run(gateway) == 1 and len(gateway.m365.received) == 1
+    with database.session_factory()() as db:
+        assert db.query(EmailScan).count() == 1
+
+
+def test_a_message_that_keeps_failing_is_dropped_after_three_days(gateway, monkeypatch):
+    gateway.send(mail())
+    meta = gateway.spool.items()[0]
+    meta["receivedAt"] = "2020-01-01T00:00:00"
+    gateway.spool.update(meta)
+    monkeypatch.setattr(mail_gateway, "parse", lambda raw, header: (_ for _ in ()).throw(ValueError("unreadable")))
+    run(gateway)
+    assert gateway.spool.size() == 0
