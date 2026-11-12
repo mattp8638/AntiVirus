@@ -145,7 +145,7 @@ jobs:
       - name: Test remote SAS, bounded pipe I/O and WinGet operation safety
         shell: pwsh
         run: |
-          cmake --build build --config Release --target fenrir-remote-sas-tests fenrir-remote-pipe-tests fenrir-winget-tests fenrir-cancellation-tests fenrir-rmm-tests fenrir-tempadmin-tests
+          cmake --build build --config Release --target fenrir-remote-sas-tests fenrir-remote-pipe-tests fenrir-winget-tests fenrir-cancellation-tests fenrir-rmm-tests fenrir-tempadmin-tests fenrir-policy-tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & ./build/Release/fenrir-remote-sas-tests.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -158,6 +158,9 @@ jobs:
           & ./build/Release/fenrir-rmm-tests.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & ./build/Release/fenrir-tempadmin-tests.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Policy parsing, device control, local admin removal, ransomware detector (Windows headers: runs here, not natively)
+          & ./build/Release/fenrir-policy-tests.exe agent/windows/tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell.exe -NoProfile -File agent/windows/tests/SystemProfileShapeTests.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -173,6 +176,9 @@ jobs:
       - name: Signature rules need every marker of a ransomware chain (no BlackCat verdict on browsers)
         shell: pwsh
         run: powershell.exe -NoProfile -File agent/windows/tests/SignatureRuleMatchTests.ps1
+      - name: Archive scanning (members of zips, nested zips, clean zips, decompression bombs)
+        shell: pwsh
+        run: powershell.exe -NoProfile -File agent/windows/tests/ArchiveScanTests.ps1
       - name: Clean-software false-positive suite (installed signed software on the runner)
         shell: pwsh
         timeout-minutes: 16

@@ -928,11 +928,16 @@ std::vector<SignatureRuleDelta> ParseFeedHashRules(const std::string& json) {
 
     const auto family = TrimWide(Utf8ToWide(ExtractJsonString(itemJson, "malwareFamily").value_or("")));
     const auto source = TrimWide(Utf8ToWide(ExtractJsonString(itemJson, "source").value_or("signature-feed")));
+    // Potentially unwanted applications (adware, bundlers, toolbars) carry their own code prefix, so the engine can
+    // apply antimalware.puaProtection (off | audit | block) to them separately from malware.
+    const bool pua = ToLowerCopy(TrimWide(Utf8ToWide(ExtractJsonString(itemJson, "category").value_or("")))) == L"pua";
     rules.push_back(SignatureRuleDelta{
         .scope = L"sha256",
-        .code = BuildFeedRuleCode(L"FEED_SHA256_", value),
-        .message = family.empty() ? L"Signature feed matched a malicious SHA-256 indicator."
-                                  : L"Signature feed matched malicious SHA-256 indicator for " + family + L".",
+        .code = BuildFeedRuleCode(pua ? L"FEED_PUA_SHA256_" : L"FEED_SHA256_", value),
+        .message = pua ? (family.empty() ? L"Potentially unwanted application (signature feed)."
+                                         : L"Potentially unwanted application: " + family + L".")
+                       : family.empty() ? L"Signature feed matched a malicious SHA-256 indicator."
+                                        : L"Signature feed matched malicious SHA-256 indicator for " + family + L".",
         .tacticId = L"TA0002",
         .techniqueId = L"T1204.002",
         .score = 92,

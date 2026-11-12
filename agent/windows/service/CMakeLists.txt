@@ -138,6 +138,7 @@ add_library(antivirus-agent-core STATIC
   src/ProcessGuard.cpp
   src/YaraScanner.cpp
   src/MemoryScanner.cpp
+  src/ZipReader.cpp
   src/EventEnvelope.cpp
   src/RmmExecutors.cpp
   src/WebSocketClient.cpp
