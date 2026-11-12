@@ -2965,6 +2965,21 @@ void RunInstallOrRepairSteps(HWND hwnd, UiContext* context, const bool repair) {
     return;
   }
 
+  // The minifilter, when this installer carries it: register the package (pnputil, SetupAPI or a direct service
+  // registration) and load it. Never fatal: without it Fenrir runs without pre-execution blocking.
+  if (HasEmbeddedPayloadResource(context->instance, IDR_PAYLOAD_DRIVER_SYS)) {
+    PostStatus(hwnd, L"Installing the real-time protection driver...", 83);
+    PostLog(hwnd, L"Installing the AntivirusMinifilter driver");
+    std::wstring driverError;
+    std::wstring driverWarning;
+    if (InstallMinifilterDriver(context->installRoot, repair, &driverError, &driverWarning)) {
+      PostLog(hwnd, driverWarning.empty() ? L"AntivirusMinifilter driver installed and loaded"
+                                          : L"Warning: " + driverWarning);
+    } else {
+      PostLog(hwnd, L"Warning: the AntivirusMinifilter driver was not installed. " + driverError);
+    }
+  }
+
   PostStatus(hwnd, L"Checking minifilter driver state...", 84);
   std::wstring minifilterWarning;
   // The old no-op driver branch was followed by a mandatory strict driver self-test.
@@ -3383,7 +3398,8 @@ void RefreshUi(UiContext& context) {
   SetWindowTextW(context.statusLabel, context.statusText.c_str());
   SetWindowTextW(context.primaryButton, context.installed ? L"Repair deployment" : L"Install protection");
   SetWindowTextW(context.badgeLabel, context.busy ? L"Working" : (context.installed ? L"Installed" : L"Ready"));
-  ShowWindow(context.uninstallButton, context.installed ? SW_SHOW : SW_HIDE);
+  // Behind the branded page the native controls stay hidden; it has its own Uninstall button.
+  ShowWindow(context.uninstallButton, context.installed && !context.webReady ? SW_SHOW : SW_HIDE);
   EnableWindow(context.primaryButton, !context.busy);
   EnableWindow(context.uninstallButton, context.installed && !context.busy);
   EnableWindow(context.closeButton, !context.busy);
