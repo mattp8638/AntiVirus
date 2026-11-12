@@ -837,6 +837,24 @@ TEMPLATES: dict[str, dict[str, Any]] = {
         "response": {"autoIsolateOnCritical": False, "autoOpenTicket": "medium"},
         "remoteAccess": {"consent": "never"},
     },
+    "android": {
+        "_label": "Android - Phones and tablets",
+        "_description": "Sensible protection without locking phones down: harmful and scam apps flagged (malicious ones "
+                        "suspended on company-owned phones), installs from outside Play blocked, a screen lock and "
+                        "encryption required, rooted or out-of-date phones flagged. No camera, Bluetooth or account "
+                        "restrictions and no remote wipe after failed attempts.",
+        # App protection: alert from suspicious upwards; suspend malicious apps (company-owned / device-owner phones).
+        "mobile": {"alertOn": "medium", "suspendMalicious": True},
+        "android": {
+            # Scam apps (fake banking, parcel and "security" apps) mostly arrive as sideloaded APKs.
+            "blockUnknownSources": True,
+            "passcodeComplexity": "low", "screenLockMinutes": 5, "requireEncryption": True,
+            "flagRooted": True, "minSecurityPatchDays": 90, "blockDeveloperOptions": True,
+            "wipeAfterFailedAttempts": 0, "disableCamera": False, "disableScreenCapture": False,
+            "blockAddingAccounts": False, "blockBluetoothSharing": False, "runtimePermissions": "prompt",
+            "alertOnNonCompliance": True,
+        },
+    },
 }
 
 

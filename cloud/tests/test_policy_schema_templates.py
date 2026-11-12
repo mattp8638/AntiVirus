@@ -42,3 +42,11 @@ def test_mac_and_linux_templates_only_use_settings_their_agent_enforces():
                 path = f"{section}.{key}"
                 support = ps.AGENT_SUPPORT.get(path)
                 assert support is None or platform in support, f"{name}: {path} is not enforced on {platform}"
+
+
+def test_android_template_is_moderate():
+    t = ps.template_settings("android")
+    ps.validate_partial(t)
+    assert set(t) == {"mobile", "android"}  # phones only: nothing for the desktop agents
+    assert t["android"]["blockUnknownSources"] is True and t["mobile"]["suspendMalicious"] is True
+    assert t["android"]["wipeAfterFailedAttempts"] == 0 and t["android"]["disableCamera"] is False
