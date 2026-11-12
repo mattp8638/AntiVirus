@@ -14,6 +14,7 @@ Challenges are signed, expire after five minutes and are accepted once.
 from __future__ import annotations
 
 import base64
+import os
 import hashlib
 import json
 import secrets
@@ -58,12 +59,31 @@ def b64url_decode(value) -> bytes:
 
 
 def rp_id() -> str:
-    return urlparse(get_settings().public_base_url).hostname or "localhost"
+    """The domain passkeys belong to. A leading "www." is dropped, so one passkey works on both
+    https://www.example.com and https://example.com (a passkey scoped to www. is refused on the bare domain).
+    FENRIR_PASSKEY_RP_ID overrides it, for example to share passkeys across a parent domain."""
+    override = os.getenv("FENRIR_PASSKEY_RP_ID", "").strip().lower().rstrip(".")
+    if override:
+        return override
+    host = (urlparse(get_settings().public_base_url).hostname or "localhost").lower()
+    return host[4:] if host.startswith("www.") and host.count(".") >= 2 else host
 
 
 def origin() -> str:
     url = urlparse(get_settings().public_base_url)
     return f"{url.scheme}://{url.netloc}"
+
+
+def origin_allowed(value) -> bool:
+    """The configured address, or any https address on the passkey domain or below it (www. and bare alike)."""
+    if not isinstance(value, str):
+        return False
+    if value == origin():
+        return True
+    url = urlparse(value)
+    host = (url.hostname or "").lower()
+    rp = rp_id()
+    return url.scheme == "https" and url.path in ("", "/") and (host == rp or host.endswith("." + rp))
 
 
 # --------------------------------------------------------------------------- CBOR (only what WebAuthn uses)
@@ -190,7 +210,7 @@ def _client_data(raw: bytes, kind: str, challenge: str) -> None:
         raise PasskeyError("The passkey response is for a different step; try again")
     if data.get("challenge") != challenge:
         raise PasskeyError("This passkey request has expired; try again")
-    if data.get("origin") != origin() or data.get("crossOrigin") is True:
+    if not origin_allowed(data.get("origin")) or data.get("crossOrigin") is True:
         raise PasskeyError(f"The passkey was used on {data.get('origin')!r}, not {origin()}")
 
 
