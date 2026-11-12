@@ -3343,8 +3343,8 @@ void HandleWebAction(UiContext& context, const std::wstring& message) {
 //
 // Setup always runs elevated, often as a different account from the person signed in (a UAC prompt answered with an
 // administrator's credentials). That account may have never signed in here, may not see a per-user WebView2 runtime,
-// and its temp folder may hold a data folder left by an earlier run. So: each run gets its own folder (temp, else
-// ProgramData), the runtime is checked first, every failure is written to the setup log with its error code, one
+// and its temp folder may hold a data folder left by an earlier run. So: each run gets its own folder (ProgramData,
+// else temp), the runtime is checked first, every failure is written to the setup log with its error code, one
 // retry uses a fresh folder with the GPU off, and the page is tried again once setup has installed the runtime.
 void NoteWebUi(UiContext& context, const std::wstring& text) {
   PostLog(context.hwnd, L"Branded setup window: " + text);
@@ -3362,25 +3362,53 @@ void NoteWebUi(UiContext& context, const std::wstring& text) {
   if (programData) CoTaskMemFree(programData);
 }
 
+// The full form of a path: temp folders are often returned in 8.3 form (C:\Users\MATT~1.ADM\...), which WebView2
+// rejects as a data folder ("Microsoft Edge can't read and write to its data directory").
+std::filesystem::path LongPathOf(const std::filesystem::path& path) {
+  wchar_t buffer[MAX_PATH * 2]{};
+  const DWORD length = GetLongPathNameW(path.c_str(), buffer, static_cast<DWORD>(std::size(buffer)));
+  return length > 0 && length < std::size(buffer) ? std::filesystem::path(buffer) : path;
+}
+
+bool IsSetupProcessRunning(const std::wstring& folderName) {
+  const auto pid = static_cast<DWORD>(wcstoul(folderName.c_str(), nullptr, 10));
+  if (pid == 0) return false;
+  HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, pid);
+  if (process == nullptr) return false;
+  const bool running = WaitForSingleObject(process, 0) == WAIT_TIMEOUT;
+  CloseHandle(process);
+  return running;
+}
+
+// ProgramData first: a machine folder with no 8.3 names and no dependence on the administrator account's profile
+// (which may be a temporary one). The account's temp folder, in its full form, is the second choice.
 std::filesystem::path PrepareWebRoot(const std::wstring& name) {
   std::vector<std::filesystem::path> bases;
-  wchar_t temp[MAX_PATH]{};
-  if (GetTempPathW(MAX_PATH, temp) > 0) bases.emplace_back(std::filesystem::path(temp) / L"FenrirSetupUI");
   PWSTR programData = nullptr;
   if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_ProgramData, 0, nullptr, &programData)) && programData) {
     bases.emplace_back(std::filesystem::path(programData) / L"Fenrir" / L"setup-ui");
   }
   if (programData) CoTaskMemFree(programData);
+  wchar_t temp[MAX_PATH]{};
+  if (GetTempPathW(MAX_PATH, temp) > 0) bases.emplace_back(LongPathOf(temp) / L"FenrirSetupUI");
   for (const auto& base : bases) {
     std::error_code ec;
-    // Folders from earlier runs: anything not in use any more is removed (in-use ones fail quietly).
+    // Folders left by setup runs that have finished are removed; another running setup's folder is left alone.
     for (const auto& entry : std::filesystem::directory_iterator(base, ec)) {
+      const auto entryName = entry.path().filename().wstring();
+      if (entryName == name || IsSetupProcessRunning(entryName)) continue;
       std::error_code ignored;
-      if (entry.path().filename() != name) std::filesystem::remove_all(entry.path(), ignored);
+      std::filesystem::remove_all(entry.path(), ignored);
     }
     const auto root = base / name;
     std::filesystem::create_directories(root / L"data", ec);
-    if (!ec && std::filesystem::is_directory(root / L"data")) return root;
+    if (ec || !std::filesystem::is_directory(root / L"data")) continue;
+    // Prove it is writable before handing it to WebView2, whose own failure is a modal error box.
+    const auto probe = root / L"data" / L"write-test";
+    { std::ofstream test(probe, std::ios::trunc); test << "ok"; }
+    const bool writable = std::filesystem::exists(probe, ec);
+    std::filesystem::remove(probe, ec);
+    if (writable) return LongPathOf(root);
   }
   return {};
 }
