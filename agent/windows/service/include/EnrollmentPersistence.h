@@ -23,4 +23,14 @@ inline bool EnrollmentChangeRequiresMigration(const std::wstring& existingServer
   return serverChanged || tokenChanged;
 }
 
+// An enrolled device reinstalled or repaired from a package for the SAME server keeps its identity and simply does
+// not use the package's deployment token (each download of the installer carries a fresh token, and the agent may
+// have cleared its own after enrolling). Nothing moves, so no migration is needed. A different server still is.
+inline bool DeploymentTokenNotNeeded(const std::wstring& existingServer, const std::wstring& existingToken,
+                                     const std::wstring& proposedServer, const std::wstring& proposedToken,
+                                     const bool hasExistingDeviceIdentity) {
+  if (!hasExistingDeviceIdentity || proposedToken.empty() || proposedToken == existingToken) return false;
+  return proposedServer.empty() || NormalizeEnrollmentServer(proposedServer) == NormalizeEnrollmentServer(existingServer);
+}
+
 }  // namespace antivirus::agent

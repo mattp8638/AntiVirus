@@ -717,6 +717,13 @@ bool SaveCloudSettingsFromArguments(int argc, wchar_t* argv[]) {
       const auto currentState = stateStore.LoadOrCreate();
       enrolled = !currentState.deviceId.empty();
     }
+    if (antivirus::agent::DeploymentTokenNotNeeded(existingConfig.controlPlaneBaseUrl, existingConfig.enrollmentToken,
+                                                   server, enrollToken, enrolled)) {
+      // Same server: keep the device identity and stored settings; the package's token is not used or saved.
+      std::wcout << L"Fenrir is already enrolled with this server; existing device identity kept "
+                    L"(the installer's deployment token was not needed)." << std::endl;
+      return true;
+    }
     if (antivirus::agent::EnrollmentChangeRequiresMigration(existingConfig.controlPlaneBaseUrl,
                                                              existingConfig.enrollmentToken,
                                                              server, enrollToken, enrolled)) {

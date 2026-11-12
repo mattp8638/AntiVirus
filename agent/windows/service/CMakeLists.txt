@@ -597,6 +597,7 @@ add_dependencies(antivirus-setup
 
 target_include_directories(antivirus-setup PRIVATE
   ${INSTALLER_NATIVE_DIR}/include
+  include
   ${INSTALLER_NATIVE_DIR}/src
   ../third_party/webview2/include
   "${CMAKE_CURRENT_BINARY_DIR}/generated"

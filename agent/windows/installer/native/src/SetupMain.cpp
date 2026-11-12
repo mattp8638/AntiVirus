@@ -30,6 +30,7 @@
 #include <utility>
 #include <vector>
 
+#include "EnrollmentPersistence.h"
 #include "FullRemoval.h"
 #include "SetupPage.h"
 #include "SetupResourceIds.h"
@@ -2926,6 +2927,18 @@ void RunInstallOrRepairSteps(HWND hwnd, UiContext* context, const bool repair) {
   if (context->enrollmentToken.empty()) {
     context->controlPlaneBaseUrl = registeredServer.empty() ? std::wstring(kDefaultControlPlaneBaseUrl) : registeredServer;
     PostLog(hwnd, L"Preserving existing managed cloud endpoint configuration.");
+  } else if ((repair || context->installed) && !registeredServer.empty() &&
+             antivirus::agent::NormalizeEnrollmentServer(registeredServer) !=
+                 antivirus::agent::NormalizeEnrollmentServer(context->controlPlaneBaseUrl)) {
+    // Checked before anything is written: the service compares against the registered server, so writing this
+    // package's server first would hide the move. An enrolled device is never moved to another server by setup.
+    FailInstall(hwnd, context, false,
+                L"This device is enrolled with " + registeredServer + L", but this installer is for " +
+                    context->controlPlaneBaseUrl + L". Nothing was changed. To move it, uninstall Fenrir and then "
+                    L"install with this server's installer.");
+    return;
+  } else if (repair) {
+    PostLog(hwnd, L"Repairing with the same cloud server; the existing device identity is kept.");
   } else {
     PostLog(hwnd, L"Preparing customer-managed enrollment for the selected cloud server.");
   }
