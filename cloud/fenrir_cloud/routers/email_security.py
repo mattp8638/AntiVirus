@@ -39,9 +39,10 @@ class ReleaseIn(BaseModel):
 class ListIn(BaseModel):
     tenantId: str
     kind: Literal["allow", "block"]
-    match: Literal["sender", "domain"]
+    match: Literal["sender", "domain", "ip", "url", "hash", "subject"]
     value: str = Field(min_length=3, max_length=320)
     note: str = Field(default="", max_length=300)
+    expiresAt: datetime | None = None
 
 
 class LabelIn(BaseModel):
@@ -98,30 +99,130 @@ def scan_now(connection_id: str, principal: Principal = Depends(current_principa
     return {**result, "setting": email_scan.setting_view(db.get(EmailScanSetting, setting.id), connection)}
 
 
-@router.get("/messages")
-def messages(tenant_id: str | None = None, verdict: str = "", agreement: str = "", label: str = "", q: str = "",
-             since: datetime | None = None, limit: int = Query(100, ge=1, le=500),
-             principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    principal.require("respond")
+def _search(db: Session, principal: Principal, tenant_id: str | None, f: dict, limit: int) -> list[EmailScan]:
+    """Explorer search: every filter is optional and they combine."""
     query = select(EmailScan).where(EmailScan.tenant_id.in_(scoped_tenant(principal, tenant_id)))
+    verdict = f.get("verdict") or ""
     if verdict == "flagged":
         query = query.where(EmailScan.verdict.in_(("phish", "malware")))
     elif verdict:
         query = query.where(EmailScan.verdict == verdict)
-    if agreement:
-        query = query.where(EmailScan.agreement == agreement)
+    for key, column in (("agreement", EmailScan.agreement), ("source", EmailScan.source), ("folder", EmailScan.folder),
+                        ("actionStatus", EmailScan.action_status), ("microsoftVerdict", EmailScan.microsoft_verdict)):
+        if f.get(key):
+            query = query.where(column == f[key])
+    if f.get("action"):
+        query = query.where(EmailScan.action == f["action"])
+    label = f.get("label") or ""
     if label == "any":
         query = query.where(EmailScan.label != "")
     elif label:
         query = query.where(EmailScan.label == label)
-    if since:
-        query = query.where(EmailScan.received_at >= since.replace(tzinfo=None))
-    if q.strip():
-        like = f"%{q.strip()[:100]}%"
+    if f.get("since"):
+        query = query.where(EmailScan.received_at >= f["since"].replace(tzinfo=None))
+    if f.get("until"):
+        query = query.where(EmailScan.received_at <= f["until"].replace(tzinfo=None))
+    for key, column in (("sender", EmailScan.sender_address), ("recipient", EmailScan.mailbox),
+                        ("senderDomain", EmailScan.sender_domain), ("subject", EmailScan.subject),
+                        ("messageId", EmailScan.internet_message_id)):
+        if (f.get(key) or "").strip():
+            query = query.where(column.ilike(f"%{f[key].strip()[:200]}%"))
+    if (f.get("q") or "").strip():
+        like = f"%{f['q'].strip()[:100]}%"
         query = query.where(or_(EmailScan.subject.ilike(like), EmailScan.sender_address.ilike(like),
-                                EmailScan.mailbox.ilike(like), EmailScan.sender_domain.ilike(like)))
-    rows = db.execute(query.order_by(EmailScan.received_at.desc()).limit(limit)).scalars().all()
-    return [email_scan.scan_view(r) for r in rows]
+                                EmailScan.mailbox.ilike(like), EmailScan.sender_domain.ilike(like),
+                                EmailScan.internet_message_id.ilike(like)))
+    if f.get("minScore") is not None:
+        query = query.where(EmailScan.score >= f["minScore"])
+    rows = db.execute(query.order_by(EmailScan.received_at.desc()).limit(limit if not _deep(f) else min(5000, limit * 20))).scalars().all()
+    if _deep(f):  # filters on the evidence (JSON): checked here, on the newest matches
+        rows = [r for r in rows if _deep_match(r, f)][:limit]
+    return rows
+
+
+def _deep(f: dict) -> bool:
+    return any((f.get(k) or "").strip() for k in ("ip", "attachment", "hash", "link", "classification", "decidedBy", "country"))
+
+
+def _deep_match(row: EmailScan, f: dict) -> bool:
+    d = row.details or {}
+    origin = d.get("origin") or {}
+    decision = d.get("decision") or {}
+    checks = {
+        "ip": lambda v: v in str(origin.get("ip") or "") or v in str((row.microsoft or {}).get("peer") or ""),
+        "country": lambda v: v.upper() == str(origin.get("country") or (row.microsoft or {}).get("country") or "").upper(),
+        "attachment": lambda v: any(v.lower() in str(a.get("name") or "").lower() for a in row.attachments or []),
+        "hash": lambda v: any(v.lower() == str(a.get("sha256") or "").lower() for a in row.attachments or []),
+        "link": lambda v: any(v.lower() in str(l).lower() for l in row.link_domains or [])
+        or any(v.lower() in str(l.get("url") or "").lower() for l in d.get("links") or []),
+        "classification": lambda v: decision.get("classification") == v,
+        "decidedBy": lambda v: v.lower() in str(decision.get("decidedBy") or "").lower(),
+    }
+    return all(check(f[key].strip()) for key, check in checks.items() if (f.get(key) or "").strip())
+
+
+def _filters(verdict: str, agreement: str, label: str, q: str, since: datetime | None, until: datetime | None, sender: str,
+             recipient: str, sender_domain: str, subject: str, message_id: str, ip: str, attachment: str, hash: str,
+             link: str, classification: str, decided_by: str, action: str, action_status: str, source: str, folder: str,
+             country: str, microsoft_verdict: str, min_score: int | None) -> dict:
+    return {"verdict": verdict, "agreement": agreement, "label": label, "q": q, "since": since, "until": until,
+            "sender": sender, "recipient": recipient, "senderDomain": sender_domain, "subject": subject,
+            "messageId": message_id, "ip": ip, "attachment": attachment, "hash": hash, "link": link,
+            "classification": classification, "decidedBy": decided_by, "action": action, "actionStatus": action_status,
+            "source": source, "folder": folder, "country": country, "microsoftVerdict": microsoft_verdict, "minScore": min_score}
+
+
+@router.get("/messages")
+def messages(tenant_id: str | None = None, verdict: str = "", agreement: str = "", label: str = "", q: str = "",
+             since: datetime | None = None, until: datetime | None = None, sender: str = "", recipient: str = "",
+             sender_domain: str = "", subject: str = "", message_id: str = "", ip: str = "", attachment: str = "",
+             hash: str = "", link: str = "", classification: str = "", decided_by: str = "", action: str = "",
+             action_status: str = "", source: str = "", folder: str = "", country: str = "", microsoft_verdict: str = "",
+             min_score: int | None = None, limit: int = Query(100, ge=1, le=500),
+             principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Explorer: search every checked message by sender, recipient, subject, Message-ID, IP, country, attachment name
+    or hash, link, verdict, classification, the policy or rule that decided, action and more."""
+    principal.require("respond")
+    f = _filters(verdict, agreement, label, q, since, until, sender, recipient, sender_domain, subject, message_id, ip,
+                 attachment, hash, link, classification, decided_by, action, action_status, source, folder, country,
+                 microsoft_verdict, min_score)
+    return [email_scan.scan_view(r) for r in _search(db, principal, tenant_id, f, limit)]
+
+
+@router.get("/messages.csv")
+def messages_csv(tenant_id: str | None = None, verdict: str = "", agreement: str = "", label: str = "", q: str = "",
+                 since: datetime | None = None, until: datetime | None = None, sender: str = "", recipient: str = "",
+                 sender_domain: str = "", subject: str = "", message_id: str = "", ip: str = "", attachment: str = "",
+                 hash: str = "", link: str = "", classification: str = "", decided_by: str = "", action: str = "",
+                 action_status: str = "", source: str = "", folder: str = "", country: str = "", microsoft_verdict: str = "",
+                 min_score: int | None = None, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """The same search as a spreadsheet (up to 5,000 rows)."""
+    import csv
+    import io
+
+    principal.require("respond")
+    f = _filters(verdict, agreement, label, q, since, until, sender, recipient, sender_domain, subject, message_id, ip,
+                 attachment, hash, link, classification, decided_by, action, action_status, source, folder, country,
+                 microsoft_verdict, min_score)
+    rows = _search(db, principal, tenant_id, f, 5000)
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(["received_utc", "mailbox", "sender", "sender_name", "subject", "message_id", "source", "folder", "verdict",
+                     "score", "classification", "decided_by", "action", "action_status", "microsoft_verdict", "originating_ip",
+                     "country", "spf", "dkim", "dmarc", "attachments", "link_domains", "top_reason", "label"])
+    for r in rows:
+        d = r.details or {}
+        origin, decision, ms = d.get("origin") or {}, d.get("decision") or {}, r.microsoft or {}
+        cells = [r.received_at.isoformat(), r.mailbox, r.sender_address, r.sender_name, r.subject, r.internet_message_id,
+                 r.source or "graph", r.folder, r.verdict, r.score, decision.get("classification", ""), decision.get("decidedBy", ""),
+                 r.action or "", r.action_status or "", r.microsoft_verdict, origin.get("ip") or ms.get("peer", ""),
+                 origin.get("country") or ms.get("country", ""), ms.get("spf", ""), ms.get("dkim", ""), ms.get("dmarc", ""),
+                 "; ".join(a.get("name", "") for a in r.attachments or []), "; ".join(r.link_domains or []),
+                 (r.reasons or [{}])[0].get("detail", "") if r.reasons else "", r.label]
+        # Spreadsheet formula injection: text starting with = + - @ is prefixed so Excel shows it as text.
+        writer.writerow(["'" + c if isinstance(c, str) and c[:1] in ("=", "+", "-", "@") else c for c in cells])
+    return Response(out.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": 'attachment; filename="fenrir-email-explorer.csv"'})
 
 
 @router.get("/messages/{scan_id}")
@@ -159,27 +260,50 @@ def release(scan_id: str, body: ReleaseIn, principal: Principal = Depends(curren
     return email_scan.scan_view(row, full=True)
 
 
-def _add_entry(db: Session, tenant_id: str, kind: str, match: str, value: str, note: str, actor: str) -> EmailListEntry:
-    value = value.strip().lower().lstrip("@")
+def _add_entry(db: Session, tenant_id: str, kind: str, match: str, value: str, note: str, actor: str,
+               expires_at: datetime | None = None) -> EmailListEntry:
+    import ipaddress
+    import re as _re
+
+    value = value.strip().lower().lstrip("@") if match != "subject" else value.strip().lower()
     if match == "sender" and ("@" not in value or " " in value):
         raise HTTPException(400, "Enter a full email address, like accounts@supplier.co.uk")
     if match == "domain" and ("@" in value or "." not in value or " " in value):
         raise HTTPException(400, "Enter a domain, like supplier.co.uk")
+    if match == "ip":
+        try:
+            value = str(ipaddress.ip_network(value, strict=False))
+        except ValueError:
+            raise HTTPException(400, "Enter an IP address or range, like 203.0.113.7 or 203.0.113.0/24") from None
+    if match == "url":
+        value = value.removeprefix("https://").removeprefix("http://").split("/")[0]
+        if "." not in value or " " in value:
+            raise HTTPException(400, "Enter the link's domain, like bad-site.example")
+    if match == "hash" and not _re.fullmatch(r"[0-9a-f]{64}", value):
+        raise HTTPException(400, "Enter a SHA-256 hash (64 hexadecimal characters)")
+    if match == "subject" and len(value) < 3:
+        raise HTTPException(400, "Enter at least three characters of the subject")
     existing = db.execute(select(EmailListEntry).where(EmailListEntry.tenant_id == tenant_id, EmailListEntry.kind == kind,
                                                        EmailListEntry.match == match, EmailListEntry.value == value)).scalar_one_or_none()
     if existing:
         return existing
     other = "block" if kind == "allow" else "allow"
     db.query(EmailListEntry).filter_by(tenant_id=tenant_id, kind=other, match=match, value=value).delete()
-    entry = EmailListEntry(tenant_id=tenant_id, kind=kind, match=match, value=value, note=note[:300], created_by=actor)
+    entry = EmailListEntry(tenant_id=tenant_id, kind=kind, match=match, value=value, note=note[:300], created_by=actor,
+                           expires_at=expires_at.replace(tzinfo=None) if expires_at else None, hits=0)
     db.add(entry)
     audit.record(db, actor, f"email_security.{kind}_listed", value, tenant_id, match=match)
     return entry
 
 
 def _entry_view(entry: EmailListEntry) -> dict:
+    from ..models import utcnow
+
     return {"id": entry.id, "tenantId": entry.tenant_id, "kind": entry.kind, "match": entry.match, "value": entry.value,
-            "note": entry.note, "createdBy": entry.created_by, "createdAt": entry.created_at.isoformat() + "Z"}
+            "note": entry.note, "createdBy": entry.created_by, "createdAt": entry.created_at.isoformat() + "Z",
+            "expiresAt": entry.expires_at.isoformat() + "Z" if entry.expires_at else None,
+            "expired": bool(entry.expires_at and entry.expires_at <= utcnow()), "hits": entry.hits or 0,
+            "lastHitAt": entry.last_hit_at.isoformat() + "Z" if entry.last_hit_at else None}
 
 
 @router.get("/lists")
@@ -195,7 +319,7 @@ def add_list_entry(body: ListIn, principal: Principal = Depends(current_principa
     """Allow or block a sender address or domain for a customer. An entry on the MSP's own tenant covers every customer."""
     principal.require("configure")
     principal.check_tenant(body.tenantId)
-    entry = _add_entry(db, body.tenantId, body.kind, body.match, body.value, body.note, principal.actor)
+    entry = _add_entry(db, body.tenantId, body.kind, body.match, body.value, body.note, principal.actor, body.expiresAt)
     db.commit()
     return _entry_view(entry)
 
@@ -486,3 +610,235 @@ def original(scan_id: str, principal: Principal = Depends(current_principal), db
     return Response(raw, media_type="message/rfc822",
                     headers={"Content-Disposition": f'attachment; filename="fenrir-{row.id}.eml"', "Cache-Control": "no-store",
                              "X-Content-Type-Options": "nosniff"})
+
+
+# --------------------------------------------------------------------------- the message body, safely
+
+@router.get("/messages/{scan_id}/content")
+def content(scan_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """The body, made safe to look at (no scripts, styles, remote images or live links) with the suspicious wording and
+    links highlighted. Kept copies are used first; mailbox messages are otherwise read from Microsoft 365 now. Audited."""
+    from .. import crypto, email_content
+
+    principal.require("respond")
+    row = owned(db, EmailScan, scan_id, principal)
+    ratelimit.check(f"email-content:{principal.actor}", 120, 600)
+    try:
+        kept = email_content.stored(db, row)
+    except crypto.VaultError:
+        kept = None
+    if kept is not None:
+        html, source = kept.get("html", ""), "kept"
+    elif (row.source or "graph") == "gateway":
+        from ..models import EmailQuarantine
+
+        held = db.execute(select(EmailQuarantine).where(EmailQuarantine.scan_id == row.id)).scalar_one_or_none()
+        if held is None:
+            raise HTTPException(404, "Fenrir did not keep this message's body (it was clean and delivered). Change the policy's "
+                                     "'keep message content' setting to keep more.")
+        message, _ = mail_gateway.parse(crypto.decrypt_bytes(held.envelope, f"email-quarantine:{row.id}"), "")
+        html, source = message.body_html, "quarantine"
+    else:
+        from urllib.parse import quote
+
+        from .. import m365
+
+        connection = db.get(M365Connection, row.connection_id)
+        if connection is None:
+            raise HTTPException(404, "The customer's Microsoft 365 connection no longer exists.")
+        try:
+            user_id = email_actions._user_id(connection, row.mailbox)
+            with httpx.Client(timeout=30, follow_redirects=False) as client:
+                token = m365.access_token(client, connection)
+                response = client.get(f"{m365.GRAPH}/users/{quote(user_id)}/messages/"
+                                      f"{quote(row.moved_message_id or row.message_id, safe='')}?$select=body",
+                                      headers={"Authorization": "Bearer " + token, "Prefer": 'outlook.body-content-type="html"'})
+        except email_actions.ActionError as exc:
+            raise HTTPException(404, str(exc)) from None
+        except httpx.HTTPError:
+            raise HTTPException(502, "Microsoft 365 could not be reached.") from None
+        if response.status_code == 404:
+            raise HTTPException(404, "The message is no longer in the mailbox, and Fenrir did not keep its body.")
+        if response.status_code >= 400:
+            raise HTTPException(502, f"Microsoft 365 would not provide the message (HTTP {response.status_code}).")
+        html, source = str((response.json().get("body") or {}).get("content") or ""), "mailbox"
+    audit.record(db, principal.actor, "email_security.content_viewed", row.id, row.tenant_id, mailbox=row.mailbox, source=source)
+    db.commit()
+    return email_content.view(row, html, source)
+
+
+# --------------------------------------------------------------------------- campaigns: related messages together
+
+def _subject_key(subject: str) -> str:
+    import re as _re
+
+    text = _re.sub(r"^((re|fw|fwd|aw|sv)\s*:\s*)+", "", (subject or "").strip(), flags=_re.I).lower()
+    return _re.sub(r"[0-9]+", "#", _re.sub(r"\s+", " ", text))[:120]
+
+
+@router.get("/campaigns")
+def campaigns(tenant_id: str | None = None, days: int = Query(7, ge=1, le=90), all_mail: bool = False,
+              principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Messages grouped by sender domain and subject (numbers ignored): how many, to whom, how Fenrir and Microsoft
+    judged them, and what was done. Only flagged mail by default."""
+    from datetime import timedelta
+
+    from ..models import utcnow
+
+    principal.require("respond")
+    query = select(EmailScan).where(EmailScan.tenant_id.in_(scoped_tenant(principal, tenant_id)),
+                                    EmailScan.received_at >= utcnow() - timedelta(days=days))
+    if not all_mail:
+        query = query.where(or_(EmailScan.verdict != "clean", EmailScan.microsoft_verdict.in_(("phish", "malware", "spam"))))
+    groups: dict[tuple, dict] = {}
+    for row in db.execute(query.order_by(EmailScan.received_at.desc()).limit(20000)).scalars():
+        key = (row.sender_domain, _subject_key(row.subject))
+        g = groups.setdefault(key, {"senderDomain": row.sender_domain, "subjectKey": key[1], "subject": row.subject,
+                                    "messages": 0, "recipients": set(), "tenants": set(), "verdicts": {}, "actions": {},
+                                    "first": row.received_at, "last": row.received_at, "senders": set(), "maxScore": 0})
+        g["messages"] += 1
+        g["recipients"].add(row.mailbox)
+        g["tenants"].add(row.tenant_id)
+        g["senders"].add(row.sender_address)
+        g["verdicts"][row.verdict] = g["verdicts"].get(row.verdict, 0) + 1
+        if row.action:
+            g["actions"][row.action] = g["actions"].get(row.action, 0) + 1
+        g["first"], g["last"] = min(g["first"], row.received_at), max(g["last"], row.received_at)
+        g["maxScore"] = max(g["maxScore"], row.score or 0)
+    out = []
+    for g in groups.values():
+        out.append({**g, "recipients": len(g["recipients"]), "tenants": len(g["tenants"]), "senders": sorted(g["senders"])[:10],
+                    "first": g["first"].isoformat() + "Z", "last": g["last"].isoformat() + "Z"})
+    out.sort(key=lambda g: (-g["messages"], -g["maxScore"]))
+    return out[:300]
+
+
+class PurgeIn(BaseModel):
+    tenantId: str | None = None
+    senderDomain: str = ""
+    subjectKey: str = ""
+    sender: str = ""
+    messageId: str = ""
+    days: int = Field(default=7, ge=1, le=90)
+    action: Literal["quarantine", "delete"] = "quarantine"
+    preview: bool = True
+
+
+@router.post("/campaigns/purge")
+def purge(body: PurgeIn, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Remove matching messages from every mailbox they reached: to Fenrir's quarantine (can be released) or deleted
+    for good. ``preview`` lists what would be touched without changing anything. Needs Mail.ReadWrite."""
+    from datetime import timedelta
+
+    from .. import m365
+    from ..models import utcnow
+
+    principal.require("configure")
+    if not (body.senderDomain or body.sender or body.messageId):
+        raise HTTPException(400, "Choose the messages: a sender, a sender domain (with an optional subject) or a Message-ID")
+    query = select(EmailScan).where(EmailScan.tenant_id.in_(scoped_tenant(principal, body.tenantId)),
+                                    EmailScan.received_at >= utcnow() - timedelta(days=body.days),
+                                    or_(EmailScan.source.is_(None), EmailScan.source == "graph"))
+    if body.senderDomain:
+        query = query.where(EmailScan.sender_domain == body.senderDomain.lower())
+    if body.sender:
+        query = query.where(EmailScan.sender_address == body.sender.lower())
+    if body.messageId:
+        query = query.where(EmailScan.internet_message_id == body.messageId)
+    rows = [r for r in db.execute(query.limit(2000)).scalars() if not body.subjectKey or _subject_key(r.subject) == body.subjectKey]
+    if body.action == "quarantine":  # already quarantined or deleted: nothing to do
+        rows = [r for r in rows if r.action_status != "deleted" and not (r.action == "quarantine" and r.action_status == "done")]
+    else:
+        rows = [r for r in rows if r.action_status != "deleted"]
+    if body.preview:
+        return {"matched": len(rows), "mailboxes": sorted({r.mailbox for r in rows})[:200],
+                "messages": [email_scan.scan_view(r) for r in rows[:50]]}
+    done, failed = 0, []
+    by_connection: dict[str, list[EmailScan]] = {}
+    for row in rows:
+        by_connection.setdefault(row.connection_id, []).append(row)
+    with httpx.Client(timeout=20, follow_redirects=False) as client:
+        for connection_id, items in by_connection.items():
+            connection = db.get(M365Connection, connection_id)
+            if connection is None:
+                failed += [r.id for r in items]
+                continue
+            try:
+                token = m365.access_token(client, connection)
+            except (httpx.HTTPError, ValueError, KeyError):
+                failed += [r.id for r in items]
+                continue
+            state = {}
+            for row in items:
+                try:
+                    user_id = email_actions._user_id(connection, row.mailbox)
+                    current = row.moved_message_id or row.message_id
+                    if body.action == "delete":
+                        email_actions.permanent_delete(client, token, user_id, current)
+                        row.action, row.action_status = "delete", "deleted"
+                    else:
+                        folder = email_actions.quarantine_folder(client, token, user_id, state)
+                        row.moved_message_id = email_actions.move(client, token, user_id, current, folder)
+                        row.action, row.action_status = "quarantine", "done"
+                    row.acted_at, row.action_error = utcnow(), ""
+                    done += 1
+                except (email_actions.ActionError, httpx.HTTPError) as exc:
+                    row.action_error = str(exc)[:300]
+                    failed.append(row.id)
+    audit.record(db, principal.actor, "email_security.purged", body.senderDomain or body.sender or body.messageId, body.tenantId,
+                 purge_action=body.action, done=done, failed=len(failed), subject=body.subjectKey[:80])
+    db.commit()
+    return {"done": done, "failed": len(failed)}
+
+
+# --------------------------------------------------------------------------- several messages at once
+
+class BulkIn(BaseModel):
+    ids: list[str] = Field(min_length=1, max_length=500)
+    op: Literal["release", "delete", "label", "blockSender", "blockDomain", "allowSender"]
+    value: str = ""
+
+
+@router.post("/messages/bulk")
+def bulk(body: BulkIn, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Release, delete for good, label, or block/allow the senders of many messages. Each result is reported."""
+    from .. import m365
+    from ..models import EmailQuarantine, utcnow
+
+    principal.require("configure" if body.op in ("delete", "blockSender", "blockDomain", "allowSender") else "respond")
+    results = {"done": 0, "failed": []}
+    for scan_id in dict.fromkeys(body.ids):
+        row = db.get(EmailScan, scan_id)
+        if row is None or row.tenant_id not in principal.tenant_ids:
+            results["failed"].append({"id": scan_id, "error": "Not found"})
+            continue
+        try:
+            if body.op == "release":
+                email_actions.release(db, row, principal.actor)
+            elif body.op == "label":
+                email_scan.label(db, row, body.value, principal.actor)
+            elif body.op in ("blockSender", "blockDomain", "allowSender"):
+                kind = "allow" if body.op == "allowSender" else "block"
+                match = "domain" if body.op == "blockDomain" else "sender"
+                _add_entry(db, row.tenant_id, kind, match, row.sender_domain if match == "domain" else row.sender_address,
+                           f"From message: {row.subject[:200]}", principal.actor)
+            elif body.op == "delete":
+                if (row.source or "graph") == "gateway":
+                    db.query(EmailQuarantine).filter_by(scan_id=row.id).delete()
+                else:
+                    connection = db.get(M365Connection, row.connection_id)
+                    if connection is None:
+                        raise email_actions.ActionError("The Microsoft 365 connection no longer exists.")
+                    with httpx.Client(timeout=20, follow_redirects=False) as client:
+                        token = m365.access_token(client, connection)
+                        email_actions.permanent_delete(client, token, email_actions._user_id(connection, row.mailbox),
+                                                       row.moved_message_id or row.message_id)
+                row.action, row.action_status, row.acted_at = "delete", "deleted", utcnow()
+                audit.record(db, principal.actor, "email_security.deleted", row.id, row.tenant_id, mailbox=row.mailbox)
+            db.commit()
+            results["done"] += 1
+        except (email_actions.ActionError, ValueError, httpx.HTTPError, HTTPException) as exc:
+            db.rollback()
+            detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+            results["failed"].append({"id": scan_id, "error": str(detail)[:300]})
+    return results

@@ -94,7 +94,9 @@ def gateway(client, admin, tenant, tmp_path, monkeypatch):
 
 def _send(port, msg, sender, rcpts):
     with smtplib.SMTP("127.0.0.1", port, timeout=10) as smtp:
-        return smtp.sendmail(sender, rcpts or ["jo@acme.co.uk"], msg.as_bytes())
+        from email import policy as mail_policy
+
+        return smtp.sendmail(sender, rcpts or ["jo@acme.co.uk"], msg.as_bytes(policy=mail_policy.SMTP))  # CRLF, as real servers send
 
 
 def mail(subject="Order dispatched", body="<p>Your order has shipped.</p>", attachment=None, sender="accounts@supplier.example"):
@@ -341,3 +343,43 @@ def test_the_mailbox_scan_interval_is_configurable(monkeypatch):
     assert email_scan.scan_interval() == 30  # never more often than every 30 seconds
     monkeypatch.setenv("FENRIR_EMAIL_SCAN_SECONDS", "300")
     assert email_scan.scan_interval() == 300
+
+
+def test_gateway_follows_the_customers_policy_rules_and_connection_filter(client, admin, tenant, gateway):
+    from fenrir_cloud import email_policy
+
+    doc = {**email_policy.PRESETS["standard"],
+           "rules": [{"name": "Label supplier mail", "conditions": [{"field": "senderDomain", "operator": "is", "value": "supplier.example"}],
+                      "actions": [{"type": "addHeader", "value": "X-Fenrir-Supplier: yes"}]}]}
+    assert client.put(f"{BASE}/policy/{tenant['id']}", json={"document": doc}, headers=admin).status_code == 200
+    gateway.send(mail())
+    run(gateway)
+    content = gateway.m365.received[0][2]
+    assert b"X-Fenrir-Supplier: yes" in content
+    with database.session_factory()() as db:
+        scan = db.query(EmailScan).one()
+        assert any(t["source"] == "Mail flow rule 'Label supplier mail'" for t in scan.details["decision"]["trail"])
+    blocked = {**doc, "connection": {"ipAllow": [], "ipBlock": ["127.0.0.0/8"]}}
+    client.put(f"{BASE}/policy/{tenant['id']}", json={"document": blocked}, headers=admin)
+    gateway.directory.policy_cache.clear()
+    with smtplib.SMTP("127.0.0.1", gateway.port, timeout=10) as smtp:
+        smtp.ehlo()
+        smtp.mail("a@supplier.example")
+        code, text = smtp.rcpt("jo@acme.co.uk")
+        assert code == 550 and b"blocked by the recipient's policy" in text
+
+
+def test_files_inside_zip_attachments_are_checked(gateway):
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("invoice.pdf", b"%PDF")
+        archive.writestr("run.js", b"WScript.Echo(1)")
+    gateway.send(mail(subject="Documents", attachment=("documents.zip", buffer.getvalue())))
+    run(gateway)
+    assert gateway.m365.received == []
+    with database.session_factory()() as db:
+        scan = db.query(EmailScan).one()
+        assert scan.action == "quarantine" and "run.js inside documents.zip" in scan.details["decision"]["trail"][-1]["detail"]

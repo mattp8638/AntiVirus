@@ -94,6 +94,7 @@ class Context:
     block_senders: set[str] = field(default_factory=set)         # customer block list: addresses
     block_sender_domains: set[str] = field(default_factory=set)  # customer block list: domains
     model: object | None = None                                  # the learned model (email_model.py), when active
+    policy: dict | None = None                                   # the customer's email policy (email_policy.py)
 
 
 @dataclass
@@ -142,6 +143,8 @@ def microsoft_verdict(headers: dict[str, str], folder: str) -> dict:
         "sfv": forefront.get("SFV", ""), "cat": forefront.get("CAT", ""), "country": forefront.get("CTRY", ""),
         "spf": _auth_result(auth, "spf"), "dkim": _auth_result(auth, "dkim"), "dmarc": _auth_result(auth, "dmarc"),
         "compauth": _auth_result(auth, "compauth"),
+        "dmarcAction": (re.search(r"\bdmarc=fail\s+action=([a-z]+)", auth, re.I).group(1).lower()
+                        if re.search(r"\bdmarc=fail\s+action=([a-z]+)", auth, re.I) else ""),
     }
     cat, sfv, scl = details["cat"].upper(), details["sfv"].upper(), details["scl"]
     if not forefront and not antispam and not auth:
@@ -247,6 +250,21 @@ def _extension(name: str) -> tuple[str, str]:
     last = parts[-1] if len(parts) > 1 else ""
     before = parts[-2] if len(parts) > 2 else ""
     return last, before
+
+
+def archive_members(name: str, payload: bytes) -> tuple[list[str], bool]:
+    """(file names inside a .zip, True if any is password-protected). Other formats are not opened."""
+    import io
+    import zipfile
+
+    if not payload or not (name or "").lower().endswith(".zip") and not payload.startswith(b"PK\x03\x04"):
+        return [], False
+    try:
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            infos = archive.infolist()[:200]
+            return [i.filename[-200:] for i in infos if not i.is_dir()], any(i.flag_bits & 0x1 for i in infos)
+    except (zipfile.BadZipFile, ValueError, OSError, RuntimeError):
+        return [], False
 
 
 def links(html: str) -> tuple[list[str], list[tuple[str, str]]]:

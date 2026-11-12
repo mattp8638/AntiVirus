@@ -2092,7 +2092,37 @@ class EmailListEntry(Base):
     note: Mapped[str] = mapped_column(String(300), default="")
     created_by: Mapped[str] = mapped_column(String(320), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # match is also ip (address or range), url (domain or link), hash (SHA-256) or subject (words in the subject).
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    hits: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+    last_hit_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     __table_args__ = (UniqueConstraint("tenant_id", "kind", "match", "value", name="uq_email_list_entry"),)
+
+
+class EmailPolicyVersion(Base):
+    """One saved version of a scope's email policy set (email_policy.py). Never changed after it is written."""
+    __tablename__ = "email_policy_versions"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("empol"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)  # the MSP (default for customers) or one customer
+    version: Mapped[int] = mapped_column(Integer)
+    document: Mapped[dict] = mapped_column(JSON, default=dict)
+    inherit: Mapped[bool] = mapped_column(Boolean, default=False)  # True: follow the parent's policy instead
+    preset: Mapped[str] = mapped_column(String(20), default="")
+    comment: Mapped[str] = mapped_column(String(500), default="")
+    created_by: Mapped[str] = mapped_column(String(320), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    __table_args__ = (UniqueConstraint("tenant_id", "version", name="uq_email_policy_version"),)
+
+
+class EmailContent(Base):
+    """A message's body, encrypted with the vault key, kept for flagged mail (or all mail, by policy) so technicians can
+    read it safely in the console. Deleted with its scan."""
+    __tablename__ = "email_content"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("emct"))
+    scan_id: Mapped[str] = mapped_column(String(32), unique=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    envelope: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
 class EmailModel(Base):

@@ -101,8 +101,14 @@ def move(client: httpx.Client, token: str, user_id: str, message_id: str, destin
     return str(moved.get("id") or message_id)
 
 
-def tag(client: httpx.Client, token: str, user_id: str, message_id: str, existing: list[str]) -> None:
-    categories = list(dict.fromkeys([*existing, TAG]))
+def permanent_delete(client: httpx.Client, token: str, user_id: str, message_id: str) -> None:
+    """Delete a message for good (not to Deleted Items), as Defender's hard delete does."""
+    _call(client, "POST", f"{m365.GRAPH}/users/{quote(user_id)}/messages/{quote(message_id, safe='')}/permanentDelete", token)
+
+
+def tag(client: httpx.Client, token: str, user_id: str, message_id: str, existing: list[str],
+        extra: list[str] | None = None) -> None:
+    categories = list(dict.fromkeys([*existing, *(extra or [TAG])]))[:25]
     _call(client, "PATCH", f"{m365.GRAPH}/users/{quote(user_id)}/messages/{quote(message_id, safe='')}", token,
           {"categories": categories})
 
@@ -110,10 +116,13 @@ def tag(client: httpx.Client, token: str, user_id: str, message_id: str, existin
 # --------------------------------------------------------------------------- acting on one message
 
 def act(client: httpx.Client, token: str, setting: EmailScanSetting, user_id: str, row: EmailScan,
-        categories: list[str], state: dict) -> str:
-    """Carry out the customer's chosen action for this verdict. Returns the action taken ("" for none)."""
-    action = actions_for(setting).get(row.verdict, "none")
-    if action == "none" or (row.reasons and row.reasons[0].get("code") == "list.allow"):
+        categories: list[str], state: dict, action: str | None = None, extra_categories: list[str] | None = None) -> str:
+    """Carry out the policy's action on one mailbox message. Returns the action taken ("" for none).
+
+    ``action`` comes from the customer's email policy (email_policy.decide); reject means quarantine in a mailbox."""
+    action = action if action is not None else actions_for(setting).get(row.verdict, "none")
+    action = "quarantine" if action == "reject" else action
+    if action in ("none", "deliver") or (row.reasons and row.reasons[0].get("code") == "list.allow" and action != "quarantine"):
         return ""
     if action == "junk" and row.folder == "junkemail":
         row.action, row.action_status = "junk", "skipped"
@@ -125,7 +134,7 @@ def act(client: httpx.Client, token: str, setting: EmailScanSetting, user_id: st
         elif action == "junk":
             row.moved_message_id = move(client, token, user_id, row.message_id, "junkemail")
         elif action == "tag":
-            tag(client, token, user_id, row.message_id, categories)
+            tag(client, token, user_id, row.message_id, categories, extra_categories)
         row.action_status, row.action_error = "done", ""
     except (ActionError, httpx.HTTPError) as exc:
         row.action_status = "failed"
@@ -315,9 +324,16 @@ def recheck(db: Session, setting: EmailScanSetting, connection: M365Connection, 
             row.verdict = "phish"
         row.reasons, row.score = reasons, min(100, row.score + reasons[0]["points"])
         row.agreement = email_security.agreement(row.verdict, row.microsoft_verdict)
+        policy = getattr(ctx, "policy", None) or {}
+        malware_policy = policy.get("antimalware") or {}
+        if malware_policy and not malware_policy.get("zeroHour", True):
+            changed.append(row)
+            continue
+        action = (malware_policy.get("action", "quarantine") if row.verdict == "malware"
+                  else ((policy.get("antispam") or {}).get("actions") or {}).get("phish", "quarantine"))
         if acting(setting) and row.source in (None, "graph") and setting.protect_since and row.received_at >= setting.protect_since:
             try:
-                act(client, token, setting, _user_id(connection, row.mailbox), row, [], state)
+                act(client, token, setting, _user_id(connection, row.mailbox), row, [], state, action)
             except ActionError as exc:
                 row.action_status, row.action_error = "failed", str(exc)[:300]
         changed.append(row)
