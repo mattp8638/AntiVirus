@@ -276,3 +276,21 @@ def test_passkeys_follow_required_microsoft_sign_in_and_disabled_accounts(client
     user_id = created["id"]
     assert client.patch(f"/api/console/users/{user_id}", headers=admin, json={"active": False}).status_code == 200
     assert "cannot sign in" in _sign_in(client, tech_key).json()["detail"]
+
+
+def test_passkeys_work_on_bare_and_www_domain(monkeypatch):
+    import dataclasses
+    from fenrir_cloud import passkeys
+    from fenrir_cloud.config import get_settings
+    base = get_settings()
+    monkeypatch.setattr(passkeys, "get_settings", lambda: dataclasses.replace(base, public_base_url="https://www.fenrir.example"))
+    assert passkeys.rp_id() == "fenrir.example"
+    assert passkeys.origin_allowed("https://www.fenrir.example")
+    assert passkeys.origin_allowed("https://fenrir.example")
+    assert not passkeys.origin_allowed("http://fenrir.example")
+    assert not passkeys.origin_allowed("https://fenrir.example.evil.test")
+    assert not passkeys.origin_allowed("https://notfenrir.example")
+    monkeypatch.setattr(passkeys, "get_settings", lambda: dataclasses.replace(base, public_base_url="https://fenrir.example"))
+    assert passkeys.rp_id() == "fenrir.example"
+    monkeypatch.setenv("FENRIR_PASSKEY_RP_ID", "console.fenrir.example")
+    assert passkeys.rp_id() == "console.fenrir.example"
