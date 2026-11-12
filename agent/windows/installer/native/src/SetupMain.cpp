@@ -97,7 +97,9 @@ constexpr DWORD kWin32VirusDeletedError = ERROR_VIRUS_DELETED;
 constexpr UINT kInstallerLogMessage = WM_APP + 1;
 constexpr UINT kInstallerStatusMessage = WM_APP + 2;
 constexpr UINT kInstallerCompleteMessage = WM_APP + 3;
-constexpr UINT kRetryWebUiMessage = WM_APP + 4;  // the WebView2 runtime was installed: try the branded window again
+constexpr UINT kRetryWebUiMessage = WM_APP + 4;
+constexpr UINT_PTR kWebFallbackTimer = 41;  // the standard window appears if the branded page is not up by then
+constexpr UINT kWebFallbackMilliseconds = 8000;  // the WebView2 runtime was installed: try the branded window again
 
 enum : int {
   IDC_EYEBROW = 1001,
@@ -171,6 +173,7 @@ struct UiContext {
   Microsoft::WRL::ComPtr<ICoreWebView2> webView;
   HMODULE webLoader{};
   bool webReady{false};
+  bool nativeVisible{true};  // false: the branded page (or its dark placeholder) is what shows
   bool webConfirmedUninstall{false};  // the page asked for confirmation itself
   int webNavigations{0};
   int webAttempts{0};          // 1 = normal start, 2 = fresh data folder with GPU off; then the native window stays
@@ -415,6 +418,25 @@ void PaintInstallerChrome(HWND hwnd, UiContext& context) {
 
   RECT client{};
   GetClientRect(hwnd, &client);
+  if (!context.nativeVisible) {
+    // Waiting for the branded page: its own background colour, the logo and one line, never the standard window.
+    const auto background = CreateSolidBrush(RGB(5, 8, 15));
+    FillRect(hdc, &client, background);
+    DeleteObject(background);
+    const int centreX = (client.left + client.right) / 2;
+    const int centreY = (client.top + client.bottom) / 2;
+    if (context.heroIcon != nullptr) {
+      DrawIconEx(hdc, centreX - 32, centreY - 56, context.heroIcon, 64, 64, 0, nullptr, DI_NORMAL);
+    }
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, RGB(148, 163, 184));
+    const auto oldFont = SelectObject(hdc, context.bodyFont);
+    RECT textRect{client.left, centreY + 20, client.right, centreY + 48};
+    DrawTextW(hdc, L"Starting Fenrir setup\u2026", -1, &textRect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+    SelectObject(hdc, oldFont);
+    EndPaint(hwnd, &paint);
+    return;
+  }
   FillRect(hdc, &client, context.windowBrush);
 
   const int padding = 20;
@@ -3399,7 +3421,7 @@ void RefreshUi(UiContext& context) {
   SetWindowTextW(context.primaryButton, context.installed ? L"Repair deployment" : L"Install protection");
   SetWindowTextW(context.badgeLabel, context.busy ? L"Working" : (context.installed ? L"Installed" : L"Ready"));
   // Behind the branded page the native controls stay hidden; it has its own Uninstall button.
-  ShowWindow(context.uninstallButton, context.installed && !context.webReady ? SW_SHOW : SW_HIDE);
+  ShowWindow(context.uninstallButton, context.installed && context.nativeVisible ? SW_SHOW : SW_HIDE);
   EnableWindow(context.primaryButton, !context.busy);
   EnableWindow(context.uninstallButton, context.installed && !context.busy);
   EnableWindow(context.closeButton, !context.busy);
@@ -3409,12 +3431,14 @@ void RefreshUi(UiContext& context) {
 }
 
 void ShowNativeControls(UiContext& context, const bool show) {
+  context.nativeVisible = show;
   for (const auto control : {context.eyebrowLabel, context.titleLabel, context.subtitleLabel, context.pathLabel, context.pathValue,
                              context.statusLabel, context.progressBar, context.logEdit, context.primaryButton, context.uninstallButton,
                              context.openFolderButton, context.closeButton, context.badgeLabel, context.logTitleLabel}) {
     if (control != nullptr) ShowWindow(control, show ? SW_SHOW : SW_HIDE);
   }
   if (show) RefreshUi(context);  // RefreshUi decides whether Uninstall is shown
+  InvalidateRect(context.hwnd, nullptr, TRUE);
 }
 
 void ResizeWeb(UiContext& context) {
@@ -3686,6 +3710,7 @@ bool StartWebView(UiContext& context) {
                         }
                         ctx->webReady = true;
                         ctx->webStarting = false;
+                        KillTimer(hwnd, kWebFallbackTimer);
                         ShowNativeControls(*ctx, false);
                         ctx->webController->put_IsVisible(TRUE);
                         ctx->webController->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
@@ -3722,8 +3747,8 @@ void FailWebUi(UiContext& context, const std::wstring& reason) {
     context.webController.Reset();
   }
   context.webView.Reset();
-  if (wasShowing) ShowNativeControls(context, true);
   const bool willRetry = context.webAttempts < 2;
+  if (wasShowing || !willRetry) ShowNativeControls(context, true);  // out of retries: the standard window
   NoteWebUi(context, reason + (willRetry ? L" Retrying with a fresh data folder." : L" Using the standard window."));
   if (willRetry) PostMessageW(context.hwnd, kRetryWebUiMessage, 0, 0);
 }
@@ -3993,6 +4018,17 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
       return 0;
     }
 
+    case WM_TIMER: {
+      if (wParam == kWebFallbackTimer) {
+        KillTimer(hwnd, kWebFallbackTimer);
+        if (auto* context = GetContext(hwnd); context && !context->webReady && !context->nativeVisible) {
+          ShowNativeControls(*context, true);
+        }
+        return 0;
+      }
+      break;
+    }
+
     case kRetryWebUiMessage: {
       if (auto* context = GetContext(hwnd); context && !context->silent && !context->quietUninstall) StartWebView(*context);
       return 0;
@@ -4215,7 +4251,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     context->silent = true;
     PostMessageW(hwnd, WM_COMMAND, IDC_PRIMARY_BUTTON, 0);
   } else if (!(argv != nullptr && HasArgument(argc, argv, L"--uninstall") && HasArgument(argc, argv, L"--quiet"))) {
-    if (auto* context = GetContext(hwnd)) StartWebView(*context);  // the native window stays if this fails
+    // The branded page only: a dark placeholder until it loads. The standard window appears only if WebView2 cannot
+    // start (no runtime yet, or both attempts failed) or the page is not up within a few seconds.
+    if (auto* context = GetContext(hwnd); context && StartWebView(*context)) {
+      ShowNativeControls(*context, false);
+      SetTimer(hwnd, kWebFallbackTimer, kWebFallbackMilliseconds, nullptr);
+    }
     ShowWindow(hwnd, showCommand == 0 ? SW_SHOWDEFAULT : showCommand);
     UpdateWindow(hwnd);
   }
