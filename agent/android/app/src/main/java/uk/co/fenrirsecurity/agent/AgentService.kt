@@ -128,6 +128,7 @@ class AgentService : Service() {
         alarm = AlarmPlayer(this)
         goForeground()
         running = true
+        PrivateDns.watchNetworks(this, store)
         registerReceiver(screenOn, IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED)
@@ -214,6 +215,8 @@ class AgentService : Service() {
             val now = System.currentTimeMillis()
             val lost = store.lostMode.enabled
             // Every 60 seconds while awake (the server counts a phone online for 2 minutes, asleep for 30).
+            // First, and on its own: a phone whose Private DNS server is down has no internet until this puts it back.
+            PrivateDns.check(this, store)
             if (force || now - store.lastHeartbeat >= (if (lost) 30_000L else 60_000L)) heartbeat()
             val reason = bootReason ?: if (store.lostMode.enabled) "lostmode" else "periodic"
             val everyMinutes = Pace.periodicMinutes(store.tracking, store.lostMode.enabled, store.zones.isNotEmpty())
@@ -252,8 +255,10 @@ class AgentService : Service() {
             if (tracking != store.tracking) { store.tracking = tracking; tracker.apply(tracking) }
         }
         Notifications.updateStatus(this, statusText())
+        val revisionBefore = store.policyRevision
         runCatching { PhonePolicy.sync(this, store, api(), reply.policyRevision) }
             .onFailure { store.lastError = "Policy: ${it.message ?: it.javaClass.simpleName}" }
+        if (store.policyRevision != revisionBefore) PrivateDns.check(this, store, force = true)
         if (reply.rotateKey) rotateKey()
         if (reply.commandsPending > 0) runCommands()
     }

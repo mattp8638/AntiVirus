@@ -2,3 +2,9 @@
     encode zstd gzip
     reverse_proxy cloud:8080
 }
+
+# Optional: DNS over TLS for Android Private DNS (docker-compose.dot.yml). This block only makes Caddy obtain and
+# renew a certificate for the name; the phones talk to the dot service on port 853, which reads that certificate.
+# {$FENRIR_DOT_HOSTNAME} {
+#     respond "Fenrir DNS" 200
+# }

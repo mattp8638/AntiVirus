@@ -9,6 +9,7 @@ Linux agent's reputation lookup. Device calls authenticate with the
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import secrets
@@ -268,6 +269,8 @@ def heartbeat(body: dict = Body(default={}), device: Device = Depends(current_de
     device.metrics = {**(device.metrics or {}), "commandCancellation": body.get("commandCancellation") is True}
     _sync_cmdb_from_agent(db, device)
     resolution, policy_doc = services.effective_policy(db, device)
+    if device.platform == "android":
+        _android_private_dns(policy_doc, device)
     if device.platform == "android" and isinstance(body.get("metrics"), dict):
         from .. import android_compliance
 
@@ -319,9 +322,29 @@ def support_request(body: dict = Body(default={}), device: Device = Depends(curr
     return {"ticketId": ticket.id, "number": ticket.number}
 
 
+def _android_private_dns(policy_doc: dict, device: Device) -> None:
+    """Tells a phone which Private DNS hostname to use (and how to prove which phone it is) when its policy asks for it."""
+    android = (policy_doc.get("modules") or {}).get("android")
+    if not isinstance(android, dict):
+        return
+    hostname = get_settings().dot_hostname
+    if android.get("privateDns") == "fenrir" and hostname:
+        android["privateDnsHost"] = hostname
+        from ..dot_server import probe_name
+
+        android["privateDnsProbe"] = probe_name(device)
+        # Part of the revision, so phones fetch the policy again when the server's DNS-over-TLS hostname changes.
+        policy_doc["revision"] = hashlib.sha256(f"{policy_doc['revision']}|dot|{hostname}".encode()).hexdigest()[:16]
+    else:
+        android.pop("privateDnsHost", None)
+        android.pop("privateDnsProbe", None)
+
+
 @router.post("/devices/{device_id}/policy-check-in")
 def policy_check_in(body: dict = Body(default={}), device: Device = Depends(current_device), db: Session = Depends(get_db)):
     _, policy_doc = services.effective_policy(db, device)
+    if device.platform == "android":
+        _android_private_dns(policy_doc, device)
     changed = body.get("currentPolicyRevision") != policy_doc["revision"]
     device.applied_policy_revision = policy_doc["revision"]
     db.commit()

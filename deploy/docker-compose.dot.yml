@@ -1,0 +1,45 @@
+# DNS over TLS for Android Private DNS: company-owned phones look up websites through Fenrir's DNS filtering, so scam,
+# phishing and malware sites are blocked in every app. See docs/DNS_PROTECTION.md, "Android phones (Private DNS)".
+#
+#   docker compose -f docker-compose.yml -f docker-compose.https.yml -f docker-compose.dot.yml up -d
+#
+# Needs: FENRIR_DOT_HOSTNAME in .env (for example dns.example.com), a DNS A record for it pointing at this server,
+# TCP port 853 open to the internet, and a site block for it in your Caddyfile so Caddy obtains its certificate
+# (see Caddyfile.example). The certificate is read from Caddy's data volume, so this runs alongside the HTTPS setup.
+services:
+  dot:
+    extends: { file: docker-compose.yml, service: worker }
+    command: ["python", "-m", "fenrir_cloud.dot_server"]
+    depends_on: { cloud: { condition: service_healthy } }  # the API creates and upgrades the database
+    environment:
+      FENRIR_ROLE: dot
+      FENRIR_DOT_HOSTNAME: ${FENRIR_DOT_HOSTNAME:?set FENRIR_DOT_HOSTNAME to the hostname phones use for Private DNS}
+      FENRIR_DOT_PORT: "8853"
+      FENRIR_DOT_CADDY_DATA: /caddy-data
+    # Caddy keeps its certificates readable by root only (0700 folders, 0600 files), so this service runs as root,
+    # with every capability dropped and Caddy's volume mounted read-only.
+    user: "0:0"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - caddy_data:/caddy-data:ro
+    ports: ["853:8853"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "fenrir_cloud.dot_server", "--check"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+
+  cloud:
+    environment:
+      # Tells phones which hostname to use; without it the policy setting does nothing.
+      FENRIR_DOT_HOSTNAME: ${FENRIR_DOT_HOSTNAME:?set FENRIR_DOT_HOSTNAME to the hostname phones use for Private DNS}
+
+  caddy:
+    environment:
+      # For the Caddyfile's {$FENRIR_DOT_HOSTNAME} site block, so Caddy obtains and renews its certificate.
+      FENRIR_DOT_HOSTNAME: ${FENRIR_DOT_HOSTNAME}
+
+volumes:
+  caddy_data: {}

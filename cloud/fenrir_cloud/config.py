@@ -86,6 +86,8 @@ class Settings:
     dns_blocklists_enabled: bool = field(default_factory=lambda: _bool("FENRIR_DNS_BLOCKLISTS", True))
     dns_upstream: str = field(default_factory=lambda: os.getenv("FENRIR_DNS_UPSTREAM", "https://cloudflare-dns.com/dns-query"))
     dns_sinkhole_ipv4: str = field(default_factory=lambda: os.getenv("FENRIR_DNS_SINKHOLE", "0.0.0.0"))
+    # DNS over TLS for Android Private DNS (fenrir_cloud.dot_server); empty when it is not deployed.
+    dot_hostname: str = field(default_factory=lambda: os.getenv("FENRIR_DOT_HOSTNAME", "").strip().lower())
 
     cors_origins: list[str] = field(default_factory=lambda: _list("FENRIR_CORS_ORIGINS", "http://localhost:5173"))
     console_dir: Path = field(

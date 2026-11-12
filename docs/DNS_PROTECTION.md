@@ -3,7 +3,7 @@
 Every device gets its own encrypted DNS resolver on the Fenrir server. Windows and Linux agents can also run a
 local DNS proxy that sends all lookups there ([EDR_EXCLUSIONS_AND_DNS_PROXY.md](EDR_EXCLUSIONS_AND_DNS_PROXY.md)).
 Macs never use the local proxy: a Mac whose DNS points at loopback has no internet whenever the proxy is not
-answering, so the macOS agent ignores the setting and puts back any DNS change an earlier version made. Phones and agentless Macs use a profile. The console page **DNS protection** is laid out like Microsoft Defender:
+answering, so the macOS agent ignores the setting and puts back any DNS change an earlier version made. Agentless Macs use a profile; company-owned Android phones use Private DNS (below). The console page **DNS protection** is laid out like Microsoft Defender:
 
 | Investigate | Policies & rules | Threat intelligence |
 |---|---|---|
@@ -122,6 +122,45 @@ Policies decide how it is used:
     that alone.
 
 Settings and builds need the platform permission. Policies are per customer.
+
+## Android phones (Private DNS)
+
+Company-owned Android phones (enrolled with Fenrir as the device owner, Android 10 or later) can have scam,
+phishing and malware sites blocked in every app and browser. Nothing runs on the phone for this: Android's own
+**Private DNS** is set to Fenrir's DNS-over-TLS server, which filters with the phone's policy like any other device.
+
+Turn it on with **Scam and phishing site blocking (Private DNS)** in the policy's Android section (the *Android -
+Phones and tablets* template has it on). Work-profile (personal) phones cannot be set this way and are not affected.
+
+**Server setup** (once):
+
+1. Pick a hostname, for example `dns.example.com`, and add a DNS **A record** for it pointing at the Fenrir server.
+2. Open **TCP port 853** to the internet (firewall and cloud provider).
+3. Add `FENRIR_DOT_HOSTNAME=dns.example.com` to `.env`.
+4. Add a site block for the name to your Caddyfile, so Caddy gets a trusted certificate for it (Android refuses
+   self-signed ones). `deploy/Caddyfile.example` shows it:
+   ```
+   {$FENRIR_DOT_HOSTNAME} {
+       respond "Fenrir DNS" 200
+   }
+   ```
+   (`docker-compose.dot.yml` passes `FENRIR_DOT_HOSTNAME` to Caddy, so your own compose files need no change.)
+5. Start it with the HTTPS setup:
+   `docker compose -f docker-compose.yml -f docker-compose.https.yml -f docker-compose.dot.yml up -d`
+
+Check it from any machine: `kdig -d @dns.example.com +tls example.com`, or on an Android phone set
+*Settings > Network > Private DNS* to the hostname by hand.
+
+**Safety: phones never lose internet because of it.** Android's Private DNS has no fallback of its own, so the Fenrir
+app checks the server before switching it on, every 3 minutes, and whenever the phone changes network. Two failed
+checks in a row switch the phone back to automatic DNS for 30 minutes and raise a `dns.private.fallback` event (and
+the phone shows as non-compliant until it is back on). The check is also how the server knows which phone is behind
+an address: it carries a code derived from the phone's DNS token, and lookups from that address then use that phone's
+policy and are logged against it. Lookups from an address no phone has checked from get the platform's default
+protection (malware, phishing, scam and command-and-control blocked) and are not logged against any customer.
+
+Phones on the same mobile carrier address (CGNAT) or the same Wi-Fi share an address. Their lookups are filtered by
+whichever of them checked in last, so where customers' DNS policies differ, results can follow another phone's policy.
 
 ## Permissions
 

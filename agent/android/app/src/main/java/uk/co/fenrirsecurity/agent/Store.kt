@@ -89,6 +89,18 @@ class Store(context: Context) {
     var wifiApplied: String
         get() = prefs.getString("wifiApplied", "") ?: ""
         set(value) = prefs.edit().putString("wifiApplied", value).apply()
+    /** Private DNS host Fenrir set on this phone ("" when it is not set by Fenrir), and its watchdog's state. */
+    var privateDnsHost: String
+        get() = prefs.getString("privateDnsHost", "") ?: ""
+        set(value) = prefs.edit().putString("privateDnsHost", value).apply()
+    var privateDnsAddress: String
+        get() = prefs.getString("privateDnsAddress", "") ?: ""
+        set(value) = prefs.edit().putString("privateDnsAddress", value).apply()
+    var privateDnsFailures: Int
+        get() = prefs.getInt("privateDnsFailures", 0)
+        set(value) = prefs.edit().putInt("privateDnsFailures", value).apply()
+    var privateDnsLastCheck: Long by LongPref("privateDnsLastCheck")
+    var privateDnsSuspendedUntil: Long by LongPref("privateDnsSuspendedUntil")
     /** A work profile whose enrolment failed (server unreachable): kept so the user can retry from the app. */
     var pendingEnrolment: String
         get() = prefs.getString("pendingEnrolment", "") ?: ""

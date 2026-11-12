@@ -294,6 +294,11 @@ SCHEMA: tuple[Section, ...] = (
             F("wifiNetworks", "list", [], "Wi-Fi networks",
               "One per line: SSID|WPA2|password or SSID|WPA3|password or SSID|OPEN. Offered to the phone (Android asks the user "
               "once). The password is stored in the policy, so use a network meant for staff devices.", platforms=("android",)),
+            F("privateDns", "enum", "off", "Scam and phishing site blocking (Private DNS)",
+              "fenrir: company-owned phones look up websites through Fenrir's DNS filtering, so scam, phishing and malware "
+              "sites are blocked in every app and browser, using this policy's DNS protection settings. Needs DNS over TLS "
+              "on the server (FENRIR_DOT_HOSTNAME). If Fenrir's DNS cannot be reached the phone switches back to normal DNS "
+              "by itself. Work-profile phones cannot be set this way.", options=("off", "fenrir"), platforms=("android",)),
             F("alwaysOnVpnApp", "str", "", "Always-on VPN app",
               "Package name of a VPN app to keep connected for work apps (work profile).", platforms=("android",)),
             F("alertOnNonCompliance", "bool", True, "Raise an alert when a phone is not compliant",
@@ -841,7 +846,8 @@ TEMPLATES: dict[str, dict[str, Any]] = {
         "_label": "Android - Phones and tablets",
         "_description": "Sensible protection without locking phones down: harmful and scam apps flagged (malicious ones "
                         "suspended on company-owned phones), installs from outside Play blocked, a screen lock and "
-                        "encryption required, rooted or out-of-date phones flagged. No camera, Bluetooth or account "
+                        "encryption required, rooted or out-of-date phones flagged, scam and phishing sites blocked "
+                        "on company-owned phones. No camera, Bluetooth or account "
                         "restrictions and no remote wipe after failed attempts.",
         # App protection: alert from suspicious upwards; suspend malicious apps (company-owned / device-owner phones).
         "mobile": {"alertOn": "medium", "suspendMalicious": True},
@@ -853,6 +859,8 @@ TEMPLATES: dict[str, dict[str, Any]] = {
             "wipeAfterFailedAttempts": 0, "disableCamera": False, "disableScreenCapture": False,
             "blockAddingAccounts": False, "blockBluetoothSharing": False, "runtimePermissions": "prompt",
             "alertOnNonCompliance": True,
+            # Scam and phishing sites blocked on company-owned phones through Fenrir's DNS (falls back by itself).
+            "privateDns": "fenrir",
         },
     },
 }

@@ -325,6 +325,7 @@ object PhonePolicy {
                 Build.TAGS?.contains("test-keys") == true
             check("rooted", "Not rooted", !rooted, "the phone looks rooted", byFenrir = false)
         }
+        PrivateDns.compliance(context, store)?.let { out.put(it) }
         for (app in required(p)) {
             check("required:${app.packageName}", "Required app ${app.packageName}", installed(context, app.packageName), "not installed")
         }
