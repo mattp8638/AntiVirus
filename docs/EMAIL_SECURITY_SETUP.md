@@ -129,7 +129,7 @@ Update permissions,** and a customer admin approves. Fenrir adds the permissions
 connection by admin sign-in.
 
 **Check:** on the customer's connection page, **Check permissions** lists *Email security: scan mail* and *Email
-security: quarantine and tag mail* as available. The Email security → Customers tab shows Mail.Read and Mail.ReadWrite
+security: quarantine and tag mail* as available. The Email security → Mailbox scanning page shows Mail.Read and Mail.ReadWrite
 as **granted**.
 
 > Optional: to limit which mailboxes the app can reach, a customer admin can add an Exchange Online *application access
@@ -143,17 +143,17 @@ as **granted**.
 Shadow mode reads new mail every minute and records Fenrir's and Microsoft's verdicts. **Nothing in any mailbox
 changes.**
 
-1. **Email security → Customers →** the customer **→** set the mode to **Shadow (compare only).**
+1. **Email security → Mailbox scanning →** the customer **→** set the mode to **Shadow (compare only).**
 2. Press **Scan now.** The first scan looks back 24 hours. Under *Last scan* you should see a count of new messages
    and no red error.
 3. **Overview** shows messages checked, how many each side flagged, and the agreement.
-4. **Messages** lists what Fenrir flagged; open one to see every reason, with Microsoft's verdict beside it.
+4. **Explorer** lists what Fenrir flagged; open one to see every reason, with Microsoft's verdict beside it.
 
 ### The labelling routine (1–2 weeks)
 
-Every day or two, on the **Messages** tab:
+Every day or two, in the **Explorer**:
 
-1. Set the agreement filter to **Only Fenrir**. Open each message and label it **phish**, **malware**, **spam** or
+1. Under *More filters*, set the agreement to **Only Fenrir**. Open each message and label it **phish**, **malware**, **spam** or
    **safe**. Safe ones are false positives: if a sender keeps appearing, allow it (Part E).
 2. Set it to **Only Microsoft** and label those too. These are what Fenrir misses.
 3. Glance at **Both flagged**; label a few.
@@ -175,12 +175,9 @@ Within a minute or two it should show as **phish**, with reasons such as *A link
 ## D. Protect mode (act on threats)
 
 1. Confirm **Mail.ReadWrite** shows as granted (B3).
-2. **Customers →** the customer **→ Protect (act).** Only mail that arrives from now on is ever touched.
-3. **Actions** (defaults shown): malware **quarantine**, phish **quarantine**, suspicious **tag**.
-   - *quarantine* moves it to a hidden "Fenrir Quarantine" folder; the user can't see it.
-   - *junk* moves it to Junk Email, where the user can see it (gentler, while you build confidence).
-   - *tag* adds the Outlook category "Fenrir: suspicious".
-   - *none* records only.
+2. **Mailbox scanning →** the customer **→ Protect (act).** Only mail that arrives from now on is ever touched.
+3. **Decide what happens** under **Threat policies** (Part D1). Shadow mode has already been recording what the policy
+   would do, so look at the Explorer's **Done** column and a few Decision tabs before switching.
 4. **Notifications:**
    - **Daily digest to users:** each user gets a daily list of what was held back, with an "ask for it back" link
      (needs B2).
@@ -188,34 +185,79 @@ Within a minute or two it should show as **phish**, with reasons such as *A link
    - **Open a ticket:** a service desk ticket per quarantine run.
    Press **Save** after changing them.
 
-**Test it:** send the test phish from Part C again. Within a minute or two it disappears from the Inbox, the Messages tab
+**Test it:** send the test phish from Part C again. Within a minute or two it disappears from the Inbox, the Explorer
 shows **Quarantined**, and an alert appears under **Alerts**. Open the message and press **Release to Inbox**: it comes
 back.
+
+### D1. Threat policies and mail flow rules
+
+**Email security → Threat policies.** Choose *My MSP (MSP default for every customer)* to set the policy every customer
+follows, or a customer to give that customer its own.
+
+1. Start from a preset: **Apply Standard preset** (balanced) or **Apply Strict preset** (catches more, more to review).
+2. Adjust the sections (anti-spam thresholds and actions, anti-phishing protected names and partner domains, blocked
+   file types, IP allow/block, what users may ask back, whether bodies are kept).
+3. Type what changed and why, then **Save as new version**. Every save is kept: **History** shows what changed in each
+   version and can **Restore** an older one.
+4. **Test** runs a message Fenrir already checked through your draft before you save (copy its ID from the message's
+   Decision tab).
+
+**Mail flow rules** (same page, or **Mail flow rules** in the menu): **Add a rule**, give it conditions ("Subject
+contains invoice" and "Sender is external"), exceptions, and actions ("Add header", "Quarantine", "Notify"). New rules:
+tick **Audit only** first, save, watch the Decision tab of matching mail for a few days, then untick it. Use the arrows to
+order rules and *Stop processing more rules* where one should win.
+
+Examples:
+
+| Goal | Conditions | Actions |
+|---|---|---|
+| Hold invoices with macros from outside | Attachment extension is any of `docm, xlsm` and external sender is true | Quarantine |
+| Warn on first contact | First contact is true | Tag `[New sender]` |
+| Trust a supplier's portal that fails DMARC | Sender domain is `portal.supplier.co.uk` and originating IP in range `81.2.69.0/24` | Bypass spam and phishing checks |
+| Copy finance on payment-change requests | Body contains `bank details` and recipient ends with `@acme.co.uk` | Notify `finance-lead@acme.co.uk`, Add category `Payment change` |
 
 ### When protect mode pauses itself
 
 If one scan would move more than 40 messages for a customer, Fenrir stops acting for that customer, keeps scanning,
 and raises a high alert: **Email protection paused itself.** This protects against a bad rule or bad intel emptying
-inboxes. Look at the Messages tab; if the messages really are a phishing campaign, press **Resume** on the Customers
+inboxes. Look at the Explorer; if the messages really are a phishing campaign, press **Resume** on the Customers
 tab. Mail from before the resume is not touched retrospectively.
 
 ### Release requests from users
 
 When a user presses **Ask IT to release it** in their digest, a low alert appears, and the message shows **release
-requested** on the Overview and Messages tabs. Open it, decide, and press **Release to Inbox**. Tick *and allow this
+requested** on the Overview and **Quarantine**. Open it, read the **Body** and **Decision** tabs, decide, and press
+**Release to Inbox** (or select several and release them together). Tick *and allow this
 sender* if it was legitimate mail from a sender who will keep sending.
 
 ---
 
 ## E. Allow and block lists
 
-**Email security → Lists.**
+**Email security → Allow / block lists.**
 
-- **Allow** a supplier who keeps getting flagged: choose the customer, *Allow*, *domain* (or *sender address*), enter
-  it, **Add**. Allow is ignored if a message fails DMARC, so attackers can't exploit it by forging the address.
-- **Block** a sender or domain: their mail is treated as malicious (quarantined in protect mode).
+- Match on a **sender address, sender domain, IP or range, URL or link domain, file SHA-256 or subject text**.
+- **Allow** a supplier who keeps getting flagged. Allow is ignored if a message fails DMARC, so attackers can't exploit
+  it by forging the address, and it never skips malware checks.
+- **Block**: their mail is quarantined (a blocked IP is refused at the gateway).
+- Set **Expires** for temporary entries (a supplier's one-off campaign); expired entries stay listed, greyed, until removed.
+- **Hits** and *last* show which entries are still doing anything.
 - An entry on **your own MSP tenant** applies to every customer.
-- From a message: **Block sender** or **Block <domain>** buttons, and *and allow this sender* when releasing.
+- From a message: **Block sender** / **Block <domain>**, *and allow this sender* when releasing, or select several in the
+  Explorer and use the bulk bar.
+
+---
+
+## E2. Investigating a message (the technician's routine)
+
+1. **Explorer** (or **Quarantine**): filter, open the message.
+2. **Decision**: why this happened, which policy version or rule, and every check with its points.
+3. **Body**: what the user saw, made safe. Highlighted wording and red link destinations are the indicators.
+4. **Origin & path** and **Authentication**: where it really came from (IP, network, country, hops) and whether
+   SPF/DKIM/DMARC passed for the domain shown.
+5. **Links & attachments**: real destinations and hashes; search a hash or domain in the Explorer to see who else got it.
+6. Act: release, label, block or allow, or **Campaigns → Remove from mailboxes** if it went to many people.
+7. If a rule or threshold was wrong: change the policy, **Test** it on this message, save with a comment.
 
 ---
 
@@ -333,7 +375,7 @@ swaks --server mx.fenrir-security.co.uk --to jo@acme.co.uk --from test@example.c
 
 - The message arrives in Jo's mailbox. In Outlook, *View message source* shows `X-Fenrir-Verdict: clean` and
   `X-Fenrir-Scan-Id`.
-- **Messages** shows it with *through the gateway* and **Delivered**.
+- **Explorer** shows it with *through the gateway* and **Delivered**.
 
 Test a threat:
 
@@ -343,7 +385,7 @@ swaks --server mx.fenrir-security.co.uk --to jo@acme.co.uk --from test@example.c
       --header "Subject: Invoice" --attach /tmp/invoice.pdf.exe
 ```
 
-It should **not** arrive. **Messages** shows it **Quarantined** (malware: *a program pretending to be a .pdf*). Press
+It should **not** arrive. **Explorer** shows it **Quarantined** (malware: *a program pretending to be a .pdf*). Press
 **Release to Inbox** to check release works; it then arrives with `X-Fenrir-Released-By`.
 
 With ClamAV: test with the EICAR test file (`https://www.eicar.org/download-anti-malware-testfile/`) attached. The
@@ -357,7 +399,7 @@ At the customer's DNS host:
 2. Replace the MX record with: **`acme.co.uk  MX  10  mx.fenrir-security.co.uk`**.
 3. Leave the SPF record alone. Outbound mail still goes straight from Microsoft 365.
 
-Over the next hour, the Gateway tab shows *last message* updating and the Messages tab fills with gateway mail.
+Over the next hour, the Gateway tab shows *last message* updating and the Explorer fills with gateway mail.
 
 ### G8. Lock down (after a day of normal mail)
 
@@ -407,7 +449,7 @@ database, and publish two MX records with the same priority.
 
 | You see | Cause and fix |
 |---|---|
-| Customers tab: *Fenrir does not have permission to read mail (Mail.Read)* | B3: add the permission and have a customer admin approve **Update permissions**. |
+| Mailbox scanning: *Fenrir does not have permission to read mail (Mail.Read)* | B3: add the permission and have a customer admin approve **Update permissions**. |
 | A message shows **action failed**: *…permission to change mail (Mail.ReadWrite)…* | Same, for Mail.ReadWrite. The message stays where it was. |
 | *No licensed mailboxes found yet* | The Microsoft 365 connection hasn't synced. Microsoft 365 → the customer → **Sync**. |
 | *Microsoft is throttling mail reads* | Very busy tenant; it carries on next run. Normal at first scan of large tenants. |
@@ -421,7 +463,11 @@ database, and publish two MX records with the same priority.
 | *Gateway could not deliver mail* alert | Microsoft 365 refused it permanently, or it failed for 3 days. Fix the destination or connector, then ask the sender to resend. |
 | Gateway message shows **action failed** with *550 5.4.1 Recipient address rejected: Access denied* | Microsoft 365 says the recipient doesn't exist in the tenant at the destination host. Check the address is a real mailbox or alias in that tenant, and that the domain's destination (Gateway tab) is that tenant's Microsoft host. Fenrir keeps the message: fix the cause, then press **Retry delivery**. |
 | Gateway messages have no evidence on their tabs, or errors without Microsoft's reason | The gateway container is still on an older build. Run updates with the mailgateway file included (`dcm up -d --build`), not plain `dc up`. |
-| Legitimate mail quarantined | Release it with *and allow this sender*, or add the domain to the allow list; label it **safe**. |
+| Legitimate mail quarantined | Read its **Decision** tab to see what decided. Release it with *and allow this sender*, add an allow entry, or fix the rule or threshold (use **Test**); label it **safe**. |
+| Body tab: *Fenrir did not keep this message's body* | Gateway mail that was delivered clean, with *keep message content* on *flagged*. Set it to *all* under Threat policies → Quarantine & content to keep more. |
+| Body tab: *no longer in the mailbox* | The user deleted it and no copy was kept. |
+| Saving a policy: *that pattern uses features not allowed in rules* | A "matches pattern" condition used back-references or nested repeats, which could stall the scanner. Simplify it or use "contains". |
+| A rule does nothing | Check it is **On** and not **Audit only**, that an earlier rule doesn't *stop processing*, and the Decision tab of a matching message. |
 
 ---
 
