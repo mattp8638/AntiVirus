@@ -95,6 +95,7 @@ constexpr DWORD kWin32VirusDeletedError = ERROR_VIRUS_DELETED;
 constexpr UINT kInstallerLogMessage = WM_APP + 1;
 constexpr UINT kInstallerStatusMessage = WM_APP + 2;
 constexpr UINT kInstallerCompleteMessage = WM_APP + 3;
+constexpr UINT kRetryWebUiMessage = WM_APP + 4;  // the WebView2 runtime was installed: try the branded window again
 
 enum : int {
   IDC_EYEBROW = 1001,
@@ -170,6 +171,9 @@ struct UiContext {
   bool webReady{false};
   bool webConfirmedUninstall{false};  // the page asked for confirmation itself
   int webNavigations{0};
+  int webAttempts{0};          // 1 = normal start, 2 = fresh data folder with GPU off; then the native window stays
+  bool webStarting{false};
+  std::filesystem::path webRoot;  // this run's loader and data folder
   std::wstring operation;  // install | repair | uninstall
   std::wstring statusText;
   int progress{0};
@@ -2910,6 +2914,7 @@ void RunInstallOrRepairSteps(HWND hwnd, UiContext* context, const bool repair) {
     webViewRuntimeReady = IsWebView2RuntimeAvailable(context->installRoot, &webViewVersion, &webViewRuntimeError);
     if (webViewRuntimeReady) {
       PostLog(hwnd, L"WebView2 runtime dependency is now available (" + webViewVersion + L").");
+      PostMessageW(hwnd, kRetryWebUiMessage, 0, 0);  // the branded window can start now
     } else {
       PostLog(hwnd, L"Warning: WebView2 runtime is still unavailable after dependency install attempt. " +
                     webViewRuntimeError);
@@ -3335,37 +3340,123 @@ void HandleWebAction(UiContext& context, const std::wstring& message) {
 
 // Shows setup.html in WebView2 once it has loaded; until then (and whenever WebView2 is missing or fails) the native
 // window is what the user sees, so setup always works.
-bool StartWebView(UiContext& context) {
-  wchar_t temp[MAX_PATH]{};
-  GetTempPathW(MAX_PATH, temp);
-  const auto root = std::filesystem::path(temp) / L"FenrirSetup";
-  auto loaderPath = root / kWebView2LoaderDllName;
-  std::wstring error;
-  if (!ExtractResourceToFile(context.instance, IDR_PAYLOAD_WEBVIEW2_LOADER, loaderPath, &error)) {
-    loaderPath = context.installRoot / kWebView2LoaderDllName;  // an installed copy will do
+//
+// Setup always runs elevated, often as a different account from the person signed in (a UAC prompt answered with an
+// administrator's credentials). That account may have never signed in here, may not see a per-user WebView2 runtime,
+// and its temp folder may hold a data folder left by an earlier run. So: each run gets its own folder (temp, else
+// ProgramData), the runtime is checked first, every failure is written to the setup log with its error code, one
+// retry uses a fresh folder with the GPU off, and the page is tried again once setup has installed the runtime.
+void NoteWebUi(UiContext& context, const std::wstring& text) {
+  PostLog(context.hwnd, L"Branded setup window: " + text);
+  // Also kept where support can find it before anything is installed: %ProgramData%\Fenrir\setup-ui.log.
+  static bool started = false;
+  PWSTR programData = nullptr;
+  if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_ProgramData, 0, nullptr, &programData)) && programData) {
+    const auto folder = std::filesystem::path(programData) / L"Fenrir";
+    std::error_code ec;
+    std::filesystem::create_directories(folder, ec);
+    std::wofstream log(folder / L"setup-ui.log", started ? std::ios::app : std::ios::trunc);
+    log << L"[" << GetCurrentProcessId() << L"] " << text << L"\n";
+    started = true;
   }
-  context.webLoader = LoadLibraryW(loaderPath.c_str());
-  if (context.webLoader == nullptr) return false;
+  if (programData) CoTaskMemFree(programData);
+}
+
+std::filesystem::path PrepareWebRoot(const std::wstring& name) {
+  std::vector<std::filesystem::path> bases;
+  wchar_t temp[MAX_PATH]{};
+  if (GetTempPathW(MAX_PATH, temp) > 0) bases.emplace_back(std::filesystem::path(temp) / L"FenrirSetupUI");
+  PWSTR programData = nullptr;
+  if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_ProgramData, 0, nullptr, &programData)) && programData) {
+    bases.emplace_back(std::filesystem::path(programData) / L"Fenrir" / L"setup-ui");
+  }
+  if (programData) CoTaskMemFree(programData);
+  for (const auto& base : bases) {
+    std::error_code ec;
+    // Folders from earlier runs: anything not in use any more is removed (in-use ones fail quietly).
+    for (const auto& entry : std::filesystem::directory_iterator(base, ec)) {
+      std::error_code ignored;
+      if (entry.path().filename() != name) std::filesystem::remove_all(entry.path(), ignored);
+    }
+    const auto root = base / name;
+    std::filesystem::create_directories(root / L"data", ec);
+    if (!ec && std::filesystem::is_directory(root / L"data")) return root;
+  }
+  return {};
+}
+
+void FailWebUi(UiContext& context, const std::wstring& reason);
+
+bool StartWebView(UiContext& context) {
+  if (context.webReady || context.webStarting || context.webAttempts >= 2) return false;
+  ++context.webAttempts;
+  const bool retry = context.webAttempts > 1;
+  context.webNavigations = 0;
+  context.webRoot = PrepareWebRoot(std::to_wstring(GetCurrentProcessId()) + (retry ? L"-2" : L""));
+  if (context.webRoot.empty()) {
+    NoteWebUi(context, L"no writable folder for WebView2 data (temp and ProgramData); using the standard window.");
+    return false;
+  }
+  if (context.webLoader == nullptr) {
+    auto loaderPath = context.webRoot / kWebView2LoaderDllName;
+    std::wstring error;
+    if (!ExtractResourceToFile(context.instance, IDR_PAYLOAD_WEBVIEW2_LOADER, loaderPath, &error)) {
+      loaderPath = context.installRoot / kWebView2LoaderDllName;  // an installed copy will do
+    }
+    context.webLoader = LoadLibraryW(loaderPath.c_str());
+    if (context.webLoader == nullptr) {
+      NoteWebUi(context, L"WebView2Loader.dll could not be loaded (error " + std::to_wstring(GetLastError()) + L").");
+      context.webAttempts = 2;
+      return false;
+    }
+  }
+  using GetVersion = HRESULT(STDAPICALLTYPE*)(PCWSTR, LPWSTR*);
+  const auto getVersion = reinterpret_cast<GetVersion>(
+      reinterpret_cast<void*>(GetProcAddress(context.webLoader, "GetAvailableCoreWebView2BrowserVersionString")));
+  LPWSTR version = nullptr;
+  const HRESULT versionResult = getVersion ? getVersion(nullptr, &version) : E_NOINTERFACE;
+  const bool hasRuntime = SUCCEEDED(versionResult) && version != nullptr && *version != L'\0';
+  if (version) CoTaskMemFree(version);
+  if (!hasRuntime) {
+    // Not installed, or installed only for another user's profile. Setup installs it machine-wide and then retries.
+    NoteWebUi(context, L"no WebView2 runtime is available to this administrator account (" + HresultToHexString(versionResult) +
+                       L"); the page will appear once setup has installed it.");
+    --context.webAttempts;
+    return false;
+  }
   using CreateEnvironment = HRESULT(STDAPICALLTYPE*)(PCWSTR, PCWSTR, ICoreWebView2EnvironmentOptions*,
                                                      ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*);
   const auto create = reinterpret_cast<CreateEnvironment>(
       reinterpret_cast<void*>(GetProcAddress(context.webLoader, "CreateCoreWebView2EnvironmentWithOptions")));
-  if (create == nullptr) return false;
-  const auto dataFolder = root / L"webview";
-  std::error_code ec;
-  std::filesystem::create_directories(dataFolder, ec);
+  if (create == nullptr) {
+    NoteWebUi(context, L"the WebView2 loader has no CreateCoreWebView2EnvironmentWithOptions.");
+    context.webAttempts = 2;
+    return false;
+  }
+  // The retry turns the GPU off: an elevated process running as a different user from the desktop's often cannot
+  // use it, which leaves a blank or crashed page. Read by WebView2 when the environment is created.
+  SetEnvironmentVariableW(L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", retry ? L"--disable-gpu" : nullptr);
   const HWND hwnd = context.hwnd;
   auto environmentHandler = MakeWebHandler<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler, HRESULT, ICoreWebView2Environment*>(
       IID_ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler, [hwnd](HRESULT result, ICoreWebView2Environment* environment) -> HRESULT {
-        if (FAILED(result) || environment == nullptr || GetContext(hwnd) == nullptr) return S_OK;
+        auto* context = GetContext(hwnd);
+        if (context == nullptr) return S_OK;
+        if (FAILED(result) || environment == nullptr) {
+          FailWebUi(*context, L"WebView2 did not start (" + HresultToHexString(result) + L").");
+          return S_OK;
+        }
         auto controllerHandler = MakeWebHandler<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler, HRESULT, ICoreWebView2Controller*>(
             IID_ICoreWebView2CreateCoreWebView2ControllerCompletedHandler, [hwnd](HRESULT created, ICoreWebView2Controller* controller) -> HRESULT {
               auto* context = GetContext(hwnd);
-              if (context == nullptr || FAILED(created) || controller == nullptr) return S_OK;
+              if (context == nullptr) return S_OK;
+              if (FAILED(created) || controller == nullptr) {
+                FailWebUi(*context, L"the WebView2 view could not be created (" + HresultToHexString(created) + L").");
+                return S_OK;
+              }
               context->webController = controller;
               controller->get_CoreWebView2(&context->webView);
               if (!context->webView) {
-                context->webController.Reset();
+                FailWebUi(*context, L"the WebView2 view has no page.");
                 return S_OK;
               }
               controller->put_IsVisible(FALSE);
@@ -3405,21 +3496,34 @@ bool StartWebView(UiContext& context) {
                         return S_OK;
                       }).Get(),
                   &token);
+              // A crashed browser or renderer: back to the native window (setup itself carries on either way).
+              context->webView->add_ProcessFailed(
+                  MakeWebHandler<ICoreWebView2ProcessFailedEventHandler, ICoreWebView2*, ICoreWebView2ProcessFailedEventArgs*>(
+                      IID_ICoreWebView2ProcessFailedEventHandler,
+                      [hwnd](ICoreWebView2*, ICoreWebView2ProcessFailedEventArgs* args) -> HRESULT {
+                        auto* ctx = GetContext(hwnd);
+                        COREWEBVIEW2_PROCESS_FAILED_KIND kind = COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED;
+                        if (args) args->get_ProcessFailedKind(&kind);
+                        if (ctx) FailWebUi(*ctx, L"a WebView2 process stopped (kind " + std::to_wstring(static_cast<int>(kind)) + L").");
+                        return S_OK;
+                      }).Get(),
+                  &token);
               context->webView->add_NavigationCompleted(
                   MakeWebHandler<ICoreWebView2NavigationCompletedEventHandler, ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs*>(
                       IID_ICoreWebView2NavigationCompletedEventHandler,
                       [hwnd](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs* args) -> HRESULT {
                         auto* ctx = GetContext(hwnd);
                         BOOL ok = FALSE;
-                        if (ctx == nullptr || args == nullptr || ctx->webReady) return S_OK;
+                        if (ctx == nullptr || args == nullptr || ctx->webReady || !ctx->webController) return S_OK;
                         args->get_IsSuccess(&ok);
-                        if (!ok) {  // keep the native window
-                          ctx->webController->Close();
-                          ctx->webController.Reset();
-                          ctx->webView.Reset();
+                        if (!ok) {
+                          COREWEBVIEW2_WEB_ERROR_STATUS status = COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
+                          args->get_WebErrorStatus(&status);
+                          FailWebUi(*ctx, L"the page did not load (status " + std::to_wstring(static_cast<int>(status)) + L").");
                           return S_OK;
                         }
                         ctx->webReady = true;
+                        ctx->webStarting = false;
                         ShowNativeControls(*ctx, false);
                         ctx->webController->put_IsVisible(TRUE);
                         ctx->webController->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
@@ -3430,10 +3534,36 @@ bool StartWebView(UiContext& context) {
               context->webView->NavigateToString(BuildSetupPage(*context).c_str());
               return S_OK;
             });
-        environment->CreateCoreWebView2Controller(hwnd, controllerHandler.Get());
+        const HRESULT controllerResult = environment->CreateCoreWebView2Controller(hwnd, controllerHandler.Get());
+        if (FAILED(controllerResult)) {
+          FailWebUi(*context, L"the WebView2 view could not be requested (" + HresultToHexString(controllerResult) + L").");
+        }
         return S_OK;
       });
-  return SUCCEEDED(create(nullptr, dataFolder.c_str(), nullptr, environmentHandler.Get()));
+  const auto dataFolder = context.webRoot / L"data";
+  context.webStarting = true;
+  const HRESULT started = create(nullptr, dataFolder.c_str(), nullptr, environmentHandler.Get());
+  if (FAILED(started)) {
+    FailWebUi(context, L"WebView2 could not be started (" + HresultToHexString(started) + L").");
+    return false;
+  }
+  return true;
+}
+
+// Drops a half-started or broken page, shows the native window again and tries once more with a fresh folder.
+void FailWebUi(UiContext& context, const std::wstring& reason) {
+  const bool wasShowing = context.webReady;
+  context.webStarting = false;
+  context.webReady = false;
+  if (context.webController) {
+    context.webController->Close();
+    context.webController.Reset();
+  }
+  context.webView.Reset();
+  if (wasShowing) ShowNativeControls(context, true);
+  const bool willRetry = context.webAttempts < 2;
+  NoteWebUi(context, reason + (willRetry ? L" Retrying with a fresh data folder." : L" Using the standard window."));
+  if (willRetry) PostMessageW(context.hwnd, kRetryWebUiMessage, 0, 0);
 }
 
 void LayoutControls(UiContext& context) {
@@ -3698,6 +3828,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         SetStatusText(*context, payload->text);
       }
       delete payload;
+      return 0;
+    }
+
+    case kRetryWebUiMessage: {
+      if (auto* context = GetContext(hwnd); context && !context->silent && !context->quietUninstall) StartWebView(*context);
       return 0;
     }
 
