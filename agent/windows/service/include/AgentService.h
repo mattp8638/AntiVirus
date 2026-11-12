@@ -220,6 +220,7 @@ class AgentService {
   unsigned long pendingRemovable_{0};
   bool drivesPrimed_{false};
   void EnforceLocalAdminPolicy();  // privilege.removeLocalAdmins
+  void StartMemoryScan();          // edr.memoryScanning
   std::vector<std::wstring> LocalAdminKeepList(const std::wstring& payloadJson) const;
   std::wstring ExecuteInventoryUninstall(const RemoteCommand& command);
   unsigned long long lastLocalAdminCheck_{0};
@@ -295,6 +296,8 @@ class AgentService {
   void DrainDeferredTelemetry();
   std::thread::id mainThreadId_{};
   std::shared_ptr<std::atomic<bool>> backgroundScanBusy_{std::make_shared<std::atomic<bool>>(false)};
+  std::shared_ptr<std::atomic<bool>> memoryScanBusy_{std::make_shared<std::atomic<bool>>(false)};
+  unsigned long long lastMemoryScan_{0};
   std::shared_ptr<std::atomic<bool>> stopRequested_{std::make_shared<std::atomic<bool>>(false)};
   AgentState identitySnapshot_{};
   std::vector<DeferredTelemetry> deferredTelemetry_{};

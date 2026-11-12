@@ -146,11 +146,22 @@ std::vector<std::size_t> PlanAdminRemoval(const std::vector<AdminMember>& member
     return std::any_of(keepLower.begin(), keepLower.end(),
                        [&](const std::wstring& k) { return k == name || k == shortName || k == sid; });
   };
+  // A member Windows could not look up cannot be told apart from a group such as Domain Admins (when the
+  // domain trust is broken every domain group looks like that), so nothing is removed until it can be.
+  if (std::any_of(members.begin(), members.end(), [](const AdminMember& m) { return m.unresolved; })) return {};
+  // The domain's own admin groups are never removed, however they show up: Domain Admins (512), Schema
+  // Admins (518) and Enterprise Admins (519).
+  const auto domainAdminGroup = [](const AdminMember& m) {
+    const auto dash = m.sid.rfind(L'-');
+    if (m.sid.rfind(L"S-1-5-21-", 0) != 0 || dash == std::wstring::npos) return false;
+    const auto rid = m.sid.substr(dash + 1);
+    return rid == L"512" || rid == L"518" || rid == L"519";
+  };
   std::vector<std::size_t> remove;
   bool usableLeft = false;
   for (std::size_t i = 0; i < members.size(); ++i) {
     const auto& m = members[i];
-    if (m.group || m.builtin || kept(m)) {
+    if (m.group || m.builtin || domainAdminGroup(m) || kept(m)) {
       if (m.group || m.enabled) usableLeft = true;
       continue;
     }
@@ -181,6 +192,8 @@ std::vector<AdminMember> ListAdministrators() {
     }
     const auto use = members[i].lgrmi2_sidusage;
     m.group = use == SidTypeGroup || use == SidTypeWellKnownGroup || use == SidTypeAlias;
+    m.unresolved = use == SidTypeUnknown || use == SidTypeInvalid || m.name.empty() ||
+                   (!m.sid.empty() && _wcsicmp(m.name.c_str(), m.sid.c_str()) == 0);
     if (members[i].lgrmi2_sid && IsValidSid(members[i].lgrmi2_sid)) {
       const auto count = *GetSidSubAuthorityCount(members[i].lgrmi2_sid);
       m.builtin = count > 0 && *GetSidSubAuthority(members[i].lgrmi2_sid, count - 1) == DOMAIN_USER_RID_ADMIN;

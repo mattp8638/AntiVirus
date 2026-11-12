@@ -369,6 +369,7 @@ ExtendedPolicy ExtendedPolicy::Parse(const std::string& modulesJson) {
   const auto* edr = root->Get("edr");
   policy.collectProcessEvents = BoolOr(edr, "collectProcessEvents", true);
   policy.collectFileEvents = BoolOr(edr, "collectFileEvents", true);
+  policy.memoryScanning = BoolOr(edr, "enabled", true) && BoolOr(edr, "memoryScanning", true);
   policy.collectScriptEvents = BoolOr(edr, "collectScriptEvents", true);
   policy.collectDnsEvents = BoolOr(edr, "collectDnsEvents", true);
   policy.collectRegistryEvents = BoolOr(edr, "enabled", true) && BoolOr(edr, "collectRegistryEvents", true);
@@ -416,6 +417,8 @@ ExtendedPolicy ExtendedPolicy::Parse(const std::string& modulesJson) {
 
   const auto* ransomware = root->Get("ransomware");
   policy.ransomwareEnabled = BoolOr(ransomware, "enabled", true);
+  policy.behavior.exploitProtection =
+      BoolOr(root->Get("edr"), "enabled", true) && BoolOr(root->Get("edr"), "exploitProtection", true);
   policy.behavior.blockShadowCopyDeletion = policy.ransomwareEnabled && BoolOr(ransomware, "blockShadowCopyDeletion", true);
   policy.canaryFiles = policy.ransomwareEnabled && BoolOr(ransomware, "canaryFiles", true);
   {
@@ -449,6 +452,8 @@ ExtendedPolicy ExtendedPolicy::Parse(const std::string& modulesJson) {
   policy.tamperServiceLocked = tamperOn && BoolOr(tamper, "protectServiceAndFiles", true);
   policy.tamperUninstallToken = tamperOn && BoolOr(tamper, "uninstallRequiresToken", true);
 
+  policy.ransomware.deceptionLures =
+      BoolOr(root->Get("edr"), "enabled", true) && BoolOr(root->Get("edr"), "deceptionLures", false);
   policy.ransomware.credentialProtection =
       BoolOr(root->Get("edr"), "enabled", true) && BoolOr(root->Get("edr"), "credentialProtection", true);
   if (const auto it = policy.behavior.asr.find(L"blockOfficeExecutableContent"); it != policy.behavior.asr.end()) {

@@ -72,6 +72,7 @@ struct RansomwareSettings {
   // Other checks that use the same live file-activity feed:
   bool credentialProtection{true};  // edr.enabled && edr.credentialProtection: browser password/cookie stores
   behavior::RuleMode officeExecutableContent{behavior::RuleMode::Off};  // attackSurface.blockOfficeExecutableContent
+  bool deceptionLures{false};  // edr.enabled && edr.deceptionLures: decoy credential files that alert when opened
 
   bool Blocks() const { return mode == L"block" || mode == L"block-and-rollback"; }
   // response.autoRollbackRansomware is handled by the cloud, which queues the ransomware.rollback command.
@@ -98,6 +99,7 @@ struct ExtendedPolicy {
   // modules.edr collection switches: routine telemetry only; detections are always sent.
   bool collectProcessEvents{true};
   bool collectFileEvents{true};
+  bool memoryScanning{true};  // edr.enabled && edr.memoryScanning: hourly scan of process memory for injected code
   bool collectScriptEvents{true};
   bool collectDnsEvents{true};
   bool collectRegistryEvents{true};  // edr.collectRegistryEvents: autostart registry changes (RegistryWatcher)

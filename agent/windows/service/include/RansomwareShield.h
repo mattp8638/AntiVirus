@@ -51,7 +51,7 @@ class RansomwareShield {
   static constexpr const wchar_t* kCanaryName = L"$fenrir-canary-budget-2024.docx";
 
  private:
-  enum class PendingKind { Write, CredentialRead, ExecutableCreate };
+  enum class PendingKind { Write, CredentialRead, ExecutableCreate, LureTouch };
   struct PendingWrite {
     unsigned long pid;
     std::wstring devicePath;
@@ -81,6 +81,8 @@ class RansomwareShield {
   void ProcessPending();
   void Handle(const ransomware::Observation& observation);
   void HandleCredentialRead(unsigned long pid, const std::wstring& devicePath);
+  void HandleLureTouch(unsigned long pid, const std::wstring& devicePath);
+  void PlaceLures(const std::vector<std::wstring>& wanted);
   void HandleExecutableCreate(unsigned long pid, const std::wstring& devicePath);
   void RetryDeletes();
   bool IsSigned(const std::wstring& image);
@@ -117,6 +119,9 @@ class RansomwareShield {
   std::mutex filterMutex_;
   std::vector<std::wstring> deviceRoots_;  // device form, used to pre-filter Create events
   std::vector<std::wstring> credentialRoots_;  // browser profile folders (device form)
+  std::vector<std::wstring> lureDevicePaths_;  // edr.deceptionLures decoys (device form, lower case)
+  std::vector<std::wstring> lurePaths_;        // the same, as placed (drive form)
+  std::map<std::wstring, unsigned long long> lureReportedMs_;
   bool watchExecutableCreates_{false};
   struct FileObjectEntry {
     std::wstring path;

@@ -25,6 +25,7 @@ struct AdminMember {
   bool group{false};  // a group (Domain Admins, an Entra role); groups are never removed
   bool enabled{true};  // local user accounts only
   bool builtin{false};  // RID 500
+  bool unresolved{false};  // Windows could not look the SID up (for example the domain trust is broken)
 };
 
 // The members to remove: direct user members except the built-in Administrator and the names/SIDs in keep

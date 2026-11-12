@@ -56,6 +56,7 @@ struct BehaviorPolicy {
   // attackSurface.<rule> -> mode
   std::map<std::wstring, RuleMode> asr;
   bool blockShadowCopyDeletion{true};  // ransomware section; enforced even if ASR is off
+  bool exploitProtection{true};        // edr.enabled && edr.exploitProtection: exploited apps starting shells
   // applicationControl
   std::wstring appControlMode{L"off"};  // off | audit | enforce-denylist | enforce-allowlist
   std::vector<std::wstring> blockedApps;  // names, sha256s or signer names
