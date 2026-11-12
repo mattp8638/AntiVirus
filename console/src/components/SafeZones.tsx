@@ -69,7 +69,7 @@ function ZoneForm({ device, zone, recipients, emailConfigured, onClose }: {
   return (
     <Modal title={zone.id ? `Safe zone · ${zone.name}` : `New safe zone · ${device.hostname}`} onClose={() => onClose(false)}
       footer={<><button onClick={() => onClose(false)}>Cancel</button><button className="primary" disabled={busy || !form.name.trim()} onClick={save}>Save</button></>}>
-      <label className="field">Name<input value={form.name} maxLength={120} onChange={(e) => set({ name: e.target.value })} placeholder="Home, School, Care home…" autoFocus /></label>
+      <label className="field">Name<input value={form.name} maxLength={120} onChange={(e) => set({ name: e.target.value })} placeholder="Office, Warehouse, Home…" autoFocus /></label>
       <p className="small muted" style={{ margin: "10px 0 6px" }}>Click the map to move the centre.</p>
       <ZonePicker zone={form} onMove={(latitude, longitude) => set({ latitude, longitude })} />
       <label className="field" style={{ marginTop: 10 }}>Radius: {metres(Number(form.radius))}
@@ -107,7 +107,7 @@ function ZoneForm({ device, zone, recipients, emailConfigured, onClose }: {
           {displayValue(p.name)} <span className="muted">{p.pushDevices ? `· notifications on ${p.pushDevices} device${p.pushDevices > 1 ? "s" : ""}` : "· notifications not turned on yet"}</span></label>)}
         <p className="small muted" style={{ margin: "4px 0 8px" }}>Each person turns notifications on in Settings → Account, on the phone or computer they want them on.</p>
         <label className="field">Also email (comma-separated){!emailConfigured && <span className="small muted"> · email is not set up on this server, so these are not sent</span>}
-          <input value={emails} onChange={(e) => setEmails(e.target.value)} placeholder="carer@example.com" /></label>
+          <input value={emails} onChange={(e) => setEmails(e.target.value)} placeholder="someone@example.com" /></label>
         <label className="row small" style={{ marginTop: 8 }}><input type="checkbox" checked={form.notify.phone} onChange={(e) => set({ notify: { ...form.notify, phone: e.target.checked } })} />
           Also tell the person on the phone when they leave or arrive</label>
       </fieldset>

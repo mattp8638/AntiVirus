@@ -28,8 +28,6 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
     "viewer": {"read"},
     # Customer end users: the client portal only (their own tickets, invoices and public KB).
     "client": {"portal"},
-    # Family members and carers: only the Care page (their people's phones, location, safe zones, SOS) and their alerts.
-    "carer": {"care"},
 }
 # "vault": reveal and copy stored credentials (always with recent re-authentication and an audit record).
 
@@ -41,14 +39,12 @@ FINE_PERMISSIONS = {
     "scripts": "configure",    # run scripts, jobs, scheduled tasks, software and patch installs
     "destructive": "configure",  # wipe, remove local admins and other irreversible device actions
     "approve": "configure",    # approve patches, elevation and other requests
-    "care": "read",            # the Care page: looked-after phones, their location and care alerts
 }
 for _perms in ROLE_PERMISSIONS.values():
     _perms.update(fine for fine, broad in FINE_PERMISSIONS.items() if broad in _perms)
 
 PERMISSIONS: dict[str, str] = {
     "read": "See devices, alerts, tickets and reports",
-    "care": "See looked-after phones on the Care page and acknowledge their alerts",
     "respond": "Handle alerts and incidents, isolate and scan devices",
     "remote": "Start remote desktop, terminal and file sessions",
     "scripts": "Run scripts, jobs, tasks, software and patch installs",

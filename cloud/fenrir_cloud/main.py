@@ -29,7 +29,6 @@ from .routers import m365_admin as m365_admin_router
 from .routers import m365 as m365_router, network as network_router, grc as grc_router, soc_workflows
 from .routers import documentation as documentation_router
 from .routers import push as push_router
-from .routers import care as care_router
 from .routers import active_directory as ad_router
 from .routers import agent_health as agent_health_router
 from .routers import onboarding as onboarding_router
@@ -326,12 +325,6 @@ def _poll_msp_mailbox(db) -> None:
         psa.poll_imap(db, msp.id)
 
 
-def _care_tick(db) -> None:
-    from . import care
-
-    care.tick(db)
-
-
 def _scheduled_jobs() -> list[tuple[str, int, object]]:
     """(name, every N passes of 30 seconds, job), in the order they run within a pass."""
     from . import condition_remediation, m365_lifecycle, m365_signin_security, network, remediation, topology
@@ -354,7 +347,6 @@ def _scheduled_jobs() -> list[tuple[str, int, object]]:
         ("artifacts.purge", 120, artifact_store.purge_expired),
         ("audit.checkpoint", 120, audit.daily_checkpoint),  # CORE-06: daily chain-head checkpoint (published to webhooks)
         ("audit.retention", 120, audit.apply_retention),
-        ("care", 2, _care_tick),  # looked-after phones: gone quiet, unacknowledged alerts (every minute)
     ]
 
 
@@ -593,7 +585,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(onboarding_router.workspace_router)
     for module in (m365_admin_router, m365_router, network_router, grc_router, soc_workflows, ad_router, agent_health_router, onboarding_router, m365_exchange_router, m365_signin_router, m365_intune_router, m365_reports_router, m365_collaboration_router, grc_programme_router,
                    rollouts_router, apikeys_router, roles_router, approvals_router, exclusions_router,
-                   exposure_intel_router, m365_partner_router, m365_workspace_router, email_security_router, email_policies_router, dns_console_router, m365_lifecycle_router, condition_packages_router, triage_router, clients_router, search_router, defender_router, mobile_apps_router, push_router, care_router,
+                   exposure_intel_router, m365_partner_router, m365_workspace_router, email_security_router, email_policies_router, dns_console_router, m365_lifecycle_router, condition_packages_router, triage_router, clients_router, search_router, defender_router, mobile_apps_router, push_router,
                    reports_router, branding_router, deploy_router):
         app.include_router(module.router)
     app.include_router(deploy_router.public)

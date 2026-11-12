@@ -58,8 +58,6 @@ class AgentService : Service() {
     companion object {
         const val ACTION_CHECK_NOW = "uk.co.fenrirsecurity.agent.CHECK_NOW"
         const val ACTION_STOP_ALARM = "uk.co.fenrirsecurity.agent.STOP_ALARM"
-        const val ACTION_SOS = "uk.co.fenrirsecurity.agent.SOS"
-        const val ACTION_SOS_CANCEL = "uk.co.fenrirsecurity.agent.SOS_CANCEL"
         private const val EXTRA_REASON = "reason"
         private const val TAG = "FenrirAgent"
 
@@ -78,12 +76,6 @@ class AgentService : Service() {
         }
 
         fun checkNow(context: Context) = start(context)
-
-        /** The Help button: tell the carers, with where the phone is, and share location every minute. */
-        fun sos(context: Context, cancel: Boolean = false) {
-            val intent = Intent(context, AgentService::class.java).setAction(if (cancel) ACTION_SOS_CANCEL else ACTION_SOS)
-            if (running) context.startService(intent) else context.startForegroundService(intent)
-        }
 
         fun scheduleWake(context: Context) {
             val alarms = context.service<AlarmManager>()
@@ -164,8 +156,6 @@ class AgentService : Service() {
         goForeground()  // every startForegroundService must be answered with startForeground
         when (intent?.action) {
             ACTION_STOP_ALARM -> alarm.stop()
-            ACTION_SOS -> { store.sosActive = true; worker.execute { sendSos() } }
-            ACTION_SOS_CANCEL -> { store.sosActive = false; worker.execute { cancelSos() } }
             ACTION_CHECK_NOW -> {
                 val reason = intent.getStringExtra(EXTRA_REASON)
                 worker.execute {
@@ -207,9 +197,7 @@ class AgentService : Service() {
     }
 
     private fun statusText(): String = when {
-        store.sosActive -> "Help requested: the people who look after you have been told"
         store.lostMode.enabled -> "Lost mode is on: reporting location every 5 minutes"
-        store.tracking.mode == "close" -> "Sharing your location with the people who look after you"
         !Device.adminActive(this) -> "Open Fenrir to finish setup (device admin is off)"
         !Locator.hasPermission(this) -> "Open Fenrir to allow location"
         else -> "Connected to your IT team"
@@ -252,31 +240,6 @@ class AgentService : Service() {
         }
     }
 
-    private fun sendSos() {
-        store.tracking = store.tracking.copy(sos = true)
-        tracker.apply(store.tracking)
-        val fix = Locator.current(this, "sos", timeoutMs = 15_000)
-        try {
-            api().sos(fix)
-            store.sosHelpSent = true
-            Notifications.updateStatus(this, "Help requested: the people who look after you have been told")
-        } catch (error: Exception) {
-            store.sosHelpSent = false
-            store.lastError = "Help request not sent yet: ${error.message ?: error.javaClass.simpleName}"
-            // Keep trying every 30 seconds until it goes through or the person says they are OK.
-            worker.schedule({ if (store.sosActive && !store.sosHelpSent) sendSos() }, 30, TimeUnit.SECONDS)
-        }
-        fix?.let { store.queueFix(it); runCatching { flush() } }
-    }
-
-    private fun cancelSos() {
-        store.tracking = store.tracking.copy(sos = false)
-        tracker.apply(store.tracking)
-        runCatching { api().sos(null, cancel = true) }.onFailure { store.lastError = "Could not tell your carers you are OK: ${it.message}" }
-        store.sosHelpSent = false
-        Notifications.updateStatus(this, statusText())
-    }
-
     private fun heartbeat() {
         val metrics = Device.metrics(this)
             .put("compliance", PhonePolicy.compliance(this, store)).put("managementMode", PhonePolicy.mode(this))
@@ -286,7 +249,6 @@ class AgentService : Service() {
         reply.lostMode?.let { if (it != store.lostMode) applyLostMode(it) }
         reply.zones?.let { if (it != store.zones) { store.zones = it; SafeZones.register(this, store) } }
         reply.tracking?.let { tracking ->
-            if (store.sosActive && !tracking.sos) { store.sosActive = false; Notifications.message(this, "Help is on the way", "Someone who looks after you has seen your request.") }
             if (tracking != store.tracking) { store.tracking = tracking; tracker.apply(tracking) }
         }
         Notifications.updateStatus(this, statusText())

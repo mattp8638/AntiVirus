@@ -160,65 +160,6 @@ def set_lost_mode(device_id: str, body: dict = Body(...), principal: Principal =
     return {"lostMode": _lost_view(device), "commandId": command.id}
 
 
-@agent.post("/sos")
-def sos(device_id: str, body: dict = Body(default={}), device: Device = Depends(current_device), db: Session = Depends(get_db)):
-    """The person pressed Help ({lat, lon, accuracy, at} when the phone has a fix), or said they are OK ({cancel: true})."""
-    from .. import care
-
-    if device.id != device_id:
-        raise HTTPException(403, "Wrong device")
-    ratelimit.check(f"sos:{device.id}", 20, 3600)
-    if body.get("cancel"):
-        care.sos_cancelled(db, device)
-        db.commit()
-        return {"sos": False}
-    point = None
-    lat, lon = _num(body.get("lat"), -90, 90), _num(body.get("lon"), -180, 180)
-    if lat is not None and lon is not None and not (lat == 0 and lon == 0):
-        at = _parse_time(body.get("at")) or utcnow()
-        point = {"lat": lat, "lon": lon, "accuracy": _num(body.get("accuracy"), 0, 1e6), "at": at}
-        db.add(DeviceLocation(tenant_id=device.tenant_id, device_id=device.id, latitude=lat, longitude=lon, accuracy_m=point["accuracy"],
-                              source="fused", reason="sos", recorded_at=at))
-    alert = care.sos(db, device, point)
-    db.commit()
-    return {"sos": True, "alertId": alert.id if alert else None}
-
-
-@console.get("/care")
-def get_care(device_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    from .. import care, geofence
-
-    principal.require("read")
-    device = _device(db, principal, device_id)
-    return {"care": care.settings(device), "enabled": bool(device.care), "sos": care.sos_state(device),
-            "recipients": geofence.recipients(db, device.tenant_id)}
-
-
-@console.put("/care")
-def set_care(device_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    """Turn care on (or change it) for a phone; {"enabled": false} turns it off."""
-    from .. import care
-
-    principal.require("respond")
-    device = _phone(db, principal, device_id)
-    if body.get("enabled") is False:
-        device.care = None
-        audit.record(db, principal.actor, "care.disabled", device.hostname, device.tenant_id)
-        db.commit()
-        return {"enabled": False}
-    try:
-        fields = care.validate(body)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from None
-    for key in ("carers", "escalateTo"):
-        if key in fields:
-            _check_recipients(db, device, {"users": fields[key]})
-    device.care = {**care.settings(device), **fields, "sos": care.sos_state(device)}
-    audit.record(db, principal.actor, "care.updated", device.hostname, device.tenant_id, fields=sorted(fields))
-    db.commit()
-    return {"care": care.settings(device), "enabled": True}
-
-
 # --------------------------------------------------------------------------- safe zones (geofences)
 
 

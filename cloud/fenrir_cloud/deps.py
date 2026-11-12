@@ -99,10 +99,8 @@ def current_principal(
     path = request.url.path
     if user.role == "client" and not (path.startswith("/api/portal") or path.startswith("/api/console/auth")):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Client accounts can only use the client portal")
-    if user.role == "carer" and not path.startswith(CARER_PATHS):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Carer accounts can only use the Care page")
     if user.role != "client":
-        staff_access_check(db, user, request, session_row.method, allowlist=user.role != "carer")
+        staff_access_check(db, user, request, session_row.method)
     if user.role == "platform_admin":
         scope = {tid for (tid,) in db.execute(select(Tenant.id)).all()}
     else:
@@ -125,9 +123,6 @@ def current_principal(
 # What a staff account still needs while required MFA is not set up: enrol an authenticator app or a passkey, sign out.
 MFA_SETUP_PATHS = ("/api/console/auth/me", "/api/console/auth/mfa/setup", "/api/console/auth/mfa/enable",
                    "/api/console/auth/logout", "/api/console/auth/reauth", "/api/console/auth/passkeys")
-
-
-CARER_PATHS = ("/api/console/care", "/api/console/auth", "/api/console/push", "/api/console/region")
 
 
 def staff_access_check(db: Session, user: User, request: Request, session_method: str | None = None, allowlist: bool = True) -> None:

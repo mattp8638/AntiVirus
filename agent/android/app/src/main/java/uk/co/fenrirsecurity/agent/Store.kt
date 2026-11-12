@@ -50,14 +50,6 @@ class Store(context: Context) {
     var tracking: Tracking
         get() = Tracking.from(prefs.getString("tracking", null)?.let { runCatching { JSONObject(it) }.getOrNull() }) ?: Tracking.DEFAULT
         set(value) = prefs.edit().putString("tracking", value.toJson().toString()).apply()
-    /** True from pressing Help until a carer acknowledges or the person says they are OK. */
-    var sosActive: Boolean
-        get() = prefs.getBoolean("sosActive", false)
-        set(value) = prefs.edit().putBoolean("sosActive", value).apply()
-    /** The help request reached the server (it is retried until it does). */
-    var sosHelpSent: Boolean
-        get() = prefs.getBoolean("sosHelpSent", false)
-        set(value) = prefs.edit().putBoolean("sosHelpSent", value).apply()
     /** Proximity-alert request codes registered with Android, so old ones are removed when the zones change. */
     var zoneCodes: Set<String>
         get() = prefs.getStringSet("zoneCodes", emptySet()).orEmpty()

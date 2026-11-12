@@ -272,10 +272,6 @@ def heartbeat(body: dict = Body(default={}), device: Device = Depends(current_de
         from .. import android_compliance
 
         android_compliance.record(db, device, body["metrics"], resolution["settings"])
-    if device.platform == "android":
-        from .. import care
-
-        care.on_heartbeat(db, device, body.get("metrics"))
     pending = db.execute(select(func.count()).where(Command.device_id == device.id, Command.status == "pending")).scalar() or 0
     db.commit()
     reply = {"receivedAt": _iso(utcnow()), "effectivePolicyRevision": policy_doc["revision"], "commandsPending": pending,
@@ -288,9 +284,8 @@ def heartbeat(body: dict = Body(default={}), device: Device = Depends(current_de
         from .. import geofence
 
         reply["geofences"] = geofence.for_phone(db, device)  # safe zones: proximity alerts and faster location checks
-        from .. import care
-
-        reply["tracking"] = care.tracking_reply(device)  # how often to report location (care level, SOS)
+        # How often the phone reports its location: its own pace (15 minutes, 5 near safe zones).
+        reply["tracking"] = {"mode": "default", "intervalSeconds": 900, "adaptive": False, "sos": False}
     return reply
 
 

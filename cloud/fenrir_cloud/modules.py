@@ -20,7 +20,6 @@ MODULES = {
     "identity": ("Microsoft 365 and identity", "Microsoft 365, Active Directory, data and identity exposure"),
     "network": ("Network", "Network topology, attack surface and out-of-band (Intel AMT)"),
     "business": ("Business", "CRM, onboarding, quotes, agreements and billing"),
-    "care": ("Care", "Looked-after people's phones: safe zones and alerts"),
     "governance": ("Compliance and GRC", "Frameworks, policies, risks and evidence"),
 }
 ESSENTIALS = ["service", "protection", "vulnerabilities"]
