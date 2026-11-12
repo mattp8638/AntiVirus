@@ -39,7 +39,7 @@ New-Item -ItemType Directory -Force -Path $OutDir, $obj | Out-Null
 # Kernel compile: no standard include paths (/X), so only the kernel headers, the shared protocol header and a
 # stdint shim are visible, with the compiler's own intrinsics headers last.
 $clArgs = @(
-  '/nologo', '/c', '/kernel', '/W4', '/WX', '/wd4201', '/wd4214', '/O2', '/Oy-', '/GS', '/Gy', '/GF', '/Zi', '/Zp8',
+  '/nologo', '/c', '/kernel', '/W4', '/WX', '/wd4201', '/wd4214', '/wd4324', '/O2', '/Oy-', '/GS', '/Gy', '/GF', '/Zi', '/Zp8',
   '/Gm-', '/GR-', '/EHs-c-', '/Zc:wchar_t', '/X',
   '/D_AMD64_', '/DAMD64', '/D_WIN64', '/DNTDDI_VERSION=0x0A000008', '/D_WIN32_WINNT=0x0A00', '/DWINVER=0x0A00',
   '/DWINNT=1', '/DNDEBUG',
@@ -47,8 +47,15 @@ $clArgs = @(
   "/Fo$obj\", "/Fd$obj\vc.pdb",
   (Join-Path $src 'AntivirusMinifilter.c')
 )
-& cl.exe @clArgs
-if ($LASTEXITCODE -ne 0) { throw "cl.exe failed ($LASTEXITCODE)" }
+$clOutput = & cl.exe @clArgs 2>&1
+$clExit = $LASTEXITCODE
+# Show our own diagnostics first; header noise is only shown when there is nothing else to explain a failure.
+$own = $clOutput | Where-Object { "$_" -notmatch 'Windows Kits' }
+$own | ForEach-Object { Write-Host $_ }
+if ($clExit -ne 0) {
+  if (-not ($own | Where-Object { "$_" -match '(error|warning) C\d+' })) { $clOutput | Select-Object -Last 40 | ForEach-Object { Write-Host $_ } }
+  throw "cl.exe failed ($clExit)"
+}
 
 $sys = Join-Path $OutDir 'AntivirusMinifilter.sys'
 $linkArgs = @(
