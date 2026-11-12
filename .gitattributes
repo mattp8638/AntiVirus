@@ -3,3 +3,6 @@
 *.ttf binary
 # Catalogue files are verified against MANIFEST.sha256 byte for byte: keep LF endings on every platform.
 catalogue/** text eol=lf
+# Driver package: its catalog (.cat) hashes these exact bytes, so line endings must never be converted.
+agent/windows/driver/prebuilt/** binary
+agent/windows/driver/*.inf text eol=crlf
