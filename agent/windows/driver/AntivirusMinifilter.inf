@@ -50,10 +50,12 @@ LoadOrderGroup = "FSFilter Activity Monitor"
 AddReg         = AntivirusMinifilter.AddRegistry
 
 [AntivirusMinifilter.AddRegistry]
-HKR,,"SupportedFeatures",0x00010001,0x3
-HKR,"Instances","DefaultInstance",0x00000000,%DefaultInstance%
-HKR,"Instances\"%Instance1.Name%,"Altitude",0x00000000,%Instance1.Altitude%
-HKR,"Instances\"%Instance1.Name%,"Flags",0x00010001,%Instance1.Flags%
+; Under Parameters, as current Windows driver rules require (Filter Manager reads it there; setup's fallback
+; registration also writes the older Services\AntivirusMinifilter\Instances key).
+HKR,"Parameters","SupportedFeatures",0x00010001,0x3
+HKR,"Parameters\Instances","DefaultInstance",0x00000000,%DefaultInstance%
+HKR,"Parameters\Instances\"%Instance1.Name%,"Altitude",0x00000000,%Instance1.Altitude%
+HKR,"Parameters\Instances\"%Instance1.Name%,"Flags",0x00010001,%Instance1.Flags%
 
 [AntivirusMinifilter.DriverFiles]
 AntivirusMinifilter.sys
