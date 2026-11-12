@@ -9,9 +9,44 @@ import org.junit.Test
 class AppRiskTest {
     private fun app(
         installer: String? = "com.android.vending", permissions: Set<String> = emptySet(), accessibility: Boolean = false,
-        icon: Boolean = true, system: Boolean = false, admin: Boolean = false,
-    ) = AppFacts("com.example.app", "Example", "1.0", installer, system, "ab".repeat(32), "cd".repeat(32), permissions,
-        accessibility, admin, false, icon, false, 0L, 0L)
+        icon: Boolean = true, system: Boolean = false, admin: Boolean = false, signer: String = "cd".repeat(32),
+        notifications: Boolean = false, name: String = "com.example.app",
+    ) = AppFacts(name, "Example", "1.0", installer, system, "ab".repeat(32), signer, permissions,
+        accessibility, admin, notifications, icon, false, 0L, 0L)
+
+    private val samsung = "5a".repeat(32)
+    private val phone = TrustContext(systemPackages = setOf("com.android.settings", "com.sec.android.app.myfiles",
+        "com.google.android.packageinstaller"), trustedSigners = setOf(samsung))
+
+    @Test
+    fun aCompanionAppsPluginSignedByTheSameDeveloperIsNotSideloaded() {
+        // Galaxy Wearable installs the watch plugin; both carry Samsung's certificate, which built-in apps also use.
+        val plugin = app(installer = "com.samsung.android.app.watchmanager", signer = samsung, icon = false,
+            permissions = setOf(AppRisk.READ_SMS, AppRisk.OVERLAY), name = "com.samsung.android.geargplugin")
+        assertFalse(AppRisk.sideloaded(plugin, phone))
+        assertEquals("low", AppRisk.assess(plugin, phone).level)
+        // An app that updates itself, signed by the same developer, likewise.
+        assertFalse(AppRisk.sideloaded(app(installer = "com.samsung.android.app.watchmanager", signer = samsung,
+            name = "com.samsung.android.app.watchmanager"), phone))
+    }
+
+    @Test
+    fun installsByBuiltInComponentsAreNotSideloadedButGenericInstallersAre() {
+        assertFalse(AppRisk.sideloaded(app(installer = "com.android.settings", icon = false), phone))  // a TTS voice
+        assertTrue(AppRisk.sideloaded(app(installer = "com.sec.android.app.myfiles"), phone))          // APK from My Files
+        assertTrue(AppRisk.sideloaded(app(installer = "com.google.android.packageinstaller"), phone))
+        assertTrue(AppRisk.sideloaded(app(installer = "com.android.chrome"), phone))                   // not built in here
+        // A stranger's certificate is not vouched for, whoever installed it.
+        assertTrue(AppRisk.sideloaded(app(installer = "com.samsung.android.app.watchmanager"), phone))
+    }
+
+    @Test
+    fun builtInAppsAreNotScoredForAbilitiesTheyHoldByDesign() {
+        val auto = app(installer = null, system = true, notifications = true, permissions = setOf(AppRisk.READ_SMS, AppRisk.OVERLAY))
+        val result = AppRisk.assess(auto, phone)
+        assertEquals("low", result.level)
+        assertEquals(0, result.score)
+    }
 
     @Test
     fun aStoreAppWithOrdinaryPermissionsIsLowRisk() {

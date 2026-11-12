@@ -27,6 +27,22 @@ data class AppFacts(
 data class Assessment(val score: Int, val level: String, val reasons: List<String>)
 
 /**
+ * What else on the phone vouches for where an app came from (built by AppScanner from every installed package).
+ *
+ * - systemPackages: apps that came with the phone. One of them installing an app (Settings adding a text-to-speech
+ *   voice, a manufacturer's companion service adding a plugin) is not sideloading, except the generic installers
+ *   (package installer, file managers, browsers, adb) through which a user installs any APK.
+ * - trustedSigners: signing certificates of apps that came with the phone or from an app store. An app signed with
+ *   one of them comes from the same developer (Galaxy Wearable's watch plugins, apps that update themselves), and
+ *   nobody else can sign with that certificate.
+ */
+data class TrustContext(
+    val stores: Set<String> = AppRisk.TRUSTED_INSTALLERS,
+    val systemPackages: Set<String> = emptySet(),
+    val trustedSigners: Set<String> = emptySet(),
+)
+
+/**
  * How risky an app looks from where it came from and what it can do. Banking trojans and stalkerware are sideloaded,
  * take over the screen through accessibility, read text messages (one-time codes), draw over other apps and hide their
  * icon; each of those adds to the score, and the combinations add more. The cloud adds threat intelligence on the APK
@@ -44,6 +60,19 @@ object AppRisk {
         "com.bbk.appstore", "com.vivo.appstore",               // vivo
     )
 
+    /** Built-in apps a user installs arbitrary APKs through: installs by these stay sideloaded. */
+    val GENERIC_INSTALLERS = setOf(
+        "com.android.packageinstaller", "com.google.android.packageinstaller", "com.samsung.android.packageinstaller",
+        "com.android.shell",                                                       // adb
+        "com.android.documentsui", "com.google.android.documentsui", "com.sec.android.app.myfiles",
+        "com.google.android.apps.nbu.files", "com.mi.android.globalFileexplorer", "com.android.fileexplorer",
+        "com.coloros.filemanager", "com.huawei.hidisk",
+        "com.android.chrome", "com.sec.android.app.sbrowser", "com.android.browser", "com.mi.globalbrowser",
+        "com.huawei.browser", "com.heytap.browser", "com.microsoft.emmx", "org.mozilla.firefox",
+        "com.android.bluetooth", "com.google.android.gm", "com.samsung.android.email.provider",
+        "com.google.android.apps.messaging", "com.samsung.android.messaging", "com.google.android.apps.nearby",
+    )
+
     const val READ_SMS = "android.permission.READ_SMS"
     const val RECEIVE_SMS = "android.permission.RECEIVE_SMS"
     const val OVERLAY = "android.permission.SYSTEM_ALERT_WINDOW"
@@ -58,14 +87,22 @@ object AppRisk {
     val NOTABLE = setOf(READ_SMS, RECEIVE_SMS, OVERLAY, INSTALL_PACKAGES, RECORD_AUDIO, READ_CALL_LOG, BACKGROUND_LOCATION,
         READ_CONTACTS, CAMERA, "android.permission.SEND_SMS", "android.permission.CALL_PHONE", "android.permission.READ_PHONE_STATE")
 
-    fun sideloaded(app: AppFacts, trusted: Set<String> = TRUSTED_INSTALLERS): Boolean =
-        !app.systemApp && (app.installer == null || app.installer !in trusted)
+    fun sideloaded(app: AppFacts, trust: TrustContext = TrustContext()): Boolean {
+        if (app.systemApp) return false
+        val installer = app.installer
+        if (installer != null && installer in trust.stores) return false
+        if (app.signer != null && app.signer in trust.trustedSigners) return false
+        if (installer != null && installer != app.packageName && installer in trust.systemPackages && installer !in GENERIC_INSTALLERS) return false
+        return true
+    }
 
-    fun assess(app: AppFacts, trusted: Set<String> = TRUSTED_INSTALLERS): Assessment {
+    fun sideloaded(app: AppFacts, trusted: Set<String>): Boolean = sideloaded(app, TrustContext(stores = trusted))
+
+    fun assess(app: AppFacts, trust: TrustContext = TrustContext()): Assessment {
         val reasons = mutableListOf<String>()
         var score = 0
         fun add(points: Int, why: String) { score += points; reasons += why }
-        val side = sideloaded(app, trusted)
+        val side = sideloaded(app, trust)
         val p = app.permissions
         val sms = READ_SMS in p || RECEIVE_SMS in p
         val overlay = OVERLAY in p
@@ -73,11 +110,15 @@ object AppRisk {
 
         if (side) add(20, "Installed from outside an app store" + (app.installer?.let { " (by $it)" } ?: ""))
         if (app.accessibilityOn) add(25, "Can see and control the screen (accessibility service is on)")
-        if (sms) add(15, "Can read incoming text messages, including one-time codes")
-        if (overlay) add(10, "Can draw over other apps")
+        // Apps that came with the phone hold these by design (Android Auto reads texts aloud, a phone link mirrors
+        // notifications); scoring them only buries the apps worth a look.
+        if (!app.systemApp) {
+            if (sms) add(15, "Can read incoming text messages, including one-time codes")
+            if (overlay) add(10, "Can draw over other apps")
+            if (app.notificationAccess) add(10, "Reads every notification")
+            if (INSTALL_PACKAGES in p) add(10, "Can install other apps")
+        }
         if (app.deviceAdmin) add(15, "Is a device administrator, which makes it hard to remove")
-        if (app.notificationAccess) add(10, "Reads every notification")
-        if (INSTALL_PACKAGES in p) add(10, "Can install other apps")
         if (side && !app.hasLauncherIcon) add(15, "Has no app icon, so it is hidden from the user")
         if (app.debuggable) add(10, "Is a debug build, not a released app")
         if (side && app.accessibilityOn && (sms || overlay)) {
@@ -91,9 +132,9 @@ object AppRisk {
         return Assessment(capped, level, reasons)
     }
 
-    fun toJson(app: AppFacts, assessment: Assessment, trusted: Set<String> = TRUSTED_INSTALLERS): JSONObject = JSONObject()
+    fun toJson(app: AppFacts, assessment: Assessment, trust: TrustContext = TrustContext()): JSONObject = JSONObject()
         .put("package", app.packageName).put("label", app.label.take(200)).put("version", app.version.take(100))
-        .put("installer", app.installer ?: JSONObject.NULL).put("sideloaded", sideloaded(app, trusted)).put("system", app.systemApp)
+        .put("installer", app.installer ?: JSONObject.NULL).put("sideloaded", sideloaded(app, trust)).put("system", app.systemApp)
         .put("sha256", app.sha256 ?: JSONObject.NULL).put("signer", app.signer ?: JSONObject.NULL)
         .put("permissions", JSONArray(app.permissions.filter { it in NOTABLE }.sorted()))
         .put("accessibility", app.accessibilityOn).put("deviceAdmin", app.deviceAdmin)
