@@ -345,6 +345,10 @@ ExtendedPolicy ExtendedPolicy::Parse(const std::string& modulesJson) {
 
   const auto* antimalware = root->Get("antimalware");
   policy.mlSensitivity = WideString(antimalware, "mlSensitivity", L"balanced");
+  policy.puaProtection = WideString(antimalware, "puaProtection", L"block");
+  if (policy.puaProtection != L"off" && policy.puaProtection != L"audit") policy.puaProtection = L"block";
+  policy.scanArchives = BoolOr(antimalware, "scanArchives", true);
+  policy.archiveMaxDepth = std::clamp(IntOr(antimalware, "archiveMaxDepth", 5), 1, 20);
   policy.behavior.excludedProcesses = WideList(antimalware, "exclusionProcesses");
   policy.quickScanPlan = ParseScanPlan(antimalware, "quickScanPlan");
   policy.scanNetworkDrives = BoolOr(antimalware, "scanNetworkDrives", false);

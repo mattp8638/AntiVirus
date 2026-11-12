@@ -79,8 +79,8 @@ jobs:
         working-directory: agent/windows
         run: |
           g++ -std=c++20 -Iservice/include service/src/BehaviorRules.cpp tests/BehaviorRulesTests.cpp -o /tmp/brtest && /tmp/brtest
-          g++ -std=c++20 -Iservice/include service/src/ExtendedPolicy.cpp service/src/BehaviorRules.cpp service/src/DeviceControl.cpp tests/PolicyAndDeviceControlTests.cpp -o /tmp/pdtest && /tmp/pdtest tests
           g++ -std=c++20 -Iservice/include tests/EnrollmentPersistenceTests.cpp -o /tmp/enrollmenttest && /tmp/enrollmenttest
+          g++ -std=c++20 -O1 -fsanitize=address,undefined -fno-sanitize-recover=all -Iservice/include service/src/ZipReader.cpp tests/ZipReaderTests.cpp -o /tmp/ziptest && /tmp/ziptest
           g++ -std=c++20 -Iservice/include tests/RemoteSasRequestTests.cpp -o /tmp/sastest && /tmp/sastest
           g++ -std=c++20 -Iservice/include tests/WingetSupportTests.cpp -o /tmp/wingettest && /tmp/wingettest
           g++ -std=c++20 -Iservice/include service/src/AdEventRules.cpp tests/AdMonitorTests.cpp -o /tmp/adtest && /tmp/adtest

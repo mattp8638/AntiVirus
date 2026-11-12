@@ -29,6 +29,7 @@
 #include "MlStaticModel.h"
 #include "ReputationLookup.h"
 #include "StringUtils.h"
+#include "ZipReader.h"
 
 namespace antivirus::agent {
 namespace {
@@ -1267,6 +1268,143 @@ std::wstring BuildAlertSummary(const ScanFinding& finding) {
   return origin + L" delivered " + item + L".";
 }
 
+// antimalware.puaProtection / scanArchives / archiveMaxDepth, read from the policy's modules once per policy change.
+struct AntimalwareOptions {
+  std::wstring pua{L"block"};
+  bool archives{true};
+  int maxDepth{5};
+};
+
+AntimalwareOptions OptionsFor(const PolicySnapshot& policy) {
+  static std::mutex mutex;
+  static std::string lastModules;
+  static AntimalwareOptions last;
+  static bool cached = false;
+  const std::scoped_lock lock(mutex);
+  if (!cached || lastModules != policy.modulesJson) {
+    AntimalwareOptions options;
+    if (!policy.modulesJson.empty()) {
+      const auto parsed = ExtendedPolicy::Parse(policy.modulesJson);
+      options.pua = parsed.puaProtection;
+      options.archives = parsed.scanArchives;
+      options.maxDepth = parsed.archiveMaxDepth;
+    }
+    last = options;
+    lastModules = policy.modulesJson;
+    cached = true;
+  }
+  return last;
+}
+
+bool IsPuaHit(const Hit& hit) { return hit.code.rfind(L"FEED_PUA_", 0) == 0; }
+
+// How deep in nested archives the current thread is.
+thread_local int g_archiveDepth = 0;
+
+constexpr std::size_t kMaxArchiveFileBytes = 128ULL * 1024 * 1024;   // archives larger than this are not opened
+constexpr std::size_t kMaxArchiveMemberBytes = 32ULL * 1024 * 1024;  // members larger than this are skipped
+constexpr std::size_t kMaxArchiveTotalBytes = 128ULL * 1024 * 1024;  // per archive
+constexpr int kMaxArchiveMembers = 200;
+constexpr std::uint64_t kBombRatio = 250;
+
+std::wstring SafeMemberFileName(const std::string& name, int index) {
+  std::wstring wide = Utf8ToWide(name);
+  const auto slash = wide.find_last_of(L"/\\");
+  if (slash != std::wstring::npos) wide = wide.substr(slash + 1);
+  for (auto& c : wide) {
+    if (c < 32 || std::wcschr(L"<>:\"/\\|?*", c) != nullptr) c = L'_';
+  }
+  if (wide.size() > 120) wide = wide.substr(wide.size() - 120);
+  return std::to_wstring(index) + L"-" + (wide.empty() ? L"member" : wide);
+}
+
+// antimalware.scanArchives: every file inside a zip (Office documents are zips too) is scanned with this same engine,
+// nested archives to archiveMaxDepth. Returns the strongest detection inside, as a hit on the archive itself. Zip
+// bombs, oversized members and encrypted members are reported or skipped, never unpacked.
+std::vector<Hit> ArchiveMemberHits(const FileData& file, const PolicySnapshot& policy, const AntimalwareOptions& options) {
+  std::vector<Hit> out;
+  if (!file.zip || !options.archives || g_archiveDepth >= options.maxDepth || file.sizeBytes > kMaxArchiveFileBytes) {
+    return out;
+  }
+  std::vector<unsigned char> whole;
+  const std::vector<unsigned char>* bytes = &file.bytes;
+  if (file.readLimitHit) {
+    std::ifstream in(file.path, std::ios::binary);
+    whole.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    bytes = &whole;
+  }
+  std::vector<zipreader::Entry> entries;
+  if (!zipreader::List(*bytes, entries, 5000)) return out;
+
+  wchar_t tempRoot[MAX_PATH]{};
+  GetTempPathW(MAX_PATH, tempRoot);
+  const auto workDir = std::filesystem::path(tempRoot) / (L"fenrir-archive-" + GenerateGuidString());
+  std::error_code ec;
+  std::filesystem::create_directories(workDir, ec);
+  if (ec) return out;
+
+  std::optional<Hit> strongest;
+  std::size_t total = 0;
+  int scanned = 0, encrypted = 0;
+  for (std::size_t i = 0; i < entries.size() && scanned < kMaxArchiveMembers; ++i) {
+    const auto& entry = entries[i];
+    if (entry.directory) continue;
+    if (entry.encrypted) {
+      ++encrypted;
+      continue;
+    }
+    if (entry.uncompressedSize > kMaxArchiveMemberBytes) continue;
+    if (entry.uncompressedSize > 1024 * 1024 && entry.compressedSize > 0 &&
+        entry.uncompressedSize / entry.compressedSize > kBombRatio) {
+      out.push_back(Hit{L"ARCHIVE_DECOMPRESSION_BOMB",
+                        L"Archive member '" + Utf8ToWide(entry.name) + L"' expands more than 250 times: a decompression bomb.",
+                        L"TA0005", L"T1499", 60});
+      break;
+    }
+    total += entry.uncompressedSize;
+    if (total > kMaxArchiveTotalBytes) break;
+    std::vector<unsigned char> content;
+    if (!zipreader::Extract(*bytes, entry, content, kMaxArchiveMemberBytes)) continue;
+    ++scanned;
+    const auto memberPath = workDir / SafeMemberFileName(entry.name, static_cast<int>(i));
+    {
+      std::ofstream member(memberPath, std::ios::binary | std::ios::trunc);
+      member.write(reinterpret_cast<const char*>(content.data()), static_cast<std::streamsize>(content.size()));
+    }
+    ++g_archiveDepth;
+    std::optional<ScanFinding> inner;
+    try {
+      inner = ScanFile(memberPath, policy);
+    } catch (...) {
+    }
+    --g_archiveDepth;
+    std::filesystem::remove(memberPath, ec);
+    if (!inner || (inner->verdict.disposition != VerdictDisposition::Block &&
+                   inner->verdict.disposition != VerdictDisposition::Quarantine)) {
+      continue;
+    }
+    const auto& reason = inner->verdict.reasons.empty() ? VerdictReason{} : inner->verdict.reasons.front();
+    const bool exact = reason.code.rfind(L"FEED_", 0) == 0 || reason.code.rfind(L"EICAR", 0) == 0 ||
+                       reason.code.rfind(L"ARCHIVE_MEMBER", 0) == 0;
+    Hit hit{reason.code.rfind(L"FEED_PUA_", 0) == 0 ? reason.code : L"ARCHIVE_MEMBER_DETECTED",
+            L"Inside the archive, '" + Utf8ToWide(entry.name) + L"': " +
+                (reason.message.empty() ? std::wstring(L"detected as malicious") : reason.message),
+            inner->verdict.tacticId.empty() ? L"TA0002" : inner->verdict.tacticId,
+            inner->verdict.techniqueId.empty() ? L"T1204.002" : inner->verdict.techniqueId,
+            std::max(70, static_cast<int>(inner->verdict.confidence)), exact};
+    if (!strongest || hit.score > strongest->score) strongest = hit;
+    if (hit.score >= 90) break;
+  }
+  std::filesystem::remove_all(workDir, ec);
+  if (strongest) out.push_back(*strongest);
+  if (encrypted > 0 && scanned == 0 && out.empty() && file.userPath) {
+    out.push_back(Hit{L"ARCHIVE_ENCRYPTED_MEMBERS",
+                      L"The archive's files are password-protected, so they could not be scanned (a common way to slip malware past scanners).",
+                      L"TA0005", L"T1027.013", 20});
+  }
+  return out;
+}
+
 ScanFinding BuildAllowOverrideFindingInternal(const std::filesystem::path& path, const std::optional<FileData>& loaded,
                                               const AllowOverrideMatch& match) {
   ScanFinding finding{
@@ -1563,6 +1701,17 @@ std::optional<ScanFinding> ScanFile(const std::filesystem::path& path, const Pol
   }
 
   AddRuleHits(LoadExternalRules(), file, policy, hits, trustedSystemBinary);
+  const auto antimalwareOptions = OptionsFor(policy);
+  for (auto& member : ArchiveMemberHits(file, policy, antimalwareOptions)) AddHit(hits, std::move(member));
+  // antimalware.puaProtection: off drops unwanted-application matches; audit reports them without blocking.
+  bool puaOnly = false;
+  if (std::any_of(hits.begin(), hits.end(), IsPuaHit)) {
+    if (antimalwareOptions.pua == L"off") {
+      hits.erase(std::remove_if(hits.begin(), hits.end(), IsPuaHit), hits.end());
+    } else if (antimalwareOptions.pua == L"audit") {
+      puaOnly = std::none_of(hits.begin(), hits.end(), [](const Hit& hit) { return !IsPuaHit(hit) && hit.score >= 45; });
+    }
+  }
   if (!trustedSystemBinary) {
     AddMlHit(file, policy, hits);
   }
@@ -1687,6 +1836,7 @@ std::optional<ScanFinding> ScanFile(const std::filesystem::path& path, const Pol
   if (policy.archiveObserveOnly && archiveSurface && netPressure < quarantineThreshold) {
     disposition = VerdictDisposition::Allow;
   }
+  if (puaOnly) disposition = VerdictDisposition::Allow;  // puaProtection audit: reported, left alone
 
   if (policy.cloudLookupObserveOnly && reputationLookup.lookupSucceeded && reputationLookup.malicious &&
       disposition == VerdictDisposition::Block && !highSeverity) {

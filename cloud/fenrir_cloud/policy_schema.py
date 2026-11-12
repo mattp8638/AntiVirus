@@ -564,10 +564,10 @@ SCHEMA: tuple[Section, ...] = (
 # wherever it applies, by the agents or by the cloud itself. Keep in step with the agents.
 AGENT_SUPPORT: dict[str, tuple[str, ...]] = {
     "antimalware.cloudLookupObserveOnly": ('windows',),
-    "antimalware.puaProtection": ('linux', 'macos'),
-    "antimalware.scanArchives": ('linux', 'macos'),
+    "antimalware.puaProtection": ('windows', 'linux', 'macos'),
+    "antimalware.scanArchives": ('windows', 'linux', 'macos'),
     "antimalware.archiveObserveOnly": ('windows',),
-    "antimalware.archiveMaxDepth": ('linux', 'macos'),
+    "antimalware.archiveMaxDepth": ('windows', 'linux', 'macos'),
     "antimalware.scanMaliciousBlockThreshold": ('windows',),
     "antimalware.scanMaliciousQuarantineThreshold": ('windows',),
     "antimalware.scanBenignDampeningScore": ('windows',),

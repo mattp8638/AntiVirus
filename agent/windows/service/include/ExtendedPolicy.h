@@ -82,6 +82,9 @@ struct RansomwareSettings {
 struct ExtendedPolicy {
   bool present{false};  // false until a cloud policy with modules has been received
   std::wstring mlSensitivity{L"balanced"};
+  std::wstring puaProtection{L"block"};  // antimalware.puaProtection: off | audit | block
+  bool scanArchives{true};               // antimalware.scanArchives: scan the files inside zip archives
+  int archiveMaxDepth{5};                // antimalware.archiveMaxDepth: nesting levels (1-20)
   behavior::BehaviorPolicy behavior;
   DeviceControlSettings deviceControl;
   bool ransomwareEnabled{true};
