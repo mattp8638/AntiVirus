@@ -629,8 +629,8 @@ AGENT_SUPPORT: dict[str, tuple[str, ...]] = {
     "web.phishingBlockThreshold": ('windows',),
     "web.destinationCacheTtlMinutes": ('windows',),
     "web.bankingProtection": (),
-    "dns.localProxy": ('windows', 'linux', 'macos'),
-    "dns.localProxyFailMode": ('windows', 'linux', 'macos'),
+    "dns.localProxy": ('windows', 'linux'),  # never on macOS: the agent ignores it (loopback DNS cut Macs off)
+    "dns.localProxyFailMode": ('windows', 'linux'),  # never on macOS: the agent ignores it (loopback DNS cut Macs off)
     "dns.sinkholeInterception": ('linux', 'macos'),
     "dns.localCacheMinutes": ('windows', 'linux', 'macos'),
     "dns.localDomains": ('windows',),
@@ -744,8 +744,8 @@ TEMPLATES: dict[str, dict[str, Any]] = {
     # ------------------------------------------------------------------------------------------------------------
     # By operating system and role. Each lists only what differs from the defaults (Balanced). Settings an OS's agent
     # does not enforce are left out of that OS's templates, so nothing in them is for show.
-    # DNS: workstations and laptops use the local DNS proxy (on macOS and Linux it points the system resolver at the
-    # agent on loopback, 127.77.0.53) and fail open, so a hotel or captive-portal network is never left without DNS.
+    # DNS: Windows and Linux workstations use the local DNS proxy and fail open, so a hotel or captive-portal network is
+    # never left without DNS. Macs never use it (the agent ignores dns.localProxy on macOS: loopback DNS cut Macs off).
     # Servers do not: they often resolve internal names, run DNS or Active Directory, or sit behind their own
     # resolvers, and a server losing name resolution is an outage.
     # Servers never remove local admins automatically and are never auto-isolated: both are a decision for a person.
@@ -814,10 +814,9 @@ TEMPLATES: dict[str, dict[str, Any]] = {
     },
     "macos-workstation": {
         "_label": "macOS - Workstations",
-        "_description": "MacBooks and iMacs: full protection, local DNS proxy that fails open (hotels, captive portals), USB "
-                        "audited, the Mac's own firewall settings left alone.",
+        "_description": "MacBooks and iMacs: full protection, USB audited, the Mac's own DNS and firewall settings left alone "
+                        "(Macs never use the loopback DNS proxy).",
         "antimalware": {"scanCpuLimitPercent": 30, "puaProtection": "block", "scanArchives": True},
-        "dns": {"localProxy": True, "localProxyFailMode": "open"},
         "firewall": {"defaultsOnLinuxMac": False},
         "deviceControl": {"usbStorage": "audit"},
         "patch": {"autoApprove": "security", "rebootBehaviour": "prompt"},
@@ -826,11 +825,10 @@ TEMPLATES: dict[str, dict[str, Any]] = {
     },
     "macos-server": {
         "_label": "macOS - Servers",
-        "_description": "Mac minis and build or file servers: night scans capped at 25% CPU, no DNS proxy (no loopback DNS), "
+        "_description": "Mac minis and build or file servers: night scans capped at 25% CPU, the Mac's own DNS left alone, "
                         "no automatic isolation, no user prompts.",
         "antimalware": {"scanCpuLimitPercent": 25, "quickScanSchedule": "daily 03:00", "fullScanSchedule": "weekly sun 03:00",
                         "scanRemovableMedia": False},
-        "dns": {"localProxy": False},
         "firewall": {"defaultsOnLinuxMac": False, "bruteForceProtection": True},
         "deviceControl": {"usbStorage": "block"},
         "privilege": {"enabled": False},

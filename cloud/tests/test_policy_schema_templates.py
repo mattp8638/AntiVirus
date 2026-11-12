@@ -13,7 +13,7 @@ def test_os_templates_exist_and_validate():
 def test_server_templates_are_conservative():
     for name in (n for n in OS_TEMPLATES if n.endswith("-server")):
         t = ps.template_settings(name)
-        assert t["dns"]["localProxy"] is False  # no loopback DNS on servers
+        assert t.get("dns", {}).get("localProxy", False) is False  # no loopback DNS on servers
         assert t["response"]["autoIsolateOnCritical"] is False
         assert t["privilege"].get("removeLocalAdmins", False) is False
         assert t["privilege"]["enabled"] is False or name == "windows-server"
@@ -22,8 +22,14 @@ def test_server_templates_are_conservative():
             assert t["experience"]["notifications"] == "none"
 
 
+def test_macs_never_use_the_loopback_dns_proxy():
+    for name in ("macos-workstation", "macos-server"):
+        assert ps.template_settings(name).get("dns", {}).get("localProxy", False) is False
+    assert "macos" not in ps.AGENT_SUPPORT["dns.localProxy"]
+
+
 def test_workstation_dns_proxy_fails_open():
-    for name in (n for n in OS_TEMPLATES if n.endswith("-workstation")):
+    for name in ("windows-workstation", "linux-workstation"):
         dns = ps.template_settings(name)["dns"]
         assert dns["localProxy"] is True and dns["localProxyFailMode"] == "open"
 

@@ -1,8 +1,9 @@
 # DNS protection
 
-Every device gets its own encrypted DNS resolver on the Fenrir server. Windows, Linux and macOS agents can also run a
+Every device gets its own encrypted DNS resolver on the Fenrir server. Windows and Linux agents can also run a
 local DNS proxy that sends all lookups there ([EDR_EXCLUSIONS_AND_DNS_PROXY.md](EDR_EXCLUSIONS_AND_DNS_PROXY.md)).
-Phones and agentless Macs use a profile. The console page **DNS protection** is laid out like Microsoft Defender:
+Macs never use the local proxy: a Mac whose DNS points at loopback has no internet whenever the proxy is not
+answering, so the macOS agent ignores the setting and puts back any DNS change an earlier version made. Phones and agentless Macs use a profile. The console page **DNS protection** is laid out like Microsoft Defender:
 
 | Investigate | Policies & rules | Threat intelligence |
 |---|---|---|
