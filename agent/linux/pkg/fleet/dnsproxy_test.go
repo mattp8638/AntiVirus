@@ -332,3 +332,40 @@ func TestResolverChangeIsRestored(t *testing.T) {
 		t.Fatalf("commands: %v", commands)
 	}
 }
+
+func TestMacLoopbackDNSIsClearedButOtherServersAreKept(t *testing.T) {
+	saved := runResolverCommand
+	forceMacCleanupForTests = true
+	defer func() { runResolverCommand = saved; forceMacCleanupForTests = false }()
+	var set []string
+	runResolverCommand = func(name string, args ...string) ([]byte, error) {
+		switch {
+		case len(args) == 1 && args[0] == "-listallnetworkservices":
+			return []byte("An asterisk (*) denotes that a network service is disabled.\nWi-Fi\nEthernet\n*Thunderbolt Bridge\n"), nil
+		case len(args) == 2 && args[0] == "-getdnsservers" && args[1] == "Wi-Fi":
+			return []byte("127.77.0.53\n"), nil
+		case len(args) == 2 && args[0] == "-getdnsservers":
+			return []byte("1.1.1.1\n"), nil
+		case len(args) >= 2 && args[0] == "-setdnsservers":
+			set = append(set, strings.Join(args[1:], " "))
+		}
+		return nil, nil
+	}
+	clearMacLoopbackDNS("127.77.0.53")
+	if len(set) != 1 || set[0] != "Wi-Fi Empty" {
+		t.Fatalf("only the service pointing at the proxy should be reset to automatic DNS, got %v", set)
+	}
+}
+
+func TestMacNeverStartsTheLoopbackProxy(t *testing.T) {
+	saved := dnsProxySupported
+	dnsProxySupported = false
+	defer func() { dnsProxySupported = saved }()
+	a := New(Config{StateDir: t.TempDir(), Server: "http://127.0.0.1:1"})
+	a.state.DNSURL = "https://fenrir.example/dns/x/dns-query"
+	a.state.Policy.Modules = map[string]map[string]interface{}{"dns": {"enabled": true, "localProxy": true}}
+	a.applyDNSProxy()
+	if a.dns != nil {
+		t.Fatal("the local DNS proxy must never run on macOS")
+	}
+}

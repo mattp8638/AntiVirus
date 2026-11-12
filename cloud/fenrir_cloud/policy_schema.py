@@ -629,8 +629,8 @@ AGENT_SUPPORT: dict[str, tuple[str, ...]] = {
     "web.phishingBlockThreshold": ('windows',),
     "web.destinationCacheTtlMinutes": ('windows',),
     "web.bankingProtection": (),
-    "dns.localProxy": ('windows', 'linux', 'macos'),
-    "dns.localProxyFailMode": ('windows', 'linux', 'macos'),
+    "dns.localProxy": ('windows', 'linux'),  # never on macOS: the agent ignores it (loopback DNS cut Macs off)
+    "dns.localProxyFailMode": ('windows', 'linux'),  # never on macOS: the agent ignores it (loopback DNS cut Macs off)
     "dns.sinkholeInterception": ('linux', 'macos'),
     "dns.localCacheMinutes": ('windows', 'linux', 'macos'),
     "dns.localDomains": ('windows',),
@@ -740,6 +740,102 @@ TEMPLATES: dict[str, dict[str, Any]] = {
         "web": {"networkObserveOnly": True},
         "dns": {"mode": "observe"},
         "response": {"autoKillOnHigh": False, "autoQuarantine": False, "autoRollbackRansomware": False},
+    },
+    # ------------------------------------------------------------------------------------------------------------
+    # By operating system and role. Each lists only what differs from the defaults (Balanced). Settings an OS's agent
+    # does not enforce are left out of that OS's templates, so nothing in them is for show.
+    # DNS: Windows and Linux workstations use the local DNS proxy and fail open, so a hotel or captive-portal network is
+    # never left without DNS. Macs never use it (the agent ignores dns.localProxy on macOS: loopback DNS cut Macs off).
+    # Servers do not: they often resolve internal names, run DNS or Active Directory, or sit behind their own
+    # resolvers, and a server losing name resolution is an outage.
+    # Servers never remove local admins automatically and are never auto-isolated: both are a decision for a person.
+    "windows-workstation": {
+        "_label": "Windows - Workstations",
+        "_description": "Desktops and laptops: full protection, local DNS proxy, ransomware rollback, deception lures, USB audited, "
+                        "local admin password rotation.",
+        "antimalware": {"scanCpuLimitPercent": 30, "scanRemovableMedia": True, "puaProtection": "block", "scanArchives": True},
+        "edr": {"memoryScanning": True, "exploitProtection": True, "credentialProtection": True, "deceptionLures": True},
+        "attackSurface": {"blockWebshellCreation": "off", "blockPsexecWmiProcessCreation": "audit"},
+        "ransomware": {"mode": "block-and-rollback", "protectedFoldersMode": "audit", "canaryFiles": True},
+        "web": {"blockKnownScamDestinations": True},
+        "dns": {"localProxy": True, "localProxyFailMode": "open"},
+        "deviceControl": {"usbStorage": "audit"},
+        "privilege": {"enabled": True, "removeLocalAdmins": False, "elevationRequests": "approval", "rotateLocalAdminPassword": True},
+        "patch": {"autoApprove": "security", "rebootBehaviour": "prompt"},
+        "response": {"autoIsolateOnCritical": True, "autoKillOnHigh": True, "autoOpenTicket": "high"},
+        "experience": {"trayIcon": True, "notifications": "important", "allowUserScans": True},
+        "remoteAccess": {"consent": "when_user_present"},
+    },
+    "windows-server": {
+        "_label": "Windows - Servers",
+        "_description": "File, application and domain servers: scans at night and capped at 25% CPU, webshell blocking, share "
+                        "protection, no DNS proxy, no automatic isolation or admin removal, no user prompts.",
+        "antimalware": {"scanCpuLimitPercent": 25, "quickScanSchedule": "daily 03:00", "fullScanSchedule": "weekly sun 03:00",
+                        "scanRemovableMedia": False},
+        "edr": {"memoryScanning": True, "exploitProtection": True, "credentialProtection": True, "deceptionLures": True},
+        "attackSurface": {"blockWebshellCreation": "block", "blockPsexecWmiProcessCreation": "audit"},
+        "ransomware": {"mode": "block-and-rollback", "networkShareProtection": True, "snapshotIntervalHours": 2,
+                       "protectedFoldersMode": "off"},
+        "dns": {"localProxy": False},
+        "deviceControl": {"usbStorage": "block"},
+        "privilege": {"enabled": False, "removeLocalAdmins": False, "rotateLocalAdminPassword": True},
+        "patch": {"autoApprove": "critical", "rebootBehaviour": "never", "installInWindow": True,
+                  "maintenanceWindow": "daily 01:00-05:00"},
+        "response": {"autoIsolateOnCritical": False, "autoKillOnHigh": True, "autoOpenTicket": "medium"},
+        "experience": {"trayIcon": False, "notifications": "none", "allowUserScans": False},
+        "remoteAccess": {"consent": "never", "showBanner": True},
+    },
+    "linux-workstation": {
+        "_label": "Linux - Workstations",
+        "_description": "Desktops and laptops: full protection, local DNS proxy (fails open), USB audited, the device's own "
+                        "firewall rules left alone.",
+        "antimalware": {"scanCpuLimitPercent": 30, "puaProtection": "block", "scanArchives": True},
+        "dns": {"localProxy": True, "localProxyFailMode": "open"},
+        "firewall": {"defaultsOnLinuxMac": False, "bruteForceProtection": True},
+        "deviceControl": {"usbStorage": "audit"},
+        "patch": {"autoApprove": "security", "rebootBehaviour": "prompt"},
+        "response": {"autoIsolateOnCritical": True, "autoOpenTicket": "high"},
+    },
+    "linux-server": {
+        "_label": "Linux - Servers",
+        "_description": "Web, database and application servers: night scans capped at 25% CPU, webshell blocking, SSH brute-force "
+                        "protection, no DNS proxy, the server's own firewall left alone, no automatic isolation.",
+        "antimalware": {"scanCpuLimitPercent": 25, "quickScanSchedule": "daily 03:00", "fullScanSchedule": "weekly sun 03:00",
+                        "scanRemovableMedia": False},
+        "attackSurface": {"blockWebshellCreation": "block"},
+        "dns": {"localProxy": False},
+        "firewall": {"defaultsOnLinuxMac": False, "bruteForceProtection": True},
+        "deviceControl": {"usbStorage": "block"},
+        "privilege": {"enabled": False},
+        "patch": {"autoApprove": "security", "rebootBehaviour": "never", "installInWindow": True,
+                  "maintenanceWindow": "daily 01:00-05:00"},
+        "response": {"autoIsolateOnCritical": False, "autoOpenTicket": "medium", "remoteShell": False},
+        "remoteAccess": {"consent": "never"},
+    },
+    "macos-workstation": {
+        "_label": "macOS - Workstations",
+        "_description": "MacBooks and iMacs: full protection, USB audited, the Mac's own DNS and firewall settings left alone "
+                        "(Macs never use the loopback DNS proxy).",
+        "antimalware": {"scanCpuLimitPercent": 30, "puaProtection": "block", "scanArchives": True},
+        "firewall": {"defaultsOnLinuxMac": False},
+        "deviceControl": {"usbStorage": "audit"},
+        "patch": {"autoApprove": "security", "rebootBehaviour": "prompt"},
+        "response": {"autoIsolateOnCritical": True, "autoOpenTicket": "high"},
+        "remoteAccess": {"consent": "when_user_present"},
+    },
+    "macos-server": {
+        "_label": "macOS - Servers",
+        "_description": "Mac minis and build or file servers: night scans capped at 25% CPU, the Mac's own DNS left alone, "
+                        "no automatic isolation, no user prompts.",
+        "antimalware": {"scanCpuLimitPercent": 25, "quickScanSchedule": "daily 03:00", "fullScanSchedule": "weekly sun 03:00",
+                        "scanRemovableMedia": False},
+        "firewall": {"defaultsOnLinuxMac": False, "bruteForceProtection": True},
+        "deviceControl": {"usbStorage": "block"},
+        "privilege": {"enabled": False},
+        "patch": {"autoApprove": "security", "rebootBehaviour": "never", "installInWindow": True,
+                  "maintenanceWindow": "daily 01:00-05:00"},
+        "response": {"autoIsolateOnCritical": False, "autoOpenTicket": "medium"},
+        "remoteAccess": {"consent": "never"},
     },
 }
 

@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -481,10 +482,21 @@ type dnsProxyState struct {
 var (
 	dnsProxyAddr = "127.77.0.53"
 	sinkholeAddr = "127.77.0.1"
+	// The loopback proxy runs on Linux only (see applyDNSProxy); a variable so tests can exercise both paths.
+	dnsProxySupported  = runtime.GOOS != "darwin"
+	macLoopbackCleanup sync.Once
 )
 
 // applyDNSProxy starts, reconfigures or stops the proxy to match policy, and points the system resolver at it.
 func (a *Agent) applyDNSProxy() {
+	// macOS never uses the loopback proxy, whatever the policy says: a Mac whose resolver points at loopback has no
+	// DNS at all whenever the proxy is not answering (sleep/wake, network changes, an agent restart), and customers
+	// lost all internet access that way. Any change an earlier version made is put back.
+	if !dnsProxySupported {
+		a.stopDNSProxy()
+		macLoopbackCleanup.Do(func() { clearMacLoopbackDNS(dnsProxyAddr) })
+		return
+	}
 	p := a.state.Policy
 	enabled := p.ModuleBool("dns", "enabled", true) && p.ModuleBool("dns", "localProxy", false) && a.state.DNSURL != ""
 	failClosed := p.ModuleString("dns", "localProxyFailMode", "open") == "closed"

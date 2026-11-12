@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -150,6 +151,30 @@ func (c *resolverChange) Restore() error {
 	}
 	return err
 }
+
+// clearMacLoopbackDNS: any network service whose DNS servers still include the proxy's loopback address goes back
+// to automatic (DHCP) DNS. The backstop when the saved original settings are gone; does nothing elsewhere.
+func clearMacLoopbackDNS(proxyAddr string) {
+	if runtime.GOOS != "darwin" && !forceMacCleanupForTests {
+		return
+	}
+	out, err := runResolverCommand("networksetup", "-listallnetworkservices")
+	if err != nil {
+		return
+	}
+	for i, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		service := strings.TrimSpace(strings.TrimPrefix(line, "*"))
+		if i == 0 || service == "" { // the first line is a header
+			continue
+		}
+		current, err := runResolverCommand("networksetup", "-getdnsservers", service)
+		if err == nil && strings.Contains(string(current), proxyAddr) {
+			_, _ = runResolverCommand("networksetup", "-setdnsservers", service, "Empty")
+		}
+	}
+}
+
+var forceMacCleanupForTests = false
 
 // restoreStaleResolver undoes a change left behind by a crash or a forced stop.
 func restoreStaleResolver(stateDir string) {
