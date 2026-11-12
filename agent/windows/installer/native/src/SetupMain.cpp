@@ -6,6 +6,7 @@
 #include <shlobj.h>
 #include <shobjidl.h>
 #include <shellapi.h>
+#include <sddl.h>
 #include <strsafe.h>
 #include <tlhelp32.h>
 #include <wincrypt.h>
@@ -3077,6 +3078,96 @@ void LaunchCleanupHelper(const std::filesystem::path& currentSetupPath, const st
   }
 }
 
+// Uninstall protection: on when the agent stored an uninstall token hash and policy has not waived it.
+bool UninstallProtectionActive() {
+  const auto hash = ReadRegistryString(HKEY_LOCAL_MACHINE, L"SOFTWARE\\FenrirAgent", L"UninstallTokenSha256");
+  if (hash.empty()) return false;
+  DWORD required = 1;
+  DWORD size = sizeof(required);
+  RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\FenrirAgent", L"UninstallTokenRequiredByPolicy", RRF_RT_REG_DWORD,
+               nullptr, &required, &size);
+  return required != 0;
+}
+
+void EnableSetupPrivilege(const wchar_t* name) {
+  HANDLE token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token)) return;
+  TOKEN_PRIVILEGES privileges{};
+  privileges.PrivilegeCount = 1;
+  privileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+  if (LookupPrivilegeValueW(nullptr, name, &privileges.Privileges[0].Luid)) {
+    AdjustTokenPrivileges(token, FALSE, &privileges, sizeof(privileges), nullptr, nullptr);
+  }
+  CloseHandle(token);
+}
+
+// The installed agent refused or failed its own uninstall (an older build, or a stuck process). Setup removes the
+// service itself: it gives administrators back control of the service (the agent locks stop and delete), turns
+// off restart-on-failure and start-up, stops it, ends its process if it does not stop, and deletes it.
+// Only called when uninstall protection is off.
+bool ForceRemoveAgentService(std::wstring* errorMessage) {
+  EnableSetupPrivilege(L"SeDebugPrivilege");
+  EnableSetupPrivilege(L"SeTakeOwnershipPrivilege");
+  const auto manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+  if (manager == nullptr) {
+    *errorMessage = L"Could not open the Service Control Manager.";
+    return false;
+  }
+  PSECURITY_DESCRIPTOR descriptor = nullptr;
+  if (ConvertStringSecurityDescriptorToSecurityDescriptorW(
+          L"O:BAD:(A;;CCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCLCSWRPWPDTLOCRSDRCWDWO;;;BA)", SDDL_REVISION_1, &descriptor,
+          nullptr)) {
+    auto service = OpenServiceW(manager, kServiceName, WRITE_DAC | READ_CONTROL);
+    if (service == nullptr && GetLastError() == ERROR_ACCESS_DENIED) {
+      if (const auto owned = OpenServiceW(manager, kServiceName, WRITE_OWNER)) {
+        SetServiceObjectSecurity(owned, OWNER_SECURITY_INFORMATION, descriptor);
+        CloseServiceHandle(owned);
+      }
+      service = OpenServiceW(manager, kServiceName, WRITE_DAC | READ_CONTROL);
+    }
+    if (service != nullptr) {
+      SetServiceObjectSecurity(service, DACL_SECURITY_INFORMATION, descriptor);
+      CloseServiceHandle(service);
+    }
+    LocalFree(descriptor);
+  }
+  const auto service =
+      OpenServiceW(manager, kServiceName, SERVICE_STOP | SERVICE_CHANGE_CONFIG | DELETE | SERVICE_QUERY_STATUS);
+  if (service == nullptr) {
+    const auto error = GetLastError();
+    CloseServiceHandle(manager);
+    if (error == ERROR_SERVICE_DOES_NOT_EXIST) return true;
+    *errorMessage = L"Could not take control of the FenrirAgent service (error " + std::to_wstring(error) + L").";
+    return false;
+  }
+  SC_ACTION noAction{SC_ACTION_NONE, 0};
+  SERVICE_FAILURE_ACTIONSW failureActions{};
+  failureActions.cActions = 1;
+  failureActions.lpsaActions = &noAction;
+  ChangeServiceConfig2W(service, SERVICE_CONFIG_FAILURE_ACTIONS, &failureActions);
+  ChangeServiceConfigW(service, SERVICE_NO_CHANGE, SERVICE_DISABLED, SERVICE_NO_CHANGE, nullptr, nullptr, nullptr,
+                       nullptr, nullptr, nullptr, nullptr);
+  SERVICE_STATUS status{};
+  ControlService(service, SERVICE_CONTROL_STOP, &status);
+  bool stopped = WaitForServiceStateByName(kServiceName, SERVICE_STOPPED, 20'000);
+  if (!stopped) stopped = TerminateServiceProcess(kServiceName, 15'000);
+  if (!stopped) {
+    CloseServiceHandle(service);
+    CloseServiceHandle(manager);
+    *errorMessage = L"The FenrirAgent service did not stop and its process could not be ended.";
+    return false;
+  }
+  const bool deleted = DeleteService(service) != FALSE || GetLastError() == ERROR_SERVICE_MARKED_FOR_DELETE;
+  const auto deleteError = GetLastError();
+  CloseServiceHandle(service);
+  CloseServiceHandle(manager);
+  if (!deleted) {
+    *errorMessage = L"The FenrirAgent service stopped but could not be deleted (error " + std::to_wstring(deleteError) + L").";
+    return false;
+  }
+  return true;
+}
+
 void RunUninstall(HWND hwnd, UiContext* context) {
   const auto installRoot = context->installRoot;
   const auto endpointClientPath = installRoot / kEndpointExeName;
@@ -3093,11 +3184,20 @@ void RunUninstall(HWND hwnd, UiContext* context) {
     PostLog(hwnd, L"Uninstalling the protection service");
     const auto args = context->uninstallToken.empty() ? std::wstring(L"--uninstall") : L"--uninstall --token " + context->uninstallToken;
     if (!RunProcessHidden(serviceExe, args, installRoot, &exitCode, &errorMessage) || exitCode != 0) {
-      PostComplete(hwnd, false, true, false,
-                   errorMessage.empty() ? L"The protection service refused to uninstall. If uninstall protection is on, run "
-                                          L"FenrirSetup.exe --uninstall --token <token> (the token is in the device's policy)."
-                                        : errorMessage);
-      return;
+      if (UninstallProtectionActive()) {
+        PostComplete(hwnd, false, true, false,
+                     (errorMessage.empty() ? std::wstring(L"The protection service refused to uninstall.") : errorMessage) +
+                         L" Uninstall protection is on: run FenrirSetup.exe --uninstall --token <token> (the token is in "
+                         L"the device's policy).");
+        return;
+      }
+      PostLog(hwnd, L"The agent did not uninstall itself (" + errorMessage + L"); removing its service directly");
+      std::wstring forceError;
+      if (!ForceRemoveAgentService(&forceError)) {
+        PostComplete(hwnd, false, true, false, errorMessage + L" Removing the service directly also failed: " + forceError);
+        return;
+      }
+      PostLog(hwnd, L"Removed the FenrirAgent service");
     }
   }
 
