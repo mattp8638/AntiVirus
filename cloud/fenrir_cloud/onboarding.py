@@ -1,10 +1,10 @@
 """Customer onboarding (FLOW-01): one checklist per customer, computed from what really exists, so it is resumable by
 nature (leave it and come back; nothing is stored that can drift from reality) and every step shows real failures
-(a Microsoft 365 connection that does not sync, a backup that failed, agents waiting for approval) with where to fix
+(a Microsoft 365 connection that does not sync, agents waiting for approval) with where to fix
 them.
 
 Steps: the customer's details (primary contact and site), an agreement, staff access, protection policy, agent
-enrolment, agents reporting, Microsoft 365, backups, vulnerability scanning, monitoring and the compliance programme.
+enrolment, agents reporting, Microsoft 365, vulnerability scanning, monitoring and the compliance programme.
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from . import presence
-from .models import (BackupPlan, BackupRun, Contact, Contract, Device, EnrollmentToken, GrcAdoption, M365Connection, MonitorCondition,
+from .models import (Contact, Contract, Device, EnrollmentToken, GrcAdoption, M365Connection, MonitorCondition,
                      Policy, Site, Tenant, User, VulnScan, utcnow)
 
 DONE, TODO, FAILED, OPTIONAL = "done", "todo", "failed", "optional"
@@ -99,18 +99,6 @@ def checklist(db: Session, tenant: Tenant) -> dict:
         status, detail = OPTIONAL, "Connect the customer's Microsoft 365 tenant (skip if they do not use it)."
     steps.append(_step("m365", "Microsoft 365", status, detail, "/m365", required=False))
 
-    plans = db.execute(select(BackupPlan).where(BackupPlan.tenant_id == tid)).scalars().all()
-    if plans:
-        last = db.execute(select(BackupRun).where(BackupRun.tenant_id == tid).order_by(BackupRun.completed_at.desc())).scalars().first()
-        if last is None:
-            status, detail = TODO, f"{len(plans)} backup plan(s); no backup has reported yet."
-        elif last.status not in ("success", "succeeded", "completed", "ok", "warning"):
-            status, detail = FAILED, f"The last backup ({last.completed_at:%d %b %H:%M}) reported {last.status}."
-        else:
-            status, detail = DONE, f"{len(plans)} plan(s); last backup {last.completed_at:%d %b %H:%M}: {last.status}."
-    else:
-        status, detail = TODO, "Record what is backed up and connect its reports, so failures raise tickets."
-    steps.append(_step("backup", "Backups", status, detail, "/backup"))
 
     scans = db.execute(select(func.count()).select_from(VulnScan).where(VulnScan.tenant_id == tid)).scalar() or 0
     auto = ((tenant.settings or {}).get("autoRemediation") or {}).get("enabled")

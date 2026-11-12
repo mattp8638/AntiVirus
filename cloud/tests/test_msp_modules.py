@@ -119,23 +119,6 @@ def test_grc_review_requires_stepup_and_future_review(client,admin,tenant):
     accepted = client.patch(url,headers=proof,json={"status":"accepted","reviewDue":(datetime.now(timezone.utc)+timedelta(days=30)).isoformat()})
     assert accepted.status_code == 200 and accepted.json()["approvedBy"] == "admin@fenrir.local"
 
-def test_backup_idempotent_runs_health_and_recovery_transitions(client,admin,tenant):
-    plan = post(client,admin,"backup/plans",{"tenantId":tenant["id"],"name":"SQL service","provider":"Existing provider","rpoHours":24,"rtoMinutes":60})
-    body = {"externalId":"job-1","status":"success","completedAt":datetime.now(timezone.utc).isoformat(),"bytesProtected":5000000000,"evidence":"provider report 1"}
-    first = post(client,admin,"backup/plans/"+plan["id"]+"/runs",body)
-    assert post(client,admin,"backup/plans/"+plan["id"]+"/runs",body)["id"] == first["id"]
-    assert client.post("/api/console/backup/plans/"+plan["id"]+"/runs",headers=admin,json={**body,"status":"failed"}).status_code == 409
-    assert client.get("/api/console/backup/plans",headers=admin).json()[0]["health"] == "protected"
-    proof = stepup(client,admin)
-    exercise = post(client,proof,"backup/plans/"+plan["id"]+"/exercises",{"target":"Isolated recovery VM"})
-    url = "/api/console/backup/exercises/"+exercise["id"]
-    assert client.patch(url,headers=proof,json={"status":"completed","evidence":"ok","durationMinutes":30}).status_code == 409
-    assert client.patch(url,headers=proof,json={"status":"approved"}).status_code == 200
-    assert client.patch(url,headers=proof,json={"status":"completed"}).status_code == 400
-    complete = client.patch(url,headers=proof,json={"status":"completed","evidence":"Boot and application checks passed","durationMinutes":30})
-    assert complete.status_code == 200 and complete.json()["rtoMet"] is True
-    assert client.patch(url,headers=proof,json={"status":"approved"}).status_code == 409
-
 def test_external_siem_events_deduplicate_without_changing_device_state(client,admin,device):
     body = {"deviceId":device["deviceId"],"source":"customer-shipper","events":[{"eventId":"external-1","eventType":"device.isolated","summary":"third-party observation"}]}
     result = post(client,admin,"soc/ingest",body)
@@ -159,16 +142,14 @@ def test_module_cross_tenant_boundaries(client,admin,tenant):
     conn = connection(client,admin,tenant)
     monitor = post(client,admin,"network/monitors",{"tenantId":tenant["id"],"name":"HTTPS","address":"10.0.0.1","port":443})
     risk = post(client,admin,"grc/records",{"tenantId":tenant["id"],"kind":"risk","title":"Private risk"})
-    plan = post(client,admin,"backup/plans",{"tenantId":tenant["id"],"name":"Private backup","provider":"vendor"})
     other = post(client,admin,"tenants",{"name":"Unrelated"})
     post(client,admin,"users",{"tenantId":other["id"],"email":"outsider@test.com","password":ADMIN_PASSWORD,"role":"tenant_admin"})
     outsider = login(client,"outsider@test.com")
-    for collection in ["m365/connections","network/monitors","grc/records","backup/plans","backup/exercises","soc/suppressions"]:
+    for collection in ["m365/connections","network/monitors","grc/records","soc/suppressions"]:
         assert client.get("/api/console/"+collection,headers=outsider).json() == []
     assert client.post("/api/console/m365/connections/"+conn["id"]+"/sync",headers=outsider).status_code == 404
     assert client.post("/api/console/network/monitors/"+monitor["id"]+"/check",headers=outsider).status_code == 404
     assert client.patch("/api/console/grc/records/"+risk["id"]+"/review",headers=outsider,json={"status":"closed"}).status_code == 404
-    assert client.get("/api/console/backup/plans/"+plan["id"]+"/runs",headers=outsider).status_code == 404
 
 def test_suppression_expires_and_alerting_resumes(client, admin, device):
     from fenrir_cloud import detection
@@ -197,15 +178,6 @@ def test_graph_sync_stops_at_total_deadline(monkeypatch):
     with httpx.Client(transport=httpx.MockTransport(lambda request: pytest.fail("Request after deadline"))) as transport:
         with pytest.raises(ValueError, match="time budget"):
             m365.collect(transport, "https://graph.microsoft.com/v1.0/users", "token", deadline=120)
-
-def test_backup_stale_and_future_completion(client, admin, tenant):
-    plan = post(client, admin, "backup/plans", {"tenantId":tenant["id"],"name":"Archive","provider":"Provider","rpoHours":1})
-    body = {"externalId":"old", "status":"success", "completedAt":(datetime.now(timezone.utc)-timedelta(hours=2)).isoformat()}
-    post(client, admin, "backup/plans/"+plan["id"]+"/runs", body)
-    assert client.get("/api/console/backup/plans", headers=admin).json()[0]["health"] == "stale"
-    body.update(externalId="future", completedAt=(datetime.now(timezone.utc)+timedelta(hours=2)).isoformat())
-    assert client.post("/api/console/backup/plans/"+plan["id"]+"/runs",headers=admin,json=body).status_code == 400
-
 
 def test_grc_controls_combine_automatic_checks_and_register_evidence(client, admin, tenant):
     library = client.get(f"/api/console/grc/controls?tenant_id={tenant['id']}", headers=admin).json()["frameworks"]

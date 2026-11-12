@@ -1,6 +1,6 @@
 """Continuous GRC: live control signals, a cross-framework control map, automated evidence and compliance drift.
 
-* Signals are live checks over the customer's policy and fleet (compliance.py), Microsoft 365, backups, endpoint
+* Signals are live checks over the customer's policy and fleet (compliance.py), Microsoft 365, endpoint
   baselines (grc_baselines.py), third-party risk (tprm.py) and approved policies.
 * The crosswalk (grc_library/crosswalk.yml) maps ~20 Fenrir common controls to the requirements they satisfy in every
   framework in the library, so one control, evidenced once, counts for Cyber Essentials, ISO 27001, CIS, NIST CSF,
@@ -23,7 +23,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import audit, events, grcprogramme as gp, services
-from .models import (BackupPlan, BackupRun, GrcAdoption, GrcEvidence, GrcEvidenceLink, GrcPolicy, GrcRequirementState, M365Connection,
+from .models import (GrcAdoption, GrcEvidence, GrcEvidenceLink, GrcPolicy, GrcRequirementState, M365Connection,
                      Tenant, utcnow)
 
 log = logging.getLogger("fenrir.grc")
@@ -50,7 +50,7 @@ SIGNAL_LABELS = {
     "firewall": "Firewall policy", "secure-configuration": "Secure configuration policy", "patching": "Automatic patching",
     "vulnerabilities": "Exploitable vulnerabilities", "least-privilege": "Least privilege", "application-control": "Application control",
     "monitoring": "Logging and monitoring", "incident-response": "Incident response", "m365-mfa": "Microsoft 365 MFA",
-    "backup": "Backups", "third-party-risk": "Third-party risk", "policies-approved": "Approved security policies",
+    "third-party-risk": "Third-party risk", "policies-approved": "Approved security policies",
 }
 
 
@@ -80,21 +80,6 @@ def _mfa(db: Session, tenant: Tenant) -> dict:
                          f"of users registered for MFA (target {MFA_TARGET}%)" for r in rows]}
 
 
-def _backup(db: Session, tenant: Tenant) -> dict:
-    plans = db.execute(select(BackupPlan).where(BackupPlan.tenant_id == tenant.id)).scalars().all()
-    if not plans:
-        return {"passed": None, "evidence": ["No backup plans are recorded for this customer"]}
-    now, evidence, ok = utcnow(), [], True
-    for plan in plans:
-        last = db.scalar(select(func.max(BackupRun.completed_at)).where(BackupRun.plan_id == plan.id, BackupRun.status == "success"))
-        allowed = timedelta(hours=max(24, 2 * (plan.rpo_hours or 24)))
-        fresh = bool(last and now - last <= allowed)
-        ok &= fresh
-        evidence.append(f"{plan.name}: last successful backup {last.strftime('%Y-%m-%d %H:%M') + ' UTC' if last else 'never'}"
-                        + ("" if fresh else f" (older than {int(allowed.total_seconds() // 3600)} h)"))
-    return {"passed": ok, "evidence": evidence}
-
-
 def _policies(db: Session, tenant: Tenant) -> dict:
     rows = db.execute(select(GrcPolicy).where(GrcPolicy.tenant_id == tenant.id, GrcPolicy.status != "retired")).scalars().all()
     if not rows:
@@ -117,7 +102,6 @@ def signals(db: Session, tenant: Tenant) -> dict[str, dict]:
         out[key] = {"passed": all(c["passed"] for c in found) if found else None,
                     "evidence": [e for c in found for e in c["evidence"]]}
     out["m365-mfa"] = _mfa(db, tenant)
-    out["backup"] = _backup(db, tenant)
     out["policies-approved"] = _policies(db, tenant)
     out["third-party-risk"] = tprm.signal(db, tenant)
     for control in crosswalk():

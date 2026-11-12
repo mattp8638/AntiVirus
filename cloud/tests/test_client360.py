@@ -4,7 +4,7 @@ from datetime import timedelta
 
 from conftest import enroll, login
 from fenrir_cloud import client360, db as database
-from fenrir_cloud.models import (Alert, BackupPlan, BackupRun, ClientHealthSnapshot, ClientReport, Contract, Device, DevicePatch,
+from fenrir_cloud.models import (Alert, ClientHealthSnapshot, ClientReport, Contract, Device, DevicePatch,
                                  Invoice, M365Connection, Tenant, Ticket, Vulnerability, utcnow)
 
 
@@ -24,12 +24,12 @@ def _health(client, headers, tenant):
 
 def test_parts_without_data_are_not_set_up_rather_than_perfect(client, admin, tenant):
     body, parts = _health(client, admin, tenant)
-    assert parts["backup"]["score"] is None and parts["backup"]["value"] == "No backup monitoring set up"
+    assert "backup" not in parts  # Fenrir does not run or monitor backups
     assert parts["identity"]["value"] == "Microsoft 365 not connected" and parts["devices"]["status"] == "none"
     assert body["measured"] < body["of"]
 
 
-def test_one_score_from_devices_protection_backup_identity_vulnerabilities_service_and_account(client, admin, tenant):
+def test_one_score_from_devices_protection_identity_vulnerabilities_service_and_account(client, admin, tenant):
     pcs = [enroll(client, admin, tenant, hostname=f"ACME-PC-{n}", serial=f"SN-{n}") for n in range(4)]
     now = utcnow()
     with database.session_factory()() as db:
@@ -37,14 +37,7 @@ def test_one_score_from_devices_protection_backup_identity_vulnerabilities_servi
         old.last_seen_at = now - timedelta(days=10)  # one laptop not seen for 10 days
         db.get(Device, pcs[2]["deviceId"]).health_state = "degraded"
         db.commit()
-    plan_ok = BackupPlan(tenant_id=tenant["id"], name="File server", provider="Veeam", rpo_hours=24)
-    plan_late = BackupPlan(tenant_id=tenant["id"], name="Accounts PC", provider="Veeam", rpo_hours=24)
-    _add(plan_ok, plan_late)
-    _add(BackupRun(plan_id=plan_ok.id, tenant_id=tenant["id"], external_id="r1", status="success", completed_at=now - timedelta(hours=2),
-                   recorded_by="ingest"),
-         BackupRun(plan_id=plan_late.id, tenant_id=tenant["id"], external_id="r2", status="success", completed_at=now - timedelta(days=3),
-                   recorded_by="ingest"),
-         Alert(tenant_id=tenant["id"], device_id=pcs[0]["deviceId"], rule_id="r", title="Ransomware behaviour", severity="critical"),
+    _add(Alert(tenant_id=tenant["id"], device_id=pcs[0]["deviceId"], rule_id="r", title="Ransomware behaviour", severity="critical"),
          Vulnerability(tenant_id=tenant["id"], device_id=pcs[1]["deviceId"], vuln_id="CVE-2023-4863", package="libwebp",
                        severity="high", known_exploited=True),
          M365Connection(tenant_id=tenant["id"], name="Acme", directory_id="d" * 36, client_id="c" * 36, credentials_envelope={},
@@ -59,7 +52,6 @@ def test_one_score_from_devices_protection_backup_identity_vulnerabilities_servi
     body, parts = _health(client, admin, tenant)
     assert parts["devices"]["score"] == 75 and parts["devices"]["stale"] == ["ACME-PC-3"]
     assert parts["protection"]["score"] == 65  # 3 of 4 healthy, less 10 for the open critical alert
-    assert parts["backup"]["score"] == 50 and "Accounts PC" in parts["backup"]["detail"]
     assert parts["identity"]["score"] == 70 and parts["identity"]["value"] == "MFA 80% · Secure Score 60%"
     assert parts["vulnerabilities"]["score"] == 75 and parts["vulnerabilities"]["status"] == "warn"
     assert parts["service"]["score"] == 100

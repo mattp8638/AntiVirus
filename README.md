@@ -33,7 +33,7 @@ Hosting, domains, publicly trusted code-signing certificates and optional provid
 | Email security | Checks customers' mail for phishing and malware, with reasons for every verdict: in Microsoft 365 mailboxes (shadow mode compares with Microsoft; protect mode quarantines, junks or tags), and at Fenrir's own mail gateway before Microsoft 365 (SPF/DKIM/DMARC, ClamAV, encrypted quarantine, release). Allow/block lists, user digests with release requests, zero-hour re-checks, and a model that learns from your labels ([guide](docs/EMAIL_SECURITY.md)). |
 | Exposure | Vulnerability inventory, CVE/EPSS/KEV intelligence, scan ingestion, external assets and remediation tracking. |
 | MSP operations | Customers, service boards, tickets, dispatch, time, projects, CRM, quotes, agreements, billing and client portal. |
-| GRC and operations | [UK and UK-targeted governance programmes](docs/GOVERNANCE.md), policies, evidence, risks, credential vault, network monitoring, backup status and recovery exercises. Actual backup/restore requires a configured provider. |
+| GRC and operations | [UK and UK-targeted governance programmes](docs/GOVERNANCE.md), policies, evidence, risks, credential vault and network monitoring. Fenrir does not back up or monitor backups of customer devices. |
 
 Deployment consists of **PostgreSQL + Fenrir Cloud**, which serves the compiled React console, agent downloads and WebSocket relay. The HTTPS example adds **Caddy**.
 

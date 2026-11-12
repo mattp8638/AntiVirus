@@ -1,6 +1,6 @@
 """The customer workspace (FLOW-09): everything a technician needs about one customer in one place, each part linked
 to its module with the customer already chosen, so nothing is looked up or typed twice: open tickets, devices that
-need attention, alerts and incidents, urgent vulnerabilities, Microsoft 365, backups, onboarding and recent actions."""
+need attention, alerts and incidents, urgent vulnerabilities, Microsoft 365, onboarding and recent actions."""
 from __future__ import annotations
 
 from datetime import timedelta
@@ -73,7 +73,7 @@ def build(db: Session, tenant: Tenant) -> dict:
         "incidents": [{"id": i.id, "title": i.title, "severity": i.severity, "status": i.status, "at": _iso(i.created_at)} for i in incidents[:8]],
         "vulnerabilities": {"open": len(vulns), "byPriority": by_priority,
                             "urgent": sorted(urgent_cves.values(), key=lambda r: (-r["knownExploited"], -r["devices"]))[:8]},
-        "microsoft365": steps.get("m365"), "backup": steps.get("backup"),
+        "microsoft365": steps.get("m365"),
         "onboarding": {k: v for k, v in progress.items() if k in ("done", "total", "failed", "ready")},
         "recent": [{"at": _iso(r.at), "actor": r.actor, "action": r.action, "target": r.target} for r in recent],
     }

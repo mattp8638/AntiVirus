@@ -26,7 +26,7 @@ from .config import Settings, get_settings, set_settings
 from .detection import sync_builtin_rules
 from .models import Device, DnsQueryLog, Event, RateLimitBucket, Policy, RuleMatch, Tenant, User, utcnow
 from .routers import m365_admin as m365_admin_router
-from .routers import m365 as m365_router, network as network_router, grc as grc_router, backup as backup_router, soc_workflows
+from .routers import m365 as m365_router, network as network_router, grc as grc_router, soc_workflows
 from .routers import documentation as documentation_router
 from .routers import push as push_router
 from .routers import care as care_router
@@ -336,7 +336,6 @@ def _scheduled_jobs() -> list[tuple[str, int, object]]:
     """(name, every N passes of 30 seconds, job), in the order they run within a pass."""
     from . import condition_remediation, m365_lifecycle, m365_signin_security, network, remediation, topology
     from .routers import artifacts as artifact_store
-    from .routers import backup as backup_health
 
     return [
         ("rmm", 1, rmm.tick),
@@ -349,7 +348,6 @@ def _scheduled_jobs() -> list[tuple[str, int, object]]:
         ("network", 1, network.tick),
         ("psa.mailbox", 4, _poll_msp_mailbox),  # every two minutes
         ("condition-remediation", 10, condition_remediation.tick),  # every five minutes
-        ("backup.health", 10, backup_health.health_tick),
         ("remediation", 20, remediation.tick),  # every ten minutes
         ("remediation.verify", 20, remediation.verify_tick),  # rescans after fixes; reports fixes not confirmed in a day
         ("topology", 120, topology.tick),  # hourly
@@ -593,7 +591,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     for module in (agent_api, admin, fleet, soc, crm_router, business, rmm_router, service_mgmt, psa_router, remote_router, portal):
         app.include_router(module.router)
     app.include_router(onboarding_router.workspace_router)
-    for module in (m365_admin_router, m365_router, network_router, grc_router, backup_router, soc_workflows, ad_router, agent_health_router, onboarding_router, m365_exchange_router, m365_signin_router, m365_intune_router, m365_reports_router, m365_collaboration_router, grc_programme_router,
+    for module in (m365_admin_router, m365_router, network_router, grc_router, soc_workflows, ad_router, agent_health_router, onboarding_router, m365_exchange_router, m365_signin_router, m365_intune_router, m365_reports_router, m365_collaboration_router, grc_programme_router,
                    rollouts_router, apikeys_router, roles_router, approvals_router, exclusions_router,
                    exposure_intel_router, m365_partner_router, m365_workspace_router, email_security_router, email_policies_router, dns_console_router, m365_lifecycle_router, condition_packages_router, triage_router, clients_router, search_router, defender_router, mobile_apps_router, push_router, care_router,
                    reports_router, branding_router, deploy_router):
@@ -604,7 +602,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(m365_router.oauth)
     app.include_router(psa_router.inbound)
     app.include_router(business.xero_callback)
-    app.include_router(backup_router.ingest)
     from .routers import local_admin as local_admin_router
     app.include_router(local_admin_router.agent)
     app.include_router(local_admin_router.console)

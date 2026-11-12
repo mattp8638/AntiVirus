@@ -11,7 +11,6 @@ This increment builds on merged Phase 1 hardening (main commit `1607f86412133efe
 | Network monitoring | Scheduled TCP availability and latency checks of explicitly configured IP/port pairs; bounded recent samples; alert after three consecutive failures and resolution on recovery; pause/resume and manual check. |
 | SIEM/XDR | Tenant-scoped external event ingestion into the existing detection pipeline, source/event deduplication, immutable text evidence with SHA-256 fingerprints and expiring rule suppressions. External events do not apply native agent device-state side effects. |
 | GRC/ISMS | Customer risk, policy, evidence, audit and exception records; framework/control references; likelihood/impact scoring; due reviews; reauthentication and future review dates for approval/acceptance. |
-| Backup/DR | Protection plans linked to existing configurations and runbooks; idempotent provider-result reporting; RPO freshness; audited recovery exercise request/approval/completion with evidence, duration and RTO assessment. |
 
 New console screens reuse existing tenant selection, authentication, error handling and tables. Related configurations, documents and detection rules are selected by name. The existing KB, device, incident, alert, event, audit and encryption implementations remain canonical.
 
@@ -22,7 +21,7 @@ New console screens reuse existing tenant selection, authentication, error handl
 - A monitor keeps its latest 100 samples. Scheduler batches are bounded to ten monitors, with two-second connection timeouts. Capacity and scheduling latency at MSP fleet scale still need load testing.
 - Vault metadata is ordinary customer data; put passwords only in the secret field. Ciphertext uses the existing authenticated encryption/key-rotation registry and tenant/record-specific associated data. The console removes revealed secrets after 30 seconds or when the customer/modal changes.
 - Microsoft 365 registration requires application permissions `User.Read.All`, `LicenseAssignment.Read.All` and `SecurityEvents.Read.All`, with admin consent in the customer directory. Synchronization uses Microsoft public-cloud Graph v1.0 endpoints. Pagination stays on that origin and is bounded by page, record and elapsed-time limits. Each HTTP request also has a timeout. No user, licence or policy changes are sent to Microsoft.
-- Backup results are operator/API reports from an existing provider. Fenrir does not execute backup or restore jobs in this increment. Approving a recovery exercise records approval; it does not invoke a vendor API.
+- The backup-oversight module (manually reported backup plans and recovery exercises) was removed: it did not run or monitor backups and suggested otherwise. Its tables are left in the database, unused.
 - GRC framework names and control references are mappings supplied by the operator. They are not complete licensed control libraries, an automated certification assessment or legal advice.
 - Suppressions apply to new alert creation for a selected rule and customer until expiry. Existing alerts and ingested events remain available. Text evidence is immutable through this API; the hash verifies content consistency and is not a cryptographic proof of collection provenance.
 

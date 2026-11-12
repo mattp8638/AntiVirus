@@ -19,7 +19,6 @@ MODULES = {
     "email": ("Email security", "Scans customers' Microsoft 365 mail for phishing and malware, next to Microsoft's own verdict"),
     "identity": ("Microsoft 365 and identity", "Microsoft 365, Active Directory, data and identity exposure"),
     "network": ("Network", "Network topology, attack surface and out-of-band (Intel AMT)"),
-    "backup": ("Backup", "Backup oversight and recovery tests"),
     "business": ("Business", "CRM, onboarding, quotes, agreements and billing"),
     "care": ("Care", "Looked-after people's phones: safe zones and alerts"),
     "governance": ("Compliance and GRC", "Frameworks, policies, risks and evidence"),
