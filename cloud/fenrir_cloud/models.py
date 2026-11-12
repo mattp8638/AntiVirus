@@ -551,6 +551,82 @@ class DnsQueryLog(Base):
     reason: Mapped[str] = mapped_column(String(200), default="")
     category: Mapped[str] = mapped_column(String(40), default="")
     at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # What decided (dns_rules.py): rule | entry | policy | intel | ruleset | blocklist | category | heuristic | safesearch
+    source: Mapped[str | None] = mapped_column(String(20), nullable=True, default="")
+    rule_id: Mapped[str | None] = mapped_column(String(32), nullable=True, default="")  # the DNS rule or list entry
+    score: Mapped[int | None] = mapped_column(Integer, nullable=True)  # Fenrir ruleset confidence, when it decided
+
+
+class DnsRule(Base):
+    """A DNS rule or allow/block list entry (dns_rules.py). Rules on the MSP's own tenant apply to every customer.
+    kind "entry" is a simple allow/block list line; kind "rule" adds conditions (match type, scope, query types,
+    schedule) and can run in audit mode. Every change bumps ``version`` and is kept in ``dns_rule_changes``."""
+    __tablename__ = "dns_rules"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("dnr"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    kind: Mapped[str] = mapped_column(String(10), default="rule")  # rule | entry
+    name: Mapped[str] = mapped_column(String(200), default="")
+    action: Mapped[str] = mapped_column(String(10), default="block")  # allow | block | monitor
+    match: Mapped[str] = mapped_column(String(10), default="domain")  # domain | exact | wildcard | regex | category
+    patterns: Mapped[list] = mapped_column(JSON, default=list)
+    scope_type: Mapped[str] = mapped_column(String(10), default="tenant")  # tenant | group | device
+    scope_ids: Mapped[list] = mapped_column(JSON, default=list)
+    qtypes: Mapped[list] = mapped_column(JSON, default=list)  # empty = every query type
+    schedule: Mapped[dict] = mapped_column(JSON, default=dict)  # {"days": [0..6], "start": "09:00", "end": "17:30"}
+    mode: Mapped[str] = mapped_column(String(10), default="enforce")  # enforce | audit
+    priority: Mapped[int] = mapped_column(Integer, default=100)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    comment: Mapped[str] = mapped_column(String(500), default="")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    hits: Mapped[int] = mapped_column(Integer, default=0)
+    last_hit_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    created_by: Mapped[str] = mapped_column(String(320), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class DnsRuleChange(Base):
+    """One version of a DNS rule: who changed what, and the whole rule as it was, so any version can be restored."""
+    __tablename__ = "dns_rule_changes"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    rule_id: Mapped[str] = mapped_column(String(32), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    change: Mapped[str] = mapped_column(String(10), default="create")  # create | update | delete | restore
+    actor: Mapped[str] = mapped_column(String(320), default="")
+    comment: Mapped[str] = mapped_column(String(500), default="")
+    snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    changes: Mapped[list] = mapped_column(JSON, default=list)
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class DnsRuleset(Base):
+    """A build of the Fenrir DNS ruleset (dns_ruleset.py): every domain the enabled feeds and threat intel name,
+    scored by how many independent sources agree, compressed. One build is active; older ones can be re-activated."""
+    __tablename__ = "dns_rulesets"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("dnrs"))
+    version: Mapped[int] = mapped_column(Integer, unique=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by: Mapped[str] = mapped_column(String(320), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    settings: Mapped[dict] = mapped_column(JSON, default=dict)  # thresholds, weights and the sources used
+    stats: Mapped[dict] = mapped_column(JSON, default=dict)
+    diff: Mapped[dict] = mapped_column(JSON, default=dict)  # against the build that was active before
+    domain_count: Mapped[int] = mapped_column(Integer, default=0)
+    domains: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+
+
+class DnsDeviceDay(Base):
+    """Lookups and blocks per device per day, counted for every query (the query log only keeps what policy logs)."""
+    __tablename__ = "dns_device_days"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    day: Mapped[str] = mapped_column(String(10))  # YYYY-MM-DD (UTC)
+    queries: Mapped[int] = mapped_column(Integer, default=0)
+    blocked: Mapped[int] = mapped_column(Integer, default=0)
+    __table_args__ = (UniqueConstraint("device_id", "day", name="uq_dns_device_day"),)
 
 
 # --------------------------------------------------------------------------

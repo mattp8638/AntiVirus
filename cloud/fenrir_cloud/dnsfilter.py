@@ -2,15 +2,18 @@
 
 Each device gets a private DoH URL (``/dns/<token>/dns-query``). The agent
 points the OS resolver (or browser policy) at it, so filtering follows the
-device off-network. Decisions, in order:
+device off-network. Decisions, in order (each step is recorded in the decision's trail):
 
-1. policy allow list           -> allow
-2. policy block list           -> block (reason "policy")
-3. tenant/global indicators     -> allow if verdict allow, block if malicious (reason "threat-intel")
-4. external blocklists          -> "malware" lists always block; other lists block if their category is blocked
-5. category lists               -> block if the category is in policy.dns.blockedCategories
-6. heuristics (DGA, DoH bypass) -> block if that category is blocked
-7. otherwise forward upstream
+1. DNS rules and allow/block entries (dns_rules.py): device, group, customer, then MSP-wide; first match wins
+2. policy allow list           -> allow
+3. policy block list           -> block (reason "policy")
+4. tenant/global indicators     -> allow if verdict allow, block if malicious (reason "threat-intel")
+5. Fenrir DNS ruleset (dns_ruleset.py) -> block at or above its threshold, monitor below it (policy dns.fenrirRuleset)
+6. external blocklists          -> "malware" lists always block; other lists block if their category is blocked
+                                   (skipped when policy dns.externalLists is "ruleset")
+7. category lists               -> block if the category is in policy.dns.blockedCategories
+8. heuristics (DGA, DoH bypass) -> block if that category is blocked
+9. otherwise forward upstream
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ import re
 import time
 from collections import Counter
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import dns.flags
 import dns.message
@@ -95,6 +98,12 @@ class Decision:
     reason: str = ""
     category: str = ""
     rewrite: str | None = None
+    source: str = ""  # rule | entry | policy | intel | ruleset | blocklist | category | heuristic | safesearch
+    rule_id: str = ""
+    score: int | None = None
+    monitor: bool = False  # a monitor rule, an audit rule or the ruleset's monitor band matched: log it
+    trail: list = field(default_factory=list)
+    audits: list = field(default_factory=list)
 
 
 class IntelCache:
@@ -147,38 +156,91 @@ class IntelCache:
 INTEL = IntelCache()
 
 
-def decide(domain: str, dns_settings: dict, intel: dict[str, tuple[str, str]], blocklists: Iterable = ()) -> Decision:
+THREAT = {"malware", "phishing", "command-and-control", "cryptomining", "dga"}
+
+
+def decide(domain: str, dns_settings: dict, intel: dict[str, tuple[str, str]], blocklists: Iterable = (), *, rules=None,
+           ruleset=None, qtype: str = "A", now=None) -> Decision:
     domain = domain.lower().rstrip(".")
     candidates = [domain, *_parents(domain)]
     allow = {d.lower().strip(".") for d in dns_settings.get("allowDomains", [])}
     block = {d.lower().strip(".") for d in dns_settings.get("blockDomains", [])}
     blocked_categories = set(dns_settings.get("blockedCategories", []))
+    lists = list(blocklists)
+    trail: list[str] = []
+    audits: list[dict] = []
+    monitor = False
 
+    def finish(decision: Decision) -> Decision:
+        decision.trail = trail + ([decision.reason] if decision.reason and decision.source not in ("rule", "entry") else [])
+        decision.audits = audits
+        decision.monitor = decision.monitor or monitor
+        return decision
+
+    def category_of() -> str:
+        if ruleset is not None:
+            hit = ruleset.lookup(candidates)
+            if hit:
+                return hit[1]
+        for candidate in candidates:
+            if candidate in intel and intel[candidate][0] != "allow":
+                return (intel[candidate][1] or "malware").lower()
+        for blocklist in lists:
+            if any(c in blocklist.domains for c in candidates):
+                return blocklist.category
+        for category, domains in CATEGORY_DOMAINS.items():
+            if any(c in domains for c in candidates):
+                return category
+        return "dga" if looks_like_dga(domain) else ""
+
+    if rules is not None:
+        outcome = rules.evaluate(domain, candidates, qtype, category_of, now)
+        trail.extend(outcome.trail)
+        audits.extend(outcome.audits)
+        monitor = bool(outcome.audits)
+        if outcome.rule is not None:
+            source = "entry" if outcome.rule.kind == "entry" else "rule"
+            label = "allow list" if source == "entry" and outcome.action == "allow" else "block list" if source == "entry" else "rule"
+            return finish(Decision(outcome.action, f"{label}: {outcome.rule.name}", category_of() if outcome.action == "block" else "",
+                                   source=source, rule_id=outcome.rule.id))
     if any(c in allow for c in candidates):
-        return Decision("allow", "allow-list")
+        return finish(Decision("allow", "allow-list", source="policy"))
     if any(c in block for c in candidates):
-        return Decision("block", "policy block list", "policy")
+        return finish(Decision("block", "policy block list", "policy", source="policy"))
     for candidate in candidates:
         if candidate in intel:
             verdict, category = intel[candidate]
             if verdict == "allow":
-                return Decision("allow", "intel allow")
+                return finish(Decision("allow", "intel allow", source="intel"))
             if verdict in {"malicious", "suspicious"}:
                 cat = (category or "malware").lower()
                 if verdict == "malicious" or cat in blocked_categories or not blocked_categories:
-                    return Decision("block", f"threat intel ({verdict})", cat)
-    for blocklist in blocklists:
-        if blocklist.category == "malware" or blocklist.category in blocked_categories:
-            if any(c in blocklist.domains for c in candidates):
-                return Decision("block", f"blocklist {blocklist.id}", blocklist.category)
+                    return finish(Decision("block", f"threat intel ({verdict})", cat, source="intel"))
+    ruleset_mode = dns_settings.get("fenrirRuleset", "block")
+    if ruleset is not None and ruleset_mode != "off":
+        hit = ruleset.lookup(candidates)
+        if hit:
+            score, category, sources = hit
+            applies = category in THREAT or category in blocked_categories
+            if ruleset_mode == "block" and score >= ruleset.block and applies:
+                return finish(Decision("block", f"Fenrir ruleset v{ruleset.version}: score {score} ({', '.join(sources[:4])})",
+                                       category, source="ruleset", score=score))
+            trail.append(f"Fenrir ruleset v{ruleset.version}: score {score}, {category}"
+                         + (" (monitor only)" if ruleset_mode == "monitor" or score < ruleset.block else " (category not blocked)"))
+            monitor = monitor or (applies and ruleset_mode != "off")
+    if dns_settings.get("externalLists", "direct") != "ruleset":
+        for blocklist in lists:
+            if blocklist.category == "malware" or blocklist.category in blocked_categories:
+                if any(c in blocklist.domains for c in candidates):
+                    return finish(Decision("block", f"blocklist {blocklist.id}", blocklist.category, source="blocklist"))
     for category, domains in CATEGORY_DOMAINS.items():
         if category in blocked_categories and any(c in domains for c in candidates):
-            return Decision("block", f"category {category}", category)
+            return finish(Decision("block", f"category {category}", category, source="category"))
     if "dga" in blocked_categories and looks_like_dga(domain):
-        return Decision("block", "algorithmically generated domain", "dga")
+        return finish(Decision("block", "algorithmically generated domain", "dga", source="heuristic"))
     if dns_settings.get("safeSearch") and domain in SAFESEARCH:
-        return Decision("allow", "safesearch", "safesearch", rewrite=SAFESEARCH[domain])
-    return Decision("allow")
+        return finish(Decision("allow", "safesearch", "safesearch", rewrite=SAFESEARCH[domain], source="safesearch"))
+    return finish(Decision("allow"))
 
 
 def blocked_response(query: dns.message.Message, action: str, sinkhole_ipv4: str) -> dns.message.Message:
@@ -231,11 +293,17 @@ def resolve(
         return response.to_wire(), Decision("allow", "malformed")
     question = query.question[0]
     qname = question.name.to_text().rstrip(".")
-    from . import blocklists
+    from . import blocklists, dns_rules, dns_ruleset
 
-    decision = decide(qname, dns_settings, INTEL.domains(db, device.tenant_id), blocklists.CACHE.active(db))
+    qtype = dns.rdatatype.to_text(question.rdtype)
+    decision = decide(qname, dns_settings, INTEL.domains(db, device.tenant_id), blocklists.CACHE.active(db),
+                      rules=dns_rules.CACHE.for_device(db, device), ruleset=dns_ruleset.CACHE.active(db), qtype=qtype)
     if dns_settings.get("mode") == "observe" and decision.action == "block":
-        decision = Decision("allow", f"observe-only: {decision.reason}", decision.category)
+        decision = Decision("allow", f"observe-only: {decision.reason}", decision.category, source=decision.source,
+                            rule_id=decision.rule_id, score=decision.score, trail=decision.trail, audits=decision.audits)
+    count(device, decision.action == "block")
+    dns_rules.flush_hits(db)
+    flush_counts(db)
 
     if decision.action == "block":
         answer = blocked_response(query, dns_settings.get("blockAction", "sinkhole"), sinkhole_ipv4).to_wire()
@@ -252,8 +320,47 @@ def resolve(
         answer = forward(wire, upstream, client)
 
     log_mode = dns_settings.get("logQueries", "blocked")
-    if log_mode == "all" or (log_mode == "blocked" and (decision.action == "block" or decision.reason.startswith("observe"))):
-        db.add(DnsQueryLog(tenant_id=device.tenant_id, device_id=device.id, qname=qname[:255],
-                           qtype=dns.rdatatype.to_text(question.rdtype), action=decision.action if not decision.reason.startswith("observe") else "observe",
-                           reason=decision.reason[:200], category=decision.category))
+    observed = decision.reason.startswith("observe")
+    if log_mode == "all" or (log_mode == "blocked" and (decision.action == "block" or observed or decision.monitor)):
+        action = "observe" if observed else "monitor" if decision.monitor and decision.action == "allow" else decision.action
+        reason = decision.reason or ("; ".join(decision.trail) if decision.trail else "")
+        db.add(DnsQueryLog(tenant_id=device.tenant_id, device_id=device.id, qname=qname[:255], qtype=qtype, action=action,
+                           reason=reason[:200], category=decision.category[:40], source=decision.source[:20],
+                           rule_id=(decision.rule_id or (decision.audits[0]["id"] if decision.audits else ""))[:32],
+                           score=decision.score))
     return answer, decision
+
+
+# Lookups and blocks per device per day, counted in memory and written at most every 30 seconds.
+_COUNTS: dict[tuple[str, str, str], list[int]] = {}
+_counts_lock = __import__("threading").Lock()
+_counts_flushed = [time.time()]
+
+
+def count(device: Device, blocked: bool) -> None:
+    from datetime import datetime, timezone
+
+    key = (device.tenant_id, device.id, datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+    with _counts_lock:
+        entry = _COUNTS.setdefault(key, [0, 0])
+        entry[0] += 1
+        entry[1] += int(blocked)
+
+
+def flush_counts(db: Session, force: bool = False) -> None:
+    from sqlalchemy import update
+
+    from .models import DnsDeviceDay
+
+    if not force and time.time() - _counts_flushed[0] < 30:
+        return
+    with _counts_lock:
+        pending = dict(_COUNTS)
+        _COUNTS.clear()
+        _counts_flushed[0] = time.time()
+    for (tenant_id, device_id, day), (queries, blocked) in pending.items():
+        changed = db.execute(update(DnsDeviceDay).where(DnsDeviceDay.device_id == device_id, DnsDeviceDay.day == day).values(
+            queries=DnsDeviceDay.queries + queries, blocked=DnsDeviceDay.blocked + blocked)).rowcount
+        if not changed:
+            db.add(DnsDeviceDay(tenant_id=tenant_id, device_id=device_id, day=day, queries=queries, blocked=blocked))
+            db.flush()

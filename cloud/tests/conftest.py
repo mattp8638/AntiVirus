@@ -26,8 +26,20 @@ def pytest_collection_modifyitems(config, items):
         items[:] = keep
 
 
+def _reset_dns_caches() -> None:
+    """The resolver keeps lists, rules, intel and the Fenrir ruleset in memory: each test starts from its own database."""
+    from fenrir_cloud import blocklists, dns_rules, dns_ruleset, dnsfilter
+
+    for cache in (blocklists.CACHE, dns_rules.CACHE, dns_ruleset.CACHE, dnsfilter.INTEL):
+        cache.invalidate()
+    dns_ruleset.CACHE._id = "-"
+    dns_rules.HITS.clear()
+    dnsfilter._COUNTS.clear()
+
+
 @pytest.fixture()
 def client():
+    _reset_dns_caches()
     settings = dataclasses.replace(Settings(), database_url=os.getenv("FENRIR_TEST_DATABASE_URL", "sqlite://"), bootstrap_admin_password=ADMIN_PASSWORD,
                                    secret_key="test-secret", public_base_url="https://fenrir.test",
                                    dns_blocklists_enabled=False, require_mfa=False)
