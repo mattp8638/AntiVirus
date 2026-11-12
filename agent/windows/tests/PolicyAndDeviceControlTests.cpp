@@ -343,6 +343,16 @@ int main(int argc, char** argv) {
     CHECK(laps::PlanAdminRemoval(lonely, {}).empty());
     lonely[0].enabled = true;  // the built-in account is enabled (and managed by LAPS): alice can go
     CHECK(laps::PlanAdminRemoval(lonely, {}).size() == 1);
+    // Broken domain trust: Domain Admins comes back unresolved (not a group), so nothing at all is removed.
+    std::vector<AdminMember> untrusted = {{L"PC1\\Administrator", L"S-1-5-21-1-2-3-500", false, true, true},
+                                          {L"", L"S-1-5-21-9-9-9-512", false, true, false, true},
+                                          {L"PC1\\alice", L"S-1-5-21-1-2-3-1001", false, true, false}};
+    CHECK(laps::PlanAdminRemoval(untrusted, {}).empty());
+    // Domain Admins / Enterprise Admins are kept even when reported as plain members.
+    std::vector<AdminMember> oddlyTyped = {{L"PC1\\Administrator", L"S-1-5-21-1-2-3-500", false, true, true},
+                                           {L"CONTOSO\\Domain Admins", L"S-1-5-21-9-9-9-512", false, true, false},
+                                           {L"CONTOSO\\Enterprise Admins", L"S-1-5-21-9-9-9-519", false, true, false}};
+    CHECK(laps::PlanAdminRemoval(oddlyTyped, {}).empty());
     CHECK(ExtendedPolicy::Parse(R"({"privilege":{"removeLocalAdmins":true}})").removeLocalAdmins == false);  // needs enabled
     CHECK(ExtendedPolicy::Parse(R"({"privilege":{"enabled":true,"removeLocalAdmins":true}})").removeLocalAdmins);
   }
