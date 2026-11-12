@@ -1,0 +1,70 @@
+;
+; AntivirusMinifilter: Fenrir's file-system minifilter (pre-execution blocking and scan-after-write).
+; Installed by FenrirSetup (pnputil /add-driver, with a SetupAPI and service-registration fallback).
+; The altitude and load-order group match the installer's fallback registration (SetupMain.cpp). Before a public
+; release, request an altitude in the FSFilter Anti-Virus range from Microsoft and change both places.
+; DriverVer is stamped at build time (build.ps1).
+;
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = "ActivityMonitor"
+ClassGuid   = {b86dff51-a31e-4bac-b3cf-e8cfe75c9fc2}
+Provider    = %ProviderString%
+DriverVer   = 01/01/2026,1.0.0.0
+CatalogFile = AntivirusMinifilter.cat
+PnpLockdown = 1
+
+[SourceDisksFiles]
+AntivirusMinifilter.sys = 1,,
+
+[SourceDisksNames]
+1 = %DiskId1%,,,
+
+[DestinationDirs]
+AntivirusMinifilter.DriverFiles = 12
+
+[DefaultInstall.NTamd64]
+OptionDesc = %ServiceDescription%
+CopyFiles  = AntivirusMinifilter.DriverFiles
+
+[DefaultInstall.NTamd64.Services]
+AddService = %ServiceName%,,AntivirusMinifilter.Service
+
+[DefaultUninstall.NTamd64]
+LegacyUninstall = 1
+DelFiles        = AntivirusMinifilter.DriverFiles
+
+[DefaultUninstall.NTamd64.Services]
+DelService = %ServiceName%,0x200
+
+[AntivirusMinifilter.Service]
+DisplayName    = %ServiceDisplayName%
+Description    = %ServiceDescription%
+ServiceBinary  = %12%\AntivirusMinifilter.sys
+Dependencies   = "FltMgr"
+ServiceType    = 2 ; SERVICE_FILE_SYSTEM_DRIVER
+StartType      = 3 ; SERVICE_DEMAND_START: the Fenrir service loads it at startup (FilterLoad)
+ErrorControl   = 1 ; SERVICE_ERROR_NORMAL
+LoadOrderGroup = "FSFilter Activity Monitor"
+AddReg         = AntivirusMinifilter.AddRegistry
+
+[AntivirusMinifilter.AddRegistry]
+HKR,,"SupportedFeatures",0x00010001,0x3
+HKR,"Instances","DefaultInstance",0x00000000,%DefaultInstance%
+HKR,"Instances\"%Instance1.Name%,"Altitude",0x00000000,%Instance1.Altitude%
+HKR,"Instances\"%Instance1.Name%,"Flags",0x00010001,%Instance1.Flags%
+
+[AntivirusMinifilter.DriverFiles]
+AntivirusMinifilter.sys
+
+[Strings]
+ProviderString     = "Fenrir"
+ServiceName        = "AntivirusMinifilter"
+ServiceDisplayName = "AntiVirus Real-Time Protection Minifilter"
+ServiceDescription = "Intercepts file activity and asks the user-mode broker for real-time allow or block decisions."
+DiskId1            = "Fenrir minifilter installation disk"
+DefaultInstance    = "AntivirusMinifilter Instance"
+Instance1.Name     = "AntivirusMinifilter Instance"
+Instance1.Altitude = "370030"
+Instance1.Flags    = 0x0

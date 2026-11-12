@@ -423,6 +423,40 @@ file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../signatures/default-signatures
 file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../signatures/default-cleanware-signers.tsv" SETUP_SIGNATURES_CLEANWARE_SIGNERS_FILE)
 file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../signatures/default-known-good-hashes.tsv" SETUP_SIGNATURES_KNOWN_GOOD_HASHES_FILE)
 file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../signatures/default-observe-only.tsv" SETUP_SIGNATURES_OBSERVE_ONLY_FILE)
+# The minifilter is built with the Windows Driver Kit by .github/workflows/driver.yml, which commits the unsigned
+# package to driver/prebuilt/x64 (this build may run on Linux with MinGW, which cannot compile kernel drivers).
+# It is staged into the development output root once per package version, so the copies signed there in place
+# (deploy/sign-windows.sh) are not overwritten by a later configure.
+set(ANTIVIRUS_EMBED_MINIFILTER ON CACHE BOOL
+  "Stage the prebuilt minifilter package (driver/prebuilt/x64) into the installer.")
+set(ANTIVIRUS_PREBUILT_DRIVER_DIR "${ANTIVIRUS_WINDOWS_ROOT}/driver/prebuilt/x64")
+if(ANTIVIRUS_EMBED_MINIFILTER
+   AND EXISTS "${ANTIVIRUS_PREBUILT_DRIVER_DIR}/AntivirusMinifilter.sys"
+   AND EXISTS "${ANTIVIRUS_PREBUILT_DRIVER_DIR}/AntivirusMinifilter.inf"
+   AND EXISTS "${ANTIVIRUS_PREBUILT_DRIVER_DIR}/AntivirusMinifilter.cat"
+   AND EXISTS "${ANTIVIRUS_PREBUILT_DRIVER_DIR}/build.json")
+  set(ANTIVIRUS_STAGED_DRIVER_DIR "${ANTIVIRUS_DEV_OUTPUT_ROOT}/driver")
+  file(READ "${ANTIVIRUS_PREBUILT_DRIVER_DIR}/build.json" ANTIVIRUS_PREBUILT_DRIVER_BUILD)
+  set(ANTIVIRUS_STAGED_DRIVER_BUILD "")
+  if(EXISTS "${ANTIVIRUS_STAGED_DRIVER_DIR}/build.json")
+    file(READ "${ANTIVIRUS_STAGED_DRIVER_DIR}/build.json" ANTIVIRUS_STAGED_DRIVER_BUILD)
+  endif()
+  if(NOT ANTIVIRUS_PREBUILT_DRIVER_BUILD STREQUAL ANTIVIRUS_STAGED_DRIVER_BUILD
+     OR NOT EXISTS "${ANTIVIRUS_STAGED_DRIVER_DIR}/AntivirusMinifilter.sys")
+    file(MAKE_DIRECTORY "${ANTIVIRUS_STAGED_DRIVER_DIR}")
+    file(COPY
+      "${ANTIVIRUS_PREBUILT_DRIVER_DIR}/AntivirusMinifilter.sys"
+      "${ANTIVIRUS_PREBUILT_DRIVER_DIR}/AntivirusMinifilter.inf"
+      "${ANTIVIRUS_PREBUILT_DRIVER_DIR}/AntivirusMinifilter.cat"
+      "${ANTIVIRUS_PREBUILT_DRIVER_DIR}/build.json"
+      DESTINATION "${ANTIVIRUS_STAGED_DRIVER_DIR}")
+    if(EXISTS "${ANTIVIRUS_WINDOWS_ROOT}/driver/README.md")
+      file(COPY "${ANTIVIRUS_WINDOWS_ROOT}/driver/README.md" DESTINATION "${ANTIVIRUS_STAGED_DRIVER_DIR}")
+    endif()
+    message(STATUS "Staged the prebuilt minifilter package into ${ANTIVIRUS_STAGED_DRIVER_DIR}")
+  endif()
+endif()
+
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/driver/AntivirusMinifilter.inf" SETUP_DRIVER_INF_FILE)
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/driver/AntivirusMinifilter.sys" SETUP_DRIVER_SYS_FILE)
 file(TO_CMAKE_PATH "${ANTIVIRUS_DEV_OUTPUT_ROOT}/driver/AntivirusMinifilter.cat" SETUP_DRIVER_CAT_FILE)
