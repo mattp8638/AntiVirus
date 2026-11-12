@@ -33,7 +33,6 @@ from __future__ import annotations
 import copy
 import ipaddress
 import re
-from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -295,6 +294,20 @@ def save(db: Session, tenant_id: str, document: dict | None, actor: str, comment
 def diff(old: dict, new: dict, path: str = "") -> list[dict]:
     """What changed between two documents: [{"path", "from", "to"}]."""
     changes = []
+    if path == "rules" and isinstance(old or [], list) and isinstance(new or [], list):  # rule by rule, matched on id
+        old, new = old or [], new or []
+        before = {r.get("id"): r for r in old if isinstance(r, dict)}
+        after = {r.get("id"): r for r in new if isinstance(r, dict)}
+        for rule_id in [*before, *[i for i in after if i not in before]]:
+            a, b = before.get(rule_id), after.get(rule_id)
+            name = (b or a or {}).get("name") or rule_id
+            if a is None:
+                changes.append({"path": f"rules: {name}", "from": None, "to": "added"})
+            elif b is None:
+                changes.append({"path": f"rules: {name}", "from": "present", "to": "removed"})
+            else:
+                changes += diff(a, b, f"rules: {name}")
+        return changes
     if isinstance(old, dict) and isinstance(new, dict):
         for key in sorted(set(old) | set(new)):
             changes += diff(old.get(key), new.get(key), f"{path}.{key}" if path else key)
@@ -387,7 +400,7 @@ def _test(c: dict, f: dict) -> bool:
     if op == "endsWith":
         return any(v.endswith(needle) for v in values)
     if op == "matches":
-        pattern = re.compile(str(c["value"]), re.I)
+        pattern = re.compile(str(c["value"]), re.IGNORECASE)
         return any(pattern.search(v[:100_000]) for v in values)
     return False
 
@@ -589,4 +602,6 @@ def summary(decision: dict) -> str:
 
 
 def now_iso() -> str:
-    return datetime.utcnow().isoformat() + "Z"
+    from .models import utcnow
+
+    return utcnow().isoformat() + "Z"

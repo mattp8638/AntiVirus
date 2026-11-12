@@ -2,10 +2,25 @@
 from datetime import timedelta
 
 import pytest
+from test_email_security import (  # noqa: F401
+    BASE,
+    CLEAN_HEADERS,
+    PHISH_HEADERS,
+    USER,
+    _by_subject,
+    _prepare,
+    _protect,
+    ctx,
+    fresh_model_cache,
+    mail,
+    message,
+    no_dns_lookups,
+)
 
-from test_email_security import (BASE, CLEAN_HEADERS, PHISH_HEADERS, USER, _by_subject, _prepare, _protect, ctx,  # noqa: F401
-                                 fresh_model_cache, mail, message, no_dns_lookups)
-from fenrir_cloud import db as database, email_content, email_policy as ep, email_security as es
+from fenrir_cloud import db as database
+from fenrir_cloud import email_content
+from fenrir_cloud import email_policy as ep
+from fenrir_cloud import email_security as es
 from fenrir_cloud.models import EmailContent, EmailListEntry, EmailScan, Tenant, utcnow
 
 STANDARD = ep.PRESETS["standard"]
@@ -142,7 +157,7 @@ def test_policies_are_versioned_inherited_compared_and_restored(client, admin, t
 
 # --------------------------------------------------------------------------- policies on real (mocked) mail
 
-def test_a_rule_decides_in_the_mailbox_and_the_body_is_kept_and_shown_safely(client, admin, tenant, mail):
+def test_a_rule_decides_in_the_mailbox_and_the_body_is_kept_and_shown_safely(client, admin, tenant, mail):  # noqa: F811 (pytest fixture)
     row = _prepare(client, admin, tenant, mail)
     doc = {**STANDARD, "rules": [{"name": "Hold order mail", "conditions": [{"field": "subject", "operator": "contains", "value": "order"}],
                                   "actions": [{"type": "quarantine"}]}]}
@@ -165,7 +180,7 @@ def test_a_rule_decides_in_the_mailbox_and_the_body_is_kept_and_shown_safely(cli
     assert tested["decision"]["action"] == "deliver" and tested["current"]["action"] == "quarantine"  # without the rule
 
 
-def test_explorer_filters_and_csv_export(client, admin, tenant, mail):
+def test_explorer_filters_and_csv_export(client, admin, tenant, mail):  # noqa: F811 (pytest fixture)
     row = _prepare(client, admin, tenant, mail)
     client.put(f"{BASE}/connections/{row['id']}", json={"mode": "shadow"}, headers=admin)
     client.post(f"{BASE}/connections/{row['id']}/scan", headers=admin)
@@ -183,7 +198,7 @@ def test_explorer_filters_and_csv_export(client, admin, tenant, mail):
     assert "'=HYPERLINK" in csv.text  # spreadsheet formulas are neutralised
 
 
-def test_campaigns_group_related_mail_and_purge_removes_it_everywhere(client, admin, tenant, mail):
+def test_campaigns_group_related_mail_and_purge_removes_it_everywhere(client, admin, tenant, mail):  # noqa: F811 (pytest fixture)
     row = _prepare(client, admin, tenant, mail)
     client.put(f"{BASE}/connections/{row['id']}", json={"mode": "shadow"}, headers=admin)
     client.post(f"{BASE}/connections/{row['id']}/scan", headers=admin)
@@ -198,7 +213,7 @@ def test_campaigns_group_related_mail_and_purge_removes_it_everywhere(client, ad
     assert gone["done"] == 1 and mail.deleted == ["m2-in-qfolder-1"]
 
 
-def test_bulk_actions_label_block_and_delete(client, admin, tenant, mail):
+def test_bulk_actions_label_block_and_delete(client, admin, tenant, mail):  # noqa: F811 (pytest fixture)
     row = _prepare(client, admin, tenant, mail)
     client.put(f"{BASE}/connections/{row['id']}", json={"mode": "shadow"}, headers=admin)
     client.post(f"{BASE}/connections/{row['id']}/scan", headers=admin)
@@ -231,3 +246,13 @@ def test_lists_take_ips_urls_hashes_subjects_and_expire(client, admin, tenant):
     with database.session_factory()() as db:
         lists = email_scan.list_entries(db, tenant["id"])
         assert "old.example" not in lists[("allow", "domain")] and "198.51.100.0/24" in lists[("block", "ip")]
+
+
+def test_history_lists_rule_changes_one_by_one():
+    from fenrir_cloud import email_policy
+
+    old = {"rules": [{"id": "r1", "name": "Parcel scams", "mode": "audit"}, {"id": "r2", "name": "Old rule"}]}
+    new = {"rules": [{"id": "r1", "name": "Parcel scams", "mode": "enforce"}, {"id": "r3", "name": "New rule"}]}
+    changes = {c["path"]: (c["from"], c["to"]) for c in email_policy.diff(old, new)}
+    assert changes == {"rules: Parcel scams.mode": ("audit", "enforce"), "rules: Old rule": ("present", "removed"),
+                       "rules: New rule": (None, "added")}
