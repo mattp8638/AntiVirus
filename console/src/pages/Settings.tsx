@@ -184,8 +184,8 @@ function GroupsTab() {
 // Every event the server sends to webhooks (services.fire_webhooks and the event outbox).
 const WEBHOOK_EVENTS: [string, string][] = [
   ["*", "Everything"], ["incident.created", "Incident opened"], ["alert.automation", "Response rule fired"], ["ticket.created", "Ticket created"],
-  ["network.down", "Monitored service down"], ["network.recovered", "Monitored service recovered"], ["backup.failed", "Backup failed"],
-  ["backup.success", "Backup succeeded"], ["vulnerability.detected", "Vulnerability found"], ["vulnerability.verified_fixed", "Vulnerability fixed"],
+  ["network.down", "Monitored service down"], ["network.recovered", "Monitored service recovered"],
+  ["vulnerability.detected", "Vulnerability found"], ["vulnerability.verified_fixed", "Vulnerability fixed"],
   ["grc.drift", "Compliance drift"], ["m365.action_finished", "Microsoft 365 action finished"], ["audit.checkpoint", "Audit checkpoint"],
   ["platform.health.degraded", "Fenrir platform degraded"], ["platform.health.recovered", "Fenrir platform recovered"],
 ];

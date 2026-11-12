@@ -1,13 +1,12 @@
 """Client 360: one health score per customer, and the monthly and quarterly reports built from the same data.
 
 The score is a weighted average of the parts below that have data. A part with nothing to measure (no Microsoft 365
-connection, no backup plan, no compliance framework, no invoices yet) is shown as not set up and left out, rather than
+connection, no compliance framework, no invoices yet) is shown as not set up and left out, rather than
 counted as perfect or as zero:
 
 - devices: checked in within the last 7 days;
 - patches: devices fully patched (rmm.patch_compliance);
 - protection: devices whose protection is healthy, less open critical and high alerts;
-- backup: plans protected within their RPO;
 - identity: Microsoft 365 MFA registration and Secure Score;
 - vulnerabilities: devices without a known-exploited (KEV) vulnerability, less those with critical ones;
 - compliance: the average compliance framework score;
@@ -26,15 +25,15 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import presence
-from .models import (Alert, BackupPlan, BackupRun, ClientHealthSnapshot, ClientReport, Command, Contract, Device, DevicePatch,
+from .models import (Alert, ClientHealthSnapshot, ClientReport, Command, Contract, Device, DevicePatch,
                      DnsQueryLog, Event, Incident, Job, M365Connection, Tenant, Ticket, TimeEntry, Vulnerability, utcnow)
 
-WEIGHTS = {"protection": 20, "patches": 15, "vulnerabilities": 15, "backup": 10, "identity": 10, "devices": 10,
+WEIGHTS = {"protection": 20, "patches": 15, "vulnerabilities": 15, "identity": 10, "devices": 10,
            "service": 10, "compliance": 5, "account": 5}
-LABELS = {"devices": "Devices checking in", "patches": "Patching", "protection": "Protection", "backup": "Backup",
+LABELS = {"devices": "Devices checking in", "patches": "Patching", "protection": "Protection",
           "identity": "Microsoft 365 identity", "vulnerabilities": "Known-exploited vulnerabilities", "compliance": "Compliance",
           "service": "Service desk", "account": "Account"}
-LINKS = {"devices": "/devices", "patches": "/patching", "protection": "/alerts", "backup": "/backup", "identity": "/m365",
+LINKS = {"devices": "/devices", "patches": "/patching", "protection": "/alerts", "identity": "/m365",
          "vulnerabilities": "/vulnerabilities", "compliance": "/governance", "service": "/service-board", "account": "/crm"}
 STALE_DEVICE = timedelta(days=7)
 MARGIN_TARGET = 30.0
@@ -94,21 +93,6 @@ def _protection(db: Session, tenant: Tenant, devices: list[Device]) -> dict:
     score = 100 * (len(devices) - len(unhealthy)) / len(devices) - 10 * critical - 3 * high
     return _part("protection", score, f"{len(devices) - len(unhealthy)} of {len(devices)} fully protected",
                  f"{critical} critical and {high} high alerts open · {sum(1 for d in devices if d.isolated)} isolated")
-
-
-def _backup(db: Session, tenant: Tenant, now: datetime) -> dict:
-    plans = db.execute(select(BackupPlan).where(BackupPlan.tenant_id == tenant.id)).scalars().all()
-    if not plans:
-        return _part("backup", None, "No backup monitoring set up")
-    protected, problems = 0, []
-    for plan in plans:
-        last = db.scalar(select(func.max(BackupRun.completed_at)).where(BackupRun.plan_id == plan.id, BackupRun.status == "success"))
-        if last and last >= now - timedelta(hours=plan.rpo_hours):
-            protected += 1
-        else:
-            problems.append(plan.name)
-    return _part("backup", 100 * protected / len(plans), f"{protected} of {len(plans)} plans within their RPO",
-                 ("Late or failing: " + ", ".join(problems[:5])) if problems else "Every plan backed up on time")
 
 
 def _identity(db: Session, tenant: Tenant) -> dict:
@@ -194,7 +178,7 @@ def _account(db: Session, tenant: Tenant, now: datetime, cost_rate: float, finan
 def health(db: Session, tenant: Tenant, cost_rate: float, finance: bool = True, now: datetime | None = None) -> dict:
     now = now or utcnow()
     devices_part, devices = _devices(db, tenant, now)
-    parts = [devices_part, _patches(db, tenant, devices), _protection(db, tenant, devices), _backup(db, tenant, now),
+    parts = [devices_part, _patches(db, tenant, devices), _protection(db, tenant, devices),
              _identity(db, tenant), _vulnerabilities(db, tenant, devices), _compliance(db, tenant), _service(db, tenant, now),
              _account(db, tenant, now, cost_rate, finance)]
     scored = [p for p in parts if p["score"] is not None]
@@ -243,15 +227,13 @@ def activity(db: Session, tenant: Tenant, start: datetime, end: datetime) -> dic
         "scriptsAndJobs": count(Job, Job.tenant_id == tenant.id, Job.created_at >= start, Job.created_at < end),
         "actionsCompleted": count(Command, Command.tenant_id == tenant.id, Command.status == "completed",
                                   Command.completed_at >= start, Command.completed_at < end),
-        "backupsSucceeded": count(BackupRun, BackupRun.tenant_id == tenant.id, BackupRun.status == "success",
-                                  BackupRun.completed_at >= start, BackupRun.completed_at < end),
     }
 
 
 ACTIVITY_LABELS = [
     ("ticketsResolved", "Support requests resolved"), ("hoursWorked", "Hours of work"), ("updatesInstalled", "Updates installed"),
     ("vulnerabilitiesFixed", "Vulnerabilities fixed and verified"), ("alertsHandled", "Security alerts investigated"),
-    ("threatsBlocked", "Threats blocked"), ("dnsBlocked", "Dangerous websites blocked"), ("backupsSucceeded", "Successful backups"),
+    ("threatsBlocked", "Threats blocked"), ("dnsBlocked", "Dangerous websites blocked"),
     ("scriptsAndJobs", "Maintenance jobs run"), ("actionsCompleted", "Device actions completed"),
 ]
 

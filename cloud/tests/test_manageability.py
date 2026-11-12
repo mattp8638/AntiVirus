@@ -103,14 +103,6 @@ def test_quotes_delete_unless_accepted(client, admin, tenant):
     assert client.delete(f"/api/console/psa/quotes/{accepted['id']}", headers=admin).status_code == 409
 
 
-def test_backup_plans_can_be_edited_and_removed(client, admin, tenant):
-    plan = ok(client.post("/api/console/backup/plans", headers=admin, json={"tenantId": tenant["id"], "name": "File server", "provider": "Veeam"}))
-    edited = ok(client.patch(f"/api/console/backup/plans/{plan['id']}", headers=admin, json={"name": "File server (nightly)", "rpoHours": 12}))
-    assert edited["name"] == "File server (nightly)" and edited["rpoHours"] == 12
-    ok(client.delete(f"/api/console/backup/plans/{plan['id']}", headers=admin))
-    assert client.get("/api/console/backup/plans", headers=admin).json() == []
-
-
 def test_network_monitors_can_be_deleted(client, admin, tenant):
     monitor = ok(client.post("/api/console/network/monitors", headers=admin, json={"tenantId": tenant["id"], "name": "Website",
                                                                                   "address": "203.0.113.10", "port": 443}))

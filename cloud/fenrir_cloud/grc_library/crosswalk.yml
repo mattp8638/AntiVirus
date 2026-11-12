@@ -175,8 +175,8 @@ controls:
       dora: [DORA-DETECT]
   - id: FC-BACKUP
     title: Backup and recovery
-    description: Automated, protected backups with tested restores.
-    signals: [backup]
+    description: Automated, protected backups with tested restores (evidence from your backup product).
+    signals: []
     maps:
       cis-v8-ig1: ["11.1", "11.2", "11.3", "11.4"]
       essential-eight: [E8-RB-1, E8-RB-2, E8-RB-3]

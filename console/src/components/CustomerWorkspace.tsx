@@ -64,7 +64,6 @@ export function CustomerWorkspace({ tenantId }: { tenantId: string }) {
 
         <div className="small" style={{ marginTop: 12 }}>
           {data.microsoft365 && <div>Microsoft 365: <Pill value={data.microsoft365.status} /> <span className="muted">{displayValue(data.microsoft365.detail)}</span></div>}
-          {data.backup && <div>Backups: <Pill value={data.backup.status} /> <span className="muted">{displayValue(data.backup.detail)}</span></div>}
           <div>Onboarding: {data.onboarding.done}/{data.onboarding.total}{data.onboarding.failed ? `, ${data.onboarding.failed} failing` : ""} · <Link to="/onboarding">checklist</Link></div>
         </div>
       </div>

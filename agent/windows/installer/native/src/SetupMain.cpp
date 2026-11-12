@@ -14,6 +14,8 @@
 #include <wrl/client.h>
 
 #include <array>
+#include <atomic>
+#include <functional>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -25,10 +27,13 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "FullRemoval.h"
+#include "SetupPage.h"
 #include "SetupResourceIds.h"
+#include "WebView2.h"
 
 namespace {
 
@@ -158,6 +163,17 @@ struct UiContext {
   bool quietUninstall{false};    // --uninstall --quiet: no prompts (RMM scripts, remote removal)
   bool installed{false};
   bool busy{false};
+  // The branded window: setup.html in WebView2 over the native controls, which stay as the fallback.
+  Microsoft::WRL::ComPtr<ICoreWebView2Controller> webController;
+  Microsoft::WRL::ComPtr<ICoreWebView2> webView;
+  HMODULE webLoader{};
+  bool webReady{false};
+  bool webConfirmedUninstall{false};  // the page asked for confirmation itself
+  int webNavigations{0};
+  std::wstring operation;  // install | repair | uninstall
+  std::wstring statusText;
+  int progress{0};
+  std::vector<std::wstring> logLines;
 };
 
 struct InstallWorkerArgs {
@@ -173,6 +189,43 @@ struct UninstallWorkerArgs {
 
 UiContext* GetContext(HWND hwnd) {
   return reinterpret_cast<UiContext*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+}
+
+// One COM callback class for every WebView2 completion and event handler the setup window uses.
+template <typename Interface, typename... Args>
+class WebHandler final : public Interface {
+ public:
+  using Callback = std::function<HRESULT(Args...)>;
+  WebHandler(REFIID iid, Callback callback) : iid_(iid), callback_(std::move(callback)) {}
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** out) override {
+    if (out == nullptr) return E_POINTER;
+    if (IsEqualIID(riid, IID_IUnknown) || IsEqualIID(riid, iid_)) {
+      *out = static_cast<Interface*>(this);
+      AddRef();
+      return S_OK;
+    }
+    *out = nullptr;
+    return E_NOINTERFACE;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override { return ++refs_; }
+  ULONG STDMETHODCALLTYPE Release() override {
+    const auto count = --refs_;
+    if (count == 0) delete this;
+    return count;
+  }
+  HRESULT STDMETHODCALLTYPE Invoke(Args... args) override { return callback_ ? callback_(args...) : S_OK; }
+
+ private:
+  IID iid_;
+  Callback callback_;
+  std::atomic<ULONG> refs_{1};
+};
+
+template <typename Interface, typename... Args, typename Fn>
+Microsoft::WRL::ComPtr<Interface> MakeWebHandler(REFIID iid, Fn fn) {
+  Microsoft::WRL::ComPtr<Interface> handler;
+  handler.Attach(new WebHandler<Interface, Args...>(iid, std::function<HRESULT(Args...)>(fn)));
+  return handler;
 }
 
 std::wstring QuotePath(const std::filesystem::path& path) {
@@ -3143,15 +3196,68 @@ int RunCleanupMode(int argc, wchar_t* argv[]) {
   return 0;
 }
 
+std::wstring JsonText(const std::wstring& value) {
+  std::wstring out = L"\"";
+  for (const wchar_t c : value) {
+    switch (c) {
+      case L'"': out += L"\\\""; break;
+      case L'\\': out += L"\\\\"; break;
+      case L'\n': out += L"\\n"; break;
+      case L'\r': break;
+      case L'\t': out += L"\\t"; break;
+      default:
+        if (c < 0x20 || c == 0x2028 || c == 0x2029 || c == L'<') {
+          wchar_t escaped[8]{};
+          swprintf_s(escaped, L"\\u%04x", static_cast<unsigned>(c));
+          out += escaped;
+        } else {
+          out += c;
+        }
+    }
+  }
+  return out + L"\"";
+}
+
+std::wstring SetupStateJson(const UiContext& context) {
+  return L"{\"type\":\"state\",\"installed\":" + std::wstring(context.installed ? L"true" : L"false") +
+         L",\"busy\":" + (context.busy ? L"true" : L"false") + L",\"status\":" + JsonText(context.statusText) +
+         L",\"progress\":" + std::to_wstring(context.progress) + L",\"path\":" + JsonText(context.installRoot.wstring()) +
+         L",\"operation\":" + JsonText(context.operation) + L"}";
+}
+
+void PushWebState(UiContext& context) {
+  if (context.webReady && context.webView) context.webView->PostWebMessageAsJson(SetupStateJson(context).c_str());
+}
+
+void PushWebLog(UiContext& context, const std::wstring& line) {
+  if (context.webReady && context.webView) {
+    context.webView->PostWebMessageAsJson((L"{\"type\":\"log\",\"line\":" + JsonText(line) + L"}").c_str());
+  }
+}
+
+// Every log line goes to the native log box, the page and the history replayed when the page loads.
+void Log(UiContext& context, const std::wstring& line) {
+  AppendLog(context.logEdit, line);
+  context.logLines.push_back(line);
+  if (context.logLines.size() > 2000) context.logLines.erase(context.logLines.begin());
+  PushWebLog(context, line);
+}
+
+void SetStatusText(UiContext& context, const std::wstring& text) {
+  context.statusText = text;
+  SetWindowTextW(context.statusLabel, text.c_str());
+  PushWebState(context);
+}
+
 void RefreshUi(UiContext& context) {
   context.installed = IsInstalledAt(context.installRoot);
   SetWindowTextW(context.pathValue, context.installRoot.c_str());
   SetWindowTextW(context.eyebrowLabel, L"FENRIR  PROTECTION PLATFORM");
-  SetWindowTextW(context.statusLabel,
-                 context.busy
-                     ? L"Deployment is running. Fenrir is staging service, client, runtime, and protection assets."
-                     : (context.installed ? L"Existing installation detected. You can repair or remove it from here."
-                                          : L"Ready to deploy Fenrir Endpoint on this device."));
+  context.statusText = context.busy
+                            ? L"Deployment is running. Fenrir is staging service, client, runtime, and protection assets."
+                            : (context.installed ? L"Existing installation detected. You can repair or remove it from here."
+                                                 : L"Ready to deploy Fenrir Endpoint on this device.");
+  SetWindowTextW(context.statusLabel, context.statusText.c_str());
   SetWindowTextW(context.primaryButton, context.installed ? L"Repair deployment" : L"Install protection");
   SetWindowTextW(context.badgeLabel, context.busy ? L"Working" : (context.installed ? L"Installed" : L"Ready"));
   ShowWindow(context.uninstallButton, context.installed ? SW_SHOW : SW_HIDE);
@@ -3160,6 +3266,174 @@ void RefreshUi(UiContext& context) {
   EnableWindow(context.closeButton, !context.busy);
   EnableWindow(context.openFolderButton, !context.busy);
   InvalidateRect(context.hwnd, nullptr, TRUE);
+  PushWebState(context);
+}
+
+void ShowNativeControls(UiContext& context, const bool show) {
+  for (const auto control : {context.eyebrowLabel, context.titleLabel, context.subtitleLabel, context.pathLabel, context.pathValue,
+                             context.statusLabel, context.progressBar, context.logEdit, context.primaryButton, context.uninstallButton,
+                             context.openFolderButton, context.closeButton, context.badgeLabel, context.logTitleLabel}) {
+    if (control != nullptr) ShowWindow(control, show ? SW_SHOW : SW_HIDE);
+  }
+  if (show) RefreshUi(context);  // RefreshUi decides whether Uninstall is shown
+}
+
+void ResizeWeb(UiContext& context) {
+  if (context.webController) {
+    RECT bounds{};
+    GetClientRect(context.hwnd, &bounds);
+    context.webController->put_Bounds(bounds);
+  }
+}
+
+std::wstring SetupLogoDataUri(HINSTANCE instance) {
+  const auto resource = FindResourceW(instance, MAKEINTRESOURCEW(IDR_SETUP_LOGO), RT_RCDATA);
+  const auto loaded = resource ? LoadResource(instance, resource) : nullptr;
+  const auto* bytes = loaded ? static_cast<const BYTE*>(LockResource(loaded)) : nullptr;
+  const DWORD size = resource ? SizeofResource(instance, resource) : 0;
+  DWORD length = 0;
+  if (bytes == nullptr || size == 0 ||
+      !CryptBinaryToStringW(bytes, size, CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, nullptr, &length) || length == 0) {
+    return L"data:,";
+  }
+  std::wstring encoded(length, L'\0');
+  if (!CryptBinaryToStringW(bytes, size, CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, encoded.data(), &length)) return L"data:,";
+  encoded.resize(length);
+  return L"data:image/png;base64," + encoded;
+}
+
+std::wstring BuildSetupPage(const UiContext& context) {
+  std::wstring page;
+  for (const auto* part : kSetupPageParts) page += part;
+  const auto fill = [&page](const std::wstring& placeholder, const std::wstring& value) {
+    const auto at = page.find(placeholder);
+    if (at != std::wstring::npos) page.replace(at, placeholder.size(), value);
+  };
+  fill(L"__FENRIR_LOGO_URI__", SetupLogoDataUri(context.instance));
+  fill(L"__FENRIR_INITIAL_STATE__", SetupStateJson(context));
+  return page;
+}
+
+void HandleWebAction(UiContext& context, const std::wstring& message) {
+  const auto is = [&message](const wchar_t* action) {
+    return message.find(std::wstring(L"\"action\":\"") + action + L"\"") != std::wstring::npos;
+  };
+  if (is(L"ready")) {
+    PushWebState(context);
+    for (const auto& line : context.logLines) PushWebLog(context, line);
+  } else if (is(L"primary")) {
+    PostMessageW(context.hwnd, WM_COMMAND, IDC_PRIMARY_BUTTON, 0);
+  } else if (is(L"uninstall")) {
+    context.webConfirmedUninstall = true;  // the page has shown its own confirmation
+    PostMessageW(context.hwnd, WM_COMMAND, IDC_UNINSTALL_BUTTON, 0);
+  } else if (is(L"openFolder")) {
+    PostMessageW(context.hwnd, WM_COMMAND, IDC_OPEN_FOLDER_BUTTON, 0);
+  } else if (is(L"close") && !context.busy) {
+    PostMessageW(context.hwnd, WM_COMMAND, IDC_CLOSE_BUTTON, 0);
+  }
+}
+
+// Shows setup.html in WebView2 once it has loaded; until then (and whenever WebView2 is missing or fails) the native
+// window is what the user sees, so setup always works.
+bool StartWebView(UiContext& context) {
+  wchar_t temp[MAX_PATH]{};
+  GetTempPathW(MAX_PATH, temp);
+  const auto root = std::filesystem::path(temp) / L"FenrirSetup";
+  auto loaderPath = root / kWebView2LoaderDllName;
+  std::wstring error;
+  if (!ExtractResourceToFile(context.instance, IDR_PAYLOAD_WEBVIEW2_LOADER, loaderPath, &error)) {
+    loaderPath = context.installRoot / kWebView2LoaderDllName;  // an installed copy will do
+  }
+  context.webLoader = LoadLibraryW(loaderPath.c_str());
+  if (context.webLoader == nullptr) return false;
+  using CreateEnvironment = HRESULT(STDAPICALLTYPE*)(PCWSTR, PCWSTR, ICoreWebView2EnvironmentOptions*,
+                                                     ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*);
+  const auto create = reinterpret_cast<CreateEnvironment>(
+      reinterpret_cast<void*>(GetProcAddress(context.webLoader, "CreateCoreWebView2EnvironmentWithOptions")));
+  if (create == nullptr) return false;
+  const auto dataFolder = root / L"webview";
+  std::error_code ec;
+  std::filesystem::create_directories(dataFolder, ec);
+  const HWND hwnd = context.hwnd;
+  auto environmentHandler = MakeWebHandler<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler, HRESULT, ICoreWebView2Environment*>(
+      IID_ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler, [hwnd](HRESULT result, ICoreWebView2Environment* environment) -> HRESULT {
+        if (FAILED(result) || environment == nullptr || GetContext(hwnd) == nullptr) return S_OK;
+        auto controllerHandler = MakeWebHandler<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler, HRESULT, ICoreWebView2Controller*>(
+            IID_ICoreWebView2CreateCoreWebView2ControllerCompletedHandler, [hwnd](HRESULT created, ICoreWebView2Controller* controller) -> HRESULT {
+              auto* context = GetContext(hwnd);
+              if (context == nullptr || FAILED(created) || controller == nullptr) return S_OK;
+              context->webController = controller;
+              controller->get_CoreWebView2(&context->webView);
+              if (!context->webView) {
+                context->webController.Reset();
+                return S_OK;
+              }
+              controller->put_IsVisible(FALSE);
+              Microsoft::WRL::ComPtr<ICoreWebView2Settings> settings;
+              if (SUCCEEDED(context->webView->get_Settings(&settings)) && settings) {
+                settings->put_AreDevToolsEnabled(FALSE);
+                settings->put_AreDefaultContextMenusEnabled(FALSE);
+                settings->put_IsStatusBarEnabled(FALSE);
+                settings->put_IsZoomControlEnabled(FALSE);
+              }
+              Microsoft::WRL::ComPtr<ICoreWebView2Controller2> controller2;
+              if (SUCCEEDED(controller->QueryInterface(IID_ICoreWebView2Controller2, reinterpret_cast<void**>(controller2.GetAddressOf()))) &&
+                  controller2) {
+                controller2->put_DefaultBackgroundColor(COREWEBVIEW2_COLOR{255, 5, 8, 15});
+              }
+              ResizeWeb(*context);
+              EventRegistrationToken token{};
+              context->webView->add_WebMessageReceived(
+                  MakeWebHandler<ICoreWebView2WebMessageReceivedEventHandler, ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs*>(
+                      IID_ICoreWebView2WebMessageReceivedEventHandler,
+                      [hwnd](ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
+                        LPWSTR text = nullptr;
+                        if (auto* ctx = GetContext(hwnd); ctx && args && SUCCEEDED(args->TryGetWebMessageAsString(&text)) && text) {
+                          HandleWebAction(*ctx, text);
+                        }
+                        if (text) CoTaskMemFree(text);
+                        return S_OK;
+                      }).Get(),
+                  &token);
+              // Only setup's own page: any other navigation (a link, a dropped file) is cancelled.
+              context->webView->add_NavigationStarting(
+                  MakeWebHandler<ICoreWebView2NavigationStartingEventHandler, ICoreWebView2*, ICoreWebView2NavigationStartingEventArgs*>(
+                      IID_ICoreWebView2NavigationStartingEventHandler,
+                      [hwnd](ICoreWebView2*, ICoreWebView2NavigationStartingEventArgs* args) -> HRESULT {
+                        auto* ctx = GetContext(hwnd);
+                        if (ctx && args && ++ctx->webNavigations > 1) args->put_Cancel(TRUE);
+                        return S_OK;
+                      }).Get(),
+                  &token);
+              context->webView->add_NavigationCompleted(
+                  MakeWebHandler<ICoreWebView2NavigationCompletedEventHandler, ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs*>(
+                      IID_ICoreWebView2NavigationCompletedEventHandler,
+                      [hwnd](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs* args) -> HRESULT {
+                        auto* ctx = GetContext(hwnd);
+                        BOOL ok = FALSE;
+                        if (ctx == nullptr || args == nullptr || ctx->webReady) return S_OK;
+                        args->get_IsSuccess(&ok);
+                        if (!ok) {  // keep the native window
+                          ctx->webController->Close();
+                          ctx->webController.Reset();
+                          ctx->webView.Reset();
+                          return S_OK;
+                        }
+                        ctx->webReady = true;
+                        ShowNativeControls(*ctx, false);
+                        ctx->webController->put_IsVisible(TRUE);
+                        ctx->webController->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
+                        PushWebState(*ctx);
+                        return S_OK;
+                      }).Get(),
+                  &token);
+              context->webView->NavigateToString(BuildSetupPage(*context).c_str());
+              return S_OK;
+            });
+        environment->CreateCoreWebView2Controller(hwnd, controllerHandler.Get());
+        return S_OK;
+      });
+  return SUCCEEDED(create(nullptr, dataFolder.c_str(), nullptr, environmentHandler.Get()));
 }
 
 void LayoutControls(UiContext& context) {
@@ -3300,7 +3574,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 
       LayoutControls(*context);
       RefreshUi(*context);
-      AppendLog(context->logEdit, L"Setup initialized.");
+      Log(*context, L"Setup initialized.");
       ApplyDarkWindowFrame(hwnd);
       return 0;
     }
@@ -3308,6 +3582,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     case WM_SIZE: {
       if (auto* context = GetContext(hwnd)) {
         LayoutControls(*context);
+        ResizeWeb(*context);
         InvalidateRect(hwnd, nullptr, TRUE);
       }
       return 0;
@@ -3361,9 +3636,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         case IDC_PRIMARY_BUTTON:
           if (!context->busy) {
             context->busy = true;
-            RefreshUi(*context);
             const auto repair = context->installed;
-            AppendLog(context->logEdit, repair ? L"Starting repair..." : L"Starting installation...");
+            context->operation = repair ? L"repair" : L"install";
+            context->progress = 0;
+            RefreshUi(*context);
+            Log(*context, repair ? L"Starting repair..." : L"Starting installation...");
             auto* workerArgs = new InstallWorkerArgs{.hwnd = hwnd, .context = context, .repair = repair};
             const auto threadHandle =
                 CreateThread(nullptr, 0, InstallWorkerThread, workerArgs, 0, nullptr);
@@ -3374,12 +3651,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
           return 0;
         case IDC_UNINSTALL_BUTTON:
           if (!context->busy &&
-              (context->quietUninstall ||
+              (context->quietUninstall || std::exchange(context->webConfirmedUninstall, false) ||
                MessageBoxW(hwnd, L"Remove Fenrir Endpoint and all of its data, quarantine and settings from this device?",
                            kWindowTitle, MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES)) {
             context->busy = true;
+            context->operation = L"uninstall";
+            context->progress = 0;
             RefreshUi(*context);
-            AppendLog(context->logEdit, L"Starting uninstall...");
+            Log(*context, L"Starting uninstall...");
             auto* workerArgs = new UninstallWorkerArgs{.hwnd = hwnd, .context = context};
             const auto threadHandle =
                 CreateThread(nullptr, 0, UninstallWorkerThread, workerArgs, 0, nullptr);
@@ -3404,7 +3683,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
       auto* context = GetContext(hwnd);
       auto* payload = reinterpret_cast<LogMessagePayload*>(lParam);
       if (context != nullptr && payload != nullptr) {
-        AppendLog(context->logEdit, payload->text);
+        Log(*context, payload->text);
       }
       delete payload;
       return 0;
@@ -3414,8 +3693,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
       auto* context = GetContext(hwnd);
       auto* payload = reinterpret_cast<StatusMessagePayload*>(lParam);
       if (context != nullptr && payload != nullptr) {
-        SetWindowTextW(context->statusLabel, payload->text.c_str());
+        context->progress = payload->progress;
         SendMessageW(context->progressBar, PBM_SETPOS, payload->progress, 0);
+        SetStatusText(*context, payload->text);
       }
       delete payload;
       return 0;
@@ -3427,8 +3707,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
       if (context != nullptr && payload != nullptr) {
         context->busy = false;
         context->installed = payload->installed;
-        SetWindowTextW(context->statusLabel, payload->message.c_str());
-        AppendLog(context->logEdit, payload->message);
+        if (payload->success) context->progress = 100;
+        SetStatusText(*context, payload->message);
+        Log(*context, payload->message);
         if (context->silent) {
           // Record the outcome for support (runtime\last-upgrade.log) and exit without any UI.
           std::error_code logError;
@@ -3444,10 +3725,17 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
           return 0;
         }
         RefreshUi(*context);
-        MessageBoxW(hwnd, payload->message.c_str(), kWindowTitle,
-                    MB_OK | (payload->success ? MB_ICONINFORMATION : MB_ICONWARNING));
-        if (payload->closeAfter) {
-          DestroyWindow(hwnd);
+        if (context->webReady && context->webView) {
+          // The page shows the result (with a Close button) instead of a message box.
+          context->webView->PostWebMessageAsJson((L"{\"type\":\"complete\",\"success\":" + std::wstring(payload->success ? L"true" : L"false") +
+                                                  L",\"installed\":" + (payload->installed ? L"true" : L"false") +
+                                                  L",\"message\":" + JsonText(payload->message) + L"}").c_str());
+        } else {
+          MessageBoxW(hwnd, payload->message.c_str(), kWindowTitle,
+                      MB_OK | (payload->success ? MB_ICONINFORMATION : MB_ICONWARNING));
+          if (payload->closeAfter) {
+            DestroyWindow(hwnd);
+          }
         }
       }
       delete payload;
@@ -3456,6 +3744,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 
     case WM_DESTROY: {
       if (auto* context = GetContext(hwnd)) {
+        if (context->webController) {
+          context->webController->Close();
+          context->webController.Reset();
+          context->webView.Reset();
+        }
         if (context->heroIcon != nullptr) {
           DestroyIcon(context->heroIcon);
         }
@@ -3537,7 +3830,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
 
   HWND hwnd = CreateWindowExW(0, kWindowClassName, kWindowTitle,
                               WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-                              CW_USEDEFAULT, CW_USEDEFAULT, 820, 620,
+                              CW_USEDEFAULT, CW_USEDEFAULT, 1000, 700,
                               nullptr, nullptr, instance, nullptr);
   if (hwnd == nullptr) {
     if (argv != nullptr) {
@@ -3616,6 +3909,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     context->silent = true;
     PostMessageW(hwnd, WM_COMMAND, IDC_PRIMARY_BUTTON, 0);
   } else if (!(argv != nullptr && HasArgument(argc, argv, L"--uninstall") && HasArgument(argc, argv, L"--quiet"))) {
+    if (auto* context = GetContext(hwnd)) StartWebView(*context);  // the native window stays if this fails
     ShowWindow(hwnd, showCommand == 0 ? SW_SHOWDEFAULT : showCommand);
     UpdateWindow(hwnd);
   }

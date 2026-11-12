@@ -24,7 +24,7 @@ def adopt(client, admin, tenant, *keys):
 
 def test_crosswalk_maps_only_real_requirements_and_every_signal_exists():
     frameworks = grcprogramme.builtin_frameworks(include_retired=True)
-    known_signals = set(grc_automation.COMPLIANCE_SIGNALS) | {"m365-mfa", "backup", "policies-approved", "third-party-risk"}
+    known_signals = set(grc_automation.COMPLIANCE_SIGNALS) | {"m365-mfa", "policies-approved", "third-party-risk"}
     for control in grc_automation.crosswalk():
         for key, ids in control["maps"].items():
             assert key in frameworks, (control["id"], key)

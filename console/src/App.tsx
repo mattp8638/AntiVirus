@@ -8,7 +8,6 @@ import OutOfBand from "./pages/OutOfBand";
 import RemediationPackages from "./pages/rmm/RemediationPackages";
 import Governance from "./pages/Governance";
 import Assurance from "./pages/grc/Assurance";
-import Backup from "./pages/Backup";
 import SocWorkflows from "./pages/SocWorkflows";
 import { FormEvent, lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
@@ -130,7 +129,6 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; al
       { module: "email", to: "/email-security", label: "Email security", icon: "✉" },
       { module: "identity", to: "/active-directory", label: "Active Directory", icon: "⌘" },
       { module: "identity", to: "/exposure", label: "Data & identity exposure", icon: "⚇" },
-      { module: "backup", to: "/backup", label: "Backup & recovery", icon: "⟳" },
       { module: "network", to: "/network", label: "Network", icon: "⌁", also: ["/network-topology"] },
       { module: "security", to: "/dns", label: "DNS protection", icon: "◈" },
       { module: "network", to: "/attack-surface", label: "Attack surface", icon: "◍" },
@@ -412,7 +410,6 @@ function Shell() {
             <Route path="/continuous-compliance" element={<Assurance />} />
             <Route path="/governance/policies/:id" element={<GrcPolicyEditor />} />
             <Route path="/governance/:tenantId/:framework" element={<ProgrammeDetail />} />
-            <Route path="/backup" element={<Backup />} />
             <Route path="/soc-workflows" element={<SocWorkflows />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
