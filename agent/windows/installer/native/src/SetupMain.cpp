@@ -2036,7 +2036,8 @@ bool InstallMinifilterDriver(const std::filesystem::path& installRoot, const boo
             L"(error " +
             std::to_wstring(minifilterStartFailureCode) +
             L"). The endpoint will continue in reduced-protection mode until a Microsoft-attested production "
-            L"minifilter signature is deployed.";
+            L"minifilter signature is deployed. On a lab machine, turn on test signing (bcdedit /set testsigning on, "
+            L"with Secure Boot off) and restart to use the test-signed driver; see docs/DRIVER_SIGNING.md.";
         return true;
       }
       if (errorMessage != nullptr) {

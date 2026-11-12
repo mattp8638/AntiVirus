@@ -1,0 +1,101 @@
+name: Windows minifilter driver
+
+# Builds AntivirusMinifilter.sys with the Windows Driver Kit (MSVC). Fenrir's server builds the installer on Linux,
+# which cannot compile kernel drivers, so when the driver source changes on a branch this workflow commits the
+# built, unsigned package to agent/windows/driver/prebuilt/x64; the server signs it when it builds the installer.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - agent/windows/driver/src/**
+      - agent/windows/driver/AntivirusMinifilter.inf
+      - agent/windows/driver/build.ps1
+      - agent/windows/shared/include/RealtimeProtectionProtocol.h
+      - .github/workflows/driver.yml
+  pull_request:
+    paths:
+      - agent/windows/driver/**
+      - agent/windows/shared/include/RealtimeProtectionProtocol.h
+      - .github/workflows/driver.yml
+
+concurrency:
+  group: driver-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Visual Studio x64 developer environment
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          cmd /c "`"$vcvars`" >nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$') { "$($Matches[1])=$($Matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8 }
+          }
+
+      - name: Windows Driver Kit present
+        shell: pwsh
+        run: |
+          $headers = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Include\*\km\fltKernel.h" -ErrorAction SilentlyContinue
+          if (-not $headers) {
+            Write-Host 'Installing the Windows Driver Kit'
+            winget install --id Microsoft.WindowsWDK.10.0.26100 --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
+          }
+          Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Include\*\km\fltKernel.h" | ForEach-Object FullName
+
+      - name: Build the driver package
+        shell: pwsh
+        run: agent/windows/driver/build.ps1 -OutDir out/driver -Version "1.0.${{ github.run_number }}.0"
+
+      - name: Check it can be signed (throwaway test certificate)
+        shell: pwsh
+        run: |
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=Fenrir CI test driver signing' -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddDays(1)
+          New-Item -ItemType Directory -Force out/driver-test-signed | Out-Null
+          Copy-Item out/driver/AntivirusMinifilter.sys, out/driver/AntivirusMinifilter.cat out/driver-test-signed/
+          & $signtool.FullName sign /fd sha256 /sha1 $cert.Thumbprint out/driver-test-signed/AntivirusMinifilter.sys out/driver-test-signed/AntivirusMinifilter.cat
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed ($LASTEXITCODE)" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AntivirusMinifilter-x64-unsigned
+          path: |
+            out/driver/AntivirusMinifilter.sys
+            out/driver/AntivirusMinifilter.inf
+            out/driver/AntivirusMinifilter.cat
+            out/driver/AntivirusMinifilter.pdb
+            out/driver/build.json
+
+      - name: Commit the built package when the source changed
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        run: |
+          $built = Get-Content out/driver/build.json -Raw | ConvertFrom-Json
+          $prebuiltDir = 'agent/windows/driver/prebuilt/x64'
+          $current = $null
+          if (Test-Path "$prebuiltDir/build.json") { $current = Get-Content "$prebuiltDir/build.json" -Raw | ConvertFrom-Json }
+          if ($current -and $current.sourceHash -eq $built.sourceHash) { Write-Host 'Prebuilt driver is up to date.'; exit 0 }
+          New-Item -ItemType Directory -Force $prebuiltDir | Out-Null
+          Copy-Item out/driver/AntivirusMinifilter.sys, out/driver/AntivirusMinifilter.inf, out/driver/AntivirusMinifilter.cat, out/driver/build.json $prebuiltDir -Force
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add $prebuiltDir
+          git commit -m "Minifilter: prebuilt driver package $($built.version) (source $($built.sourceHash.Substring(0, 12)))"
+          for ($i = 0; $i -lt 4; $i++) {
+            git pull --rebase origin $env:GITHUB_REF_NAME
+            git push origin "HEAD:$env:GITHUB_REF_NAME"
+            if ($LASTEXITCODE -eq 0) { exit 0 }
+            Start-Sleep -Seconds (5 * ($i + 1))
+          }
+          throw 'Could not push the prebuilt driver package.'

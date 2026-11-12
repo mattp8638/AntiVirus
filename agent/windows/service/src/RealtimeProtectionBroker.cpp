@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cwchar>
 #include <cwctype>
 #include <deque>
 #include <filesystem>
@@ -44,12 +45,14 @@ using FilterConnectCommunicationPortFn =
     HRESULT(WINAPI*)(LPCWSTR, DWORD, LPVOID, WORD, LPSECURITY_ATTRIBUTES, HANDLE*);
 using FilterGetMessageFn = HRESULT(WINAPI*)(HANDLE, FilterMessageHeader*, DWORD, LPOVERLAPPED);
 using FilterReplyMessageFn = HRESULT(WINAPI*)(HANDLE, FilterReplyHeader*, DWORD);
+using FilterLoadFn = HRESULT(WINAPI*)(LPCWSTR);
 
 struct FilterApi {
   HMODULE module{nullptr};
   FilterConnectCommunicationPortFn connect{nullptr};
   FilterGetMessageFn getMessage{nullptr};
   FilterReplyMessageFn replyMessage{nullptr};
+  FilterLoadFn load{nullptr};  // optional
 
   bool Load() {
     module = LoadLibraryW(L"fltlib.dll");
@@ -61,6 +64,7 @@ struct FilterApi {
         GetProcAddress(module, "FilterConnectCommunicationPort"));
     getMessage = reinterpret_cast<FilterGetMessageFn>(GetProcAddress(module, "FilterGetMessage"));
     replyMessage = reinterpret_cast<FilterReplyMessageFn>(GetProcAddress(module, "FilterReplyMessage"));
+    load = reinterpret_cast<FilterLoadFn>(GetProcAddress(module, "FilterLoad"));
     if (connect == nullptr || getMessage == nullptr || replyMessage == nullptr) {
       FreeLibrary(module);
       module = nullptr;
@@ -94,6 +98,57 @@ struct BrokerPortReply {
 #pragma pack(pop)
 
 constexpr DWORD kBrokerMessageWaitMilliseconds = 1'000;
+constexpr wchar_t kMinifilterServiceName[] = L"AntivirusMinifilter";
+
+enum class MinifilterLoadResult { NotInstalled, AlreadyRunning, Loaded, SignatureRejected, Failed };
+
+bool EnableTokenPrivilege(const wchar_t* privilegeName) {
+  HANDLE token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token)) return false;
+  TOKEN_PRIVILEGES privileges{};
+  privileges.PrivilegeCount = 1;
+  privileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+  const bool ok = LookupPrivilegeValueW(nullptr, privilegeName, &privileges.Privileges[0].Luid) &&
+                  AdjustTokenPrivileges(token, FALSE, &privileges, sizeof(privileges), nullptr, nullptr) &&
+                  GetLastError() == ERROR_SUCCESS;
+  CloseHandle(token);
+  return ok;
+}
+
+// The minifilter is a demand-start driver (a broken boot-start driver could stop Windows starting), so the service
+// loads it each time it starts; after a reboot nothing else does.
+MinifilterLoadResult LoadMinifilter(const FilterApi& api, HRESULT* result) {
+  *result = S_OK;
+  const SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+  if (manager == nullptr) return MinifilterLoadResult::Failed;
+  const SC_HANDLE service = OpenServiceW(manager, kMinifilterServiceName, SERVICE_QUERY_STATUS);
+  if (service == nullptr) {
+    CloseServiceHandle(manager);
+    return MinifilterLoadResult::NotInstalled;
+  }
+  SERVICE_STATUS status{};
+  const bool running = QueryServiceStatus(service, &status) && status.dwCurrentState == SERVICE_RUNNING;
+  CloseServiceHandle(service);
+  CloseServiceHandle(manager);
+  if (running) return MinifilterLoadResult::AlreadyRunning;
+  if (api.load == nullptr) return MinifilterLoadResult::Failed;
+  EnableTokenPrivilege(L"SeLoadDriverPrivilege");
+  *result = api.load(kMinifilterServiceName);
+  if (SUCCEEDED(*result)) return MinifilterLoadResult::Loaded;
+  if (*result == HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS) || *result == HRESULT_FROM_WIN32(ERROR_SERVICE_ALREADY_RUNNING)) {
+    return MinifilterLoadResult::AlreadyRunning;
+  }
+  if (*result == HRESULT_FROM_WIN32(ERROR_INVALID_IMAGE_HASH) || *result == HRESULT_FROM_WIN32(ERROR_DRIVER_BLOCKED)) {
+    return MinifilterLoadResult::SignatureRejected;
+  }
+  return MinifilterLoadResult::Failed;
+}
+
+std::wstring HresultHex(const HRESULT value) {
+  wchar_t buffer[16]{};
+  swprintf_s(buffer, L"0x%08X", static_cast<unsigned int>(value));
+  return buffer;
+}
 constexpr auto kProcessContextCacheTtl = std::chrono::seconds(15);
 constexpr std::size_t kProcessContextCacheMaxEntries = 512;
 
@@ -1906,6 +1961,29 @@ void RealtimeProtectionBroker::PumpLoop() {
                           std::wstring(L"{\"portName\":\"") +
                               Utf8ToWide(EscapeJsonString(config_.realtimeProtectionPortName)) + L"\"}");
     return;
+  }
+
+  {
+    HRESULT loadResult = S_OK;
+    switch (LoadMinifilter(api, &loadResult)) {
+      case MinifilterLoadResult::Loaded:
+        QueueBrokerStateEvent(L"realtime.driver.loaded", L"The Fenrir minifilter driver was loaded.", L"{}");
+        break;
+      case MinifilterLoadResult::SignatureRejected:
+        QueueBrokerStateEvent(
+            L"realtime.driver.signature_rejected",
+            L"Windows refused to load the Fenrir minifilter because of its signature. Production machines need a "
+            L"Microsoft-attested driver; a lab machine can load a test-signed one with test signing turned on.",
+            L"{\"hresult\":\"" + HresultHex(loadResult) + L"\"}");
+        break;
+      case MinifilterLoadResult::Failed:
+        QueueBrokerStateEvent(L"realtime.driver.load_failed", L"The Fenrir minifilter driver could not be loaded.",
+                              L"{\"hresult\":\"" + HresultHex(loadResult) + L"\"}");
+        break;
+      case MinifilterLoadResult::NotInstalled:
+      case MinifilterLoadResult::AlreadyRunning:
+        break;
+    }
   }
 
   // Report waiting once, then every six hours while it lasts: without the minifilter it lasts forever, and an
