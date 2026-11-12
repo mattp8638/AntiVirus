@@ -2463,8 +2463,44 @@ bool CopySelfToInstallRoot(const std::filesystem::path& currentPath, const std::
   return true;
 }
 
+// Setup runs elevated; the endpoint window must not (it would inherit administrator rights, and WebView2 cannot
+// share its data folder with the user's normal copy). Start it with the desktop shell's own, unelevated token.
+bool LaunchUnelevated(const std::filesystem::path& exe, const std::wstring& arguments, const std::filesystem::path& directory,
+                      const bool hidden) {
+  const auto shell = GetShellWindow();
+  DWORD shellPid = 0;
+  if (shell == nullptr || GetWindowThreadProcessId(shell, &shellPid) == 0 || shellPid == 0) return false;
+  bool started = false;
+  if (const auto process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, shellPid)) {
+    HANDLE shellToken = nullptr;
+    if (OpenProcessToken(process, TOKEN_DUPLICATE, &shellToken)) {
+      HANDLE primary = nullptr;
+      if (DuplicateTokenEx(shellToken, TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID,
+                           nullptr, SecurityImpersonation, TokenPrimary, &primary)) {
+        std::wstring commandLine = L"\"" + exe.wstring() + L"\"" + (arguments.empty() ? L"" : L" " + arguments);
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        startup.dwFlags = STARTF_USESHOWWINDOW;
+        startup.wShowWindow = hidden ? SW_HIDE : SW_SHOWNORMAL;
+        PROCESS_INFORMATION info{};
+        if (CreateProcessWithTokenW(primary, 0, exe.c_str(), commandLine.data(), 0, nullptr, directory.c_str(), &startup, &info)) {
+          CloseHandle(info.hThread);
+          CloseHandle(info.hProcess);
+          started = true;
+        }
+        CloseHandle(primary);
+      }
+      CloseHandle(shellToken);
+    }
+    CloseHandle(process);
+  }
+  return started;
+}
+
 bool LaunchInstalledEndpointClient(const std::filesystem::path& installRoot, const bool backgroundMode) {
   const auto arguments = backgroundMode ? L"--background" : L"";
+  if (LaunchUnelevated(installRoot / kEndpointExeName, arguments, installRoot, backgroundMode)) return true;
+  // No desktop shell to borrow a token from (unusual): the window then uses its separate elevated data folder.
   return reinterpret_cast<std::intptr_t>(ShellExecuteW(nullptr, L"open", (installRoot / kEndpointExeName).c_str(),
                                                        arguments, installRoot.c_str(),
                                                        backgroundMode ? SW_HIDE : SW_SHOWNORMAL)) > 32;

@@ -806,7 +806,18 @@ std::filesystem::path GetWebViewUserDataFolder() {
     return {};
   }
 
-  return std::filesystem::path(localAppData) / L"Fenrir Endpoint" / L"webview2";
+  // WebView2 refuses to share a data folder between an elevated and a normal copy of the app ("Microsoft Edge can't
+  // read and write to its data directory"), which happened when setup or a "run as administrator" started the
+  // window while the tray copy was running. An elevated copy gets its own folder.
+  bool elevated = false;
+  HANDLE token = nullptr;
+  if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+    TOKEN_ELEVATION elevation{};
+    DWORD size = 0;
+    elevated = GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size) && elevation.TokenIsElevated != 0;
+    CloseHandle(token);
+  }
+  return std::filesystem::path(localAppData) / L"Fenrir Endpoint" / (elevated ? L"webview2-admin" : L"webview2");
 }
 
 bool LaunchExclusionsEditor(HWND owner) {
