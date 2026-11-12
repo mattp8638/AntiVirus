@@ -208,6 +208,33 @@ std::vector<Decision> Evaluate(const ProcessFacts& p, const BehaviorPolicy& poli
       IsOneOf(c.parentName, {L"acrord32.exe", L"acrobat.exe", L"foxitpdfreader.exe"}) && IsOneOf(c.imageName, kShells),
       c.parentName + L" started " + c.imageName, L"T1204.002");
 
+  // edr.exploitProtection (exploit blocker): an exploited browser, PDF reader, Office app or Java starting a
+  // command shell, script host or living-off-the-land tool. Their normal children (renderers, updaters, crash
+  // handlers, the files a person chooses to open) are never shells.
+  if (policy.exploitProtection) {
+    static const std::initializer_list<std::wstring_view> kBrowsers = {
+        L"chrome.exe", L"msedge.exe", L"firefox.exe", L"iexplore.exe", L"brave.exe", L"opera.exe", L"vivaldi.exe",
+        L"msedgewebview2.exe"};
+    static const std::initializer_list<std::wstring_view> kReaders = {
+        L"acrord32.exe", L"acrobat.exe", L"foxitpdfreader.exe", L"foxitreader.exe", L"sumatrapdf.exe"};
+    static const std::initializer_list<std::wstring_view> kJava = {L"java.exe", L"javaw.exe", L"javaws.exe", L"jp2launcher.exe"};
+    static const std::initializer_list<std::wstring_view> kJavaAbuse = {
+        L"wscript.exe", L"cscript.exe", L"mshta.exe", L"regsvr32.exe", L"rundll32.exe", L"certutil.exe", L"bitsadmin.exe"};
+    // Office macros legitimately run cmd and PowerShell (attackSurface.blockOfficeChildProcesses decides about
+    // those), so for Office, like Java, only the script hosts and download/execute tools count here.
+    // Chromium browsers start extension helpers (password managers and the like: native messaging hosts) through
+    // cmd.exe with the extension's origin on the command line; those are not exploits.
+    const bool nativeMessagingHost = c.imageName == L"cmd.exe" &&
+                                     ContainsAny(c.cmd, {L"chrome-extension://", L"--parent-window=", L"moz-extension://"});
+    const bool hit = ((IsOneOf(c.parentName, kBrowsers) || IsOneOf(c.parentName, kReaders)) && IsOneOf(c.imageName, kShells) &&
+                      !nativeMessagingHost) ||
+                     ((IsOneOf(c.parentName, kJava) || officeParent) && IsOneOf(c.imageName, kJavaAbuse));
+    if (hit) {
+      out.push_back({L"edr.exploitProtection", RuleMode::Block,
+                     L"possible exploit: " + c.parentName + L" started " + c.imageName, L"T1203"});
+    }
+  }
+
   const bool encoded = (IsOneOf(c.imageName, {L"powershell.exe", L"pwsh.exe"}) &&
                         ContainsAny(c.cmdDash, {L" -enc ", L" -encodedcommand ", L" -ec ", L" -e "})) ||
                        ContainsAny(c.cmd, {L"frombase64string(", L"[char[]]", L"-join[char]", L"iex(", L"invoke-expression"}) ||

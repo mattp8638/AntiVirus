@@ -72,3 +72,50 @@ detection:
     EventType: 'agent.crashed'
   condition: selection
 level: high
+---
+title: Malware found in process memory
+id: fenrir-protection-memory-malware
+description: The advanced memory scanner found a program image in unbacked executable memory that the engine identifies as malware (injected or unpacked in memory). The agent ends the process unless it is a Windows process.
+tags: [attack.defense_evasion, attack.privilege_escalation, attack.t1055]
+logsource: {category: endpoint_protection}
+detection:
+  selection:
+    EventType: 'asr.memory.malware'
+  condition: selection
+level: critical
+---
+title: Injected or unpacked code running from memory
+id: fenrir-protection-memory-injected
+description: An unsigned process holds a Windows program image in executable memory that no file backs (reflective DLL injection, process hollowing or in-memory unpacking). The engine did not identify it; investigate the process.
+tags: [attack.defense_evasion, attack.t1055, attack.t1620]
+logsource: {category: endpoint_protection}
+detection:
+  selection:
+    EventType: 'asr.memory.injected_code'
+  condition: selection
+falsepositives: [Software protectors and packers that unpack themselves in memory, some game anti-cheat]
+level: high
+---
+title: Code running from memory inside a signed program
+id: fenrir-protection-memory-injected-signed
+description: A signed program holds a Windows program image in executable memory that no file backs. Some legitimate protected software does this; malware injecting into trusted programs does too.
+tags: [attack.defense_evasion, attack.t1055]
+logsource: {category: endpoint_protection}
+detection:
+  selection:
+    EventType: 'asr.memory.injected_code_signed'
+  condition: selection
+falsepositives: [Software protectors, DRM and anti-cheat components]
+level: medium
+---
+title: Deception lure opened
+id: fenrir-protection-deception-lure
+description: A program opened one of the decoy credential files Fenrir plants (a fake password vault or credentials sheet). Nobody has a reason to open them; attackers and infostealers searching for credentials do.
+tags: [attack.credential_access, attack.discovery, attack.t1552.001, attack.t1083]
+logsource: {category: endpoint_protection}
+detection:
+  selection:
+    EventType: 'asr.deception_lure.touched'
+  condition: selection
+falsepositives: [A person curious about a hidden file, backup or search tools not yet recognised]
+level: high

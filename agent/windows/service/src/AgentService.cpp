@@ -3,6 +3,7 @@
 #include "AgentWatchdog.h"
 #include "Liveness.h"
 #include "LocalAdminRotation.h"
+#include "MemoryScanner.h"
 #include "TemporaryAdmin.h"
 #include "CrashReporter.h"
 #include "SystemProfile.h"
@@ -1303,6 +1304,12 @@ void AgentService::RunSyncLoop(const AgentRunMode mode) {
       if (GetTickCount64() - lastDefenderCheck_ > 6ULL * 60 * 60 * 1000) {
         lastDefenderCheck_ = GetTickCount64();
         CheckDefenderSelfProtection();
+      }
+      // Memory scan: 15 minutes after start, then hourly.
+      if (lastMemoryScan_ == 0) lastMemoryScan_ = GetTickCount64() - 45ULL * 60 * 1000;
+      if (GetTickCount64() - lastMemoryScan_ > 60ULL * 60 * 1000) {
+        lastMemoryScan_ = GetTickCount64();
+        StartMemoryScan();
       }
       if (GetTickCount64() - lastLocalAdminCheck_ > 60ULL * 60 * 1000 || lastLocalAdminCheck_ == 0) {
         lastLocalAdminCheck_ = GetTickCount64();
@@ -4569,6 +4576,89 @@ void AgentService::MaybeCollectSystemProfile() {
     } catch (const std::exception& error) {
       record(L"inventory.profile.failed", L"The system profile could not be collected or sent.",
              L"{\"error\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(error.what()))) + L"\"}");
+    }
+    busy->store(false);
+  }).detach();
+}
+
+// edr.memoryScanning: injected or unpacked program images in running processes (see MemoryScanner.h). Runs on its
+// own low-priority thread on copies, like background scans. Malware the engine confirms is ended, unless it is in a
+// Windows process (ending one of those could take the machine down); everything found is reported.
+void AgentService::StartMemoryScan() {
+  const auto extended = policy_.modulesJson.empty() ? ExtendedPolicy{} : ExtendedPolicy::Parse(policy_.modulesJson);
+  if (!extended.memoryScanning) return;
+  bool expected = false;
+  if (!memoryScanBusy_->compare_exchange_strong(expected, true)) return;
+  auto busy = memoryScanBusy_;
+  auto stopping = stopRequested_;
+  const auto config = config_;
+  const auto policy = state_.policy;
+  std::thread([busy, stopping, config, policy]() {
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+    const TelemetryQueueStore queue(config.runtimeDatabasePath, config.telemetryQueuePath);
+    const auto record = [&](const std::wstring& type, const std::wstring& summary, const std::wstring& payload) {
+      try {
+        queue.Append({TelemetryRecord{.eventId = GenerateGuidString(), .eventType = type, .source = L"memory-scanner",
+                                      .summary = summary, .occurredAt = CurrentUtcTimestamp(), .payloadJson = payload}});
+      } catch (...) {
+      }
+    };
+    const auto json = [](const std::wstring& value) { return L"\"" + Utf8ToWide(EscapeJsonString(value)) + L"\""; };
+    wchar_t windowsDir[MAX_PATH]{};
+    GetWindowsDirectoryW(windowsDir, MAX_PATH);
+    auto windowsLower = std::wstring(windowsDir) + L"\\";
+    std::transform(windowsLower.begin(), windowsLower.end(), windowsLower.begin(), ::towlower);
+    try {
+      const auto workDir = config.runtimeDatabasePath.parent_path() / L"memscan";
+      const auto summary = memscan::ScanProcesses(policy, workDir, *stopping);
+      int malicious = 0;
+      for (const auto& finding : summary.findings) {
+        const bool confirmed = finding.verdict && (finding.verdict->verdict.disposition == VerdictDisposition::Block ||
+                                                   finding.verdict->verdict.disposition == VerdictDisposition::Quarantine);
+        auto imageLower = finding.image;
+        std::transform(imageLower.begin(), imageLower.end(), imageLower.begin(), ::towlower);
+        const bool windowsProcess = imageLower.rfind(windowsLower, 0) == 0;
+        const bool hostSigned = !finding.image.empty() && VerifyFileAuthenticodeSignature(finding.image);
+        std::wstring action = L"reported";
+        if (confirmed && !windowsProcess) {
+          if (const auto process = OpenProcess(PROCESS_TERMINATE, FALSE, finding.pid)) {
+            if (TerminateProcess(process, 1)) action = L"terminated";
+            CloseHandle(process);
+          }
+        }
+        wchar_t address[32]{};
+        swprintf_s(address, L"0x%llX", finding.address);
+        std::wstring payload = L"{\"rule\":\"edr.memoryScanning\",\"pid\":" + std::to_wstring(finding.pid) +
+                               L",\"processImagePath\":" + json(finding.image) + L",\"address\":\"" + address +
+                               L"\",\"size\":" + std::to_wstring(finding.size) + L",\"signed\":" +
+                               (hostSigned ? L"true" : L"false") + L",\"action\":\"" + action + L"\",\"technique\":\"T1055\"";
+        if (confirmed) {
+          ++malicious;
+          const auto& verdict = finding.verdict->verdict;
+          payload += L",\"confidence\":" + std::to_wstring(verdict.confidence);
+          if (!verdict.reasons.empty()) {
+            payload += L",\"threat\":" + json(verdict.reasons.front().code) + L",\"reason\":" + json(verdict.reasons.front().message);
+          }
+        }
+        payload += L"}";
+        const auto name = std::filesystem::path(finding.image).filename().wstring();
+        if (confirmed) {
+          record(L"asr.memory.malware",
+                 (action == L"terminated" ? L"Ended " : L"Found malware in the memory of ") + name +
+                     (action == L"terminated" ? L": malware found in its memory" : L""),
+                 payload);
+        } else {
+          record(hostSigned ? L"asr.memory.injected_code_signed" : L"asr.memory.injected_code",
+                 L"A program image is running from memory no file backs, inside " + name + L" (injected or unpacked code)",
+                 payload);
+        }
+      }
+      record(L"edr.memory.scan.completed", L"Memory scan finished",
+             L"{\"processes\":" + std::to_wstring(summary.processes) + L",\"skipped\":" + std::to_wstring(summary.skipped) +
+                 L",\"images\":" + std::to_wstring(summary.images) + L",\"malicious\":" + std::to_wstring(malicious) + L"}");
+    } catch (const std::exception& error) {
+      record(L"edr.memory.scan.failed", L"The memory scan could not complete",
+             L"{\"error\":" + json(Utf8ToWide(error.what())) + L"}");
     }
     busy->store(false);
   }).detach();

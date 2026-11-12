@@ -140,6 +140,38 @@ std::string CanaryContent() {
   return content;
 }
 
+// edr.deceptionLures: decoys an attacker looking for credentials opens and a person has no reason to. Only two, in
+// shared places (not one per user profile: Microsoft Defender reads a SYSTEM program writing the same hidden file into
+// every profile as ransomware). Each starts with its format's signature so tools that check headers believe it, then a
+// marker that lets the agent recognise its own file before removing it.
+struct Lure {
+  const wchar_t* relative;  // under %SystemDrive%
+  const char* header;
+  std::size_t headerSize;
+};
+const Lure kLures[] = {
+    {L"\\Users\\Public\\Documents\\IT admin passwords.kdbx", "\x03\xD9\xA2\x9A\x67\xFB\x4B\xB5", 8},
+    {L"\\ProgramData\\Backup\\svc-backup credentials.xlsx", "PK\x03\x04", 4},
+};
+constexpr char kLureMarker[] = "\r\nFENRIR-DECEPTION-LURE: opening this file raises a security alert.\r\n";
+
+std::string LureContent(const Lure& lure) {
+  std::string content(lure.header, lure.headerSize);
+  content += kLureMarker;
+  unsigned state = 0x9E3779B9u;  // fixed filler, so the file is the same every time and can be recognised
+  while (content.size() < 4096) {
+    state = state * 1664525u + 1013904223u;
+    content.push_back(static_cast<char>(state >> 24));
+  }
+  return content;
+}
+
+std::wstring SystemDrive() {
+  wchar_t buffer[MAX_PATH]{};
+  const auto length = GetEnvironmentVariableW(L"SystemDrive", buffer, MAX_PATH);
+  return length > 0 && length < MAX_PATH ? std::wstring(buffer, length) : std::wstring(L"C:");
+}
+
 bool ReadSmallFile(const std::wstring& path, std::string& out, std::size_t limit) {
   const auto file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -290,7 +322,7 @@ bool SameSettings(const RansomwareSettings& a, const RansomwareSettings& b) {
          a.protectedFoldersMode == b.protectedFoldersMode && a.allowedApps == b.allowedApps &&
          a.rollbackSnapshots == b.rollbackSnapshots && a.snapshotIntervalHours == b.snapshotIntervalHours &&
          a.networkShareProtection == b.networkShareProtection && a.credentialProtection == b.credentialProtection &&
-         a.officeExecutableContent == b.officeExecutableContent;
+         a.officeExecutableContent == b.officeExecutableContent && a.deceptionLures == b.deceptionLures;
 }
 
 }  // namespace
@@ -451,8 +483,18 @@ void RansomwareShield::Reconfigure() {
       }
     }
   }
+  std::vector<std::wstring> lures, lureDevices;
+  if (settings.deceptionLures) {
+    const auto drive = SystemDrive();
+    for (const auto& lure : kLures) {
+      lures.push_back(drive + lure.relative);
+      lureDevices.push_back(ransomware::Lower(toDevice(lures.back())));
+    }
+  }
+  PlaceLures(lures);
   {
     const std::scoped_lock lock(filterMutex_);
+    lureDevicePaths_ = lureDevices;
     deviceRoots_.clear();
     for (const auto& root : config.roots) deviceRoots_.push_back(root);
     for (const auto& root : config.shareRoots) deviceRoots_.push_back(root);
@@ -469,7 +511,7 @@ void RansomwareShield::Reconfigure() {
   }
   lastCanaryCheckMs_ = 0;  // place canaries straight away
 
-  const bool feedNeeded = (settings.enabled && !roots.empty()) || !credentialRoots.empty() ||
+  const bool feedNeeded = (settings.enabled && !roots.empty()) || !credentialRoots.empty() || !lureDevices.empty() ||
                           settings.officeExecutableContent != behavior::RuleMode::Off;
   if (feedNeeded) {
     if (!etwActive_.load() && !StartEtw() && !degradedReported_) {
@@ -692,7 +734,7 @@ void RansomwareShield::OnEtwEvent(const EVENT_RECORD& record) {
     const auto length = wcsnlen(name, maxChars);
     const auto disposition = options >> 24;  // FILE_SUPERSEDE, FILE_CREATE, FILE_OVERWRITE, FILE_OVERWRITE_IF write
     const bool creates = disposition == 0 || disposition == 2 || disposition == 4 || disposition == 5;
-    bool watched = false, credential = false, executable = false;
+    bool watched = false, credential = false, executable = false, lureTouched = false;
     {
       const std::scoped_lock lock(filterMutex_);
       for (const auto& root : deviceRoots_) {
@@ -714,9 +756,16 @@ void RansomwareShield::OnEtwEvent(const EVENT_RECORD& record) {
         }
       }
       executable = watchExecutableCreates_ && creates && HasExecutableExtension(name, length);
+      for (const auto& lure : lureDevicePaths_) {
+        if (lure.size() == length && _wcsnicmp(name, lure.c_str(), length) == 0) {
+          lureTouched = true;
+          break;
+        }
+      }
     }
     if (credential && pid != GetCurrentProcessId()) push(pid, std::wstring(name, length), PendingKind::CredentialRead);
     if (executable) push(pid, std::wstring(name, length), PendingKind::ExecutableCreate);
+    if (lureTouched && pid != GetCurrentProcessId()) push(pid, std::wstring(name, length), PendingKind::LureTouch);
     if (!watched) {
       fileObjects_.erase(fileObject);  // file objects are reused; drop any stale mapping
       return;
@@ -827,6 +876,10 @@ void RansomwareShield::ProcessPending() {
   for (const auto& write : batch) {
     if (write.kind == PendingKind::CredentialRead) {
       HandleCredentialRead(write.pid, write.devicePath);
+      continue;
+    }
+    if (write.kind == PendingKind::LureTouch) {
+      HandleLureTouch(write.pid, write.devicePath);
       continue;
     }
     if (write.kind == PendingKind::ExecutableCreate) {
@@ -983,6 +1036,63 @@ void RansomwareShield::HandleCredentialRead(const unsigned long pid, const std::
             std::to_wstring(pid) + L",\"signed\":" + (trusted ? L"true" : L"false") + L",\"action\":" +
             J(killed ? L"terminated" : L"reported") + L",\"technique\":\"T1555.003\"}",
         killed);
+}
+
+// edr.deceptionLures: places the decoys that are wanted and removes ours that are not (only files with our content).
+void RansomwareShield::PlaceLures(const std::vector<std::wstring>& wanted) {
+  const auto drive = SystemDrive();
+  for (const auto& lure : kLures) {
+    const auto path = drive + lure.relative;
+    const auto content = LureContent(lure);
+    const bool want = std::find(wanted.begin(), wanted.end(), path) != wanted.end();
+    std::string existing;
+    const bool ours = ReadSmallFile(path, existing, content.size() + 1) && existing == content;
+    if (!want) {
+      if (ours) {
+        SetFileAttributesW(path.c_str(), FILE_ATTRIBUTE_NORMAL);
+        DeleteFileW(path.c_str());
+      }
+      continue;
+    }
+    if (ours) continue;
+    if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) continue;  // someone's real file: never overwritten
+    const auto slash = path.find_last_of(L'\\');
+    CreateDirectoryW(path.substr(0, slash).c_str(), nullptr);
+    const auto file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_HIDDEN, nullptr);
+    if (file == INVALID_HANDLE_VALUE) continue;
+    DWORD written = 0;
+    WriteFile(file, content.data(), static_cast<DWORD>(content.size()), &written, nullptr);
+    CloseHandle(file);
+  }
+  const std::scoped_lock lock(mutex_);
+  lurePaths_ = wanted;
+}
+
+// edr.deceptionLures: something opened a decoy. Windows components (search indexing, Explorer previews) and
+// antivirus scanners are ignored; anything else is reported at once, once an hour per program and decoy.
+void RansomwareShield::HandleLureTouch(const unsigned long pid, const std::wstring& devicePath) {
+  if (pid <= ransomware::kSystemPid) return;
+  const auto image = ImageFor(pid);
+  const auto lower = ransomware::Lower(image);
+  static const auto windows = SystemRootLower();
+  static const auto ownFolder = ModuleDirectoryLower();
+  if (lower.empty() || lower.rfind(windows, 0) == 0 || lower.rfind(ownFolder, 0) == 0 ||
+      lower.find(L"\\windows defender") != std::wstring::npos || lower.find(L"\\msmpeng.exe") != std::wstring::npos) {
+    return;
+  }
+  const auto key = lower + L"|" + ransomware::Lower(devicePath);
+  const auto now = GetTickCount64();
+  auto& last = lureReportedMs_[key];
+  if (last != 0 && now - last < 3600'000) return;
+  last = now;
+  if (lureReportedMs_.size() > 4096) lureReportedMs_.clear();
+  const auto path = ToDosPath(devicePath);
+  Queue(L"asr.deception_lure.touched",
+        BaseNameLower(image) + L" opened a decoy credentials file (" + BaseNameLower(path) + L")",
+        L"{\"rule\":\"edr.deceptionLures\",\"path\":" + J(path) + L",\"processImagePath\":" + J(image) + L",\"pid\":" +
+            std::to_wstring(pid) + L",\"signed\":" + (IsSigned(image) ? L"true" : L"false") +
+            L",\"action\":\"reported\",\"technique\":\"T1552.001\"}",
+        true);
 }
 
 // attackSurface.blockOfficeExecutableContent: Office writing a program or script to disk.
