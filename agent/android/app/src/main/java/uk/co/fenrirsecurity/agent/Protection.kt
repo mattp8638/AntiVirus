@@ -16,6 +16,7 @@ import android.provider.Settings
 import org.json.JSONObject
 import uk.co.fenrirsecurity.agent.core.AppFacts
 import uk.co.fenrirsecurity.agent.core.AppRisk
+import uk.co.fenrirsecurity.agent.core.TrustContext
 import uk.co.fenrirsecurity.agent.core.Assessment
 import java.io.File
 import java.security.MessageDigest
@@ -28,6 +29,10 @@ import java.util.UUID
  */
 object AppScanner {
     private const val MAX_HASH_BYTES = 512L * 1024 * 1024
+
+    @Suppress("DEPRECATION")
+    private val SIGNING_FLAGS =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
 
     @Suppress("DEPRECATION")
     private val FLAGS = PackageManager.GET_PERMISSIONS or
@@ -46,14 +51,46 @@ object AppScanner {
         val listeners = enabledComponents(context, "enabled_notification_listeners")
         val admins = context.service<DevicePolicyManager>().activeAdmins.orEmpty().map { it.packageName }.toSet()
         val cache = store.apkHashes()
+        val trust = trustContext(context)
         val results = packages.mapNotNull { info ->
             if (info.packageName == context.packageName) return@mapNotNull null
             val facts = facts(context, info, accessibility, listeners, admins, cache) ?: return@mapNotNull null
-            facts to AppRisk.assess(facts)
+            facts to AppRisk.assess(facts, trust)
         }
         store.saveApkHashes(cache)
+        lastTrust = trust
         return results
     }
+
+    @Volatile private var lastTrust = TrustContext()
+
+    /**
+     * Built-in apps and the signing certificates of built-in and app-store apps, from every installed package.
+     * On a test-keys build (a custom ROM) the platform certificate is public, so built-in signers vouch for nothing.
+     */
+    private fun trustContext(context: Context): TrustContext {
+        val pm = context.packageManager
+        val all: List<PackageInfo> = runCatching { @Suppress("DEPRECATION") pm.getInstalledPackages(SIGNING_FLAGS) }.getOrDefault(emptyList())
+        val testKeys = Build.TAGS?.contains("test-keys") == true
+        val system = mutableSetOf<String>()
+        val signers = mutableSetOf<String>()
+        for (info in all) {
+            val app = info.applicationInfo ?: continue
+            val isSystem = app.flags and ApplicationInfo.FLAG_SYSTEM != 0
+            if (isSystem) {
+                system += info.packageName
+                if (!testKeys) signer(info)?.let { signers += it }
+            } else if (installerOf(pm, info.packageName) in AppRisk.TRUSTED_INSTALLERS) {
+                signer(info)?.let { signers += it }
+            }
+        }
+        return TrustContext(systemPackages = system, trustedSigners = signers)
+    }
+
+    private fun installerOf(pm: PackageManager, name: String): String? = runCatching {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) pm.getInstallSourceInfo(name).installingPackageName
+        else @Suppress("DEPRECATION") pm.getInstallerPackageName(name)
+    }.getOrNull()
 
     private fun enabledComponents(context: Context, key: String): Set<String> =
         runCatching { Settings.Secure.getString(context.contentResolver, key) }.getOrNull().orEmpty().split(':')
@@ -67,10 +104,7 @@ object AppScanner {
         if (system && !updated) return null
         val pm = context.packageManager
         val name = info.packageName
-        val installer = runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) pm.getInstallSourceInfo(name).installingPackageName
-            else @Suppress("DEPRECATION") pm.getInstallerPackageName(name)
-        }.getOrNull()
+        val installer = installerOf(pm, name)
         return AppFacts(
             packageName = name,
             label = runCatching { pm.getApplicationLabel(app).toString() }.getOrDefault(name),
@@ -124,7 +158,7 @@ object AppScanner {
     }
 
     fun event(results: List<Pair<AppFacts, Assessment>>, full: Boolean): JSONObject =
-        AppRisk.event(UUID.randomUUID().toString(), results.map { (facts, assessment) -> AppRisk.toJson(facts, assessment) }, full,
+        AppRisk.event(UUID.randomUUID().toString(), results.map { (facts, assessment) -> AppRisk.toJson(facts, assessment, lastTrust) }, full,
             System.currentTimeMillis())
 
     fun installed(context: Context, packageName: String): Boolean =
