@@ -38,7 +38,6 @@ import CrmAccount from "./pages/CrmAccount";
 import Onboarding from "./pages/Onboarding";
 import Billing from "./pages/Billing";
 import Portal from "./pages/Portal";
-import Care from "./pages/Care";
 
 const RemoteViewer = lazy(() => import("./pages/RemoteViewer"));
 import Scripts from "./pages/rmm/Scripts";
@@ -105,7 +104,6 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; al
     group: "Endpoints",
     items: [
       { to: "/devices", label: "Devices", icon: "▣" },
-      { module: "care", to: "/care", label: "Care", icon: "♡" },
       { to: "/groups", label: "Device groups", icon: "⧉" },
       { to: "/monitoring", label: "Monitoring", icon: "♥" },
       { to: "/patching", label: "Patching", icon: "⟳" },
@@ -348,7 +346,6 @@ function Shell() {
             <Route path="/" element={<Overview />} />
             <Route path="/inbox" element={<Inbox />} />
             <Route path="/devices" element={<Devices />} />
-            <Route path="/care" element={<Care />} />
             <Route path="/devices/:id" element={<DeviceDetail />} />
             <Route path="/groups" element={<><PageHead title="Device groups" subtitle="Organise each customer's devices, give groups their own policy, and target them with scripts, patching and monitoring." /><GroupsManager /></>} />
             <Route path="/policies" element={<Policies />} />
@@ -446,8 +443,6 @@ function RootContent() {
   }
   if (me.user.role === "client" || location.pathname.startsWith("/portal")) return <PageBoundary resetKey={`${location.pathname}${location.search}`}><Portal /></PageBoundary>;
   if (me.mfaSetupRequired) return <MfaSetupGate />;
-  // Family members and carers see only the Care page.
-  if (me.user.role === "carer") return <PageBoundary resetKey={`${location.pathname}${location.search}`}><Care standalone /></PageBoundary>;
   return <Shell />;
 }
 

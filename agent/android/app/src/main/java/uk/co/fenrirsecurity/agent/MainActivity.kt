@@ -118,8 +118,6 @@ class MainActivity : Activity() {
     private fun renderStatus() {
         val lost = store.lostMode
         if (lost.enabled) content.addView(card("Lost mode is on", "This phone was reported lost. It is locked and sharing its location.", Color.rgb(127, 29, 29)))
-        // Help (SOS) for looked-after phones: shown once the console has turned care on for this phone.
-        if (store.tracking.mode != "default" || store.sosActive) renderHelp()
         val last = store.lastContact
         content.addView(label(
             "Managed by ${store.server.removePrefix("https://")}" + (if (PhonePolicy.workProfile(this)) " (work profile)" else "") + "\n" +
@@ -163,26 +161,6 @@ class MainActivity : Activity() {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
         content.addView(label("Version ${BuildConfig.VERSION_NAME} · device ${store.deviceId}", muted))
-    }
-
-    private fun renderHelp() {
-        if (store.sosActive) {
-            content.addView(card("Help requested", if (store.sosHelpSent) "The people who look after you have been told where you are. " +
-                "Your location is shared every minute until someone answers." else "Sending… it keeps trying until it gets through.", Color.rgb(127, 29, 29)))
-            content.addView(button("I'm OK now") {
-                AgentService.sos(this, cancel = true); store.sosActive = false; render()
-            })
-            return
-        }
-        content.addView(button("Send for help", primary = true) {
-            android.app.AlertDialog.Builder(this)
-                .setTitle("Send for help?")
-                .setMessage("The people who look after you will be told straight away, with where you are.")
-                .setPositiveButton("Send for help") { _, _ -> AgentService.sos(this); store.sosActive = true; render() }
-                .setNegativeButton("Cancel", null)
-                .show()
-        }.apply { setBackgroundColor(Color.rgb(185, 28, 28)); setTextColor(Color.WHITE); textSize = 20f; minHeight = 160 })
-        if (store.tracking.mode == "close") content.addView(label("Your location is shared with the people who look after you.", muted))
     }
 
     private fun step(name: String, done: Boolean, why: String, enabled: Boolean = true, action: () -> Unit) {

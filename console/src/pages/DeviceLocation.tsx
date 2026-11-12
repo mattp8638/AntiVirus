@@ -6,7 +6,6 @@ import { ago, api, fmtTime } from "../api";
 import { useApp } from "../app-context";
 import { ErrorNote, Modal, useAction, useData } from "../components/ui";
 import { SafeZones } from "../components/SafeZones";
-import { CareSettings } from "../components/CareSettings";
 
 // Where a phone is and has been, plus the anti-theft controls: locate, alarm, lock, lost mode and erase.
 // Loaded only for phones (Leaflet + OpenStreetMap tiles), so desktops never download the map.
@@ -136,7 +135,6 @@ export function LocationTab({ device, onChanged }: { device: any; onChanged: () 
             </div>
             <p className="small muted" style={{ marginBottom: 0 }}>Actions reach the phone within a minute when it is online; otherwise as soon as it reconnects.</p>
           </div>}
-          <CareSettings device={device} />
           <SafeZones device={device} latest={latest} onChanged={reloadZones} />
         </div>
       </div>
