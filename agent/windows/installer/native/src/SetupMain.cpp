@@ -3888,10 +3888,19 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         SetStatusText(*context, payload->message);
         Log(*context, payload->message);
         if (context->silent) {
-          // Record the outcome for support (runtime\last-upgrade.log) and exit without any UI.
+          // Record the outcome for support and exit without any UI: runtime\last-upgrade.log, or for an uninstall
+          // %SystemRoot%\Temp\FenrirUninstall.log, since the install folder is about to be deleted.
           std::error_code logError;
-          std::filesystem::create_directories(context->installRoot / L"runtime", logError);
-          std::wofstream log(context->installRoot / L"runtime" / L"last-upgrade.log", std::ios::trunc);
+          std::filesystem::path logPath;
+          if (context->operation == L"uninstall") {
+            wchar_t windowsDirectory[MAX_PATH]{};
+            GetWindowsDirectoryW(windowsDirectory, MAX_PATH);
+            logPath = std::filesystem::path(windowsDirectory) / L"Temp" / L"FenrirUninstall.log";
+          } else {
+            std::filesystem::create_directories(context->installRoot / L"runtime", logError);
+            logPath = context->installRoot / L"runtime" / L"last-upgrade.log";
+          }
+          std::wofstream log(logPath, std::ios::trunc);
           const int length = GetWindowTextLengthW(context->logEdit);
           std::wstring text(static_cast<std::size_t>(length) + 1, L'\0');
           GetWindowTextW(context->logEdit, text.data(), length + 1);
