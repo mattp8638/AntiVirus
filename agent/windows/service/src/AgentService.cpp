@@ -1073,6 +1073,9 @@ AgentService::~AgentService() {
   if (firewallThread_.joinable()) {
     firewallThread_.join();  // bounded by the script's three-minute timeout
   }
+  if (dnsRuleThread_.joinable()) {
+    dnsRuleThread_.join();  // bounded by the script's one-minute timeout
+  }
   if (wakeEvent_ != nullptr) {
     CloseHandle(wakeEvent_);
     wakeEvent_ = nullptr;
@@ -1179,6 +1182,7 @@ int AgentService::Run(const AgentRunMode mode) {
     }
 
     RunSyncLoop(mode);
+    StopDnsProxy();  // first: lookups go back to the network's DNS before anything else stops
     StopRealtimeChannel();
     DrainProcessTelemetry();
     DrainRansomwareTelemetry();
@@ -1222,6 +1226,7 @@ int AgentService::Run(const AgentRunMode mode) {
   } catch (const std::exception& error) {
     std::wcerr << L"Agent service failed to initialize: " << Utf8ToWide(error.what()) << std::endl;
     liveness::Stop();
+    StopDnsProxy();
     StopRealtimeChannel();  // a running thread left behind would crash the process on exit
     return 1;  // non-zero: Windows' recovery actions restart the service
   }
@@ -1915,6 +1920,18 @@ void AgentService::RefreshPolicy(const int cycle) {
   }
 
   const auto policyCheckIn = controlPlaneClient_->CheckInPolicy(state_);
+  if (!policyCheckIn.dnsOverHttpsUrl.empty()) {
+    std::error_code ec;
+    std::wstring saved;
+    {
+      std::wifstream in(DnsResolverUrlPath());
+      std::getline(in, saved);
+    }
+    if (saved != policyCheckIn.dnsOverHttpsUrl) {
+      std::filesystem::create_directories(DnsResolverUrlPath().parent_path(), ec);
+      std::wofstream(DnsResolverUrlPath(), std::ios::trunc) << policyCheckIn.dnsOverHttpsUrl;
+    }
+  }
   state_.lastPolicySyncAt = policyCheckIn.retrievedAt;
   state_.policy = policyCheckIn.policy;
   policy_ = policyCheckIn.policy;
@@ -3973,6 +3990,7 @@ void AgentService::ApplyProtectionPolicy() {
     QueueTelemetryEvent(record.eventType, record.source, record.summary, record.payloadJson);
   }
   ApplyFirewallPolicy();
+  ApplyDnsProxy();
   WriteExperienceFile();
   if (ransomwareShield_ && !policy_.modulesJson.empty()) {
     const auto extended = ExtendedPolicy::Parse(policy_.modulesJson);
@@ -5003,6 +5021,196 @@ bool AgentService::RunFirewallScript(const std::string& script, const std::wstri
     QueueTelemetryEvent(L"firewall.apply_failed", L"firewall", L"Firewall policy could not be applied",
                         L"{\"error\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(error.what()))) + L"\"}");
     return false;
+  }
+}
+
+// --------------------------------------------------------------------------- local DNS proxy (DnsProxy.h)
+
+std::filesystem::path AgentService::DnsMarkerPath() const {
+  return config_.runtimeDatabasePath.parent_path() / L"dns-proxy.json";
+}
+
+std::filesystem::path AgentService::DnsResolverUrlPath() const {
+  return config_.runtimeDatabasePath.parent_path() / L"dns-resolver-url.txt";
+}
+
+void AgentService::ApplyDnsProxy() {
+  const auto settings = policy_.modulesJson.empty() ? dnsproxy::Settings{} : dnsproxy::Parse(policy_.modulesJson);
+  std::wstring url;
+  {
+    std::wifstream in(DnsResolverUrlPath());
+    std::getline(in, url);
+  }
+  std::string skip;
+  if (settings.enabled && url.empty()) {
+    skip = "waiting for this device's DNS address from the server (sent with the next policy check-in)";
+  } else if (settings.enabled && dnsproxy::IsDomainControllerOrDnsServer()) {
+    skip = "domain controllers and DNS servers answer DNS themselves, so the local proxy is not used on them";
+  }
+  std::string config = "off";
+  if (settings.enabled && skip.empty()) {
+    config = WideToUtf8(url) + "|" + (settings.failClosed ? "closed" : "open") + "|" + std::to_string(settings.cacheMinutes);
+    for (const auto& domain : settings.localDomains) config += "|" + domain;
+  }
+  std::error_code ec;
+  const bool marker = std::filesystem::exists(DnsMarkerPath(), ec);
+  if (config == dnsProxyConfig_) {
+    // Running, but the rule is gone (the watchdog removed it, or applying it failed): try again every 10 minutes.
+    if (dnsProxy_ && !marker && GetTickCount64() - lastDnsRuleAttemptMs_ > 10ULL * 60 * 1000) RequestDnsRule(true);
+    return;
+  }
+  dnsProxyConfig_ = config;
+  if (!skip.empty() && skip != dnsSkipReported_) {
+    dnsSkipReported_ = skip;
+    QueueTelemetryEvent(L"dns.proxy.skipped", L"dns-proxy", L"Local DNS proxy not started: " + Utf8ToWide(skip),
+                        L"{\"reason\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(skip))) + L"\"}");
+  }
+  if (config == "off") {
+    if (dnsProxy_ || marker) {
+      StopDnsProxy();
+      QueueTelemetryEvent(L"dns.proxy.stopped", L"dns-proxy", L"Local DNS proxy stopped; lookups use the network's DNS again", L"{}");
+    }
+    return;
+  }
+
+  dnsproxy::Options options;
+  options.dohUrl = url;
+  const auto& channel = state_.commandChannelUrl;
+  if (const auto at = channel.find(L"deviceApiKey="); at != std::wstring::npos) {
+    options.apiKey = channel.substr(at + 13, channel.find(L'&', at) == std::wstring::npos ? std::wstring::npos : channel.find(L'&', at) - at - 13);
+  }
+  options.failClosed = settings.failClosed;
+  options.cacheMinutes = settings.cacheMinutes;
+  options.localDomains = settings.localDomains;
+  options.onCachedBlock = [this](const std::string& domain, const std::string& reason) {
+    QueueTelemetryEvent(L"dns.blocked", L"dns-proxy", L"Blocked DNS lookup " + Utf8ToWide(domain) + L" (remembered block)",
+                        L"{\"queryName\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(domain))) + L"\",\"reason\":\"" +
+                            Utf8ToWide(EscapeJsonString(Utf8ToWide(reason))) + L"\",\"verdict\":\"block\",\"cached\":true}");
+  };
+  if (dnsProxy_) {  // new settings: the rule stays, the proxy is replaced (a gap of milliseconds)
+    dnsProxy_->Stop();
+    dnsProxy_.reset();
+  }
+  auto proxy = std::make_unique<dnsproxy::Proxy>(std::move(options));
+  std::string error;
+  if (!proxy->Start(&error) || !dnsproxy::Probe(dnsproxy::kListenAddress, 53, 2000)) {
+    if (error.empty()) error = "the proxy did not answer its own health check";
+    proxy.reset();
+    if (marker) {
+      dnsRuleWanted_ = 0;
+      std::lock_guard scriptLock(dnsScriptMutex_);
+      SetDnsRuleNow(false);
+    }
+    dnsProxyConfig_.clear();  // try again at the next policy check-in
+    QueueTelemetryEvent(L"dns.proxy.failed", L"dns-proxy", L"Local DNS proxy could not start: " + Utf8ToWide(error),
+                        L"{\"error\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(error))) + L"\"}");
+    return;
+  }
+  dnsProxy_ = std::move(proxy);
+  dnsSkipReported_.clear();
+  QueueTelemetryEvent(L"dns.proxy.started", L"dns-proxy",
+                      std::wstring(L"Local DNS proxy answering on 127.77.0.53 (when Fenrir is unreachable: ") +
+                          (settings.failClosed ? L"refuse" : L"use the network's DNS") + L")",
+                      std::wstring(L"{\"failMode\":\"") + (settings.failClosed ? L"closed" : L"open") + L"\",\"cacheMinutes\":" +
+                          std::to_wstring(settings.cacheMinutes) + L",\"localDomains\":" + std::to_wstring(settings.localDomains.size()) + L"}");
+  RequestDnsRule(true);
+}
+
+void AgentService::StopDnsProxy() {
+  std::error_code ec;
+  if (dnsProxy_ || std::filesystem::exists(DnsMarkerPath(), ec)) {
+    dnsRuleWanted_ = 0;
+    std::lock_guard scriptLock(dnsScriptMutex_);
+    SetDnsRuleNow(false);
+  }
+  {
+    std::unique_lock lock(dnsRuleMutex_);
+    if (!dnsRuleBusy_ && dnsRuleThread_.joinable()) {
+      lock.unlock();
+      dnsRuleThread_.join();
+    }
+  }
+  if (dnsProxy_) {
+    dnsProxy_->Stop();
+    dnsProxy_.reset();
+  }
+  dnsProxyConfig_.clear();
+}
+
+void AgentService::RequestDnsRule(bool apply) {
+  dnsRuleWanted_ = apply ? 1 : 0;
+  lastDnsRuleAttemptMs_ = GetTickCount64();
+  std::lock_guard lock(dnsRuleMutex_);
+  if (dnsRuleBusy_) return;  // the worker checks dnsRuleWanted_ again when it finishes
+  if (dnsRuleThread_.joinable()) dnsRuleThread_.join();
+  dnsRuleBusy_ = true;
+  dnsRuleThread_ = std::thread([this] { DnsRuleWorker(); });
+}
+
+void AgentService::DnsRuleWorker() {
+  int done = -1;
+  for (;;) {
+    {
+      std::lock_guard lock(dnsRuleMutex_);
+      if (dnsRuleWanted_ == done || dnsRuleWanted_ < 0) {
+        dnsRuleBusy_ = false;
+        return;
+      }
+    }
+    std::lock_guard scriptLock(dnsScriptMutex_);
+    const int wanted = dnsRuleWanted_;
+    if (wanted < 0) continue;
+    SetDnsRuleNow(wanted == 1);
+    done = wanted;
+  }
+}
+
+void AgentService::SetDnsRuleNow(bool apply) {
+  const auto workRoot = config_.runtimeDatabasePath.parent_path() / L"rmm" / L"dns";
+  std::error_code ec;
+  std::filesystem::create_directories(workRoot, ec);
+  const auto path = workRoot / (apply ? L"apply-dns-rule.ps1" : L"remove-dns-rule.ps1");
+  {
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    file << "\xEF\xBB\xBF" << (apply ? dnsproxy::BuildApplyScript() : dnsproxy::BuildRemoveScript());
+  }
+  wchar_t systemDir[MAX_PATH]{};
+  GetSystemDirectoryW(systemDir, MAX_PATH);
+  const std::wstring command = L"\"" + std::wstring(systemDir) +
+                               L"\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" +
+                               path.wstring() + L"\"";
+  std::string output;
+  bool ran = false;
+  try {
+    const auto result = rmm::RunProcess(command, workRoot.wstring(), {}, 60 * 1000);
+    ran = !result.timedOut;
+    output = result.stdoutText;
+  } catch (const std::exception& error) {
+    output = std::string("{\"ok\":false,\"reason\":\"") + EscapeJsonString(Utf8ToWide(error.what())) + "\"}";
+  }
+  std::filesystem::remove(path, ec);
+  while (!output.empty() && (output.back() == '\n' || output.back() == '\r' || output.back() == ' ')) output.pop_back();
+  const auto parsed = json::Parse(output);
+  const bool ok = ran && parsed && parsed->IsObject() && parsed->Get("ok") && parsed->Get("ok")->Bool().value_or(false);
+  std::string reason = parsed && parsed->IsObject() && parsed->Get("reason") ? parsed->Get("reason")->String().value_or("") : "";
+  if (!ran) reason = "PowerShell did not finish within a minute";
+  if (apply) {
+    if (ok) {
+      dnsRuleFailureReported_.clear();
+      std::ofstream(DnsMarkerPath(), std::ios::trunc) << "{\"listen\":\"" << dnsproxy::kListenAddress << "\",\"rule\":\"" << dnsproxy::kRuleComment << "\"}";
+      QueueTelemetryEvent(L"dns.proxy.rule_applied", L"dns-proxy", L"Windows now sends DNS lookups to the Fenrir DNS proxy", L"{}");
+    } else if (reason != dnsRuleFailureReported_) {  // retried every 10 minutes; reported when the reason changes
+      dnsRuleFailureReported_ = reason;
+      QueueTelemetryEvent(L"dns.proxy.rule_failed", L"dns-proxy", L"Windows could not be pointed at the Fenrir DNS proxy: " + Utf8ToWide(reason),
+                          L"{\"reason\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(reason))) + L"\"}");
+    }
+  } else {
+    if (ok) {
+      std::filesystem::remove(DnsMarkerPath(), ec);
+    } else {
+      QueueTelemetryEvent(L"dns.proxy.rule_failed", L"dns-proxy", L"The Fenrir DNS rule could not be removed: " + Utf8ToWide(reason),
+                          L"{\"reason\":\"" + Utf8ToWide(EscapeJsonString(Utf8ToWide(reason))) + L"\"}");
+    }
   }
 }
 

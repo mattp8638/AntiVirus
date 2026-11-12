@@ -397,6 +397,8 @@ void RunPowerShellCleanup(RemovalReport& report, const RemovalLog& log) {
       L"$ErrorActionPreference='SilentlyContinue';"
       L"Get-NetFirewallRule -Group 'Fenrir policy' | Remove-NetFirewallRule;"
       L"Get-NetFirewallRule | Where-Object { $_.DisplayName -like 'Fenrir *' -or $_.DisplayName -like 'AntiVirus *' } | Remove-NetFirewallRule;"
+      // The local DNS proxy's catch-all rule: left behind, nothing could resolve names once the agent is gone.
+      L"Get-DnsClientNrptRule | Where-Object { $_.Comment -eq 'Fenrir DNS protection' } | ForEach-Object { Remove-DnsClientNrptRule -Name $_.Name -Force }; Clear-DnsClientCache;"
       L"Get-ScheduledTask -TaskPath '\\Fenrir\\' | Unregister-ScheduledTask -Confirm:$false;"
       L"try { $s = New-Object -ComObject Schedule.Service; $s.Connect(); $s.GetFolder('\\').DeleteFolder('Fenrir', 0) } catch { };"
       // Device control: Fenrir blocked removable storage through these policy values; give the device back.

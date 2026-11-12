@@ -30,6 +30,7 @@ struct PolicyCheckInResult {
   std::wstring retrievedAt;
   bool changed{false};
   PolicySnapshot policy;
+  std::wstring dnsOverHttpsUrl;  // the device's private DNS resolver (empty from servers that don't send it)
 };
 
 struct TelemetryBatchResult {

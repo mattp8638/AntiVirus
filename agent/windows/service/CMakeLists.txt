@@ -97,6 +97,8 @@ add_library(antivirus-agent-core STATIC
   src/DestinationProtection.cpp
   src/DestinationVerdictEngine.cpp
   src/DeviceInventoryCollector.cpp
+  src/DnsProxy.cpp
+  src/DnsProxyCore.cpp
   src/AgentWatchdog.cpp
   src/EndpointClient.cpp
   src/EvidenceRecorder.cpp
@@ -645,6 +647,14 @@ target_include_directories(fenrir-rmm-tests PRIVATE include ../shared/include)
 target_link_libraries(fenrir-rmm-tests PRIVATE wtsapi32 userenv urlmon advapi32 bcrypt crypt32 wintrust)
 antivirus_apply_portable_runtime(fenrir-rmm-tests)
 target_include_directories(fenrir-policy-tests PRIVATE include)
+
+add_executable(fenrir-dnsproxy-tests ../tests/DnsProxyTests.cpp src/DnsProxyCore.cpp src/ExtendedPolicy.cpp src/BehaviorRules.cpp src/DeviceControl.cpp)
+target_include_directories(fenrir-dnsproxy-tests PRIVATE include)
+antivirus_apply_portable_runtime(fenrir-dnsproxy-tests)
+add_executable(fenrir-dnsproxy-smoke ../tools/dnsproxysmoke/DnsProxySmokeMain.cpp src/DnsProxy.cpp src/DnsProxyCore.cpp src/ExtendedPolicy.cpp src/BehaviorRules.cpp src/DeviceControl.cpp)
+target_include_directories(fenrir-dnsproxy-smoke PRIVATE include)
+target_link_libraries(fenrir-dnsproxy-smoke PRIVATE ws2_32 winhttp iphlpapi advapi32)
+antivirus_apply_portable_runtime(fenrir-dnsproxy-smoke)
 
 add_executable(fenrir-json-field-tests ../tests/JsonStringFieldTests.cpp)
 target_include_directories(fenrir-json-field-tests PRIVATE include)

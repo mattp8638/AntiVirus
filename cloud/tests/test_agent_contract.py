@@ -47,7 +47,8 @@ def test_heartbeat_policy_and_device_auth(client, device):
     check = client.post(f"{url}/policy-check-in", json={"currentPolicyRevision": device["policy"]["revision"]},
                         headers=device["headers"]).json()
     assert check["changed"] is False
-    assert set(check) == {"retrievedAt", "changed", "policy"}
+    assert set(check) == {"retrievedAt", "changed", "policy", "dnsOverHttpsUrl"}
+    assert check["dnsOverHttpsUrl"] == device["dnsOverHttpsUrl"]  # the Windows DNS proxy learns its resolver here
 
 
 def test_command_round_trip(client, admin, device):

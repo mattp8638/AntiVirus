@@ -330,7 +330,10 @@ def policy_check_in(body: dict = Body(default={}), device: Device = Depends(curr
     changed = body.get("currentPolicyRevision") != policy_doc["revision"]
     device.applied_policy_revision = policy_doc["revision"]
     db.commit()
-    return {"retrievedAt": _iso(utcnow()), "changed": changed, "policy": policy_doc}
+    base = get_settings().public_base_url.rstrip("/")
+    # Agents enrolled before they used it learn their DNS resolver address here (the Windows local DNS proxy).
+    return {"retrievedAt": _iso(utcnow()), "changed": changed, "policy": policy_doc,
+            "dnsOverHttpsUrl": f"{base}/dns/{device.dns_token}/dns-query"}
 
 
 async def _lenient_json(request: Request) -> dict:

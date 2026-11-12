@@ -22,6 +22,14 @@ jobs:
         cmake --build build --config Release --target fenrir-json-field-tests
         ctest --test-dir build -C Release -R '^json-string-fields$' --output-on-failure --no-tests=error
 
+    - name: DNS proxy unit tests and live smoke test (port 53, NRPT rule)
+      run: |
+        cmake --build build --config Release --target fenrir-dnsproxy-tests fenrir-dnsproxy-smoke
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        build/Release/fenrir-dnsproxy-tests.exe
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        python agent/windows/tests/dns_proxy_smoke.py build/Release/fenrir-dnsproxy-smoke.exe
+
     - name: Build Windows agent and real native FenrirSetup
       run: cmake --build build --config Release --target antivirus-setup
 
