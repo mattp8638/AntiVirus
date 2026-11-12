@@ -2972,8 +2972,12 @@ void RunInstallOrRepairSteps(HWND hwnd, UiContext* context, const bool repair) {
   const auto driverState = QueryServiceStateByName(kMinifilterServiceName);
   const bool minifilterDegraded = driverState != L"running";
   if (minifilterDegraded) {
-    minifilterWarning = L"AntivirusMinifilter is not running (state: " + driverState +
-        L"). Kernel real-time protection is unavailable; deploy a validated, signed driver separately.";
+    minifilterWarning =
+        !HasEmbeddedPayloadResource(context->instance, IDR_PAYLOAD_DRIVER_SYS)
+            ? L"This installer was built without the AntivirusMinifilter driver, so pre-execution blocking is off. "
+              L"Rebuild the server from a branch that includes agent/windows/driver/prebuilt/x64."
+            : L"AntivirusMinifilter is not running (state: " + driverState +
+                  L"). Pre-execution blocking is off; see the driver lines above for why Windows did not load it.";
   }
   if (minifilterDegraded) {
     PostLog(hwnd, L"Warning: " + minifilterWarning);
