@@ -64,3 +64,23 @@ def test_managed_firewall_rules_block_doh_and_botnet_ips():
     settings["firewall"]["botnetProtection"] = False
     off = ps.to_agent_policy("p1", "Test", settings, botnet_ips=["203.0.113.7"])
     assert off["modules"]["firewall"]["parsedRules"] == [] and off["revision"] == ps.revision(settings)
+
+
+def test_windows_dns_proxy_settings_reach_the_agent():
+    import pytest
+    from fenrir_cloud import policy_schema as ps
+
+    cleaned = ps.validate_partial({"dns": {"localProxy": True, "localProxyFailMode": "closed",
+                                           "localDomains": [" Corp.Example.co.uk ", "*.branch.example", ""]}})
+    assert cleaned["dns"]["localDomains"] == ["corp.example.co.uk", "*.branch.example"]
+    for bad in (["not a domain"], ["evil.example; rm -rf /"], ["a" * 300]):
+        with pytest.raises(ps.PolicyError):
+            ps.validate_partial({"dns": {"localDomains": bad}})
+    settings = ps.defaults()
+    settings["dns"].update(cleaned["dns"])
+    doc = ps.to_agent_policy("p1", "Test", settings)
+    assert doc["modules"]["dns"]["localProxy"] is True
+    assert doc["modules"]["dns"]["localDomains"] == ["corp.example.co.uk", "*.branch.example"]
+    fields = {f["path"]: f for s in ps.schema_document()["sections"] for f in s["fields"]}
+    assert "windows" in fields["dns.localProxy"]["enforcedOn"] and fields["dns.localDomains"]["enforcedOn"] == ["windows"]
+    assert fields["dns.sinkholeInterception"]["enforcedOn"] == ["linux", "macos"]

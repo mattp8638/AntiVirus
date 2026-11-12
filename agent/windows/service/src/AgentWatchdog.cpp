@@ -15,6 +15,8 @@
 #include <string>
 
 #include "AgentConfig.h"
+#include "DnsProxy.h"
+#include "RmmExecutors.h"
 #include "Liveness.h"
 
 namespace antivirus::agent::watchdog {
@@ -88,6 +90,7 @@ class Watchdog {
   }
 
   int Run() {
+    CheckDnsProxy();  // first: everything below may need DNS
     if (InMaintenance()) return 0;
     const auto manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
     if (manager == nullptr) {
@@ -125,6 +128,37 @@ class Watchdog {
   }
 
  private:
+  // The NRPT rule sends every lookup to the agent's DNS proxy (DnsProxyCore.h). If the proxy is not answering (the
+  // agent crashed, hung or was killed) while the rule is in place, nothing on this machine can resolve names, so the
+  // rule is removed and Windows goes back to the network's DNS. The agent puts it back once its proxy runs again.
+  void CheckDnsProxy() {
+    std::error_code ec;
+    const auto marker = runtime_ / L"dns-proxy.json";
+    if (!std::filesystem::exists(marker, ec)) return;
+    if (dnsproxy::Probe(dnsproxy::kListenAddress, 53, 1500) || dnsproxy::Probe(dnsproxy::kListenAddress, 53, 3000)) return;
+    const auto script = runtime_ / L"watchdog-dns-restore.ps1";
+    std::ofstream(script, std::ios::binary | std::ios::trunc) << "\xEF\xBB\xBF" << dnsproxy::BuildRemoveScript();
+    wchar_t systemDir[MAX_PATH]{};
+    GetSystemDirectoryW(systemDir, MAX_PATH);
+    std::string output;
+    try {
+      const auto result = rmm::RunProcess(L"\"" + std::wstring(systemDir) +
+                                              L"\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" +
+                                              script.wstring() + L"\"",
+                                          runtime_.wstring(), {}, 60 * 1000);
+      output = result.stdoutText;
+    } catch (const std::exception& error) {
+      output = error.what();
+    }
+    std::filesystem::remove(script, ec);
+    if (output.find("\"ok\":true") != std::string::npos) {
+      std::filesystem::remove(marker, ec);
+      Act("dns-restored", "the DNS proxy was not answering, so Windows was pointed back at the network's own DNS servers");
+    } else {
+      Log("could not remove the Fenrir DNS rule while the proxy is down: " + output.substr(0, 300));
+    }
+  }
+
   void Check(SC_HANDLE service, const SERVICE_STATUS_PROCESS& status) {
     switch (status.dwCurrentState) {
       case SERVICE_STOPPED:

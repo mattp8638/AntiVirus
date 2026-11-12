@@ -1271,7 +1271,8 @@ PolicyCheckInResult ControlPlaneClient::CheckInPolicy(const AgentState& state) c
   return PolicyCheckInResult{
       .retrievedAt = RequireString(ExtractJsonString(response.body, "retrievedAt"), "retrievedAt"),
       .changed = RequireBool(ExtractJsonBool(response.body, "changed"), "changed"),
-      .policy = ParsePolicySnapshot(*policyObject)};
+      .policy = ParsePolicySnapshot(*policyObject),
+      .dnsOverHttpsUrl = Utf8ToWide(ExtractJsonString(response.body, "dnsOverHttpsUrl").value_or(std::string{}))};
 }
 
 TelemetryBatchResult ControlPlaneClient::SendTelemetryBatch(const AgentState& state,

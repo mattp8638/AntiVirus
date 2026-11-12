@@ -25,6 +25,7 @@
 #include "RegistryWatcher.h"
 #include "CommandJournalStore.h"
 #include "DeviceInventoryCollector.h"
+#include "DnsProxy.h"
 #include "EventEnvelope.h"
 #include "FileDeltaTracker.h"
 #include "HardeningManager.h"
@@ -228,6 +229,25 @@ class AgentService {
   int ScheduledScanCpuLimit() const;
   void FirewallWorker();
   bool RunFirewallScript(const std::string& script, const std::wstring& summary);
+  // Local DNS proxy (DnsProxy.h, policy dns.localProxy). The NRPT rule is applied on a worker thread; it is removed
+  // synchronously, before the proxy stops, so lookups never point at a proxy that is not running.
+  void ApplyDnsProxy();
+  void StopDnsProxy();
+  void RequestDnsRule(bool apply);
+  void DnsRuleWorker();
+  void SetDnsRuleNow(bool apply);  // caller holds dnsScriptMutex_
+  std::filesystem::path DnsMarkerPath() const;
+  std::filesystem::path DnsResolverUrlPath() const;
+  std::unique_ptr<dnsproxy::Proxy> dnsProxy_{};
+  std::string dnsProxyConfig_{};
+  std::string dnsSkipReported_{};
+  std::string dnsRuleFailureReported_{};
+  unsigned long long lastDnsRuleAttemptMs_{0};
+  std::atomic<int> dnsRuleWanted_{-1};  // 1 apply, 0 remove
+  std::mutex dnsRuleMutex_{};
+  std::mutex dnsScriptMutex_{};
+  bool dnsRuleBusy_{false};
+  std::thread dnsRuleThread_{};
   std::unique_ptr<LocalStateStore> stateStore_{};
   std::unique_ptr<ControlPlaneClient> controlPlaneClient_{};
   std::unique_ptr<CommandJournalStore> commandJournalStore_{};

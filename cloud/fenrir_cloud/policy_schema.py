@@ -363,8 +363,13 @@ SCHEMA: tuple[Section, ...] = (
             F("blockThirdPartyDoh", "bool", True, "Block third-party encrypted DNS (DoH/DoT bypass)"),
             F("logQueries", "enum", "blocked", "Query logging", options=("none", "blocked", "all")),
             F("localProxy", "bool", False, "Local loopback DNS proxy",
-              "The agent answers DNS on a loopback address, forwards it to the device's DoH URL and caches verdicts, so "
-              "blocked domains stay blocked offline. The system resolver is pointed at it and restored when turned off."),
+              "The agent answers DNS on 127.77.0.53, forwards it to the device's DoH URL and caches verdicts, so blocked "
+              "domains stay blocked offline. The system resolver is pointed at it (Windows: a Name Resolution Policy rule; "
+              "Linux and macOS: the resolver settings) and restored when turned off or when the agent stops. Internal names "
+              "(the Active Directory domain, the network's DNS suffixes and the local domains below) still use the network's DNS."),
+            F("localDomains", "list", [], "Local domains (network DNS)",
+              "Internal domains the local proxy always sends to the network's own DNS servers, in addition to the ones Windows "
+              "already knows (the Active Directory domain and DNS suffixes). Example: corp.example.co.uk."),
             F("localProxyFailMode", "enum", "open", "When Fenrir Cloud is unreachable",
               "open: resolve uncached names with the previous system resolver. closed: refuse them.", options=("open", "closed")),
             F("sinkholeInterception", "bool", True, "Intercept connections to blocked domains",
@@ -616,10 +621,11 @@ AGENT_SUPPORT: dict[str, tuple[str, ...]] = {
     "web.phishingBlockThreshold": ('windows',),
     "web.destinationCacheTtlMinutes": ('windows',),
     "web.bankingProtection": (),
-    "dns.localProxy": ('linux', 'macos'),
-    "dns.localProxyFailMode": ('linux', 'macos'),
+    "dns.localProxy": ('windows', 'linux', 'macos'),
+    "dns.localProxyFailMode": ('windows', 'linux', 'macos'),
     "dns.sinkholeInterception": ('linux', 'macos'),
-    "dns.localCacheMinutes": ('linux', 'macos'),
+    "dns.localCacheMinutes": ('windows', 'linux', 'macos'),
+    "dns.localDomains": ('windows',),
     "firewall.networkAttackProtection": (),
     "firewall.bruteForceProtection": ('windows', 'linux', 'macos'),
     "firewall.blockSmbV1": ('windows',),
@@ -768,6 +774,16 @@ def _coerce(path: str, spec: F, value: Any) -> Any:
             bad = [item for item in cleaned if item not in spec.options]
             if bad:
                 raise PolicyError(f"{path} has unknown values: {', '.join(bad)}")
+        if path == "dns.localDomains":
+            import re as _re
+
+            pattern = _re.compile(r"^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.?$")
+            cleaned = [item.lower() for item in cleaned]
+            bad = [item for item in cleaned if len(item) > 253 or not pattern.match(item)]
+            if bad:
+                raise PolicyError(f"dns.localDomains: not a domain name: {', '.join(bad[:5])}")
+            if len(cleaned) > 100:
+                raise PolicyError("dns.localDomains: at most 100 domains")
         if path == "firewall.rules":
             for item in cleaned:
                 if not item.startswith("#") and parse_firewall_rule(item) is None:
