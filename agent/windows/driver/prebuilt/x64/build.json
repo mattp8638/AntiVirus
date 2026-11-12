@@ -1,7 +1,7 @@
 {
+  "sourceHash": "8c716deea9e14a82a1d40c4803e01bd37d6767bb352167e17355dc4ca411d9b0",
+  "sys": "5456cfb1297a1569cfc45770d3c451f51b4be6cd67bfcd7ccb4e95908cbcacb3",
   "wdk": "10.0.26100.0",
-  "sourceHash": "e354ab7801277427fbfe1d8969358652f9482ae9a24f858a65218ddfbcc659a7",
-  "signed": false,
-  "sys": "8961aa848ad079ff2360f32dff4bd7d2c9903134ce5bc50c84da7f171e606f31",
-  "version": "1.0.5.0"
+  "version": "1.0.9.0",
+  "signed": false
 }
