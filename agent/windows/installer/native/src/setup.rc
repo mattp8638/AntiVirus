@@ -2,3 +2,4 @@
 
 IDI_SETUP_ICON ICON "../../../Fenrir.ico"
 1 RT_MANIFEST "setup.manifest"
+IDR_SETUP_LOGO RCDATA "../../../tools/endpointui/assets/fenrir-logo-128.png"

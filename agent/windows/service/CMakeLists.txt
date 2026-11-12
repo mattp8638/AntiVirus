@@ -552,6 +552,30 @@ set_source_files_properties(${SETUP_PAYLOAD_RC} PROPERTIES
   OBJECT_DEPENDS "${SETUP_PAYLOAD_DEPENDENCIES}"
 )
 
+# The setup window's page (installer/native/web/setup.html, plain ASCII), embedded the same way as the agent window's.
+set(SETUP_PAGE "${INSTALLER_NATIVE_DIR}/web/setup.html")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${SETUP_PAGE}")
+file(READ "${SETUP_PAGE}" SETUP_PAGE_CONTENT)
+foreach(placeholder __FENRIR_LOGO_URI__ __FENRIR_INITIAL_STATE__)
+  string(REGEX MATCHALL "${placeholder}" placeholder_hits "${SETUP_PAGE_CONTENT}")
+  list(LENGTH placeholder_hits placeholder_count)
+  if(NOT placeholder_count EQUAL 1)
+    message(FATAL_ERROR "setup.html must contain ${placeholder} exactly once (found ${placeholder_count})")
+  endif()
+endforeach()
+string(LENGTH "${SETUP_PAGE_CONTENT}" SETUP_PAGE_LENGTH)
+set(SETUP_PAGE_CHUNKS "")
+set(SETUP_PAGE_OFFSET 0)
+while(SETUP_PAGE_OFFSET LESS SETUP_PAGE_LENGTH)
+  string(SUBSTRING "${SETUP_PAGE_CONTENT}" ${SETUP_PAGE_OFFSET} 6000 SETUP_PAGE_PART)
+  string(APPEND SETUP_PAGE_CHUNKS "    LR\"FENRIRSETUP(${SETUP_PAGE_PART})FENRIRSETUP\",\n")
+  math(EXPR SETUP_PAGE_OFFSET "${SETUP_PAGE_OFFSET} + 6000")
+endwhile()
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/SetupPage.h.tmp"
+  "#pragma once\n// Generated from installer/native/web/setup.html by CMake. Do not edit.\n"
+  "inline const wchar_t* const kSetupPageParts[] = {\n${SETUP_PAGE_CHUNKS}};\n")
+configure_file("${CMAKE_CURRENT_BINARY_DIR}/generated/SetupPage.h.tmp" "${CMAKE_CURRENT_BINARY_DIR}/generated/SetupPage.h" COPYONLY)
+
 add_executable(antivirus-setup WIN32
   ${INSTALLER_NATIVE_DIR}/src/setup.rc
   ${INSTALLER_NATIVE_DIR}/src/SetupMain.cpp
@@ -574,6 +598,8 @@ add_dependencies(antivirus-setup
 target_include_directories(antivirus-setup PRIVATE
   ${INSTALLER_NATIVE_DIR}/include
   ${INSTALLER_NATIVE_DIR}/src
+  ../third_party/webview2/include
+  "${CMAKE_CURRENT_BINARY_DIR}/generated"
 )
 target_link_libraries(antivirus-setup PRIVATE comctl32 ole32 shell32 advapi32 crypt32 wintrust dwmapi fwpuclnt netapi32 setupapi)
 # Keep the runtime fully static. A trailing -Bdynamic here overrides -static

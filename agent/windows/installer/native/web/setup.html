@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>Fenrir Endpoint Setup</title>
+<style>
+:root {
+  --bg: #05080f; --panel: rgba(17, 24, 39, .72); --line: rgba(148, 163, 184, .16); --text: #e8eefc; --muted: #93a2bd;
+  --blue: #3b82f6; --violet: #8b5cf6; --cyan: #22d3ee; --green: #22c55e; --amber: #f59e0b; --red: #ef4444;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+  font: 14px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; user-select: none; }
+/* Moving aurora behind everything */
+.aurora { position: fixed; inset: -20%; z-index: 0; filter: blur(70px); opacity: .55; pointer-events: none; }
+.aurora i { position: absolute; width: 46vmax; height: 46vmax; border-radius: 50%; mix-blend-mode: screen; }
+.aurora i:nth-child(1) { background: radial-gradient(circle, #1d4ed8 0, transparent 65%); left: 0; top: 5%; animation: drift1 22s ease-in-out infinite alternate; }
+.aurora i:nth-child(2) { background: radial-gradient(circle, #7c3aed 0, transparent 65%); right: 0; top: 20%; animation: drift2 26s ease-in-out infinite alternate; }
+.aurora i:nth-child(3) { background: radial-gradient(circle, #0891b2 0, transparent 65%); left: 30%; bottom: -10%; animation: drift3 30s ease-in-out infinite alternate; }
+@keyframes drift1 { to { transform: translate(18vw, 10vh) scale(1.15); } }
+@keyframes drift2 { to { transform: translate(-16vw, 14vh) scale(.9); } }
+@keyframes drift3 { to { transform: translate(10vw, -16vh) scale(1.2); } }
+.grid { position: fixed; inset: 0; z-index: 0; pointer-events: none; opacity: .5;
+  background-image: linear-gradient(rgba(148,163,184,.05) 1px, transparent 1px), linear-gradient(90deg, rgba(148,163,184,.05) 1px, transparent 1px);
+  background-size: 44px 44px; mask-image: radial-gradient(ellipse at 50% 35%, #000 30%, transparent 75%); }
+.app { position: relative; z-index: 1; height: 100%; display: grid; grid-template-rows: auto 1fr auto; padding: 26px 30px 20px; gap: 18px; }
+
+/* Header */
+header { display: flex; align-items: center; gap: 18px; }
+.logo { position: relative; width: 74px; height: 74px; flex: none; }
+.logo img { width: 74px; height: 74px; border-radius: 20px; position: relative; z-index: 1; box-shadow: 0 10px 40px rgba(59,130,246,.35); }
+.logo::before { content: ""; position: absolute; inset: -6px; border-radius: 26px; background: conic-gradient(from 0deg, var(--blue), var(--violet), var(--cyan), var(--blue));
+  animation: spin 6s linear infinite; filter: blur(6px); opacity: .8; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.eyebrow { font-size: 11px; letter-spacing: .22em; font-weight: 700; color: #9cc5ff; text-transform: uppercase; }
+h1 { margin: 2px 0 2px; font: 700 30px/1.15 "Segoe UI Variable Display", "Segoe UI", sans-serif; letter-spacing: -.01em;
+  background: linear-gradient(90deg, #fff, #c7d7ff 60%, #a5b4fc); -webkit-background-clip: text; color: transparent; }
+.sub { color: var(--muted); max-width: 560px; }
+.chip { margin-left: auto; align-self: flex-start; display: inline-flex; align-items: center; gap: 8px; padding: 7px 14px; border-radius: 999px;
+  border: 1px solid var(--line); background: rgba(15,23,42,.6); font-weight: 600; font-size: 12px; white-space: nowrap; }
+.chip i { width: 8px; height: 8px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 12px var(--blue); }
+.chip.installed i { background: var(--green); box-shadow: 0 0 12px var(--green); }
+.chip.working i { background: var(--cyan); box-shadow: 0 0 12px var(--cyan); animation: pulse 1s ease-in-out infinite; }
+.chip.failed i { background: var(--red); box-shadow: 0 0 12px var(--red); }
+@keyframes pulse { 50% { opacity: .3; } }
+
+/* Main */
+main { display: grid; grid-template-columns: 300px 1fr; gap: 20px; min-height: 0; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 20px; backdrop-filter: blur(14px); box-shadow: 0 20px 60px rgba(0,0,0,.35); }
+.ring-panel { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 22px; gap: 14px; }
+.ring { position: relative; width: 196px; height: 196px; }
+.ring > svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.ring .track { stroke: rgba(148,163,184,.12); }
+.ring .bar { stroke: url(#ringGrad); stroke-linecap: round; transition: stroke-dashoffset .6s cubic-bezier(.2,.8,.2,1); filter: drop-shadow(0 0 8px rgba(99,102,241,.6)); }
+.ring .center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+.ring .pct { font: 700 40px/1 "Segoe UI Variable Display", "Segoe UI", sans-serif; }
+.ring .lbl { color: var(--muted); font-size: 12px; margin-top: 6px; max-width: 130px; }
+.ring.idle .bar { opacity: 0; }
+.shield { width: 64px; height: 64px; }
+.status { text-align: center; color: #cfe0ff; min-height: 40px; font-size: 13px; }
+.path { font-size: 11px; color: var(--muted); text-align: center; word-break: break-all; }
+.path b { color: #b9c8e4; font-weight: 600; }
+
+.right { display: flex; flex-direction: column; gap: 16px; min-height: 0; }
+.right > .panel { min-height: 0; }
+.right > .log { flex: 1; }
+.steps { padding: 18px 20px; display: grid; gap: 10px; }
+.step { display: grid; grid-template-columns: 30px 1fr; align-items: center; gap: 12px; color: var(--muted); transition: color .3s; }
+.step .dot { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; border: 1px solid var(--line); background: rgba(15,23,42,.7); font-size: 12px; font-weight: 700; transition: all .3s; }
+.step.active { color: var(--text); }
+.step.active .dot { border-color: var(--cyan); box-shadow: 0 0 0 4px rgba(34,211,238,.12), 0 0 18px rgba(34,211,238,.4); color: var(--cyan); }
+.step.done { color: #cbe7d6; }
+.step.done .dot { background: linear-gradient(135deg, var(--green), #16a34a); border-color: transparent; color: #04120a; }
+.step small { display: block; color: var(--muted); font-size: 11.5px; }
+
+.features { padding: 18px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-content: start; overflow: auto; }
+.feature { display: flex; gap: 12px; padding: 14px; border-radius: 14px; border: 1px solid var(--line); background: rgba(15,23,42,.45); transition: transform .25s, border-color .25s; }
+.feature:hover { transform: translateY(-2px); border-color: rgba(99,102,241,.45); }
+.feature svg { width: 26px; height: 26px; flex: none; }
+.feature b { display: block; font-size: 13px; }
+.feature span { color: var(--muted); font-size: 12px; }
+
+.log { display: flex; flex-direction: column; min-height: 0; padding: 14px 16px; }
+.log h3 { margin: 0 0 8px; font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: #9fb2d6; display: flex; align-items: center; gap: 8px; }
+.log pre { margin: 0; flex: 1; min-height: 0; overflow: auto; font: 12px/1.6 "Cascadia Mono", Consolas, monospace; color: #c3d2ee; white-space: pre-wrap; user-select: text; }
+.log pre .warn { color: #fcd34d; } .log pre .err { color: #fca5a5; } .log pre .ok { color: #86efac; }
+.hidden { display: none !important; }
+
+/* Footer */
+footer { display: flex; align-items: center; gap: 10px; }
+button { font: 600 14px "Segoe UI", sans-serif; border-radius: 12px; padding: 11px 20px; cursor: pointer; color: var(--text);
+  border: 1px solid var(--line); background: rgba(15,23,42,.7); transition: transform .15s, box-shadow .2s, background .2s; }
+button:hover:not(:disabled) { transform: translateY(-1px); background: rgba(30,41,59,.85); }
+button:disabled { opacity: .45; cursor: default; }
+.primary { border: 0; padding: 12px 26px; background: linear-gradient(90deg, var(--blue), var(--violet)); box-shadow: 0 10px 30px rgba(99,102,241,.45); position: relative; overflow: hidden; }
+.primary:hover:not(:disabled) { background: linear-gradient(90deg, #4f8ff7, #9b70f8); box-shadow: 0 14px 38px rgba(99,102,241,.6); }
+.primary::after { content: ""; position: absolute; top: 0; left: -60%; width: 40%; height: 100%; background: linear-gradient(90deg, transparent, rgba(255,255,255,.35), transparent); transform: skewX(-20deg); animation: shine 3.5s ease-in-out infinite; }
+@keyframes shine { 60%, 100% { left: 130%; } }
+.danger { color: #fecaca; border-color: rgba(239,68,68,.45); }
+.danger:hover:not(:disabled) { background: rgba(127,29,29,.45); }
+.spacer { flex: 1; }
+.toggle { font-size: 12px; padding: 9px 14px; }
+
+/* Dialogs and the completion screen */
+.overlay { position: fixed; inset: 0; z-index: 5; display: grid; place-items: center; background: rgba(2,6,14,.72); backdrop-filter: blur(8px); animation: fade .25s ease; }
+@keyframes fade { from { opacity: 0; } }
+.dialog { width: min(520px, 90vw); padding: 28px; text-align: center; animation: pop .35s cubic-bezier(.2,1.4,.4,1); }
+@keyframes pop { from { transform: scale(.9); opacity: 0; } }
+.dialog h2 { margin: 12px 0 8px; font-size: 22px; }
+.dialog p { color: var(--muted); margin: 0 0 18px; }
+.dialog .row { display: flex; justify-content: center; gap: 10px; }
+.notice { text-align: left; margin: 0 0 16px; padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(245,158,11,.4); background: rgba(120,53,15,.25); color: #fde68a; font-size: 12.5px; }
+.check { width: 92px; height: 92px; }
+.check circle { stroke: var(--green); stroke-dasharray: 290; stroke-dashoffset: 290; animation: draw .7s ease forwards; }
+.check path { stroke: var(--green); stroke-dasharray: 80; stroke-dashoffset: 80; animation: draw .45s .55s ease forwards; }
+.check.bad circle, .check.bad path { stroke: var(--amber); }
+@keyframes draw { to { stroke-dashoffset: 0; } }
+.confetti { position: fixed; inset: 0; pointer-events: none; z-index: 6; overflow: hidden; }
+.confetti i { position: absolute; top: -10px; width: 8px; height: 14px; border-radius: 2px; animation: fall linear forwards; }
+@keyframes fall { to { transform: translateY(110vh) rotate(720deg); opacity: .2; } }
+</style>
+</head>
+<body>
+<div class="aurora"><i></i><i></i><i></i></div>
+<div class="grid"></div>
+<div class="app">
+  <header>
+    <div class="logo"><img id="logo" alt="" src="__FENRIR_LOGO_URI__"></div>
+    <div>
+      <div class="eyebrow">Fenrir protection platform</div>
+      <h1 id="title">Fenrir Endpoint Setup</h1>
+      <div class="sub" id="subtitle">Install, repair or remove Fenrir Endpoint: the protection service, the desktop client, signatures and everything they need.</div>
+    </div>
+    <div class="chip" id="chip"><i></i><span id="chipText">Ready</span></div>
+  </header>
+
+  <main>
+    <section class="panel ring-panel">
+      <div class="ring idle" id="ring">
+        <svg viewBox="0 0 120 120"><defs><linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset=".5" stop-color="#3b82f6"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs>
+          <circle class="track" cx="60" cy="60" r="52" fill="none" stroke-width="9"/>
+          <circle class="bar" id="bar" cx="60" cy="60" r="52" fill="none" stroke-width="9" stroke-dasharray="326.7" stroke-dashoffset="326.7"/></svg>
+        <div class="center">
+          <svg class="shield" id="shield" viewBox="0 0 24 24" fill="none" stroke="url(#ringGrad)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2.5 4 5.5v6c0 5 3.4 8.9 8 10 4.6-1.1 8-5 8-10v-6z"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>
+          <div class="pct hidden" id="pct">0%</div>
+          <div class="lbl" id="ringLabel">Ready to protect this device</div>
+        </div>
+      </div>
+      <div class="status" id="status">Ready to deploy Fenrir Endpoint on this device.</div>
+      <div class="path">Install location<br><b id="path"></b></div>
+    </section>
+
+    <section class="right">
+      <div class="panel steps" id="steps"></div>
+      <div class="panel features" id="features">
+        <div class="feature"><svg viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="1.7" stroke-linecap="round"><path d="M12 2.5 4 5.5v6c0 5 3.4 8.9 8 10 4.6-1.1 8-5 8-10v-6z"/></svg><div><b>Real-time protection</b><span>Signatures, behaviour and machine learning on every file and process.</span></div></div>
+        <div class="feature"><svg viewBox="0 0 24 24" fill="none" stroke="#a78bfa" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg><div><b>DNS and web filtering</b><span>Dangerous sites blocked on and off the office network.</span></div></div>
+        <div class="feature"><svg viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="1.7" stroke-linecap="round"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><div><b>Ransomware shield</b><span>Mass encryption stopped, protected folders and rollback.</span></div></div>
+        <div class="feature"><svg viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="1.7" stroke-linecap="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><div><b>Managed by your IT team</b><span>Updates, patching and remote help from one console.</span></div></div>
+      </div>
+      <div class="panel log hidden" id="logPanel"><h3>Deployment log</h3><pre id="log"></pre></div>
+    </section>
+  </main>
+
+  <footer>
+    <button class="primary" id="primary">Install protection</button>
+    <button class="danger hidden" id="uninstall">Uninstall</button>
+    <button id="folder">Open install folder</button>
+    <span class="spacer"></span>
+    <button class="toggle" id="toggle">Show details</button>
+    <button id="close">Close</button>
+  </footer>
+</div>
+
+<div class="overlay hidden" id="confirm">
+  <div class="panel dialog">
+    <svg class="check bad" viewBox="0 0 100 100" fill="none" stroke-width="6" stroke-linecap="round"><circle cx="50" cy="50" r="44" style="stroke:#ef4444"/><path d="M50 28v28M50 70v2" style="stroke:#ef4444"/></svg>
+    <h2>Remove Fenrir Endpoint?</h2>
+    <p>The protection service, the desktop client, quarantine, logs and settings are removed from this device. It stops being protected and managed.</p>
+    <div class="row"><button id="confirmNo">Keep it</button><button class="danger" id="confirmYes">Remove Fenrir</button></div>
+  </div>
+</div>
+
+<div class="overlay hidden" id="done">
+  <div class="panel dialog">
+    <svg class="check" id="doneIcon" viewBox="0 0 100 100" fill="none" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"><circle cx="50" cy="50" r="44"/><path id="doneMark" d="M30 52l13 13 27-29"/></svg>
+    <h2 id="doneTitle">All set</h2>
+    <p id="doneText"></p>
+    <div id="doneWarnings"></div>
+    <div class="row"><button id="doneDetails">View log</button><button class="primary" id="doneClose">Close</button></div>
+  </div>
+</div>
+<div class="confetti" id="confetti"></div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var state = __FENRIR_INITIAL_STATE__;
+  var showLog = false;
+  var INSTALL_STEPS = [
+    ["Preparing", "Checking this device and the existing installation", 8],
+    ["Copying files", "Service, desktop client, signatures and runtime", 45],
+    ["Protection service", "Registering the service, drivers and hardening", 72],
+    ["Desktop client", "Tray app, shortcuts and the watchdog", 92],
+    ["Finishing", "Starting protection and connecting to your IT team", 100]
+  ];
+  var REMOVE_STEPS = [
+    ["Stopping", "Stopping the service and the desktop client", 20],
+    ["Removing", "Files, drivers, scheduled tasks and settings", 70],
+    ["Cleaning up", "Quarantine, logs and leftover data", 100]
+  ];
+
+  function send(action) { if (window.chrome && chrome.webview) chrome.webview.postMessage(JSON.stringify({ action: action })); }
+  function esc(t) { return String(t).replace(/[&<>]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]; }); }
+
+  function render() {
+    var s = state, busy = !!s.busy, pct = Math.max(0, Math.min(100, s.progress || 0));
+    var removing = s.operation === "uninstall";
+    $("title").textContent = busy ? (removing ? "Removing Fenrir Endpoint" : (s.operation === "repair" ? "Repairing Fenrir Endpoint" : "Installing Fenrir Endpoint"))
+      : (s.installed ? "Fenrir Endpoint is installed" : "Protect this device with Fenrir");
+    $("subtitle").textContent = busy ? "This usually takes a minute or two. You can watch every step below."
+      : (s.installed ? "Repair puts every component back as it should be. Uninstall removes Fenrir from this device."
+                     : "Install the protection service, the desktop client, signatures and everything they need.");
+    var chip = $("chip");
+    chip.className = "chip" + (busy ? " working" : (s.failed ? " failed" : (s.installed ? " installed" : "")));
+    $("chipText").textContent = busy ? "Working" : (s.failed ? "Needs attention" : (s.installed ? "Installed" : "Ready"));
+    $("status").textContent = s.status || "";
+    $("path").textContent = s.path || "";
+    var ring = $("ring");
+    ring.classList.toggle("idle", !busy && !pct);
+    $("bar").style.strokeDashoffset = String(326.7 * (1 - pct / 100));
+    $("pct").textContent = pct + "%";
+    $("pct").classList.toggle("hidden", !busy && !pct);
+    $("shield").classList.toggle("hidden", busy || !!pct);
+    $("ringLabel").textContent = busy ? (removing ? "Removing" : "Installing") : (s.installed ? "Protected" : "Ready to protect this device");
+    var steps = removing ? REMOVE_STEPS : INSTALL_STEPS, html = "", prev = 0;
+    for (var i = 0; i < steps.length; i++) {
+      var done = pct >= steps[i][2] && (pct === 100 || busy || s.finished), active = busy && !done && pct >= prev;
+      html += '<div class="step' + (done ? " done" : (active ? " active" : "")) + '"><div class="dot">' + (done ? "&#10003;" : (i + 1)) +
+              '</div><div>' + esc(steps[i][0]) + '<small>' + esc(steps[i][1]) + '</small></div></div>';
+      prev = steps[i][2];
+      if (active) { for (var j = i + 1; j < steps.length; j++) html += '<div class="step"><div class="dot">' + (j + 1) + '</div><div>' + esc(steps[j][0]) + '<small>' + esc(steps[j][1]) + '</small></div></div>'; break; }
+    }
+    $("steps").innerHTML = html;
+    $("steps").classList.toggle("hidden", !busy && !s.finished);
+    var logVisible = showLog || busy;
+    $("logPanel").classList.toggle("hidden", !logVisible);
+    $("features").classList.toggle("hidden", logVisible);
+    $("toggle").textContent = logVisible ? "Hide details" : "Show details";
+    $("toggle").disabled = busy;
+    $("primary").textContent = s.installed ? "Repair" : "Install protection";
+    $("primary").disabled = busy;
+    $("uninstall").classList.toggle("hidden", !s.installed);
+    $("uninstall").disabled = busy;
+    $("folder").disabled = busy;
+    $("close").disabled = busy;
+  }
+
+  function addLog(line) {
+    var pre = $("log"), cls = /WARNING|warn/i.test(line) ? "warn" : (/fail|error|could not/i.test(line) ? "err" : (/success|completed|installed|removed/i.test(line) ? "ok" : ""));
+    var atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 30;
+    pre.insertAdjacentHTML("beforeend", (cls ? '<span class="' + cls + '">' : "<span>") + esc(line) + "</span>\n");
+    if (atBottom) pre.scrollTop = pre.scrollHeight;
+  }
+
+  function confetti() {
+    var box = $("confetti"), colours = ["#3b82f6", "#8b5cf6", "#22d3ee", "#22c55e", "#f472b6", "#facc15"];
+    for (var i = 0; i < 90; i++) {
+      var p = document.createElement("i");
+      p.style.left = Math.random() * 100 + "vw";
+      p.style.background = colours[i % colours.length];
+      p.style.animationDuration = (2.2 + Math.random() * 2) + "s";
+      p.style.animationDelay = Math.random() * .6 + "s";
+      box.appendChild(p);
+    }
+    setTimeout(function () { box.innerHTML = ""; }, 5000);
+  }
+
+  function complete(m) {
+    var parts = String(m.message || "").split(/\s*WARNING:\s*/);
+    var warnings = parts.slice(1);
+    $("doneTitle").textContent = m.success ? (warnings.length ? "Installed, with a warning" : (state.operation === "uninstall" ? "Fenrir has been removed" : "You're protected")) : "Something went wrong";
+    $("doneText").textContent = parts[0] || "";
+    $("doneWarnings").innerHTML = warnings.map(function (w) { return '<div class="notice">' + esc(w) + "</div>"; }).join("");
+    var icon = $("doneIcon");
+    icon.classList.toggle("bad", !m.success || warnings.length > 0);
+    $("doneMark").setAttribute("d", m.success && !warnings.length ? "M30 52l13 13 27-29" : "M50 28v28M50 70v2");
+    // restart the drawing animation
+    var clone = icon.cloneNode(true); icon.parentNode.replaceChild(clone, icon);
+    $("done").classList.remove("hidden");
+    if (m.success && !warnings.length && state.operation !== "uninstall") confetti();
+  }
+
+  window.chrome && chrome.webview && chrome.webview.addEventListener("message", function (event) {
+    var m = event.data;
+    if (typeof m === "string") { try { m = JSON.parse(m); } catch (e) { return; } }
+    if (m.type === "state") { state = m; render(); }
+    else if (m.type === "log") { addLog(m.line); }
+    else if (m.type === "complete") { state.busy = false; state.finished = true; state.failed = !m.success; state.installed = !!m.installed; render(); complete(m); }
+  });
+
+  $("primary").onclick = function () { state.operation = state.installed ? "repair" : "install"; send("primary"); };
+  $("uninstall").onclick = function () { $("confirm").classList.remove("hidden"); };
+  $("confirmNo").onclick = function () { $("confirm").classList.add("hidden"); };
+  $("confirmYes").onclick = function () { $("confirm").classList.add("hidden"); state.operation = "uninstall"; send("uninstall"); };
+  $("folder").onclick = function () { send("openFolder"); };
+  $("close").onclick = function () { send("close"); };
+  $("toggle").onclick = function () { showLog = !showLog; render(); };
+  $("doneClose").onclick = function () { send("close"); };
+  $("doneDetails").onclick = function () { $("done").classList.add("hidden"); showLog = true; render(); };
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape") { $("confirm").classList.add("hidden"); } });
+  render();
+  send("ready");
+})();
+</script>
+</body>
+</html>
