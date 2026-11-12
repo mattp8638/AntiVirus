@@ -362,6 +362,14 @@ SCHEMA: tuple[Section, ...] = (
             F("safeSearch", "bool", False, "Enforce SafeSearch"),
             F("blockThirdPartyDoh", "bool", True, "Block third-party encrypted DNS (DoH/DoT bypass)"),
             F("logQueries", "enum", "blocked", "Query logging", options=("none", "blocked", "all")),
+            F("fenrirRuleset", "enum", "block", "Fenrir DNS ruleset",
+              "The ruleset Fenrir builds from every feed and its threat intel, scored by how many sources agree. block: "
+              "block domains at or above the block threshold (threat categories always, others where the category is "
+              "blocked). monitor: log matches, block nothing. off: not used.", options=("block", "monitor", "off")),
+            F("externalLists", "enum", "direct", "External blocklists",
+              "direct: each enabled list blocks on its own, as well as feeding the ruleset. ruleset: lists only count through "
+              "the Fenrir ruleset's score, so a domain on a single list is no longer blocked by that alone.",
+              options=("direct", "ruleset")),
             F("localProxy", "bool", False, "Local loopback DNS proxy",
               "The agent answers DNS on 127.77.0.53, forwards it to the device's DoH URL and caches verdicts, so blocked "
               "domains stay blocked offline. The system resolver is pointed at it (Windows: a Name Resolution Policy rule; "

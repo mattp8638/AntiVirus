@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 70
+LATEST_MIGRATION = 71
 
 def init_engine(url: str, pool_size: int = 5, max_overflow: int = 10) -> Engine:
     global _engine, _session_factory
@@ -508,6 +508,13 @@ def migrate(bind: Engine) -> list[int]:
                 ensure_columns(Base, conn)  # email_list_entries: expiry and hit counts
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (70)"))
                 applied.append(70)
+            if 71 not in versions:
+                from .models import DnsDeviceDay, DnsRule, DnsRuleChange, DnsRuleset
+                for model in (DnsRule, DnsRuleChange, DnsRuleset, DnsDeviceDay):  # DNS rules, history, Fenrir ruleset, per-device counts
+                    model.__table__.create(conn, checkfirst=True)
+                ensure_columns(Base, conn)  # dns_query_log: source, rule_id, score
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (71)"))
+                applied.append(71)
             conn.commit()
         except Exception:
             conn.rollback()

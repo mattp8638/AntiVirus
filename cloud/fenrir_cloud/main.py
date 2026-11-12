@@ -49,6 +49,7 @@ from .routers import m365_partner as m365_partner_router
 from .routers import m365_workspace as m365_workspace_router
 from .routers import email_security as email_security_router
 from .routers import email_policies as email_policies_router
+from .routers import dns_console as dns_console_router
 from .routers import m365_lifecycle as m365_lifecycle_router
 from .routers import condition_packages as condition_packages_router
 from .routers import triage as triage_router
@@ -232,6 +233,9 @@ def _purge_telemetry(db, settings: Settings) -> dict:
             ~exists().where(RuleMatch.event_pk == Event.id))
     removed["ruleMatches"] = _delete_in_chunks(db, RuleMatch, RuleMatch.at < cutoff)
     removed["dnsQueries"] = _delete_in_chunks(db, DnsQueryLog, DnsQueryLog.at < cutoff)
+    from .models import DnsDeviceDay
+
+    removed["dnsDays"] = _delete_in_chunks(db, DnsDeviceDay, DnsDeviceDay.day < (now - timedelta(days=400)).strftime("%Y-%m-%d"))
     db.execute(delete(RateLimitBucket).where(RateLimitBucket.expires_at < utcnow()))
     if any(removed.values()):
         log.info("telemetry retention removed %s", removed)
@@ -262,6 +266,9 @@ def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
         from . import blocklists
 
         jobs.append(("dns.blocklists", lambda db: [log.info("dns blocklist sync: %s", r) for r in blocklists.sync_due(db)]))
+        from . import dns_ruleset
+
+        jobs.append(("dns.ruleset", dns_ruleset.tick))  # rebuild the Fenrir DNS ruleset after the feeds change
     return jobs
 
 
@@ -588,7 +595,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(onboarding_router.workspace_router)
     for module in (m365_admin_router, m365_router, network_router, grc_router, backup_router, soc_workflows, ad_router, agent_health_router, onboarding_router, m365_exchange_router, m365_signin_router, m365_intune_router, m365_reports_router, m365_collaboration_router, grc_programme_router,
                    rollouts_router, apikeys_router, roles_router, approvals_router, exclusions_router,
-                   exposure_intel_router, m365_partner_router, m365_workspace_router, email_security_router, email_policies_router, m365_lifecycle_router, condition_packages_router, triage_router, clients_router, search_router, defender_router, mobile_apps_router, push_router, care_router,
+                   exposure_intel_router, m365_partner_router, m365_workspace_router, email_security_router, email_policies_router, dns_console_router, m365_lifecycle_router, condition_packages_router, triage_router, clients_router, search_router, defender_router, mobile_apps_router, push_router, care_router,
                    reports_router, branding_router, deploy_router):
         app.include_router(module.router)
     app.include_router(deploy_router.public)

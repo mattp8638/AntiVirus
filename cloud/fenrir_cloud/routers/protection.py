@@ -98,9 +98,14 @@ def dns_check(domain: str, device_id: str | None = None, tenant_id: str | None =
         from ..policy_schema import resolve
 
         resolution = resolve(services.policy_layers(db, db.get(Tenant, tid)))
-    decision = dnsfilter.decide(domain, resolution["settings"]["dns"], dnsfilter.INTEL.domains(db, tid), blocklists.CACHE.active(db))
+    from .. import dns_rules, dns_ruleset
+
+    rules = dns_rules.CACHE.for_device(db, device) if device_id else dns_rules.CACHE.for_tenant(db, tid)
+    decision = dnsfilter.decide(domain, resolution["settings"]["dns"], dnsfilter.INTEL.domains(db, tid), blocklists.CACHE.active(db),
+                                rules=rules, ruleset=dns_ruleset.CACHE.active(db))
     return {"domain": domain, "action": decision.action, "reason": decision.reason or "no match", "category": decision.category,
-            "rewrite": decision.rewrite, "dgaScore": dnsfilter.looks_like_dga(domain.lower())}
+            "rewrite": decision.rewrite, "dgaScore": dnsfilter.looks_like_dga(domain.lower()), "source": decision.source,
+            "trail": decision.trail, "score": decision.score}
 
 
 @console.get("/dns/log")
