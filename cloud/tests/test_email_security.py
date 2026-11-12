@@ -189,6 +189,13 @@ class FakeMail:
                 return httpx.Response(201, json={"id": "qfolder-1", "displayName": body["displayName"]})
             assert request.url.params.get("includeHiddenFolders") == "true"
             return httpx.Response(200, json={"value": [{"id": v, "displayName": k} for k, v in self.hidden_folders.items()]})
+        if parts[:2] == ["users", USER] and parts[2] == "messages" and len(parts) == 5 and parts[4] == "permanentDelete":
+            self.deleted = getattr(self, "deleted", []) + [parts[3]]
+            return httpx.Response(204)
+        if parts[:2] == ["users", USER] and parts[2] == "messages" and len(parts) == 4 and request.method == "GET":
+            return httpx.Response(200, json={"id": parts[3], "body": {"contentType": "html", "content":
+                "<p>Please verify your account within 24 hours</p><script>alert(1)</script>"
+                "<a href='http://198.51.100.20/login' onclick='x()'>https://www.microsoft.com</a><img src='https://track.example/p.gif'>"}})
         if parts[:2] == ["users", USER] and parts[2] == "messages" and len(parts) == 5 and parts[4] == "move":
             destination = json.loads(request.content)["destinationId"]
             self.moves.append((parts[3], destination))

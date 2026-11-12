@@ -30,7 +30,7 @@ import httpx
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from . import audit, crypto, email_actions, email_security, m365
+from . import audit, crypto, email_actions, email_content, email_policy, email_security, m365
 from .models import EmailScan, EmailScanSetting, Indicator, M365Connection, utcnow
 
 log = logging.getLogger("fenrir.email")
@@ -114,6 +114,35 @@ def build_context(db: Session, connection: M365Connection, intel: dict) -> email
                                   model=email_model.active(db))
 
 
+def record_hits(db: Session, tenant_id: str, row: EmailScan, decision: dict) -> None:
+    """Count a hit on each allow or block entry that matched this message (shown on the Lists tab)."""
+    from .models import EmailListEntry, Tenant
+
+    sources = {t.get("source") for t in decision.get("trail") or []}
+    codes = {r.get("code") for r in row.reasons or []}
+    kinds = ({"block"} if "Block list" in sources or "list.block" in codes else set()) | \
+            ({"allow"} if "Allow list" in sources or "list.allow" in codes else set())
+    if not kinds:
+        return
+    chain, current = [], db.get(Tenant, tenant_id)
+    while current is not None and len(chain) < 10:
+        chain.append(current.id)
+        current = db.get(Tenant, current.parent_id) if current.parent_id else None
+    domain_parts = row.sender_domain.split(".") if row.sender_domain else []
+    domains = {".".join(domain_parts[i:]) for i in range(len(domain_parts) - 1)}
+    hashes = {str(a.get("sha256") or "").lower() for a in row.attachments or [] if a.get("sha256")}
+    subject = (row.subject or "").lower()
+    for entry in db.execute(select(EmailListEntry).where(EmailListEntry.tenant_id.in_(chain), EmailListEntry.kind.in_(kinds))).scalars():
+        value = entry.value
+        hit = (entry.match == "sender" and value == row.sender_address) or (entry.match == "domain" and value in domains) \
+            or (entry.match == "url" and any(value == d or d.endswith("." + value) for d in row.link_domains or [])) \
+            or (entry.match == "hash" and value in hashes) or (entry.match == "subject" and value in subject) \
+            or (entry.match == "ip" and email_policy._in_ranges(str(((row.details or {}).get("origin") or {}).get("ip") or ""), [value]))
+        if hit:
+            entry.hits = (entry.hits or 0) + 1
+            entry.last_hit_at = utcnow()
+
+
 def list_entries(db: Session, tenant_id: str) -> dict:
     """The allow and block lists that apply to a customer: its own, and those of every tenant above it (the MSP's)."""
     from .models import EmailListEntry, Tenant
@@ -122,9 +151,11 @@ def list_entries(db: Session, tenant_id: str) -> dict:
     while current is not None and len(chain) < 10:
         chain.append(current.id)
         current = db.get(Tenant, current.parent_id) if current.parent_id else None
-    out = {(k, m): set() for k in ("allow", "block") for m in ("sender", "domain")}
+    out = {(k, m): set() for k in ("allow", "block") for m in ("sender", "domain", "ip", "url", "hash", "subject")}
+    now = utcnow()
     for kind, match, value in db.execute(select(EmailListEntry.kind, EmailListEntry.match, EmailListEntry.value)
-                                         .where(EmailListEntry.tenant_id.in_(chain or [tenant_id]))).all():
+                                         .where(EmailListEntry.tenant_id.in_(chain or [tenant_id]))
+                                         .where((EmailListEntry.expires_at.is_(None)) | (EmailListEntry.expires_at > now))).all():
         if (kind, match) in out:
             out[(kind, match)].add(str(value).lower())
     return out
@@ -185,6 +216,9 @@ def _attachments(client: httpx.Client, token: str, user_id: str, message_id: str
                 full = _get(client, f"{base}/{quote(str(item.get('id')), safe='')}", token)
                 content = base64.b64decode(full.get("contentBytes") or "", validate=False)
                 entry["sha256"] = hashlib.sha256(content).hexdigest()
+                members, encrypted = email_security.archive_members(entry["name"], content)
+                if members or encrypted:
+                    entry["members"], entry["encrypted"] = members[:100], encrypted
                 hashed += 1
             except (httpx.HTTPError, ValueError):
                 pass
@@ -210,6 +244,9 @@ def scan_connection(db: Session, setting: EmailScanSetting, connection: M365Conn
     """Read and score new mail for one connection. Returns how many messages were stored."""
     token = m365.access_token(client, connection)
     ctx = build_context(db, connection, intel)
+    policy, policy_meta = email_policy.resolve(db, connection.tenant_id)
+    ctx.policy = policy
+    lists = list_entries(db, connection.tenant_id)
     bad_ips = set((intel.get(None) or {}).get("ips", set())) | set((intel.get(connection.tenant_id) or {}).get("ips", set()))
     state = dict(setting.state or {})
     boxes = mailboxes(connection)
@@ -249,20 +286,32 @@ def scan_connection(db: Session, setting: EmailScanSetting, connection: M365Conn
                             continue
                         seen.add(item["id"])
                         attachments = _attachments(client, token, box["id"], item["id"]) if item.get("hasAttachments") else []
-                        result = email_security.analyse(_message(item, box["address"], folder, attachments), ctx)
+                        message = _message(item, box["address"], folder, attachments)
+                        result = email_security.analyse(message, ctx)
                         row = _row(connection, box["address"], folder, item, received, attachments, result)
                         row.details = _details(item, attachments, ctx, bad_ips)
+                        decision = email_policy.decide(message, result, policy, {
+                            "gateway": False, "recipients": [box["address"]], "ownDomains": ctx.own_domains, "lists": lists,
+                            "details": row.details}, policy_meta)
+                        row.details = {**(row.details or {}), "decision": decision}
                         db.add(row)
+                        db.flush()
                         new_rows.append(row)
                         ctx.known_senders.add(result["sender_domain"])
+                        record_hits(db, connection.tenant_id, row, decision)
+                        if email_content.should_keep(policy, row.verdict, decision["action"], decision):
+                            email_content.keep(db, row, message.body_html, message.subject)
+                        planned = decision["action"]
                         if email_actions.acting(setting) and setting.protect_since and received >= setting.protect_since:
-                            planned = email_actions.actions_for(setting).get(row.verdict, "none")
-                            if planned in ("quarantine", "junk") and moved >= email_actions.BRAKE:
+                            if planned in ("quarantine", "junk", "reject") and moved >= email_actions.BRAKE:
                                 email_actions.apply_brake(db, setting, moved + 1)
-                            else:
+                            elif planned != "deliver":
                                 done = email_actions.act(client, token, setting, box["id"], row,
-                                                         list(item.get("categories") or []), state)
+                                                         list(item.get("categories") or []), state, planned,
+                                                         decision["categories"] or None)
                                 moved += done in ("quarantine", "junk")
+                        elif planned != "deliver":
+                            row.action, row.action_status = "", ""  # shadow: recorded in the decision only
                         stored += 1
                         taken += 1
                     url = page.get("@odata.nextLink")
@@ -410,6 +459,11 @@ def purge(db: Session) -> int:
     removed = 0
     for setting in db.execute(select(EmailScanSetting)).scalars().all():
         days = max(7, min(int(setting.retention_days or 90), 730))
+        old = select(EmailScan.id).where(EmailScan.connection_id == setting.connection_id,
+                                         EmailScan.received_at < utcnow() - timedelta(days=days))
+        from .models import EmailContent
+
+        db.execute(delete(EmailContent).where(EmailContent.scan_id.in_(old)))
         removed += db.execute(delete(EmailScan).where(EmailScan.connection_id == setting.connection_id,
                                                       EmailScan.received_at < utcnow() - timedelta(days=days))).rowcount or 0
     if removed:

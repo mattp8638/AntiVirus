@@ -55,7 +55,7 @@ from types import SimpleNamespace
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from . import audit, crypto, email_actions, email_security
+from . import audit, crypto, email_actions, email_policy, email_security
 from .models import EmailGatewayDomain, EmailQuarantine, EmailScan, Indicator, M365Connection, utcnow
 
 log = logging.getLogger("fenrir.email.gateway")
@@ -123,6 +123,7 @@ class Directory:
     routes: dict[str, Route] = field(default_factory=dict)
     bad_ips: set[str] = field(default_factory=set)
     loaded_at: float = 0.0
+    policy_cache: dict = field(default_factory=dict)
 
     def refresh(self, force: bool = False) -> None:
         if not force and time.monotonic() - self.loaded_at < DIRECTORY_REFRESH:
@@ -147,6 +148,16 @@ class Directory:
                 Indicator.type == "ip", Indicator.verdict == "malicious",
                 (Indicator.expires_at.is_(None)) | (Indicator.expires_at > now)))}
         self.routes, self.bad_ips, self.loaded_at = routes, bad, time.monotonic()
+
+    def blocked_ip(self, tenant_id: str, ip: str) -> bool:
+        """The customer's connection filter (email policy) blocks this IP. Policies are re-read once a minute."""
+        cached = self.policy_cache.get(tenant_id)
+        if not cached or time.monotonic() - cached[0] > DIRECTORY_REFRESH:
+            with self.session_factory() as db:
+                document, _ = email_policy.resolve(db, tenant_id)
+            cached = (time.monotonic(), document)
+            self.policy_cache[tenant_id] = cached
+        return email_policy._in_ranges(ip, (cached[1].get("connection") or {}).get("ipBlock") or [])
 
     def route(self, address: str) -> Route | None:
         self.refresh()
@@ -235,6 +246,9 @@ class Handler:
             return "550 5.7.1 Relaying denied: this server only accepts mail for its own domains"
         if route.known is not None and address.lower() not in route.known:
             return "550 5.1.1 Recipient address rejected: no such mailbox"
+        ip = (session.peer or ("", 0))[0]
+        if ip and self.directory.blocked_ip(route.tenant_id, ip):
+            return "550 5.7.1 Message rejected: the sending IP is blocked by the recipient's policy"
         if len(envelope.rcpt_tos) >= MAX_RECIPIENTS:
             return "452 4.5.3 Too many recipients"
         envelope.rcpt_tos.append(address)
@@ -398,8 +412,12 @@ def parse(raw: bytes, auth_header: str) -> tuple[email_security.Message, dict]:
             except Exception:  # noqa: BLE001 - malformed parts are common in spam
                 payload = b""
             if len(attachments) < 20:
-                attachments.append({"name": str(filename or "attachment")[:200], "contentType": content_type,
-                                    "size": len(payload), "sha256": hashlib.sha256(payload).hexdigest()})
+                entry = {"name": str(filename or "attachment")[:200], "contentType": content_type,
+                         "size": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+                members, encrypted = email_security.archive_members(entry["name"], payload)
+                if members or encrypted:
+                    entry["members"], entry["encrypted"] = members[:100], encrypted
+                attachments.append(entry)
         elif content_type == "text/html" and not html:
             html = str(part.get_content())[:500_000]
         elif content_type == "text/plain" and not text:
@@ -500,23 +518,25 @@ def deliver(data: bytes, mail_from: str, recipients: list[str], host: str, port:
         raise TemporaryFailure(f"Could not deliver to {host}: {type(exc).__name__}: {str(exc)[:150]}") from None
 
 
-def _headers(meta: dict, scan: EmailScan, auth_header: str) -> bytes:
+def _headers(meta: dict, scan: EmailScan, auth_header: str, extra: list[str] | None = None) -> bytes:
     lines = [
         f"Received: from {meta.get('helo') or 'unknown'} ([{meta.get('peer')}]) by {hostname()} (Fenrir gateway) with ESMTPS id "
         f"{meta['id']}; {formatdate(localtime=False)}",
         f"Authentication-Results: {hostname()}; {auth_header}",
         f"X-Fenrir-Verdict: {scan.verdict}; score={scan.score}",
         f"X-Fenrir-Scan-Id: {scan.id}",
+        *[line for line in (extra or []) if line and "\r" not in line and "\n" not in line],
     ]
     return ("\r\n".join(lines) + "\r\n").encode()
 
 
-def _tag_subject(raw: bytes) -> bytes:
+def _tag_subject(raw: bytes, prefix: str = "[Suspicious]") -> bytes:
     message = BytesParser(policy=policy.default).parsebytes(raw)
     subject = str(message.get("Subject", ""))
-    if not subject.startswith("[Suspicious]"):
+    prefix = (prefix or "[Suspicious]").strip()
+    if not subject.startswith(prefix):
         del message["Subject"]
-        message["Subject"] = "[Suspicious] " + subject
+        message["Subject"] = prefix + " " + subject
     return message.as_bytes(policy=policy.SMTP)
 
 
@@ -528,6 +548,7 @@ class Worker:
         self.intel: dict = {}
         self.intel_at = 0.0
         self.contexts: dict[str, tuple[float, email_security.Context]] = {}
+        self.policies: dict[str, tuple[float, dict, dict]] = {}
 
     def _intel(self, db: Session) -> dict:
         from . import email_scan
@@ -535,6 +556,14 @@ class Worker:
         if time.monotonic() - self.intel_at > 300:
             self.intel, self.intel_at = email_scan.load_intel(db), time.monotonic()
         return self.intel
+
+    def _policy(self, db: Session, tenant_id: str) -> tuple[dict, dict]:
+        cached = self.policies.get(tenant_id)
+        if cached and time.monotonic() - cached[0] < 60:
+            return cached[1], cached[2]
+        document, meta = email_policy.resolve(db, tenant_id)
+        self.policies[tenant_id] = (time.monotonic(), document, meta)
+        return document, meta
 
     def _context(self, db: Session, tenant_id: str) -> email_security.Context:
         cached = self.contexts.get(tenant_id)
@@ -602,9 +631,14 @@ class Worker:
             if state["action"] == "quarantine":
                 state["done"] = True
                 continue
-            data = raw if not (state["action"] == "tag" and route.tag_subject) else _tag_subject(raw)
+            decision = (scan.details or {}).get("decision") or {}
+            prefix = decision.get("tag") or ""
+            data = _tag_subject(raw, prefix) if (prefix and route.tag_subject) else raw
+            extra = list(decision.get("headers") or [])
+            if decision.get("action") in ("junk", "tag"):
+                extra.append(f"X-Fenrir-Action: {decision['action']}")
             try:
-                handed = deliver(_headers(meta, scan, auth["header"]) + data, meta.get("mailFrom", ""), rcpts, route.destination,
+                handed = deliver(_headers(meta, scan, auth["header"], extra) + data, meta.get("mailFrom", ""), rcpts, route.destination,
                                  route.port, route.require_tls)
                 scan.action_status, scan.action_error, scan.acted_at = "done", "", utcnow()
                 scan.details = {**(scan.details or {}), "delivery": {**handed, "attempts": int(meta.get("attempts") or 0) + 1}}
@@ -655,8 +689,17 @@ class Worker:
             result["reasons"].insert(0, {"code": "clamav", "points": 100, "detail": f"ClamAV found {signature}"})
             result["score"], result["verdict"] = 100, "malware"
             result["features"]["codes"] = sorted(set(result["features"]["codes"]) | {"clamav"})
-        action = actions_for({"actions": route.actions}).get(result["verdict"], "deliver")
         received = datetime.fromisoformat(meta["receivedAt"])
+        details = self._details(raw, meta, rcpts, auth, ctx)
+        rules_policy, policy_meta = self._policy(db, route.tenant_id)
+        from . import email_scan as scanner
+
+        decision = email_policy.decide(message, result, rules_policy, {
+            "gateway": True, "ip": meta.get("peer", ""), "recipients": rcpts, "size": len(raw), "ownDomains": ctx.own_domains,
+            "lists": scanner.list_entries(db, route.tenant_id), "details": details, "dmarcPolicy": auth.get("policy", "")},
+            policy_meta)
+        details["decision"] = decision
+        action = {"reject": "quarantine", "junk": "tag"}.get(decision["action"], decision["action"])
         ms = result["microsoft"]
         scan = EmailScan(
             tenant_id=route.tenant_id, connection_id=route.domain_id, mailbox=rcpts[0].lower()[:320],
@@ -670,10 +713,14 @@ class Worker:
             verdict=result["verdict"], score=result["score"], reasons=result["reasons"],
             agreement=email_security.agreement(result["verdict"], "unknown"), features=result["features"],
             model_score=result.get("model_score"), source="gateway", recipients=[r.lower() for r in rcpts],
-            action=action, action_status="", acted_at=None,
-            details=self._details(raw, meta, rcpts, auth, ctx))
+            action=action, action_status="", acted_at=None, details=details)
         db.add(scan)
         db.flush()
+        from . import email_content
+
+        scanner.record_hits(db, route.tenant_id, scan, decision)
+        if email_content.should_keep(rules_policy, scan.verdict, action, decision):
+            email_content.keep(db, scan, message.body_html, message.subject)
         if action == "quarantine":
             db.add(EmailQuarantine(scan_id=scan.id, tenant_id=route.tenant_id, mail_from=meta.get("mailFrom", "")[:320],
                                    recipients=scan.recipients, size=len(raw), envelope=crypto.encrypt(raw, f"email-quarantine:{scan.id}")))
@@ -769,6 +816,9 @@ def purge(db: Session) -> int:
         old = [i for (i,) in db.execute(select(EmailScan.id).where(EmailScan.connection_id == route.id, EmailScan.received_at < cutoff))]
         if old:
             db.execute(delete(EmailQuarantine).where(EmailQuarantine.scan_id.in_(old)))
+            from .models import EmailContent
+
+            db.execute(delete(EmailContent).where(EmailContent.scan_id.in_(old)))
             removed += db.execute(delete(EmailScan).where(EmailScan.id.in_(old))).rowcount or 0
     db.commit()
     return removed
