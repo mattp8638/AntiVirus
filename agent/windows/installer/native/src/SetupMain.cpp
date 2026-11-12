@@ -3383,7 +3383,8 @@ void RefreshUi(UiContext& context) {
   SetWindowTextW(context.statusLabel, context.statusText.c_str());
   SetWindowTextW(context.primaryButton, context.installed ? L"Repair deployment" : L"Install protection");
   SetWindowTextW(context.badgeLabel, context.busy ? L"Working" : (context.installed ? L"Installed" : L"Ready"));
-  ShowWindow(context.uninstallButton, context.installed ? SW_SHOW : SW_HIDE);
+  // Behind the branded page the native controls stay hidden; it has its own Uninstall button.
+  ShowWindow(context.uninstallButton, context.installed && !context.webReady ? SW_SHOW : SW_HIDE);
   EnableWindow(context.primaryButton, !context.busy);
   EnableWindow(context.uninstallButton, context.installed && !context.busy);
   EnableWindow(context.closeButton, !context.busy);
