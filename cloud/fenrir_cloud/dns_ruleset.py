@@ -124,8 +124,8 @@ def build(db: Session, actor: str = "system", activate: bool = True) -> DnsRules
     sources.append({"id": "fenrir-intel", "name": "Fenrir threat intel", "category": "malware", "weight": int(cfg["intelWeight"]),
                     "kind": "intel"})
     sources = sources[:30]  # a bit per source in the packed value
-    score: dict[str, int] = {}
-    mask: dict[str, int] = {}
+    # One dict, packed: the weight sum in the low 12 bits, one bit per source above them (each source adds a name once).
+    acc: dict[str, int] = {}
     contributed = []
     for index, source in enumerate(sources):
         bit, weight = 1 << index, source["weight"]
@@ -136,9 +136,9 @@ def build(db: Session, actor: str = "system", activate: bool = True) -> DnsRules
             names = cached.domains if cached else blocklists._unpack(
                 db.execute(select(DnsBlocklist.domains).where(DnsBlocklist.id == source["id"])).scalar_one_or_none())
         count = 0
+        add = weight + (bit << 12)
         for name in names:
-            score[name] = score.get(name, 0) + weight
-            mask[name] = mask.get(name, 0) | bit
+            acc[name] = acc.get(name, 0) + add
             count += 1
         contributed.append(count)
         source["domains"] = count
@@ -147,14 +147,14 @@ def build(db: Session, actor: str = "system", activate: bool = True) -> DnsRules
     kept: dict[str, int] = {}
     by_category: dict[str, int] = {}
     blocking = 0
-    for name, value in score.items():
+    for name, packed in acc.items():
         parts = name.split(".")
-        total, bits = value, mask[name]
+        total, bits = packed & 0xFFF, packed >> 12
         for i in range(1, len(parts) - 1):
-            parent = ".".join(parts[i:])
-            if parent in mask and not mask[parent] & bits:
-                total += score[parent]
-                bits |= mask[parent]
+            parent = acc.get(".".join(parts[i:]))
+            if parent is not None and not (parent >> 12) & bits:
+                total += parent & 0xFFF
+                bits |= parent >> 12
         total = min(100, total)
         if total < threshold or _is_protected(name, protected):
             continue
@@ -177,7 +177,7 @@ def build(db: Session, actor: str = "system", activate: bool = True) -> DnsRules
     blob = zlib.compress("\n".join(f"{d}\t{v}" for d, v in kept.items()).encode(), 6)
     version = (db.execute(select(func.max(DnsRuleset.version))).scalar() or 0) + 1
     stats = {"domains": len(kept), "blocking": blocking, "monitorOnly": len(kept) - blocking, "byCategory": by_category,
-             "scored": len(score), "protectedSkipped": sum(1 for d in score if _is_protected(d, protected)),
+             "scored": len(acc), "protectedSkipped": sum(1 for d in acc if _is_protected(d, protected)),
              "seconds": round(time.time() - started, 1), "bytes": len(blob)}
     row = DnsRuleset(version=version, created_by=actor, domain_count=len(kept), domains=blob, stats=stats, diff=diff,
                      settings={**{k: cfg[k] for k in ("blockThreshold", "monitorThreshold", "intelWeight")}, "sources": sources})
