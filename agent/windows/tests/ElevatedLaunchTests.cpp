@@ -17,6 +17,9 @@
 #include <string>
 #include <thread>
 
+#include <sddl.h>
+#include <vector>
+
 #include "LocalAdminRotation.h"
 #include "TemporaryAdmin.h"
 
@@ -50,6 +53,27 @@ std::string ReadAll(const std::filesystem::path& file) {
   return out;
 }
 
+std::vector<std::wstring> GroupSids(HANDLE token, bool logonOnly) {
+  std::vector<std::wstring> sids;
+  DWORD size = 0;
+  GetTokenInformation(token, TokenGroups, nullptr, 0, &size);
+  std::vector<BYTE> buffer(size ? size : 1);
+  if (!size || !GetTokenInformation(token, TokenGroups, buffer.data(), size, &size)) return sids;
+  const auto* groups = reinterpret_cast<TOKEN_GROUPS*>(buffer.data());
+  for (DWORD i = 0; i < groups->GroupCount; ++i) {
+    if (logonOnly && (groups->Groups[i].Attributes & SE_GROUP_LOGON_ID) != SE_GROUP_LOGON_ID) continue;
+    LPWSTR text = nullptr;
+    if (ConvertSidToStringSidW(groups->Groups[i].Sid, &text)) {
+      sids.push_back(text);
+      LocalFree(text);
+    }
+  }
+  return sids;
+}
+
+// The user's own logon SID must be in the launched token: it is what lets the program reach their desktop.
+std::string g_logonCheck;
+
 // Runs whoami /groups as the launch and returns its output, or an error starting with "error:".
 std::string RunWhoami(const std::wstring& account, const std::wstring& password, DWORD session, const std::wstring& name) {
   const auto file = g_out / (name + L".txt");
@@ -63,6 +87,18 @@ std::string RunWhoami(const std::wstring& account, const std::wstring& password,
   std::wstring step;
   const auto status = tempadmin::LaunchElevated(account, password, session, cmd, arguments, &launch, &step);
   if (status != 0) return "error: could not " + Narrow(step) + " (Windows error " + std::to_string(status) + ")";
+  g_logonCheck = "missing";
+  HANDLE user = nullptr;
+  if (WTSQueryUserToken(session, &user)) {
+    const auto mine = GroupSids(user, true);
+    const auto launched = GroupSids(static_cast<HANDLE>(launch.token), false);
+    for (const auto& sid : mine) {
+      for (const auto& other : launched) {
+        if (_wcsicmp(sid.c_str(), other.c_str()) == 0) g_logonCheck = "ok";
+      }
+    }
+    CloseHandle(user);
+  }
   for (int i = 0; i < 300 && tempadmin::RunningProcesses(launch) > 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(200));
   const bool finished = tempadmin::RunningProcesses(launch) == 0;
   tempadmin::Release(&launch);
@@ -77,7 +113,7 @@ std::string CheckElevated(const std::string& groups, const char* who) {
   if (admins == std::string::npos) return std::string("FAIL ") + who + ": no Administrators group:\n" + groups;
   const auto line = groups.substr(admins, groups.find('\n', admins) - admins);
   if (line.find("Enabled group") == std::string::npos) return std::string("FAIL ") + who + ": Administrators not enabled: " + line;
-  if (groups.find("S-1-5-5-") == std::string::npos) return std::string("FAIL ") + who + ": no logon SID:\n" + groups;
+  if (g_logonCheck != "ok") return std::string("FAIL ") + who + ": the launched token does not carry the user's logon SID";
   return {};
 }
 
