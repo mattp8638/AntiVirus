@@ -73,6 +73,14 @@ mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 log = logging.getLogger("fenrir")
 
+# Pages served as HTML (the console and the few public pages): scripts only from this server, no plugins, no
+# framing, forms only back here. Styles allow inline (React style props and the email viewer); images and map tiles
+# may come from https; WebSockets serve the realtime and remote-session channels.
+CONSOLE_CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; "
+               "font-src 'self' data:; connect-src 'self' ws: wss:; media-src 'self' blob:; worker-src 'self'; "
+               "manifest-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; "
+               "frame-ancestors 'none'")
+
 
 def bootstrap(settings: Settings) -> None:
     crypto.key_status()  # Validate configured keys before changing the database.
@@ -562,6 +570,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         from .demo_mode import DemoGuard
 
         app.add_middleware(DemoGuard, seed_token=settings.demo_seed_token)
+    from . import proxies
+
+    trusted_proxies = proxies.parse(settings.trusted_proxies)
+    if trusted_proxies:  # outermost: everything after it sees the real client address
+        app.add_middleware(proxies.TrustedProxyMiddleware, networks=trusted_proxies)
+
+    https_public = settings.public_base_url.lower().startswith("https://")
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -571,6 +586,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # The remote viewer needs the clipboard and fullscreen; nothing else may use powerful features.
         response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
+        if https_public:
+            # Browsers that have seen the console over HTTPS never go back to plain HTTP for it (a year).
+            response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+        if response.headers.get("content-type", "").startswith("text/html") and \
+                not request.url.path.startswith(("/docs", "/redoc", "/legacy/")):  # FastAPI's API pages load their own scripts
+            response.headers.setdefault("Content-Security-Policy", CONSOLE_CSP)
         return response
 
     from . import approvals as approval_gate

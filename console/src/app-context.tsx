@@ -19,6 +19,7 @@ export interface Me {
   mfaSetupRequired?: boolean;  // the MSP requires MFA and this account has not enrolled yet
   emergencyStop?: { active: boolean; by: string; reason: string; at: string } | null;
   passkeys?: number;  // how many passkeys this account has registered
+  sessionIdleMinutes?: number;  // signed out after this long without keyboard or mouse use (0: never)
 }
 
 interface Ctx {
@@ -82,6 +83,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setUnauthorizedHandler(clearSession);
     refreshMe();
   }, [clearSession, refreshMe]);
+
+  // Sign out after the configured time without keyboard, mouse or touch use in any open console tab. The server
+  // ends idle sessions too, but the console's own background refreshes would otherwise keep them alive.
+  const idleMinutes = me?.sessionIdleMinutes ?? 0;
+  useEffect(() => {
+    if (!me || idleMinutes <= 0) return;
+    const key = "fenrir.activity";
+    let last = Date.now();
+    const mark = () => {
+      const now = Date.now();
+      if (now - last < 5000) return;
+      last = now;
+      try { localStorage.setItem(key, String(now)); } catch { /* private window */ }
+    };
+    const events = ["keydown", "pointerdown", "pointermove", "wheel", "touchstart"] as const;
+    events.forEach((name) => window.addEventListener(name, mark, { passive: true }));
+    mark();
+    const timer = window.setInterval(() => {
+      let shared = last;
+      try { shared = Math.max(last, Number(localStorage.getItem(key)) || 0); } catch { /* ignore */ }
+      if (Date.now() - shared > idleMinutes * 60_000) {
+        logout();
+        setToastState({ message: `Signed out after ${idleMinutes} minutes without use.`, error: false });
+      }
+    }, 30_000);
+    return () => {
+      events.forEach((name) => window.removeEventListener(name, mark));
+      window.clearInterval(timer);
+    };
+  }, [me, idleMinutes, logout]);
 
   // Microsoft sign-in returns with a one-minute, single-use code; swap it for the session token.
   const completeSso = async (handoff: string) => {

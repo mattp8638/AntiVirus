@@ -149,7 +149,8 @@ def me(principal: Principal = Depends(current_principal), db: Session = Depends(
             "mfaSetupRequired": principal.credential_id is None and platform_security.mfa_required(
                 db, principal.user, getattr(db.get(UserSession, principal.session_id or ""), "method", None)),
             "emergencyStop": platform_security.stopped(db),
-            "passkeys": len(passkeys.list_for(db, principal.user.id))}
+            "passkeys": len(passkeys.list_for(db, principal.user.id)),
+            "sessionIdleMinutes": get_settings().session_idle_minutes}
 
 
 @router.post("/auth/password")

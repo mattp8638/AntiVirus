@@ -41,6 +41,9 @@ class Settings:
     secret_key: str = field(default_factory=lambda: os.getenv("FENRIR_SECRET_KEY") or secrets.token_hex(32))
     token_ttl_minutes: int = field(default_factory=lambda: int(os.getenv("FENRIR_TOKEN_TTL_MINUTES", "720")))
     # Staff must use MFA unless the platform settings say otherwise (Settings > Platform > Security).
+    # A console session nobody has used for this long ends (0 turns it off). The console also signs out after this
+    # long without keyboard or mouse use, since its background refreshes would otherwise keep the session alive.
+    session_idle_minutes: int = field(default_factory=lambda: int(os.getenv("FENRIR_SESSION_IDLE_MINUTES", "60")))
     require_mfa: bool = field(default_factory=lambda: _bool("FENRIR_REQUIRE_MFA", True))
     # Default for Settings > Platform > Security > "Require script review" until it is saved there.
     script_review: bool = field(default_factory=lambda: _bool("FENRIR_SCRIPT_REVIEW", False))
@@ -89,6 +92,8 @@ class Settings:
     # DNS over TLS for Android Private DNS (fenrir_cloud.dot_server); empty when it is not deployed.
     dot_hostname: str = field(default_factory=lambda: os.getenv("FENRIR_DOT_HOSTNAME", "").strip().lower())
 
+    # Reverse proxies whose X-Forwarded-For is believed (addresses or networks, comma-separated): see proxies.py.
+    trusted_proxies: str = field(default_factory=lambda: os.getenv("FENRIR_TRUSTED_PROXIES", "").strip())
     cors_origins: list[str] = field(default_factory=lambda: _list("FENRIR_CORS_ORIGINS", "http://localhost:5173"))
     console_dir: Path = field(
         default_factory=lambda: Path(os.getenv("FENRIR_CONSOLE_DIR", str(Path(__file__).resolve().parents[2] / "console" / "dist")))

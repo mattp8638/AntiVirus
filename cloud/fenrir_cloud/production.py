@@ -41,6 +41,10 @@ def check(settings: Settings, existing_users: int) -> tuple[list[str], list[str]
     if url.scheme != "https" and (url.hostname or "") not in LOCAL_HOSTS:
         warnings.append(f"FENRIR_PUBLIC_URL ({settings.public_base_url}) is not HTTPS: agents and browsers would send credentials "
                         "unencrypted. Put the server behind TLS (deploy/docker-compose.https.yml) and use an https:// URL.")
+    if url.scheme == "https" and (url.hostname or "") not in LOCAL_HOSTS and not settings.trusted_proxies:
+        warnings.append("FENRIR_TRUSTED_PROXIES is empty: behind the HTTPS proxy, sign-ins, the audit log and rate limits record "
+                        "the proxy's address instead of the client's. Set it to the proxy's network (install.sh does) once "
+                        "port 8080 is only reachable from the proxy.")
     if settings.open_enrollment:
         warnings.append("FENRIR_OPEN_ENROLLMENT is on: any machine that can reach the server can enrol into the Unassigned "
                         "customer and wait for approval. Turn it off once enrolment tokens are in use.")
