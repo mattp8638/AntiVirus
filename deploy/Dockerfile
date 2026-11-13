@@ -4,7 +4,7 @@
 # stages are then skipped entirely and /app/cloud/downloads holds only a note.
 ARG FENRIR_AGENTS=build
 
-FROM node:24.22.1-bookworm-slim AS console
+FROM node:26.13.0-bookworm-slim AS console
 WORKDIR /src/console
 COPY console/package.json console/package-lock.json* ./
 RUN npm ci --no-audit --no-fund
