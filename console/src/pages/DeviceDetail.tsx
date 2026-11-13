@@ -12,6 +12,8 @@ import { ErrorNote, Modal, Pill, PresenceDot, presenceOf, Sev, Table, useAction,
 import { ConnectButtons, JobDetail, JobStatus, pct } from "../components/rmm";
 import { RoutesPanel } from "../components/routes";
 import { TimeChart } from "../components/TimeChart";
+import { ALLOW_KINDS, AllowanceForm } from "../components/AdminAllowance";
+import { confirmDialog } from "../components/dialogs";
 import { RunScript } from "./rmm/Scripts";
 import { SystemTab } from "./DeviceSystem";
 import { DeviceVulns } from "./DeviceVulns";
@@ -617,34 +619,58 @@ function ScriptPicker({ device, onClose, onStarted }: { device: any; onClose: ()
 
 
 // LAPS-style local admin passwords: history, reveal (asks to re-enter your password, audited) and rotate now.
-// A technician gives the person signed in at this PC a temporary administrator account (PAM), without them asking first.
+// A technician gives the person signed in at this PC a temporary administrator account (PAM), without them asking first,
+// or lets a user get admin access whenever they need it without approval (an allowance).
 function TemporaryAdmin({ device }: { device: any }) {
   const { can } = useApp();
   const { data, reload } = useListData<any>("elevation-requests", { device_id: device.id }, [device.id]);
+  const { data: allowances, reload: reloadAllowances } = useListData<any>("elevation-allowances", { device_id: device.id }, [device.id]);
   const [open, setOpen] = useState(false);
+  const [allowOpen, setAllowOpen] = useState(false);
   const [form, setForm] = useState({ reason: "", minutes: 30 });
   const { run, busy } = useAction();
   const user = device.metrics?.loggedOnUser;
   const grant = async () => {
     if (await run(() => api("elevation-requests", { body: { deviceId: device.id, reason: form.reason.trim(), minutes: form.minutes } }),
-                  "Granted: the temporary account is created at the device's next check-in and shows in the user's agent window")) {
+                  "Granted: the temporary account is created within seconds and shows in the user's agent window")) {
       setOpen(false); setForm({ reason: "", minutes: 30 }); reload();
     }
   };
+  const revoke = async (a: any) => {
+    if (!await confirmDialog(`Stop ${a.anyUser ? "anyone" : a.user} getting admin access without approval${a.scope === "customer" ? " on every device of this customer" : ""}?`)) return;
+    if (await run(() => api(`elevation-allowances/${a.id}/revoke`, { method: "POST" }), "Allowance removed")) reloadAllowances();
+  };
   const recent = (data ?? []).slice(0, 5);
+  const manage = can("configure") && can("approve");
   return (
     <div className="card" style={{ marginBottom: 14 }}>
-      <div className="row"><h3 style={{ margin: 0, flex: 1 }}>Temporary admin access</h3>
+      <div className="row"><h3 style={{ margin: 0, flex: 1 }}>Admin access</h3>
         <Link className="small" to="/admin-requests">All admin requests →</Link></div>
-      <p className="small muted">Creates a temporary local administrator account for the signed-in user, removed automatically when the time
-        is up or they are done. Every step is in the audit log against this device and the user.</p>
-      {can("configure") && can("approve") && (user
-        ? <button className="primary" disabled={busy} onClick={() => setOpen(true)}>Give {user} admin access…</button>
-        : <span className="small muted">Nobody is signed in at this device right now.</span>)}
-      {recent.length > 0 && <Table rows={recent} columns={[
-        { key: "user", label: "User" }, { key: "status", label: "Status", render: (r) => <Pill value={r.status} /> },
-        { key: "account", label: "Temporary admin", render: (r) => <span className="mono small">{r.account || "—"}</span> },
-        { key: "createdAt", label: "When", render: (r) => fmtTime(r.createdAt) }]} />}
+      <p className="small muted">Approved programs open already elevated on the user's desktop, with no password and no Windows prompt. Admin
+        access uses a temporary local administrator account that is removed automatically. Every step is in the audit log against this device and the user.</p>
+      {manage && <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+        {user ? <button className="primary" disabled={busy} onClick={() => setOpen(true)}>Give {user} admin access now…</button>
+              : <span className="small muted">Nobody is signed in at this device right now.</span>}
+        <button disabled={busy} onClick={() => setAllowOpen(true)}>Allow admin access without approval…</button>
+      </div>}
+      {(allowances ?? []).length > 0 && <>
+        <h4 style={{ margin: "14px 0 6px" }}>Allowed without approval</h4>
+        <Table rows={allowances ?? []} columns={[
+          { key: "user", label: "Who", render: (a) => <><b>{a.anyUser ? "Anyone signed in" : a.user || a.userSid}</b>{a.scope === "customer" && <div className="small muted">every device of this customer</div>}</> },
+          { key: "kinds", label: "For", render: (a) => <span className="small">{ALLOW_KINDS[a.kinds] || a.kinds}{a.programs?.length ? `: ${a.programs.join(", ")}` : ""}</span> },
+          { key: "minutes", label: "Each time", render: (a) => `${a.minutes} min` },
+          { key: "expiresAt", label: "Until", render: (a) => a.expiresAt ? fmtTime(a.expiresAt) : "revoked" },
+          { key: "uses", label: "Used", render: (a) => <span className="small">{a.uses}×{a.lastUsedAt ? `, last ${fmtTime(a.lastUsedAt)}` : ""}</span> },
+          { key: "x", label: "", className: "right", render: (a) => can("configure") && <button className="small danger" disabled={busy} onClick={() => revoke(a)}>Remove</button> }]} />
+      </>}
+      {recent.length > 0 && <>
+        <h4 style={{ margin: "14px 0 6px" }}>Recent requests</h4>
+        <Table rows={recent} columns={[
+          { key: "user", label: "User" }, { key: "status", label: "Status", render: (r) => <Pill value={r.status} /> },
+          { key: "kind", label: "For", render: (r) => r.kind === "run" ? <span className="small mono">{String(r.target).split("\\").pop()}</span> : <span className="small">Admin access</span> },
+          { key: "approvedByRule", label: "Approved by", render: (r) => <span className="small">{r.approvedByRule || r.decidedBy || ""}</span> },
+          { key: "createdAt", label: "When", render: (r) => fmtTime(r.createdAt) }]} />
+      </>}
       {open && <Modal title={`Admin access for ${user}`} onClose={() => setOpen(false)}
                       footer={<><button onClick={() => setOpen(false)}>Cancel</button>
                         <button className="primary" disabled={busy || form.reason.trim().length < 4} onClick={grant}>Grant</button></>}>
@@ -653,6 +679,7 @@ function TemporaryAdmin({ device }: { device: any }) {
         <label className="field">For<select value={form.minutes} onChange={(e) => setForm({ ...form, minutes: Number(e.target.value) })}>
           {[15, 30, 60, 120, 240, 480].map((m) => <option key={m} value={m}>{m < 60 ? `${m} minutes` : `${m / 60} hour${m > 60 ? "s" : ""}`}</option>)}</select></label>
       </Modal>}
+      {allowOpen && <AllowanceForm device={device} onClose={() => setAllowOpen(false)} onSaved={() => { setAllowOpen(false); reloadAllowances(); }} />}
     </div>
   );
 }
