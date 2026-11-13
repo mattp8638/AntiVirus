@@ -18,6 +18,7 @@ Unassigned holding area. It works in this order:
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from sqlalchemy import delete, func, select, update
@@ -161,3 +162,52 @@ def delete_customer(db: Session, tenant: Tenant, actor: str, actor_tenant_id: st
     for path in files:
         path.unlink(missing_ok=True)
     return {"ok": True, "name": name, "removed": removed, "total": sum(removed.values())}
+
+
+# Columns never exported: credentials, key material and anything that would let the file be used to sign in or
+# decrypt. Encrypted envelopes are left out too (they are useless without the server's key).
+_SECRET_COLUMN = re.compile(r"(password|secret|envelope|ciphertext|api_key|token_hash|key_hash|private|mfa_)", re.IGNORECASE)
+
+
+def export_customer(db: Session, tenant: Tenant, out) -> dict:
+    """Everything the platform holds about a customer, as a zip of JSON files (one per table) written to ``out``.
+
+    Covers the same tables as deleting the customer, plus the customer record and its audit trail. Secrets are left
+    out (see _SECRET_COLUMN). Stored files (evidence, bundles) are listed by name in their tables, not included.
+    """
+    import json
+    import zipfile
+
+    device_ids = list(db.scalars(select(Device.id).where(Device.tenant_id == tenant.id)))
+    user_ids = list(db.scalars(select(User.id).where(User.tenant_id == tenant.id)))
+    counts: dict[str, int] = {}
+    omitted: dict[str, list[str]] = {}
+
+    def rows(table, condition):
+        columns = [c for c in table.c if not _SECRET_COLUMN.search(c.name)]
+        hidden = [c.name for c in table.c if _SECRET_COLUMN.search(c.name)]
+        if hidden:
+            omitted[table.name] = hidden
+        return [dict(row._mapping) for row in db.execute(select(*columns).where(condition))]
+
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+        def write(name: str, data) -> None:
+            archive.writestr(f"{name}.json", json.dumps(data, default=str, indent=1, ensure_ascii=False))
+            counts[name] = len(data) if isinstance(data, list) else 1
+
+        tenants = Base.metadata.tables["tenants"]
+        write("tenants", rows(tenants, tenants.c.id == tenant.id))
+        audit_log = Base.metadata.tables["audit_log"]
+        write("audit_log", rows(audit_log, audit_log.c.tenant_id == tenant.id))
+        for table, link in _tables():
+            condition = _condition(table, link, tenant.id, device_ids, user_ids)
+            if condition is None:
+                continue
+            data = rows(table, condition)
+            if data:
+                write(table.name, data)
+        summary = {"format": "fenrir-customer-export/1", "customer": {"id": tenant.id, "name": tenant.name},
+                   "exportedAt": utcnow().isoformat() + "Z", "tables": counts, "omittedSecretColumns": omitted,
+                   "note": "Secrets and encrypted values are not included. Stored files are referenced by name only."}
+        archive.writestr("README.json", json.dumps(summary, indent=1, ensure_ascii=False))
+    return summary

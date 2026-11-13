@@ -1,7 +1,7 @@
 import { displayValue } from "./DisplayValue";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api } from "../api";
+import { api, downloadFile } from "../api";
 import { useApp } from "../app-context";
 import { confirmDialog } from "./dialogs";
 import { ErrorNote, Modal, Table, useAction, useData, useListData } from "./ui";
@@ -104,6 +104,8 @@ export function CustomerActions({ customer, onChanged, afterDelete = "/crm", onD
     <span style={{ display: "inline-flex", gap: 6 }} onClick={(e) => e.stopPropagation()}>
       <button className={small ? "small" : ""} onClick={() => setEditing(true)}>{small ? "Edit" : "Edit customer"}</button>
       <button className={small ? "small" : ""} disabled={busy} onClick={toggleArchive}>{archived ? "Restore" : "Archive"}</button>
+      <button className={small ? "small" : ""} disabled={busy} title="Everything held about this customer, as a zip of JSON files (secrets left out). Recorded in the audit log."
+        onClick={() => run(() => downloadFile(`tenants/${customer.id}/export`, "fenrir-export.zip"), "Export downloaded")}>Export data</button>
       <button className={`danger${small ? " small" : ""}`} onClick={() => setDeleting(true)}>Delete</button>
       {editing && <CustomerEditModal customer={customer} onClose={(saved) => { setEditing(false); if (saved) { onChanged(); refreshMe(); } }} />}
       {deleting && <CustomerDeleteModal customer={customer} onClose={() => setDeleting(false)}

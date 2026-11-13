@@ -147,11 +147,26 @@ export async function uploadFile<T = any>(path: string, file: Blob, query: Recor
 
 /** Download an authenticated file and save it with the server's (or the given) file name. */
 export async function downloadFile(path: string, fallbackName = "download") {
-  const headers: Record<string, string> = {};
-  const token = getToken();
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const response = await fetch(new URL(`/api/console/${path}`, window.location.origin).toString(), { headers });
-  if (!response.ok) throw new ApiError(response.status, (await response.text()) || "Download failed");
+  const fetchIt = () => {
+    const headers: Record<string, string> = {};
+    const token = getToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+    if (reauthToken && reauthToken.expires > Date.now()) headers["X-Fenrir-Reauth"] = reauthToken.value;
+    return fetch(new URL(`/api/console/${path}`, window.location.origin).toString(), { headers });
+  };
+  const detail = async (r: Response) => {
+    const text = await r.text();
+    try { const d = JSON.parse(text).detail; return typeof d === "string" ? d : text; } catch { return text; }
+  };
+  let response = await fetchIt();
+  if (response.status === 403 && reauthPrompt) {
+    const why = await detail(response);
+    if (why !== "reauth_required") throw new ApiError(403, why);
+    reauthToken = null;  // sensitive download (a customer export): confirm the password, then try again
+    if (!(await reauthPrompt())) throw new ApiError(403, why);
+    response = await fetchIt();
+  }
+  if (!response.ok) throw new ApiError(response.status, (await detail(response)) || "Download failed");
   const disposition = response.headers.get("Content-Disposition") || "";
   const name = /filename="?([^";]+)"?/.exec(disposition)?.[1] || fallbackName;
   const url = URL.createObjectURL(await response.blob());
