@@ -9,7 +9,8 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/gosnmp/gosnmp v1.38.0
 	github.com/hillu/go-yara/v4 v4.3.2
-	github.com/jezek/xgb v1.1.1
+	github.com/jezek/xgb v1.3.1
+	github.com/pion/webrtc/v4 v4.2.24
 	go.etcd.io/bbolt v1.3.8
 	golang.org/x/sys v0.43.0
 )
@@ -31,10 +32,8 @@ require (
 	github.com/pion/stun/v4 v4.0.1 // indirect
 	github.com/pion/transport/v5 v5.1.1 // indirect
 	github.com/pion/turn/v5 v5.1.2 // indirect
-	github.com/pion/webrtc/v4 v4.2.24 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	golang.org/x/crypto v0.48.0 // indirect
-	golang.org/x/exp v0.0.0-20230224173230-c95f2b4c22f2 // indirect
 	golang.org/x/net v0.50.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 )
