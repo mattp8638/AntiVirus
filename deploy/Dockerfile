@@ -92,7 +92,7 @@ FROM agents-none AS windows-agents-none
 FROM linux-agents-${FENRIR_AGENTS} AS linux-agents
 FROM windows-agents-${FENRIR_AGENTS} AS windows-agents-selected
 
-FROM python:3.13-slim-bookworm
+FROM python:3.15-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 FENRIR_CONSOLE_DIR=/app/console/dist
 WORKDIR /app/cloud
 COPY cloud/requirements.txt ./
