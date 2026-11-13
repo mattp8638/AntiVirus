@@ -22,6 +22,8 @@ Every change and release runs free tooling, with results under **Security → Co
 | OpenSSF Scorecard | `scorecard.yml` | Rates the repository's own practices: pinned actions, branch protection, token permissions, signed releases. |
 | SBOM and dependency scan | `sbom.yml` | SPDX and CycloneDX bills of materials for the whole tree, scanned for known vulnerable dependencies; attached to each release. |
 | Catalogue integrity | `catalogue.yml` | Community apps and scripts must match `catalogue/MANIFEST.sha256`; winget and Homebrew IDs must exist. |
+| Dependency updates | `.github/dependabot.yml` | Weekly updates for Python, npm, Go, Gradle, Docker and Actions; security fixes as soon as an advisory is published. |
+| Release provenance | `release.yml` | Each release's source archive has a SHA-256 and a signed build attestation: `gh attestation verify fenrir-<tag>.tar.gz -R <owner>/<repo>`. |
 | Clean-software and stress suites | `acceptance.yml` | Windows and Linux agents on real runners: false positives, crash recovery, server outage, Defender alongside. |
 
 ## Running it safely

@@ -149,7 +149,8 @@ def me(principal: Principal = Depends(current_principal), db: Session = Depends(
             "mfaSetupRequired": principal.credential_id is None and platform_security.mfa_required(
                 db, principal.user, getattr(db.get(UserSession, principal.session_id or ""), "method", None)),
             "emergencyStop": platform_security.stopped(db),
-            "passkeys": len(passkeys.list_for(db, principal.user.id))}
+            "passkeys": len(passkeys.list_for(db, principal.user.id)),
+            "sessionIdleMinutes": get_settings().session_idle_minutes}
 
 
 @router.post("/auth/password")
@@ -707,6 +708,36 @@ def deletion_preview(tenant_id: str, principal: Principal = Depends(current_prin
     from .. import customers
 
     return customers.deletion_report(db, _customer(db, principal, tenant_id), principal.user.tenant_id)
+
+
+@router.get("/tenants/{tenant_id}/export")
+def export_tenant(tenant_id: str, request: Request, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Everything held about a customer as a zip of JSON files (for a customer's data request or before deleting
+    them). Secrets are left out. Needs fresh authentication; recorded in the audit log."""
+    import os
+    import tempfile
+
+    from fastapi.responses import FileResponse
+    from starlette.background import BackgroundTask
+
+    from .. import customers
+
+    tenant = _customer(db, principal, tenant_id)
+    require_reauth(request, principal)
+    ratelimit.check(f"tenant-export:{principal.user.id}", 5, 600)
+    handle, path = tempfile.mkstemp(prefix="fenrir-export-", suffix=".zip")
+    try:
+        with os.fdopen(handle, "wb") as out:
+            summary = customers.export_customer(db, tenant, out)
+    except Exception:
+        os.unlink(path)
+        raise
+    audit.record(db, principal.actor, "tenant.exported", tenant.name, tenant.id, tables=len(summary["tables"]),
+                 rows=sum(summary["tables"].values()))
+    db.commit()
+    safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in tenant.name)[:60] or "customer"
+    return FileResponse(path, media_type="application/zip", filename=f"fenrir-export-{safe}.zip",
+                        background=BackgroundTask(os.unlink, path))
 
 
 @router.delete("/tenants/{tenant_id}")

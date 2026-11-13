@@ -34,6 +34,12 @@ def active(db: Session, session_id: str | None, user_id: str | None) -> UserSess
     now = utcnow()
     if row is None or row.user_id != user_id or row.revoked_at is not None or row.expires_at <= now:
         return None
+    idle = get_settings().session_idle_minutes
+    if idle > 0 and (now - row.last_seen_at).total_seconds() > idle * 60 + TOUCH_SECONDS:
+        row.revoked_at, row.revoked_reason = now, "idle"
+        db.commit()  # the request is refused, so nothing else would save it
+        _cut_remote_viewers([row.id])
+        return None
     if (now - row.last_seen_at).total_seconds() > TOUCH_SECONDS:
         row.last_seen_at = now
     return row

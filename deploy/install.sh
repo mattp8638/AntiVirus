@@ -146,6 +146,8 @@ else
   set_env FENRIR_PUBLIC_URL "https://$domain"
   set_env FENRIR_DOMAIN "$domain"
   set_env FENRIR_OPEN_ENROLLMENT false
+  set_env FENRIR_BACKUP_PASSPHRASE "$(openssl rand -base64 32)"  # backup.sh encrypts with it; keep it offline with .env
+  set_env FENRIR_TRUSTED_PROXIES "172.16.0.0/12,10.0.0.0/8,192.168.0.0/16,127.0.0.1"  # Caddy on the Docker network
   set_env FENRIR_BUILD_PROFILE production
   set_env FENRIR_RELEASE_KEY ./signing/release-ed25519.pem
   set_env FENRIR_MSP_NAME "$company"

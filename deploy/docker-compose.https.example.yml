@@ -4,6 +4,10 @@ services:
   cloud:
     # Replace the base file's public HTTP binding; keep it available for local diagnostics.
     ports: !override ["127.0.0.1:8080:8080", "3478:3478/udp"]   # 3478/udp: STUN for direct remote sessions
+    environment:
+      # Caddy reaches the cloud over Docker's private network: believe its X-Forwarded-For, so sign-ins, the audit
+      # log and rate limits see the real client address. Safe because port 8080 above is only on localhost.
+      FENRIR_TRUSTED_PROXIES: ${FENRIR_TRUSTED_PROXIES:-172.16.0.0/12,10.0.0.0/8,192.168.0.0/16,127.0.0.1}
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped

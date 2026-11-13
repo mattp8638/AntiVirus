@@ -342,7 +342,7 @@ else
   } | grep -Eq 'backup\.sh|fenrir-backup' && schedule=yes
   latest=""
   if [ -d "$BACKUP_DIR" ]; then
-    latest="$(find "$BACKUP_DIR" -maxdepth 1 -type d -name 'fenrir-backup-*' -mtime -2 2>/dev/null | sort | tail -1)"
+    latest="$(find "$BACKUP_DIR" -maxdepth 1 \( -type d -name 'fenrir-backup-*' -o -type f -name 'fenrir-backup-*.tar.enc' \) -mtime -2 2>/dev/null | sort | tail -1)"
   fi
   if [ -n "$latest" ] && [ -s "$latest/manifest.json" ]; then
     pass "A backup from the last two days: $latest"

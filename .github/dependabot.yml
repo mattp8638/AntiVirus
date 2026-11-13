@@ -1,0 +1,29 @@
+# Weekly dependency updates (SOC 2 CC7.1: known vulnerabilities in third-party code are found and fixed).
+# Security fixes are proposed as soon as an advisory is published, whatever the schedule.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /cloud
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 5
+    groups: { python: { patterns: ["*"], update-types: [minor, patch] } }
+  - package-ecosystem: npm
+    directory: /console
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 5
+    groups: { console: { patterns: ["*"], update-types: [minor, patch] } }
+  - package-ecosystem: gomod
+    directory: /agent/linux
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 5
+  - package-ecosystem: gradle
+    directory: /agent/android
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 5
+  - package-ecosystem: docker
+    directory: /deploy
+    schedule: { interval: weekly, day: monday }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly, day: monday }
+    groups: { actions: { patterns: ["*"] } }

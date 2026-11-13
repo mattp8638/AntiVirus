@@ -11,7 +11,10 @@ x-fenrir-environment: &fenrir-environment
   FENRIR_MSP_NAME: ${FENRIR_MSP_NAME:-My MSP}   # first run only: your company, as the MSP tenant
   FENRIR_STUN_PORT: ${FENRIR_STUN_PORT:-3478}     # UDP STUN for direct remote sessions; 0 turns it off
   FENRIR_ADMIN_PASSWORD: ${FENRIR_ADMIN_PASSWORD:?set FENRIR_ADMIN_PASSWORD}
-  FENRIR_OPEN_ENROLLMENT: ${FENRIR_OPEN_ENROLLMENT:-true}
+  FENRIR_OPEN_ENROLLMENT: ${FENRIR_OPEN_ENROLLMENT:-false}   # true lets any machine enrol into Unassigned without a token
+  # The reverse proxy (Caddy) whose X-Forwarded-For gives the real client address: set by install.sh for the HTTPS
+  # setup, where port 8080 is only on localhost. Leave empty when clients reach port 8080 directly.
+  FENRIR_TRUSTED_PROXIES: ${FENRIR_TRUSTED_PROXIES:-}
   FENRIR_FEED_URL: ${FENRIR_FEED_URL:-}            # optional: your own signaturedb-style feed
   FENRIR_FEED_TOKEN: ${FENRIR_FEED_TOKEN:-}
   FENRIR_VAULT_KEY: ${FENRIR_VAULT_KEY:?set a persistent base64 32-byte FENRIR_VAULT_KEY}

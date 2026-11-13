@@ -102,3 +102,30 @@ def test_what_cannot_be_deleted_and_who_cannot_delete(client, admin):
     outsider = login(client, "boss@other.example")
     assert client.get(f"/api/console/tenants/{victim['id']}/deletion", headers=outsider).status_code in (403, 404)
     assert client.post(f"/api/console/tenants/{victim['id']}/archive", headers=outsider, json={}).status_code in (403, 404)
+
+
+def test_export_contains_the_customers_data_and_no_secrets(client, admin):
+    import io
+    import json
+    import zipfile
+
+    leaving = make(client, admin, "Exported Ltd")
+    other = make(client, admin, "Other Ltd")
+    populate(client, admin, leaving, "EXP1")
+    populate(client, admin, other, "OTH1")
+    url = f"/api/console/tenants/{leaving['id']}/export"
+    assert client.get(url, headers=admin).status_code == 403  # needs fresh sign-in
+    response = client.get(url, headers=stepup(client, admin))
+    assert response.status_code == 200, response.text
+    archive = zipfile.ZipFile(io.BytesIO(response.content))
+    names = set(archive.namelist())
+    assert {"README.json", "tenants.json", "devices.json", "psa_tickets.json", "audit_log.json"} <= names
+    devices = json.loads(archive.read("devices.json"))
+    assert [d["serial_number"] for d in devices] == ["EXP1"]  # this customer only
+    everything = b"".join(archive.read(n) for n in names if n != "README.json")  # the README names what was left out
+    assert b"OTH1" not in everything
+    assert b"api_key_hash" not in everything and b"password_hash" not in everything
+    readme = json.loads(archive.read("README.json"))
+    assert readme["customer"]["name"] == "Exported Ltd" and "api_key_hash" in readme["omittedSecretColumns"]["devices"]
+    actions = [e["action"] for e in client.get("/api/console/audit", headers=admin).json()]
+    assert "tenant.exported" in actions

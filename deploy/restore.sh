@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Restore a Fenrir platform backup made by backup.sh (CORE-09, AT-24).
 #
-#   deploy/restore.sh <backup directory> [--yes] [--allow-different-vault-key]
+#   deploy/restore.sh <backup directory or .tar.enc file> [--yes] [--allow-different-vault-key]
+#
+# An encrypted backup (.tar.enc) is decrypted with FENRIR_BACKUP_PASSPHRASE (or FENRIR_BACKUP_PASSPHRASE_FILE) from
+# the environment or deploy/.env, into a private temporary folder that is removed afterwards.
 #
 # Checks every file against the manifest and the vault key fingerprint against deploy/.env, stops the API, replaces
 # the database and the artifacts volume, starts the API, waits for /ready, then checks that the audit chain verifies
@@ -17,6 +20,21 @@ compose_args=(-f "$DEPLOY_DIR/docker-compose.yml")
 for f in ${FENRIR_COMPOSE_FILES:-}; do compose_args+=(-f "$f"); done
 compose() { docker compose "${compose_args[@]}" --env-file "$ENV_FILE" "$@"; }
 envval() { sed -n "s/^$1=//p" "$ENV_FILE" 2>/dev/null | tail -1 | tr -d '"'"'"' \r'; }
+if [ -f "$dir" ] && [[ "$dir" == *.tar.enc ]]; then
+  # Exact value (a passphrase may contain spaces): only surrounding quotes and a Windows line end are removed.
+rawval() { sed -n "s/^$1=//p" "$ENV_FILE" 2>/dev/null | tail -1 | sed -e 's/\r$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\\(.*\\)'\$/\\1/"; }
+setting() { local v="${!1:-}"; [ -n "$v" ] || v="$(rawval "$1")"; printf '%s' "$v"; }
+  passphrase="$(setting FENRIR_BACKUP_PASSPHRASE)"
+  if [ -z "$passphrase" ] && [ -n "$(setting FENRIR_BACKUP_PASSPHRASE_FILE)" ]; then passphrase="$(cat "$(setting FENRIR_BACKUP_PASSPHRASE_FILE)")"; fi
+  [ -n "$passphrase" ] || { echo "$dir is encrypted: set FENRIR_BACKUP_PASSPHRASE (the one it was made with)"; exit 1; }
+  work="$(umask 077; mktemp -d)"
+  trap 'rm -rf "$work"' EXIT
+  echo "Decrypting..."
+  FENRIR_BACKUP_KEY="$passphrase" openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -pass env:FENRIR_BACKUP_KEY -in "$dir" |
+    tar -C "$work" -xf - || { echo "Could not decrypt $dir: wrong passphrase, or the file is damaged"; exit 1; }
+  dir="$(find "$work" -mindepth 1 -maxdepth 1 -type d -name 'fenrir-backup-*' | head -1)"
+  [ -n "$dir" ] || { echo "The decrypted file holds no Fenrir backup"; exit 1; }
+fi
 manifest="$dir/manifest.json"
 [ -f "$manifest" ] || { echo "No manifest.json in $dir"; exit 1; }
 grep -q '"format": "fenrir-backup/1"' "$manifest" || { echo "Not a Fenrir backup"; exit 1; }

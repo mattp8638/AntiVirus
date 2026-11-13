@@ -432,8 +432,11 @@ jobs:
           c() { docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.lab.yml --env-file deploy/.env "$@"; }
           count() { c exec -T db psql -U fenrir -d fenrir -tAc "SELECT (SELECT count(*) FROM devices) || ',' || (SELECT count(*) FROM psa_tickets) || ',' || (SELECT count(*) FROM audit_log WHERE actor <> 'system:health-watch') || ',' || (SELECT count(*) FROM commands)" | tr -d '[:space:]'; }
           before="$(count)"
+          # An encrypted backup this time, as install.sh configures: restore must decrypt it.
+          export FENRIR_BACKUP_PASSPHRASE="ci passphrase $(openssl rand -hex 8)"
           deploy/backup.sh /tmp/fenrir-fresh
-          backup="$(ls -d /tmp/fenrir-fresh/fenrir-backup-* | tail -1)"
+          backup="$(ls /tmp/fenrir-fresh/fenrir-backup-*.tar.enc | tail -1)"
+          test -z "$(find /tmp/fenrir-fresh -maxdepth 1 -type d -name 'fenrir-backup-*')"  # no plain copy left behind
           # Lose the whole server: containers, database and artifact volumes. Only the backup, .env and signing remain.
           c down -v --remove-orphans
           started=$(date +%s)
