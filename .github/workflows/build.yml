@@ -12,7 +12,7 @@ jobs:
     name: Windows Agent (MSVC + CMake)
     runs-on: windows-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     - name: Configure CMake (development build without signed minifilter)
       run: cmake -B build -S agent/windows/service -DANTIVIRUS_REQUIRE_MINIFILTER_PAYLOAD=OFF
@@ -54,7 +54,7 @@ jobs:
         if ($LASTEXITCODE -ne 0) { throw "Built service --help returned $LASTEXITCODE" }
         Write-Warning 'Unsigned development artifacts only. Not approved for customer installation or kernel antimalware claims.'
 
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v7
       with:
         name: Fenrir-Windows-UNSIGNED-CI
         path: |
@@ -68,7 +68,7 @@ jobs:
     name: macOS Agent (Swift + EndpointSecurity)
     runs-on: macos-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     - name: Build Swift Package
       working-directory: agent/macos
@@ -83,7 +83,7 @@ jobs:
       run: |
         echo "Placeholder: pkgbuild --root .build/release --identifier com.fenrir.agent FenrirAgent.pkg"
 
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v7
       with:
         name: Fenrir-macOS
         path: agent/macos/.build/release/fenrir-agent
