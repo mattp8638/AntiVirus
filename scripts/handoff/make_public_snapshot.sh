@@ -71,6 +71,7 @@ python3 "$out/scripts/handoff/public_check.py" --strict \
   || { echo "The snapshot still contains private names or built-in addresses (above). Nothing was committed." >&2; exit 1; }
 # The check has passed: blank its built-in word list, which names the original owner, in the published copy.
 sed -i 's/^BUILT_IN_PRIVATE = .*/BUILT_IN_PRIVATE: list[str] = []  # add the names you must not publish/' "$out/scripts/handoff/public_check.py"
+sed -i 's/^STATIC = .*/STATIC: list[str] = []  # addresses of services you no longer run/' "$out/scripts/handoff/public_check.py"
 git -C "$out" add -A
 echo
 echo "Public copy ready in $out ($(git -C "$out" ls-files | wc -l) files, no history)."
