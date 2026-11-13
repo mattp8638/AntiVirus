@@ -92,6 +92,10 @@ def effective_policy(db: Session, device: Device) -> tuple[dict, dict]:
                                         name=name, settings=resolution["settings"], botnet_ips=botnet_ips(db, device.tenant_id),
                                         trusted_sha256=trusted_hashes(db, device.tenant_id),
                                         edr_exclusions=_edr_exclusions(db, device.tenant_id))
+    if (device.platform or "windows").lower() == "windows":
+        from . import elevation_rules
+
+        elevation_rules.adjust_agent_document(db, device, resolution, doc)
     return resolution, doc
 
 

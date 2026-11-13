@@ -58,6 +58,9 @@ constexpr UINT kPatchActionCompleteMessage = WM_APP + 4;
 // A program started as the temporary administrator has closed: end that admin session now.
 constexpr UINT kElevationProgramClosedMessage = WM_APP + 20;
 constexpr UINT_PTR kRefreshTimerId = 100;
+// While an admin access request is on its way, the window checks every 2 seconds instead of every 10.
+constexpr UINT_PTR kElevationPollTimerId = 102;
+constexpr UINT kElevationPollIntervalMs = 2000;
 constexpr UINT kRefreshIntervalMs = 10000;
 constexpr UINT kFenrirPngResourceId = 101;
 
@@ -272,6 +275,7 @@ struct UiContext {
   std::wstring elevationJson{L"{}"};
   // Requests whose program this window has already started as the temporary administrator.
   std::vector<std::wstring> launchedElevations;
+  ULONGLONG elevationPollUntil{0};
   std::wstring brandName{L"Fenrir"};
   bool allowUserScans{true};
   bool trayIconAllowed{true};
@@ -3636,6 +3640,9 @@ bool LaunchAsTemporaryAdmin(UiContext& context, const std::wstring& requestId, c
 void LaunchApprovedProgram(UiContext& context) {
   const auto& json = context.elevationJson;
   if (ElevationField(json, "state") != L"granted" || ElevationField(json, "kind") != L"run") return;
+  // The service starts approved programs itself (elevated, no prompt). The window only steps in when it reports it
+  // could not, for example on a Windows version that refuses its way of reaching the desktop.
+  if (json.find(L"\"launchFailed\":true") == std::wstring::npos) return;
   const auto requestId = ElevationField(json, "requestId");
   const auto account = ElevationField(json, "account");
   const auto password = ElevationField(json, "password");
@@ -3667,8 +3674,9 @@ bool RequestAdminProgram(const antivirus::agent::AgentConfig& config, const std:
                : target.empty()
                    ? (approved ? L"Approved. The temporary administrator account appears under Get help in a moment."
                                : L"Your request was sent. Once it is approved, the temporary administrator account appears under Get help.")
-               : approved ? L"Approved. The program opens in a moment; choose Yes when Windows asks."
-                          : L"Your request was sent. The program opens as soon as it is approved.";
+               : result.responseJson.find(L"\"launched\":true") != std::wstring::npos ? L"Opening it as administrator now."
+               : approved ? L"Approved. The program opens as administrator in a moment."
+                          : L"Your request was sent. The program opens as administrator as soon as it is approved, even if this window is closed.";
   }
   return result.success;
 }
@@ -3680,6 +3688,11 @@ void RefreshSnapshot(UiContext& context) {
     const auto status = antivirus::agent::SendLocalBrokerCommand(context.config, L"elevation.status", L"", L"{}", L"", L"");
     context.elevationJson = status.success && !status.responseJson.empty() && status.responseJson.front() == L'{' ? status.responseJson : L"{}";
     LaunchApprovedProgram(context);
+    const bool waiting = ElevationField(context.elevationJson, "state") == L"pending" || GetTickCount64() < context.elevationPollUntil;
+    if (context.hwnd != nullptr) {
+      if (waiting) SetTimer(context.hwnd, kElevationPollTimerId, kElevationPollIntervalMs, nullptr);
+      else KillTimer(context.hwnd, kElevationPollTimerId);
+    }
   } else {
     context.elevationJson = L"{}";
   }
@@ -4389,16 +4402,38 @@ void HandleWebViewMessage(UiContext& context, const std::wstring& message) {
     return;
   }
 
+  if (_wcsicmp(action.c_str(), L"elevationRun") == 0) {
+    // During admin access: pick any program, script or installer and the service starts it elevated, no prompt.
+    wchar_t filePath[MAX_PATH] = {};
+    wchar_t filter[] = L"Programs and installers (*.exe;*.msi;*.bat;*.cmd)\0*.exe;*.msi;*.bat;*.cmd\0All files (*.*)\0*.*\0\0";
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = context.hwnd;
+    dialog.lpstrFilter = filter;
+    dialog.lpstrFile = filePath;
+    dialog.nMaxFile = static_cast<DWORD>(std::size(filePath));
+    dialog.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
+    dialog.lpstrTitle = L"Choose a program to run as administrator";
+    if (!GetOpenFileNameW(&dialog)) return;
+    std::wstring message;
+    const bool sent = RequestAdminProgram(context.config, filePath, L"", L"Run from the agent window during admin access", &message);
+    PostWebViewNotice(context, sent ? L"good" : L"danger", message);
+    context.elevationPollUntil = GetTickCount64() + 60000;
+    RefreshSnapshot(context);
+    PublishWebViewState(context);
+    return;
+  }
+
   if (_wcsicmp(action.c_str(), L"elevationRequest") == 0) {
     const auto reason = GetQueryValue(pairs, L"reason");
     const auto payload = L"{\"reason\":\"" + JsonEscape(reason.substr(0, 300)) + L"\"}";
     const auto result = antivirus::agent::SendLocalBrokerCommand(context.config, L"elevation.request", L"", payload, L"", L"");
+    context.elevationPollUntil = GetTickCount64() + 60000;
     if (result.success) {
       const bool granted = result.responseJson.find(L"\"status\":\"approved\"") != std::wstring::npos;
       PostWebViewNotice(context, L"good",
-                        granted ? L"Approved. A temporary administrator account will appear here in a moment; enter it when "
-                                  L"Windows asks for an administrator."
-                                : L"Your request was sent. You will get a temporary administrator account once it is approved.",
+                        granted ? L"Approved. Your admin access appears here in a moment."
+                                : L"Your request was sent. You will get admin access here as soon as it is approved.",
                         true);
     } else {
       PostWebViewNotice(context, L"danger", L"Your request could not be sent: " +
@@ -5008,7 +5043,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     }
 
     case WM_TIMER: {
-      if (wParam == kRefreshTimerId) {
+      if (wParam == kRefreshTimerId || wParam == kElevationPollTimerId) {
         if (auto* context = GetContext(hwnd)) {
           RefreshSnapshot(*context);
         }
@@ -5268,6 +5303,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
       auto* context = GetContext(hwnd);
       if (context != nullptr) {
         KillTimer(hwnd, kRefreshTimerId);
+        KillTimer(hwnd, kElevationPollTimerId);
         if (context->trayAdded) {
           Shell_NotifyIconW(NIM_DELETE, &context->trayIcon);
         }
@@ -5350,7 +5386,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
                                           launchOptions.pamRunArgs,
                                           launchOptions.pamRunReason.empty() ? L"Requested from the PAM tray" : launchOptions.pamRunReason,
                                           &message);
-    MessageBoxW(nullptr, message.c_str(), kWindowTitle, MB_OK | (sent ? MB_ICONINFORMATION : MB_ICONWARNING));
+    // Approved straight away: the program simply opens, so there is nothing to say. Otherwise explain.
+    const bool quiet = sent && (message.rfind(L"Approved", 0) == 0 || message.rfind(L"Opening", 0) == 0);
+    if (!quiet) MessageBoxW(nullptr, message.c_str(), kWindowTitle, MB_OK | (sent ? MB_ICONINFORMATION : MB_ICONWARNING));
+    if (!launchOptions.pamRunTarget.empty()) {
+      // Run one program (Explorer's menu or the PAM tray): the service opens it once approved, window or not.
+      OleUninitialize();
+      return 0;
+    }
   }
 
   const wchar_t* mutexName =

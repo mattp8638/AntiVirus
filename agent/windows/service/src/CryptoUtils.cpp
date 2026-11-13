@@ -5,6 +5,7 @@
 #include <wincrypt.h>
 #include <wintrust.h>
 #include <softpub.h>
+#include <mscat.h>
 
 #include <sstream>
 #include <stdexcept>
@@ -248,6 +249,86 @@ std::wstring QueryFileSignerSubject(const std::filesystem::path& path) {
   }
 
   return subject;
+}
+
+namespace {
+
+// Verifies a signature (embedded, or the catalog that lists the file) and returns the signer's display name.
+std::wstring VerifiedSigner(WINTRUST_DATA& trustData) {
+  GUID policyGuid = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+  trustData.cbStruct = sizeof(trustData);
+  trustData.dwUIChoice = WTD_UI_NONE;
+  trustData.fdwRevocationChecks = WTD_REVOKE_NONE;
+  trustData.dwStateAction = WTD_STATEACTION_VERIFY;
+  trustData.dwProvFlags = WTD_CACHE_ONLY_URL_RETRIEVAL;
+  std::wstring name;
+  if (WinVerifyTrust(nullptr, &policyGuid, &trustData) == ERROR_SUCCESS) {
+    if (auto* provider = WTHelperProvDataFromStateData(trustData.hWVTStateData)) {
+      if (auto* signer = WTHelperGetProvSignerFromChain(provider, 0, FALSE, 0); signer && signer->csCertChain > 0 && signer->pasCertChain) {
+        wchar_t buffer[512]{};
+        if (CertGetNameStringW(signer->pasCertChain[0].pCert, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, nullptr, buffer, 512) > 1) name = buffer;
+      }
+    }
+  }
+  trustData.dwStateAction = WTD_STATEACTION_CLOSE;
+  WinVerifyTrust(nullptr, &policyGuid, &trustData);
+  return name;
+}
+
+}  // namespace
+
+std::wstring QueryFilePublisher(const std::filesystem::path& path) {
+  WINTRUST_FILE_INFO fileInfo{};
+  fileInfo.cbStruct = sizeof(fileInfo);
+  fileInfo.pcwszFilePath = path.c_str();
+  WINTRUST_DATA embedded{};
+  embedded.dwUnionChoice = WTD_CHOICE_FILE;
+  embedded.pFile = &fileInfo;
+  if (auto name = VerifiedSigner(embedded); !name.empty()) return name;
+
+  // Most of Windows (cmd.exe, PowerShell, msiexec) is signed through a catalog instead.
+  HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return {};
+  std::wstring name;
+  // The SHA-256 catalog functions (Windows 8+) are looked up at run time; not every SDK's import library has them.
+  using AcquireFn = BOOL(WINAPI*)(HCATADMIN*, const GUID*, PCWSTR, PCCERT_STRONG_SIGN_PARA, DWORD);
+  using HashFn = BOOL(WINAPI*)(HCATADMIN, HANDLE, DWORD*, BYTE*, DWORD);
+  const HMODULE wintrust = GetModuleHandleW(L"wintrust.dll") ? GetModuleHandleW(L"wintrust.dll") : LoadLibraryW(L"wintrust.dll");
+  const auto acquire = wintrust ? reinterpret_cast<AcquireFn>(GetProcAddress(wintrust, "CryptCATAdminAcquireContext2")) : nullptr;
+  const auto calcHash = wintrust ? reinterpret_cast<HashFn>(GetProcAddress(wintrust, "CryptCATAdminCalcHashFromFileHandle2")) : nullptr;
+  HCATADMIN admin = nullptr;
+  if (acquire && calcHash && acquire(&admin, nullptr, BCRYPT_SHA256_ALGORITHM, nullptr, 0)) {
+    DWORD size = 0;
+    calcHash(admin, file, &size, nullptr, 0);
+    std::vector<BYTE> hash(size);
+    if (size != 0 && calcHash(admin, file, &size, hash.data(), 0)) {
+      if (HCATINFO catalog = CryptCATAdminEnumCatalogFromHash(admin, hash.data(), size, 0, nullptr)) {
+        CATALOG_INFO info{};
+        info.cbStruct = sizeof(info);
+        if (CryptCATCatalogInfoFromContext(catalog, &info, 0)) {
+          std::wstring tag;
+          static constexpr wchar_t kHex[] = L"0123456789ABCDEF";
+          for (const BYTE b : hash) tag += kHex[b >> 4], tag += kHex[b & 0x0F];
+          WINTRUST_CATALOG_INFO catalogInfo{};
+          catalogInfo.cbStruct = sizeof(catalogInfo);
+          catalogInfo.pcwszCatalogFilePath = info.wszCatalogFile;
+          catalogInfo.pcwszMemberFilePath = path.c_str();
+          catalogInfo.pcwszMemberTag = tag.c_str();
+          catalogInfo.hMemberFile = file;
+          catalogInfo.pbCalculatedFileHash = hash.data();
+          catalogInfo.cbCalculatedFileHash = size;
+          WINTRUST_DATA trust{};
+          trust.dwUnionChoice = WTD_CHOICE_CATALOG;
+          trust.pCatalog = &catalogInfo;
+          name = VerifiedSigner(trust);
+        }
+        CryptCATAdminReleaseCatalogContext(admin, catalog, 0);
+      }
+    }
+    CryptCATAdminReleaseContext(admin, 0);
+  }
+  CloseHandle(file);
+  return name;
 }
 
 }  // namespace antivirus::agent

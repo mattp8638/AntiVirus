@@ -170,6 +170,26 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell.exe -NoProfile -File agent/windows/tests/PatchScriptSyntaxTests.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Privileged access - approved programs start elevated in the user's session (as LocalSystem)
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --target fenrir-elevated-launch-tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $exe = (Resolve-Path build/Release/fenrir-elevated-launch-tests.exe).Path
+          $out = Join-Path $env:RUNNER_TEMP 'elevated-launch'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          # The service runs as LocalSystem; a scheduled task is the simplest way to run the test the same way.
+          $action = New-ScheduledTaskAction -Execute $exe -Argument "--out `"$out`""
+          Register-ScheduledTask -TaskName FenrirElevatedLaunchTest -Action $action -User 'SYSTEM' -RunLevel Highest -Force | Out-Null
+          Start-ScheduledTask -TaskName FenrirElevatedLaunchTest
+          $result = Join-Path $out 'result.txt'
+          for ($i = 0; $i -lt 120 -and -not (Test-Path $result); $i++) { Start-Sleep -Seconds 1 }
+          Unregister-ScheduledTask -TaskName FenrirElevatedLaunchTest -Confirm:$false
+          Get-ChildItem $out -Filter *.txt | ForEach-Object { Write-Host "--- $($_.Name)"; Get-Content $_.FullName | Write-Host }
+          if (-not (Test-Path $result)) { throw 'The elevated launch test did not finish' }
+          $verdict = (Get-Content $result -Raw).Trim()
+          if ($verdict.StartsWith('FAIL')) { throw $verdict }
+          if ($verdict.StartsWith('SKIP')) { Write-Host "::warning::Elevated launch test skipped: $verdict" }
       - name: Build Windows native installer and bundled service
         shell: pwsh
         run: cmake --build build --config Release --target antivirus-setup

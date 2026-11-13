@@ -23,6 +23,7 @@
 #include "AdMonitor.h"
 #include "BruteForceGuard.h"
 #include "RegistryWatcher.h"
+#include "TemporaryAdmin.h"
 #include "CommandJournalStore.h"
 #include "DeviceInventoryCollector.h"
 #include "DnsProxy.h"
@@ -215,6 +216,15 @@ class AgentService {
   std::mutex elevationMutex_{};
   // Temporary admin passwords by request id: memory only, never written to disk or sent to the cloud.
   std::map<std::wstring, std::wstring> elevationPasswords_{};
+  // Programs the service started as a temporary administrator, by request id (guarded by elevationMutex_).
+  std::map<std::wstring, std::vector<std::shared_ptr<tempadmin::Launch>>> elevationLaunches_{};
+  // Starts target elevated on the user's desktop for this grant; endWhenClosed ends the grant once it has all closed.
+  bool StartElevatedProgram(const std::wstring& requestId, const std::wstring& sid, const std::wstring& account,
+                            const std::wstring& target, const std::wstring& arguments, bool endWhenClosed, std::wstring* error);
+  void WatchElevatedProgram(std::wstring requestId, std::shared_ptr<tempadmin::Launch> launch, bool endWhenClosed);
+  bool ElevatedProgramsRunningLocked(const std::wstring& requestId);
+  void ApplyElevationShellMenu(bool on);  // "Run as administrator with Fenrir" on programs and installers
+  int elevationMenuState_{-1};
   void CheckRemovableMedia();  // antimalware.scanRemovableMedia
   unsigned long knownDrives_{0};
   unsigned long pendingRemovable_{0};

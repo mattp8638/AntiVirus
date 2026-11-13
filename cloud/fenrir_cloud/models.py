@@ -351,6 +351,35 @@ class ElevationRequest(Base):
     account_sid: Mapped[str | None] = mapped_column(String(200), nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     end_reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # What the device verified about the program (kind "run"): its signature's publisher and SHA-256, used by the
+    # auto-approve rules and shown to technicians.
+    publisher: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    approved_by_rule: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    events: Mapped[list | None] = mapped_column(JSON, nullable=True)  # timeline: requested, decided, granted, launched, ended
+
+
+class ElevationAllowance(Base):
+    """A technician lets a user (or anyone) on a device, or on all of a customer's devices, get admin access without
+    asking each time. Requests that match are granted straight away, whatever the policy's request setting."""
+
+    __tablename__ = "elevation_allowances"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ela"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)  # null = every device of the customer
+    user: Mapped[str] = mapped_column(String(200), default="")      # "" = any user
+    user_sid: Mapped[str] = mapped_column(String(200), default="")  # when known, matched instead of the name
+    kinds: Mapped[str] = mapped_column(String(10), default="any")   # any | session | run
+    programs: Mapped[list] = mapped_column(JSON, default=list)      # run only: paths, wildcards or SHA-256; [] = any program
+    minutes: Mapped[int] = mapped_column(Integer, default=30)       # length of each admin session it grants
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # null = until revoked
+    note: Mapped[str] = mapped_column(String(500), default="")
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_by: Mapped[str] = mapped_column(String(200), default="")
+    uses: Mapped[int] = mapped_column(Integer, default=0)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     events: Mapped[list | None] = mapped_column(JSON, nullable=True)  # timeline: requested, decided, granted, launched, ended
 
 

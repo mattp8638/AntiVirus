@@ -447,11 +447,22 @@ SCHEMA: tuple[Section, ...] = (
         "Privilege management",
         "Least-privilege controls with just-in-time elevation (PAM).",
         (
-            F("enabled", "bool", False, "Privilege management"),
+            F("enabled", "bool", False, "Privilege management",
+              "Turns on removing standing local admin rights. Admin access requests below work on their own."),
             F("removeLocalAdmins", "bool", False, "Remove standing local admin rights"),
-            F("elevationRequests", "enum", "approval", "Elevation requests", options=("off", "auto-approve", "approval")),
+            F("elevationRequests", "enum", "off", "Admin access requests",
+              "off: users cannot ask (allowances given from a device still work). approval: requests wait for a "
+              "technician unless an auto-approve rule or allowance below matches. auto-approve: every request is "
+              "granted straight away.", options=("off", "auto-approve", "approval")),
             F("elevationMinutes", "int", 30, "Elevation length (minutes)", min=5, max=480),
-            F("autoApprovePublishers", "list", [], "Auto-approve signed by"),
+            F("autoApproveUsers", "list", [], "Auto-approve these users",
+              "One per line: a user name (jo), DOMAIN\\user or PC\\user. Their requests are granted without waiting."),
+            F("autoApprovePrograms", "list", [], "Auto-approve these programs",
+              "One per line: a full path, a path with * wildcards (C:\\Program Files\\Vendor\\*), or a file's SHA-256. "
+              "Avoid folders ordinary users can write to (Downloads, Desktop, Temp)."),
+            F("autoApprovePublishers", "list", [], "Auto-approve programs signed by",
+              "One per line: the publisher exactly as shown on a request (for example Adobe Inc.). Checked on the device "
+              "with a valid signature. Microsoft Windows covers built-in tools, including Command Prompt and PowerShell."),
             F("breakGlassAllowed", "bool", True, "Allow break-glass admin"),
             F("rotateLocalAdminPassword", "bool", False, "Rotate the local admin password (LAPS)",
               "The agent sets a random password for the local Administrator and stores it in the vault first. "
@@ -649,7 +660,9 @@ AGENT_SUPPORT: dict[str, tuple[str, ...]] = {
     "privilege.removeLocalAdmins": ('windows',),
     "privilege.elevationRequests": ('windows',),
     "privilege.elevationMinutes": ('windows',),
-    "privilege.autoApprovePublishers": (),
+    "privilege.autoApprovePublishers": ('windows',),
+    "privilege.autoApproveUsers": ('windows',),
+    "privilege.autoApprovePrograms": ('windows',),
     "tamper.enabled": ('windows',),
     "tamper.uninstallRequiresToken": ('windows',),
     "tamper.protectServiceAndFiles": ('windows',),
@@ -969,6 +982,19 @@ class Layer:
     name: str
     settings: dict
     locks: list[str] = field(default_factory=list)
+
+
+def elevation_mode(resolution: dict) -> str:
+    """Admin access requests (privilege.elevationRequests), independent of the Privilege management switch.
+
+    Before they were separate, requests only worked with privilege.enabled on and the default was "approval". A policy
+    that never chose a value keeps that behaviour: "approval" with the switch on, "off" without it.
+    """
+    privilege = resolution["settings"].get("privilege", {})
+    mode = str(privilege.get("elevationRequests") or "off")
+    if resolution.get("origin", {}).get("privilege.elevationRequests", "default") == "default":
+        return "approval" if privilege.get("enabled") else "off"
+    return mode if mode in ("off", "auto-approve", "approval") else "off"
 
 
 def resolve(layers: list[Layer]) -> dict:
