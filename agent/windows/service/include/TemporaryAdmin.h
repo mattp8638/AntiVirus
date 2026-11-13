@@ -56,4 +56,29 @@ bool RemoveProfile(const std::wstring& sid);
 // Local accounts carrying kComment: what a crash or power cut may have left behind.
 std::vector<Account> List();
 
+// The interactive (Remote Desktop or console) session the user is signed in to, active ones first; kNoSession when
+// they are not signed in.
+constexpr unsigned long kNoSession = 0xFFFFFFFFul;
+unsigned long FindUserSession(const std::wstring& userSid);
+
+// A program the service started as a temporary administrator. Handles are Windows HANDLEs, owned by this struct.
+struct Launch {
+  unsigned long pid{0};
+  void* process{nullptr};
+  void* job{nullptr};      // the program and everything it starts, so the service knows when all of it has closed
+  void* token{nullptr};
+  void* profile{nullptr};  // the account's loaded profile, unloaded on release
+};
+
+// Starts target already elevated, as the temporary administrator, on the desktop of the user's session: the user is
+// not asked for a password and Windows shows no UAC prompt. .bat/.cmd run through cmd.exe and .msi through msiexec.
+// Needs LocalSystem (the service). 0 or a Windows error; step says which stage failed.
+unsigned long LaunchElevated(const std::wstring& account, const std::wstring& password, unsigned long sessionId,
+                             const std::wstring& target, const std::wstring& arguments, Launch* out, std::wstring* step);
+// Processes still running in the launch's job (0 once the program and everything it started have closed).
+unsigned long RunningProcesses(const Launch& launch);
+// Ends the program and everything it started (admin access was revoked or ran out).
+void Terminate(const Launch& launch);
+void Release(Launch* launch);
+
 }  // namespace antivirus::agent::tempadmin

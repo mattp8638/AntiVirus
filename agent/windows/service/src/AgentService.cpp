@@ -2006,7 +2006,8 @@ void AgentService::PollAndExecuteCommands(const int cycle) {
 }
 
 bool AgentService::IsInteractiveCommand(const std::wstring& type) {
-  return type == L"remote.session.start" || type == L"remote.session.end";
+  // Admin access grants run here too, so a user waiting for one is never held up behind a scan or a patch.
+  return type == L"remote.session.start" || type == L"remote.session.end" || type == L"elevation.grant" || type == L"elevation.revoke";
 }
 
 void AgentService::ExecuteJournaledCommand(const RemoteCommand& command, const AgentState& identity) {
@@ -2107,7 +2108,7 @@ void AgentService::InteractiveCommandLoop() {
     const auto identity = IdentitySnapshot();
     if (!identity.deviceId.empty() && !ControlPlaneClient::DeviceApiKey(identity).empty()) {
       try {
-        const auto poll = controlPlaneClient_->PollPendingCommands(identity, 25, L"remote.session.start,remote.session.end");
+        const auto poll = controlPlaneClient_->PollPendingCommands(identity, 25, L"remote.session.start,remote.session.end,elevation.grant,elevation.revoke");
         for (const auto& command : poll.items) {
           if (IsInteractiveCommand(command.type)) {
             ExecuteJournaledCommand(command, identity);
@@ -4118,6 +4119,8 @@ struct ElevationGrant {
   long long until{0};
   bool wasAdmin{false};  // the user is already an administrator: no temporary account was needed
   std::wstring account, accountSid, kind, target, arguments;
+  bool launched{false};      // the service started the program itself (kind "run"), so the agent window does not
+  bool launchFailed{false};  // the service could not: the agent window starts it the older way instead
 };
 struct ElevationPending {
   std::wstring sid, requestId;
@@ -4156,7 +4159,8 @@ ElevationState LoadElevations(const std::filesystem::path& file) {
   if (const auto* grants = parsed->Get("grants"); grants && std::get_if<json::Array>(&grants->v)) {
     for (const auto& g : std::get<json::Array>(grants->v)) {
       state.grants.push_back({str(g, "sid"), str(g, "user"), str(g, "requestId"), num(g, "until"), flag(g, "wasAdmin"),
-                              str(g, "account"), str(g, "accountSid"), str(g, "kind"), str(g, "target"), str(g, "arguments")});
+                              str(g, "account"), str(g, "accountSid"), str(g, "kind"), str(g, "target"), str(g, "arguments"),
+                              flag(g, "launched"), flag(g, "launchFailed")});
     }
   }
   if (const auto* pending = parsed->Get("pending"); pending && std::get_if<json::Array>(&pending->v)) {
@@ -4180,7 +4184,7 @@ void SaveElevations(const std::filesystem::path& file, const ElevationState& sta
     body += (i ? L"," : L"") + std::wstring(L"{\"sid\":") + q(g.sid) + L",\"user\":" + q(g.user) + L",\"requestId\":" +
             q(g.requestId) + L",\"until\":" + std::to_wstring(g.until) + L",\"wasAdmin\":" + b(g.wasAdmin) + L",\"account\":" +
             q(g.account) + L",\"accountSid\":" + q(g.accountSid) + L",\"kind\":" + q(g.kind) + L",\"target\":" + q(g.target) +
-            L",\"arguments\":" + q(g.arguments) + L"}";
+            L",\"arguments\":" + q(g.arguments) + L",\"launched\":" + b(g.launched) + L",\"launchFailed\":" + b(g.launchFailed) + L"}";
   }
   body += L"],\"pending\":[";
   for (std::size_t i = 0; i < state.pending.size(); ++i) {
@@ -4225,9 +4229,9 @@ std::wstring AgentService::RequestElevation(const RemoteCommand& command) {
   const auto modules = ModulesJsonCopy();  // the local pipe runs on its own thread
   const auto root = modules.empty() ? std::optional<json::Value>{} : json::Parse(modules);
   const auto* privilege = root && root->IsObject() ? root->Get("privilege") : nullptr;
-  const auto* enabled = privilege ? privilege->Get("enabled") : nullptr;
+  // The cloud sends the effective setting (requests on their own, or allowed by an allowance on this device).
   const auto* mode = privilege ? privilege->Get("elevationRequests") : nullptr;
-  if (!enabled || !enabled->Bool().value_or(false) || (mode && mode->String().value_or("approval") == "off")) {
+  if (!mode || mode->String().value_or("off") == "off") {
     throw std::runtime_error("Admin access requests are turned off on this device.");
   }
   const auto user = command.issuedBy.substr(std::wstring(L"local-dashboard:").size());
@@ -4236,11 +4240,38 @@ std::wstring AgentService::RequestElevation(const RemoteCommand& command) {
   const auto target = ExtractPayloadString(command.payloadJson, "target").value_or(L"");
   const auto arguments = ExtractPayloadString(command.payloadJson, "arguments").value_or(L"");
   const bool run = !target.empty();
+  if (run) {
+    // Admin access already granted (a session): start the program straight away, nothing more to ask.
+    std::wstring requestId, account;
+    {
+      const std::lock_guard lock(elevationMutex_);
+      const auto state = LoadElevations(config_.runtimeDatabasePath.parent_path() / L"elevations.json");
+      const auto now = static_cast<long long>(std::time(nullptr));
+      for (const auto& grant : state.grants) {
+        if (grant.sid == command.callerSid && grant.until > now && grant.kind != L"run") requestId = grant.requestId, account = grant.account;
+      }
+    }
+    if (!requestId.empty()) {
+      std::wstring error;
+      if (!StartElevatedProgram(requestId, command.callerSid, account, target, arguments, false, &error)) {
+        throw std::runtime_error(WideToUtf8(error));
+      }
+      return L"{\"id\":" + Quoted(requestId) + L",\"status\":\"approved\",\"launched\":true}";
+    }
+  }
   std::string body = "{\"user\":\"" + EscapeJsonString(user.substr(0, 200)) + "\",\"userSid\":\"" +
                      EscapeJsonString(command.callerSid) + "\",\"reason\":\"" + EscapeJsonString(reason.substr(0, 1000)) +
                      "\",\"kind\":\"" + (run ? "run" : "session") + "\"";
   if (run) {
-    body += ",\"target\":\"" + EscapeJsonString(target.substr(0, 1024)) + "\",\"arguments\":\"" + EscapeJsonString(arguments.substr(0, 2000)) + "\"";
+    // What the device can vouch for about the program, for the policy's auto-approve rules.
+    std::wstring publisher, sha256;
+    try {
+      publisher = QueryFilePublisher(target);
+      sha256 = ComputeFileSha256(target);
+    } catch (const std::exception&) {
+    }
+    body += ",\"target\":\"" + EscapeJsonString(target.substr(0, 1024)) + "\",\"arguments\":\"" + EscapeJsonString(arguments.substr(0, 2000)) +
+            "\",\"publisher\":\"" + EscapeJsonString(publisher.substr(0, 200)) + "\",\"sha256\":\"" + EscapeJsonString(sha256) + "\"";
   }
   body += "}";
   const auto response = controlPlaneClient_->RequestElevation(IdentitySnapshot(), body);
@@ -4268,7 +4299,9 @@ std::wstring AgentService::ElevationStatus(const RemoteCommand& command) {
     if (grant.sid != command.callerSid || grant.until <= now) continue;
     std::wstring out = L"{\"state\":\"granted\",\"until\":\"" + UnixToIso(grant.until) + L"\",\"requestId\":" + Quoted(grant.requestId) +
                        L",\"kind\":" + Quoted(grant.kind.empty() ? L"session" : grant.kind) + L",\"target\":" + Quoted(grant.target) +
-                       L",\"arguments\":" + Quoted(grant.arguments);
+                       L",\"arguments\":" + Quoted(grant.arguments) + L",\"launched\":" + (grant.launched ? L"true" : L"false") +
+                       L",\"launchFailed\":" + (grant.launchFailed ? L"true" : L"false") +
+                       L",\"running\":" + (ElevatedProgramsRunningLocked(grant.requestId) ? L"true" : L"false");
     if (!grant.account.empty()) {
       auto& password = elevationPasswords_[grant.requestId];
       if (password.empty()) {
@@ -4330,6 +4363,28 @@ std::wstring AgentService::GrantElevation(const RemoteCommand& command) {
     if (!password.empty()) elevationPasswords_[requestId] = password;
   }
   SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+  if (kind == L"run" && !target.empty()) {
+    // The service starts the program itself, elevated on the user's desktop: no password, no Windows prompt, and it
+    // works whether or not the agent window is open. Creating the account's profile can take a few seconds, so it
+    // runs on its own thread; if it cannot, the agent window starts it the older way (the user confirms a prompt).
+    std::thread([this, requestId, sid, account, target, arguments]() {
+      std::wstring error;
+      if (!StartElevatedProgram(requestId, sid, account, target, arguments, true, &error)) {
+        {
+          const std::lock_guard lock(elevationMutex_);
+          const auto file = config_.runtimeDatabasePath.parent_path() / L"elevations.json";
+          auto state = LoadElevations(file);
+          for (auto& grant : state.grants) {
+            if (grant.requestId == requestId) grant.launchFailed = true;
+          }
+          SaveElevations(file, state);
+        }
+        QueueTelemetryEvent(L"elevation.launch.fallback", L"local-security",
+                            L"The service could not start " + target + L" itself (" + error + L"); the agent window will.",
+                            L"{\"requestId\":" + Quoted(requestId) + L",\"error\":" + Quoted(error) + L"}");
+      }
+    }).detach();
+  }
   QueueTelemetryEvent(L"elevation.granted", L"local-security",
                       wasAdmin ? user + L" is already an administrator; no temporary account was needed."
                                : L"Temporary administrator " + account + L" was created for " + user + L" for " + std::to_wstring(minutes) + L" minutes.",
@@ -4346,6 +4401,15 @@ void AgentService::EndElevationLocked(ElevationStateRef stateRef, const std::wst
   const auto it = std::find_if(state.grants.begin(), state.grants.end(), [&](const ElevationGrant& g) { return g.requestId == requestId; });
   if (it == state.grants.end()) return;
   ElevationCleanup cleanup{it->requestId, it->account, it->accountSid, reason, true, false};
+  // Programs started with this access close with it (revoked, time up, or the user said they were done).
+  if (auto launches = elevationLaunches_.find(requestId); launches != elevationLaunches_.end()) {
+    for (auto& launch : launches->second) {
+      tempadmin::Terminate(*launch);
+      if (launch->process != nullptr) WaitForSingleObject(static_cast<HANDLE>(launch->process), 3000);
+      tempadmin::Release(launch.get());  // unloads the profile, so it can be deleted with the account
+    }
+    elevationLaunches_.erase(launches);
+  }
   unsigned long status = 0;
   if (!it->account.empty()) {
     bool profileRemoved = false;
@@ -4451,7 +4515,11 @@ void AgentService::ExpireElevations() {
   const auto now = static_cast<long long>(std::time(nullptr));
   std::vector<std::wstring> due;
   for (const auto& grant : state.grants) {
-    if (grant.until <= now) due.push_back(grant.requestId);
+    if (grant.until > now) continue;
+    // A program started for a "run" request keeps its access while it is open (an installer still working), up to
+    // 8 hours past the time limit.
+    if (grant.kind == L"run" && ElevatedProgramsRunningLocked(grant.requestId) && now < grant.until + 8 * 3600) continue;
+    due.push_back(grant.requestId);
   }
   for (const auto& id : due) EndElevationLocked(&state, id, L"time limit reached");
   // Retry what an earlier end could not finish: a profile that was in use, a report the cloud did not get.
@@ -4474,6 +4542,135 @@ void AgentService::ExpireElevations() {
   }
   std::erase_if(state.pending, [now](const ElevationPending& p) { return now - p.at > 24 * 3600; });
   SaveElevations(file, state);
+}
+
+bool AgentService::ElevatedProgramsRunningLocked(const std::wstring& requestId) {
+  const auto found = elevationLaunches_.find(requestId);
+  if (found == elevationLaunches_.end()) return false;
+  return std::any_of(found->second.begin(), found->second.end(), [](const auto& launch) { return tempadmin::RunningProcesses(*launch) > 0; });
+}
+
+bool AgentService::StartElevatedProgram(const std::wstring& requestId, const std::wstring& sid, const std::wstring& account,
+                                        const std::wstring& target, const std::wstring& arguments, const bool endWhenClosed,
+                                        std::wstring* error) {
+  const auto session = tempadmin::FindUserSession(sid);
+  if (session == tempadmin::kNoSession) {
+    if (error) *error = L"the user is not signed in";
+    return false;
+  }
+  auto launch = std::make_shared<tempadmin::Launch>();
+  unsigned long status = 0;
+  std::wstring step;
+  {
+    const std::lock_guard lock(elevationMutex_);
+    std::wstring password;
+    if (!account.empty()) {
+      auto& known = elevationPasswords_[requestId];
+      if (known.empty()) {
+        // The service restarted and no longer knows it: give the account a new one.
+        known = laps::GeneratePassword(20);
+        if (tempadmin::SetPassword(account, known) != 0) known.clear();
+      }
+      password = known;
+    }
+    status = tempadmin::LaunchElevated(account, password, session, target, arguments, launch.get(), &step);
+    SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+    if (status == 0) {
+      elevationLaunches_[requestId].push_back(launch);
+      const auto file = config_.runtimeDatabasePath.parent_path() / L"elevations.json";
+      auto state = LoadElevations(file);
+      for (auto& grant : state.grants) {
+        if (grant.requestId == requestId && grant.kind == L"run") grant.launched = true;
+      }
+      SaveElevations(file, state);
+    }
+  }
+  if (status != 0) {
+    if (error) *error = L"could not " + step + L" (Windows error " + std::to_wstring(status) + L")";
+    return false;
+  }
+  const auto who = account.empty() ? std::wstring(L"the user's own administrator rights") : L"temporary administrator " + account;
+  QueueTelemetryEvent(L"elevation.program.launched", L"local-security", target + L" was started elevated with " + who + L".",
+                      L"{\"requestId\":" + Quoted(requestId) + L",\"account\":" + Quoted(account) + L",\"target\":" + Quoted(target) +
+                          L",\"pid\":" + std::to_wstring(launch->pid) + L",\"by\":\"service\"}");
+  try {
+    controlPlaneClient_->ReportElevationEvent(IdentitySnapshot(), requestId,
+                                              "{\"type\":\"launched\",\"account\":\"" + EscapeJsonString(account) + "\",\"target\":\"" +
+                                                  EscapeJsonString(target) + "\",\"pid\":" + std::to_string(launch->pid) + "}");
+  } catch (const std::exception&) {
+  }
+  std::thread([this, requestId, launch, endWhenClosed]() { WatchElevatedProgram(requestId, launch, endWhenClosed); }).detach();
+  return true;
+}
+
+void AgentService::WatchElevatedProgram(std::wstring requestId, std::shared_ptr<tempadmin::Launch> launch, const bool endWhenClosed) {
+  while (true) {
+    {
+      const std::lock_guard lock(elevationMutex_);
+      if (launch->process == nullptr && launch->job == nullptr) return;  // already ended with its access
+      if (tempadmin::RunningProcesses(*launch) == 0) {
+        tempadmin::Release(launch.get());
+        auto found = elevationLaunches_.find(requestId);
+        if (found != elevationLaunches_.end()) {
+          std::erase(found->second, launch);
+          if (found->second.empty()) elevationLaunches_.erase(found);
+        }
+        if (endWhenClosed && elevationLaunches_.find(requestId) == elevationLaunches_.end()) {
+          const auto file = config_.runtimeDatabasePath.parent_path() / L"elevations.json";
+          auto state = LoadElevations(file);
+          EndElevationLocked(&state, requestId, L"the program closed");
+          SaveElevations(file, state);
+        }
+        return;
+      }
+    }
+    if (stopEvent_ != nullptr && WaitForSingleObject(stopEvent_, 2000) == WAIT_OBJECT_0) return;
+  }
+}
+
+// "Run as administrator with Fenrir" on programs and installers in Explorer, while admin access requests are on.
+// It sends the request through the agent window (--pam-run), so the same policy, allowances and audit apply.
+void AgentService::ApplyElevationShellMenu(const bool on) {
+  if (elevationMenuState_ == (on ? 1 : 0)) return;
+  const auto client = (config_.installRootPath / L"fenrir-endpoint-client.exe").wstring();
+  struct Entry { const wchar_t* key; std::wstring command; };
+  const Entry entries[] = {
+      {L"SOFTWARE\\Classes\\exefile\\shell\\FenrirRunAsAdmin",
+       L"\"" + client + L"\" --pam-run \"%1\" --pam-reason \"Run as administrator from Explorer\""},
+      {L"SOFTWARE\\Classes\\Msi.Package\\shell\\FenrirRunAsAdmin",
+       L"\"" + client + L"\" --pam-run \"%1\" --pam-reason \"Install as administrator from Explorer\""},
+      {L"SOFTWARE\\Classes\\batfile\\shell\\FenrirRunAsAdmin",
+       L"\"" + client + L"\" --pam-run \"%1\" --pam-reason \"Run as administrator from Explorer\""},
+      {L"SOFTWARE\\Classes\\cmdfile\\shell\\FenrirRunAsAdmin",
+       L"\"" + client + L"\" --pam-run \"%1\" --pam-reason \"Run as administrator from Explorer\""},
+  };
+  bool ok = true;
+  for (const auto& entry : entries) {
+    if (!on) {
+      const auto status = RegDeleteTreeW(HKEY_LOCAL_MACHINE, entry.key);
+      ok = ok && (status == ERROR_SUCCESS || status == ERROR_FILE_NOT_FOUND);
+      continue;
+    }
+    HKEY key = nullptr;
+    if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, entry.key, 0, nullptr, 0, KEY_WRITE, nullptr, &key, nullptr) != ERROR_SUCCESS) {
+      ok = false;
+      continue;
+    }
+    const std::wstring label = L"Run as administrator with Fenrir";
+    RegSetValueExW(key, nullptr, 0, REG_SZ, reinterpret_cast<const BYTE*>(label.c_str()), static_cast<DWORD>((label.size() + 1) * sizeof(wchar_t)));
+    const std::wstring icon = client + L",0";
+    RegSetValueExW(key, L"Icon", 0, REG_SZ, reinterpret_cast<const BYTE*>(icon.c_str()), static_cast<DWORD>((icon.size() + 1) * sizeof(wchar_t)));
+    HKEY commandKey = nullptr;
+    if (RegCreateKeyExW(key, L"command", 0, nullptr, 0, KEY_WRITE, nullptr, &commandKey, nullptr) == ERROR_SUCCESS) {
+      RegSetValueExW(commandKey, nullptr, 0, REG_SZ, reinterpret_cast<const BYTE*>(entry.command.c_str()),
+                     static_cast<DWORD>((entry.command.size() + 1) * sizeof(wchar_t)));
+      RegCloseKey(commandKey);
+    } else {
+      ok = false;
+    }
+    RegCloseKey(key);
+  }
+  if (ok) elevationMenuState_ = on ? 1 : 0;
 }
 
 PolicySnapshot AgentService::EnforcedPolicy() const {
@@ -4903,8 +5100,10 @@ void AgentService::WriteExperienceFile() {
   }
   {
     const auto* privilege = section("privilege");
-    const auto mode = flag(privilege, "enabled", false) ? text(privilege, "elevationRequests", "approval") : std::string("off");
-    out += ",\"elevationRequests\":" + q(mode == "auto-approve" || mode == "approval" ? mode : "off");
+    auto mode = text(privilege, "elevationRequests", "off");
+    if (mode != "auto-approve" && mode != "approval") mode = "off";
+    out += ",\"elevationRequests\":" + q(mode);
+    if (!laps::IsDomainController()) ApplyElevationShellMenu(mode != "off");
   }
   out += "}";
   try {

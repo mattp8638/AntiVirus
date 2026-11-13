@@ -608,6 +608,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from .routers import elevation as elevation_router
     app.include_router(elevation_router.agent)
     app.include_router(elevation_router.console)
+    app.include_router(elevation_router.allowances)
     app.include_router(artifacts_router.agent)
     app.include_router(artifacts_router.console)
     app.include_router(remote_router.sockets)

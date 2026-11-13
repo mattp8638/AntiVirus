@@ -37,3 +37,22 @@ assert.match(render('current'), /class="badge good">Up to date/);
 assert.match(render('available', 'available'), /Update to 131\.0/);
 assert.match(render('available', 'available'), /1 update waiting/);
 console.log('Endpoint update UI: confirmed updates, provider capability and failed checks stay distinct.');
+
+// Admin access card (privileged access management).
+function elevation(st, mode = 'approval') {
+  context.fixture = { experience: { elevationRequests: mode }, elevation: st };
+  return vm.runInContext('S = fixture; elevationCard()', context);
+}
+assert.equal(elevation({}, 'off'), '');
+assert.match(elevation({}), /Ask for admin access/);
+assert.match(elevation({}, 'auto-approve'), /Get admin access/);
+assert.match(elevation({ state: 'pending' }), /Waiting/);
+const session = elevation({ state: 'granted', kind: 'session', until: '2026-01-01T10:00:00Z', account: '.\\fadm-jo-1a2b', password: 'pw' });
+assert.match(session, /data-act="elevationRun"/);
+assert.match(session, /Run as administrator with Fenrir/);
+assert.match(session, /fadm-jo-1a2b/);
+const opened = elevation({ state: 'granted', kind: 'run', until: '2026-01-01T10:00:00Z', target: 'C:\\Tools\\setup.exe', running: true });
+assert.match(opened, /setup\.exe<\/b> is open as administrator/);
+assert.doesNotMatch(opened, /Choose <b>Yes<\/b>/);
+assert.match(elevation({ state: 'granted', kind: 'run', target: 'C:\\Tools\\setup.exe', launchFailed: true }), /Choose <b>Yes<\/b>/);
+console.log('Admin access card: request, waiting, session with run button, and service-opened programs render correctly.');

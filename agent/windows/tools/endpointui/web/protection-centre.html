@@ -670,13 +670,21 @@ function elevationCard() {
       return head + `<p style="margin:0 0 8px">Your account is already an administrator on this computer, so no temporary account was needed.</p>` + done;
     }
     if (st.kind === 'run') {
-      return head + `<p style="margin:0 0 8px">Fenrir opens <b>${esc((st.target || '').split('\\').pop())}</b> as a temporary administrator. Choose <b>Yes</b> when Windows asks.</p>` + done;
+      const name = esc((st.target || '').split('\\').pop());
+      const how = st.launchFailed ? `Fenrir is opening <b>${name}</b> as a temporary administrator. Choose <b>Yes</b> when Windows asks.`
+        : st.running ? `<b>${name}</b> is open as administrator. Admin access ends when you close it.`
+        : `Fenrir is opening <b>${name}</b> as administrator.`;
+      return head + `<p style="margin:0 0 8px">${how}</p>` + done;
     }
-    return head + `<p style="margin:0 0 8px">When Windows asks for an administrator, enter this temporary account:</p>
+    const runner = `<div class="actions"><button class="btn primary" data-act="elevationRun">${icon('shield')}Run a program as administrator\u2026</button></div>
+      <p class="muted small" style="margin:6px 0 12px">Opens straight away with admin rights, no password needed. You can also right-click a program or installer and choose <b>Run as administrator with Fenrir</b>.</p>`;
+    if (!st.account) return head + runner + done;
+    return head + runner + `<details><summary class="small">Windows asking for an administrator anyway?</summary>
+      <p class="small" style="margin:8px 0">Enter this temporary account:</p>
       <label class="f">User name<input class="text mono" id="elvAccount" readonly value="${esc(st.account || '')}"></label>
       <label class="f">Password<input class="text mono" id="elvPassword" readonly value="${esc(st.password || '')}"></label>
       <div class="actions"><button class="btn" data-act="elevationCopy" data-field="elvAccount">Copy user name</button>
-        <button class="btn" data-act="elevationCopy" data-field="elvPassword">Copy password</button></div>` + done;
+        <button class="btn" data-act="elevationCopy" data-field="elvPassword">Copy password</button></div></details>` + done;
   }
   if (st.state === 'pending') {
     return `<div class="card"><div class="card-head"><h3>Admin access</h3><span class="badge">Waiting</span></div><div class="card-body">
@@ -685,7 +693,7 @@ function elevationCard() {
   return `<div class="card"><div class="card-head"><h3>Need admin access?</h3></div><div class="card-body">
     <label class="f">What do you need it for?<input class="text" id="elvReason" maxlength="300" placeholder="For example: install the printer driver" value="${esc(elevationReason)}"></label>
     <div class="actions"><button class="btn" data-act="elevationRequest" ${elevationBusy ? 'disabled' : ''}>${icon('shield')}${elevationBusy ? 'Sending\u2026' : (mode === 'auto-approve' ? 'Get admin access' : 'Ask for admin access')}</button></div>
-    <p class="muted small" style="margin:8px 0 0">Access is temporary and recorded.</p></div></div>`;
+    <p class="muted small" style="margin:8px 0 0">Access is temporary and recorded.${mode === 'auto-approve' ? '' : ' Your IT team may have allowed it without waiting; if not, they will be asked.'}</p></div></div>`;
 }
 
 /* ---------- settings ---------- */
@@ -834,6 +842,7 @@ document.addEventListener('click', (ev) => {
     if (field) { field.select(); try { document.execCommand('copy'); toast('good', 'Copied.'); } catch (e) { toast('warning', 'Select the text and press Ctrl+C.'); } }
     return;
   }
+  if (act === 'elevationRun') { send('elevationRun'); return; }
   if (act === 'elevationFinish') {
     if (!window.confirm('End admin access now? The temporary administrator account is deleted.')) return;
     send('elevationFinish');
