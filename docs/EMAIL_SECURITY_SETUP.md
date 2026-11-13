@@ -60,7 +60,7 @@ Open `deploy/.env` (`sudo nano deploy/.env`) and add:
 
 ```bash
 # Keep your existing signature feed (the default changed to "off" in this update)
-FENRIR_FEED_URL=https://api.fenrir-security.co.uk
+FENRIR_FEED_URL=https://feed.example.com
 FENRIR_FEED_SYNC=true
 
 # Email security mail gateway (leave empty until Part G)
@@ -285,7 +285,7 @@ shadow or protect mode.
 - [ ] **Port 25 inbound** reaches the server. Many hosting providers block it until you ask; check your provider's
       control panel or ask support. Nothing else on the server may use port 25: `sudo ss -ltnp | grep ':25 '` should
       print nothing.
-- [ ] **A host name for the gateway**, for example `mx.fenrir-security.co.uk`, with an **A record** pointing at the
+- [ ] **A host name for the gateway**, for example `mx.example.com`, with an **A record** pointing at the
       server's public IP.
 - [ ] **Reverse DNS (PTR)** for the server's IP set to that same name, in your hosting provider's control panel.
       Senders' servers check it.
@@ -294,8 +294,8 @@ shadow or protect mode.
 Check from your PC:
 
 ```bash
-nslookup mx.fenrir-security.co.uk          # -> the server's IP
-nslookup <server IP>                       # -> mx.fenrir-security.co.uk
+nslookup mx.example.com          # -> the server's IP
+nslookup <server IP>                       # -> mx.example.com
 ```
 
 ### G2. Settings
@@ -303,7 +303,7 @@ nslookup <server IP>                       # -> mx.fenrir-security.co.uk
 In `deploy/.env`:
 
 ```bash
-FENRIR_GATEWAY_HOSTNAME=mx.fenrir-security.co.uk
+FENRIR_GATEWAY_HOSTNAME=mx.example.com
 FENRIR_GATEWAY_PUBLIC_IPS=<the server's public IP>
 # Optional virus scanning with ClamAV (uses about 1.5 GB of memory)
 FENRIR_CLAMD_HOST=clamav
@@ -322,7 +322,7 @@ dc up -d cloud worker        # so the console knows the gateway's name and IPs
 dc -f deploy/docker-compose.mailgateway.yml logs --tail=30 mailgateway
 ```
 
-The log shows `mail gateway listening on port 2525 as mx.fenrir-security.co.uk` (port 25 outside the container maps to
+The log shows `mail gateway listening on port 2525 as mx.example.com` (port 25 outside the container maps to
 2525 inside). **Email security → Gateway** shows **running** within a minute.
 
 Remember to include `-f deploy/docker-compose.mailgateway.yml` in future `dc up -d` and `dc pull` commands, or the
@@ -335,7 +335,7 @@ dcm() { dc -f deploy/docker-compose.mailgateway.yml "$@"; }
 **Check from outside** (any machine with `swaks`: `sudo apt install swaks`):
 
 ```bash
-swaks --server mx.fenrir-security.co.uk --to someone@gmail.com --from test@example.com
+swaks --server mx.example.com --to someone@gmail.com --from test@example.com
 # expect: 550 5.7.1 Relaying denied   (the gateway refuses domains it doesn't serve)
 ```
 
@@ -368,7 +368,7 @@ Enhanced Filtering**, enable it for that connector with *Automatically detect an
 Send through the gateway directly, while the MX still points at Microsoft:
 
 ```bash
-swaks --server mx.fenrir-security.co.uk --to jo@acme.co.uk --from test@example.com \
+swaks --server mx.example.com --to jo@acme.co.uk --from test@example.com \
       --header "Subject: Gateway test"
 # expect: 250 2.0.0 Queued as ...
 ```
@@ -381,7 +381,7 @@ Test a threat:
 
 ```bash
 printf 'MZ test' > /tmp/invoice.pdf.exe
-swaks --server mx.fenrir-security.co.uk --to jo@acme.co.uk --from test@example.com \
+swaks --server mx.example.com --to jo@acme.co.uk --from test@example.com \
       --header "Subject: Invoice" --attach /tmp/invoice.pdf.exe
 ```
 
@@ -396,7 +396,7 @@ reason reads *ClamAV found Eicar…*.
 At the customer's DNS host:
 
 1. Lower the TTL of the current MX record to 300 seconds a day beforehand if you can.
-2. Replace the MX record with: **`acme.co.uk  MX  10  mx.fenrir-security.co.uk`**.
+2. Replace the MX record with: **`acme.co.uk  MX  10  mx.example.com`**.
 3. Leave the SPF record alone. Outbound mail still goes straight from Microsoft 365.
 
 Over the next hour, the Gateway tab shows *last message* updating and the Explorer fills with gateway mail.

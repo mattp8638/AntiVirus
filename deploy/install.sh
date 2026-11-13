@@ -120,6 +120,10 @@ else
   git clone -q ${branch:+--branch "$branch"} "$repo" "$dir"
   root="$dir"; ok "cloned into $root"
 fi
+# Automatic updates come from this repository's releases: it should be your own copy (see FORKING.md).
+update_source="$(git -C "$root" remote get-url origin 2>/dev/null || echo "none")"
+ok "updates will come from: $update_source"
+printf '         Make sure that is your own fork or template copy: whoever controls it controls this server.\n'
 cd "$root"
 umask 022
 

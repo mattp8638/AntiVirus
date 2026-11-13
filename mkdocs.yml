@@ -1,6 +1,6 @@
 site_name: Fenrir
 site_description: Free, self-hosted RMM, endpoint protection and MSP platform
-repo_url: https://github.com/Palmertech-Webdev/fenrir-security
+repo_url: !ENV [FENRIR_DOCS_REPO_URL, ""]  # set by the Docs site workflow to this repository
 edit_uri: edit/main/docs/
 docs_dir: docs
 theme:

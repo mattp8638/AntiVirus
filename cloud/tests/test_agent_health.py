@@ -46,7 +46,7 @@ def test_reported_failures_show_until_the_component_recovers(client, admin, tena
 
 
 def test_failed_commands_and_stalled_rollouts_are_listed(client, admin, tenant):
-    pc = enroll(client, admin, tenant, hostname="PM-DC", serial="DC-1")
+    pc = enroll(client, admin, tenant, hostname="ACME-DC", serial="DC-1")
     with database.session_factory()() as db:
         db.add(Command(tenant_id=tenant["id"], device_id=pc["deviceId"], type="script.run", status="failed", issued_by="admin",
                        result={"error": "Access is denied"}, updated_at=utcnow()))

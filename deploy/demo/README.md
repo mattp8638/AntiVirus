@@ -26,7 +26,7 @@ the `fenrir-demo` project's volumes.
 ## Set up
 
 ```bash
-sudo git clone https://github.com/Palmertech-Webdev/fenrir-security /opt/fenrir-demo && cd /opt/fenrir-demo
+sudo git clone https://github.com/<your-org>/<your-fork> /opt/fenrir-demo && cd /opt/fenrir-demo
 sudo deploy/demo/setup.sh --domain demo.example.com --live /opt/fenrir --connect-live
 ```
 

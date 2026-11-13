@@ -23,9 +23,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-BUILT_IN_PRIVATE = ["palmertech", "palmer tech"]
-# The public repository's own address is allowed to appear (install command, docs site, signing info link).
-ALLOWED = ["Palmertech-Webdev/fenrir-security"]
+BUILT_IN_PRIVATE = ["palmertech", "palmer tech", "fenrirsecurity", "fenrir-security"]
+# Nothing is allowed: a template names no owner, so forks never point back at the original.
+ALLOWED: list[str] = []
 STATIC = [r"fenrir-security\.co\.uk", r"api\.fenrir-security", r"palmertech\.co\.uk"]
 SKIP_PARTS = ("third_party/", "node_modules/", "/vendor/", "components/", "dist/")
 SKIP_SUFFIX = (".png", ".jpg", ".ico", ".exe", ".dll", ".zip", ".pfx", ".onnx", ".bin", ".gz", ".woff", ".woff2", ".pdf", ".jar")

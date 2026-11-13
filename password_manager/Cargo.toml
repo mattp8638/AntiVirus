@@ -10,7 +10,7 @@ resolver = "2"
 edition = "2021"
 license = "Apache-2.0"
 version = "0.1.0"
-authors = ["Fenrir Security"]
+authors = ["Fenrir contributors"]
 rust-version = "1.82"
 
 [workspace.dependencies]

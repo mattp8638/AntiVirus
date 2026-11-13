@@ -28,7 +28,7 @@ def fake(monkeypatch):
 
 
 def domain_controller(client, admin, tenant, entra_connect=True):
-    dc = enroll(client, admin, tenant, hostname="PM-DC", os_version="Windows Server 2022 Standard", serial="DC-1")
+    dc = enroll(client, admin, tenant, hostname="ACME-DC", os_version="Windows Server 2022 Standard", serial="DC-1")
     role = {"kind": "domain-controller", "domain": "acme.example",
             "workloads": ["Active Directory Domain Services"] + (["Entra Connect (Azure AD Connect)"] if entra_connect else [])}
     assert client.post(f"/api/v1/devices/{dc['deviceId']}/profile", headers=dc["headers"], json={"profile": {"role": role}}).status_code == 200
@@ -66,11 +66,11 @@ def test_offboarding_a_synced_user_changes_ad_on_the_domain_controller(client, a
     keys = [s["key"] for s in flow["steps"]]
     assert keys[:7] == ["ad_disable", "ad_scramble", "ad_remove_groups", "ad_move", "ad_hide_gal", "ad_describe", "ad_sync"]
     assert "block_signin" not in keys and "reset_password" not in keys  # Microsoft refuses these for synced users
-    assert {s["where"] for s in flow["steps"][:7]} == {"ad"} and flow["steps"][0]["detail"].startswith("ssynced on PM-DC")
+    assert {s["where"] for s in flow["steps"][:7]} == {"ad"} and flow["steps"][0]["detail"].startswith("ssynced on ACME-DC")
 
     proof = stepup(client, admin)
     out = run(client, proof, flow)
-    assert out["more"] and "PM-DC" in out["waiting"]  # waits for the domain controller
+    assert out["more"] and "ACME-DC" in out["waiting"]  # waits for the domain controller
     seen = []
     for _ in range(12):
         seen += agent_answers(client, dc, lambda item, req: {"ok": True, "removed": ["Sales AD"], "kept": []}

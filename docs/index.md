@@ -6,15 +6,17 @@ you run yourself. There are no per-device fees and no outside service it depends
 
 !!! warning "No support"
     Fenrir is given away as it is, with no support, maintenance commitment or warranty. Read the
-    [security policy](https://github.com/Palmertech-Webdev/fenrir-security/blob/main/SECURITY.md) before relying on it. If the
+    [security policy](https://github.com/<your-org>/<your-fork>/blob/main/SECURITY.md) before relying on it. If the
     repository is archived, fork it and carry on.
 
 ## Install in one command
 
-On a fresh Ubuntu or Debian server (2 GB memory, 15 GB free disk) with a DNS record pointing at it:
+First **fork the repository** (or use **Use this template**): servers update from the repository they were installed
+from, so install from your own copy. Then, on a fresh Ubuntu or Debian server (2 GB memory, 15 GB free disk) with a DNS
+record pointing at it:
 
 ```bash
-git clone https://github.com/Palmertech-Webdev/fenrir-security /opt/fenrir && cd /opt/fenrir
+git clone https://github.com/<your-org>/<your-fork> /opt/fenrir && cd /opt/fenrir
 sudo deploy/install.sh --domain rmm.example.com --email you@example.com --company "Your Company"
 ```
 
@@ -23,7 +25,7 @@ Let's Encrypt, builds and starts the server, schedules backups and updates, and 
 443, and UDP 3478 for direct remote sessions.
 
 The full manual setup, upgrades, backup and troubleshooting are in the
-[README](https://github.com/Palmertech-Webdev/fenrir-security#readme).
+README in the repository.
 
 ## Where to go next
 
@@ -43,4 +45,4 @@ The full manual setup, upgrades, backup and troubleshooting are in the
 
 Apps to deploy and keep updated, and scripts for the library, are plain files in the repository's `catalogue/` folder,
 reviewed in pull requests. See the
-[catalogue README](https://github.com/Palmertech-Webdev/fenrir-security/blob/main/catalogue/README.md) to add one.
+[catalogue README](https://github.com/<your-org>/<your-fork>/blob/main/catalogue/README.md) to add one.

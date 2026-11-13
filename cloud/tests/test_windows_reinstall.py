@@ -15,7 +15,7 @@ def test_windows_reinstall_reuses_authenticated_record(client, admin, tenant, de
 
     def install(serial, identity):
         return client.post("/api/v1/enroll", headers={"X-Fenrir-Token": token},
-                           json={"hostname": "PM-DC", "platform": "windows", "serialNumber": serial,
+                           json={"hostname": "ACME-DC", "platform": "windows", "serialNumber": serial,
                                  "reinstallProof": identity})
 
     assert install("SN-1", "34" * 32).status_code == 409

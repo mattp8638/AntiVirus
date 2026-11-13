@@ -6,6 +6,10 @@ Fenrir is a self-hosted project combining endpoint security, RMM, Microsoft 365 
 
 Hosting, domains, publicly trusted code-signing certificates and optional providers can still cost money.
 
+> **A template, not a service.** Fork this repository (or use **Use this template**) and install from **your own copy**.
+> Your servers then update from your repository's releases, under your control. Nobody maintains an upstream for you
+> to run from; see [FORKING.md](FORKING.md).
+
 > **Free, as-is, unsupported.** Fenrir is released free of charge under the [Apache License 2.0](LICENSE). It is provided **"AS IS", without warranty of any kind**, and **no support is offered**: issues and pull requests may not be answered. You are responsible for testing it on your own systems before relying on it (see the [acceptance lab](docs/ACCEPTANCE_LAB.md)), for securing your own installation, and for anything it does on the devices and tenants you connect to it. See [Licence and support](#licence-and-support).
 
 ## Contents
@@ -103,7 +107,8 @@ Point a hostname such as `rmm.example.com` at the VPS. Remove incorrect AAAA/IPv
 ### 2. Clone and configure
 
 ```bash
-git clone https://github.com/Palmertech-Webdev/fenrir-security.git ~/AntiVirus
+# Your own fork: servers update from the repository they were cloned from.
+git clone https://github.com/<your-org>/<your-fork>.git ~/AntiVirus
 cd ~/AntiVirus
 (
 umask 077
@@ -726,7 +731,7 @@ each bundled dependency keeps its own licence.
 - **Your installation, your responsibility.** An RMM/EDR controls every device it manages. Keep the server patched and
   behind HTTPS, use MFA for every console account, restrict who can reach the console, protect the signing and vault keys,
   and test changes on a small group of devices first.
-- **Security problems.** If you find a vulnerability, report it privately through GitHub's
-  [security advisories](https://github.com/Palmertech-Webdev/fenrir-security/security/advisories/new) rather than a public issue. There
+- **Security problems.** If you find a vulnerability, report it privately through the
+  **Security → Report a vulnerability** page of the repository you got it from, rather than a public issue. There
   is no promise of a fix or a response time. See [SECURITY.md](SECURITY.md) for the free scanning every change goes
   through (CodeQL, OpenSSF Scorecard, SBOMs).

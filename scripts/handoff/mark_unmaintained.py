@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import os
 import re
 from pathlib import Path
 
@@ -47,7 +48,9 @@ def main() -> None:
     apply(ROOT / "README.md", text)
     docs_home = ROOT / "docs" / "index.md"
     if docs_home.exists():
-        apply(docs_home, text.replace("(FORKING.md)", "(https://github.com/Palmertech-Webdev/fenrir-security/blob/main/FORKING.md)"))
+        repo = os.getenv("GITHUB_REPOSITORY", "")  # owner/name of this repository, when run in Actions
+        link = f"(https://github.com/{repo}/blob/main/FORKING.md)" if repo else "(the repository's FORKING.md)"
+        apply(docs_home, text.replace("(FORKING.md)", link))
 
 
 if __name__ == "__main__":

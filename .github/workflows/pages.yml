@@ -28,6 +28,8 @@ jobs:
       - run: pip install "mkdocs==1.6.1" "mkdocs-material==9.*"
       - run: mkdocs build --site-dir site
         env:
+          FENRIR_DOCS_REPO_URL: https://github.com/${{ github.repository }}
+        env:
           NO_MKDOCS_2_WARNING: "1"
       - uses: actions/upload-pages-artifact@v3
         if: github.event_name != 'pull_request'

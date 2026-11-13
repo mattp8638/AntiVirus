@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Set up a read-only public demo beside a live Fenrir on the same host. Run from a SEPARATE checkout:
 #
-#   sudo git clone https://github.com/Palmertech-Webdev/fenrir-security /opt/fenrir-demo && cd /opt/fenrir-demo
+#   sudo git clone https://github.com/<your-org>/<your-fork> /opt/fenrir-demo && cd /opt/fenrir-demo
 #   sudo deploy/demo/setup.sh --domain demo.example.com --live /opt/fenrir [--reset-hours 6] [--connect-live]
 #
 # It never changes the live install unless you pass --connect-live, and then only: it adds one site block to the live

@@ -147,7 +147,7 @@ def test_a_dc_that_sends_no_directory_says_why(client, admin, tenant):
     """Seen on a real domain: the page said only "waiting for the first directory snapshot" while the DC's agent was
     failing to collect its profile, or was an agent too old to read the directory."""
     role = {"kind": "domain-controller", "domainRole": "Primary domain controller", "domain": "corp.example"}
-    dc = enroll(client, admin, tenant, hostname="PM-DC", os_version="Windows Server 2022 Standard", serial="PM-DC")
+    dc = enroll(client, admin, tenant, hostname="ACME-DC", os_version="Windows Server 2022 Standard", serial="ACME-DC")
     client.post(f"/api/v1/devices/{dc['deviceId']}/profile", headers=dc["headers"], json={"profile": {"role": role}})
     [domain] = client.get("/api/console/ad/domains", headers=admin).json()
     assert "too old to read the directory" in domain["problems"][0]["problem"]
