@@ -1,4 +1,4 @@
-"""SOC 2 hardening: the real client address behind a trusted proxy only, security headers, idle sessions ending."""
+"""Security hardening: the real client address behind a trusted proxy only, security headers, idle sessions ending."""
 import asyncio
 from datetime import timedelta
 
@@ -49,3 +49,10 @@ def test_idle_sessions_end(client, admin, monkeypatch):
     assert client.get("/api/console/auth/me", headers=admin).status_code == 401
     with database.session_factory()() as db:
         assert db.query(UserSession).filter(UserSession.revoked_reason == "idle").count() == 1
+
+
+def test_security_txt_only_when_a_contact_is_set(client, monkeypatch):
+    assert client.get("/.well-known/security.txt").status_code == 404
+    monkeypatch.setenv("FENRIR_SECURITY_CONTACT", "mailto:security@msp.example")
+    text = client.get("/.well-known/security.txt").text
+    assert "Contact: mailto:security@msp.example" in text and "Expires: " in text

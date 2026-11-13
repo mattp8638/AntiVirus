@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import mimetypes
 import secrets
 import re
@@ -13,7 +14,7 @@ from contextlib import asynccontextmanager, contextmanager
 from datetime import timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from sqlalchemy import delete, func, select, text
@@ -740,6 +741,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     if settings.enable_legacy:
         _mount_legacy(app)
+
+    @app.get("/.well-known/security.txt", include_in_schema=False)
+    def security_txt():
+        """RFC 9116: how to report a vulnerability in this server. Only when FENRIR_SECURITY_CONTACT is set (a mailto: or
+        https: address), so no contact is published by accident."""
+        contact = os.getenv("FENRIR_SECURITY_CONTACT", "").strip()
+        if not contact.startswith(("mailto:", "https://")):
+            raise HTTPException(404, "Not found")
+        from datetime import timedelta
+
+        expires = (utcnow() + timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        lines = [f"Contact: {contact}", f"Expires: {expires}", "Preferred-Languages: en",
+                 f"Canonical: {settings.public_base_url.rstrip('/')}/.well-known/security.txt"]
+        policy = os.getenv("FENRIR_SECURITY_POLICY_URL", "").strip()
+        if policy.startswith("https://"):
+            lines.append(f"Policy: {policy}")
+        return PlainTextResponse("\n".join(lines) + "\n")
 
     console_dir = settings.console_dir
     if console_dir.is_dir() and (console_dir / "index.html").is_file():

@@ -34,7 +34,7 @@ jobs:
           - language: c-cpp
             build-mode: none
           - language: java-kotlin
-            build-mode: none
+            build-mode: manual  # Kotlin is only analysed while it compiles (the Android app)
           - language: actions
             build-mode: none
     steps:
@@ -43,6 +43,13 @@ jobs:
         if: matrix.language == 'go'
         with:
           go-version-file: agent/linux/go.mod
+      - uses: actions/setup-java@v4
+        if: matrix.language == 'java-kotlin'
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        if: matrix.language == 'java-kotlin'
       - uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
@@ -57,6 +64,10 @@ jobs:
         if: matrix.language == 'go'
         working-directory: agent/linux
         run: go build ./...
+      - name: Build the Android app
+        if: matrix.language == 'java-kotlin'
+        working-directory: agent/android
+        run: ./gradlew --no-daemon --no-build-cache assembleDebug
       - uses: github/codeql-action/analyze@v4
         with:
           category: "/language:${{ matrix.language }}"

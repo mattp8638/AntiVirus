@@ -1,0 +1,9 @@
+# Changes to these paths need a review from their owner before merging (with "Require review from Code Owners"
+# turned on in the main branch's protection rules). Add a second maintainer next to @mattp8638 when there is one.
+*                       @mattp8638
+/cloud/fenrir_cloud/security.py   @mattp8638
+/cloud/fenrir_cloud/crypto.py     @mattp8638
+/cloud/fenrir_cloud/sessions.py   @mattp8638
+/cloud/fenrir_cloud/deps.py       @mattp8638
+/deploy/                @mattp8638
+/.github/               @mattp8638

@@ -41,12 +41,26 @@ jobs:
     name: Publish the release
     needs: verify
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write      # signs the provenance with GitHub's OIDC identity (Sigstore)
+      attestations: write
     steps:
       - uses: actions/checkout@v4
+      # A source archive with SHA-256 and a signed provenance statement, so anyone can check a download came from
+      # this repository's release workflow at this tag:  gh attestation verify fenrir-<tag>.tar.gz -R <owner>/<repo>
+      - name: Source archive and checksum
+        run: |
+          git archive --format=tar.gz --prefix="fenrir-$GITHUB_REF_NAME/" -o "fenrir-$GITHUB_REF_NAME.tar.gz" "$GITHUB_SHA"
+          sha256sum "fenrir-$GITHUB_REF_NAME.tar.gz" > "fenrir-$GITHUB_REF_NAME.tar.gz.sha256"
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: fenrir-${{ github.ref_name }}.tar.gz
       - name: Create the GitHub release with notes
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           prerelease=""
           case "$GITHUB_REF_NAME" in *-rc.*) prerelease="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes $prerelease --title "Fenrir $GITHUB_REF_NAME"
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes $prerelease --title "Fenrir $GITHUB_REF_NAME" \
+            "fenrir-$GITHUB_REF_NAME.tar.gz" "fenrir-$GITHUB_REF_NAME.tar.gz.sha256"
