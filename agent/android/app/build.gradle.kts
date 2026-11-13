@@ -63,7 +63,7 @@ dependencies {
     // QR scanning through Google Play services: no camera permission, the scanner UI is Google's.
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
     // WebSockets for remote support sessions and the live connection to the server.
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:okhttp:5.5.1")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
 }
