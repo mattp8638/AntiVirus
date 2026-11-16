@@ -11,7 +11,7 @@ RUN npm ci --no-audit --no-fund
 COPY console/ ./
 RUN npm run build
 
-FROM golang:1.27.3-bookworm AS agents
+FROM golang:1.27.4-bookworm AS agents
 WORKDIR /src/agent/linux
 COPY agent/linux/ ./
 # Release signing (FIX-07/AGT-03). The Ed25519 release key arrives as a BuildKit secret (never in a layer); its
