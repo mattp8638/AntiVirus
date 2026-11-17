@@ -110,6 +110,12 @@ with TestClient(create_app(settings), raise_server_exceptions=False) as client:
         incident_id = incident.id
         m365_id = m365_connection.id
         recording_id = recording.id
+    engagement = client.post("/api/console/pentest/engagements", headers=admin, json={
+        "tenantId": tenant["id"], "name": "Console smoke pentest", "kind": "hybrid", "startDate": "2026-01-01", "endDate": "2026-12-31"}).json()
+    client.post(f"/api/console/pentest/engagements/{engagement['id']}/scope", headers=admin, json={"targetType": "host", "value": "203.0.113.10"})
+    client.post(f"/api/console/pentest/engagements/{engagement['id']}/authorisations", headers=admin, json={
+        "clientSignatory": "Render Client", "signatoryRole": "Director", "documentReference": "LOA-UI", "documentSha256": "0" * 64,
+        "scopeStatement": "203.0.113.10", "windowStart": "2026-01-01", "windowEnd": "2026-12-31"})
     programme = post("/api/console/grc/programmes", {"tenantId": tenant["id"], "frameworkKey": "nist-csf-2"})
     policies = client.get("/api/console/grc/policies", headers=admin).json()
     me = client.get("/api/console/auth/me", headers=admin).json()
@@ -125,7 +131,7 @@ with TestClient(create_app(settings), raise_server_exceptions=False) as client:
           "ticket": ticket["id"], "project": project["id"], "incident": incident_id,
           "grcPolicy": policies[0]["id"] if policies else "missing", "framework": "nist-csf-2", "remote": remote["id"],
           "phone": phone["deviceId"], "recording": recording_id, "m365": m365_id,
-          "cancellationDevice": cancellation_device["deviceId"], "cancellationJob": cancellation_job["id"]}})
+          "cancellationDevice": cancellation_device["deviceId"], "cancellationJob": cancellation_job["id"], "engagement": engagement["id"]}})
     for line in sys.stdin:
         request = json.loads(line)
         try:

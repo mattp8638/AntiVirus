@@ -151,7 +151,7 @@ function concrete(path: string) {
     : path.startsWith("/incidents/") ? "incident" : path.startsWith("/tickets/") ? "ticket"
     : path.startsWith("/projects/") ? "project" : path.startsWith("/governance/policies/") ? "grcPolicy"
     : path.startsWith("/crm/accounts/") || path.startsWith("/companies/") ? "tenant" : path.startsWith("/remote/") ? "remote"
-    : path.startsWith("/recordings/") ? "recording" : "device";
+    : path.startsWith("/recordings/") ? "recording" : path.startsWith("/pentest/") ? "engagement" : "device";
   return path.replace(":id", ids[kind]).replace(":tenantId", ids.tenant).replace(":framework", ids.framework).replace(":connectionId", ids.m365);
 }
 

@@ -32,6 +32,8 @@ import Dns from "./pages/Dns";
 import Intel from "./pages/Intel";
 import Vulnerabilities from "./pages/Vulnerabilities";
 import AttackSurface from "./pages/AttackSurface";
+import Pentest from "./pages/Pentest";
+import PentestEngagement from "./pages/PentestEngagement";
 import Compliance from "./pages/Compliance";
 import Crm from "./pages/Crm";
 import CrmAccount from "./pages/CrmAccount";
@@ -130,6 +132,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; al
       { module: "network", to: "/network", label: "Network", icon: "⌁", also: ["/network-topology"] },
       { module: "security", to: "/dns", label: "DNS protection", icon: "◈" },
       { module: "network", to: "/attack-surface", label: "Attack surface", icon: "◍" },
+      { module: "pentest", to: "/pentest", label: "Penetration testing", icon: "⚑" },
     ],
   },
   {
@@ -370,6 +373,8 @@ function Shell() {
             <Route path="/exposure" element={<Exposure />} />
             <Route path="/active-directory" element={<ActiveDirectory />} />
             <Route path="/attack-surface" element={<AttackSurface />} />
+            <Route path="/pentest" element={<Pentest />} />
+            <Route path="/pentest/:id" element={<PentestEngagement />} />
             <Route path="/compliance" element={<Compliance />} />
             <Route path="/crm" element={<Crm />} />
             <Route path="/onboarding" element={<Onboarding />} />
