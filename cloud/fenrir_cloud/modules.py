@@ -19,6 +19,7 @@ MODULES = {
     "email": ("Email security", "Scans customers' Microsoft 365 mail for phishing and malware, next to Microsoft's own verdict"),
     "identity": ("Microsoft 365 and identity", "Microsoft 365, Active Directory, data and identity exposure"),
     "network": ("Network", "Network topology, attack surface and out-of-band (Intel AMT)"),
+    "pentest": ("Penetration testing", "Authorised penetration tests with client authorisation, approvals, evidence and reports"),
     "business": ("Business", "CRM, onboarding, quotes, agreements and billing"),
     "governance": ("Compliance and GRC", "Frameworks, policies, risks and evidence"),
 }
