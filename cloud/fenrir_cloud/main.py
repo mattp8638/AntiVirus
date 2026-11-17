@@ -394,6 +394,10 @@ def start_background(settings: Settings, stop: threading.Event) -> list[threadin
 
         threads.append(threading.Thread(target=cveintel.loop, args=(stop,), daemon=True, name="vuln-intel"))
     if settings.scheduler_enabled:
+        from .pentest import runner as pentest_runner
+
+        threads.append(threading.Thread(target=pentest_runner.loop, args=(stop,), daemon=True, name="pentest"))
+    if settings.scheduler_enabled:
         from . import email_scan
 
         threads.append(threading.Thread(target=email_scan.loop, args=(stop,), daemon=True, name="email-security"))
