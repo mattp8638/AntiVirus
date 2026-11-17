@@ -2753,6 +2753,159 @@ class VendorAssessment(Base):
 
 
 # --------------------------------------------------------------------------
+# Authorised penetration testing (docs/PENTEST.md)
+# --------------------------------------------------------------------------
+
+
+class PentestEngagement(Base):
+    """One authorised penetration test for a customer tenant."""
+
+    __tablename__ = "pentest_engagements"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("pte"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)  # the customer being tested
+    name: Mapped[str] = mapped_column(String(200))
+    kind: Mapped[str] = mapped_column(String(20), default="external")  # external | internal | hybrid
+    status: Mapped[str] = mapped_column(String(30), default="draft")  # draft | authorised | suspended | completed | cancelled
+    lead_tester: Mapped[str] = mapped_column(String(200))
+    start_date: Mapped[str] = mapped_column(String(10))  # planned dates (YYYY-MM-DD); the authorisation window governs testing
+    end_date: Mapped[str] = mapped_column(String(10))
+    rules: Mapped[dict] = mapped_column(JSON, default=dict)  # rules of engagement
+    notes: Mapped[str] = mapped_column(Text, default="")
+    stop_requested: Mapped[bool] = mapped_column(Boolean, default=False)  # engagement kill switch
+    created_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class PentestAuthorisation(Base):
+    """The client's written authorisation. Recorded by one person, approved by a different authoriser."""
+
+    __tablename__ = "pentest_authorisations"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("pta"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    engagement_id: Mapped[str] = mapped_column(String(32), index=True)
+    client_signatory: Mapped[str] = mapped_column(String(200))
+    signatory_role: Mapped[str] = mapped_column(String(200))
+    document_reference: Mapped[str] = mapped_column(String(300))
+    document_sha256: Mapped[str] = mapped_column(String(64))
+    scope_statement: Mapped[str] = mapped_column(Text)
+    window_start: Mapped[datetime] = mapped_column(DateTime)  # UTC
+    window_end: Mapped[datetime] = mapped_column(DateTime)
+    vantage_device_ids: Mapped[list] = mapped_column(JSON, default=list)  # agents allowed to test internal scope
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | active | superseded | revoked
+    recorded_by: Mapped[str] = mapped_column(String(200))
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    approved_by: Mapped[str] = mapped_column(String(200), default="")
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_by: Mapped[str] = mapped_column(String(200), default="")
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoke_reason: Mapped[str] = mapped_column(String(500), default="")
+
+
+class PentestScope(Base):
+    """An in-scope or excluded target. Scope is default-deny: anything not listed is out of scope."""
+
+    __tablename__ = "pentest_scope"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("pts"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    engagement_id: Mapped[str] = mapped_column(String(32), index=True)
+    target_type: Mapped[str] = mapped_column(String(20))  # host | cidr | domain | subdomain | url
+    value: Mapped[str] = mapped_column(String(500))
+    allowed: Mapped[bool] = mapped_column(Boolean, default=True)
+    network: Mapped[str] = mapped_column(String(10), default="external")  # external | internal (tested from a vantage agent)
+    notes: Mapped[str] = mapped_column(String(500), default="")
+    added_by: Mapped[str] = mapped_column(String(200))
+    added_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class PentestRun(Base):
+    """One check run (queued, running or finished). Every run passed the scope, authorisation and policy gates."""
+
+    __tablename__ = "pentest_runs"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ptr"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    engagement_id: Mapped[str] = mapped_column(String(32), index=True)
+    check_name: Mapped[str] = mapped_column(String(60))
+    category: Mapped[str] = mapped_column(String(30))
+    phase: Mapped[str] = mapped_column(String(30), default="")
+    target: Mapped[str] = mapped_column(String(500), default="")
+    params: Mapped[dict] = mapped_column(JSON, default=dict)
+    vantage_device_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    command_id: Mapped[str | None] = mapped_column(String(32), nullable=True)  # agent command, for internal checks
+    approval_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    plan_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="queued")  # queued | running | waiting_agent | completed | failed | blocked | cancelled
+    requested_by: Mapped[str] = mapped_column(String(200))
+    approved_by: Mapped[str] = mapped_column(String(200), default="")
+    summary: Mapped[str] = mapped_column(String(1000), default="")
+    error: Mapped[str] = mapped_column(String(1000), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class PentestEvidence(Base):
+    """Raw output of a check or manual test, hashed so later changes are detectable."""
+
+    __tablename__ = "pentest_evidence"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ptv"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    engagement_id: Mapped[str] = mapped_column(String(32), index=True)
+    run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    kind: Mapped[str] = mapped_column(String(40))  # check name, or manual_test
+    target: Mapped[str] = mapped_column(String(500), default="")
+    summary: Mapped[str] = mapped_column(String(1000), default="")
+    content: Mapped[str] = mapped_column(Text)  # canonical JSON
+    sha256: Mapped[str] = mapped_column(String(64))
+    recorded_by: Mapped[str] = mapped_column(String(200))
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class PentestFinding(Base):
+    __tablename__ = "pentest_findings"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ptf"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    engagement_id: Mapped[str] = mapped_column(String(32), index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), index=True)  # engagement + title + asset + service
+    title: Mapped[str] = mapped_column(String(300))
+    description: Mapped[str] = mapped_column(Text, default="")
+    severity: Mapped[str] = mapped_column(String(20), default="informational")  # critical | high | medium | low | informational
+    confidence: Mapped[str] = mapped_column(String(40), default="Confirmed")  # Confirmed | Suspected | Requires manual validation
+    status: Mapped[str] = mapped_column(String(20), default="draft")  # draft | approved | rejected | fixed
+    phase: Mapped[str] = mapped_column(String(30), default="")
+    affected_asset: Mapped[str] = mapped_column(String(500), default="")
+    affected_service: Mapped[str] = mapped_column(String(200), default="")
+    remediation: Mapped[str] = mapped_column(Text, default="")
+    retest_steps: Mapped[str] = mapped_column(Text, default="")
+    cve_ids: Mapped[list] = mapped_column(JSON, default=list)
+    cvss: Mapped[float | None] = mapped_column(Float, nullable=True)
+    references: Mapped[list] = mapped_column(JSON, default=list)
+    evidence_ids: Mapped[list] = mapped_column(JSON, default=list)
+    source: Mapped[str] = mapped_column(String(60), default="")  # check or tool that raised it, or the tester
+    occurrences: Mapped[int] = mapped_column(Integer, default=1)
+    reviewed_by: Mapped[str] = mapped_column(String(200), default="")
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ticket_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class PentestReport(Base):
+    __tablename__ = "pentest_reports"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ptp"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    engagement_id: Mapped[str] = mapped_column(String(32), index=True)
+    kind: Mapped[str] = mapped_column(String(20), default="technical")  # technical | executive
+    html: Mapped[str] = mapped_column(Text)
+    pdf: Mapped[bytes] = mapped_column(LargeBinary)
+    sha256: Mapped[str] = mapped_column(String(64))  # of the PDF
+    finding_count: Mapped[int] = mapped_column(Integer, default=0)
+    audit_head: Mapped[str] = mapped_column(String(64), default="")  # audit chain head when generated
+    generated_by: Mapped[str] = mapped_column(String(200))
+    generated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+# --------------------------------------------------------------------------
 # Analytics Data Ingestion Models (Pydantic Validation Schemas)
 # --------------------------------------------------------------------------
 

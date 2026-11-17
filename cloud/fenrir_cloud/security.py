@@ -16,10 +16,12 @@ import time
 
 ROLE_PERMISSIONS: dict[str, set[str]] = {
     # Full control of the platform, every tenant.
-    "platform_admin": {"read", "respond", "configure", "manage_tenants", "platform", "billing", "crm", "vault", "grc", "m365_admin"},
+    "platform_admin": {"read", "respond", "configure", "manage_tenants", "platform", "billing", "crm", "vault", "grc", "m365_admin",
+                       "pentest", "pentest_authorise"},
     # MSP staff manage every customer tenant below their own.
-    "msp_admin": {"read", "respond", "configure", "manage_tenants", "billing", "crm", "vault", "grc", "m365_admin"},
-    "soc_analyst": {"read", "respond", "configure"},
+    "msp_admin": {"read", "respond", "configure", "manage_tenants", "billing", "crm", "vault", "grc", "m365_admin",
+                  "pentest", "pentest_authorise"},
+    "soc_analyst": {"read", "respond", "configure", "pentest"},
     "technician": {"read", "respond", "crm", "vault"},
     "billing": {"read", "billing", "crm"},
     # Customer-side roles are limited to their own tenant subtree.
@@ -58,6 +60,8 @@ PERMISSIONS: dict[str, str] = {
     "grc": "Compliance programmes, policies and evidence",
     "m365_admin": "Microsoft 365 administration",
     "platform": "Platform-wide administration",
+    "pentest": "Plan and run authorised penetration tests",
+    "pentest_authorise": "Approve penetration test authorisations, rules of engagement and scope changes",
 }
 ROLES = tuple(ROLE_PERMISSIONS)
 

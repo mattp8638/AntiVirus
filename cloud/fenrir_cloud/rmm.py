@@ -342,6 +342,10 @@ def on_command_complete(db: Session, device: Device, command: Command) -> None:
         from . import amt
 
         amt.on_command_complete(db, device, command)
+    if (command.payload or {}).get("pentestRunId"):
+        from .pentest import runner as pentest_runner
+
+        pentest_runner.on_command_complete(db, device, command)  # authorised penetration test (internal check)
     if (command.payload or {}).get("conditionPackageId"):
         from . import condition_remediation
 

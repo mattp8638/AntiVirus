@@ -59,6 +59,7 @@ from .routers import defender as defender_router
 from .routers import mobile_apps as mobile_apps_router
 from .routers import web_profile as web_profile_router
 from .routers import reports as reports_router, branding as branding_router
+from .routers import pentest as pentest_router
 from .routers import deploy as deploy_router
 from .routers import oob as oob_router
 from .routers import hybrid as hybrid_router
@@ -393,6 +394,10 @@ def start_background(settings: Settings, stop: threading.Event) -> list[threadin
 
         threads.append(threading.Thread(target=cveintel.loop, args=(stop,), daemon=True, name="vuln-intel"))
     if settings.scheduler_enabled:
+        from .pentest import runner as pentest_runner
+
+        threads.append(threading.Thread(target=pentest_runner.loop, args=(stop,), daemon=True, name="pentest"))
+    if settings.scheduler_enabled:
         from . import email_scan
 
         threads.append(threading.Thread(target=email_scan.loop, args=(stop,), daemon=True, name="email-security"))
@@ -608,7 +613,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     for module in (m365_admin_router, m365_router, network_router, grc_router, soc_workflows, ad_router, agent_health_router, onboarding_router, m365_exchange_router, m365_signin_router, m365_intune_router, m365_reports_router, m365_collaboration_router, grc_programme_router,
                    rollouts_router, apikeys_router, roles_router, approvals_router, exclusions_router,
                    exposure_intel_router, m365_partner_router, m365_workspace_router, email_security_router, email_policies_router, dns_console_router, m365_lifecycle_router, condition_packages_router, triage_router, clients_router, search_router, defender_router, mobile_apps_router, push_router,
-                   reports_router, branding_router, deploy_router):
+                   reports_router, branding_router, deploy_router, pentest_router):
         app.include_router(module.router)
     app.include_router(deploy_router.public)
     app.include_router(email_security_router.public)

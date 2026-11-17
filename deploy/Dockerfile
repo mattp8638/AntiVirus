@@ -109,7 +109,9 @@ COPY --from=windows-agents-selected /out/windows/ /app/cloud/downloads/windows/
 # directories traversable, preserve executable agents, and remove group/other
 # write access. Build secrets are mounted separately and never copied here.
 # wixl (msitools) builds each customer's MSI on request (rmm_deploy.py).
-RUN apt-get update && apt-get install -y --no-install-recommends wixl && rm -rf /var/lib/apt/lists/*
+# nmap and testssl.sh run authorised penetration test checks (docs/PENTEST.md); nmap uses TCP connect scans, so it
+# needs no root or raw-socket capability. nuclei is optional: install it yourself and set FENRIR_PENTEST_NUCLEI.
+RUN apt-get update && apt-get install -y --no-install-recommends wixl nmap testssl.sh && rm -rf /var/lib/apt/lists/*
 RUN useradd --system --uid 10001 fenrir \
  && chmod -R a+rX,go-w /app \
  && mkdir -p /data && chown fenrir /data
