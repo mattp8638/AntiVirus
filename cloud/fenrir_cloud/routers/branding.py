@@ -144,7 +144,7 @@ def put_modules(body: dict = Body(...), principal: Principal = Depends(current_p
         chosen = modules.validate(body.get("enabled"))
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
-    msp.settings = {**(msp.settings or {}), "modules": chosen}
+    msp.settings = {**(msp.settings or {}), "modules": chosen, "modulesKnown": list(modules.MODULES)}
     audit.record(db, principal.actor, "modules.updated", msp.name, msp.id, enabled=chosen)
     db.commit()
     return get_modules(principal, db)

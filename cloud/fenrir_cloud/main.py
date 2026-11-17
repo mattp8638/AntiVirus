@@ -98,7 +98,8 @@ def bootstrap(settings: Settings) -> None:
             from . import modules
 
             # A new installation starts with the short Essentials menu (Settings > Modules adds the rest).
-            msp = Tenant(name=name, slug=slug, kind="msp", plan="mdr", settings={"modules": list(modules.MODULES if settings.demo_mode else modules.ESSENTIALS)})
+            msp = Tenant(name=name, slug=slug, kind="msp", plan="mdr", settings={"modules": list(modules.MODULES if settings.demo_mode else modules.ESSENTIALS),
+                                                                                "modulesKnown": list(modules.MODULES)})
             db.add(msp)
             db.flush()
         if db.get(Policy, GLOBAL_POLICY_ID) is None:

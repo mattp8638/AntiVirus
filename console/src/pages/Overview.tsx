@@ -53,6 +53,39 @@ function MyWork() {
   );
 }
 
+// Penetration testing at a glance (docs/PENTEST.md): shown when the module is on and there is something to see or do.
+function PentestCard() {
+  const { tenantId, tenantName, can } = useApp();
+  const navigate = useNavigate();
+  const { data: modules } = useData<any>("modules");
+  const on = !!modules?.enabled?.includes("pentest");
+  const { data } = useData<any>(on ? "pentest/summary" : null, { tenant_id: tenantId });
+  if (!on || !data || (!data.open && !can("pentest"))) return null;
+  const waiting = data.awaitingAuthorisation + data.approvalsWaiting + data.findingsToReview;
+  const n = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+  return (
+    <>
+      <h2 style={{ margin: "24px 0 10px" }}>Penetration testing <Link to="/pentest" className="small" style={{ fontWeight: 400 }}>Open engagements</Link></h2>
+      <div className="grid k4">
+        <Stat label="Open engagements" value={data.open} to="/pentest" hint={`${data.testingNow} authorised for testing right now`} />
+        <Stat label="Checks running" value={data.checksRunning} accent={data.checksRunning ? "amber" : undefined} to="/pentest" hint="queued, running or waiting for an agent" />
+        <Stat label="Waiting for a decision" value={waiting} accent={waiting ? "amber" : "green"} to={data.approvalsWaiting ? "/settings?tab=Approvals" : "/pentest"}
+              hint={`${n(data.awaitingAuthorisation, "authorisation")} · ${n(data.approvalsWaiting, "check approval")} · ${n(data.findingsToReview, "finding")} to review`} />
+        <Stat label="Not testing now" value={data.open - data.testingNow} accent={data.open - data.testingNow ? "amber" : "green"} to="/pentest"
+              hint="awaiting authorisation, outside the window or hours, or stopped" />
+      </div>
+      {data.engagements.length > 0 && <div className="card" style={{ marginTop: 16 }}>
+        <Table rows={data.engagements} onRow={(e) => navigate(`/pentest/${e.id}`)}
+               columns={[{ key: "name", label: "Engagement", render: (e) => <><b>{displayValue(e.name)}</b><div className="small muted">{tenantName(e.tenantId)}</div></> },
+                         { key: "state", label: "Testing", render: (e) => e.testingAllowed ? <Pill value="authorised" tone="good" />
+                           : e.awaitingAuthorisation ? <Pill value="awaiting approval" tone="warn" /> : <span className="small muted">{displayValue(e.problem)}</span> },
+                         { key: "running", label: "Checks running", className: "right" },
+                         { key: "draftFindings", label: "Findings to review", className: "right" }]} />
+      </div>}
+    </>
+  );
+}
+
 export default function Overview() {
   const { tenantId, tenantName } = useApp();
   const navigate = useNavigate();
@@ -63,6 +96,7 @@ export default function Overview() {
     <>
       <PageHead title="Dashboard" subtitle={`${tenantId ? tenantName(tenantId) : "All tenants"}`} />
       <MyWork />
+      <PentestCard />
       <h2 style={{ margin: "24px 0 10px" }}>Security <span className="small muted">last 14 days</span></h2>
       <ErrorNote error={error} />
       {data && (
