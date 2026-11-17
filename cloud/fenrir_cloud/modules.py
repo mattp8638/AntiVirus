@@ -24,6 +24,16 @@ MODULES = {
     "governance": ("Compliance and GRC", "Frameworks, policies, risks and evidence"),
 }
 ESSENTIALS = ["service", "protection", "vulnerabilities"]
+# Modules added after the first module release. A saved choice that predates them never decided about them, so they
+# are shown until an admin chooses again (and from then on the saved "modulesKnown" list says what was decided).
+ADDED_LATER = {"pentest"}
+
+
+def known_when_saved(settings: dict) -> set[str]:
+    known = settings.get("modulesKnown")
+    if isinstance(known, list):
+        return {m for m in known if isinstance(m, str)}
+    return set(MODULES) - ADDED_LATER
 
 
 def enabled(db: Session, tenant_id: str | None) -> list[str]:
@@ -34,10 +44,12 @@ def enabled(db: Session, tenant_id: str | None) -> list[str]:
         return list(MODULES)  # a public demo shows everything (and nobody can change it there)
 
     msp = branding.msp_of(db, tenant_id) if tenant_id else branding.default_msp(db)
-    stored = (msp.settings or {}).get("modules") if msp is not None else None
+    settings = (msp.settings or {}) if msp is not None else {}
+    stored = settings.get("modules")
     if not isinstance(stored, list):
         return list(MODULES)  # never chosen: an existing installation keeps everything
-    return [m for m in MODULES if m in stored]
+    undecided = set(MODULES) - known_when_saved(settings)  # added since the choice was saved
+    return [m for m in MODULES if m in stored or m in undecided]
 
 
 def validate(value) -> list[str]:

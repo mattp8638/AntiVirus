@@ -80,59 +80,70 @@ import { api, setDefaultCurrency } from "./api";
 // Grouped by the job in hand rather than by module: work the queue, look after a client, look after their endpoints,
 // their identity and cloud, run the service desk and the business, prove compliance, then administration.
 const NAV: { group: string; items: { to: string; label: string; icon: string; also?: string[]; module?: string }[] }[] = [
+  // Ordered by how often an MSP reaches for each area: today's work first, set-up and administration last.
   {
-    group: "Triage",
+    group: "Home",
     items: [
       { to: "/", label: "Dashboard", icon: "◎" },
       { to: "/inbox", label: "Inbox", icon: "☰" },
+    ],
+  },
+  {
+    group: "Security operations",
+    items: [
       { to: "/alerts", label: "Alerts", icon: "△" },
       { module: "security", to: "/incidents", label: "Incidents", icon: "⚑" },
       { module: "security", to: "/admin-requests", label: "Admin requests", icon: "⇡" },
+      { module: "protection", to: "/quarantine", label: "Quarantine", icon: "⊘" },
       { module: "security", to: "/hunt", label: "Threat hunting", icon: "⌕" },
       { module: "security", to: "/intel", label: "Threat intel", icon: "✦" },
     ],
   },
   {
-    group: "Clients",
-    items: [
-      { to: "/companies", label: "Companies", icon: "⌂" },
-      { to: "/reports", label: "Reports", icon: "▤" },
-      { module: "documentation", to: "/configurations", label: "Configurations", icon: "⚿" },
-      { module: "documentation", to: "/knowledge", label: "Knowledge base", icon: "❏" },
-      { module: "documentation", to: "/vault", label: "Credential vault", icon: "⚿" },
-    ],
-  },
-  {
-    group: "Endpoints",
+    group: "Devices",
     items: [
       { to: "/devices", label: "Devices", icon: "▣" },
       { to: "/groups", label: "Device groups", icon: "⧉" },
       { to: "/monitoring", label: "Monitoring", icon: "♥" },
+      { to: "/agent-health", label: "Agent health", icon: "✚" },
+      { to: "/deploy", label: "Deploy agents", icon: "⇩" },
+      { module: "network", to: "/out-of-band", label: "Out-of-band (Intel AMT)", icon: "⏻" },
+    ],
+  },
+  {
+    group: "Maintenance & automation",
+    items: [
       { to: "/patching", label: "Patching", icon: "⟳" },
       { to: "/software", label: "Software", icon: "⬇" },
       { to: "/scripts", label: "Scripts", icon: "❯" },
       { to: "/remediation-packages", label: "Remediation packages", icon: "✚" },
       { to: "/automation", label: "Jobs & schedules", icon: "⏱" },
+    ],
+  },
+  {
+    group: "Protection",
+    items: [
       { module: "protection", to: "/policies", label: "Protection policies", icon: "⚙" },
       { module: "protection", to: "/protection-health", label: "Protection health", icon: "⛨" },
-      { to: "/agent-health", label: "Agent health", icon: "✚" },
-      { module: "protection", to: "/quarantine", label: "Quarantine", icon: "⊘" },
+      { module: "security", to: "/dns", label: "DNS protection", icon: "◈" },
+      { module: "email", to: "/email-security", label: "Email security", icon: "✉" },
+    ],
+  },
+  {
+    group: "Exposure & testing",
+    items: [
       { module: "vulnerabilities", to: "/vulnerabilities", label: "Vulnerabilities", icon: "⚠" },
-      { module: "network", to: "/out-of-band", label: "Out-of-band (Intel AMT)", icon: "⏻" },
-      { to: "/deploy", label: "Deploy agents", icon: "⇩" },
+      { module: "network", to: "/attack-surface", label: "Attack surface", icon: "◍" },
+      { module: "pentest", to: "/pentest", label: "Penetration testing", icon: "⚑" },
+      { module: "identity", to: "/exposure", label: "Data & identity exposure", icon: "⚇" },
     ],
   },
   {
     group: "Identity, cloud & network",
     items: [
       { module: "identity", to: "/m365", label: "Microsoft 365", icon: "▦", also: ["/m365-partner"] },
-      { module: "email", to: "/email-security", label: "Email security", icon: "✉" },
       { module: "identity", to: "/active-directory", label: "Active Directory", icon: "⌘" },
-      { module: "identity", to: "/exposure", label: "Data & identity exposure", icon: "⚇" },
       { module: "network", to: "/network", label: "Network", icon: "⌁", also: ["/network-topology"] },
-      { module: "security", to: "/dns", label: "DNS protection", icon: "◈" },
-      { module: "network", to: "/attack-surface", label: "Attack surface", icon: "◍" },
-      { module: "pentest", to: "/pentest", label: "Penetration testing", icon: "⚑" },
     ],
   },
   {
@@ -145,12 +156,22 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; al
     ],
   },
   {
-    group: "Business",
+    group: "Customers & business",
     items: [
-      { module: "business", to: "/crm", label: "CRM & projects", icon: "☺" },
+      { to: "/companies", label: "Companies", icon: "⌂" },
       { module: "business", to: "/onboarding", label: "Customer onboarding", icon: "✓" },
+      { module: "business", to: "/crm", label: "CRM & projects", icon: "☺" },
       { module: "business", to: "/quotes", label: "Products & quotes", icon: "❖" },
       { module: "business", to: "/billing", label: "Agreements & billing", icon: "£" },
+    ],
+  },
+  {
+    group: "Knowledge & reports",
+    items: [
+      { to: "/reports", label: "Reports", icon: "▤" },
+      { module: "documentation", to: "/configurations", label: "Configurations", icon: "⚿" },
+      { module: "documentation", to: "/knowledge", label: "Knowledge base", icon: "❏" },
+      { module: "documentation", to: "/vault", label: "Credential vault", icon: "⚿" },
     ],
   },
   { group: "Governance", items: [{ module: "governance", to: "/governance", label: "Compliance & GRC", icon: "✓", also: ["/continuous-compliance", "/compliance"] }] },
@@ -166,6 +187,20 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; al
     ],
   },
 ];
+// Menu groups each user has collapsed (per browser). The group holding the current page always stays open.
+const COLLAPSED_KEY = "fenrir.nav.collapsed";
+function readCollapsedGroups(): string[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(COLLAPSED_KEY) || "[]");
+    return Array.isArray(value) ? value.filter((g) => typeof g === "string") : [];
+  } catch {
+    return [];
+  }
+}
+function isCurrent(item: { to: string; also?: string[] }, path: string) {
+  const prefixes = [item.to, ...(item.also ?? [])];
+  return item.to === "/" ? path === "/" : prefixes.some((p) => path === p || path.startsWith(`${p}/`));
+}
 // Settings > Modules: pages of switched-off modules leave the menu and search (they still open by link).
 function visibleNav(enabled: string[] | null) {
   return NAV.map((g) => ({ ...g, items: g.items.filter((i) => !i.module || !enabled || enabled.includes(i.module)) }))
@@ -290,6 +325,12 @@ function Shell() {
     return () => window.removeEventListener("fenrir:modules-changed", load);
   }, [me?.user.id]);
   const nav = useMemo(() => visibleNav(enabledModules), [enabledModules]);
+  const [collapsed, setCollapsed] = useState<string[]>(readCollapsedGroups);
+  const toggleGroup = useCallback((group: string) => setCollapsed((current) => {
+    const next = current.includes(group) ? current.filter((g) => g !== group) : [...current, group];
+    try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify(next)); } catch { /* storage unavailable: lasts until reload */ }
+    return next;
+  }), []);
   const pages = useMemo(() => nav.flatMap((g) => g.items.map((i) => ({ to: i.to, label: i.label, group: g.group }))), [nav]);
   const [navOpen, setNavOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -315,17 +356,28 @@ function Shell() {
           <div className="small muted">{me.user.role.replace(/_/g, " ")}</div>
           <button className="small" onClick={logout}>Sign out</button>
         </div>
-        {nav.map((group) => (
-          <div key={group.group}>
-            <div className="nav-group">{group.group}</div>
-            {group.items.map((item) => (
-              <NavLink key={item.to} to={item.to} end={item.to === "/"}
-                       className={({ isActive }) => `nav-link ${isActive || item.also?.some((p) => location.pathname === p || location.pathname.startsWith(`${p}/`)) ? "active" : ""}`}>
-                <span aria-hidden style={{ width: 16, textAlign: "center" }}>{item.icon}</span>{item.label}
-              </NavLink>
-            ))}
-          </div>
-        ))}
+        {nav.map((group) => {
+          const holdsCurrent = group.items.some((item) => isCurrent(item, location.pathname));
+          const open = holdsCurrent || !collapsed.includes(group.group);
+          const listId = `nav-${group.group.replace(/\W+/g, "-").toLowerCase()}`;
+          return (
+            <div key={group.group}>
+              <button type="button" className="nav-group" aria-expanded={open} aria-controls={listId}
+                      title={holdsCurrent ? "Contains the page you are on" : open ? "Collapse" : "Expand"}
+                      onClick={() => !holdsCurrent && toggleGroup(group.group)}>
+                <span>{group.group}</span><span aria-hidden className="nav-chevron">{open ? "▾" : "▸"}</span>
+              </button>
+              {open && <div id={listId}>
+                {group.items.map((item) => (
+                  <NavLink key={item.to} to={item.to} end={item.to === "/"}
+                           className={({ isActive }) => `nav-link ${isActive || item.also?.some((p) => location.pathname === p || location.pathname.startsWith(`${p}/`)) ? "active" : ""}`}>
+                    <span aria-hidden style={{ width: 16, textAlign: "center" }}>{item.icon}</span>{item.label}
+                  </NavLink>
+                ))}
+              </div>}
+            </div>
+          );
+        })}
       </aside>
       <div className="main">
         <DemoNote />
