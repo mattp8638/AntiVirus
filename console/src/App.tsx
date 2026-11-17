@@ -9,7 +9,7 @@ import RemediationPackages from "./pages/rmm/RemediationPackages";
 import Governance from "./pages/Governance";
 import Assurance from "./pages/grc/Assurance";
 import SocWorkflows from "./pages/SocWorkflows";
-import { FormEvent, lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { useApp } from "./app-context";
 import { PageBoundary } from "./components/PageBoundary";
@@ -79,17 +79,20 @@ import { api, setDefaultCurrency } from "./api";
 // `also`: other pages of the same section (they switch with section tabs), so the entry stays highlighted on them.
 // Grouped by the job in hand rather than by module: work the queue, look after a client, look after their endpoints,
 // their identity and cloud, run the service desk and the business, prove compliance, then administration.
-const NAV: { group: string; items: { to: string; label: string; icon: string; also?: string[]; module?: string }[] }[] = [
+type NavItem = { to: string; label: string; icon: string; also?: string[]; module?: string };
+// `flat`: shown as top-level links rather than a sub-menu. A section left with one page also shows as a plain link.
+type NavSection = { group: string; icon: string; flat?: boolean; items: NavItem[] };
+const NAV: NavSection[] = [
   // Ordered by how often an MSP reaches for each area: today's work first, set-up and administration last.
   {
-    group: "Home",
+    group: "Home", icon: "◎", flat: true,
     items: [
       { to: "/", label: "Dashboard", icon: "◎" },
       { to: "/inbox", label: "Inbox", icon: "☰" },
     ],
   },
   {
-    group: "Security operations",
+    group: "Security operations", icon: "⛨",
     items: [
       { to: "/alerts", label: "Alerts", icon: "△" },
       { module: "security", to: "/incidents", label: "Incidents", icon: "⚑" },
@@ -100,7 +103,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; al
     ],
   },
   {
-    group: "Devices",
+    group: "Devices", icon: "▣",
     items: [
       { to: "/devices", label: "Devices", icon: "▣" },
       { to: "/groups", label: "Device groups", icon: "⧉" },
@@ -111,7 +114,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; al
     ],
   },
   {
-    group: "Maintenance & automation",
+    group: "Maintenance", icon: "⟳",
     items: [
       { to: "/patching", label: "Patching", icon: "⟳" },
       { to: "/software", label: "Software", icon: "⬇" },
@@ -121,7 +124,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; al
     ],
   },
   {
-    group: "Protection",
+    group: "Protection", icon: "◈",
     items: [
       { module: "protection", to: "/policies", label: "Protection policies", icon: "⚙" },
       { module: "protection", to: "/protection-health", label: "Protection health", icon: "⛨" },
@@ -130,7 +133,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; al
     ],
   },
   {
-    group: "Exposure & testing",
+    group: "Exposure & testing", icon: "⚠",
     items: [
       { module: "vulnerabilities", to: "/vulnerabilities", label: "Vulnerabilities", icon: "⚠" },
       { module: "network", to: "/attack-surface", label: "Attack surface", icon: "◍" },
@@ -139,7 +142,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; al
     ],
   },
   {
-    group: "Identity, cloud & network",
+    group: "Identity & network", icon: "☁",
     items: [
       { module: "identity", to: "/m365", label: "Microsoft 365", icon: "▦", also: ["/m365-partner"] },
       { module: "identity", to: "/active-directory", label: "Active Directory", icon: "⌘" },
@@ -147,7 +150,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; al
     ],
   },
   {
-    group: "Service desk",
+    group: "Service desk", icon: "✉",
     items: [
       { module: "service", to: "/service-board", label: "Service board", icon: "✉" },
       { module: "service", to: "/dispatch", label: "Dispatch", icon: "▦" },
@@ -156,7 +159,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; al
     ],
   },
   {
-    group: "Customers & business",
+    group: "Customers & business", icon: "⌂",
     items: [
       { to: "/companies", label: "Companies", icon: "⌂" },
       { module: "business", to: "/onboarding", label: "Customer onboarding", icon: "✓" },
@@ -166,7 +169,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; al
     ],
   },
   {
-    group: "Knowledge & reports",
+    group: "Knowledge & reports", icon: "▤",
     items: [
       { to: "/reports", label: "Reports", icon: "▤" },
       { module: "documentation", to: "/configurations", label: "Configurations", icon: "⚿" },
@@ -174,9 +177,9 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; al
       { module: "documentation", to: "/vault", label: "Credential vault", icon: "⚿" },
     ],
   },
-  { group: "Governance", items: [{ module: "governance", to: "/governance", label: "Compliance & GRC", icon: "✓", also: ["/continuous-compliance", "/compliance"] }] },
+  { group: "Governance", icon: "✓", items: [{ module: "governance", to: "/governance", label: "Compliance & GRC", icon: "✓", also: ["/continuous-compliance", "/compliance"] }] },
   {
-    group: "Admin",
+    group: "Admin", icon: "⚙",
     items: [
       { to: "/settings", label: "Settings", icon: "⚒" },
       { module: "service", to: "/service-settings", label: "Service settings", icon: "⚙" },
@@ -187,22 +190,17 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; al
     ],
   },
 ];
-// Menu groups each user has collapsed (per browser). The group holding the current page always stays open.
-const COLLAPSED_KEY = "fenrir.nav.collapsed";
-function readCollapsedGroups(): string[] {
-  try {
-    const value = JSON.parse(localStorage.getItem(COLLAPSED_KEY) || "[]");
-    return Array.isArray(value) ? value.filter((g) => typeof g === "string") : [];
-  } catch {
-    return [];
-  }
+// Desktop: the menu can shrink to an icon rail (remembered per browser); sections then open as fly-out menus.
+const RAIL_KEY = "fenrir.nav.rail";
+function readRail(): boolean {
+  try { return localStorage.getItem(RAIL_KEY) === "1"; } catch { return false; }
 }
 function isCurrent(item: { to: string; also?: string[] }, path: string) {
   const prefixes = [item.to, ...(item.also ?? [])];
   return item.to === "/" ? path === "/" : prefixes.some((p) => path === p || path.startsWith(`${p}/`));
 }
 // Settings > Modules: pages of switched-off modules leave the menu and search (they still open by link).
-function visibleNav(enabled: string[] | null) {
+function visibleNav(enabled: string[] | null): NavSection[] {
   return NAV.map((g) => ({ ...g, items: g.items.filter((i) => !i.module || !enabled || enabled.includes(i.module)) }))
     .filter((g) => g.items.length > 0);
 }
@@ -313,6 +311,74 @@ const BOTTOM_NAV = [
   { to: "/service-board", label: "Tickets", icon: "✉" },
 ];
 
+// The side menu: Dashboard and Inbox at the top, then one sub-menu per area. One sub-menu is open at a time (the
+// area of the page you are on, until you open another). In the icon rail, an area opens as a fly-out instead.
+function SideNav({ nav, rail }: { nav: NavSection[]; rail: boolean }) {
+  const location = useLocation();
+  const path = location.pathname;
+  const currentGroup = nav.find((g) => g.items.some((i) => isCurrent(i, path)))?.group ?? null;
+  const [open, setOpen] = useState<string | null>(currentGroup);
+  useEffect(() => { setOpen(currentGroup); }, [currentGroup, path]);
+  const [flyout, setFlyout] = useState<{ group: string; top: number } | null>(null);
+  const closeTimer = useRef<number | undefined>(undefined);
+  useEffect(() => { setFlyout(null); }, [path, rail]);
+  useEffect(() => {
+    if (!flyout) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setFlyout(null); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [flyout]);
+  const showFlyout = (group: string, el: HTMLElement) => {
+    window.clearTimeout(closeTimer.current);
+    const top = Math.max(8, Math.min(el.getBoundingClientRect().top, window.innerHeight - 80));
+    setFlyout({ group, top });
+  };
+  const hideFlyout = () => { closeTimer.current = window.setTimeout(() => setFlyout(null), 160); };
+  const link = (item: NavItem, sub: boolean) => (
+    <NavLink key={item.to} to={item.to} end={item.to === "/"} title={rail && !sub ? item.label : undefined}
+             className={() => `nav-link ${sub ? "nav-sublink" : ""} ${isCurrent(item, path) ? "active" : ""}`}
+             aria-current={isCurrent(item, path) ? "page" : undefined}>
+      {!sub && <span aria-hidden className="nav-icon">{item.icon}</span>}<span className="nav-label">{item.label}</span>
+    </NavLink>
+  );
+  return (
+    <nav className="side-nav" aria-label="Sections">
+      {nav.map((section) => {
+        if (section.flat || section.items.length === 1) {
+          return <div key={section.group} className="nav-top">{section.items.map((item) => link(item, false))}</div>;
+        }
+        const id = `nav-${section.group.replace(/\W+/g, "-").toLowerCase()}`;
+        const holdsCurrent = section.group === currentGroup;
+        const expanded = !rail && open === section.group;
+        const flying = rail && flyout?.group === section.group;
+        return (
+          <div key={section.group} className={`nav-section ${holdsCurrent ? "current" : ""}`}
+               onMouseEnter={rail ? (e) => showFlyout(section.group, e.currentTarget) : undefined}
+               onMouseLeave={rail ? hideFlyout : undefined}>
+            <button type="button" className={`nav-section-head ${expanded || flying ? "open" : ""}`}
+                    aria-expanded={expanded || flying} aria-controls={id} title={rail ? section.group : undefined}
+                    onClick={(e) => rail
+                      ? (flying ? setFlyout(null) : showFlyout(section.group, e.currentTarget))
+                      : setOpen(expanded ? null : section.group)}>
+              <span aria-hidden className="nav-icon">{section.icon}</span>
+              <span className="nav-label">{section.group}</span>
+              <span aria-hidden className="nav-chevron">›</span>
+            </button>
+            {expanded && <div id={id} className="nav-sub">{section.items.map((item) => link(item, true))}</div>}
+            {flying && flyout && (
+              <div id={id} className="nav-flyout" style={{ top: flyout.top }} role="group" aria-label={section.group}
+                   onMouseEnter={() => window.clearTimeout(closeTimer.current)} onMouseLeave={hideFlyout}>
+                <div className="nav-flyout-title">{section.group}</div>
+                {section.items.map((item) => link(item, true))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </nav>
+  );
+}
+
 function Shell() {
   const { me, tenantId, setTenantId, logout } = useApp();
   const location = useLocation();
@@ -325,11 +391,19 @@ function Shell() {
     return () => window.removeEventListener("fenrir:modules-changed", load);
   }, [me?.user.id]);
   const nav = useMemo(() => visibleNav(enabledModules), [enabledModules]);
-  const [collapsed, setCollapsed] = useState<string[]>(readCollapsedGroups);
-  const toggleGroup = useCallback((group: string) => setCollapsed((current) => {
-    const next = current.includes(group) ? current.filter((g) => g !== group) : [...current, group];
-    try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify(next)); } catch { /* storage unavailable: lasts until reload */ }
-    return next;
+  const [railChosen, setRail] = useState(readRail);
+  const [narrow, setNarrow] = useState(() => typeof window.matchMedia === "function" && window.matchMedia("(max-width: 900px)").matches);
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia("(max-width: 900px)");
+    const onChange = () => setNarrow(query.matches);
+    query.addEventListener?.("change", onChange);
+    return () => query.removeEventListener?.("change", onChange);
+  }, []);
+  const rail = railChosen && !narrow;  // phones and tablets always use the full slide-out menu
+  const toggleRail = useCallback(() => setRail((current) => {
+    try { localStorage.setItem(RAIL_KEY, current ? "0" : "1"); } catch { /* storage unavailable: lasts until reload */ }
+    return !current;
   }), []);
   const pages = useMemo(() => nav.flatMap((g) => g.items.map((i) => ({ to: i.to, label: i.label, group: g.group }))), [nav]);
   const [navOpen, setNavOpen] = useState(false);
@@ -346,7 +420,7 @@ function Shell() {
   }, [navOpen]);
   if (!me) return null;
   return (
-    <div className={`shell ${navOpen ? "nav-open" : ""}`}>
+    <div className={`shell ${navOpen ? "nav-open" : ""} ${rail ? "nav-rail" : ""}`}>
       <div className="nav-backdrop" onClick={() => setNavOpen(false)} aria-hidden />
       <aside className="sidebar" aria-label="Main menu">
         <div className="brand"><BrandHeader />
@@ -356,28 +430,11 @@ function Shell() {
           <div className="small muted">{me.user.role.replace(/_/g, " ")}</div>
           <button className="small" onClick={logout}>Sign out</button>
         </div>
-        {nav.map((group) => {
-          const holdsCurrent = group.items.some((item) => isCurrent(item, location.pathname));
-          const open = holdsCurrent || !collapsed.includes(group.group);
-          const listId = `nav-${group.group.replace(/\W+/g, "-").toLowerCase()}`;
-          return (
-            <div key={group.group}>
-              <button type="button" className="nav-group" aria-expanded={open} aria-controls={listId}
-                      title={holdsCurrent ? "Contains the page you are on" : open ? "Collapse" : "Expand"}
-                      onClick={() => !holdsCurrent && toggleGroup(group.group)}>
-                <span>{group.group}</span><span aria-hidden className="nav-chevron">{open ? "▾" : "▸"}</span>
-              </button>
-              {open && <div id={listId}>
-                {group.items.map((item) => (
-                  <NavLink key={item.to} to={item.to} end={item.to === "/"}
-                           className={({ isActive }) => `nav-link ${isActive || item.also?.some((p) => location.pathname === p || location.pathname.startsWith(`${p}/`)) ? "active" : ""}`}>
-                    <span aria-hidden style={{ width: 16, textAlign: "center" }}>{item.icon}</span>{item.label}
-                  </NavLink>
-                ))}
-              </div>}
-            </div>
-          );
-        })}
+        <SideNav nav={nav} rail={rail} />
+        <button type="button" className="ghost nav-rail-toggle" onClick={toggleRail}
+                aria-label={rail ? "Expand menu" : "Collapse menu to icons"} title={rail ? "Expand menu" : "Collapse menu to icons"}>
+          <span aria-hidden>{rail ? "»" : "«"}</span><span className="nav-label">Collapse menu</span>
+        </button>
       </aside>
       <div className="main">
         <DemoNote />
