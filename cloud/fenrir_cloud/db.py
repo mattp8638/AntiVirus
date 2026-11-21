@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 75
+LATEST_MIGRATION = 76
 
 def init_engine(url: str, pool_size: int = 5, max_overflow: int = 10) -> Engine:
     global _engine, _session_factory
@@ -541,6 +541,10 @@ def migrate(bind: Engine) -> list[int]:
                 ensure_columns(Base, conn)  # enrollment_tokens.include_backup: installers bundle the backup agent
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (75)"))
                 applied.append(75)
+            if 76 not in versions:
+                ensure_columns(Base, conn)  # NAS gateway: backup agents, repositories and access
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (76)"))
+                applied.append(76)
             conn.commit()
         except Exception:
             conn.rollback()

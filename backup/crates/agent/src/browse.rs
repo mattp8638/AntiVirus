@@ -60,7 +60,7 @@ fn manifest(ctx: &Ctx, access: &RepoAccess, image: Uuid) -> anyhow::Result<Arc<M
         return Ok(s.manifest.clone());
     }
     *g = None;
-    let repo = open_repo(ctx.key, access)?;
+    let repo = open_repo(ctx, access)?;
     let m = Arc::new(
         repo.load_manifest(&image)
             .map_err(|e| anyhow!("image {image}: {e}"))?,

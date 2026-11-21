@@ -410,3 +410,80 @@ def test_agent_builds_download_without_an_agent_token(client, tmp_path, monkeypa
     assert client.get(f"/backup/agent/{t.triple}/{t.file}").content == b"agent"
     assert client.get("/backup/agent/x86_64-unknown-linux-musl/..%2f..%2fetc").content != b"agent"
     assert client.get("/backup/agent/x86_64-unknown-linux-musl/other").status_code == 404
+
+
+def test_nas_gateway_routes_relays_and_keeps_retention_on_the_gateway(client, admin, tenant):
+    import threading
+
+    e = link(client, admin, tenant)
+    gw_id, gw_h = agent_enroll(client, e["token"], machine="nas-gw")
+    caps = CAPS + ["restore_files", "gateway"]
+    hb = lambda h, **kw: client.post("/backup/api/agent/heartbeat", headers=h, json={"inventory": {"hostname": "x", "capabilities": caps, **kw}}).json()
+    hb(gw_h, gateway_addresses=["192.168.1.20:8475"])
+    repo_id = ready_repo(client, admin, tenant, gw_id, gw_h)
+    hb(gw_h, gateway_addresses=["192.168.1.20:8475"])
+    remote_id, remote_h = agent_enroll(client, e["token"], machine="laptop", key=base64.b64encode(b"r" * 32).decode())
+    hb(remote_h)
+
+    # Through the gateway needs a gateway first; the gateway must have direct access.
+    r = client.post(f"/api/console/backup/repositories/{repo_id}/access", headers=admin,
+                    json={"agentId": remote_id, "sealed": SEALED, "viaGateway": True})
+    assert r.status_code == 400 and "gateway" in r.json()["detail"]
+    assert client.post(f"/api/console/backup/repositories/{repo_id}/gateway", headers=admin,
+                       json={"agentId": remote_id}).status_code == 400
+    r = client.post(f"/api/console/backup/repositories/{repo_id}/gateway", headers=admin,
+                    json={"agentId": gw_id, "port": 8475, "address": "backup.example.com:18475"})
+    assert r.status_code == 200, r.text
+    assert client.post(f"/api/console/backup/repositories/{repo_id}/access", headers=admin,
+                       json={"agentId": remote_id, "sealed": SEALED, "viaGateway": True}).status_code == 200
+
+    # The gateway learns what to serve and to whom; the client how to reach it.
+    cfg = hb(gw_h, gateway_addresses=["192.168.1.20:8475"])["gateway"]
+    assert cfg["listen_port"] == 8475
+    assert cfg["repositories"][0]["repository_id"] == repo_id
+    assert cfg["repositories"][0]["clients"] == [{"agent_id": remote_id, "public_key": base64.b64encode(b"r" * 32).decode()}]
+    assert hb(remote_h)["gateway"] is None
+    client.post(f"/api/console/backup/agents/{remote_id}/jobs", headers=admin,
+                json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+    spec = hb(remote_h)["jobs"][0]
+    assert spec["repository"]["gateway"] == {"agent_id": gw_id, "public_key": base64.b64encode(b"k" * 32).decode(),
+                                             "addresses": ["backup.example.com:18475", "192.168.1.20:8475"], "relay": True}
+    repo = [x for x in client.get("/api/console/backup/repositories", headers=admin).json() if x["id"] == repo_id][0]
+    assert repo["gateway"]["name"] and repo["maintenanceAgentId"] == gw_id
+    assert {a["id"]: a["viaGateway"] for a in repo["agents"]} == {gw_id: False, remote_id: True}
+
+    # A plan backup by the client: retention runs on the gateway (the client cannot delete through it).
+    plan = client.post("/api/console/backup/plans", headers=admin, json={
+        "name": "Laptop", "agentId": remote_id, "repositoryId": repo_id, "job": {"type": "backup_system"},
+        "schedule": {"type": "manual"}, "retention": {"keep_last": 2}}).json()["id"]
+    finish(client, remote_h, spec["id"])
+    client.post(f"/api/console/backup/plans/{plan}/run", headers=admin)
+    job = hb(remote_h)["jobs"][0]
+    finish(client, remote_h, job["id"], images=[image(machine="laptop")])
+    assert hb(remote_h)["jobs"] == []
+    assert hb(gw_h)["jobs"][0]["kind"]["type"] == "apply_retention"
+
+    # Relay: the client's message reaches the gateway, the gateway's answer comes back, byte for byte.
+    got = {}
+
+    def send():
+        got["r"] = client.post(f"/backup/api/agent/relay/{gw_id}", headers=remote_h, content=b"\x01sealed-request")
+
+    t = threading.Thread(target=send)
+    t.start()
+    nxt = None
+    for _ in range(10):
+        nxt = client.get("/backup/api/agent/relay/next", headers=gw_h)
+        if nxt.status_code == 200:
+            break
+    assert nxt.status_code == 200 and nxt.content == b"\x01sealed-request"
+    assert client.post(f"/backup/api/agent/relay/reply/{nxt.headers['X-Relay-Id']}", headers=gw_h,
+                       content=b"\x01sealed-answer").status_code == 204
+    t.join(10)
+    assert got["r"].status_code == 200 and got["r"].content == b"\x01sealed-answer"
+    # Machines not routed through this gateway may not use it.
+    other_id, other_h = agent_enroll(client, e["token"], machine="other", key=base64.b64encode(b"o" * 32).decode())
+    assert client.post(f"/backup/api/agent/relay/{gw_id}", headers=other_h, content=b"x").status_code == 403
+    # The gateway cannot be removed from under its clients.
+    assert client.post(f"/api/console/backup/repositories/{repo_id}/gateway", headers=admin, json={}).status_code == 400
+    assert client.delete(f"/api/console/backup/repositories/{repo_id}/access/{gw_id}", headers=admin).status_code == 400

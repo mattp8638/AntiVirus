@@ -9,7 +9,9 @@ Repository passphrases and share passwords arrive here already sealed in the bro
 
 from __future__ import annotations
 
+import re
 import uuid as uuidlib
+from types import SimpleNamespace
 from datetime import timedelta
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
@@ -17,6 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import backup as bk
+from .. import backup_gateway as gwmod
 from ..db import get_db
 from ..deps import Principal, current_principal, require_reauth, scoped_tenant
 from ..models import (BackupAgent, BackupBootCheck, BackupEnrollment, BackupImage, BackupJob, BackupRepoAccess,
@@ -136,7 +139,20 @@ def repo_out(db: Session, r: BackupRepository) -> dict:
             "pruneEveryDays": r.prune_every_days, "lastPruneAt": iso(r.last_prune_at), "anomalies": anomalies,
             "bootAgentId": r.boot_agent_id, "bootEveryDays": r.boot_every_days, "lastVerifiedBoot": iso(verified),
             "shareAuth": r.share_auth, "shareUser": r.share_user, "isShare": is_share_path(r.path),
-            "agents": [{"id": a.id, "name": a.display_name or a.hostname} for a in agents]}
+            "agents": [{"id": a.id, "name": a.display_name or a.hostname,
+                        "viaGateway": bool((db.get(BackupRepoAccess, (r.id, a.id)) or SimpleNamespace(via_gateway=None)).via_gateway)}
+                       for a in agents],
+            "gateway": _gateway_out(db, r)}
+
+
+def _gateway_out(db: Session, r: BackupRepository) -> dict | None:
+    if not r.gateway_agent_id:
+        return None
+    g = db.get(BackupAgent, r.gateway_agent_id)
+    if g is None:
+        return None
+    return {"agentId": g.id, "name": g.display_name or g.hostname, "online": bk.online(g) and not g.revoked,
+            "port": g.gateway_port or 0, "address": g.gateway_address, "addresses": gwmod.addresses(g)}
 
 
 def plan_out(p: ImageBackupPlan, names: dict[str, str]) -> dict:
@@ -527,8 +543,11 @@ def grant_access(repo_id: str, body: dict = Body(...), p: Principal = Depends(cu
     a = _agent(db, p, str(body.get("agentId") or ""))
     if a.tenant_id != repo.tenant_id:
         bad("that machine belongs to another customer")
+    via = bool(body.get("viaGateway"))
+    if via and (not repo.gateway_agent_id or repo.gateway_agent_id == a.id):
+        bad("set up a gateway for this repository first (and choose another machine than the gateway)")
     share = None
-    if repo.share_auth == "password":
+    if repo.share_auth == "password" and not via:
         if not body.get("sealedShare"):
             bad("this repository is on a network share: enter the share password for the machine too")
         share = _sealed(body["sealedShare"])
@@ -537,7 +556,9 @@ def grant_access(repo_id: str, body: dict = Body(...), p: Principal = Depends(cu
         row = BackupRepoAccess(repository_id=repo.id, agent_id=a.id, sealed={}, granted_by=p.actor)
         db.add(row)
     row.sealed, row.sealed_share, row.granted_at, row.granted_by = _sealed(body.get("sealed")), share, utcnow(), p.actor
-    bk.record(db, p.actor, "backup.repository.access_granted", repo.name, repo.tenant_id, machine=a.hostname)
+    row.via_gateway = via or None
+    bk.record(db, p.actor, "backup.repository.access_granted", repo.name, repo.tenant_id, machine=a.hostname,
+              via_gateway=via)
     db.commit()
     return {"ok": True}
 
@@ -546,6 +567,8 @@ def grant_access(repo_id: str, body: dict = Body(...), p: Principal = Depends(cu
 def revoke_access(repo_id: str, agent_id: str, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     p.require("configure")
     repo = _repo(db, p, repo_id)
+    if agent_id == repo.gateway_agent_id:
+        bad("that machine is this repository's gateway: stop serving through it first")
     row = db.get(BackupRepoAccess, (repo.id, agent_id))
     if row is not None:
         db.delete(row)
@@ -570,6 +593,44 @@ def forget_repo(repo_id: str, p: Principal = Depends(current_principal), db: Ses
     db.delete(repo)
     db.commit()
     return {"ok": True, "note": "The server forgot this repository. Its data was not touched."}
+
+
+@router.post("/repositories/{repo_id}/gateway")
+def set_gateway(repo_id: str, body: dict = Body(...), p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Serve the repository through a gateway agent (NAS gateway), or stop. Machines given access "through the
+    gateway" then reach it via that agent: directly on `port` when they can, relayed by this server otherwise."""
+    p.require("configure")
+    repo = _repo(db, p, repo_id)
+    if not body.get("agentId"):
+        users = db.execute(select(BackupRepoAccess).where(BackupRepoAccess.repository_id == repo.id,
+                                                          BackupRepoAccess.via_gateway.is_(True))).scalars().all()
+        if users:
+            bad(f"{len(users)} machine(s) reach this repository through the gateway; remove their access first")
+        repo.gateway_agent_id = None
+        bk.record(db, p.actor, "backup.repository.gateway_removed", repo.name, repo.tenant_id)
+        db.commit()
+        return {"ok": True}
+    g = _agent(db, p, str(body["agentId"]))
+    access = db.get(BackupRepoAccess, (repo.id, g.id))
+    if g.tenant_id != repo.tenant_id or access is None or access.via_gateway:
+        bad("the gateway must be a machine with direct access to the repository (give it access first)")
+    if "gateway" not in bk.capabilities(g):
+        bad(f"the backup agent on {g.display_name or g.hostname} is too old to be a gateway; it updates itself shortly")
+    port = body.get("port", gwmod.DEFAULT_PORT)
+    if port is None:
+        port = 0
+    if not isinstance(port, int) or not (port == 0 or 1024 <= port <= 65535):
+        bad("the port must be 1024 to 65535, or 0 to use the relay only")
+    address = str(body.get("address") or "").strip() or None
+    if address and (len(address) > 255 or not re.fullmatch(r"[A-Za-z0-9.\-]+:\d{2,5}|\[[0-9A-Fa-f:]+\]:\d{2,5}", address)):
+        bad("the extra address must look like host:port, e.g. nas-gw.example.com:8475")
+    repo.gateway_agent_id = g.id
+    repo.maintenance_agent_id = g.id  # retention and space reclamation run on the gateway
+    g.gateway_port, g.gateway_address = port or None, address
+    bk.record(db, p.actor, "backup.repository.gateway_set", repo.name, repo.tenant_id, gateway=g.hostname, port=port,
+              address=address)
+    db.commit()
+    return {"ok": True}
 
 
 @router.post("/repositories/{repo_id}/hold")
@@ -605,6 +666,8 @@ def set_maintenance(repo_id: str, body: dict = Body(...), p: Principal = Depends
     if body.get("agentId"):
         a = _agent(db, p, str(body["agentId"]))
         _has_access(db, repo, a)
+        if repo.gateway_agent_id and a.id != repo.gateway_agent_id:
+            bad("this repository is served through a gateway: its maintenance runs on the gateway")
         repo.maintenance_agent_id = a.id
     if "pruneEveryDays" in body:
         d = body["pruneEveryDays"]

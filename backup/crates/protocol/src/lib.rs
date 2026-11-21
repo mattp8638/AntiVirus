@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod gateway;
 pub mod seal;
 pub mod setup;
 
@@ -124,6 +125,10 @@ pub struct Inventory {
     /// VMs this host runs from backups (boot checks kept running).
     #[serde(default)]
     pub running_vms: Vec<RunningVm>,
+    /// Addresses ("ip:port") where this agent serves repositories as a
+    /// gateway, when it listens for direct connections.
+    #[serde(default)]
+    pub gateway_addresses: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -177,6 +182,9 @@ pub struct HeartbeatResponse {
     /// A newer agent build the server wants this agent to run.
     #[serde(default)]
     pub update: Option<AgentUpdate>,
+    /// Repositories this agent serves to other agents (NAS gateway).
+    #[serde(default)]
+    pub gateway: Option<gateway::GatewayConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -387,6 +395,9 @@ pub struct RepoAccess {
     /// Network share sign-in (`ShareCredentials`), sealed to this agent.
     #[serde(default)]
     pub sealed_share: Option<seal::Sealed>,
+    /// Reach the repository through a gateway agent instead of `path`.
+    #[serde(default)]
+    pub gateway: Option<gateway::GatewayRoute>,
 }
 
 /// Sign-in for a repository on a network share (SMB). Sealed to each agent

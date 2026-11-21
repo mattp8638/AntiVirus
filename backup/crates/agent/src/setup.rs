@@ -275,6 +275,16 @@ mod win {
             }
             s.delete().context("deleting the service")?;
         }
+        // The NAS gateway's firewall rule, if this machine was a gateway.
+        let _ = std::process::Command::new("netsh")
+            .args([
+                "advfirewall",
+                "firewall",
+                "delete",
+                "rule",
+                "name=Fenrir-Backup gateway",
+            ])
+            .output();
         let _ = std::fs::remove_dir_all(crate::config::state_dir());
         // This executable may be the installed one: delete the folder from a
         // detached helper once we have exited.

@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import binascii
 import os
+import time
 import uuid as uuidlib
 
 from types import SimpleNamespace
@@ -19,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import backup as bk
+from .. import backup_gateway as gw
 from .. import ratelimit
 from ..security import digest
 from ..config import get_settings
@@ -131,6 +133,7 @@ def _job_spec(db: Session, agent: BackupAgent, job: BackupJob) -> dict | None:
         if repo is None or access is None:
             return None
         repository = {"repository_id": repo.id, "path": repo.path, "sealed_secret": access.sealed,
+                      "gateway": gw.route(db, repo, access),
                       "sealed_share": access.sealed_share}
     return {"id": job.id, "kind": job.kind, "repository": repository}
 
@@ -175,7 +178,10 @@ def heartbeat(body: dict = Body(...), agent: BackupAgent = Depends(current_backu
         BackupJob.state.in_(("dispatched", "running"))))]
     update_ = bk.update_offer(inv) if backup_settings(db).get("autoUpdate", True) else None
     db.commit()
-    return {"jobs": jobs, "poll_seconds": bk.poll_seconds(db, agent), "cancel": cancel, "update": update_}
+    gateway = gw.gateway_config(db, agent)
+    db.commit()
+    return {"jobs": jobs, "poll_seconds": bk.poll_seconds(db, agent), "cancel": cancel, "update": update_,
+            "gateway": gateway}
 
 
 def _record_boot_check(db: Session, job: BackupJob, agent: BackupAgent, b: dict) -> str:
@@ -363,3 +369,63 @@ def valid_uuid(v: str) -> bool:
     except (ValueError, TypeError):
         return False
 
+
+
+# --------------------------------------------------------------------------
+# NAS gateway relay (backup_gateway.py). Bodies are end-to-end encrypted between the two agents.
+# --------------------------------------------------------------------------
+
+
+async def _body(request: Request) -> bytes:
+    size = int(request.headers.get("content-length") or 0)
+    if size > gw.MAX_MESSAGE:
+        raise HTTPException(413, "message too large")
+    data = bytearray()
+    async for part in request.stream():
+        data += part
+        if len(data) > gw.MAX_MESSAGE:
+            raise HTTPException(413, "message too large")
+    return bytes(data)
+
+
+@router.post("/api/agent/relay/{gateway_id}")
+async def relay_send(gateway_id: str, request: Request, agent: BackupAgent = Depends(current_backup_agent),
+                     db: Session = Depends(get_db)):
+    """A client's message for its gateway; answers with the gateway's (encrypted) reply."""
+    key, now = (agent.id, gateway_id), time.monotonic()
+    if now - gw.RELAY.allowed.get(key, -1e9) > 60:
+        if not gw.may_relay(db, agent, gateway_id):
+            raise HTTPException(403, "this machine is not routed through that gateway")
+        gw.RELAY.allowed[key] = now
+    db.close()  # do not hold a database connection while waiting for the gateway
+    body = await _body(request)
+    try:
+        reply = await gw.RELAY.forward(gateway_id, body)
+    except OverflowError:
+        raise HTTPException(503, "the relay is busy; try again shortly") from None
+    if reply is None:
+        raise HTTPException(504, "the gateway did not answer: is it online?")
+    return Response(reply, media_type="application/octet-stream")
+
+
+@router.get("/api/agent/relay/next")
+async def relay_next(agent: BackupAgent = Depends(current_backup_agent), db: Session = Depends(get_db)):
+    """Long poll for the gateway: the next message from a client, or 204 after 25 seconds."""
+    agent_id = agent.id
+    db.close()
+    item = await gw.RELAY.next(agent_id)
+    if item is None:
+        return Response(status_code=204)
+    rid, body = item
+    return Response(body, media_type="application/octet-stream", headers={"X-Relay-Id": rid})
+
+
+@router.post("/api/agent/relay/reply/{rid}")
+async def relay_reply(rid: str, request: Request, agent: BackupAgent = Depends(current_backup_agent),
+                      db: Session = Depends(get_db)):
+    agent_id = agent.id
+    db.close()
+    body = await _body(request)
+    if not gw.RELAY.answer(agent_id, rid, body):
+        raise HTTPException(404, "nobody is waiting for that answer any more")
+    return Response(status_code=204)

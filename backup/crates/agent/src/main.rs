@@ -5,6 +5,7 @@ mod boot;
 mod browse;
 mod client;
 mod config;
+mod gateway;
 mod hyperv;
 mod inventory;
 mod jobs;
@@ -281,6 +282,7 @@ pub fn run_loop(stop: Arc<AtomicBool>) -> anyhow::Result<LoopExit> {
     let mut backoff = 5u64;
     let mut running: Option<Running> = None;
     let mut inv_cache: Option<(Instant, protocol::Inventory)> = None;
+    let gw = gateway::Gateway::new(key.clone(), client.clone());
     let vms: Arc<Mutex<VmCache>> = Arc::new(Mutex::new((None, vec![], vec![])));
 
     while !stop.load(Ordering::SeqCst) {
@@ -288,7 +290,11 @@ pub fn run_loop(stop: Arc<AtomicBool>) -> anyhow::Result<LoopExit> {
             running = None;
         }
         // Close an image left open for browsing, and its network share.
-        if running.is_none() && browse::expire() && boot::running_vms().is_empty() {
+        if running.is_none()
+            && browse::expire()
+            && boot::running_vms().is_empty()
+            && !gateway::serving()
+        {
             share::release_all();
         }
         // Hyper-V inventory is slow (PowerShell); refresh every 5 minutes.
@@ -320,6 +326,8 @@ pub fn run_loop(stop: Arc<AtomicBool>) -> anyhow::Result<LoopExit> {
                 inv
             }
         };
+        let mut inventory = inventory;
+        inventory.gateway_addresses = gw.addresses();
         let req = HeartbeatRequest {
             inventory,
             running_job: running.as_ref().map(|r| r.id),
@@ -329,6 +337,7 @@ pub fn run_loop(stop: Arc<AtomicBool>) -> anyhow::Result<LoopExit> {
                 backoff = 5;
                 // The server asks for 1-second polling while someone browses files.
                 let poll = hb.poll_seconds.clamp(1, 300) as u64;
+                gw.apply(hb.gateway.as_ref());
                 if let Some(r) = &running {
                     if hb.cancel.contains(&r.id) {
                         log::info(&format!("job {} cancelled by the server", r.id));

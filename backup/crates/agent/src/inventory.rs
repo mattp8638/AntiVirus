@@ -88,10 +88,16 @@ pub fn os() -> OsSummary {
 }
 
 pub fn capabilities(role: &str) -> Vec<String> {
-    let mut c: Vec<String> = ["verify", "maintenance", "restore_vhdx", "restore_files"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let mut c: Vec<String> = [
+        "verify",
+        "maintenance",
+        "restore_vhdx",
+        "restore_files",
+        "gateway",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
     if cfg!(windows) {
         c.push("backup_system".into());
         if role == "hyperv" {
@@ -186,6 +192,7 @@ pub fn collect(role: &str, vms: Vec<protocol::VmSummary>, notes: Vec<String>) ->
         agent_target: crate::update::TARGET.into(),
         agent_sha256: crate::update::self_sha256(),
         running_vms: crate::boot::running_vms(),
+        gateway_addresses: vec![],
     }
 }
 

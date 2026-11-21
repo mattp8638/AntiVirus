@@ -70,6 +70,20 @@ impl AgentKey {
         B64.encode(PublicKey::from(&self.secret).as_bytes())
     }
 
+    /// X25519 with another agent's public key (gateway channels).
+    pub(crate) fn diffie_hellman(&self, peer: &[u8; 32]) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(
+            *self
+                .secret
+                .diffie_hellman(&PublicKey::from(*peer))
+                .as_bytes(),
+        )
+    }
+
+    pub(crate) fn public_bytes(&self) -> [u8; 32] {
+        *PublicKey::from(&self.secret).as_bytes()
+    }
+
     pub fn open(&self, s: &Sealed) -> Result<Zeroizing<Vec<u8>>, SealError> {
         if s.v != 1 {
             return Err(SealError("unsupported version"));

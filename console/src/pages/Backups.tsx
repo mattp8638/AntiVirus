@@ -21,7 +21,8 @@ interface Repo {
   images: number; storedBytes: number; lastImage: number | null; hold: boolean; holdReason: string | null; holdSince: string | null;
   maintenanceAgentId: string | null; pruneEveryDays: number; lastPruneAt: string | null; anomalies: number;
   bootAgentId: string | null; bootEveryDays: number; lastVerifiedBoot: string | null; shareAuth: string; shareUser: string | null;
-  isShare: boolean; agents: { id: string; name: string }[];
+  isShare: boolean; agents: { id: string; name: string; viaGateway?: boolean }[];
+  gateway: { agentId: string; name: string; online: boolean; port: number; address: string | null; addresses: string[] } | null;
 }
 interface Job {
   id: string; agentId: string; agentName: string; repositoryId: string | null; label: string; state: string; kind: any;
@@ -316,6 +317,7 @@ function Repositories({ repos, agents, reload }: { repos: Repo[] | null; agents:
   const [creating, setCreating] = useState(false);
   const [grant, setGrant] = useState<Repo | null>(null);
   const [share, setShare] = useState<Repo | null>(null);
+  const [gateway, setGateway] = useState<Repo | null>(null);
   const act = (fn: () => Promise<unknown>, msg: string) => run(fn, msg).then(reload);
   const name = (id: string | null) => agents.find((a) => a.id === id)?.name ?? "—";
   return (
@@ -338,10 +340,18 @@ function Repositories({ repos, agents, reload }: { repos: Repo[] | null; agents:
               {r.images} images · {bytes(r.storedBytes)} stored · last {unixTime(r.lastImage)} · machines: {r.agents.map((a) => a.name).join(", ") || "none"}
               {r.isShare && <> · share sign-in: {r.shareAuth === "password" ? r.shareUser : r.shareAuth === "machine" ? "computer account" : "none"}</>}
             </div>
+            {r.gateway && (
+              <div className="small" style={{ marginTop: 4 }}>
+                Gateway: <b>{r.gateway.name}</b> {r.gateway.online ? "" : <Pill value="offline" tone="bad" />} serves it to{" "}
+                {r.agents.filter((a) => a.viaGateway).map((a) => a.name).join(", ") || "no machines yet"}
+                {" "}· {r.gateway.port ? `direct on ${[...r.gateway.addresses].join(", ") || `port ${r.gateway.port}`}, else relayed` : "relayed through this server"}
+              </div>
+            )}
             <div className="small muted">Reclaim space every {r.pruneEveryDays || "—"} days on {name(r.maintenanceAgentId)} (last {fmtTime(r.lastPruneAt) || "never"}) · boot verification {r.bootEveryDays ? `every ${r.bootEveryDays} days on ${name(r.bootAgentId)}, last verified ${fmtTime(r.lastVerifiedBoot) || "never"}` : "off"}</div>
             <div className="row" style={{ gap: 6, marginTop: 8, flexWrap: "wrap" }}>
               {can("configure") && <button className="small" onClick={() => setGrant(r)}>Give a machine access</button>}
               {can("configure") && r.isShare && <button className="small" onClick={() => setShare(r)}>Change share sign-in</button>}
+              {can("configure") && <button className="small" onClick={() => setGateway(r)}>{r.gateway ? "Gateway settings" : "Serve through a gateway"}</button>}
               {!r.hold && can("respond") && <button className="small" disabled={busy} onClick={async () => { const why = await promptDialog("Reason for the hold (legal hold, investigation…)", ""); if (why !== null) act(() => api(`backup/repositories/${r.id}/hold`, { body: { hold: true, reason: why } }), "Hold placed"); }}>Place on hold</button>}
               {r.hold && can("destructive") && <button className="small danger" disabled={busy} onClick={async () => { if (await confirmDialog("Release the hold? Retention will delete old images again. Make sure the machine is clean first.")) act(() => api(`backup/repositories/${r.id}/hold`, { body: { hold: false } }), "Hold released"); }}>Release hold</button>}
               {can("respond") && <button className="small" disabled={busy || !r.maintenanceAgentId} onClick={() => act(() => api(`backup/repositories/${r.id}/prune`, { body: { dryRun: true } }), "Dry run queued: see Activity")}>Estimate reclaimable space</button>}
@@ -365,6 +375,7 @@ function Repositories({ repos, agents, reload }: { repos: Repo[] | null; agents:
       {creating && <CreateRepo agents={agents} onClose={() => { setCreating(false); reload(); }} />}
       {grant && <GrantAccess repo={grant} agents={agents} onClose={() => { setGrant(null); reload(); }} />}
       {share && <ShareSignin repo={share} agents={agents} onClose={() => { setShare(null); reload(); }} />}
+      {gateway && <GatewayDialog repo={gateway} agents={agents} onClose={() => { setGateway(null); reload(); }} />}
     </>
   );
 }
@@ -449,17 +460,53 @@ function CreateRepo({ agents, onClose }: { agents: BackupAgent[]; onClose: () =>
   );
 }
 
+function GatewayDialog({ repo, agents, onClose }: { repo: Repo; agents: BackupAgent[]; onClose: () => void }) {
+  const { run, busy } = useAction();
+  // The gateway needs its own direct access (it is the one machine that reaches the NAS).
+  const pool = agents.filter((a) => repo.agents.some((x) => x.id === a.id && !x.viaGateway) && a.capabilities.includes("gateway"));
+  const [id, setId] = useState(repo.gateway?.agentId ?? pool[0]?.id ?? "");
+  const [direct, setDirect] = useState(repo.gateway ? repo.gateway.port > 0 : true);
+  const [port, setPort] = useState(repo.gateway?.port || 8475);
+  const [address, setAddress] = useState(repo.gateway?.address ?? "");
+  const save = () => run(() => api(`backup/repositories/${repo.id}/gateway`, { body: { agentId: id, port: direct ? port : 0, address: address.trim() || null } }), "Gateway saved").then((r) => r !== undefined && onClose());
+  const stop = () => run(() => api(`backup/repositories/${repo.id}/gateway`, { body: {} }), "Gateway removed").then((r) => r !== undefined && onClose());
+  return (
+    <Modal wide title={`Serve ${repo.name} through a gateway`} onClose={onClose}
+      footer={<>{repo.gateway && <button className="danger" disabled={busy} onClick={stop}>Stop serving</button>}<button className="primary" disabled={busy || !id} onClick={save}>Save</button></>}>
+      <p className="small">One machine inside the network (where the NAS is) serves this repository to machines you choose elsewhere:
+        laptops at home, a branch office. They connect to it directly when they can reach it (same network, VPN or a forwarded port),
+        and through this server otherwise, so no port has to be opened.</p>
+      <p className="small muted">Everything is encrypted between the two machines; this server only passes on what it cannot read. Machines
+        reaching the repository through the gateway can add backups and restore, but cannot delete them, so ransomware on a laptop
+        cannot erase its history. Retention and space reclamation run on the gateway.</p>
+      {pool.length === 0 ? <p className="small">No machine with direct access to {repo.path} can be a gateway yet. Give the machine next to the NAS access first (and let its backup agent update).</p> : (
+        <div className="form-grid">
+          <label className="field">Gateway machine<select value={id} onChange={(e) => setId(e.target.value)}>{pool.map((a) => <option key={a.id} value={a.id}>{a.name}{a.online ? "" : " (offline)"}</option>)}</select></label>
+          <label className="field">Direct connections
+            <span className="row small" style={{ gap: 6, fontWeight: 400 }}><input type="checkbox" checked={direct} onChange={(e) => setDirect(e.target.checked)} /> Listen on port
+              <input type="number" min={1024} max={65535} value={port} disabled={!direct} onChange={(e) => setPort(Number(e.target.value))} style={{ width: 90 }} /></span>
+          </label>
+          <label className="field">Address from outside (optional)<input value={address} placeholder="backup.example.com:8475" onChange={(e) => setAddress(e.target.value)} /></label>
+        </div>
+      )}
+      {direct && <p className="small muted">Allow inbound TCP {port} on the gateway machine's firewall for the networks that should connect directly. Without it, or from anywhere else, machines use the relay.</p>}
+      <p className="small muted">Then give each remote machine access with "Through the gateway" ticked.</p>
+    </Modal>
+  );
+}
+
 function GrantAccess({ repo, agents, onClose }: { repo: Repo; agents: BackupAgent[]; onClose: () => void }) {
   const { run, busy } = useAction();
   const pool = agents.filter((a) => a.tenantId === repo.tenantId && !repo.agents.some((x) => x.id === a.id));
   const [id, setId] = useState(pool[0]?.id ?? "");
   const [pass, setPass] = useState("");
   const [signin, setSignin] = useState<Signin>({ ...noSignin(), username: repo.shareUser ?? "" });
-  const needsShare = repo.shareAuth === "password";
+  const [via, setVia] = useState(!!repo.gateway);
+  const needsShare = repo.shareAuth === "password" && !via;
   const go = () => run(async () => {
     const a = agents.find((x) => x.id === id)!;
     const sealed: Sealed = await seal(a.publicKey, JSON.stringify({ passphrase: pass, recovery_key: null }));
-    await api(`backup/repositories/${repo.id}/access`, { body: { agentId: id, sealed, sealedShare: needsShare ? await sealSignin(a, signin) : null } });
+    await api(`backup/repositories/${repo.id}/access`, { body: { agentId: id, sealed, viaGateway: via, sealedShare: needsShare ? await sealSignin(a, signin) : null } });
   }, "Access given").then(onClose);
   return (
     <Modal title={`Give a machine access to ${repo.name}`} onClose={onClose}
@@ -468,8 +515,15 @@ function GrantAccess({ repo, agents, onClose }: { repo: Repo; agents: BackupAgen
         <label className="field">Machine<select value={id} onChange={(e) => setId(e.target.value)}>{pool.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
         <label className="field">Repository passphrase<input type="password" value={pass} onChange={(e) => setPass(e.target.value)} autoComplete="off" /></label>
       </div>
+      {repo.gateway && (
+        <label className="row small" style={{ gap: 6, marginTop: 8 }}>
+          <input type="checkbox" checked={via} onChange={(e) => setVia(e.target.checked)} />
+          Through the gateway ({repo.gateway.name}): for machines outside the network that cannot reach {repo.path} themselves
+        </label>
+      )}
       {needsShare && <><h3>Share password</h3><SigninFields value={signin} onChange={(s) => setSignin({ ...s, mode: "password" })} /></>}
-      <p className="small muted">Encrypted here for that machine only. If the passphrase is wrong, its first backup reports it.</p>
+      <p className="small muted">Encrypted here for that machine only. If the passphrase is wrong, its first backup reports it.
+        {via && " Through the gateway the machine can add backups and restore, but never delete: old backups are removed only by the gateway's retention."}</p>
     </Modal>
   );
 }

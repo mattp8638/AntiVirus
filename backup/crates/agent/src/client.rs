@@ -122,16 +122,68 @@ impl Client {
         }
         match req.send_json(body) {
             Ok(r) => Ok(r.into_json()?),
-            Err(ureq::Error::Status(code, r)) => {
-                let msg = r
-                    .into_json::<protocol::ErrorBody>()
-                    .map(|e| e.error)
-                    .unwrap_or_default();
-                bail!(ServerRefused { code, message: msg })
-            }
+            Err(ureq::Error::Status(code, r)) => bail!(ServerRefused {
+                code,
+                message: error_message(r)
+            }),
             Err(e) => Err(anyhow!("cannot reach {}: {e}", self.base)),
         }
     }
+
+    /// A binary request (gateway relay). 200 and 204 are answers; the body is
+    /// capped at `limit` bytes. Returns (status, X-Relay-Id header, body).
+    pub fn raw(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&[u8]>,
+        timeout: Duration,
+        limit: u64,
+    ) -> anyhow::Result<(u16, Option<String>, Vec<u8>)> {
+        let mut req = self
+            .agent
+            .request(method, &format!("{}{path}", self.base))
+            .timeout(timeout);
+        if let Some(t) = &self.token {
+            req = req.set("Authorization", &format!("Bearer {t}"));
+        }
+        let res = match body {
+            Some(b) => req
+                .set("Content-Type", "application/octet-stream")
+                .send_bytes(b),
+            None => req.call(),
+        };
+        let r = match res {
+            Ok(r) => r,
+            Err(ureq::Error::Status(code, r)) => bail!(ServerRefused {
+                code,
+                message: error_message(r)
+            }),
+            Err(e) => return Err(anyhow!("cannot reach {}: {e}", self.base)),
+        };
+        let status = r.status();
+        let relay = r.header("X-Relay-Id").map(str::to_string);
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(
+            &mut std::io::Read::take(r.into_reader(), limit + 1),
+            &mut buf,
+        )?;
+        if buf.len() as u64 > limit {
+            bail!("answer larger than {limit} bytes");
+        }
+        Ok((status, relay, buf))
+    }
+}
+
+/// The error text of a refused request: `error` (Fenrir-Backup server) or
+/// `detail` (Fenrir Cloud).
+fn error_message(r: ureq::Response) -> String {
+    let v: serde_json::Value = r.into_json().unwrap_or_default();
+    v.get("error")
+        .or_else(|| v.get("detail"))
+        .and_then(|m| m.as_str())
+        .unwrap_or_default()
+        .to_string()
 }
 
 impl Client {

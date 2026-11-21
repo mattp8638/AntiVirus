@@ -19,7 +19,7 @@ backups are managed from the Fenrir console alongside security and RMM.
 | Agent installation from Fenrir agents | Device page › Backup › Enable backup (`script.run`) | Done |
 | All-in-one: bundled in the Fenrir installers | `FenrirSetup.exe` / MSI, RMM scripts, Linux and macOS installers | Done |
 | Agent builds in the platform image | `deploy/Dockerfile` (Linux, Windows); CI for macOS | Done |
-| NAS repository gateway (relay through Fenrir Cloud, or direct) | | Designed (`docs/DEVICE_BACKUP.md` at the repository root); next |
+| NAS repository gateway (relay through Fenrir Cloud, or direct) | `crates/agent/src/gateway.rs`, `cloud/fenrir_cloud/backup_gateway.py` | Done; tested end to end with real agents |
 
 Repository keys never reach the server: the console encrypts the
 repository passphrase (and network share sign-ins) in the browser for each

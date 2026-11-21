@@ -358,6 +358,12 @@ def queue_retention(db: Session, plan_id: str, repo_id: str, agent: BackupAgent,
     if plan is None or keeps_everything(plan.retention):
         return
     machine_ids = sorted({i["machine_id"] for i in images})
+    repo = db.get(BackupRepository, repo_id)
+    if repo is not None and repo.gateway_agent_id and repo.gateway_agent_id != agent.id:
+        # Served append-only through a gateway: only the gateway deletes old images.
+        gateway = db.get(BackupAgent, repo.gateway_agent_id)
+        if gateway is not None and not gateway.revoked:
+            agent = gateway
     if machine_ids:
         queue(db, agent, {"type": "apply_retention", "machine_ids": machine_ids, "retention": plan.retention,
                           "dry_run": False}, repo_id, "retention", plan_id=plan_id)

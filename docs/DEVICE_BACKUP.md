@@ -55,7 +55,7 @@ Fenrir server itself.
 | View machines, repositories, plans, images, jobs | `read` |
 | Back up now, verify, test a connection, run a plan, cancel, place a hold | `respond` |
 | Browse and restore files; restore to VHDX files or a new Hyper-V VM; boot tests; stop a test VM | `scripts` |
-| Install links, repositories, access, plans, share sign-ins, maintenance | `configure` |
+| Install links, repositories, access, plans, share sign-ins, maintenance, gateways | `configure` |
 | Overwrite a physical disk, replace existing files with backup copies, release a hold, reclaim space | `destructive` + password re-check |
 | Turn automatic agent updates on or off | `platform` |
 
@@ -112,18 +112,31 @@ Retention runs after each successful plan backup. Space is reclaimed on the repo
 N days (default 7). Boot verification boots each machine's newest image in an isolated VM on a chosen host (Linux
 with QEMU/KVM, or Hyper-V) every N days.
 
-## NAS gateway: one machine inside the network serves remote machines (next)
+## NAS gateway: machines elsewhere back up to your NAS
 
-Remote machines (laptops at home, a branch office) often cannot reach the office NAS. The plan, chosen for this
-platform:
+Laptops at home or a branch office usually cannot reach the office NAS. One backup agent inside the network — a server
+or PC next to the NAS — can serve the repository to them.
 
-1. One backup agent inside the network is made a **gateway** for a repository on the NAS. It is the only machine
-   that signs in to the share.
-2. In the console you choose which remote machines may use that gateway, per repository.
-3. Remote agents write to the repository through the gateway, **direct** when they can reach it (LAN, VPN, port
-   forward) and otherwise **relayed** through Fenrir Cloud over the existing outbound connections. Neither side
-   needs an open inbound port in relay mode.
-4. Everything stays end-to-end encrypted: the remote agent encrypts chunks itself with the repository key; the
-   gateway and the relay only move sealed objects. The gateway serves the repository **append-only** to remote
-   agents (add chunks and images, read for restore; no delete), so a compromised remote machine cannot erase
-   backups. Retention and space reclamation run on the gateway itself.
+1. **Backups › Repositories › Serve through a gateway**: choose the gateway (a machine with direct access to the
+   repository). Optionally let it listen for direct connections on a port (default 8475; on Windows it adds a
+   Windows Firewall rule for Domain and Private networks) and give an address reachable from outside
+   (`host:port`, e.g. a forwarded port or VPN address).
+2. **Give a machine access** with **Through the gateway** ticked, for each remote machine. It needs only the
+   repository passphrase, not the share sign-in.
+
+How it works:
+
+* Remote machines send each storage request to the gateway: **directly** when one of its addresses answers (the
+  address it reports on its own network, then the one you set), otherwise **relayed** through this server over the
+  connections both agents already make. No inbound port is needed for the relay. A direct address that fails is
+  tried again after five minutes; direct connections never go through a web proxy.
+* **End-to-end encryption**: each message is encrypted and authenticated with a key only the two agents can derive
+  (X25519 between their own key pairs, HKDF-SHA256, AES-256-GCM; `backup/crates/protocol/src/gateway.rs`). The
+  server passes on bytes it can neither read nor forge, and requests older than ten minutes are refused. As
+  everywhere in device backup, the agents' public keys come from this server.
+* **Append-only**: through the gateway a machine can add backups, verify, browse and restore, but cannot delete or
+  overwrite anything except its own lock files. Ransomware on a laptop cannot erase its backup history.
+  Retention and space reclamation for the repository run on the gateway (it becomes the maintenance machine).
+* The gateway must stay online for remote machines to back up; Backups shows it as offline otherwise. Stop
+  serving only after removing the remote machines' access.
+* The relay holds messages in memory in the server process (the image runs one worker), at most 512 MiB at a time.

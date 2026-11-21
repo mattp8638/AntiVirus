@@ -4,9 +4,9 @@ name: Device backup (Rust)
 # tested by the platform workflow.
 on:
   push:
-    paths: ["backup/**", ".github/workflows/backup.yml"]
+    paths: ["backup/**", "cloud/fenrir_cloud/backup*.py", "cloud/fenrir_cloud/routers/backup*.py", ".github/workflows/backup.yml"]
   pull_request:
-    paths: ["backup/**", ".github/workflows/backup.yml"]
+    paths: ["backup/**", "cloud/fenrir_cloud/backup*.py", "cloud/fenrir_cloud/routers/backup*.py", ".github/workflows/backup.yml"]
   workflow_dispatch:
 
 permissions:
@@ -57,6 +57,28 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked
       - name: test
         run: cargo test --workspace --locked
+
+  # The NAS gateway with the real platform server and two real agents: relay first, then direct.
+  gateway-e2e:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: cargo build --locked -p agent
+      - name: platform server requirements
+        working-directory: cloud
+        run: python -m pip install -r requirements.txt httpx cryptography
+      - name: laptop backs up through the gateway (relay, then direct)
+        working-directory: .
+        run: sudo -E "$(command -v python)" backup/ci/e2e-gateway.py "$RUNNER_TEMP/e2e" "$PWD/backup/target/debug/fenrir-backup-agent" "$PWD/cloud"
+      - name: logs
+        if: failure()
+        working-directory: .
+        run: tail -n 60 "$RUNNER_TEMP"/e2e/*.log "$RUNNER_TEMP"/e2e/*/agent.log || true
 
   windows-vss-smoke:
     runs-on: windows-latest

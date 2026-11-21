@@ -2983,6 +2983,10 @@ class BackupAgent(Base):
     enrolled_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+    # NAS gateway: the TCP port it listens on for direct connections (None or 0: relay only), and an address other
+    # agents can use to reach it from outside its network ("host:port", e.g. a forwarded port or VPN address).
+    gateway_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gateway_address: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
 class BackupRepository(Base):
@@ -3008,6 +3012,8 @@ class BackupRepository(Base):
     # Network share sign-in: none | machine (Windows computer account) | password (sealed per agent).
     share_auth: Mapped[str] = mapped_column(String(20), default="none")
     share_user: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # NAS gateway: the agent that serves this repository to machines that cannot reach it (append-only for them).
+    gateway_agent_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
 
 class BackupRepoAccess(Base):
@@ -3020,6 +3026,8 @@ class BackupRepoAccess(Base):
     sealed_share: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     granted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     granted_by: Mapped[str] = mapped_column(String(200), default="")
+    # Reaches the repository through its gateway instead of the path.
+    via_gateway: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
 
 class ImageBackupPlan(Base):
