@@ -48,7 +48,7 @@ RUN --mount=type=secret,id=release_key \
 
 # Automatically compile the unsigned Windows user-mode payload on Ubuntu.
 # Docker's layer cache reuses it until agent source or its toolchain changes.
-FROM ubuntu:24.04 AS windows-agents
+FROM ubuntu:26.04 AS windows-agents
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake ninja-build g++-mingw-w64-x86-64-posix python3 osslsigncode openssl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -98,7 +98,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
  && mkdir -p /out/backup/$triple \
  && cp target/release/fenrir-backup-agent /out/backup/$triple/
 
-FROM ubuntu:24.04 AS backup-windows
+FROM ubuntu:26.04 AS backup-windows
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates gcc gcc-mingw-w64-x86-64 libc6-dev \
  && rm -rf /var/lib/apt/lists/*
