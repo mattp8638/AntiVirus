@@ -66,6 +66,7 @@ import { ProgrammeDetail } from "./pages/grc/Programmes";
 import { PolicyEditor as GrcPolicyEditor } from "./pages/grc/Policies";
 import ProtectionHealth from "./pages/ProtectionHealth";
 import AgentHealth from "./pages/AgentHealth";
+import Backups from "./pages/Backups";
 import Quarantine from "./pages/Quarantine";
 import EmailSecurity from "./pages/EmailSecurity";
 import EdrExclusions from "./pages/EdrExclusions";
@@ -109,6 +110,7 @@ const NAV: NavSection[] = [
       { to: "/groups", label: "Device groups", icon: "⧉" },
       { to: "/monitoring", label: "Monitoring", icon: "♥" },
       { to: "/agent-health", label: "Agent health", icon: "✚" },
+      { to: "/backups", label: "Backups", icon: "⛁" },
       { to: "/deploy", label: "Deploy agents", icon: "⇩" },
       { module: "network", to: "/out-of-band", label: "Out-of-band (Intel AMT)", icon: "⏻" },
     ],
@@ -466,6 +468,7 @@ function Shell() {
             <Route path="/alerts" element={<Alerts />} />
             <Route path="/protection-health" element={<ProtectionHealth />} />
             <Route path="/agent-health" element={<AgentHealth />} />
+            <Route path="/backups" element={<Backups />} />
             <Route path="/quarantine" element={<Quarantine />} />
             <Route path="/email-security" element={<EmailSecurity />} />
             <Route path="/edr-exclusions" element={<EdrExclusions />} />

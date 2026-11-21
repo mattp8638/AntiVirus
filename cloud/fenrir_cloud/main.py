@@ -30,6 +30,7 @@ from .routers import m365_admin as m365_admin_router
 from .routers import m365 as m365_router, network as network_router, grc as grc_router, soc_workflows
 from .routers import documentation as documentation_router
 from .routers import push as push_router
+from .routers import backup as backup_router, backup_agent as backup_agent_router
 from .routers import active_directory as ad_router
 from .routers import agent_health as agent_health_router
 from .routers import onboarding as onboarding_router
@@ -256,6 +257,7 @@ def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
     """Hourly jobs, in order."""
     from . import (autodoc, billing_sync, client360, darkweb, defender, grc_automation, group_rules, m365_partner, m365_reports,
                    m365_standards, m365_workspace, reports, tprm, web_profile)
+    from . import backup as device_backup
 
     jobs: list[tuple[str, object]] = [("telemetry.retention", lambda db: _purge_telemetry(db, settings))]
     if settings.feed_sync_enabled and settings.feed_url:
@@ -267,7 +269,8 @@ def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
              ("m365.workspace", m365_workspace.tick), ("m365.reports", m365_reports.send_schedules),
              ("reports.schedules", reports.send_schedules),
              ("billing.sync", billing_sync.tick), ("clients.health", client360.tick),
-             ("defender", defender.tick), ("web.profiles", web_profile.tick), ("groups.rules", group_rules.tick)]
+             ("defender", defender.tick), ("web.profiles", web_profile.tick), ("groups.rules", group_rules.tick),
+             ("backup.hourly", device_backup.hourly)]
     if settings.intel_feeds_enabled:
         from . import threat_feeds
 
@@ -339,6 +342,7 @@ def _poll_msp_mailbox(db) -> None:
 def _scheduled_jobs() -> list[tuple[str, int, object]]:
     """(name, every N passes of 30 seconds, job), in the order they run within a pass."""
     from . import condition_remediation, m365_lifecycle, m365_signin_security, network, remediation, topology
+    from . import backup as device_backup
     from .routers import artifacts as artifact_store
 
     return [
@@ -350,6 +354,7 @@ def _scheduled_jobs() -> list[tuple[str, int, object]]:
         ("m365.signin-protection", 20, m365_signin_security.tick),  # every ten minutes: impossible travel and unusual sign-ins
         ("events.outbox", 1, events.process),  # after the jobs above, so their events go out in the same pass
         ("network", 1, network.tick),
+        ("backup", 1, device_backup.tick),  # due plans and boot verification
         ("psa.mailbox", 4, _poll_msp_mailbox),  # every two minutes
         ("condition-remediation", 10, condition_remediation.tick),  # every five minutes
         ("remediation", 20, remediation.tick),  # every ten minutes
@@ -617,6 +622,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                    reports_router, branding_router, deploy_router, pentest_router):
         app.include_router(module.router)
     app.include_router(deploy_router.public)
+    app.include_router(backup_router.router)
+    app.include_router(backup_agent_router.router)
     app.include_router(email_security_router.public)
     app.include_router(documentation_router.router)
     app.include_router(m365_router.oauth)

@@ -81,6 +81,45 @@ RUN --mount=type=secret,id=codesign_pfx --mount=type=secret,id=codesign_password
 RUN x86_64-w64-mingw32-objdump -p /out/windows/FenrirSetup.exe > /out/windows/imports.txt && if grep -Ei 'DLL Name:.*(libwinpthread|libgcc|libstdc[+][+])' /out/windows/imports.txt; then echo "ERROR: setup depends on an external compiler runtime"; exit 1; fi
 RUN python3 -c 'import hashlib,json,pathlib; p=pathlib.Path("/out/windows/FenrirSetup.exe"); sig=json.loads(pathlib.Path("/out/windows/signing.json").read_text()); p.with_name("build.json").write_text(json.dumps({"sha256":hashlib.sha256(p.read_bytes()).hexdigest(),"buildId":pathlib.Path("/build-id").read_text().strip(),"platform":"windows-x64","mode":"signed" if sig.get("signed") else "unsigned-lab","profile":"'"$FENRIR_BUILD_PROFILE"'",**sig}))'
 
+# Device backup agent (backup/, Rust): static Linux build for this architecture, and Windows (also Hyper-V hosts)
+# cross-compiled with MinGW. macOS builds come from CI (.github/workflows/backup.yml) into the same folder layout.
+FROM rust:1.97-alpine AS backup-linux
+RUN apk add --no-cache musl-dev gcc
+WORKDIR /src
+COPY backup/ ./
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --locked -p agent \
+ && case "$(uname -m)" in \
+      x86_64)  triple=x86_64-unknown-linux-musl ;; \
+      aarch64) triple=aarch64-unknown-linux-musl ;; \
+      *) echo "unsupported architecture $(uname -m)" >&2; exit 1 ;; \
+    esac \
+ && mkdir -p /out/backup/$triple \
+ && cp target/release/fenrir-backup-agent /out/backup/$triple/
+
+FROM ubuntu:24.04 AS backup-windows
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates gcc gcc-mingw-w64-x86-64 libc6-dev \
+ && rm -rf /var/lib/apt/lists/*
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
+COPY --from=rust:1.97-bookworm /usr/local/rustup /usr/local/rustup
+COPY --from=rust:1.97-bookworm /usr/local/cargo /usr/local/cargo
+RUN rustup target add x86_64-pc-windows-gnu
+WORKDIR /src
+COPY backup/ ./
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --locked -p agent --target x86_64-pc-windows-gnu \
+ && mkdir -p /out/backup/x86_64-pc-windows-msvc \
+ && cp target/x86_64-pc-windows-gnu/release/fenrir-backup-agent.exe /out/backup/x86_64-pc-windows-msvc/
+
+FROM scratch AS backup-agents-build
+COPY --from=backup-linux /out/backup/ /out/backup/
+COPY --from=backup-windows /out/backup/ /out/backup/
+FROM scratch AS backup-agents-none
+COPY deploy/demo/no-agents/ /out/backup/
+
 # Pick the agents to package: the stages above (build) or an empty placeholder (none). BuildKit skips any stage the
 # final image does not use, so "none" never compiles an agent.
 FROM scratch AS agents-none
@@ -91,6 +130,7 @@ FROM windows-agents AS windows-agents-build
 FROM agents-none AS windows-agents-none
 FROM linux-agents-${FENRIR_AGENTS} AS linux-agents
 FROM windows-agents-${FENRIR_AGENTS} AS windows-agents-selected
+FROM backup-agents-${FENRIR_AGENTS} AS backup-agents
 
 FROM python:3.13-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 FENRIR_CONSOLE_DIR=/app/console/dist
@@ -104,6 +144,7 @@ COPY ml/models /app/ml/models
 COPY --from=console /src/console/dist /app/console/dist
 COPY --from=linux-agents /out/ /app/cloud/downloads/
 COPY --from=windows-agents-selected /out/windows/ /app/cloud/downloads/windows/
+COPY --from=backup-agents /out/backup/ /app/cloud/downloads/backup/
 # COPY preserves checkout permissions: a pull under umask 077 can leave source
 # root-owned and unreadable to fenrir. Keep packaged code/assets readable and
 # directories traversable, preserve executable agents, and remove group/other
