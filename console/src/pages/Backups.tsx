@@ -5,6 +5,7 @@ import { Fragment, useMemo, useState } from "react";
 import { api, ago, fmtTime, getToken } from "../api";
 import { useApp } from "../app-context";
 import { newRecoveryKey, seal, sealSupported, type Sealed } from "../backup-seal";
+import { FileBrowser } from "./BackupFiles";
 import { confirmDialog, promptDialog } from "../components/dialogs";
 import { ErrorNote, Modal, PageHead, Pill, Stat, Table, Tabs, TenantSelect, useAction, useAutoRefresh, useData, useListData } from "../components/ui";
 
@@ -593,6 +594,7 @@ function Images({ agents, repos }: { agents: BackupAgent[]; repos: Repo[] }) {
   const images = useListData<Image>("backup/images", { tenantId: tenantId || undefined, repositoryId: repo || undefined }, [tenantId, repo]);
   const [restore, setRestore] = useState<Image | null>(null);
   const [boot, setBoot] = useState<Image | null>(null);
+  const [files, setFiles] = useState<Image | null>(null);
   const { can } = useApp();
   return (
     <div className="card">
@@ -607,12 +609,14 @@ function Images({ agents, repos }: { agents: BackupAgent[]; repos: Repo[] }) {
           { key: "consistency", label: "Consistency" },
           { key: "boot", label: "Boots?", render: (i) => i.lastBootCheck ? <Pill value={i.lastBootCheck.outcome} tone={i.lastBootCheck.outcome === "failed" ? "bad" : "good"} /> : <span className="small muted">not tested</span> },
           { key: "act", label: "", render: (i) => <div className="row" style={{ gap: 4 }}>
+            {can("scripts") && <button className="small primary" onClick={() => setFiles(i)}>Browse files</button>}
             {can("scripts") && <button className="small" onClick={() => setRestore(i)}>Restore</button>}
             {can("scripts") && <button className="small" onClick={() => setBoot(i)}>Boot test</button>}
           </div> },
         ]} />
       {restore && <RestoreDialog image={restore} agents={agents} repos={repos} onClose={() => setRestore(null)} />}
       {boot && <BootDialog image={boot} agents={agents} repos={repos} onClose={() => setBoot(null)} />}
+      {files && <FileBrowser image={files} onClose={() => setFiles(null)} />}
     </div>
   );
 }
@@ -730,6 +734,7 @@ export function DeviceBackup({ device }: { device: { id: string; hostname: strin
   const detail = useData<any>(agent ? `backup/agents/${agent.id}` : null, {}, [agent?.id]);
   const [role, setRole] = useState(/server/i.test(device.osVersion ?? "") || device.platform === "linux" ? "server" : "workstation");
   const [sent, setSent] = useState(false);
+  const [files, setFiles] = useState<Image | null>(null);
   useAutoRefresh(agents.reload, 15000);
   if (agents.data == null) return <div className="empty">Loading…</div>;
   if (!agent) return (
@@ -763,7 +768,9 @@ export function DeviceBackup({ device }: { device: { id: string; hostname: strin
           { key: "kind", label: "Type", render: (i: Image) => `${i.kind}${i.vmName ? ` · ${i.vmName}` : ""}` },
           { key: "size", label: "Size", render: (i: Image) => bytes(i.capturedBytes) },
           { key: "boot", label: "Boots?", render: (i: Image) => i.lastBootCheck ? <Pill value={i.lastBootCheck.outcome} tone={i.lastBootCheck.outcome === "failed" ? "bad" : "good"} /> : "—" },
+          { key: "files", label: "", render: (i: Image) => can("scripts") && <button className="small" onClick={() => setFiles(i)}>Browse files</button> },
         ]} />
+        {files && <FileBrowser image={files} onClose={() => setFiles(null)} />}
       </div>
       <div className="card"><h3>Recent backup jobs</h3><JobsTable rows={detail.data?.jobs ?? null} /></div>
     </>

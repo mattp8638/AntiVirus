@@ -37,12 +37,37 @@ Fenrir server itself.
 |---|---|
 | View machines, repositories, plans, images, jobs | `read` |
 | Back up now, verify, test a connection, run a plan, cancel, place a hold | `respond` |
-| Restore to VHDX files or a new Hyper-V VM, boot tests, stop a test VM | `scripts` |
+| Browse and restore files; restore to VHDX files or a new Hyper-V VM; boot tests; stop a test VM | `scripts` |
 | Install links, repositories, access, plans, share sign-ins, maintenance | `configure` |
-| Overwrite a physical disk, release a hold, reclaim space | `destructive` + password re-check |
+| Overwrite a physical disk, replace existing files with backup copies, release a hold, reclaim space | `destructive` + password re-check |
 | Turn automatic agent updates on or off | `platform` |
 
 A disk restore also needs the device name typed exactly. Every change is in the audit log (`backup.*`).
+
+## Restoring individual files
+
+**Images & restore › Browse files** (also on a device's Backup tab) opens any backup as a file explorer: pick the
+volume (C:, D:, /home…), open folders, tick files or folders and restore them. Nothing is restored to a disk.
+
+* **Who reads the backup**: a backup agent with access to the repository opens the image with the repository key it
+  was given, and decrypts only the parts it needs. By default that is the machine the backup came from; any other
+  machine with access can do it (useful when the original is broken). The server only relays folder listings, and
+  drops them from its records after a day. File contents never pass through it.
+* **Where files go**: a folder on the chosen machine (default `C:\Restored\<backup date>`), optionally recreating
+  the original folders inside it, or back to the **original location** when restoring on the machine the backup
+  came from. If a file already exists: keep both (the backup copy is named `report (restored).docx`), skip it, or
+  replace it. Replacing needs the `destructive` permission and a password re-check. Files are written to a
+  temporary name and renamed when complete, keep their modification time, and names are made safe for the target
+  system. Nothing is written outside the chosen folder, and existing links there are not followed.
+* **Permissions**: browsing and restoring files need `scripts`, like other restores. Opening a backup and every file
+  restore are audited (`backup.files.browsed`, `backup.files.restore_requested`).
+* **Volumes**: NTFS (Windows) and ext2/3/4 (Linux) volumes can be browsed. BitLocker and LUKS volumes are stored
+  encrypted as they were on the disk and cannot be browsed: restore the disk or VHDX and unlock it there. NTFS
+  files that Windows compressed (the folder's "Compress contents" setting) or encrypted with EFS are listed but
+  not restored yet. Links and cloud-only placeholders (OneDrive "files on demand") are shown but not restored.
+  For other file systems (XFS, Btrfs, FAT, ReFS), restore the volume as a VHDX and open it.
+* While someone is browsing, that machine checks in every second instead of every 15, and keeps the backup open
+  for 5 minutes after the last request.
 
 ## Network shares
 

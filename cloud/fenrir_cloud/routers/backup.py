@@ -878,6 +878,84 @@ def create_restore(request: Request, body: dict = Body(...), p: Principal = Depe
     return {"id": job.id}
 
 
+def _file_agent(db: Session, p: Principal, im: BackupImage, agent_id: str | None) -> BackupAgent:
+    """The machine that reads the image: the one asked for, else the machine it came from, else any with access."""
+    if agent_id:
+        a = _agent(db, p, agent_id)
+    else:
+        candidates = [x for x in db.execute(select(BackupAgent).join(BackupRepoAccess, BackupRepoAccess.agent_id == BackupAgent.id)
+                                            .where(BackupRepoAccess.repository_id == im.repository_id,
+                                                   BackupAgent.revoked.is_(False))).scalars()]
+        candidates.sort(key=lambda x: (x.id != im.agent_id, not bk.online(x), "restore_files" not in bk.capabilities(x)))
+        if not candidates:
+            bad("no machine has access to this image's repository")
+        a = candidates[0]
+    if a.tenant_id != im.tenant_id or db.get(BackupRepoAccess, (im.repository_id, a.id)) is None:
+        bad("that machine has no access to the image's repository; give it access first")
+    if "restore_files" not in bk.capabilities(a):
+        bad(f"the backup agent on {a.display_name or a.hostname} is too old to browse files; it updates itself shortly")
+    return a
+
+
+def _volume(body: dict) -> dict | None:
+    if body.get("disk") is None and body.get("partition") is None:
+        return None
+    disk, part = body.get("disk"), body.get("partition")
+    if not isinstance(disk, int) or not isinstance(part, int) or disk < 0 or part < 1:
+        bad("choose a volume")
+    return {"disk": disk, "partition": part}
+
+
+@router.post("/images/{image_id}/browse")
+def browse_files(image_id: str, body: dict = Body(default={}), p: Principal = Depends(current_principal),
+                 db: Session = Depends(get_db)):
+    """List an image's volumes (no volume given) or one folder. Returns a job; poll it for the listing."""
+    p.require("scripts")
+    im = _image(db, p, image_id)
+    a = _file_agent(db, p, im, body.get("agentId"))
+    path = str(body.get("path") or "/")
+    if len(path) > 4000 or ".." in path.replace("\\", "/").split("/"):
+        bad("invalid folder")
+    job = bk.queue(db, a, {"type": "browse_files", "image_id": im.image_id, "volume": _volume(body), "path": path},
+                   im.repository_id, p.actor)
+    if _volume(body) is None:
+        bk.record(db, p.actor, "backup.files.browsed", im.hostname, im.tenant_id, image=im.image_id, machine=a.hostname)
+    db.commit()
+    return {"id": job.id, "agentId": a.id, "agentName": a.display_name or a.hostname, "agentOnline": bk.online(a)}
+
+
+@router.post("/images/{image_id}/restore-files")
+def restore_files(image_id: str, request: Request, body: dict = Body(...), p: Principal = Depends(current_principal),
+                  db: Session = Depends(get_db)):
+    """Copy chosen files and folders out of a backup to a folder on a machine."""
+    p.require("scripts")
+    im = _image(db, p, image_id)
+    a = _file_agent(db, p, im, body.get("agentId"))
+    volume = _volume(body)
+    if volume is None:
+        bad("choose a volume")
+    paths = [str(x) for x in body.get("paths") or [] if str(x).strip("/")]
+    if not paths or len(paths) > 1000 or any(len(x) > 4000 for x in paths):
+        bad("choose 1 to 1000 files or folders")
+    target = str(body.get("target") or "").strip()
+    if not target or len(target) > 1000:
+        bad("choose the folder to restore into")
+    conflict = body.get("conflict") or "rename"
+    if conflict not in ("rename", "skip", "overwrite"):
+        bad("existing files: rename, skip or overwrite")
+    if conflict == "overwrite":
+        # Replaces files that are on the machine now: deliberate, re-authenticated.
+        p.require("destructive")
+        require_reauth(request, p)
+    job = bk.queue(db, a, {"type": "restore_files", "image_id": im.image_id, "volume": volume, "paths": paths,
+                           "target": target, "keep_structure": bool(body.get("keepStructure", True)),
+                           "conflict": conflict}, im.repository_id, p.actor)
+    bk.record(db, p.actor, "backup.files.restore_requested", im.hostname, im.tenant_id, image=im.image_id,
+              machine=a.hostname, items=len(paths), first=paths[0][:300], restore_to=target, conflict=conflict)
+    db.commit()
+    return {"id": job.id}
+
+
 @router.post("/images/{image_id}/boot-check")
 def create_boot_check(image_id: str, body: dict = Body(default={}), p: Principal = Depends(current_principal),
                       db: Session = Depends(get_db)):

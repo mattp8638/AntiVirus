@@ -2,6 +2,7 @@
 //! is given (backups, Hyper-V VM backups, verification).
 
 mod boot;
+mod browse;
 mod client;
 mod config;
 mod hyperv;
@@ -271,11 +272,16 @@ pub fn run_loop(stop: Arc<AtomicBool>) -> anyhow::Result<LoopExit> {
 
     let mut backoff = 5u64;
     let mut running: Option<Running> = None;
+    let mut inv_cache: Option<(Instant, protocol::Inventory)> = None;
     let vms: Arc<Mutex<VmCache>> = Arc::new(Mutex::new((None, vec![], vec![])));
 
     while !stop.load(Ordering::SeqCst) {
         if running.as_ref().is_some_and(|r| r.handle.is_finished()) {
             running = None;
+        }
+        // Close an image left open for browsing, and its network share.
+        if running.is_none() && browse::expire() && boot::running_vms().is_empty() {
+            share::release_all();
         }
         // Hyper-V inventory is slow (PowerShell); refresh every 5 minutes.
         if cfg.role == "hyperv" {
@@ -297,14 +303,24 @@ pub fn run_loop(stop: Arc<AtomicBool>) -> anyhow::Result<LoopExit> {
             let g = vms.lock().unwrap();
             (g.1.clone(), g.2.clone())
         };
+        // While polling fast (file browsing), the inventory is reused for 20 s.
+        let inventory = match &inv_cache {
+            Some((t, inv)) if t.elapsed() < Duration::from_secs(20) => inv.clone(),
+            _ => {
+                let inv = inventory::collect(&cfg.role, vm_list, notes);
+                inv_cache = Some((Instant::now(), inv.clone()));
+                inv
+            }
+        };
         let req = HeartbeatRequest {
-            inventory: inventory::collect(&cfg.role, vm_list, notes),
+            inventory,
             running_job: running.as_ref().map(|r| r.id),
         };
         match client.post::<_, HeartbeatResponse>("/api/agent/heartbeat", &req) {
             Ok(hb) => {
                 backoff = 5;
-                let poll = hb.poll_seconds.clamp(5, 300) as u64;
+                // The server asks for 1-second polling while someone browses files.
+                let poll = hb.poll_seconds.clamp(1, 300) as u64;
                 if let Some(r) = &running {
                     if hb.cancel.contains(&r.id) {
                         log::info(&format!("job {} cancelled by the server", r.id));

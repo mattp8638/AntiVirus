@@ -16,6 +16,8 @@ base64.workspace = true
 clap.workspace = true
 core-format.workspace = true
 engine.workspace = true
+filebrowse.workspace = true
+nbd-server.workspace = true
 hex.workspace = true
 protocol.workspace = true
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }

@@ -246,3 +246,66 @@ def test_scheduler_ticks_queue_due_plans_and_raise_overdue(client, admin, tenant
         assert any(a.rule_id == bk.RULE_OVERDUE for a in db.query(Alert).all())
         bk.hourly(db)  # deduplicated
         assert sum(a.rule_id == bk.RULE_OVERDUE for a in db.query(Alert).all()) == 1
+
+
+def test_browse_and_restore_files(client, admin, tenant):
+    from datetime import timedelta
+
+    from fenrir_cloud.db import session_factory
+    from fenrir_cloud.models import BackupJob, utcnow
+
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    caps = CAPS + ["restore_files"]
+    heartbeat(client, h, caps=caps)
+    repo_id = ready_repo(client, admin, tenant, agent_id, h)
+    client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+    job = heartbeat(client, h, caps=caps)["jobs"][0]
+    im = image()
+    finish(client, h, job["id"], images=[im])
+    assert heartbeat(client, h, caps=caps)["poll_seconds"] == bk.POLL_SECONDS
+
+    # Volumes, then a folder; the machine polls every second meanwhile.
+    r = client.post(f"/api/console/backup/images/{im['image_id']}/browse", headers=admin, json={})
+    assert r.status_code == 200 and r.json()["agentId"] == agent_id, r.text
+    hb = heartbeat(client, h, caps=caps)
+    assert hb["poll_seconds"] == 1
+    spec = hb["jobs"][0]
+    assert spec["kind"] == {"type": "browse_files", "image_id": im["image_id"], "volume": None, "path": "/"}
+    assert spec["repository"]["sealed_secret"] == SEALED
+    finish(client, h, spec["id"], result={"volumes": [{"disk": 0, "partition": 3, "filesystem": "ntfs", "browsable": True}]})
+    r = client.post(f"/api/console/backup/images/{im['image_id']}/browse", headers=admin,
+                    json={"disk": 0, "partition": 3, "path": "/Users/anna"})
+    spec = heartbeat(client, h, caps=caps)["jobs"][0]
+    assert spec["kind"]["volume"] == {"disk": 0, "partition": 3} and spec["kind"]["path"] == "/Users/anna"
+    finish(client, h, spec["id"], result={"listing": {"path": "/Users/anna", "entries": [{"name": "report.txt"}]}})
+    assert client.get(f"/api/console/backup/jobs/{r.json()['id']}", headers=admin).json()["result"]["listing"]["entries"]
+    assert client.post(f"/api/console/backup/images/{im['image_id']}/browse", headers=admin,
+                       json={"disk": 0, "partition": 3, "path": "/Users/../Windows"}).status_code == 400
+    heartbeat(client, h, caps=caps)  # drain the queue
+
+    # Restore with "keep both" is ordinary; overwriting needs destructive rights and a password check.
+    body = {"disk": 0, "partition": 3, "paths": ["/Users/anna/report.txt"], "target": "C:\\Restored", "conflict": "rename"}
+    r = client.post(f"/api/console/backup/images/{im['image_id']}/restore-files", headers=admin, json=body)
+    assert r.status_code == 200, r.text
+    spec = heartbeat(client, h, caps=caps)["jobs"][0]
+    assert spec["kind"] == {"type": "restore_files", "image_id": im["image_id"], "volume": {"disk": 0, "partition": 3},
+                            "paths": ["/Users/anna/report.txt"], "target": "C:\\Restored", "keep_structure": True,
+                            "conflict": "rename"}
+    finish(client, h, spec["id"])
+    over = client.post(f"/api/console/backup/images/{im['image_id']}/restore-files", headers=admin, json={**body, "conflict": "overwrite"})
+    assert over.status_code == 403 and over.json()["detail"] == "reauth_required"
+
+    # An agent without file restore is told to update.
+    heartbeat(client, h, caps=CAPS)
+    assert "too old" in client.post(f"/api/console/backup/images/{im['image_id']}/browse", headers=admin, json={}).json()["detail"]
+
+    # File names in listings are dropped after a day; other results stay.
+    with session_factory()() as db:
+        for j in db.query(BackupJob).all():
+            j.finished_at = utcnow() - timedelta(days=2)
+        db.commit()
+        assert bk.purge_listings(db) == 2
+        kinds = {j.kind["type"]: j.result for j in db.query(BackupJob).all() if j.kind["type"] in ("browse_files",)}
+        assert kinds == {"browse_files": None}

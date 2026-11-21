@@ -314,6 +314,29 @@ pub enum JobKind {
     },
     /// Power off a VM left running by a boot check.
     StopVm { session_id: Uuid },
+    /// Without `volume`: the image's volumes. With it: the folder `path`
+    /// (`/`-separated from the volume root) in that volume.
+    BrowseFiles {
+        image_id: Uuid,
+        #[serde(default)]
+        volume: Option<VolumeRef>,
+        #[serde(default)]
+        path: String,
+    },
+    /// Copy chosen files and folders out of an image into `target`, a
+    /// folder on this machine.
+    RestoreFiles {
+        image_id: Uuid,
+        volume: VolumeRef,
+        paths: Vec<String>,
+        target: String,
+        /// Recreate the folders above each item under `target`.
+        #[serde(default)]
+        keep_structure: bool,
+        /// "rename" (keep both), "skip" or "overwrite" existing files.
+        #[serde(default = "default_conflict")]
+        conflict: String,
+    },
     /// Can this machine reach and write to `path`? Signs in to a network
     /// share first when credentials are given. Reports free space.
     CheckAccess {
@@ -338,8 +361,21 @@ impl JobKind {
             JobKind::BootCheck { .. } => "Boot check",
             JobKind::StopVm { .. } => "Stop VM",
             JobKind::CheckAccess { .. } => "Test connection",
+            JobKind::BrowseFiles { .. } => "Browse files",
+            JobKind::RestoreFiles { .. } => "Restore files",
         }
     }
+}
+
+/// One partition of one disk of an image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VolumeRef {
+    pub disk: u32,
+    pub partition: u32,
+}
+
+fn default_conflict() -> String {
+    "rename".into()
 }
 
 /// Where the repository is and the secret to open it, sealed to this agent.

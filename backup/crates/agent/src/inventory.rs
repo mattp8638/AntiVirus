@@ -88,7 +88,7 @@ pub fn os() -> OsSummary {
 }
 
 pub fn capabilities(role: &str) -> Vec<String> {
-    let mut c: Vec<String> = ["verify", "maintenance", "restore_vhdx"]
+    let mut c: Vec<String> = ["verify", "maintenance", "restore_vhdx", "restore_files"]
         .iter()
         .map(|s| s.to_string())
         .collect();

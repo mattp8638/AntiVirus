@@ -141,7 +141,7 @@ fn secret(key: &AgentKey, access: &RepoAccess) -> anyhow::Result<RepoSecret> {
     Ok(serde_json::from_slice(&pt)?)
 }
 
-fn open_repo(key: &AgentKey, access: &RepoAccess) -> anyhow::Result<Repository> {
+pub(crate) fn open_repo(key: &AgentKey, access: &RepoAccess) -> anyhow::Result<Repository> {
     let s = secret(key, access)?;
     let path = crate::share::prepare(key, &access.path, access.sealed_share.as_ref())?;
     let backend: Arc<dyn Backend> = Arc::new(
@@ -160,7 +160,7 @@ pub fn run(ctx: &Ctx, spec: &JobSpec) -> JobUpdate {
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| execute(ctx, spec, &rep)));
     // Network shares stay connected only while a job (or a VM running from
     // a backup) needs them.
-    if crate::boot::running_vms().is_empty() {
+    if crate::boot::running_vms().is_empty() && !crate::browse::active() {
         crate::share::release_all();
     }
     match r {
@@ -366,6 +366,35 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             crate::boot::run(ctx, &repo, &req, rep)
         }
         JobKind::StopVm { session_id } => crate::boot::stop_vm(*session_id),
+        JobKind::BrowseFiles {
+            image_id,
+            volume,
+            path,
+        } => crate::browse::browse(
+            ctx,
+            access.ok_or_else(|| anyhow!("no repository"))?,
+            *image_id,
+            *volume,
+            path,
+        ),
+        JobKind::RestoreFiles {
+            image_id,
+            volume,
+            paths,
+            target,
+            keep_structure,
+            conflict,
+        } => crate::browse::restore_files(
+            ctx,
+            access.ok_or_else(|| anyhow!("no repository"))?,
+            *image_id,
+            *volume,
+            paths,
+            target,
+            *keep_structure,
+            conflict,
+            rep,
+        ),
         JobKind::CheckAccess { path, sealed_share } => {
             check_access(ctx, path, sealed_share.as_ref())
         }

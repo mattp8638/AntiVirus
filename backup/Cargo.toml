@@ -11,6 +11,7 @@ members = [
     "crates/vdisk",
     "crates/protocol",
     "crates/vmboot",
+    "crates/filebrowse",
 ]
 
 [workspace.package]
@@ -29,6 +30,7 @@ vdisk = { path = "crates/vdisk" }
 protocol = { path = "crates/protocol" }
 nbd-server = { path = "crates/nbd-server" }
 vmboot = { path = "crates/vmboot" }
+filebrowse = { path = "crates/filebrowse" }
 
 anyhow = "1"
 argon2 = { version = "0.5", default-features = false, features = ["alloc"] }

@@ -70,7 +70,8 @@ KIND_LABELS = {
     "init_repository": "Create repository", "backup_system": "System backup", "backup_disks": "Disk backup",
     "backup_hyperv": "Hyper-V backup", "verify": "Verify", "list_images": "Refresh images",
     "apply_retention": "Apply retention", "prune": "Reclaim space", "restore": "Restore", "boot_check": "Boot check",
-    "stop_vm": "Stop VM", "check_access": "Test connection",
+    "stop_vm": "Stop VM", "check_access": "Test connection", "browse_files": "Browse files",
+    "restore_files": "Restore files",
 }
 # Capability the agent must report for console-created jobs of each kind.
 KIND_CAPABILITY = {"backup_system": "backup_system", "backup_disks": "backup_disks", "backup_hyperv": "backup_hyperv",
@@ -485,9 +486,35 @@ def tick(db: Session) -> None:
     run_boot_checks(db)
 
 
+BROWSE_KEEP = timedelta(days=1)
+# While someone browses a machine's backups, it polls every second (agents older than this ask for at least 5).
+FAST_POLL_SECONDS = 1
+FAST_POLL_FOR = timedelta(minutes=3)
+
+
+def poll_seconds(db: Session, agent: BackupAgent) -> int:
+    recent = db.execute(select(BackupJob.id).where(
+        BackupJob.agent_id == agent.id, BackupJob.created_at > utcnow() - FAST_POLL_FOR,
+        BackupJob.kind["type"].as_string() == "browse_files")).first()
+    return FAST_POLL_SECONDS if recent else POLL_SECONDS
+
+
+def purge_listings(db: Session) -> int:
+    """Folder listings (file names) are kept a day, then dropped from the job record."""
+    n = 0
+    for j in db.execute(select(BackupJob).where(BackupJob.finished_at < utcnow() - BROWSE_KEEP,
+                                                BackupJob.result.is_not(None))).scalars():
+        if (j.kind or {}).get("type") == "browse_files":
+            j.result = None
+            n += 1
+    db.commit()
+    return n
+
+
 def hourly(db: Session) -> None:
     run_maintenance(db)
     check_health(db)
+    purge_listings(db)
 
 
 def record(db: Session, actor: str, action: str, target: str, tenant_id: str | None, **details) -> None:
