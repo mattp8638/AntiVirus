@@ -82,7 +82,9 @@ pub struct Client {
 
 impl Client {
     pub fn new(base: &str, pin_hex: &str, token: Option<String>) -> anyhow::Result<Client> {
+        // HTTPS_PROXY / ALL_PROXY, as the Fenrir installers write them for networks that need a proxy.
         let mut b = ureq::AgentBuilder::new()
+            .try_proxy_from_env(true)
             .timeout_connect(Duration::from_secs(15))
             .timeout(Duration::from_secs(120))
             .user_agent(&format!(

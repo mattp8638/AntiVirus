@@ -188,3 +188,39 @@ pub fn collect(role: &str, vms: Vec<protocol::VmSummary>, notes: Vec<String>) ->
         running_vms: crate::boot::running_vms(),
     }
 }
+
+/// The role for `--role auto` (the all-in-one Fenrir installer): a Hyper-V host
+/// backs up its VMs, Windows Server and Linux are servers, the rest workstations.
+pub fn detect_role() -> String {
+    if cfg!(windows) {
+        let ok = |prog: &str, args: &[&str]| {
+            std::process::Command::new(prog)
+                .args(args)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        };
+        if ok("sc.exe", &["query", "vmms"]).is_some() {
+            return "hyperv".into();
+        }
+        let product = ok(
+            "reg.exe",
+            &[
+                "query",
+                r"HKLM\SYSTEM\CurrentControlSet\Control\ProductOptions",
+                "/v",
+                "ProductType",
+            ],
+        )
+        .unwrap_or_default();
+        // "WinNT" is a workstation edition; "ServerNT" / "LanmanNT" are servers.
+        let server = product.contains("ServerNT") || product.contains("LanmanNT");
+        return if server { "server" } else { "workstation" }.into();
+    }
+    if cfg!(target_os = "macos") {
+        "workstation".into()
+    } else {
+        "server".into()
+    }
+}

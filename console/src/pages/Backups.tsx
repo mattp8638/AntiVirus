@@ -223,6 +223,7 @@ function AddMachines({ onClose }: { onClose: () => void }) {
             </label>
             <label className="field">Link valid for (days)<input type="number" min={1} max={90} value={days} onChange={(e) => setDays(Number(e.target.value))} /></label>
           </div>
+          <p className="small">Machines installed with the Fenrir agent installer (Deploy agents) already have device backup: they appear here on their own. Use these links for machines that should only be backed up.</p>
           <p className="small muted">One link installs any number of machines until it expires. Each installs the backup agent as a protected system service (FenrirBackupAgent on Windows) that only administrators can stop or remove. It is separate from the Fenrir security agent and does not touch it.</p>
           <button className="primary" disabled={busy || !tenant} onClick={create}>Create install links</button>
         </>

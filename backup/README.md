@@ -17,6 +17,7 @@ backups are managed from the Fenrir console alongside security and RMM.
 | Backup API, scheduling, retention, alerts | `cloud/fenrir_cloud/backup.py`, `routers/backup*.py` | Done; tested (`tests/test_device_backup.py`) |
 | Console pages | `console/src/pages/Backups.tsx`, device page › Backup | Done |
 | Agent installation from Fenrir agents | Device page › Backup › Enable backup (`script.run`) | Done |
+| All-in-one: bundled in the Fenrir installers | `FenrirSetup.exe` / MSI, RMM scripts, Linux and macOS installers | Done |
 | Agent builds in the platform image | `deploy/Dockerfile` (Linux, Windows); CI for macOS | Done |
 | NAS repository gateway (relay through Fenrir Cloud, or direct) | | Designed (`docs/DEVICE_BACKUP.md` at the repository root); next |
 

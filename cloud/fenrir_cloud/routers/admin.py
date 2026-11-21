@@ -1122,13 +1122,14 @@ def download_installer(body: dict = Body(...), principal: Principal = Depends(cu
     # Reinstatement tokens keep the fet_ shape (letters, digits, "_" and "-") that the installers and
     # Windows setup accept, and name the device they reconnect: fet_rs-<device id>-<hex secret>.
     raw = (f"{REINSTATE_PREFIX}{reinstatement.id}-{secrets.token_hex(24)}") if reinstatement else new_secret("fet", 24)
+    include_backup = body.get("includeBackup", True) is not False
     data, filename, media_type = deployment_installers.build(
-        os_name, get_settings().public_base_url, raw
+        os_name, get_settings().public_base_url, raw, include_backup
     )  # Build/release validation BEFORE issuing a token.
     row = EnrollmentToken(tenant_id=tenant_id, group_id=group_id, label=label,
                           token_hash=digest(raw), token_hint=raw[-6:],
                           max_uses=1 if reinstatement else None,
-                          expires_at=utcnow() + timedelta(days=days))
+                          expires_at=utcnow() + timedelta(days=days), include_backup=include_backup)
     if reinstatement:
         for old in db.scalars(select(EnrollmentToken).where(EnrollmentToken.tenant_id == tenant_id,
                                EnrollmentToken.label == label, EnrollmentToken.revoked.is_(False))):

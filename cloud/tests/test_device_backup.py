@@ -309,3 +309,104 @@ def test_browse_and_restore_files(client, admin, tenant):
         assert bk.purge_listings(db) == 2
         kinds = {j.kind["type"]: j.result for j in db.query(BackupJob).all() if j.kind["type"] in ("browse_files",)}
         assert kinds == {"browse_files": None}
+
+
+def _fake_builds(tmp_path, monkeypatch, which=None):
+    """Fake security-agent release files and backup agent builds for installer tests."""
+    from fenrir_cloud import deployment_installers as installers
+
+    rel = tmp_path / "rel"
+    rel.mkdir()
+    monkeypatch.setattr(installers, "DOWNLOADS", rel)
+    for arch in ("amd64", "arm64"):
+        (rel / f"fenrir-agent-linux-{arch}").write_bytes(b"\x7fELF-fenrir-" + arch.encode())
+        (rel / f"fenrir-agent-darwin-{arch}").write_bytes(b"\xcf\xfa-fenrir-" + arch.encode())
+    agents = tmp_path / "backup-builds"
+    monkeypatch.setenv("FENRIR_BACKUP_AGENTS_DIR", str(agents))
+    for t in bk.ALL_TARGETS.values():
+        if which is None or t.triple in which:
+            (agents / t.triple).mkdir(parents=True, exist_ok=True)
+            (agents / t.triple / t.file).write_bytes(b"backup-agent-" + t.triple.encode())
+    return installers
+
+
+def test_all_in_one_installers_carry_the_backup_agent(client, admin, tenant, tmp_path, monkeypatch):
+    import shutil
+    import subprocess
+
+    installers = _fake_builds(tmp_path, monkeypatch, which={"x86_64-unknown-linux-musl", "aarch64-apple-darwin"})
+    with_backup = client.post("/api/console/deploy-scripts", headers=admin, json={"tenantId": tenant["id"]}).json()
+    assert with_backup["includeBackup"] is True
+    sh = client.get("/api/v1/install/linux.sh", headers={"X-Fenrir-Token": with_backup["token"]}).text
+    assert "install_fenrir_backup" in sh and '--server "${base%/}/backup" --token "$token" --role auto' in sh
+    assert "fenrir-backup-agent.service" in sh
+    assert hashlib_sha("backup-agent-x86_64-unknown-linux-musl") in sh
+    assert "no backup agent for $(uname -m) yet" in sh  # no arm64 build on this server: skipped, not failed
+    mac = client.get("/api/v1/install/macos.sh", headers={"X-Fenrir-Token": with_backup["token"]}).text
+    assert "uk.fenrir-backup.agent" in mac and hashlib_sha("backup-agent-aarch64-apple-darwin") in mac
+    if shutil.which("sh"):
+        for script in (sh, mac):
+            assert subprocess.run(["sh", "-n"], input=script, text=True).returncode == 0
+
+    without = client.post("/api/console/deploy-scripts", headers=admin,
+                          json={"tenantId": tenant["id"], "includeBackup": False}).json()
+    assert without["includeBackup"] is False
+    assert "install_fenrir_backup" not in client.get("/api/v1/install/linux.sh", headers={"X-Fenrir-Token": without["token"]}).text
+    # Windows: setup reads "backup=off" from its embedded settings.
+    (installers.DOWNLOADS / "windows").mkdir()
+    import hashlib
+    import json
+
+    (installers.DOWNLOADS / "windows" / "FenrirSetup.exe").write_bytes(b"MZ-setup")
+    (installers.DOWNLOADS / "windows" / "build.json").write_text(json.dumps({"sha256": hashlib.sha256(b"MZ-setup").hexdigest()}))
+    tail = len(installers.WINDOWS_CONFIG_MAGIC) + 4
+    on = client.get("/api/v1/install/windows.exe", headers={"X-Fenrir-Token": with_backup["token"]}).content
+    off = client.get("/api/v1/install/windows.exe", headers={"X-Fenrir-Token": without["token"]}).content
+    assert on.endswith(installers.WINDOWS_CONFIG_MAGIC) and not on[:-tail].endswith(b"backup=off")
+    assert off[:-tail].endswith(b"\nbackup=off")
+
+
+def hashlib_sha(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def test_bundled_backup_agent_enrols_with_the_deployment_token_and_links_to_its_device(client, admin, tenant):
+    made = client.post("/api/console/deploy-scripts", headers=admin, json={"tenantId": tenant["id"]}).json()
+    # The backup agent usually enrols first (it is installed in the same run); the device appears just after.
+    agent_id, _ = agent_enroll(client, made["token"], machine="acme-ws-01")
+    rows = client.get(f"/api/console/backup/agents?tenantId={tenant['id']}", headers=admin).json()
+    assert [r["id"] for r in rows] == [agent_id] and rows[0]["deviceId"] is None
+    dev = enroll(client, admin, tenant, hostname="ACME-WS-01")
+    from fenrir_cloud.db import session_factory
+
+    with session_factory()() as db:
+        assert bk.link_devices(db) == 1
+    assert client.get(f"/api/console/backup/agents?deviceId={dev['deviceId']}", headers=admin).json()[0]["id"] == agent_id
+    # The deployment token is not used up by the backup agent.
+    from fenrir_cloud.models import EnrollmentToken
+
+    with session_factory()() as db:
+        assert db.get(EnrollmentToken, made["id"]).uses <= 1
+
+    # A deployment without backup refuses it; a revoked token too.
+    off = client.post("/api/console/deploy-scripts", headers=admin, json={"tenantId": tenant["id"], "includeBackup": False}).json()
+    body = {"protocol": 1, "token": off["token"], "hostname": "X", "machine_id": "x", "role": "server", "os": {},
+            "agent_version": "", "public_key": base64.b64encode(b"q" * 32).decode()}
+    assert client.post("/backup/api/agent/enroll", json=body).status_code == 409
+    with session_factory()() as db:
+        db.get(EnrollmentToken, made["id"]).revoked = True
+        db.commit()
+    assert client.post("/backup/api/agent/enroll", json={**body, "token": made["token"]}).status_code == 403
+
+
+def test_agent_builds_download_without_an_agent_token(client, tmp_path, monkeypatch):
+    """Installers fetch the agent before it has enrolled; the file is checked against its SHA-256."""
+    monkeypatch.setenv("FENRIR_BACKUP_AGENTS_DIR", str(tmp_path))
+    t = bk.ALL_TARGETS["x86_64-unknown-linux-musl"]
+    (tmp_path / t.triple).mkdir()
+    (tmp_path / t.triple / t.file).write_bytes(b"agent")
+    assert client.get(f"/backup/agent/{t.triple}/{t.file}").content == b"agent"
+    assert client.get("/backup/agent/x86_64-unknown-linux-musl/..%2f..%2fetc").content != b"agent"
+    assert client.get("/backup/agent/x86_64-unknown-linux-musl/other").status_code == 404

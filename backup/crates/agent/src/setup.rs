@@ -188,7 +188,15 @@ mod win {
         }
 
         println!("Enrolling with the server...");
-        crate::enroll(&cfg.server, &cfg.token, &cfg.pin, &cfg.role)?;
+        if let Err(e) = crate::enroll(&cfg.server, &cfg.token, &cfg.pin, &cfg.role) {
+            // A fresh install that could not enrol leaves nothing behind (the
+            // all-in-one Fenrir setup may run this for a deployment without backup).
+            if existing.is_none() && !same_file(&me, &target) {
+                let _ = std::fs::remove_file(&target);
+                let _ = std::fs::remove_dir(&dir);
+            }
+            return Err(e);
+        }
 
         let info = ServiceInfo {
             name: OsString::from(NAME),

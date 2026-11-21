@@ -19,6 +19,8 @@ from urllib.parse import urlparse
 
 from fastapi import HTTPException
 
+from . import backup_bundle
+
 DOWNLOADS = Path(__file__).resolve().parents[1] / "downloads"
 MAX_SETUP_BYTES = 180 * 1024 * 1024
 
@@ -144,7 +146,7 @@ esac
 case "$proxy" in *[!A-Za-z0-9:/._@%-]*) echo "--proxy contains characters a proxy address cannot have" >&2; exit 2 ;; esac"""
 
 
-def _linux_script(base: str, token: str) -> bytes:
+def _linux_script(base: str, token: str, include_backup: bool = True) -> bytes:
     bins = {arch: release_file(f"fenrir-agent-linux-{arch}") for arch in ("amd64", "arm64")}
     if not all(bins.values()):
         raise HTTPException(409, "Linux agent binaries are not available; rebuild the cloud image.")
@@ -225,10 +227,12 @@ if ! systemctl is-active --quiet fenrir-agent; then
 fi
 echo "Fenrir agent installed as an automatic-start service. Confirm the device checks in to your tenant."
 """
+    if include_backup:
+        script += backup_bundle.unix_block("linux")
     return script.encode("utf-8")
 
 
-def _macos_script(base: str, token: str) -> bytes:
+def _macos_script(base: str, token: str, include_backup: bool = True) -> bytes:
     bins = {arch: release_file(f"fenrir-agent-darwin-{arch}") for arch in ("amd64", "arm64")}
     if not all(bins.values()):
         raise HTTPException(409, "macOS agent binaries are not available; rebuild the cloud image.")
@@ -310,6 +314,8 @@ echo "In System Settings > Privacy & Security, allow /usr/local/bin/fenrir-agent
 echo "  - Full Disk Access (complete scanning)"
 echo "  - Screen Recording and Accessibility (remote screen view and control)"
 """
+    if include_backup:
+        script += backup_bundle.unix_block("macos")
     return script.encode("utf-8")
 
 
@@ -362,7 +368,7 @@ def windows_signature() -> dict:
             "method": str(meta.get("method") or ("pfx" if meta.get("signed") else ""))}
 
 
-def _windows_executable(base: str, token: str) -> tuple[bytes, str, str]:
+def _windows_executable(base: str, token: str, include_backup: bool = True) -> tuple[bytes, str, str]:
     mode, problem = windows_release_mode()
     if mode is None:
         raise HTTPException(409, problem)
@@ -371,21 +377,22 @@ def _windows_executable(base: str, token: str) -> tuple[bytes, str, str]:
     # components are already embedded as PE resources in the shared template.
     # No shell, compiler, temporary customer files or public download URL needed.
     request_id = uuid.uuid4().hex
-    payload = (base + "\n" + token + "\n" + request_id).encode("ascii")
+    # A fourth line turns off the bundled device backup agent for this deployment (SetupMain.cpp).
+    payload = (base + "\n" + token + "\n" + request_id + ("" if include_backup else "\nbackup=off")).encode("ascii")
     if len(payload) > 4096:
         raise HTTPException(422, "Installer enrollment configuration is too large.")
     data = attach_windows_overlay(executable.read_bytes(), payload + struct.pack("<I", len(payload)) + WINDOWS_CONFIG_MAGIC)
     return data, f"FenrirSetup-{request_id}.exe", "application/vnd.microsoft.portable-executable"
 
 
-def build(os_name: str, base: str, token: str) -> tuple[bytes, str, str]:
+def build(os_name: str, base: str, token: str, include_backup: bool = True) -> tuple[bytes, str, str]:
     """Return (body, filename, MIME). Artifact checks must run before DB token creation."""
     base = server_address(base)
     token = _check_token(token)
     if os_name == "linux":
-        return _linux_script(base, token), "Install-Fenrir-Linux.sh", "text/x-shellscript"
+        return _linux_script(base, token, include_backup), "Install-Fenrir-Linux.sh", "text/x-shellscript"
     if os_name == "windows":
-        return _windows_executable(base, token)
+        return _windows_executable(base, token, include_backup)
     if os_name == "macos":
-        return _macos_script(base, token), "Install-Fenrir-macOS.sh", "text/x-shellscript"
+        return _macos_script(base, token, include_backup), "Install-Fenrir-macOS.sh", "text/x-shellscript"
     raise HTTPException(409, "The selected operating system does not have an installable agent release yet.")

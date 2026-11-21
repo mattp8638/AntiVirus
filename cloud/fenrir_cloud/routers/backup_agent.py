@@ -11,15 +11,19 @@ import binascii
 import os
 import uuid as uuidlib
 
+from types import SimpleNamespace
+
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import backup as bk
+from .. import ratelimit
+from ..security import digest
 from ..config import get_settings
 from ..db import get_db
-from ..models import (BackupAgent, BackupBootCheck, BackupEnrollment, BackupImage, BackupJob, BackupRepoAccess,
+from ..models import (EnrollmentToken, BackupAgent, BackupBootCheck, BackupEnrollment, BackupImage, BackupJob, BackupRepoAccess,
                       BackupRepository, Tenant, utcnow)
 
 router = APIRouter(prefix="/backup", tags=["Backup agent"])
@@ -60,12 +64,25 @@ def enroll(body: dict = Body(...), db: Session = Depends(get_db)):
     role = body.get("role")
     if role not in bk.ROLES:
         raise HTTPException(400, "unknown role")
-    tok = db.execute(select(BackupEnrollment).where(
-        BackupEnrollment.token_hash == bk.token_hash(str(body.get("token") or "")))).scalars().first()
-    if tok is None:
-        raise HTTPException(403, "enrollment token not recognised")
-    if tok.revoked or tok.expires_at < utcnow():
-        raise HTTPException(403, "enrollment token has expired or was revoked; create a new download")
+    raw = str(body.get("token") or "")
+    if raw.startswith("fet_"):
+        # The all-in-one Fenrir installer: the backup agent enrols with the same deployment token as the security
+        # agent. It does not use up one of the token's uses; the security agent's enrolment does.
+        ratelimit.check(f"backup-enroll:{bk.token_hash(raw)[:16]}", 500, 3600)
+        fet = db.execute(select(EnrollmentToken).where(EnrollmentToken.token_hash == digest(raw))).scalars().first()
+        if fet is None:
+            raise HTTPException(403, "enrollment token not recognised")
+        if fet.revoked or (fet.expires_at and fet.expires_at < utcnow()):
+            raise HTTPException(403, "the deployment token has expired or was revoked")
+        if fet.include_backup is False:
+            raise HTTPException(409, "device backup is not included in this deployment")
+        tok = SimpleNamespace(id=fet.id, tenant_id=fet.tenant_id, device_id=None, label="bundled", uses=0, revoked=False)
+    else:
+        tok = db.execute(select(BackupEnrollment).where(BackupEnrollment.token_hash == bk.token_hash(raw))).scalars().first()
+        if tok is None:
+            raise HTTPException(403, "enrollment token not recognised")
+        if tok.revoked or tok.expires_at < utcnow():
+            raise HTTPException(403, "enrollment token has expired or was revoked; create a new download")
 
     agent_token = bk.new_token()
     os_ = body.get("os") if isinstance(body.get("os"), dict) else {}
@@ -95,6 +112,8 @@ def enroll(body: dict = Body(...), db: Session = Depends(get_db)):
         db.add(agent)
         db.flush()
         action = "backup.agent.enrolled"
+    if agent.device_id is None:
+        agent.device_id = bk.matching_device(db, agent)
     tok.uses += 1
     if tok.label.startswith("push:"):
         tok.revoked = True  # pushed to one device through its Fenrir agent: single use
@@ -273,8 +292,9 @@ def update_job(job_id: str, body: dict = Body(...), agent: BackupAgent = Depends
 # --------------------------------------------------------------------------
 
 @router.get("/agent/{triple}/{file}")
-def agent_build(triple: str, file: str, agent: BackupAgent = Depends(current_backup_agent)):
-    """Self-update download (agents only)."""
+def agent_build(triple: str, file: str):
+    """Agent builds, for installers (before enrolment) and self-update. Not secret: every installer and update checks
+    the file's SHA-256, which it gets from the server over TLS."""
     t = bk.ALL_TARGETS.get(triple)
     if t is None or t.file != file or not bk.binary_path(t).is_file():
         raise HTTPException(404, "no such agent build")

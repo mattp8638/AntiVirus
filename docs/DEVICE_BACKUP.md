@@ -21,6 +21,23 @@ Fenrir server itself.
 
 ## Installing the agent
 
+* **With the Fenrir agent (all-in-one, the default)**: the normal Fenrir installers from **Deploy agents** — the
+  Windows `FenrirSetup.exe` and MSI, the RMM / Group Policy / Intune scripts, and the Linux and macOS installers —
+  also install the backup agent. It enrols with the same deployment token, works out its role by itself (Hyper-V
+  host, server or workstation) and appears under **Backups**; it is linked to the device once the security agent has
+  enrolled (by host name, within the customer). Untick **Include device backup** when creating the installer or
+  deployment to leave it out (Windows setup also takes `--no-backup` with `--server`/`--enroll-token`).
+  * Windows: `FenrirSetup.exe` carries `fenrir-backup-agent.exe` (code-signed with the other components in the
+    production build) and installs it last, as the `FenrirBackupAgent` service. Linux and macOS: the installer
+    script carries it and installs a `fenrir-backup-agent` systemd unit / `uk.fenrir-backup.agent` LaunchDaemon,
+    using the installer's `--proxy` if given.
+  * Backup is never allowed to stop the security agent's install: if it cannot be set up, setup says why and
+    finishes; add it later from the device's Backup tab.
+  * Uninstalling the Fenrir agent leaves the backup agent running, so backups continue and a reinstall keeps
+    repository access. To remove it too: `"C:\Program Files\Fenrir-Backup\fenrir-backup-agent.exe" uninstall
+    --yes` as administrator, or the uninstallers on the Backups page (Linux, macOS).
+  * Linux on ARM gets the backup agent only when the server has an `aarch64-unknown-linux-musl` build (the image
+    builds the server's own CPU; CI builds both). Otherwise the installer skips backup with a note.
 * **From a device page** (Backup tab › Enable backup): the Fenrir agent runs the installer as SYSTEM or root
   (`script.run`). The link inside is bound to that device, lasts a day and works once.
 * **Install links** (Backups › Add machines): per customer and role (desktop, server, Hyper-V host). Windows gets a

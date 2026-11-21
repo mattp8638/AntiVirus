@@ -118,6 +118,8 @@ class EnrollmentToken(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # Installers made with this token also install the device backup agent (None: yes, the default).
+    include_backup: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
 
 class Device(Base):

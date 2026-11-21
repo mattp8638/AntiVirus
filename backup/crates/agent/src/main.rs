@@ -172,7 +172,15 @@ fn stop_on_signal() -> Arc<AtomicBool> {
 
 fn enroll(server: &str, token: &str, pin: &str, role: &str) -> anyhow::Result<()> {
     let server = config::validate_server_url(server)?;
-    let role = AgentRole::parse(role).context("role must be workstation, server or hyperv")?;
+    let detected;
+    let role = if role == "auto" {
+        detected = inventory::detect_role();
+        detected.as_str()
+    } else {
+        role
+    };
+    let role =
+        AgentRole::parse(role).context("role must be workstation, server, hyperv or auto")?;
     let dir = config::state_dir();
     config::ensure_private_dir(&dir)?;
     // Keep an existing key pair so repository access survives reinstalls.

@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from . import audit
 from . import backup_installers as tpl
-from .models import (Alert, BackupAgent, BackupBootCheck, BackupImage, BackupJob, BackupRepoAccess, BackupRepository,
+from .models import (Alert, Device, BackupAgent, BackupBootCheck, BackupImage, BackupJob, BackupRepoAccess, BackupRepository,
                      ImageBackupPlan, utcnow)
 
 PROTOCOL_VERSION = 1
@@ -511,7 +511,29 @@ def purge_listings(db: Session) -> int:
     return n
 
 
+def matching_device(db: Session, agent: BackupAgent) -> str | None:
+    """The Fenrir device this backup agent runs on: the one device in its tenant with the same host name."""
+    name = (agent.hostname or "").split(".")[0].lower()
+    if not name:
+        return None
+    rows = [d for d in db.execute(select(Device).where(Device.tenant_id == agent.tenant_id)).scalars()
+            if (d.hostname or "").split(".")[0].lower() == name and d.api_key_hash != f"retired-{d.id}"]
+    return rows[0].id if len(rows) == 1 else None
+
+
+def link_devices(db: Session) -> int:
+    """Link backup agents installed by the all-in-one installer to their device once the security agent enrols."""
+    n = 0
+    for a in db.execute(select(BackupAgent).where(BackupAgent.device_id.is_(None), BackupAgent.revoked.is_(False))).scalars():
+        if (dev := matching_device(db, a)) is not None:
+            a.device_id = dev
+            n += 1
+    db.commit()
+    return n
+
+
 def hourly(db: Session) -> None:
+    link_devices(db)
     run_maintenance(db)
     check_health(db)
     purge_listings(db)

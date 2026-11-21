@@ -25,7 +25,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
 snapshot-linux.workspace = true
-ureq = { version = "2.12", default-features = false, features = ["tls", "json"] }
+ureq = { version = "2.12", default-features = false, features = ["tls", "json", "proxy-from-env"] }
 uuid.workspace = true
 vdisk.workspace = true
 vmboot.workspace = true
