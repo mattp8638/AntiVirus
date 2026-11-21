@@ -1,0 +1,345 @@
+"""Endpoints the backup agent (backup/crates/agent) calls, mounted under /backup so the agent's server URL is
+https://<this server>/backup. Agents always initiate; the server never connects to them.
+
+Also: the one-time installer downloads and the agent builds served for self-update.
+"""
+
+from __future__ import annotations
+
+import base64
+import binascii
+import os
+import uuid as uuidlib
+
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, Response
+from fastapi.responses import FileResponse, PlainTextResponse
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from .. import backup as bk
+from ..config import get_settings
+from ..db import get_db
+from ..models import (BackupAgent, BackupBootCheck, BackupEnrollment, BackupImage, BackupJob, BackupRepoAccess,
+                      BackupRepository, Tenant, utcnow)
+
+router = APIRouter(prefix="/backup", tags=["Backup agent"])
+
+
+def backup_settings(db: Session) -> dict:
+    msp = db.execute(select(Tenant).where(Tenant.kind == "msp").order_by(Tenant.created_at)).scalars().first()
+    stored = ((msp.settings or {}) if msp else {}).get("backup") or {}
+    return {"autoUpdate": True, **stored}
+
+
+def current_backup_agent(authorization: str | None = Header(default=None), db: Session = Depends(get_db)) -> BackupAgent:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "agent token required")
+    agent = db.execute(select(BackupAgent).where(
+        BackupAgent.token_hash == bk.token_hash(authorization[7:].strip()))).scalars().first()
+    if agent is None or agent.revoked:
+        raise HTTPException(401, "agent not recognised or revoked")
+    return agent
+
+
+def _str(v, n: int) -> str:
+    return str(v or "")[:n]
+
+
+@router.post("/api/agent/enroll")
+def enroll(body: dict = Body(...), db: Session = Depends(get_db)):
+    if body.get("protocol") != bk.PROTOCOL_VERSION:
+        raise HTTPException(400, f"server speaks protocol {bk.PROTOCOL_VERSION}, agent sent {body.get('protocol')}")
+    machine_id, hostname = _str(body.get("machine_id"), 200).strip(), _str(body.get("hostname"), 255).strip()
+    public_key = _str(body.get("public_key"), 64)
+    try:
+        key_ok = len(base64.b64decode(public_key, validate=True)) == 32
+    except (binascii.Error, ValueError):
+        key_ok = False
+    if not machine_id or not hostname or not key_ok:
+        raise HTTPException(400, "hostname, machine_id and a 32-byte public key are required")
+    role = body.get("role")
+    if role not in bk.ROLES:
+        raise HTTPException(400, "unknown role")
+    tok = db.execute(select(BackupEnrollment).where(
+        BackupEnrollment.token_hash == bk.token_hash(str(body.get("token") or "")))).scalars().first()
+    if tok is None:
+        raise HTTPException(403, "enrollment token not recognised")
+    if tok.revoked or tok.expires_at < utcnow():
+        raise HTTPException(403, "enrollment token has expired or was revoked; create a new download")
+
+    agent_token = bk.new_token()
+    os_ = body.get("os") if isinstance(body.get("os"), dict) else {}
+    os_ = {k: _str(os_.get(k), 100) for k in ("family", "name", "version", "arch")}
+    version = _str(body.get("agent_version"), 64)
+    # Reinstall on the same machine (same tenant) keeps the agent's identity and history. If its key pair changed,
+    # secrets sealed to the old key are useless and are dropped; an administrator grants access again.
+    existing = db.execute(select(BackupAgent).where(
+        BackupAgent.machine_id == machine_id, BackupAgent.tenant_id == tok.tenant_id, BackupAgent.revoked.is_(False),
+    ).order_by(BackupAgent.enrolled_at.desc())).scalars().first()
+    now = utcnow()
+    if existing:
+        agent = existing
+        if agent.public_key != public_key:
+            for a in db.execute(select(BackupRepoAccess).where(BackupRepoAccess.agent_id == agent.id)).scalars():
+                db.delete(a)
+            action = "backup.agent.reenrolled_new_key"
+        else:
+            action = "backup.agent.reenrolled"
+        agent.token_hash, agent.hostname, agent.role, agent.os = bk.token_hash(agent_token), hostname, role, os_
+        agent.public_key, agent.agent_version, agent.last_seen_at = public_key, version, now
+        agent.device_id = tok.device_id or agent.device_id
+    else:
+        agent = BackupAgent(tenant_id=tok.tenant_id, device_id=tok.device_id, token_hash=bk.token_hash(agent_token),
+                            hostname=hostname, machine_id=machine_id, role=role, os=os_, public_key=public_key,
+                            agent_version=version, last_seen_at=now)
+        db.add(agent)
+        db.flush()
+        action = "backup.agent.enrolled"
+    tok.uses += 1
+    if tok.label.startswith("push:"):
+        tok.revoked = True  # pushed to one device through its Fenrir agent: single use
+    bk.record(db, f"backup-agent:{agent.id}", action, hostname, agent.tenant_id, enrollment=tok.id)
+    db.commit()
+    return {"agent_id": agent.id, "agent_token": agent_token, "poll_seconds": bk.POLL_SECONDS}
+
+
+def _job_spec(db: Session, agent: BackupAgent, job: BackupJob) -> dict | None:
+    """The job as the agent receives it, with the sealed repository access. None: no access."""
+    repository = None
+    if job.repository_id:
+        repo = db.get(BackupRepository, job.repository_id)
+        access = db.get(BackupRepoAccess, (job.repository_id, agent.id))
+        if repo is None or access is None:
+            return None
+        repository = {"repository_id": repo.id, "path": repo.path, "sealed_secret": access.sealed,
+                      "sealed_share": access.sealed_share}
+    return {"id": job.id, "kind": job.kind, "repository": repository}
+
+
+@router.post("/api/agent/heartbeat")
+def heartbeat(body: dict = Body(...), agent: BackupAgent = Depends(current_backup_agent), db: Session = Depends(get_db)):
+    now = utcnow()
+    inv = body.get("inventory") if isinstance(body.get("inventory"), dict) else {}
+    agent.last_seen_at, agent.inventory = now, inv
+    agent.hostname = _str(inv.get("hostname"), 255) or agent.hostname
+    agent.agent_version = _str(inv.get("agent_version"), 64) or agent.agent_version
+    running = body.get("running_job") or ""
+
+    # Jobs this agent was given but no longer reports: it restarted.
+    for j in db.execute(select(BackupJob).where(
+            BackupJob.agent_id == agent.id, BackupJob.state.in_(("dispatched", "running")), BackupJob.id != running,
+            BackupJob.dispatched_at < now - bk.LOST_AFTER)).scalars():
+        j.state, j.finished_at = "failed", now
+        j.error = ("The agent stopped before finishing this job (restart or crash). "
+                   "It will run again at the next scheduled time.")
+
+    jobs = []
+    busy = db.execute(select(BackupJob.id).where(BackupJob.agent_id == agent.id,
+                                                 BackupJob.state.in_(("dispatched", "running")))).first()
+    if busy is None and not running:
+        for job in db.execute(select(BackupJob).where(BackupJob.agent_id == agent.id, BackupJob.state == "queued")
+                              .order_by(BackupJob.created_at)).scalars():
+            repo = db.get(BackupRepository, job.repository_id) if job.repository_id else None
+            if repo is not None and repo.hold and job.kind.get("type") in ("apply_retention", "prune"):
+                continue  # on hold: wait until released
+            spec = _job_spec(db, agent, job)
+            if spec is None:
+                job.state, job.finished_at = "failed", now
+                job.error = "This machine has not been given access to the repository. Grant access on the Backups page."
+                continue
+            job.state, job.dispatched_at = "dispatched", now
+            jobs.append(spec)
+            break
+
+    cancel = [j for (j,) in db.execute(select(BackupJob.id).where(
+        BackupJob.agent_id == agent.id, BackupJob.cancel_requested.is_(True),
+        BackupJob.state.in_(("dispatched", "running"))))]
+    update_ = bk.update_offer(inv) if backup_settings(db).get("autoUpdate", True) else None
+    db.commit()
+    return {"jobs": jobs, "poll_seconds": bk.POLL_SECONDS, "cancel": cancel, "update": update_}
+
+
+def _record_boot_check(db: Session, job: BackupJob, agent: BackupAgent, b: dict) -> str:
+    shot = None
+    if b.get("screenshot_png"):
+        try:
+            raw = base64.b64decode(b["screenshot_png"])
+            shot = raw if len(raw) <= bk.MAX_SCREENSHOT and raw.startswith(b"\x89PNG") else None
+        except (binascii.Error, ValueError):
+            shot = None
+    outcome = b.get("outcome") if b.get("outcome") in ("verified", "screen") else "failed"
+    db.add(BackupBootCheck(image_id=str(b["image_id"]), repository_id=job.repository_id, tenant_id=job.tenant_id,
+                           agent_id=agent.id, job_id=job.id, outcome=outcome, method=_str(b.get("method"), 40),
+                           seconds=int(b.get("seconds") or 0), firmware=_str(b.get("firmware"), 10),
+                           accel=_str(b.get("accel"), 10), message=_str(b.get("message"), 1000), screenshot=shot))
+    return outcome
+
+
+IMAGE_INT_FIELDS = ("captured_bytes", "stored_new_bytes", "chunks_total", "chunks_new", "bytes_new_raw")
+
+
+@router.post("/api/agent/jobs/{job_id}/update")
+def update_job(job_id: str, body: dict = Body(...), agent: BackupAgent = Depends(current_backup_agent),
+               db: Session = Depends(get_db)):
+    job = db.get(BackupJob, job_id)
+    if job is None:
+        raise HTTPException(404, "unknown job")
+    if job.agent_id != agent.id:
+        raise HTTPException(403, "job belongs to another agent")
+    if job.state in bk.FINAL_STATES:
+        raise HTTPException(409, "job already finished")
+    state = body.get("state")
+    if state not in ("running",) + bk.FINAL_STATES:
+        raise HTTPException(400, "unknown state")
+    now, final, kind = utcnow(), state in bk.FINAL_STATES, job.kind or {}
+    name = agent.display_name or agent.hostname
+    job.state = state
+    if body.get("progress") is not None:
+        job.progress = body["progress"]
+    if state == "running" and job.started_at is None:
+        job.started_at = now
+    if final:
+        job.finished_at = now
+    if body.get("result") is not None:
+        job.result = body["result"]
+    if body.get("error"):
+        job.error = _str(body["error"], 4000)
+    if body.get("warnings"):
+        job.warnings = [_str(w, 1000) for w in body["warnings"]][:100]
+
+    repo = db.get(BackupRepository, job.repository_id) if job.repository_id else None
+    images = body.get("images") or []
+    if repo is not None:
+        for im in images:
+            if db.get(BackupImage, str(im["image_id"])) is not None:
+                continue
+            row = BackupImage(image_id=str(im["image_id"]), repository_id=repo.id, tenant_id=repo.tenant_id,
+                              agent_id=agent.id, machine_id=_str(im.get("machine_id"), 200),
+                              hostname=_str(im.get("hostname"), 255), created_unix=int(im.get("created_unix") or 0),
+                              kind=_str(im.get("kind"), 20), consistency=_str(im.get("consistency"), 30),
+                              disks=im.get("disks") or [], label=im.get("label"), vm_name=im.get("vm_name"),
+                              **{f: int(im.get(f) or 0) for f in IMAGE_INT_FIELDS})
+            db.add(row)
+            db.flush()
+            if bk.is_backup(kind):
+                reason = bk.check_anomaly(db, repo.id, im)
+                if reason:
+                    what = im.get("vm_name") or im.get("hostname") or name
+                    row.anomaly = reason
+                    repo.hold, repo.hold_since = True, now
+                    repo.hold_reason = f"Possible ransomware on {what}: {reason}"
+                    bk.record(db, f"backup-agent:{agent.id}", "backup.repository.hold.anomaly", repo.name,
+                              repo.tenant_id, machine=what, reason=reason)
+                    bk.raise_alert(db, repo.tenant_id, agent.device_id, bk.RULE_RANSOMWARE,
+                                   f"Possible ransomware detected on {what}", "critical",
+                                   f"The latest backup of {what} looks like mass encryption: {reason}. Deletion of old "
+                                   "backups in this repository is on hold, so earlier images are kept. Check the "
+                                   "machine, then release the hold on the Backups page.")
+        for removed in body.get("removed_images") or []:
+            for model in (BackupImage, BackupBootCheck):
+                for r in db.execute(select(model).where(model.image_id == str(removed),
+                                                        model.repository_id == repo.id)).scalars():
+                    db.delete(r)
+        if kind.get("type") == "prune" and not kind.get("dry_run") and state == "succeeded":
+            repo.last_prune_at = now
+        b = body.get("boot_check")
+        if kind.get("type") == "boot_check" and final and isinstance(b, dict) and str(b.get("image_id")) == kind.get("image_id"):
+            if _record_boot_check(db, job, agent, b) == "failed":
+                bk.raise_alert(db, job.tenant_id, agent.device_id, bk.RULE_BOOT,
+                               f"Backup of {name} did not boot", "high",
+                               f"A boot check of image {kind.get('image_id')} failed: {_str(b.get('message'), 500)}")
+        if kind.get("type") == "init_repository" and final:
+            if state in ("succeeded", "warning"):
+                ok = str(body.get("repo_uuid") or "") == repo.repo_uuid
+                repo.status = "ready" if ok else "failed"
+                repo.status_message = None if ok else "agent reported a different repository ID"
+            else:
+                repo.status, repo.status_message = "failed", job.error
+    # Retention runs after each successful plan backup (held repositories wait).
+    if bk.is_backup(kind) and state in ("succeeded", "warning") and job.plan_id and repo is not None:
+        bk.queue_retention(db, job.plan_id, repo.id, agent, images)
+    if state == "failed" and kind.get("type") not in ("check_access", "list_images"):
+        bk.raise_alert(db, job.tenant_id, agent.device_id, bk.RULE_FAILED, f"{bk.label(kind)} failed: {name}",
+                       "high" if bk.is_backup(kind) or kind.get("type") == "restore" else "medium",
+                       f"{bk.label(kind)} on {name} failed. {job.error or ''}".strip())
+    if final:
+        bk.record(db, f"backup-agent:{agent.id}", f"backup.job.{state}", job.id, job.tenant_id, kind=kind.get("type"))
+    db.commit()
+    return {"ok": True}
+
+
+# --------------------------------------------------------------------------
+# Downloads
+# --------------------------------------------------------------------------
+
+@router.get("/agent/{triple}/{file}")
+def agent_build(triple: str, file: str, agent: BackupAgent = Depends(current_backup_agent)):
+    """Self-update download (agents only)."""
+    t = bk.ALL_TARGETS.get(triple)
+    if t is None or t.file != file or not bk.binary_path(t).is_file():
+        raise HTTPException(404, "no such agent build")
+    return FileResponse(bk.binary_path(t), media_type="application/octet-stream", filename=file)
+
+
+def server_url(request: Request) -> str:
+    base = (get_settings().public_base_url or str(request.base_url)).rstrip("/")
+    return base + "/backup"
+
+
+def enrollment_for(db: Session, raw: str) -> BackupEnrollment:
+    tok = db.execute(select(BackupEnrollment).where(BackupEnrollment.token_hash == bk.token_hash(raw))).scalars().first()
+    if tok is None or tok.revoked or tok.expires_at < utcnow():
+        raise HTTPException(404, "This download link has expired or was revoked. Create a new one in the console.")
+    return tok
+
+
+def tls_pin() -> str:
+    """SHA-256 of the server's TLS certificate for agents to pin; empty when served behind a trusted certificate."""
+    return os.getenv("FENRIR_BACKUP_TLS_PIN", "").strip().lower()
+
+
+@router.get("/install/{token}/{platform}")
+def install(token: str, platform: str, request: Request, db: Session = Depends(get_db)):
+    if platform not in bk.PLATFORMS:
+        raise HTTPException(404, "unknown platform")
+    tok = enrollment_for(db, token)
+    p = bk.PLATFORMS[platform]
+    role = p["role"] or tok.role
+    if not any(bk.binary_info(t) for t in p["targets"]):
+        raise HTTPException(503, f"The {p['name']} backup agent is not on this server yet.")
+    script = bk.install_script(platform, server_url(request), tls_pin(), token, role)
+    return PlainTextResponse(script, headers={"Content-Disposition": f'attachment; filename="{p["script"]}"',
+                                              "Cache-Control": "no-store"})
+
+
+@router.get("/install/{token}/{platform}/{file}")
+def setup_program(token: str, platform: str, file: str, request: Request, db: Session = Depends(get_db)):
+    """Fenrir-Backup-Setup.exe: the Windows agent with this enrollment's settings appended. Double-click installs."""
+    p = bk.PLATFORMS.get(platform)
+    if p is None or p["setup"] != file:
+        raise HTTPException(404, "unknown setup program")
+    tok = enrollment_for(db, token)
+    info = bk.binary_info(bk.WIN[0])
+    if info is None:
+        raise HTTPException(503, "The Windows backup agent is not on this server yet.")
+    exe = bk.binary_path(bk.WIN[0]).read_bytes()
+    data = bk.setup_exe(exe, server_url(request), tls_pin(), token, p["role"] or tok.role)
+    return Response(data, media_type="application/vnd.microsoft.portable-executable",
+                    headers={"Content-Disposition": f'attachment; filename="{file}"', "Cache-Control": "no-store"})
+
+
+@router.get("/uninstall/{platform}")
+def uninstall(platform: str):
+    if platform not in bk.UNINSTALLERS:
+        raise HTTPException(404, "unknown platform")
+    name, body = bk.UNINSTALLERS[platform]
+    return PlainTextResponse(body, headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+def valid_uuid(v: str) -> bool:
+    try:
+        uuidlib.UUID(v)
+        return True
+    except (ValueError, TypeError):
+        return False
+

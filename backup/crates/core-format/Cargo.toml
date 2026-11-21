@@ -1,0 +1,34 @@
+[package]
+name = "core-format"
+description = "Fenrir-Backup repository format: chunk store, keys, signed manifests, storage backends"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+# Helpers for building synthetic disks in tests of other crates.
+test-util = []
+
+[dependencies]
+argon2.workspace = true
+base64.workspace = true
+blake3.workspace = true
+chacha20poly1305.workspace = true
+crc32fast.workspace = true
+ed25519-dalek.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[bin]]
+name = "fenrir-reader"
+path = "src/bin/fenrir-reader.rs"

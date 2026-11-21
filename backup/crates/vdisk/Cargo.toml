@@ -1,0 +1,21 @@
+[package]
+name = "vdisk"
+description = "Read-only virtual disk readers (VHDX) for Fenrir-Backup"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+test-util = []
+
+[dependencies]
+core-format.workspace = true
+engine.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+vdisk = { path = ".", features = ["test-util"] }
+tempfile.workspace = true
+core-format = { workspace = true, features = ["test-util"] }

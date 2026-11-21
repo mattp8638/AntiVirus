@@ -1,0 +1,17 @@
+[package]
+name = "vmboot"
+description = "Boot Fenrir-Backup images as QEMU/KVM VMs straight from the repository and check that they boot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+core-format.workspace = true
+nbd-server.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+engine.workspace = true

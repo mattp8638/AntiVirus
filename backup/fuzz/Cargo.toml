@@ -1,0 +1,44 @@
+# Fuzz targets for the parsers that read untrusted repository data.
+# Run with: cargo +nightly fuzz run <target>   (requires cargo-fuzz)
+[package]
+name = "fenrir-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+core-format = { path = "../crates/core-format" }
+serde_json = "1"
+uuid = "1"
+
+# Not part of the main workspace: needs nightly and sanitizers.
+[workspace]
+
+[[bin]]
+name = "manifest_envelope"
+path = "fuzz_targets/manifest_envelope.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "sealed_object"
+path = "fuzz_targets/sealed_object.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "partition_table"
+path = "fuzz_targets/partition_table.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "key_files"
+path = "fuzz_targets/key_files.rs"
+test = false
+doc = false

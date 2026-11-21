@@ -1,0 +1,19 @@
+[package]
+name = "protocol"
+description = "Fenrir-Backup server/agent wire protocol and secret sealing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aes-gcm = "0.10"
+base64.workspace = true
+getrandom.workspace = true
+hkdf = "0.12"
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+uuid.workspace = true
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+zeroize.workspace = true
