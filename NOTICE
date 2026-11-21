@@ -4,6 +4,9 @@ Copyright 2026 Matthew Palmer and the Fenrir contributors
 This product is licensed under the Apache License, Version 2.0 (see LICENSE).
 It is provided "AS IS", without warranty of any kind, and without support.
 
+The device backup component (backup/) was developed as Fenrir-Backup and is licensed Apache-2.0 OR MIT; its
+third-party Rust components and their licences are listed in backup/THIRD_PARTY.md.
+
 Third-party components keep their own licences:
 
 - SQLite (third_party/sqlite) is in the public domain. https://sqlite.org/copyright.html
