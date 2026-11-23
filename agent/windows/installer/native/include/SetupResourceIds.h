@@ -24,5 +24,6 @@
 #define IDR_PAYLOAD_SIGNATURES_CLEANWARE_SIGNERS 1020
 #define IDR_PAYLOAD_SIGNATURES_KNOWN_GOOD_HASHES 1021
 #define IDR_PAYLOAD_SIGNATURES_OBSERVE_ONLY 1022
+#define IDR_PAYLOAD_BACKUP_AGENT 1023  // optional: the device backup agent (backup/ in the repository)
 
 #define IDR_SETUP_LOGO 1100  // the setup window's logo (PNG)

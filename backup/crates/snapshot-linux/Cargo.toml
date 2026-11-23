@@ -1,0 +1,17 @@
+[package]
+name = "snapshot-linux"
+description = "Fenrir-Backup Linux image sources (Phase 1: raw disks and image files; snapshots in Phase 6)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+core-format.workspace = true
+engine.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile.workspace = true

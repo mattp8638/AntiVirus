@@ -1,0 +1,22 @@
+[package]
+name = "filebrowse"
+description = "Read-only browsing and file-level restore from Fenrir-Backup disk images (NTFS, ext2/3/4)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+core-format.workspace = true
+nbd-server.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+ntfs = "0.4"
+ext4-view = { version = "1", features = ["std"] }
+
+[dev-dependencies]
+core-format = { workspace = true, features = ["test-util"] }
+engine.workspace = true
+tempfile.workspace = true
+uuid.workspace = true
+zstd.workspace = true

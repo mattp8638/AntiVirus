@@ -6,7 +6,7 @@ from fenrir_cloud.models import EnrollmentToken, utcnow
 @pytest.fixture
 def reinstatement(client,admin,device,monkeypatch):
     raw=[]
-    def build(os,base,token):
+    def build(os,base,token,include_backup=True):
         raw.append(token)
         return b'installer', 'FenrirSetup.exe','application/octet-stream'
     monkeypatch.setattr(deployment_installers,'build',build)

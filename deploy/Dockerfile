@@ -48,6 +48,39 @@ RUN --mount=type=secret,id=release_key \
 
 # Automatically compile the unsigned Windows user-mode payload on Ubuntu.
 # Docker's layer cache reuses it until agent source or its toolchain changes.
+# Device backup agent (backup/, Rust): static Linux build for this architecture, and Windows (also Hyper-V hosts)
+# cross-compiled with MinGW. macOS builds come from CI (.github/workflows/backup.yml) into the same folder layout.
+FROM rust:1.97-alpine AS backup-linux
+RUN apk add --no-cache musl-dev gcc
+WORKDIR /src
+COPY backup/ ./
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --locked -p agent \
+ && case "$(uname -m)" in \
+      x86_64)  triple=x86_64-unknown-linux-musl ;; \
+      aarch64) triple=aarch64-unknown-linux-musl ;; \
+      *) echo "unsupported architecture $(uname -m)" >&2; exit 1 ;; \
+    esac \
+ && mkdir -p /out/backup/$triple \
+ && cp target/release/fenrir-backup-agent /out/backup/$triple/
+
+FROM ubuntu:24.04 AS backup-windows
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates gcc gcc-mingw-w64-x86-64 libc6-dev \
+ && rm -rf /var/lib/apt/lists/*
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
+COPY --from=rust:1.97-bookworm /usr/local/rustup /usr/local/rustup
+COPY --from=rust:1.97-bookworm /usr/local/cargo /usr/local/cargo
+RUN rustup target add x86_64-pc-windows-gnu
+WORKDIR /src
+COPY backup/ ./
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --locked -p agent --target x86_64-pc-windows-gnu \
+ && mkdir -p /out/backup/x86_64-pc-windows-msvc \
+ && cp target/x86_64-pc-windows-gnu/release/fenrir-backup-agent.exe /out/backup/x86_64-pc-windows-msvc/
+
 FROM ubuntu:24.04 AS windows-agents
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake ninja-build g++-mingw-w64-x86-64-posix python3 osslsigncode openssl ca-certificates \
@@ -57,6 +90,9 @@ COPY agent/windows/ agent/windows/
 COPY third_party/sqlite/ third_party/sqlite/
 COPY deploy/mingw-x64.cmake deploy/mingw-x64.cmake
 COPY deploy/sign-windows.sh deploy/sign-windows.sh
+# The device backup agent goes inside FenrirSetup (all-in-one install); it is signed with the other components and
+# the same signed file is what the server offers backup agents for updates.
+COPY --from=backup-windows /out/backup/x86_64-pc-windows-msvc/fenrir-backup-agent.exe agent/windows/out/backup/fenrir-backup-agent.exe
 # production (default): a code-signing certificate is required and checked before anything is compiled.
 # lab: no certificate needed; the agents are built unsigned and labelled "unsigned-lab".
 ARG FENRIR_BUILD_PROFILE=production
@@ -71,15 +107,23 @@ RUN --mount=type=secret,id=codesign_pfx --mount=type=secret,id=codesign_password
     -DCMAKE_TOOLCHAIN_FILE=/src/deploy/mingw-x64.cmake -DFENRIR_BUILD_ID=$(cat /build-id) \
     -DCMAKE_BUILD_TYPE=Release -DANTIVIRUS_ENABLE_BUILD_VALIDATION=OFF \
     -DANTIVIRUS_REQUIRE_MINIFILTER_PAYLOAD=OFF \
+    -DANTIVIRUS_BACKUP_AGENT_EXE=/src/agent/windows/out/backup/fenrir-backup-agent.exe \
     && cmake --build /build --target antivirus-setup --parallel 2 \
-    && sh deploy/sign-windows.sh agent/windows/out/dev \
+    && sh deploy/sign-windows.sh agent/windows/out/dev agent/windows/out/backup \
     && cmake --build /build --target antivirus-setup --parallel 2 \
     && sh deploy/sign-windows.sh agent/windows/out/install/FenrirSetup.exe \
-    && mkdir -p /out/windows \
-    && cp agent/windows/out/install/FenrirSetup.exe /out/windows/
+    && mkdir -p /out/windows /out/windows-backup/x86_64-pc-windows-msvc \
+    && cp agent/windows/out/install/FenrirSetup.exe /out/windows/ \
+    && cp agent/windows/out/backup/fenrir-backup-agent.exe /out/windows-backup/x86_64-pc-windows-msvc/
 # Setup must start on a clean Windows host before extracting any resources.
 RUN x86_64-w64-mingw32-objdump -p /out/windows/FenrirSetup.exe > /out/windows/imports.txt && if grep -Ei 'DLL Name:.*(libwinpthread|libgcc|libstdc[+][+])' /out/windows/imports.txt; then echo "ERROR: setup depends on an external compiler runtime"; exit 1; fi
 RUN python3 -c 'import hashlib,json,pathlib; p=pathlib.Path("/out/windows/FenrirSetup.exe"); sig=json.loads(pathlib.Path("/out/windows/signing.json").read_text()); p.with_name("build.json").write_text(json.dumps({"sha256":hashlib.sha256(p.read_bytes()).hexdigest(),"buildId":pathlib.Path("/build-id").read_text().strip(),"platform":"windows-x64","mode":"signed" if sig.get("signed") else "unsigned-lab","profile":"'"$FENRIR_BUILD_PROFILE"'",**sig}))'
+
+FROM scratch AS backup-agents-build
+COPY --from=backup-linux /out/backup/ /out/backup/
+COPY --from=windows-agents /out/windows-backup/ /out/backup/
+FROM scratch AS backup-agents-none
+COPY deploy/demo/no-agents/ /out/backup/
 
 # Pick the agents to package: the stages above (build) or an empty placeholder (none). BuildKit skips any stage the
 # final image does not use, so "none" never compiles an agent.
@@ -91,6 +135,7 @@ FROM windows-agents AS windows-agents-build
 FROM agents-none AS windows-agents-none
 FROM linux-agents-${FENRIR_AGENTS} AS linux-agents
 FROM windows-agents-${FENRIR_AGENTS} AS windows-agents-selected
+FROM backup-agents-${FENRIR_AGENTS} AS backup-agents
 
 FROM python:3.13-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 FENRIR_CONSOLE_DIR=/app/console/dist
@@ -104,6 +149,7 @@ COPY ml/models /app/ml/models
 COPY --from=console /src/console/dist /app/console/dist
 COPY --from=linux-agents /out/ /app/cloud/downloads/
 COPY --from=windows-agents-selected /out/windows/ /app/cloud/downloads/windows/
+COPY --from=backup-agents /out/backup/ /app/cloud/downloads/backup/
 # COPY preserves checkout permissions: a pull under umask 077 can leave source
 # root-owned and unreadable to fenrir. Keep packaged code/assets readable and
 # directories traversable, preserve executable agents, and remove group/other
