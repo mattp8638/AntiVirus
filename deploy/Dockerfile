@@ -50,12 +50,14 @@ RUN --mount=type=secret,id=release_key \
 # Docker's layer cache reuses it until agent source or its toolchain changes.
 # Device backup agent (backup/, Rust): static Linux build for this architecture, and Windows (also Hyper-V hosts)
 # cross-compiled with MinGW. macOS builds come from CI (.github/workflows/backup.yml) into the same folder layout.
+# Both stages run at the same time: the crate download cache is shared but locked (one stage at a time, or they
+# unpack the same crate together and fail with "File exists"), and each has its own build cache.
 FROM rust:1.97-alpine AS backup-linux
 RUN apk add --no-cache musl-dev gcc
 WORKDIR /src
 COPY backup/ ./
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
+RUN --mount=type=cache,id=fenrir-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=fenrir-backup-target-linux,target=/src/target \
     cargo build --release --locked -p agent \
  && case "$(uname -m)" in \
       x86_64)  triple=x86_64-unknown-linux-musl ;; \
@@ -75,8 +77,8 @@ COPY --from=rust:1.97-bookworm /usr/local/cargo /usr/local/cargo
 RUN rustup target add x86_64-pc-windows-gnu
 WORKDIR /src
 COPY backup/ ./
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
+RUN --mount=type=cache,id=fenrir-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=fenrir-backup-target-windows,target=/src/target \
     cargo build --release --locked -p agent --target x86_64-pc-windows-gnu \
  && mkdir -p /out/backup/x86_64-pc-windows-msvc \
  && cp target/x86_64-pc-windows-gnu/release/fenrir-backup-agent.exe /out/backup/x86_64-pc-windows-msvc/
