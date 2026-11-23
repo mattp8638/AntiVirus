@@ -28,9 +28,10 @@ def agent_enroll(client, token, machine="m-1", key=None, role="server"):
     return body["agent_id"], {"Authorization": f"Bearer {body['agent_token']}"}
 
 
-def heartbeat(client, h, running=None, caps=CAPS):
+def heartbeat(client, h, running=None, caps=CAPS, **inventory):
     r = client.post("/backup/api/agent/heartbeat", headers=h, json={
-        "inventory": {"hostname": "M-1", "os": {"family": "windows"}, "agent_version": "0.1.0", "capabilities": caps},
+        "inventory": {"hostname": "M-1", "os": {"family": "windows"}, "agent_version": "0.1.0", "capabilities": caps,
+                      **inventory},
         "running_job": running})
     assert r.status_code == 200, r.text
     return r.json()
@@ -110,7 +111,9 @@ def test_enrol_backup_and_ransomware_hold(client, admin, tenant):
 def test_disk_restore_needs_typed_confirmation_and_reauth(client, admin, tenant):
     e = link(client, admin, tenant)
     agent_id, h = agent_enroll(client, e["token"])
-    heartbeat(client, h)
+    disks = [{"path": r"\\.\PhysicalDrive0", "size": 1 << 40, "model": "", "system": True},
+             {"path": r"\\.\PhysicalDrive1", "size": 1 << 40, "model": "", "system": False}]
+    heartbeat(client, h, disks=disks)
     ready_repo(client, admin, tenant, agent_id, h)
     client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
                 json={"kind": {"type": "backup_system"}, "repositoryId": client.get(
@@ -118,6 +121,7 @@ def test_disk_restore_needs_typed_confirmation_and_reauth(client, admin, tenant)
     job = heartbeat(client, h)["jobs"][0]
     im = image()
     finish(client, h, job["id"], images=[im])
+    heartbeat(client, h, disks=disks)
     target = {"type": "disk", "device": r"\\.\PhysicalDrive1", "disk": 0, "confirm": r"\\.\PhysicalDrive1"}
     body = {"imageId": im["image_id"], "agentId": agent_id, "target": target}
     assert client.post("/api/console/backup/restores", headers=admin, json=body).json()["detail"] == "reauth_required"
@@ -125,6 +129,8 @@ def test_disk_restore_needs_typed_confirmation_and_reauth(client, admin, tenant)
                                                     json={"password": ADMIN_PASSWORD}).json()["reauthToken"]}
     wrong = {**body, "target": {**target, "confirm": "PhysicalDrive1"}}
     assert client.post("/api/console/backup/restores", headers=step, json=wrong).status_code == 400
+    system = {**body, "target": {"type": "disk", "device": r"\\.\PhysicalDrive0", "disk": 0, "confirm": r"\\.\PhysicalDrive0"}}
+    assert "in use" in client.post("/api/console/backup/restores", headers=step, json=system).json()["detail"]
     assert client.post("/api/console/backup/restores", headers=step, json=body).status_code == 200
     spec = heartbeat(client, h)["jobs"][0]
     assert spec["kind"]["type"] == "restore" and spec["kind"]["target"]["confirm"] == target["device"]
@@ -518,3 +524,82 @@ def test_boot_test_on_a_hyperv_host_keeps_the_vm_when_asked(client, admin, tenan
         "hostname": "HV01", "capabilities": ["boot_hyperv", "restore_hyperv"]}}).json()["jobs"][0]
     assert spec["kind"] == {"type": "boot_check", "image_id": im["image_id"], "keep_running": True, "memory_mb": None,
                             "cpus": None, "directory": "D:\\Fenrir checks"}
+
+
+def test_recovery_media_is_personalised_and_enrols_recovery_sessions_only(client, admin, tenant, tmp_path, monkeypatch):
+    """Recovery media (Fenrir-Backup phase 2): the ISO carries this server's settings in its placeholder block and
+    nothing else changes; recovery links enrol recovery sessions only; their own medium is never a restore target;
+    they raise no offline alerts and are removed after a week."""
+    import json
+    from datetime import timedelta
+
+    from fenrir_cloud.db import session_factory
+    from fenrir_cloud.models import BackupAgent, utcnow
+
+    monkeypatch.setenv("FENRIR_BACKUP_AGENTS_DIR", str(tmp_path))
+    (tmp_path / "recovery").mkdir()
+    iso = bytes((i * 2654435761 >> 13) & 0xFF for i in range(3 << 20))
+    at = (1 << 20) - 2048  # across a 1 MiB read boundary
+    placeholder = bk.RECOVERY_MARKER + b" " * (4096 - len(bk.RECOVERY_MARKER))
+    iso = iso[:at] + placeholder + iso[at + 4096:]
+    (tmp_path / "recovery" / "fenrir-recovery.iso").write_bytes(iso)
+    assert client.get("/api/console/backup/recovery-media", headers=admin).json() == {"available": True, "size": len(iso)}
+
+    e = link(client, admin, tenant, role="recovery", days=30, label="stick")
+    assert e["recovery"]["available"] is True and "links" not in e
+    path = e["recovery"]["iso"].split("/backup/", 1)[1]
+    got = client.get(f"/backup/{path}")
+    assert got.status_code == 200
+    body = got.content
+    assert len(body) == len(iso) and body[:at] == iso[:at] and body[at + 4096:] == iso[at + 4096:]
+    block = body[at:at + 4096]
+    assert block.startswith(bk.RECOVERY_MARKER)
+    cfg = json.loads(block[len(bk.RECOVERY_MARKER):].strip())
+    assert cfg["token"] == e["token"] and cfg["server"].endswith("/backup") and list(cfg) == ["server", "pin", "token", "expires"]
+    settings = client.get("/backup/" + e["recovery"]["settings"].split("/backup/", 1)[1]).json()
+    assert settings == cfg
+
+    # An ordinary link gives no recovery media; links and roles must match.
+    normal = link(client, admin, tenant)
+    assert client.get(f"/backup/recovery/{normal['token']}/fenrir-recovery.iso").status_code == 404
+    key = base64.b64encode(b"r" * 32).decode()
+    for token, role in ((e["token"], "server"), (normal["token"], "recovery")):
+        r = client.post("/backup/api/agent/enroll", json={
+            "protocol": 1, "token": token, "hostname": "recovery-abc", "machine_id": "recovery:abc", "role": role,
+            "os": {"family": "linux"}, "agent_version": "0.1.0", "public_key": key})
+        assert r.status_code == 403, r.text
+    rid, rh = agent_enroll(client, e["token"], machine="recovery:abc", key=key, role="recovery")
+    heartbeat(client, rh, caps=["restore_disk", "restore_files", "verify"], firmware="uefi", disks=[
+        {"path": "/dev/sda", "size": 1 << 30, "model": "stick", "system": False, "in_use": True},
+        {"path": "/dev/nvme0n1", "size": 1 << 40, "model": "new", "system": False}])
+
+    # Its own boot medium is refused as a target.
+    owner_id, oh = agent_enroll(client, normal["token"], machine="m-src")
+    heartbeat(client, oh)
+    repo = ready_repo(client, admin, tenant, owner_id, oh)
+    client.post(f"/api/console/backup/agents/{owner_id}/jobs", headers=admin, json={"kind": {"type": "backup_system"}, "repositoryId": repo})
+    job = heartbeat(client, oh)["jobs"][0]
+    im = image(machine="m-src")
+    finish(client, oh, job["id"], images=[im])
+    assert client.post(f"/api/console/backup/repositories/{repo}/access", headers=admin,
+                       json={"agentId": rid, "sealed": SEALED}).status_code == 200
+    step = {**admin, "X-Fenrir-Reauth": client.post("/api/console/auth/reauth", headers=admin,
+                                                    json={"password": ADMIN_PASSWORD}).json()["reauthToken"]}
+    def restore(dev):
+        return client.post("/api/console/backup/restores", headers=step, json={
+            "imageId": im["image_id"], "agentId": rid, "target": {"type": "disk", "device": dev, "disk": 0, "confirm": dev}})
+    assert "in use" in restore("/dev/sda").json()["detail"]
+    assert restore("/dev/nvme0n1").status_code == 200
+
+    # A week later: removed, and never an offline alert.
+    with session_factory()() as db:
+        a = db.get(BackupAgent, rid)
+        a.last_seen_at = utcnow() - timedelta(days=8)
+        db.commit()
+        bk.check_health(db)
+        db.commit()
+        assert bk.expire_recovery_sessions(db) == 1
+        assert db.get(BackupAgent, rid).revoked
+    alerts = client.get("/api/console/alerts", headers=admin).json()
+    rows = alerts.get("items", alerts) if isinstance(alerts, dict) else alerts
+    assert not any("recovery-abc" in json.dumps(x).lower() and "offline" in json.dumps(x).lower() for x in rows)

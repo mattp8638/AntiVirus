@@ -1,0 +1,14 @@
+[Unit]
+Description=Fenrir-Backup recovery agent
+Wants=network-online.target
+After=network-online.target NetworkManager.service
+
+[Service]
+ExecStart=/usr/local/bin/fenrir-backup-agent recovery
+Restart=always
+RestartSec=5
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

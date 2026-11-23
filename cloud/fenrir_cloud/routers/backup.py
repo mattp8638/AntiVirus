@@ -99,6 +99,10 @@ def agent_out(db: Session, a: BackupAgent, now=None) -> dict:
         "enrolledAt": iso(a.enrolled_at), "lastSeenAt": iso(a.last_seen_at), "online": bk.online(a, now) and not a.revoked,
         "revoked": a.revoked, "publicKey": a.public_key, "capabilities": inv.get("capabilities") or [],
         "vmCount": len(inv.get("vms") or []), "disks": [d.get("path") for d in inv.get("disks") or [] if d.get("path")],
+        "diskInfo": [{"path": d.get("path"), "size": d.get("size") or 0, "model": d.get("model") or "",
+                      "serial": d.get("serial") or "", "system": bool(d.get("system")), "inUse": bool(d.get("in_use"))}
+                     for d in inv.get("disks") or [] if isinstance(d, dict) and d.get("path")],
+        "firmware": inv.get("firmware"), "secureBoot": inv.get("secure_boot"),
         "runningVms": [{"sessionId": v.get("session_id"), "imageId": v.get("image_id"), "startedUnix": v.get("started_unix"),
                         "vncPort": v.get("vnc_port") or 0} for v in inv.get("running_vms") or [] if isinstance(v, dict)],
         "lastBackup": ({"jobId": last_backup.id, "state": last_backup.state, "at": iso(last_backup.finished_at),
@@ -381,6 +385,13 @@ def cancel_job(job_id: str, p: Principal = Depends(current_principal), db: Sessi
 # --------------------------------------------------------------------------
 
 
+def _recovery_links(request: Request, raw: str) -> dict:
+    base = server_url(request)
+    iso = bk.recovery_iso_path()
+    return {"available": iso.is_file(), "size": iso.stat().st_size if iso.is_file() else None,
+            "iso": f"{base}/recovery/{raw}/{bk.RECOVERY_ISO}", "settings": f"{base}/recovery/{raw}/{bk.RECOVERY_SETTINGS}"}
+
+
 def _links(request: Request, raw: str) -> dict:
     base = server_url(request)
     out = {}
@@ -416,7 +427,9 @@ def create_enrollment(request: Request, body: dict = Body(...), p: Principal = D
         bad("choose a customer")
     role = body.get("role") or "server"
     if role not in bk.ROLES:
-        bad("role must be workstation, server or hyperv")
+        bad("role must be workstation, server, hyperv or recovery")
+    if role == "recovery" and device_id:
+        bad("recovery media is not bound to a device")
     days = body.get("days", 7)
     if not isinstance(days, int) or not 1 <= days <= 90:
         bad("a link lasts 1 to 90 days")
@@ -426,8 +439,17 @@ def create_enrollment(request: Request, body: dict = Body(...), p: Principal = D
     db.add(e)
     bk.record(db, p.actor, "backup.enrollment.created", e.label or role, tenant_id, role=role, device=device_id, days=days)
     db.commit()
+    if role == "recovery":
+        return {"id": e.id, "token": raw, "expiresAt": iso(e.expires_at), "recovery": _recovery_links(request, raw)}
     return {"id": e.id, "token": raw, "expiresAt": iso(e.expires_at), "links": _links(request, raw),
             "uninstall": {k: f"{server_url(request)}/uninstall/{k}" for k in bk.UNINSTALLERS}}
+
+
+@router.get("/recovery-media")
+def recovery_media_status(p: Principal = Depends(current_principal)):
+    p.require("configure")
+    iso = bk.recovery_iso_path()
+    return {"available": iso.is_file(), "size": iso.stat().st_size if iso.is_file() else None}
 
 
 @router.post("/devices/{device_id}/install")
@@ -444,7 +466,7 @@ def install_on_device(device_id: str, request: Request, body: dict = Body(defaul
     if platform not in ("windows", "linux", "macos"):
         bad(f"the backup agent is not available for {dev.platform}")
     role = body.get("role") or ("server" if "server" in (dev.os_version or "").lower() or platform == "linux" else "workstation")
-    if role not in bk.ROLES or (role == "hyperv" and platform != "windows"):
+    if role not in bk.INSTALL_ROLES or (role == "hyperv" and platform != "windows"):
         bad("role must be workstation, server or hyperv (Windows only)")
     key = "hyperv" if role == "hyperv" else platform
     if not any(bk.binary_info(t) for t in bk.PLATFORMS[key]["targets"]):
@@ -927,6 +949,14 @@ def create_restore(request: Request, body: dict = Body(...), p: Principal = Depe
         disk = t.get("disk", 0)
         if not isinstance(disk, int) or disk < 0:
             bad("choose a disk of the image")
+        # A device must be one the machine reported, and not its system disk or a disk in use (such as the
+        # recovery medium). Image files are checked by the agent.
+        if device.startswith("/dev/") or device.startswith("\\\\.\\"):
+            d = next((x for x in (a.inventory or {}).get("disks") or [] if x.get("path") == device), None)
+            if d is None:
+                bad("that disk is not one the machine reported")
+            if d.get("system") or d.get("in_use"):
+                bad("that disk is in use on the machine (its system disk, the recovery medium, or mounted)")
         target, need = {"type": "disk", "device": device, "disk": disk, "confirm": device}, "restore_disk"
     else:
         bad("choose where to restore to")

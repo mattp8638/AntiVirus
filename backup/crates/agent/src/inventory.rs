@@ -3,6 +3,9 @@
 use protocol::{DiskSummary, Inventory, OsSummary};
 
 pub fn hostname() -> String {
+    if let Ok(n) = std::env::var("FENRIR_RECOVERY_NAME") {
+        return n;
+    }
     std::env::var("COMPUTERNAME")
         .ok()
         .or_else(|| {
@@ -88,6 +91,12 @@ pub fn os() -> OsSummary {
 }
 
 pub fn capabilities(role: &str) -> Vec<String> {
+    if role == "recovery" {
+        return ["restore_disk", "restore_files", "verify"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+    }
     let mut c: Vec<String> = [
         "verify",
         "maintenance",
@@ -118,13 +127,23 @@ pub fn capabilities(role: &str) -> Vec<String> {
 pub fn disks() -> Vec<DiskSummary> {
     #[cfg(target_os = "linux")]
     {
-        let root_dev = std::fs::read_to_string("/proc/self/mountinfo")
-            .ok()
-            .and_then(|m| {
-                m.lines()
-                    .find(|l| l.split_whitespace().nth(4) == Some("/"))
-                    .and_then(|l| l.split_whitespace().nth(2).map(String::from))
-            });
+        let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
+        let root_dev = mountinfo
+            .lines()
+            .find(|l| l.split_whitespace().nth(4) == Some("/"))
+            .and_then(|l| l.split_whitespace().nth(2).map(String::from));
+        // Every mounted device number, and swap devices by name.
+        let mounted: std::collections::HashSet<String> = mountinfo
+            .lines()
+            .filter_map(|l| l.split_whitespace().nth(2).map(String::from))
+            .collect();
+        let swaps: Vec<String> = std::fs::read_to_string("/proc/swaps")
+            .unwrap_or_default()
+            .lines()
+            .skip(1)
+            .filter_map(|l| l.split_whitespace().next())
+            .filter_map(|d| d.strip_prefix("/dev/").map(String::from))
+            .collect();
         let mut out = Vec::new();
         let Ok(rd) = std::fs::read_dir("/sys/block") else {
             return out;
@@ -147,8 +166,12 @@ pub fn disks() -> Vec<DiskSummary> {
             if size == 0 {
                 continue;
             }
-            // System disk: the root filesystem is on it or one of its partitions.
+            // The disk and its partitions: device numbers, names, holders.
             let mut devs = vec![rd("dev")];
+            let mut names = vec![name.clone()];
+            let mut held = std::fs::read_dir(base.join("holders"))
+                .map(|mut d| d.next().is_some())
+                .unwrap_or(false);
             if let Ok(parts) = std::fs::read_dir(&base) {
                 for p in parts.flatten() {
                     if p.path().join("partition").exists() {
@@ -157,14 +180,27 @@ pub fn disks() -> Vec<DiskSummary> {
                                 .map(|s| s.trim().to_string())
                                 .unwrap_or_default(),
                         );
+                        names.push(p.file_name().to_string_lossy().to_string());
+                        held |= std::fs::read_dir(p.path().join("holders"))
+                            .map(|mut d| d.next().is_some())
+                            .unwrap_or(false);
                     }
                 }
             }
+            let serial = [rd("device/serial"), rd("serial")]
+                .into_iter()
+                .find(|s| !s.is_empty())
+                .unwrap_or_default();
             out.push(DiskSummary {
                 path: format!("/dev/{name}"),
                 size,
                 model: rd("device/model"),
                 system: root_dev.as_ref().is_some_and(|r| devs.contains(r)),
+                serial,
+                sector_size: rd("queue/logical_block_size").parse().unwrap_or(0),
+                in_use: held
+                    || devs.iter().any(|d| mounted.contains(d))
+                    || names.iter().any(|n| swaps.contains(n)),
             });
         }
         out.sort_by(|a, b| a.path.cmp(&b.path));
@@ -176,11 +212,36 @@ pub fn disks() -> Vec<DiskSummary> {
     }
 }
 
+/// How this machine booted, and whether Secure Boot is on.
+pub fn firmware() -> (Option<String>, Option<bool>) {
+    #[cfg(target_os = "linux")]
+    {
+        if !std::path::Path::new("/sys/firmware/efi").exists() {
+            return (Some("bios".into()), Some(false));
+        }
+        let sb = std::fs::read_dir("/sys/firmware/efi/efivars")
+            .ok()
+            .and_then(|d| {
+                d.flatten()
+                    .find(|e| e.file_name().to_string_lossy().starts_with("SecureBoot-"))
+            })
+            .and_then(|e| std::fs::read(e.path()).ok())
+            // 4 bytes of attributes, then the value.
+            .and_then(|v| v.get(4).map(|b| *b == 1));
+        (Some("uefi".into()), sb)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        (None, None)
+    }
+}
+
 pub fn collect(role: &str, vms: Vec<protocol::VmSummary>, notes: Vec<String>) -> Inventory {
     let mut notes = notes;
     if cfg!(target_os = "macos") {
         notes.push("macOS system protection needs file-level backup, which is not available yet. Disk images of non-system disks and verification work.".into());
     }
+    let fw = firmware();
     Inventory {
         hostname: hostname(),
         os: os(),
@@ -193,6 +254,8 @@ pub fn collect(role: &str, vms: Vec<protocol::VmSummary>, notes: Vec<String>) ->
         agent_sha256: crate::update::self_sha256(),
         running_vms: crate::boot::running_vms(),
         gateway_addresses: vec![],
+        firmware: fw.0,
+        secure_boot: fw.1,
     }
 }
 

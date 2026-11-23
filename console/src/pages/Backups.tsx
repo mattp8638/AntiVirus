@@ -13,6 +13,8 @@ export interface BackupAgent {
   id: string; tenantId: string; deviceId: string | null; name: string; hostname: string; role: string;
   os: { family?: string; name?: string; version?: string; arch?: string }; agentVersion: string; online: boolean;
   lastSeenAt: string | null; publicKey: string; capabilities: string[]; vmCount: number; disks: string[];
+  diskInfo?: { path: string; size: number; model: string; serial: string; system: boolean; inUse: boolean }[];
+  firmware?: "uefi" | "bios" | null; secureBoot?: boolean | null;
   runningVms?: { sessionId: string; imageId: string; startedUnix: number; vncPort: number }[];
   lastBackup: { jobId: string; state: string; at: string; error: string | null } | null;
   runningJob: { id: string; label: string; state: string; progress: any } | null;
@@ -140,7 +142,7 @@ function Machines({ agents, repos, reload }: { agents: BackupAgent[] | null; rep
         columns={[
           { key: "name", label: "Machine", render: (a) => <><b>{a.name}</b>{a.name !== a.hostname && <div className="small muted">{a.hostname}</div>}</> },
           { key: "tenant", label: "Customer", render: (a) => tenantName(a.tenantId) },
-          { key: "os", label: "System", render: (a) => <span className="small">{a.os.name || a.os.family} {a.os.version} · {a.role === "hyperv" ? `Hyper-V host (${a.vmCount} VMs)` : a.role}</span> },
+          { key: "os", label: "System", render: (a) => <span className="small">{a.os.name || a.os.family} {a.os.version} · {a.role === "hyperv" ? `Hyper-V host (${a.vmCount} VMs)` : a.role === "recovery" ? "recovery session (restores only)" : a.role}</span> },
           { key: "online", label: "Status", render: (a) => a.runningJob ? <Pill value={`${a.runningJob.label} ${progressText(a.runningJob.progress)}`} tone="blue" /> : <Pill value={a.online ? "online" : "offline"} tone={a.online ? "good" : "muted"} /> },
           { key: "last", label: "Last backup", render: (a) => a.lastBackup ? <><StatePill state={a.lastBackup.state} /> <span className="small muted">{ago(a.lastBackup.at)}</span></> : <span className="muted small">never</span> },
         ]} />
@@ -221,18 +223,34 @@ function AddMachines({ onClose }: { onClose: () => void }) {
             <label className="field">These machines are
               <select value={role} onChange={(e) => setRole(e.target.value)}>
                 <option value="server">Servers</option><option value="workstation">Desktops and laptops</option><option value="hyperv">Hyper-V hosts (back up their VMs)</option>
+                <option value="recovery">Recovery media (bare-metal restore)</option>
               </select>
             </label>
             <label className="field">Link valid for (days)<input type="number" min={1} max={90} value={days} onChange={(e) => setDays(Number(e.target.value))} /></label>
           </div>
           <p className="small">Machines installed with the Fenrir agent installer (Deploy agents) already have device backup: they appear here on their own. Use these links for machines that should only be backed up.</p>
           <p className="small muted">One link installs any number of machines until it expires. Each installs the backup agent as a protected system service (FenrirBackupAgent on Windows) that only administrators can stop or remove. It is separate from the Fenrir security agent and does not touch it.</p>
-          <button className="primary" disabled={busy || !tenant} onClick={create}>Create install links</button>
+          {role === "recovery" && <p className="small">Recovery media is a bootable USB stick or ISO for a machine that no longer starts, or new hardware. Started from it, the machine appears under Machines as a recovery session (restores only); restore a backup onto its disk from Images &amp; restore. Works with Secure Boot on.</p>}
+          <button className="primary" disabled={busy || !tenant} onClick={create}>{role === "recovery" ? "Create recovery media" : "Create install links"}</button>
         </>
       ) : (
         <>
           <p className="small">Expires {fmtTime(result.expiresAt)}. Treat these links like a password: anyone with one can add a machine to this customer.</p>
-          {Object.entries(result.links).map(([key, l]: [string, any]) => (
+          {result.recovery && (result.recovery.available ? (
+            <div className="card" style={{ marginBottom: 10 }}>
+              <div className="row" style={{ gap: 8 }}>
+                <a className="btn primary" href={result.recovery.iso} download>Download fenrir-recovery.iso{result.recovery.size ? ` (${bytes(result.recovery.size)})` : ""}</a>
+                <a className="btn" href={result.recovery.settings} download>Settings file only</a>
+              </div>
+              <ol className="small" style={{ marginTop: 8 }}>
+                <li>Write the ISO to a USB stick (balenaEtcher, Rufus in DD mode, or dd), or attach it to a VM as a DVD.</li>
+                <li>Start the machine from it (boot menu: usually F12, F11, F8 or Esc). Wired networks connect by themselves; Wi-Fi and fixed addresses are under Network settings on its screen.</li>
+                <li>It appears under Machines as a recovery session. In Images &amp; restore, restore a backup with it as the machine and its disk as the target.</li>
+              </ol>
+              <p className="small muted">The ISO carries this server's address and an enrolment code for recovery sessions until it expires. A session cannot read any backup until you give it access. With a stick from elsewhere, put the settings file in the root of any USB stick and choose "Look for server settings on a USB stick" on the recovery screen.</p>
+            </div>
+          ) : <div className="card warn-card">The recovery ISO is not on this server yet: place fenrir-recovery.iso from the Fenrir-Backup build in the backup agents folder under recovery/ (see docs/DEVICE_BACKUP.md).</div>)}
+          {Object.entries(result.links ?? {}).map(([key, l]: [string, any]) => (
             <div key={key} className="card" style={{ marginBottom: 10, opacity: l.available ? 1 : 0.6 }}>
               <div className="row" style={{ justifyContent: "space-between" }}><b>{l.name}</b>{!l.available && <Pill value="not built on this server yet" tone="warn" />}</div>
               {l.setup && <div className="row" style={{ gap: 8, marginTop: 6 }}><a className="btn primary" href={l.setup} download>Download {l.setupFile}</a><span className="small muted">Double-click and approve the administrator prompt.</span></div>}
@@ -240,7 +258,7 @@ function AddMachines({ onClose }: { onClose: () => void }) {
               <div className="row" style={{ gap: 6 }}><code className="mono" style={{ flex: 1, overflowX: "auto", whiteSpace: "nowrap" }}>{l.oneLiner}</code><button className="small" onClick={() => copy(l.oneLiner)}>Copy</button></div>
             </div>
           ))}
-          <p className="small muted">To uninstall later: {Object.entries(result.uninstall).map(([k, u]: [string, any]) => <Fragment key={k}><a href={u}>{k}</a>{" "}</Fragment>)}</p>
+          {result.uninstall && <p className="small muted">To uninstall later: {Object.entries(result.uninstall).map(([k, u]: [string, any]) => <Fragment key={k}><a href={u}>{k}</a>{" "}</Fragment>)}</p>}
         </>
       )}
     </Modal>
@@ -711,7 +729,7 @@ function RestoreDialog({ image, agents, repos, onClose }: { image: Image; agents
     <Modal wide title={`Restore ${image.vmName ?? image.hostname} from ${unixTime(image.created)}`} onClose={onClose}
       footer={<button className={type === "disk" ? "danger" : "primary"} disabled={busy || !ok || !agentId || (needsAccess && !pass)} onClick={go}>{type === "disk" ? "Overwrite the disk" : needsAccess ? "Give access and restore" : "Restore"}</button>}>
       <div className="form-grid">
-        <label className="field">Machine that restores<select value={agentId} onChange={(e) => setAgentId(e.target.value)}>{pool.map((a) => <option key={a.id} value={a.id}>{a.name}{a.capabilities.includes("restore_hyperv") ? " · Hyper-V" : ""}{hasAccess(a.id) ? "" : " · no access yet"}</option>)}</select></label>
+        <label className="field">Machine that restores<select value={agentId} onChange={(e) => setAgentId(e.target.value)}>{pool.map((a) => <option key={a.id} value={a.id}>{a.name}{a.capabilities.includes("restore_hyperv") ? " · Hyper-V" : ""}{a.role === "recovery" ? " · recovery session" : ""}{hasAccess(a.id) ? "" : " · no access yet"}</option>)}</select></label>
         <label className="field">Restore to<select value={type} onChange={(e) => setType(e.target.value)}>
           {caps.includes("restore_vhdx") && <option value="vhdx">Virtual disk files (VHDX)</option>}
           {caps.includes("restore_hyperv") && <option value="hyperv_vm">A new Hyper-V VM</option>}
@@ -721,7 +739,11 @@ function RestoreDialog({ image, agents, repos, onClose }: { image: Image; agents
         {type === "hyperv_vm" && <label className="field">VM name<input value={vmName} onChange={(e) => setVmName(e.target.value)} /></label>}
         {type === "disk" && <>
           <label className="field">Image disk<select value={disk} onChange={(e) => setDisk(Number(e.target.value))}>{(image.disks.length ? image.disks : [{}]).map((d: any, i: number) => <option key={i} value={i}>Disk {i}{d.size ? ` (${bytes(d.size)})` : ""}</option>)}</select></label>
-          <label className="field">Target device<input value={device} onChange={(e) => setDevice(e.target.value)} placeholder="\\.\PhysicalDrive1 or /dev/sdb" /></label>
+          {(agent?.diskInfo ?? []).some((d) => !d.system && !d.inUse) && <label className="field">Disk on {agent?.name}<select value={device} onChange={(e) => { setDevice(e.target.value); setConfirm(""); }}>
+            <option value="">Choose…</option>
+            {(agent?.diskInfo ?? []).filter((d) => !d.system && !d.inUse).map((d) => <option key={d.path} value={d.path}>{d.path} · {bytes(d.size)}{d.model ? ` · ${d.model}` : ""}{d.serial ? ` · ${d.serial}` : ""}</option>)}
+          </select></label>}
+          <label className="field">Target device<input value={device} onChange={(e) => { setDevice(e.target.value); setConfirm(""); }} placeholder="\\.\PhysicalDrive1 or /dev/sdb" /></label>
         </>}
       </div>
       {needsAccess && (
@@ -734,6 +756,9 @@ function RestoreDialog({ image, agents, repos, onClose }: { image: Image; agents
           <p className="small muted">Encrypted in this browser for {agent?.name} only.</p>
         </div>
       )}
+      {type === "disk" && agent?.role === "recovery" && agent.firmware && <p className="small muted" style={{ marginTop: 8 }}>
+        {agent.name} started in {agent.firmware === "uefi" ? `UEFI mode${agent.secureBoot ? " with Secure Boot" : ""}` : "legacy BIOS mode"}. The disk may be larger, or smaller if the backed-up partitions fit; a UEFI system gets the fallback boot loader and a firmware boot entry, and the job says if the firmware mode must be changed.
+      </p>}
       {type === "disk" && <div className="card warn-card" style={{ marginTop: 10 }}>
         Everything on <b className="mono">{device || "the target device"}</b> is replaced. Type the device again to confirm. You will also be asked for your password.
         <input style={{ marginTop: 6, width: "100%" }} value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder={device} />

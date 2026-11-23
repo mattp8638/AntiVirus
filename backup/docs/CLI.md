@@ -24,7 +24,7 @@ fenrir-backup [--json] [--repo PATH] [--passphrase-file FILE | --recovery-key FI
 | `image list` | All images, oldest first. |
 | `image show ID` | Full manifest of one image (ID or unique prefix). |
 | `verify [--image ID]... [--sample PCT \| --full] [--workers N]` | Quick (manifests + chunk presence), sampled or full re-hash. |
-| `restore disk --image ID [--disk N] --target PATH --yes [--no-zero-fill]` | Write one disk of an image to a device or file. |
+| `restore disk --image ID [--disk N] --target PATH --yes [--no-zero-fill] [--fit] [--boot-fixup]` | Write one disk of an image to a device or file. `--fit`: the target may be a different size (the GPT moves to the end of a larger disk; a smaller disk works when every partition fits; a different sector size is refused). `--boot-fixup`: afterwards add the fallback UEFI loader `\EFI\BOOT\BOOTX64.EFI` on the restored EFI system partition if it is missing, so new hardware can start it. |
 
 ### Safety
 

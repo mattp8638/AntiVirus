@@ -34,6 +34,10 @@ pub trait WriteTarget: Send + Sync {
     fn write_at(&self, offset: u64, data: &[u8]) -> io::Result<()>;
     fn sync(&self) -> io::Result<()>;
     fn describe(&self) -> String;
+    /// Logical sector size of a disk target, if known.
+    fn logical_sector_size(&self) -> Option<u32> {
+        None
+    }
 }
 
 #[derive(Debug)]
@@ -42,6 +46,7 @@ pub struct FileTarget {
     path: PathBuf,
     size: u64,
     pub is_block_device: bool,
+    sector: Option<u32>,
 }
 
 impl FileTarget {
@@ -100,6 +105,10 @@ impl FileTarget {
                 path: path.to_path_buf(),
                 size,
                 is_block_device: true,
+                #[cfg(target_os = "linux")]
+                sector: linux::logical_sector_size(path),
+                #[cfg(not(target_os = "linux"))]
+                sector: None,
             });
         }
         match &meta {
@@ -132,6 +141,7 @@ impl FileTarget {
             path: path.to_path_buf(),
             size: cur.max(min_size),
             is_block_device: false,
+            sector: None,
         })
     }
 }
@@ -191,6 +201,9 @@ impl WriteTarget for FileTarget {
     fn describe(&self) -> String {
         self.path.display().to_string()
     }
+    fn logical_sector_size(&self) -> Option<u32> {
+        self.sector
+    }
 }
 
 #[cfg(test)]
@@ -217,6 +230,18 @@ pub mod linux {
     use std::path::Path;
 
     use crate::{EngineError, Result};
+
+    /// Logical sector size of a block device, from sysfs.
+    pub fn logical_sector_size(path: &Path) -> Option<u32> {
+        use std::os::unix::fs::MetadataExt;
+        let (ma, mi) = major_minor(std::fs::metadata(path).ok()?.rdev());
+        let base = std::path::PathBuf::from(format!("/sys/dev/block/{ma}:{mi}"));
+        // Partitions have no queue/ of their own; it is on the parent disk.
+        [base.join("queue"), base.join("../queue")]
+            .iter()
+            .find_map(|q| std::fs::read_to_string(q.join("logical_block_size")).ok())
+            .and_then(|s| s.trim().parse().ok())
+    }
 
     pub fn major_minor(rdev: u64) -> (u64, u64) {
         let major = ((rdev >> 8) & 0xfff) | ((rdev >> 32) & !0xfff);

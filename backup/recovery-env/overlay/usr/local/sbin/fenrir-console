@@ -1,0 +1,210 @@
+#!/bin/bash
+# Fenrir-Backup recovery console on tty1 (design: docs/design/phase-2.md §3, §5).
+#
+# Nothing here writes to a disk except the offline restore, and only to the
+# disk the user picked and then typed the name of. Repositories are mounted
+# read-only.
+set -u
+RT=/run/fenrir-recovery
+TITLE="Fenrir-Backup recovery"
+export NEWT_COLORS='root=,blue window=,lightgray title=black, button=white,blue actbutton=white,red'
+mkdir -p "$RT"
+
+msg() { whiptail --title "$TITLE" --msgbox "$1" 0 0; }
+ask() { whiptail --title "$TITLE" --inputbox "$1" 0 72 "${2:-}" 3>&1 1>&2 2>&3; }
+secret() { whiptail --title "$TITLE" --passwordbox "$1" 0 72 3>&1 1>&2 2>&3; }
+yesno() { whiptail --title "$TITLE" --yesno "$1" 0 0; }
+
+addresses() {
+  ip -4 -o addr show scope global 2>/dev/null | awk '{print $2" "$4}' | paste -sd ';' - | sed 's/;/;  /g'
+}
+
+firmware() {
+  if [ -d /sys/firmware/efi ]; then echo UEFI; else echo "BIOS (legacy)"; fi
+}
+
+status_text() {
+  local s
+  s=$(cat "$RT/status" 2>/dev/null || echo "starting ...")
+  printf 'Server:   %s\nNetwork:  %s\nFirmware: %s\n' "$s" "$(addresses || true)" "$(firmware)"
+  [ -n "$(addresses)" ] || printf '\nNo network address yet. Plug in a cable, or use Network settings.\n'
+}
+
+# A server's settings: typed in, or fenrir-recovery.json from a stick.
+connect_server() {
+  local server token pin
+  server=$(ask "Server address (as in your browser):" "https://") || return
+  token=$(ask "Enrolment token for recovery (web UI > Machines > Add machine > Recovery media):") || return
+  pin=$(ask "Certificate fingerprint (SHA-256), only for a self-signed certificate. Leave empty otherwise:") || return
+  jq -n --arg s "$server" --arg t "$token" --arg p "$pin" '{server:$s, token:$t, pin:$p}' > "$RT/recovery.json.new" &&
+    mv "$RT/recovery.json.new" "$RT/recovery.json"
+  systemctl restart fenrir-recovery-agent.service
+  msg "Connecting to $server. This machine will appear in the web UI under Recovery sessions."
+}
+
+from_stick() {
+  local dev found=""
+  mkdir -p "$RT/scan"
+  for dev in $(lsblk -rpno NAME,FSTYPE | awk '$2 ~ /^(vfat|exfat|ntfs|ext[234])$/ {print $1}'); do
+    if mount -o ro "$dev" "$RT/scan" 2>/dev/null; then
+      for f in "$RT/scan/fenrir-recovery.json" "$RT/scan/fenrir/recovery.json"; do
+        if [ -f "$f" ] && jq -e .server "$f" >/dev/null 2>&1; then
+          cp "$f" "$RT/recovery.json" && found="$dev"
+        fi
+      done
+      umount "$RT/scan"
+    fi
+    [ -n "$found" ] && break
+  done
+  if [ -n "$found" ]; then
+    systemctl restart fenrir-recovery-agent.service
+    msg "Found settings on $found. Connecting to $(jq -r .server "$RT/recovery.json")."
+  else
+    msg "No fenrir-recovery.json found on any attached stick or disk."
+  fi
+}
+
+# Disks that may be written: not the boot medium, nothing mounted, not swap.
+free_disks() {
+  local d
+  for d in $(lsblk -dpno NAME,TYPE | awk '$2=="disk"{print $1}'); do
+    if lsblk -rpno MOUNTPOINTS "$d" 2>/dev/null | grep -q .; then continue; fi
+    if grep -q "^$d" /proc/swaps; then continue; fi
+    echo "$d"
+  done
+}
+
+offline_restore() {
+  local src kind share user pass path repo key image_list image disks disk dev confirm menu=() d
+  kind=$(whiptail --title "$TITLE" --menu "Where is the repository?" 0 72 0 \
+    disk "A USB disk or a disk in this machine" \
+    share "A network share (SMB)" 3>&1 1>&2 2>&3) || return
+  src=$RT/repo-src
+  mkdir -p "$src"
+  umount "$src" 2>/dev/null
+  if [ "$kind" = disk ]; then
+    for d in $(lsblk -rpno NAME,TYPE,FSTYPE | awk '$2=="part" && $3!="" {print $1}'); do
+      menu+=("$d" "$(lsblk -rno SIZE,FSTYPE,LABEL "$d" | head -1)")
+    done
+    [ ${#menu[@]} -gt 0 ] || { msg "No partitions with a file system found."; return; }
+    dev=$(whiptail --title "$TITLE" --menu "Partition that holds the repository (mounted read-only):" 0 72 0 "${menu[@]}" 3>&1 1>&2 2>&3) || return
+    mount -o ro "$dev" "$src" || { msg "Could not mount $dev."; return; }
+  else
+    share=$(ask "Share, e.g. //nas/backups:") || return
+    user=$(ask "User name (DOMAIN\\user or user; empty for guest):") || return
+    pass=$(secret "Password:") || return
+    local opts="ro,vers=3.0"
+    if [ -n "$user" ]; then
+      printf 'username=%s\npassword=%s\n' "${user##*\\}" "$pass" > "$RT/cifs.cred"; chmod 600 "$RT/cifs.cred"
+      opts="$opts,credentials=$RT/cifs.cred"
+      [ "${user#*\\}" != "$user" ] && opts="$opts,domain=${user%%\\*}"
+    else
+      opts="$opts,guest"
+    fi
+    mount -t cifs "$share" "$src" -o "$opts"; local rc=$?
+    rm -f "$RT/cifs.cred"
+    [ $rc -eq 0 ] || { msg "Could not connect to $share."; return; }
+  fi
+  path=$(find "$src" -maxdepth 4 -name config.json -path '*/config.json' -printf '%h\n' 2>/dev/null |
+    while read -r p; do [ -d "$p/manifests" ] && echo "$p"; done | head -20)
+  if [ -z "$path" ]; then msg "No Fenrir-Backup repository found there."; umount "$src"; return; fi
+  menu=()
+  while read -r p; do menu+=("$p" ""); done <<< "$path"
+  repo=$(whiptail --title "$TITLE" --menu "Repository:" 0 76 0 "${menu[@]}" 3>&1 1>&2 2>&3) || return
+
+  local auth=()
+  if yesno "Unlock with the repository passphrase?\n\n(No: use a recovery key file instead.)"; then
+    FENRIR_PASSPHRASE=$(secret "Repository passphrase:") || return
+    export FENRIR_PASSPHRASE
+  else
+    key=$(ask "Path of the recovery key file (e.g. on a mounted stick):") || return
+    auth=(--recovery-key "$key")
+  fi
+  image_list=$(fenrir-backup --json --repo "$repo" "${auth[@]}" image list 2>&1)
+  if ! jq -e .ok <<< "$image_list" >/dev/null 2>&1 || [ "$(jq -r .ok <<< "$image_list")" != true ]; then
+    msg "Could not open the repository:\n\n$(jq -r '.error.message // empty' <<< "$image_list" 2>/dev/null || echo "$image_list")"
+    return
+  fi
+  menu=()
+  while IFS=$'\t' read -r id when host label; do
+    menu+=("$id" "$when  $host  $label")
+  done < <(jq -r '.result | sort_by(.created) | reverse | .[] | [.image_id[0:13], (.created|tostring), (.hostname // .machine_id // ""), (.label // "")] | @tsv' <<< "$image_list")
+  [ ${#menu[@]} -gt 0 ] || { msg "The repository has no images."; return; }
+  image=$(whiptail --title "$TITLE" --menu "Image to restore (newest first):" 0 90 0 "${menu[@]}" 3>&1 1>&2 2>&3) || return
+  disks=$(fenrir-backup --json --repo "$repo" "${auth[@]}" image show "$image")
+  menu=()
+  while IFS=$'\t' read -r idx size model; do
+    menu+=("$idx" "$size bytes  $model")
+  done < <(jq -r '.result.disks[] | [.index, .size, (.model // "")] | @tsv' <<< "$disks")
+  disk=$(whiptail --title "$TITLE" --menu "Disk of the image:" 0 72 0 "${menu[@]}" 3>&1 1>&2 2>&3) || return
+
+  menu=()
+  for d in $(free_disks); do
+    menu+=("$d" "$(lsblk -dno SIZE,MODEL,SERIAL "$d" | xargs)")
+  done
+  [ ${#menu[@]} -gt 0 ] || { msg "No disk is free to restore onto (the recovery medium and mounted disks are excluded)."; return; }
+  dev=$(whiptail --title "$TITLE" --menu "Restore onto (EVERYTHING ON IT WILL BE OVERWRITTEN):" 0 80 0 "${menu[@]}" 3>&1 1>&2 2>&3) || return
+  confirm=$(ask "This erases $dev ($(lsblk -dno SIZE,MODEL "$dev" | xargs)).\n\nType $dev to confirm:") || return
+  if [ "$confirm" != "$dev" ]; then msg "Not confirmed. Nothing was written."; return; fi
+
+  clear
+  echo "Restoring disk $disk of image $image onto $dev ..."
+  local result
+  result=$(fenrir-backup --json --repo "$repo" "${auth[@]}" restore disk --image "$image" --disk "$disk" \
+    --target "$dev" --yes --fit --boot-fixup)
+  unset FENRIR_PASSPHRASE
+  if [ "$(jq -r .ok <<< "$result")" != true ]; then
+    msg "The restore failed:\n\n$(jq -r '.error.message // .' <<< "$result")"
+    return
+  fi
+  local note="Restore finished: $(jq -r '.result.bytes_written' <<< "$result") bytes written to $dev."
+  local loader label part
+  loader=$(jq -r '.result.boot.loader.path // empty' <<< "$result")
+  label=$(jq -r '.result.boot.loader.label // empty' <<< "$result")
+  part=$(jq -r --argjson d "$disk" '.result.disks[] | select(.index==$d) | .partition_table.partitions[] | select(.role=="esp") | .number' <<< "$disks" 2>/dev/null | head -1)
+  if [ -n "$loader" ] && [ -n "$part" ] && [ -d /sys/firmware/efi ]; then
+    if efibootmgr --create --disk "$dev" --part "$part" --label "$label" --loader "$loader" >/dev/null 2>&1; then
+      note="$note\n\nAdded the firmware boot entry \"$label\"."
+    fi
+  fi
+  local fw
+  fw=$(jq -r '.result.boot.firmware // empty' <<< "$disks")
+  if [ "$fw" = unknown ] || [ -z "$fw" ]; then
+    # Not recorded at backup: an EFI system partition means UEFI, an MBR disk
+    # without one means BIOS.
+    if [ -n "$part" ]; then fw=uefi
+    elif [ "$(jq -r --argjson d "$disk" '.result.disks[] | select(.index==$d) | .partition_table.scheme' <<< "$disks")" = mbr ]; then fw=bios
+    fi
+  fi
+  if [ "$fw" = uefi ] && [ ! -d /sys/firmware/efi ]; then
+    note="$note\n\nThe restored system boots with UEFI but this machine started in BIOS mode: turn off CSM / legacy boot in the firmware settings."
+  elif [ "$fw" = bios ] && [ -d /sys/firmware/efi ]; then
+    note="$note\n\nThe restored system boots in BIOS mode but this machine started with UEFI: turn on CSM / legacy boot in the firmware settings."
+  fi
+  umount "$src" 2>/dev/null
+  msg "$note\n\nRemove the recovery medium and restart."
+}
+
+while true; do
+  choice=$(whiptail --title "$TITLE" --nocancel --menu "$(status_text)" 0 78 0 \
+    refresh "Refresh" \
+    connect "Connect to a server" \
+    stick "Look for server settings on a USB stick" \
+    offline "Restore from a repository here (no server)" \
+    network "Network settings" \
+    disks "Show disks" \
+    shell "Shell" \
+    reboot "Restart" \
+    poweroff "Power off" 3>&1 1>&2 2>&3)
+  case "$choice" in
+    connect) connect_server ;;
+    stick) from_stick ;;
+    offline) offline_restore ;;
+    network) nmtui ;;
+    disks) lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,MODEL,SERIAL,MOUNTPOINTS | less ;;
+    shell) clear; echo "Type exit to return to the menu."; bash -l --norc ;;
+    reboot) yesno "Restart now?" && systemctl reboot ;;
+    poweroff) yesno "Power off now?" && systemctl poweroff ;;
+    *) ;;
+  esac
+done

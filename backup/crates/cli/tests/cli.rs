@@ -241,6 +241,141 @@ fn end_to_end_backup_verify_restore() {
     assert_eq!(v["result"]["corrupt_chunks"].as_array().unwrap().len(), 1);
 }
 
+/// Bare-metal restore onto a bigger disk of a machine whose ESP has only
+/// the Windows loader: the GPT moves to the new end and the fallback loader
+/// is added for the new hardware's firmware.
+#[test]
+fn bare_metal_restore_to_a_larger_disk_adds_the_fallback_loader() {
+    use std::io::{Read, Write};
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    let pass = "correct horse battery";
+    let rk = dir.path().join("rk.json");
+    let o = fenrir(
+        &repo,
+        pass,
+        &["repo", "init", "--recovery-key-out", rk.to_str().unwrap()],
+    );
+    assert_eq!(code(&o), 0);
+
+    // 64 MiB disk: 33 MiB FAT32 ESP at 1 MiB, data after it.
+    let mut d = vec![0u8; 64 * MIB];
+    let esp = (2048u64, 2048 + 33 * 2048 - 1);
+    write_gpt(
+        &mut d,
+        512,
+        uuid::Uuid::from_u128(5),
+        &[
+            GptPart {
+                type_guid: gpt_types::ESP,
+                first_lba: esp.0,
+                last_lba: esp.1,
+                name: "EFI",
+            },
+            GptPart {
+                type_guid: gpt_types::BASIC_DATA,
+                first_lba: esp.1 + 1,
+                last_lba: 120_000,
+                name: "C",
+            },
+        ],
+    );
+    {
+        let part = &mut d[esp.0 as usize * 512..(esp.1 as usize + 1) * 512];
+        let mut c = std::io::Cursor::new(part);
+        fatfs::format_volume(
+            &mut c,
+            fatfs::FormatVolumeOptions::new().fat_type(fatfs::FatType::Fat32),
+        )
+        .unwrap();
+        let fs = fatfs::FileSystem::new(&mut c, fatfs::FsOptions::new()).unwrap();
+        let b = fs
+            .root_dir()
+            .create_dir("EFI")
+            .unwrap()
+            .create_dir("Microsoft")
+            .unwrap()
+            .create_dir("Boot")
+            .unwrap();
+        b.create_file("bootmgfw.efi")
+            .unwrap()
+            .write_all(b"MZ windows boot manager")
+            .unwrap();
+    }
+    d[100_000 * 512..100_001 * 512].fill(0xC5);
+    let img = dir.path().join("disk.img");
+    std::fs::write(&img, &d).unwrap();
+    let o = fenrir(
+        &repo,
+        pass,
+        &[
+            "backup",
+            "disk",
+            img.to_str().unwrap(),
+            "--machine-id",
+            "pc",
+        ],
+    );
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stdout));
+    let id = json(&o)["result"]["image_id"].as_str().unwrap().to_string();
+
+    // The new disk is bigger.
+    let args = |t: &Path| {
+        vec![
+            "restore".to_string(),
+            "disk".into(),
+            "--image".into(),
+            id.clone(),
+            "--target".into(),
+            t.to_str().unwrap().into(),
+            "--yes".into(),
+        ]
+    };
+    let big = dir.path().join("big.img");
+    std::fs::File::create(&big)
+        .unwrap()
+        .set_len(96 * MIB as u64)
+        .unwrap();
+    let mut a = args(&big);
+    a.extend(["--fit".into(), "--boot-fixup".into()]);
+    let o = fenrir(
+        &repo,
+        pass,
+        &a.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+    );
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stdout));
+    let v = json(&o);
+    assert_eq!(v["result"]["boot"]["added"][0], "\\EFI\\BOOT\\BOOTX64.EFI");
+    assert_eq!(
+        v["result"]["boot"]["loader"]["label"],
+        "Windows Boot Manager"
+    );
+
+    let out = std::fs::read(&big).unwrap();
+    assert_eq!(out.len(), 96 * MIB);
+    struct B<'a>(&'a [u8]);
+    impl core_format::io::ReadAt for B<'_> {
+        fn read_at(&self, o: u64, b: &mut [u8]) -> std::io::Result<()> {
+            b.copy_from_slice(&self.0[o as usize..o as usize + b.len()]);
+            Ok(())
+        }
+    }
+    let t = core_format::partition::read_table(&B(&out), out.len() as u64, 512).unwrap();
+    assert!(t.backup_table_valid);
+    assert_eq!(t.partitions.len(), 2);
+    assert!(out[100_000 * 512..100_001 * 512].iter().all(|&b| b == 0xC5));
+    let part = &out[esp.0 as usize * 512..(esp.1 as usize + 1) * 512];
+    let fs = fatfs::FileSystem::new(std::io::Cursor::new(part.to_vec()), fatfs::FsOptions::new())
+        .unwrap();
+    let mut data = Vec::new();
+    fs.root_dir()
+        .open_file("EFI/BOOT/BOOTX64.EFI")
+        .unwrap()
+        .read_to_end(&mut data)
+        .unwrap();
+    assert_eq!(data, b"MZ windows boot manager");
+}
+
 #[test]
 fn missing_repo_and_usage_errors() {
     let dir = tempfile::tempdir().unwrap();

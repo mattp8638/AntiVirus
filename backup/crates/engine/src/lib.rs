@@ -6,7 +6,9 @@
 #![forbid(unsafe_code)]
 
 pub mod backup;
+pub mod bootfix;
 pub mod control;
+pub mod fit;
 pub mod layout;
 pub mod restore;
 pub mod retention;

@@ -26,6 +26,7 @@ Regenerate the Rust tables with `scripts/third-party.py` after changing dependen
 | ed25519-dalek | 2.2.0 | BSD-3-Clause | Manifest signatures |
 | getrandom | 0.2.17 | MIT OR Apache-2.0 | OS random numbers |
 | ext4-view | 1.0.0 | MIT OR Apache-2.0 | Reading ext2/3/4 volumes inside images (file restore) |
+| fatfs | 0.3.6 | MIT | Adding the fallback UEFI boot loader to a restored EFI system partition |
 | hex | 0.4.3 | MIT OR Apache-2.0 | Hex encoding |
 | hkdf | 0.12.4 | MIT OR Apache-2.0 | Sealed secrets key derivation |
 | libc | 0.2.191 | MIT OR Apache-2.0 | Linux block-device ioctls |
@@ -80,6 +81,7 @@ Versions are pinned in `ui/package-lock.json`.
 | base64ct | 1.8.3 | Apache-2.0 OR MIT |
 | binrw | 0.11.3 | MIT |
 | binrw_derive | 0.11.3 | MIT |
+| bitflags | 1.3.2 | MIT/Apache-2.0 |
 | bitflags | 2.13.2 | MIT OR Apache-2.0 |
 | blake2 | 0.10.6 | MIT OR Apache-2.0 |
 | blake3 | 1.8.7 | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception |
@@ -120,6 +122,7 @@ Versions are pinned in `ui/package-lock.json`.
 | enumn | 0.1.14 | MIT OR Apache-2.0 |
 | errno | 0.3.15 | MIT OR Apache-2.0 |
 | ext4-view | 1.0.0 | MIT OR Apache-2.0 |
+| fatfs | 0.3.6 | MIT |
 | fastrand | 2.5.0 | Apache-2.0 OR MIT |
 | fiat-crypto | 0.2.9 | MIT OR Apache-2.0 OR BSD-1-Clause |
 | find-msvc-tools | 0.1.15 | MIT OR Apache-2.0 |

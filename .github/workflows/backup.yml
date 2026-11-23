@@ -132,6 +132,31 @@ jobs:
           name: backup-${{ matrix.target }}
           path: backup/out
 
+  # Recovery media (bare-metal restore): the Debian live ISO with the static agent and CLI. Place it at
+  # <FENRIR_BACKUP_AGENTS_DIR>/recovery/fenrir-recovery.iso on the server; see docs/DEVICE_BACKUP.md.
+  recovery-iso:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: backup-x86_64-unknown-linux-musl
+          path: bin
+      - name: tools
+        run: sudo apt-get update && sudo apt-get install -y mmdebstrap squashfs-tools xorriso mtools dosfstools
+      - name: build
+        working-directory: .
+        run: |
+          chmod +x bin/agents/x86_64-unknown-linux-musl/fenrir-backup-agent bin/cli/fenrir-backup-x86_64-unknown-linux-musl
+          sudo backup/recovery-env/build.sh "$PWD/out/recovery/fenrir-recovery.iso" \
+            bin/agents/x86_64-unknown-linux-musl/fenrir-backup-agent bin/cli/fenrir-backup-x86_64-unknown-linux-musl
+          sudo chown -R "$USER" out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backup-recovery-iso
+          path: out
+
   # The shared backup code is made in Fenrir-Backup and copied here with backup/sync-upstream.py: fail if backup/
   # no longer matches the Fenrir-Backup commit pinned in backup/UPSTREAM. If that repository is private, add a
   # read-only token for it as the secret FENRIR_BACKUP_READ_TOKEN; without one the check is skipped with a warning.

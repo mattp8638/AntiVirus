@@ -105,6 +105,33 @@ volume (C:, D:, /home…), open folders, tick files or folders and restore them.
 * While someone is browsing, that machine checks in every second instead of every 15, and keeps the backup open
   for 5 minutes after the last request.
 
+## Recovery media: bare-metal restore
+
+For a machine that no longer starts, has a new disk, or is replaced by new hardware.
+
+1. **Backups › Add machines**, choose **Recovery media**, pick the customer and **Create recovery media**, then
+   download `fenrir-recovery.iso`. The download carries this server's address and an enrolment code for that
+   customer's recovery sessions (valid 1–90 days; revoke it like any install link). Write it to a USB stick
+   (balenaEtcher, Rufus in DD mode, `dd`) or attach it to a VM.
+2. Start the machine from it; Secure Boot can stay on. It appears under **Machines** as a *recovery session*
+   (restores only, nothing installed, everything in memory).
+3. **Images & restore › Restore**, choose the session as the machine, give it access (the passphrase is sealed in
+   your browser for that session only) and pick its disk. Disks in use on it (its own stick, anything mounted) are not
+   offered and are refused by the server and by the agent. A repository on a NAS the session cannot reach is served
+   to it through the NAS gateway, if the repository has one.
+4. When the restore finishes, remove the stick and restart.
+
+The target disk may be larger (the partition table moves to its end; extend the last partition afterwards) or
+smaller if every partition fits. UEFI systems get the fallback boot loader and a firmware boot entry; if the machine
+started in a different firmware mode from the backed-up system, the job says which setting to change. Sessions do not
+raise offline alerts and are removed a week after they were last seen. The recovery screen also restores without a
+server, from a repository on a USB disk or an SMB share.
+
+The ISO comes from the backup workflow (artifact `backup-recovery-iso`, built by `backup/recovery-env/build.sh`). Put
+it at `<FENRIR_BACKUP_AGENTS_DIR>/recovery/fenrir-recovery.iso` (in the container:
+`/app/cloud/downloads/backup/recovery/fenrir-recovery.iso`, for example as a mounted volume); until then the console
+says it is missing. Design: `backup/docs/design/phase-2.md`.
+
 ## Network shares
 
 A repository path such as `\\nas\backups\fenrir` can sign in with:

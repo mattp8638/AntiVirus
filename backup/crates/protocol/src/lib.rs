@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod gateway;
+pub mod recovery;
 pub mod seal;
 pub mod setup;
 
@@ -24,6 +25,8 @@ pub enum AgentRole {
     Server,
     /// Hyper-V host backing up its VMs.
     Hyperv,
+    /// A machine booted from recovery media: restores only, state in RAM.
+    Recovery,
 }
 
 impl AgentRole {
@@ -32,6 +35,7 @@ impl AgentRole {
             "workstation" => Some(Self::Workstation),
             "server" => Some(Self::Server),
             "hyperv" => Some(Self::Hyperv),
+            "recovery" => Some(Self::Recovery),
             _ => None,
         }
     }
@@ -40,6 +44,7 @@ impl AgentRole {
             Self::Workstation => "workstation",
             Self::Server => "server",
             Self::Hyperv => "hyperv",
+            Self::Recovery => "recovery",
         }
     }
 }
@@ -86,6 +91,19 @@ pub struct DiskSummary {
     pub model: String,
     #[serde(default)]
     pub system: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub serial: String,
+    /// Logical sector size in bytes (0 = unknown).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub sector_size: u32,
+    /// A partition of it is mounted or in use (e.g. the recovery medium):
+    /// never offered as a restore target.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub in_use: bool,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -129,6 +147,12 @@ pub struct Inventory {
     /// gateway, when it listens for direct connections.
     #[serde(default)]
     pub gateway_addresses: Vec<String>,
+    /// How this machine booted: "uefi" or "bios" (recovery media reports it
+    /// so the UI can warn before restoring an image that needs the other).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firmware: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secure_boot: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

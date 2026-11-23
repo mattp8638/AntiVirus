@@ -19,6 +19,11 @@ pub struct RestoreOptions {
     /// the target may hold old data (a used disk); unnecessary for a fresh
     /// sparse file.
     pub zero_fill: bool,
+    /// Lay the image onto a target of a different size (`fit`): move the
+    /// GPT to the target's end, allow a smaller target when the partitions
+    /// fit. Off: the target must be at least the image disk's size and is
+    /// written byte for byte.
+    pub fit: bool,
 }
 
 impl Default for RestoreOptions {
@@ -26,6 +31,7 @@ impl Default for RestoreOptions {
         RestoreOptions {
             workers: 4,
             zero_fill: true,
+            fit: false,
         }
     }
 }
@@ -55,13 +61,27 @@ pub fn restore_disk(
         .iter()
         .find(|d| d.index == disk_index)
         .ok_or_else(|| EngineError::InvalidInput(format!("image has no disk {disk_index}")))?;
-    if target.size() < disk.size {
-        return Err(EngineError::Safety(format!(
-            "target is {} bytes, image disk is {} bytes",
+    let fit = if opts.fit {
+        Some(crate::fit::plan(
+            disk,
             target.size(),
-            disk.size
-        )));
-    }
+            target.logical_sector_size(),
+        )?)
+    } else {
+        if target.size() < disk.size {
+            return Err(EngineError::Safety(format!(
+                "target is {} bytes, image disk is {} bytes",
+                target.size(),
+                disk.size
+            )));
+        }
+        None
+    };
+    let clipped = crate::fit::Clipped {
+        inner: target,
+        limit: fit.as_ref().map_or(u64::MAX, |f| f.clip()),
+    };
+    let target: &dyn WriteTarget = &clipped;
     let cs = image.chunk_size as u64;
     let total = extent::total_len(&disk.used_extents);
     let done = AtomicU64::new(0);
@@ -133,6 +153,9 @@ pub fn restore_disk(
         }
     }
     target.sync()?;
+    if let Some(f) = &fit {
+        f.finish(clipped.inner)?;
+    }
     Ok(RestoreReport {
         image_id: image.image_id,
         disk: disk_index,

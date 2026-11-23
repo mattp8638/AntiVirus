@@ -195,6 +195,15 @@ enum RestoreCmd {
         /// Skip writing zeros where the image has none (only for empty targets).
         #[arg(long)]
         no_zero_fill: bool,
+        /// Fit the image onto a disk of a different size: move the GPT to
+        /// the end of a larger disk, or use a smaller disk if every
+        /// partition fits.
+        #[arg(long)]
+        fit: bool,
+        /// Afterwards, add the fallback UEFI boot loader on the restored
+        /// EFI system partition if it is missing (for new hardware).
+        #[arg(long)]
+        boot_fixup: bool,
         #[arg(long, default_value_t = 4)]
         workers: usize,
     },
@@ -336,8 +345,22 @@ fn run(ctx: &Ctx, cmd: Cmd) -> R<Outcome> {
             target,
             yes,
             no_zero_fill,
+            fit,
+            boot_fixup,
             workers,
-        }) => restore(ctx, &image, disk, &target, yes, !no_zero_fill, workers),
+        }) => restore(
+            ctx,
+            &image,
+            disk,
+            &target,
+            yes,
+            RestoreFlags {
+                zero_fill: !no_zero_fill,
+                fit,
+                boot_fixup,
+            },
+            workers,
+        ),
     }
 }
 
@@ -980,15 +1003,34 @@ fn verify(ctx: &Ctx, a: VerifyArgs) -> R<Outcome> {
 
 // ---------- restore ----------
 
+struct RestoreFlags {
+    zero_fill: bool,
+    fit: bool,
+    boot_fixup: bool,
+}
+
+#[derive(serde::Serialize)]
+struct RestoreOutput {
+    #[serde(flatten)]
+    report: engine::RestoreReport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    boot: Option<engine::bootfix::BootFix>,
+}
+
 fn restore(
     ctx: &Ctx,
     image: &str,
     disk: u32,
     target: &Path,
     yes: bool,
-    zero_fill: bool,
+    flags: RestoreFlags,
     workers: usize,
 ) -> R<Outcome> {
+    let RestoreFlags {
+        zero_fill,
+        fit,
+        boot_fixup,
+    } = flags;
     let repo = open_repo(ctx)?;
     let id = repo.resolve_image_id(image)?;
     let m = repo.load_manifest(&id)?;
@@ -1010,7 +1052,12 @@ fn restore(
         ));
     }
     let confirm = DestructiveConfirmation::confirmed_by_user(target);
-    let t = FileTarget::open(target, d.size, true, &confirm)?;
+    let min = if fit {
+        engine::fit::min_size(d)
+    } else {
+        d.size
+    };
+    let t = FileTarget::open(target, min, true, &confirm)?;
     let tty = std::io::stderr().is_terminal() && !ctx.json;
     let last = std::sync::Mutex::new(Instant::now());
     let pr = |done: u64, total: u64| {
@@ -1034,6 +1081,7 @@ fn restore(
         &RestoreOptions {
             workers,
             zero_fill: zero_fill || t.is_block_device,
+            fit,
         },
         &JobControl::new(),
         &pr,
@@ -1041,14 +1089,28 @@ fn restore(
     if tty {
         eprintln!();
     }
-    let human = format!(
+    drop(t);
+    let mut human = format!(
         "Restored disk {} of image {} to {} ({} written).\n",
         disk,
         id,
         r.target,
         human_bytes(r.bytes_written)
     );
-    Ok(Outcome::new(&r, human))
+    let boot = if boot_fixup {
+        let b = engine::bootfix::fix_restored_disk(target, d)?;
+        match &b {
+            Some(b) if !b.added.is_empty() => {
+                human += &format!("Added the fallback boot loader: {}.\n", b.added.join(", "))
+            }
+            Some(_) => human += "The restored disk already has a fallback boot loader.\n",
+            None => human += "No EFI system partition on this disk; nothing to fix.\n",
+        }
+        b
+    } else {
+        None
+    };
+    Ok(Outcome::new(&RestoreOutput { report: r, boot }, human))
 }
 
 fn human_bytes(n: u64) -> String {
