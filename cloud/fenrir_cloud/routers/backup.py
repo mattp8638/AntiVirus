@@ -1006,7 +1006,8 @@ def create_restore(request: Request, body: dict = Body(...), p: Principal = Depe
                 bad("that disk is not one the machine reported")
             if d.get("system") or d.get("in_use"):
                 bad("that disk is in use on the machine (its system disk, the recovery medium, or mounted)")
-        target, need = {"type": "disk", "device": device, "disk": disk, "confirm": device}, "restore_disk"
+        target, need = {"type": "disk", "device": device, "disk": disk, "confirm": device,
+                        "grow": bool(t.get("grow", True))}, "restore_disk"
     else:
         bad("choose where to restore to")
     if need not in bk.capabilities(a):

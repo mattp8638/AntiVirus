@@ -24,6 +24,9 @@ pub struct RestoreOptions {
     /// fit. Off: the target must be at least the image disk's size and is
     /// written byte for byte.
     pub fit: bool,
+    /// With `fit` onto a larger target: give the new space to the last
+    /// partition (its file system is grown by the caller, `crate::grow`).
+    pub grow: bool,
 }
 
 impl Default for RestoreOptions {
@@ -32,6 +35,7 @@ impl Default for RestoreOptions {
             workers: 4,
             zero_fill: true,
             fit: false,
+            grow: false,
         }
     }
 }
@@ -44,6 +48,12 @@ pub struct RestoreReport {
     pub bytes_written: u64,
     pub chunks_restored: u64,
     pub zero_ranges_written: u64,
+    /// The partition given the extra space (`grow`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grown: Option<crate::fit::Grown>,
+    /// Why nothing was grown, when `grow` was asked for.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 pub fn restore_disk(
@@ -61,12 +71,20 @@ pub fn restore_disk(
         .iter()
         .find(|d| d.index == disk_index)
         .ok_or_else(|| EngineError::InvalidInput(format!("image has no disk {disk_index}")))?;
-    let fit = if opts.fit {
-        Some(crate::fit::plan(
-            disk,
-            target.size(),
-            target.logical_sector_size(),
-        )?)
+    let mut notes = Vec::new();
+    let fit = if opts.fit || opts.grow {
+        let mut f = crate::fit::plan(disk, target.size(), target.logical_sector_size())?;
+        if opts.grow {
+            match f.grow(disk) {
+                Ok(Some(_)) => {}
+                Ok(None) => notes.push(
+                    "nothing to grow: the last partition already reaches the end of the target"
+                        .into(),
+                ),
+                Err(e) => notes.push(e),
+            }
+        }
+        Some(f)
     } else {
         if target.size() < disk.size {
             return Err(EngineError::Safety(format!(
@@ -163,5 +181,7 @@ pub fn restore_disk(
         bytes_written: done.load(Ordering::Relaxed) + zero_bytes,
         chunks_restored: chunks_restored.load(Ordering::Relaxed),
         zero_ranges_written: zero_ranges,
+        grown: fit.as_ref().and_then(|f| f.grown().cloned()),
+        notes,
     })
 }

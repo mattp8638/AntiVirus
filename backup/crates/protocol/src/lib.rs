@@ -265,6 +265,10 @@ pub enum RestoreTarget {
         device: String,
         disk: u32,
         confirm: String,
+        /// Give a larger disk's extra space to the last partition and grow
+        /// its file system (phase-5-grow-clone.md).
+        #[serde(default)]
+        grow: bool,
     },
 }
 

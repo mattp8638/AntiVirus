@@ -116,6 +116,11 @@ pub fn capabilities(role: &str) -> Vec<String> {
             c.push("restore_hyperv".into());
         }
     } else {
+        if cfg!(target_os = "linux") {
+            // Live images through LVM snapshots (the job explains what a
+            // system without LVM needs).
+            c.push("backup_system".into());
+        }
         c.push("backup_disks".into());
         c.push("restore_disk".into());
     }

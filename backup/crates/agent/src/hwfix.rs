@@ -168,12 +168,36 @@ pub fn find_windows(root: &Path) -> Option<(PathBuf, PathBuf)> {
 pub fn hive_is_dirty(path: &Path) -> anyhow::Result<bool> {
     use std::io::Read;
     let mut b = [0u8; 12];
-    std::fs::File::open(path)?.read_exact(&mut b)?;
+    while_locked(|| std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut b)))
+        .with_context(|| format!("reading {}", path.display()))?;
     if &b[..4] != b"regf" {
         bail!("{} is not a registry hive", path.display());
     }
     Ok(b[4..8] != b[8..12])
 }
+
+/// Run `f` again while the file it opens is held by another program (on a
+/// volume Windows has just mounted, the indexer or a virus scanner often
+/// opens files for a moment): sharing or lock violations, for up to a minute.
+pub fn while_locked<T>(mut f: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let start = std::time::Instant::now();
+    loop {
+        match f() {
+            // ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION
+            Err(e)
+                if matches!(e.raw_os_error(), Some(32) | Some(33))
+                    && cfg!(windows)
+                    && start.elapsed() < std::time::Duration::from_secs(60) =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(500))
+            }
+            r => return r,
+        }
+    }
+}
+
+/// The original SYSTEM hive, kept next to it before it is changed.
+pub const BACKUP_NAME: &str = "SYSTEM.fenrir-before-hardware";
 
 /// Prepare the Windows installation mounted at `root` for this hardware.
 pub fn adapt(
@@ -200,9 +224,10 @@ pub fn adapt(
     };
     fix.control_set = p.control_set.clone();
     if !p.boot_start.is_empty() || !p.overrides.is_empty() {
-        let backup = hive_path.with_file_name("SYSTEM.fenrir-before-hardware");
+        let backup = hive_path.with_file_name(BACKUP_NAME);
         if !backup.exists() {
-            std::fs::copy(hive_path, &backup).context("keeping a copy of the registry")?;
+            while_locked(|| std::fs::copy(hive_path, &backup))
+                .context("keeping a copy of the registry")?;
         }
         let set: Vec<(String, String, u32)> = p
             .boot_start
@@ -415,11 +440,19 @@ fn reg(args: &[&str]) -> std::io::Result<std::process::Output> {
 impl RegHive {
     pub fn load(path: &Path) -> anyhow::Result<RegHive> {
         let p = path.to_string_lossy().to_string();
-        let o = reg(&["load", OFFLINE, &p]).context("running reg.exe")?;
-        if !o.status.success() {
-            bail!("reg load: {}", String::from_utf8_lossy(&o.stderr).trim());
+        // A program that had the file open for a moment (see while_locked).
+        for _ in 0..60 {
+            let o = reg(&["load", OFFLINE, &p]).context("running reg.exe")?;
+            if o.status.success() {
+                return Ok(RegHive);
+            }
+            let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            if !err.contains("used by another process") {
+                bail!("reg load: {err}");
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
         }
-        Ok(RegHive)
+        bail!("reg load: {p} stayed in use by another program")
     }
 
     fn query(&self, key: &str, name: &str) -> Option<(String, String)> {
@@ -538,8 +571,12 @@ pub fn adapt_restored_disk(device: &str) -> anyhow::Result<Option<WindowsFix>> {
     vols.sort_by_key(|v| std::cmp::Reverse(v.2));
     let folder = crate::recovery::runtime_dir().join("windows");
     for (vol, _, _) in vols {
-        let Ok(root) = disks::volume_root(&vol, &folder) else {
-            continue;
+        let root = match disks::volume_root(&vol, &folder) {
+            Ok(r) => r,
+            Err(e) => {
+                crate::log::warn(&format!("{vol}: {e}"));
+                continue;
+            }
         };
         let Some((hive_path, drivers)) = find_windows(&root.root) else {
             continue;
@@ -547,8 +584,25 @@ pub fn adapt_restored_disk(device: &str) -> anyhow::Result<Option<WindowsFix>> {
         let mut fix = if hive_is_dirty(&hive_path)? {
             adapt(&root.root, &vol, &NoHive, &hive_path, &drivers)?
         } else {
-            let h = RegHive::load(&hive_path)?;
-            adapt(&root.root, &vol, &h, &hive_path, &drivers)?
+            // reg.exe holds a loaded hive open exclusively: keep the copy of
+            // the original first (adapt finds it there), and drop it again if
+            // nothing changed.
+            let backup = hive_path.with_file_name(BACKUP_NAME);
+            let made = !backup.exists();
+            if made {
+                while_locked(|| std::fs::copy(&hive_path, &backup)).with_context(|| {
+                    format!("keeping a copy of the registry as {}", backup.display())
+                })?;
+            }
+            let fix = {
+                let h = RegHive::load(&hive_path)
+                    .with_context(|| format!("loading {}", hive_path.display()))?;
+                adapt(&root.root, &vol, &h, &hive_path, &drivers)?
+            };
+            if made && fix.boot_start.is_empty() && fix.overrides_removed.is_empty() {
+                let _ = std::fs::remove_file(&backup);
+            }
+            fix
         };
         let image = root.root.to_string_lossy().to_string();
         for d in driver_folders() {

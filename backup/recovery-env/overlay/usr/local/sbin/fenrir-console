@@ -147,17 +147,27 @@ offline_restore() {
   confirm=$(ask "This erases $dev ($(lsblk -dno SIZE,MODEL "$dev" | xargs)).\n\nType $dev to confirm:") || return
   if [ "$confirm" != "$dev" ]; then msg "Not confirmed. Nothing was written."; return; fi
 
+  local grow=() isize tsize
+  isize=$(jq -r --argjson d "$disk" '.result.disks[] | select(.index==$d) | .size' <<< "$disks")
+  tsize=$(lsblk -bdno SIZE "$dev")
+  if [ -n "$isize" ] && [ "$tsize" -gt $((isize + (1 << 30))) ]; then
+    yesno "$dev is larger than the disk in the image.\n\nGive the extra space to the last partition and grow its file system?" && grow=(--grow)
+  fi
+
   clear
   echo "Restoring disk $disk of image $image onto $dev ..."
   local result
   result=$(fenrir-backup --json --repo "$repo" "${auth[@]}" restore disk --image "$image" --disk "$disk" \
-    --target "$dev" --yes --fit --boot-fixup)
+    --target "$dev" --yes --fit --boot-fixup "${grow[@]}")
   unset FENRIR_PASSPHRASE
   if [ "$(jq -r .ok <<< "$result")" != true ]; then
     msg "The restore failed:\n\n$(jq -r '.error.message // .' <<< "$result")"
     return
   fi
   local note="Restore finished: $(jq -r '.result.bytes_written' <<< "$result") bytes written to $dev."
+  local gnotes
+  gnotes=$(jq -r '(.result.grow.notes // []) + (.result.notes // []) | .[]' <<< "$result")
+  [ -n "$gnotes" ] && note="$note\n\n$gnotes"
   local loader label part
   loader=$(jq -r '.result.boot.loader.path // empty' <<< "$result")
   label=$(jq -r '.result.boot.loader.label // empty' <<< "$result")

@@ -307,4 +307,11 @@ Versions are pinned in `ui/package-lock.json`.
   NBD project's published protocol description. The Hyper-V boot check uses
   the documented `Msvm_VirtualSystemManagementService.GetVirtualSystemThumbnailImage`
   WMI method.
+* Live Linux images and growing file systems: the system's own LVM tools
+  (`lvs`, `pvs`, `vgs`, `lvcreate`, `lvremove`, `pvresize`; lvm2,
+  GPL-2.0/LGPL-2.1), `lsblk`, `fsfreeze`, `losetup`, `blockdev` (util-linux,
+  GPL-2.0), `e2fsck`/`resize2fs` (e2fsprogs, GPL-2.0), `ntfsresize`
+  (ntfs-3g, GPL-2.0) and on Windows `diskpart`, run as separate programs
+  through their documented command lines; nothing from them is linked into
+  Fenrir-Backup. The recovery image installs them from Debian.
 * macOS: `ioreg`, `sw_vers`, launchd.

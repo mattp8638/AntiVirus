@@ -2,16 +2,18 @@
 //!
 //! Larger target: the image is written as is, then the GPT is moved to the
 //! target's real end (primary header updated, backup header and entries
-//! written at the last LBAs, the stale backup zeroed). Partitions are not
-//! grown. Smaller target: allowed only when every partition still fits; the
+//! written at the last LBAs, the stale backup zeroed). With [`Fit::grow`]
+//! the last partition also gets the new space (phase-5-grow-clone.md §1);
+//! its file system is grown afterwards by `crate::grow`. Smaller target: allowed only when every partition still fits; the
 //! old backup GPT, the only data past the new end, is clipped. MBR disks
 //! only need the size checks.
 
 use std::io;
 
 use core_format::extent::Extent;
+use core_format::fsdetect::FsType;
 use core_format::manifest::DiskImage;
-use core_format::partition::Scheme;
+use core_format::partition::{PartitionRole, Scheme};
 
 use crate::target::WriteTarget;
 use crate::{EngineError, Result};
@@ -24,6 +26,31 @@ pub struct Fit {
     /// Image bytes at or after this offset are not written.
     clip: u64,
     gpt: Option<GptFit>,
+    /// MBR disks whose last partition was grown: the new first sector.
+    mbr_patch: Option<Vec<u8>>,
+    grown: Option<Grown>,
+}
+
+/// The partition given the space past its old end.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Grown {
+    pub number: u32,
+    /// Byte offset of the partition.
+    pub start: u64,
+    pub old_length: u64,
+    pub new_length: u64,
+    pub filesystem: FsType,
+    /// Its number as Windows counts (table order, without the extended
+    /// container or empty entries), for diskpart.
+    pub windows_number: u32,
+}
+
+/// File systems that can use a larger partition (now or once mounted).
+pub fn growable(fs: FsType) -> bool {
+    matches!(
+        fs,
+        FsType::Ntfs | FsType::Ext | FsType::Xfs | FsType::Btrfs | FsType::LvmPv | FsType::Luks
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +97,8 @@ pub fn plan(disk: &DiskImage, target_size: u64, target_sector: Option<u32>) -> R
         target_size,
         clip: target_size.min(disk.size),
         gpt: None,
+        mbr_patch: None,
+        grown: None,
     };
     let limit = match table.scheme {
         Scheme::None => {
@@ -225,9 +254,115 @@ impl Fit {
         self.clip
     }
 
+    /// What [`Fit::grow`] changed.
+    pub fn grown(&self) -> Option<&Grown> {
+        self.grown.as_ref()
+    }
+
+    /// Give the space past the last partition to it, if its file system can
+    /// use it. Returns why not otherwise (`Ok(None)`: nothing to gain).
+    pub fn grow(&mut self, disk: &DiskImage) -> std::result::Result<Option<Grown>, String> {
+        const ALIGN: u64 = 1 << 20;
+        let t = &disk.partition_table;
+        let ss = self.sector;
+        let Some(p) = t
+            .partitions
+            .iter()
+            .filter(|p| p.role != PartitionRole::Extended)
+            .max_by_key(|p| p.start + p.length)
+        else {
+            return Ok(None);
+        };
+        let fs = disk
+            .partitions
+            .iter()
+            .find(|r| r.entry.number == p.number)
+            .map(|r| r.filesystem)
+            .unwrap_or(FsType::Unknown);
+        let limit = match (&t.scheme, &self.gpt) {
+            (Scheme::Gpt, Some(g)) => {
+                let es = g.entries.len() as u64 / ss;
+                (self.target_size / ss - 1 - es) * ss // first byte of the backup entries
+            }
+            (Scheme::Mbr, _) => self.target_size.min((u32::MAX as u64 + 1) * ss),
+            _ => return Ok(None),
+        };
+        // Ends on a whole MiB (a multiple of every sector size).
+        let new_end = limit / ALIGN * ALIGN;
+        if new_end <= p.start + p.length {
+            return Ok(None);
+        }
+        if !growable(fs) {
+            return Err(format!(
+                "partition {} ({fs:?}) is the last on the disk, but its file system cannot be grown; the extra space is left free",
+                p.number
+            ));
+        }
+        let new_length = new_end - p.start;
+        match t.scheme {
+            Scheme::Gpt => {
+                let g = self.gpt.as_mut().expect("GPT fit");
+                let n = u32::from_le_bytes(g.header[80..84].try_into().unwrap()) as usize;
+                let esz = u32::from_le_bytes(g.header[84..88].try_into().unwrap()) as usize;
+                let i = p.number as usize - 1;
+                if i >= n || (i + 1) * esz > g.entries.len() {
+                    return Err(format!("partition {} has no GPT entry", p.number));
+                }
+                let last_lba = new_end / ss - 1;
+                g.entries[i * esz + 40..i * esz + 48].copy_from_slice(&last_lba.to_le_bytes());
+                let crc = crc32fast::hash(&g.entries[..n * esz]);
+                g.header[88..92].copy_from_slice(&crc.to_le_bytes());
+            }
+            Scheme::Mbr => {
+                if p.number > 4 {
+                    return Err(format!(
+                        "partition {} is a logical partition; growing it would need its extended partition grown too, so the extra space is left free",
+                        p.number
+                    ));
+                }
+                let mut mbr = t
+                    .raw_regions
+                    .iter()
+                    .find(|r| r.offset == 0)
+                    .map(|r| r.data.clone())
+                    .ok_or("the image has no MBR")?;
+                let e = 446 + (p.number as usize - 1) * 16;
+                let first = u32::from_le_bytes(mbr[e + 8..e + 12].try_into().unwrap()) as u64;
+                if first * ss != p.start {
+                    return Err(format!(
+                        "MBR entry {} does not match partition {}",
+                        p.number, p.number
+                    ));
+                }
+                let sectors = (new_length / ss).min(u32::MAX as u64) as u32;
+                mbr[e + 12..e + 16].copy_from_slice(&sectors.to_le_bytes());
+                self.mbr_patch = Some(mbr);
+            }
+            Scheme::None => return Ok(None),
+        }
+        let g = Grown {
+            number: p.number,
+            start: p.start,
+            old_length: p.length,
+            new_length,
+            filesystem: fs,
+            windows_number: t
+                .partitions
+                .iter()
+                .filter(|x| x.role != PartitionRole::Extended && x.number <= p.number)
+                .count() as u32,
+        };
+        self.grown = Some(g.clone());
+        Ok(Some(g))
+    }
+
     /// After the image is written: put the partition table in order for the
     /// target's size.
     pub fn finish(&self, t: &dyn WriteTarget) -> io::Result<()> {
+        if let Some(m) = &self.mbr_patch {
+            t.write_at(0, m)?;
+            return t.sync();
+        }
         let Some(g) = &self.gpt else {
             return Ok(());
         };
@@ -502,5 +637,118 @@ mod tests {
         let img = image(64 * MIB, 512, table, vec![Extent(0, MIB)]);
         assert!(plan(&img, 32 * MIB, Some(512)).is_err());
         assert!(plan(&img, 64 * MIB, Some(512)).is_ok());
+    }
+
+    fn with_fs(mut img: DiskImage, fs: FsType) -> DiskImage {
+        img.partitions = img
+            .partition_table
+            .partitions
+            .iter()
+            .map(|e| core_format::manifest::PartitionRecord {
+                entry: e.clone(),
+                filesystem: if e.number == 1 { FsType::Fat32 } else { fs },
+                capture: core_format::manifest::CaptureMethod::RawFull,
+                captured_bytes: e.length,
+                volume: None,
+                mount_points: vec![],
+                encryption: None,
+            })
+            .collect();
+        img
+    }
+
+    fn grow_restore(src: &[u8], img: &DiskImage, target_size: u64) -> (Vec<u8>, Option<Grown>) {
+        let mut f = plan(img, target_size, Some(img.partition_table.sector_size)).unwrap();
+        let g = f.grow(img).unwrap();
+        let t = Mem(Mutex::new(vec![0x5Au8; target_size as usize]));
+        let c = Clipped {
+            inner: &t,
+            limit: f.clip(),
+        };
+        for e in &img.used_extents {
+            c.write_at(e.0, &src[e.0 as usize..(e.0 + e.1) as usize])
+                .unwrap();
+        }
+        f.finish(&t).unwrap();
+        (t.0.into_inner().unwrap(), g)
+    }
+
+    #[test]
+    fn grow_gives_the_last_gpt_partition_the_new_space() {
+        for ss in [512usize, 4096] {
+            let (src, img) = gpt_disk(64 * MIB, ss, 60 * MIB);
+            let img = with_fs(img, FsType::Ntfs);
+            let (out, g) = grow_restore(&src, &img, 100 * MIB + 12345 / ss as u64 * ss as u64);
+            let g = g.expect("grown");
+            assert_eq!((g.number, g.old_length), (2, 55 * MIB));
+            // Up to the last whole MiB before the backup entries.
+            assert_eq!(g.start + g.new_length, 99 * MIB);
+            // The table read back is valid (both headers, entry CRCs) and says so.
+            let t = read_table(&Bytes(&out), out.len() as u64, ss as u32).unwrap();
+            assert!(t.backup_table_valid, "{ss}");
+            assert_eq!(t.partitions[1].length, g.new_length);
+            assert_eq!(t.partitions[0], img.partition_table.partitions[0]);
+            assert!(out[(60 * MIB - 4096) as usize..(60 * MIB) as usize]
+                .iter()
+                .all(|&b| b == 0xAB));
+        }
+    }
+
+    #[test]
+    fn grow_leaves_file_systems_that_cannot_grow() {
+        let (_, img) = gpt_disk(64 * MIB, 512, 60 * MIB);
+        for fs in [
+            FsType::Fat32,
+            FsType::Swap,
+            FsType::Bitlocker,
+            FsType::Unknown,
+        ] {
+            let img = with_fs(img.clone(), fs);
+            let mut f = plan(&img, 128 * MIB, Some(512)).unwrap();
+            assert!(f.grow(&img).is_err(), "{fs:?}");
+            assert!(f.grown().is_none());
+        }
+        // Nothing to gain: the partition already ends at the last whole MiB.
+        let (_, img) = gpt_disk(64 * MIB, 512, 63 * MIB);
+        let img = with_fs(img, FsType::Ext);
+        let mut f = plan(&img, 64 * MIB, Some(512)).unwrap();
+        assert_eq!(f.grow(&img).unwrap(), None);
+    }
+
+    #[test]
+    fn grow_mbr_primary_partition() {
+        let size = 64 * MIB;
+        let mut d = vec![0u8; size as usize];
+        let s = |b: u64| (b / 512) as u32;
+        write_mbr(
+            &mut d,
+            0x1234,
+            &[
+                (0x0C, s(MIB), s(4 * MIB), true),
+                (0x83, s(5 * MIB), s(50 * MIB), false),
+            ],
+        );
+        d[(55 * MIB - 512) as usize..(55 * MIB) as usize].fill(0xCD);
+        let table = read_table(&Bytes(&d), size, 512).unwrap();
+        let mut used = table.raw_extents();
+        used.push(Extent(MIB, 54 * MIB));
+        let img = with_fs(
+            image(size, 512, table, core_format::extent::normalize(used)),
+            FsType::Ext,
+        );
+        let (out, g) = grow_restore(&d, &img, 200 * MIB + 512);
+        let g = g.unwrap();
+        assert_eq!(g.start + g.new_length, 200 * MIB);
+        let t = read_table(&Bytes(&out), out.len() as u64, 512).unwrap();
+        assert_eq!(t.partitions[1].length, 195 * MIB);
+        assert_eq!(t.partitions[0], img.partition_table.partitions[0]);
+        assert_eq!(
+            &out[440..444],
+            &0x1234u32.to_le_bytes(),
+            "disk signature kept"
+        );
+        assert!(out[(55 * MIB - 512) as usize..(55 * MIB) as usize]
+            .iter()
+            .all(|&b| b == 0xCD));
     }
 }

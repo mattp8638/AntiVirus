@@ -106,6 +106,7 @@ pub fn write_vhdx(
                 workers: 4,
                 zero_fill: false,
                 fit: false,
+                grow: false,
             },
             &ctx.ctl,
             &cb,
@@ -257,6 +258,7 @@ fn run_target(
             device,
             disk,
             confirm,
+            grow,
         } => {
             if confirm != device {
                 bail!("the typed confirmation does not match the target device");
@@ -280,6 +282,7 @@ fn run_target(
                     workers: 4,
                     zero_fill: true,
                     fit: true,
+                    grow: *grow,
                 },
                 &ctx.ctl,
                 &cb,
@@ -319,6 +322,16 @@ fn run_target(
                     ));
                 }
             }
+            // The file system of the grown partition (phase-5-grow-clone).
+            if let Some(g) = &r.grown {
+                rep.progress("growing the file system", 1, 1, device);
+                let gr = engine::grow::grow_filesystem(Path::new(device), g);
+                if !gr.filesystem_grown {
+                    u.warnings.extend(gr.notes.iter().skip(1).cloned());
+                }
+                result["grow"] = serde_json::to_value(&gr)?;
+            }
+            u.warnings.extend(r.notes.iter().cloned());
             // Windows on different hardware: its storage drivers (design:
             // phase-5-hardware).
             if ctx.cfg.role == "recovery" {

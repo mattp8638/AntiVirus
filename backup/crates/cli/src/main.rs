@@ -70,6 +70,36 @@ enum Cmd {
     /// Restore an image.
     #[command(subcommand)]
     Restore(RestoreCmd),
+    /// Copy a disk straight onto another (no repository).
+    Clone(CloneArgs),
+}
+
+#[derive(Args)]
+struct CloneArgs {
+    /// Disk to copy: a block device or image file not in use (or with --live).
+    #[arg(long)]
+    source: PathBuf,
+    /// Disk to overwrite. Everything on it is lost.
+    #[arg(long)]
+    target: PathBuf,
+    /// Confirm overwriting the target. Required.
+    #[arg(long)]
+    yes: bool,
+    /// The target may be a different size (GPT moved to its end; a smaller
+    /// disk when the partitions fit).
+    #[arg(long)]
+    fit: bool,
+    /// Give a larger target's extra space to the last partition and grow its
+    /// file system (implies --fit).
+    #[arg(long)]
+    grow: bool,
+    /// Add the fallback UEFI boot loader on the copy if it is missing.
+    #[arg(long)]
+    boot_fixup: bool,
+    /// The source is in use: read it through a snapshot (Linux: LVM;
+    /// Windows: VSS, the system disk).
+    #[arg(long)]
+    live: bool,
 }
 
 #[derive(Subcommand)]
@@ -122,17 +152,27 @@ struct CommonBackup {
 
 #[derive(Subcommand)]
 enum BackupCmd {
-    /// Image the running Windows system (VSS, application-consistent).
+    /// Image the running system: Windows through VSS (application-consistent),
+    /// Linux through LVM snapshots and frozen copies (crash-consistent).
     System {
         #[command(flatten)]
         common: CommonBackup,
-        /// Also include this physical disk number. Repeatable.
+        /// Windows: also include this physical disk number. Repeatable.
         #[arg(long = "include-disk")]
         include_disk: Vec<u32>,
         /// Use the VSS FULL backup type (writers may truncate logs).
         /// Default is COPY, which leaves other backup tools' chains intact.
         #[arg(long)]
         vss_full: bool,
+        /// Linux: image these whole disks instead of the ones holding the
+        /// system's mounts. Repeatable.
+        #[arg(long = "disk")]
+        disks: Vec<PathBuf>,
+        /// Linux: read what cannot be snapshotted live (a large non-LVM
+        /// root, LUKS, RAID) and mark the image inconsistent, instead of
+        /// refusing.
+        #[arg(long)]
+        allow_inconsistent: bool,
     },
     /// Image block devices or raw image files that are not in use.
     Disk {
@@ -204,6 +244,10 @@ enum RestoreCmd {
         /// EFI system partition if it is missing (for new hardware).
         #[arg(long)]
         boot_fixup: bool,
+        /// On a larger target, give the extra space to the last partition
+        /// and grow its file system (implies --fit).
+        #[arg(long)]
+        grow: bool,
         #[arg(long, default_value_t = 4)]
         workers: usize,
     },
@@ -329,7 +373,28 @@ fn run(ctx: &Ctx, cmd: Cmd) -> R<Outcome> {
             common,
             include_disk,
             vss_full,
-        }) => backup_system(ctx, common, include_disk, vss_full),
+            disks,
+            allow_inconsistent,
+        }) => {
+            if cfg!(windows) && (!disks.is_empty() || allow_inconsistent) {
+                return Err(CliError::usage(
+                    "--disk and --allow-inconsistent are for Linux; on Windows use --include-disk",
+                ));
+            }
+            if !cfg!(windows) && (!include_disk.is_empty() || vss_full) {
+                return Err(CliError::usage(
+                    "--include-disk and --vss-full are for Windows; on Linux use --disk",
+                ));
+            }
+            backup_system(
+                ctx,
+                common,
+                include_disk,
+                vss_full,
+                disks,
+                allow_inconsistent,
+            )
+        }
         Cmd::Image(ImageCmd::List) => image_list(ctx),
         Cmd::Image(ImageCmd::Show { image }) => {
             let repo = open_repo(ctx)?;
@@ -339,6 +404,7 @@ fn run(ctx: &Ctx, cmd: Cmd) -> R<Outcome> {
             Ok(Outcome::new(&m, human))
         }
         Cmd::Verify(a) => verify(ctx, a),
+        Cmd::Clone(a) => clone(ctx, a),
         Cmd::Restore(RestoreCmd::Disk {
             image,
             disk,
@@ -347,6 +413,7 @@ fn run(ctx: &Ctx, cmd: Cmd) -> R<Outcome> {
             no_zero_fill,
             fit,
             boot_fixup,
+            grow,
             workers,
         }) => restore(
             ctx,
@@ -356,8 +423,9 @@ fn run(ctx: &Ctx, cmd: Cmd) -> R<Outcome> {
             yes,
             RestoreFlags {
                 zero_fill: !no_zero_fill,
-                fit,
+                fit: fit || grow,
                 boot_fixup,
+                grow,
             },
             workers,
         ),
@@ -761,6 +829,8 @@ fn backup_system(
     common: CommonBackup,
     include_disk: Vec<u32>,
     vss_full: bool,
+    _disks: Vec<PathBuf>,
+    _allow_inconsistent: bool,
 ) -> R<Outcome> {
     let repo = if common.dry_run {
         None
@@ -810,10 +880,101 @@ fn backup_system(
     Ok(out)
 }
 
-#[cfg(not(windows))]
-fn backup_system(_ctx: &Ctx, _c: CommonBackup, _d: Vec<u32>, _f: bool) -> R<Outcome> {
+#[cfg(target_os = "linux")]
+fn backup_system(
+    ctx: &Ctx,
+    common: CommonBackup,
+    _include_disk: Vec<u32>,
+    _vss_full: bool,
+    disks: Vec<PathBuf>,
+    allow_inconsistent: bool,
+) -> R<Outcome> {
+    use snapshot_linux::live;
+    let state = PathBuf::from("/var/lib/fenrir-backup");
+    let _ = std::fs::create_dir_all(&state);
+    for l in live::remove_leftover_snapshots(&state) {
+        eprintln!("{l}");
+    }
+    let repo = if common.dry_run {
+        None
+    } else {
+        Some(open_repo(ctx)?)
+    };
+    if !ctx.json {
+        eprintln!("Taking snapshots...");
+    }
+    let temp = if Path::new("/var/tmp").is_dir() {
+        PathBuf::from("/var/tmp")
+    } else {
+        std::env::temp_dir()
+    };
+    let lb = live::prepare(&live::LiveOptions {
+        disks,
+        allow_inconsistent,
+        state_dir: state,
+        temp_dir: temp,
+        exclude_paths: ctx.repo.iter().filter(|p| p.is_dir()).cloned().collect(),
+    })
+    .map_err(|e| CliError::new(ExitCode::Safety, e.to_string()))?;
+    if common.dry_run {
+        let out = dry_run(&lb.sources());
+        let w = lb.warnings.clone();
+        let finish = lb.finish();
+        let mut out = out?;
+        out.warnings.splice(0..0, w);
+        if let Err(e) = finish {
+            out.warnings.push(e);
+        }
+        return Ok(out);
+    }
+    let repo = repo.expect("opened when not a dry run");
+    let machine_id = local_machine_id();
+    if machine_id.is_empty() {
+        return Err(CliError::usage(
+            "could not determine a machine ID (/etc/machine-id)",
+        ));
+    }
+    let meta = engine::ImageMeta {
+        machine: MachineInfo {
+            machine_id,
+            hostname: hostname(),
+        },
+        consistency: lb.consistency,
+        os: lb.os.clone(),
+        boot: lb.boot.clone(),
+        drivers: vec![],
+        label: common.label.clone(),
+        warnings: lb.warnings.clone(),
+        vm: None,
+    };
+    let pr = progress_printer(ctx.json);
+    let result = engine::backup(
+        &repo,
+        &lb.sources(),
+        meta,
+        &backup_options(&common),
+        &JobControl::new(),
+        &pr,
+    );
+    let finish = lb.finish();
+    let mut out = report_outcome(result?);
+    if let Err(e) = finish {
+        out.warnings.push(format!("image stored, but {e}"));
+    }
+    Ok(out)
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn backup_system(
+    _ctx: &Ctx,
+    _c: CommonBackup,
+    _d: Vec<u32>,
+    _f: bool,
+    _l: Vec<PathBuf>,
+    _a: bool,
+) -> R<Outcome> {
     Err(CliError::usage(
-        "`backup system` uses VSS and runs on Windows. On Linux, image unmounted disks with `backup disk` (live Linux snapshots arrive in a later release).",
+        "`backup system` runs on Windows (VSS) and Linux (LVM snapshots). Here, image unmounted disks with `backup disk`.",
     ))
 }
 
@@ -1063,14 +1224,67 @@ struct RestoreFlags {
     zero_fill: bool,
     fit: bool,
     boot_fixup: bool,
+    grow: bool,
 }
 
 #[derive(serde::Serialize)]
-struct RestoreOutput {
+struct RestoreOutput<R: serde::Serialize> {
     #[serde(flatten)]
-    report: engine::RestoreReport,
+    report: R,
     #[serde(skip_serializing_if = "Option::is_none")]
     boot: Option<engine::bootfix::BootFix>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    grow: Option<engine::grow::GrowReport>,
+}
+
+/// After a disk was written: fallback boot loader, Windows re-reading the
+/// disk, the grown file system. Appends to `human` and `warnings`.
+#[allow(clippy::too_many_arguments)]
+fn after_write(
+    target: &Path,
+    d: &core_format::manifest::DiskImage,
+    boot_fixup: bool,
+    grown: Option<&engine::fit::Grown>,
+    #[cfg(windows)] lock: Option<snapshot_win::win::disks::DiskLock>,
+    human: &mut String,
+    warnings: &mut Vec<String>,
+) -> R<(
+    Option<engine::bootfix::BootFix>,
+    Option<engine::grow::GrowReport>,
+)> {
+    let boot = if boot_fixup {
+        let b = engine::bootfix::fix_restored_disk(target, d)?;
+        match &b {
+            Some(b) if !b.added.is_empty() => {
+                *human += &format!("Added the fallback boot loader: {}.\n", b.added.join(", "))
+            }
+            Some(_) => *human += "The disk already has a fallback boot loader.\n",
+            None => *human += "No EFI system partition on this disk; nothing to fix.\n",
+        }
+        b
+    } else {
+        None
+    };
+    #[cfg(windows)]
+    if let Some(l) = lock {
+        if let Err(e) = l.finish() {
+            *human +=
+                &format!("Windows did not re-read the disk ({e}); restart before using it.\n");
+        }
+    }
+    let grow = grown.map(|g| {
+        let r = engine::grow::grow_filesystem(target, g);
+        for n in &r.notes {
+            *human += &format!("{n}.\n");
+        }
+        if r.filesystem_grown {
+            *human += "Its file system fills the partition.\n";
+        } else {
+            warnings.extend(r.notes.iter().skip(1).cloned());
+        }
+        r
+    });
+    Ok((boot, grow))
 }
 
 fn restore(
@@ -1086,6 +1300,7 @@ fn restore(
         zero_fill,
         fit,
         boot_fixup,
+        grow,
     } = flags;
     let repo = open_repo(ctx)?;
     let id = repo.resolve_image_id(image)?;
@@ -1148,6 +1363,7 @@ fn restore(
             workers,
             zero_fill: zero_fill || t.is_block_device,
             fit,
+            grow,
         },
         &JobControl::new(),
         &pr,
@@ -1163,28 +1379,211 @@ fn restore(
         r.target,
         human_bytes(r.bytes_written)
     );
-    let boot = if boot_fixup {
-        let b = engine::bootfix::fix_restored_disk(target, d)?;
-        match &b {
-            Some(b) if !b.added.is_empty() => {
-                human += &format!("Added the fallback boot loader: {}.\n", b.added.join(", "))
-            }
-            Some(_) => human += "The restored disk already has a fallback boot loader.\n",
-            None => human += "No EFI system partition on this disk; nothing to fix.\n",
-        }
-        b
-    } else {
-        None
+    let mut warnings = r.notes.clone();
+    let (boot, grow) = after_write(
+        target,
+        d,
+        boot_fixup,
+        r.grown.as_ref(),
+        #[cfg(windows)]
+        lock,
+        &mut human,
+        &mut warnings,
+    )?;
+    Ok(Outcome::new(
+        &RestoreOutput {
+            report: r,
+            boot,
+            grow,
+        },
+        human,
+    )
+    .with_warnings(warnings))
+}
+
+fn same_disk(a: &Path, b: &Path) -> bool {
+    let c = |p: &Path| {
+        std::fs::canonicalize(p)
+            .map(|x| x.display().to_string())
+            .unwrap_or_else(|_| p.display().to_string())
+            .to_ascii_lowercase()
     };
+    c(a) == c(b)
+}
+
+/// Something to undo after a live copy (release a snapshot); returns an error text.
+type Release = Box<dyn FnOnce() -> Option<String>>;
+
+/// An in-use disk through a snapshot: LVM on Linux.
+#[cfg(target_os = "linux")]
+fn live_source(
+    disk: &Path,
+    warnings: &mut Vec<String>,
+    release: &mut Vec<Release>,
+) -> R<Box<dyn engine::DiskSource>> {
+    let state = PathBuf::from("/var/lib/fenrir-backup");
+    let _ = std::fs::create_dir_all(&state);
+    let mut lb = snapshot_linux::live::prepare(&snapshot_linux::live::LiveOptions {
+        disks: vec![disk.to_path_buf()],
+        allow_inconsistent: false,
+        state_dir: state,
+        temp_dir: PathBuf::from("/var/tmp"),
+        exclude_paths: vec![],
+    })
+    .map_err(|e| CliError::new(ExitCode::Safety, e.to_string()))?;
+    warnings.extend(lb.warnings.clone());
+    let src = lb.sources.remove(0);
+    release.push(Box::new(move || lb.finish().err()));
+    Ok(Box::new(src))
+}
+
+/// An in-use disk through a snapshot: VSS on Windows (the system disk).
+#[cfg(windows)]
+fn live_source(
+    disk: &Path,
+    _warnings: &mut Vec<String>,
+    release: &mut Vec<Release>,
+) -> R<Box<dyn engine::DiskSource>> {
+    let mut sb = snapshot_win::prepare_system_backup(&snapshot_win::VssOptions {
+        full_backup_type: false,
+        extra_disks: vec![],
+    })
+    .map_err(|e| CliError::new(ExitCode::Error, e.to_string()))?;
+    let want = disk.to_string_lossy().to_ascii_lowercase();
+    let i = sb
+        .disks
+        .iter()
+        .position(|d| d.info.device.to_ascii_lowercase() == want)
+        .ok_or_else(|| {
+            CliError::usage(format!(
+                "{} is not the system disk; --live copies the disk Windows runs from",
+                disk.display()
+            ))
+        })?;
+    let src = sb.disks.remove(i);
+    release.push(Box::new(move || {
+        sb.finish(true).err().map(|e| e.to_string())
+    }));
+    Ok(Box::new(src))
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn live_source(
+    _disk: &Path,
+    _warnings: &mut Vec<String>,
+    _release: &mut Vec<Release>,
+) -> R<Box<dyn engine::DiskSource>> {
+    Err(CliError::usage("--live works on Linux and Windows"))
+}
+
+fn clone(ctx: &Ctx, a: CloneArgs) -> R<Outcome> {
+    if same_disk(&a.source, &a.target) {
+        return Err(CliError::usage(
+            "the source and the target are the same disk",
+        ));
+    }
+    if !a.yes {
+        return Err(CliError::new(
+            ExitCode::ConfirmationRequired,
+            format!(
+                "this will overwrite {} with a copy of {}. Re-run with --yes to confirm.",
+                a.target.display(),
+                a.source.display()
+            ),
+        ));
+    }
+    // The source, plus whatever must be released afterwards.
+    let mut release: Vec<Release> = Vec::new();
+    let mut warnings = Vec::new();
+    let source: Box<dyn engine::DiskSource> = if a.live {
+        live_source(&a.source, &mut warnings, &mut release)?
+    } else {
+        let o = snapshot_linux::open_disk(&a.source, false).map_err(|e| {
+            CliError::new(
+                if e.is::<snapshot_linux::InUse>() {
+                    ExitCode::Safety
+                } else {
+                    ExitCode::Error
+                },
+                format!("{e} (or copy it with --live)"),
+            )
+        })?;
+        Box::new(o.source)
+    };
+    let fit = a.fit || a.grow;
+    let confirm = DestructiveConfirmation::confirmed_by_user(&a.target);
+    let src_size = source.info().size;
     #[cfg(windows)]
-    if let Some(l) = lock {
-        if let Err(e) = l.finish() {
-            human += &format!(
-                "Windows did not re-read the restored disk ({e}); restart before using it.\n"
-            );
+    let (t, lock) = if engine::target::is_windows_device_path(&a.target.to_string_lossy()) {
+        let (t, l) = snapshot_win::win::disks::take_over(&a.target.to_string_lossy(), &confirm)?;
+        (t, Some(l))
+    } else {
+        (
+            FileTarget::open(&a.target, if fit { 1 } else { src_size }, true, &confirm)?,
+            None,
+        )
+    };
+    #[cfg(not(windows))]
+    let t = FileTarget::open(&a.target, if fit { 1 } else { src_size }, true, &confirm)?;
+    let tty = std::io::stderr().is_terminal() && !ctx.json;
+    let last = std::sync::Mutex::new(Instant::now());
+    let pr = |done: u64, total: u64| {
+        if tty {
+            let mut l = last.lock().unwrap();
+            if l.elapsed() > Duration::from_millis(250) {
+                *l = Instant::now();
+                eprint!(
+                    "\rcopying: {} / {}   ",
+                    human_bytes(done),
+                    human_bytes(total)
+                );
+            }
+        }
+    };
+    let result = engine::clone::clone_disk(
+        source.as_ref(),
+        &t,
+        &engine::clone::CloneOptions { fit, grow: a.grow },
+        &JobControl::new(),
+        &pr,
+    );
+    if tty {
+        eprintln!();
+    }
+    drop(t);
+    drop(source);
+    for r in release {
+        if let Some(e) = r() {
+            warnings.push(format!("releasing the snapshot: {e}"));
         }
     }
-    Ok(Outcome::new(&RestoreOutput { report: r, boot }, human))
+    let (r, d) = result?;
+    let mut human = format!(
+        "Copied {} to {} ({} copied).\n",
+        a.source.display(),
+        a.target.display(),
+        human_bytes(r.bytes_copied)
+    );
+    warnings.extend(r.notes.iter().cloned());
+    let (boot, grow) = after_write(
+        &a.target,
+        &d,
+        a.boot_fixup,
+        r.grown.as_ref(),
+        #[cfg(windows)]
+        lock,
+        &mut human,
+        &mut warnings,
+    )?;
+    Ok(Outcome::new(
+        &RestoreOutput {
+            report: r,
+            boot,
+            grow,
+        },
+        human,
+    )
+    .with_warnings(warnings))
 }
 
 fn human_bytes(n: u64) -> String {

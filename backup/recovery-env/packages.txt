@@ -31,6 +31,8 @@ parted
 dosfstools
 e2fsprogs
 ntfs-3g
+# Growing a restored LVM physical volume (pvresize)
+lvm2
 exfatprogs
 cifs-utils
 util-linux

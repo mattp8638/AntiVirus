@@ -275,6 +275,7 @@ fn restore_image_as_vhdx() {
             workers: 3,
             zero_fill: false,
             fit: false,
+            grow: false,
         },
         &engine::JobControl::new(),
         &|_, _| {},

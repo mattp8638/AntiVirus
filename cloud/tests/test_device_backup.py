@@ -134,6 +134,8 @@ def test_disk_restore_needs_typed_confirmation_and_reauth(client, admin, tenant)
     assert client.post("/api/console/backup/restores", headers=step, json=body).status_code == 200
     spec = heartbeat(client, h)["jobs"][0]
     assert spec["kind"]["type"] == "restore" and spec["kind"]["target"]["confirm"] == target["device"]
+    # Use the whole disk is on unless turned off (phase-5-grow-clone).
+    assert spec["kind"]["target"]["grow"] is True
 
 
 def test_tenants_are_isolated_and_reenrol_with_new_key_drops_access(client, admin, tenant):

@@ -80,6 +80,22 @@ starts, with the VM's network disconnected:
   each time.
 * For a lasting copy rather than a test, use **Restore › A new Hyper-V VM** on a Hyper-V host instead.
 
+## Live backups of Linux servers
+
+On Linux the agent backs up the running system (**Whole system** in a plan or Back up now), like VSS on Windows:
+every disk holding the system's file systems is imaged while it runs. Logical volumes are read through LVM snapshots
+(LVM freezes each file system while taking its snapshot), `/boot` and the EFI partition are copied while frozen, swap
+keeps only its header, and the snapshots are removed afterwards (also after a crash, on the agent's next start; other
+tools' snapshots are never touched). The image is crash-consistent. The volume group needs free space for the
+snapshots during the backup: 10 % of each logical volume, at least 64 MiB; the job says how much is missing. A
+system that cannot be snapshotted (a root file system without LVM, LUKS, software RAID) is refused with the reason:
+back it up from the recovery media. Disks that only hold the repository are left out. Details:
+`backup/docs/design/phase-6.md`.
+
+**Cloning a disk** without a repository (an upgrade to a bigger disk, for instance) is done with the agent's CLI:
+`fenrir-backup clone --source /dev/sda --target /dev/sdb --yes --grow [--live]` (Windows: `\\.\PhysicalDriveN`);
+see `backup/docs/CLI.md` and `backup/docs/design/phase-5-grow-clone.md`.
+
 ## Restoring individual files
 
 **Images & restore › Browse files** (also on a device's Backup tab) opens any backup as a file explorer: pick the
@@ -123,8 +139,9 @@ For a machine that no longer starts, has a new disk, or is replaced by new hardw
    to it through the NAS gateway, if the repository has one.
 4. When the restore finishes, remove the stick and restart.
 
-The target disk may be larger (the partition table moves to its end; extend the last partition afterwards) or
-smaller if every partition fits. UEFI systems get the fallback boot loader and a firmware boot entry; if the machine
+The target disk may be larger (the partition table moves to its end, and with **Use the whole disk**, on by default,
+the last partition gets the extra space and its NTFS, ext4 or LVM file system is grown; XFS and Btrfs get the space
+and a note to grow them once mounted) or smaller if every partition fits. UEFI systems get the fallback boot loader and a firmware boot entry; if the machine
 started in a different firmware mode from the backed-up system, the job says which setting to change. Sessions do not
 raise offline alerts and are removed a week after they were last seen. The recovery screen also restores without a
 server, from a repository on a USB disk or an SMB share.

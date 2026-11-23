@@ -301,8 +301,9 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             Ok(u)
         }
         JobKind::BackupSystem { settings } => {
-            let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
-            backup_system(ctx, &repo, settings, rep)
+            let access = access.ok_or_else(|| anyhow!("no repository"))?;
+            let repo = open_repo(ctx, access)?;
+            backup_system(ctx, &repo, &access.path, settings, rep)
         }
         JobKind::BackupDisks { paths, settings } => {
             let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
@@ -530,6 +531,7 @@ fn finish_backup(
 fn backup_system(
     ctx: &Ctx,
     repo: &Repository,
+    _repo_path: &str,
     s: &BackupSettings,
     rep: &Reporter,
 ) -> anyhow::Result<JobUpdate> {
@@ -554,14 +556,74 @@ fn backup_system(
     finish_backup(repo, vec![r], warnings, s, rep)
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+fn backup_system(
+    ctx: &Ctx,
+    repo: &Repository,
+    repo_path: &str,
+    s: &BackupSettings,
+    rep: &Reporter,
+) -> anyhow::Result<JobUpdate> {
+    use snapshot_linux::live;
+    rep.progress("snapshot", 0, 1, "taking LVM snapshots");
+    let temp = if Path::new("/var/tmp").is_dir() {
+        std::path::PathBuf::from("/var/tmp")
+    } else {
+        std::env::temp_dir()
+    };
+    let lb = live::prepare(&live::LiveOptions {
+        disks: vec![],
+        allow_inconsistent: false,
+        state_dir: crate::config::state_dir(),
+        temp_dir: temp,
+        // A repository on a local disk: that disk is not imaged.
+        exclude_paths: [std::path::PathBuf::from(repo_path)]
+            .into_iter()
+            .filter(|p| p.is_absolute() && p.is_dir())
+            .collect(),
+    })
+    .map_err(|e| anyhow!("{e}"))?;
+    let meta = ImageMeta {
+        machine: MachineInfo {
+            machine_id: ctx.cfg.machine_id.clone(),
+            hostname: crate::inventory::hostname(),
+        },
+        consistency: lb.consistency,
+        os: lb.os.clone(),
+        boot: lb.boot.clone(),
+        drivers: vec![],
+        label: s.label.clone(),
+        warnings: lb.warnings.clone(),
+        vm: None,
+    };
+    let cb = progress_cb(rep, String::new());
+    let result = engine::backup(repo, &lb.sources(), meta, &options(s), &ctx.ctl, &cb);
+    let finish = lb.finish();
+    let r = result?;
+    let mut warnings = vec![];
+    if let Err(e) = finish {
+        warnings.push(format!("image stored, but {e}"));
+    }
+    finish_backup(repo, vec![r], warnings, s, rep)
+}
+
+/// Remove LVM snapshots a crashed backup left behind (only ones we recorded).
+#[cfg(target_os = "linux")]
+pub fn cleanup_leftover_snapshots(dir: &Path) {
+    for l in snapshot_linux::live::remove_leftover_snapshots(dir) {
+        crate::log::info(&l);
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn backup_system(
     _ctx: &Ctx,
     _repo: &Repository,
+    _repo_path: &str,
     _s: &BackupSettings,
     _rep: &Reporter,
 ) -> anyhow::Result<JobUpdate> {
-    bail!("system backups of a running OS are available on Windows; on this platform back up disks")
+    bail!("system backups of a running OS are available on Windows and Linux; on this platform back up disks")
 }
 
 /// Snapshot IDs created but not yet destroyed, so a crash mid-backup does

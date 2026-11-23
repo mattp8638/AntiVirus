@@ -1,9 +1,14 @@
-//! Raw disk / image file sources.
+//! Linux image sources.
 //!
-//! Phase 1 scope: image an unmounted block device or a raw image file.
-//! LVM, btrfs and ZFS snapshots and fsfreeze arrive in Phase 6; until then
-//! a mounted device can only be imaged with an explicit opt-in, and the
-//! image is marked `inconsistent`.
+//! `open_disk`: an unmounted block device or a raw image file (a mounted
+//! device only with an explicit opt-in, marked `inconsistent`).
+//! `live::prepare`: the running system, consistent through LVM snapshots and
+//! frozen copies (docs/design/phase-6.md).
+
+pub mod blk;
+#[cfg(target_os = "linux")]
+pub mod live;
+pub mod lvm;
 
 use std::fs::File;
 use std::io::{self, Seek, SeekFrom};

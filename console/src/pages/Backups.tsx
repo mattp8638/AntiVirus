@@ -762,7 +762,8 @@ function RestoreDialog({ image, agents, repos, onClose }: { image: Image; agents
   const [device, setDevice] = useState("");
   const [confirm, setConfirm] = useState("");
   const [disk, setDisk] = useState(0);
-  const target = type === "vhdx" ? { type, directory } : type === "hyperv_vm" ? { type, name: vmName, directory, start: false } : { type, device, disk, confirm };
+  const [grow, setGrow] = useState(true);
+  const target = type === "vhdx" ? { type, directory } : type === "hyperv_vm" ? { type, name: vmName, directory, start: false } : { type, device, disk, confirm, grow };
   const ok = type === "disk" ? device && confirm === device : directory.trim() && (type !== "hyperv_vm" || vmName.trim());
   const go = () => run(async () => {
     if (needsAccess && agent) {
@@ -805,6 +806,10 @@ function RestoreDialog({ image, agents, repos, onClose }: { image: Image; agents
       {type === "disk" && agent?.role === "recovery" && agent.firmware && <p className="small muted" style={{ marginTop: 8 }}>
         {agent.name} started in {agent.firmware === "uefi" ? `UEFI mode${agent.secureBoot ? " with Secure Boot" : ""}` : "legacy BIOS mode"}. The disk may be larger, or smaller if the backed-up partitions fit; a UEFI system gets the fallback boot loader and a firmware boot entry, and the job says if the firmware mode must be changed.
       </p>}
+      {type === "disk" && <label className="row small" style={{ gap: 6, marginTop: 8 }}>
+        <input type="checkbox" checked={grow} onChange={(e) => setGrow(e.target.checked)} />
+        Use the whole disk: on a larger disk the last partition gets the extra space and its file system is grown (NTFS, ext4, LVM; XFS and Btrfs once mounted)
+      </label>}
       {type === "disk" && <div className="card warn-card" style={{ marginTop: 10 }}>
         Everything on <b className="mono">{device || "the target device"}</b> is replaced. Type the device again to confirm. You will also be asked for your password.
         <input style={{ marginTop: 6, width: "100%" }} value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder={device} />

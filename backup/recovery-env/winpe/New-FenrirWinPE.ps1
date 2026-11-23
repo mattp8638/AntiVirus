@@ -156,6 +156,8 @@ if ($UsbDrive) {
     Write-Host "Done: $UsbDrive"
 } else {
     $Out = [IO.Path]::GetFullPath($Out)
+    # MakeWinPEMedia (oscdimg) does not create the folder.
+    New-Item -ItemType Directory -Force (Split-Path $Out) | Out-Null
     Write-Host "== ISO"
     Invoke-Adk "MakeWinPEMedia /ISO /F `"$Work`" `"$Out`""
     $h = (Get-FileHash $Out -Algorithm SHA256).Hash.ToLower()

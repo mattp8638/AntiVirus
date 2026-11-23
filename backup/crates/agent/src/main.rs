@@ -315,6 +315,8 @@ pub fn run_loop(stop: Arc<AtomicBool>) -> anyhow::Result<LoopExit> {
     if hyperv::is_host(&cfg.role) {
         jobs::cleanup_leftover_checkpoints(&dir);
     }
+    #[cfg(target_os = "linux")]
+    jobs::cleanup_leftover_snapshots(&dir);
     update::cleanup_old();
     let mut failed_update: Option<(String, Instant)> = None;
 
