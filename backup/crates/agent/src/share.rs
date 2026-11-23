@@ -114,7 +114,7 @@ struct Opened {
     mount: Option<std::path::PathBuf>,
 }
 
-fn open_credentials(key: &AgentKey, sealed: &Sealed) -> anyhow::Result<ShareCredentials> {
+pub fn open_credentials(key: &AgentKey, sealed: &Sealed) -> anyhow::Result<ShareCredentials> {
     let pt = key
         .open(sealed)
         .map_err(|e| anyhow!("{e}. Enter the share sign-in again on the Repositories page."))?;

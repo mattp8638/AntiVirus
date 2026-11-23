@@ -46,13 +46,27 @@ pub fn open_read(path: &str) -> io::Result<File> {
     open_with(path, GENERIC_READ.0)
 }
 
+/// Open a disk or volume for writing (restore only, after the caller's
+/// checks and the administrator's confirmation).
+pub fn open_rw(path: &str) -> io::Result<File> {
+    open_with(
+        path,
+        GENERIC_READ.0 | windows::Win32::Foundation::GENERIC_WRITE.0,
+    )
+}
+
 /// Open a file for metadata queries only (no data access).
 pub fn open_attributes(path: &str) -> io::Result<File> {
     open_with(path, FILE_READ_ATTRIBUTES.0)
 }
 
 /// DeviceIoControl; returns (bytes returned, more data pending).
-fn ioctl(f: &File, code: u32, input: &[u8], out: &mut [u8]) -> io::Result<(usize, bool)> {
+pub(crate) fn ioctl(
+    f: &File,
+    code: u32,
+    input: &[u8],
+    out: &mut [u8],
+) -> io::Result<(usize, bool)> {
     let mut n = 0u32;
     let r = unsafe {
         DeviceIoControl(

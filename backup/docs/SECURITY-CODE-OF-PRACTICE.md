@@ -51,8 +51,8 @@ promises of a backup product:
 | Client-side encryption, Argon2id passphrase + offline recovery key | Done (Phase 1) |
 | Integrity: AEAD on every object, keyed hash on every chunk, Ed25519-signed manifests | Done (Phase 1) |
 | Verify: quick / sampled / full re-hash | Done (Phase 1) |
-| Create-only writes; append-only server mode with separate admin credential | Create-only Done; server mode Phase 4 |
-| S3 Object Lock (compliance) retention | Phase 4 (storage milestone) |
+| Create-only writes; append-only server mode with separate admin credential | Done: create-only everywhere (S3: `If-None-Match`); NAS gateway clients can only add data; S3 keys without delete rights for machines that only back up |
+| S3 Object Lock (compliance) retention | Done: every object locked on write, locks of objects in use extended by maintenance, deletion only after expiry (`docs/design/phase-4-storage.md`) |
 | Change-ratio / entropy anomaly alert holding pruning | Done: anomaly puts the repository on hold until an administrator releases it (typed confirmation) |
 | Repository locks so pruning never deletes data a running backup reuses | Done |
 | Agent self-update verified by SHA-256 over the pinned connection | Done |

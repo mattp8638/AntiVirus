@@ -39,6 +39,11 @@ pub enum Error {
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
 
+    /// The storage keeps the object immutable (S3 Object Lock) until the
+    /// given time; it cannot be deleted yet.
+    #[error("kept by the storage's object lock: {0}")]
+    Retained(String),
+
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 }

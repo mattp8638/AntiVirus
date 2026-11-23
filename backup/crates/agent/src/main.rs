@@ -6,11 +6,13 @@ mod browse;
 mod client;
 mod config;
 mod gateway;
+mod hwfix;
 mod hyperv;
 mod inventory;
 mod jobs;
 mod log;
 mod names;
+mod recovery;
 mod restore;
 mod setup;
 mod share;
@@ -54,6 +56,20 @@ enum Cmd {
     },
     /// Run in the foreground (systemd, launchd, or by hand).
     Run,
+    /// Recovery media: find the server settings, enrol this machine for
+    /// restores (state in RAM) and serve jobs until stopped.
+    Recovery {
+        /// Settings file (default: search the recovery medium and sticks).
+        #[arg(long)]
+        config: Option<std::path::PathBuf>,
+    },
+    /// Recovery media: after a Windows disk was restored to DEVICE, make it
+    /// start on this machine's storage controller (offline registry; prints
+    /// what changed as JSON).
+    PrepareWindows {
+        #[arg(long)]
+        device: String,
+    },
     /// Windows service entry point.
     Service,
     /// Show enrollment and connectivity.
@@ -118,6 +134,10 @@ fn main() {
             Ok(LoopExit::Stopped) => Ok(()),
             Err(e) => Err(e),
         },
+        Cmd::Recovery { config } => recovery::run(config),
+        Cmd::PrepareWindows { device } => hwfix::adapt_restored_disk(&device).map(|r| {
+            println!("{}", serde_json::to_string(&r).unwrap_or_default());
+        }),
         Cmd::Service => service(),
         Cmd::Status => status(),
         Cmd::Install {
@@ -172,6 +192,17 @@ fn stop_on_signal() -> Arc<AtomicBool> {
 }
 
 fn enroll(server: &str, token: &str, pin: &str, role: &str) -> anyhow::Result<()> {
+    enroll_as(server, token, pin, role, None)
+}
+
+/// Enrol; `identity` overrides (hostname, machine id), for recovery media.
+pub fn enroll_as(
+    server: &str,
+    token: &str,
+    pin: &str,
+    role: &str,
+    identity: Option<(&str, &str)>,
+) -> anyhow::Result<()> {
     let server = config::validate_server_url(server)?;
     let detected;
     let role = if role == "auto" {
@@ -182,6 +213,11 @@ fn enroll(server: &str, token: &str, pin: &str, role: &str) -> anyhow::Result<()
     };
     let role =
         AgentRole::parse(role).context("role must be workstation, server, hyperv or auto")?;
+    if role == AgentRole::Recovery && identity.is_none() {
+        anyhow::bail!(
+            "the recovery role is for recovery media: use `fenrir-backup-agent recovery`"
+        );
+    }
     let dir = config::state_dir();
     config::ensure_private_dir(&dir)?;
     // Keep an existing key pair so repository access survives reinstalls.
@@ -190,12 +226,15 @@ fn enroll(server: &str, token: &str, pin: &str, role: &str) -> anyhow::Result<()
         .flatten()
         .map(|s| s.key)
         .unwrap_or_else(protocol::seal::AgentKey::generate);
-    let machine_id = inventory::machine_id()?;
+    let machine_id = match identity {
+        Some((_, m)) => m.to_string(),
+        None => inventory::machine_id()?,
+    };
     let client = Client::new(&server, pin, None)?;
     let req = EnrollRequest {
         protocol: PROTOCOL_VERSION,
         token: token.to_string(),
-        hostname: inventory::hostname(),
+        hostname: identity.map_or_else(inventory::hostname, |(h, _)| h.to_string()),
         machine_id: machine_id.clone(),
         os: inventory::os(),
         role,
@@ -276,6 +315,8 @@ pub fn run_loop(stop: Arc<AtomicBool>) -> anyhow::Result<LoopExit> {
     if hyperv::is_host(&cfg.role) {
         jobs::cleanup_leftover_checkpoints(&dir);
     }
+    #[cfg(target_os = "linux")]
+    jobs::cleanup_leftover_snapshots(&dir);
     update::cleanup_old();
     let mut failed_update: Option<(String, Instant)> = None;
 
@@ -383,9 +424,11 @@ pub fn run_loop(stop: Arc<AtomicBool>) -> anyhow::Result<LoopExit> {
                 }
                 // Update only between jobs, and do not retry a failing
                 // build more than hourly.
-                if let (None, Some(u), true) =
-                    (&running, &hb.update, req.inventory.running_vms.is_empty())
-                {
+                if let (None, Some(u), true) = (
+                    &running,
+                    &hb.update,
+                    req.inventory.running_vms.is_empty() && cfg.role != "recovery",
+                ) {
                     let recently_failed = failed_update.as_ref().is_some_and(|(sha, t)| {
                         sha == &u.sha256 && t.elapsed() < Duration::from_secs(3600)
                     });

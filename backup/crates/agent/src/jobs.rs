@@ -141,8 +141,44 @@ fn secret(key: &AgentKey, access: &RepoAccess) -> anyhow::Result<RepoSecret> {
     Ok(serde_json::from_slice(&pt)?)
 }
 
-/// The repository's storage: its folder, or a gateway (NAS gateway) when the
-/// server routes this machine through one.
+/// S3-compatible storage for `path` (`s3://bucket/prefix`), with the keys
+/// sealed to this machine.
+pub(crate) fn s3_backend(
+    key: &AgentKey,
+    path: &str,
+    s: &protocol::S3Settings,
+    sealed: Option<&protocol::seal::Sealed>,
+) -> anyhow::Result<s3store::S3Backend> {
+    let (bucket, prefix) = s3store::parse_url(path)
+        .ok_or_else(|| anyhow!("{path} is not an s3://bucket/prefix location"))?;
+    let creds = crate::share::open_credentials(
+        key,
+        sealed.ok_or_else(|| {
+            anyhow!("this machine has no access keys for {path}; give it access again")
+        })?,
+    )?;
+    let lock = match s.lock_mode.as_deref() {
+        None | Some("") | Some("none") => None,
+        Some(m) => Some(s3store::Lock {
+            mode: s3store::LockMode::parse(m)
+                .ok_or_else(|| anyhow!("unknown Object Lock mode {m}"))?,
+            days: s.lock_days,
+        }),
+    };
+    Ok(s3store::S3Backend::new(s3store::S3Config {
+        endpoint: s.endpoint.clone(),
+        region: s.region.clone(),
+        bucket,
+        prefix,
+        path_style: s.path_style,
+        access_key: creds.username,
+        secret_key: creds.password,
+        lock,
+    })?)
+}
+
+/// The repository's storage: its folder, S3, or a gateway (NAS gateway) when
+/// the server routes this machine through one.
 fn storage(ctx: &Ctx, access: &RepoAccess, create: bool) -> anyhow::Result<Arc<dyn Backend>> {
     if let Some(route) = &access.gateway {
         let me = uuid::Uuid::parse_str(&ctx.cfg.agent_id).context("agent id")?;
@@ -154,6 +190,16 @@ fn storage(ctx: &Ctx, access: &RepoAccess, create: bool) -> anyhow::Result<Arc<d
             access.repository_id,
             Box::new(transport),
         )?));
+    }
+    if let Some(s) = &access.s3 {
+        let b = s3_backend(ctx.key, &access.path, s, access.sealed_share.as_ref())?;
+        if create && !b.is_empty()? {
+            bail!(
+                "{} already holds data: choose an empty bucket or prefix",
+                access.path
+            );
+        }
+        return Ok(Arc::new(b));
     }
     let path = crate::share::prepare(ctx.key, &access.path, access.sealed_share.as_ref())?;
     Ok(if create {
@@ -255,8 +301,9 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             Ok(u)
         }
         JobKind::BackupSystem { settings } => {
-            let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
-            backup_system(ctx, &repo, settings, rep)
+            let access = access.ok_or_else(|| anyhow!("no repository"))?;
+            let repo = open_repo(ctx, access)?;
+            backup_system(ctx, &repo, &access.path, settings, rep)
         }
         JobKind::BackupDisks { paths, settings } => {
             let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
@@ -420,9 +467,22 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             conflict,
             rep,
         ),
-        JobKind::CheckAccess { path, sealed_share } => {
-            check_access(ctx, path, sealed_share.as_ref())
+        JobKind::CheckAccess {
+            path,
+            sealed_share,
+            s3: Some(s3),
+        } => {
+            let b = s3_backend(ctx.key, path, s3, sealed_share.as_ref())?;
+            let note = b.check()?;
+            let mut u = done(JobState::Succeeded);
+            u.result = Some(
+                json!({ "s3": true, "note": note, "repository": b.exists(core_format::repo::CONFIG_KEY)? }),
+            );
+            Ok(u)
         }
+        JobKind::CheckAccess {
+            path, sealed_share, ..
+        } => check_access(ctx, path, sealed_share.as_ref()),
     }
 }
 
@@ -471,6 +531,7 @@ fn finish_backup(
 fn backup_system(
     ctx: &Ctx,
     repo: &Repository,
+    _repo_path: &str,
     s: &BackupSettings,
     rep: &Reporter,
 ) -> anyhow::Result<JobUpdate> {
@@ -495,14 +556,74 @@ fn backup_system(
     finish_backup(repo, vec![r], warnings, s, rep)
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+fn backup_system(
+    ctx: &Ctx,
+    repo: &Repository,
+    repo_path: &str,
+    s: &BackupSettings,
+    rep: &Reporter,
+) -> anyhow::Result<JobUpdate> {
+    use snapshot_linux::live;
+    rep.progress("snapshot", 0, 1, "taking LVM snapshots");
+    let temp = if Path::new("/var/tmp").is_dir() {
+        std::path::PathBuf::from("/var/tmp")
+    } else {
+        std::env::temp_dir()
+    };
+    let lb = live::prepare(&live::LiveOptions {
+        disks: vec![],
+        allow_inconsistent: false,
+        state_dir: crate::config::state_dir(),
+        temp_dir: temp,
+        // A repository on a local disk: that disk is not imaged.
+        exclude_paths: [std::path::PathBuf::from(repo_path)]
+            .into_iter()
+            .filter(|p| p.is_absolute() && p.is_dir())
+            .collect(),
+    })
+    .map_err(|e| anyhow!("{e}"))?;
+    let meta = ImageMeta {
+        machine: MachineInfo {
+            machine_id: ctx.cfg.machine_id.clone(),
+            hostname: crate::inventory::hostname(),
+        },
+        consistency: lb.consistency,
+        os: lb.os.clone(),
+        boot: lb.boot.clone(),
+        drivers: vec![],
+        label: s.label.clone(),
+        warnings: lb.warnings.clone(),
+        vm: None,
+    };
+    let cb = progress_cb(rep, String::new());
+    let result = engine::backup(repo, &lb.sources(), meta, &options(s), &ctx.ctl, &cb);
+    let finish = lb.finish();
+    let r = result?;
+    let mut warnings = vec![];
+    if let Err(e) = finish {
+        warnings.push(format!("image stored, but {e}"));
+    }
+    finish_backup(repo, vec![r], warnings, s, rep)
+}
+
+/// Remove LVM snapshots a crashed backup left behind (only ones we recorded).
+#[cfg(target_os = "linux")]
+pub fn cleanup_leftover_snapshots(dir: &Path) {
+    for l in snapshot_linux::live::remove_leftover_snapshots(dir) {
+        crate::log::info(&l);
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn backup_system(
     _ctx: &Ctx,
     _repo: &Repository,
+    _repo_path: &str,
     _s: &BackupSettings,
     _rep: &Reporter,
 ) -> anyhow::Result<JobUpdate> {
-    bail!("system backups of a running OS are available on Windows; on this platform back up disks")
+    bail!("system backups of a running OS are available on Windows and Linux; on this platform back up disks")
 }
 
 /// Snapshot IDs created but not yet destroyed, so a crash mid-backup does

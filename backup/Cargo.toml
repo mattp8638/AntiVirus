@@ -12,6 +12,7 @@ members = [
     "crates/protocol",
     "crates/vmboot",
     "crates/filebrowse",
+    "crates/s3store",
 ]
 
 [workspace.package]
@@ -31,6 +32,7 @@ protocol = { path = "crates/protocol" }
 nbd-server = { path = "crates/nbd-server" }
 vmboot = { path = "crates/vmboot" }
 filebrowse = { path = "crates/filebrowse" }
+s3store = { path = "crates/s3store" }
 
 anyhow = "1"
 argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
@@ -39,6 +41,7 @@ blake3 = "1"
 chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
 clap = { version = "4", features = ["derive", "env"] }
 crc32fast = "1"
+fatfs = { version = "0.3.6", default-features = false, features = ["std", "alloc"] }
 ed25519-dalek = { version = "2", features = ["zeroize"] }
 getrandom = "0.2"
 hex = "0.4"

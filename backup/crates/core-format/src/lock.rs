@@ -289,15 +289,23 @@ mod tests {
             Duration::from_millis(30),
         )
         .unwrap();
-        for _ in 0..40 {
+        // Observe until it has refreshed at least twice (a loaded CI runner can be slow to schedule
+        // the refresh thread, so wait on the outcome rather than a fixed number of rounds).
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut rounds = 0;
+        while rounds < 40 || *l.seq.lock().unwrap() < 2 {
             // At every observation exactly one key exists for the lock.
             let locks = list_locks(&*b).unwrap();
             assert_eq!(locks.len(), 1);
             assert!(!locks.values().next().unwrap().is_empty());
             std::thread::sleep(Duration::from_millis(5));
+            rounds += 1;
+            assert!(
+                std::time::Instant::now() < deadline,
+                "refreshed {} times",
+                *l.seq.lock().unwrap()
+            );
         }
-        let seq = *l.seq.lock().unwrap();
-        assert!(seq >= 2, "refreshed {seq} times");
         drop(l);
         assert!(list_locks(&*b).unwrap().is_empty());
     }

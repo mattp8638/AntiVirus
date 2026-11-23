@@ -15,6 +15,7 @@ clap.workspace = true
 core-format.workspace = true
 engine.workspace = true
 rpassword.workspace = true
+s3store.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 snapshot-linux.workspace = true
@@ -24,5 +25,6 @@ uuid.workspace = true
 snapshot-win.workspace = true
 
 [dev-dependencies]
+fatfs.workspace = true
 core-format = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true

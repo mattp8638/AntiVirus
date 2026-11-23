@@ -1,5 +1,6 @@
 //! Windows-only implementation.
 
+pub mod disks;
 pub mod ioctl;
 pub mod source;
 pub mod system;

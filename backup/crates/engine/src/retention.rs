@@ -176,6 +176,10 @@ fn period(rule: &str, t: i64) -> i64 {
 pub struct ForgetReport {
     pub kept: usize,
     pub removed: Vec<Uuid>,
+    /// No longer kept by the policy, but the storage's object lock keeps
+    /// them until it expires; removed by a later run.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub retained: Vec<Uuid>,
     pub decisions: Vec<Decision>,
     pub dry_run: bool,
 }
@@ -202,16 +206,24 @@ pub fn forget(
         .collect();
     let decisions = select(&cands, p);
     let mut removed = Vec::new();
+    let mut retained = Vec::new();
     for d in decisions.iter().filter(|d| !d.keep) {
         if !dry_run {
-            repo.backend()
-                .delete(&format!("manifests/{}", d.image_id))?;
+            match repo.backend().delete(&format!("manifests/{}", d.image_id)) {
+                Ok(()) => {}
+                Err(core_format::Error::Retained(_)) => {
+                    retained.push(d.image_id);
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
         removed.push(d.image_id);
     }
     Ok(ForgetReport {
         kept: decisions.iter().filter(|d| d.keep).count(),
         removed,
+        retained,
         decisions,
         dry_run,
     })
@@ -224,6 +236,10 @@ pub struct PruneReport {
     pub chunks_referenced: usize,
     pub chunks_deleted: usize,
     pub bytes_deleted: u64,
+    /// Unreferenced, but kept by the storage's object lock until it expires.
+    pub chunks_retained: usize,
+    /// Objects whose object lock was moved forward (storage with locks).
+    pub locks_extended: usize,
     pub dry_run: bool,
 }
 
@@ -253,11 +269,42 @@ pub fn prune(repo: &Repository, dry_run: bool, ctl: &JobControl) -> Result<Prune
         if !ctl.checkpoint() {
             return Err(EngineError::Cancelled);
         }
-        r.bytes_deleted += repo.backend().size(k).unwrap_or(0);
+        let size = repo.backend().size(k).unwrap_or(0);
         if !dry_run {
-            repo.backend().delete(k)?;
+            match repo.backend().delete(k) {
+                Ok(()) => {}
+                Err(core_format::Error::Retained(_)) => {
+                    r.chunks_retained += 1;
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
+        r.bytes_deleted += size;
         r.chunks_deleted += 1;
+    }
+    // Storage with object locks: everything still in use keeps a full lock
+    // from now (design: phase-4-storage §5).
+    if !dry_run && repo.backend().lock_days().is_some() {
+        let mut keep: Vec<String> = stored
+            .iter()
+            .filter(|k| referenced.contains(*k))
+            .cloned()
+            .collect();
+        for prefix in ["manifests", "keys", "signers"] {
+            keep.extend(repo.backend().list(prefix)?);
+        }
+        keep.push("config.json".into());
+        for k in keep {
+            if !ctl.checkpoint() {
+                return Err(EngineError::Cancelled);
+            }
+            match repo.backend().extend_lock(&k) {
+                Ok(true) => r.locks_extended += 1,
+                Ok(false) | Err(core_format::Error::NotFound(_)) => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
     }
     Ok(r)
 }

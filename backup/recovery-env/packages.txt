@@ -1,0 +1,51 @@
+# Debian packages in the recovery image (Debian stable, amd64).
+# One per line; '#' starts a comment.
+
+# Boot: live system, Debian's signed kernel, shim and GRUB
+linux-image-amd64
+live-boot
+systemd-sysv
+shim-signed
+grub-efi-amd64-signed
+grub-efi-amd64-bin
+grub-pc-bin
+
+# Network: wired DHCP by itself; nmtui for Wi-Fi and static addresses
+network-manager
+wpasupplicant
+iproute2
+iputils-ping
+ca-certificates
+
+# Firmware for common network and storage controllers
+firmware-linux-free
+firmware-misc-nonfree
+firmware-realtek
+firmware-iwlwifi
+firmware-bnx2
+firmware-bnx2x
+
+# Disks and file systems
+efibootmgr
+parted
+dosfstools
+e2fsprogs
+ntfs-3g
+# Growing a restored LVM physical volume (pvresize)
+lvm2
+exfatprogs
+cifs-utils
+util-linux
+pciutils
+usbutils
+smartmontools
+# Preparing a restored Windows for new hardware (offline registry)
+libhivex-bin
+libwin-hivex-perl
+
+# The console
+whiptail
+jq
+kbd
+less
+nano

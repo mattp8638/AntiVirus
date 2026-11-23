@@ -8,6 +8,8 @@ rust-version.workspace = true
 
 [dependencies]
 core-format.workspace = true
+crc32fast.workspace = true
+fatfs.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 uuid.workspace = true

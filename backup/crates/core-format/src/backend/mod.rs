@@ -23,8 +23,9 @@ pub enum PutOutcome {
 ///   temporary name, then publish atomically).
 /// * `get` returns the whole object or `Error::NotFound`.
 /// * `list` returns full keys under `prefix` in no particular order.
-/// * `delete` is only used by admin operations (prune, Phase 4) and may be
-///   refused by append-only backends.
+/// * `delete` is only used by admin operations (prune, retention) and may be
+///   refused by append-only backends, or with `Error::Retained` while an
+///   object lock keeps the object.
 pub trait Backend: Send + Sync {
     fn put(&self, key: &str, data: &[u8]) -> Result<PutOutcome>;
     fn get(&self, key: &str) -> Result<Vec<u8>>;
@@ -37,6 +38,16 @@ pub trait Backend: Send + Sync {
     }
     /// Human-readable location, for logs.
     fn describe(&self) -> String;
+    /// Days each object is kept immutable after it is written or extended
+    /// (S3 Object Lock), if the backend locks objects.
+    fn lock_days(&self) -> Option<u32> {
+        None
+    }
+    /// Move `key`'s lock to now + `lock_days`. Never shortens a lock. Returns
+    /// false when the backend does not lock objects.
+    fn extend_lock(&self, _key: &str) -> Result<bool> {
+        Ok(false)
+    }
 }
 
 /// Reject keys that could escape the repository root or are not ones the

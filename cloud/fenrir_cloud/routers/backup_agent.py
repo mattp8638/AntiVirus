@@ -15,7 +15,7 @@ import uuid as uuidlib
 from types import SimpleNamespace
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, Response
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -78,6 +78,8 @@ def enroll(body: dict = Body(...), db: Session = Depends(get_db)):
             raise HTTPException(403, "the deployment token has expired or was revoked")
         if fet.include_backup is False:
             raise HTTPException(409, "device backup is not included in this deployment")
+        if role == "recovery":
+            raise HTTPException(403, "recovery sessions enrol with a recovery media link")
         tok = SimpleNamespace(id=fet.id, tenant_id=fet.tenant_id, device_id=None, label="bundled", uses=0, revoked=False)
     else:
         tok = db.execute(select(BackupEnrollment).where(BackupEnrollment.token_hash == bk.token_hash(raw))).scalars().first()
@@ -85,6 +87,9 @@ def enroll(body: dict = Body(...), db: Session = Depends(get_db)):
             raise HTTPException(403, "enrollment token not recognised")
         if tok.revoked or tok.expires_at < utcnow():
             raise HTTPException(403, "enrollment token has expired or was revoked; create a new download")
+        # Recovery media links enrol recovery sessions only, and recovery sessions need one.
+        if (tok.role == "recovery") != (role == "recovery"):
+            raise HTTPException(403, "this enrollment token is for recovery media only, or this agent needs one")
 
     agent_token = bk.new_token()
     os_ = body.get("os") if isinstance(body.get("os"), dict) else {}
@@ -114,7 +119,7 @@ def enroll(body: dict = Body(...), db: Session = Depends(get_db)):
         db.add(agent)
         db.flush()
         action = "backup.agent.enrolled"
-    if agent.device_id is None:
+    if agent.device_id is None and role != "recovery":
         agent.device_id = bk.matching_device(db, agent)
     tok.uses += 1
     if tok.label.startswith("push:"):
@@ -135,6 +140,8 @@ def _job_spec(db: Session, agent: BackupAgent, job: BackupJob) -> dict | None:
         repository = {"repository_id": repo.id, "path": repo.path, "sealed_secret": access.sealed,
                       "gateway": gw.route(db, repo, access),
                       "sealed_share": access.sealed_share}
+        if repo.s3:
+            repository["s3"] = repo.s3
     return {"id": job.id, "kind": job.kind, "repository": repository}
 
 
@@ -352,6 +359,29 @@ def setup_program(token: str, platform: str, file: str, request: Request, db: Se
     data = bk.setup_exe(exe, server_url(request), tls_pin(), token, p["role"] or tok.role)
     return Response(data, media_type="application/vnd.microsoft.portable-executable",
                     headers={"Content-Disposition": f'attachment; filename="{file}"', "Cache-Control": "no-store"})
+
+
+@router.get("/recovery/{token}/{file}")
+def recovery_media(token: str, file: str, request: Request, db: Session = Depends(get_db)):
+    """fenrir-recovery.iso with this server's settings in its placeholder block, or the same settings as
+    fenrir-recovery.json for a USB stick. The link is a recovery enrolment token."""
+    tok = enrollment_for(db, token)
+    if tok.role != "recovery":
+        raise HTTPException(404, "This link is not for recovery media.")
+    cfg = bk.recovery_settings(server_url(request), tls_pin(), token, tok.expires_at)
+    if file == bk.RECOVERY_SETTINGS:
+        return JSONResponse(cfg, headers={"Content-Disposition": f'attachment; filename="{file}"', "Cache-Control": "no-store"})
+    if file != bk.RECOVERY_ISO:
+        raise HTTPException(404, "no such file")
+    path = bk.recovery_iso_path()
+    if not path.is_file():
+        raise HTTPException(503, "The recovery ISO is not on this server yet.")
+    offset = bk.recovery_block_offset(path)
+    if offset is None:
+        raise HTTPException(500, "The recovery ISO on this server has no settings block.")
+    return StreamingResponse(bk.personalised_iso(path, offset, bk.recovery_block(cfg)), media_type="application/octet-stream",
+                             headers={"Content-Disposition": f'attachment; filename="{file}"', "Cache-Control": "no-store",
+                                      "Content-Length": str(path.stat().st_size)})
 
 
 @router.get("/uninstall/{platform}")

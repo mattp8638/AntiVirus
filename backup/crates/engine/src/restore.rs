@@ -19,6 +19,14 @@ pub struct RestoreOptions {
     /// the target may hold old data (a used disk); unnecessary for a fresh
     /// sparse file.
     pub zero_fill: bool,
+    /// Lay the image onto a target of a different size (`fit`): move the
+    /// GPT to the target's end, allow a smaller target when the partitions
+    /// fit. Off: the target must be at least the image disk's size and is
+    /// written byte for byte.
+    pub fit: bool,
+    /// With `fit` onto a larger target: give the new space to the last
+    /// partition (its file system is grown by the caller, `crate::grow`).
+    pub grow: bool,
 }
 
 impl Default for RestoreOptions {
@@ -26,6 +34,8 @@ impl Default for RestoreOptions {
         RestoreOptions {
             workers: 4,
             zero_fill: true,
+            fit: false,
+            grow: false,
         }
     }
 }
@@ -38,6 +48,12 @@ pub struct RestoreReport {
     pub bytes_written: u64,
     pub chunks_restored: u64,
     pub zero_ranges_written: u64,
+    /// The partition given the extra space (`grow`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grown: Option<crate::fit::Grown>,
+    /// Why nothing was grown, when `grow` was asked for.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 pub fn restore_disk(
@@ -55,13 +71,35 @@ pub fn restore_disk(
         .iter()
         .find(|d| d.index == disk_index)
         .ok_or_else(|| EngineError::InvalidInput(format!("image has no disk {disk_index}")))?;
-    if target.size() < disk.size {
-        return Err(EngineError::Safety(format!(
-            "target is {} bytes, image disk is {} bytes",
-            target.size(),
-            disk.size
-        )));
-    }
+    let mut notes = Vec::new();
+    let fit = if opts.fit || opts.grow {
+        let mut f = crate::fit::plan(disk, target.size(), target.logical_sector_size())?;
+        if opts.grow {
+            match f.grow(disk) {
+                Ok(Some(_)) => {}
+                Ok(None) => notes.push(
+                    "nothing to grow: the last partition already reaches the end of the target"
+                        .into(),
+                ),
+                Err(e) => notes.push(e),
+            }
+        }
+        Some(f)
+    } else {
+        if target.size() < disk.size {
+            return Err(EngineError::Safety(format!(
+                "target is {} bytes, image disk is {} bytes",
+                target.size(),
+                disk.size
+            )));
+        }
+        None
+    };
+    let clipped = crate::fit::Clipped {
+        inner: target,
+        limit: fit.as_ref().map_or(u64::MAX, |f| f.clip()),
+    };
+    let target: &dyn WriteTarget = &clipped;
     let cs = image.chunk_size as u64;
     let total = extent::total_len(&disk.used_extents);
     let done = AtomicU64::new(0);
@@ -133,6 +171,9 @@ pub fn restore_disk(
         }
     }
     target.sync()?;
+    if let Some(f) = &fit {
+        f.finish(clipped.inner)?;
+    }
     Ok(RestoreReport {
         image_id: image.image_id,
         disk: disk_index,
@@ -140,5 +181,7 @@ pub fn restore_disk(
         bytes_written: done.load(Ordering::Relaxed) + zero_bytes,
         chunks_restored: chunks_restored.load(Ordering::Relaxed),
         zero_ranges_written: zero_ranges,
+        grown: fit.as_ref().and_then(|f| f.grown().cloned()),
+        notes,
     })
 }

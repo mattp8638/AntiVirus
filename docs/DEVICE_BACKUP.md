@@ -80,6 +80,22 @@ starts, with the VM's network disconnected:
   each time.
 * For a lasting copy rather than a test, use **Restore › A new Hyper-V VM** on a Hyper-V host instead.
 
+## Live backups of Linux servers
+
+On Linux the agent backs up the running system (**Whole system** in a plan or Back up now), like VSS on Windows:
+every disk holding the system's file systems is imaged while it runs. Logical volumes are read through LVM snapshots
+(LVM freezes each file system while taking its snapshot), `/boot` and the EFI partition are copied while frozen, swap
+keeps only its header, and the snapshots are removed afterwards (also after a crash, on the agent's next start; other
+tools' snapshots are never touched). The image is crash-consistent. The volume group needs free space for the
+snapshots during the backup: 10 % of each logical volume, at least 64 MiB; the job says how much is missing. A
+system that cannot be snapshotted (a root file system without LVM, LUKS, software RAID) is refused with the reason:
+back it up from the recovery media. Disks that only hold the repository are left out. Details:
+`backup/docs/design/phase-6.md`.
+
+**Cloning a disk** without a repository (an upgrade to a bigger disk, for instance) is done with the agent's CLI:
+`fenrir-backup clone --source /dev/sda --target /dev/sdb --yes --grow [--live]` (Windows: `\\.\PhysicalDriveN`);
+see `backup/docs/CLI.md` and `backup/docs/design/phase-5-grow-clone.md`.
+
 ## Restoring individual files
 
 **Images & restore › Browse files** (also on a device's Backup tab) opens any backup as a file explorer: pick the
@@ -97,13 +113,81 @@ volume (C:, D:, /home…), open folders, tick files or folders and restore them.
   system. Nothing is written outside the chosen folder, and existing links there are not followed.
 * **Permissions**: browsing and restoring files need `scripts`, like other restores. Opening a backup and every file
   restore are audited (`backup.files.browsed`, `backup.files.restore_requested`).
-* **Volumes**: NTFS (Windows) and ext2/3/4 (Linux) volumes can be browsed. BitLocker and LUKS volumes are stored
-  encrypted as they were on the disk and cannot be browsed: restore the disk or VHDX and unlock it there. NTFS
+* **Volumes**: NTFS (Windows) and ext2/3/4 (Linux) volumes can be browsed. Windows backups read BitLocker volumes through
+  their snapshot, decrypted, so they browse like any NTFS volume (the image is encrypted with the repository key).
+  Volumes captured still encrypted (LUKS, a Hyper-V VM's own BitLocker) cannot be browsed: restore the disk or VHDX
+  and unlock it there. NTFS
   files that Windows compressed (the folder's "Compress contents" setting) or encrypted with EFS are listed but
   not restored yet. Links and cloud-only placeholders (OneDrive "files on demand") are shown but not restored.
   For other file systems (XFS, Btrfs, FAT, ReFS), restore the volume as a VHDX and open it.
 * While someone is browsing, that machine checks in every second instead of every 15, and keeps the backup open
   for 5 minutes after the last request.
+
+## Recovery media: bare-metal restore
+
+For a machine that no longer starts, has a new disk, or is replaced by new hardware.
+
+1. **Backups › Add machines**, choose **Recovery media**, pick the customer and **Create recovery media**, then
+   download `fenrir-recovery.iso`. The download carries this server's address and an enrolment code for that
+   customer's recovery sessions (valid 1–90 days; revoke it like any install link). Write it to a USB stick
+   (balenaEtcher, Rufus in DD mode, `dd`) or attach it to a VM.
+2. Start the machine from it; Secure Boot can stay on. It appears under **Machines** as a *recovery session*
+   (restores only, nothing installed, everything in memory).
+3. **Images & restore › Restore**, choose the session as the machine, give it access (the passphrase is sealed in
+   your browser for that session only) and pick its disk. Disks in use on it (its own stick, anything mounted) are not
+   offered and are refused by the server and by the agent. A repository on a NAS the session cannot reach is served
+   to it through the NAS gateway, if the repository has one.
+4. When the restore finishes, remove the stick and restart.
+
+The target disk may be larger (the partition table moves to its end, and with **Use the whole disk**, on by default,
+the last partition gets the extra space and its NTFS, ext4 or LVM file system is grown; XFS and Btrfs get the space
+and a note to grow them once mounted) or smaller if every partition fits. UEFI systems get the fallback boot loader and a firmware boot entry; if the machine
+started in a different firmware mode from the backed-up system, the job says which setting to change. Sessions do not
+raise offline alerts and are removed a week after they were last seen. The recovery screen also restores without a
+server, from a repository on a USB disk or an SMB share.
+
+**Different hardware.** A restored Windows gets its own storage drivers (AHCI, NVMe, Intel RST, common RAID/SAS
+controllers, Hyper-V, VMware, virtio) set to start at boot in its registry, so moving from RAID to AHCI, SATA to NVMe
+or a physical machine to a VM does not stop it with INACCESSIBLE_BOOT_DEVICE (a copy of the hive is kept as
+`SYSTEM.fenrir-before-hardware`; the job lists the changes).
+
+**BitLocker.** The Windows agent backs volumes up through their VSS snapshot, which reads them decrypted (the image is
+encrypted with the repository key instead), so a restored Windows starts without the BitLocker recovery key; the job
+reminds you to turn BitLocker on again. Volumes captured still encrypted (a Hyper-V VM's own BitLocker backed up from the
+host) need their recovery key on new hardware; the job says which.
+
+**Windows PE media** (optional): for controllers that only have Windows drivers, or to add drivers to the restored
+Windows. Build it on a Windows PC with Microsoft's free Windows ADK and Windows PE add-on (Fenrir does not ship Windows
+PE): `backup/recovery-env/winpe/New-FenrirWinPE.ps1 -Agent fenrir-backup-agent.exe -Cli fenrir-backup.exe -Settings
+fenrir-recovery.json -Drivers <folder>`. The settings file is **Settings file only** of a recovery media link. Driver
+packages from `-Drivers`, or from a `fenrir-drivers` folder on any USB stick, are added with DISM after the restore.
+
+**Onto a second disk of a running Windows.** Windows machines can also restore onto a disk that is not their system
+disk (Restore › A physical disk): its volumes are locked and dismounted first, and the restore is refused while files
+are open on it.
+
+The ISO comes from the backup workflow (artifact `backup-recovery-iso`, built by `backup/recovery-env/build.sh`). Put
+it at `<FENRIR_BACKUP_AGENTS_DIR>/recovery/fenrir-recovery.iso` (in the container:
+`/app/cloud/downloads/backup/recovery/fenrir-recovery.iso`, for example as a mounted volume); until then the console
+says it is missing. Design: `backup/docs/design/phase-2.md`.
+
+## S3 object storage with Object Lock (immutable backups)
+
+Repositories can live on Amazon S3, Wasabi, Backblaze B2, Cloudflare R2, MinIO or any S3-compatible storage: **New
+repository › Stored on › S3 object storage**. With **Object Lock** in compliance mode every backup is immutable for the
+days chosen: nobody can delete or overwrite it before then, not ransomware holding the keys, not the storage account
+owner, not Fenrir.
+
+* Create the bucket with Object Lock enabled (only possible at creation), without a default retention: Fenrir locks
+  each object itself. Give Fenrir its own access key limited to the bucket (`PutObject`, `GetObject`, `ListBucket`,
+  `DeleteObject`, `DeleteObjectVersion`, `Get/PutObjectRetention`).
+* The keys are sealed in your browser for each machine, like a share sign-in; this server never sees them.
+  **Test connection** checks the bucket really refuses to delete a locked object.
+* Maintenance (weekly by default, and it must run more often than the lock period) renews the locks of backups still
+  in use; backups retention no longer keeps are deleted once their lock has run out.
+* S3 repositories are reached directly by every machine; the NAS gateway is not used for them.
+
+Design: `backup/docs/design/phase-4-storage.md`.
 
 ## Network shares
 
