@@ -17,6 +17,9 @@
 //! with the hivex tools (`hivexget`, `hivexregedit`, run as programs), on
 //! Windows PE with `reg.exe`. A copy of the hive is kept next to it.
 
+// Only Linux and Windows recovery media prepare a restored Windows.
+#![cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
