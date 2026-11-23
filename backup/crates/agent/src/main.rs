@@ -2,8 +2,10 @@
 //! is given (backups, Hyper-V VM backups, verification).
 
 mod boot;
+mod browse;
 mod client;
 mod config;
+mod gateway;
 mod hyperv;
 mod inventory;
 mod jobs;
@@ -171,7 +173,15 @@ fn stop_on_signal() -> Arc<AtomicBool> {
 
 fn enroll(server: &str, token: &str, pin: &str, role: &str) -> anyhow::Result<()> {
     let server = config::validate_server_url(server)?;
-    let role = AgentRole::parse(role).context("role must be workstation, server or hyperv")?;
+    let detected;
+    let role = if role == "auto" {
+        detected = inventory::detect_role();
+        detected.as_str()
+    } else {
+        role
+    };
+    let role =
+        AgentRole::parse(role).context("role must be workstation, server, hyperv or auto")?;
     let dir = config::state_dir();
     config::ensure_private_dir(&dir)?;
     // Keep an existing key pair so repository access survives reinstalls.
@@ -263,7 +273,7 @@ pub fn run_loop(stop: Arc<AtomicBool>) -> anyhow::Result<LoopExit> {
         "agent {} starting; server {}",
         cfg.agent_id, cfg.server
     ));
-    if cfg.role == "hyperv" && cfg!(windows) {
+    if hyperv::is_host(&cfg.role) {
         jobs::cleanup_leftover_checkpoints(&dir);
     }
     update::cleanup_old();
@@ -271,14 +281,24 @@ pub fn run_loop(stop: Arc<AtomicBool>) -> anyhow::Result<LoopExit> {
 
     let mut backoff = 5u64;
     let mut running: Option<Running> = None;
+    let mut inv_cache: Option<(Instant, protocol::Inventory)> = None;
+    let gw = gateway::Gateway::new(key.clone(), client.clone());
     let vms: Arc<Mutex<VmCache>> = Arc::new(Mutex::new((None, vec![], vec![])));
 
     while !stop.load(Ordering::SeqCst) {
         if running.as_ref().is_some_and(|r| r.handle.is_finished()) {
             running = None;
         }
+        // Close an image left open for browsing, and its network share.
+        if running.is_none()
+            && browse::expire()
+            && boot::running_vms().is_empty()
+            && !gateway::serving()
+        {
+            share::release_all();
+        }
         // Hyper-V inventory is slow (PowerShell); refresh every 5 minutes.
-        if cfg.role == "hyperv" {
+        if hyperv::is_host(&cfg.role) {
             let mut g = vms.lock().unwrap();
             if g.0.is_none_or(|t| t.elapsed() > Duration::from_secs(300)) {
                 match hyperv::list_vms() {
@@ -297,14 +317,27 @@ pub fn run_loop(stop: Arc<AtomicBool>) -> anyhow::Result<LoopExit> {
             let g = vms.lock().unwrap();
             (g.1.clone(), g.2.clone())
         };
+        // While polling fast (file browsing), the inventory is reused for 20 s.
+        let inventory = match &inv_cache {
+            Some((t, inv)) if t.elapsed() < Duration::from_secs(20) => inv.clone(),
+            _ => {
+                let inv = inventory::collect(&cfg.role, vm_list, notes);
+                inv_cache = Some((Instant::now(), inv.clone()));
+                inv
+            }
+        };
+        let mut inventory = inventory;
+        inventory.gateway_addresses = gw.addresses();
         let req = HeartbeatRequest {
-            inventory: inventory::collect(&cfg.role, vm_list, notes),
+            inventory,
             running_job: running.as_ref().map(|r| r.id),
         };
         match client.post::<_, HeartbeatResponse>("/api/agent/heartbeat", &req) {
             Ok(hb) => {
                 backoff = 5;
-                let poll = hb.poll_seconds.clamp(5, 300) as u64;
+                // The server asks for 1-second polling while someone browses files.
+                let poll = hb.poll_seconds.clamp(1, 300) as u64;
+                gw.apply(hb.gateway.as_ref());
                 if let Some(r) = &running {
                     if hb.cancel.contains(&r.id) {
                         log::info(&format!("job {} cancelled by the server", r.id));

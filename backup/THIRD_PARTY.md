@@ -17,8 +17,6 @@ Regenerate the Rust tables with `scripts/third-party.py` after changing dependen
 | aes-gcm | 0.10.3 | Apache-2.0 OR MIT | Sealed secrets (AES-256-GCM) |
 | anyhow | 1.0.104 | MIT OR Apache-2.0 | Error handling in binaries |
 | argon2 | 0.5.3 | MIT OR Apache-2.0 | Passphrase and administrator password hashing (Argon2id) |
-| axum | 0.8.9 | MIT | Server HTTP routing |
-| axum-server | 0.9.2 | MIT | Server TLS listener |
 | rustls-pki-types | 1.16.0 | MIT OR Apache-2.0 | Reading the server certificate (PEM) |
 | base64 | 0.22.1 | MIT OR Apache-2.0 | Base64 in JSON |
 | blake3 | 1.8.7 | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception | Keyed chunk hashing, subkey derivation (bundles BLAKE3 C/asm, CC0/Apache-2.0) |
@@ -27,31 +25,24 @@ Regenerate the Rust tables with `scripts/third-party.py` after changing dependen
 | crc32fast | 1.5.5 | MIT OR Apache-2.0 | GPT CRC32 |
 | ed25519-dalek | 2.2.0 | BSD-3-Clause | Manifest signatures |
 | getrandom | 0.2.17 | MIT OR Apache-2.0 | OS random numbers |
+| ext4-view | 1.0.0 | MIT OR Apache-2.0 | Reading ext2/3/4 volumes inside images (file restore) |
 | hex | 0.4.3 | MIT OR Apache-2.0 | Hex encoding |
 | hkdf | 0.12.4 | MIT OR Apache-2.0 | Sealed secrets key derivation |
 | libc | 0.2.191 | MIT OR Apache-2.0 | Linux block-device ioctls |
-| libsqlite3-sys | 0.40.0 | MIT | Bundled SQLite (the SQLite C source is public domain) |
-| rcgen | 0.13.2 | MIT OR Apache-2.0 | Self-signed server certificate |
+| ntfs | 0.4.0 | MIT OR Apache-2.0 | Reading NTFS volumes inside images (file restore) |
 | ring | 0.17.14 | Apache-2.0 AND ISC | Cryptographic primitives for rustls (Apache-2.0 AND ISC) |
 | rpassword | 7.5.5 | Apache-2.0 | Passphrase prompt without echo |
-| rusqlite | 0.43.0 | MIT | Server database |
 | rustls | 0.23.46 | Apache-2.0 OR ISC OR MIT | TLS (server and agent) |
 | serde | 1.0.229 | MIT OR Apache-2.0 | Serialisation |
 | serde_json | 1.0.154 | MIT OR Apache-2.0 | JSON |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 | SHA-256 |
 | thiserror | 1.0.69 | MIT OR Apache-2.0 | Error types |
-| tokio | 1.54.1 | MIT | Server async runtime |
-| tower-http | 0.6.11 | MIT | Static files and security headers |
-| tracing | 0.1.44 | MIT | Structured logs |
-| tracing-subscriber | 0.3.23 | MIT | JSON log output |
 | ureq | 2.12.1 | MIT OR Apache-2.0 | Agent HTTPS client |
 | uuid | 1.29.3 | Apache-2.0 OR MIT | Identifiers |
 | webpki-roots | 0.26.11 | CDLA-Permissive-2.0 | Mozilla CA roots for agents talking to CA-signed servers (CDLA-Permissive-2.0) |
 | windows | 0.62.2 | MIT OR Apache-2.0 | Win32/COM bindings (VSS, IOCTLs, registry, DPAPI) |
-| lettre | 0.11.24 | MIT | Email alerts (SMTP over rustls) |
 | windows-service | 0.8.1 | MIT OR Apache-2.0 | Windows service entry point |
 | x25519-dalek | 2.0.1 | BSD-3-Clause | Agent key pairs for sealed secrets |
-| x509-parser | 0.16.0 | MIT OR Apache-2.0 | Certificate fingerprints |
 | zeroize | 1.9.2 | Apache-2.0 OR MIT | Wiping key material |
 | zstd | 0.13.5 | BSD-3-Clause | zstd compression |
 | zstd-safe | 7.4.1 | BSD-3-Clause | zstd binding layer |
@@ -75,34 +66,27 @@ Versions are pinned in `ui/package-lock.json`.
 | aead | 0.5.2 | MIT OR Apache-2.0 |
 | aes | 0.8.4 | MIT OR Apache-2.0 |
 | aes-gcm | 0.10.3 | Apache-2.0 OR MIT |
-| aho-corasick | 1.1.5 | Unlicense OR MIT |
 | anstream | 1.0.0 | MIT OR Apache-2.0 |
 | anstyle | 1.0.14 | MIT OR Apache-2.0 |
 | anstyle-parse | 1.0.0 | MIT OR Apache-2.0 |
 | anstyle-query | 1.1.5 | MIT OR Apache-2.0 |
 | anstyle-wincon | 3.0.11 | MIT OR Apache-2.0 |
 | anyhow | 1.0.104 | MIT OR Apache-2.0 |
-| arc-swap | 1.9.5 | MIT OR Apache-2.0 |
 | argon2 | 0.5.3 | MIT OR Apache-2.0 |
+| array-init | 2.1.0 | MIT OR Apache-2.0 |
 | arrayvec | 0.7.8 | MIT OR Apache-2.0 |
-| asn1-rs | 0.6.2 | MIT OR Apache-2.0 |
-| asn1-rs-derive | 0.5.1 | MIT OR Apache-2.0 |
-| asn1-rs-impl | 0.2.0 | MIT/Apache-2.0 |
-| atomic-waker | 1.1.2 | Apache-2.0 OR MIT |
 | autocfg | 1.5.1 | Apache-2.0 OR MIT |
-| axum | 0.8.9 | MIT |
-| axum-core | 0.5.6 | MIT |
-| axum-macros | 0.5.1 | MIT |
-| axum-server | 0.9.2 | MIT |
 | base64 | 0.22.1 | MIT OR Apache-2.0 |
-| base64 | 0.23.1 | MIT OR Apache-2.0 |
 | base64ct | 1.8.3 | Apache-2.0 OR MIT |
+| binrw | 0.11.3 | MIT |
+| binrw_derive | 0.11.3 | MIT |
 | bitflags | 2.13.2 | MIT OR Apache-2.0 |
 | blake2 | 0.10.6 | MIT OR Apache-2.0 |
 | blake3 | 1.8.7 | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception |
 | block-buffer | 0.10.4 | MIT OR Apache-2.0 |
 | bumpalo | 3.20.4 | MIT OR Apache-2.0 |
-| bytes | 1.12.2 | MIT |
+| bytemuck | 1.25.2 | Zlib OR Apache-2.0 OR MIT |
+| byteorder | 1.5.0 | Unlicense OR MIT |
 | cc | 1.11.3 | MIT OR Apache-2.0 |
 | cfg-if | 1.0.5 | MIT OR Apache-2.0 |
 | chacha20 | 0.9.1 | Apache-2.0 OR MIT |
@@ -115,60 +99,43 @@ Versions are pinned in `ui/package-lock.json`.
 | colorchoice | 1.0.5 | MIT OR Apache-2.0 |
 | const-oid | 0.9.6 | Apache-2.0 OR MIT |
 | constant_time_eq | 0.4.2 | CC0-1.0 OR MIT-0 OR Apache-2.0 |
+| convert_case | 0.4.0 | MIT |
 | cpufeatures | 0.2.17 | MIT OR Apache-2.0 |
 | cpufeatures | 0.3.1 | MIT OR Apache-2.0 |
+| crc | 3.4.0 | MIT OR Apache-2.0 |
+| crc-catalog | 2.5.0 | MIT OR Apache-2.0 |
 | crc32fast | 1.5.5 | MIT OR Apache-2.0 |
 | crypto-common | 0.1.7 | MIT OR Apache-2.0 |
 | ctr | 0.9.2 | MIT OR Apache-2.0 |
 | curve25519-dalek | 4.1.3 | BSD-3-Clause |
 | curve25519-dalek-derive | 0.1.1 | MIT/Apache-2.0 |
-| data-encoding | 2.11.1 | MIT |
 | der | 0.7.10 | Apache-2.0 OR MIT |
-| der-parser | 9.0.0 | MIT/Apache-2.0 |
 | deranged | 0.5.9 | MIT OR Apache-2.0 |
+| derive_more | 0.99.20 | MIT |
 | digest | 0.10.7 | MIT OR Apache-2.0 |
 | displaydoc | 0.2.7 | MIT OR Apache-2.0 |
 | ed25519 | 2.2.3 | Apache-2.0 OR MIT |
 | ed25519-dalek | 2.2.0 | BSD-3-Clause |
 | either | 1.19.0 | MIT OR Apache-2.0 |
-| email-encoding | 0.4.3 | MIT OR Apache-2.0 |
-| email_address | 0.2.10 | MIT OR Apache-2.0 |
-| equivalent | 1.0.3 | Apache-2.0 OR MIT |
+| enumn | 0.1.14 | MIT OR Apache-2.0 |
 | errno | 0.3.15 | MIT OR Apache-2.0 |
-| fallible-iterator | 0.3.0 | MIT/Apache-2.0 |
-| fallible-streaming-iterator | 0.1.9 | MIT/Apache-2.0 |
+| ext4-view | 1.0.0 | MIT OR Apache-2.0 |
 | fastrand | 2.5.0 | Apache-2.0 OR MIT |
 | fiat-crypto | 0.2.9 | MIT OR Apache-2.0 OR BSD-1-Clause |
 | find-msvc-tools | 0.1.15 | MIT OR Apache-2.0 |
-| fnv | 1.0.7 | Apache-2.0 / MIT |
-| foldhash | 0.2.0 | Zlib |
 | form_urlencoded | 1.2.2 | MIT OR Apache-2.0 |
-| fs-err | 3.3.2 | MIT OR Apache-2.0 |
-| futures-channel | 0.3.34 | MIT OR Apache-2.0 |
 | futures-core | 0.3.34 | MIT OR Apache-2.0 |
-| futures-sink | 0.3.34 | MIT OR Apache-2.0 |
 | futures-task | 0.3.34 | MIT OR Apache-2.0 |
 | futures-util | 0.3.34 | MIT OR Apache-2.0 |
 | generic-array | 0.14.7 | MIT |
 | getrandom | 0.2.17 | MIT OR Apache-2.0 |
 | getrandom | 0.4.3 | MIT OR Apache-2.0 |
 | ghash | 0.5.1 | Apache-2.0 OR MIT |
-| h2 | 0.4.20 | MIT |
-| hashbrown | 0.17.1 | MIT OR Apache-2.0 |
-| hashlink | 0.12.2 | MIT OR Apache-2.0 |
+| heck | 0.4.1 | MIT OR Apache-2.0 |
 | heck | 0.5.0 | MIT OR Apache-2.0 |
 | hex | 0.4.3 | MIT OR Apache-2.0 |
 | hkdf | 0.12.4 | MIT OR Apache-2.0 |
 | hmac | 0.12.1 | MIT OR Apache-2.0 |
-| hostname | 0.4.2 | MIT |
-| http | 1.5.0 | MIT OR Apache-2.0 |
-| http-body | 1.1.0 | MIT |
-| http-body-util | 0.1.5 | MIT |
-| http-range-header | 0.4.2 | MIT |
-| httparse | 1.10.1 | MIT OR Apache-2.0 |
-| httpdate | 1.0.3 | MIT OR Apache-2.0 |
-| hyper | 1.12.0 | MIT |
-| hyper-util | 0.1.21 | MIT |
 | icu_collections | 2.4.0 | Unicode-3.0 |
 | icu_locale_core | 2.4.0 | Unicode-3.0 |
 | icu_normalizer | 2.4.0 | Unicode-3.0 |
@@ -178,39 +145,24 @@ Versions are pinned in `ui/package-lock.json`.
 | icu_provider | 2.4.0 | Unicode-3.0 |
 | idna | 1.1.0 | MIT OR Apache-2.0 |
 | idna_adapter | 1.2.2 | Apache-2.0 OR MIT |
-| indexmap | 2.14.2 | Apache-2.0 OR MIT |
 | inout | 0.1.4 | MIT OR Apache-2.0 |
 | is_terminal_polyfill | 1.70.2 | MIT OR Apache-2.0 |
 | itoa | 1.0.19 | MIT OR Apache-2.0 |
 | jobserver | 0.1.35 | MIT OR Apache-2.0 |
 | js-sys | 0.3.107 | MIT OR Apache-2.0 |
-| lazy_static | 1.5.1 | MIT OR Apache-2.0 |
-| lettre | 0.11.24 | MIT |
 | libc | 0.2.191 | MIT OR Apache-2.0 |
-| libsqlite3-sys | 0.40.0 | MIT |
 | linux-raw-sys | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | litemap | 0.8.3 | Unicode-3.0 |
 | log | 0.4.35 | MIT OR Apache-2.0 |
-| matchers | 0.2.0 | MIT |
-| matchit | 0.8.4 | MIT AND BSD-3-Clause |
 | memchr | 2.8.3 | Unlicense OR MIT |
-| mime | 0.3.18 | MIT OR Apache-2.0 |
-| mime_guess | 2.0.5 | MIT |
-| minimal-lexical | 0.2.1 | MIT/Apache-2.0 |
-| mio | 1.2.5 | MIT |
-| nom | 7.1.3 | MIT |
-| nom | 8.0.0 | MIT |
-| nu-ansi-term | 0.50.3 | MIT |
-| num-bigint | 0.4.8 | MIT OR Apache-2.0 |
+| memoffset | 0.9.1 | MIT |
+| nt-string | 0.1.2 | MIT OR Apache-2.0 |
+| ntfs | 0.4.0 | MIT OR Apache-2.0 |
 | num-conv | 0.2.2 | MIT OR Apache-2.0 |
-| num-integer | 0.1.47 | MIT OR Apache-2.0 |
-| num-traits | 0.2.19 | MIT OR Apache-2.0 |
-| oid-registry | 0.7.1 | MIT OR Apache-2.0 |
 | once_cell | 1.21.4 | MIT OR Apache-2.0 |
 | once_cell_polyfill | 1.70.2 | MIT OR Apache-2.0 |
 | opaque-debug | 0.3.1 | MIT OR Apache-2.0 |
 | password-hash | 0.5.0 | MIT OR Apache-2.0 |
-| pem | 3.0.6 | MIT |
 | percent-encoding | 2.3.2 | MIT OR Apache-2.0 |
 | pin-project-lite | 0.2.18 | Apache-2.0 OR MIT |
 | pkcs8 | 0.10.2 | Apache-2.0 OR MIT |
@@ -221,76 +173,44 @@ Versions are pinned in `ui/package-lock.json`.
 | powerfmt | 0.2.1 | MIT OR Apache-2.0 |
 | proc-macro2 | 1.0.107 | MIT OR Apache-2.0 |
 | quote | 1.0.47 | MIT OR Apache-2.0 |
-| quoted_printable | 0.5.2 | 0BSD |
 | r-efi | 6.0.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later |
 | rand_core | 0.6.4 | MIT OR Apache-2.0 |
-| rcgen | 0.13.2 | MIT OR Apache-2.0 |
-| regex-automata | 0.4.19 | MIT OR Apache-2.0 |
-| regex-syntax | 0.8.12 | MIT OR Apache-2.0 |
 | ring | 0.17.14 | Apache-2.0 AND ISC |
 | rpassword | 7.5.5 | Apache-2.0 |
-| rsqlite-vfs | 0.2.0 | MIT |
 | rtoolbox | 0.0.6 | Apache-2.0 |
-| rusqlite | 0.43.0 | MIT |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
-| rusticata-macros | 4.1.0 | MIT/Apache-2.0 |
 | rustix | 1.1.6 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | rustls | 0.23.46 | Apache-2.0 OR ISC OR MIT |
 | rustls-pki-types | 1.16.0 | MIT OR Apache-2.0 |
 | rustls-webpki | 0.103.17 | ISC |
 | rustversion | 1.0.23 | MIT OR Apache-2.0 |
-| ryu | 1.0.23 | Apache-2.0 OR BSL-1.0 |
 | semver | 1.0.28 | MIT OR Apache-2.0 |
 | serde | 1.0.229 | MIT OR Apache-2.0 |
 | serde_core | 1.0.229 | MIT OR Apache-2.0 |
 | serde_derive | 1.0.229 | MIT OR Apache-2.0 |
 | serde_json | 1.0.154 | MIT OR Apache-2.0 |
-| serde_path_to_error | 0.1.20 | MIT OR Apache-2.0 |
-| serde_urlencoded | 0.7.1 | MIT/Apache-2.0 |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 |
-| sharded-slab | 0.1.7 | MIT |
 | shlex | 2.0.1 | MIT OR Apache-2.0 |
-| signal-hook-registry | 1.4.8 | MIT OR Apache-2.0 |
 | signature | 2.2.0 | Apache-2.0 OR MIT |
 | slab | 0.4.12 | MIT |
 | smallvec | 1.16.6 | MIT OR Apache-2.0 |
-| socket2 | 0.6.5 | MIT OR Apache-2.0 |
 | spki | 0.7.3 | Apache-2.0 OR MIT |
-| sqlite-wasm-rs | 0.6.3 | MIT |
 | stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 |
 | strsim | 0.11.1 | MIT |
+| strum_macros | 0.24.3 | MIT |
 | subtle | 2.6.1 | BSD-3-Clause |
+| syn | 1.0.109 | MIT OR Apache-2.0 |
 | syn | 2.0.119 | MIT OR Apache-2.0 |
 | syn | 3.0.10 | MIT OR Apache-2.0 |
-| sync_wrapper | 1.0.2 | Apache-2.0 |
-| synstructure | 0.13.2 | MIT |
 | synstructure | 0.14.0 | MIT |
 | tempfile | 3.27.0 | MIT OR Apache-2.0 |
-| thiserror | 1.0.69 | MIT OR Apache-2.0 |
 | thiserror | 2.0.21 | MIT OR Apache-2.0 |
-| thiserror-impl | 1.0.69 | MIT OR Apache-2.0 |
 | thiserror-impl | 2.0.21 | MIT OR Apache-2.0 |
-| thread_local | 1.1.10 | MIT OR Apache-2.0 |
 | time | 0.3.55 | MIT OR Apache-2.0 |
 | time-core | 0.1.9 | MIT OR Apache-2.0 |
 | time-macros | 0.2.32 | MIT OR Apache-2.0 |
 | tinystr | 0.8.5 | Unicode-3.0 |
-| tokio | 1.54.1 | MIT |
-| tokio-macros | 2.7.2 | MIT |
-| tokio-rustls | 0.26.6 | MIT OR Apache-2.0 |
-| tokio-util | 0.7.20 | MIT |
-| tower | 0.5.3 | MIT |
-| tower-http | 0.6.11 | MIT |
-| tower-layer | 0.3.3 | MIT |
-| tower-service | 0.3.3 | MIT |
-| tracing | 0.1.44 | MIT |
-| tracing-attributes | 0.1.31 | MIT |
-| tracing-core | 0.1.36 | MIT |
-| tracing-log | 0.2.0 | MIT |
-| tracing-serde | 0.2.0 | MIT |
-| tracing-subscriber | 0.3.23 | MIT |
 | typenum | 1.20.1 | MIT OR Apache-2.0 |
-| unicase | 2.10.0 | MIT OR Apache-2.0 |
 | unicode-ident | 1.0.27 | (MIT OR Apache-2.0) AND Unicode-3.0 |
 | universal-hash | 0.5.1 | MIT OR Apache-2.0 |
 | untrusted | 0.9.0 | ISC |
@@ -300,8 +220,6 @@ Versions are pinned in `ui/package-lock.json`.
 | utf8parse | 0.2.2 | Apache-2.0 OR MIT |
 | utf_types | 1.0.0 | Apache-2.0 OR MIT |
 | uuid | 1.29.3 | Apache-2.0 OR MIT |
-| valuable | 0.1.1 | MIT |
-| vcpkg | 0.2.15 | MIT/Apache-2.0 |
 | version_check | 0.9.5 | MIT/Apache-2.0 |
 | wasi | 0.11.1+wasi-snapshot-preview1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wasm-bindgen | 0.2.130 | MIT OR Apache-2.0 |
@@ -336,8 +254,6 @@ Versions are pinned in `ui/package-lock.json`.
 | windows_x86_64_msvc | 0.52.6 | MIT OR Apache-2.0 |
 | writeable | 0.6.4 | Unicode-3.0 |
 | x25519-dalek | 2.0.1 | BSD-3-Clause |
-| x509-parser | 0.16.0 | MIT OR Apache-2.0 |
-| yasna | 0.5.2 | MIT OR Apache-2.0 |
 | yoke | 0.8.4 | Unicode-3.0 |
 | yoke-derive | 0.8.4 | Unicode-3.0 |
 | zerofrom | 0.1.8 | Unicode-3.0 |

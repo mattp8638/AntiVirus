@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod gateway;
 pub mod seal;
 pub mod setup;
 
@@ -124,6 +125,10 @@ pub struct Inventory {
     /// VMs this host runs from backups (boot checks kept running).
     #[serde(default)]
     pub running_vms: Vec<RunningVm>,
+    /// Addresses ("ip:port") where this agent serves repositories as a
+    /// gateway, when it listens for direct connections.
+    #[serde(default)]
+    pub gateway_addresses: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -177,6 +182,9 @@ pub struct HeartbeatResponse {
     /// A newer agent build the server wants this agent to run.
     #[serde(default)]
     pub update: Option<AgentUpdate>,
+    /// Repositories this agent serves to other agents (NAS gateway).
+    #[serde(default)]
+    pub gateway: Option<gateway::GatewayConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -304,16 +312,45 @@ pub enum JobKind {
     /// Boot the image as an isolated VM and check that it starts.
     BootCheck {
         image_id: Uuid,
-        /// Leave the VM running after the check (KVM hosts).
+        /// Keep the VM after the check (network disconnected) until it is
+        /// stopped: KVM hosts keep it running for up to 8 hours, Hyper-V
+        /// hosts keep it as a VM to log in to and inspect.
         #[serde(default)]
         keep_running: bool,
         #[serde(default)]
         memory_mb: Option<u64>,
         #[serde(default)]
         cpus: Option<u32>,
+        /// Hyper-V: folder on the host for the VM's disks (default: the
+        /// agent's own folder).
+        #[serde(default)]
+        directory: Option<String>,
     },
     /// Power off a VM left running by a boot check.
     StopVm { session_id: Uuid },
+    /// Without `volume`: the image's volumes. With it: the folder `path`
+    /// (`/`-separated from the volume root) in that volume.
+    BrowseFiles {
+        image_id: Uuid,
+        #[serde(default)]
+        volume: Option<VolumeRef>,
+        #[serde(default)]
+        path: String,
+    },
+    /// Copy chosen files and folders out of an image into `target`, a
+    /// folder on this machine.
+    RestoreFiles {
+        image_id: Uuid,
+        volume: VolumeRef,
+        paths: Vec<String>,
+        target: String,
+        /// Recreate the folders above each item under `target`.
+        #[serde(default)]
+        keep_structure: bool,
+        /// "rename" (keep both), "skip" or "overwrite" existing files.
+        #[serde(default = "default_conflict")]
+        conflict: String,
+    },
     /// Can this machine reach and write to `path`? Signs in to a network
     /// share first when credentials are given. Reports free space.
     CheckAccess {
@@ -338,8 +375,21 @@ impl JobKind {
             JobKind::BootCheck { .. } => "Boot check",
             JobKind::StopVm { .. } => "Stop VM",
             JobKind::CheckAccess { .. } => "Test connection",
+            JobKind::BrowseFiles { .. } => "Browse files",
+            JobKind::RestoreFiles { .. } => "Restore files",
         }
     }
+}
+
+/// One partition of one disk of an image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VolumeRef {
+    pub disk: u32,
+    pub partition: u32,
+}
+
+fn default_conflict() -> String {
+    "rename".into()
 }
 
 /// Where the repository is and the secret to open it, sealed to this agent.
@@ -351,6 +401,9 @@ pub struct RepoAccess {
     /// Network share sign-in (`ShareCredentials`), sealed to this agent.
     #[serde(default)]
     pub sealed_share: Option<seal::Sealed>,
+    /// Reach the repository through a gateway agent instead of `path`.
+    #[serde(default)]
+    pub gateway: Option<gateway::GatewayRoute>,
 }
 
 /// Sign-in for a repository on a network share (SMB). Sealed to each agent

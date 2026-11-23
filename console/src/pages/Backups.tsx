@@ -5,6 +5,7 @@ import { Fragment, useMemo, useState } from "react";
 import { api, ago, fmtTime, getToken } from "../api";
 import { useApp } from "../app-context";
 import { newRecoveryKey, seal, sealSupported, type Sealed } from "../backup-seal";
+import { FileBrowser } from "./BackupFiles";
 import { confirmDialog, promptDialog } from "../components/dialogs";
 import { ErrorNote, Modal, PageHead, Pill, Stat, Table, Tabs, TenantSelect, useAction, useAutoRefresh, useData, useListData } from "../components/ui";
 
@@ -12,6 +13,7 @@ export interface BackupAgent {
   id: string; tenantId: string; deviceId: string | null; name: string; hostname: string; role: string;
   os: { family?: string; name?: string; version?: string; arch?: string }; agentVersion: string; online: boolean;
   lastSeenAt: string | null; publicKey: string; capabilities: string[]; vmCount: number; disks: string[];
+  runningVms?: { sessionId: string; imageId: string; startedUnix: number; vncPort: number }[];
   lastBackup: { jobId: string; state: string; at: string; error: string | null } | null;
   runningJob: { id: string; label: string; state: string; progress: any } | null;
 }
@@ -20,7 +22,8 @@ interface Repo {
   images: number; storedBytes: number; lastImage: number | null; hold: boolean; holdReason: string | null; holdSince: string | null;
   maintenanceAgentId: string | null; pruneEveryDays: number; lastPruneAt: string | null; anomalies: number;
   bootAgentId: string | null; bootEveryDays: number; lastVerifiedBoot: string | null; shareAuth: string; shareUser: string | null;
-  isShare: boolean; agents: { id: string; name: string }[];
+  isShare: boolean; agents: { id: string; name: string; viaGateway?: boolean }[];
+  gateway: { agentId: string; name: string; online: boolean; port: number; address: string | null; addresses: string[] } | null;
 }
 interface Job {
   id: string; agentId: string; agentName: string; repositoryId: string | null; label: string; state: string; kind: any;
@@ -222,6 +225,7 @@ function AddMachines({ onClose }: { onClose: () => void }) {
             </label>
             <label className="field">Link valid for (days)<input type="number" min={1} max={90} value={days} onChange={(e) => setDays(Number(e.target.value))} /></label>
           </div>
+          <p className="small">Machines installed with the Fenrir agent installer (Deploy agents) already have device backup: they appear here on their own. Use these links for machines that should only be backed up.</p>
           <p className="small muted">One link installs any number of machines until it expires. Each installs the backup agent as a protected system service (FenrirBackupAgent on Windows) that only administrators can stop or remove. It is separate from the Fenrir security agent and does not touch it.</p>
           <button className="primary" disabled={busy || !tenant} onClick={create}>Create install links</button>
         </>
@@ -314,6 +318,7 @@ function Repositories({ repos, agents, reload }: { repos: Repo[] | null; agents:
   const [creating, setCreating] = useState(false);
   const [grant, setGrant] = useState<Repo | null>(null);
   const [share, setShare] = useState<Repo | null>(null);
+  const [gateway, setGateway] = useState<Repo | null>(null);
   const act = (fn: () => Promise<unknown>, msg: string) => run(fn, msg).then(reload);
   const name = (id: string | null) => agents.find((a) => a.id === id)?.name ?? "—";
   return (
@@ -336,10 +341,18 @@ function Repositories({ repos, agents, reload }: { repos: Repo[] | null; agents:
               {r.images} images · {bytes(r.storedBytes)} stored · last {unixTime(r.lastImage)} · machines: {r.agents.map((a) => a.name).join(", ") || "none"}
               {r.isShare && <> · share sign-in: {r.shareAuth === "password" ? r.shareUser : r.shareAuth === "machine" ? "computer account" : "none"}</>}
             </div>
+            {r.gateway && (
+              <div className="small" style={{ marginTop: 4 }}>
+                Gateway: <b>{r.gateway.name}</b> {r.gateway.online ? "" : <Pill value="offline" tone="bad" />} serves it to{" "}
+                {r.agents.filter((a) => a.viaGateway).map((a) => a.name).join(", ") || "no machines yet"}
+                {" "}· {r.gateway.port ? `direct on ${[...r.gateway.addresses].join(", ") || `port ${r.gateway.port}`}, else relayed` : "relayed through this server"}
+              </div>
+            )}
             <div className="small muted">Reclaim space every {r.pruneEveryDays || "—"} days on {name(r.maintenanceAgentId)} (last {fmtTime(r.lastPruneAt) || "never"}) · boot verification {r.bootEveryDays ? `every ${r.bootEveryDays} days on ${name(r.bootAgentId)}, last verified ${fmtTime(r.lastVerifiedBoot) || "never"}` : "off"}</div>
             <div className="row" style={{ gap: 6, marginTop: 8, flexWrap: "wrap" }}>
               {can("configure") && <button className="small" onClick={() => setGrant(r)}>Give a machine access</button>}
               {can("configure") && r.isShare && <button className="small" onClick={() => setShare(r)}>Change share sign-in</button>}
+              {can("configure") && <button className="small" onClick={() => setGateway(r)}>{r.gateway ? "Gateway settings" : "Serve through a gateway"}</button>}
               {!r.hold && can("respond") && <button className="small" disabled={busy} onClick={async () => { const why = await promptDialog("Reason for the hold (legal hold, investigation…)", ""); if (why !== null) act(() => api(`backup/repositories/${r.id}/hold`, { body: { hold: true, reason: why } }), "Hold placed"); }}>Place on hold</button>}
               {r.hold && can("destructive") && <button className="small danger" disabled={busy} onClick={async () => { if (await confirmDialog("Release the hold? Retention will delete old images again. Make sure the machine is clean first.")) act(() => api(`backup/repositories/${r.id}/hold`, { body: { hold: false } }), "Hold released"); }}>Release hold</button>}
               {can("respond") && <button className="small" disabled={busy || !r.maintenanceAgentId} onClick={() => act(() => api(`backup/repositories/${r.id}/prune`, { body: { dryRun: true } }), "Dry run queued: see Activity")}>Estimate reclaimable space</button>}
@@ -363,6 +376,7 @@ function Repositories({ repos, agents, reload }: { repos: Repo[] | null; agents:
       {creating && <CreateRepo agents={agents} onClose={() => { setCreating(false); reload(); }} />}
       {grant && <GrantAccess repo={grant} agents={agents} onClose={() => { setGrant(null); reload(); }} />}
       {share && <ShareSignin repo={share} agents={agents} onClose={() => { setShare(null); reload(); }} />}
+      {gateway && <GatewayDialog repo={gateway} agents={agents} onClose={() => { setGateway(null); reload(); }} />}
     </>
   );
 }
@@ -447,17 +461,53 @@ function CreateRepo({ agents, onClose }: { agents: BackupAgent[]; onClose: () =>
   );
 }
 
+function GatewayDialog({ repo, agents, onClose }: { repo: Repo; agents: BackupAgent[]; onClose: () => void }) {
+  const { run, busy } = useAction();
+  // The gateway needs its own direct access (it is the one machine that reaches the NAS).
+  const pool = agents.filter((a) => repo.agents.some((x) => x.id === a.id && !x.viaGateway) && a.capabilities.includes("gateway"));
+  const [id, setId] = useState(repo.gateway?.agentId ?? pool[0]?.id ?? "");
+  const [direct, setDirect] = useState(repo.gateway ? repo.gateway.port > 0 : true);
+  const [port, setPort] = useState(repo.gateway?.port || 8475);
+  const [address, setAddress] = useState(repo.gateway?.address ?? "");
+  const save = () => run(() => api(`backup/repositories/${repo.id}/gateway`, { body: { agentId: id, port: direct ? port : 0, address: address.trim() || null } }), "Gateway saved").then((r) => r !== undefined && onClose());
+  const stop = () => run(() => api(`backup/repositories/${repo.id}/gateway`, { body: {} }), "Gateway removed").then((r) => r !== undefined && onClose());
+  return (
+    <Modal wide title={`Serve ${repo.name} through a gateway`} onClose={onClose}
+      footer={<>{repo.gateway && <button className="danger" disabled={busy} onClick={stop}>Stop serving</button>}<button className="primary" disabled={busy || !id} onClick={save}>Save</button></>}>
+      <p className="small">One machine inside the network (where the NAS is) serves this repository to machines you choose elsewhere:
+        laptops at home, a branch office. They connect to it directly when they can reach it (same network, VPN or a forwarded port),
+        and through this server otherwise, so no port has to be opened.</p>
+      <p className="small muted">Everything is encrypted between the two machines; this server only passes on what it cannot read. Machines
+        reaching the repository through the gateway can add backups and restore, but cannot delete them, so ransomware on a laptop
+        cannot erase its history. Retention and space reclamation run on the gateway.</p>
+      {pool.length === 0 ? <p className="small">No machine with direct access to {repo.path} can be a gateway yet. Give the machine next to the NAS access first (and let its backup agent update).</p> : (
+        <div className="form-grid">
+          <label className="field">Gateway machine<select value={id} onChange={(e) => setId(e.target.value)}>{pool.map((a) => <option key={a.id} value={a.id}>{a.name}{a.online ? "" : " (offline)"}</option>)}</select></label>
+          <label className="field">Direct connections
+            <span className="row small" style={{ gap: 6, fontWeight: 400 }}><input type="checkbox" checked={direct} onChange={(e) => setDirect(e.target.checked)} /> Listen on port
+              <input type="number" min={1024} max={65535} value={port} disabled={!direct} onChange={(e) => setPort(Number(e.target.value))} style={{ width: 90 }} /></span>
+          </label>
+          <label className="field">Address from outside (optional)<input value={address} placeholder="backup.example.com:8475" onChange={(e) => setAddress(e.target.value)} /></label>
+        </div>
+      )}
+      {direct && <p className="small muted">Allow inbound TCP {port} on the gateway machine's firewall for the networks that should connect directly. Without it, or from anywhere else, machines use the relay.</p>}
+      <p className="small muted">Then give each remote machine access with "Through the gateway" ticked.</p>
+    </Modal>
+  );
+}
+
 function GrantAccess({ repo, agents, onClose }: { repo: Repo; agents: BackupAgent[]; onClose: () => void }) {
   const { run, busy } = useAction();
   const pool = agents.filter((a) => a.tenantId === repo.tenantId && !repo.agents.some((x) => x.id === a.id));
   const [id, setId] = useState(pool[0]?.id ?? "");
   const [pass, setPass] = useState("");
   const [signin, setSignin] = useState<Signin>({ ...noSignin(), username: repo.shareUser ?? "" });
-  const needsShare = repo.shareAuth === "password";
+  const [via, setVia] = useState(!!repo.gateway);
+  const needsShare = repo.shareAuth === "password" && !via;
   const go = () => run(async () => {
     const a = agents.find((x) => x.id === id)!;
     const sealed: Sealed = await seal(a.publicKey, JSON.stringify({ passphrase: pass, recovery_key: null }));
-    await api(`backup/repositories/${repo.id}/access`, { body: { agentId: id, sealed, sealedShare: needsShare ? await sealSignin(a, signin) : null } });
+    await api(`backup/repositories/${repo.id}/access`, { body: { agentId: id, sealed, viaGateway: via, sealedShare: needsShare ? await sealSignin(a, signin) : null } });
   }, "Access given").then(onClose);
   return (
     <Modal title={`Give a machine access to ${repo.name}`} onClose={onClose}
@@ -466,8 +516,15 @@ function GrantAccess({ repo, agents, onClose }: { repo: Repo; agents: BackupAgen
         <label className="field">Machine<select value={id} onChange={(e) => setId(e.target.value)}>{pool.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
         <label className="field">Repository passphrase<input type="password" value={pass} onChange={(e) => setPass(e.target.value)} autoComplete="off" /></label>
       </div>
+      {repo.gateway && (
+        <label className="row small" style={{ gap: 6, marginTop: 8 }}>
+          <input type="checkbox" checked={via} onChange={(e) => setVia(e.target.checked)} />
+          Through the gateway ({repo.gateway.name}): for machines outside the network that cannot reach {repo.path} themselves
+        </label>
+      )}
       {needsShare && <><h3>Share password</h3><SigninFields value={signin} onChange={(s) => setSignin({ ...s, mode: "password" })} /></>}
-      <p className="small muted">Encrypted here for that machine only. If the passphrase is wrong, its first backup reports it.</p>
+      <p className="small muted">Encrypted here for that machine only. If the passphrase is wrong, its first backup reports it.
+        {via && " Through the gateway the machine can add backups and restore, but never delete: old backups are removed only by the gateway's retention."}</p>
     </Modal>
   );
 }
@@ -593,6 +650,7 @@ function Images({ agents, repos }: { agents: BackupAgent[]; repos: Repo[] }) {
   const images = useListData<Image>("backup/images", { tenantId: tenantId || undefined, repositoryId: repo || undefined }, [tenantId, repo]);
   const [restore, setRestore] = useState<Image | null>(null);
   const [boot, setBoot] = useState<Image | null>(null);
+  const [files, setFiles] = useState<Image | null>(null);
   const { can } = useApp();
   return (
     <div className="card">
@@ -607,28 +665,33 @@ function Images({ agents, repos }: { agents: BackupAgent[]; repos: Repo[] }) {
           { key: "consistency", label: "Consistency" },
           { key: "boot", label: "Boots?", render: (i) => i.lastBootCheck ? <Pill value={i.lastBootCheck.outcome} tone={i.lastBootCheck.outcome === "failed" ? "bad" : "good"} /> : <span className="small muted">not tested</span> },
           { key: "act", label: "", render: (i) => <div className="row" style={{ gap: 4 }}>
+            {can("scripts") && <button className="small primary" onClick={() => setFiles(i)}>Browse files</button>}
             {can("scripts") && <button className="small" onClick={() => setRestore(i)}>Restore</button>}
             {can("scripts") && <button className="small" onClick={() => setBoot(i)}>Boot test</button>}
           </div> },
         ]} />
       {restore && <RestoreDialog image={restore} agents={agents} repos={repos} onClose={() => setRestore(null)} />}
       {boot && <BootDialog image={boot} agents={agents} repos={repos} onClose={() => setBoot(null)} />}
+      {files && <FileBrowser image={files} onClose={() => setFiles(null)} />}
     </div>
   );
-}
-
-function withAccess(agents: BackupAgent[], repos: Repo[], repoId: string) {
-  const r = repos.find((x) => x.id === repoId);
-  return agents.filter((a) => r?.agents.some((x) => x.id === a.id));
 }
 
 function RestoreDialog({ image, agents, repos, onClose }: { image: Image; agents: BackupAgent[]; repos: Repo[]; onClose: () => void }) {
   const { run, busy } = useAction();
   const { can } = useApp();
-  const pool = withAccess(agents, repos, image.repositoryId);
+  // Any of the customer's machines can restore; one without access to the repository is given it here.
+  const repo = repos.find((r) => r.id === image.repositoryId);
+  const owner = agents.find((a) => a.id === image.agentId);
+  const hasAccess = (id: string) => !!repo?.agents.some((x) => x.id === id);
+  const pool = agents.filter((a) => !owner || a.tenantId === owner.tenantId)
+    .sort((a, b) => Number(hasAccess(b.id)) - Number(hasAccess(a.id)));
   const [agentId, setAgentId] = useState(pool[0]?.id ?? "");
   const agent = pool.find((a) => a.id === agentId);
   const caps = agent?.capabilities ?? [];
+  const needsAccess = !!agent && !hasAccess(agent.id);
+  const [pass, setPass] = useState("");
+  const [via, setVia] = useState(false);
   const [type, setType] = useState("vhdx");
   const [directory, setDirectory] = useState("");
   const [vmName, setVmName] = useState(`${image.vmName ?? image.hostname}-restored`);
@@ -637,12 +700,18 @@ function RestoreDialog({ image, agents, repos, onClose }: { image: Image; agents
   const [disk, setDisk] = useState(0);
   const target = type === "vhdx" ? { type, directory } : type === "hyperv_vm" ? { type, name: vmName, directory, start: false } : { type, device, disk, confirm };
   const ok = type === "disk" ? device && confirm === device : directory.trim() && (type !== "hyperv_vm" || vmName.trim());
-  const go = () => run(() => api("backup/restores", { body: { imageId: image.imageId, agentId, target } }), "Restore queued: follow it in Activity").then((r) => r !== undefined && onClose());
+  const go = () => run(async () => {
+    if (needsAccess && agent) {
+      const sealed: Sealed = await seal(agent.publicKey, JSON.stringify({ passphrase: pass, recovery_key: null }));
+      await api(`backup/repositories/${image.repositoryId}/access`, { body: { agentId: agent.id, sealed, viaGateway: via } });
+    }
+    return api("backup/restores", { body: { imageId: image.imageId, agentId, target } });
+  }, "Restore queued: follow it in Activity").then((r) => r !== undefined && onClose());
   return (
     <Modal wide title={`Restore ${image.vmName ?? image.hostname} from ${unixTime(image.created)}`} onClose={onClose}
-      footer={<button className={type === "disk" ? "danger" : "primary"} disabled={busy || !ok || !agentId} onClick={go}>{type === "disk" ? "Overwrite the disk" : "Restore"}</button>}>
+      footer={<button className={type === "disk" ? "danger" : "primary"} disabled={busy || !ok || !agentId || (needsAccess && !pass)} onClick={go}>{type === "disk" ? "Overwrite the disk" : needsAccess ? "Give access and restore" : "Restore"}</button>}>
       <div className="form-grid">
-        <label className="field">Machine that restores<select value={agentId} onChange={(e) => setAgentId(e.target.value)}>{pool.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
+        <label className="field">Machine that restores<select value={agentId} onChange={(e) => setAgentId(e.target.value)}>{pool.map((a) => <option key={a.id} value={a.id}>{a.name}{a.capabilities.includes("restore_hyperv") ? " · Hyper-V" : ""}{hasAccess(a.id) ? "" : " · no access yet"}</option>)}</select></label>
         <label className="field">Restore to<select value={type} onChange={(e) => setType(e.target.value)}>
           {caps.includes("restore_vhdx") && <option value="vhdx">Virtual disk files (VHDX)</option>}
           {caps.includes("restore_hyperv") && <option value="hyperv_vm">A new Hyper-V VM</option>}
@@ -655,6 +724,16 @@ function RestoreDialog({ image, agents, repos, onClose }: { image: Image; agents
           <label className="field">Target device<input value={device} onChange={(e) => setDevice(e.target.value)} placeholder="\\.\PhysicalDrive1 or /dev/sdb" /></label>
         </>}
       </div>
+      {needsAccess && (
+        <div className="card" style={{ marginTop: 10 }}>
+          <b>{agent?.name} has no access to {repo?.name ?? "this repository"} yet.</b>
+          <div className="form-grid" style={{ marginTop: 6 }}>
+            <label className="field">Repository passphrase<input type="password" value={pass} onChange={(e) => setPass(e.target.value)} autoComplete="off" /></label>
+          </div>
+          {repo?.gateway && <label className="row small" style={{ gap: 6 }}><input type="checkbox" checked={via} onChange={(e) => setVia(e.target.checked)} /> Through the gateway ({repo.gateway.name})</label>}
+          <p className="small muted">Encrypted in this browser for {agent?.name} only.</p>
+        </div>
+      )}
       {type === "disk" && <div className="card warn-card" style={{ marginTop: 10 }}>
         Everything on <b className="mono">{device || "the target device"}</b> is replaced. Type the device again to confirm. You will also be asked for your password.
         <input style={{ marginTop: 6, width: "100%" }} value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder={device} />
@@ -665,28 +744,86 @@ function RestoreDialog({ image, agents, repos, onClose }: { image: Image; agents
 
 function BootDialog({ image, agents, repos, onClose }: { image: Image; agents: BackupAgent[]; repos: Repo[]; onClose: () => void }) {
   const { run, busy } = useAction();
-  const hosts = withAccess(agents, repos, image.repositoryId).filter((a) => a.capabilities.some((c) => c === "boot_kvm" || c === "boot_hyperv"));
-  const [agentId, setAgentId] = useState(hosts[0]?.id ?? "");
+  const repo = repos.find((r) => r.id === image.repositoryId);
+  // Every Hyper-V or QEMU host of the customer; one without access to the repository can be given it here.
+  const owner = agents.find((a) => a.id === image.agentId);
+  const hosts = agents.filter((a) => a.capabilities.some((c) => c === "boot_kvm" || c === "boot_hyperv") && (!owner || a.tenantId === owner.tenantId));
+  const hasAccess = (id: string) => !!repo?.agents.some((x) => x.id === id);
+  const [agentId, setAgentId] = useState((hosts.find((h) => hasAccess(h.id)) ?? hosts[0])?.id ?? "");
+  const host = hosts.find((a) => a.id === agentId);
+  const hyperv = !!host?.capabilities.includes("boot_hyperv") && !host?.capabilities.includes("boot_kvm");
   const [keep, setKeep] = useState(false);
+  const [folder, setFolder] = useState("");
+  const [pass, setPass] = useState("");
+  const [via, setVia] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const needsAccess = !!host && !hasAccess(host.id);
   const checks = useListData<any>(`backup/images/${image.imageId}/boot-checks`);
   const [shot, setShot] = useState<string | null>(null);
   const showShot = async (id: number) => {
     const r = await fetch(`/api/console/backup/boot-checks/${id}/screenshot.png`, { headers: { Authorization: `Bearer ${getToken()}` } });
     if (r.ok) setShot(URL.createObjectURL(await r.blob()));
   };
-  const kvm = agents.find((a) => a.id === agentId)?.capabilities.includes("boot_kvm");
+  const start = () => run(async () => {
+    if (!host) return;
+    if (needsAccess) {
+      const sealed: Sealed = await seal(host.publicKey, JSON.stringify({ passphrase: pass, recovery_key: null }));
+      await api(`backup/repositories/${image.repositoryId}/access`, { body: { agentId: host.id, sealed, viaGateway: via } });
+    }
+    await api(`backup/images/${image.imageId}/boot-check`, { body: { agentId: host.id, keepRunning: keep, directory: hyperv && folder.trim() ? folder.trim() : null } });
+    setMsg(keep
+      ? (hyperv ? `Queued. When it has booted, the VM stays in Hyper-V Manager on ${host.name} as "Fenrir check ${image.hostname} …", network disconnected. Stop it from Machines › ${host.name} when you are done.`
+                : `Queued. The VM stays running on ${host.name} (isolated) for up to 8 hours; stop it from Machines › ${host.name}.`)
+      : "Queued. The result appears below in a few minutes.");
+  }).then(() => checks.reload());
+  const kept = host?.runningVms ?? [];
   return (
     <Modal wide title={`Boot test of ${image.vmName ?? image.hostname}`} onClose={onClose}
-      footer={<button className="primary" disabled={busy || !agentId} onClick={() => run(() => api(`backup/images/${image.imageId}/boot-check`, { body: { agentId, keepRunning: keep && kvm } }), "Boot test queued").then(() => checks.reload())}>Start boot test</button>}>
-      {hosts.length === 0 ? <p>No machine with access to this repository can boot VMs. A Linux machine with QEMU, or a Hyper-V host, can.</p> : (
-        <div className="form-grid">
-          <label className="field">Boot on<select value={agentId} onChange={(e) => setAgentId(e.target.value)}>{hosts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
-          {kvm && <label className="row small" style={{ gap: 6 }}><input type="checkbox" checked={keep} onChange={(e) => setKeep(e.target.checked)} /> Keep it running afterwards (isolated, no network)</label>}
+      footer={<button className="primary" disabled={busy || !host || (needsAccess && !pass)} onClick={start}>{needsAccess ? "Give access and start" : "Start boot test"}</button>}>
+      {hosts.length === 0 ? (
+        <p>No machine of this customer can boot VMs yet. A Windows machine with Hyper-V, or a Linux machine with QEMU, can: install the backup agent on it (it detects Hyper-V by itself).</p>
+      ) : (
+        <>
+          <div className="form-grid">
+            <label className="field">Boot on
+              <select value={agentId} onChange={(e) => { setAgentId(e.target.value); setMsg(null); }}>
+                {hosts.map((a) => <option key={a.id} value={a.id}>{a.name} · {a.capabilities.includes("boot_hyperv") ? "Hyper-V" : "QEMU/KVM"}{hasAccess(a.id) ? "" : " · no access yet"}{a.online ? "" : " (offline)"}</option>)}
+              </select>
+            </label>
+            {hyperv && <label className="field">Folder on {host?.name} for the VM's disks<input value={folder} onChange={(e) => setFolder(e.target.value)} placeholder="default: the agent's folder on C:" /></label>}
+          </div>
+          {needsAccess && (
+            <div className="card" style={{ marginTop: 10 }}>
+              <b>{host?.name} has no access to {repo?.name ?? "this repository"} yet.</b>
+              <div className="form-grid" style={{ marginTop: 6 }}>
+                <label className="field">Repository passphrase<input type="password" value={pass} onChange={(e) => setPass(e.target.value)} autoComplete="off" /></label>
+              </div>
+              {repo?.gateway && <label className="row small" style={{ gap: 6 }}><input type="checkbox" checked={via} onChange={(e) => setVia(e.target.checked)} /> Through the gateway ({repo.gateway.name})</label>}
+              <p className="small muted">Encrypted in this browser for {host?.name} only.{repo?.isShare && repo.shareAuth === "password" && !via ? " The repository is on a network share that needs a password: give access on the Repositories tab instead." : ""}</p>
+            </div>
+          )}
+          <label className="row small" style={{ gap: 6, marginTop: 8 }}>
+            <input type="checkbox" checked={keep} onChange={(e) => setKeep(e.target.checked)} />
+            {hyperv ? "Keep the VM afterwards so I can log in and check it (it stays in Hyper-V Manager until I stop it)" : "Keep it running afterwards (up to 8 hours)"}
+          </label>
+        </>
+      )}
+      {msg && <p role="status" className="small">{msg}</p>}
+      <p className="small muted">The backup is restored as a VM with its network disconnected; nothing is written to the backup or the original machine. A pass means Windows (or Linux) started and answered; a kept VM lets you log in and check applications and data yourself.{hyperv && " The VM's disks need about as much free space on the host as the data in the backup."}</p>
+      {kept.length > 0 && (
+        <div className="card" style={{ marginBottom: 10 }}>
+          <b>Test VMs kept on {host?.name}</b>
+          {kept.map((v) => (
+            <div key={v.sessionId} className="row small" style={{ gap: 8 }}>
+              Image {String(v.imageId).slice(0, 8)} since {unixTime(v.startedUnix)}{v.vncPort ? ` · console on the host at 127.0.0.1:${v.vncPort}` : ""}
+              <button className="small" disabled={busy} onClick={() => run(() => api(`backup/agents/${host!.id}/vms/${v.sessionId}/stop`, { body: {} }), "Stopping and removing the VM")}>Stop and remove</button>
+            </div>
+          ))}
         </div>
       )}
-      <p className="small muted">The image boots in an isolated VM with no network; nothing is written to the backup. A pass means the operating system started.</p>
       <Table rows={checks.data} empty="Not tested yet." columns={[
         { key: "at", label: "When", render: (b) => fmtTime(b.at) },
+        { key: "agentName", label: "Host", render: (b) => <span className="small">{b.agentName}</span> },
         { key: "outcome", label: "Result", render: (b) => <Pill value={b.outcome} tone={b.outcome === "failed" ? "bad" : "good"} /> },
         { key: "message", label: "Detail", render: (b) => <span className="small">{b.message} ({b.seconds}s, {b.accel})</span> },
         { key: "shot", label: "", render: (b) => b.hasScreenshot && <button className="small" onClick={() => showShot(b.id)}>Screen</button> },
@@ -730,6 +867,7 @@ export function DeviceBackup({ device }: { device: { id: string; hostname: strin
   const detail = useData<any>(agent ? `backup/agents/${agent.id}` : null, {}, [agent?.id]);
   const [role, setRole] = useState(/server/i.test(device.osVersion ?? "") || device.platform === "linux" ? "server" : "workstation");
   const [sent, setSent] = useState(false);
+  const [files, setFiles] = useState<Image | null>(null);
   useAutoRefresh(agents.reload, 15000);
   if (agents.data == null) return <div className="empty">Loading…</div>;
   if (!agent) return (
@@ -763,7 +901,9 @@ export function DeviceBackup({ device }: { device: { id: string; hostname: strin
           { key: "kind", label: "Type", render: (i: Image) => `${i.kind}${i.vmName ? ` · ${i.vmName}` : ""}` },
           { key: "size", label: "Size", render: (i: Image) => bytes(i.capturedBytes) },
           { key: "boot", label: "Boots?", render: (i: Image) => i.lastBootCheck ? <Pill value={i.lastBootCheck.outcome} tone={i.lastBootCheck.outcome === "failed" ? "bad" : "good"} /> : "—" },
+          { key: "files", label: "", render: (i: Image) => can("scripts") && <button className="small" onClick={() => setFiles(i)}>Browse files</button> },
         ]} />
+        {files && <FileBrowser image={files} onClose={() => setFiles(null)} />}
       </div>
       <div className="card"><h3>Recent backup jobs</h3><JobsTable rows={detail.data?.jobs ?? null} /></div>
     </>

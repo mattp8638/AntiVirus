@@ -418,7 +418,7 @@ def test_retired_device_can_reenroll_only_with_fresh_token_and_restores_existing
                        json={}).status_code == 401
     from fenrir_cloud import deployment_installers
     tokens = []
-    def build(platform, server, token):
+    def build(platform, server, token, include_backup=True):
         tokens.append(token)
         return b"installer", "FenrirSetup.exe", "application/octet-stream"
     monkeypatch.setattr(deployment_installers, "build", build)

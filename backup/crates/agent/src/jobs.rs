@@ -141,12 +141,39 @@ fn secret(key: &AgentKey, access: &RepoAccess) -> anyhow::Result<RepoSecret> {
     Ok(serde_json::from_slice(&pt)?)
 }
 
-fn open_repo(key: &AgentKey, access: &RepoAccess) -> anyhow::Result<Repository> {
-    let s = secret(key, access)?;
-    let path = crate::share::prepare(key, &access.path, access.sealed_share.as_ref())?;
-    let backend: Arc<dyn Backend> = Arc::new(
-        LocalBackend::open(&path).with_context(|| format!("repository path {}", access.path))?,
-    );
+/// The repository's storage: its folder, or a gateway (NAS gateway) when the
+/// server routes this machine through one.
+fn storage(ctx: &Ctx, access: &RepoAccess, create: bool) -> anyhow::Result<Arc<dyn Backend>> {
+    if let Some(route) = &access.gateway {
+        let me = uuid::Uuid::parse_str(&ctx.cfg.agent_id).context("agent id")?;
+        let transport = crate::gateway::Route::new(route.clone(), ctx.client.clone());
+        return Ok(Arc::new(crate::gateway::RemoteBackend::new(
+            ctx.key,
+            me,
+            &route.public_key,
+            access.repository_id,
+            Box::new(transport),
+        )?));
+    }
+    let path = crate::share::prepare(ctx.key, &access.path, access.sealed_share.as_ref())?;
+    Ok(if create {
+        Arc::new(LocalBackend::create(&path).with_context(|| {
+            format!(
+                "creating the repository at {} (the folder must be new or empty)",
+                access.path
+            )
+        })?)
+    } else {
+        Arc::new(
+            LocalBackend::open(&path)
+                .with_context(|| format!("repository path {}", access.path))?,
+        )
+    })
+}
+
+pub(crate) fn open_repo(ctx: &Ctx, access: &RepoAccess) -> anyhow::Result<Repository> {
+    let s = secret(ctx.key, access)?;
+    let backend = storage(ctx, access, false)?;
     Repository::unlock_with_passphrase(backend, s.passphrase.as_bytes()).map_err(|e| match e {
         core_format::Error::WrongKey => anyhow!("the repository passphrase given to this machine is wrong; grant access again with the right passphrase"),
         e => e.into(),
@@ -160,7 +187,10 @@ pub fn run(ctx: &Ctx, spec: &JobSpec) -> JobUpdate {
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| execute(ctx, spec, &rep)));
     // Network shares stay connected only while a job (or a VM running from
     // a backup) needs them.
-    if crate::boot::running_vms().is_empty() {
+    if crate::boot::running_vms().is_empty()
+        && !crate::browse::active()
+        && !crate::gateway::serving()
+    {
         crate::share::release_all();
     }
     match r {
@@ -215,14 +245,7 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
                     .as_deref()
                     .ok_or_else(|| anyhow!("no recovery key supplied"))?,
             )?;
-            let path = crate::share::prepare(ctx.key, &access.path, access.sealed_share.as_ref())?;
-            let backend: Arc<dyn Backend> =
-                Arc::new(LocalBackend::create(&path).with_context(|| {
-                    format!(
-                        "creating the repository at {} (the folder must be new or empty)",
-                        access.path
-                    )
-                })?);
+            let backend = storage(ctx, access, true)?;
             rep.progress("creating", 0, 1, "deriving keys");
             let repo =
                 Repository::init_with(backend, s.passphrase.as_bytes(), Default::default(), &rk)?;
@@ -232,11 +255,11 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             Ok(u)
         }
         JobKind::BackupSystem { settings } => {
-            let repo = open_repo(ctx.key, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
             backup_system(ctx, &repo, settings, rep)
         }
         JobKind::BackupDisks { paths, settings } => {
-            let repo = open_repo(ctx.key, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
             let mut opened = Vec::new();
             for p in paths {
                 opened.push(
@@ -266,14 +289,14 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             finish_backup(&repo, vec![r], vec![], settings, rep)
         }
         JobKind::BackupHyperv { vm_ids, settings } => {
-            let repo = open_repo(ctx.key, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
             backup_hyperv(ctx, &repo, vm_ids, settings, rep)
         }
         JobKind::Verify {
             level,
             sample_percent,
         } => {
-            let repo = open_repo(ctx.key, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
             let lvl = match level.as_str() {
                 "full" => VerifyLevel::Full,
                 "sample" => VerifyLevel::Sample(sample_percent.unwrap_or(5.0)),
@@ -298,7 +321,7 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             Ok(u)
         }
         JobKind::ListImages => {
-            let repo = open_repo(ctx.key, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
             let (ok, bad) = repo.load_all_manifests()?;
             let mut u = done(if bad.is_empty() {
                 JobState::Succeeded
@@ -317,7 +340,7 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             retention,
             dry_run,
         } => {
-            let repo = open_repo(ctx.key, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
             rep.progress("retention", 0, 1, "reading images");
             let p = engine::retention::RetentionPolicy {
                 keep_last: retention.keep_last,
@@ -335,7 +358,7 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             Ok(u)
         }
         JobKind::Prune { dry_run } => {
-            let repo = open_repo(ctx.key, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
             rep.progress("pruning", 0, 1, "finding unreferenced data");
             let r = engine::retention::prune(&repo, *dry_run, &ctx.ctl)?;
             let mut u = done(JobState::Succeeded);
@@ -347,7 +370,7 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             disks,
             target,
         } => {
-            let repo = open_repo(ctx.key, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
             crate::restore::run(ctx, &repo, *image_id, disks, target, rep)
         }
         JobKind::BootCheck {
@@ -355,17 +378,48 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             keep_running,
             memory_mb,
             cpus,
+            directory,
         } => {
-            let repo = open_repo(ctx.key, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
             let req = crate::boot::BootRequest {
                 image_id: *image_id,
                 keep_running: *keep_running,
                 memory_mb: *memory_mb,
                 cpus: *cpus,
+                directory: directory.clone(),
             };
             crate::boot::run(ctx, &repo, &req, rep)
         }
         JobKind::StopVm { session_id } => crate::boot::stop_vm(*session_id),
+        JobKind::BrowseFiles {
+            image_id,
+            volume,
+            path,
+        } => crate::browse::browse(
+            ctx,
+            access.ok_or_else(|| anyhow!("no repository"))?,
+            *image_id,
+            *volume,
+            path,
+        ),
+        JobKind::RestoreFiles {
+            image_id,
+            volume,
+            paths,
+            target,
+            keep_structure,
+            conflict,
+        } => crate::browse::restore_files(
+            ctx,
+            access.ok_or_else(|| anyhow!("no repository"))?,
+            *image_id,
+            *volume,
+            paths,
+            target,
+            *keep_structure,
+            conflict,
+            rep,
+        ),
         JobKind::CheckAccess { path, sealed_share } => {
             check_access(ctx, path, sealed_share.as_ref())
         }

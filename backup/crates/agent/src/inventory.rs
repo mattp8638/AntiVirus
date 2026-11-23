@@ -88,13 +88,19 @@ pub fn os() -> OsSummary {
 }
 
 pub fn capabilities(role: &str) -> Vec<String> {
-    let mut c: Vec<String> = ["verify", "maintenance", "restore_vhdx"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let mut c: Vec<String> = [
+        "verify",
+        "maintenance",
+        "restore_vhdx",
+        "restore_files",
+        "gateway",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
     if cfg!(windows) {
         c.push("backup_system".into());
-        if role == "hyperv" {
+        if crate::hyperv::is_host(role) {
             c.push("backup_hyperv".into());
             c.push("restore_hyperv".into());
         }
@@ -186,5 +192,42 @@ pub fn collect(role: &str, vms: Vec<protocol::VmSummary>, notes: Vec<String>) ->
         agent_target: crate::update::TARGET.into(),
         agent_sha256: crate::update::self_sha256(),
         running_vms: crate::boot::running_vms(),
+        gateway_addresses: vec![],
+    }
+}
+
+/// The role for `--role auto` (the all-in-one Fenrir installer): a Hyper-V host
+/// backs up its VMs, Windows Server and Linux are servers, the rest workstations.
+pub fn detect_role() -> String {
+    if cfg!(windows) {
+        let ok = |prog: &str, args: &[&str]| {
+            std::process::Command::new(prog)
+                .args(args)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        };
+        if ok("sc.exe", &["query", "vmms"]).is_some() {
+            return "hyperv".into();
+        }
+        let product = ok(
+            "reg.exe",
+            &[
+                "query",
+                r"HKLM\SYSTEM\CurrentControlSet\Control\ProductOptions",
+                "/v",
+                "ProductType",
+            ],
+        )
+        .unwrap_or_default();
+        // "WinNT" is a workstation edition; "ServerNT" / "LanmanNT" are servers.
+        let server = product.contains("ServerNT") || product.contains("LanmanNT");
+        return if server { "server" } else { "workstation" }.into();
+    }
+    if cfg!(target_os = "macos") {
+        "workstation".into()
+    } else {
+        "server".into()
     }
 }

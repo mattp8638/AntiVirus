@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from . import audit
 from . import backup_installers as tpl
-from .models import (Alert, BackupAgent, BackupBootCheck, BackupImage, BackupJob, BackupRepoAccess, BackupRepository,
+from .models import (Alert, Device, BackupAgent, BackupBootCheck, BackupImage, BackupJob, BackupRepoAccess, BackupRepository,
                      ImageBackupPlan, utcnow)
 
 PROTOCOL_VERSION = 1
@@ -70,7 +70,8 @@ KIND_LABELS = {
     "init_repository": "Create repository", "backup_system": "System backup", "backup_disks": "Disk backup",
     "backup_hyperv": "Hyper-V backup", "verify": "Verify", "list_images": "Refresh images",
     "apply_retention": "Apply retention", "prune": "Reclaim space", "restore": "Restore", "boot_check": "Boot check",
-    "stop_vm": "Stop VM", "check_access": "Test connection",
+    "stop_vm": "Stop VM", "check_access": "Test connection", "browse_files": "Browse files",
+    "restore_files": "Restore files",
 }
 # Capability the agent must report for console-created jobs of each kind.
 KIND_CAPABILITY = {"backup_system": "backup_system", "backup_disks": "backup_disks", "backup_hyperv": "backup_hyperv",
@@ -357,6 +358,12 @@ def queue_retention(db: Session, plan_id: str, repo_id: str, agent: BackupAgent,
     if plan is None or keeps_everything(plan.retention):
         return
     machine_ids = sorted({i["machine_id"] for i in images})
+    repo = db.get(BackupRepository, repo_id)
+    if repo is not None and repo.gateway_agent_id and repo.gateway_agent_id != agent.id:
+        # Served append-only through a gateway: only the gateway deletes old images.
+        gateway = db.get(BackupAgent, repo.gateway_agent_id)
+        if gateway is not None and not gateway.revoked:
+            agent = gateway
     if machine_ids:
         queue(db, agent, {"type": "apply_retention", "machine_ids": machine_ids, "retention": plan.retention,
                           "dry_run": False}, repo_id, "retention", plan_id=plan_id)
@@ -485,9 +492,57 @@ def tick(db: Session) -> None:
     run_boot_checks(db)
 
 
+BROWSE_KEEP = timedelta(days=1)
+# While someone browses a machine's backups, it polls every second (agents older than this ask for at least 5).
+FAST_POLL_SECONDS = 1
+FAST_POLL_FOR = timedelta(minutes=3)
+
+
+def poll_seconds(db: Session, agent: BackupAgent) -> int:
+    recent = db.execute(select(BackupJob.id).where(
+        BackupJob.agent_id == agent.id, BackupJob.created_at > utcnow() - FAST_POLL_FOR,
+        BackupJob.kind["type"].as_string() == "browse_files")).first()
+    return FAST_POLL_SECONDS if recent else POLL_SECONDS
+
+
+def purge_listings(db: Session) -> int:
+    """Folder listings (file names) are kept a day, then dropped from the job record."""
+    n = 0
+    for j in db.execute(select(BackupJob).where(BackupJob.finished_at < utcnow() - BROWSE_KEEP,
+                                                BackupJob.result.is_not(None))).scalars():
+        if (j.kind or {}).get("type") == "browse_files":
+            j.result = None
+            n += 1
+    db.commit()
+    return n
+
+
+def matching_device(db: Session, agent: BackupAgent) -> str | None:
+    """The Fenrir device this backup agent runs on: the one device in its tenant with the same host name."""
+    name = (agent.hostname or "").split(".")[0].lower()
+    if not name:
+        return None
+    rows = [d for d in db.execute(select(Device).where(Device.tenant_id == agent.tenant_id)).scalars()
+            if (d.hostname or "").split(".")[0].lower() == name and d.api_key_hash != f"retired-{d.id}"]
+    return rows[0].id if len(rows) == 1 else None
+
+
+def link_devices(db: Session) -> int:
+    """Link backup agents installed by the all-in-one installer to their device once the security agent enrols."""
+    n = 0
+    for a in db.execute(select(BackupAgent).where(BackupAgent.device_id.is_(None), BackupAgent.revoked.is_(False))).scalars():
+        if (dev := matching_device(db, a)) is not None:
+            a.device_id = dev
+            n += 1
+    db.commit()
+    return n
+
+
 def hourly(db: Session) -> None:
+    link_devices(db)
     run_maintenance(db)
     check_health(db)
+    purge_listings(db)
 
 
 def record(db: Session, actor: str, action: str, target: str, tenant_id: str | None, **details) -> None:

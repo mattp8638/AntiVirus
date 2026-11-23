@@ -508,6 +508,27 @@ pub fn list_vms() -> anyhow::Result<Vec<protocol::VmSummary>> {
     parse_vm_list(&run_ps(&list_script())?)
 }
 
+/// Is Hyper-V installed here (the Virtual Machine Management service), whatever
+/// role the agent was installed with?
+pub fn host_present() -> bool {
+    if !cfg!(windows) {
+        return false;
+    }
+    static PRESENT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *PRESENT.get_or_init(|| {
+        std::process::Command::new("sc.exe")
+            .args(["query", "vmms"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    })
+}
+
+/// A Hyper-V host: installed as one, or a machine where Hyper-V is installed.
+pub fn is_host(role: &str) -> bool {
+    cfg!(windows) && (role == "hyperv" || host_present())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

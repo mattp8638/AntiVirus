@@ -246,3 +246,275 @@ def test_scheduler_ticks_queue_due_plans_and_raise_overdue(client, admin, tenant
         assert any(a.rule_id == bk.RULE_OVERDUE for a in db.query(Alert).all())
         bk.hourly(db)  # deduplicated
         assert sum(a.rule_id == bk.RULE_OVERDUE for a in db.query(Alert).all()) == 1
+
+
+def test_browse_and_restore_files(client, admin, tenant):
+    from datetime import timedelta
+
+    from fenrir_cloud.db import session_factory
+    from fenrir_cloud.models import BackupJob, utcnow
+
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    caps = CAPS + ["restore_files"]
+    heartbeat(client, h, caps=caps)
+    repo_id = ready_repo(client, admin, tenant, agent_id, h)
+    client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+    job = heartbeat(client, h, caps=caps)["jobs"][0]
+    im = image()
+    finish(client, h, job["id"], images=[im])
+    assert heartbeat(client, h, caps=caps)["poll_seconds"] == bk.POLL_SECONDS
+
+    # Volumes, then a folder; the machine polls every second meanwhile.
+    r = client.post(f"/api/console/backup/images/{im['image_id']}/browse", headers=admin, json={})
+    assert r.status_code == 200 and r.json()["agentId"] == agent_id, r.text
+    hb = heartbeat(client, h, caps=caps)
+    assert hb["poll_seconds"] == 1
+    spec = hb["jobs"][0]
+    assert spec["kind"] == {"type": "browse_files", "image_id": im["image_id"], "volume": None, "path": "/"}
+    assert spec["repository"]["sealed_secret"] == SEALED
+    finish(client, h, spec["id"], result={"volumes": [{"disk": 0, "partition": 3, "filesystem": "ntfs", "browsable": True}]})
+    r = client.post(f"/api/console/backup/images/{im['image_id']}/browse", headers=admin,
+                    json={"disk": 0, "partition": 3, "path": "/Users/anna"})
+    spec = heartbeat(client, h, caps=caps)["jobs"][0]
+    assert spec["kind"]["volume"] == {"disk": 0, "partition": 3} and spec["kind"]["path"] == "/Users/anna"
+    finish(client, h, spec["id"], result={"listing": {"path": "/Users/anna", "entries": [{"name": "report.txt"}]}})
+    assert client.get(f"/api/console/backup/jobs/{r.json()['id']}", headers=admin).json()["result"]["listing"]["entries"]
+    assert client.post(f"/api/console/backup/images/{im['image_id']}/browse", headers=admin,
+                       json={"disk": 0, "partition": 3, "path": "/Users/../Windows"}).status_code == 400
+    heartbeat(client, h, caps=caps)  # drain the queue
+
+    # Restore with "keep both" is ordinary; overwriting needs destructive rights and a password check.
+    body = {"disk": 0, "partition": 3, "paths": ["/Users/anna/report.txt"], "target": "C:\\Restored", "conflict": "rename"}
+    r = client.post(f"/api/console/backup/images/{im['image_id']}/restore-files", headers=admin, json=body)
+    assert r.status_code == 200, r.text
+    spec = heartbeat(client, h, caps=caps)["jobs"][0]
+    assert spec["kind"] == {"type": "restore_files", "image_id": im["image_id"], "volume": {"disk": 0, "partition": 3},
+                            "paths": ["/Users/anna/report.txt"], "target": "C:\\Restored", "keep_structure": True,
+                            "conflict": "rename"}
+    finish(client, h, spec["id"])
+    over = client.post(f"/api/console/backup/images/{im['image_id']}/restore-files", headers=admin, json={**body, "conflict": "overwrite"})
+    assert over.status_code == 403 and over.json()["detail"] == "reauth_required"
+
+    # An agent without file restore is told to update.
+    heartbeat(client, h, caps=CAPS)
+    assert "too old" in client.post(f"/api/console/backup/images/{im['image_id']}/browse", headers=admin, json={}).json()["detail"]
+
+    # File names in listings are dropped after a day; other results stay.
+    with session_factory()() as db:
+        for j in db.query(BackupJob).all():
+            j.finished_at = utcnow() - timedelta(days=2)
+        db.commit()
+        assert bk.purge_listings(db) == 2
+        kinds = {j.kind["type"]: j.result for j in db.query(BackupJob).all() if j.kind["type"] in ("browse_files",)}
+        assert kinds == {"browse_files": None}
+
+
+def _fake_builds(tmp_path, monkeypatch, which=None):
+    """Fake security-agent release files and backup agent builds for installer tests."""
+    from fenrir_cloud import deployment_installers as installers
+
+    rel = tmp_path / "rel"
+    rel.mkdir()
+    monkeypatch.setattr(installers, "DOWNLOADS", rel)
+    for arch in ("amd64", "arm64"):
+        (rel / f"fenrir-agent-linux-{arch}").write_bytes(b"\x7fELF-fenrir-" + arch.encode())
+        (rel / f"fenrir-agent-darwin-{arch}").write_bytes(b"\xcf\xfa-fenrir-" + arch.encode())
+    agents = tmp_path / "backup-builds"
+    monkeypatch.setenv("FENRIR_BACKUP_AGENTS_DIR", str(agents))
+    for t in bk.ALL_TARGETS.values():
+        if which is None or t.triple in which:
+            (agents / t.triple).mkdir(parents=True, exist_ok=True)
+            (agents / t.triple / t.file).write_bytes(b"backup-agent-" + t.triple.encode())
+    return installers
+
+
+def test_all_in_one_installers_carry_the_backup_agent(client, admin, tenant, tmp_path, monkeypatch):
+    import shutil
+    import subprocess
+
+    installers = _fake_builds(tmp_path, monkeypatch, which={"x86_64-unknown-linux-musl", "aarch64-apple-darwin"})
+    with_backup = client.post("/api/console/deploy-scripts", headers=admin, json={"tenantId": tenant["id"]}).json()
+    assert with_backup["includeBackup"] is True
+    sh = client.get("/api/v1/install/linux.sh", headers={"X-Fenrir-Token": with_backup["token"]}).text
+    assert "install_fenrir_backup" in sh and '--server "${base%/}/backup" --token "$token" --role auto' in sh
+    assert "fenrir-backup-agent.service" in sh
+    assert hashlib_sha("backup-agent-x86_64-unknown-linux-musl") in sh
+    assert "no backup agent for $(uname -m) yet" in sh  # no arm64 build on this server: skipped, not failed
+    mac = client.get("/api/v1/install/macos.sh", headers={"X-Fenrir-Token": with_backup["token"]}).text
+    assert "uk.fenrir-backup.agent" in mac and hashlib_sha("backup-agent-aarch64-apple-darwin") in mac
+    if shutil.which("sh"):
+        for script in (sh, mac):
+            assert subprocess.run(["sh", "-n"], input=script, text=True).returncode == 0
+
+    without = client.post("/api/console/deploy-scripts", headers=admin,
+                          json={"tenantId": tenant["id"], "includeBackup": False}).json()
+    assert without["includeBackup"] is False
+    assert "install_fenrir_backup" not in client.get("/api/v1/install/linux.sh", headers={"X-Fenrir-Token": without["token"]}).text
+    # Windows: setup reads "backup=off" from its embedded settings.
+    (installers.DOWNLOADS / "windows").mkdir()
+    import hashlib
+    import json
+
+    (installers.DOWNLOADS / "windows" / "FenrirSetup.exe").write_bytes(b"MZ-setup")
+    (installers.DOWNLOADS / "windows" / "build.json").write_text(json.dumps({"sha256": hashlib.sha256(b"MZ-setup").hexdigest()}))
+    tail = len(installers.WINDOWS_CONFIG_MAGIC) + 4
+    on = client.get("/api/v1/install/windows.exe", headers={"X-Fenrir-Token": with_backup["token"]}).content
+    off = client.get("/api/v1/install/windows.exe", headers={"X-Fenrir-Token": without["token"]}).content
+    assert on.endswith(installers.WINDOWS_CONFIG_MAGIC) and not on[:-tail].endswith(b"backup=off")
+    assert off[:-tail].endswith(b"\nbackup=off")
+
+
+def hashlib_sha(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def test_bundled_backup_agent_enrols_with_the_deployment_token_and_links_to_its_device(client, admin, tenant):
+    made = client.post("/api/console/deploy-scripts", headers=admin, json={"tenantId": tenant["id"]}).json()
+    # The backup agent usually enrols first (it is installed in the same run); the device appears just after.
+    agent_id, _ = agent_enroll(client, made["token"], machine="acme-ws-01")
+    rows = client.get(f"/api/console/backup/agents?tenantId={tenant['id']}", headers=admin).json()
+    assert [r["id"] for r in rows] == [agent_id] and rows[0]["deviceId"] is None
+    dev = enroll(client, admin, tenant, hostname="ACME-WS-01")
+    from fenrir_cloud.db import session_factory
+
+    with session_factory()() as db:
+        assert bk.link_devices(db) == 1
+    assert client.get(f"/api/console/backup/agents?deviceId={dev['deviceId']}", headers=admin).json()[0]["id"] == agent_id
+    # The deployment token is not used up by the backup agent.
+    from fenrir_cloud.models import EnrollmentToken
+
+    with session_factory()() as db:
+        assert db.get(EnrollmentToken, made["id"]).uses <= 1
+
+    # A deployment without backup refuses it; a revoked token too.
+    off = client.post("/api/console/deploy-scripts", headers=admin, json={"tenantId": tenant["id"], "includeBackup": False}).json()
+    body = {"protocol": 1, "token": off["token"], "hostname": "X", "machine_id": "x", "role": "server", "os": {},
+            "agent_version": "", "public_key": base64.b64encode(b"q" * 32).decode()}
+    assert client.post("/backup/api/agent/enroll", json=body).status_code == 409
+    with session_factory()() as db:
+        db.get(EnrollmentToken, made["id"]).revoked = True
+        db.commit()
+    assert client.post("/backup/api/agent/enroll", json={**body, "token": made["token"]}).status_code == 403
+
+
+def test_agent_builds_download_without_an_agent_token(client, tmp_path, monkeypatch):
+    """Installers fetch the agent before it has enrolled; the file is checked against its SHA-256."""
+    monkeypatch.setenv("FENRIR_BACKUP_AGENTS_DIR", str(tmp_path))
+    t = bk.ALL_TARGETS["x86_64-unknown-linux-musl"]
+    (tmp_path / t.triple).mkdir()
+    (tmp_path / t.triple / t.file).write_bytes(b"agent")
+    assert client.get(f"/backup/agent/{t.triple}/{t.file}").content == b"agent"
+    assert client.get("/backup/agent/x86_64-unknown-linux-musl/..%2f..%2fetc").content != b"agent"
+    assert client.get("/backup/agent/x86_64-unknown-linux-musl/other").status_code == 404
+
+
+def test_nas_gateway_routes_relays_and_keeps_retention_on_the_gateway(client, admin, tenant):
+    import threading
+
+    e = link(client, admin, tenant)
+    gw_id, gw_h = agent_enroll(client, e["token"], machine="nas-gw")
+    caps = CAPS + ["restore_files", "gateway"]
+    hb = lambda h, **kw: client.post("/backup/api/agent/heartbeat", headers=h, json={"inventory": {"hostname": "x", "capabilities": caps, **kw}}).json()
+    hb(gw_h, gateway_addresses=["192.168.1.20:8475"])
+    repo_id = ready_repo(client, admin, tenant, gw_id, gw_h)
+    hb(gw_h, gateway_addresses=["192.168.1.20:8475"])
+    remote_id, remote_h = agent_enroll(client, e["token"], machine="laptop", key=base64.b64encode(b"r" * 32).decode())
+    hb(remote_h)
+
+    # Through the gateway needs a gateway first; the gateway must have direct access.
+    r = client.post(f"/api/console/backup/repositories/{repo_id}/access", headers=admin,
+                    json={"agentId": remote_id, "sealed": SEALED, "viaGateway": True})
+    assert r.status_code == 400 and "gateway" in r.json()["detail"]
+    assert client.post(f"/api/console/backup/repositories/{repo_id}/gateway", headers=admin,
+                       json={"agentId": remote_id}).status_code == 400
+    r = client.post(f"/api/console/backup/repositories/{repo_id}/gateway", headers=admin,
+                    json={"agentId": gw_id, "port": 8475, "address": "backup.example.com:18475"})
+    assert r.status_code == 200, r.text
+    assert client.post(f"/api/console/backup/repositories/{repo_id}/access", headers=admin,
+                       json={"agentId": remote_id, "sealed": SEALED, "viaGateway": True}).status_code == 200
+
+    # The gateway learns what to serve and to whom; the client how to reach it.
+    cfg = hb(gw_h, gateway_addresses=["192.168.1.20:8475"])["gateway"]
+    assert cfg["listen_port"] == 8475
+    assert cfg["repositories"][0]["repository_id"] == repo_id
+    assert cfg["repositories"][0]["clients"] == [{"agent_id": remote_id, "public_key": base64.b64encode(b"r" * 32).decode()}]
+    assert hb(remote_h)["gateway"] is None
+    client.post(f"/api/console/backup/agents/{remote_id}/jobs", headers=admin,
+                json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+    spec = hb(remote_h)["jobs"][0]
+    assert spec["repository"]["gateway"] == {"agent_id": gw_id, "public_key": base64.b64encode(b"k" * 32).decode(),
+                                             "addresses": ["backup.example.com:18475", "192.168.1.20:8475"], "relay": True}
+    repo = [x for x in client.get("/api/console/backup/repositories", headers=admin).json() if x["id"] == repo_id][0]
+    assert repo["gateway"]["name"] and repo["maintenanceAgentId"] == gw_id
+    assert {a["id"]: a["viaGateway"] for a in repo["agents"]} == {gw_id: False, remote_id: True}
+
+    # A plan backup by the client: retention runs on the gateway (the client cannot delete through it).
+    plan = client.post("/api/console/backup/plans", headers=admin, json={
+        "name": "Laptop", "agentId": remote_id, "repositoryId": repo_id, "job": {"type": "backup_system"},
+        "schedule": {"type": "manual"}, "retention": {"keep_last": 2}}).json()["id"]
+    finish(client, remote_h, spec["id"])
+    client.post(f"/api/console/backup/plans/{plan}/run", headers=admin)
+    job = hb(remote_h)["jobs"][0]
+    finish(client, remote_h, job["id"], images=[image(machine="laptop")])
+    assert hb(remote_h)["jobs"] == []
+    assert hb(gw_h)["jobs"][0]["kind"]["type"] == "apply_retention"
+
+    # Relay: the client's message reaches the gateway, the gateway's answer comes back, byte for byte.
+    got = {}
+
+    def send():
+        got["r"] = client.post(f"/backup/api/agent/relay/{gw_id}", headers=remote_h, content=b"\x01sealed-request")
+
+    t = threading.Thread(target=send)
+    t.start()
+    nxt = None
+    for _ in range(10):
+        nxt = client.get("/backup/api/agent/relay/next", headers=gw_h)
+        if nxt.status_code == 200:
+            break
+    assert nxt.status_code == 200 and nxt.content == b"\x01sealed-request"
+    assert client.post(f"/backup/api/agent/relay/reply/{nxt.headers['X-Relay-Id']}", headers=gw_h,
+                       content=b"\x01sealed-answer").status_code == 204
+    t.join(10)
+    assert got["r"].status_code == 200 and got["r"].content == b"\x01sealed-answer"
+    # Machines not routed through this gateway may not use it.
+    other_id, other_h = agent_enroll(client, e["token"], machine="other", key=base64.b64encode(b"o" * 32).decode())
+    assert client.post(f"/backup/api/agent/relay/{gw_id}", headers=other_h, content=b"x").status_code == 403
+    # The gateway cannot be removed from under its clients.
+    assert client.post(f"/api/console/backup/repositories/{repo_id}/gateway", headers=admin, json={}).status_code == 400
+    assert client.delete(f"/api/console/backup/repositories/{repo_id}/access/{gw_id}", headers=admin).status_code == 400
+
+
+def test_boot_test_on_a_hyperv_host_keeps_the_vm_when_asked(client, admin, tenant):
+    e = link(client, admin, tenant)
+    src_id, src_h = agent_enroll(client, e["token"], machine="pm-acer")
+    heartbeat(client, src_h)
+    repo_id = ready_repo(client, admin, tenant, src_id, src_h)
+    client.post(f"/api/console/backup/agents/{src_id}/jobs", headers=admin, json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+    job = heartbeat(client, src_h)["jobs"][0]
+    im = image(machine="pm-acer")
+    finish(client, src_h, job["id"], images=[im])
+
+    hv_id, hv_h = agent_enroll(client, e["token"], machine="hv01", key=base64.b64encode(b"h" * 32).decode())
+    kept = {"session_id": str(uuid.uuid4()), "image_id": im["image_id"], "started_unix": 1_790_000_000, "vnc_port": 0, "forwards": {}}
+    client.post("/backup/api/agent/heartbeat", headers=hv_h, json={"inventory": {
+        "hostname": "HV01", "capabilities": ["boot_hyperv", "restore_hyperv"], "running_vms": [kept]}})
+    hv = [a for a in client.get("/api/console/backup/agents", headers=admin).json() if a["id"] == hv_id][0]
+    assert hv["runningVms"] == [{"sessionId": kept["session_id"], "imageId": im["image_id"], "startedUnix": 1_790_000_000, "vncPort": 0}]
+
+    url = f"/api/console/backup/images/{im['image_id']}/boot-check"
+    # Not given access yet: refused until it is (the console gives access first, in the same dialog).
+    assert "no access" in client.post(url, headers=admin, json={"agentId": hv_id, "keepRunning": True}).json()["detail"]
+    assert client.post(f"/api/console/backup/repositories/{repo_id}/access", headers=admin,
+                       json={"agentId": hv_id, "sealed": SEALED}).status_code == 200
+    assert client.post(url, headers=admin, json={"agentId": hv_id, "keepRunning": True, "directory": "relative"}).status_code == 400
+    r = client.post(url, headers=admin, json={"agentId": hv_id, "keepRunning": True, "directory": "D:\\Fenrir checks"})
+    assert r.status_code == 200, r.text
+    spec = client.post("/backup/api/agent/heartbeat", headers=hv_h, json={"inventory": {
+        "hostname": "HV01", "capabilities": ["boot_hyperv", "restore_hyperv"]}}).json()["jobs"][0]
+    assert spec["kind"] == {"type": "boot_check", "image_id": im["image_id"], "keep_running": True, "memory_mb": None,
+                            "cpus": None, "directory": "D:\\Fenrir checks"}

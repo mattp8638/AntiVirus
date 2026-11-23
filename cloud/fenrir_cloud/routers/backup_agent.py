@@ -9,7 +9,10 @@ from __future__ import annotations
 import base64
 import binascii
 import os
+import time
 import uuid as uuidlib
+
+from types import SimpleNamespace
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse, PlainTextResponse
@@ -17,9 +20,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import backup as bk
+from .. import backup_gateway as gw
+from .. import ratelimit
+from ..security import digest
 from ..config import get_settings
 from ..db import get_db
-from ..models import (BackupAgent, BackupBootCheck, BackupEnrollment, BackupImage, BackupJob, BackupRepoAccess,
+from ..models import (EnrollmentToken, BackupAgent, BackupBootCheck, BackupEnrollment, BackupImage, BackupJob, BackupRepoAccess,
                       BackupRepository, Tenant, utcnow)
 
 router = APIRouter(prefix="/backup", tags=["Backup agent"])
@@ -60,12 +66,25 @@ def enroll(body: dict = Body(...), db: Session = Depends(get_db)):
     role = body.get("role")
     if role not in bk.ROLES:
         raise HTTPException(400, "unknown role")
-    tok = db.execute(select(BackupEnrollment).where(
-        BackupEnrollment.token_hash == bk.token_hash(str(body.get("token") or "")))).scalars().first()
-    if tok is None:
-        raise HTTPException(403, "enrollment token not recognised")
-    if tok.revoked or tok.expires_at < utcnow():
-        raise HTTPException(403, "enrollment token has expired or was revoked; create a new download")
+    raw = str(body.get("token") or "")
+    if raw.startswith("fet_"):
+        # The all-in-one Fenrir installer: the backup agent enrols with the same deployment token as the security
+        # agent. It does not use up one of the token's uses; the security agent's enrolment does.
+        ratelimit.check(f"backup-enroll:{bk.token_hash(raw)[:16]}", 500, 3600)
+        fet = db.execute(select(EnrollmentToken).where(EnrollmentToken.token_hash == digest(raw))).scalars().first()
+        if fet is None:
+            raise HTTPException(403, "enrollment token not recognised")
+        if fet.revoked or (fet.expires_at and fet.expires_at < utcnow()):
+            raise HTTPException(403, "the deployment token has expired or was revoked")
+        if fet.include_backup is False:
+            raise HTTPException(409, "device backup is not included in this deployment")
+        tok = SimpleNamespace(id=fet.id, tenant_id=fet.tenant_id, device_id=None, label="bundled", uses=0, revoked=False)
+    else:
+        tok = db.execute(select(BackupEnrollment).where(BackupEnrollment.token_hash == bk.token_hash(raw))).scalars().first()
+        if tok is None:
+            raise HTTPException(403, "enrollment token not recognised")
+        if tok.revoked or tok.expires_at < utcnow():
+            raise HTTPException(403, "enrollment token has expired or was revoked; create a new download")
 
     agent_token = bk.new_token()
     os_ = body.get("os") if isinstance(body.get("os"), dict) else {}
@@ -95,6 +114,8 @@ def enroll(body: dict = Body(...), db: Session = Depends(get_db)):
         db.add(agent)
         db.flush()
         action = "backup.agent.enrolled"
+    if agent.device_id is None:
+        agent.device_id = bk.matching_device(db, agent)
     tok.uses += 1
     if tok.label.startswith("push:"):
         tok.revoked = True  # pushed to one device through its Fenrir agent: single use
@@ -112,6 +133,7 @@ def _job_spec(db: Session, agent: BackupAgent, job: BackupJob) -> dict | None:
         if repo is None or access is None:
             return None
         repository = {"repository_id": repo.id, "path": repo.path, "sealed_secret": access.sealed,
+                      "gateway": gw.route(db, repo, access),
                       "sealed_share": access.sealed_share}
     return {"id": job.id, "kind": job.kind, "repository": repository}
 
@@ -156,7 +178,10 @@ def heartbeat(body: dict = Body(...), agent: BackupAgent = Depends(current_backu
         BackupJob.state.in_(("dispatched", "running"))))]
     update_ = bk.update_offer(inv) if backup_settings(db).get("autoUpdate", True) else None
     db.commit()
-    return {"jobs": jobs, "poll_seconds": bk.POLL_SECONDS, "cancel": cancel, "update": update_}
+    gateway = gw.gateway_config(db, agent)
+    db.commit()
+    return {"jobs": jobs, "poll_seconds": bk.poll_seconds(db, agent), "cancel": cancel, "update": update_,
+            "gateway": gateway}
 
 
 def _record_boot_check(db: Session, job: BackupJob, agent: BackupAgent, b: dict) -> str:
@@ -258,7 +283,7 @@ def update_job(job_id: str, body: dict = Body(...), agent: BackupAgent = Depends
     # Retention runs after each successful plan backup (held repositories wait).
     if bk.is_backup(kind) and state in ("succeeded", "warning") and job.plan_id and repo is not None:
         bk.queue_retention(db, job.plan_id, repo.id, agent, images)
-    if state == "failed" and kind.get("type") not in ("check_access", "list_images"):
+    if state == "failed" and kind.get("type") not in ("check_access", "list_images", "browse_files"):
         bk.raise_alert(db, job.tenant_id, agent.device_id, bk.RULE_FAILED, f"{bk.label(kind)} failed: {name}",
                        "high" if bk.is_backup(kind) or kind.get("type") == "restore" else "medium",
                        f"{bk.label(kind)} on {name} failed. {job.error or ''}".strip())
@@ -273,8 +298,9 @@ def update_job(job_id: str, body: dict = Body(...), agent: BackupAgent = Depends
 # --------------------------------------------------------------------------
 
 @router.get("/agent/{triple}/{file}")
-def agent_build(triple: str, file: str, agent: BackupAgent = Depends(current_backup_agent)):
-    """Self-update download (agents only)."""
+def agent_build(triple: str, file: str):
+    """Agent builds, for installers (before enrolment) and self-update. Not secret: every installer and update checks
+    the file's SHA-256, which it gets from the server over TLS."""
     t = bk.ALL_TARGETS.get(triple)
     if t is None or t.file != file or not bk.binary_path(t).is_file():
         raise HTTPException(404, "no such agent build")
@@ -343,3 +369,63 @@ def valid_uuid(v: str) -> bool:
     except (ValueError, TypeError):
         return False
 
+
+
+# --------------------------------------------------------------------------
+# NAS gateway relay (backup_gateway.py). Bodies are end-to-end encrypted between the two agents.
+# --------------------------------------------------------------------------
+
+
+async def _body(request: Request) -> bytes:
+    size = int(request.headers.get("content-length") or 0)
+    if size > gw.MAX_MESSAGE:
+        raise HTTPException(413, "message too large")
+    data = bytearray()
+    async for part in request.stream():
+        data += part
+        if len(data) > gw.MAX_MESSAGE:
+            raise HTTPException(413, "message too large")
+    return bytes(data)
+
+
+@router.post("/api/agent/relay/{gateway_id}")
+async def relay_send(gateway_id: str, request: Request, agent: BackupAgent = Depends(current_backup_agent),
+                     db: Session = Depends(get_db)):
+    """A client's message for its gateway; answers with the gateway's (encrypted) reply."""
+    key, now = (agent.id, gateway_id), time.monotonic()
+    if now - gw.RELAY.allowed.get(key, -1e9) > 60:
+        if not gw.may_relay(db, agent, gateway_id):
+            raise HTTPException(403, "this machine is not routed through that gateway")
+        gw.RELAY.allowed[key] = now
+    db.close()  # do not hold a database connection while waiting for the gateway
+    body = await _body(request)
+    try:
+        reply = await gw.RELAY.forward(gateway_id, body)
+    except OverflowError:
+        raise HTTPException(503, "the relay is busy; try again shortly") from None
+    if reply is None:
+        raise HTTPException(504, "the gateway did not answer: is it online?")
+    return Response(reply, media_type="application/octet-stream")
+
+
+@router.get("/api/agent/relay/next")
+async def relay_next(agent: BackupAgent = Depends(current_backup_agent), db: Session = Depends(get_db)):
+    """Long poll for the gateway: the next message from a client, or 204 after 25 seconds."""
+    agent_id = agent.id
+    db.close()
+    item = await gw.RELAY.next(agent_id)
+    if item is None:
+        return Response(status_code=204)
+    rid, body = item
+    return Response(body, media_type="application/octet-stream", headers={"X-Relay-Id": rid})
+
+
+@router.post("/api/agent/relay/reply/{rid}")
+async def relay_reply(rid: str, request: Request, agent: BackupAgent = Depends(current_backup_agent),
+                      db: Session = Depends(get_db)):
+    agent_id = agent.id
+    db.close()
+    body = await _body(request)
+    if not gw.RELAY.answer(agent_id, rid, body):
+        raise HTTPException(404, "nobody is waiting for that answer any more")
+    return Response(status_code=204)

@@ -9,7 +9,9 @@ Repository passphrases and share passwords arrive here already sealed in the bro
 
 from __future__ import annotations
 
+import re
 import uuid as uuidlib
+from types import SimpleNamespace
 from datetime import timedelta
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
@@ -17,6 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import backup as bk
+from .. import backup_gateway as gwmod
 from ..db import get_db
 from ..deps import Principal, current_principal, require_reauth, scoped_tenant
 from ..models import (BackupAgent, BackupBootCheck, BackupEnrollment, BackupImage, BackupJob, BackupRepoAccess,
@@ -96,6 +99,8 @@ def agent_out(db: Session, a: BackupAgent, now=None) -> dict:
         "enrolledAt": iso(a.enrolled_at), "lastSeenAt": iso(a.last_seen_at), "online": bk.online(a, now) and not a.revoked,
         "revoked": a.revoked, "publicKey": a.public_key, "capabilities": inv.get("capabilities") or [],
         "vmCount": len(inv.get("vms") or []), "disks": [d.get("path") for d in inv.get("disks") or [] if d.get("path")],
+        "runningVms": [{"sessionId": v.get("session_id"), "imageId": v.get("image_id"), "startedUnix": v.get("started_unix"),
+                        "vncPort": v.get("vnc_port") or 0} for v in inv.get("running_vms") or [] if isinstance(v, dict)],
         "lastBackup": ({"jobId": last_backup.id, "state": last_backup.state, "at": iso(last_backup.finished_at),
                         "error": last_backup.error} if last_backup else None),
         "runningJob": ({"id": running.id, "label": bk.label(running.kind), "state": running.state,
@@ -136,7 +141,20 @@ def repo_out(db: Session, r: BackupRepository) -> dict:
             "pruneEveryDays": r.prune_every_days, "lastPruneAt": iso(r.last_prune_at), "anomalies": anomalies,
             "bootAgentId": r.boot_agent_id, "bootEveryDays": r.boot_every_days, "lastVerifiedBoot": iso(verified),
             "shareAuth": r.share_auth, "shareUser": r.share_user, "isShare": is_share_path(r.path),
-            "agents": [{"id": a.id, "name": a.display_name or a.hostname} for a in agents]}
+            "agents": [{"id": a.id, "name": a.display_name or a.hostname,
+                        "viaGateway": bool((db.get(BackupRepoAccess, (r.id, a.id)) or SimpleNamespace(via_gateway=None)).via_gateway)}
+                       for a in agents],
+            "gateway": _gateway_out(db, r)}
+
+
+def _gateway_out(db: Session, r: BackupRepository) -> dict | None:
+    if not r.gateway_agent_id:
+        return None
+    g = db.get(BackupAgent, r.gateway_agent_id)
+    if g is None:
+        return None
+    return {"agentId": g.id, "name": g.display_name or g.hostname, "online": bk.online(g) and not g.revoked,
+            "port": g.gateway_port or 0, "address": g.gateway_address, "addresses": gwmod.addresses(g)}
 
 
 def plan_out(p: ImageBackupPlan, names: dict[str, str]) -> dict:
@@ -527,8 +545,11 @@ def grant_access(repo_id: str, body: dict = Body(...), p: Principal = Depends(cu
     a = _agent(db, p, str(body.get("agentId") or ""))
     if a.tenant_id != repo.tenant_id:
         bad("that machine belongs to another customer")
+    via = bool(body.get("viaGateway"))
+    if via and (not repo.gateway_agent_id or repo.gateway_agent_id == a.id):
+        bad("set up a gateway for this repository first (and choose another machine than the gateway)")
     share = None
-    if repo.share_auth == "password":
+    if repo.share_auth == "password" and not via:
         if not body.get("sealedShare"):
             bad("this repository is on a network share: enter the share password for the machine too")
         share = _sealed(body["sealedShare"])
@@ -537,7 +558,9 @@ def grant_access(repo_id: str, body: dict = Body(...), p: Principal = Depends(cu
         row = BackupRepoAccess(repository_id=repo.id, agent_id=a.id, sealed={}, granted_by=p.actor)
         db.add(row)
     row.sealed, row.sealed_share, row.granted_at, row.granted_by = _sealed(body.get("sealed")), share, utcnow(), p.actor
-    bk.record(db, p.actor, "backup.repository.access_granted", repo.name, repo.tenant_id, machine=a.hostname)
+    row.via_gateway = via or None
+    bk.record(db, p.actor, "backup.repository.access_granted", repo.name, repo.tenant_id, machine=a.hostname,
+              via_gateway=via)
     db.commit()
     return {"ok": True}
 
@@ -546,6 +569,8 @@ def grant_access(repo_id: str, body: dict = Body(...), p: Principal = Depends(cu
 def revoke_access(repo_id: str, agent_id: str, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     p.require("configure")
     repo = _repo(db, p, repo_id)
+    if agent_id == repo.gateway_agent_id:
+        bad("that machine is this repository's gateway: stop serving through it first")
     row = db.get(BackupRepoAccess, (repo.id, agent_id))
     if row is not None:
         db.delete(row)
@@ -570,6 +595,44 @@ def forget_repo(repo_id: str, p: Principal = Depends(current_principal), db: Ses
     db.delete(repo)
     db.commit()
     return {"ok": True, "note": "The server forgot this repository. Its data was not touched."}
+
+
+@router.post("/repositories/{repo_id}/gateway")
+def set_gateway(repo_id: str, body: dict = Body(...), p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Serve the repository through a gateway agent (NAS gateway), or stop. Machines given access "through the
+    gateway" then reach it via that agent: directly on `port` when they can, relayed by this server otherwise."""
+    p.require("configure")
+    repo = _repo(db, p, repo_id)
+    if not body.get("agentId"):
+        users = db.execute(select(BackupRepoAccess).where(BackupRepoAccess.repository_id == repo.id,
+                                                          BackupRepoAccess.via_gateway.is_(True))).scalars().all()
+        if users:
+            bad(f"{len(users)} machine(s) reach this repository through the gateway; remove their access first")
+        repo.gateway_agent_id = None
+        bk.record(db, p.actor, "backup.repository.gateway_removed", repo.name, repo.tenant_id)
+        db.commit()
+        return {"ok": True}
+    g = _agent(db, p, str(body["agentId"]))
+    access = db.get(BackupRepoAccess, (repo.id, g.id))
+    if g.tenant_id != repo.tenant_id or access is None or access.via_gateway:
+        bad("the gateway must be a machine with direct access to the repository (give it access first)")
+    if "gateway" not in bk.capabilities(g):
+        bad(f"the backup agent on {g.display_name or g.hostname} is too old to be a gateway; it updates itself shortly")
+    port = body.get("port", gwmod.DEFAULT_PORT)
+    if port is None:
+        port = 0
+    if not isinstance(port, int) or not (port == 0 or 1024 <= port <= 65535):
+        bad("the port must be 1024 to 65535, or 0 to use the relay only")
+    address = str(body.get("address") or "").strip() or None
+    if address and (len(address) > 255 or not re.fullmatch(r"[A-Za-z0-9.\-]+:\d{2,5}|\[[0-9A-Fa-f:]+\]:\d{2,5}", address)):
+        bad("the extra address must look like host:port, e.g. nas-gw.example.com:8475")
+    repo.gateway_agent_id = g.id
+    repo.maintenance_agent_id = g.id  # retention and space reclamation run on the gateway
+    g.gateway_port, g.gateway_address = port or None, address
+    bk.record(db, p.actor, "backup.repository.gateway_set", repo.name, repo.tenant_id, gateway=g.hostname, port=port,
+              address=address)
+    db.commit()
+    return {"ok": True}
 
 
 @router.post("/repositories/{repo_id}/hold")
@@ -605,6 +668,8 @@ def set_maintenance(repo_id: str, body: dict = Body(...), p: Principal = Depends
     if body.get("agentId"):
         a = _agent(db, p, str(body["agentId"]))
         _has_access(db, repo, a)
+        if repo.gateway_agent_id and a.id != repo.gateway_agent_id:
+            bad("this repository is served through a gateway: its maintenance runs on the gateway")
         repo.maintenance_agent_id = a.id
     if "pruneEveryDays" in body:
         d = body["pruneEveryDays"]
@@ -878,6 +943,84 @@ def create_restore(request: Request, body: dict = Body(...), p: Principal = Depe
     return {"id": job.id}
 
 
+def _file_agent(db: Session, p: Principal, im: BackupImage, agent_id: str | None) -> BackupAgent:
+    """The machine that reads the image: the one asked for, else the machine it came from, else any with access."""
+    if agent_id:
+        a = _agent(db, p, agent_id)
+    else:
+        candidates = [x for x in db.execute(select(BackupAgent).join(BackupRepoAccess, BackupRepoAccess.agent_id == BackupAgent.id)
+                                            .where(BackupRepoAccess.repository_id == im.repository_id,
+                                                   BackupAgent.revoked.is_(False))).scalars()]
+        candidates.sort(key=lambda x: (x.id != im.agent_id, not bk.online(x), "restore_files" not in bk.capabilities(x)))
+        if not candidates:
+            bad("no machine has access to this image's repository")
+        a = candidates[0]
+    if a.tenant_id != im.tenant_id or db.get(BackupRepoAccess, (im.repository_id, a.id)) is None:
+        bad("that machine has no access to the image's repository; give it access first")
+    if "restore_files" not in bk.capabilities(a):
+        bad(f"the backup agent on {a.display_name or a.hostname} is too old to browse files; it updates itself shortly")
+    return a
+
+
+def _volume(body: dict) -> dict | None:
+    if body.get("disk") is None and body.get("partition") is None:
+        return None
+    disk, part = body.get("disk"), body.get("partition")
+    if not isinstance(disk, int) or not isinstance(part, int) or disk < 0 or part < 1:
+        bad("choose a volume")
+    return {"disk": disk, "partition": part}
+
+
+@router.post("/images/{image_id}/browse")
+def browse_files(image_id: str, body: dict = Body(default={}), p: Principal = Depends(current_principal),
+                 db: Session = Depends(get_db)):
+    """List an image's volumes (no volume given) or one folder. Returns a job; poll it for the listing."""
+    p.require("scripts")
+    im = _image(db, p, image_id)
+    a = _file_agent(db, p, im, body.get("agentId"))
+    path = str(body.get("path") or "/")
+    if len(path) > 4000 or ".." in path.replace("\\", "/").split("/"):
+        bad("invalid folder")
+    job = bk.queue(db, a, {"type": "browse_files", "image_id": im.image_id, "volume": _volume(body), "path": path},
+                   im.repository_id, p.actor)
+    if _volume(body) is None:
+        bk.record(db, p.actor, "backup.files.browsed", im.hostname, im.tenant_id, image=im.image_id, machine=a.hostname)
+    db.commit()
+    return {"id": job.id, "agentId": a.id, "agentName": a.display_name or a.hostname, "agentOnline": bk.online(a)}
+
+
+@router.post("/images/{image_id}/restore-files")
+def restore_files(image_id: str, request: Request, body: dict = Body(...), p: Principal = Depends(current_principal),
+                  db: Session = Depends(get_db)):
+    """Copy chosen files and folders out of a backup to a folder on a machine."""
+    p.require("scripts")
+    im = _image(db, p, image_id)
+    a = _file_agent(db, p, im, body.get("agentId"))
+    volume = _volume(body)
+    if volume is None:
+        bad("choose a volume")
+    paths = [str(x) for x in body.get("paths") or [] if str(x).strip("/")]
+    if not paths or len(paths) > 1000 or any(len(x) > 4000 for x in paths):
+        bad("choose 1 to 1000 files or folders")
+    target = str(body.get("target") or "").strip()
+    if not target or len(target) > 1000:
+        bad("choose the folder to restore into")
+    conflict = body.get("conflict") or "rename"
+    if conflict not in ("rename", "skip", "overwrite"):
+        bad("existing files: rename, skip or overwrite")
+    if conflict == "overwrite":
+        # Replaces files that are on the machine now: deliberate, re-authenticated.
+        p.require("destructive")
+        require_reauth(request, p)
+    job = bk.queue(db, a, {"type": "restore_files", "image_id": im.image_id, "volume": volume, "paths": paths,
+                           "target": target, "keep_structure": bool(body.get("keepStructure", True)),
+                           "conflict": conflict}, im.repository_id, p.actor)
+    bk.record(db, p.actor, "backup.files.restore_requested", im.hostname, im.tenant_id, image=im.image_id,
+              machine=a.hostname, items=len(paths), first=paths[0][:300], restore_to=target, conflict=conflict)
+    db.commit()
+    return {"id": job.id}
+
+
 @router.post("/images/{image_id}/boot-check")
 def create_boot_check(image_id: str, body: dict = Body(default={}), p: Principal = Depends(current_principal),
                       db: Session = Depends(get_db)):
@@ -890,14 +1033,16 @@ def create_boot_check(image_id: str, body: dict = Body(default={}), p: Principal
         bad("memory must be 256 MB to 64 GB, CPUs 1 to 16")
     caps = bk.capabilities(a)
     if "boot_kvm" not in caps and "boot_hyperv" not in caps:
-        bad("that machine cannot boot VMs (it needs QEMU on Linux, or the Hyper-V role)")
-    if keep and "boot_kvm" not in caps:
-        bad("keeping the VM running is available on Linux (QEMU/KVM) hosts")
+        bad("that machine cannot boot VMs (it needs QEMU on Linux, or Hyper-V on Windows)")
+    directory = str(body.get("directory") or "").strip() or None
+    if directory and ("boot_hyperv" not in caps or len(directory) > 500 or not re.match(r"^([A-Za-z]:\\|\\\\)", directory)):
+        bad("the folder for the VM is for Hyper-V hosts and must be a full Windows path, e.g. D:\\Fenrir checks")
     if a.tenant_id != im.tenant_id or db.get(BackupRepoAccess, (im.repository_id, a.id)) is None:
         bad("that machine has no access to the image's repository; give it access first")
     job = bk.queue(db, a, {"type": "boot_check", "image_id": im.image_id, "keep_running": keep, "memory_mb": mem,
-                           "cpus": cpus}, im.repository_id, p.actor)
-    bk.record(db, p.actor, "backup.boot_check.requested", im.hostname, im.tenant_id, image=im.image_id, machine=a.hostname)
+                           "cpus": cpus, "directory": directory}, im.repository_id, p.actor)
+    bk.record(db, p.actor, "backup.boot_check.requested", im.hostname, im.tenant_id, image=im.image_id, machine=a.hostname,
+              keep=keep, directory=directory)
     db.commit()
     return {"id": job.id}
 
