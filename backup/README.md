@@ -6,6 +6,13 @@ Linux disks, stored encrypted and deduplicated in a repository on a local
 disk or a network share. Developed as Fenrir-Backup and moved here so that
 backups are managed from the Fenrir console alongside security and RMM.
 
+**Where to change it.** The shared code (`crates/` except the server,
+`recovery-env/`, `fuzz/`, the format and CLI docs) is developed in
+[Fenrir-Backup](https://github.com/zy538324/Fenrir-Backup), the standalone
+backup product, and copied here: make the change there first, then run
+`python3 backup/sync-upstream.py ../Fenrir-Backup` and commit the result
+(`UPSTREAM` records the commit). CI fails if `backup/` drifts from it.
+
 **Integration status**
 
 | Part | Where | State |

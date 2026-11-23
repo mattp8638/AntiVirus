@@ -132,6 +132,29 @@ jobs:
           name: backup-${{ matrix.target }}
           path: backup/out
 
+  # The shared backup code is made in Fenrir-Backup and copied here with backup/sync-upstream.py: fail if backup/
+  # no longer matches the Fenrir-Backup commit pinned in backup/UPSTREAM. If that repository is private, add a
+  # read-only token for it as the secret FENRIR_BACKUP_READ_TOKEN; without one the check is skipped with a warning.
+  upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: pin
+        run: echo "commit=$(awk '{print $2}' UPSTREAM)" >> "$GITHUB_OUTPUT"
+      - id: fetch
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          repository: zy538324/Fenrir-Backup
+          ref: ${{ steps.pin.outputs.commit }}
+          path: upstream
+          token: ${{ secrets.FENRIR_BACKUP_READ_TOKEN || github.token }}
+      - name: backup/ matches Fenrir-Backup
+        if: steps.fetch.outcome == 'success'
+        run: python3 sync-upstream.py ../upstream --check
+      - if: steps.fetch.outcome != 'success'
+        run: echo "::warning::Could not fetch Fenrir-Backup ${{ steps.pin.outputs.commit }}; drift check skipped"
+
   supply-chain:
     runs-on: ubuntu-latest
     steps:
