@@ -152,40 +152,105 @@ fn secret(key: &AgentKey, access: &RepoAccess) -> anyhow::Result<RepoSecret> {
     Ok(serde_json::from_slice(&pt)?)
 }
 
-/// S3-compatible storage for `path` (`s3://bucket/prefix`), with the keys
-/// sealed to this machine.
-pub(crate) fn s3_backend(
+/// Object storage behind a repository: S3-compatible or Azure Blob.
+pub(crate) enum ObjectStore {
+    S3(s3store::S3Backend),
+    Azure(azstore::AzureBackend),
+}
+
+impl ObjectStore {
+    pub fn is_empty(&self) -> core_format::Result<bool> {
+        match self {
+            ObjectStore::S3(b) => b.is_empty(),
+            ObjectStore::Azure(b) => b.is_empty(),
+        }
+    }
+    pub fn check(&self) -> core_format::Result<String> {
+        match self {
+            ObjectStore::S3(b) => b.check(),
+            ObjectStore::Azure(b) => b.check(),
+        }
+    }
+    pub fn into_backend(self) -> Arc<dyn Backend> {
+        match self {
+            ObjectStore::S3(b) => Arc::new(b),
+            ObjectStore::Azure(b) => Arc::new(b),
+        }
+    }
+    fn backend(&self) -> &dyn Backend {
+        match self {
+            ObjectStore::S3(b) => b,
+            ObjectStore::Azure(b) => b,
+        }
+    }
+}
+
+/// Object storage for `path` (`s3://bucket/prefix` or
+/// `azure://container/prefix`), with the keys sealed to this machine: for
+/// S3 the access key and secret, for Azure the account name and its key or
+/// a SAS token.
+pub(crate) fn object_store(
     key: &AgentKey,
     path: &str,
     s: &protocol::S3Settings,
     sealed: Option<&protocol::seal::Sealed>,
-) -> anyhow::Result<s3store::S3Backend> {
-    let (bucket, prefix) = s3store::parse_url(path)
-        .ok_or_else(|| anyhow!("{path} is not an s3://bucket/prefix location"))?;
+) -> anyhow::Result<ObjectStore> {
     let creds = crate::share::open_credentials(
         key,
         sealed.ok_or_else(|| {
             anyhow!("this machine has no access keys for {path}; give it access again")
         })?,
     )?;
-    let lock = match s.lock_mode.as_deref() {
+    let mode = match s.lock_mode.as_deref() {
         None | Some("") | Some("none") => None,
-        Some(m) => Some(s3store::Lock {
-            mode: s3store::LockMode::parse(m)
-                .ok_or_else(|| anyhow!("unknown Object Lock mode {m}"))?,
-            days: s.lock_days,
-        }),
+        Some(m) => Some(m),
     };
-    Ok(s3store::S3Backend::new(s3store::S3Config {
-        endpoint: s.endpoint.clone(),
-        region: s.region.clone(),
-        bucket,
-        prefix,
-        path_style: s.path_style,
-        access_key: creds.username,
-        secret_key: creds.password,
-        lock,
-    })?)
+    if path.starts_with("azure://") {
+        let (container, prefix) = azstore::parse_url(path)
+            .ok_or_else(|| anyhow!("{path} is not an azure://container/prefix location"))?;
+        let lock = mode
+            .map(|m| {
+                Ok::<_, anyhow::Error>(azstore::Lock {
+                    mode: azstore::LockMode::parse(m)
+                        .ok_or_else(|| anyhow!("unknown immutability mode {m}"))?,
+                    days: s.lock_days,
+                })
+            })
+            .transpose()?;
+        return Ok(ObjectStore::Azure(azstore::AzureBackend::new(
+            azstore::AzureConfig {
+                endpoint: s.endpoint.clone(),
+                account: creds.username,
+                container,
+                prefix,
+                credential: azstore::credential_from(&creds.password),
+                lock,
+            },
+        )?));
+    }
+    let (bucket, prefix) = s3store::parse_url(path)
+        .ok_or_else(|| anyhow!("{path} is not an s3://bucket/prefix location"))?;
+    let lock = mode
+        .map(|m| {
+            Ok::<_, anyhow::Error>(s3store::Lock {
+                mode: s3store::LockMode::parse(m)
+                    .ok_or_else(|| anyhow!("unknown Object Lock mode {m}"))?,
+                days: s.lock_days,
+            })
+        })
+        .transpose()?;
+    Ok(ObjectStore::S3(s3store::S3Backend::new(
+        s3store::S3Config {
+            endpoint: s.endpoint.clone(),
+            region: s.region.clone(),
+            bucket,
+            prefix,
+            path_style: s.path_style,
+            access_key: creds.username,
+            secret_key: creds.password,
+            lock,
+        },
+    )?))
 }
 
 /// The repository's storage: its folder, S3, or a gateway (NAS gateway) when
@@ -203,14 +268,14 @@ fn storage(ctx: &Ctx, access: &RepoAccess, create: bool) -> anyhow::Result<Arc<d
         )?));
     }
     if let Some(s) = &access.s3 {
-        let b = s3_backend(ctx.key, &access.path, s, access.sealed_share.as_ref())?;
+        let b = object_store(ctx.key, &access.path, s, access.sealed_share.as_ref())?;
         if create && !b.is_empty()? {
             bail!(
-                "{} already holds data: choose an empty bucket or prefix",
+                "{} already holds data: choose an empty bucket or container, or another folder in it",
                 access.path
             );
         }
-        return Ok(Arc::new(b));
+        return Ok(b.into_backend());
     }
     let path = crate::share::prepare(ctx.key, &access.path, access.sealed_share.as_ref())?;
     Ok(if create {
@@ -484,11 +549,11 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             sealed_share,
             s3: Some(s3),
         } => {
-            let b = s3_backend(ctx.key, path, s3, sealed_share.as_ref())?;
+            let b = object_store(ctx.key, path, s3, sealed_share.as_ref())?;
             let note = b.check()?;
             let mut u = done(JobState::Succeeded);
             u.result = Some(
-                json!({ "s3": true, "note": note, "repository": b.exists(core_format::repo::CONFIG_KEY)? }),
+                json!({ "s3": true, "note": note, "repository": b.backend().exists(core_format::repo::CONFIG_KEY)? }),
             );
             Ok(u)
         }

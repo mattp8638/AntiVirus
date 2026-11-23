@@ -7,7 +7,7 @@ fenrir-backup [--json] [--repo PATH] [--passphrase-file FILE | --recovery-key FI
 | Option | Meaning |
 |---|---|
 | `--json` | Print exactly one JSON document on stdout. Progress and messages go to stderr. |
-| `--repo PATH` | Repository path. Also `FENRIR_REPO`. `s3://bucket/folder` for S3-compatible storage, configured with `FENRIR_S3_ENDPOINT` (required), `FENRIR_S3_REGION` (default `us-east-1`), `FENRIR_S3_PATH_STYLE=1` (MinIO and most self-hosted), `FENRIR_S3_LOCK=compliance:DAYS` or `governance:DAYS` (Object Lock for new objects), `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. |
+| `--repo PATH` | Repository path. Also `FENRIR_REPO`. `s3://bucket/folder` for S3-compatible storage, configured with `FENRIR_S3_ENDPOINT` (required), `FENRIR_S3_REGION` (default `us-east-1`), `FENRIR_S3_PATH_STYLE=1` (MinIO and most self-hosted), `FENRIR_S3_LOCK=compliance:DAYS` or `governance:DAYS` (Object Lock for new objects), `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. `azure://container/folder` for Azure Blob Storage, configured with `FENRIR_AZURE_ACCOUNT`, `FENRIR_AZURE_KEY` (the account key) or `FENRIR_AZURE_SAS` (a SAS token), `FENRIR_AZURE_ENDPOINT` (default `https://ACCOUNT.blob.core.windows.net`) and `FENRIR_AZURE_LOCK=locked:DAYS` or `unlocked:DAYS` (an immutability policy on each new blob). |
 | `--passphrase-file FILE` | Read the passphrase from the first line of FILE. Otherwise `FENRIR_PASSPHRASE`, otherwise an interactive prompt. |
 | `--recovery-key FILE` | Unlock with a recovery key file instead of a passphrase. |
 

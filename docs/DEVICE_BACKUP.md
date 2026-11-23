@@ -187,6 +187,11 @@ owner, not Fenrir.
   in use; backups retention no longer keeps are deleted once their lock has run out.
 * S3 repositories are reached directly by every machine; the NAS gateway is not used for them.
 
+**Azure Blob Storage** works the same way (**Service › Azure Blob Storage**): the storage account name and its key
+(or a SAS token), a container and a folder in it. For immutable backups, enable version-level immutability on the
+container (and versioning on the account); each backup blob then gets an immutability policy (compliance = locked,
+nobody can shorten it; governance = unlocked), renewed by maintenance like S3 locks.
+
 Design: `backup/docs/design/phase-4-storage.md`.
 
 ## Network shares

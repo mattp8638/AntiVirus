@@ -537,9 +537,61 @@ fn s3_from_env(url: &str) -> R<s3store::S3Backend> {
     })?)
 }
 
-/// The repository's storage: a folder, or S3 for `s3://` locations.
+/// `--repo azure://container/prefix`: Azure Blob Storage configured from the
+/// environment (FENRIR_AZURE_ACCOUNT, FENRIR_AZURE_KEY or FENRIR_AZURE_SAS,
+/// FENRIR_AZURE_ENDPOINT (default https://ACCOUNT.blob.core.windows.net),
+/// FENRIR_AZURE_LOCK=locked:30 or unlocked:30).
+fn azure_from_env(url: &str) -> R<azstore::AzureBackend> {
+    let (container, prefix) = azstore::parse_url(url)
+        .ok_or_else(|| CliError::usage(format!("{url}: expected azure://container/prefix")))?;
+    let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    let account = var("FENRIR_AZURE_ACCOUNT").ok_or_else(|| {
+        CliError::usage("FENRIR_AZURE_ACCOUNT is needed for an azure:// repository")
+    })?;
+    let credential = match (var("FENRIR_AZURE_KEY"), var("FENRIR_AZURE_SAS")) {
+        (Some(k), _) => azstore::Credential::AccountKey(k),
+        (None, Some(s)) => azstore::credential_from(&s),
+        _ => {
+            return Err(CliError::usage(
+                "FENRIR_AZURE_KEY (the account key) or FENRIR_AZURE_SAS is needed",
+            ))
+        }
+    };
+    let lock = match var("FENRIR_AZURE_LOCK") {
+        None => None,
+        Some(l) => {
+            let bad = || CliError::usage("FENRIR_AZURE_LOCK is locked:DAYS or unlocked:DAYS");
+            let (m, d) = l.split_once(':').unwrap_or((&l, ""));
+            Some(azstore::Lock {
+                mode: azstore::LockMode::parse(m).ok_or_else(bad)?,
+                days: d.parse().map_err(|_| bad())?,
+            })
+        }
+    };
+    Ok(azstore::AzureBackend::new(azstore::AzureConfig {
+        endpoint: var("FENRIR_AZURE_ENDPOINT")
+            .unwrap_or_else(|| format!("https://{account}.blob.core.windows.net")),
+        account,
+        container,
+        prefix,
+        credential,
+        lock,
+    })?)
+}
+
+/// The repository's storage: a folder, S3 for `s3://` locations, Azure Blob
+/// for `azure://`.
 fn backend(path: &Path, create: bool) -> R<Arc<dyn Backend>> {
     let s = path.to_string_lossy();
+    if s.starts_with("azure://") {
+        let b = azure_from_env(&s)?;
+        if create && !b.is_empty()? {
+            return Err(CliError::usage(format!(
+                "{s} already holds data: choose an empty container or another folder in it"
+            )));
+        }
+        return Ok(Arc::new(b));
+    }
     if s.starts_with("s3://") {
         let b = s3_from_env(&s)?;
         if create && !b.is_empty()? {

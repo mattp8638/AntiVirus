@@ -300,30 +300,36 @@ function SigninFields({ value, onChange }: { value: Signin; onChange: (s: Signin
 }
 
 interface S3Settings { endpoint: string; region: string; path_style: boolean; lock_mode: "governance" | "compliance" | null; lock_days: number }
-interface S3Form { endpoint: string; region: string; bucket: string; prefix: string; pathStyle: boolean; lockMode: "none" | "governance" | "compliance"; lockDays: number; accessKey: string; secretKey: string }
+interface S3Form { azure?: boolean; endpoint: string; region: string; bucket: string; prefix: string; pathStyle: boolean; lockMode: "none" | "governance" | "compliance"; lockDays: number; accessKey: string; secretKey: string }
 const emptyS3 = (): S3Form => ({ endpoint: "https://s3.eu-west-2.amazonaws.com", region: "eu-west-2", bucket: "", prefix: "fenrir", pathStyle: false, lockMode: "compliance", lockDays: 30, accessKey: "", secretKey: "" });
-const s3Path = (f: S3Form) => `s3://${f.bucket.trim()}${f.prefix.trim() ? "/" + f.prefix.trim().replace(/^\/+|\/+$/g, "") : ""}`;
+const s3Path = (f: S3Form) => `${f.azure ? "azure" : "s3"}://${f.bucket.trim()}${f.prefix.trim() ? "/" + f.prefix.trim().replace(/^\/+|\/+$/g, "") : ""}`;
 const s3Settings = (f: S3Form): S3Settings => ({ endpoint: f.endpoint.trim().replace(/\/+$/, ""), region: f.region.trim() || "us-east-1", path_style: f.pathStyle, lock_mode: f.lockMode === "none" ? null : f.lockMode, lock_days: f.lockMode === "none" ? 0 : f.lockDays });
 const s3Signin = (f: S3Form): Signin => ({ mode: "password", domain: "", username: f.accessKey.trim(), password: f.secretKey });
-const s3Ok = (f: S3Form) => /^https?:\/\/[^/\s]+$/.test(f.endpoint.trim().replace(/\/+$/, "")) && /^[a-z0-9.-]{3,63}$/.test(f.bucket.trim()) && !!f.accessKey.trim() && !!f.secretKey && (f.lockMode === "none" || (f.lockDays > 7 && f.lockDays <= 36500));
+const s3Ok = (f: S3Form) => (f.azure ? /^https?:\/\/[^/\s]+(\/\S*)?$/ : /^https?:\/\/[^/\s]+$/).test(f.endpoint.trim().replace(/\/+$/, "")) && (f.azure ? /^[a-z0-9](?!.*--)[a-z0-9-]{1,61}[a-z0-9]$/ : /^[a-z0-9.-]{3,63}$/).test(f.bucket.trim()) && !!f.accessKey.trim() && !!f.secretKey && (f.lockMode === "none" || (f.lockDays > 7 && f.lockDays <= 36500));
 
 function S3Fields({ value: f, onChange }: { value: S3Form; onChange: (f: S3Form) => void }) {
   const set = (p: Partial<S3Form>) => onChange({ ...f, ...p });
   return (
     <div className="form-grid">
-      <label className="field">Endpoint<input value={f.endpoint} onChange={(e) => set({ endpoint: e.target.value })} placeholder="https://s3.eu-west-2.amazonaws.com" /></label>
-      <label className="field">Region<input value={f.region} onChange={(e) => set({ region: e.target.value })} placeholder="eu-west-2 (us-east-1 for most others)" /></label>
-      <label className="field">Bucket (created with Object Lock enabled)<input value={f.bucket} onChange={(e) => set({ bucket: e.target.value.toLowerCase() })} /></label>
-      <label className="field">Folder in the bucket<input value={f.prefix} onChange={(e) => set({ prefix: e.target.value })} /></label>
-      <label className="field">Access key ID<input value={f.accessKey} onChange={(e) => set({ accessKey: e.target.value })} autoComplete="off" /></label>
-      <label className="field">Secret access key<input type="password" value={f.secretKey} onChange={(e) => set({ secretKey: e.target.value })} autoComplete="new-password" /></label>
-      <label className="field">Immutable backups (Object Lock)<select value={f.lockMode} onChange={(e) => set({ lockMode: e.target.value as S3Form["lockMode"] })}>
+      <label className="field">Service<select value={f.azure ? "azure" : "s3"} onChange={(e) => set(e.target.value === "azure"
+        ? { azure: true, endpoint: `https://${f.accessKey.trim() || "<account>"}.blob.core.windows.net`, region: "", pathStyle: false }
+        : { azure: false, endpoint: "https://s3.eu-west-2.amazonaws.com", region: "eu-west-2" })}>
+        <option value="s3">Amazon S3 or S3-compatible (Wasabi, Backblaze B2, R2, MinIO)</option>
+        <option value="azure">Azure Blob Storage</option>
+      </select></label>
+      <label className="field">Endpoint<input value={f.endpoint} onChange={(e) => set({ endpoint: e.target.value })} placeholder={f.azure ? "https://account.blob.core.windows.net" : "https://s3.eu-west-2.amazonaws.com"} /></label>
+      {!f.azure && <label className="field">Region<input value={f.region} onChange={(e) => set({ region: e.target.value })} placeholder="eu-west-2 (us-east-1 for most others)" /></label>}
+      <label className="field">{f.azure ? "Container (with version-level immutability for locked backups)" : "Bucket (created with Object Lock enabled)"}<input value={f.bucket} onChange={(e) => set({ bucket: e.target.value.toLowerCase() })} /></label>
+      <label className="field">Folder in the {f.azure ? "container" : "bucket"}<input value={f.prefix} onChange={(e) => set({ prefix: e.target.value })} /></label>
+      <label className="field">{f.azure ? "Storage account name" : "Access key ID"}<input value={f.accessKey} onChange={(e) => set(f.azure ? { accessKey: e.target.value, endpoint: `https://${e.target.value.trim() || "<account>"}.blob.core.windows.net` } : { accessKey: e.target.value })} autoComplete="off" /></label>
+      <label className="field">{f.azure ? "Account key or SAS token" : "Secret access key"}<input type="password" value={f.secretKey} onChange={(e) => set({ secretKey: e.target.value })} autoComplete="new-password" /></label>
+      <label className="field">Immutable backups ({f.azure ? "immutability policy" : "Object Lock"})<select value={f.lockMode} onChange={(e) => set({ lockMode: e.target.value as S3Form["lockMode"] })}>
         <option value="compliance">Compliance: nobody can delete a backup early</option>
         <option value="governance">Governance: only special admin rights can</option>
         <option value="none">Off</option>
       </select></label>
       {f.lockMode !== "none" && <label className="field">Keep each backup locked for (days, more than 7)<input type="number" min={8} max={36500} value={f.lockDays} onChange={(e) => set({ lockDays: Number(e.target.value) })} /></label>}
-      <label className="row small" style={{ gap: 6 }}><input type="checkbox" checked={f.pathStyle} onChange={(e) => set({ pathStyle: e.target.checked })} /> Path-style addresses (MinIO and most self-hosted storage)</label>
+      {!f.azure && <label className="row small" style={{ gap: 6 }}><input type="checkbox" checked={f.pathStyle} onChange={(e) => set({ pathStyle: e.target.checked })} /> Path-style addresses (MinIO and most self-hosted storage)</label>}
     </div>
   );
 }

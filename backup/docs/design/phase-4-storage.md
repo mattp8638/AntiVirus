@@ -105,6 +105,28 @@ even full credentials cannot remove a locked backup.
   `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`.
 * Fenrir Cloud: the same repository settings in the console.
 
+### Azure Blob Storage
+
+`azure://container/prefix` repositories (crate `azstore`) use the documented
+Blob service REST API with the same rules:
+
+* Requests are signed with Shared Key (HMAC-SHA256 with the storage account
+  key over the documented canonical string), or carry a SAS token instead.
+  The machine's sealed sign-in holds the account name and the key or token.
+* Writes are create-only (`If-None-Match: *`).
+* Immutability: each new blob gets a version-level immutability policy
+  (`x-ms-immutability-policy-until-date`, mode `Locked` for the
+  "compliance" setting, `Unlocked` for "governance"). The container needs
+  version-level immutability enabled (and the account versioning). Deletes
+  name the blob's version, which Azure refuses while it is immutable; the
+  maintenance run extends the policies of blobs still in use
+  (`comp=immutabilityPolicies`).
+* The settings are the object-storage settings above (the endpoint; the
+  region is not used); the web UI offers "Azure Blob Storage" as a provider.
+* Tests: the Shared Key string to sign follows the documented layout (unit
+  test); the backend runs against the Azurite emulator in CI (which checks
+  Shared Key signatures, but does not implement immutability policies).
+
 ## 8. Tests
 
 * SigV4 against the AWS documentation example (GET with Range).

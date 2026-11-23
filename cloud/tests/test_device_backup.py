@@ -633,6 +633,8 @@ def test_s3_repositories_with_object_lock(client, admin, tenant):
         ("s3://backups/office", s3, False, "access key"),
         ("s3://backups/office", {**s3, "lock_days": 5}, True, "more often"),
         ("D:\\Backups", s3, True, "s3://"),
+        ("azure://Bad--Name/x", s3, True, "container name"),
+        ("azure://backups/x", {**s3, "endpoint": "ftp://x"}, True, "endpoint"),
     ]:
         r = client.post("/api/console/backup/repositories", headers=admin, json=body(path, s3v, keys))
         assert r.status_code == 400 and why in r.json()["detail"], (path, r.text)
@@ -657,3 +659,7 @@ def test_s3_repositories_with_object_lock(client, admin, tenant):
     assert r.status_code == 200, r.text
     kind = heartbeat(client, h)["jobs"][0]["kind"]
     assert kind["type"] == "check_access" and kind["s3"]["lock_mode"] == "compliance"
+    # Azure Blob: the same settings; the endpoint may carry the account (Azurite).
+    azure = {**s3, "endpoint": "http://127.0.0.1:10000/devstoreaccount1"}
+    r = client.post("/api/console/backup/repositories", headers=admin, json=body("azure://backups/office", azure))
+    assert r.status_code == 200, r.text

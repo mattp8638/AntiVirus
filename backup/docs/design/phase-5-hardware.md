@@ -55,6 +55,23 @@ left alone and the job says so. Images taken through VSS are consistent
 * Windows PE: `reg.exe load/query/add/delete/unload` and `dism.exe`, both
   part of Windows PE.
 
+## Boot configuration (BCD)
+
+Windows' boot configuration names its boot and system partitions by the
+disk's GPT disk GUID (or MBR signature) and the partitions' GUIDs (or
+offsets). A restore or clone writes the partition table as it was, so those
+identities are unchanged and the BCD stays valid on any hardware; nothing is
+rewritten. Restored disks boot in CI (`ci/e2e-recovery.py`).
+
+The one case where it changes: a clone made on a running Windows while the
+source disk is still attached. Windows sees two disks with the same identity
+and gives the copy a new one, so the copy's BCD points at the source. Remove
+the source before the copy is first attached, or boot the copy alone. If it
+already happened, run `bcdboot X:\Windows /s S:` from Windows PE, where X: is
+the copy's Windows volume and S: its EFI system partition. Fenrir-Backup does
+not run `bcdboot` itself on a running Windows, because it also changes that
+machine's firmware boot entries.
+
 ## Tests
 
 * `hwfix` unit tests build a real registry hive (regf: base block, hbin,

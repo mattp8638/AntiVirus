@@ -72,10 +72,13 @@ def is_share_path(path: str) -> bool:
 
 
 def is_s3_path(path: str) -> bool:
-    return path.strip().startswith("s3://")
+    """Object storage: S3-compatible (s3://bucket/prefix) or Azure Blob (azure://container/prefix)."""
+    p = path.strip()
+    return p.startswith("s3://") or p.startswith("azure://")
 
 
 _BUCKET = re.compile(r"^[a-z0-9.-]{3,63}$")
+_CONTAINER = re.compile(r"^(?!.*--)[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$")
 
 
 def _s3_settings(path: str, raw, prune_every_days: int) -> dict | None:
@@ -83,15 +86,20 @@ def _s3_settings(path: str, raw, prune_every_days: int) -> dict | None:
     than an Object Lock: maintenance extends the locks of backups in use (Fenrir-Backup phase-4-storage)."""
     if not is_s3_path(path):
         if raw:
-            bad("S3 settings need an s3://bucket/prefix location")
+            bad("object storage settings need an s3://bucket/prefix or azure://container/prefix location")
         return None
     if not isinstance(raw, dict):
-        bad("an s3:// location needs its endpoint and region")
+        bad("an s3:// or azure:// location needs its endpoint")
+    azure = path.strip().startswith("azure://")
     endpoint = str(raw.get("endpoint") or "").strip().rstrip("/")
-    m = re.match(r"^https?://([^/\s]+)$", endpoint)
+    # Azure endpoints may carry the account in the path (the Azurite emulator); S3 endpoints are a host only.
+    m = re.match(r"^https?://([^/\s]+)(/[^\s]*)?$" if azure else r"^https?://([^/\s]+)$", endpoint)
     if not m:
         bad("the endpoint is https://host (or http://host:port), without a path")
-    if not _BUCKET.match(path.strip()[5:].split("/", 1)[0]):
+    if azure:
+        if not _CONTAINER.match(path.strip()[8:].split("/", 1)[0]):
+            bad("the container name is 3 to 63 lower-case letters, digits or single hyphens")
+    elif not _BUCKET.match(path.strip()[5:].split("/", 1)[0]):
         bad("the bucket name is 3 to 63 lower-case letters, digits, dots or hyphens")
     mode = raw.get("lock_mode") or None
     days = raw.get("lock_days") or 0
