@@ -96,6 +96,14 @@ back it up from the recovery media. Disks that only hold the repository are left
 `fenrir-backup clone --source /dev/sda --target /dev/sdb --yes --grow [--live]` (Windows: `\\.\PhysicalDriveN`);
 see `backup/docs/CLI.md` and `backup/docs/design/phase-5-grow-clone.md`.
 
+## Frequent backups
+
+A plan can run every few minutes (from 5) as well as every few hours or at a time of day. A run never overlaps the
+previous one: if a backup takes longer than the interval, the next starts when it finishes. Each run reads the used
+disk space again and stores only what changed, so pick an interval longer than one backup takes. Retention has an
+**Hourly** rule (the newest image of each of the latest N hours) for many short-lived restore points. Design:
+`backup/docs/design/frequent-backups.md`.
+
 ## Restoring individual files
 
 **Images & restore › Browse files** (also on a device's Backup tab) opens any backup as a file explorer: pick the

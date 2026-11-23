@@ -19,6 +19,12 @@ pub const SKIPPED_WRITERS: &[(&str, &str)] = &[(
     "virtual machines are backed up from the host's Hyper-V backup, one VM at a time",
 )];
 
+const ON_PURPOSE: &str = "not coordinated: virtual machines";
+
+fn is_skipped_on_purpose(a: &ApplicationInfo) -> bool {
+    a.note.as_deref().is_some_and(|n| n.starts_with(ON_PURPOSE))
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Component {
     /// Writer class id, lower case without braces.
@@ -119,10 +125,11 @@ pub fn select(components: &[Component], snapshot: &[String]) -> Selection {
     sel
 }
 
-/// One line for the job and the image: which applications were included.
+/// A warning for the job and the image when some application data was not
+/// coordinated (writers left out on purpose, such as Hyper-V, do not count).
 pub fn summary(report: &[ApplicationInfo]) -> Option<String> {
     let mut by_writer: Vec<(&str, usize, usize)> = Vec::new();
-    for a in report {
+    for a in report.iter().filter(|a| !is_skipped_on_purpose(a)) {
         match by_writer.iter_mut().find(|(w, _, _)| *w == a.writer) {
             Some(e) => {
                 e.1 += a.included as usize;
@@ -218,6 +225,11 @@ mod tests {
             .as_ref()
             .unwrap()
             .contains("Hyper-V backup"));
+        assert_eq!(
+            summary(&s.report[..1]),
+            None,
+            "leaving the Hyper-V writer out is on purpose, not a warning"
+        );
         assert!(s.report[1]
             .note
             .as_ref()

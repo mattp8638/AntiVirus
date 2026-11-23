@@ -1,6 +1,8 @@
 """Device backup (fenrir-backup-agent): enrolment, jobs, repositories, the ransomware guard and restores."""
 
 import base64
+
+import pytest
 import uuid
 
 from conftest import ADMIN_PASSWORD, enroll
@@ -85,7 +87,8 @@ def test_enrol_backup_and_ransomware_hold(client, admin, tenant):
         finish(client, h, job["id"], images=[image(t=i)])
         ret = heartbeat(client, h)["jobs"][0]
         assert ret["kind"] == {"type": "apply_retention", "machine_ids": ["m-1"], "retention": {
-            "keep_last": 3, "keep_daily": 0, "keep_weekly": 0, "keep_monthly": 0, "keep_yearly": 0}, "dry_run": False}
+            "keep_last": 3, "keep_hourly": 0, "keep_daily": 0, "keep_weekly": 0, "keep_monthly": 0, "keep_yearly": 0},
+        "dry_run": False}
         finish(client, h, ret["id"])
 
     # Then most of the disk changes and nothing compresses: hold, alert, and retention waits.
@@ -184,6 +187,14 @@ def test_schedule_and_anomaly_rules():
     t = bk.next_after(daily, 1_795_219_200)  # 2026-11-19 00:00 UTC, a Thursday
     assert t is not None and (t // 86_400 + 3) % 7 == 0 and (t + 3600) % 86_400 == 2 * 3600 + 1800
     assert bk.next_after({"type": "interval", "hours": 6}, 100) == 100 + 6 * 3600
+    # Frequent backups: minutes, from 5 minutes; hourly retention.
+    assert bk.next_after({"type": "interval", "hours": 0, "minutes": 15}, 100) == 100 + 900
+    bk.validate_schedule({"type": "interval", "hours": 0, "minutes": 5})
+    for bad in ({"type": "interval", "hours": 0, "minutes": 4}, {"type": "interval", "hours": 1, "minutes": 60},
+                {"type": "interval", "hours": 0}):
+        with pytest.raises(ValueError):
+            bk.validate_schedule(bad)
+    assert bk.validate_retention({"keep_hourly": 24})["keep_hourly"] == 24
     normal = [bk.ChangeStats(1000, 30, 30, 12)] * 6
     assert bk.evaluate_anomaly(normal, bk.ChangeStats(1000, 40, 40, 16)) is None
     assert bk.evaluate_anomaly(normal, bk.ChangeStats(1000, 700, 700, 699))

@@ -23,6 +23,10 @@ use crate::{EngineError, Result};
 pub struct RetentionPolicy {
     #[serde(default)]
     pub keep_last: u32,
+    /// One image per clock hour (UTC), for the newest this many hours that
+    /// have one.
+    #[serde(default)]
+    pub keep_hourly: u32,
     #[serde(default)]
     pub keep_daily: u32,
     #[serde(default)]
@@ -36,6 +40,7 @@ pub struct RetentionPolicy {
 impl RetentionPolicy {
     pub fn keeps_everything(&self) -> bool {
         self.keep_last == 0
+            && self.keep_hourly == 0
             && self.keep_daily == 0
             && self.keep_weekly == 0
             && self.keep_monthly == 0
@@ -112,6 +117,7 @@ pub fn select(images: &[Candidate], p: &RetentionPolicy) -> Vec<Decision> {
             reasons[0].push("newest");
             let rules = [
                 ("last", p.keep_last),
+                ("hourly", p.keep_hourly),
                 ("daily", p.keep_daily),
                 ("weekly", p.keep_weekly),
                 ("monthly", p.keep_monthly),
@@ -158,6 +164,7 @@ pub fn select(images: &[Candidate], p: &RetentionPolicy) -> Vec<Decision> {
 fn period(rule: &str, t: i64) -> i64 {
     let day = t.div_euclid(86_400);
     match rule {
+        "hourly" => t.div_euclid(3600),
         "daily" => day,
         "weekly" => {
             let (y, w) = iso_week(day);
@@ -364,6 +371,23 @@ mod tests {
     }
 
     #[test]
+    fn hourly_keeps_one_per_hour() {
+        // A backup every 15 minutes for 10 hours.
+        let base = days_from_civil(2026, 6, 1) * 86_400;
+        let imgs: Vec<_> = (0..40).map(|i| c(base + i * 900)).collect();
+        let p = RetentionPolicy {
+            keep_hourly: 4,
+            ..Default::default()
+        };
+        let k = kept(&select(&imgs, &p));
+        // The newest of each of the last 4 hours (9:45, 8:45, 7:45, 6:45).
+        assert_eq!(k.len(), 4);
+        for h in 6..10 {
+            assert!(k.contains(&(base + h * 3600 + 2700)), "hour {h}");
+        }
+    }
+
+    #[test]
     fn gfs_over_a_year() {
         // One backup per day for 2026.
         let imgs: Vec<_> = (0..365)
@@ -371,6 +395,7 @@ mod tests {
             .collect();
         let p = RetentionPolicy {
             keep_last: 2,
+            keep_hourly: 0,
             keep_daily: 7,
             keep_weekly: 4,
             keep_monthly: 6,
@@ -407,6 +432,7 @@ mod tests {
         });
         let p = RetentionPolicy {
             keep_last: 1,
+            keep_hourly: 0,
             ..Default::default()
         };
         let d = select(&imgs, &p);
@@ -432,6 +458,7 @@ mod tests {
             &imgs,
             &RetentionPolicy {
                 keep_last: 1,
+                keep_hourly: 0,
                 ..Default::default()
             },
         );

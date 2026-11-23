@@ -104,8 +104,11 @@ def _parse_hm(value: str) -> tuple[int, int] | None:
 def validate_schedule(s: dict) -> None:
     kind = s.get("type")
     if kind == "interval":
-        if not isinstance(s.get("hours"), int) or not 1 <= s["hours"] <= 24 * 31:
-            raise ValueError("interval must be 1 hour to 31 days")
+        # Hours and minutes (frequent backups, Fenrir-Backup frequent-backups.md): 5 minutes to 31 days.
+        hours, minutes = s.get("hours", 0), s.get("minutes", 0)
+        if not isinstance(hours, int) or not isinstance(minutes, int) or not 0 <= minutes < 60 or hours < 0 \
+                or not 5 <= hours * 60 + minutes <= 31 * 24 * 60:
+            raise ValueError("interval must be 5 minutes to 31 days")
     elif kind == "daily":
         if _parse_hm(s.get("time", "")) is None:
             raise ValueError("time must be HH:MM")
@@ -121,7 +124,7 @@ def next_after(s: dict, after: int) -> int | None:
     """First run time strictly after `after` (Unix seconds)."""
     kind = s.get("type")
     if kind == "interval":
-        return after + int(s["hours"]) * 3600
+        return after + int(s.get("hours", 0)) * 3600 + int(s.get("minutes", 0)) * 60
     if kind != "daily":
         return None
     hm = _parse_hm(s.get("time", ""))
@@ -141,7 +144,7 @@ def next_after(s: dict, after: int) -> int | None:
     return None
 
 
-RETENTION_FIELDS = ("keep_last", "keep_daily", "keep_weekly", "keep_monthly", "keep_yearly")
+RETENTION_FIELDS = ("keep_last", "keep_hourly", "keep_daily", "keep_weekly", "keep_monthly", "keep_yearly")
 
 
 def keeps_everything(r: dict | None) -> bool:

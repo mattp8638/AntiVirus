@@ -224,6 +224,9 @@ pub struct AgentUpdate {
 pub struct Retention {
     #[serde(default)]
     pub keep_last: u32,
+    /// One image per hour for this many hours (frequent backups).
+    #[serde(default)]
+    pub keep_hourly: u32,
     #[serde(default)]
     pub keep_daily: u32,
     #[serde(default)]
@@ -237,6 +240,7 @@ pub struct Retention {
 impl Retention {
     pub fn keeps_everything(&self) -> bool {
         self.keep_last == 0
+            && self.keep_hourly == 0
             && self.keep_daily == 0
             && self.keep_weekly == 0
             && self.keep_monthly == 0

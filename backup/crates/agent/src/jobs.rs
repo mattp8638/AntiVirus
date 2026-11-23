@@ -468,6 +468,7 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             rep.progress("retention", 0, 1, "reading images");
             let p = engine::retention::RetentionPolicy {
                 keep_last: retention.keep_last,
+                keep_hourly: retention.keep_hourly,
                 keep_daily: retention.keep_daily,
                 keep_weekly: retention.keep_weekly,
                 keep_monthly: retention.keep_monthly,

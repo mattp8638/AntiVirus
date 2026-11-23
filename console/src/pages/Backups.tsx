@@ -622,7 +622,7 @@ function ShareSignin({ repo, agents, onClose }: { repo: Repo; agents: BackupAgen
 // ---------------------------------------------------------------- plans
 
 function describeSchedule(s: any): string {
-  if (s.type === "interval") return `every ${s.hours} h`;
+  if (s.type === "interval") return s.minutes ? (s.hours ? `every ${s.hours} h ${s.minutes} min` : `every ${s.minutes} min`) : `every ${s.hours} h`;
   if (s.type === "daily") return `${s.days?.length ? s.days.map((d: number) => DAYS[d]).join(", ") : "daily"} at ${s.time}`;
   return "manual";
 }
@@ -690,8 +690,11 @@ function PlanEditor({ plan, agents, repos, onClose }: { plan: Plan | null; agent
       <h3 style={{ marginTop: 12 }}>When</h3>
       <div className="form-grid">
         <label className="field">Schedule<select value={schedule.type} onChange={(e) => setSchedule(e.target.value === "interval" ? { type: "interval", hours: 4 } : e.target.value === "daily" ? { type: "daily", time: "01:00", days: [], utc_offset_minutes: -new Date().getTimezoneOffset() } : { type: "manual" })}>
-          <option value="daily">At a time of day</option><option value="interval">Every few hours</option><option value="manual">Only when started</option></select></label>
-        {schedule.type === "interval" && <label className="field">Every (hours)<input type="number" min={1} max={744} value={schedule.hours} onChange={(e) => setSchedule({ ...schedule, hours: Number(e.target.value) })} /></label>}
+          <option value="daily">At a time of day</option><option value="interval">Every few minutes or hours</option><option value="manual">Only when started</option></select></label>
+        {schedule.type === "interval" && <label className="field">Every<span className="row" style={{ gap: 6 }}>
+          <input type="number" min={0} max={744} value={schedule.hours ?? 0} onChange={(e) => setSchedule({ ...schedule, hours: Math.max(0, Number(e.target.value)) })} style={{ width: 80 }} /> h
+          <input type="number" min={0} max={59} value={schedule.minutes ?? 0} onChange={(e) => setSchedule({ ...schedule, minutes: Math.min(59, Math.max(0, Number(e.target.value))) })} style={{ width: 80 }} /> min
+        </span><span className="small muted">At least 5 minutes. A run starts after the previous one finishes; each reads the used disk space again and stores only changes.</span></label>}
         {schedule.type === "daily" && <label className="field">Time (this browser's time zone)<input type="time" value={schedule.time} onChange={(e) => setSchedule({ ...schedule, time: e.target.value })} /></label>}
       </div>
       {schedule.type === "daily" && <div className="row small" style={{ gap: 8, marginTop: 6 }}>{DAYS.map((d, i) => (
@@ -699,7 +702,7 @@ function PlanEditor({ plan, agents, repos, onClose }: { plan: Plan | null; agent
       ))}<span className="muted">(none ticked = every day)</span></div>}
       <h3 style={{ marginTop: 12 }}>Keep</h3>
       <div className="form-grid">
-        {["keep_last", "keep_daily", "keep_weekly", "keep_monthly", "keep_yearly"].map((k) => (
+        {["keep_last", "keep_hourly", "keep_daily", "keep_weekly", "keep_monthly", "keep_yearly"].map((k) => (
           <label key={k} className="field">{k.replace("keep_", "").replace(/^./, (c) => c.toUpperCase())}<input type="number" min={0} value={retention?.[k] ?? 0} onChange={(e) => setRetention({ ...(retention ?? {}), [k]: Number(e.target.value) })} /></label>
         ))}
       </div>
