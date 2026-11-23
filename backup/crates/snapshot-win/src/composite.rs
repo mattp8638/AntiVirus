@@ -23,6 +23,12 @@ pub struct Overlay {
     pub device_len: u64,
     /// Snapshot device; offset 0 = partition start.
     pub device: SharedReader,
+    /// The snapshot serves a decrypted view of an encrypted volume
+    /// (BitLocker). The partition tail past `device_len` is then not read
+    /// from the disk, which holds ciphertext there: its first 512 bytes are
+    /// a copy of the decrypted boot sector (NTFS keeps its backup boot
+    /// sector there) and the rest is zeros.
+    pub decrypted: bool,
 }
 
 pub struct CompositeDisk {
@@ -89,6 +95,27 @@ impl DiskSource for CompositeDisk {
                     (next.min(end), &self.raw, pos)
                 }
             };
+            // Tail of a decrypted volume's partition: synthesised.
+            if cur.is_none() {
+                if let Some(o) = self.overlays.iter().find(|o| {
+                    o.decrypted && pos >= o.start + o.device_len.min(o.len) && pos < o.start + o.len
+                }) {
+                    let tail = o.start + o.device_len.min(o.len);
+                    let stop = (o.start + o.len).min(end);
+                    let out = &mut buf[done..done + (stop - pos) as usize];
+                    out.fill(0);
+                    // Overlap with [tail, tail + 512): the boot sector copy.
+                    let (s, e) = (pos.max(tail), stop.min(tail + 512));
+                    if s < e {
+                        let mut boot = [0u8; 512];
+                        o.device.read_at(0, &mut boot)?;
+                        out[(s - pos) as usize..(e - pos) as usize]
+                            .copy_from_slice(&boot[(s - tail) as usize..(e - tail) as usize]);
+                    }
+                    pos = stop;
+                    continue;
+                }
+            }
             let n = (stop - pos) as usize;
             dev.read_at(dev_off, &mut buf[done..done + n]).map_err(|e| {
                 let what = match cur {
@@ -134,12 +161,14 @@ mod tests {
                     len: 10,
                     device_len: 10,
                     device: snap_b,
+                    decrypted: false,
                 },
                 Overlay {
                     start: 10,
                     len: 20,
                     device_len: 20,
                     device: snap_a,
+                    decrypted: false,
                 },
             ],
             CapturePlan::default(),
@@ -165,6 +194,7 @@ mod tests {
             len: 5,
             device_len: 5,
             device: r.clone(),
+            decrypted: false,
         };
         assert!(CompositeDisk::new(
             DiskInfo::default(),
@@ -193,6 +223,7 @@ mod tests {
                 len: 20,
                 device_len: 15,
                 device: snap,
+                decrypted: false,
             }],
             CapturePlan::default(),
         )
@@ -206,5 +237,51 @@ mod tests {
         let mut tail = [0u8; 4];
         d.read_at(26, &mut tail).unwrap();
         assert_eq!(tail, [b'r'; 4]);
+    }
+
+    #[test]
+    fn decrypted_volume_tail_is_a_boot_sector_copy_and_zeros() {
+        // BitLocker: the disk holds ciphertext ('x'); the snapshot is the
+        // decrypted NTFS volume. Partition 1024..4096, volume 2048 bytes.
+        let raw: SharedReader = Arc::new(vec![b'x'; 5000]);
+        let mut vol = vec![b'v'; 2048];
+        vol[..3].copy_from_slice(b"NTF");
+        let snap: SharedReader = Arc::new(vol);
+        let d = CompositeDisk::new(
+            DiskInfo {
+                size: 5000,
+                ..Default::default()
+            },
+            raw,
+            vec![Overlay {
+                start: 1024,
+                len: 3072,
+                device_len: 2048,
+                device: snap,
+                decrypted: true,
+            }],
+            CapturePlan::default(),
+        )
+        .unwrap();
+        let mut buf = vec![0u8; 5000];
+        d.read_at(0, &mut buf).unwrap();
+        assert_eq!(&buf[..1024], &[b'x'; 1024][..]);
+        assert_eq!(&buf[1024..1027], b"NTF");
+        let tail = 1024 + 2048;
+        assert_eq!(&buf[tail..tail + 3], b"NTF", "backup boot sector");
+        assert_eq!(&buf[tail + 3..tail + 512], &vec![b'v'; 509][..]);
+        assert!(
+            buf[tail + 512..4096].iter().all(|&b| b == 0),
+            "no ciphertext"
+        );
+        assert_eq!(
+            &buf[4096..],
+            &[b'x'; 904][..],
+            "after the partition: the disk"
+        );
+        // A read starting inside the boot sector copy.
+        let mut part = [0u8; 4];
+        d.read_at(tail as u64 + 1, &mut part).unwrap();
+        assert_eq!(&part, b"TFvv");
     }
 }

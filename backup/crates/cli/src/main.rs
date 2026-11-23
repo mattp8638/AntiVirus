@@ -1057,6 +1057,16 @@ fn restore(
     } else {
         d.size
     };
+    // Windows: a physical disk is taken over first (volumes locked and
+    // dismounted, the system disk refused).
+    #[cfg(windows)]
+    let (t, lock) = if engine::target::is_windows_device_path(&target.to_string_lossy()) {
+        let (t, l) = snapshot_win::win::disks::take_over(&target.to_string_lossy(), &confirm)?;
+        (t, Some(l))
+    } else {
+        (FileTarget::open(target, min, true, &confirm)?, None)
+    };
+    #[cfg(not(windows))]
     let t = FileTarget::open(target, min, true, &confirm)?;
     let tty = std::io::stderr().is_terminal() && !ctx.json;
     let last = std::sync::Mutex::new(Instant::now());
@@ -1110,6 +1120,14 @@ fn restore(
     } else {
         None
     };
+    #[cfg(windows)]
+    if let Some(l) = lock {
+        if let Err(e) = l.finish() {
+            human += &format!(
+                "Windows did not re-read the restored disk ({e}); restart before using it.\n"
+            );
+        }
+    }
     Ok(Outcome::new(&RestoreOutput { report: r, boot }, human))
 }
 

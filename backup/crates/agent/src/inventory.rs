@@ -109,6 +109,8 @@ pub fn capabilities(role: &str) -> Vec<String> {
     .collect();
     if cfg!(windows) {
         c.push("backup_system".into());
+        // Onto a disk that is not the system disk (its volumes are locked).
+        c.push("restore_disk".into());
         if crate::hyperv::is_host(role) {
             c.push("backup_hyperv".into());
             c.push("restore_hyperv".into());
@@ -206,7 +208,22 @@ pub fn disks() -> Vec<DiskSummary> {
         out.sort_by(|a, b| a.path.cmp(&b.path));
         out
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    {
+        snapshot_win::win::disks::list()
+            .into_iter()
+            .map(|d| DiskSummary {
+                path: d.path,
+                size: d.size,
+                model: d.model,
+                system: d.system,
+                serial: d.serial,
+                sector_size: d.sector_size,
+                in_use: d.in_use,
+            })
+            .collect()
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
     {
         Vec::new()
     }
@@ -230,7 +247,11 @@ pub fn firmware() -> (Option<String>, Option<bool>) {
             .and_then(|v| v.get(4).map(|b| *b == 1));
         (Some("uefi".into()), sb)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    {
+        snapshot_win::win::disks::firmware_mode()
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
     {
         (None, None)
     }

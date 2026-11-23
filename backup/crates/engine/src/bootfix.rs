@@ -158,8 +158,110 @@ pub fn fix_restored_disk(
         .read(true)
         .write(true)
         .open(device)?;
-    let fix = ensure_fallback(Window::new(f, esp.start, esp.length))?;
+    // Raw disks on Windows take whole, aligned sectors only.
+    let sector = disk.partition_table.sector_size.max(512) as usize;
+    let mut w = Aligned::new(Window::new(f, esp.start, esp.length), sector);
+    let fix = ensure_fallback(&mut w)?;
+    w.flush()?;
     Ok(Some(fix))
+}
+
+/// Turns any reads and writes into whole, aligned sectors of the stream
+/// below (read-modify-write for partial sectors). Raw disk devices on
+/// Windows refuse anything else.
+pub struct Aligned<S> {
+    inner: S,
+    sector: usize,
+    pos: u64,
+}
+
+impl<S: Read + Write + Seek> Aligned<S> {
+    pub fn new(inner: S, sector: usize) -> Self {
+        Aligned {
+            inner,
+            sector,
+            pos: 0,
+        }
+    }
+
+    fn span(&self, len: usize) -> (u64, usize) {
+        let s = self.sector as u64;
+        let start = self.pos / s * s;
+        let end = (self.pos + len as u64).div_ceil(s) * s;
+        (start, (end - start) as usize)
+    }
+
+    fn read_span(&mut self, start: u64, len: usize) -> io::Result<Vec<u8>> {
+        let mut buf = vec![0u8; len];
+        self.inner.seek(SeekFrom::Start(start))?;
+        let mut got = 0;
+        while got < len {
+            match self.inner.read(&mut buf[got..])? {
+                0 => break,
+                n => got += n,
+            }
+        }
+        buf.truncate(got);
+        Ok(buf)
+    }
+}
+
+impl<S: Read + Write + Seek> Read for Aligned<S> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if out.is_empty() {
+            return Ok(0);
+        }
+        let (start, len) = self.span(out.len());
+        let buf = self.read_span(start, len)?;
+        let skip = (self.pos - start) as usize;
+        let n = buf.len().saturating_sub(skip).min(out.len());
+        out[..n].copy_from_slice(&buf[skip..skip + n]);
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+impl<S: Read + Write + Seek> Write for Aligned<S> {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        if data.is_empty() {
+            return Ok(0);
+        }
+        let (start, len) = self.span(data.len());
+        let mut buf = self.read_span(start, len)?;
+        if buf.len() < len {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "write past the end",
+            ));
+        }
+        let skip = (self.pos - start) as usize;
+        buf[skip..skip + data.len()].copy_from_slice(data);
+        self.inner.seek(SeekFrom::Start(start))?;
+        self.inner.write_all(&buf)?;
+        self.pos += data.len() as u64;
+        Ok(data.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl<S: Seek> Seek for Aligned<S> {
+    fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
+        let p = match to {
+            SeekFrom::Start(p) => p as i128,
+            SeekFrom::Current(d) => self.pos as i128 + d as i128,
+            SeekFrom::End(d) => self.inner.seek(SeekFrom::End(0))? as i128 + d as i128,
+        };
+        if p < 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "seek before start",
+            ));
+        }
+        self.pos = p as u64;
+        Ok(self.pos)
+    }
 }
 
 /// `[start, start + len)` of a seekable stream (a partition of a disk).
@@ -328,6 +430,53 @@ mod tests {
         let mut img = esp(&[("notes/readme.txt", b"x")]);
         let fix = ensure_fallback(Cursor::new(&mut img)).unwrap();
         assert!(fix.loader.is_none() && fix.added.is_empty());
+    }
+
+    /// A device that, like a raw disk on Windows, refuses anything but
+    /// whole aligned sectors.
+    struct Strict(Cursor<Vec<u8>>);
+    impl Read for Strict {
+        fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
+            if self.0.position() % 512 != 0 || b.len() % 512 != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unaligned read",
+                ));
+            }
+            self.0.read(b)
+        }
+    }
+    impl Write for Strict {
+        fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+            if self.0.position() % 512 != 0 || b.len() % 512 != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unaligned write",
+                ));
+            }
+            self.0.write(b)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    impl Seek for Strict {
+        fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
+            self.0.seek(to)
+        }
+    }
+
+    #[test]
+    fn works_on_a_device_that_takes_whole_sectors_only() {
+        let img = esp(&[("EFI/Microsoft/Boot/bootmgfw.efi", b"WINDOWS")]);
+        assert!(
+            ensure_fallback(Strict(Cursor::new(img.clone()))).is_err(),
+            "fatfs alone does unaligned I/O"
+        );
+        let mut a = Aligned::new(Strict(Cursor::new(img)), 512);
+        assert_eq!(ensure_fallback(&mut a).unwrap().added.len(), 1);
+        let mut out = a.inner.0.into_inner();
+        assert_eq!(read(&mut out, "EFI/BOOT/BOOTX64.EFI").unwrap(), b"WINDOWS");
     }
 
     #[test]

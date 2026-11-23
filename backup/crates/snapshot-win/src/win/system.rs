@@ -143,6 +143,29 @@ fn firmware_var(name: &str) -> Option<Vec<u8>> {
 /// Firmware type, Secure Boot state and UEFI boot entries. Reading
 /// firmware variables needs SeSystemEnvironmentPrivilege; without it the
 /// entries are simply left empty with a note.
+/// Firmware type and Secure Boot state only (no privileges needed).
+pub fn boot_config_basic() -> BootConfig {
+    let mut b = BootConfig::default();
+    let mut ft = FIRMWARE_TYPE::default();
+    if unsafe { GetFirmwareType(&mut ft) }.is_ok() {
+        b.firmware = if ft == FirmwareTypeUefi {
+            Firmware::Uefi
+        } else if ft == FirmwareTypeBios {
+            Firmware::Bios
+        } else {
+            Firmware::Unknown
+        };
+    }
+    if b.firmware == Firmware::Uefi {
+        b.secure_boot = reg_dword(
+            r"SYSTEM\CurrentControlSet\Control\SecureBoot\State",
+            "UEFISecureBootEnabled",
+        )
+        .map(|v| v != 0);
+    }
+    b
+}
+
 pub fn boot_config() -> BootConfig {
     let mut b = BootConfig::default();
     let mut ft = FIRMWARE_TYPE::default();

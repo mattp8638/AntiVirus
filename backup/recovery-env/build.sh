@@ -21,6 +21,7 @@ cli=$(realpath "$3")
 here=$(cd "$(dirname "$0")" && pwd)
 suite=${SUITE:-stable}
 mirror=${MIRROR:-https://deb.debian.org/debian}
+mkdir -p "$(dirname "$out")"
 work=$(mktemp -d "${TMPDIR:-/tmp}/fenrir-recovery.XXXXXX")
 trap 'rm -rf --one-file-system "$work"' EXIT
 root=$work/root

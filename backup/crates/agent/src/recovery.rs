@@ -12,7 +12,13 @@ use protocol::recovery::{self, RecoveryConfig};
 /// Where the recovery session keeps its state and status.
 pub fn runtime_dir() -> PathBuf {
     if cfg!(windows) {
-        PathBuf::from(r"X:\fenrir")
+        // Windows PE runs from X:; elsewhere (tests, a running Windows) the
+        // temporary folder.
+        if Path::new(r"X:\Windows\System32").is_dir() {
+            PathBuf::from(r"X:\fenrir")
+        } else {
+            std::env::temp_dir().join("fenrir-recovery")
+        }
     } else {
         PathBuf::from("/run/fenrir-recovery")
     }
@@ -111,6 +117,33 @@ pub fn identity(dmi: &Path, net: &Path) -> (String, String) {
     (format!("recovery-{name}"), format!("recovery:{id}"))
 }
 
+/// (hostname, machine id) from SMBIOS on Windows PE: the same identity the
+/// Linux recovery media gives this machine.
+fn windows_identity() -> Option<(String, String)> {
+    #[cfg(windows)]
+    {
+        let (uuid, serial) = snapshot_win::win::disks::hardware_identity()?;
+        let junk = |s: &str| {
+            let l = s.to_ascii_lowercase();
+            l.is_empty()
+                || l.contains("o.e.m")
+                || l.contains("default")
+                || l.contains("not specified")
+        };
+        let id = uuid.clone()?;
+        let name = if junk(&serial) {
+            id[..8].to_string()
+        } else {
+            clean(&serial)
+        };
+        Some((format!("recovery-{name}"), format!("recovery:{id}")))
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 /// One line for the console's status screen.
 pub fn status(line: &str) {
     let dir = runtime_dir();
@@ -132,6 +165,8 @@ pub fn run(config: Option<PathBuf>) -> anyhow::Result<()> {
     };
     let (host, machine) = if cfg!(target_os = "linux") {
         identity(Path::new("/sys/class/dmi/id"), Path::new("/sys/class/net"))
+    } else if let Some(hw) = windows_identity() {
+        hw
     } else {
         let id =
             crate::inventory::machine_id().unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());

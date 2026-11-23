@@ -172,6 +172,58 @@ pub fn ntfs_readable_bytes(buf: &[u8]) -> Option<u64> {
     Some((clusters as u64 * bpc).min(sectors as u64 * bps))
 }
 
+/// The system UUID and serial number from a raw SMBIOS table as Windows
+/// returns it (`GetSystemFirmwareTable('RSMB')`: an 8-byte header, then the
+/// structures). The UUID is formatted as Linux shows `product_uuid` (SMBIOS
+/// 2.6+: the first three fields little-endian), so a machine has the same
+/// identity whichever recovery media it starts from. Placeholders (all 0 or
+/// all FF) give `None` for the UUID.
+pub fn smbios_system(raw: &[u8]) -> Option<(Option<String>, String)> {
+    let data = raw.get(8..)?;
+    let mut p = 0usize;
+    while p + 4 <= data.len() {
+        let typ = data[p];
+        let len = data[p + 1] as usize;
+        if len < 4 || p + len > data.len() {
+            return None;
+        }
+        // Strings follow the formatted area, ending with a double NUL.
+        let mut q = p + len;
+        let mut strings = Vec::new();
+        loop {
+            let end = data[q..].iter().position(|&b| b == 0)? + q;
+            if end == q {
+                break;
+            }
+            strings.push(String::from_utf8_lossy(&data[q..end]).trim().to_string());
+            q = end + 1;
+        }
+        let next = if strings.is_empty() { q + 2 } else { q + 1 };
+        if typ == 1 && len >= 0x19 {
+            let s = &data[p..p + len];
+            let serial = match s[7] {
+                0 => String::new(),
+                i => strings.get(i as usize - 1).cloned().unwrap_or_default(),
+            };
+            let u = &s[8..24];
+            let uuid = if u.iter().all(|&b| b == 0) || u.iter().all(|&b| b == 0xFF) {
+                None
+            } else {
+                Some(format!(
+                    "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+                    u[3], u[2], u[1], u[0], u[5], u[4], u[7], u[6], u[8], u[9], u[10], u[11], u[12], u[13], u[14], u[15]
+                ))
+            };
+            return Some((uuid, serial));
+        }
+        if typ == 127 {
+            return None;
+        }
+        p = next;
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,5 +323,36 @@ mod tests {
         assert_eq!(ntfs_readable_bytes(&b[..40]), None);
         b[44..48].copy_from_slice(&0u32.to_le_bytes());
         assert_eq!(ntfs_readable_bytes(&b), None);
+    }
+
+    #[test]
+    fn smbios_system_uuid_and_serial() {
+        let mut raw = vec![0u8, 3, 4, 0, 0, 0, 0, 0];
+        // Type 0 (BIOS) with one string, to be skipped.
+        raw.extend([0u8, 4, 0, 0]);
+        raw.extend(b"Vendor\0\0");
+        // Type 1 (System): manufacturer 1, product 2, version 0, serial 3, UUID.
+        let mut t1 = vec![1u8, 0x1B, 1, 0, 1, 2, 0, 3];
+        t1.extend([
+            0x44, 0x45, 0x4C, 0x4C, 0x42, 0x00, 0x10, 0x35, 0x80, 0x51, 0xB4, 0xC0, 0x4F, 0x4B,
+            0x4E, 0x32,
+        ]);
+        t1.extend([6, 0, 0]);
+        raw.extend(&t1);
+        raw.extend(b"Dell Inc.\0PowerEdge\0CN-0X35B\0\0");
+        raw.extend([127u8, 4, 0, 0, 0, 0]);
+        let (uuid, serial) = smbios_system(&raw).unwrap();
+        // Same text as Linux's /sys/class/dmi/id/product_uuid for these bytes.
+        assert_eq!(
+            uuid.as_deref(),
+            Some("4c4c4544-0042-3510-8051-b4c04f4b4e32")
+        );
+        assert_eq!(serial, "CN-0X35B");
+        // Placeholder UUID.
+        let mut z = raw.clone();
+        let at = 8 + 4 + 8 + 8;
+        z[at..at + 16].fill(0);
+        assert_eq!(smbios_system(&z).unwrap().0, None);
+        assert_eq!(smbios_system(&raw[..20]), None);
     }
 }

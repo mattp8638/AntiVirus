@@ -97,8 +97,10 @@ volume (C:, D:, /home…), open folders, tick files or folders and restore them.
   system. Nothing is written outside the chosen folder, and existing links there are not followed.
 * **Permissions**: browsing and restoring files need `scripts`, like other restores. Opening a backup and every file
   restore are audited (`backup.files.browsed`, `backup.files.restore_requested`).
-* **Volumes**: NTFS (Windows) and ext2/3/4 (Linux) volumes can be browsed. BitLocker and LUKS volumes are stored
-  encrypted as they were on the disk and cannot be browsed: restore the disk or VHDX and unlock it there. NTFS
+* **Volumes**: NTFS (Windows) and ext2/3/4 (Linux) volumes can be browsed. Windows backups read BitLocker volumes through
+  their snapshot, decrypted, so they browse like any NTFS volume (the image is encrypted with the repository key).
+  Volumes captured still encrypted (LUKS, a Hyper-V VM's own BitLocker) cannot be browsed: restore the disk or VHDX
+  and unlock it there. NTFS
   files that Windows compressed (the folder's "Compress contents" setting) or encrypted with EFS are listed but
   not restored yet. Links and cloud-only placeholders (OneDrive "files on demand") are shown but not restored.
   For other file systems (XFS, Btrfs, FAT, ReFS), restore the volume as a VHDX and open it.
@@ -126,6 +128,26 @@ smaller if every partition fits. UEFI systems get the fallback boot loader and a
 started in a different firmware mode from the backed-up system, the job says which setting to change. Sessions do not
 raise offline alerts and are removed a week after they were last seen. The recovery screen also restores without a
 server, from a repository on a USB disk or an SMB share.
+
+**Different hardware.** A restored Windows gets its own storage drivers (AHCI, NVMe, Intel RST, common RAID/SAS
+controllers, Hyper-V, VMware, virtio) set to start at boot in its registry, so moving from RAID to AHCI, SATA to NVMe
+or a physical machine to a VM does not stop it with INACCESSIBLE_BOOT_DEVICE (a copy of the hive is kept as
+`SYSTEM.fenrir-before-hardware`; the job lists the changes).
+
+**BitLocker.** The Windows agent backs volumes up through their VSS snapshot, which reads them decrypted (the image is
+encrypted with the repository key instead), so a restored Windows starts without the BitLocker recovery key; the job
+reminds you to turn BitLocker on again. Volumes captured still encrypted (a Hyper-V VM's own BitLocker backed up from the
+host) need their recovery key on new hardware; the job says which.
+
+**Windows PE media** (optional): for controllers that only have Windows drivers, or to add drivers to the restored
+Windows. Build it on a Windows PC with Microsoft's free Windows ADK and Windows PE add-on (Fenrir does not ship Windows
+PE): `backup/recovery-env/winpe/New-FenrirWinPE.ps1 -Agent fenrir-backup-agent.exe -Cli fenrir-backup.exe -Settings
+fenrir-recovery.json -Drivers <folder>`. The settings file is **Settings file only** of a recovery media link. Driver
+packages from `-Drivers`, or from a `fenrir-drivers` folder on any USB stick, are added with DISM after the restore.
+
+**Onto a second disk of a running Windows.** Windows machines can also restore onto a disk that is not their system
+disk (Restore › A physical disk): its volumes are locked and dismounted first, and the restore is refused while files
+are open on it.
 
 The ISO comes from the backup workflow (artifact `backup-recovery-iso`, built by `backup/recovery-env/build.sh`). Put
 it at `<FENRIR_BACKUP_AGENTS_DIR>/recovery/fenrir-recovery.iso` (in the container:

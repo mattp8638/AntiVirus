@@ -13,9 +13,9 @@ Build scripts for the Fenrir-Backup recovery media (design:
   automatic login on the first screen only).
 * `grub.cfg`: the boot menu.
 
-Windows PE media (design §6) is not available yet: restoring from Windows
-needs the target disk's volumes locked and dismounted first, which the
-agent does not do yet.
+* `winpe/New-FenrirWinPE.ps1`: builds Windows PE recovery media on a
+  Windows PC with your own Windows ADK and Windows PE add-on (Windows PE is
+  not redistributed by this project); see docs/DEPLOY.md.
 
 ```bash
 cargo build --release -p agent -p cli --target x86_64-unknown-linux-musl

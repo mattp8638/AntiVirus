@@ -1,6 +1,6 @@
 # Phase 2 design note: recovery media and bare-metal restore
 
-Status: done except WinPE (§6, deferred).
+Status: done.
 
 Goal: a machine whose disk has died, been wiped or been encrypted by
 ransomware can be put back from a backup without any operating system on it.
@@ -16,7 +16,7 @@ wizard on the machine's screen.
 | Recovery agent mode (`fenrir-backup-agent recovery`) | `crates/agent` | permissive deps only |
 | Restore to a different-size disk, boot fix-ups | `crates/engine` (`fit.rs`, `bootfix.rs`) | adds `fatfs` (MIT) |
 | Personalised ISO download, recovery machines, restore-to-disk flow | `crates/server`, `ui/`, and Fenrir Cloud | none new |
-| Optional WinPE media builder (deferred, §6) | `recovery-env/winpe/` PowerShell, run by the user with their own Microsoft ADK | WinPE is never redistributed |
+| Optional WinPE media builder (§6) | `recovery-env/winpe/` PowerShell, run by the user with their own Microsoft ADK | WinPE is never redistributed |
 
 ## 2. Recovery ISO
 
@@ -127,9 +127,15 @@ New hardware has no firmware boot entry for the restored system:
   machine started in legacy BIOS mode and vice versa. The UI warns before
   the restore; the job result repeats it with what to change in the
   firmware settings.
-* BitLocker: volumes restore still encrypted; the restored Windows asks for
-  the BitLocker recovery key on first boot on new hardware (TPM changed).
-  The UI says so when the image recorded BitLocker.
+* BitLocker: the Windows agent reads volumes through their VSS snapshot,
+  above BitLocker, so the image holds them decrypted (encrypted by the
+  repository key). They restore unencrypted and start without the recovery
+  key; the partition tail outside the snapshot (NTFS backup boot sector) is
+  synthesised from the decrypted boot sector rather than copied as
+  ciphertext. The job reminds the administrator to turn BitLocker on again.
+  Volumes captured raw (Hyper-V guests' own BitLocker, unsnapshotted
+  volumes, Linux backups of Windows disks) stay encrypted; the job says
+  their recovery key is needed on new hardware.
 
 Driver injection for different storage controllers is Phase 5.
 
@@ -149,13 +155,28 @@ target's name to confirm. It runs
 `fenrir-backup restore disk ... --yes` with `--fit` and `--boot-fixup`
 (new CLI flags matching §4), showing progress.
 
-## 6. WinPE (optional; deferred)
+## 6. WinPE (optional)
 
-Not in the first release of this phase: writing a whole disk from Windows
-needs every volume on it locked and dismounted first (Windows refuses raw
-writes to mounted volumes), which the agent does not do yet. The Linux ISO
-covers the machines it can boot; this remains for storage that only has
-Windows drivers.
+Windows refuses raw writes to sectors of a mounted volume, so a whole-disk
+restore on Windows (Windows PE, or a running Windows onto a disk other than
+its own) first takes the target over (`snapshot_win::win::disks`):
+
+* the disk must be a listed physical disk, not the one holding the running
+  Windows, the Windows PE medium (`sources\boot.wim`, `fenrir\recovery.json`)
+  or a page file;
+* an offline or read-only disk is made online and writable for this boot;
+* every volume on it is locked (`FSCTL_LOCK_VOLUME`, which fails while files
+  are open: the restore is refused and nothing is written) and dismounted;
+* the disk is written through `\\.\PhysicalDriveN` in whole sectors (the
+  boot fix-up goes through a sector-aligned adapter);
+* afterwards `IOCTL_DISK_UPDATE_PROPERTIES` makes Windows read the restored
+  partition table, and the old volume handles are released.
+
+Windows PE identifies the machine from SMBIOS (system UUID and serial), the
+same values the Linux ISO reads, so either medium updates the same recovery
+session entry. Tested on a Windows CI runner with two virtual disks
+(`ci/windows-disk-restore.ps1`); the media build is tested there too with
+the ADK installed.
 
 
 `recovery-env/winpe/New-FenrirWinPE.ps1` on a Windows PC with the Windows

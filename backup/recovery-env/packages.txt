@@ -37,6 +37,9 @@ util-linux
 pciutils
 usbutils
 smartmontools
+# Preparing a restored Windows for new hardware (offline registry)
+libhivex-bin
+libwin-hivex-perl
 
 # The console
 whiptail

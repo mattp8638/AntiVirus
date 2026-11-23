@@ -6,6 +6,7 @@ mod browse;
 mod client;
 mod config;
 mod gateway;
+mod hwfix;
 mod hyperv;
 mod inventory;
 mod jobs;
@@ -61,6 +62,13 @@ enum Cmd {
         /// Settings file (default: search the recovery medium and sticks).
         #[arg(long)]
         config: Option<std::path::PathBuf>,
+    },
+    /// Recovery media: after a Windows disk was restored to DEVICE, make it
+    /// start on this machine's storage controller (offline registry; prints
+    /// what changed as JSON).
+    PrepareWindows {
+        #[arg(long)]
+        device: String,
     },
     /// Windows service entry point.
     Service,
@@ -127,6 +135,9 @@ fn main() {
             Err(e) => Err(e),
         },
         Cmd::Recovery { config } => recovery::run(config),
+        Cmd::PrepareWindows { device } => hwfix::adapt_restored_disk(&device).map(|r| {
+            println!("{}", serde_json::to_string(&r).unwrap_or_default());
+        }),
         Cmd::Service => service(),
         Cmd::Status => status(),
         Cmd::Install {

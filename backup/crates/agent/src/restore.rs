@@ -135,6 +135,79 @@ pub fn run(
     rep: &Reporter,
 ) -> anyhow::Result<JobUpdate> {
     let m = repo.load_manifest(&image_id)?;
+    let only: Vec<u32> = match target {
+        RestoreTarget::Disk { disk, .. } => vec![*disk],
+        _ => disks.to_vec(),
+    };
+    let mut u = run_target(ctx, repo, &m, disks, target, rep)?;
+    let notes = bitlocker_notes(&m, &only);
+    if !notes.is_empty() && u.state == JobState::Succeeded {
+        u.state = JobState::Warning;
+    }
+    u.warnings.extend(notes);
+    Ok(u)
+}
+
+/// What BitLocker means for this restore (design: phase-2 §4.2). Volumes
+/// backed up through a snapshot were captured decrypted: they restore
+/// unencrypted and start without the recovery key, so BitLocker has to be
+/// turned on again. Volumes captured raw (no snapshot, a Hyper-V guest's own
+/// BitLocker) are still encrypted, and Windows asks for the recovery key when
+/// the TPM differs.
+pub fn bitlocker_notes(m: &ManifestBody, disks: &[u32]) -> Vec<String> {
+    use core_format::manifest::CaptureMethod;
+    let (mut plain, mut sealed) = (Vec::new(), Vec::new());
+    for d in m
+        .disks
+        .iter()
+        .filter(|d| disks.is_empty() || disks.contains(&d.index))
+    {
+        for p in &d.partitions {
+            let bitlocker = p.encryption.as_deref() == Some("bitlocker")
+                || p.filesystem == core_format::fsdetect::FsType::Bitlocker;
+            if !bitlocker {
+                continue;
+            }
+            let name = p
+                .mount_points
+                .first()
+                .cloned()
+                .unwrap_or_else(|| format!("disk {} partition {}", d.index, p.entry.number));
+            match p.capture {
+                CaptureMethod::SnapshotBitmap | CaptureMethod::SnapshotFull
+                    if p.filesystem != core_format::fsdetect::FsType::Bitlocker =>
+                {
+                    plain.push(name)
+                }
+                _ => sealed.push(name),
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if !plain.is_empty() {
+        out.push(format!(
+            "BitLocker was on for {} when it was backed up. The restored copy is not encrypted, so it starts without the recovery key: turn BitLocker on again (Control Panel > BitLocker, or manage-bde -on).",
+            plain.join(", ")
+        ));
+    }
+    if !sealed.is_empty() {
+        out.push(format!(
+            "{} was captured still BitLocker-encrypted. On different hardware (or a different TPM) Windows asks for its 48-digit BitLocker recovery key on first start: have it ready (Microsoft account, Active Directory or Entra ID, or where it was saved).",
+            sealed.join(", ")
+        ));
+    }
+    out
+}
+
+fn run_target(
+    ctx: &Ctx,
+    repo: &Repository,
+    m: &ManifestBody,
+    disks: &[u32],
+    target: &RestoreTarget,
+    rep: &Reporter,
+) -> anyhow::Result<JobUpdate> {
+    let m = m.clone();
     match target {
         RestoreTarget::Vhdx { directory } => {
             let files = write_vhdx(ctx, repo, &m, disks, Path::new(directory), rep)?;
@@ -195,7 +268,7 @@ pub fn run(
                 .ok_or_else(|| anyhow!("the image has no disk {disk}"))?;
             let c = DestructiveConfirmation::confirmed_by_user(device);
             // Bare-metal restore: the new disk may be bigger or smaller.
-            let t = FileTarget::open(Path::new(device), engine::fit::min_size(d), true, &c)?;
+            let (t, takeover) = open_target(device, engine::fit::min_size(d), &c)?;
             let total = d.size;
             let cb = |done: u64, _t: u64| rep.progress("restoring", done, total, device);
             let r = engine::restore_disk(
@@ -237,6 +310,29 @@ pub fn run(
                         .push(format!("could not add the fallback boot loader: {e}")),
                 }
             }
+            // Windows: release the disk and let Windows read the restored
+            // partition table.
+            if let Some(finish) = takeover {
+                if let Err(e) = finish() {
+                    u.warnings.push(format!(
+                        "Windows did not re-read the restored disk ({e}); restart before using it."
+                    ));
+                }
+            }
+            // Windows on different hardware: its storage drivers (design:
+            // phase-5-hardware).
+            if ctx.cfg.role == "recovery" {
+                rep.progress("preparing Windows for this hardware", 1, 1, device);
+                match crate::hwfix::adapt_restored_disk(device) {
+                    Ok(Some(fix)) => {
+                        result["windows"] = serde_json::to_value(&fix)?;
+                    }
+                    Ok(None) => {}
+                    Err(e) => u.warnings.push(format!(
+                        "The restored Windows could not be prepared for this machine's storage controller ({e:#}); if it stops with INACCESSIBLE_BOOT_DEVICE, restore again from Windows PE recovery media."
+                    )),
+                }
+            }
             if ctx.cfg.role == "recovery" {
                 if let (Some(need), (Some(fw), _)) = (need, crate::inventory::firmware()) {
                     if fw != need {
@@ -256,6 +352,27 @@ pub fn run(
             Ok(u)
         }
     }
+}
+
+/// Called after writing a taken-over disk.
+type Finish = Box<dyn FnOnce() -> std::io::Result<()>>;
+
+/// The restore target. On Windows a physical disk is taken over first (its
+/// volumes locked and dismounted; the system disk refused).
+fn open_target(
+    device: &str,
+    min_size: u64,
+    c: &DestructiveConfirmation,
+) -> anyhow::Result<(FileTarget, Option<Finish>)> {
+    #[cfg(windows)]
+    if engine::target::is_windows_device_path(device) {
+        let (t, lock) = snapshot_win::win::disks::take_over(device, c)?;
+        return Ok((t, Some(Box::new(move || lock.finish()))));
+    }
+    Ok((
+        FileTarget::open(Path::new(device), min_size, true, c)?,
+        None,
+    ))
 }
 
 /// How the backed-up system boots: as recorded at backup, else inferred
@@ -346,6 +463,44 @@ fn guess_generation(m: &ManifestBody) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bitlocker_notes_tell_decrypted_from_still_encrypted() {
+        use core_format::manifest::*;
+        let part = |n: u32, capture: CaptureMethod, fs: core_format::fsdetect::FsType, mp: &str| {
+            serde_json::from_value::<PartitionRecord>(serde_json::json!({
+                "number": n, "start": n as u64 * 1048576, "length": 1048576, "role": "data",
+                "filesystem": fs, "capture": capture, "captured_bytes": 0,
+                "encryption": "bitlocker", "mount_points": if mp.is_empty() { vec![] } else { vec![mp] },
+            }))
+            .unwrap()
+        };
+        let disk: DiskImage = serde_json::from_value(serde_json::json!({
+            "index": 0, "size": 1 << 30, "logical_sector_size": 512, "physical_sector_size": 512,
+            "partition_table": { "scheme": "gpt", "sector_size": 512, "partitions": [], "raw_regions": [] },
+            "partitions": [], "used_extents": [], "chunks": [],
+        }))
+        .unwrap();
+        let mut d = disk;
+        use core_format::fsdetect::FsType;
+        d.partitions = vec![
+            part(3, CaptureMethod::SnapshotBitmap, FsType::Ntfs, "C:\\"),
+            part(4, CaptureMethod::RawFull, FsType::Bitlocker, ""),
+        ];
+        let body = serde_json::json!({
+            "format": "fenrir-manifest-body", "version": 1, "image_id": uuid::Uuid::nil(), "repo_id": uuid::Uuid::nil(),
+            "created": "", "created_unix": 0, "kind": "full", "machine": {"machine_id": "m", "hostname": "h"},
+            "consistency": "application", "chunk_size": 4194304, "hash": "blake3-keyed", "compression": "zstd",
+            "encryption": "xchacha20poly1305", "disks": [d], "boot": BootConfig::default(), "os": OsInfo::default(),
+            "drivers": [], "excluded": [], "warnings": [], "stats": ImageStats::default(),
+        });
+        let m: ManifestBody = serde_json::from_value(body).unwrap();
+        let n = bitlocker_notes(&m, &[]);
+        assert_eq!(n.len(), 2, "{n:?}");
+        assert!(n[0].contains("C:\\") && n[0].contains("not encrypted"));
+        assert!(n[1].contains("disk 0 partition 4") && n[1].contains("recovery key"));
+        assert!(bitlocker_notes(&m, &[1]).is_empty(), "other disks only");
+    }
 
     #[test]
     fn names_are_safe() {

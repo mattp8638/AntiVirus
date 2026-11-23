@@ -167,6 +167,16 @@ offline_restore() {
       note="$note\n\nAdded the firmware boot entry \"$label\"."
     fi
   fi
+  # A restored Windows: make it start on this machine's storage controller.
+  local win
+  win=$(fenrir-backup-agent prepare-windows --device "$dev" 2>/dev/null | tail -1)
+  if [ -n "$win" ] && [ "$win" != null ]; then
+    local changed
+    changed=$(jq -r '(.boot_start + .overrides_removed) | unique | join(", ")' <<< "$win" 2>/dev/null)
+    if [ -n "$changed" ]; then
+      note="$note\n\nPrepared Windows for this machine: storage drivers set to start at boot ($changed)."
+    fi
+  fi
   local fw
   fw=$(jq -r '.result.boot.firmware // empty' <<< "$disks")
   if [ "$fw" = unknown ] || [ -z "$fw" ]; then

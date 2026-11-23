@@ -317,6 +317,7 @@ pub fn prepare_system_backup(opts: &VssOptions) -> Result<SystemBackup, PrepareE
                     len: p.length,
                     device_len,
                     device: Arc::new(FileReader(dev)),
+                    decrypted: bitlocker,
                 });
             }
             plan.partitions.push(pp);

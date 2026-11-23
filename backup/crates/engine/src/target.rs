@@ -75,7 +75,7 @@ impl FileTarget {
         {
             if is_windows_device_path(&path.to_string_lossy()) {
                 return Err(EngineError::Safety(
-                    "restoring to a physical disk from a running Windows is not supported; boot the recovery environment".into(),
+                    "a physical disk must be taken over first (its volumes locked): use the agent or CLI, which do that".into(),
                 ));
             }
         }
@@ -142,6 +142,35 @@ impl FileTarget {
             size: cur.max(min_size),
             is_block_device: false,
             sector: None,
+        })
+    }
+}
+
+impl FileTarget {
+    /// A whole disk the caller has already taken over (Windows: every volume
+    /// on it locked and dismounted, the system disk refused), of `size`
+    /// bytes with `sector`-byte sectors. Windows does not report a raw
+    /// disk's size through the file, so the caller passes it.
+    pub fn open_device(
+        path: &Path,
+        size: u64,
+        sector: u32,
+        confirm: &DestructiveConfirmation,
+    ) -> Result<FileTarget> {
+        if confirm.target() != path {
+            return Err(EngineError::Safety(format!(
+                "confirmation was given for {} but the target is {}",
+                confirm.target().display(),
+                path.display()
+            )));
+        }
+        let file = OpenOptions::new().read(true).write(true).open(path)?;
+        Ok(FileTarget {
+            file,
+            path: path.to_path_buf(),
+            size,
+            is_block_device: true,
+            sector: Some(sector),
         })
     }
 }
