@@ -100,7 +100,7 @@ pub fn capabilities(role: &str) -> Vec<String> {
     .collect();
     if cfg!(windows) {
         c.push("backup_system".into());
-        if role == "hyperv" {
+        if crate::hyperv::is_host(role) {
             c.push("backup_hyperv".into());
             c.push("restore_hyperv".into());
         }

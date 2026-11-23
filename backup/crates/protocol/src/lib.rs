@@ -312,13 +312,19 @@ pub enum JobKind {
     /// Boot the image as an isolated VM and check that it starts.
     BootCheck {
         image_id: Uuid,
-        /// Leave the VM running after the check (KVM hosts).
+        /// Keep the VM after the check (network disconnected) until it is
+        /// stopped: KVM hosts keep it running for up to 8 hours, Hyper-V
+        /// hosts keep it as a VM to log in to and inspect.
         #[serde(default)]
         keep_running: bool,
         #[serde(default)]
         memory_mb: Option<u64>,
         #[serde(default)]
         cpus: Option<u32>,
+        /// Hyper-V: folder on the host for the VM's disks (default: the
+        /// agent's own folder).
+        #[serde(default)]
+        directory: Option<String>,
     },
     /// Power off a VM left running by a boot check.
     StopVm { session_id: Uuid },

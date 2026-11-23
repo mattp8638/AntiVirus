@@ -61,6 +61,25 @@ Fenrir server itself.
 
 A disk restore also needs the device name typed exactly. Every change is in the audit log (`backup.*`).
 
+## Boot tests: restore a backup as a VM to prove it works
+
+**Images & restore › Boot test** restores a backup as a virtual machine on a host of your choice and checks that it
+starts, with the VM's network disconnected:
+
+* **Hosts**: any Windows machine with Hyper-V (detected by the agent, whatever role it was installed with), or a Linux
+  machine with QEMU/KVM. Hosts without access to the repository are listed too: enter the repository passphrase in
+  the dialog to give access (encrypted in the browser for that host only).
+* **Hyper-V**: the backup is written as VHDX files (dynamic, so about as much space as the data in the backup) in the
+  agent's folder or a folder you choose, started as a Generation 1 or 2 VM like the original, and passes when
+  Windows' heartbeat integration service answers; otherwise a screenshot shows what was on screen.
+* **Keep the VM**: tick it to keep the VM afterwards, so you can log in from Hyper-V Manager and check applications
+  and data. It stays (network still disconnected, named `Fenrir check <machine> <date> …`) until you press **Stop and
+  remove** in the boot-test dialog or on the host's machine page, which deletes the VM and its disks. QEMU hosts
+  keep it running for up to 8 hours.
+* Scheduled boot verification (repository settings) tests each machine's newest image regularly and removes the VM
+  each time.
+* For a lasting copy rather than a test, use **Restore › A new Hyper-V VM** on a Hyper-V host instead.
+
 ## Restoring individual files
 
 **Images & restore › Browse files** (also on a device's Backup tab) opens any backup as a file explorer: pick the

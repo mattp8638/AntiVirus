@@ -487,3 +487,34 @@ def test_nas_gateway_routes_relays_and_keeps_retention_on_the_gateway(client, ad
     # The gateway cannot be removed from under its clients.
     assert client.post(f"/api/console/backup/repositories/{repo_id}/gateway", headers=admin, json={}).status_code == 400
     assert client.delete(f"/api/console/backup/repositories/{repo_id}/access/{gw_id}", headers=admin).status_code == 400
+
+
+def test_boot_test_on_a_hyperv_host_keeps_the_vm_when_asked(client, admin, tenant):
+    e = link(client, admin, tenant)
+    src_id, src_h = agent_enroll(client, e["token"], machine="pm-acer")
+    heartbeat(client, src_h)
+    repo_id = ready_repo(client, admin, tenant, src_id, src_h)
+    client.post(f"/api/console/backup/agents/{src_id}/jobs", headers=admin, json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+    job = heartbeat(client, src_h)["jobs"][0]
+    im = image(machine="pm-acer")
+    finish(client, src_h, job["id"], images=[im])
+
+    hv_id, hv_h = agent_enroll(client, e["token"], machine="hv01", key=base64.b64encode(b"h" * 32).decode())
+    kept = {"session_id": str(uuid.uuid4()), "image_id": im["image_id"], "started_unix": 1_790_000_000, "vnc_port": 0, "forwards": {}}
+    client.post("/backup/api/agent/heartbeat", headers=hv_h, json={"inventory": {
+        "hostname": "HV01", "capabilities": ["boot_hyperv", "restore_hyperv"], "running_vms": [kept]}})
+    hv = [a for a in client.get("/api/console/backup/agents", headers=admin).json() if a["id"] == hv_id][0]
+    assert hv["runningVms"] == [{"sessionId": kept["session_id"], "imageId": im["image_id"], "startedUnix": 1_790_000_000, "vncPort": 0}]
+
+    url = f"/api/console/backup/images/{im['image_id']}/boot-check"
+    # Not given access yet: refused until it is (the console gives access first, in the same dialog).
+    assert "no access" in client.post(url, headers=admin, json={"agentId": hv_id, "keepRunning": True}).json()["detail"]
+    assert client.post(f"/api/console/backup/repositories/{repo_id}/access", headers=admin,
+                       json={"agentId": hv_id, "sealed": SEALED}).status_code == 200
+    assert client.post(url, headers=admin, json={"agentId": hv_id, "keepRunning": True, "directory": "relative"}).status_code == 400
+    r = client.post(url, headers=admin, json={"agentId": hv_id, "keepRunning": True, "directory": "D:\\Fenrir checks"})
+    assert r.status_code == 200, r.text
+    spec = client.post("/backup/api/agent/heartbeat", headers=hv_h, json={"inventory": {
+        "hostname": "HV01", "capabilities": ["boot_hyperv", "restore_hyperv"]}}).json()["jobs"][0]
+    assert spec["kind"] == {"type": "boot_check", "image_id": im["image_id"], "keep_running": True, "memory_mb": None,
+                            "cpus": None, "directory": "D:\\Fenrir checks"}

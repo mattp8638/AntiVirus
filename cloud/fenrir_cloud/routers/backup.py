@@ -99,6 +99,8 @@ def agent_out(db: Session, a: BackupAgent, now=None) -> dict:
         "enrolledAt": iso(a.enrolled_at), "lastSeenAt": iso(a.last_seen_at), "online": bk.online(a, now) and not a.revoked,
         "revoked": a.revoked, "publicKey": a.public_key, "capabilities": inv.get("capabilities") or [],
         "vmCount": len(inv.get("vms") or []), "disks": [d.get("path") for d in inv.get("disks") or [] if d.get("path")],
+        "runningVms": [{"sessionId": v.get("session_id"), "imageId": v.get("image_id"), "startedUnix": v.get("started_unix"),
+                        "vncPort": v.get("vnc_port") or 0} for v in inv.get("running_vms") or [] if isinstance(v, dict)],
         "lastBackup": ({"jobId": last_backup.id, "state": last_backup.state, "at": iso(last_backup.finished_at),
                         "error": last_backup.error} if last_backup else None),
         "runningJob": ({"id": running.id, "label": bk.label(running.kind), "state": running.state,
@@ -1031,14 +1033,16 @@ def create_boot_check(image_id: str, body: dict = Body(default={}), p: Principal
         bad("memory must be 256 MB to 64 GB, CPUs 1 to 16")
     caps = bk.capabilities(a)
     if "boot_kvm" not in caps and "boot_hyperv" not in caps:
-        bad("that machine cannot boot VMs (it needs QEMU on Linux, or the Hyper-V role)")
-    if keep and "boot_kvm" not in caps:
-        bad("keeping the VM running is available on Linux (QEMU/KVM) hosts")
+        bad("that machine cannot boot VMs (it needs QEMU on Linux, or Hyper-V on Windows)")
+    directory = str(body.get("directory") or "").strip() or None
+    if directory and ("boot_hyperv" not in caps or len(directory) > 500 or not re.match(r"^([A-Za-z]:\\|\\\\)", directory)):
+        bad("the folder for the VM is for Hyper-V hosts and must be a full Windows path, e.g. D:\\Fenrir checks")
     if a.tenant_id != im.tenant_id or db.get(BackupRepoAccess, (im.repository_id, a.id)) is None:
         bad("that machine has no access to the image's repository; give it access first")
     job = bk.queue(db, a, {"type": "boot_check", "image_id": im.image_id, "keep_running": keep, "memory_mb": mem,
-                           "cpus": cpus}, im.repository_id, p.actor)
-    bk.record(db, p.actor, "backup.boot_check.requested", im.hostname, im.tenant_id, image=im.image_id, machine=a.hostname)
+                           "cpus": cpus, "directory": directory}, im.repository_id, p.actor)
+    bk.record(db, p.actor, "backup.boot_check.requested", im.hostname, im.tenant_id, image=im.image_id, machine=a.hostname,
+              keep=keep, directory=directory)
     db.commit()
     return {"id": job.id}
 

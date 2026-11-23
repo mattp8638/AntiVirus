@@ -273,7 +273,7 @@ pub fn run_loop(stop: Arc<AtomicBool>) -> anyhow::Result<LoopExit> {
         "agent {} starting; server {}",
         cfg.agent_id, cfg.server
     ));
-    if cfg.role == "hyperv" && cfg!(windows) {
+    if hyperv::is_host(&cfg.role) {
         jobs::cleanup_leftover_checkpoints(&dir);
     }
     update::cleanup_old();
@@ -298,7 +298,7 @@ pub fn run_loop(stop: Arc<AtomicBool>) -> anyhow::Result<LoopExit> {
             share::release_all();
         }
         // Hyper-V inventory is slow (PowerShell); refresh every 5 minutes.
-        if cfg.role == "hyperv" {
+        if hyperv::is_host(&cfg.role) {
             let mut g = vms.lock().unwrap();
             if g.0.is_none_or(|t| t.elapsed() > Duration::from_secs(300)) {
                 match hyperv::list_vms() {
