@@ -32,6 +32,8 @@ pub struct Reporter<'a> {
     client: &'a Client,
     path: String,
     last: Mutex<Option<Instant>>,
+    /// When the current phase started, for the rate and time left.
+    phase: Mutex<(String, Instant)>,
 }
 
 impl<'a> Reporter<'a> {
@@ -40,20 +42,38 @@ impl<'a> Reporter<'a> {
             client,
             path: format!("/api/agent/jobs/{job}/update"),
             last: Mutex::new(None),
+            phase: Mutex::new((String::new(), Instant::now())),
         }
     }
 
     pub fn progress(&self, phase: &str, done: u64, total: u64, message: &str) {
+        self.progress_stored(phase, done, total, 0, message)
+    }
+
+    /// Progress of a phase, with the new data stored so far (backups).
+    pub fn progress_stored(&self, phase: &str, done: u64, total: u64, stored: u64, message: &str) {
+        let started = {
+            let mut p = self.phase.lock().unwrap();
+            if p.0 != phase {
+                *p = (phase.to_string(), Instant::now());
+            }
+            p.1
+        };
         let mut l = self.last.lock().unwrap();
         if l.is_some_and(|t| t.elapsed() < Duration::from_secs(2)) && done < total {
             return;
         }
         *l = Some(Instant::now());
+        let (rate, eta_seconds) =
+            JobProgress::estimate(done, total, started.elapsed().as_secs_f64());
         let u = running(Some(JobProgress {
             phase: phase.into(),
             done,
             total,
             message: message.into(),
+            rate,
+            eta_seconds,
+            stored,
         }));
         if let Err(e) = self.client.post::<_, serde_json::Value>(&self.path, &u) {
             crate::log::warn(&format!("progress update failed: {e:#}"));
@@ -347,10 +367,11 @@ fn progress_cb<'a>(
     prefix: String,
 ) -> impl Fn(&engine::Progress) + Sync + 'a {
     move |p: &engine::Progress| {
-        rep.progress(
+        rep.progress_stored(
             "reading",
             p.bytes_done,
             p.bytes_total,
+            p.bytes_stored,
             &format!("{prefix}disk {}", p.disk),
         )
     }
@@ -457,6 +478,38 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
                 .map(|(id, e)| format!("image {id}: {e}"))
                 .collect();
             u.images = Some(ok.iter().map(report_of).collect());
+            Ok(u)
+        }
+        JobKind::CopyImages {
+            images,
+            full_verify,
+            ..
+        } => {
+            let src = open_repo(ctx, access.ok_or_else(|| anyhow!("no source repository"))?)?;
+            let target = spec.copy_target.as_ref().ok_or_else(|| {
+                anyhow!("this machine has no access to the destination repository; grant it access there")
+            })?;
+            let dst = open_repo(ctx, target)?;
+            let cb = |done: u64, total: u64| rep.progress("copying", done, total, &target.path);
+            let ids = (!images.is_empty()).then_some(images.as_slice());
+            let r = engine::copy::copy_images(&src, &dst, ids, *full_verify, &ctx.ctl, &cb)?;
+            let mut u = done(JobState::Succeeded);
+            u.result = Some(json!({
+                "copied": r.copied.len(),
+                "already_there": r.already_there,
+                "chunks_written": r.chunks_written,
+                "bytes_stored": r.bytes_stored,
+                "verified": r.verified,
+                "to": target.path,
+            }));
+            // The destination's catalogue lists the copies.
+            u.images = Some(
+                r.copied
+                    .iter()
+                    .filter_map(|id| dst.load_manifest(id).ok())
+                    .map(|m| report_of(&m))
+                    .collect(),
+            );
             Ok(u)
         }
         JobKind::ApplyRetention {

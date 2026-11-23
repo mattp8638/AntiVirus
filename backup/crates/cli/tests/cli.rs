@@ -518,3 +518,71 @@ fn s3_repository_with_object_lock() {
     let end = 30001 * 512;
     assert_eq!(&restored[..end], &original[..end]);
 }
+
+#[test]
+fn copy_to_another_repository() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+    let img = dir.path().join("disk.img");
+    let orig = make_image(&img);
+    for (repo, pass) in [(&a, "passphrase-one"), (&b, "passphrase-two")] {
+        let o = fenrir(
+            repo,
+            pass,
+            &[
+                "repo",
+                "init",
+                "--recovery-key-out",
+                &dir.path().join(format!("{pass}.key")).display().to_string(),
+            ],
+        );
+        assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stderr));
+    }
+    let o = fenrir(
+        &a,
+        "passphrase-one",
+        &["backup", "disk", img.to_str().unwrap(), "--machine-id", "m"],
+    );
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stderr));
+    // The destination needs its own passphrase.
+    let o = fenrir(&a, "passphrase-one", &["copy", "--to", b.to_str().unwrap()]);
+    assert_ne!(code(&o), 0, "no destination passphrase");
+    let o = Command::new(env!("CARGO_BIN_EXE_fenrir-backup"))
+        .args([
+            "--json",
+            "--repo",
+            a.to_str().unwrap(),
+            "copy",
+            "--to",
+            b.to_str().unwrap(),
+            "--full-verify",
+        ])
+        .env("FENRIR_PASSPHRASE", "passphrase-one")
+        .env("FENRIR_TO_PASSPHRASE", "passphrase-two")
+        .output()
+        .unwrap();
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stderr));
+    let r = json(&o);
+    assert_eq!(r["result"]["copied"].as_array().unwrap().len(), 1);
+    assert_eq!(r["result"]["verified"], true);
+    // The copy restores to the same bytes, from the destination with its key.
+    let copied = r["result"]["copied"][0].as_str().unwrap().to_string();
+    let out = dir.path().join("restored.img");
+    let o = fenrir(
+        &b,
+        "passphrase-two",
+        &[
+            "restore",
+            "disk",
+            "--image",
+            &copied,
+            "--target",
+            out.to_str().unwrap(),
+            "--yes",
+        ],
+    );
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stderr));
+    let restored = std::fs::read(&out).unwrap();
+    assert_eq!(restored.len(), orig.len());
+    assert_eq!(&restored[..4096], &orig[..4096], "partition table");
+}

@@ -35,6 +35,7 @@ interface Job {
 interface Plan {
   id: string; name: string; agentId: string; agentName: string; repositoryId: string; job: any; label: string;
   schedule: any; retention: any; enabled: boolean; nextRunAt: string | null; lastRunAt: string | null;
+  copyToRepositoryId?: string | null;
 }
 type ImageApp = { writer: string; component: string; caption?: string; included: boolean; note?: string | null };
 interface Image {
@@ -58,10 +59,18 @@ const unixTime = (t: number | null) => (t ? new Date(t * 1000).toLocaleString() 
 const isSharePath = (p: string) => /^(\\\\|\/\/|smb:\/\/)/i.test(p.trim());
 const StatePill = ({ state }: { state: string }) => <Pill value={state} tone={STATE_TONE[state] ?? "muted"} />;
 
+/** "reading 42% · 120 MB/s · 4 min left · 300 MB new" from the agent's progress (done/total, rate, ETA, stored). */
 function progressText(p: any): string {
   if (!p) return "";
-  const pct = p.bytes_total ? ` ${Math.floor((100 * (p.bytes_done || 0)) / p.bytes_total)}%` : "";
-  return `${p.phase || ""}${pct}`.trim();
+  const total = p.total ?? p.bytes_total, done = p.done ?? p.bytes_done ?? 0;
+  const parts = [`${p.phase || ""}${total ? ` ${Math.floor((100 * done) / total)}%` : ""}`.trim()];
+  if (p.rate) parts.push(`${bytes(p.rate)}/s`);
+  if (p.rate && p.eta_seconds != null) {
+    const s = p.eta_seconds;
+    parts.push(s < 60 ? "under a minute left" : s < 3600 ? `${Math.ceil(s / 60)} min left` : `${Math.floor(s / 3600)} h ${Math.ceil((s % 3600) / 60)} min left`);
+  }
+  if (p.stored) parts.push(`${bytes(p.stored)} new`);
+  return parts.filter(Boolean).join(" · ");
 }
 
 /** Poll a job until it finishes (connection tests, repository creation). */
@@ -661,12 +670,13 @@ function PlanEditor({ plan, agents, repos, onClose }: { plan: Plan | null; agent
   const [schedule, setSchedule] = useState<any>(plan?.schedule ?? { type: "daily", time: "01:00", days: [], utc_offset_minutes: -new Date().getTimezoneOffset() });
   const [retention, setRetention] = useState<any>(plan?.retention ?? { keep_last: 7, keep_daily: 14, keep_weekly: 8, keep_monthly: 12, keep_yearly: 0 });
   const [enabled, setEnabled] = useState(plan?.enabled ?? true);
+  const [copyTo, setCopyTo] = useState(plan?.copyToRepositoryId ?? "");
   const caps = agent?.capabilities ?? [];
   const jobKind = job ?? (caps.includes("backup_hyperv") ? { type: "backup_hyperv", vm_ids: [] } : caps.includes("backup_system") ? { type: "backup_system" } : { type: "backup_disks", paths: [] });
   const repo = repoId || usable[0]?.id || "";
   const save = () => run(() => plan
-    ? api(`backup/plans/${plan.id}`, { method: "PATCH", body: { name, job: jobKind, schedule, retention, enabled } })
-    : api("backup/plans", { body: { name, agentId, repositoryId: repo, job: jobKind, schedule, retention, enabled } }), "Plan saved").then((r) => r !== undefined && onClose());
+    ? api(`backup/plans/${plan.id}`, { method: "PATCH", body: { name, job: jobKind, schedule, retention, enabled, copyToRepositoryId: copyTo || null } })
+    : api("backup/plans", { body: { name, agentId, repositoryId: repo, job: jobKind, schedule, retention, enabled, copyToRepositoryId: copyTo || null } }), "Plan saved").then((r) => r !== undefined && onClose());
   const remove = async () => { if (plan && await confirmDialog(`Delete the plan ${plan.name}? Its backups are kept.`)) run(() => api(`backup/plans/${plan.id}`, { method: "DELETE" }), "Plan deleted").then(onClose); };
   return (
     <Modal wide title={plan ? `Edit ${plan.name}` : "New backup plan"} onClose={onClose}
@@ -707,6 +717,14 @@ function PlanEditor({ plan, agents, repos, onClose }: { plan: Plan | null; agent
         ))}
       </div>
       <p className="small muted">All zero keeps everything. Old images are only deleted after a successful backup, and never while the repository is on hold.</p>
+      {usable.some((r) => r.id !== repo) && <>
+        <h3 style={{ marginTop: 12 }}>Off-site copy</h3>
+        <label className="field">After each backup, also copy it to<select value={copyTo} onChange={(e) => setCopyTo(e.target.value)}>
+          <option value="">No copy</option>
+          {usable.filter((r) => r.id !== repo).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+        </select></label>
+        <p className="small muted">The machine copies each new image to the second repository, encrypted for it and verified there (for example a NAS backup copied to S3 or Azure). It needs access to both.</p>
+      </>}
       <label className="row small" style={{ gap: 6 }}><input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} /> Enabled</label>
     </Modal>
   );

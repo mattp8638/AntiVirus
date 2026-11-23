@@ -211,6 +211,7 @@ def plan_out(p: ImageBackupPlan, names: dict[str, str]) -> dict:
     return {"id": p.id, "tenantId": p.tenant_id, "name": p.name, "agentId": p.agent_id,
             "agentName": names.get(p.agent_id, ""), "repositoryId": p.repository_id, "job": p.job,
             "label": bk.label(p.job), "schedule": p.schedule, "retention": p.retention, "enabled": p.enabled,
+            "copyToRepositoryId": p.copy_to_repository_id,
             "nextRunAt": iso(p.next_run_at), "lastRunAt": iso(p.last_run_at)}
 
 
@@ -870,6 +871,20 @@ def _plan_fields(db: Session, p: Principal, body: dict, plan: ImageBackupPlan | 
             bad(str(e))
     if "enabled" in body or plan is None:
         out["enabled"] = bool(body.get("enabled", True))
+    if "copyToRepositoryId" in body:
+        c = body.get("copyToRepositoryId") or None
+        if c is not None:
+            agent_id = plan.agent_id if plan else str(body.get("agentId") or "")
+            repo_id = plan.repository_id if plan else _uuid(body.get("repositoryId"), "repository")
+            c = _uuid(c, "repository")
+            if c == repo_id:
+                bad("the copy must go to another repository than the backup")
+            target = db.get(BackupRepository, c)
+            if target is None or target.tenant_id not in p.tenant_ids:
+                bad("no such repository")
+            if db.get(BackupRepoAccess, (c, agent_id)) is None:
+                bad("the machine has no access to the copy's repository; grant it access there first")
+        out["copy_to_repository_id"] = c
     return out
 
 

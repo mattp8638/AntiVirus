@@ -71,7 +71,7 @@ BACKUP_KINDS = ("backup_system", "backup_disks", "backup_hyperv")
 KIND_LABELS = {
     "init_repository": "Create repository", "backup_system": "System backup", "backup_disks": "Disk backup",
     "backup_hyperv": "Hyper-V backup", "verify": "Verify", "list_images": "Refresh images",
-    "apply_retention": "Apply retention", "prune": "Reclaim space", "restore": "Restore", "boot_check": "Boot check",
+    "apply_retention": "Apply retention", "copy_images": "Copy off-site", "prune": "Reclaim space", "restore": "Restore", "boot_check": "Boot check",
     "stop_vm": "Stop VM", "check_access": "Test connection", "browse_files": "Browse files",
     "restore_files": "Restore files",
 }
@@ -356,6 +356,16 @@ def check_anomaly(db: Session, repo_id: str, im: dict) -> str | None:
     cur = ChangeStats(int(im.get("chunks_total") or 0), int(im.get("chunks_new") or 0),
                       int(im.get("bytes_new_raw") or 0), int(im.get("stored_new_bytes") or 0))
     return evaluate_anomaly(hist, cur)
+
+
+def queue_copy(db: Session, plan_id: str, repo_id: str, agent: BackupAgent, images: list[dict]) -> None:
+    """The plan's off-site copy of the images just taken, on the same machine (Fenrir-Backup offsite-copy.md)."""
+    plan = db.get(ImageBackupPlan, plan_id)
+    ids = [str(i["image_id"]) for i in images if i.get("image_id")]
+    if plan is None or not plan.copy_to_repository_id or not ids:
+        return
+    queue(db, agent, {"type": "copy_images", "target_repository_id": plan.copy_to_repository_id, "images": ids,
+                      "full_verify": False}, repo_id, "copy", plan_id=plan_id)
 
 
 def queue_retention(db: Session, plan_id: str, repo_id: str, agent: BackupAgent, images: list[dict]) -> None:

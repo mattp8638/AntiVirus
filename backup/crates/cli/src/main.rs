@@ -72,6 +72,28 @@ enum Cmd {
     Restore(RestoreCmd),
     /// Copy a disk straight onto another (no repository).
     Clone(CloneArgs),
+    /// Copy images to another repository (an off-site copy): re-encrypted
+    /// for it, then verified there.
+    Copy(CopyArgs),
+}
+
+#[derive(Args)]
+struct CopyArgs {
+    /// The destination repository (a folder, s3:// or azure://).
+    #[arg(long)]
+    to: PathBuf,
+    /// The destination's passphrase, first line of this file. Otherwise
+    /// FENRIR_TO_PASSPHRASE.
+    #[arg(long)]
+    to_passphrase_file: Option<PathBuf>,
+    /// Image ID (or unique prefix) to copy. Repeatable. Default: every image
+    /// the destination does not have.
+    #[arg(long = "image")]
+    images: Vec<String>,
+    /// Re-read every copied chunk in the destination (default: check the
+    /// manifests and that every chunk is there).
+    #[arg(long)]
+    full_verify: bool,
 }
 
 #[derive(Args)]
@@ -413,6 +435,7 @@ fn run(ctx: &Ctx, cmd: Cmd) -> R<Outcome> {
         }
         Cmd::Verify(a) => verify(ctx, a),
         Cmd::Clone(a) => clone(ctx, a),
+        Cmd::Copy(a) => copy(ctx, a),
         Cmd::Restore(RestoreCmd::Disk {
             image,
             disk,
@@ -1466,6 +1489,57 @@ fn restore(
         human,
     )
     .with_warnings(warnings))
+}
+
+fn copy(ctx: &Ctx, a: CopyArgs) -> R<Outcome> {
+    let src = open_repo(ctx)?;
+    let pass = match &a.to_passphrase_file {
+        Some(f) => std::fs::read_to_string(f)
+            .map_err(|e| CliError::usage(format!("{}: {e}", f.display())))?
+            .lines()
+            .next()
+            .unwrap_or("")
+            .to_string(),
+        None => std::env::var("FENRIR_TO_PASSPHRASE").map_err(|_| {
+            CliError::new(
+                ExitCode::KeyError,
+                "the destination's passphrase: --to-passphrase-file or FENRIR_TO_PASSPHRASE",
+            )
+        })?,
+    };
+    let dst = Repository::unlock_with_passphrase(backend(&a.to, false)?, pass.as_bytes())?;
+    let ids = a
+        .images
+        .iter()
+        .map(|i| src.resolve_image_id(i))
+        .collect::<Result<Vec<_>, _>>()?;
+    let tty = std::io::stderr().is_terminal() && !ctx.json;
+    let pr = |done: u64, total: u64| {
+        if tty {
+            eprint!("\rcopying: {done} / {total} chunks   ");
+        }
+    };
+    let r = engine::copy::copy_images(
+        &src,
+        &dst,
+        (!ids.is_empty()).then_some(ids.as_slice()),
+        a.full_verify,
+        &JobControl::new(),
+        &pr,
+    )?;
+    if tty {
+        eprintln!();
+    }
+    let human = format!(
+        "Copied {} image(s) to {} ({} already there): {} chunks written ({}), {} already there. Verified.\n",
+        r.copied.len(),
+        a.to.display(),
+        r.already_there,
+        r.chunks_written,
+        human_bytes(r.bytes_stored),
+        r.chunks_present
+    );
+    Ok(Outcome::new(&r, human))
 }
 
 fn same_disk(a: &Path, b: &Path) -> bool {

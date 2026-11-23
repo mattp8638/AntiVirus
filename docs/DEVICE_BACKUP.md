@@ -104,6 +104,15 @@ disk space again and stores only what changed, so pick an interval longer than o
 **Hourly** rule (the newest image of each of the latest N hours) for many short-lived restore points. Design:
 `backup/docs/design/frequent-backups.md`.
 
+## Off-site copies
+
+A plan can copy each backup to a second repository: **Off-site copy** in the plan editor (for example a NAS
+repository copied to S3 or Azure). After each successful backup the machine copies the new images: every chunk is
+decrypted from the first repository and encrypted again for the second (each repository has its own keys), the image
+is signed for it, and the copy is verified there. Nothing leaves the machine unencrypted. The machine needs access to
+both repositories. A copy has its own image ID and is listed under its repository. The CLI does the same with
+`fenrir-backup copy --to REPO`. Design: `backup/docs/design/offsite-copy.md`.
+
 ## Restoring individual files
 
 **Images & restore › Browse files** (also on a device's Backup tab) opens any backup as a file explorer: pick the

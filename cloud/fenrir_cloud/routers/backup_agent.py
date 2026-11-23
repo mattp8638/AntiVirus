@@ -129,20 +129,34 @@ def enroll(body: dict = Body(...), db: Session = Depends(get_db)):
     return {"agent_id": agent.id, "agent_token": agent_token, "poll_seconds": bk.POLL_SECONDS}
 
 
+def _access(db: Session, agent: BackupAgent, repo_id: str) -> dict | None:
+    """A repository's access sealed to this agent, as the agent receives it. None: no access."""
+    repo = db.get(BackupRepository, repo_id)
+    access = db.get(BackupRepoAccess, (repo_id, agent.id))
+    if repo is None or access is None:
+        return None
+    out = {"repository_id": repo.id, "path": repo.path, "sealed_secret": access.sealed,
+           "gateway": gw.route(db, repo, access), "sealed_share": access.sealed_share}
+    if repo.s3:
+        out["s3"] = repo.s3
+    return out
+
+
 def _job_spec(db: Session, agent: BackupAgent, job: BackupJob) -> dict | None:
-    """The job as the agent receives it, with the sealed repository access. None: no access."""
+    """The job as the agent receives it, with the sealed repository access. None: no access (to the repository, or to
+    a copy's destination)."""
     repository = None
     if job.repository_id:
-        repo = db.get(BackupRepository, job.repository_id)
-        access = db.get(BackupRepoAccess, (job.repository_id, agent.id))
-        if repo is None or access is None:
+        repository = _access(db, agent, job.repository_id)
+        if repository is None:
             return None
-        repository = {"repository_id": repo.id, "path": repo.path, "sealed_secret": access.sealed,
-                      "gateway": gw.route(db, repo, access),
-                      "sealed_share": access.sealed_share}
-        if repo.s3:
-            repository["s3"] = repo.s3
-    return {"id": job.id, "kind": job.kind, "repository": repository}
+    spec = {"id": job.id, "kind": job.kind, "repository": repository}
+    if (job.kind or {}).get("type") == "copy_images":
+        target = _access(db, agent, str(job.kind.get("target_repository_id") or ""))
+        if target is None:
+            return None
+        spec["copy_target"] = target
+    return spec
 
 
 @router.post("/api/agent/heartbeat")
@@ -254,11 +268,14 @@ def update_job(job_id: str, body: dict = Body(...), agent: BackupAgent = Depends
 
     repo = db.get(BackupRepository, job.repository_id) if job.repository_id else None
     images = body.get("images") or []
-    if repo is not None:
+    # A copy reports the images it put in its destination.
+    image_repo = db.get(BackupRepository, str(kind.get("target_repository_id"))) \
+        if kind.get("type") == "copy_images" else repo
+    if image_repo is not None:
         for im in images:
             if db.get(BackupImage, str(im["image_id"])) is not None:
                 continue
-            row = BackupImage(image_id=str(im["image_id"]), repository_id=repo.id, tenant_id=repo.tenant_id,
+            row = BackupImage(image_id=str(im["image_id"]), repository_id=image_repo.id, tenant_id=image_repo.tenant_id,
                               agent_id=agent.id, machine_id=_str(im.get("machine_id"), 200),
                               hostname=_str(im.get("hostname"), 255), created_unix=int(im.get("created_unix") or 0),
                               kind=_str(im.get("kind"), 20), consistency=_str(im.get("consistency"), 30),
@@ -303,6 +320,7 @@ def update_job(job_id: str, body: dict = Body(...), agent: BackupAgent = Depends
                 repo.status, repo.status_message = "failed", job.error
     # Retention runs after each successful plan backup (held repositories wait).
     if bk.is_backup(kind) and state in ("succeeded", "warning") and job.plan_id and repo is not None:
+        bk.queue_copy(db, job.plan_id, repo.id, agent, images)
         bk.queue_retention(db, job.plan_id, repo.id, agent, images)
     if state == "failed" and kind.get("type") not in ("check_access", "list_images", "browse_files"):
         bk.raise_alert(db, job.tenant_id, agent.device_id, bk.RULE_FAILED, f"{bk.label(kind)} failed: {name}",

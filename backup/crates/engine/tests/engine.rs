@@ -778,3 +778,77 @@ fn object_locks_keep_objects_until_they_expire_and_are_extended() {
             .ok
     );
 }
+
+#[test]
+fn copy_to_another_repository_restores_identically() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = new_repo(&dir.path().join("a"));
+    let dst = new_repo(&dir.path().join("b"));
+    let disk = make_disk();
+    let first = run_backup(&src, &disk).unwrap();
+    disk.data.write().unwrap()[(7 * MIB) as usize..(7 * MIB) as usize + 4096].fill(0xAB);
+    let second = run_backup(&src, &disk).unwrap();
+    // A copy has its own ID in each destination, derived from the source image.
+    let id_in = |r: &Repository, id: Uuid| engine::copy::copy_id(r.config().repo_id, id);
+
+    let r =
+        engine::copy::copy_images(&src, &dst, None, true, &JobControl::new(), &|_, _| {}).unwrap();
+    assert_eq!(
+        r.copied,
+        vec![id_in(&dst, first.image_id), id_in(&dst, second.image_id)],
+        "oldest first"
+    );
+    assert!(r.verified);
+    let total: usize = src
+        .load_manifest(&second.image_id)
+        .unwrap()
+        .disks
+        .iter()
+        .map(|d| d.chunks.len())
+        .sum();
+    assert!(
+        r.chunks_written > 0 && (r.chunks_written as usize) < 2 * total,
+        "shared chunks once"
+    );
+    // The copy keeps the chain and restores to the same bytes as the source.
+    let copied = dst.load_manifest(&id_in(&dst, second.image_id)).unwrap();
+    assert_eq!(copied.parent, Some(id_in(&dst, first.image_id)));
+    assert_eq!(copied.repo_id, dst.config().repo_id);
+    let (a, b) = (
+        dir.path().join("from-src.img"),
+        dir.path().join("from-dst.img"),
+    );
+    restore_to(&src, second.image_id, &a);
+    restore_to(&dst, id_in(&dst, second.image_id), &b);
+    assert_eq!(std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap());
+    // Different keys: the destination's chunk objects are not the source's.
+    let names = |r: &Repository| -> std::collections::HashSet<String> {
+        r.backend().list("chunks/").unwrap().into_iter().collect()
+    };
+    assert!(names(&src).is_disjoint(&names(&dst)));
+
+    // Again: nothing to do.
+    let r =
+        engine::copy::copy_images(&src, &dst, None, false, &JobControl::new(), &|_, _| {}).unwrap();
+    assert!(r.copied.is_empty() && r.already_there == 2 && r.chunks_written == 0);
+    // Only the newest, into a third repository: it stands alone there.
+    let third = new_repo(&dir.path().join("c"));
+    let r = engine::copy::copy_images(
+        &src,
+        &third,
+        Some(&[second.image_id]),
+        false,
+        &JobControl::new(),
+        &|_, _| {},
+    )
+    .unwrap();
+    assert_eq!(r.copied, vec![id_in(&third, second.image_id)]);
+    let alone = third
+        .load_manifest(&id_in(&third, second.image_id))
+        .unwrap();
+    assert_eq!((alone.parent, alone.kind), (None, ImageKind::Full));
+    // Not into itself.
+    assert!(
+        engine::copy::copy_images(&src, &src, None, false, &JobControl::new(), &|_, _| {}).is_err()
+    );
+}

@@ -63,6 +63,8 @@ pub struct Progress {
     pub bytes_done: u64,
     pub bytes_total: u64,
     pub chunks_new: u64,
+    /// New data written to the repository so far (compressed, encrypted).
+    pub bytes_stored: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -405,6 +407,7 @@ fn run_pipeline(
                 bytes_done: bytes_done.min(total),
                 bytes_total: total,
                 chunks_new: stats.chunks_new,
+                bytes_stored: stats.bytes_new_stored,
             });
         }
         let reader_result = reader.join().expect("reader thread panicked");

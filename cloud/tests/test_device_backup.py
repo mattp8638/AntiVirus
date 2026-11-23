@@ -674,3 +674,37 @@ def test_s3_repositories_with_object_lock(client, admin, tenant):
     azure = {**s3, "endpoint": "http://127.0.0.1:10000/devstoreaccount1"}
     r = client.post("/api/console/backup/repositories", headers=admin, json=body("azure://backups/office", azure))
     assert r.status_code == 200, r.text
+
+
+def test_offsite_copy_after_each_plan_backup(client, admin, tenant):
+    """A plan's off-site copy (Fenrir-Backup offsite-copy.md): after each backup the machine copies the new images
+    to the second repository, with both repositories' access sealed to it; the copies are listed there."""
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    heartbeat(client, h)
+    local = ready_repo(client, admin, tenant, agent_id, h)
+    offsite = ready_repo(client, admin, tenant, agent_id, h)
+    body = {"name": "Nightly", "agentId": agent_id, "repositoryId": local, "job": {"type": "backup_system"},
+            "schedule": {"type": "manual"}}
+    assert client.post("/api/console/backup/plans", headers=admin, json={**body, "copyToRepositoryId": local}).status_code == 400
+    r = client.post("/api/console/backup/plans", headers=admin, json={**body, "copyToRepositoryId": offsite})
+    assert r.status_code == 200, r.text
+    plan_id = r.json()["id"]
+    assert client.get("/api/console/backup/plans", headers=admin).json()[0]["copyToRepositoryId"] == offsite
+
+    assert client.post(f"/api/console/backup/plans/{plan_id}/run", headers=admin).status_code == 200
+    job = heartbeat(client, h)["jobs"][0]
+    im = image()
+    finish(client, h, job["id"], images=[im])
+    copy = heartbeat(client, h)["jobs"][0]
+    assert copy["kind"] == {"type": "copy_images", "target_repository_id": offsite, "images": [im["image_id"]],
+                            "full_verify": False}
+    assert copy["repository"]["repository_id"] == local and copy["copy_target"]["repository_id"] == offsite
+    assert copy["copy_target"]["sealed_secret"] == SEALED
+    finish(client, h, copy["id"], images=[{**im, "image_id": str(uuid.uuid4())}])
+    listed = client.get(f"/api/console/backup/images?repositoryId={offsite}", headers=admin).json()
+    assert len(listed) == 1 and listed[0]["repositoryId"] == offsite
+
+    r = client.patch(f"/api/console/backup/plans/{plan_id}", headers=admin, json={"copyToRepositoryId": None})
+    assert r.status_code == 200
+    assert client.get("/api/console/backup/plans", headers=admin).json()[0]["copyToRepositoryId"] is None
