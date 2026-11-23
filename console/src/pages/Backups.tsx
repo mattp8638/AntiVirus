@@ -25,6 +25,7 @@ interface Repo {
   maintenanceAgentId: string | null; pruneEveryDays: number; lastPruneAt: string | null; anomalies: number;
   bootAgentId: string | null; bootEveryDays: number; lastVerifiedBoot: string | null; shareAuth: string; shareUser: string | null;
   isShare: boolean; agents: { id: string; name: string; viaGateway?: boolean }[];
+  s3?: S3Settings | null;
   gateway: { agentId: string; name: string; online: boolean; port: number; address: string | null; addresses: string[] } | null;
 }
 interface Job {
@@ -297,15 +298,44 @@ function SigninFields({ value, onChange }: { value: Signin; onChange: (s: Signin
   );
 }
 
-function TestConnection({ agent, path, signin }: { agent?: BackupAgent; path: string; signin: Signin | null }) {
+interface S3Settings { endpoint: string; region: string; path_style: boolean; lock_mode: "governance" | "compliance" | null; lock_days: number }
+interface S3Form { endpoint: string; region: string; bucket: string; prefix: string; pathStyle: boolean; lockMode: "none" | "governance" | "compliance"; lockDays: number; accessKey: string; secretKey: string }
+const emptyS3 = (): S3Form => ({ endpoint: "https://s3.eu-west-2.amazonaws.com", region: "eu-west-2", bucket: "", prefix: "fenrir", pathStyle: false, lockMode: "compliance", lockDays: 30, accessKey: "", secretKey: "" });
+const s3Path = (f: S3Form) => `s3://${f.bucket.trim()}${f.prefix.trim() ? "/" + f.prefix.trim().replace(/^\/+|\/+$/g, "") : ""}`;
+const s3Settings = (f: S3Form): S3Settings => ({ endpoint: f.endpoint.trim().replace(/\/+$/, ""), region: f.region.trim() || "us-east-1", path_style: f.pathStyle, lock_mode: f.lockMode === "none" ? null : f.lockMode, lock_days: f.lockMode === "none" ? 0 : f.lockDays });
+const s3Signin = (f: S3Form): Signin => ({ mode: "password", domain: "", username: f.accessKey.trim(), password: f.secretKey });
+const s3Ok = (f: S3Form) => /^https?:\/\/[^/\s]+$/.test(f.endpoint.trim().replace(/\/+$/, "")) && /^[a-z0-9.-]{3,63}$/.test(f.bucket.trim()) && !!f.accessKey.trim() && !!f.secretKey && (f.lockMode === "none" || (f.lockDays > 7 && f.lockDays <= 36500));
+
+function S3Fields({ value: f, onChange }: { value: S3Form; onChange: (f: S3Form) => void }) {
+  const set = (p: Partial<S3Form>) => onChange({ ...f, ...p });
+  return (
+    <div className="form-grid">
+      <label className="field">Endpoint<input value={f.endpoint} onChange={(e) => set({ endpoint: e.target.value })} placeholder="https://s3.eu-west-2.amazonaws.com" /></label>
+      <label className="field">Region<input value={f.region} onChange={(e) => set({ region: e.target.value })} placeholder="eu-west-2 (us-east-1 for most others)" /></label>
+      <label className="field">Bucket (created with Object Lock enabled)<input value={f.bucket} onChange={(e) => set({ bucket: e.target.value.toLowerCase() })} /></label>
+      <label className="field">Folder in the bucket<input value={f.prefix} onChange={(e) => set({ prefix: e.target.value })} /></label>
+      <label className="field">Access key ID<input value={f.accessKey} onChange={(e) => set({ accessKey: e.target.value })} autoComplete="off" /></label>
+      <label className="field">Secret access key<input type="password" value={f.secretKey} onChange={(e) => set({ secretKey: e.target.value })} autoComplete="new-password" /></label>
+      <label className="field">Immutable backups (Object Lock)<select value={f.lockMode} onChange={(e) => set({ lockMode: e.target.value as S3Form["lockMode"] })}>
+        <option value="compliance">Compliance: nobody can delete a backup early</option>
+        <option value="governance">Governance: only special admin rights can</option>
+        <option value="none">Off</option>
+      </select></label>
+      {f.lockMode !== "none" && <label className="field">Keep each backup locked for (days, more than 7)<input type="number" min={8} max={36500} value={f.lockDays} onChange={(e) => set({ lockDays: Number(e.target.value) })} /></label>}
+      <label className="row small" style={{ gap: 6 }}><input type="checkbox" checked={f.pathStyle} onChange={(e) => set({ pathStyle: e.target.checked })} /> Path-style addresses (MinIO and most self-hosted storage)</label>
+    </div>
+  );
+}
+
+function TestConnection({ agent, path, signin, s3 }: { agent?: BackupAgent; path: string; signin: Signin | null; s3?: S3Settings | null }) {
   const [state, setState] = useState<{ busy?: boolean; job?: Job | null; err?: string; key?: string }>({});
-  const key = JSON.stringify([agent?.id, path.trim(), signin]);
+  const key = JSON.stringify([agent?.id, path.trim(), signin, s3]);
   const go = async () => {
     if (!agent) return;
     setState({ busy: true, key });
     try {
       const sealedShare = signin && signin.mode === "password" ? await sealSignin(agent, signin) : null;
-      const { id } = await api<{ id: string }>(`backup/agents/${agent.id}/check-access`, { body: { path, sealedShare } });
+      const { id } = await api<{ id: string }>(`backup/agents/${agent.id}/check-access`, { body: { path, sealedShare, s3: s3 ?? null } });
       const job = await waitForJob(id);
       setState(job ? { job, key } : { err: `${agent.name} did not answer in time. Is it online?`, key });
     } catch (e) { setState({ err: (e as Error).message, key }); }
@@ -321,7 +351,7 @@ function TestConnection({ agent, path, signin }: { agent?: BackupAgent; path: st
       {cur.job?.state === "failed" && <div className="small" style={{ color: "#fca5a5" }}>{cur.job.error}</div>}
       {cur.job && r && cur.job.state !== "failed" && (
         <div className="small" style={{ color: "#86efac" }}>
-          {r.share ? "Signed in to the share and wrote a test file." : "Wrote a test file."} {r.repository ? "A repository is already there." : r.exists ? "The folder exists." : "The folder will be created."}
+          {r.s3 ? `Object storage: ${r.note}.` : <>{r.share ? "Signed in to the share and wrote a test file." : "Wrote a test file."} {r.repository ? "A repository is already there." : r.exists ? "The folder exists." : "The folder will be created."}</>}
           {r.free_bytes != null && ` Free: ${bytes(r.free_bytes)} of ${bytes(r.total_bytes)}.`}
           {cur.job.warnings.map((w, i) => <div key={i}>{w}</div>)}
         </div>
@@ -358,6 +388,7 @@ function Repositories({ repos, agents, reload }: { repos: Repo[] | null; agents:
             <div className="small" style={{ marginTop: 6 }}>
               {r.images} images · {bytes(r.storedBytes)} stored · last {unixTime(r.lastImage)} · machines: {r.agents.map((a) => a.name).join(", ") || "none"}
               {r.isShare && <> · share sign-in: {r.shareAuth === "password" ? r.shareUser : r.shareAuth === "machine" ? "computer account" : "none"}</>}
+              {r.s3 && <> · object storage, key {r.shareUser} · {r.s3.lock_mode ? `Object Lock ${r.s3.lock_mode}, ${r.s3.lock_days} days` : "no Object Lock"}</>}
             </div>
             {r.gateway && (
               <div className="small" style={{ marginTop: 4 }}>
@@ -369,7 +400,7 @@ function Repositories({ repos, agents, reload }: { repos: Repo[] | null; agents:
             <div className="small muted">Reclaim space every {r.pruneEveryDays || "—"} days on {name(r.maintenanceAgentId)} (last {fmtTime(r.lastPruneAt) || "never"}) · boot verification {r.bootEveryDays ? `every ${r.bootEveryDays} days on ${name(r.bootAgentId)}, last verified ${fmtTime(r.lastVerifiedBoot) || "never"}` : "off"}</div>
             <div className="row" style={{ gap: 6, marginTop: 8, flexWrap: "wrap" }}>
               {can("configure") && <button className="small" onClick={() => setGrant(r)}>Give a machine access</button>}
-              {can("configure") && r.isShare && <button className="small" onClick={() => setShare(r)}>Change share sign-in</button>}
+              {can("configure") && (r.isShare || r.s3) && <button className="small" onClick={() => setShare(r)}>{r.s3 ? "Change access keys" : "Change share sign-in"}</button>}
               {can("configure") && <button className="small" onClick={() => setGateway(r)}>{r.gateway ? "Gateway settings" : "Serve through a gateway"}</button>}
               {!r.hold && can("respond") && <button className="small" disabled={busy} onClick={async () => { const why = await promptDialog("Reason for the hold (legal hold, investigation…)", ""); if (why !== null) act(() => api(`backup/repositories/${r.id}/hold`, { body: { hold: true, reason: why } }), "Hold placed"); }}>Place on hold</button>}
               {r.hold && can("destructive") && <button className="small danger" disabled={busy} onClick={async () => { if (await confirmDialog("Release the hold? Retention will delete old images again. Make sure the machine is clean first.")) act(() => api(`backup/repositories/${r.id}/hold`, { body: { hold: false } }), "Hold released"); }}>Release hold</button>}
@@ -410,12 +441,16 @@ function CreateRepo({ agents, onClose }: { agents: BackupAgent[]; onClose: () =>
   const [members, setMembers] = useState<string[]>([]);
   const [creator, setCreator] = useState("");
   const [signin, setSignin] = useState<Signin>(noSignin());
+  const [kind, setKind] = useState<"folder" | "s3">("folder");
+  const [s3, setS3] = useState<S3Form>(emptyS3());
   const [saved, setSaved] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const isS3 = kind === "s3";
   const tenant = agents.find((a) => a.id === (creator || members[0]))?.tenantId;
   const pool = agents.filter((a) => !tenant || a.tenantId === tenant);
-  const share = isSharePath(path);
-  const ok = name.trim() && path.trim() && pass.length >= 12 && pass === pass2 && members.length > 0 && members.includes(creator) && (!share || signinOk(signin));
+  const share = !isS3 && isSharePath(path);
+  const location = isS3 ? s3Path(s3) : path;
+  const ok = name.trim() && (isS3 ? s3Ok(s3) : path.trim()) && pass.length >= 12 && pass === pass2 && members.length > 0 && members.includes(creator) && (!share || signinOk(signin));
   const download = () => {
     const blob = new Blob([recovery.fileContents], { type: "application/json" });
     const a = document.createElement("a");
@@ -428,11 +463,13 @@ function CreateRepo({ agents, onClose }: { agents: BackupAgent[]; onClose: () =>
       const access = await Promise.all(members.map(async (id) => {
         const a = agents.find((x) => x.id === id)!;
         const secret = JSON.stringify({ passphrase: pass, recovery_key: id === creator ? recovery.fileContents : null });
-        return { agentId: id, sealed: await seal(a.publicKey, secret), sealedShare: share && signin.mode === "password" ? await sealSignin(a, signin) : null };
+        return { agentId: id, sealed: await seal(a.publicKey, secret), sealedShare: isS3 ? await sealSignin(a, s3Signin(s3)) : share && signin.mode === "password" ? await sealSignin(a, signin) : null };
       }));
       return api<{ id: string; initJobId: string }>("backup/repositories", { body: {
-        name, path, repoUuid: recovery.repoId, initAgentId: creator, access,
-        share_auth: share ? signin.mode : "none", share_user: share && signin.mode === "password" ? signinUser(signin) : null } });
+        name, path: location, repoUuid: recovery.repoId, initAgentId: creator, access,
+        share_auth: isS3 ? "password" : share ? signin.mode : "none",
+        share_user: isS3 ? s3.accessKey.trim() : share && signin.mode === "password" ? signinUser(signin) : null,
+        s3: isS3 ? s3Settings(s3) : null } });
     });
     if (!res) return;
     setStatus("Creating the repository on the machine…");
@@ -445,7 +482,8 @@ function CreateRepo({ agents, onClose }: { agents: BackupAgent[]; onClose: () =>
         <>
           <div className="form-grid">
             <label className="field">Name<input value={name} onChange={(e) => setName(e.target.value)} placeholder="Office NAS" /></label>
-            <label className="field">Folder (on the machines)<input value={path} onChange={(e) => setPath(e.target.value)} placeholder={"\\\\nas\\backups\\fenrir or /mnt/backup"} /></label>
+            <label className="field">Stored on<select value={kind} onChange={(e) => setKind(e.target.value as "folder" | "s3")}><option value="folder">A folder or network share</option><option value="s3">S3 object storage (AWS, Wasabi, B2, R2, MinIO…)</option></select></label>
+            {!isS3 && <label className="field">Folder (on the machines)<input value={path} onChange={(e) => setPath(e.target.value)} placeholder={"\\\\nas\\backups\\fenrir or /mnt/backup"} /></label>}
             <label className="field">Passphrase (12+ characters)<input type="password" value={pass} onChange={(e) => setPass(e.target.value)} autoComplete="new-password" /></label>
             <label className="field">Confirm passphrase<input type="password" value={pass2} onChange={(e) => setPass2(e.target.value)} autoComplete="new-password" /></label>
           </div>
@@ -457,8 +495,11 @@ function CreateRepo({ agents, onClose }: { agents: BackupAgent[]; onClose: () =>
               {members.includes(a.id) && <label className="small muted" style={{ marginLeft: 8 }}><input type="radio" checked={creator === a.id} onChange={() => setCreator(a.id)} /> creates it</label>}
             </label>
           ))}
+          {isS3 && <><h3 style={{ marginTop: 12 }}>Object storage</h3><S3Fields value={s3} onChange={setS3} />
+            {s3.lockMode === "compliance" && <p className="small">Every backup stays undeletable for at least {s3.lockDays} days: not by ransomware with these keys, not by the storage account owner, not by Fenrir. Old backups go only after their lock ends; maintenance renews the locks of backups still in use.</p>}</>}
           {share && <><h3 style={{ marginTop: 12 }}>Network share sign-in</h3><SigninFields value={signin} onChange={setSignin} /></>}
-          <TestConnection agent={agents.find((a) => a.id === creator)} path={path} signin={share ? signin : null} />
+          {isS3 ? (s3Ok(s3) && <TestConnection agent={agents.find((a) => a.id === creator)} path={location} signin={s3Signin(s3)} s3={s3Settings(s3)} />)
+            : <TestConnection agent={agents.find((a) => a.id === creator)} path={path} signin={share ? signin : null} />}
           <p className="small muted">The passphrase is encrypted in this browser for each chosen machine. This server stores only the encrypted copies and can never open the backups.</p>
           <button className="primary" disabled={!ok} onClick={() => setStep(1)}>Next: recovery key</button>
         </>
@@ -556,12 +597,17 @@ function ShareSignin({ repo, agents, onClose }: { repo: Repo; agents: BackupAgen
     await api(`backup/repositories/${repo.id}/share`, { body: { share_auth: s.mode, share_user: s.mode === "password" ? signinUser(s) : null, access } });
   }, "Share sign-in updated").then(onClose);
   return (
-    <Modal wide title={`Network sign-in for ${repo.name}`} onClose={onClose}
+    <Modal wide title={repo.s3 ? `Access keys for ${repo.name}` : `Network sign-in for ${repo.name}`} onClose={onClose}
       footer={<button className="primary" disabled={busy || !signinOk(s)} onClick={save}>Save for {machines.length} machine{machines.length === 1 ? "" : "s"}</button>}>
       <div className="mono small" style={{ marginBottom: 8 }}>{repo.path}</div>
-      <SigninFields value={s} onChange={setS} />
-      <TestConnection agent={machines.find((m) => m.online) ?? machines[0]} path={repo.path} signin={s} />
-      <p className="small muted">Changing the password here does not change it on the NAS or server; change it there first, then here.</p>
+      {repo.s3 ? (
+        <div className="form-grid">
+          <label className="field">Access key ID<input value={s.username} onChange={(e) => setS({ ...s, mode: "password", domain: "", username: e.target.value })} autoComplete="off" /></label>
+          <label className="field">Secret access key<input type="password" value={s.password} onChange={(e) => setS({ ...s, mode: "password", password: e.target.value })} autoComplete="new-password" /></label>
+        </div>
+      ) : <SigninFields value={s} onChange={setS} />}
+      <TestConnection agent={machines.find((m) => m.online) ?? machines[0]} path={repo.path} signin={s} s3={repo.s3} />
+      <p className="small muted">{repo.s3 ? "Create the new keys at the storage provider first, then enter them here; remove the old ones afterwards." : "Changing the password here does not change it on the NAS or server; change it there first, then here."}</p>
     </Modal>
   );
 }

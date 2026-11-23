@@ -3014,6 +3014,9 @@ class BackupRepository(Base):
     share_user: Mapped[str | None] = mapped_column(String(200), nullable=True)
     # NAS gateway: the agent that serves this repository to machines that cannot reach it (append-only for them).
     gateway_agent_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # S3-compatible storage (path s3://bucket/prefix): endpoint, region, path_style, lock_mode, lock_days. Not secret;
+    # the access keys are sealed per agent like a share sign-in.
+    s3: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class BackupRepoAccess(Base):

@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod gateway;
+pub mod net;
 pub mod recovery;
 pub mod seal;
 pub mod setup;
@@ -381,6 +382,8 @@ pub enum JobKind {
         path: String,
         #[serde(default)]
         sealed_share: Option<seal::Sealed>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        s3: Option<S3Settings>,
     },
 }
 
@@ -428,6 +431,32 @@ pub struct RepoAccess {
     /// Reach the repository through a gateway agent instead of `path`.
     #[serde(default)]
     pub gateway: Option<gateway::GatewayRoute>,
+    /// S3-compatible storage (`path` = `s3://bucket/prefix`). The access key
+    /// and secret are `sealed_share` (username = access key ID, password =
+    /// secret).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub s3: Option<S3Settings>,
+}
+
+/// Where an S3 repository is, and its Object Lock (design: phase-4-storage).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct S3Settings {
+    /// `https://s3.eu-west-2.amazonaws.com`, `http://minio.lan:9000`, ...
+    pub endpoint: String,
+    #[serde(default = "default_region")]
+    pub region: String,
+    /// `https://host/bucket/key` instead of `https://bucket.host/key`.
+    #[serde(default)]
+    pub path_style: bool,
+    /// "governance" or "compliance"; none = no Object Lock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock_mode: Option<String>,
+    #[serde(default)]
+    pub lock_days: u32,
+}
+
+fn default_region() -> String {
+    "us-east-1".into()
 }
 
 /// Sign-in for a repository on a network share (SMB). Sealed to each agent

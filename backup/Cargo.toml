@@ -12,6 +12,7 @@ members = [
     "crates/protocol",
     "crates/vmboot",
     "crates/filebrowse",
+    "crates/s3store",
 ]
 
 [workspace.package]
@@ -31,6 +32,7 @@ protocol = { path = "crates/protocol" }
 nbd-server = { path = "crates/nbd-server" }
 vmboot = { path = "crates/vmboot" }
 filebrowse = { path = "crates/filebrowse" }
+s3store = { path = "crates/s3store" }
 
 anyhow = "1"
 argon2 = { version = "0.5", default-features = false, features = ["alloc"] }

@@ -21,7 +21,7 @@ from pathlib import Path
 SHARED = [
     "crates/agent", "crates/cli", "crates/core-format", "crates/engine", "crates/filebrowse",
     "crates/nbd-server", "crates/protocol", "crates/snapshot-linux", "crates/snapshot-win",
-    "crates/vdisk", "crates/vmboot", "recovery-env", "fuzz",
+    "crates/vdisk", "crates/vmboot", "crates/s3store", "recovery-env", "fuzz",
     "deny.toml", "SECURITY.md", "scripts/third-party.py",
     "docs/CLI.md", "docs/FORMAT.md", "docs/SECURITY-CODE-OF-PRACTICE.md", "docs/design",
 ]

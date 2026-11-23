@@ -141,8 +141,44 @@ fn secret(key: &AgentKey, access: &RepoAccess) -> anyhow::Result<RepoSecret> {
     Ok(serde_json::from_slice(&pt)?)
 }
 
-/// The repository's storage: its folder, or a gateway (NAS gateway) when the
-/// server routes this machine through one.
+/// S3-compatible storage for `path` (`s3://bucket/prefix`), with the keys
+/// sealed to this machine.
+pub(crate) fn s3_backend(
+    key: &AgentKey,
+    path: &str,
+    s: &protocol::S3Settings,
+    sealed: Option<&protocol::seal::Sealed>,
+) -> anyhow::Result<s3store::S3Backend> {
+    let (bucket, prefix) = s3store::parse_url(path)
+        .ok_or_else(|| anyhow!("{path} is not an s3://bucket/prefix location"))?;
+    let creds = crate::share::open_credentials(
+        key,
+        sealed.ok_or_else(|| {
+            anyhow!("this machine has no access keys for {path}; give it access again")
+        })?,
+    )?;
+    let lock = match s.lock_mode.as_deref() {
+        None | Some("") | Some("none") => None,
+        Some(m) => Some(s3store::Lock {
+            mode: s3store::LockMode::parse(m)
+                .ok_or_else(|| anyhow!("unknown Object Lock mode {m}"))?,
+            days: s.lock_days,
+        }),
+    };
+    Ok(s3store::S3Backend::new(s3store::S3Config {
+        endpoint: s.endpoint.clone(),
+        region: s.region.clone(),
+        bucket,
+        prefix,
+        path_style: s.path_style,
+        access_key: creds.username,
+        secret_key: creds.password,
+        lock,
+    })?)
+}
+
+/// The repository's storage: its folder, S3, or a gateway (NAS gateway) when
+/// the server routes this machine through one.
 fn storage(ctx: &Ctx, access: &RepoAccess, create: bool) -> anyhow::Result<Arc<dyn Backend>> {
     if let Some(route) = &access.gateway {
         let me = uuid::Uuid::parse_str(&ctx.cfg.agent_id).context("agent id")?;
@@ -154,6 +190,16 @@ fn storage(ctx: &Ctx, access: &RepoAccess, create: bool) -> anyhow::Result<Arc<d
             access.repository_id,
             Box::new(transport),
         )?));
+    }
+    if let Some(s) = &access.s3 {
+        let b = s3_backend(ctx.key, &access.path, s, access.sealed_share.as_ref())?;
+        if create && !b.is_empty()? {
+            bail!(
+                "{} already holds data: choose an empty bucket or prefix",
+                access.path
+            );
+        }
+        return Ok(Arc::new(b));
     }
     let path = crate::share::prepare(ctx.key, &access.path, access.sealed_share.as_ref())?;
     Ok(if create {
@@ -420,9 +466,22 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             conflict,
             rep,
         ),
-        JobKind::CheckAccess { path, sealed_share } => {
-            check_access(ctx, path, sealed_share.as_ref())
+        JobKind::CheckAccess {
+            path,
+            sealed_share,
+            s3: Some(s3),
+        } => {
+            let b = s3_backend(ctx.key, path, s3, sealed_share.as_ref())?;
+            let note = b.check()?;
+            let mut u = done(JobState::Succeeded);
+            u.result = Some(
+                json!({ "s3": true, "note": note, "repository": b.exists(core_format::repo::CONFIG_KEY)? }),
+            );
+            Ok(u)
         }
+        JobKind::CheckAccess {
+            path, sealed_share, ..
+        } => check_access(ctx, path, sealed_share.as_ref()),
     }
 }
 

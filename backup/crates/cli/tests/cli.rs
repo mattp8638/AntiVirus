@@ -396,3 +396,125 @@ fn missing_repo_and_usage_errors() {
         json(&o);
     }
 }
+
+/// `--repo s3://...` end to end against an S3 emulator (FENRIR_TEST_S3: a
+/// command starting one on the port given as its last argument), with a
+/// compliance Object Lock: create, back up, full verify, restore.
+#[test]
+fn s3_repository_with_object_lock() {
+    use std::process::Stdio;
+    let Ok(cmd) = std::env::var("FENRIR_TEST_S3") else {
+        eprintln!("FENRIR_TEST_S3 not set: skipped");
+        return;
+    };
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let mut parts = cmd.split_whitespace();
+    let mut emu = Command::new(parts.next().unwrap())
+        .args(parts)
+        .arg(port.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    struct Kill<'a>(&'a mut std::process::Child);
+    impl Drop for Kill<'_> {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let _guard = Kill(&mut emu);
+    for _ in 0..100 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let endpoint = format!("http://127.0.0.1:{port}");
+    let key = std::env::var("FENRIR_TEST_S3_KEY").unwrap_or_else(|_| "testing".into());
+    let secret = std::env::var("FENRIR_TEST_S3_SECRET").unwrap_or_else(|_| "testing".into());
+    s3store::S3Backend::new(s3store::S3Config {
+        endpoint: endpoint.clone(),
+        region: "us-east-1".into(),
+        bucket: "cli-backups".into(),
+        prefix: String::new(),
+        path_style: true,
+        access_key: key.clone(),
+        secret_key: secret.clone(),
+        lock: None,
+    })
+    .unwrap()
+    .create_bucket(true)
+    .unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_fenrir-backup"))
+            .arg("--json")
+            .args(["--repo", "s3://cli-backups/office"])
+            .args(args)
+            .env("FENRIR_PASSPHRASE", "s3 passphrase")
+            .env("FENRIR_S3_ENDPOINT", &endpoint)
+            .env("FENRIR_S3_PATH_STYLE", "1")
+            .env("FENRIR_S3_LOCK", "compliance:1")
+            .env("AWS_ACCESS_KEY_ID", &key)
+            .env("AWS_SECRET_ACCESS_KEY", &secret)
+            .env_remove("FENRIR_REPO")
+            .output()
+            .unwrap()
+    };
+    let rk = dir.path().join("rk.json");
+    let o = run(&[
+        "repo",
+        "init",
+        "--recovery-key-out",
+        rk.to_str().unwrap(),
+        "--chunk-size-kib",
+        "1024",
+    ]);
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stdout));
+    let o = run(&[
+        "repo",
+        "init",
+        "--recovery-key-out",
+        dir.path().join("rk2.json").to_str().unwrap(),
+    ]);
+    assert_ne!(
+        code(&o),
+        0,
+        "a second repository in the same place is refused"
+    );
+
+    let img = dir.path().join("disk.img");
+    let original = make_image(&img);
+    let o = run(&[
+        "backup",
+        "disk",
+        img.to_str().unwrap(),
+        "--machine-id",
+        "s3-box",
+    ]);
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stdout));
+    let id = json(&o)["result"]["image_id"].as_str().unwrap().to_string();
+    let o = run(&["verify", "--full"]);
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stdout));
+    assert_eq!(json(&o)["result"]["ok"], true);
+    let out = dir.path().join("restored.img");
+    let o = run(&[
+        "restore",
+        "disk",
+        "--image",
+        &id,
+        "--target",
+        out.to_str().unwrap(),
+        "--yes",
+    ]);
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stdout));
+    let restored = std::fs::read(&out).unwrap();
+    let end = 30001 * 512;
+    assert_eq!(&restored[..end], &original[..end]);
+}

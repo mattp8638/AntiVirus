@@ -24,6 +24,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
+s3store.workspace = true
 snapshot-linux.workspace = true
 ureq = { version = "2.12", default-features = false, features = ["tls", "json", "proxy-from-env"] }
 uuid.workspace = true

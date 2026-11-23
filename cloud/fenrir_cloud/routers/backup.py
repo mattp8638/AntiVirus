@@ -71,6 +71,44 @@ def is_share_path(path: str) -> bool:
     return p.startswith("\\\\") or p.startswith("//") or p.lower().startswith("smb://")
 
 
+def is_s3_path(path: str) -> bool:
+    return path.strip().startswith("s3://")
+
+
+_BUCKET = re.compile(r"^[a-z0-9.-]{3,63}$")
+
+
+def _s3_settings(path: str, raw, prune_every_days: int) -> dict | None:
+    """S3 settings for an s3:// repository (protocol::S3Settings), checked. The maintenance interval must be shorter
+    than an Object Lock: maintenance extends the locks of backups in use (Fenrir-Backup phase-4-storage)."""
+    if not is_s3_path(path):
+        if raw:
+            bad("S3 settings need an s3://bucket/prefix location")
+        return None
+    if not isinstance(raw, dict):
+        bad("an s3:// location needs its endpoint and region")
+    endpoint = str(raw.get("endpoint") or "").strip().rstrip("/")
+    m = re.match(r"^https?://([^/\s]+)$", endpoint)
+    if not m:
+        bad("the endpoint is https://host (or http://host:port), without a path")
+    if not _BUCKET.match(path.strip()[5:].split("/", 1)[0]):
+        bad("the bucket name is 3 to 63 lower-case letters, digits, dots or hyphens")
+    mode = raw.get("lock_mode") or None
+    days = raw.get("lock_days") or 0
+    if mode not in (None, "none", "governance", "compliance"):
+        bad("Object Lock mode must be none, governance or compliance")
+    if mode in ("governance", "compliance"):
+        if not isinstance(days, int) or not 1 <= days <= 36_500:
+            bad("Object Lock needs 1 to 36500 days")
+        if prune_every_days == 0 or prune_every_days >= days:
+            bad(f"with an Object Lock of {days} days, maintenance must run more often than that (it extends the locks "
+                f"of backups in use); it runs every {prune_every_days or '0 (never)'} days")
+    else:
+        mode, days = None, 0
+    return {"endpoint": endpoint, "region": str(raw.get("region") or "us-east-1").strip()[:64],
+            "path_style": bool(raw.get("path_style")), "lock_mode": mode, "lock_days": days}
+
+
 def _share_mode(body: dict) -> tuple[str, str | None]:
     mode = body.get("share_auth") or "none"
     if mode not in ("none", "machine", "password"):
@@ -144,7 +182,7 @@ def repo_out(db: Session, r: BackupRepository) -> dict:
             "holdSince": iso(r.hold_since), "maintenanceAgentId": r.maintenance_agent_id,
             "pruneEveryDays": r.prune_every_days, "lastPruneAt": iso(r.last_prune_at), "anomalies": anomalies,
             "bootAgentId": r.boot_agent_id, "bootEveryDays": r.boot_every_days, "lastVerifiedBoot": iso(verified),
-            "shareAuth": r.share_auth, "shareUser": r.share_user, "isShare": is_share_path(r.path),
+            "shareAuth": r.share_auth, "shareUser": r.share_user, "isShare": is_share_path(r.path), "s3": r.s3,
             "agents": [{"id": a.id, "name": a.display_name or a.hostname,
                         "viaGateway": bool((db.get(BackupRepoAccess, (r.id, a.id)) or SimpleNamespace(via_gateway=None)).via_gateway)}
                        for a in agents],
@@ -538,11 +576,14 @@ def create_repo(body: dict = Body(...), p: Principal = Depends(current_principal
     if not any(x.get("agentId") == init.id for x in access):
         bad("the machine that creates the repository needs its sealed secret")
     mode, user = _share_mode(body)
-    if mode != "none" and not is_share_path(path):
+    s3 = _s3_settings(path, body.get("s3"), 7)
+    if s3 and mode != "password":
+        bad("an S3 repository needs an access key and secret for every machine")
+    if mode != "none" and not is_share_path(path) and not s3:
         bad(r"a share sign-in needs a network path like \\server\share\folder")
     repo = BackupRepository(tenant_id=init.tenant_id, name=name, path=path,
                             repo_uuid=_uuid(body.get("repoUuid"), "repository UUID"), maintenance_agent_id=init.id,
-                            share_auth=mode, share_user=user, created_by=p.actor)
+                            share_auth=mode, share_user=user, created_by=p.actor, s3=s3)
     db.add(repo)
     db.flush()
     for x in access:
@@ -625,6 +666,8 @@ def set_gateway(repo_id: str, body: dict = Body(...), p: Principal = Depends(cur
     gateway" then reach it via that agent: directly on `port` when they can, relayed by this server otherwise."""
     p.require("configure")
     repo = _repo(db, p, repo_id)
+    if repo.s3 and body.get("agentId"):
+        bad("an S3 repository is reached directly by every machine; a gateway is for folders on a NAS")
     if not body.get("agentId"):
         users = db.execute(select(BackupRepoAccess).where(BackupRepoAccess.repository_id == repo.id,
                                                           BackupRepoAccess.via_gateway.is_(True))).scalars().all()
@@ -697,6 +740,8 @@ def set_maintenance(repo_id: str, body: dict = Body(...), p: Principal = Depends
         d = body["pruneEveryDays"]
         if not isinstance(d, int) or not 0 <= d <= 365:
             bad("prune interval must be 0 (never) to 365 days")
+        if repo.s3:
+            _s3_settings(repo.path, repo.s3, d)
         repo.prune_every_days = d
     bk.record(db, p.actor, "backup.repository.maintenance_changed", repo.name, repo.tenant_id,
               agent=repo.maintenance_agent_id, every_days=repo.prune_every_days)
@@ -752,7 +797,7 @@ def set_share(repo_id: str, body: dict = Body(...), p: Principal = Depends(curre
     p.require("configure")
     repo = _repo(db, p, repo_id)
     mode, user = _share_mode(body)
-    if mode != "none" and not is_share_path(repo.path):
+    if mode != "none" and not is_share_path(repo.path) and not repo.s3:
         bad("this repository is not on a network share")
     rows = db.execute(select(BackupRepoAccess).where(BackupRepoAccess.repository_id == repo.id)).scalars().all()
     sealed = {}
@@ -777,7 +822,11 @@ def check_access(agent_id: str, body: dict = Body(...), p: Principal = Depends(c
     if not path or len(path) > 1000:
         bad("enter a folder path")
     share = _sealed(body["sealedShare"]) if body.get("sealedShare") else None
-    job = bk.queue(db, a, {"type": "check_access", "path": path, "sealed_share": share}, None, p.actor)
+    kind = {"type": "check_access", "path": path, "sealed_share": share}
+    s3 = _s3_settings(path, body.get("s3"), 7)
+    if s3:
+        kind["s3"] = s3
+    job = bk.queue(db, a, kind, None, p.actor)
     db.commit()
     return {"id": job.id}
 

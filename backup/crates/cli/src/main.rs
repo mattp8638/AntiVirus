@@ -424,9 +424,65 @@ fn new_passphrase(env: &str) -> R<String> {
     Ok(a)
 }
 
+/// `--repo s3://bucket/prefix`: S3-compatible storage configured from the
+/// environment (FENRIR_S3_ENDPOINT, FENRIR_S3_REGION, FENRIR_S3_PATH_STYLE,
+/// FENRIR_S3_LOCK=compliance:30, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY).
+fn s3_from_env(url: &str) -> R<s3store::S3Backend> {
+    let (bucket, prefix) = s3store::parse_url(url)
+        .ok_or_else(|| CliError::usage(format!("{url}: expected s3://bucket/prefix")))?;
+    let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    let need = |k: &str| {
+        var(k).ok_or_else(|| CliError::usage(format!("{k} is needed for an s3:// repository")))
+    };
+    let lock = match var("FENRIR_S3_LOCK") {
+        None => None,
+        Some(l) => {
+            let (m, d) = l.split_once(':').unwrap_or((&l, ""));
+            Some(s3store::Lock {
+                mode: s3store::LockMode::parse(m).ok_or_else(|| {
+                    CliError::usage("FENRIR_S3_LOCK is governance:DAYS or compliance:DAYS")
+                })?,
+                days: d.parse().map_err(|_| {
+                    CliError::usage("FENRIR_S3_LOCK is governance:DAYS or compliance:DAYS")
+                })?,
+            })
+        }
+    };
+    Ok(s3store::S3Backend::new(s3store::S3Config {
+        endpoint: need("FENRIR_S3_ENDPOINT")?,
+        region: var("FENRIR_S3_REGION").unwrap_or_else(|| "us-east-1".into()),
+        bucket,
+        prefix,
+        path_style: var("FENRIR_S3_PATH_STYLE")
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true")),
+        access_key: need("AWS_ACCESS_KEY_ID")?,
+        secret_key: need("AWS_SECRET_ACCESS_KEY")?,
+        lock,
+    })?)
+}
+
+/// The repository's storage: a folder, or S3 for `s3://` locations.
+fn backend(path: &Path, create: bool) -> R<Arc<dyn Backend>> {
+    let s = path.to_string_lossy();
+    if s.starts_with("s3://") {
+        let b = s3_from_env(&s)?;
+        if create && !b.is_empty()? {
+            return Err(CliError::usage(format!(
+                "{s} already holds data: choose an empty bucket or prefix"
+            )));
+        }
+        return Ok(Arc::new(b));
+    }
+    Ok(if create {
+        Arc::new(LocalBackend::create(path)?)
+    } else {
+        Arc::new(LocalBackend::open(path)?)
+    })
+}
+
 fn open_repo(ctx: &Ctx) -> R<Repository> {
     let path = repo_path(ctx)?;
-    let backend: Arc<dyn Backend> = Arc::new(LocalBackend::open(path)?);
+    let backend = backend(path, false)?;
     if let Some(rkp) = &ctx.recovery_key {
         let s = std::fs::read_to_string(rkp).map_err(|e| {
             CliError::new(
@@ -483,7 +539,7 @@ fn repo_init(ctx: &Ctx, rk_out: &Path, chunk_kib: u32, zstd_level: i32) -> R<Out
     if pass.is_empty() {
         return Err(CliError::usage("passphrase must not be empty"));
     }
-    let backend: Arc<dyn Backend> = Arc::new(LocalBackend::create(path)?);
+    let backend = backend(path, true)?;
     let (repo, rk) = Repository::init(
         backend,
         pass.as_bytes(),

@@ -140,6 +140,8 @@ def _job_spec(db: Session, agent: BackupAgent, job: BackupJob) -> dict | None:
         repository = {"repository_id": repo.id, "path": repo.path, "sealed_secret": access.sealed,
                       "gateway": gw.route(db, repo, access),
                       "sealed_share": access.sealed_share}
+        if repo.s3:
+            repository["s3"] = repo.s3
     return {"id": job.id, "kind": job.kind, "repository": repository}
 
 

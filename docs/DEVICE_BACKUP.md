@@ -154,6 +154,24 @@ it at `<FENRIR_BACKUP_AGENTS_DIR>/recovery/fenrir-recovery.iso` (in the containe
 `/app/cloud/downloads/backup/recovery/fenrir-recovery.iso`, for example as a mounted volume); until then the console
 says it is missing. Design: `backup/docs/design/phase-2.md`.
 
+## S3 object storage with Object Lock (immutable backups)
+
+Repositories can live on Amazon S3, Wasabi, Backblaze B2, Cloudflare R2, MinIO or any S3-compatible storage: **New
+repository › Stored on › S3 object storage**. With **Object Lock** in compliance mode every backup is immutable for the
+days chosen: nobody can delete or overwrite it before then, not ransomware holding the keys, not the storage account
+owner, not Fenrir.
+
+* Create the bucket with Object Lock enabled (only possible at creation), without a default retention: Fenrir locks
+  each object itself. Give Fenrir its own access key limited to the bucket (`PutObject`, `GetObject`, `ListBucket`,
+  `DeleteObject`, `DeleteObjectVersion`, `Get/PutObjectRetention`).
+* The keys are sealed in your browser for each machine, like a share sign-in; this server never sees them.
+  **Test connection** checks the bucket really refuses to delete a locked object.
+* Maintenance (weekly by default, and it must run more often than the lock period) renews the locks of backups still
+  in use; backups retention no longer keeps are deleted once their lock has run out.
+* S3 repositories are reached directly by every machine; the NAS gateway is not used for them.
+
+Design: `backup/docs/design/phase-4-storage.md`.
+
 ## Network shares
 
 A repository path such as `\\nas\backups\fenrir` can sign in with:

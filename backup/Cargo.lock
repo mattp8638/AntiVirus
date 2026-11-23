@@ -51,6 +51,7 @@ dependencies = [
  "nbd-server",
  "protocol",
  "rustls",
+ "s3store",
  "serde",
  "serde_json",
  "sha2",
@@ -349,6 +350,7 @@ dependencies = [
  "engine",
  "fatfs",
  "rpassword",
+ "s3store",
  "serde",
  "serde_json",
  "snapshot-linux",
@@ -944,6 +946,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
+name = "md-5"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+dependencies = [
+ "cfg-if",
+ "digest",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1243,6 +1255,21 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
+name = "s3store"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "core-format",
+ "hex",
+ "hmac",
+ "md-5",
+ "protocol",
+ "sha2",
+ "tempfile",
+ "ureq",
+]
 
 [[package]]
 name = "semver"

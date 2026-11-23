@@ -603,3 +603,47 @@ def test_recovery_media_is_personalised_and_enrols_recovery_sessions_only(client
     alerts = client.get("/api/console/alerts", headers=admin).json()
     rows = alerts.get("items", alerts) if isinstance(alerts, dict) else alerts
     assert not any("recovery-abc" in json.dumps(x).lower() and "offline" in json.dumps(x).lower() for x in rows)
+
+
+def test_s3_repositories_with_object_lock(client, admin, tenant):
+    """S3 repositories (Fenrir-Backup phase-4-storage): settings checked, sent with jobs (keys sealed per agent like a
+    share sign-in), maintenance must run more often than the lock, no NAS gateway."""
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    heartbeat(client, h)
+    s3 = {"endpoint": "https://s3.eu-west-2.amazonaws.com", "region": "eu-west-2", "lock_mode": "compliance", "lock_days": 30}
+
+    def body(path, s3v, keys=True):
+        return {"name": "Cloud", "path": path, "repoUuid": str(uuid.uuid4()), "initAgentId": agent_id,
+                "share_auth": "password" if keys else "none", "share_user": "AKID", "s3": s3v,
+                "access": [{"agentId": agent_id, "sealed": SEALED, "sealedShare": SEALED if keys else None}]}
+    for path, s3v, keys, why in [
+        ("s3://backups/office", None, True, "endpoint"),
+        ("s3://Bad_Bucket/x", s3, True, "bucket name"),
+        ("s3://backups/office", s3, False, "access key"),
+        ("s3://backups/office", {**s3, "lock_days": 5}, True, "more often"),
+        ("D:\\Backups", s3, True, "s3://"),
+    ]:
+        r = client.post("/api/console/backup/repositories", headers=admin, json=body(path, s3v, keys))
+        assert r.status_code == 400 and why in r.json()["detail"], (path, r.text)
+    r = client.post("/api/console/backup/repositories", headers=admin, json=body("s3://backups/office", s3))
+    assert r.status_code == 200, r.text
+    repo = r.json()["id"]
+    spec = heartbeat(client, h)["jobs"][0]
+    assert spec["repository"]["path"] == "s3://backups/office"
+    assert spec["repository"]["s3"] == {**s3, "path_style": False}
+    assert spec["repository"]["sealed_share"] == SEALED
+    finish(client, h, spec["id"], repo_uuid=str(uuid.uuid4()))
+    listed = client.get("/api/console/backup/repositories", headers=admin).json()
+    assert next(x for x in listed if x["id"] == repo)["s3"]["lock_days"] == 30
+
+    m = f"/api/console/backup/repositories/{repo}/maintenance"
+    assert client.post(m, headers=admin, json={"pruneEveryDays": 0}).status_code == 400
+    assert client.post(m, headers=admin, json={"pruneEveryDays": 14}).status_code == 200
+    r = client.post(f"/api/console/backup/repositories/{repo}/gateway", headers=admin, json={"agentId": agent_id, "port": 0})
+    assert r.status_code == 400
+    r = client.post(f"/api/console/backup/agents/{agent_id}/check-access", headers=admin,
+                    json={"path": "s3://backups/new", "sealedShare": SEALED, "s3": s3})
+    assert r.status_code == 200, r.text
+    kind = heartbeat(client, h)["jobs"][0]["kind"]
+    assert kind["type"] == "check_access" and kind["s3"]["lock_mode"] == "compliance"
