@@ -36,9 +36,10 @@ interface Plan {
   id: string; name: string; agentId: string; agentName: string; repositoryId: string; job: any; label: string;
   schedule: any; retention: any; enabled: boolean; nextRunAt: string | null; lastRunAt: string | null;
 }
+type ImageApp = { writer: string; component: string; caption?: string; included: boolean; note?: string | null };
 interface Image {
   imageId: string; repositoryId: string; agentId: string | null; hostname: string; created: number; kind: string;
-  consistency: string; capturedBytes: number; storedNewBytes: number; disks: any[]; label: string | null; vmName: string | null;
+  consistency: string; applications?: ImageApp[]; capturedBytes: number; storedNewBytes: number; disks: any[]; label: string | null; vmName: string | null;
   anomaly: string | null; lastBootCheck: { outcome: string; at: string; message: string } | null;
 }
 
@@ -726,7 +727,7 @@ function Images({ agents, repos }: { agents: BackupAgent[]; repos: Repo[] }) {
           { key: "what", label: "Image", render: (i) => <><b>{i.vmName ?? i.hostname}</b> <span className="small muted">{i.kind}{i.label ? ` · ${i.label}` : ""}</span>{i.anomaly && <div className="small" style={{ color: "#fca5a5" }}>⚠ {i.anomaly}</div>}</> },
           { key: "created", label: "Taken", render: (i) => unixTime(i.created) },
           { key: "size", label: "Size", render: (i) => <span className="small">{bytes(i.capturedBytes)} · {bytes(i.storedNewBytes)} new</span> },
-          { key: "consistency", label: "Consistency" },
+          { key: "consistency", label: "Consistency", render: (i) => <><span>{i.consistency}</span><AppsLine apps={i.applications} /></> },
           { key: "boot", label: "Boots?", render: (i) => i.lastBootCheck ? <Pill value={i.lastBootCheck.outcome} tone={i.lastBootCheck.outcome === "failed" ? "bad" : "good"} /> : <span className="small muted">not tested</span> },
           { key: "act", label: "", render: (i) => <div className="row" style={{ gap: 4 }}>
             {can("scripts") && <button className="small primary" onClick={() => setFiles(i)}>Browse files</button>}
@@ -739,6 +740,18 @@ function Images({ agents, repos }: { agents: BackupAgent[]; repos: Repo[] }) {
       {files && <FileBrowser image={files} onClose={() => setFiles(null)} />}
     </div>
   );
+}
+
+/** Applications the snapshot was coordinated with (Windows VSS writers), or how many were not. */
+function AppsLine({ apps }: { apps?: ImageApp[] }) {
+  if (!apps || apps.length === 0) return null;
+  const pretty = (w: string) => w.replace(/^Microsoft /, "").replace(/ VSS Writer$| Writer$/i, "").replace(/^SqlServerWriter$/, "SQL Server");
+  const missing = apps.filter((a) => !a.included);
+  const named = [...new Set(apps.map((a) => pretty(a.writer)))].filter((w) => /SQL|Exchange|Hyper-V|NTDS|Active Directory|DHCP|SharePoint|Oracle|MySQL|DFS/i.test(w));
+  const title = apps.map((a) => `${a.included ? "✓" : "✗"} ${pretty(a.writer)}: ${a.caption || a.component}${a.note ? ` (${a.note})` : ""}`).join("\n");
+  return <div className="small muted" title={title}>{missing.length
+    ? <span style={{ color: "#fcd34d" }}>{missing.length} application component{missing.length === 1 ? "" : "s"} not coordinated</span>
+    : <>apps: {named.length ? named.join(", ") : "Windows system state"}</>}</div>;
 }
 
 function RestoreDialog({ image, agents, repos, onClose }: { image: Image; agents: BackupAgent[]; repos: Repo[]; onClose: () => void }) {

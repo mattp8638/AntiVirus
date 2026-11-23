@@ -163,7 +163,7 @@ def image_out(i: BackupImage, checks: dict[str, BackupBootCheck]) -> dict:
     return {"imageId": i.image_id, "repositoryId": i.repository_id, "agentId": i.agent_id, "machineId": i.machine_id,
             "hostname": i.hostname, "created": i.created_unix, "kind": i.kind, "consistency": i.consistency,
             "capturedBytes": i.captured_bytes, "storedNewBytes": i.stored_new_bytes, "disks": i.disks, "label": i.label,
-            "vmName": i.vm_name, "anomaly": i.anomaly,
+            "vmName": i.vm_name, "anomaly": i.anomaly, "applications": i.applications or [],
             "lastBootCheck": ({"outcome": b.outcome, "at": iso(b.at), "message": b.message} if b else None)}
 
 

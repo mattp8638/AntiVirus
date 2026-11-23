@@ -164,6 +164,10 @@ enum BackupCmd {
         /// Default is COPY, which leaves other backup tools' chains intact.
         #[arg(long)]
         vss_full: bool,
+        /// Windows: image only the --include-disk disks, not the system disk
+        /// (a server's data disks, coordinated with its applications).
+        #[arg(long)]
+        data_disks_only: bool,
         /// Linux: image these whole disks instead of the ones holding the
         /// system's mounts. Repeatable.
         #[arg(long = "disk")]
@@ -373,6 +377,7 @@ fn run(ctx: &Ctx, cmd: Cmd) -> R<Outcome> {
             common,
             include_disk,
             vss_full,
+            data_disks_only,
             disks,
             allow_inconsistent,
         }) => {
@@ -381,18 +386,21 @@ fn run(ctx: &Ctx, cmd: Cmd) -> R<Outcome> {
                     "--disk and --allow-inconsistent are for Linux; on Windows use --include-disk",
                 ));
             }
-            if !cfg!(windows) && (!include_disk.is_empty() || vss_full) {
+            if !cfg!(windows) && (!include_disk.is_empty() || vss_full || data_disks_only) {
                 return Err(CliError::usage(
-                    "--include-disk and --vss-full are for Windows; on Linux use --disk",
+                    "--include-disk, --vss-full and --data-disks-only are for Windows; on Linux use --disk",
                 ));
             }
             backup_system(
                 ctx,
                 common,
-                include_disk,
-                vss_full,
-                disks,
-                allow_inconsistent,
+                SystemFlags {
+                    include_disk,
+                    vss_full,
+                    data_disks_only,
+                    disks,
+                    allow_inconsistent,
+                },
             )
         }
         Cmd::Image(ImageCmd::List) => image_list(ctx),
@@ -806,6 +814,7 @@ fn backup_disk(
         label: common.label.clone(),
         warnings: std::mem::take(&mut warnings),
         vm: None,
+        applications: vec![],
     };
     let sources: Vec<&dyn engine::DiskSource> = opened
         .iter()
@@ -823,15 +832,28 @@ fn backup_disk(
     Ok(report_outcome(r))
 }
 
-#[cfg(windows)]
-fn backup_system(
-    ctx: &Ctx,
-    common: CommonBackup,
+/// What `backup system` was asked for (some of it per platform).
+struct SystemFlags {
+    #[cfg_attr(not(windows), allow(dead_code))]
     include_disk: Vec<u32>,
+    #[cfg_attr(not(windows), allow(dead_code))]
     vss_full: bool,
-    _disks: Vec<PathBuf>,
-    _allow_inconsistent: bool,
-) -> R<Outcome> {
+    #[cfg_attr(not(windows), allow(dead_code))]
+    data_disks_only: bool,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    disks: Vec<PathBuf>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    allow_inconsistent: bool,
+}
+
+#[cfg(windows)]
+fn backup_system(ctx: &Ctx, common: CommonBackup, f: SystemFlags) -> R<Outcome> {
+    let SystemFlags {
+        include_disk,
+        vss_full,
+        data_disks_only,
+        ..
+    } = f;
     let repo = if common.dry_run {
         None
     } else {
@@ -843,6 +865,7 @@ fn backup_system(
     let sb = snapshot_win::prepare_system_backup(&snapshot_win::VssOptions {
         full_backup_type: vss_full,
         extra_disks: include_disk,
+        data_disks_only,
     })
     .map_err(|e| CliError::new(ExitCode::Error, e.to_string()))?;
     if common.dry_run {
@@ -881,15 +904,13 @@ fn backup_system(
 }
 
 #[cfg(target_os = "linux")]
-fn backup_system(
-    ctx: &Ctx,
-    common: CommonBackup,
-    _include_disk: Vec<u32>,
-    _vss_full: bool,
-    disks: Vec<PathBuf>,
-    allow_inconsistent: bool,
-) -> R<Outcome> {
+fn backup_system(ctx: &Ctx, common: CommonBackup, f: SystemFlags) -> R<Outcome> {
     use snapshot_linux::live;
+    let SystemFlags {
+        disks,
+        allow_inconsistent,
+        ..
+    } = f;
     let state = PathBuf::from("/var/lib/fenrir-backup");
     let _ = std::fs::create_dir_all(&state);
     for l in live::remove_leftover_snapshots(&state) {
@@ -946,6 +967,7 @@ fn backup_system(
         label: common.label.clone(),
         warnings: lb.warnings.clone(),
         vm: None,
+        applications: vec![],
     };
     let pr = progress_printer(ctx.json);
     let result = engine::backup(
@@ -965,14 +987,7 @@ fn backup_system(
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]
-fn backup_system(
-    _ctx: &Ctx,
-    _c: CommonBackup,
-    _d: Vec<u32>,
-    _f: bool,
-    _l: Vec<PathBuf>,
-    _a: bool,
-) -> R<Outcome> {
+fn backup_system(_ctx: &Ctx, _c: CommonBackup, _f: SystemFlags) -> R<Outcome> {
     Err(CliError::usage(
         "`backup system` runs on Windows (VSS) and Linux (LVM snapshots). Here, image unmounted disks with `backup disk`.",
     ))
@@ -1445,6 +1460,7 @@ fn live_source(
     release: &mut Vec<Release>,
 ) -> R<Box<dyn engine::DiskSource>> {
     let mut sb = snapshot_win::prepare_system_backup(&snapshot_win::VssOptions {
+        data_disks_only: false,
         full_backup_type: false,
         extra_disks: vec![],
     })

@@ -131,6 +131,17 @@ pub fn report_of(m: &ManifestBody) -> ImageReport {
         chunks_total: m.stats.chunks_total,
         chunks_new: m.stats.chunks_new,
         bytes_new_raw: m.stats.bytes_new_raw,
+        applications: m
+            .applications
+            .iter()
+            .map(|a| protocol::ImageApplication {
+                writer: a.writer.clone(),
+                component: a.component.clone(),
+                caption: a.caption.clone(),
+                included: a.included,
+                note: a.note.clone(),
+            })
+            .collect(),
     }
 }
 
@@ -330,6 +341,7 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
                 label: settings.label.clone(),
                 warnings: opened.iter().flat_map(|o| o.warnings.clone()).collect(),
                 vm: None,
+                applications: vec![],
             };
             let cb = progress_cb(rep, String::new());
             let r = engine::backup(&repo, &sources, meta, &options(settings), &ctx.ctl, &cb)?;
@@ -537,6 +549,7 @@ fn backup_system(
 ) -> anyhow::Result<JobUpdate> {
     rep.progress("snapshot", 0, 1, "creating VSS snapshot set");
     let sb = snapshot_win::prepare_system_backup(&snapshot_win::VssOptions {
+        data_disks_only: false,
         full_backup_type: s.vss_full,
         extra_disks: vec![],
     })
@@ -595,6 +608,7 @@ fn backup_system(
         label: s.label.clone(),
         warnings: lb.warnings.clone(),
         vm: None,
+        applications: vec![],
     };
     let cb = progress_cb(rep, String::new());
     let result = engine::backup(repo, &lb.sources(), meta, &options(s), &ctx.ctl, &cb);
@@ -750,6 +764,7 @@ fn backup_one_vm(
             label: s.label.clone(),
             warnings: cp.warning.iter().cloned().collect(),
             vm: Some(cp.vm.clone()),
+            applications: vec![],
         };
         let cb = progress_cb(rep, prefix.to_string());
         Ok(engine::backup(

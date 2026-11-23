@@ -611,6 +611,21 @@ pub struct ImageReport {
     pub chunks_new: u64,
     #[serde(default)]
     pub bytes_new_raw: u64,
+    /// Application components coordinated with the snapshot (VSS writers).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub applications: Vec<ImageApplication>,
+}
+
+/// An application component in an image (see core-format `ApplicationInfo`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageApplication {
+    pub writer: String,
+    pub component: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub caption: String,
+    pub included: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

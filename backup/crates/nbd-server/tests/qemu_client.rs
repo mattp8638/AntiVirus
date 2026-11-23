@@ -58,6 +58,7 @@ fn setup(dir: &std::path::Path) -> (Repository, core_format::ManifestBody, Vec<u
         label: None,
         warnings: vec![],
         vm: None,
+        applications: vec![],
     };
     let r = engine::backup(
         &repo,

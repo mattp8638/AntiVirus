@@ -120,7 +120,15 @@ def test_disk_restore_needs_typed_confirmation_and_reauth(client, admin, tenant)
                     "/api/console/backup/repositories", headers=admin).json()[0]["id"]})
     job = heartbeat(client, h)["jobs"][0]
     im = image()
+    # Application-aware (VSS component mode): the agent lists the writers' components; unknown fields are dropped.
+    im["applications"] = [{"writer": "SqlServerWriter", "component": "SQL01\\sales", "caption": "sales",
+                           "included": True, "evil": "x" * 10_000},
+                          {"writer": "Exchange", "component": "Mailbox", "included": False, "note": "on D:"}]
     finish(client, h, job["id"], images=[im])
+    listed = client.get("/api/console/backup/images", headers=admin).json()
+    apps = next(i for i in listed if i["imageId"] == im["image_id"])["applications"]
+    assert [a["writer"] for a in apps] == ["SqlServerWriter", "Exchange"] and "evil" not in apps[0]
+    assert apps[0]["included"] is True and apps[1]["note"] == "on D:"
     heartbeat(client, h, disks=disks)
     target = {"type": "disk", "device": r"\\.\PhysicalDrive1", "disk": 0, "confirm": r"\\.\PhysicalDrive1"}
     body = {"imageId": im["image_id"], "agentId": agent_id, "target": target}

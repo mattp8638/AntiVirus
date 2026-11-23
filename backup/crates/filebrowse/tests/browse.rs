@@ -85,6 +85,7 @@ fn backed_up(dir: &std::path::Path) -> (Repository, core_format::ManifestBody) {
         label: None,
         warnings: vec![],
         vm: None,
+        applications: vec![],
     };
     let r = engine::backup(
         &repo,

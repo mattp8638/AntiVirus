@@ -7,6 +7,7 @@
 //! composition logic is portable and unit-tested on every platform.
 
 pub use engine::composite;
+pub mod apps;
 pub mod parse;
 
 #[cfg(windows)]

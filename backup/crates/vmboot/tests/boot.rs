@@ -44,6 +44,7 @@ fn backup(dir: &std::path::Path, disk: Vec<u8>) -> (Repository, core_format::Man
         label: None,
         warnings: vec![],
         vm: None,
+        applications: vec![],
     };
     let r = engine::backup(
         &repo,

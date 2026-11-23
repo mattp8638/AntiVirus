@@ -3093,6 +3093,8 @@ class BackupImage(Base):
     chunks_new: Mapped[int] = mapped_column(BigInteger, default=0)
     bytes_new_raw: Mapped[int] = mapped_column(BigInteger, default=0)
     anomaly: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Application components coordinated with the snapshot (Windows VSS writers), as the agent reports them.
+    applications: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
 class BackupBootCheck(Base):

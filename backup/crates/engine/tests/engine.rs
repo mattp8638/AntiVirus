@@ -121,6 +121,7 @@ fn meta() -> ImageMeta {
         label: None,
         warnings: vec![],
         vm: None,
+        applications: vec![],
     }
 }
 

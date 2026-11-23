@@ -210,6 +210,19 @@ def _record_boot_check(db: Session, job: BackupJob, agent: BackupAgent, b: dict)
 IMAGE_INT_FIELDS = ("captured_bytes", "stored_new_bytes", "chunks_total", "chunks_new", "bytes_new_raw")
 
 
+def _applications(v) -> list | None:
+    """The image's application components (VSS writers), rebuilt from known fields only, bounded."""
+    if not isinstance(v, list) or not v:
+        return None
+    out = []
+    for a in v[:500]:
+        if isinstance(a, dict):
+            out.append({"writer": _str(a.get("writer"), 200), "component": _str(a.get("component"), 500),
+                        "caption": _str(a.get("caption"), 300), "included": bool(a.get("included")),
+                        "note": _str(a.get("note"), 500) or None})
+    return out or None
+
+
 @router.post("/api/agent/jobs/{job_id}/update")
 def update_job(job_id: str, body: dict = Body(...), agent: BackupAgent = Depends(current_backup_agent),
                db: Session = Depends(get_db)):
@@ -250,6 +263,7 @@ def update_job(job_id: str, body: dict = Body(...), agent: BackupAgent = Depends
                               hostname=_str(im.get("hostname"), 255), created_unix=int(im.get("created_unix") or 0),
                               kind=_str(im.get("kind"), 20), consistency=_str(im.get("consistency"), 30),
                               disks=im.get("disks") or [], label=im.get("label"), vm_name=im.get("vm_name"),
+                              applications=_applications(im.get("applications")),
                               **{f: int(im.get(f) or 0) for f in IMAGE_INT_FIELDS})
             db.add(row)
             db.flush()

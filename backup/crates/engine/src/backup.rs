@@ -33,6 +33,8 @@ pub struct ImageMeta {
     pub warnings: Vec<String>,
     /// Set when imaging a VM from its host.
     pub vm: Option<core_format::manifest::VmInfo>,
+    /// Application components coordinated with the snapshot (VSS writers).
+    pub applications: Vec<core_format::manifest::ApplicationInfo>,
 }
 
 #[derive(Debug, Clone)]
@@ -198,6 +200,7 @@ pub fn backup(
         warnings: warnings.clone(),
         stats: stats.clone(),
         vm: meta.vm,
+        applications: meta.applications,
     };
     if ctl.is_cancelled() {
         return Err(EngineError::Cancelled);
