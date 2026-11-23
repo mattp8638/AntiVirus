@@ -52,7 +52,7 @@ RUN --mount=type=secret,id=release_key \
 # cross-compiled with MinGW. macOS builds come from CI (.github/workflows/backup.yml) into the same folder layout.
 # Both stages run at the same time: the crate download cache is shared but locked (one stage at a time, or they
 # unpack the same crate together and fail with "File exists"), and each has its own build cache.
-FROM rust:1.97-alpine AS backup-linux
+FROM rust:1.100-alpine AS backup-linux
 RUN apk add --no-cache musl-dev gcc
 WORKDIR /src
 COPY backup/ ./
