@@ -200,18 +200,21 @@ pub fn while_locked<T>(mut f: impl FnMut() -> std::io::Result<T>) -> std::io::Re
 pub const BACKUP_NAME: &str = "SYSTEM.fenrir-before-hardware";
 
 /// Prepare the Windows installation mounted at `root` for this hardware.
+/// `dirty` is [`hive_is_dirty`], checked by the caller before it opened the
+/// hive (reg.exe holds a loaded hive exclusively, so it cannot be read then).
 pub fn adapt(
     root: &Path,
     volume: &str,
     hive: &dyn Hive,
     hive_path: &Path,
     drivers_dir: &Path,
+    dirty: bool,
 ) -> anyhow::Result<WindowsFix> {
     let mut fix = WindowsFix {
         volume: volume.to_string(),
         ..Default::default()
     };
-    if hive_is_dirty(hive_path)? {
+    if dirty {
         fix.notes.push("The registry of the restored Windows has unsaved changes in its logs; its storage drivers were not changed.".into());
         return Ok(fix);
     }
@@ -359,14 +362,18 @@ pub fn adapt_restored_disk(device: &str) -> anyhow::Result<Option<WindowsFix>> {
             continue;
         }
         let r = match find_windows(&mnt) {
-            Some((hive, drivers)) => adapt(
-                &mnt,
-                &node,
-                &HivexHive { path: hive.clone() },
-                &hive,
-                &drivers,
-            )
-            .map(Some),
+            Some((hive, drivers)) => hive_is_dirty(&hive)
+                .and_then(|dirty| {
+                    adapt(
+                        &mnt,
+                        &node,
+                        &HivexHive { path: hive.clone() },
+                        &hive,
+                        &drivers,
+                        dirty,
+                    )
+                })
+                .map(Some),
             None => Ok(None),
         };
         let _ = Command::new("sync").status();
@@ -582,7 +589,7 @@ pub fn adapt_restored_disk(device: &str) -> anyhow::Result<Option<WindowsFix>> {
             continue;
         };
         let mut fix = if hive_is_dirty(&hive_path)? {
-            adapt(&root.root, &vol, &NoHive, &hive_path, &drivers)?
+            adapt(&root.root, &vol, &NoHive, &hive_path, &drivers, true)?
         } else {
             // reg.exe holds a loaded hive open exclusively: keep the copy of
             // the original first (adapt finds it there), and drop it again if
@@ -597,7 +604,7 @@ pub fn adapt_restored_disk(device: &str) -> anyhow::Result<Option<WindowsFix>> {
             let fix = {
                 let h = RegHive::load(&hive_path)
                     .with_context(|| format!("loading {}", hive_path.display()))?;
-                adapt(&root.root, &vol, &h, &hive_path, &drivers)?
+                adapt(&root.root, &vol, &h, &hive_path, &drivers, false)?
             };
             if made && fix.boot_start.is_empty() && fix.overrides_removed.is_empty() {
                 let _ = std::fs::remove_file(&backup);
@@ -892,7 +899,15 @@ mod tests {
         let (found, drivers) = find_windows(t.path()).unwrap();
         assert_eq!(found, hive);
         let h = HivexHive { path: hive.clone() };
-        let fix = adapt(t.path(), "/dev/sda3", &h, &hive, &drivers).unwrap();
+        let fix = adapt(
+            t.path(),
+            "/dev/sda3",
+            &h,
+            &hive,
+            &drivers,
+            hive_is_dirty(&hive).unwrap(),
+        )
+        .unwrap();
         assert_eq!(fix.control_set, "ControlSet001");
         // iaStorV has no driver file; storvsc already starts at boot.
         assert_eq!(fix.boot_start, vec!["storahci", "stornvme"]);
@@ -918,7 +933,15 @@ mod tests {
             .with_file_name("SYSTEM.fenrir-before-hardware")
             .is_file());
         // Running again changes nothing.
-        let again = adapt(t.path(), "/dev/sda3", &h, &hive, &drivers).unwrap();
+        let again = adapt(
+            t.path(),
+            "/dev/sda3",
+            &h,
+            &hive,
+            &drivers,
+            hive_is_dirty(&hive).unwrap(),
+        )
+        .unwrap();
         assert!(again.boot_start.is_empty() && again.overrides_removed.is_empty());
     }
 
@@ -929,7 +952,15 @@ mod tests {
         let (_, drivers) = find_windows(t.path()).unwrap();
         let before = std::fs::read(&hive).unwrap();
         let h = HivexHive { path: hive.clone() };
-        let fix = adapt(t.path(), "x", &h, &hive, &drivers).unwrap();
+        let fix = adapt(
+            t.path(),
+            "x",
+            &h,
+            &hive,
+            &drivers,
+            hive_is_dirty(&hive).unwrap(),
+        )
+        .unwrap();
         assert!(fix.boot_start.is_empty() && fix.notes[0].contains("unsaved"));
         assert_eq!(std::fs::read(&hive).unwrap(), before);
     }
