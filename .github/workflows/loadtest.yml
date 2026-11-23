@@ -34,7 +34,7 @@ jobs:
       EPM: ${{ inputs.events_per_minute || '30' }}
       COMPOSE_BAKE: "false"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: One-run secrets and a throwaway release key
         run: |
           set -euo pipefail
@@ -75,7 +75,7 @@ jobs:
             tail -36 /tmp/stats.log 2>/dev/null; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.lab.yml --env-file deploy/.env logs --tail 80 cloud worker > /tmp/load-logs.txt 2>&1 || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: load-test

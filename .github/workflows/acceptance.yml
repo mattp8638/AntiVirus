@@ -28,11 +28,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.24"
           cache-dependency-path: agent/linux/go.sum
@@ -63,7 +63,7 @@ jobs:
         run: |
           cat acceptance-linux/report.md >> "$GITHUB_STEP_SUMMARY" || echo "No report was written." >> "$GITHUB_STEP_SUMMARY"
           cp "$RUNNER_TEMP/server.log" "$RUNNER_TEMP/agent.log" acceptance-linux/ 2>/dev/null || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: acceptance-linux
@@ -74,8 +74,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
       - name: Build the agent (MSVC)
@@ -135,7 +135,7 @@ jobs:
               Format-List TimeCreated, Id, LevelDisplayName, Message | Out-File acceptance-windows/agent-events.txt
           } catch { "No FenrirAgent events: $_" | Out-File acceptance-windows/agent-events.txt }
           exit 0
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: acceptance-windows

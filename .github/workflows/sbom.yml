@@ -26,7 +26,7 @@ jobs:
     permissions:
       contents: write   # attach SBOMs to a release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: SPDX SBOM of the whole source tree
         uses: anchore/sbom-action@v0
         with:
@@ -44,14 +44,14 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
       - name: Scan the dependencies for known vulnerabilities
-        uses: anchore/scan-action@v6
+        uses: anchore/scan-action@v7
         id: scan
         with:
           sbom: fenrir-source.spdx.json
           fail-build: false
           severity-cutoff: high
           output-format: table
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sbom
           path: fenrir-source.*.json

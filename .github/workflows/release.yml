@@ -15,7 +15,7 @@ jobs:
     name: Test the tagged commit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { fetch-depth: 0 }
       - name: The tag must be on main
         run: |
@@ -24,9 +24,9 @@ jobs:
             echo "::error::$GITHUB_REF_NAME points at a commit that is not on main. Merge first, then tag main."
             exit 1
           fi
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with: { python-version: "3.13" }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with: { node-version: "22" }
       - run: pip install -r cloud/requirements-dev.txt
       - name: Server tests
@@ -46,14 +46,14 @@ jobs:
       id-token: write      # signs the provenance with GitHub's OIDC identity (Sigstore)
       attestations: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # A source archive with SHA-256 and a signed provenance statement, so anyone can check a download came from
       # this repository's release workflow at this tag:  gh attestation verify fenrir-<tag>.tar.gz -R <owner>/<repo>
       - name: Source archive and checksum
         run: |
           git archive --format=tar.gz --prefix="fenrir-$GITHUB_REF_NAME/" -o "fenrir-$GITHUB_REF_NAME.tar.gz" "$GITHUB_SHA"
           sha256sum "fenrir-$GITHUB_REF_NAME.tar.gz" > "fenrir-$GITHUB_REF_NAME.tar.gz.sha256"
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-path: fenrir-${{ github.ref_name }}.tar.gz
       - name: Create the GitHub release with notes
