@@ -67,7 +67,7 @@ RUN --mount=type=cache,id=fenrir-cargo-registry,target=/usr/local/cargo/registry
  && mkdir -p /out/backup/$triple \
  && cp target/release/fenrir-backup-agent /out/backup/$triple/
 
-FROM ubuntu:24.04 AS backup-windows
+FROM ubuntu:26.04 AS backup-windows
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates gcc gcc-mingw-w64-x86-64 libc6-dev \
  && rm -rf /var/lib/apt/lists/*
@@ -83,7 +83,7 @@ RUN --mount=type=cache,id=fenrir-cargo-registry,target=/usr/local/cargo/registry
  && mkdir -p /out/backup/x86_64-pc-windows-msvc \
  && cp target/x86_64-pc-windows-gnu/release/fenrir-backup-agent.exe /out/backup/x86_64-pc-windows-msvc/
 
-FROM ubuntu:24.04 AS windows-agents
+FROM ubuntu:26.04 AS windows-agents
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake ninja-build g++-mingw-w64-x86-64-posix python3 osslsigncode openssl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
