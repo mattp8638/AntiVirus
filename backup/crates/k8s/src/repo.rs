@@ -141,7 +141,7 @@ pub fn backup(
         meta,
         &engine::BackupOptions {
             workers: 2,
-            rate_limit: 0,
+            ..Default::default()
         },
         ctl,
         &|_| {},

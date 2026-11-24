@@ -1021,3 +1021,46 @@ fn spot_checks_catch_a_write_the_tracker_missed() {
         "no image written"
     );
 }
+
+#[test]
+fn retention_never_deletes_images_on_legal_hold() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = new_repo(dir.path());
+    let disk = make_disk();
+    let mut ids = vec![];
+    for round in 0..4u8 {
+        disk.data.write().unwrap()[(7 * MIB) as usize..(7 * MIB) as usize + 4096].fill(round + 1);
+        ids.push(run_backup(&repo, &disk).unwrap().image_id);
+    }
+    let keep_last = engine::retention::RetentionPolicy {
+        keep_last: 1,
+        ..Default::default()
+    };
+    let r = engine::retention::forget_with_holds(&repo, &[], &keep_last, &[ids[1]], false).unwrap();
+    let mut removed = r.removed.clone();
+    removed.sort();
+    let mut expected = vec![ids[0], ids[2]];
+    expected.sort();
+    assert_eq!(
+        removed, expected,
+        "everything but the newest and the held one goes"
+    );
+    let held = r.decisions.iter().find(|d| d.image_id == ids[1]).unwrap();
+    assert!(held.keep && held.reasons == vec!["legal hold"]);
+    let left = repo.list_image_ids().unwrap();
+    assert!(left.contains(&ids[1]) && left.contains(&ids[3]) && left.len() == 2);
+    // Prune keeps what the held image needs: it still restores.
+    engine::retention::prune(&repo, false, &JobControl::new()).unwrap();
+    restore_to(&repo, ids[1], &dir.path().join("held.img"));
+    assert!(
+        engine::verify(
+            &repo,
+            Some(&[ids[1]]),
+            VerifyLevel::Full,
+            &JobControl::new(),
+            2
+        )
+        .unwrap()
+        .ok
+    );
+}

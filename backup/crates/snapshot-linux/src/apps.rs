@@ -217,6 +217,7 @@ fn app(writer: &str, component: &str, included: bool, note: String) -> Applicati
         caption: String::new(),
         included,
         note: Some(note),
+        files: vec![],
     }
 }
 

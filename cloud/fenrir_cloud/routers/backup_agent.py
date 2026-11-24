@@ -266,7 +266,8 @@ def _applications(v) -> list | None:
         if isinstance(a, dict):
             out.append({"writer": _str(a.get("writer"), 200), "component": _str(a.get("component"), 500),
                         "caption": _str(a.get("caption"), 300), "included": bool(a.get("included")),
-                        "note": _str(a.get("note"), 500) or None})
+                        "note": _str(a.get("note"), 500) or None,
+                        "fileSets": a["file_sets"] if isinstance(a.get("file_sets"), int) and 0 <= a["file_sets"] < 10_000 else 0})
     return out or None
 
 
@@ -374,6 +375,8 @@ def update_job(job_id: str, body: dict = Body(...), agent: BackupAgent = Depends
                 bk.raise_alert(db, job.tenant_id, agent.device_id, bk.RULE_BOOT,
                                f"Backup of {name} did not boot", "high",
                                f"A boot check of image {kind.get('image_id')} failed: {_str(b.get('message'), 500)}")
+        if kind.get("type") == "scan_image" and final:
+            bk.record_scan(db, job, agent, state, body.get("result") if isinstance(body.get("result"), dict) else None)
         if kind.get("type") == "list_images" and final and repo.status == "pending" and not repo.repo_uuid:
             # Adopting an existing repository: the machine reports its ID with the listing.
             got = str(body.get("repo_uuid") or "")
@@ -395,9 +398,25 @@ def update_job(job_id: str, body: dict = Body(...), agent: BackupAgent = Depends
                 repo.status_message = None if ok else "agent reported a different repository ID"
             else:
                 repo.status, repo.status_message = "failed", job.error
+    # Each new backup's file catalogue is built on the machine that took it, for searching across backups.
+    if bk.is_backup(kind) and state in ("succeeded", "warning") and repo is not None \
+            and "search_files" in bk.capabilities(agent):
+        for im in images:
+            if db.get(BackupImage, str(im.get("image_id"))) is not None:
+                bk.queue(db, agent, {"type": "index_image", "image_id": str(im.get("image_id"))}, repo.id,
+                         f"backup-agent:{agent.id}", job.plan_id)
+    # A plan can scan each new backup for malware on the machine that took it.
+    settings = kind.get("settings") if isinstance(kind.get("settings"), dict) else {}
+    if bk.is_backup(kind) and state in ("succeeded", "warning") and settings.get("scan_after_backup") \
+            and repo is not None and "scan_images" in bk.capabilities(agent):
+        for im in images:
+            row = db.get(BackupImage, str(im.get("image_id")))
+            if row is not None:
+                bk.queue_scan(db, agent, row, f"backup-agent:{agent.id}", plan_id=job.plan_id)
     # Retention runs after each successful plan backup (held repositories wait).
     if bk.is_backup(kind) and state in ("succeeded", "warning") and job.plan_id and repo is not None:
         bk.queue_copy(db, job.plan_id, repo.id, agent, images)
+        bk.queue_standby(db, job.plan_id, repo.id, images)
         bk.queue_retention(db, job.plan_id, repo.id, agent, images)
     if state == "failed" and kind.get("type") not in ("check_access", "list_images", "browse_files"):
         bk.raise_alert(db, job.tenant_id, agent.device_id, bk.RULE_FAILED, f"{bk.label(kind)} failed: {name}",

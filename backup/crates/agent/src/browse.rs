@@ -99,8 +99,30 @@ fn open(
     image: Uuid,
     v: VolumeRef,
 ) -> anyhow::Result<Box<dyn filebrowse::Volumefs>> {
+    let m = manifest(ctx, access, image)?;
+    if m.os.family == filebackup::FAMILY {
+        // A folder backup: its index is the volume.
+        let g = SESSION.lock().unwrap();
+        let s = g.as_ref().ok_or_else(|| anyhow!("image closed"))?;
+        return Ok(Box::new(filebackup::IndexVolume::open(&s.repo, &m)?));
+    }
     let (m, d) = disk(ctx, access, image, v.disk)?;
     Ok(filebrowse::open(&m, d, v.disk, v.partition)?)
+}
+
+/// The one "volume" of a folder backup: everything it holds, from the root
+/// (`/C:/Users/...`, `/home/...`, `//server/share/...`).
+pub fn folder_volume(m: &ManifestBody) -> filebrowse::Volume {
+    filebrowse::Volume {
+        disk: 1,
+        partition: 1,
+        filesystem: core_format::fsdetect::FsType::Unknown,
+        size: m.disks.get(1).map(|d| d.size).unwrap_or(0),
+        mount_points: vec!["Files and folders".into()],
+        name: "Files and folders".into(),
+        browsable: true,
+        note: None,
+    }
 }
 
 pub fn browse(
@@ -113,7 +135,12 @@ pub fn browse(
     let result = match volume {
         None => {
             let m = manifest(ctx, access, image)?;
-            serde_json::json!({ "volumes": filebrowse::volumes(&m) })
+            let volumes = if m.os.family == filebackup::FAMILY {
+                vec![folder_volume(&m)]
+            } else {
+                filebrowse::volumes(&m)
+            };
+            serde_json::json!({ "volumes": volumes })
         }
         Some(v) => {
             let mut fs = open(ctx, access, image, v)?;
@@ -138,6 +165,9 @@ pub fn restore_files(
     conflict: &str,
     rep: &Reporter,
 ) -> anyhow::Result<JobUpdate> {
+    if target.trim() == ORIGINAL {
+        return restore_to_original(ctx, access, image, volume, paths, conflict, rep);
+    }
     let target = PathBuf::from(target.trim());
     if !target.is_absolute() {
         bail!("the restore folder must be a full path on this machine, e.g. C:\\Restored or /srv/restored");
@@ -199,6 +229,88 @@ pub fn restore_files(
     }
     u.result = Some(serde_json::to_value(&report)?);
     Ok(u)
+}
+
+/// Target meaning "where each item was" (folder backups only).
+pub const ORIGINAL: &str = "@original";
+
+/// The folder a folder-backup item came from, as a path on this machine:
+/// `/C:/Users/anna/x` -> `C:\Users\anna`, `/home/anna/x` -> `/home/anna`,
+/// `/UNC/nas/share/dir/x` -> `\\nas\share\dir`.
+pub fn original_parent(p: &str, windows: bool) -> anyhow::Result<PathBuf> {
+    let parts = filebrowse::components(p)?;
+    let unc = parts.first().is_some_and(|f| f == "UNC");
+    if parts.len() < 2 || (unc && parts.len() < 4) {
+        bail!("{p}: choose a file or folder inside a backed-up folder");
+    }
+    let up = &parts[..parts.len() - 1];
+    Ok(PathBuf::from(if unc {
+        format!("\\\\{}", up[1..].join("\\"))
+    } else if windows {
+        let mut s = up.join("\\");
+        if up.len() == 1 {
+            s.push('\\'); // C: -> C:\
+        }
+        s
+    } else {
+        format!("/{}", up.join("/"))
+    }))
+}
+
+/// Folder backups: put each chosen item back in the folder it came from.
+fn restore_to_original(
+    ctx: &Ctx,
+    access: &RepoAccess,
+    image: Uuid,
+    volume: VolumeRef,
+    paths: &[String],
+    conflict: &str,
+    rep: &Reporter,
+) -> anyhow::Result<JobUpdate> {
+    let m = manifest(ctx, access, image)?;
+    if m.os.family != filebackup::FAMILY {
+        bail!("restoring to the original place is for folder backups; choose a folder");
+    }
+    let mut total = filebrowse::RestoreReport::default();
+    let mut last = finished(JobState::Succeeded);
+    for p in paths {
+        let parent = original_parent(p, cfg!(windows))?;
+        std::fs::create_dir_all(&parent)?;
+        last = restore_files(
+            ctx,
+            access,
+            image,
+            volume,
+            std::slice::from_ref(p),
+            &parent.to_string_lossy(),
+            false,
+            conflict,
+            rep,
+        )?;
+        if let Some(r) = last
+            .result
+            .as_ref()
+            .and_then(|v| serde_json::from_value::<filebrowse::RestoreReport>(v.clone()).ok())
+        {
+            total.files += r.files;
+            total.folders += r.folders;
+            total.bytes += r.bytes;
+            total.skipped += r.skipped;
+            total.failed_total += r.failed_total;
+            total.failed.extend(r.failed);
+        }
+    }
+    let state = match (total.files, total.failed_total) {
+        (_, 0) => JobState::Succeeded,
+        (0, _) => JobState::Failed,
+        _ => JobState::Warning,
+    };
+    last.state = state;
+    if state == JobState::Failed && last.error.is_none() {
+        last.error = Some("nothing was restored".into());
+    }
+    last.result = Some(serde_json::to_value(&total)?);
+    Ok(last)
 }
 
 /// Restore `paths` into a private temporary folder, then send them to the
@@ -265,4 +377,36 @@ pub fn download_files(
     let restored = u.result.take().unwrap_or_default();
     u.result = Some(serde_json::json!({ "download": header, "restored": restored }));
     Ok(u)
+}
+
+#[cfg(test)]
+mod original_tests {
+    use super::original_parent;
+    use std::path::PathBuf;
+
+    #[test]
+    fn items_go_back_to_their_folder() {
+        assert_eq!(
+            original_parent("/C:/Users/anna/report.docx", true).unwrap(),
+            PathBuf::from("C:\\Users\\anna")
+        );
+        assert_eq!(
+            original_parent("/C:/notes.txt", true).unwrap(),
+            PathBuf::from("C:\\")
+        );
+        assert_eq!(
+            original_parent("/home/anna/report.docx", false).unwrap(),
+            PathBuf::from("/home/anna")
+        );
+        assert_eq!(
+            original_parent("/UNC/nas/share/dir/x.pdf", true).unwrap(),
+            PathBuf::from("\\\\nas\\share\\dir")
+        );
+        assert_eq!(
+            original_parent("/UNC/nas/share/x.pdf", false).unwrap(),
+            PathBuf::from("\\\\nas\\share")
+        );
+        assert!(original_parent("/C:", true).is_err());
+        assert!(original_parent("/UNC/nas/share", true).is_err());
+    }
 }

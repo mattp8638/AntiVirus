@@ -160,6 +160,7 @@ pub fn report_of(m: &ManifestBody) -> ImageReport {
                 caption: a.caption.clone(),
                 included: a.included,
                 note: a.note.clone(),
+                file_sets: a.files.len() as u32,
             })
             .collect(),
     }
@@ -537,6 +538,50 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             let repo = open_repo(ctx, access)?;
             backup_system(ctx, &repo, &access.path, settings, rep)
         }
+        JobKind::RestoreApplication {
+            image_id,
+            component,
+            directory,
+            attach_as,
+            sql_instance,
+        } => {
+            let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            let req = crate::apprestore::AppRestoreRequest {
+                image_id: *image_id,
+                component,
+                directory,
+                attach_as: attach_as.as_deref(),
+                sql_instance,
+            };
+            crate::apprestore::run(ctx, &repo, &req, rep)
+        }
+        JobKind::IndexImage { image_id } => {
+            let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            crate::search::index(ctx, &repo, *image_id, rep)
+        }
+        JobKind::SearchFiles {
+            query,
+            images,
+            limit,
+            budget_secs,
+        } => {
+            let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            let budget = std::time::Duration::from_secs(if *budget_secs == 0 {
+                120
+            } else {
+                (*budget_secs).min(1800)
+            } as u64);
+            let limit = if *limit == 0 { 500 } else { *limit };
+            crate::search::search(ctx, &repo, query, images, limit, budget, rep)
+        }
+        JobKind::BackupFiles {
+            paths,
+            excludes,
+            settings,
+        } => {
+            let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            crate::folders::run(ctx, &repo, paths, excludes, settings, rep)
+        }
         JobKind::BackupDisks { paths, settings } => {
             let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
             let mut opened = Vec::new();
@@ -653,6 +698,7 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             machine_ids,
             retention,
             dry_run,
+            held,
         } => {
             let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
             rep.progress("retention", 0, 1, "reading images");
@@ -664,12 +710,14 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
                 keep_monthly: retention.keep_monthly,
                 keep_yearly: retention.keep_yearly,
             };
-            let r = engine::retention::forget(&repo, machine_ids, &p, *dry_run)?;
+            let r = engine::retention::forget_with_holds(&repo, machine_ids, &p, held, *dry_run)?;
             let mut u = done(JobState::Succeeded);
             if !dry_run {
                 u.removed_images = r.removed.clone();
             }
-            u.result = Some(json!({ "kept": r.kept, "removed": r.removed, "dry_run": r.dry_run }));
+            u.result = Some(
+                json!({ "kept": r.kept, "removed": r.removed, "dry_run": r.dry_run, "held": held.len() }),
+            );
             Ok(u)
         }
         JobKind::BackupKubernetes {
@@ -826,6 +874,23 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             crate::boot::run(ctx, &repo, &req, rep)
         }
         JobKind::StopVm { session_id } => crate::boot::stop_vm(*session_id),
+        JobKind::ScanImage {
+            image_id,
+            indicators,
+            rules,
+            selection,
+            max_file_mib,
+        } => {
+            let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            let req = crate::malware::ScanRequest {
+                image_id: *image_id,
+                indicators,
+                rules,
+                selection,
+                max_file_mib: *max_file_mib,
+            };
+            crate::malware::run(ctx, &repo, &req, rep)
+        }
         JobKind::BrowseFiles {
             image_id,
             volume,

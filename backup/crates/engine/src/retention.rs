@@ -260,6 +260,19 @@ pub fn forget(
     p: &RetentionPolicy,
     dry_run: bool,
 ) -> Result<ForgetReport> {
+    forget_with_holds(repo, machine_ids, p, &[], dry_run)
+}
+
+/// [`forget`], never deleting the images in `held` (legal holds): they are
+/// kept whatever the policy says, with the reason "legal hold". CDP
+/// journals that follow a held base are kept with it.
+pub fn forget_with_holds(
+    repo: &Repository,
+    machine_ids: &[String],
+    p: &RetentionPolicy,
+    held: &[Uuid],
+    dry_run: bool,
+) -> Result<ForgetReport> {
     let _lock = repo.lock(LockKind::Shared)?;
     let (all, _unreadable) = repo.load_all_manifests()?;
     let chosen: Vec<&ManifestBody> = all
@@ -278,6 +291,14 @@ pub fn forget(
         })
         .collect();
     let mut decisions = select(&cands, p);
+    for d in decisions.iter_mut().filter(|d| held.contains(&d.image_id)) {
+        if !d.keep {
+            d.keep = true;
+            d.reasons = vec!["legal hold"];
+        } else {
+            d.reasons.push("legal hold");
+        }
+    }
     let cdp: Vec<CdpImage> = chosen.iter().filter_map(|m| CdpImage::of(m)).collect();
     decisions.extend(cdp_journals(&cdp, &decisions));
     let mut removed = Vec::new();

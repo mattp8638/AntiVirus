@@ -3049,6 +3049,9 @@ class ImageBackupPlan(Base):
     retention: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Off-site copy: after each backup the machine copies the new images to this repository too.
     copy_to_repository_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # Standby VM: after each backup, this machine restores the new image as a VM (replacing the previous standby):
+    # {"agent_id", "type": "hyperv_vm" | "vm_files", "format", "name", "directory"}.
+    standby: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -3099,6 +3102,8 @@ class BackupImage(Base):
     anomaly: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Application components coordinated with the snapshot (Windows VSS writers), as the agent reports them.
     applications: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Legal hold: never deleted by retention until released (who, when, why).
+    legal_hold: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class DrRunbook(Base):
@@ -3135,6 +3140,24 @@ class DrRun(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     started_by: Mapped[str] = mapped_column(String(200), default="")
+
+
+class BackupScan(Base):
+    """A malware scan of the files inside a backup image (agent malware.rs). Findings list paths and what matched;
+    file contents never reach the server."""
+    __tablename__ = "backup_scans"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    image_id: Mapped[str] = mapped_column(String(36), index=True)
+    repository_id: Mapped[str] = mapped_column(String(36), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    agent_id: Mapped[str] = mapped_column(String(36))
+    job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    state: Mapped[str] = mapped_column(String(20))  # clean | infected | incomplete
+    files_scanned: Mapped[int] = mapped_column(Integer, default=0)
+    bytes_scanned: Mapped[int] = mapped_column(BigInteger, default=0)
+    findings: Mapped[list] = mapped_column(JSON, default=list)
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class BackupBootCheck(Base):

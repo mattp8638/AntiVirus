@@ -8,6 +8,7 @@ repository only the "gateway" can reach: first through the server relay, then di
 with the platform's Python requirements installed (cloud/requirements.txt) plus httpx and cryptography."""
 
 import base64
+import hashlib
 import json
 import os
 import shutil
@@ -88,6 +89,33 @@ def agent(name, *args, background=False):
     return r.stdout
 
 
+def reauth(c):
+    """A fresh password check (retried if the server is momentarily busy)."""
+    for _ in range(5):
+        r = c.post("/api/console/auth/reauth", json={"password": "e2e-admin-password-123"})
+        if r.status_code < 500:
+            assert r.status_code == 200, r.text
+            return r.json()["reauthToken"]
+        time.sleep(2)
+    raise SystemExit(f"password check failed: {r.status_code} {r.text[:300]}")
+
+
+def try_unlock(c, repo_id, machine, passphrase):
+    """The console's unlock: password check, then the passphrase sealed to a machine that tries it on the repository."""
+    rt = reauth(c)
+    sealed = seal(machine["publicKey"], json.dumps({"passphrase": passphrase, "recovery_key": None}).encode())
+    r = c.post(f"/api/console/backup/repositories/{repo_id}/unlock", headers={"X-Fenrir-Reauth": rt},
+               json={"agentId": machine["id"], "sealed": sealed})
+    assert r.status_code == 200, r.text
+    for _ in range(120):
+        out = c.get(f"/api/console/backup/unlock/{r.json()['id']}").json()
+        if out["state"] != "pending":
+            print(f"  unlock with {'the right' if passphrase.startswith('e2e') else 'a wrong'} passphrase: {out['state']}")
+            return out
+        time.sleep(1)
+    raise SystemExit("the unlock check did not finish")
+
+
 def wait_job(c, jid, what, seconds=300):
     for _ in range(seconds):
         j = c.get(f"/api/console/backup/jobs/{jid}").json()
@@ -107,8 +135,8 @@ try:
     tenant = c.post("/api/console/tenants", json={"name": "E2E Ltd", "template": "balanced"}).json()["id"]
     link = c.post("/api/console/backup/enrollments", json={"tenantId": tenant, "role": "server"}).json()["token"]
 
-    agent("gateway", "enroll", "--server", f"{BASE}/backup", "--token", link, "--role", "server")
-    agent("laptop", "enroll", "--server", f"{BASE}/backup", "--token", link, "--role", "workstation")
+    agent("gateway", "enroll", "--server", f"{BASE}/backup", f"--token={link}", "--role", "server")
+    agent("laptop", "enroll", "--server", f"{BASE}/backup", f"--token={link}", "--role", "workstation")
     agent("gateway", "run", background=True)
     agent("laptop", "run", background=True)
     for _ in range(60):
@@ -145,7 +173,14 @@ try:
     assert any(p.name.startswith("chunks") for p in nas.iterdir()), "nothing written on the NAS"
     j = c.post(f"/api/console/backup/agents/{laptop['id']}/jobs", json={"kind": {"type": "verify", "level": "full"}, "repositoryId": repo_id}).json()
     wait_job(c, j["id"], "laptop full verify through the relay")
+    # Images open only after an unlock: a fresh password check, then the passphrase tried on a real machine.
+    assert c.get("/api/console/backup/images", params={"repositoryId": repo_id}).status_code == 403
+    assert try_unlock(c, repo_id, gw, "not the passphrase")["state"] == "failed", "a wrong passphrase must not unlock"
+    out = try_unlock(c, repo_id, gw, "e2e repository passphrase")
+    assert out["state"] == "unlocked", out
+    c.headers["X-Fenrir-Unlock"] = out["token"]
     images = c.get("/api/console/backup/images", params={"repositoryId": repo_id}).json()
+    assert images, "no images listed after the unlock"
     print("  images:", [(i["hostname"], i["capturedBytes"]) for i in images])
 
     # Retention through the gateway is refused for the laptop (append-only); the gateway itself can.
@@ -167,6 +202,23 @@ try:
     print(f"  ({time.time() - t:.1f}s for 24 MiB)")
     log = (W / "laptop.log").read_text()
     print("  laptop log mentions direct address:", "18475" in log or "not reachable directly" not in log)
+
+    # AT-19: restore the latest backup to a new disk file on the laptop (an isolated target, nothing else is
+    # touched) and compare it with the source by SHA-256.
+    images = c.get("/api/console/backup/images", params={"repositoryId": repo_id}).json()
+    latest = max(images, key=lambda i: i["created"])
+    rt = reauth(c)
+    restored = W / "restored-disk.img"
+    r = c.post("/api/console/backup/restores", headers={"X-Fenrir-Reauth": rt}, json={
+        "imageId": latest["imageId"], "agentId": laptop["id"],
+        "target": {"type": "disk", "device": str(restored), "disk": 0, "confirm": str(restored), "grow": False}})
+    assert r.status_code == 200, r.text
+    t = time.time()
+    wait_job(c, r.json()["id"], "restore the latest backup to a new disk file")
+    source = disk.read_bytes()
+    got = restored.read_bytes()[: len(source)]
+    assert hashlib.sha256(got).hexdigest() == hashlib.sha256(source).hexdigest(), "the restored disk differs from the source"
+    print(f"  restore verified by SHA-256 ({len(source) >> 20} MiB) in {time.time() - t:.1f}s")
     print("E2E OK")
 finally:
     for p in procs:

@@ -74,10 +74,29 @@ pub struct Writer<'a> {
     repo: &'a Repository,
     pub index: Index,
     pub stats: ImageStats,
+    /// Image OS family ("saas", or "files" for folder backups) and machine.
+    family: String,
+    machine: MachineInfo,
 }
 
 impl<'a> Writer<'a> {
     pub fn new(repo: &'a Repository, service: &str, tenant: &str) -> Self {
+        let machine = MachineInfo {
+            machine_id: machine_id(service, tenant),
+            hostname: tenant.into(),
+        };
+        Self::with_identity(repo, "saas", machine, service, tenant)
+    }
+
+    /// A writer for another kind of item backup with the same layout (folder
+    /// backups: family "files", the backed-up machine's own ID).
+    pub fn with_identity(
+        repo: &'a Repository,
+        family: &str,
+        machine: MachineInfo,
+        service: &str,
+        tenant: &str,
+    ) -> Self {
         Writer {
             repo,
             index: Index {
@@ -87,7 +106,43 @@ impl<'a> Writer<'a> {
                 ..Default::default()
             },
             stats: ImageStats::default(),
+            family: family.into(),
+            machine,
         }
+    }
+
+    /// Add an item whose bytes are read from `r` one chunk at a time (large
+    /// files are never held in memory).
+    pub fn add_stream(&mut self, mut item: Item, r: &mut dyn std::io::Read) -> std::io::Result<()> {
+        let cs = self.repo.chunk_size() as usize;
+        let mut h = blake3::Hasher::new();
+        let mut chunks = Vec::new();
+        let mut size = 0u64;
+        let mut buf = vec![0u8; cs];
+        loop {
+            let mut n = 0;
+            while n < cs {
+                let k = r.read(&mut buf[n..])?;
+                if k == 0 {
+                    break;
+                }
+                n += k;
+            }
+            if n == 0 && !chunks.is_empty() {
+                break;
+            }
+            h.update(&buf[..n]);
+            size += n as u64;
+            chunks.extend(self.put(&buf[..n]).map_err(std::io::Error::other)?);
+            if n < cs {
+                break;
+            }
+        }
+        item.size = size;
+        item.hash = h.finalize().to_hex().to_string();
+        item.chunks = chunks;
+        self.index.items.push(item);
+        Ok(())
     }
 
     fn put(&mut self, data: &[u8]) -> core_format::Result<Vec<ChunkId>> {
@@ -185,10 +240,7 @@ impl<'a> Writer<'a> {
             }
         }
         let size1 = (d1.len() as u64 * cs).max(cs);
-        let machine = MachineInfo {
-            machine_id: machine_id(&self.index.service, &self.index.tenant),
-            hostname: self.index.tenant.clone(),
-        };
+        let machine = self.machine.clone();
         let (all, _) = self.repo.load_all_manifests()?;
         let parent = all
             .iter()
@@ -223,7 +275,7 @@ impl<'a> Writer<'a> {
             ],
             boot: BootConfig::default(),
             os: OsInfo {
-                family: "saas".into(),
+                family: self.family.clone(),
                 name: self.index.service.clone(),
                 version: json.len().to_string(),
                 ..Default::default()
@@ -243,9 +295,9 @@ impl<'a> Writer<'a> {
 
 /// The index of a SaaS image.
 pub fn read_index(repo: &Repository, m: &ManifestBody) -> core_format::Result<Index> {
-    if m.os.family != "saas" || m.disks.len() < 2 {
+    if !matches!(m.os.family.as_str(), "saas" | "files") || m.disks.len() < 2 {
         return Err(core_format::Error::InvalidArgument(format!(
-            "{} is not a SaaS backup",
+            "{} is not a SaaS or folder backup",
             m.image_id
         )));
     }

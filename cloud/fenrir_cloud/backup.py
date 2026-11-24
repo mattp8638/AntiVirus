@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 from . import audit
 from . import backup_installers as tpl
 from .models import (Alert, Device, BackupAgent, BackupBootCheck, BackupImage, BackupJob, BackupRepoAccess, BackupRepository,
-                     DrRun, DrRunbook, ImageBackupPlan, utcnow)
+                     BackupScan, DrRun, DrRunbook, ImageBackupPlan, Indicator, YaraRule, utcnow)
 
 PROTOCOL_VERSION = 1
 POLL_SECONDS = 15
@@ -69,10 +69,12 @@ def token_hash(raw: str) -> str:
 # Job kinds (protocol JobKind, "type"-tagged)
 # --------------------------------------------------------------------------
 
-BACKUP_KINDS = ("backup_system", "backup_disks", "backup_hyperv", "backup_kubernetes", "backup_saas")
+BACKUP_KINDS = ("backup_system", "backup_disks", "backup_hyperv", "backup_kubernetes", "backup_saas", "backup_files")
 KIND_LABELS = {
     "init_repository": "Create repository", "backup_system": "System backup", "backup_disks": "Disk backup",
-    "backup_hyperv": "Hyper-V backup", "verify": "Verify", "list_images": "Refresh images",
+    "backup_hyperv": "Hyper-V backup", "backup_files": "Files and folders backup", "scan_image": "Malware scan",
+    "index_image": "Index files", "search_files": "Search backups", "restore_application": "Restore application data",
+    "verify": "Verify", "list_images": "Refresh images",
     "apply_retention": "Apply retention", "copy_images": "Copy off-site", "prune": "Reclaim space", "restore": "Restore", "boot_check": "Boot check",
     "stop_vm": "Stop VM", "check_access": "Test connection", "browse_files": "Browse files",
     "restore_files": "Restore files", "download_files": "Download files",
@@ -85,6 +87,7 @@ LOCAL_RECOVERY_LABELS = {"install": "Install local recovery", "refresh": "Refres
 LOCAL_RECOVERY_DAYS = 365
 # Capability the agent must report for console-created jobs of each kind.
 KIND_CAPABILITY = {"backup_system": "backup_system", "backup_disks": "backup_disks", "backup_hyperv": "backup_hyperv",
+                   "backup_files": "backup_files",
                    "verify": "verify", "backup_kubernetes": "kubernetes", "restore_kubernetes": "kubernetes",
                    "backup_saas": "saas", "restore_saas": "saas"}
 
@@ -95,6 +98,14 @@ def label(kind: dict | None) -> str:
     if (kind or {}).get("type") == "local_recovery":
         return LOCAL_RECOVERY_LABELS.get(str(kind.get("action")), "Local recovery")
     return KIND_LABELS.get((kind or {}).get("type", ""), "Job")
+
+
+FOLDER_PREFIX = "files:"
+
+
+def is_folder_backup(image) -> bool:
+    """A backup of chosen files and folders (no disks to restore or boot)."""
+    return (getattr(image, "machine_id", None) or "").startswith(FOLDER_PREFIX)
 
 
 def is_backup(kind: dict | None) -> bool:
@@ -409,6 +420,35 @@ def queue_copy(db: Session, plan_id: str, repo_id: str, agent: BackupAgent, imag
                       "full_verify": False}, repo_id, "copy", plan_id=plan_id)
 
 
+RULE_STANDBY = "backup.standby_failed"
+
+
+def queue_standby(db: Session, plan_id: str, repo_id: str, images: list[dict]) -> None:
+    """The plan's standby VM: the newest image just taken, restored as a VM on the standby host, replacing the
+    previous standby once the new one is ready (never a running VM)."""
+    plan = db.get(ImageBackupPlan, plan_id)
+    sb = plan.standby if plan is not None else None
+    ids = [str(i["image_id"]) for i in images if i.get("image_id")]
+    if not sb or not ids:
+        return
+    host = db.get(BackupAgent, sb.get("agent_id"))
+    if host is None or host.revoked or host.tenant_id != plan.tenant_id:
+        return
+    if db.get(BackupRepoAccess, (repo_id, host.id)) is None:
+        raise_alert(db, plan.tenant_id, host.device_id, RULE_STANDBY, f"Standby VM not updated: {sb.get('name')}",
+                    "high", f"{host.display_name or host.hostname} has no access to the plan's repository, so the "
+                    f"standby VM {sb.get('name')} was not updated. Give it access on the Repositories page.",
+                    dedupe_key=f"standby-access:{plan.id}")
+        return
+    target = {"type": sb["type"], "name": sb["name"], "directory": sb["directory"], "replace": True}
+    if sb["type"] == "vm_files":
+        target["format"] = sb.get("format") or "qcow2"
+    else:
+        target.update({"switch": None, "start": False})
+    queue(db, host, {"type": "restore", "image_id": ids[-1], "disks": [], "target": target}, repo_id, "standby",
+          plan_id=plan_id)
+
+
 def queue_retention(db: Session, plan_id: str, repo_id: str, agent: BackupAgent, images: list[dict]) -> None:
     plan = db.get(ImageBackupPlan, plan_id)
     if plan is None or keeps_everything(plan.retention):
@@ -420,9 +460,28 @@ def queue_retention(db: Session, plan_id: str, repo_id: str, agent: BackupAgent,
         gateway = db.get(BackupAgent, repo.gateway_agent_id)
         if gateway is not None and not gateway.revoked:
             agent = gateway
-    if machine_ids:
-        queue(db, agent, {"type": "apply_retention", "machine_ids": machine_ids, "retention": plan.retention,
-                          "dry_run": False}, repo_id, "retention", plan_id=plan_id)
+    if not machine_ids:
+        return
+    held = held_images(db, repo_id)
+    if held and "legal_hold" not in capabilities(agent):
+        # An older agent would not know to keep them: no retention until it is updated.
+        raise_alert(db, plan.tenant_id, agent.device_id, RULE_FAILED,
+                    f"Retention skipped: {agent.display_name or agent.hostname} needs an update",
+                    "medium", f"Backups in repository {repo.name if repo else repo_id} are on legal hold, and the backup "
+                    "agent that applies retention is too old to keep them. Old backups are not being deleted until it "
+                    "is updated.", dedupe_key=f"legal-hold-agent:{agent.id}")
+        return
+    kind = {"type": "apply_retention", "machine_ids": machine_ids, "retention": plan.retention, "dry_run": False}
+    if held:  # only agents with the legal_hold capability get here with holds
+        kind["held"] = held
+    queue(db, agent, kind, repo_id, "retention", plan_id=plan_id)
+
+
+def held_images(db: Session, repo_id: str) -> list[str]:
+    """Images of a repository on legal hold (never deleted by retention)."""
+    return sorted(i for (i,) in db.execute(select(BackupImage.image_id).where(
+        BackupImage.repository_id == repo_id, BackupImage.legal_hold.is_not(None))).all()
+        if i)
 
 
 # --------------------------------------------------------------------------
@@ -573,6 +632,98 @@ def refresh_local_recovery(db: Session) -> int:
 # --------------------------------------------------------------------------
 
 RULE_DR = "backup.dr_test_failed"
+RULE_MALWARE = "backup.malware_found"
+
+# --------------------------------------------------------------------------
+# Malware scans of backup images (Fenrir-Backup docs/design/malware-scan.md)
+# --------------------------------------------------------------------------
+
+SCAN_MAX_INDICATORS = 500_000
+SCAN_MAX_FINDINGS = 1000
+
+
+def scan_content(db: Session, tenant_id: str) -> tuple[list[str], list[dict]]:
+    """The detection content a scan of this customer's backups uses: malicious SHA-256 indicators (global and the
+    customer's own, not expired, minus those allow-listed) and enabled YARA rules."""
+    now = utcnow()
+    scope = (Indicator.tenant_id.is_(None)) | (Indicator.tenant_id == tenant_id)
+    live = (Indicator.expires_at.is_(None)) | (Indicator.expires_at > now)
+    rows = db.execute(select(Indicator.value, Indicator.verdict).where(Indicator.type == "sha256", scope, live)).all()
+    allowed = {v.lower() for v, verdict in rows if verdict == "allow"}
+    hashes = sorted({v.lower() for v, verdict in rows if verdict == "malicious" and re.fullmatch(r"[0-9a-fA-F]{64}", v)}
+                    - allowed)[:SCAN_MAX_INDICATORS]
+    rules = [{"name": r.name, "source": r.source} for r in db.execute(
+        select(YaraRule).where(YaraRule.enabled.is_(True),
+                               (YaraRule.tenant_id.is_(None)) | (YaraRule.tenant_id == tenant_id))
+        .order_by(YaraRule.name)).scalars()]
+    return hashes, rules
+
+
+def queue_scan(db: Session, agent: BackupAgent, image: BackupImage, by: str, selection: str = "executables",
+               plan_id: str | None = None) -> BackupJob:
+    hashes, rules = scan_content(db, image.tenant_id)
+    return queue(db, agent, {"type": "scan_image", "image_id": image.image_id, "indicators": hashes, "rules": rules,
+                             "selection": selection, "max_file_mib": 64}, image.repository_id, by, plan_id)
+
+
+def scan_latest(db: Session, image_ids: list[str]) -> dict[str, BackupScan]:
+    out: dict[str, BackupScan] = {}
+    if image_ids:
+        for r in db.execute(select(BackupScan).where(BackupScan.image_id.in_(image_ids))
+                            .order_by(BackupScan.at.desc(), BackupScan.id.desc())).scalars():
+            out.setdefault(r.image_id, r)
+    return out
+
+
+def _s(v, n: int) -> str:
+    return str(v or "")[:n]
+
+
+def record_scan(db: Session, job: BackupJob, agent: BackupAgent, state: str, result: dict | None) -> BackupScan | None:
+    """Store what a finished scan job found. Only paths and names are kept, each field bounded."""
+    kind = job.kind or {}
+    image = db.get(BackupImage, str(kind.get("image_id")))
+    if image is None:
+        return None
+    rep = (result or {}).get("scan") if isinstance((result or {}).get("scan"), dict) else None
+    if state not in ("succeeded", "warning") or rep is None:
+        row = BackupScan(image_id=image.image_id, repository_id=image.repository_id, tenant_id=image.tenant_id,
+                         agent_id=agent.id, job_id=job.id, state="incomplete",
+                         summary={"error": _s(job.error, 1000)})
+        db.add(row)
+        return row
+    findings = []
+    for f in (rep.get("findings") or [])[:SCAN_MAX_FINDINGS]:
+        if not isinstance(f, dict):
+            continue
+        findings.append({"volume": _s(f.get("volume"), 200), "path": _s(f.get("path"), 2000),
+                         "size": f["size"] if isinstance(f.get("size"), int) and f["size"] >= 0 else 0,
+                         "sha256": _s(f.get("sha256"), 64).lower(),
+                         "detections": [{"kind": _s(d.get("kind"), 10), "name": _s(d.get("name"), 300)}
+                                        for d in (f.get("detections") or [])[:20] if isinstance(d, dict)]})
+    scanned = [_s(v, 200) for v in (rep.get("volumes_scanned") or [])[:50]]
+    summary = {k: [_s(v, 500) for v in (rep.get(k) or [])[:50]] for k in ("volumes_skipped", "rule_errors")}
+    summary.update({"volumes_scanned": scanned, "truncated": bool(rep.get("truncated")),
+                    **{k: int(rep.get(k) or 0) for k in ("files_cached", "files_skipped_large", "files_unreadable",
+                                                          "rules_used", "indicators_used")},
+                    "selection": _s(kind.get("selection") or "executables", 20)})
+    verdict = "infected" if findings else ("clean" if scanned else "incomplete")
+    row = BackupScan(image_id=image.image_id, repository_id=image.repository_id, tenant_id=image.tenant_id,
+                     agent_id=agent.id, job_id=job.id, state=verdict, files_scanned=int(rep.get("files_scanned") or 0),
+                     bytes_scanned=int(rep.get("bytes_scanned") or 0), findings=findings, summary=summary)
+    db.add(row)
+    what = image.vm_name or image.hostname or "a machine"
+    record(db, f"backup-agent:{agent.id}", f"backup.scan.{verdict}", what, image.tenant_id, image=image.image_id,
+           findings=len(findings))
+    if findings:
+        names = sorted({d["name"] for f in findings for d in f["detections"]})
+        raise_alert(db, image.tenant_id, agent.device_id, RULE_MALWARE, f"Malware found in a backup of {what}",
+                    "critical",
+                    f"A scan of the backup of {what} taken at unix time {image.created_unix} found {len(findings)} "
+                    f"infected file{'s' if len(findings) != 1 else ''} ({', '.join(names[:5])}). Restoring it brings "
+                    "them back: restore from a clean backup (Images & restore shows the last clean one), or restore "
+                    "and clean the files.", dedupe_key=f"backup-malware:{image.image_id}")
+    return row
 
 
 def device_key(i: BackupImage) -> str:
@@ -813,17 +964,17 @@ def poll_seconds(db: Session, agent: BackupAgent) -> int:
     """Every second while someone browses this machine's backups or waits for it to check a passphrase."""
     recent = db.execute(select(BackupJob.kind).where(
         BackupJob.agent_id == agent.id, BackupJob.created_at > utcnow() - FAST_POLL_FOR,
-        BackupJob.kind["type"].as_string().in_(("browse_files", "list_images")))).scalars().all()
-    fast = any(k.get("type") == "browse_files" or k.get("unlock") for k in recent if isinstance(k, dict))
+        BackupJob.kind["type"].as_string().in_(("browse_files", "list_images", "search_files")))).scalars().all()
+    fast = any(k.get("type") in ("browse_files", "search_files") or k.get("unlock") for k in recent if isinstance(k, dict))
     return FAST_POLL_SECONDS if fast else POLL_SECONDS
 
 
 def purge_listings(db: Session) -> int:
-    """Folder listings (file names) are kept a day, then dropped from the job record."""
+    """Folder listings and search results (file names) are kept a day, then dropped from the job record."""
     n = 0
     for j in db.execute(select(BackupJob).where(BackupJob.finished_at < utcnow() - BROWSE_KEEP,
                                                 BackupJob.result.is_not(None))).scalars():
-        if (j.kind or {}).get("type") == "browse_files":
+        if (j.kind or {}).get("type") in ("browse_files", "search_files"):
             j.result = None
             n += 1
     db.commit()

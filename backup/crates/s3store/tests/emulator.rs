@@ -145,3 +145,30 @@ fn s3_backend_against_an_emulator() {
     repo.put_chunk(&id, &data).unwrap();
     assert_eq!(repo.get_chunk(&id).unwrap(), data);
 }
+
+#[test]
+fn a_large_file_uploads_in_parts_as_one_object() {
+    let Some(emu) = start() else {
+        eprintln!("FENRIR_TEST_S3 not set: skipped");
+        return;
+    };
+    let b = backend(emu.1, "vm-import", "pm-acer", None);
+    b.ensure_bucket().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("disk0.vhdx");
+    let data: Vec<u8> = (0..(12u64 << 20) + 777).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&p, &data).unwrap();
+    let seen = std::sync::Mutex::new(Vec::new());
+    b.upload_file("disk0.vhdx", &p, &|done, total| {
+        seen.lock().unwrap().push((done, total))
+    })
+    .unwrap();
+    let seen = seen.into_inner().unwrap();
+    assert_eq!(seen.len(), 3, "5 + 5 + 2 MiB parts: {seen:?}");
+    assert_eq!(seen.last().unwrap().0, data.len() as u64);
+    assert!(
+        b.get("disk0.vhdx").unwrap() == data,
+        "one object, byte for byte"
+    );
+    assert_eq!(b.s3_uri("disk0.vhdx"), "s3://vm-import/pm-acer/disk0.vhdx");
+}

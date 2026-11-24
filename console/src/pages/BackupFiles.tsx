@@ -2,23 +2,39 @@
 // restoring the disk. The machine that reads the image decrypts it with the repository key it was given; this server
 // only relays folder listings (kept a day) and never sees file contents.
 import { useEffect, useMemo, useState } from "react";
-import { api, apiBytes } from "../api";
+import { api, apiBytes, ApiError } from "../api";
+import { confirmDialog } from "../components/dialogs";
 import { downloadKey } from "../backup-seal";
 import { useApp } from "../app-context";
 import { ErrorNote, Modal, Pill, useListData } from "../components/ui";
 import { bytes, type BackupAgent } from "./Backups";
 
+/** POST, and when the files asked for are infected (latest malware scan), ask before sending again with allowInfected. */
+async function postAllowingInfected<T>(path: string, body: Record<string, unknown>): Promise<T> {
+  try {
+    return await api<T>(path, { body });
+  } catch (e) {
+    const d = e instanceof ApiError ? (e.detail as { code?: string; infected?: string[]; count?: number } | undefined) : undefined;
+    if (d?.code !== "image_infected") throw e;
+    const list = (d.infected ?? []).slice(0, 5).join("\n");
+    if (!(await confirmDialog(`The latest malware scan found ${d.count} infected file${d.count === 1 ? "" : "s"} in what you chose:\n${list}${(d.count ?? 0) > 5 ? "\n…" : ""}\n\nRestore them anyway?`))) {
+      throw new Error("Not restored: the files include malware found by the latest scan.");
+    }
+    return api<T>(path, { body: { ...body, allowInfected: true } });
+  }
+}
+
 interface Volume { disk: number; partition: number; filesystem: string; size: number; mount_points: string[]; name: string; browsable: boolean; note?: string }
 interface Entry { name: string; kind: "file" | "dir" | "link" | "other"; size: number; modified?: number; hidden: boolean }
 interface Listing { path: string; entries: Entry[]; truncated: boolean; total: number }
 interface Job { id: string; state: string; result: any; error: string | null; warnings: string[]; progress: any }
-export interface BrowseImage { imageId: string; repositoryId: string; agentId: string | null; hostname: string; vmName: string | null; created: number }
+export interface BrowseImage { source?: string; imageId: string; repositoryId: string; agentId: string | null; hostname: string; vmName: string | null; created: number }
 
 const FINAL = ["succeeded", "warning", "failed", "cancelled"];
 const FS_LABEL: Record<string, string> = { ntfs: "NTFS", ext: "ext4", fat32: "FAT32", fat16: "FAT", exfat: "exFAT", xfs: "XFS", btrfs: "Btrfs", refs: "ReFS", bitlocker: "BitLocker", luks: "LUKS", swap: "swap" };
 
 /** Poll a job quickly (browsing is interactive). */
-async function waitFast(id: string, onProgress?: (j: Job) => void, seconds = 180): Promise<Job> {
+export async function waitFast(id: string, onProgress?: (j: Job) => void, seconds = 180): Promise<Job> {
   const until = Date.now() + seconds * 1000;
   while (Date.now() < until) {
     await new Promise((r) => setTimeout(r, 700));
@@ -36,7 +52,10 @@ const volumeLabel = (v: Volume) => v.mount_points[0] || v.name || `Disk ${v.disk
 const joinPath = (dir: string, name: string) => `${dir.replace(/\/+$/, "")}/${name}`;
 const when = (t?: number) => (t ? new Date(t * 1000).toLocaleString() : "—");
 
-export function FileBrowser({ image, onClose }: { image: BrowseImage; onClose: () => void }) {
+/** Where to open: a volume (by disk and partition), a folder in it, and an item to tick (search results). */
+export interface BrowseStart { disk: number; partition: number; folder: string; select?: string }
+
+export function FileBrowser({ image, onClose, start }: { image: BrowseImage; onClose: () => void; start?: BrowseStart }) {
   const [agentId, setAgentId] = useState<string | undefined>(undefined);
   const [agentName, setAgentName] = useState("");
   const [volumes, setVolumes] = useState<Volume[] | null>(null);
@@ -83,6 +102,12 @@ export function FileBrowser({ image, onClose }: { image: BrowseImage; onClose: (
       if (!res?.volumes) return;
       setVolumes(res.volumes);
       const usable = (res.volumes as Volume[]).filter((v) => v.browsable);
+      const asked = start && usable.find((v) => v.disk === start.disk && v.partition === start.partition);
+      if (asked) {
+        await openVolume(asked, start!.folder || "/");
+        if (start!.select) setSelected(new Set([start!.select]));
+        return;
+      }
       // Straight into the obvious volume: the only one, or the system drive.
       const pick = usable.length === 1 ? usable[0] : usable.find((v) => v.mount_points.some((m) => /^c:\\?$/i.test(m)));
       if (pick) await openVolume(pick);
@@ -177,7 +202,9 @@ function RestoreFiles({ image, volume, paths, browsingAgent, onClose }: { image:
   const pool = useMemo(() => (agents.data ?? []).filter((a) => repo?.agents.some((x: any) => x.id === a.id) && a.capabilities.includes("restore_files")), [agents.data, repo]);
   const [agentId, setAgentId] = useState<string>("");
   const agent = pool.find((a) => a.id === (agentId || image.agentId || browsingAgent)) ?? pool[0];
-  const original = volume.mount_points[0];
+  // A backup of files and folders knows where each item was; a disk image's volume, its mount point.
+  const folderBackup = image.source === "files";
+  const original = folderBackup ? "@original" : volume.mount_points[0];
   // A VM's image belongs to its Hyper-V host's agent: its "original location" is inside the VM, not on the host.
   const sameMachine = agent && agent.id === image.agentId && !image.vmName;
   const [where, setWhere] = useState<"folder" | "original">("folder");
@@ -193,9 +220,9 @@ function RestoreFiles({ image, volume, paths, browsingAgent, onClose }: { image:
   const go = async () => {
     setState({ busy: true });
     try {
-      const { id } = await api<{ id: string }>(`backup/images/${image.imageId}/restore-files`, { body: {
+      const { id } = await postAllowingInfected<{ id: string }>(`backup/images/${image.imageId}/restore-files`, {
         agentId: agent!.id, disk: volume.disk, partition: volume.partition, paths, target,
-        keepStructure: where === "original" ? true : keep, conflict } });
+        keepStructure: where === "original" ? true : keep, conflict });
       const job = await waitFast(id, (j) => setState({ busy: true, progress: j.progress?.message }), 24 * 3600);
       setState({ job });
     } catch (e) {
@@ -208,8 +235,8 @@ function RestoreFiles({ image, volume, paths, browsingAgent, onClose }: { image:
     setState({ busy: true, progress: "Preparing…" });
     try {
       const k = await downloadKey();
-      const { id } = await api<{ id: string }>(`backup/images/${image.imageId}/download-files`, { body: {
-        agentId: agent!.id, disk: volume.disk, partition: volume.partition, paths, recipient: k.publicB64 } });
+      const { id } = await postAllowingInfected<{ id: string }>(`backup/images/${image.imageId}/download-files`, {
+        agentId: agent!.id, disk: volume.disk, partition: volume.partition, paths, recipient: k.publicB64 });
       const job = await waitFast(id, (j) => setState({ busy: true, progress: j.progress?.message }), 24 * 3600);
       if (job.state !== "succeeded" && job.state !== "warning") throw new Error(job.error || "the machine could not prepare the files");
       const header = job.result?.download;
@@ -246,7 +273,7 @@ function RestoreFiles({ image, volume, paths, browsingAgent, onClose }: { image:
           <label className="field">To
             <select value={where} onChange={(e) => setWhere(e.target.value as any)}>
               <option value="folder">A folder</option>
-              {original && sameMachine && <option value="original">Original location ({original})</option>}
+              {original && sameMachine && <option value="original">{folderBackup ? "Where each item was" : `Original location (${original})`}</option>}
             </select>
           </label>
           {where === "folder" && <label className="field">Folder on {agent?.name ?? "the machine"}<input value={folder} placeholder={defaultFolder} onChange={(e) => setFolder(e.target.value)} /></label>}

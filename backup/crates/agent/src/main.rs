@@ -1,11 +1,14 @@
 //! fenrir-backup-agent: enrolls with a Fenrir-Backup server, then runs the jobs it
 //! is given (backups, Hyper-V VM backups, verification).
 
+mod apprestore;
 mod boot;
 mod browse;
 mod client;
+mod cloudrestore;
 mod config;
 mod download;
+mod folders;
 mod gateway;
 mod hwfix;
 mod hyperv;
@@ -14,13 +17,16 @@ mod jobs;
 mod linuxfix;
 mod localrec;
 mod log;
+mod malware;
 mod names;
 mod rct;
 mod recovery;
 mod restore;
+mod search;
 mod setup;
 mod share;
 mod update;
+mod vmdef;
 #[cfg(windows)]
 mod winsvc;
 

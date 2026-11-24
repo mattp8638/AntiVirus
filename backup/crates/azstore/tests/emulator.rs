@@ -120,3 +120,57 @@ fn azure_backend_against_azurite() {
     repo.put_chunk(&id, &data).unwrap();
     assert_eq!(repo.get_chunk(&id).unwrap(), data);
 }
+
+#[test]
+fn disk_restored_as_a_fixed_vhd_page_blob() {
+    use engine::WriteTarget;
+    let Some(emu) = start() else {
+        eprintln!("FENRIR_TEST_AZURE not set: skipped");
+        return;
+    };
+    let b = backend(emu.1, "restores", "pm-acer", KEY);
+    b.ensure_container().unwrap();
+    let size = (3u64 << 20) + 4096; // not a whole MiB: rounded up for Azure
+    let t = azstore::pageblob::PageBlobTarget::create(
+        backend(emu.1, "restores", "pm-acer", KEY),
+        "disk0.vhd",
+        size,
+    )
+    .unwrap();
+    assert_eq!(t.disk_size(), 4 << 20);
+    let mut data = vec![0u8; 1 << 20];
+    data[512..1024].fill(0xAB); // one page set
+    data[(1 << 20) - 512..].fill(0xCD); // and the last
+    t.write_at(1 << 20, &data).unwrap();
+    t.write_at(size - 4096, &[0xEE; 4096]).unwrap();
+    assert!(t.write_at(3, &[1; 512]).is_err(), "unaligned");
+    assert!(
+        azstore::pageblob::PageBlobTarget::create(
+            backend(emu.1, "restores", "pm-acer", KEY),
+            "disk0.vhd",
+            size
+        )
+        .is_err(),
+        "an existing blob is never overwritten"
+    );
+    let url = t.finish([9; 16]).unwrap();
+    assert!(url.ends_with("/restores/pm-acer/disk0.vhd"), "{url}");
+
+    let blob = b.get("disk0.vhd").unwrap();
+    assert_eq!(blob.len() as u64, (4 << 20) + 512);
+    assert!(blob[..1 << 20].iter().all(|&x| x == 0));
+    assert!(blob[(1 << 20) + 512..(1 << 20) + 1024]
+        .iter()
+        .all(|&x| x == 0xAB));
+    assert!(
+        blob[(1 << 20) + 1024..(2 << 20) - 512]
+            .iter()
+            .all(|&x| x == 0),
+        "zero pages stay unwritten"
+    );
+    assert!(blob[(2 << 20) - 512..2 << 20].iter().all(|&x| x == 0xCD));
+    assert!(blob[(size - 4096) as usize..size as usize]
+        .iter()
+        .all(|&x| x == 0xEE));
+    assert_eq!(&blob[4 << 20..(4 << 20) + 8], b"conectix");
+}

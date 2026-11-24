@@ -171,6 +171,34 @@ def test_disk_restore_needs_typed_confirmation_and_reauth(client, admin, tenant)
     assert spec["kind"]["target"]["grow"] is True
 
 
+def test_restore_as_files_for_qemu_virtualbox_or_vmware(client, admin, tenant):
+    """Disk files and a VM definition for another hypervisor: only machines that report restore_vm_files, a known
+    format, and a VM name safe for file names and scripts."""
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    heartbeat(client, h)
+    repo_id = ready_repo(client, admin, tenant, agent_id, h)
+    client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+    im = image()
+    finish(client, h, heartbeat(client, h)["jobs"][0]["id"], images=[im])
+    admin = unlock(client, admin, h, repo_id, agent_id)
+    go = lambda target: client.post("/api/console/backup/restores", headers=admin,  # noqa: E731
+                                    json={"imageId": im["image_id"], "agentId": agent_id, "target": target})
+    target = {"type": "vm_files", "format": "qcow2", "name": "PM-ACER restored", "directory": "/srv/restores"}
+    # An agent that does not report the capability (an older version) is refused.
+    assert "cannot perform" in go(target).json()["detail"]
+    heartbeat(client, h, caps=CAPS + ["restore_vm_files"])
+    for bad_target in ({**target, "format": "ova"}, {**target, "name": "x; rm -rf /"}, {**target, "name": " lead"},
+                       {**target, "directory": ""}):
+        assert go(bad_target).status_code == 400, bad_target
+    for fmt in ("qcow2", "vdi", "vmdk"):
+        assert go({**target, "format": fmt}).status_code == 200
+        spec = heartbeat(client, h, caps=CAPS + ["restore_vm_files"])["jobs"][0]
+        assert spec["kind"]["target"] == {**target, "format": fmt}
+        finish(client, h, spec["id"])
+
+
 def test_tenants_are_isolated_and_reenrol_with_new_key_drops_access(client, admin, tenant):
     e = link(client, admin, tenant)
     agent_id, h = agent_enroll(client, e["token"])
@@ -1165,3 +1193,385 @@ def test_kubernetes_and_saas_backups_keep_only_the_sealed_secret(client, admin, 
     step = {**admin, "X-Fenrir-Reauth": reauth(client, admin)}
     assert client.post(url, headers=step, json={**replace, "confirm": "staging"}).status_code == 400
     assert client.post(url, headers=step, json=replace).status_code == 200
+
+
+def test_backups_are_scanned_for_malware_and_infected_restores_need_acknowledging(client, admin, tenant):
+    """A scan job carries the customer's detection content; findings are stored, alerted and shown; the last clean
+    backup is reported; restoring infected files needs allowInfected; a plan can scan each new backup."""
+    from fenrir_cloud.db import session_factory
+    from fenrir_cloud.models import Alert
+
+    bad_sha, good_sha = "ab" * 32, "cd" * 32
+    assert client.post("/api/console/intel/indicators", headers=admin,
+                       json={"values": [bad_sha], "verdict": "malicious"}).status_code == 200
+    client.post("/api/console/intel/indicators", headers=admin, json={"values": [good_sha], "verdict": "malicious"})
+    client.post("/api/console/intel/indicators", headers=admin, json={"values": [good_sha], "verdict": "allow"})
+    client.post("/api/console/intel/yara", headers=admin,
+                json={"name": "test.yar", "source": "rule T { strings: $a = \"x\" condition: $a }"})
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    caps = CAPS + ["scan_images"]
+    heartbeat(client, h, caps=caps)
+    repo_id = ready_repo(client, admin, tenant, agent_id, h)
+    old, new = image(t=0), image(t=100)
+    for im in (old, new):
+        client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                    json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+        finish(client, h, heartbeat(client, h, caps=caps)["jobs"][0]["id"], images=[im])
+    admin = unlock(client, admin, h, repo_id, agent_id, caps=caps)
+
+    def scan(im, findings, **body):
+        r = client.post(f"/api/console/backup/images/{im['image_id']}/scan", headers=admin, json=body)
+        assert r.status_code == 200, r.text
+        spec = next(j for j in heartbeat(client, h, caps=caps)["jobs"] if j["id"] == r.json()["id"])
+        return spec, lambda: finish(client, h, spec["id"], state="warning" if findings else "succeeded", result={
+            "image_id": im["image_id"], "scan": {"files_scanned": 120, "bytes_scanned": 9 << 20,
+                                                 "volumes_scanned": ["C:\\"], "findings": findings,
+                                                 "rule_errors": [], "rules_used": 1, "indicators_used": 1}})
+
+    spec, done = scan(old, [])
+    k = spec["kind"]
+    assert k["type"] == "scan_image" and k["selection"] == "executables"
+    assert bad_sha in k["indicators"] and good_sha not in k["indicators"], "allow-listed hashes are left out"
+    assert [r["name"] for r in k["rules"]] == ["test.yar"]
+    done()
+    infected = [{"volume": "C:\\", "path": "/Users/anna/Downloads/invoice.exe", "size": 4096, "sha256": bad_sha,
+                 "detections": [{"kind": "hash", "name": "SHA-256 indicator"}], "evil": "x" * 9999}]
+    spec, done = scan(new, infected, allFiles=True)
+    assert spec["kind"]["selection"] == "all"
+    done()
+
+    listed = {i["imageId"]: i for i in client.get("/api/console/backup/images", headers=admin).json()}
+    assert listed[old["image_id"]]["lastScan"]["state"] == "clean"
+    assert listed[new["image_id"]]["lastScan"] == {**listed[new["image_id"]]["lastScan"], "state": "infected", "findings": 1}
+    dev = next(d for d in client.get("/api/console/backup/image-devices", headers=admin).json() if d["name"] == "M-1")
+    assert dev["infected"] == 1 and dev["lastCleanCreated"] == old["created_unix"]
+    scans = client.get(f"/api/console/backup/images/{new['image_id']}/scans", headers=admin).json()
+    assert scans[0]["findings"][0]["path"].endswith("invoice.exe") and "evil" not in scans[0]["findings"][0]
+    with session_factory()() as db:
+        alert = db.query(Alert).filter(Alert.title.like("Malware found in a backup of%")).one()
+        assert alert.severity == "critical"
+
+    # Restoring the infected image needs acknowledging; restoring a clean file from it does not.
+    body = {"imageId": new["image_id"], "agentId": agent_id, "target": {"type": "vhdx", "directory": "D:\\R"}}
+    r = client.post("/api/console/backup/restores", headers=admin, json=body)
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "image_infected"
+    assert client.post("/api/console/backup/restores", headers=admin, json={**body, "allowInfected": True}).status_code == 200
+    files = {"agentId": agent_id, "disk": 0, "partition": 1, "target": "D:\\R",
+             "paths": ["/Users/anna/Documents/report.txt"]}
+    for j in heartbeat(client, h, caps=caps + ["restore_files"])["jobs"]:
+        finish(client, h, j["id"])  # the image restore above
+    ok = client.post(f"/api/console/backup/images/{new['image_id']}/restore-files", headers=admin, json=files)
+    assert ok.status_code == 200, ok.text
+    blocked = client.post(f"/api/console/backup/images/{new['image_id']}/restore-files", headers=admin,
+                          json={**files, "paths": ["/Users/anna"]})
+    assert blocked.status_code == 409 and blocked.json()["detail"]["infected"] == ["/Users/anna/Downloads/invoice.exe"]
+
+    # A plan that scans after each backup queues a scan for the new image on the same machine.
+    for j in heartbeat(client, h, caps=caps + ["restore_files"])["jobs"]:
+        finish(client, h, j["id"])  # the file restore
+    r = client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                    json={"kind": {"type": "backup_system", "settings": {"scan_after_backup": True}}, "repositoryId": repo_id})
+    assert r.status_code == 200, r.text
+    third = image(t=200)
+    jobs = heartbeat(client, h, caps=caps)["jobs"]
+    finish(client, h, jobs[0]["id"], images=[third])
+    queued = [j["kind"] for j in heartbeat(client, h, caps=caps)["jobs"]]
+    assert any(k["type"] == "scan_image" and k["image_id"] == third["image_id"] for k in queued), queued
+
+
+def test_folder_backups_list_under_the_machine_and_restore_files_only(client, admin, tenant):
+    """A backup of chosen files and folders: validated paths, agents that report backup_files, listed with the
+    machine's backups, restored with Browse files (also back where they were); no disk restore or boot test."""
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    caps = CAPS + ["backup_files", "restore_files"]
+    heartbeat(client, h)
+    repo_id = ready_repo(client, admin, tenant, agent_id, h)
+    job = {"type": "backup_files", "paths": [r"C:\Users\anna\Documents", r"\\nas\share\Accounts"],
+           "excludes": ["*.tmp", "node_modules"]}
+    r = client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin, json={"kind": job, "repositoryId": repo_id})
+    assert "cannot" in r.json()["detail"], "an agent without backup_files is refused"
+    heartbeat(client, h, caps=caps)
+    for bad_job in ({**job, "paths": []}, {**job, "paths": ["relative\\folder"]}):
+        assert client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                           json={"kind": bad_job, "repositoryId": repo_id}).status_code == 400
+    plan = client.post("/api/console/backup/plans", headers=admin, json={
+        "name": "Documents hourly", "agentId": agent_id, "repositoryId": repo_id, "job": job,
+        "schedule": {"type": "interval", "hours": 1}, "retention": {"keep_last": 24}})
+    assert plan.status_code == 200, plan.text
+    assert client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                       json={"kind": job, "repositoryId": repo_id}).status_code == 200
+    spec = heartbeat(client, h, caps=caps)["jobs"][0]
+    assert spec["kind"]["type"] == "backup_files" and spec["kind"]["excludes"] == ["*.tmp", "node_modules"]
+    disks, files = image(t=0), {**image(machine="files:m-1", t=50), "hostname": "M-1"}
+    finish(client, h, spec["id"], images=[files])
+    client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+    finish(client, h, heartbeat(client, h, caps=caps)["jobs"][0]["id"], images=[disks])
+
+    devices = client.get("/api/console/backup/image-devices", headers=admin).json()
+    assert [(d["name"], d["images"]) for d in devices] == [("M-1", 2)], "listed with the machine's own backups"
+    admin = unlock(client, admin, h, repo_id, agent_id, caps=caps)
+    listed = {i["imageId"]: i for i in client.get("/api/console/backup/images", headers=admin).json()}
+    assert listed[files["image_id"]]["source"] == "files" and listed[disks["image_id"]]["source"] == "disks"
+
+    r = client.post("/api/console/backup/restores", headers=admin,
+                    json={"imageId": files["image_id"], "agentId": agent_id, "target": {"type": "vhdx", "directory": "D:\\R"}})
+    assert r.status_code == 400 and "Browse files" in r.json()["detail"]
+    r = client.post(f"/api/console/backup/images/{files['image_id']}/boot-check", headers=admin, json={"agentId": agent_id})
+    assert r.status_code == 400
+    back = {"agentId": agent_id, "disk": 1, "partition": 1, "paths": ["/C:/Users/anna/Documents/report.docx"],
+            "target": "@original"}
+    assert client.post(f"/api/console/backup/images/{files['image_id']}/restore-files", headers=admin, json=back).status_code == 200
+    assert client.post(f"/api/console/backup/images/{disks['image_id']}/restore-files", headers=admin,
+                       json={**back, "partition": 2}).status_code == 400, "@original is for folder backups"
+
+
+def test_search_across_a_machines_backups(client, admin, tenant):
+    """Each new backup is indexed on the machine that took it; a search runs on a machine with access over the
+    machine's unlocked backups (newest first) and its matches are dropped from the job record after a day."""
+    from datetime import timedelta
+
+    from fenrir_cloud import backup as bk
+    from fenrir_cloud.db import session_factory
+    from fenrir_cloud.models import BackupJob
+
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    caps = CAPS + ["search_files"]
+    heartbeat(client, h, caps=caps)
+    repo_id = ready_repo(client, admin, tenant, agent_id, h)
+    older, newer = image(t=0), image(t=100)
+    for im in (older, newer):
+        client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                    json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+        finish(client, h, heartbeat(client, h, caps=caps)["jobs"][0]["id"], images=[im])
+        index = heartbeat(client, h, caps=caps)["jobs"][0]
+        assert index["kind"] == {"type": "index_image", "image_id": im["image_id"]}
+        finish(client, h, index["id"])
+
+    dev = client.get("/api/console/backup/image-devices", headers=admin).json()[0]
+    locked = client.post("/api/console/backup/search", headers=admin, json={"query": "budget", "device": dev["key"]})
+    assert locked.status_code == 403
+    admin = unlock(client, admin, h, repo_id, agent_id, caps=caps)
+    assert client.post("/api/console/backup/search", headers=admin, json={"query": " ", "device": dev["key"]}).status_code == 400
+    r = client.post("/api/console/backup/search", headers=admin, json={"query": "budget*.xlsx", "device": dev["key"]})
+    assert r.status_code == 200, r.text
+    [job] = r.json()["jobs"]
+    spec = heartbeat(client, h, caps=caps)["jobs"][0]
+    assert spec["id"] == job["id"] and spec["kind"]["type"] == "search_files"
+    assert spec["kind"]["images"] == [newer["image_id"], older["image_id"]], "newest first"
+    hit = {"image_id": newer["image_id"], "volume": {"label": "C:\\", "disk": 0, "partition": 3},
+           "path": "/Users/anna/Documents/budget 2026.xlsx", "size": 51200, "modified": 1790000000, "folder": False}
+    finish(client, h, job["id"], result={"query": "budget*.xlsx", "hits": [hit], "searched": 2, "not_indexed": [],
+                                         "truncated": False})
+    got = client.get(f"/api/console/backup/jobs/{job['id']}", headers=admin).json()
+    assert got["result"]["hits"][0]["path"].endswith("budget 2026.xlsx")
+    with session_factory()() as db:
+        j = db.get(BackupJob, job["id"])
+        j.finished_at = j.finished_at - bk.BROWSE_KEEP - timedelta(minutes=1)
+        db.commit()
+        assert bk.purge_listings(db) >= 1
+        assert db.get(BackupJob, job["id"]).result is None, "matches are not kept beyond a day"
+
+
+def test_one_sql_or_exchange_database_restores_on_its_own(client, admin, tenant):
+    """A component whose files the image lists restores alone on a Windows machine; SQL Server databases can be
+    attached under a new name; older images (no file lists) and other machines are refused."""
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    caps = CAPS + ["restore_apps"]
+    heartbeat(client, h, caps=caps)
+    repo_id = ready_repo(client, admin, tenant, agent_id, h)
+    client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+    im = image()
+    im["applications"] = [
+        {"writer": "SqlServerWriter", "component": "SQL01\\sales", "caption": "sales", "included": True, "file_sets": 2},
+        {"writer": "Microsoft Exchange Writer", "component": "Microsoft Exchange Server\\DB01", "included": True,
+         "file_sets": 3},
+        {"writer": "SqlServerWriter", "component": "SQL01\\legacy", "included": True},
+    ]
+    finish(client, h, heartbeat(client, h, caps=caps)["jobs"][0]["id"], images=[im])
+    admin = unlock(client, admin, h, repo_id, agent_id, caps=caps)
+    apps = client.get("/api/console/backup/images", headers=admin).json()[0]["applications"]
+    assert [a["fileSets"] for a in apps] == [2, 3, 0]
+    url = f"/api/console/backup/images/{im['image_id']}/restore-app"
+    body = {"agentId": agent_id, "component": "SQL01\\sales", "directory": "D:\\Restores", "attachAs": "sales_0901",
+            "sqlInstance": "SQL01\\FINANCE"}
+    for bad_body in ({**body, "component": "SQL01\\legacy"}, {**body, "component": "nope"},
+                     {**body, "directory": "Restores"}, {**body, "sqlInstance": "x; DROP"},
+                     {**body, "component": "Microsoft Exchange Server\\DB01"}):
+        assert client.post(url, headers=admin, json=bad_body).status_code == 400, bad_body
+    r = client.post(url, headers=admin, json=body)
+    assert r.status_code == 200, r.text
+    spec = heartbeat(client, h, caps=caps)["jobs"][0]["kind"]
+    assert spec == {"type": "restore_application", "image_id": im["image_id"], "component": "SQL01\\sales",
+                    "directory": "D:\\Restores", "attach_as": "sales_0901", "sql_instance": "SQL01\\FINANCE"}
+    ex = {"agentId": agent_id, "component": "Microsoft Exchange Server\\DB01", "directory": "D:\\Restores"}
+    assert client.post(url, headers=admin, json=ex).status_code == 200
+
+
+def test_restore_to_azure_or_aws_and_keep_a_standby_vm(client, admin, tenant):
+    """Cloud restores carry the location and keys sealed to the machine; a plan's standby VM is refreshed on its host
+    after each backup, replacing the previous one; a standby host without access is refused and alerted."""
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    caps = CAPS + ["restore_cloud", "restore_hyperv", "restore_vm_files"]
+    heartbeat(client, h, caps=caps)
+    repo_id = ready_repo(client, admin, tenant, agent_id, h)
+    client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+    im = image()
+    finish(client, h, heartbeat(client, h, caps=caps)["jobs"][0]["id"], images=[im])
+    admin = unlock(client, admin, h, repo_id, agent_id, caps=caps)
+    go = lambda target: client.post("/api/console/backup/restores", headers=admin,  # noqa: E731
+                                    json={"imageId": im["image_id"], "agentId": agent_id, "target": target})
+    az = {"type": "azure", "location": "azure://restores/pm-acer", "name": "pm-acer", "sealed": SEALED}
+    for bad_target in ({**az, "location": "azure://UPPER"}, {**az, "name": "a b"}, {**az, "sealed": None},
+                       {**az, "endpoint": "http://plain.example"}):
+        assert go(bad_target).status_code == 400, bad_target
+    assert go(az).status_code == 200
+    spec = heartbeat(client, h, caps=caps)["jobs"][0]
+    assert spec["kind"]["target"] == {**az, "endpoint": ""}
+    finish(client, h, spec["id"])
+    aws = {"type": "aws", "location": "s3://vm-import/dr", "region": "eu-west-2", "name": "pm-acer",
+           "staging": "D:\\Staging", "sealed": SEALED}
+    assert go({**aws, "staging": "relative"}).status_code == 400
+    assert go(aws).status_code == 200
+    finish(client, h, heartbeat(client, h, caps=caps)["jobs"][0]["id"])
+
+    # A plan with a standby Hyper-V VM on the same machine (a Hyper-V host).
+    plan = client.post("/api/console/backup/plans", headers=admin, json={
+        "name": "Nightly", "agentId": agent_id, "repositoryId": repo_id, "job": {"type": "backup_system"},
+        "schedule": {"type": "manual"}, "retention": {"keep_last": 7},
+        "standby": {"agentId": agent_id, "type": "hyperv_vm", "name": "PM-ACER standby", "directory": "D:\\Standby"}})
+    assert plan.status_code == 200, plan.text
+    listed = next(p for p in client.get("/api/console/backup/plans", headers=admin).json() if p["id"] == plan.json()["id"])
+    assert listed["standby"]["name"] == "PM-ACER standby"
+    bad_sb = client.patch(f"/api/console/backup/plans/{plan.json()['id']}", headers=admin,
+                          json={"standby": {"agentId": agent_id, "type": "vm_files", "format": "ova", "name": "x", "directory": "D:\\S"}})
+    assert bad_sb.status_code == 400
+    assert client.post(f"/api/console/backup/plans/{plan.json()['id']}/run", headers=admin).status_code == 200
+    job = heartbeat(client, h, caps=caps)["jobs"][0]
+    newer = image(t=500)
+    finish(client, h, job["id"], images=[newer])
+    queued = []
+    for _ in range(6):
+        jobs = heartbeat(client, h, caps=caps)["jobs"]
+        if not jobs:
+            break
+        queued.append(jobs[0]["kind"])
+        finish(client, h, jobs[0]["id"])
+    standby = next(k for k in queued if k["type"] == "restore")
+    assert standby["image_id"] == newer["image_id"]
+    assert standby["target"] == {"type": "hyperv_vm", "name": "PM-ACER standby", "directory": "D:\\Standby",
+                                 "replace": True, "switch": None, "start": False}
+
+
+def test_backup_report_for_a_customer_and_its_schedule(client, admin, tenant):
+    """The backup report shows machines (protected, failing, no plan), success rate, restore tests and malware scans,
+    with next steps; it is a page and a PDF, and can be emailed on a schedule like the other reports."""
+    from fenrir_cloud import mailer, reports
+    from fenrir_cloud.db import session_factory
+
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    caps = CAPS + ["scan_images"]
+    heartbeat(client, h, caps=caps)
+    repo_id = ready_repo(client, admin, tenant, agent_id, h)
+    client.post("/api/console/backup/plans", headers=admin, json={
+        "name": "Nightly", "agentId": agent_id, "repositoryId": repo_id, "job": {"type": "backup_system"},
+        "schedule": {"type": "daily", "time": "01:00", "days": [], "utc_offset_minutes": 0}, "retention": {"keep_last": 7}})
+    good, bad = image(t=0), image(t=10)
+    for im in (good,):
+        client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                    json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+        finish(client, h, heartbeat(client, h, caps=caps)["jobs"][0]["id"], images=[im])
+    client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+    finish(client, h, heartbeat(client, h, caps=caps)["jobs"][0]["id"], state="failed", error="VSS writer timed out")
+
+    with session_factory()() as db:
+        from fenrir_cloud.models import Tenant
+        t = db.get(Tenant, tenant["id"])
+        data = reports.backup_data(db, t, 30)
+        assert data["jobs"] == 2 and data["successRate"] == 50
+        assert [m["status"] for m in data["machines"]] == ["failing"]
+        assert data["failures"][0]["error"] == "VSS writer timed out"
+        steps = reports.backup_recommendations(data)
+        assert any("failing backups of M-1" in s for s in steps)
+    page = client.get("/api/console/reports/backup.html", headers=admin, params={"tenant_id": tenant["id"], "days": 30})
+    assert page.status_code == 200 and "Backup report" in page.text and "VSS writer timed out" in page.text
+    pdf = client.get("/api/console/reports/backup.pdf", headers=admin, params={"tenant_id": tenant["id"], "days": 7})
+    assert pdf.status_code == 200 and pdf.content.startswith(b"%PDF")
+    assert client.get("/api/console/reports/backup.pdf", headers=admin,
+                      params={"tenant_id": tenant["id"], "days": 12}).status_code == 400
+    saved = client.put("/api/console/reports/schedules", headers=admin, params={"tenant_id": tenant["id"]},
+                       json={"schedules": [{"kind": "backup", "every": "monthly", "to": ["it@acme.example"]}]})
+    assert saved.status_code == 200, saved.text
+    mailer.OUTBOX.clear()
+    with session_factory()() as db:
+        assert reports.send_schedules(db) == 1
+    assert mailer.OUTBOX[-1]["subject"].startswith("Backup report") and mailer.OUTBOX[-1]["attachments"][0].endswith(".pdf")
+
+
+def test_legal_hold_keeps_backups_from_retention(client, admin, tenant):
+    """Held backups go to retention as `held`; an agent too old to honour holds gets no retention (alerted); releasing
+    a hold needs a fresh password check; everything is audited."""
+    from fenrir_cloud.db import session_factory
+    from fenrir_cloud.models import Alert
+
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    heartbeat(client, h)  # no legal_hold capability yet
+    repo_id = ready_repo(client, admin, tenant, agent_id, h)
+    plan = client.post("/api/console/backup/plans", headers=admin, json={
+        "name": "Nightly", "agentId": agent_id, "repositoryId": repo_id, "job": {"type": "backup_system"},
+        "schedule": {"type": "manual"}, "retention": {"keep_last": 1}}).json()["id"]
+
+    def backup(t, caps=CAPS):
+        assert client.post(f"/api/console/backup/plans/{plan}/run", headers=admin).status_code == 200
+        im = image(t=t)
+        finish(client, h, heartbeat(client, h, caps=caps)["jobs"][0]["id"], images=[im])
+        return im
+
+    first = backup(0)
+    for j in heartbeat(client, h)["jobs"]:
+        finish(client, h, j["id"])
+    admin = unlock(client, admin, h, repo_id, agent_id)
+    url = f"/api/console/backup/images/{first['image_id']}/legal-hold"
+    assert client.post(url, headers=admin, json={"hold": True, "reason": ""}).status_code == 400
+    r = client.post(url, headers=admin, json={"hold": True, "reason": "Matter 2026-114 (HR dispute)"})
+    assert r.status_code == 200 and r.json()["legalHold"]["reason"].startswith("Matter")
+    listed = client.get("/api/console/backup/images", headers=admin).json()
+    assert next(i for i in listed if i["imageId"] == first["image_id"])["legalHold"]["by"]
+
+    # An old agent: no retention while holds exist, and an alert says why.
+    backup(100)
+    assert not [j for j in heartbeat(client, h)["jobs"] if j["kind"]["type"] == "apply_retention"]
+    with session_factory()() as db:
+        assert db.query(Alert).filter(Alert.title.like("Retention skipped%")).count() == 1
+
+    # An up-to-date agent gets the held list with retention.
+    caps = CAPS + ["legal_hold"]
+    backup(200, caps)
+    kinds = []
+    for _ in range(4):
+        jobs = heartbeat(client, h, caps=caps)["jobs"]
+        if not jobs:
+            break
+        kinds.append(jobs[0]["kind"])
+        finish(client, h, jobs[0]["id"])
+    ret = next(k for k in kinds if k["type"] == "apply_retention")
+    assert ret["held"] == [first["image_id"]]
+
+    # Releasing needs a fresh password check.
+    assert client.post(url, headers=admin, json={"hold": False}).json()["detail"] == "reauth_required"
+    step = {**admin, "X-Fenrir-Reauth": reauth(client, admin)}
+    assert client.post(url, headers=step, json={"hold": False}).json()["legalHold"] is None
+    dev = client.get("/api/console/backup/image-devices", headers=admin).json()[0]
+    held = client.post("/api/console/backup/legal-hold/device", headers=admin,
+                       json={"device": dev["key"], "reason": "Matter 2026-120"}).json()["held"]
+    assert held == 3

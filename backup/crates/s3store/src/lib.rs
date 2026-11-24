@@ -6,6 +6,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod multipart;
+
 use std::io::Read;
 use std::time::Duration;
 

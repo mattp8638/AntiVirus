@@ -17,13 +17,15 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 81
+LATEST_MIGRATION = 84
 
 def init_engine(url: str, pool_size: int = 5, max_overflow: int = 10) -> Engine:
     global _engine, _session_factory
     kwargs: dict = {"future": True}
     if url.startswith("sqlite"):
-        kwargs["connect_args"] = {"check_same_thread": False}
+        # Wait up to 30 s for a write lock instead of the driver's 5 s: agents polling the relay write often, and a
+        # busy database must slow a request down, not fail it ("database is locked").
+        kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
         if url in {"sqlite://", "sqlite:///:memory:"}:
             from sqlalchemy.pool import StaticPool
 
@@ -565,6 +567,20 @@ def migrate(bind: Engine) -> list[int]:
                 # DR runbooks and runs: new tables (create_all made them).
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (81)"))
                 applied.append(81)
+            if 82 not in versions:
+                # Malware scans of backup images: a new table.
+                from .models import BackupScan
+                BackupScan.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (82)"))
+                applied.append(82)
+            if 83 not in versions:
+                ensure_columns(Base, conn)  # standby VMs (backup_image_plans.standby)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (83)"))
+                applied.append(83)
+            if 84 not in versions:
+                ensure_columns(Base, conn)  # legal holds (backup_images.legal_hold)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (84)"))
+                applied.append(84)
             conn.commit()
         except Exception:
             conn.rollback()

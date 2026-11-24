@@ -60,7 +60,7 @@ Fenrir server itself.
 | View machines, repositories, plans, jobs, and the list of backed-up machines | `read` |
 | Open a machine's backups (list, browse, restore, boot test) | `read` + unlock (below) |
 | Back up now, verify, test a connection, run a plan, cancel, place a hold | `respond` |
-| Browse and restore files; restore to VHDX files or a new Hyper-V VM; boot tests; stop a test VM | `scripts` |
+| Browse and restore files; restore to VHDX files, a new Hyper-V VM, or VM files for QEMU, VirtualBox or VMware; boot tests; malware scans; stop a test VM | `scripts` |
 | Install links, repositories, access, plans, share sign-ins, maintenance, gateways | `configure` |
 | Overwrite a physical disk, replace existing files with backup copies, release a hold, reclaim space | `destructive` + password re-check |
 | Turn automatic agent updates on or off | `platform` |
@@ -105,7 +105,104 @@ starts, with the VM's network disconnected:
   keep it running for up to 8 hours.
 * Scheduled boot verification (repository settings) tests each machine's newest image regularly and removes the VM
   each time.
-* For a lasting copy rather than a test, use **Restore › A new Hyper-V VM** on a Hyper-V host instead.
+* For a lasting copy rather than a test, use **Restore › Hyper-V: a new VM on this host** on a Hyper-V host instead.
+
+## Backing up chosen files and folders
+
+A plan's **What** can be **Chosen files and folders**: full paths, one per line (`C:\Users\anna\Documents`,
+`/home/anna`, or a network share `\\server\share\folder` read with the backup agent's own sign-in), and names or paths
+to leave out (`*.tmp`, `~$*`, `node_modules`). After the first backup only new and changed files are read; every backup
+still restores on its own. On Windows the files are read from a VSS snapshot, so open files are copied too.
+
+Folder backups are listed with the machine's other backups as **Files and folders**. Restore them with **Browse files**:
+to a folder, as a download, or **Where each item was**. They can be scanned for malware like disk images.
+
+Design: `backup/docs/design/file-backup.md`.
+
+## Restoring one SQL Server or Exchange database
+
+Application-aware Windows backups list each database's files, so **Images & restore › Restore a database** can restore
+one on its own onto a Windows machine, into a new folder:
+
+* **SQL Server**: optionally attached under a new name (the live database is untouched); an attach script is always left
+  in the folder, for when the agent is not allowed to attach.
+* **Exchange**: the database and logs with a script for the Exchange Management Shell that mounts them as a recovery
+  database and restores chosen mailboxes.
+
+Backups taken before this was added restore databases with the volume. Design: `backup/docs/design/app-restore.md`.
+
+## Backup reports for customers
+
+**Reports › Backup report** shows a customer's device backup for the last 7, 30 or 90 days: machines protected, success
+rate, restores, restore tests and malware scans, each machine's last good backup, failed backups and what to do next. It
+can be emailed on a schedule (weekly: 7 days, monthly: 30, quarterly: 90) like the other reports. See
+`docs/REPORTS_AND_BRANDING.md`.
+
+## Finding a file across backups
+
+**Images & restore › a machine › Find a file in these backups** searches every unlocked backup of the machine by name
+(`budget 2026`), pattern (`*.xlsx`) or path (`Documents/report`). Results show each file with the backups that hold it;
+**Open** goes straight to it in Browse files. Each backup is indexed on the machine after it is taken; the index stays on
+the machine and only matches come back (kept a day). Design: `backup/docs/design/search.md`.
+
+## Legal hold
+
+A backup on legal hold is never deleted by retention, whatever the plan keeps. In **Images & restore › a machine**,
+**Legal hold** on a row holds that backup; **Hold all current backups** holds every backup the machine has now (later
+backups are not held). Both need a reason (3 to 500 characters, for example a matter number), which is shown on the row
+and recorded in the audit log. Releasing a hold needs a fresh password check and is audited too. Needs the configure
+permission.
+
+Holds are kept by the server and sent with each retention job; the agent marks held backups as kept with the reason
+"legal hold". An agent too old to understand holds is not sent retention while any backup in the repository is held:
+an alert asks for it to be updated, and nothing is deleted meanwhile. A hold does not stop someone with access to the
+repository deleting files by hand; pair it with immutable storage (S3 Object Lock, below) where that matters.
+
+## Malware scans of backups
+
+**Images & restore › Scan** checks the files inside a backup against your threat intelligence (malicious file hashes
+and YARA rules under Protection › Threat intelligence). The machine the backup came from (or another with access) reads
+the files from the repository; contents never leave it and only findings are reported. By default programs, scripts,
+shortcuts and macro documents are checked; **Every file** checks the rest too. Files that did not change since an
+earlier scan of the same machine are not read again.
+
+* Each backup shows **clean**, **infected** or **scan incomplete**; a machine with infected backups shows a warning and
+  its **last clean** backup.
+* Malware found raises a critical alert (`backup.malware_found`).
+* Restoring an infected backup, or files that include an infected one, asks for **Restore it anyway**; the choice is in
+  the audit log.
+* A plan can **scan each new backup for malware** (plan editor › Malware).
+
+Design: `backup/docs/design/malware-scan.md`.
+
+## Restoring to a virtual machine
+
+**Images & restore › Restore › Restore to** offers, depending on the machine that restores:
+
+| Option | Writes | Then |
+|---|---|---|
+| Hyper-V: a new VM on this host | VHDX files and the VM (Hyper-V hosts) | Start it in Hyper-V Manager |
+| Hyper-V: VHDX disk files | VHDX files | Attach them to a VM |
+| QEMU / KVM | qcow2 files and `start-<name>.sh` | Run the script on a KVM host (OVMF is used for UEFI systems), or import the disks with `virt-install --import` (the script shows the line) or into Proxmox |
+| VirtualBox | VDI files and `register-<name>.cmd` (Windows) or `.sh` | Run the script on the machine with VirtualBox; the VM then appears in VirtualBox Manager |
+| VMware | VMDK files (one growable file each) and `<name>.vmx` | Open the .vmx in VMware Workstation, Fusion or Player. For ESXi, copy the folder to a datastore and convert each disk with `vmkfstools -i <disk>.vmdk -d thin <new>.vmdk` |
+| Azure | a fixed VHD page blob per disk in your storage container (only data is uploaded) | Run the Azure CLI commands the job shows to make a managed disk and VM |
+| AWS | a VHDX per disk in your S3 bucket (written to a staging folder first) | Run the `aws ec2 import-image` command the job shows (needs the vmimport role) |
+| A physical disk | the disk, overwritten | See bare-metal recovery below |
+
+For Azure and AWS, the storage account key or access keys are encrypted in the browser for the restoring machine; the
+server never sees them.
+
+**Standby VM** (plan editor): after each backup, the new image is restored as a Hyper-V VM or VM files on a chosen host,
+replacing the previous standby once ready, and never while the standby VM is running (after a failover). Design:
+`backup/docs/design/cloud-restore.md`.
+
+The files go into a new folder named after the VM, in the folder you choose on the restoring machine. The VM gets the
+CPUs and memory recorded at backup (2 CPUs and 4 GB for a physical machine), the same firmware (UEFI or BIOS, with
+Secure Boot in VMware when it was on) and a SATA disk controller with one NAT network adapter. A Windows system backed
+up from a physical machine may stop at INACCESSIBLE_BOOT_DEVICE in a VM: try another disk controller, or restore it
+with the recovery media, which prepares Windows for different hardware. Disks with 4096-byte sectors can only be
+restored as VHDX. A VMDK holds at most 2 TiB less 1 GiB.
 
 ## Live backups of Linux servers
 

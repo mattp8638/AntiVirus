@@ -5,7 +5,8 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { api, ago, fmtTime, getToken, lockRepositories, rememberReauth as rememberReauthToken, onUnlockChange, rememberUnlock, unlockedUntil } from "../api";
 import { useApp } from "../app-context";
 import { newRecoveryKey, seal, sealSupported, type Sealed } from "../backup-seal";
-import { FileBrowser } from "./BackupFiles";
+import { FileBrowser, type BrowseStart } from "./BackupFiles";
+import { SearchBackups } from "./BackupSearch";
 import { AppsAndClusters, isAppPlan } from "./BackupApps";
 import { confirmDialog, promptDialog } from "../components/dialogs";
 import { ErrorNote, Modal, PageHead, Pill, Stat, Table, Tabs, TenantSelect, useAction, useAutoRefresh, useData, useListData } from "../components/ui";
@@ -39,13 +40,17 @@ interface Plan {
   id: string; name: string; agentId: string; agentName: string; repositoryId: string; job: any; label: string;
   schedule: any; retention: any; enabled: boolean; nextRunAt: string | null; lastRunAt: string | null;
   copyToRepositoryId?: string | null;
+  standby?: { agentId: string; type: string; format: string | null; name: string; directory: string } | null;
 }
-type ImageApp = { writer: string; component: string; caption?: string; included: boolean; note?: string | null };
+type ImageApp = { writer: string; component: string; caption?: string; included: boolean; note?: string | null; fileSets?: number };
 interface Image {
   imageId: string; repositoryId: string; agentId: string | null; hostname: string; created: number; kind: string;
   consistency: string; applications?: ImageApp[]; capturedBytes: number; storedNewBytes: number; disks: any[]; label: string | null; vmName: string | null;
   anomaly: string | null; lastBootCheck: { outcome: string; at: string; message: string } | null;
+  lastScan?: ScanSummary | null; source?: "files" | "disks";
+  legalHold?: { reason: string; by: string; at: string } | null;
 }
+interface ScanSummary { state: "clean" | "infected" | "incomplete"; at: string; findings: number; filesScanned: number }
 
 const FINAL = ["succeeded", "warning", "failed", "cancelled"];
 const STATE_TONE: Record<string, string> = { succeeded: "good", warning: "warn", failed: "bad", cancelled: "muted", queued: "muted", dispatched: "blue", running: "blue" };
@@ -961,11 +966,15 @@ function PlanEditor({ plan, agents, repos, onClose }: { plan: Plan | null; agent
   const [enabled, setEnabled] = useState(plan?.enabled ?? true);
   const [copyTo, setCopyTo] = useState(plan?.copyToRepositoryId ?? "");
   const caps = agent?.capabilities ?? [];
-  const jobKind = job ?? (caps.includes("backup_hyperv") ? { type: "backup_hyperv", vm_ids: [] } : caps.includes("backup_system") ? { type: "backup_system" } : { type: "backup_disks", paths: [] });
+  const baseKind = job ?? (caps.includes("backup_hyperv") ? { type: "backup_hyperv", vm_ids: [] } : caps.includes("backup_system") ? { type: "backup_system" } : { type: "backup_disks", paths: [] });
+  const [scanAfter, setScanAfter] = useState<boolean>(!!plan?.job?.settings?.scan_after_backup);
+  const [standby, setStandby] = useState<{ agentId: string; type: string; format: string; name: string; directory: string } | null>(
+    plan?.standby ? { agentId: plan.standby.agentId, type: plan.standby.type, format: plan.standby.format ?? "qcow2", name: plan.standby.name, directory: plan.standby.directory } : null);
+  const jobKind = { ...baseKind, settings: { ...(baseKind.settings ?? {}), scan_after_backup: scanAfter } };
   const repo = repoId || usable[0]?.id || "";
   const save = () => run(() => plan
-    ? api(`backup/plans/${plan.id}`, { method: "PATCH", body: { name, job: jobKind, schedule, retention, enabled, copyToRepositoryId: copyTo || null } })
-    : api("backup/plans", { body: { name, agentId, repositoryId: repo, job: jobKind, schedule, retention, enabled, copyToRepositoryId: copyTo || null } }), "Plan saved").then((r) => r !== undefined && onClose());
+    ? api(`backup/plans/${plan.id}`, { method: "PATCH", body: { name, job: jobKind, schedule, retention, enabled, copyToRepositoryId: copyTo || null, standby } })
+    : api("backup/plans", { body: { name, agentId, repositoryId: repo, job: jobKind, schedule, retention, enabled, copyToRepositoryId: copyTo || null, standby } }), "Plan saved").then((r) => r !== undefined && onClose());
   const remove = async () => { if (plan && await confirmDialog(`Delete the plan ${plan.name}? Its backups are kept.`)) run(() => api(`backup/plans/${plan.id}`, { method: "DELETE" }), "Plan deleted").then(onClose); };
   return (
     <Modal wide title={plan ? `Edit ${plan.name}` : "New backup plan"} onClose={onClose}
@@ -975,16 +984,28 @@ function PlanEditor({ plan, agents, repos, onClose }: { plan: Plan | null; agent
         <label className="field">Machine<select value={agentId} disabled={!!plan} onChange={(e) => { setAgentId(e.target.value); setJob(null); setRepoId(""); }}>{agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
         <label className="field">Repository<select value={repo} disabled={!!plan} onChange={(e) => setRepoId(e.target.value)}>{usable.length === 0 && <option value="">No ready repository this machine can use</option>}{usable.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></label>
         <label className="field">What
-          <select value={jobKind.type} onChange={(e) => setJob(e.target.value === "backup_disks" ? { type: "backup_disks", paths: [] } : e.target.value === "backup_hyperv" ? { type: "backup_hyperv", vm_ids: [] } : { type: e.target.value })}>
+          <select value={jobKind.type} onChange={(e) => setJob(e.target.value === "backup_disks" ? { type: "backup_disks", paths: [] } : e.target.value === "backup_hyperv" ? { type: "backup_hyperv", vm_ids: [] } : e.target.value === "backup_files" ? { type: "backup_files", paths: [], excludes: [] } : { type: e.target.value })}>
             {caps.includes("backup_system") && <option value="backup_system">Whole system (live, consistent)</option>}
             {caps.includes("backup_disks") && <option value="backup_disks">Chosen disks</option>}
             {caps.includes("backup_hyperv") && <option value="backup_hyperv">Hyper-V VMs</option>}
+            {caps.includes("backup_files") && <option value="backup_files">Chosen files and folders</option>}
           </select>
         </label>
       </div>
       {jobKind.type === "backup_disks" && <div className="small" style={{ marginTop: 8 }}>{(agentInventoryDisks(agent)).map((d) => (
         <label key={d} className="row" style={{ gap: 6 }}><input type="checkbox" checked={jobKind.paths.includes(d)} onChange={(e) => setJob({ ...jobKind, paths: e.target.checked ? [...jobKind.paths, d] : jobKind.paths.filter((x: string) => x !== d) })} />{d}</label>
       ))}<input placeholder="or type a device path and press Enter" onKeyDown={(e) => { const v = (e.target as HTMLInputElement).value.trim(); if (e.key === "Enter" && v) setJob({ ...jobKind, paths: [...jobKind.paths, v] }); }} /></div>}
+      {jobKind.type === "backup_files" && <div className="form-grid" style={{ marginTop: 8 }}>
+        <label className="field">Files and folders (one per line)
+          <textarea rows={4} value={(jobKind.paths ?? []).join("\n")} placeholder={agent?.os?.family === "windows" ? "C:\\Users\\anna\\Documents\n\\\\nas\\share\\Accounts" : "/home/anna\n/srv/data"}
+            onChange={(e) => setJob({ ...jobKind, paths: e.target.value.split("\n").map((x) => x.trim()).filter(Boolean) })} />
+          <span className="small muted">Full paths on {agent?.name ?? "the machine"}. Network shares (\\\\server\\share\\folder) are read with the backup agent's own sign-in.</span></label>
+        <label className="field">Leave out (one per line)
+          <textarea rows={4} value={(jobKind.excludes ?? []).join("\n")} placeholder={"*.tmp\n~$*\nnode_modules"}
+            onChange={(e) => setJob({ ...jobKind, excludes: e.target.value.split("\n").map((x) => x.trim()).filter(Boolean) })} />
+          <span className="small muted">Names with * and ? wildcards, or full paths. Paging files, the recycle bin and System Volume Information are always left out.</span></label>
+      </div>}
+      {jobKind.type === "backup_files" && <p className="small muted">Only new and changed files are read after the first backup; every backup still restores on its own. On Windows the files are read from a VSS snapshot, so open files are copied too. Restore them with Images & restore › Browse files.</p>}
       {jobKind.type === "backup_hyperv" && <p className="small muted">All VMs on the host, including ones added later. Running VMs are captured with production checkpoints.</p>}
       <h3 style={{ marginTop: 12 }}>When</h3>
       <div className="form-grid">
@@ -1014,6 +1035,23 @@ function PlanEditor({ plan, agents, repos, onClose }: { plan: Plan | null; agent
         </select></label>
         <p className="small muted">The machine copies each new image to the second repository, encrypted for it and verified there (for example a NAS backup copied to S3 or Azure). It needs access to both.</p>
       </>}
+      <h3 style={{ marginTop: 12 }}>Standby VM</h3>
+      <label className="row small" style={{ gap: 6 }}><input type="checkbox" checked={!!standby} onChange={(e) => setStandby(e.target.checked ? { agentId: agents.find((a) => a.capabilities.includes("restore_hyperv"))?.id ?? agentId, type: "hyperv_vm", format: "qcow2", name: `${agent?.name ?? "server"}-standby`.replace(/[^A-Za-z0-9 ._-]/g, "-"), directory: "D:\\Standby" } : null)} /> After each backup, refresh a ready-to-start VM from it</label>
+      {standby && <div className="form-grid">
+        <label className="field">On<select value={standby.agentId} onChange={(e) => setStandby({ ...standby, agentId: e.target.value })}>{agents.filter((a) => a.capabilities.includes("restore_hyperv") || a.capabilities.includes("restore_vm_files")).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
+        <label className="field">As<select value={standby.type === "vm_files" ? standby.format : "hyperv_vm"} onChange={(e) => setStandby(e.target.value === "hyperv_vm" ? { ...standby, type: "hyperv_vm" } : { ...standby, type: "vm_files", format: e.target.value })}>
+          <option value="hyperv_vm">A Hyper-V VM</option><option value="qcow2">QEMU / KVM files</option><option value="vdi">VirtualBox files</option><option value="vmdk">VMware files</option>
+        </select></label>
+        <label className="field">VM name<input value={standby.name} onChange={(e) => setStandby({ ...standby, name: e.target.value })} /></label>
+        <label className="field">Folder on that machine<input value={standby.directory} onChange={(e) => setStandby({ ...standby, directory: e.target.value })} /></label>
+      </div>}
+      {standby && <p className="small muted">The new disks are written to a new folder; the previous standby is replaced only once they are ready, and never while its VM is running (after a failover). The host needs access to this plan's repository.</p>}
+      <h3 style={{ marginTop: 12 }}>Malware</h3>
+      <label className="row small" style={{ gap: 6 }}>
+        <input type="checkbox" checked={scanAfter} disabled={!caps.includes("scan_images")} onChange={(e) => setScanAfter(e.target.checked)} />
+        Scan each new backup for malware on this machine{caps.includes("scan_images") ? "" : " (update its backup agent first)"}
+      </label>
+      <p className="small muted">Programs, scripts and macro documents in the backup are checked against your threat intelligence (malicious file hashes and YARA rules). Files are read on the machine, never sent anywhere; only findings are reported. Unchanged files are not read again.</p>
       <label className="row small" style={{ gap: 6 }}><input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} /> Enabled</label>
     </Modal>
   );
@@ -1029,6 +1067,7 @@ interface ImageDevice {
   key: string; name: string; hostname: string; vmName: string | null; agentId: string | null; tenantId: string;
   images: number; lastCreated: number; firstCreated: number; storedBytes: number; lastKind: string; lastConsistency: string;
   anomalies: number; lastVerified: string | null; repositories: { id: string; name: string; images: number; unlocked: boolean }[];
+  infected?: number; lastCleanCreated?: number | null; latestScan?: ScanSummary | null; held?: number;
 }
 
 /** Re-render when a repository is unlocked or locked, and when an unlock runs out. */
@@ -1068,7 +1107,7 @@ function Images({ agents, repos }: { agents: BackupAgent[]; repos: Repo[] }) {
       </div>
       <Table rows={rows} empty="No backups yet." onRow={pick}
         columns={[
-          { key: "name", label: "Machine", render: (d) => <><b>{d.name}</b>{d.vmName && <span className="small muted"> · VM on {d.hostname}</span>}{d.anomalies > 0 && <div className="small" style={{ color: "#fca5a5" }}>⚠ {d.anomalies} backup{d.anomalies === 1 ? "" : "s"} flagged</div>}</> },
+          { key: "name", label: "Machine", render: (d) => <><b>{d.name}</b>{d.vmName && <span className="small muted"> · VM on {d.hostname}</span>}{d.anomalies > 0 && <div className="small" style={{ color: "#fca5a5" }}>⚠ {d.anomalies} backup{d.anomalies === 1 ? "" : "s"} flagged</div>}{(d.infected ?? 0) > 0 && <div className="small" style={{ color: "#fca5a5" }}>⚠ Malware in {d.infected} backup{d.infected === 1 ? "" : "s"}</div>}</> },
           { key: "images", label: "Backups", render: (d) => <span>{d.images} <span className="small muted">since {new Date(d.firstCreated * 1000).toLocaleDateString()}</span></span> },
           { key: "last", label: "Latest", render: (d) => <span>{unixTime(d.lastCreated)} <span className="small muted">{d.lastKind} · {d.lastConsistency}</span></span> },
           { key: "stored", label: "Stored", render: (d) => <span className="small">{bytes(d.storedBytes)}</span> },
@@ -1090,7 +1129,28 @@ function DeviceImages({ device, agents, repos, onBack, onUnlock }: {
   const [restore, setRestore] = useState<Image | null>(null);
   const [boot, setBoot] = useState<Image | null>(null);
   const [files, setFiles] = useState<Image | null>(null);
+  const [filesAt, setFilesAt] = useState<BrowseStart | undefined>(undefined);
+  const [scan, setScan] = useState<Image | null>(null);
+  const [appRestore, setAppRestore] = useState<Image | null>(null);
   const { can } = useApp();
+  const { run } = useAction();
+  const toggleHold = async (i: Image) => {
+    if (i.legalHold) {
+      if (!(await confirmDialog(`Release the legal hold on the backup of ${unixTime(i.created)} (${i.legalHold.reason})? Retention may then delete it. You will be asked for your password.`))) return;
+      await run(() => api(`backup/images/${i.imageId}/legal-hold`, { body: { hold: false } }), "Hold released");
+    } else {
+      const reason = await promptDialog("Why is this backup held? (a case or matter reference)", "");
+      if (!reason) return;
+      await run(() => api(`backup/images/${i.imageId}/legal-hold`, { body: { hold: true, reason } }), "Backup held: retention will keep it");
+    }
+    images.reload();
+  };
+  const holdAll = async () => {
+    const reason = await promptDialog(`Hold every current backup of ${device.name}? Give a case or matter reference.`, "");
+    if (!reason) return;
+    await run(() => api("backup/legal-hold/device", { body: { device: device.key, reason } }), "Backups held: retention will keep them");
+    images.reload();
+  };
   const locked = device.repositories.filter((r) => !unlockedUntil(r.id));
   const until = Math.max(...device.repositories.map((r) => unlockedUntil(r.id) ?? 0));
   useEffect(() => { if (locked.length === device.repositories.length) onBack(); }, [tick]);  // ran out, or locked
@@ -1100,25 +1160,38 @@ function DeviceImages({ device, agents, repos, onBack, onUnlock }: {
         <button className="small" onClick={onBack}>← All machines</button>
         <h3 style={{ margin: 0 }}>{device.name}{device.vmName && <span className="small muted"> · VM on {device.hostname}</span>}</h3>
         <span className="small muted">Unlocked until {new Date(until).toLocaleTimeString()}</span>
-        <button className="small" style={{ marginLeft: "auto" }} onClick={() => { lockRepositories(device.repositories.map((r) => r.id)); onBack(); }}>Lock</button>
+        {can("configure") && <button className="small" style={{ marginLeft: "auto" }} onClick={holdAll}>Hold all current backups</button>}
+        <button className="small" style={can("configure") ? undefined : { marginLeft: "auto" }} onClick={() => { lockRepositories(device.repositories.map((r) => r.id)); onBack(); }}>Lock</button>
       </div>
       {locked.length > 0 && <p className="small">{locked.map((r) => `${r.images} backup${r.images === 1 ? "" : "s"} in ${r.name}`).join(", ")} still locked. <button className="small" onClick={onUnlock}>Unlock</button></p>}
+      {can("scripts") && <SearchBackups device={device.key} images={(images.data ?? []).map((i) => ({ imageId: i.imageId, created: i.created }))}
+        onOpen={(id, at) => { const im = images.data?.find((i) => i.imageId === id); if (im) { setFilesAt(at); setFiles(im); } }} />}
+      {(device.infected ?? 0) > 0 && <div className="card warn-card" role="alert" style={{ marginBottom: 10 }}>
+        <b>Malware was found in {device.infected} backup{device.infected === 1 ? "" : "s"} of {device.name}.</b>{" "}
+        {device.lastCleanCreated ? <>The last clean backup was taken {unixTime(device.lastCleanCreated)}: restore from it, or from an earlier clean one.</> : "No backup of this machine has been scanned clean yet: scan an older backup to find one."}
+      </div>}
       <Table rows={images.data} empty="No backups."
         columns={[
-          { key: "what", label: "Backup", render: (i) => <><span>{i.kind}</span>{i.label && <span className="small muted"> · {i.label}</span>}{device.repositories.length > 1 && <div className="small muted">{repos.find((r) => r.id === i.repositoryId)?.name}</div>}{i.anomaly && <div className="small" style={{ color: "#fca5a5" }}>⚠ {i.anomaly}</div>}</> },
+          { key: "what", label: "Backup", render: (i) => <><span>{i.source === "files" ? "Files and folders" : i.kind}</span>{i.legalHold && <div className="small" title={`${i.legalHold.reason} (by ${i.legalHold.by}, ${ago(i.legalHold.at)})`}><Pill value="On legal hold" tone="warn" /> <span className="muted">{i.legalHold.reason}</span></div>}{i.label && <span className="small muted"> · {i.label}</span>}{device.repositories.length > 1 && <div className="small muted">{repos.find((r) => r.id === i.repositoryId)?.name}</div>}{i.anomaly && <div className="small" style={{ color: "#fca5a5" }}>⚠ {i.anomaly}</div>}</> },
           { key: "created", label: "Taken (oldest first)", render: (i) => unixTime(i.created) },
           { key: "size", label: "Size", render: (i) => <span className="small">{bytes(i.capturedBytes)} · {bytes(i.storedNewBytes)} new</span> },
           { key: "consistency", label: "Consistency", render: (i) => <><span>{i.consistency}</span><AppsLine apps={i.applications} /></> },
-          { key: "boot", label: "Boots?", render: (i) => i.lastBootCheck ? <Pill value={i.lastBootCheck.outcome} tone={i.lastBootCheck.outcome === "failed" ? "bad" : "good"} /> : <span className="small muted">not tested</span> },
+          { key: "boot", label: "Boots?", render: (i) => i.source === "files" ? <span className="small muted">n/a</span> : i.lastBootCheck ? <Pill value={i.lastBootCheck.outcome} tone={i.lastBootCheck.outcome === "failed" ? "bad" : "good"} /> : <span className="small muted">not tested</span> },
+          { key: "scan", label: "Malware", render: (i) => <ScanPill scan={i.lastScan} clean={!!device.lastCleanCreated && i.created === device.lastCleanCreated} /> },
           { key: "act", label: "", render: (i) => <div className="row" style={{ gap: 4 }}>
-            {can("scripts") && <button className="small primary" onClick={() => setFiles(i)}>Browse files</button>}
-            {can("scripts") && <button className="small" onClick={() => setRestore(i)}>Restore</button>}
-            {can("scripts") && <button className="small" onClick={() => setBoot(i)}>Boot test</button>}
+            {can("scripts") && <button className="small primary" onClick={() => { setFilesAt(undefined); setFiles(i); }}>Browse files</button>}
+            {can("scripts") && i.source !== "files" && <button className="small" onClick={() => setRestore(i)}>Restore</button>}
+            {can("scripts") && i.source !== "files" && <button className="small" onClick={() => setBoot(i)}>Boot test</button>}
+            {can("scripts") && <button className="small" onClick={() => setScan(i)}>Scan</button>}
+            {can("scripts") && restorableApps(i).length > 0 && <button className="small" onClick={() => setAppRestore(i)}>Restore a database</button>}
+            {can("configure") && <button className="small" onClick={() => toggleHold(i)}>{i.legalHold ? "Release hold" : "Legal hold"}</button>}
           </div> },
         ]} />
       {restore && <RestoreDialog image={restore} agents={agents} repos={repos} onClose={() => setRestore(null)} />}
       {boot && <BootDialog image={boot} agents={agents} repos={repos} onClose={() => setBoot(null)} />}
-      {files && <FileBrowser image={files} onClose={() => setFiles(null)} />}
+      {files && <FileBrowser image={files} start={filesAt} onClose={() => setFiles(null)} />}
+      {scan && <ScanDialog image={scan} agents={agents} onClose={() => { setScan(null); images.reload(); }} />}
+      {appRestore && <AppRestoreDialog image={appRestore} agents={agents} onClose={() => setAppRestore(null)} />}
     </div>
   );
 }
@@ -1210,6 +1283,138 @@ function AppsLine({ apps }: { apps?: ImageApp[] }) {
     : <>apps: {named.length ? named.join(", ") : "Windows system state"}</>}</div>;
 }
 
+/** SQL Server and Exchange databases a backup can restore on their own (their files are listed in it). */
+function restorableApps(i: Image): ImageApp[] {
+  return (i.applications ?? []).filter((a) => (a.fileSets ?? 0) > 0 && (a.writer === "SqlServerWriter" || /exchange/i.test(a.writer)));
+}
+
+/** One SQL Server or Exchange database out of an application-aware backup. */
+function AppRestoreDialog({ image, agents, onClose }: { image: Image; agents: BackupAgent[]; onClose: () => void }) {
+  const { run, busy } = useAction();
+  const apps = restorableApps(image);
+  const [component, setComponent] = useState(apps[0]?.component ?? "");
+  const app = apps.find((a) => a.component === component);
+  const sql = app?.writer === "SqlServerWriter";
+  const able = agents.filter((a) => a.capabilities.includes("restore_apps"));
+  const [agentId, setAgentId] = useState(able.find((a) => a.id === image.agentId)?.id ?? able[0]?.id ?? "");
+  const [directory, setDirectory] = useState("D:\\Restores");
+  const db = component.split("\\").pop() ?? "";
+  const [attach, setAttach] = useState(true);
+  const [attachAs, setAttachAs] = useState(`${db}_restored`);
+  const [instance, setInstance] = useState("");
+  const infected = image.lastScan?.state === "infected";
+  const [allowInfected, setAllowInfected] = useState(false);
+  const go = () => run(() => api(`backup/images/${image.imageId}/restore-app`, { body: {
+    agentId, component, directory, ...(sql && attach ? { attachAs, sqlInstance: instance } : {}), ...(allowInfected ? { allowInfected: true } : {}) } }),
+    "Restore queued: follow it in Activity").then((r) => r !== undefined && onClose());
+  return (
+    <Modal title={`Restore a database from ${unixTime(image.created)}`} onClose={onClose}
+      footer={<button className="primary" disabled={busy || !agentId || !directory.trim() || !component || (infected && !allowInfected)} onClick={go}>Restore</button>}>
+      <div className="form-grid">
+        <label className="field">Database<select value={component} onChange={(e) => { setComponent(e.target.value); setAttachAs(`${e.target.value.split("\\").pop()}_restored`); }}>
+          {apps.map((a) => <option key={a.component} value={a.component}>{a.writer === "SqlServerWriter" ? "SQL Server" : "Exchange"}: {a.caption || a.component}</option>)}
+        </select></label>
+        <label className="field">Restored on<select value={agentId} onChange={(e) => setAgentId(e.target.value)}>
+          {able.length === 0 && <option value="">No Windows machine with an up-to-date agent</option>}
+          {able.map((a) => <option key={a.id} value={a.id}>{a.name}{a.online ? "" : " (offline)"}</option>)}
+        </select></label>
+        <label className="field">Into the folder<input value={directory} onChange={(e) => setDirectory(e.target.value)} /></label>
+      </div>
+      {sql && <>
+        <label className="row small" style={{ gap: 6, marginTop: 8 }}><input type="checkbox" checked={attach} onChange={(e) => setAttach(e.target.checked)} /> Attach it to SQL Server on that machine</label>
+        {attach && <div className="form-grid">
+          <label className="field">As database<input value={attachAs} onChange={(e) => setAttachAs(e.target.value)} /></label>
+          <label className="field">Instance<input value={instance} onChange={(e) => setInstance(e.target.value)} placeholder="blank for the default" /></label>
+        </div>}
+        <p className="small muted">The database files are copied out of the backup into a new folder named after the database, then attached under the new name, so the live database is not touched. If attaching is not allowed (the agent runs as Local System), the job leaves an attach script in the folder for a SQL Server administrator.</p>
+      </>}
+      {app && !sql && <p className="small muted">The database and log files are copied into a new folder with a script for the Exchange Management Shell: it mounts them as a recovery database and restores chosen mailboxes, or items into a folder of a mailbox.</p>}
+      {infected && <label className="row small" style={{ gap: 6, marginTop: 8 }}><input type="checkbox" checked={allowInfected} onChange={(e) => setAllowInfected(e.target.checked)} /> This backup contains malware (latest scan): restore from it anyway</label>}
+    </Modal>
+  );
+}
+
+/** A backup's latest malware scan, in words as well as colour. */
+function ScanPill({ scan, clean }: { scan?: ScanSummary | null; clean?: boolean }) {
+  if (!scan) return <span className="small muted">not scanned</span>;
+  if (scan.state === "infected") return <Pill value={`⚠ ${scan.findings} infected`} tone="bad" />;
+  if (scan.state === "incomplete") return <Pill value="scan incomplete" tone="warn" />;
+  return <span><Pill value="clean" tone="good" />{clean && <span className="small muted"> · last clean</span>}</span>;
+}
+
+interface ScanRecord {
+  id: number; at: string; state: string; filesScanned: number; bytesScanned: number; agentName: string | null; jobId: string | null;
+  findings: { volume: string; path: string; size: number; sha256: string; detections: { kind: string; name: string }[] }[];
+  summary: { volumes_scanned?: string[]; volumes_skipped?: string[]; rule_errors?: string[]; files_cached?: number;
+    files_skipped_large?: number; files_unreadable?: number; rules_used?: number; indicators_used?: number; truncated?: boolean; selection?: string; error?: string };
+}
+
+/** Scan a backup for malware on a machine with access, and see what earlier scans found. */
+function ScanDialog({ image, agents, onClose }: { image: Image; agents: BackupAgent[]; onClose: () => void }) {
+  const { run, busy } = useAction();
+  const scans = useListData<ScanRecord>(`backup/images/${image.imageId}/scans`);
+  useAutoRefresh(scans.reload, 5000);
+  const [all, setAll] = useState(false);
+  const able = agents.filter((a) => a.capabilities.includes("scan_images"));
+  const [agentId, setAgentId] = useState("");
+  const last = scans.data?.[0];
+  const go = () => run(() => api(`backup/images/${image.imageId}/scan`, { body: { allFiles: all, ...(agentId ? { agentId } : {}) } }),
+    "Scan queued: results appear here and in Activity");
+  return (
+    <Modal wide title={`Malware scan: ${image.vmName ?? image.hostname}, ${unixTime(image.created)}`} onClose={onClose}
+      footer={<button className="primary" disabled={busy || able.length === 0} onClick={go}>Scan now</button>}>
+      <div className="form-grid">
+        <label className="field">Scanned by<select value={agentId} onChange={(e) => setAgentId(e.target.value)}>
+          <option value="">The machine it came from, or another with access</option>
+          {able.map((a) => <option key={a.id} value={a.id}>{a.name}{a.online ? "" : " (offline)"}</option>)}
+        </select></label>
+      </div>
+      <label className="row small" style={{ gap: 6, marginTop: 6 }}><input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)} />
+        Every file (slower). Otherwise programs, libraries, scripts, shortcuts and macro documents, and files in Unix program and temporary folders.</label>
+      <p className="small muted">The machine reads the files from the backup and checks them against your threat intelligence (Protection › Threat intelligence: malicious file hashes and YARA rules). File contents never leave it; only findings are reported. Files up to 64 MB are scanned.</p>
+      {able.length === 0 && <ErrorNote error="No backup agent here can scan yet: update the backup agents (Backups › Machines)." />}
+      {last && <>
+        <h3 style={{ marginTop: 12 }}>Latest scan: <ScanPill scan={{ state: last.state as ScanSummary["state"], at: last.at, findings: last.findings.length, filesScanned: last.filesScanned }} /></h3>
+        <p className="small muted">{ago(last.at)} by {last.agentName ?? "a machine"}: {last.filesScanned.toLocaleString()} files ({last.summary.files_cached ?? 0} unchanged since an earlier scan, {bytes(last.bytesScanned)} read)
+          {last.summary.volumes_scanned?.length ? `, volumes ${last.summary.volumes_scanned.join(", ")}` : ""}; {last.summary.rules_used ?? 0} YARA rule files and {(last.summary.indicators_used ?? 0).toLocaleString()} file hashes.</p>
+        {last.summary.error && <ErrorNote error={last.summary.error} />}
+        {(last.summary.volumes_skipped ?? []).length > 0 && <p className="small">Not scanned: {last.summary.volumes_skipped!.join("; ")}</p>}
+        {(last.summary.rule_errors ?? []).length > 0 && <p className="small">Rules that could not be used: {last.summary.rule_errors!.join("; ")}</p>}
+        {last.findings.length > 0 && <Table rows={last.findings} empty=""
+          columns={[
+            { key: "path", label: "Infected file", render: (f) => <span className="mono small">{f.volume} {f.path}</span> },
+            { key: "what", label: "Detected as", render: (f) => <span className="small">{f.detections.map((d) => d.name).join(", ")}</span> },
+            { key: "size", label: "Size", render: (f) => <span className="small">{bytes(f.size)}</span> },
+            { key: "sha", label: "SHA-256", render: (f) => <span className="mono small" title={f.sha256}>{f.sha256.slice(0, 16)}…</span> },
+          ]} />}
+        {last.summary.truncated && <p className="small muted">Only the first 1000 findings are listed.</p>}
+      </>}
+      {scans.data && scans.data.length > 1 && <p className="small muted">Earlier scans: {scans.data.slice(1).map((r) => `${r.state} ${ago(r.at)}`).join(", ")}.</p>}
+    </Modal>
+  );
+}
+
+/** Where a backup can be restored to, and the capability the restoring machine needs for each. */
+const RESTORE_KINDS: { value: string; label: string; cap: string; missing: string }[] = [
+  { value: "hyperv_vm", label: "Hyper-V: a new VM on this host", cap: "restore_hyperv", missing: "needs a Hyper-V host" },
+  { value: "vhdx", label: "Hyper-V: VHDX disk files", cap: "restore_vhdx", missing: "not on this machine" },
+  { value: "qcow2", label: "QEMU / KVM: qcow2 disk files and a start script", cap: "restore_vm_files", missing: "update the backup agent" },
+  { value: "vdi", label: "VirtualBox: VDI disk files and a script that registers the VM", cap: "restore_vm_files", missing: "update the backup agent" },
+  { value: "vmdk", label: "VMware: VMDK disk files and a .vmx", cap: "restore_vm_files", missing: "update the backup agent" },
+  { value: "azure", label: "Azure: a VHD in a storage container, for a managed disk and VM", cap: "restore_cloud", missing: "update the backup agent" },
+  { value: "aws", label: "AWS: a VHDX in an S3 bucket, for VM Import (AMI)", cap: "restore_cloud", missing: "update the backup agent" },
+  { value: "disk", label: "A physical disk (overwrites it)", cap: "restore_disk", missing: "not on this machine" },
+];
+
+const VM_FILE_TARGETS = [
+  { value: "qcow2", files: "qcow2 disk files", definition: "a start script for qemu-system-x86_64 (and a virt-install line for libvirt)" },
+  { value: "vdi", files: "VDI disk files", definition: "a script that registers the VM in VirtualBox (VBoxManage)" },
+  { value: "vmdk", files: "VMDK disk files (VMware Workstation, Fusion, Player)", definition: "a .vmx to open in VMware" },
+];
+
+/** The agent's rule for VM names used in file names and scripts (vmdef.rs). */
+const VM_FILE_NAME = /^[A-Za-z0-9._-](?:[A-Za-z0-9 ._-]{0,78}[A-Za-z0-9._-])?$/;
+
 function RestoreDialog({ image, agents, repos, onClose }: { image: Image; agents: BackupAgent[]; repos: Repo[]; onClose: () => void }) {
   const { run, busy } = useAction();
   const { can } = useApp();
@@ -1232,27 +1437,66 @@ function RestoreDialog({ image, agents, repos, onClose }: { image: Image; agents
   const [confirm, setConfirm] = useState("");
   const [disk, setDisk] = useState(0);
   const [grow, setGrow] = useState(true);
-  const target = type === "vhdx" ? { type, directory } : type === "hyperv_vm" ? { type, name: vmName, directory, start: false } : { type, device, disk, confirm, grow };
-  const ok = type === "disk" ? device && confirm === device : directory.trim() && (type !== "hyperv_vm" || vmName.trim());
+  const infected = image.lastScan?.state === "infected";
+  const [allowInfected, setAllowInfected] = useState(false);
+  const cloud = type === "azure" || type === "aws";
+  const [cloudLoc, setCloudLoc] = useState("");
+  const [cloudUser, setCloudUser] = useState("");
+  const [cloudSecret, setCloudSecret] = useState("");
+  const [cloudRegion, setCloudRegion] = useState("eu-west-2");
+  const [cloudEndpoint, setCloudEndpoint] = useState("");
+  const [staging, setStaging] = useState("D:\\Staging");
+  const cloudName = (image.vmName ?? image.hostname).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").slice(0, 64) || "restored";
+  const cloudOk = cloud && /^(azure|s3):\/\/[a-z0-9]/.test(cloudLoc) && cloudLoc.startsWith(type === "azure" ? "azure://" : "s3://") && !!cloudUser && !!cloudSecret && (type === "azure" || !!staging.trim());
+  const vmFiles = VM_FILE_TARGETS.find((t) => t.value === type);
+  const named = type === "hyperv_vm" || !!vmFiles;
+  const target = type === "vhdx" ? { type, directory }
+    : type === "hyperv_vm" ? { type, name: vmName, directory, start: false }
+    : vmFiles ? { type: "vm_files", format: vmFiles.value, name: vmName, directory }
+    : { type, device, disk, confirm, grow };
+  const nameOk = type === "hyperv_vm" ? !!vmName.trim() : !vmFiles || VM_FILE_NAME.test(vmName);
+  const ok = type === "disk" ? device && confirm === device : cloud ? cloudOk : directory.trim() && nameOk;
+  // The first kind this machine can do, when it cannot do the one chosen (another machine was picked).
+  const available = RESTORE_KINDS.filter((k) => caps.includes(k.cap) && (k.value !== "disk" || can("destructive")));
+  useEffect(() => {
+    if (agent && !available.some((k) => k.value === type) && available.length) setType(available[0].value);
+  }, [agentId]);
   const go = () => run(async () => {
     if (needsAccess && agent) {
       const sealed: Sealed = await seal(agent.publicKey, JSON.stringify({ passphrase: pass, recovery_key: null }));
       await api(`backup/repositories/${image.repositoryId}/access`, { body: { agentId: agent.id, sealed, viaGateway: via } });
     }
-    return api("backup/restores", { body: { imageId: image.imageId, agentId, target } });
+    let finalTarget: Record<string, unknown> = target;
+    if (cloud && agent) {
+      // The storage account and key (or access key and secret) are sealed here for the restoring machine only.
+      const sealed: Sealed = await seal(agent.publicKey, JSON.stringify({ domain: "", username: cloudUser.trim(), password: cloudSecret }));
+      finalTarget = type === "azure"
+        ? { type, location: cloudLoc.trim(), endpoint: cloudEndpoint.trim(), name: cloudName, sealed }
+        : { type, location: cloudLoc.trim(), endpoint: cloudEndpoint.trim(), region: cloudRegion.trim(), name: cloudName, staging: staging.trim(), sealed };
+    }
+    return api("backup/restores", { body: { imageId: image.imageId, agentId, target: finalTarget, ...(allowInfected ? { allowInfected: true } : {}) } });
   }, "Restore queued: follow it in Activity").then((r) => r !== undefined && onClose());
   return (
     <Modal wide title={`Restore ${image.vmName ?? image.hostname} from ${unixTime(image.created)}`} onClose={onClose}
-      footer={<button className={type === "disk" ? "danger" : "primary"} disabled={busy || !ok || !agentId || (needsAccess && !pass)} onClick={go}>{type === "disk" ? "Overwrite the disk" : needsAccess ? "Give access and restore" : "Restore"}</button>}>
+      footer={<button className={type === "disk" ? "danger" : "primary"} disabled={busy || !ok || !agentId || (needsAccess && !pass) || (infected && !allowInfected)} onClick={go}>{type === "disk" ? "Overwrite the disk" : needsAccess ? "Give access and restore" : "Restore"}</button>}>
       <div className="form-grid">
         <label className="field">Machine that restores<select value={agentId} onChange={(e) => setAgentId(e.target.value)}>{pool.map((a) => <option key={a.id} value={a.id}>{a.name}{a.capabilities.includes("restore_hyperv") ? " · Hyper-V" : ""}{a.role === "recovery" ? " · recovery session" : ""}{hasAccess(a.id) ? "" : " · no access yet"}</option>)}</select></label>
         <label className="field">Restore to<select value={type} onChange={(e) => setType(e.target.value)}>
-          {caps.includes("restore_vhdx") && <option value="vhdx">Virtual disk files (VHDX)</option>}
-          {caps.includes("restore_hyperv") && <option value="hyperv_vm">A new Hyper-V VM</option>}
-          {caps.includes("restore_disk") && can("destructive") && <option value="disk">A physical disk (overwrites it)</option>}
+          {RESTORE_KINDS.filter((k) => k.value !== "disk" || can("destructive")).map((k) => {
+            const yes = caps.includes(k.cap);
+            return <option key={k.value} value={k.value} disabled={!yes}>{k.label}{yes ? "" : ` (${k.missing})`}</option>;
+          })}
         </select></label>
-        {type !== "disk" && <label className="field">Folder on that machine<input value={directory} onChange={(e) => setDirectory(e.target.value)} placeholder="D:\\Restores" /></label>}
-        {type === "hyperv_vm" && <label className="field">VM name<input value={vmName} onChange={(e) => setVmName(e.target.value)} /></label>}
+        {cloud && <>
+          <label className="field">{type === "azure" ? "Container and folder" : "Bucket and folder"}<input value={cloudLoc} onChange={(e) => setCloudLoc(e.target.value)} placeholder={type === "azure" ? "azure://restores/pm-acer" : "s3://vm-import/pm-acer"} /></label>
+          <label className="field">{type === "azure" ? "Storage account" : "Access key ID"}<input value={cloudUser} onChange={(e) => setCloudUser(e.target.value)} autoComplete="off" /></label>
+          <label className="field">{type === "azure" ? "Account key or SAS token" : "Secret access key"}<input type="password" value={cloudSecret} onChange={(e) => setCloudSecret(e.target.value)} autoComplete="off" /></label>
+          {type === "aws" && <label className="field">Region<input value={cloudRegion} onChange={(e) => setCloudRegion(e.target.value)} /></label>}
+          {type === "aws" && <label className="field">Staging folder on that machine<input value={staging} onChange={(e) => setStaging(e.target.value)} /></label>}
+          <label className="field">Endpoint (optional)<input value={cloudEndpoint} onChange={(e) => setCloudEndpoint(e.target.value)} placeholder="blank for the public cloud" /></label>
+        </>}
+        {type !== "disk" && !cloud && <label className="field">Folder on that machine<input value={directory} onChange={(e) => setDirectory(e.target.value)} placeholder={agent?.os?.family === "windows" ? "D:\\Restores" : "/srv/restores"} /></label>}
+        {named && <label className="field">VM name<input value={vmName} onChange={(e) => setVmName(e.target.value)} aria-invalid={!nameOk} /></label>}
         {type === "disk" && <>
           <label className="field">Image disk<select value={disk} onChange={(e) => setDisk(Number(e.target.value))}>{(image.disks.length ? image.disks : [{}]).map((d: any, i: number) => <option key={i} value={i}>Disk {i}{d.size ? ` (${bytes(d.size)})` : ""}</option>)}</select></label>
           {(agent?.diskInfo ?? []).some((d) => !d.system && !d.inUse) && <label className="field">Disk on {agent?.name}<select value={device} onChange={(e) => { setDevice(e.target.value); setConfirm(""); }}>
@@ -1262,6 +1506,17 @@ function RestoreDialog({ image, agents, repos, onClose }: { image: Image; agents
           <label className="field">Target device<input value={device} onChange={(e) => { setDevice(e.target.value); setConfirm(""); }} placeholder="\\.\PhysicalDrive1 or /dev/sdb" /></label>
         </>}
       </div>
+      {vmFiles && <p className="small muted" style={{ marginTop: 8 }}>
+        Writes {vmFiles.files} into <span className="mono">{directory.trim() || "the folder"}{agent?.os?.family === "windows" ? "\\" : "/"}{vmName || "name"}</span>, with {vmFiles.definition}. The VM gets the CPUs and memory recorded at backup (or 2 CPUs and 4 GB), the same firmware (UEFI or BIOS) and a SATA disk controller.
+        {vmFiles.value === "vmdk" && " For ESXi, copy the folder to a datastore and convert the disks with vmkfstools."}
+      </p>}
+      {type === "azure" && <p className="small muted" style={{ marginTop: 8 }}>Each disk becomes a fixed VHD page blob named {cloudName}-diskN.vhd (only data is uploaded). The job then shows the Azure CLI commands that make a managed disk and VM from it. The key is encrypted in this browser for the restoring machine only.</p>}
+      {type === "aws" && <p className="small muted" style={{ marginTop: 8 }}>Each disk is written as a VHDX in the staging folder, uploaded as {cloudName}-diskN.vhdx and removed. The job then shows the AWS CLI command that imports it as an AMI (it needs the vmimport role). The secret is encrypted in this browser for the restoring machine only.</p>}
+      {vmFiles && !nameOk && <ErrorNote error="VM names here can use letters, digits, spaces, dots, hyphens and underscores (up to 80), without a space at either end." />}
+      {infected && <div className="card warn-card" role="alert" style={{ marginTop: 10 }}>
+        <b>The latest malware scan found {image.lastScan!.findings} infected file{image.lastScan!.findings === 1 ? "" : "s"} in this backup.</b> Restoring it brings them back. Prefer an earlier clean backup, or restore and clean it before use.
+        <label className="row small" style={{ gap: 6, marginTop: 6 }}><input type="checkbox" checked={allowInfected} onChange={(e) => setAllowInfected(e.target.checked)} /> Restore it anyway</label>
+      </div>}
       {needsAccess && (
         <div className="card" style={{ marginTop: 10 }}>
           <b>{agent?.name} has no access to {repo?.name ?? "this repository"} yet.</b>

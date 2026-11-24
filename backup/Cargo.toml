@@ -17,6 +17,9 @@ members = [
     "crates/k8s",
     "crates/saas",
     "crates/cdp",
+    "crates/scan",
+    "crates/filebackup",
+    "crates/catalog",
 ]
 
 [workspace.package]
@@ -30,6 +33,9 @@ rust-version = "1.85"
 k8s = { path = "crates/k8s" }
 saas = { path = "crates/saas" }
 cdp = { path = "crates/cdp" }
+scan = { path = "crates/scan" }
+filebackup = { path = "crates/filebackup" }
+catalog = { path = "crates/catalog" }
 core-format = { path = "crates/core-format" }
 engine = { path = "crates/engine" }
 snapshot-linux = { path = "crates/snapshot-linux" }

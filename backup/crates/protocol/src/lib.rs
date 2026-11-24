@@ -273,6 +273,48 @@ pub enum RestoreTarget {
         switch: Option<String>,
         #[serde(default)]
         start: bool,
+        /// Standby VM: replace the VM of this name made by an earlier
+        /// standby restore, once the new disks are written (never a running
+        /// VM). docs/design/cloud-restore.md §4.
+        #[serde(default)]
+        replace: bool,
+    },
+    /// Disk files for another hypervisor in `directory/<name>`, with a VM
+    /// definition next to them: QEMU/KVM ("qcow2", a start script),
+    /// VirtualBox ("vdi", a script that registers the VM) or VMware
+    /// ("vmdk", a .vmx). Agents that can report `restore_vm_files`.
+    VmFiles {
+        format: String,
+        name: String,
+        directory: String,
+        /// Standby: replace the files of an earlier standby restore of this
+        /// name once the new ones are written.
+        #[serde(default)]
+        replace: bool,
+    },
+    /// Each disk as a fixed VHD page blob in an Azure storage container,
+    /// ready for a managed disk and VM (docs/design/cloud-restore.md).
+    /// `sealed` holds the storage account (username) and its key or a SAS
+    /// token (password), sealed to this agent. Agents that report
+    /// `restore_cloud`.
+    Azure {
+        /// `azure://container/prefix`.
+        location: String,
+        endpoint: String,
+        name: String,
+        sealed: seal::Sealed,
+    },
+    /// Each disk as a VHDX object in an S3 bucket, for AWS VM Import. The
+    /// VHDX is written to `staging` on this machine first and removed after
+    /// the upload. `sealed`: access key ID (username) and secret (password).
+    Aws {
+        /// `s3://bucket/prefix`.
+        location: String,
+        endpoint: String,
+        region: String,
+        name: String,
+        staging: String,
+        sealed: seal::Sealed,
     },
     /// Raw write of one image disk to a device or file. `confirm` must
     /// equal `device`: the administrator typed it.
@@ -320,6 +362,44 @@ pub enum JobKind {
         #[serde(default)]
         settings: BackupSettings,
     },
+    /// Restore one application component (a SQL Server or Exchange
+    /// database) from an application-aware image into `directory/<name>`;
+    /// SQL Server databases can be attached as `attach_as`
+    /// (docs/design/app-restore.md). Agents that report `restore_apps`.
+    RestoreApplication {
+        image_id: Uuid,
+        component: String,
+        directory: String,
+        #[serde(default)]
+        attach_as: Option<String>,
+        #[serde(default)]
+        sql_instance: String,
+    },
+    /// Build (and keep on the agent) the file catalogue of an image, for
+    /// searching across backups (docs/design/search.md).
+    IndexImage { image_id: Uuid },
+    /// Search the file catalogues of `images` (newest first) for a name
+    /// or pattern; images without one are indexed while the time budget lasts.
+    SearchFiles {
+        query: String,
+        images: Vec<Uuid>,
+        #[serde(default)]
+        limit: u32,
+        #[serde(default)]
+        budget_secs: u32,
+    },
+    /// Chosen files and folders (folder backup, docs/design/file-backup.md):
+    /// local paths, or network shares (`\\server\share\folder`) read with
+    /// the agent's own sign-in. Agents that report `backup_files`.
+    BackupFiles {
+        paths: Vec<String>,
+        /// File or folder names (`*.tmp`, `node_modules`) or full paths to
+        /// leave out, besides the built-in ones (paging files, recycle bin).
+        #[serde(default)]
+        excludes: Vec<String>,
+        #[serde(default)]
+        settings: BackupSettings,
+    },
     /// Hyper-V VMs by ID; empty = every VM on the host.
     BackupHyperv {
         #[serde(default)]
@@ -354,6 +434,10 @@ pub enum JobKind {
         retention: Retention,
         #[serde(default)]
         dry_run: bool,
+        /// Images on legal hold: kept whatever the policy says. Sent only
+        /// to agents that report `legal_hold`.
+        #[serde(default)]
+        held: Vec<Uuid>,
     },
     /// Delete chunks no image references.
     Prune {
@@ -386,6 +470,22 @@ pub enum JobKind {
     },
     /// Power off a VM left running by a boot check.
     StopVm { session_id: Uuid },
+    /// Scan the files inside an image for malware with the platform's
+    /// detection content: malicious SHA-256 values and YARA rules
+    /// (docs/design/malware-scan.md). Agents that report `scan_images`.
+    ScanImage {
+        image_id: Uuid,
+        #[serde(default)]
+        indicators: Vec<String>,
+        #[serde(default)]
+        rules: Vec<ScanRule>,
+        /// "executables" (default) or "all".
+        #[serde(default)]
+        selection: String,
+        /// Files larger than this are not scanned (MiB, default 64).
+        #[serde(default)]
+        max_file_mib: u32,
+    },
     /// Without `volume`: the image's volumes. With it: the folder `path`
     /// (`/`-separated from the volume root) in that volume.
     BrowseFiles {
@@ -499,6 +599,11 @@ impl JobKind {
             JobKind::Restore { .. } => "Restore",
             JobKind::BootCheck { .. } => "Boot check",
             JobKind::StopVm { .. } => "Stop VM",
+            JobKind::ScanImage { .. } => "Malware scan",
+            JobKind::BackupFiles { .. } => "Back up files and folders",
+            JobKind::IndexImage { .. } => "Index files",
+            JobKind::RestoreApplication { .. } => "Restore application data",
+            JobKind::SearchFiles { .. } => "Search backups",
             JobKind::CheckAccess { .. } => "Test connection",
             JobKind::LocalRecovery { action, .. } => match action {
                 LocalRecoveryAction::Install => "Install local recovery",
@@ -525,6 +630,13 @@ pub struct VolumeRef {
 
 fn default_conflict() -> String {
     "rename".into()
+}
+
+/// One YARA rule source of a `ScanImage` job.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScanRule {
+    pub name: String,
+    pub source: String,
 }
 
 /// Where the repository is and the secret to open it, sealed to this agent.
@@ -791,6 +903,9 @@ pub struct ImageApplication {
     pub included: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// Number of file sets recorded for it (0: restorable only as a volume).
+    #[serde(default)]
+    pub file_sets: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

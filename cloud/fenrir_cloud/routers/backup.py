@@ -30,7 +30,7 @@ from ..config import get_settings
 from ..deps import REAUTH_HEADER, REAUTH_MINUTES, Principal, current_principal, require_reauth, scoped_tenant
 from ..security import digest, issue_token, read_token, reauth_state
 from ..models import (BackupAgent, BackupBootCheck, BackupEnrollment, BackupImage, BackupJob, BackupRepoAccess,
-                      BackupRepository, Device, DrRun, DrRunbook, ImageBackupPlan, Tenant, utcnow)
+                      BackupRepository, BackupScan, Device, DrRun, DrRunbook, ImageBackupPlan, Tenant, utcnow)
 from .backup_agent import backup_settings, server_url, tls_pin
 
 router = APIRouter(prefix="/api/console/backup", tags=["Backup"])
@@ -174,13 +174,21 @@ def job_out(j: BackupJob, names: dict[str, str]) -> dict:
             "requestedBy": j.requested_by, "cancelRequested": j.cancel_requested}
 
 
-def image_out(i: BackupImage, checks: dict[str, BackupBootCheck]) -> dict:
+def scan_out(r) -> dict | None:
+    return {"state": r.state, "at": iso(r.at), "findings": len(r.findings or []), "filesScanned": r.files_scanned} \
+        if r is not None else None
+
+
+def image_out(i: BackupImage, checks: dict[str, BackupBootCheck], scans: dict | None = None) -> dict:
     b = checks.get(i.image_id)
     return {"imageId": i.image_id, "repositoryId": i.repository_id, "agentId": i.agent_id, "machineId": i.machine_id,
             "hostname": i.hostname, "created": i.created_unix, "kind": i.kind, "consistency": i.consistency,
             "capturedBytes": i.captured_bytes, "storedNewBytes": i.stored_new_bytes, "disks": i.disks, "label": i.label,
             "vmName": i.vm_name, "anomaly": i.anomaly, "applications": i.applications or [],
-            "lastBootCheck": ({"outcome": b.outcome, "at": iso(b.at), "message": b.message} if b else None)}
+            "lastBootCheck": ({"outcome": b.outcome, "at": iso(b.at), "message": b.message} if b else None),
+            "lastScan": scan_out((scans or {}).get(i.image_id)),
+            "source": "files" if bk.is_folder_backup(i) else "disks",
+            "legalHold": i.legal_hold}
 
 
 _MEMBER = re.compile(r"^(.+)[\\/]repos[\\/]([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[\\/]?$", re.I)
@@ -235,6 +243,9 @@ def plan_out(p: ImageBackupPlan, names: dict[str, str]) -> dict:
             "agentName": names.get(p.agent_id, ""), "repositoryId": p.repository_id, "job": p.job,
             "label": bk.label(p.job), "schedule": p.schedule, "retention": p.retention, "enabled": p.enabled,
             "copyToRepositoryId": p.copy_to_repository_id,
+            "standby": ({"agentId": p.standby.get("agent_id"), "type": p.standby.get("type"),
+                         "format": p.standby.get("format"), "name": p.standby.get("name"),
+                         "directory": p.standby.get("directory")} if p.standby else None),
             "nextRunAt": iso(p.next_run_at), "lastRunAt": iso(p.last_run_at)}
 
 
@@ -494,7 +505,7 @@ def _settings(s) -> dict:
         bad("rate limit must be a whole number of MiB/s")
     lab = str(s.get("label") or "").strip()[:200] or None
     return {"label": lab, "rate_limit_mib": rate, "vss_full": bool(s.get("vss_full")), "verify_sample_percent": pct,
-            "full_read": bool(s.get("full_read"))}
+            "full_read": bool(s.get("full_read")), "scan_after_backup": bool(s.get("scan_after_backup"))}
 
 # Kubernetes clusters and SaaS tenants (backup/docs/design/kubernetes.md, saas.md). Their secret is sealed in the
 # browser to the machine that runs the jobs; only the sealed form is kept here.
@@ -563,6 +574,16 @@ def normalise_kind(kind) -> dict:
     if t == "backup_hyperv":
         return {"type": t, "vm_ids": [str(x)[:100] for x in kind.get("vm_ids") or []][:200],
                 "settings": _settings(kind.get("settings"))}
+    if t == "backup_files":
+        paths = [str(x).strip() for x in kind.get("paths") or [] if str(x).strip()]
+        excludes = [str(x).strip() for x in kind.get("excludes") or [] if str(x).strip()]
+        if not paths or len(paths) > 100 or any(len(x) > 1000 or "\0" in x for x in paths):
+            bad("choose 1 to 100 files or folders to back up")
+        if any(not re.match(r"^([A-Za-z]:[\\/]|/|\\\\[^\\]+\\[^\\]+)", x) for x in paths):
+            bad("each path must be a full path on the machine: C:\\Users\\anna\\Documents, /home/anna or \\\\server\\share\\folder")
+        if len(excludes) > 200 or any(len(x) > 500 for x in excludes):
+            bad("up to 200 exclusions")
+        return {"type": t, "paths": paths, "excludes": excludes, "settings": _settings(kind.get("settings"))}
     if t == "verify":
         level, pct = kind.get("level"), kind.get("sample_percent")
         if level not in ("quick", "sample", "full") or (pct is not None and not (isinstance(pct, (int, float)) and 0 <= pct <= 100)):
@@ -1359,7 +1380,36 @@ def _plan_fields(db: Session, p: Principal, body: dict, plan: ImageBackupPlan | 
             if db.get(BackupRepoAccess, (c, agent_id)) is None:
                 bad("the machine has no access to the copy's repository; grant it access there first")
         out["copy_to_repository_id"] = c
+    if "standby" in body:
+        out["standby"] = _standby(db, p, body.get("standby"), plan.repository_id if plan else
+                                  _uuid(body.get("repositoryId"), "repository"))
     return out
+
+
+def _standby(db: Session, p: Principal, sb, repo_id: str) -> dict | None:
+    """A plan's standby VM, validated: a host with access to the repository that can make that kind of VM."""
+    if not sb:
+        return None
+    if not isinstance(sb, dict):
+        bad("standby must be an object")
+    host = _agent(db, p, str(sb.get("agentId") or ""))
+    kind = sb.get("type")
+    caps = bk.capabilities(host)
+    if kind == "hyperv_vm":
+        if "restore_hyperv" not in caps:
+            bad("the standby host must be a Hyper-V host")
+    elif kind == "vm_files":
+        if "restore_vm_files" not in caps or sb.get("format") not in VM_FILE_FORMATS:
+            bad("choose QEMU (qcow2), VirtualBox (vdi) or VMware (vmdk) files on a machine with an up-to-date agent")
+    else:
+        bad("a standby is a Hyper-V VM or VM files")
+    name, directory = str(sb.get("name") or ""), str(sb.get("directory") or "").strip()
+    if not VM_NAME.fullmatch(name) or not directory or len(directory) > 500:
+        bad("choose a standby VM name (letters, digits, spaces, dots, hyphens, underscores) and a folder on the host")
+    if db.get(BackupRepoAccess, (repo_id, host.id)) is None:
+        bad("the standby host has no access to the plan's repository; give it access first")
+    return {"agent_id": host.id, "type": kind, "format": sb.get("format") if kind == "vm_files" else None,
+            "name": name, "directory": directory}
 
 
 def _reschedule(plan: ImageBackupPlan) -> None:
@@ -1565,6 +1615,7 @@ def image_devices(request: Request, tenantId: str | None = None, p: Principal = 
     repos = {r.id: r for r in db.execute(select(BackupRepository).where(
         BackupRepository.id.in_({i.repository_id for i in rows}))).scalars()} if rows else {}
     checks = _boot_latest(db, [i.image_id for i in rows]) if rows else {}
+    scans = bk.scan_latest(db, [i.image_id for i in rows]) if rows else {}
     unlocked = _unlocked(request, p)
     groups: dict[str, dict] = {}
     for i in rows:
@@ -1574,11 +1625,20 @@ def image_devices(request: Request, tenantId: str | None = None, p: Principal = 
                 "key": _device_key(i), "name": i.vm_name or i.hostname, "hostname": i.hostname, "vmName": i.vm_name,
                 "agentId": i.agent_id, "tenantId": i.tenant_id, "images": 0, "lastCreated": i.created_unix,
                 "firstCreated": i.created_unix, "storedBytes": 0, "lastKind": i.kind, "lastConsistency": i.consistency,
-                "anomalies": 0, "lastVerified": None, "repositories": {}, "source": _app_source(i)}
+                "anomalies": 0, "lastVerified": None, "repositories": {}, "source": _app_source(i),
+                "infected": 0, "lastCleanCreated": None, "latestScan": scan_out(scans.get(i.image_id)), "held": 0}
         g["images"] += 1
         g["firstCreated"] = min(g["firstCreated"], i.created_unix)
         g["storedBytes"] += i.stored_new_bytes or 0
         g["anomalies"] += 1 if i.anomaly else 0
+        g["held"] += 1 if i.legal_hold else 0
+        sc = scans.get(i.image_id)
+        if sc is not None and sc.state == "infected":
+            g["infected"] += 1
+        # Rows come newest first: the first clean one is the last clean restore point.
+        # (a system backup: a clean folder backup does not restore the machine)
+        if sc is not None and sc.state == "clean" and g["lastCleanCreated"] is None and not bk.is_folder_backup(i):
+            g["lastCleanCreated"] = i.created_unix
         b = checks.get(i.image_id)
         if b is not None and b.outcome == "verified" and (g["lastVerified"] is None or iso(b.at) > g["lastVerified"]):
             g["lastVerified"] = iso(b.at)
@@ -1660,7 +1720,8 @@ def list_images(request: Request, tenantId: str | None = None, repositoryId: str
     if order == "asc":
         rows.reverse()
     checks = _boot_latest(db, [i.image_id for i in rows])
-    return [image_out(i, checks) for i in rows]
+    scans = bk.scan_latest(db, [i.image_id for i in rows])
+    return [image_out(i, checks, scans) for i in rows]
 
 
 def _image(db: Session, p: Principal, image_id: str) -> BackupImage:
@@ -1670,10 +1731,18 @@ def _image(db: Session, p: Principal, image_id: str) -> BackupImage:
     return im
 
 
+# Restores as files for another hypervisor (agent vmdef.rs): format -> hypervisor.
+VM_FILE_FORMATS = {"qcow2": "QEMU/KVM", "vdi": "VirtualBox", "vmdk": "VMware"}
+VM_NAME = re.compile(r"[A-Za-z0-9._-](?:[A-Za-z0-9 ._-]{0,78}[A-Za-z0-9._-])?")
+
+
 @router.post("/restores")
 def create_restore(request: Request, body: dict = Body(...), p: Principal = Depends(current_principal),
                    db: Session = Depends(get_db)):
     im = _image_unlocked(request, db, p, str(body.get("imageId") or ""))
+    _malware_guard(db, im, body)
+    if bk.is_folder_backup(im):
+        bad("this is a backup of files and folders: restore them with Browse files")
     a = _agent(db, p, str(body.get("agentId") or ""))
     t = body.get("target") if isinstance(body.get("target"), dict) else {}
     kind = t.get("type")
@@ -1691,6 +1760,41 @@ def create_restore(request: Request, body: dict = Body(...), p: Principal = Depe
         target = {"type": "hyperv_vm", "name": name, "directory": d,
                   "switch": (str(t.get("switch")).strip() or None) if t.get("switch") else None, "start": bool(t.get("start"))}
         need = "restore_hyperv"
+    elif kind == "vm_files":
+        # Disk files and a VM definition for another hypervisor, in a new folder.
+        p.require("scripts")
+        fmt = t.get("format")
+        if fmt not in VM_FILE_FORMATS:
+            bad("choose QEMU (qcow2), VirtualBox (vdi) or VMware (vmdk)")
+        name, d = str(t.get("name") or ""), str(t.get("directory") or "").strip()
+        if not VM_NAME.fullmatch(name) or not d:
+            bad("choose a VM name (letters, digits, spaces, dots, hyphens, underscores) and a folder on the machine")
+        target, need = {"type": "vm_files", "format": fmt, "name": name, "directory": d}, "restore_vm_files"
+    elif kind in ("azure", "aws"):
+        # A copy in the customer's own cloud storage, for a VM there; the keys are sealed in the browser to the machine.
+        p.require("scripts")
+        name, location = str(t.get("name") or ""), str(t.get("location") or "").strip()
+        endpoint = str(t.get("endpoint") or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", name):
+            bad("names for cloud disks are 1 to 64 letters, digits, dots, hyphens or underscores")
+        if endpoint and not re.match(r"^https://[^\s/]+(/[^\s]*)?$", endpoint):
+            bad("the endpoint must be an https:// address (leave it blank for the public cloud)")
+        sealed = _sealed(t.get("sealed"))
+        if kind == "azure":
+            if not re.fullmatch(r"azure://[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?(/[^\s]*)?", location):
+                bad("the location is azure://container/folder")
+            target = {"type": "azure", "location": location, "endpoint": endpoint, "name": name, "sealed": sealed}
+        else:
+            region, staging = str(t.get("region") or "").strip(), str(t.get("staging") or "").strip()
+            if not re.fullmatch(r"s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9](/[^\s]*)?", location):
+                bad("the location is s3://bucket/folder")
+            if region and not re.fullmatch(r"[a-z0-9-]{4,30}", region):
+                bad("unknown region")
+            if not re.match(r"^([A-Za-z]:\\|/)", staging) or len(staging) > 500:
+                bad("choose a staging folder on that machine with room for the disk files")
+            target = {"type": "aws", "location": location, "endpoint": endpoint, "region": region, "name": name,
+                      "staging": staging, "sealed": sealed}
+        need = "restore_cloud"
     elif kind == "disk":
         # Overwrites a whole disk: typed confirmation, destructive permission and a fresh password check.
         p.require("destructive")
@@ -1721,7 +1825,8 @@ def create_restore(request: Request, body: dict = Body(...), p: Principal = Depe
     job = bk.queue(db, a, {"type": "restore", "image_id": im.image_id, "disks": disks, "target": target},
                    im.repository_id, p.actor)
     bk.record(db, p.actor, "backup.restore.requested", im.hostname, im.tenant_id, image=im.image_id,
-              machine=a.hostname, restore_to=kind, device=target.get("device"))
+              machine=a.hostname, restore_to=kind, device=target.get("device"), format=target.get("format"),
+              infected_acknowledged=body.get("allowInfected") is True)
     db.commit()
     return {"id": job.id}
 
@@ -1783,11 +1888,14 @@ def restore_files(image_id: str, request: Request, body: dict = Body(...), p: Pr
     if volume is None:
         bad("choose a volume")
     paths = [str(x) for x in body.get("paths") or [] if str(x).strip("/")]
+    _malware_guard(db, im, body, paths)
     if not paths or len(paths) > 1000 or any(len(x) > 4000 for x in paths):
         bad("choose 1 to 1000 files or folders")
     target = str(body.get("target") or "").strip()
     if not target or len(target) > 1000:
         bad("choose the folder to restore into")
+    if target == "@original" and not bk.is_folder_backup(im):
+        bad("putting files back where they were is for backups of files and folders; choose a folder")
     conflict = body.get("conflict") or "rename"
     if conflict not in ("rename", "skip", "overwrite"):
         bad("existing files: rename, skip or overwrite")
@@ -1816,6 +1924,7 @@ def download_files(image_id: str, request: Request, body: dict = Body(...), p: P
     if volume is None:
         bad("choose a volume")
     paths = [str(x) for x in body.get("paths") or [] if str(x).strip("/")]
+    _malware_guard(db, im, body, paths)
     if not paths or len(paths) > 1000 or any(len(x) > 4000 for x in paths):
         bad("choose 1 to 1000 files or folders")
     recipient = str(body.get("recipient") or "").strip()
@@ -1853,6 +1962,8 @@ def create_boot_check(image_id: str, request: Request, body: dict = Body(default
                       db: Session = Depends(get_db)):
     p.require("scripts")
     im = _image_unlocked(request, db, p, image_id)
+    if bk.is_folder_backup(im):
+        bad("a backup of files and folders has no system to boot")
     a = _agent(db, p, str(body.get("agentId") or ""))
     mem, cpus, keep = body.get("memoryMb"), body.get("cpus"), bool(body.get("keepRunning"))
     if (mem is not None and not (isinstance(mem, int) and 256 <= mem <= 65536)) or \
@@ -1884,6 +1995,213 @@ def list_boot_checks(image_id: str, request: Request, p: Principal = Depends(cur
     return [{"id": b.id, "at": iso(b.at), "outcome": b.outcome, "method": b.method, "seconds": b.seconds,
              "firmware": b.firmware, "accel": b.accel, "message": b.message, "hasScreenshot": b.screenshot is not None,
              "agentId": b.agent_id, "agentName": names.get(b.agent_id), "jobId": b.job_id} for b in rows]
+
+
+# ---------------------------------------------------------------- malware scans of images
+
+def _scan_agent(db: Session, p: Principal, im: BackupImage, agent_id: str | None) -> BackupAgent:
+    """The machine that scans: the one asked for, else the one the backup came from, else any online one with access."""
+    def able(a: BackupAgent) -> bool:
+        return a.tenant_id == im.tenant_id and "scan_images" in bk.capabilities(a) \
+            and db.get(BackupRepoAccess, (im.repository_id, a.id)) is not None
+    if agent_id:
+        a = _agent(db, p, agent_id)
+        if not able(a):
+            bad("that machine cannot scan this backup (it needs access to the repository and an up-to-date agent)")
+        return a
+    candidates = db.execute(select(BackupAgent).join(BackupRepoAccess, BackupRepoAccess.agent_id == BackupAgent.id)
+                            .where(BackupRepoAccess.repository_id == im.repository_id)).scalars().all()
+    candidates = sorted((a for a in candidates if able(a)),
+                        key=lambda a: (not bk.online(a), a.id != im.agent_id))
+    if not candidates:
+        bad("no machine with access to this repository can scan backups yet: update its backup agent")
+    return candidates[0]
+
+
+@router.post("/images/{image_id}/scan")
+def create_scan(image_id: str, request: Request, body: dict = Body(default={}), p: Principal = Depends(current_principal),
+                db: Session = Depends(get_db)):
+    """Scan the files inside a backup for malware on a machine with access (contents never leave it)."""
+    p.require("scripts")
+    im = _image_unlocked(request, db, p, image_id)
+    a = _scan_agent(db, p, im, body.get("agentId"))
+    selection = "all" if body.get("allFiles") else "executables"
+    job = bk.queue_scan(db, a, im, p.actor, selection)
+    bk.record(db, p.actor, "backup.scan.requested", im.vm_name or im.hostname, im.tenant_id, image=im.image_id,
+              machine=a.hostname, selection=selection)
+    db.commit()
+    return {"id": job.id, "agentId": a.id}
+
+
+@router.get("/images/{image_id}/scans")
+def list_scans(image_id: str, request: Request, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    p.require("read")
+    im = _image_unlocked(request, db, p, image_id)
+    rows = db.execute(select(BackupScan).where(BackupScan.image_id == im.image_id)
+                      .order_by(BackupScan.at.desc(), BackupScan.id.desc()).limit(20)).scalars().all()
+    names = _names(db, [im.tenant_id])
+    return [{"id": r.id, "at": iso(r.at), "state": r.state, "filesScanned": r.files_scanned,
+             "bytesScanned": r.bytes_scanned, "findings": r.findings or [], "summary": r.summary or {},
+             "agentId": r.agent_id, "agentName": names.get(r.agent_id), "jobId": r.job_id} for r in rows]
+
+
+# ---------------------------------------------------------------- legal hold
+
+@router.post("/images/{image_id}/legal-hold")
+def set_legal_hold(image_id: str, request: Request, body: dict = Body(...), p: Principal = Depends(current_principal),
+                   db: Session = Depends(get_db)):
+    """Put a backup on legal hold (retention never deletes it) or release it. Releasing needs a fresh password check."""
+    p.require("configure")
+    im = _image_unlocked(request, db, p, image_id)
+    hold = bool(body.get("hold"))
+    if hold:
+        reason = str(body.get("reason") or "").strip()
+        if not 3 <= len(reason) <= 500:
+            bad("say why the backup is held (a case or matter reference), 3 to 500 characters")
+        if im.legal_hold is None:
+            im.legal_hold = {"reason": reason, "by": p.actor, "at": iso(utcnow())}
+            bk.record(db, p.actor, "backup.legal_hold.placed", im.vm_name or im.hostname, im.tenant_id,
+                      image=im.image_id, reason=reason)
+    elif im.legal_hold is not None:
+        require_reauth(request, p)
+        bk.record(db, p.actor, "backup.legal_hold.released", im.vm_name or im.hostname, im.tenant_id,
+                  image=im.image_id, reason=im.legal_hold.get("reason"))
+        im.legal_hold = None
+    db.commit()
+    return {"legalHold": im.legal_hold}
+
+
+@router.post("/legal-hold/device")
+def hold_device(request: Request, body: dict = Body(...), p: Principal = Depends(current_principal),
+                db: Session = Depends(get_db)):
+    """Hold every current backup of a machine in the unlocked repositories (later backups are not held)."""
+    p.require("configure")
+    device = str(body.get("device") or "")
+    reason = str(body.get("reason") or "").strip()
+    if not 3 <= len(reason) <= 500:
+        bad("say why the backups are held (a case or matter reference), 3 to 500 characters")
+    unlocked = _unlocked(request, p)
+    rows = [i for i in db.execute(select(BackupImage).where(BackupImage.tenant_id.in_(p.tenant_ids),
+                                                            BackupImage.repository_id.in_(unlocked or [""]))).scalars()
+            if _device_key(i) == device]
+    if not rows:
+        raise HTTPException(403, "repository_locked")
+    n = 0
+    for im in rows:
+        if im.legal_hold is None:
+            im.legal_hold = {"reason": reason, "by": p.actor, "at": iso(utcnow())}
+            n += 1
+    bk.record(db, p.actor, "backup.legal_hold.placed", rows[0].vm_name or rows[0].hostname, rows[0].tenant_id,
+              images=n, reason=reason)
+    db.commit()
+    return {"held": n}
+
+
+# ---------------------------------------------------------------- one application database
+
+@router.post("/images/{image_id}/restore-app")
+def restore_application(image_id: str, request: Request, body: dict = Body(...), p: Principal = Depends(current_principal),
+                        db: Session = Depends(get_db)):
+    """Restore one SQL Server or Exchange database from an application-aware backup into a folder on a Windows machine;
+    a SQL Server database can be attached under a new name there."""
+    p.require("scripts")
+    im = _image_unlocked(request, db, p, image_id)
+    _malware_guard(db, im, body)
+    component = str(body.get("component") or "")
+    app = next((a for a in im.applications or [] if a.get("component") == component), None)
+    if app is None:
+        bad("this backup has no such application component")
+    if not app.get("fileSets"):
+        bad("this backup does not list that component's files (taken by an older agent): restore the volume instead")
+    a = _agent(db, p, str(body.get("agentId") or ""))
+    if "restore_apps" not in bk.capabilities(a):
+        bad("that machine cannot restore application data (it must be a Windows machine with an up-to-date agent)")
+    if a.tenant_id != im.tenant_id or db.get(BackupRepoAccess, (im.repository_id, a.id)) is None:
+        bad("that machine has no access to the image's repository; give it access first")
+    directory = str(body.get("directory") or "").strip()
+    if not re.match(r"^([A-Za-z]:\\|\\\\)", directory) or len(directory) > 500:
+        bad("choose a full folder path on that machine, e.g. D:\\Restores")
+    attach = str(body.get("attachAs") or "").strip() or None
+    instance = str(body.get("sqlInstance") or "").strip()
+    if attach is not None:
+        if app.get("writer") != "SqlServerWriter":
+            bad("only SQL Server databases can be attached")
+        if len(attach) > 128 or any(ord(c) < 32 for c in attach):
+            bad("database names are up to 128 characters")
+        if len(instance) > 200 or not re.fullmatch(r"[A-Za-z0-9_.\-]*(\\[A-Za-z0-9_$\-]+)?", instance):
+            bad("SQL Server instance: blank for the default, or SERVER\\INSTANCE")
+    job = bk.queue(db, a, {"type": "restore_application", "image_id": im.image_id, "component": component,
+                           "directory": directory, "attach_as": attach, "sql_instance": instance}, im.repository_id, p.actor)
+    bk.record(db, p.actor, "backup.restore.application", im.vm_name or im.hostname, im.tenant_id, image=im.image_id,
+              component=component, machine=a.hostname, attach_as=attach, infected_acknowledged=body.get("allowInfected") is True)
+    db.commit()
+    return {"id": job.id}
+
+
+# ---------------------------------------------------------------- search across backups
+
+SEARCH_MAX_IMAGES = 500
+
+
+@router.post("/search")
+def search_backups(request: Request, body: dict = Body(...), p: Principal = Depends(current_principal),
+                   db: Session = Depends(get_db)):
+    """Find files by name across a machine's backups. One job per repository, on a machine with access: it searches
+    the file catalogues it keeps (building missing ones for a while) and returns only the matches."""
+    p.require("scripts")
+    query = str(body.get("query") or "").strip()
+    if not query or len(query) > 200:
+        bad("type part of a file or folder name (up to 200 characters)")
+    device = str(body.get("device") or "")
+    unlocked = _unlocked(request, p)
+    rows = db.execute(select(BackupImage).where(BackupImage.tenant_id.in_(p.tenant_ids),
+                                                BackupImage.repository_id.in_(unlocked or [""]))
+                      .order_by(BackupImage.created_unix.desc())).scalars().all()
+    rows = [i for i in rows if not device or _device_key(i) == device]
+    if not rows:
+        raise HTTPException(403, "repository_locked") if device and not unlocked else bad("no unlocked backups to search")
+    by_repo: dict[str, list[BackupImage]] = {}
+    for i in rows:
+        by_repo.setdefault(i.repository_id, []).append(i)
+    jobs = []
+    for repo_id, images in by_repo.items():
+        candidates = db.execute(select(BackupAgent).join(BackupRepoAccess, BackupRepoAccess.agent_id == BackupAgent.id)
+                                .where(BackupRepoAccess.repository_id == repo_id)).scalars().all()
+        candidates = sorted((a for a in candidates if "search_files" in bk.capabilities(a)),
+                            key=lambda a: (not bk.online(a), a.id != images[0].agent_id))
+        if not candidates:
+            continue
+        a = candidates[0]
+        job = bk.queue(db, a, {"type": "search_files", "query": query,
+                               "images": [i.image_id for i in images[:SEARCH_MAX_IMAGES]], "limit": 500,
+                               "budget_secs": 120}, repo_id, p.actor)
+        jobs.append({"id": job.id, "repositoryId": repo_id, "agentId": a.id, "agentName": a.display_name or a.hostname,
+                     "agentOnline": bk.online(a), "images": min(len(images), SEARCH_MAX_IMAGES)})
+    if not jobs:
+        bad("no machine with access to these backups can search them yet: update its backup agent")
+    bk.record(db, p.actor, "backup.search", device or "all machines", rows[0].tenant_id, query=query[:200],
+              repositories=len(jobs))
+    db.commit()
+    return {"jobs": jobs}
+
+
+def _malware_guard(db: Session, im: BackupImage, body: dict, paths: list[str] | None = None) -> None:
+    """Restoring infected files needs `allowInfected`: a whole image when its latest scan found malware, chosen files
+    when they are (or contain) an infected file. The decision is audited by the caller's restore record."""
+    sc = bk.scan_latest(db, [im.image_id]).get(im.image_id)
+    if sc is None or sc.state != "infected" or body.get("allowInfected") is True:
+        return
+    hits = [f.get("path", "") for f in sc.findings or []]
+    if paths is not None:
+        def covers(sel: str, hit: str) -> bool:
+            a, b = sel.rstrip("/").lower(), hit.lower()
+            return b == a or b.startswith(a + "/") or a == ""
+        hits = [h for h in hits if any(covers(x, h) for x in paths)]
+        if not hits:
+            return
+    raise HTTPException(409, {"code": "image_infected", "infected": hits[:20], "count": len(hits),
+                              "message": f"The latest malware scan found {len(hits)} infected file"
+                                         f"{'s' if len(hits) != 1 else ''} in what you are restoring."})
 
 
 @router.get("/boot-checks/{check_id}/screenshot.png")

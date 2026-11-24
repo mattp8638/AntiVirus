@@ -2495,7 +2495,7 @@ fn cdp_store(
         m,
         &engine::BackupOptions {
             workers: 2,
-            rate_limit: 0,
+            ..Default::default()
         },
         &JobControl::new(),
         &|_| {},

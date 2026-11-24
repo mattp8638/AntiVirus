@@ -42,6 +42,9 @@ def active(db: Session, session_id: str | None, user_id: str | None) -> UserSess
         return None
     if (now - row.last_seen_at).total_seconds() > TOUCH_SECONDS:
         row.last_seen_at = now
+        # Save it now. Left pending, the next query autoflushes it and this request holds the write lock until it
+        # ends, so its own separate-connection writes (rate limits) wait on it; on SQLite that fails after 30 s.
+        db.commit()
     return row
 
 

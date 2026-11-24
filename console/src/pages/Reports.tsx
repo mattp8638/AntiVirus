@@ -12,6 +12,7 @@ const KINDS: { kind: string; label: string }[] = [
   { kind: "monthly", label: "What we did for you (monthly)" },
   { kind: "quarterly", label: "Quarterly business review" },
   { kind: "vulnerability", label: "Vulnerability report" },
+  { kind: "backup", label: "Backup report" },
 ];
 const KIND_LABEL = Object.fromEntries(KINDS.map((k) => [k.kind, k.label]));
 const EVERY = ["weekly", "monthly", "quarterly"];
@@ -55,7 +56,7 @@ export default function Reports() {
   const { data } = useData<any>(kind === "executive" && tenant ? "reports/executive" : null, { tenant_id: tenant, days }, [tenant, days, kind]);
   const query = () => {
     const params = new URLSearchParams({ tenant_id: tenant });
-    if (kind === "executive") params.set("days", String(days));
+    if (kind === "executive" || kind === "backup") params.set("days", String(days));
     if (kind === "monthly" && month) params.set("period", month);
     if (kind === "quarterly" && quarter) params.set("period", quarter);
     return params.toString();
@@ -77,7 +78,7 @@ export default function Reports() {
           <label className="field" style={{ minWidth: 240 }}>Report
             <select value={kind} onChange={(e) => setKind(e.target.value)}>{KINDS.map((k) => <option key={k.kind} value={k.kind}>{k.label}</option>)}</select>
           </label>
-          {kind === "executive" && <label className="field">Period
+          {(kind === "executive" || kind === "backup") && <label className="field">Period
             <select value={days} onChange={(e) => setDays(Number(e.target.value))}>{[7, 30, 90].map((d) => <option key={d} value={d}>Last {d} days</option>)}</select></label>}
           {kind === "monthly" && <label className="field">Month
             <select value={month} onChange={(e) => setMonth(e.target.value)}>

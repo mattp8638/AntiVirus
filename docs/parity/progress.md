@@ -9,12 +9,32 @@ Baseline of the review: `main` at `790e364`. Work branch: `claude/jolly-goodall-
 | State | Count |
 |---|---|
 | verified | 6 (FIX-01 to FIX-05, FIX-08) |
-| implemented-unverified | 14 (FIX-07, AGT-04, CORE-03, FLOW-01/02/04/09 and 7 requirements the brief marked U) |
-| partial | 119 |
-| missing | 38 |
+| implemented-unverified | 17 (FIX-07, AGT-04, CORE-03, FLOW-01/02/04/09, BDR-01/02/04 and 7 requirements the brief marked U) |
+| partial | 121 |
+| missing | 33 |
 | externally-blocked | 1 (FIX-06) |
 
 Overall parity: **not passed**. MVP: **not yet declared**.
+
+## 2026-11-24 backup re-assessment (BDR-01 to BDR-06, AT-19)
+
+The six backup entries were still `missing` from when the backup-oversight module was removed. The device backup engine
+(`backup/`) and its platform integration now cover them in part:
+
+* BDR-01 `implemented-unverified`: image, VM and folder backups, schedules, exclusions, encryption, retention,
+  deduplication, local, NAS, S3 and Azure destinations; automated round trips in CI on three systems.
+* BDR-02 `implemented-unverified`: Object Lock and Azure immutability (emulator tests, now run in CI), append-only
+  gateway access, ransomware hold, passphrase plus MFA unlock.
+* BDR-03 `partial`: file, disk, bare-metal, VM, cloud and single-database restore, boot verification, DR runbooks,
+  malware scans with the last clean point; the recovery ISO's boot and restore is not proven in CI.
+* BDR-04 `implemented-unverified`: agent-executed jobs as evidence, deduplicated alerts, MSP view, scheduled backup
+  report; no discovery of third-party backup products.
+* BDR-05 `partial`: Microsoft 365, Google Workspace and Salesforce with mocked APIs; SharePoint, Teams, Entra and
+  QuickBooks missing; live tenants blocked as AT-14.
+* BDR-06 `partial`: search across backups, retention and legal hold; no eDiscovery or self-service.
+
+AT-19 gained an end-to-end restore with a SHA-256 comparison in the gateway job; it stays **NOT RUN** until CI records
+a result. Changed-block tracking for physical machines needs decisions first (`backup/docs/design/cbt-physical.md`).
 
 ## Reports and branding (roadmap 0-30 days)
 

@@ -100,8 +100,20 @@ pub fn capabilities(role: &str) -> Vec<String> {
     let mut c: Vec<String> = [
         "verify",
         "maintenance",
+        // Retention keeps images on legal hold (sent with ApplyRetention).
+        "legal_hold",
         "restore_vhdx",
+        // qcow2, VDI and VMDK files with a VM definition (vmdef.rs).
+        "restore_vm_files",
         "restore_files",
+        // Malware scans of images (malware.rs).
+        "scan_images",
+        // Chosen files and folders (folders.rs).
+        "backup_files",
+        // File catalogues and search across backups (search.rs).
+        "search_files",
+        // Restores to Azure and AWS (cloudrestore.rs).
+        "restore_cloud",
         "gateway",
         "kubernetes",
         "saas",
@@ -114,6 +126,8 @@ pub fn capabilities(role: &str) -> Vec<String> {
         // Onto a disk that is not the system disk (its volumes are locked).
         c.push("restore_disk".into());
         c.push("local_recovery".into());
+        // One SQL Server or Exchange database from an application-aware image (apprestore.rs).
+        c.push("restore_apps".into());
         if crate::hyperv::is_host(role) {
             c.push("backup_hyperv".into());
             c.push("restore_hyperv".into());
