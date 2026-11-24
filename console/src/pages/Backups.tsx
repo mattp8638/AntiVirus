@@ -1069,6 +1069,25 @@ function AppsLine({ apps }: { apps?: ImageApp[] }) {
     : <>apps: {named.length ? named.join(", ") : "Windows system state"}</>}</div>;
 }
 
+/** Where a backup can be restored to, and the capability the restoring machine needs for each. */
+const RESTORE_KINDS: { value: string; label: string; cap: string; missing: string }[] = [
+  { value: "hyperv_vm", label: "Hyper-V: a new VM on this host", cap: "restore_hyperv", missing: "needs a Hyper-V host" },
+  { value: "vhdx", label: "Hyper-V: VHDX disk files", cap: "restore_vhdx", missing: "not on this machine" },
+  { value: "qcow2", label: "QEMU / KVM: qcow2 disk files and a start script", cap: "restore_vm_files", missing: "update the backup agent" },
+  { value: "vdi", label: "VirtualBox: VDI disk files and a script that registers the VM", cap: "restore_vm_files", missing: "update the backup agent" },
+  { value: "vmdk", label: "VMware: VMDK disk files and a .vmx", cap: "restore_vm_files", missing: "update the backup agent" },
+  { value: "disk", label: "A physical disk (overwrites it)", cap: "restore_disk", missing: "not on this machine" },
+];
+
+const VM_FILE_TARGETS = [
+  { value: "qcow2", files: "qcow2 disk files", definition: "a start script for qemu-system-x86_64 (and a virt-install line for libvirt)" },
+  { value: "vdi", files: "VDI disk files", definition: "a script that registers the VM in VirtualBox (VBoxManage)" },
+  { value: "vmdk", files: "VMDK disk files (VMware Workstation, Fusion, Player)", definition: "a .vmx to open in VMware" },
+];
+
+/** The agent's rule for VM names used in file names and scripts (vmdef.rs). */
+const VM_FILE_NAME = /^[A-Za-z0-9._-](?:[A-Za-z0-9 ._-]{0,78}[A-Za-z0-9._-])?$/;
+
 function RestoreDialog({ image, agents, repos, onClose }: { image: Image; agents: BackupAgent[]; repos: Repo[]; onClose: () => void }) {
   const { run, busy } = useAction();
   const { can } = useApp();
@@ -1091,8 +1110,19 @@ function RestoreDialog({ image, agents, repos, onClose }: { image: Image; agents
   const [confirm, setConfirm] = useState("");
   const [disk, setDisk] = useState(0);
   const [grow, setGrow] = useState(true);
-  const target = type === "vhdx" ? { type, directory } : type === "hyperv_vm" ? { type, name: vmName, directory, start: false } : { type, device, disk, confirm, grow };
-  const ok = type === "disk" ? device && confirm === device : directory.trim() && (type !== "hyperv_vm" || vmName.trim());
+  const vmFiles = VM_FILE_TARGETS.find((t) => t.value === type);
+  const named = type === "hyperv_vm" || !!vmFiles;
+  const target = type === "vhdx" ? { type, directory }
+    : type === "hyperv_vm" ? { type, name: vmName, directory, start: false }
+    : vmFiles ? { type: "vm_files", format: vmFiles.value, name: vmName, directory }
+    : { type, device, disk, confirm, grow };
+  const nameOk = type === "hyperv_vm" ? !!vmName.trim() : !vmFiles || VM_FILE_NAME.test(vmName);
+  const ok = type === "disk" ? device && confirm === device : directory.trim() && nameOk;
+  // The first kind this machine can do, when it cannot do the one chosen (another machine was picked).
+  const available = RESTORE_KINDS.filter((k) => caps.includes(k.cap) && (k.value !== "disk" || can("destructive")));
+  useEffect(() => {
+    if (agent && !available.some((k) => k.value === type) && available.length) setType(available[0].value);
+  }, [agentId]);
   const go = () => run(async () => {
     if (needsAccess && agent) {
       const sealed: Sealed = await seal(agent.publicKey, JSON.stringify({ passphrase: pass, recovery_key: null }));
@@ -1106,12 +1136,13 @@ function RestoreDialog({ image, agents, repos, onClose }: { image: Image; agents
       <div className="form-grid">
         <label className="field">Machine that restores<select value={agentId} onChange={(e) => setAgentId(e.target.value)}>{pool.map((a) => <option key={a.id} value={a.id}>{a.name}{a.capabilities.includes("restore_hyperv") ? " · Hyper-V" : ""}{a.role === "recovery" ? " · recovery session" : ""}{hasAccess(a.id) ? "" : " · no access yet"}</option>)}</select></label>
         <label className="field">Restore to<select value={type} onChange={(e) => setType(e.target.value)}>
-          {caps.includes("restore_vhdx") && <option value="vhdx">Virtual disk files (VHDX)</option>}
-          {caps.includes("restore_hyperv") && <option value="hyperv_vm">A new Hyper-V VM</option>}
-          {caps.includes("restore_disk") && can("destructive") && <option value="disk">A physical disk (overwrites it)</option>}
+          {RESTORE_KINDS.filter((k) => k.value !== "disk" || can("destructive")).map((k) => {
+            const yes = caps.includes(k.cap);
+            return <option key={k.value} value={k.value} disabled={!yes}>{k.label}{yes ? "" : ` (${k.missing})`}</option>;
+          })}
         </select></label>
-        {type !== "disk" && <label className="field">Folder on that machine<input value={directory} onChange={(e) => setDirectory(e.target.value)} placeholder="D:\\Restores" /></label>}
-        {type === "hyperv_vm" && <label className="field">VM name<input value={vmName} onChange={(e) => setVmName(e.target.value)} /></label>}
+        {type !== "disk" && <label className="field">Folder on that machine<input value={directory} onChange={(e) => setDirectory(e.target.value)} placeholder={agent?.os?.family === "windows" ? "D:\\Restores" : "/srv/restores"} /></label>}
+        {named && <label className="field">VM name<input value={vmName} onChange={(e) => setVmName(e.target.value)} aria-invalid={!nameOk} /></label>}
         {type === "disk" && <>
           <label className="field">Image disk<select value={disk} onChange={(e) => setDisk(Number(e.target.value))}>{(image.disks.length ? image.disks : [{}]).map((d: any, i: number) => <option key={i} value={i}>Disk {i}{d.size ? ` (${bytes(d.size)})` : ""}</option>)}</select></label>
           {(agent?.diskInfo ?? []).some((d) => !d.system && !d.inUse) && <label className="field">Disk on {agent?.name}<select value={device} onChange={(e) => { setDevice(e.target.value); setConfirm(""); }}>
@@ -1121,6 +1152,11 @@ function RestoreDialog({ image, agents, repos, onClose }: { image: Image; agents
           <label className="field">Target device<input value={device} onChange={(e) => { setDevice(e.target.value); setConfirm(""); }} placeholder="\\.\PhysicalDrive1 or /dev/sdb" /></label>
         </>}
       </div>
+      {vmFiles && <p className="small muted" style={{ marginTop: 8 }}>
+        Writes {vmFiles.files} into <span className="mono">{directory.trim() || "the folder"}{agent?.os?.family === "windows" ? "\\" : "/"}{vmName || "name"}</span>, with {vmFiles.definition}. The VM gets the CPUs and memory recorded at backup (or 2 CPUs and 4 GB), the same firmware (UEFI or BIOS) and a SATA disk controller.
+        {vmFiles.value === "vmdk" && " For ESXi, copy the folder to a datastore and convert the disks with vmkfstools."}
+      </p>}
+      {vmFiles && !nameOk && <ErrorNote error="VM names here can use letters, digits, spaces, dots, hyphens and underscores (up to 80), without a space at either end." />}
       {needsAccess && (
         <div className="card" style={{ marginTop: 10 }}>
           <b>{agent?.name} has no access to {repo?.name ?? "this repository"} yet.</b>

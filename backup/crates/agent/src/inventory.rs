@@ -101,6 +101,8 @@ pub fn capabilities(role: &str) -> Vec<String> {
         "verify",
         "maintenance",
         "restore_vhdx",
+        // qcow2, VDI and VMDK files with a VM definition (vmdef.rs).
+        "restore_vm_files",
         "restore_files",
         "gateway",
     ]

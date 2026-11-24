@@ -171,6 +171,34 @@ def test_disk_restore_needs_typed_confirmation_and_reauth(client, admin, tenant)
     assert spec["kind"]["target"]["grow"] is True
 
 
+def test_restore_as_files_for_qemu_virtualbox_or_vmware(client, admin, tenant):
+    """Disk files and a VM definition for another hypervisor: only machines that report restore_vm_files, a known
+    format, and a VM name safe for file names and scripts."""
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    heartbeat(client, h)
+    repo_id = ready_repo(client, admin, tenant, agent_id, h)
+    client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+    im = image()
+    finish(client, h, heartbeat(client, h)["jobs"][0]["id"], images=[im])
+    admin = unlock(client, admin, h, repo_id, agent_id)
+    go = lambda target: client.post("/api/console/backup/restores", headers=admin,  # noqa: E731
+                                    json={"imageId": im["image_id"], "agentId": agent_id, "target": target})
+    target = {"type": "vm_files", "format": "qcow2", "name": "PM-ACER restored", "directory": "/srv/restores"}
+    # An agent that does not report the capability (an older version) is refused.
+    assert "cannot perform" in go(target).json()["detail"]
+    heartbeat(client, h, caps=CAPS + ["restore_vm_files"])
+    for bad_target in ({**target, "format": "ova"}, {**target, "name": "x; rm -rf /"}, {**target, "name": " lead"},
+                       {**target, "directory": ""}):
+        assert go(bad_target).status_code == 400, bad_target
+    for fmt in ("qcow2", "vdi", "vmdk"):
+        assert go({**target, "format": fmt}).status_code == 200
+        spec = heartbeat(client, h, caps=CAPS + ["restore_vm_files"])["jobs"][0]
+        assert spec["kind"]["target"] == {**target, "format": fmt}
+        finish(client, h, spec["id"])
+
+
 def test_tenants_are_isolated_and_reenrol_with_new_key_drops_access(client, admin, tenant):
     e = link(client, admin, tenant)
     agent_id, h = agent_enroll(client, e["token"])

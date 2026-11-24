@@ -273,6 +273,15 @@ pub enum RestoreTarget {
         #[serde(default)]
         start: bool,
     },
+    /// Disk files for another hypervisor in `directory/<name>`, with a VM
+    /// definition next to them: QEMU/KVM ("qcow2", a start script),
+    /// VirtualBox ("vdi", a script that registers the VM) or VMware
+    /// ("vmdk", a .vmx). Agents that can report `restore_vm_files`.
+    VmFiles {
+        format: String,
+        name: String,
+        directory: String,
+    },
     /// Raw write of one image disk to a device or file. `confirm` must
     /// equal `device`: the administrator typed it.
     Disk {

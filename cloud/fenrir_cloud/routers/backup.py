@@ -1405,6 +1405,11 @@ def _image(db: Session, p: Principal, image_id: str) -> BackupImage:
     return im
 
 
+# Restores as files for another hypervisor (agent vmdef.rs): format -> hypervisor.
+VM_FILE_FORMATS = {"qcow2": "QEMU/KVM", "vdi": "VirtualBox", "vmdk": "VMware"}
+VM_NAME = re.compile(r"[A-Za-z0-9._-](?:[A-Za-z0-9 ._-]{0,78}[A-Za-z0-9._-])?")
+
+
 @router.post("/restores")
 def create_restore(request: Request, body: dict = Body(...), p: Principal = Depends(current_principal),
                    db: Session = Depends(get_db)):
@@ -1426,6 +1431,16 @@ def create_restore(request: Request, body: dict = Body(...), p: Principal = Depe
         target = {"type": "hyperv_vm", "name": name, "directory": d,
                   "switch": (str(t.get("switch")).strip() or None) if t.get("switch") else None, "start": bool(t.get("start"))}
         need = "restore_hyperv"
+    elif kind == "vm_files":
+        # Disk files and a VM definition for another hypervisor, in a new folder.
+        p.require("scripts")
+        fmt = t.get("format")
+        if fmt not in VM_FILE_FORMATS:
+            bad("choose QEMU (qcow2), VirtualBox (vdi) or VMware (vmdk)")
+        name, d = str(t.get("name") or ""), str(t.get("directory") or "").strip()
+        if not VM_NAME.fullmatch(name) or not d:
+            bad("choose a VM name (letters, digits, spaces, dots, hyphens, underscores) and a folder on the machine")
+        target, need = {"type": "vm_files", "format": fmt, "name": name, "directory": d}, "restore_vm_files"
     elif kind == "disk":
         # Overwrites a whole disk: typed confirmation, destructive permission and a fresh password check.
         p.require("destructive")
@@ -1456,7 +1471,7 @@ def create_restore(request: Request, body: dict = Body(...), p: Principal = Depe
     job = bk.queue(db, a, {"type": "restore", "image_id": im.image_id, "disks": disks, "target": target},
                    im.repository_id, p.actor)
     bk.record(db, p.actor, "backup.restore.requested", im.hostname, im.tenant_id, image=im.image_id,
-              machine=a.hostname, restore_to=kind, device=target.get("device"))
+              machine=a.hostname, restore_to=kind, device=target.get("device"), format=target.get("format"))
     db.commit()
     return {"id": job.id}
 

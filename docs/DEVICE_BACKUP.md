@@ -60,7 +60,7 @@ Fenrir server itself.
 | View machines, repositories, plans, jobs, and the list of backed-up machines | `read` |
 | Open a machine's backups (list, browse, restore, boot test) | `read` + unlock (below) |
 | Back up now, verify, test a connection, run a plan, cancel, place a hold | `respond` |
-| Browse and restore files; restore to VHDX files or a new Hyper-V VM; boot tests; stop a test VM | `scripts` |
+| Browse and restore files; restore to VHDX files, a new Hyper-V VM, or VM files for QEMU, VirtualBox or VMware; boot tests; stop a test VM | `scripts` |
 | Install links, repositories, access, plans, share sign-ins, maintenance, gateways | `configure` |
 | Overwrite a physical disk, replace existing files with backup copies, release a hold, reclaim space | `destructive` + password re-check |
 | Turn automatic agent updates on or off | `platform` |
@@ -105,7 +105,27 @@ starts, with the VM's network disconnected:
   keep it running for up to 8 hours.
 * Scheduled boot verification (repository settings) tests each machine's newest image regularly and removes the VM
   each time.
-* For a lasting copy rather than a test, use **Restore › A new Hyper-V VM** on a Hyper-V host instead.
+* For a lasting copy rather than a test, use **Restore › Hyper-V: a new VM on this host** on a Hyper-V host instead.
+
+## Restoring to a virtual machine
+
+**Images & restore › Restore › Restore to** offers, depending on the machine that restores:
+
+| Option | Writes | Then |
+|---|---|---|
+| Hyper-V: a new VM on this host | VHDX files and the VM (Hyper-V hosts) | Start it in Hyper-V Manager |
+| Hyper-V: VHDX disk files | VHDX files | Attach them to a VM |
+| QEMU / KVM | qcow2 files and `start-<name>.sh` | Run the script on a KVM host (OVMF is used for UEFI systems), or import the disks with `virt-install --import` (the script shows the line) or into Proxmox |
+| VirtualBox | VDI files and `register-<name>.cmd` (Windows) or `.sh` | Run the script on the machine with VirtualBox; the VM then appears in VirtualBox Manager |
+| VMware | VMDK files (one growable file each) and `<name>.vmx` | Open the .vmx in VMware Workstation, Fusion or Player. For ESXi, copy the folder to a datastore and convert each disk with `vmkfstools -i <disk>.vmdk -d thin <new>.vmdk` |
+| A physical disk | the disk, overwritten | See bare-metal recovery below |
+
+The files go into a new folder named after the VM, in the folder you choose on the restoring machine. The VM gets the
+CPUs and memory recorded at backup (2 CPUs and 4 GB for a physical machine), the same firmware (UEFI or BIOS, with
+Secure Boot in VMware when it was on) and a SATA disk controller with one NAT network adapter. A Windows system backed
+up from a physical machine may stop at INACCESSIBLE_BOOT_DEVICE in a VM: try another disk controller, or restore it
+with the recovery media, which prepares Windows for different hardware. Disks with 4096-byte sectors can only be
+restored as VHDX. A VMDK holds at most 2 TiB less 1 GiB.
 
 ## Live backups of Linux servers
 

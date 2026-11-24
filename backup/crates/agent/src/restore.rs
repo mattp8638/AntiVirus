@@ -1,4 +1,5 @@
-//! Restore jobs: to VHDX files, to a new Hyper-V VM, or to a disk.
+//! Restore jobs: to VHDX files, to a new Hyper-V VM, to disk files and a VM
+//! definition for QEMU, VirtualBox or VMware, or to a disk.
 
 use std::path::{Path, PathBuf};
 
@@ -44,7 +45,8 @@ pub fn safe_name(s: &str) -> String {
     }
 }
 
-pub fn vhdx_names(m: &ManifestBody, disks: &[u32]) -> Vec<(u32, String)> {
+/// `<machine>-<taken>-disk<n>.<ext>` for each selected disk.
+pub fn disk_names(m: &ManifestBody, disks: &[u32], ext: &str) -> Vec<(u32, String)> {
     let base = safe_name(
         m.vm.as_ref()
             .map(|v| v.name.as_str())
@@ -58,7 +60,7 @@ pub fn vhdx_names(m: &ManifestBody, disks: &[u32]) -> Vec<(u32, String)> {
     m.disks
         .iter()
         .filter(|d| disks.is_empty() || disks.contains(&d.index))
-        .map(|d| (d.index, format!("{base}-{stamp}-disk{}.vhdx", d.index)))
+        .map(|d| (d.index, format!("{base}-{stamp}-disk{}.{ext}", d.index)))
         .collect()
 }
 
@@ -71,8 +73,22 @@ pub fn write_vhdx(
     dir: &Path,
     rep: &Reporter,
 ) -> anyhow::Result<Vec<(u32, PathBuf)>> {
+    write_disk_files(ctx, repo, m, disks, dir, vdisk::Format::Vhdx, rep)
+}
+
+/// Write the selected disks as virtual disk files of `format` into `dir`.
+/// Returns their paths. A file that fails part-way is removed.
+pub fn write_disk_files(
+    ctx: &Ctx,
+    repo: &Repository,
+    m: &ManifestBody,
+    disks: &[u32],
+    dir: &Path,
+    format: vdisk::Format,
+    rep: &Reporter,
+) -> anyhow::Result<Vec<(u32, PathBuf)>> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    let names = vhdx_names(m, disks);
+    let names = disk_names(m, disks, format.extension());
     if names.is_empty() {
         bail!("the image has none of the selected disks");
     }
@@ -87,21 +103,22 @@ pub fn write_vhdx(
     for (index, name) in names {
         let d = m.disks.iter().find(|d| d.index == index).expect("selected");
         let path = dir.join(&name);
-        let t = vdisk::VhdxTarget::create(
-            &path,
-            d.size,
-            d.logical_sector_size,
-            d.physical_sector_size,
-            m.chunk_size,
-        )
-        .with_context(|| format!("creating {} (it must not exist already)", path.display()))?;
+        let t = format
+            .create(
+                &path,
+                d.size,
+                d.logical_sector_size,
+                d.physical_sector_size,
+                m.chunk_size,
+            )
+            .with_context(|| format!("creating {} (it must not exist already)", path.display()))?;
         let label = format!("disk {index} → {name}");
         let cb = |done: u64, _t: u64| rep.progress("restoring", base + done, total, &label);
         let r = engine::restore_disk(
             repo,
             m,
             index,
-            &t,
+            &*t,
             &RestoreOptions {
                 workers: 4,
                 zero_fill: false,
@@ -125,6 +142,70 @@ pub fn write_vhdx(
         out.push((index, path));
     }
     Ok(out)
+}
+
+/// Disk files and a VM definition for QEMU, VirtualBox or VMware, in
+/// `directory/<name>` (which must be new or empty).
+fn restore_vm_files(
+    ctx: &Ctx,
+    repo: &Repository,
+    m: &ManifestBody,
+    disks: &[u32],
+    (format, name, directory): (&str, &str, &str),
+    rep: &Reporter,
+) -> anyhow::Result<JobUpdate> {
+    use crate::vmdef::Hypervisor;
+    let (fmt, hv, product) = match format {
+        "qcow2" => (vdisk::Format::Qcow2, Hypervisor::Qemu, "QEMU/KVM"),
+        "vdi" => (vdisk::Format::Vdi, Hypervisor::VirtualBox, "VirtualBox"),
+        "vmdk" => (vdisk::Format::Vmdk, Hypervisor::Vmware, "VMware"),
+        other => bail!("unknown virtual disk format {other:?}"),
+    };
+    crate::vmdef::check_name(name)?;
+    let dir = Path::new(directory).join(name);
+    if dir.exists()
+        && std::fs::read_dir(&dir)
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(true)
+    {
+        bail!("{} already exists and is not empty", dir.display());
+    }
+    let files = write_disk_files(ctx, repo, m, disks, &dir, fmt, rep)?;
+    rep.progress("writing the VM definition", 1, 1, name);
+    let names: Vec<String> = files
+        .iter()
+        .filter_map(|(_, p)| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect();
+    let settings = crate::vmdef::settings(m, name, names);
+    let (def_name, def) = crate::vmdef::definition(hv, &settings, cfg!(windows));
+    let def_path = dir.join(&def_name);
+    std::fs::write(&def_path, def).with_context(|| format!("writing {}", def_path.display()))?;
+    #[cfg(unix)]
+    if def_name.ends_with(".sh") {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&def_path, std::fs::Permissions::from_mode(0o755));
+    }
+    let mut u = done(JobState::Succeeded);
+    u.result = Some(json!({
+        "hypervisor": product,
+        "path": dir.display().to_string(),
+        "files": files.iter().map(|(_, p)| p.display().to_string()).collect::<Vec<_>>(),
+        "definition": def_path.display().to_string(),
+        "firmware": if settings.uefi { "uefi" } else { "bios" },
+    }));
+    if m.os.family.eq_ignore_ascii_case("windows") && m.vm.is_none() {
+        u.state = JobState::Warning;
+        u.warnings.push(format!(
+            "This Windows system was backed up from a physical machine. If it stops at INACCESSIBLE_BOOT_DEVICE in {product}, change the VM's disk controller (SATA is set; try IDE or SCSI), or restore it with the recovery media, which prepares Windows for different hardware."
+        ));
+    }
+    if fmt == vdisk::Format::Vmdk {
+        u.warnings.push("The VMDK files are for VMware Workstation, Fusion and Player. For ESXi, copy the folder to a datastore and convert each disk there: vmkfstools -i <disk>.vmdk -d thin <new>.vmdk".into());
+        if u.state == JobState::Succeeded {
+            u.state = JobState::Warning;
+        }
+    }
+    Ok(u)
 }
 
 pub fn run(
@@ -254,6 +335,11 @@ fn run_target(
             }
             Ok(u)
         }
+        RestoreTarget::VmFiles {
+            format,
+            name,
+            directory,
+        } => restore_vm_files(ctx, repo, &m, disks, (format, name, directory), rep),
         RestoreTarget::Disk {
             device,
             disk,

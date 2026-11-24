@@ -21,6 +21,7 @@ mod restore;
 mod setup;
 mod share;
 mod update;
+mod vmdef;
 #[cfg(windows)]
 mod winsvc;
 
