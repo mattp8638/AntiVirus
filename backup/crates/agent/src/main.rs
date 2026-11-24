@@ -1,6 +1,7 @@
 //! fenrir-backup-agent: enrolls with a Fenrir-Backup server, then runs the jobs it
 //! is given (backups, Hyper-V VM backups, verification).
 
+mod apprestore;
 mod boot;
 mod browse;
 mod client;

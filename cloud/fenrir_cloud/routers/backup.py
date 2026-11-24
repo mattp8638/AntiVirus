@@ -1985,6 +1985,47 @@ def list_scans(image_id: str, request: Request, p: Principal = Depends(current_p
              "agentId": r.agent_id, "agentName": names.get(r.agent_id), "jobId": r.job_id} for r in rows]
 
 
+# ---------------------------------------------------------------- one application database
+
+@router.post("/images/{image_id}/restore-app")
+def restore_application(image_id: str, request: Request, body: dict = Body(...), p: Principal = Depends(current_principal),
+                        db: Session = Depends(get_db)):
+    """Restore one SQL Server or Exchange database from an application-aware backup into a folder on a Windows machine;
+    a SQL Server database can be attached under a new name there."""
+    p.require("scripts")
+    im = _image_unlocked(request, db, p, image_id)
+    _malware_guard(db, im, body)
+    component = str(body.get("component") or "")
+    app = next((a for a in im.applications or [] if a.get("component") == component), None)
+    if app is None:
+        bad("this backup has no such application component")
+    if not app.get("fileSets"):
+        bad("this backup does not list that component's files (taken by an older agent): restore the volume instead")
+    a = _agent(db, p, str(body.get("agentId") or ""))
+    if "restore_apps" not in bk.capabilities(a):
+        bad("that machine cannot restore application data (it must be a Windows machine with an up-to-date agent)")
+    if a.tenant_id != im.tenant_id or db.get(BackupRepoAccess, (im.repository_id, a.id)) is None:
+        bad("that machine has no access to the image's repository; give it access first")
+    directory = str(body.get("directory") or "").strip()
+    if not re.match(r"^([A-Za-z]:\\|\\\\)", directory) or len(directory) > 500:
+        bad("choose a full folder path on that machine, e.g. D:\\Restores")
+    attach = str(body.get("attachAs") or "").strip() or None
+    instance = str(body.get("sqlInstance") or "").strip()
+    if attach is not None:
+        if app.get("writer") != "SqlServerWriter":
+            bad("only SQL Server databases can be attached")
+        if len(attach) > 128 or any(ord(c) < 32 for c in attach):
+            bad("database names are up to 128 characters")
+        if len(instance) > 200 or not re.fullmatch(r"[A-Za-z0-9_.\-]*(\\[A-Za-z0-9_$\-]+)?", instance):
+            bad("SQL Server instance: blank for the default, or SERVER\\INSTANCE")
+    job = bk.queue(db, a, {"type": "restore_application", "image_id": im.image_id, "component": component,
+                           "directory": directory, "attach_as": attach, "sql_instance": instance}, im.repository_id, p.actor)
+    bk.record(db, p.actor, "backup.restore.application", im.vm_name or im.hostname, im.tenant_id, image=im.image_id,
+              component=component, machine=a.hostname, attach_as=attach, infected_acknowledged=body.get("allowInfected") is True)
+    db.commit()
+    return {"id": job.id}
+
+
 # ---------------------------------------------------------------- search across backups
 
 SEARCH_MAX_IMAGES = 500

@@ -329,6 +329,19 @@ pub enum JobKind {
         #[serde(default)]
         settings: BackupSettings,
     },
+    /// Restore one application component (a SQL Server or Exchange
+    /// database) from an application-aware image into `directory/<name>`;
+    /// SQL Server databases can be attached as `attach_as`
+    /// (docs/design/app-restore.md). Agents that report `restore_apps`.
+    RestoreApplication {
+        image_id: Uuid,
+        component: String,
+        directory: String,
+        #[serde(default)]
+        attach_as: Option<String>,
+        #[serde(default)]
+        sql_instance: String,
+    },
     /// Build (and keep on the agent) the file catalogue of an image, for
     /// searching across backups (docs/design/search.md).
     IndexImage { image_id: Uuid },
@@ -552,6 +565,7 @@ impl JobKind {
             JobKind::ScanImage { .. } => "Malware scan",
             JobKind::BackupFiles { .. } => "Back up files and folders",
             JobKind::IndexImage { .. } => "Index files",
+            JobKind::RestoreApplication { .. } => "Restore application data",
             JobKind::SearchFiles { .. } => "Search backups",
             JobKind::CheckAccess { .. } => "Test connection",
             JobKind::LocalRecovery { action, .. } => match action {
@@ -852,6 +866,9 @@ pub struct ImageApplication {
     pub included: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// Number of file sets recorded for it (0: restorable only as a volume).
+    #[serde(default)]
+    pub file_sets: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

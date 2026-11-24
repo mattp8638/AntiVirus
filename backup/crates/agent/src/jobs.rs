@@ -160,6 +160,7 @@ pub fn report_of(m: &ManifestBody) -> ImageReport {
                 caption: a.caption.clone(),
                 included: a.included,
                 note: a.note.clone(),
+                file_sets: a.files.len() as u32,
             })
             .collect(),
     }
@@ -536,6 +537,23 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             let access = access.ok_or_else(|| anyhow!("no repository"))?;
             let repo = open_repo(ctx, access)?;
             backup_system(ctx, &repo, &access.path, settings, rep)
+        }
+        JobKind::RestoreApplication {
+            image_id,
+            component,
+            directory,
+            attach_as,
+            sql_instance,
+        } => {
+            let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            let req = crate::apprestore::AppRestoreRequest {
+                image_id: *image_id,
+                component,
+                directory,
+                attach_as: attach_as.as_deref(),
+                sql_instance,
+            };
+            crate::apprestore::run(ctx, &repo, &req, rep)
         }
         JobKind::IndexImage { image_id } => {
             let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;

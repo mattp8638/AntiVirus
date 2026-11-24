@@ -122,6 +122,8 @@ pub fn capabilities(role: &str) -> Vec<String> {
         // Onto a disk that is not the system disk (its volumes are locked).
         c.push("restore_disk".into());
         c.push("local_recovery".into());
+        // One SQL Server or Exchange database from an application-aware image (apprestore.rs).
+        c.push("restore_apps".into());
         if crate::hyperv::is_host(role) {
             c.push("backup_hyperv".into());
             c.push("restore_hyperv".into());

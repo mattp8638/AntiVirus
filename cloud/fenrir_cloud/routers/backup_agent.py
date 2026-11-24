@@ -266,7 +266,8 @@ def _applications(v) -> list | None:
         if isinstance(a, dict):
             out.append({"writer": _str(a.get("writer"), 200), "component": _str(a.get("component"), 500),
                         "caption": _str(a.get("caption"), 300), "included": bool(a.get("included")),
-                        "note": _str(a.get("note"), 500) or None})
+                        "note": _str(a.get("note"), 500) or None,
+                        "fileSets": a["file_sets"] if isinstance(a.get("file_sets"), int) and 0 <= a["file_sets"] < 10_000 else 0})
     return out or None
 
 

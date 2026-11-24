@@ -560,10 +560,11 @@ unsafe fn writer_components(comp: &Components) -> Result<FoundComponents, VssErr
             }
             let i = &*info;
             let mut volumes = Vec::new();
-            for (getter, count) in [
-                (cv.GetFile, i.files),
-                (cv.GetDatabaseFile, i.databases),
-                (cv.GetDatabaseLogFile, i.log_files),
+            let mut files = Vec::new();
+            for (getter, count, role) in [
+                (cv.GetFile, i.files, "file"),
+                (cv.GetDatabaseFile, i.databases, "database"),
+                (cv.GetDatabaseLogFile, i.log_files, "log"),
             ] {
                 for f in 0..count {
                     let mut fd: This = null_mut();
@@ -572,7 +573,19 @@ unsafe fn writer_components(comp: &Components) -> Result<FoundComponents, VssErr
                         continue;
                     }
                     let desc = windows::Win32::Storage::Vss::IVssWMFiledesc::from_raw(fd);
-                    volumes.push(desc.GetPath().ok().and_then(|p| volume_of(&p.to_string())));
+                    let path = desc.GetPath().ok().map(|p| p.to_string());
+                    volumes.push(path.as_deref().and_then(volume_of));
+                    if let Some(path) = path {
+                        files.push(core_format::manifest::AppFile {
+                            path,
+                            spec: desc
+                                .GetFilespec()
+                                .map(|s| s.to_string())
+                                .unwrap_or_default(),
+                            recursive: desc.GetRecursive().unwrap_or(false),
+                            role: role.into(),
+                        });
+                    }
                 }
             }
             let c = crate::apps::Component {
@@ -585,6 +598,7 @@ unsafe fn writer_components(comp: &Components) -> Result<FoundComponents, VssErr
                 kind: i.kind,
                 selectable: i.selectable != 0,
                 volumes,
+                files,
             };
             let _ = (cv.FreeComponentInfo)(wc.0, info);
             out.push(c);

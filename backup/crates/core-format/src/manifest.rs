@@ -275,6 +275,25 @@ pub struct ApplicationInfo {
     /// Why it was not included, or what else is worth knowing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// The files the application listed for it (and its subcomponents), so
+    /// one database can be restored on its own. Empty in older images.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<AppFile>,
+}
+
+/// A file set a VSS writer lists for a component: a folder and a file name
+/// pattern (`*` and `?`), optionally including subfolders.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppFile {
+    /// Folder as on the backed-up machine, e.g. `C:\Program Files\...\DATA`.
+    pub path: String,
+    /// File name or pattern, e.g. `sales.mdf`, `*.log`.
+    pub spec: String,
+    #[serde(default)]
+    pub recursive: bool,
+    /// "database", "log" or "file".
+    #[serde(default)]
+    pub role: String,
 }
 
 /// Hypervisor-level description of a backed-up VM, enough to recreate it.

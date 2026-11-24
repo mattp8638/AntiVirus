@@ -73,7 +73,7 @@ BACKUP_KINDS = ("backup_system", "backup_disks", "backup_hyperv", "backup_kubern
 KIND_LABELS = {
     "init_repository": "Create repository", "backup_system": "System backup", "backup_disks": "Disk backup",
     "backup_hyperv": "Hyper-V backup", "backup_files": "Files and folders backup", "scan_image": "Malware scan",
-    "index_image": "Index files", "search_files": "Search backups",
+    "index_image": "Index files", "search_files": "Search backups", "restore_application": "Restore application data",
     "verify": "Verify", "list_images": "Refresh images",
     "apply_retention": "Apply retention", "copy_images": "Copy off-site", "prune": "Reclaim space", "restore": "Restore", "boot_check": "Boot check",
     "stop_vm": "Stop VM", "check_access": "Test connection", "browse_files": "Browse files",

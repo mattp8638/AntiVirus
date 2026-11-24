@@ -1374,3 +1374,40 @@ def test_search_across_a_machines_backups(client, admin, tenant):
         db.commit()
         assert bk.purge_listings(db) >= 1
         assert db.get(BackupJob, job["id"]).result is None, "matches are not kept beyond a day"
+
+
+def test_one_sql_or_exchange_database_restores_on_its_own(client, admin, tenant):
+    """A component whose files the image lists restores alone on a Windows machine; SQL Server databases can be
+    attached under a new name; older images (no file lists) and other machines are refused."""
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    caps = CAPS + ["restore_apps"]
+    heartbeat(client, h, caps=caps)
+    repo_id = ready_repo(client, admin, tenant, agent_id, h)
+    client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+    im = image()
+    im["applications"] = [
+        {"writer": "SqlServerWriter", "component": "SQL01\\sales", "caption": "sales", "included": True, "file_sets": 2},
+        {"writer": "Microsoft Exchange Writer", "component": "Microsoft Exchange Server\\DB01", "included": True,
+         "file_sets": 3},
+        {"writer": "SqlServerWriter", "component": "SQL01\\legacy", "included": True},
+    ]
+    finish(client, h, heartbeat(client, h, caps=caps)["jobs"][0]["id"], images=[im])
+    admin = unlock(client, admin, h, repo_id, agent_id, caps=caps)
+    apps = client.get("/api/console/backup/images", headers=admin).json()[0]["applications"]
+    assert [a["fileSets"] for a in apps] == [2, 3, 0]
+    url = f"/api/console/backup/images/{im['image_id']}/restore-app"
+    body = {"agentId": agent_id, "component": "SQL01\\sales", "directory": "D:\\Restores", "attachAs": "sales_0901",
+            "sqlInstance": "SQL01\\FINANCE"}
+    for bad_body in ({**body, "component": "SQL01\\legacy"}, {**body, "component": "nope"},
+                     {**body, "directory": "Restores"}, {**body, "sqlInstance": "x; DROP"},
+                     {**body, "component": "Microsoft Exchange Server\\DB01"}):
+        assert client.post(url, headers=admin, json=bad_body).status_code == 400, bad_body
+    r = client.post(url, headers=admin, json=body)
+    assert r.status_code == 200, r.text
+    spec = heartbeat(client, h, caps=caps)["jobs"][0]["kind"]
+    assert spec == {"type": "restore_application", "image_id": im["image_id"], "component": "SQL01\\sales",
+                    "directory": "D:\\Restores", "attach_as": "sales_0901", "sql_instance": "SQL01\\FINANCE"}
+    ex = {"agentId": agent_id, "component": "Microsoft Exchange Server\\DB01", "directory": "D:\\Restores"}
+    assert client.post(url, headers=admin, json=ex).status_code == 200

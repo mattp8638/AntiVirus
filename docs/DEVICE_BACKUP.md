@@ -119,6 +119,18 @@ to a folder, as a download, or **Where each item was**. They can be scanned for 
 
 Design: `backup/docs/design/file-backup.md`.
 
+## Restoring one SQL Server or Exchange database
+
+Application-aware Windows backups list each database's files, so **Images & restore › Restore a database** can restore
+one on its own onto a Windows machine, into a new folder:
+
+* **SQL Server**: optionally attached under a new name (the live database is untouched); an attach script is always left
+  in the folder, for when the agent is not allowed to attach.
+* **Exchange**: the database and logs with a script for the Exchange Management Shell that mounts them as a recovery
+  database and restores chosen mailboxes.
+
+Backups taken before this was added restore databases with the volume. Design: `backup/docs/design/app-restore.md`.
+
 ## Finding a file across backups
 
 **Images & restore › a machine › Find a file in these backups** searches every unlocked backup of the machine by name

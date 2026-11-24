@@ -9,7 +9,7 @@
 //! every file it lists is on a volume in the snapshot set (a writer refuses
 //! a component whose files are not snapshotted).
 
-use core_format::manifest::ApplicationInfo;
+use core_format::manifest::{AppFile, ApplicationInfo};
 
 /// VSS writers left out of whole-system images: the Hyper-V writer would
 /// take a checkpoint of every VM, which `backup_hyperv` does on purpose and
@@ -39,6 +39,8 @@ pub struct Component {
     /// Volume GUID names (`\\?\Volume{...}\`) of the files it lists; `None`
     /// for a file whose volume could not be found.
     pub volumes: Vec<Option<String>>,
+    /// The file sets it lists (for restoring one database on its own).
+    pub files: Vec<AppFile>,
 }
 
 impl Component {
@@ -93,6 +95,11 @@ pub fn select(components: &[Component], snapshot: &[String]) -> Selection {
             caption: c.caption.clone(),
             included: false,
             note: None,
+            // Its own files and its subcomponents'.
+            files: std::iter::once(c)
+                .chain(components.iter().filter(|o| o.is_below(c)))
+                .flat_map(|o| o.files.iter().cloned())
+                .collect(),
         };
         if let Some((_, why)) = SKIPPED_WRITERS
             .iter()
@@ -168,7 +175,25 @@ mod tests {
             kind: 1,
             selectable: true,
             volumes: vols.iter().map(|v| Some(v.to_string())).collect(),
+            files: vec![AppFile {
+                path: format!("C:\\Data\\{name}"),
+                spec: format!("{name}.mdf"),
+                recursive: false,
+                role: "database".into(),
+            }],
         }
+    }
+
+    #[test]
+    fn a_top_level_component_carries_its_subcomponents_files() {
+        let comps = vec![
+            comp("SqlServerWriter", "", "SQL01", &[C]),
+            comp("SqlServerWriter", "SQL01", "sales", &[C]),
+        ];
+        let sel = select(&comps, &[C.to_string()]);
+        let top = sel.report.iter().find(|a| a.component == "SQL01").unwrap();
+        let specs: Vec<&str> = top.files.iter().map(|f| f.spec.as_str()).collect();
+        assert_eq!(specs, vec!["SQL01.mdf", "sales.mdf"]);
     }
 
     #[test]
