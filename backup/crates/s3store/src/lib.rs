@@ -355,6 +355,26 @@ impl S3Backend {
         }
     }
 
+    /// Create the bucket for a new repository unless it exists (with Object
+    /// Lock when the repository uses it). Returns true when it was created.
+    pub fn ensure_bucket(&self) -> Result<bool> {
+        if self.bucket_exists()? {
+            return Ok(false);
+        }
+        self.create_bucket(self.cfg.lock.is_some())?;
+        Ok(true)
+    }
+
+    /// Whether the bucket exists (and these keys may see it).
+    pub fn bucket_exists(&self) -> Result<bool> {
+        let r = self.request("HEAD", "", &[], &[], b"")?;
+        match r.status {
+            200 => Ok(true),
+            404 => Ok(false),
+            _ => Err(self.fail("look up bucket", &self.cfg.bucket, &r)),
+        }
+    }
+
     /// True when nothing is stored under the prefix yet (for `repo init`).
     pub fn is_empty(&self) -> Result<bool> {
         Ok(self.list_objects("", Some(1))?.is_empty())

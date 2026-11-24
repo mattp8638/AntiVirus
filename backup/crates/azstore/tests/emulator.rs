@@ -71,7 +71,11 @@ fn azure_backend_against_azurite() {
     };
     let port = emu.1;
     let b = backend(port, "fenrir-test", "office/nas", KEY);
-    b.create_container(false).unwrap();
+    assert!(
+        b.ensure_container().unwrap(),
+        "created for a new repository"
+    );
+    assert!(!b.ensure_container().unwrap(), "already there: left alone");
     b.create_container(false).unwrap(); // already there: fine
     assert!(b.is_empty().unwrap());
     assert_eq!(b.put("config.json", b"{}").unwrap(), PutOutcome::Created);

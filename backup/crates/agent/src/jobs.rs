@@ -185,6 +185,19 @@ impl ObjectStore {
             ObjectStore::Azure(b) => b.is_empty(),
         }
     }
+    pub fn exists(&self) -> core_format::Result<bool> {
+        match self {
+            ObjectStore::S3(b) => b.bucket_exists(),
+            ObjectStore::Azure(b) => b.container_exists(),
+        }
+    }
+    /// Create the bucket or container if it does not exist yet (new repository).
+    pub fn ensure_exists(&self) -> core_format::Result<bool> {
+        match self {
+            ObjectStore::S3(b) => b.ensure_bucket(),
+            ObjectStore::Azure(b) => b.ensure_container(),
+        }
+    }
     pub fn check(&self) -> core_format::Result<String> {
         match self {
             ObjectStore::S3(b) => b.check(),
@@ -274,7 +287,8 @@ pub(crate) fn object_store(
 }
 
 /// The repository's storage: its folder, S3, or a gateway (NAS gateway) when
-/// the server routes this machine through one.
+/// the server routes this machine through one. A dedup group member
+/// (`<group>/repos/<id>`) is its folder plus the group's shared store.
 fn storage(ctx: &Ctx, access: &RepoAccess, create: bool) -> anyhow::Result<Arc<dyn Backend>> {
     if let Some(route) = &access.gateway {
         let me = uuid::Uuid::parse_str(&ctx.cfg.agent_id).context("agent id")?;
@@ -287,30 +301,102 @@ fn storage(ctx: &Ctx, access: &RepoAccess, create: bool) -> anyhow::Result<Arc<d
             Box::new(transport),
         )?));
     }
+    if let Some((root, _)) = core_format::group::split_member_path(&access.path) {
+        let member = location(ctx, access, &access.path, create)?;
+        let shared = location(ctx, access, &root, false)?;
+        return Ok(Arc::new(core_format::group::GroupBackend {
+            member,
+            shared,
+        }));
+    }
+    location(ctx, access, &access.path, create)
+}
+
+/// A folder, share or object storage location with the repository's
+/// credentials. `create`: it must be new or empty (created if missing).
+fn location(
+    ctx: &Ctx,
+    access: &RepoAccess,
+    path: &str,
+    create: bool,
+) -> anyhow::Result<Arc<dyn Backend>> {
     if let Some(s) = &access.s3 {
-        let b = object_store(ctx.key, &access.path, s, access.sealed_share.as_ref())?;
+        let b = object_store(ctx.key, path, s, access.sealed_share.as_ref())?;
+        if create {
+            b.ensure_exists()
+                .with_context(|| format!("creating {path}"))?;
+        }
         if create && !b.is_empty()? {
             bail!(
-                "{} already holds data: choose an empty bucket or container, or another folder in it",
-                access.path
+                "{path} already holds data: choose an empty bucket or container, or another folder in it"
             );
         }
         return Ok(b.into_backend());
     }
-    let path = crate::share::prepare(ctx.key, &access.path, access.sealed_share.as_ref())?;
+    let local = crate::share::prepare(ctx.key, path, access.sealed_share.as_ref())?;
     Ok(if create {
-        Arc::new(LocalBackend::create(&path).with_context(|| {
-            format!(
-                "creating the repository at {} (the folder must be new or empty)",
-                access.path
-            )
+        Arc::new(LocalBackend::create(&local).with_context(|| {
+            format!("creating the repository at {path} (the folder must be new or empty)")
         })?)
     } else {
-        Arc::new(
-            LocalBackend::open(&path)
-                .with_context(|| format!("repository path {}", access.path))?,
-        )
+        Arc::new(LocalBackend::open(&local).with_context(|| format!("repository path {path}"))?)
     })
+}
+
+/// Create a repository; in a dedup group (its path `<group>/repos/<id>`),
+/// a new group, or a member of the group `group_source` belongs to.
+fn init_repository(
+    ctx: &Ctx,
+    access: &RepoAccess,
+    group_source: Option<&RepoAccess>,
+    passphrase: &[u8],
+    rk: &RecoveryKey,
+) -> anyhow::Result<Repository> {
+    let Some((root, id)) = core_format::group::split_member_path(&access.path) else {
+        let backend = storage(ctx, access, true)?;
+        return Ok(Repository::init_with(
+            backend,
+            passphrase,
+            Default::default(),
+            rk,
+        )?);
+    };
+    if id != rk.repo_id {
+        bail!(
+            "the repository folder {} does not match its recovery key",
+            access.path
+        );
+    }
+    let (shared, info, key) = match group_source {
+        Some(src) => {
+            let other = open_repo(ctx, src).context("opening the group's other repository")?;
+            let key = other
+                .group_key()
+                .cloned()
+                .ok_or_else(|| anyhow!("{} is not in a dedup group", src.path))?;
+            let shared = location(ctx, access, &root, false)?;
+            let info = core_format::group::read_info(&*shared)?;
+            if Some(info.group_id) != other.config().group {
+                bail!("{} is not in the dedup group at {root}", src.path);
+            }
+            (shared, info, key)
+        }
+        None => {
+            let shared = location(ctx, access, &root, true)?;
+            let info = core_format::group::create(&*shared, core_format::DEFAULT_CHUNK_SIZE)?;
+            (shared, info, core_format::crypto::SecretKey::generate()?)
+        }
+    };
+    let member = location(ctx, access, &access.path, true)?;
+    let backend: Arc<dyn Backend> = Arc::new(core_format::group::GroupBackend { member, shared });
+    Ok(Repository::init_member(
+        backend,
+        passphrase,
+        Default::default(),
+        rk,
+        &info,
+        &key,
+    )?)
 }
 
 pub(crate) fn open_repo(ctx: &Ctx, access: &RepoAccess) -> anyhow::Result<Repository> {
@@ -388,13 +474,19 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
                     .as_deref()
                     .ok_or_else(|| anyhow!("no recovery key supplied"))?,
             )?;
-            let backend = storage(ctx, access, true)?;
             rep.progress("creating", 0, 1, "deriving keys");
-            let repo =
-                Repository::init_with(backend, s.passphrase.as_bytes(), Default::default(), &rk)?;
+            let repo = init_repository(
+                ctx,
+                access,
+                spec.group_source.as_ref(),
+                s.passphrase.as_bytes(),
+                &rk,
+            )?;
             let mut u = done(JobState::Succeeded);
             u.repo_uuid = Some(repo.config().repo_id);
-            u.result = Some(json!({ "path": access.path, "chunk_size": repo.chunk_size() }));
+            u.result = Some(
+                json!({ "path": access.path, "chunk_size": repo.chunk_size(), "dedup_group": repo.config().group }),
+            );
             Ok(u)
         }
         JobKind::BackupSystem { settings } => {
@@ -621,6 +713,24 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             s3: Some(s3),
         } => {
             let b = object_store(ctx.key, path, s3, sealed_share.as_ref())?;
+            if !b.exists()? {
+                // Signed in fine; nothing to write to yet. Creating the repository creates it.
+                let what = if path.starts_with("azure://") {
+                    "container"
+                } else {
+                    "bucket"
+                };
+                let mut u = done(JobState::Succeeded);
+                u.result = Some(json!({ "s3": true, "repository": false, "note": format!(
+                    "the keys work; the {what} does not exist yet and is created with the repository{}",
+                    if s3.lock_mode.as_deref().is_some_and(|m| !m.is_empty() && m != "none") {
+                        " (with immutability on)"
+                    } else {
+                        ""
+                    }
+                ) }));
+                return Ok(u);
+            }
             let note = b.check()?;
             let mut u = done(JobState::Succeeded);
             u.result = Some(
@@ -730,6 +840,7 @@ fn backup_system(
             .into_iter()
             .filter(|p| p.is_absolute() && p.is_dir())
             .collect(),
+        hooks_dir: Some(std::path::PathBuf::from(snapshot_linux::apps::HOOKS_DIR)),
     })
     .map_err(|e| anyhow!("{e}"))?;
     let meta = ImageMeta {
@@ -744,7 +855,7 @@ fn backup_system(
         label: s.label.clone(),
         warnings: lb.warnings.clone(),
         vm: None,
-        applications: vec![],
+        applications: lb.applications.clone(),
     };
     let cb = progress_cb(rep, String::new());
     let result = engine::backup(repo, &lb.sources(), meta, &options(s), &ctx.ctl, &cb);
@@ -998,5 +1109,21 @@ mod tests {
         let mut got = vec![];
         pending_update(d.path(), |v| got = v.clone());
         assert_eq!(got, vec!["Microsoft:B"]);
+    }
+}
+
+#[cfg(test)]
+mod dedup_paths {
+    #[test]
+    fn protocol_and_format_agree_on_member_paths() {
+        let id = uuid::Uuid::new_v4();
+        for root in ["/nas/b", r"\\nas\b", "s3://bucket/x", "azure://c/p"] {
+            let a = protocol::dedup::member_path(root, &id);
+            assert_eq!(a, core_format::group::member_path(root, &id));
+            assert_eq!(
+                protocol::dedup::split_member_path(&a),
+                core_format::group::split_member_path(&a)
+            );
+        }
     }
 }

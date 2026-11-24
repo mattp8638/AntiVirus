@@ -335,12 +335,27 @@ fn run_target(
             // Windows on different hardware: its storage drivers (design:
             // phase-5-hardware).
             if ctx.cfg.role == "recovery" {
-                rep.progress("preparing Windows for this hardware", 1, 1, device);
+                rep.progress(
+                    "preparing the restored system for this hardware",
+                    1,
+                    1,
+                    device,
+                );
                 match crate::hwfix::adapt_restored_disk(device) {
                     Ok(Some(fix)) => {
                         result["windows"] = serde_json::to_value(&fix)?;
                     }
-                    Ok(None) => {}
+                    // Not Windows: a Linux system gets an initramfs with all storage drivers.
+                    Ok(None) => match crate::linuxfix::adapt_restored_linux(device) {
+                        Ok(Some(fix)) => {
+                            u.warnings.extend(fix.notes.iter().filter(|n| !n.starts_with("Network")).cloned());
+                            result["linux"] = serde_json::to_value(&fix)?;
+                        }
+                        Ok(None) => {}
+                        Err(e) => u.warnings.push(format!(
+                            "The restored Linux could not be prepared for this machine's storage controller ({e:#}); if it does not find its root file system, rebuild its initramfs without host-only (dracut --no-hostonly)."
+                        )),
+                    },
                     Err(e) => u.warnings.push(format!(
                         "The restored Windows could not be prepared for this machine's storage controller ({e:#}); if it stops with INACCESSIBLE_BOOT_DEVICE, restore again from Windows PE recovery media."
                     )),

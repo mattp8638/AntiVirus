@@ -899,3 +899,52 @@ def test_backups_are_listed_by_device_and_open_only_after_an_unlock(client, admi
     # The unlock belongs to this sign-in: another session of the same person does not carry it.
     elsewhere = {**login(client), "X-Fenrir-Unlock": opened["X-Fenrir-Unlock"]}
     assert client.get("/api/console/backup/images", headers=elsewhere).json() == []
+
+
+def test_dedup_group_repositories_share_storage_and_key(client, admin, tenant):
+    """Dedup groups (backup/docs/design/dedup-groups.md): members live in <group>/repos/<id>; a new member takes
+    the group's key from a member the creating machine can open; never across customers."""
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    heartbeat(client, h)
+
+    def create(uuid_, dedup, path="D:\\Group", agent=agent_id):
+        return client.post("/api/console/backup/repositories", headers=admin, json={
+            "name": f"R {uuid_[:4]}", "path": path, "repoUuid": uuid_, "dedup": dedup, "initAgentId": agent,
+            "access": [{"agentId": agent, "sealed": SEALED}]})
+
+    a_uuid = str(uuid.uuid4())
+    r = create(a_uuid, "new")
+    assert r.status_code == 200, r.text
+    a = r.json()["id"]
+    spec = heartbeat(client, h)["jobs"][0]
+    assert spec["kind"] == {"type": "init_repository"} and "group_source" not in spec
+    assert spec["repository"]["path"] == f"D:\\Group\\repos\\{a_uuid}"
+    finish(client, h, spec["id"], repo_uuid=a_uuid)
+    listed = next(x for x in client.get("/api/console/backup/repositories", headers=admin).json() if x["id"] == a)
+    assert listed["dedupGroup"] == "D:\\Group"
+
+    b_uuid = str(uuid.uuid4())
+    assert create(b_uuid, a, path="E:\\Elsewhere").status_code == 400, "members share the group's folder"
+    r = create(b_uuid, a)
+    assert r.status_code == 200, r.text
+    spec = heartbeat(client, h)["jobs"][0]
+    assert spec["repository"]["path"] == f"D:\\Group\\repos\\{b_uuid}"
+    assert spec["group_source"]["repository_id"] == a and spec["group_source"]["sealed_secret"] == SEALED
+    finish(client, h, spec["id"], repo_uuid=b_uuid)
+
+    # A machine without access to A: the job fails with the reason.
+    other_id, oh = agent_enroll(client, e["token"], machine="m-2", key=base64.b64encode(b"o" * 32).decode())
+    heartbeat(client, oh)
+    assert create(str(uuid.uuid4()), a, agent=other_id).status_code == 200
+    assert heartbeat(client, oh)["jobs"] == []
+    jobs = client.get("/api/console/backup/jobs", headers=admin).json()
+    failed = next(j for j in jobs if j["agentId"] == other_id)
+    assert failed["state"] == "failed" and "dedup group" in failed["error"]
+
+    # Another customer's repository cannot be joined.
+    other_tenant = client.post("/api/console/tenants", json={"name": "Other Co", "template": "balanced"}, headers=admin).json()
+    e2 = link(client, admin, other_tenant)
+    t2, h2 = agent_enroll(client, e2["token"], machine="m-3", key=base64.b64encode(b"t" * 32).decode())
+    heartbeat(client, h2)
+    assert create(str(uuid.uuid4()), a, agent=t2).status_code == 400

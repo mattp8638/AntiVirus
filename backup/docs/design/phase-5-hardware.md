@@ -82,3 +82,31 @@ machine's firmware boot entries.
   is not touched.
 * The Windows PE path is checked on a Windows CI runner against a hive
   saved with `reg save` (see the WinPE work in `phase-2.md` §6).
+
+## Other drivers (Linux recovery media)
+
+Windows PE media add any driver package with DISM. The Linux recovery media cannot run DISM, so it stages
+them instead: every `fenrir-drivers` folder (on the medium, or in the root of any partition not on the restored
+disk, such as a USB stick) is copied to `Windows\Fenrir\Drivers\NN` in the restored Windows, and
+`%SystemRoot%\Fenrir\Drivers` is added to `DevicePath` (`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion`),
+the folders Windows searches, with their subfolders, for drivers of hardware it finds. When Windows starts it
+installs network, chipset, graphics and other drivers from there by itself. Drivers Windows needs before it can
+start (a storage controller it has no driver for) cannot be staged this way and still need Windows PE media.
+
+## Linux
+
+Restoring a Linux system onto different hardware from the recovery media, after the image is written, finds the
+restored root file system (partitions and logical volumes of the restored disk with `etc/os-release` and
+`etc/fstab`), mounts it with its `/boot` and `/boot/efi` from fstab, and inside it (chroot):
+
+* dracut (Red Hat, Fedora, SUSE; host-only by default): `dracut --force --no-hostonly --regenerate-all`;
+* initramfs-tools with `MODULES=dep`: writes `conf.d/zz-fenrir-restore` with `MODULES=most` and runs
+  `update-initramfs -u -k all`;
+* initramfs-tools with `MODULES=most` (Debian and Ubuntu's default) already has the drivers: unchanged.
+
+The result is reported with the restore (`linux`). Network interfaces may be named differently on the new
+hardware; settings tied to an interface name or MAC address are left for the administrator.
+
+Code: `crates/agent/src/linuxfix.rs`; tests: the tool detection and fstab parsing (unit tests), and the driver
+staging with a real registry hive (`driver_packages_are_staged_for_windows_to_find`, run where the hivex tools
+are installed, as in CI).

@@ -5,6 +5,8 @@
 //! `live::prepare`: the running system, consistent through LVM snapshots and
 //! frozen copies (docs/design/phase-6.md).
 
+#[cfg(target_os = "linux")]
+pub mod apps;
 pub mod blk;
 #[cfg(target_os = "linux")]
 pub mod live;

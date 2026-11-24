@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod dedup;
 pub mod download;
 pub mod gateway;
 pub mod net;
@@ -542,6 +543,10 @@ pub struct JobSpec {
     /// the source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub copy_target: Option<RepoAccess>,
+    /// Creating a repository in an existing dedup group: a member of the
+    /// group this machine can open, to take the group's key from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_source: Option<RepoAccess>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

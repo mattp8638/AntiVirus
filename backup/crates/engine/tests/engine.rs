@@ -852,3 +852,114 @@ fn copy_to_another_repository_restores_identically() {
         engine::copy::copy_images(&src, &src, None, false, &JobControl::new(), &|_, _| {}).is_err()
     );
 }
+
+/// Dedup groups (docs/design/dedup-groups.md): two repositories in one group
+/// store the same data once; neither can read the other's manifests; pruning
+/// one never deletes chunks the other still uses.
+#[test]
+fn dedup_group_members_share_chunks_and_prune_safely() {
+    use core_format::crypto::SecretKey;
+    use core_format::group::{self, GroupBackend};
+    use core_format::RecoveryKey;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("group");
+    let shared: Arc<dyn Backend> = Arc::new(LocalBackend::create(&root).unwrap());
+    let info = group::create(&*shared, CS).unwrap();
+    let opts = || InitOptions {
+        chunk_size: 4 * CS, // ignored: members use the group's chunk size
+        kdf: KdfParams::INSECURE_FAST,
+        ..Default::default()
+    };
+    let member = |id: Uuid, create: bool| -> Arc<dyn Backend> {
+        let p = root.join("repos").join(id.to_string());
+        let m: Arc<dyn Backend> = Arc::new(if create {
+            LocalBackend::create(&p).unwrap()
+        } else {
+            LocalBackend::open(&p).unwrap()
+        });
+        Arc::new(GroupBackend {
+            member: m,
+            shared: shared.clone(),
+        })
+    };
+    let rk_a = RecoveryKey::generate(Uuid::new_v4()).unwrap();
+    let a = Repository::init_member(
+        member(rk_a.repo_id, true),
+        b"pass-a",
+        opts(),
+        &rk_a,
+        &info,
+        &SecretKey::generate().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(a.chunk_size(), CS);
+    assert_eq!(a.config().version, 2);
+    let rk_b = RecoveryKey::generate(Uuid::new_v4()).unwrap();
+    let b = Repository::init_member(
+        member(rk_b.repo_id, true),
+        b"pass-b",
+        opts(),
+        &rk_b,
+        &info,
+        a.group_key().unwrap(),
+    )
+    .unwrap();
+
+    let disk = make_disk();
+    let ra = run_backup(&a, &disk).unwrap();
+    assert!(ra.stats.chunks_new > 0);
+    let rb = run_backup(&b, &disk).unwrap();
+    assert_eq!(
+        rb.stats.chunks_new, 0,
+        "the same data is stored once in the group"
+    );
+    let chunks = shared.list("chunks").unwrap().len();
+
+    // Separate members: their own manifests only, their own passphrase.
+    assert_eq!(a.list_image_ids().unwrap(), vec![ra.image_id]);
+    assert!(b.load_manifest(&ra.image_id).is_err());
+    assert!(Repository::unlock_with_passphrase(member(rk_b.repo_id, false), b"pass-a").is_err());
+    let b2 = Repository::unlock_with_passphrase(member(rk_b.repo_id, false), b"pass-b").unwrap();
+    assert_eq!(b2.chunk_id(b"x"), a.chunk_id(b"x"));
+    let out = dir.path().join("b.img");
+    restore_to(&b2, rb.image_id, &out);
+
+    // A forgets its image and prunes: B still uses every chunk.
+    a.delete_image(&ra.image_id).unwrap();
+    let p = engine::retention::prune(&a, false, &JobControl::new()).unwrap();
+    assert_eq!(p.chunks_deleted, 0);
+    assert_eq!(shared.list("chunks").unwrap().len(), chunks);
+    restore_to(&b2, rb.image_id, &dir.path().join("b2.img"));
+
+    // A reference list left by a crash (no manifest) is cleaned up by its member.
+    shared
+        .put(&group::refs_key(&a.config().repo_id, &Uuid::new_v4()), b"x")
+        .unwrap();
+    engine::retention::prune(&a, false, &JobControl::new()).unwrap();
+    assert!(shared
+        .list(&format!("refs/{}", a.config().repo_id))
+        .unwrap()
+        .is_empty());
+
+    // A damaged list of another member: nothing is deleted.
+    let bref = group::refs_key(&b.config().repo_id, &rb.image_id);
+    let good = shared.get(&bref).unwrap();
+    let mut bad = good.clone();
+    let n = bad.len();
+    bad[n - 1] ^= 1;
+    shared.delete(&bref).unwrap();
+    shared.put(&bref, &bad).unwrap();
+    let orphan = vec![7u8; 1000];
+    a.put_chunk(&a.chunk_id(&orphan), &orphan).unwrap();
+    let e = engine::retention::prune(&a, false, &JobControl::new()).unwrap_err();
+    assert!(matches!(e, EngineError::Safety(_)), "{e}");
+    shared.delete(&bref).unwrap();
+    shared.put(&bref, &good).unwrap();
+
+    // Once B lets its image go too, the chunks go.
+    b.delete_image(&rb.image_id).unwrap();
+    let p = engine::retention::prune(&b, false, &JobControl::new()).unwrap();
+    assert_eq!(p.chunks_deleted, chunks + 1);
+    assert!(shared.list("chunks").unwrap().is_empty());
+}
