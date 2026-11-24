@@ -43,6 +43,28 @@ pub struct BackupOptions {
     pub workers: usize,
     /// Read rate limit in bytes per second; 0 = unlimited.
     pub rate_limit: u64,
+    /// Changed-block tracking: what changed since an earlier image of the
+    /// same machine. Chunks with no changed byte are taken from that image
+    /// instead of being read (docs/design/frequent-backups.md §3).
+    pub changed: Option<ChangedSince>,
+}
+
+/// The ranges written on each disk since `base_image` was taken, as reported
+/// by a change tracker the caller trusts to record every write (Hyper-V
+/// Resilient Change Tracking). A chunk is reused from the base image only if
+/// none of its bytes changed and its used ranges are the same as in the base
+/// image; everything else is read. When the base image cannot be used (gone,
+/// another machine, another chunk size) every disk is read in full.
+#[derive(Debug, Clone)]
+pub struct ChangedSince {
+    pub base_image: Uuid,
+    /// One entry per source disk, in the same order. `None` reads that disk
+    /// in full (no tracking for it, or a disk the base image does not have).
+    pub disks: Vec<Option<Vec<Extent>>>,
+    /// Read about one in this many chunks reported unchanged anyway and
+    /// check they match the base image; a mismatch fails the backup with
+    /// [`EngineError::ChangeTrackingMissed`]. 0 = no checks.
+    pub spot_check_one_in: u32,
 }
 
 impl Default for BackupOptions {
@@ -53,6 +75,7 @@ impl Default for BackupOptions {
                 .unwrap_or(2)
                 .clamp(1, 8),
             rate_limit: 0,
+            changed: None,
         }
     }
 }
@@ -74,6 +97,24 @@ pub struct BackupReport {
     pub kind: ImageKind,
     pub stats: ImageStats,
     pub warnings: Vec<String>,
+    /// How the disks were read: "full", or "changed_blocks" when unchanged
+    /// chunks were taken from `changed_base` without reading them.
+    pub read_mode: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changed_base: Option<Uuid>,
+    /// Used bytes taken from the base image without reading them.
+    pub bytes_unchanged: u64,
+    /// Why change tracking was asked for but not used, if it was not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub full_read_reason: Option<String>,
+}
+
+/// The base image's view of one disk, for reusing its unchanged chunks.
+struct Reuse<'a> {
+    spot_check_one_in: u32,
+    changed: &'a [Extent],
+    base_used: &'a [Extent],
+    base_chunks: std::collections::HashMap<u64, ChunkId>,
 }
 
 struct Work {
@@ -82,6 +123,11 @@ struct Work {
 }
 
 enum Done {
+    /// Taken from the base image without reading (changed-block tracking).
+    Reused {
+        index: u64,
+        id: ChunkId,
+    },
     Stored {
         index: u64,
         id: ChunkId,
@@ -117,6 +163,22 @@ pub fn backup(
     let mut disks = Vec::new();
     let mut warnings = meta.warnings.clone();
     let mut excluded = Vec::new();
+    let mut bytes_unchanged = 0u64;
+    let (base, mut full_read_reason) = match &opts.changed {
+        None => (None, None),
+        Some(c) => match usable_base(repo, c, &meta.machine.machine_id, sources.len()) {
+            Ok(m) => (Some((c, m)), None),
+            Err(why) => (None, Some(why)),
+        },
+    };
+    let changed_lists: Vec<Option<Vec<Extent>>> = match &base {
+        Some((c, _)) => c
+            .disks
+            .iter()
+            .map(|d| d.clone().map(extent::normalize))
+            .collect(),
+        None => vec![],
+    };
 
     for (di, src) in sources.iter().enumerate() {
         let PlannedDisk {
@@ -135,6 +197,19 @@ pub fn backup(
         excluded.extend(plan.excluded.iter().cloned());
         let total = extent::total_len(&layout.used);
 
+        let reuse = base.as_ref().and_then(|(c, m)| {
+            let changed = changed_lists.get(di)?.as_deref()?;
+            let d = m.disks.iter().find(|d| d.index == di as u32)?;
+            if d.size != info.size {
+                return None;
+            }
+            Some(Reuse {
+                spot_check_one_in: c.spot_check_one_in,
+                changed,
+                base_used: &d.used_extents,
+                base_chunks: d.chunks.iter().map(|c| (c.0, c.1)).collect(),
+            })
+        });
         let chunks = run_pipeline(
             repo,
             *src,
@@ -147,6 +222,8 @@ pub fn backup(
             ctl,
             progress,
             &mut stats,
+            reuse.as_ref(),
+            &mut bytes_unchanged,
         )?;
 
         disks.push(DiskImage {
@@ -209,13 +286,57 @@ pub fn backup(
     }
     let signer = repo.signer_for_machine(&meta.machine.machine_id)?;
     repo.store_manifest(&body, &signer)?;
+    let used_base = base.is_some() && changed_lists.iter().any(|d| d.is_some());
+    if base.is_some() && !used_base {
+        full_read_reason = Some("no disk had change tracking".into());
+    }
     Ok(BackupReport {
         image_id: body.image_id,
         parent,
         kind: body.kind,
         stats,
         warnings,
+        read_mode: if used_base { "changed_blocks" } else { "full" },
+        changed_base: base
+            .as_ref()
+            .filter(|_| used_base)
+            .map(|(c, _)| c.base_image),
+        bytes_unchanged,
+        full_read_reason,
     })
+}
+
+/// Whether to read a chunk reported unchanged anyway, to check the tracker:
+/// a fixed, evenly spread choice of about one chunk in `one_in`.
+fn spot_check(index: u64, one_in: u32) -> bool {
+    one_in > 0 && index.wrapping_mul(0x9E37_79B9_7F4A_7C15) % one_in as u64 == 0
+}
+
+/// The base image, if its chunks may stand in for unchanged ones: it must
+/// still exist (the shared lock held by the caller keeps it and its chunks
+/// from being pruned), be of the same machine and use this chunk size.
+fn usable_base(
+    repo: &Repository,
+    c: &ChangedSince,
+    machine_id: &str,
+    disks: usize,
+) -> std::result::Result<ManifestBody, String> {
+    if c.disks.len() != disks {
+        return Err(format!(
+            "change tracking covers {} disks, the backup has {disks}",
+            c.disks.len()
+        ));
+    }
+    let m = repo
+        .load_manifest(&c.base_image)
+        .map_err(|e| format!("the previous image {} cannot be used: {e}", c.base_image))?;
+    if m.machine.machine_id != machine_id {
+        return Err("the previous image is of another machine".into());
+    }
+    if m.chunk_size != repo.chunk_size() {
+        return Err("the previous image uses another chunk size".into());
+    }
+    Ok(m)
 }
 
 /// What a backup of one disk would capture.
@@ -309,6 +430,8 @@ fn run_pipeline(
     ctl: &JobControl,
     progress: &(dyn Fn(&Progress) + Sync),
     stats: &mut ImageStats,
+    reuse: Option<&Reuse>,
+    bytes_unchanged: &mut u64,
 ) -> Result<Vec<ChunkRef>> {
     let workers = opts.workers.max(1);
     let (work_tx, work_rx): (SyncSender<Work>, Receiver<Work>) = mpsc::sync_channel(workers * 2);
@@ -333,6 +456,7 @@ fn run_pipeline(
                 }
             });
         }
+        let reused_tx = done_tx.clone();
         drop(done_tx);
 
         // Reader.
@@ -351,6 +475,28 @@ fn run_pipeline(
                 if parts.is_empty() {
                     continue;
                 }
+                // Nothing written here since the base image, and the same
+                // bytes in use: the base image's chunk (or its absence, for
+                // an all-zero chunk) is this chunk.
+                // Spot-checked chunks are read anyway and compared with it.
+                let mut check: Option<Option<ChunkId>> = None;
+                if let Some(r) = reuse {
+                    if extent::clip(r.changed, range).is_empty()
+                        && extent::clip(r.base_used, range) == parts
+                    {
+                        let base_id = r.base_chunks.get(&index).copied();
+                        if spot_check(index, r.spot_check_one_in) {
+                            check = Some(base_id);
+                        } else {
+                            if let Some(id) = base_id {
+                                if reused_tx.send(Ok(Done::Reused { index, id })).is_err() {
+                                    break;
+                                }
+                            }
+                            continue;
+                        }
+                    }
+                }
                 // Unused bytes stay zero: free-space contents are never stored.
                 let mut data = vec![0u8; range.1 as usize];
                 for e in &parts {
@@ -364,17 +510,39 @@ fn run_pipeline(
                         })?;
                     throttle.account(e.1, ctl);
                 }
+                if let Some(base_id) = check {
+                    let same = match base_id {
+                        Some(id) => repo.chunk_id(&data) == id,
+                        None => data.iter().all(|&b| b == 0),
+                    };
+                    if !same {
+                        return Err(EngineError::ChangeTrackingMissed(format!(
+                            "disk {disk_index}: the chunk at offset {start} was reported unchanged but differs from the previous image"
+                        )));
+                    }
+                }
                 if work_tx.send(Work { index, data }).is_err() {
                     break;
                 }
             }
             drop(work_tx);
+            drop(reused_tx);
             Ok(())
         });
 
         // Collector (this thread).
         for r in done_rx.iter() {
             match r {
+                Ok(Done::Reused { index, id }) => {
+                    refs.push(ChunkRef(index, id));
+                    stats.chunks_total += 1;
+                    let len = extent::total_len(&extent::clip(
+                        used,
+                        Extent(index * cs, cs.min(size - index * cs)),
+                    ));
+                    *bytes_unchanged += len;
+                    bytes_done += len;
+                }
                 Ok(Done::Stored {
                     index,
                     id,

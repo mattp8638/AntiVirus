@@ -7,6 +7,9 @@
 //! Read the frozen VHDX files with Fenrir's own reader, store one image per
 //! VM, then destroy the checkpoint so Hyper-V merges the differencing disks.
 //!
+//! With change tracking (`rct.rs`), the checkpoint is converted to a
+//! reference point instead, so the next backup reads only what changed.
+//!
 //! WMI is driven through Windows PowerShell 5.1 (always present on Hyper-V
 //! hosts). Script text and output parsing are platform-independent and
 //! unit-tested; only `run_ps` needs Windows.
@@ -15,7 +18,7 @@ use anyhow::{bail, Context};
 use core_format::manifest::{Consistency, VmDisk, VmInfo, VmNetworkAdapter};
 use serde::Deserialize;
 
-const PS_PRELUDE: &str = r#"$ErrorActionPreference = 'Stop'
+pub(crate) const PS_PRELUDE: &str = r#"$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $ns = 'root\virtualization\v2'
 function Wait-WmiJob($r, $what) {
@@ -70,7 +73,10 @@ $drives = @(Get-VMHardDiskDrive -VM $v | ForEach-Object {
 })
 $disks = @(foreach ($f in $frozen) {
   $d = $drives | Where-Object { $_.parent -eq $f -or $_.current -eq $f } | Select-Object -First 1
-  [pscustomobject]@{ path = $f; controller = $(if ($d) { $d.controller } else { '' }) }
+  # Virtual disk identity and size, for change tracking (rct.rs).
+  $vhd = $null; try { $vhd = Get-VHD -Path $f } catch {}
+  [pscustomobject]@{ path = $f; controller = $(if ($d) { $d.controller } else { '' });
+    disk_id = $(if ($vhd) { [string]$vhd.DiskIdentifier } else { '' }); size = $(if ($vhd) { [uint64]$vhd.Size } else { [uint64]0 }) }
 })
 $nets = @(Get-VMNetworkAdapter -VM $v | ForEach-Object { [pscustomobject]@{ name = $_.Name; switch = [string]$_.SwitchName; mac = [string]$_.MacAddress } })
 $sb = $null
@@ -134,6 +140,12 @@ pub struct CheckpointDisk {
     pub path: String,
     #[serde(default)]
     pub controller: String,
+    /// The VHDX's virtual disk identifier (`Get-VHD`), if it could be read.
+    #[serde(default)]
+    pub disk_id: String,
+    /// Virtual size in bytes; 0 if unknown.
+    #[serde(default)]
+    pub size: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

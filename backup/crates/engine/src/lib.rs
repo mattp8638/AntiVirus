@@ -21,7 +21,8 @@ pub mod target;
 pub mod verify;
 
 pub use backup::{
-    backup, plan_image, probe_reads, BackupOptions, BackupReport, ImageMeta, PlannedDisk, Progress,
+    backup, plan_image, probe_reads, BackupOptions, BackupReport, ChangedSince, ImageMeta,
+    PlannedDisk, Progress,
 };
 pub use control::JobControl;
 pub use restore::{restore_disk, RestoreOptions, RestoreReport};
@@ -42,6 +43,11 @@ pub enum EngineError {
     InvalidInput(String),
     #[error("cancelled")]
     Cancelled,
+    /// A chunk the change tracker reported as unchanged was read and
+    /// differs from the base image: the tracker missed a write. The image
+    /// was not written; back up again reading the disks in full.
+    #[error("change tracking missed a write: {0}")]
+    ChangeTrackingMissed(String),
 }
 
 pub type Result<T> = std::result::Result<T, EngineError>;

@@ -13,6 +13,7 @@ mod inventory;
 mod jobs;
 mod log;
 mod names;
+mod rct;
 mod recovery;
 mod restore;
 mod setup;

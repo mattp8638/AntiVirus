@@ -894,8 +894,22 @@ def test_backups_are_listed_by_device_and_open_only_after_an_unlock(client, admi
     opened = unlock(client, admin, h, repo_id, agent_id)
     mine = client.get("/api/console/backup/images", headers=opened, params={"device": host["key"]}).json()
     assert len(mine) == 2 and all(i["vmName"] is None for i in mine)
+    assert mine[0]["created"] > mine[1]["created"], "newest first by default"
+    # A machine's backups, oldest first, as the machine's page lists them.
+    oldest = client.get("/api/console/backup/images", headers=opened,
+                        params={"device": host["key"], "order": "asc"}).json()
+    assert [i["imageId"] for i in oldest] == [i["imageId"] for i in reversed(mine)]
+    assert client.get("/api/console/backup/images", headers=opened, params={"order": "sideways"}).status_code == 400
     assert next(d for d in client.get("/api/console/backup/image-devices", headers=opened).json()
                 if d["name"] == "M-1")["repositories"][0]["unlocked"] is True
     # The unlock belongs to this sign-in: another session of the same person does not carry it.
     elsewhere = {**login(client), "X-Fenrir-Unlock": opened["X-Fenrir-Unlock"]}
     assert client.get("/api/console/backup/images", headers=elsewhere).json() == []
+
+
+def test_plan_settings_can_turn_off_change_tracking():
+    """`full_read` reaches the agent: every disk read in full, Hyper-V change tracking ignored."""
+    from fenrir_cloud.routers.backup import _settings
+
+    assert _settings({})["full_read"] is False
+    assert _settings({"full_read": True})["full_read"] is True

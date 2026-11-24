@@ -294,6 +294,9 @@ pub struct BackupSettings {
     /// Verify a sample of the new image's chunks afterwards.
     #[serde(default)]
     pub verify_sample_percent: Option<f64>,
+    /// Read every disk in full, ignoring change tracking (Hyper-V RCT).
+    #[serde(default)]
+    pub full_read: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

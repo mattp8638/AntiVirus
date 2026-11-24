@@ -818,7 +818,8 @@ function DeviceImages({ device, agents, repos, onBack, onUnlock }: {
   device: ImageDevice; agents: BackupAgent[]; repos: Repo[]; onBack: () => void; onUnlock: () => void;
 }) {
   const tick = useUnlocks();
-  const images = useListData<Image>("backup/images", { device: device.key }, [device.key, tick]);
+  // Oldest first: the machine's restore points in the order they were taken.
+  const images = useListData<Image>("backup/images", { device: device.key, order: "asc" }, [device.key, tick]);
   const [restore, setRestore] = useState<Image | null>(null);
   const [boot, setBoot] = useState<Image | null>(null);
   const [files, setFiles] = useState<Image | null>(null);
@@ -838,7 +839,7 @@ function DeviceImages({ device, agents, repos, onBack, onUnlock }: {
       <Table rows={images.data} empty="No backups."
         columns={[
           { key: "what", label: "Backup", render: (i) => <><span>{i.kind}</span>{i.label && <span className="small muted"> · {i.label}</span>}{device.repositories.length > 1 && <div className="small muted">{repos.find((r) => r.id === i.repositoryId)?.name}</div>}{i.anomaly && <div className="small" style={{ color: "#fca5a5" }}>⚠ {i.anomaly}</div>}</> },
-          { key: "created", label: "Taken", render: (i) => unixTime(i.created) },
+          { key: "created", label: "Taken (oldest first)", render: (i) => unixTime(i.created) },
           { key: "size", label: "Size", render: (i) => <span className="small">{bytes(i.capturedBytes)} · {bytes(i.storedNewBytes)} new</span> },
           { key: "consistency", label: "Consistency", render: (i) => <><span>{i.consistency}</span><AppsLine apps={i.applications} /></> },
           { key: "boot", label: "Boots?", render: (i) => i.lastBootCheck ? <Pill value={i.lastBootCheck.outcome} tone={i.lastBootCheck.outcome === "failed" ? "bad" : "good"} /> : <span className="small muted">not tested</span> },

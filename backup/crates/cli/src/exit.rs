@@ -91,6 +91,7 @@ impl From<engine::EngineError> for CliError {
             E::InvalidInput(m) => CliError::usage(m),
             E::Cancelled => CliError::new(ExitCode::Cancelled, "cancelled"),
             E::Io(e) => CliError::new(ExitCode::Error, e.to_string()),
+            e @ E::ChangeTrackingMissed(_) => CliError::new(ExitCode::Error, e.to_string()),
         }
     }
 }

@@ -869,6 +869,12 @@ fn backup_one_vm(
     let out = crate::hyperv::run_ps(&crate::hyperv::checkpoint_script(&vm.id)?)?;
     let cp = crate::hyperv::parse_checkpoint(&out, host, &vm.id)?;
     pending_update(ctx.state_dir, |v| v.push(cp.snapshot_id.clone()));
+    // Change tracking: what the last image of this VM in this repository
+    // left behind (rct.rs).
+    let key = crate::rct::key(repo.config().repo_id, &vm.id);
+    let mut state = crate::rct::load(ctx.state_dir);
+    let prev = state.vms.get(&key).cloned();
+    let now = core_format::timefmt::now_unix();
 
     let result = (|| -> anyhow::Result<BackupReport> {
         if cp.disks.is_empty() {
@@ -903,26 +909,153 @@ fn backup_one_vm(
             applications: vec![],
         };
         let cb = progress_cb(rep, prefix.to_string());
-        Ok(engine::backup(
-            repo,
-            &refs,
-            meta,
-            &options(s),
-            &ctx.ctl,
-            &cb,
-        )?)
+        let mut opts = options(s);
+        if !s.full_read {
+            rep.progress("changes", 0, 1, &format!("{prefix}finding what changed"));
+            opts.changed = tracked_changes(prev.as_ref(), &cp, now, prefix);
+        }
+        match engine::backup(repo, &refs, meta.clone(), &opts, &ctx.ctl, &cb) {
+            Err(engine::EngineError::ChangeTrackingMissed(why)) => {
+                // Never trust the tracker for this image: read everything.
+                let msg = format!(
+                    "VM '{}': change tracking missed a write ({why}); the disks were read in full",
+                    vm.name
+                );
+                crate::log::warn(&msg);
+                opts.changed = None;
+                let mut r = engine::backup(repo, &refs, meta, &opts, &ctx.ctl, &cb)?;
+                r.full_read_reason = Some(msg.clone());
+                r.warnings.push(msg);
+                Ok(r)
+            }
+            r => Ok(r?),
+        }
     })();
 
-    // Always merge the checkpoint back, whatever happened above.
     let mut warnings = vec![];
-    match crate::hyperv::destroy_script(&cp.snapshot_id).and_then(|sc| crate::hyperv::run_ps(&sc)) {
-        Ok(_) => pending_update(ctx.state_dir, |v| v.retain(|x| x != &cp.snapshot_id)),
-        Err(e) => warnings.push(format!(
-            "VM '{}': the recovery checkpoint could not be removed ({e:#}); the agent will retry, or remove it in Hyper-V Manager",
-            vm.name
-        )),
+    // After a good image, keep a reference point for the next backup to
+    // read only what changed since this one; otherwise merge the checkpoint
+    // back as before.
+    let mut kept = false;
+    if let (Ok(r), false) = (&result, s.full_read) {
+        match crate::rct::to_reference_script(&cp.snapshot_id)
+            .and_then(|sc| crate::hyperv::run_ps(&sc))
+            .and_then(|o| crate::rct::parse_reference(&o, &cp.disks))
+        {
+            Ok((rp_id, disks)) => {
+                kept = true;
+                pending_update(ctx.state_dir, |v| v.retain(|x| x != &cp.snapshot_id));
+                if disks.len() < cp.disks.len() {
+                    crate::log::info(&format!(
+                        "{prefix}{} of {} disks have change tracking; the others are read in full each time",
+                        disks.len(),
+                        cp.disks.len()
+                    ));
+                }
+                let full_read_unix = match (&prev, r.read_mode) {
+                    (Some(p), "changed_blocks") => p.full_read_unix,
+                    _ => now,
+                };
+                state.vms.insert(
+                    key.clone(),
+                    crate::rct::Entry {
+                        image_id: r.image_id,
+                        reference_point_id: rp_id.clone(),
+                        disks,
+                        full_read_unix,
+                    },
+                );
+                if let Err(e) = crate::rct::save(ctx.state_dir, &state) {
+                    crate::log::warn(&format!("{prefix}could not save change tracking state: {e:#}"));
+                }
+                if let Some(p) = prev.as_ref().filter(|p| p.reference_point_id != rp_id) {
+                    remove_reference_point(&p.reference_point_id, prefix);
+                }
+            }
+            Err(e) => crate::log::info(&format!(
+                "{prefix}change tracking is not available ({e:#}); backups of this VM read its disks in full"
+            )),
+        }
+    }
+    if !kept {
+        match crate::hyperv::destroy_script(&cp.snapshot_id)
+            .and_then(|sc| crate::hyperv::run_ps(&sc))
+        {
+            Ok(_) => pending_update(ctx.state_dir, |v| v.retain(|x| x != &cp.snapshot_id)),
+            Err(e) => warnings.push(format!(
+                "VM '{}': the recovery checkpoint could not be removed ({e:#}); the agent will retry, or remove it in Hyper-V Manager",
+                vm.name
+            )),
+        }
+        // A good image without a reference point: the old one is no use.
+        if result.is_ok() {
+            if let Some(p) = state.vms.remove(&key) {
+                remove_reference_point(&p.reference_point_id, prefix);
+                let _ = crate::rct::save(ctx.state_dir, &state);
+            }
+        }
     }
     result.map(|r| (r, warnings))
+}
+
+/// The changed ranges of each disk since the last image, or `None` to read
+/// everything (with the reason in the agent log).
+fn tracked_changes(
+    prev: Option<&crate::rct::Entry>,
+    cp: &crate::hyperv::Checkpoint,
+    now: i64,
+    prefix: &str,
+) -> Option<engine::ChangedSince> {
+    let plan = match crate::rct::plan(prev, &cp.disks, now) {
+        Ok(p) => p,
+        Err(why) => {
+            crate::log::info(&format!("{prefix}reading the disks in full: {why}"));
+            return None;
+        }
+    };
+    let queries: Vec<&crate::rct::Query> = plan.queries.iter().flatten().collect();
+    let answers = match crate::rct::changes_script(&queries)
+        .and_then(|sc| crate::hyperv::run_ps(&sc))
+        .and_then(|o| crate::rct::parse_changes(&o, &queries))
+    {
+        Ok(a) => a,
+        Err(e) => {
+            crate::log::warn(&format!(
+                "{prefix}could not read the changed blocks ({e:#}); reading the disks in full"
+            ));
+            return None;
+        }
+    };
+    let mut answers = answers.into_iter();
+    let disks = plan
+        .queries
+        .iter()
+        .map(|q| {
+            let q = q.as_ref()?;
+            match answers.next()? {
+                Ok(ranges) => Some(ranges),
+                Err(e) => {
+                    crate::log::info(&format!("{prefix}{}: {e}; reading it in full", q.path));
+                    None
+                }
+            }
+        })
+        .collect();
+    Some(engine::ChangedSince {
+        base_image: plan.base_image,
+        disks,
+        spot_check_one_in: crate::rct::SPOT_CHECK_ONE_IN,
+    })
+}
+
+fn remove_reference_point(id: &str, prefix: &str) {
+    if let Err(e) =
+        crate::rct::destroy_reference_script(id).and_then(|sc| crate::hyperv::run_ps(&sc))
+    {
+        crate::log::warn(&format!(
+            "{prefix}could not remove the previous reference point {id}: {e:#}"
+        ));
+    }
 }
 
 /// Sign in (if a share), then check the folder: exists, is a repository,

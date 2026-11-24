@@ -70,7 +70,8 @@ A disk restore also needs the device name typed exactly. Every change is in the 
 ## Opening a machine's backups
 
 **Images & restore** lists the backed-up machines (and Hyper-V VMs): how many backups, the latest, space used,
-the last verified boot. The backups themselves open only after an unlock:
+the last verified boot. Choosing a machine opens its own backups, oldest first (the same view is on the device's
+Backup tab). The backups themselves open only after an unlock:
 
 1. Choose the machine. Enter the **repository passphrase**, **your password** and, if your account has MFA, the
    **authenticator code**.
@@ -126,7 +127,10 @@ see `backup/docs/CLI.md` and `backup/docs/design/phase-5-grow-clone.md`.
 
 A plan can run every few minutes (from 5) as well as every few hours or at a time of day. A run never overlaps the
 previous one: if a backup takes longer than the interval, the next starts when it finishes. Each run reads the used
-disk space again and stores only what changed, so pick an interval longer than one backup takes. Retention has an
+disk space again and stores only what changed, so pick an interval longer than one backup takes. Hyper-V VMs are
+the exception: with Resilient Change Tracking (VM configuration version 6.2 or later) a run reads only the blocks
+written since the last backup, with a full read each week and spot checks against the previous image; the plan
+setting `full_read` turns this off. Retention has an
 **Hourly** rule (the newest image of each of the latest N hours) for many short-lived restore points. Design:
 `backup/docs/design/frequent-backups.md`.
 
