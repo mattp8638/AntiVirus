@@ -124,6 +124,11 @@ pub struct VmSummary {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Inventory {
     pub hostname: String,
+    /// The machine's hardware serial number (SMBIOS), when it has a real one:
+    /// lets a management server tie this agent to the same device's other
+    /// agents (Fenrir Cloud) when host names are ambiguous.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hardware_serial: Option<String>,
     pub os: OsSummary,
     pub agent_version: String,
     /// What this agent can do: "backup_system", "backup_disks",

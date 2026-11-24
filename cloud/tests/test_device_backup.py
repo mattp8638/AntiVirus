@@ -753,3 +753,28 @@ def test_move_from_fenrir_backup_existing_repository_and_plan_import(client, adm
     assert plan["schedule"]["minutes"] == 30 and plan["retention"]["keep_hourly"] == 24 and plan["repositoryId"] == repo_id
     # Importing again does not duplicate it.
     assert client.post("/api/console/backup/import", headers=admin, json={"export": export}).json()["created"] == []
+
+
+def test_backup_agent_links_by_hardware_serial_when_host_names_are_ambiguous(client, admin, tenant):
+    """Two devices with the same host name: the backup agent's hardware serial decides which is its machine, and a
+    firmware placeholder serial does not count."""
+    from fenrir_cloud.db import session_factory
+    from fenrir_cloud.models import BackupAgent, Device
+
+    enroll(client, admin, tenant, hostname="SHOP-PC", serial="CN-0X35B")
+    b = enroll(client, admin, tenant, hostname="SHOP-PC", serial="PF2ABCDE")
+    with session_factory()() as db:
+        assert sum(1 for d in db.query(Device).all() if (d.hostname or "").upper() == "SHOP-PC") == 2
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"], machine="shop-pc")
+    heartbeat(client, h, hostname="SHOP-PC", hardware_serial="To Be Filled By O.E.M.")
+    with session_factory()() as db:
+        assert bk.matching_device(db, db.get(BackupAgent, agent_id)) is None, "same name twice, no real serial"
+    heartbeat(client, h, hostname="SHOP-PC", hardware_serial="pf2abcde")
+    with session_factory()() as db:
+        agent = db.get(BackupAgent, agent_id)
+        assert bk.matching_device(db, agent) == b["deviceId"]
+        agent.device_id = None
+        db.commit()
+        assert bk.link_devices(db) == 1
+        assert db.get(BackupAgent, agent_id).device_id == b["deviceId"]

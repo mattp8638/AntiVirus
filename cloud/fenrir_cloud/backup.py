@@ -621,14 +621,33 @@ def purge_listings(db: Session) -> int:
     return n
 
 
+def _serial(s: str | None) -> str:
+    """A hardware serial number fit to identify a machine ('' for firmware placeholders)."""
+    v = (s or "").strip().lower()
+    junk = len(v) < 3 or any(x in v for x in ("o.e.m", "default", "not specified", "serial number", "none")) \
+        or all(c in "0-. " for c in v)
+    return "" if junk else v
+
+
 def matching_device(db: Session, agent: BackupAgent) -> str | None:
-    """The Fenrir device this backup agent runs on: the one device in its tenant with the same host name."""
+    """The Fenrir device this backup agent runs on, within its tenant: the device with the same host name and, when
+    both agents report it, the same hardware serial number; or, when host names are ambiguous or differ, the one
+    device with that serial number."""
     name = (agent.hostname or "").split(".")[0].lower()
-    if not name:
-        return None
-    rows = [d for d in db.execute(select(Device).where(Device.tenant_id == agent.tenant_id)).scalars()
-            if (d.hostname or "").split(".")[0].lower() == name and d.api_key_hash != f"retired-{d.id}"]
-    return rows[0].id if len(rows) == 1 else None
+    serial = _serial((agent.inventory or {}).get("hardware_serial"))
+    devices = [d for d in db.execute(select(Device).where(Device.tenant_id == agent.tenant_id)).scalars()
+               if d.api_key_hash != f"retired-{d.id}"]
+    by_name = [d for d in devices if name and (d.hostname or "").split(".")[0].lower() == name]
+    if serial:
+        both = [d for d in by_name if _serial(d.serial_number) == serial]
+        if len(both) == 1:
+            return both[0].id
+        same = [d for d in devices if _serial(d.serial_number) == serial]
+        if len(same) == 1:
+            return same[0].id
+        # A device reporting another serial under this name is a different machine.
+        by_name = [d for d in by_name if not _serial(d.serial_number)]
+    return by_name[0].id if len(by_name) == 1 else None
 
 
 def link_devices(db: Session) -> int:

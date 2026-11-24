@@ -12,6 +12,11 @@ Fenrir server itself.
   service `FenrirBackupAgent`, `C:\Program Files\Fenrir-Backup\`, state in `C:\ProgramData\Fenrir-Backup\agent`
   (SYSTEM and Administrators only). Linux: systemd unit `fenrir-backup-agent`. macOS: `uk.fenrir-backup.agent`.
   Only administrators can stop or remove it. It never touches the security agent's `FenrirAgent` service.
+* **One device**: the backup agent is shown on its device (Devices › the device's Backup tab, and alerts carry the
+  device). It is linked by host name and, when both agents report it, the hardware serial number; when two devices
+  share a host name the serial decides. The two agents keep **separate credentials** on purpose: the backup agent's
+  key is the X25519 key repository passphrases are sealed to, and keeping it out of the security agent (and the
+  security agent's API key out of the backup agent) means a fault in one cannot open backups or act as the other.
 * **Server URL**: agents talk to `https://<this server>/backup` (enrol, heartbeat every 15 s, job updates,
   self-update downloads). They always connect out; nothing connects to them.
 * **Repositories**: folders on a local disk, a NAS or file server (`\\nas\share\folder`, `smb://`), holding

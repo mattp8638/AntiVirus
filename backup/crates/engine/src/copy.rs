@@ -92,7 +92,11 @@ pub fn copy_images(
         let m = src.load_manifest(&id)?;
         todo.push(m);
     }
-    todo.sort_by_key(|m| m.created_unix);
+    // By time, then by position in the parent chain (backups taken within
+    // the same second), as retention orders them.
+    let order = crate::retention::newest_first(&todo, |m| (m.image_id, m.created_unix, m.parent));
+    let mut sorted: Vec<_> = order.into_iter().rev().map(|i| todo[i].clone()).collect();
+    std::mem::swap(&mut todo, &mut sorted);
     let total: u64 = todo
         .iter()
         .flat_map(|m| &m.disks)
