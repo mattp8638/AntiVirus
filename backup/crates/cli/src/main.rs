@@ -70,6 +70,15 @@ enum Cmd {
     /// Restore an image.
     #[command(subcommand)]
     Restore(RestoreCmd),
+    /// Kubernetes: back up and restore the objects of namespaces.
+    #[command(subcommand)]
+    K8s(K8sCmd),
+    /// Microsoft 365, Google Workspace and Salesforce data.
+    #[command(subcommand)]
+    Saas(SaasCmd),
+    /// Continuous data protection of Linux volumes (any second restorable).
+    #[command(subcommand)]
+    Cdp(CdpCmd),
     /// Copy a disk straight onto another (no repository).
     Clone(CloneArgs),
     /// Copy images to another repository (an off-site copy): re-encrypted
@@ -148,6 +157,220 @@ enum RepoCmd {
     },
     /// Show repository parameters and usage.
     Info,
+}
+
+/// Continuous data protection of a Linux logical volume.
+#[derive(Subcommand)]
+enum CdpCmd {
+    /// Journal every write of an unmounted logical volume (then mount
+    /// /dev/mapper/fenrir-cdp-NAME instead of it).
+    Enable {
+        #[arg(long)]
+        name: String,
+        /// The logical volume, e.g. /dev/vg0/data.
+        #[arg(long)]
+        volume: String,
+        /// Size of each of the two journal volumes.
+        #[arg(long, default_value_t = 1024)]
+        journal_mb: u64,
+    },
+    /// Mark, swap and ship journals to the repository, with base images.
+    Run {
+        #[arg(long)]
+        name: String,
+        /// Seconds between timestamp marks (the restore granularity).
+        #[arg(long, default_value_t = 5)]
+        mark_every: u64,
+        /// Seconds between journal swaps (shipped then).
+        #[arg(long, default_value_t = 60)]
+        rotate_every: u64,
+        /// Seconds between base images.
+        #[arg(long, default_value_t = 86_400)]
+        base_every: u64,
+        /// Stop after this many seconds (default: run until stopped).
+        #[arg(long)]
+        r#for: Option<u64>,
+    },
+    /// The times a volume can be restored to.
+    Points {
+        #[arg(long)]
+        name: String,
+    },
+    /// Restore a volume as it was at a moment (to the second it was marked).
+    Restore {
+        #[arg(long)]
+        name: String,
+        /// Unix seconds, or YYYY-MM-DDTHH:MM:SSZ.
+        #[arg(long)]
+        at: String,
+        /// A device or image file to write it to.
+        #[arg(long)]
+        target: PathBuf,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Stop journaling (unmount the device first).
+    Disable {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        remove_journals: bool,
+    },
+}
+
+/// Which SaaS service and its credentials (secrets come from files).
+#[derive(clap::Args, Clone)]
+struct SaasService {
+    /// m365 | google | salesforce
+    #[arg(long)]
+    service: String,
+    /// Microsoft 365: directory (tenant) ID or domain. Google: the Workspace
+    /// domain. Salesforce: a name for the org.
+    #[arg(long)]
+    tenant: String,
+    /// Microsoft 365 / Salesforce: the app registration's or connected app's client ID.
+    #[arg(long)]
+    client_id: Option<String>,
+    /// Microsoft 365 / Salesforce: a file holding the client secret.
+    #[arg(long)]
+    secret_file: Option<PathBuf>,
+    /// Google: the service account's JSON key file.
+    #[arg(long)]
+    key_file: Option<PathBuf>,
+    /// Google: a Workspace administrator (to list users).
+    #[arg(long)]
+    admin: Option<String>,
+    /// Salesforce: https://<my-domain>.my.salesforce.com
+    #[arg(long)]
+    domain_url: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum SaasCmd {
+    /// Back up (only what changed since the last backup is downloaded).
+    Backup {
+        #[command(flatten)]
+        svc: SaasService,
+        /// Users (Microsoft 365, Google) to back up; default: all.
+        #[arg(long = "user")]
+        users: Vec<String>,
+        /// Salesforce objects; default: the standard ones and every custom object.
+        #[arg(long = "object")]
+        objects: Vec<String>,
+        /// Leave mail out (Microsoft 365, Google).
+        #[arg(long)]
+        no_mail: bool,
+        /// Leave files out (OneDrive, Google Drive).
+        #[arg(long)]
+        no_files: bool,
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// The items in a SaaS backup.
+    List {
+        image: String,
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Write items to a folder (mail as .eml, files as files, records as JSON).
+    Export {
+        #[arg(long)]
+        image: String,
+        #[arg(long)]
+        to: PathBuf,
+        #[arg(long)]
+        account: Option<String>,
+        /// Only items whose path starts with this.
+        #[arg(long)]
+        path: Option<String>,
+    },
+    /// Put items back into the service.
+    Restore {
+        #[command(flatten)]
+        svc: SaasService,
+        #[arg(long)]
+        image: String,
+        /// The user (or org) whose items to restore.
+        #[arg(long)]
+        account: String,
+        /// Into another user's mailbox and drive.
+        #[arg(long)]
+        to_account: Option<String>,
+        #[arg(long)]
+        path: Option<String>,
+        /// mail | file | record (default: all).
+        #[arg(long)]
+        kind: Option<String>,
+        /// Salesforce: update records that still exist (default: leave them).
+        #[arg(long)]
+        overwrite: bool,
+    },
+}
+
+/// How to reach the Kubernetes API (default: the pod's service account).
+#[derive(clap::Args, Clone)]
+struct K8sConnect {
+    /// API server, e.g. https://10.0.0.1:6443.
+    #[arg(long)]
+    api_server: Option<String>,
+    /// File holding a bearer token (a service account's).
+    #[arg(long)]
+    token_file: Option<PathBuf>,
+    /// The cluster's CA certificate (PEM).
+    #[arg(long)]
+    ca_file: Option<PathBuf>,
+}
+
+#[derive(Subcommand)]
+enum K8sCmd {
+    /// Back up the objects of namespaces (not their volumes' data).
+    Backup {
+        #[command(flatten)]
+        connect: K8sConnect,
+        /// Namespace to back up (repeat for several).
+        #[arg(long = "namespace", required = true)]
+        namespaces: Vec<String>,
+        /// Name of the cluster in the repository (its machine).
+        #[arg(long, default_value = "kubernetes")]
+        cluster: String,
+        #[arg(long)]
+        label: Option<String>,
+        /// Also back up the data of the namespaces' claims, read by pods
+        /// running this image (the Fenrir-Backup CLI image).
+        #[arg(long)]
+        volume_image: Option<String>,
+    },
+    /// What a Kubernetes backup holds.
+    Show { image: String },
+    /// Create a backup's objects again.
+    Restore {
+        #[command(flatten)]
+        connect: K8sConnect,
+        #[arg(long)]
+        image: String,
+        /// Only this namespace of the backup (default: all).
+        #[arg(long)]
+        namespace: Option<String>,
+        /// Into this namespace instead (with --namespace).
+        #[arg(long)]
+        to_namespace: Option<String>,
+        /// Replace objects that exist (default: leave them).
+        #[arg(long)]
+        replace: bool,
+        /// Write the claims' data back with pods running this image.
+        #[arg(long)]
+        volume_image: Option<String>,
+    },
+    /// In a pod: serve a volume's files to a backup, or receive them on
+    /// restore (started by backup and restore; not for direct use).
+    #[command(hide = true)]
+    VolumeServer {
+        #[arg(long)]
+        dir: PathBuf,
+        /// read | write
+        #[arg(long)]
+        mode: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -450,6 +673,9 @@ fn run(ctx: &Ctx, cmd: Cmd) -> R<Outcome> {
         Cmd::Verify(a) => verify(ctx, a),
         Cmd::Clone(a) => clone(ctx, a),
         Cmd::Copy(a) => copy(ctx, a),
+        Cmd::K8s(k) => k8s_cmd(ctx, k),
+        Cmd::Saas(c) => saas_cmd(ctx, c),
+        Cmd::Cdp(c) => cdp_cmd(ctx, c),
         Cmd::Restore(RestoreCmd::Disk {
             image,
             disk,
@@ -1838,5 +2064,779 @@ fn human_bytes(n: u64) -> String {
         format!("{n} B")
     } else {
         format!("{v:.1} {}", U[i])
+    }
+}
+
+// ---------------------------------------------------------------- Kubernetes (docs/design/kubernetes.md)
+
+fn k8s_client(c: &K8sConnect) -> R<k8s::Client> {
+    let conn = match &c.api_server {
+        None => k8s::Connect::in_cluster().map_err(|e| CliError::usage(e.to_string()))?,
+        Some(server) => {
+            let read = |p: &Option<PathBuf>, what: &str| -> R<String> {
+                let p = p.as_ref().ok_or_else(|| {
+                    CliError::usage(format!("--{what} is needed with --api-server"))
+                })?;
+                std::fs::read_to_string(p)
+                    .map_err(|e| CliError::usage(format!("{}: {e}", p.display())))
+            };
+            k8s::Connect {
+                server: server.clone(),
+                token: read(&c.token_file, "token-file")?.trim().to_string(),
+                ca_pem: read(&c.ca_file, "ca-file")?,
+            }
+        }
+    };
+    k8s::Client::new(&conn).map_err(|e| CliError::usage(e.to_string()))
+}
+
+fn k8s_e(e: k8s::Error) -> CliError {
+    CliError::new(ExitCode::Error, e.0)
+}
+
+/// A Kubernetes backup's archive, read back from the repository.
+fn k8s_archive(
+    repo: &Repository,
+    image: &str,
+) -> R<(core_format::ManifestBody, k8s::archive::Archive)> {
+    let m = repo.load_manifest(&repo.resolve_image_id(image)?)?;
+    let a = k8s::repo::archive(repo, &m).map_err(|e| CliError::usage(e.0))?;
+    Ok((m, a))
+}
+
+fn k8s_cmd(ctx: &Ctx, k: K8sCmd) -> R<Outcome> {
+    match k {
+        K8sCmd::Backup {
+            connect,
+            namespaces,
+            cluster,
+            label,
+            volume_image,
+        } => {
+            let c = k8s_client(&connect)?;
+            let quiet = ctx.json;
+            let repo = open_repo(ctx)?;
+            let r = k8s::repo::backup(
+                &repo,
+                &c,
+                &cluster,
+                &namespaces,
+                label,
+                volume_image.as_deref(),
+                &JobControl::new(),
+                &|s: &str| {
+                    if !quiet {
+                        eprintln!("  {s}")
+                    }
+                },
+            )
+            .map_err(k8s_e)?;
+            let out = Outcome::new(
+                json!({ "image_id": r.image_id, "namespaces": namespaces, "objects": r.objects, "kinds": r.kinds, "volumes": r.volumes, "warnings": r.warnings }),
+                format!(
+                    "Backed up {} objects and {} volumes of {} as image {}\n",
+                    r.objects,
+                    r.volumes.len(),
+                    namespaces.join(", "),
+                    r.image_id
+                ),
+            );
+            Ok(if r.warnings.is_empty() {
+                out
+            } else {
+                out.with_warnings(r.warnings.clone())
+            })
+        }
+        K8sCmd::Show { image } => {
+            let repo = open_repo(ctx)?;
+            let (m, a) = k8s_archive(&repo, &image)?;
+            let names: Vec<String> = a
+                .objects
+                .iter()
+                .map(|o| {
+                    format!(
+                        "{}/{} {}",
+                        o.namespace,
+                        o.resource.kind,
+                        o.object["metadata"]["name"].as_str().unwrap_or("")
+                    )
+                })
+                .collect();
+            Ok(Outcome::new(
+                json!({ "image_id": m.image_id, "cluster": m.machine.hostname, "namespaces": a.namespaces.iter().map(|n| &n.name).collect::<Vec<_>>(), "kinds": a.summary(), "objects": names }),
+                format!("{}\n", names.join("\n")),
+            ))
+        }
+        K8sCmd::Restore {
+            connect,
+            image,
+            namespace,
+            to_namespace,
+            replace,
+            volume_image,
+        } => {
+            if to_namespace.is_some() && namespace.is_none() {
+                return Err(CliError::usage(
+                    "--to-namespace needs --namespace (the one to restore under the new name)",
+                ));
+            }
+            let repo = open_repo(ctx)?;
+            let m = repo.load_manifest(&repo.resolve_image_id(&image)?)?;
+            let c = k8s_client(&connect)?;
+            let only: Vec<String> = namespace.iter().cloned().collect();
+            let map: Vec<(String, String)> = namespace
+                .iter()
+                .cloned()
+                .zip(to_namespace.iter().cloned())
+                .collect();
+            let rep =
+                k8s::repo::restore(&repo, &c, &m, &only, &map, replace, volume_image.as_deref())
+                    .map_err(k8s_e)?;
+            let warnings = rep.failed.clone();
+            let text = format!(
+                "Restored into {}: {} created, {} already there, {} volumes{}\n",
+                rep.namespaces.join(", "),
+                rep.created,
+                rep.existing,
+                rep.volumes.len(),
+                if rep.failed.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        ", {} failed:\n  {}",
+                        rep.failed.len(),
+                        rep.failed.join("\n  ")
+                    )
+                }
+            );
+            let out = Outcome::new(serde_json::to_value(&rep).unwrap_or_default(), text);
+            Ok(if warnings.is_empty() {
+                out
+            } else {
+                out.with_warnings(warnings)
+            })
+        }
+        K8sCmd::VolumeServer { dir, mode } => {
+            k8s::volumes::serve(&dir, mode == "write")?;
+            Ok(Outcome::new(json!({ "served": true }), String::new()))
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+/// Disk `disk` of an image, written to `file` (its first `len` bytes).
+fn k8s_disk_to(
+    repo: &Repository,
+    m: &core_format::ManifestBody,
+    disk: u32,
+    file: &Path,
+    len: u64,
+) -> R<()> {
+    k8s::repo::disk_to(repo, m, disk, file, len).map_err(k8s_e)
+}
+
+#[cfg(target_os = "linux")]
+fn tempfile_dir() -> R<PathBuf> {
+    let d = std::env::temp_dir().join(format!("fenrir-k8s-{}", std::process::id()));
+    std::fs::create_dir_all(&d)?;
+    Ok(d)
+}
+
+// ---------------------------------------------------------------- SaaS (docs/design/saas.md)
+
+fn saas_conn(s: &SaasService) -> R<(saas::run::Settings, saas::run::Conn)> {
+    let file = s
+        .key_file
+        .as_ref()
+        .or(s.secret_file.as_ref())
+        .ok_or_else(|| {
+            CliError::usage(if s.service == "google" {
+                "--key-file is needed for google"
+            } else {
+                "--secret-file is needed"
+            })
+        })?;
+    let secret = std::fs::read_to_string(file)
+        .map_err(|e| CliError::usage(format!("{}: {e}", file.display())))?;
+    let settings = saas::run::Settings {
+        service: s.service.clone(),
+        tenant: s.tenant.clone(),
+        client_id: s.client_id.clone().unwrap_or_default(),
+        domain_url: s.domain_url.clone().unwrap_or_default(),
+        admin: s.admin.clone().unwrap_or_default(),
+    };
+    let conn = saas::run::connect(&settings, &secret).map_err(|e| CliError::usage(e.0))?;
+    Ok((settings, conn))
+}
+
+fn saas_err(e: saas::Error) -> CliError {
+    CliError::new(ExitCode::Error, e.0)
+}
+
+/// A safe relative path for an exported item.
+fn saas_rel(it: &saas::store::Item) -> PathBuf {
+    let clean = |s: &str| -> String {
+        let t: String = s
+            .chars()
+            .map(|c| {
+                if c.is_control() || "<>:\"\\|?*".contains(c) {
+                    '_'
+                } else {
+                    c
+                }
+            })
+            .collect();
+        let t = t.trim().trim_matches('.').to_string();
+        if t.is_empty() {
+            "_".into()
+        } else {
+            t.chars().take(120).collect()
+        }
+    };
+    let mut p = PathBuf::from(clean(&it.account)).join(&it.kind);
+    let parts: Vec<&str> = it
+        .path
+        .split('/')
+        .filter(|x| !x.is_empty() && *x != "." && *x != "..")
+        .collect();
+    for (i, part) in parts.iter().enumerate() {
+        let last = i + 1 == parts.len();
+        p.push(if last && it.kind == "mail" {
+            format!(
+                "{} [{}].eml",
+                clean(part),
+                clean(&it.id).chars().take(16).collect::<String>()
+            )
+        } else if last && it.kind == "record" {
+            format!("{}.json", clean(part))
+        } else {
+            clean(part)
+        });
+    }
+    p
+}
+
+fn saas_cmd(ctx: &Ctx, c: SaasCmd) -> R<Outcome> {
+    match c {
+        SaasCmd::Backup {
+            svc,
+            users,
+            objects,
+            no_mail,
+            no_files,
+            label,
+        } => {
+            let (settings, conn) = saas_conn(&svc)?;
+            let repo = open_repo(ctx)?;
+            let quiet = ctx.json;
+            let r = saas::run::backup(
+                &repo,
+                &conn,
+                &settings,
+                &saas::run::Scope {
+                    users,
+                    objects,
+                    mail: !no_mail,
+                    files: !no_files,
+                },
+                label,
+                &|s: &str| {
+                    if !quiet {
+                        eprintln!("  {s}")
+                    }
+                },
+            )
+            .map_err(saas_err)?;
+            let out = Outcome::new(
+                json!({ "image_id": r.image_id, "service": svc.service, "tenant": svc.tenant, "items": r.items, "chunks_new": r.chunks_new, "warnings": r.warnings }),
+                format!(
+                    "Backed up {} items of {} {} as image {}\n",
+                    r.items, svc.service, svc.tenant, r.image_id
+                ),
+            );
+            Ok(if r.warnings.is_empty() {
+                out
+            } else {
+                out.with_warnings(r.warnings.clone())
+            })
+        }
+        SaasCmd::List { image, account } => {
+            let repo = open_repo(ctx)?;
+            let m = repo.load_manifest(&repo.resolve_image_id(&image)?)?;
+            let idx = saas::store::read_index(&repo, &m)?;
+            let items: Vec<&saas::store::Item> = idx
+                .items
+                .iter()
+                .filter(|i| account.as_ref().is_none_or(|a| &i.account == a))
+                .collect();
+            let text: Vec<String> = items
+                .iter()
+                .map(|i| format!("{}\t{}\t{}\t{}", i.account, i.kind, i.size, i.path))
+                .collect();
+            Ok(Outcome::new(
+                json!({ "service": idx.service, "tenant": idx.tenant, "items": items.iter().map(|i| json!({ "account": i.account, "kind": i.kind, "id": i.id, "path": i.path, "size": i.size, "modified": i.modified })).collect::<Vec<_>>() }),
+                format!("{}\n", text.join("\n")),
+            ))
+        }
+        SaasCmd::Export {
+            image,
+            to,
+            account,
+            path,
+        } => {
+            let repo = open_repo(ctx)?;
+            let m = repo.load_manifest(&repo.resolve_image_id(&image)?)?;
+            let idx = saas::store::read_index(&repo, &m)?;
+            let (mut n, mut bytes) = (0u64, 0u64);
+            for it in idx.items.iter().filter(|i| {
+                account.as_ref().is_none_or(|a| &i.account == a)
+                    && path.as_ref().is_none_or(|p| i.path.starts_with(p.as_str()))
+            }) {
+                let data = saas::store::read_item(&repo, it)?;
+                let dst = to.join(saas_rel(it));
+                if let Some(parent) = dst.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&dst, &data)?;
+                n += 1;
+                bytes += data.len() as u64;
+            }
+            Ok(Outcome::new(
+                json!({ "items": n, "bytes": bytes, "to": to }),
+                format!("Exported {n} items ({bytes} bytes) to {}\n", to.display()),
+            ))
+        }
+        SaasCmd::Restore {
+            svc,
+            image,
+            account,
+            to_account,
+            path,
+            kind,
+            overwrite,
+        } => {
+            let (_, conn) = saas_conn(&svc)?;
+            let repo = open_repo(ctx)?;
+            let m = repo.load_manifest(&repo.resolve_image_id(&image)?)?;
+            let r = saas::run::restore(
+                &repo,
+                &conn,
+                &m,
+                &saas::run::Selection {
+                    account,
+                    to_account,
+                    kind,
+                    path,
+                    overwrite,
+                },
+            )
+            .map_err(saas_err)?;
+            let out = Outcome::new(
+                serde_json::to_value(&r).unwrap_or_default(),
+                format!("Restored {} items to {} ({})\n", r.restored, r.to, r.folder),
+            );
+            Ok(if r.failed.is_empty() {
+                out
+            } else {
+                out.with_warnings(r.failed)
+            })
+        }
+    }
+}
+
+// ---------------------------------------------------------------- CDP (docs/design/cdp.md)
+
+#[cfg(target_os = "linux")]
+fn cdp_state_dir() -> PathBuf {
+    std::env::var_os("FENRIR_CDP_STATE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/lib/fenrir-backup"))
+}
+
+/// A CDP image's details (base or journal), kept in its OS version field.
+#[cfg(target_os = "linux")]
+fn cdp_meta(m: &core_format::ManifestBody) -> serde_json::Value {
+    serde_json::from_str(&m.os.version).unwrap_or_default()
+}
+
+#[cfg(target_os = "linux")]
+fn cdp_store(
+    ctx: &Ctx,
+    name: &str,
+    path: &Path,
+    kind: &str,
+    meta: serde_json::Value,
+) -> R<uuid::Uuid> {
+    let repo = open_repo(ctx)?;
+    let src = snapshot_linux::open_disk(path, false)
+        .map_err(|e| CliError::new(ExitCode::Error, e.to_string()))?;
+    let m = engine::ImageMeta {
+        machine: MachineInfo {
+            machine_id: format!("cdp:{}:{name}", hostname()),
+            hostname: format!("{} ({name})", hostname()),
+        },
+        consistency: core_format::manifest::Consistency::Crash,
+        os: core_format::manifest::OsInfo {
+            family: kind.into(),
+            name: name.into(),
+            version: meta.to_string(),
+            ..Default::default()
+        },
+        boot: Default::default(),
+        drivers: vec![],
+        label: Some(format!("{kind} {name}")),
+        warnings: vec![],
+        vm: None,
+        applications: vec![],
+    };
+    let r = engine::backup(
+        &repo,
+        &[&src.source as &dyn engine::DiskSource],
+        m,
+        &engine::BackupOptions {
+            workers: 2,
+            rate_limit: 0,
+        },
+        &JobControl::new(),
+        &|_| {},
+    )?;
+    Ok(r.image_id)
+}
+
+/// Swap journals (with a base image when due) and ship the finished journal.
+#[cfg(target_os = "linux")]
+fn cdp_cycle(ctx: &Ctx, st: &mut cdp::control::State, base: bool) -> R<serde_json::Value> {
+    let dir = cdp_state_dir();
+    let err = |e: String| CliError::new(ExitCode::Error, e);
+    let snap = format!("{}-fenrir-cdp-base", st.lv);
+    let (journal, seq) =
+        cdp::control::rotate(&dir, st, base.then_some(snap.as_str())).map_err(err)?;
+    let mut out = json!({ "journal_seq": seq });
+    if base {
+        let snap_path = PathBuf::from(format!("/dev/{}/{snap}", st.vg));
+        let t = cdp::control::now();
+        let r = cdp_store(
+            ctx,
+            &st.name,
+            &snap_path,
+            "cdp-base",
+            json!({ "seq": st.seq, "unix": t }),
+        );
+        let _ = std::process::Command::new("lvremove")
+            .args(["-q", "-y"])
+            .arg(&snap_path)
+            .status();
+        let id = r?;
+        st.base_image = Some(id.to_string());
+        st.base_seq = st.seq;
+        st.base_unix = t;
+        cdp::control::save(&dir, st).map_err(err)?;
+        out["base_image"] = json!(id);
+    }
+    // The finished journal: only the part in use.
+    let mut f = std::fs::File::open(&journal)?;
+    let used = cdp::control::used_bytes(&mut f)?;
+    let (_, list) = cdp::journal::entries(&mut f)?;
+    let times: Vec<i64> = list
+        .iter()
+        .filter_map(|e| {
+            if let cdp::journal::Entry::Mark(m) = e {
+                cdp::journal::mark_time(m)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let tmp = tempfile_dir()?.join(format!("journal-{seq}.img"));
+    {
+        use std::io::{Read, Seek, SeekFrom};
+        f.seek(SeekFrom::Start(0))?;
+        let mut o = std::fs::File::create(&tmp)?;
+        std::io::copy(&mut (&mut f).take(used), &mut o)?;
+        o.set_len(used.div_ceil(4096) * 4096)?;
+    }
+    let id = cdp_store(
+        ctx,
+        &st.name,
+        &tmp,
+        "cdp-journal",
+        json!({ "seq": seq, "bytes": used, "first": times.first(), "last": times.last(), "entries": list.len() }),
+    );
+    let _ = std::fs::remove_file(&tmp);
+    out["journal_image"] = json!(id?);
+    out["marks"] = json!([times.first(), times.last()]);
+    Ok(out)
+}
+
+#[cfg(target_os = "linux")]
+fn cdp_cmd(ctx: &Ctx, c: CdpCmd) -> R<Outcome> {
+    let dir = cdp_state_dir();
+    let err = |e: String| CliError::new(ExitCode::Error, e);
+    match c {
+        CdpCmd::Enable {
+            name,
+            volume,
+            journal_mb,
+        } => {
+            let st = cdp::control::enable(&dir, &name, &volume, journal_mb).map_err(err)?;
+            let dev = cdp::control::device(&name);
+            Ok(Outcome::new(json!({ "device": dev, "state": st }), format!("CDP enabled for {volume}: mount {} instead of it from now on (and in /etc/fstab).\n", dev.display())))
+        }
+        CdpCmd::Run {
+            name,
+            mark_every,
+            rotate_every,
+            base_every,
+            r#for,
+        } => {
+            let mut st = cdp::control::load(&dir, &name).map_err(err)?;
+            let started = Instant::now();
+            let mut cycles = Vec::new();
+            let mut last_rotate = Instant::now();
+            let base_due = |st: &cdp::control::State| {
+                st.base_image.is_none() || cdp::control::now() - st.base_unix >= base_every as i64
+            };
+            // First a base, so that every journal from here replays onto it.
+            if base_due(&st) {
+                cycles.push(cdp_cycle(ctx, &mut st, true)?);
+                last_rotate = Instant::now();
+            }
+            loop {
+                std::thread::sleep(Duration::from_secs(mark_every.max(1)));
+                cdp::control::mark(&name, &cdp::journal::time_mark(cdp::control::now()))
+                    .map_err(err)?;
+                let (_, hi, disabled) = cdp::control::usage(&name).map_err(err)?;
+                let size = std::fs::metadata(&st.journals[st.active])
+                    .map(|_| ())
+                    .ok()
+                    .and_then(|_| {
+                        std::process::Command::new("blockdev")
+                            .arg("--getsz")
+                            .arg(&st.journals[st.active])
+                            .output()
+                            .ok()
+                            .and_then(|o| {
+                                String::from_utf8_lossy(&o.stdout)
+                                    .trim()
+                                    .parse::<u64>()
+                                    .ok()
+                            })
+                    })
+                    .unwrap_or(u64::MAX);
+                let done = r#for.is_some_and(|f| started.elapsed().as_secs() >= f);
+                if disabled
+                    || hi > size / 10 * 7
+                    || last_rotate.elapsed().as_secs() >= rotate_every
+                    || done
+                {
+                    let due = base_due(&st);
+                    cycles.push(cdp_cycle(ctx, &mut st, due)?);
+                    last_rotate = Instant::now();
+                }
+                if done {
+                    break;
+                }
+            }
+            Ok(Outcome::new(
+                json!({ "cycles": cycles }),
+                format!("{} journal swaps shipped\n", cycles.len()),
+            ))
+        }
+        CdpCmd::Points { name } => {
+            let repo = open_repo(ctx)?;
+            let (all, _) = repo.load_all_manifests()?;
+            let mid = format!("cdp:{}:{name}", hostname());
+            let mut rows: Vec<serde_json::Value> = all.iter().filter(|m| m.machine.machine_id == mid).map(|m| {
+                let meta = cdp_meta(m);
+                json!({ "image_id": m.image_id, "kind": m.os.family, "seq": meta["seq"], "from": meta["first"], "to": meta["last"], "base_unix": meta["unix"] })
+            }).collect();
+            rows.sort_by_key(|r| (r["seq"].as_u64().unwrap_or(0), r["kind"] != "cdp-base"));
+            let first = rows
+                .iter()
+                .find(|r| r["kind"] == "cdp-base")
+                .and_then(|r| r["base_unix"].as_i64());
+            let last = rows.iter().filter_map(|r| r["to"].as_i64()).max();
+            Ok(Outcome::new(
+                json!({ "points": rows, "earliest": first, "latest": last }),
+                format!(
+                    "Restorable from {} to {} (unix seconds), to the second of each mark\n",
+                    first.unwrap_or(0),
+                    last.unwrap_or(0)
+                ),
+            ))
+        }
+        CdpCmd::Restore {
+            name,
+            at,
+            target,
+            yes,
+        } => {
+            let at: i64 =
+                at.parse().ok().or_else(|| parse_utc(&at)).ok_or_else(|| {
+                    CliError::usage("--at is unix seconds or YYYY-MM-DDTHH:MM:SSZ")
+                })?;
+            if !yes {
+                return Err(CliError::new(
+                    ExitCode::ConfirmationRequired,
+                    format!("this overwrites {}: add --yes", target.display()),
+                ));
+            }
+            let repo = open_repo(ctx)?;
+            let (all, _) = repo.load_all_manifests()?;
+            let mid = format!("cdp:{}:{name}", hostname());
+            let mine: Vec<&core_format::ManifestBody> =
+                all.iter().filter(|m| m.machine.machine_id == mid).collect();
+            let base = mine
+                .iter()
+                .filter(|m| {
+                    m.os.family == "cdp-base"
+                        && cdp_meta(m)["unix"].as_i64().is_some_and(|u| u <= at)
+                })
+                .max_by_key(|m| cdp_meta(m)["seq"].as_u64().unwrap_or(0))
+                .ok_or_else(|| CliError::usage("no base image from before that moment"))?;
+            let base_seq = cdp_meta(base)["seq"].as_u64().unwrap_or(0);
+            let mut journals: Vec<&&core_format::ManifestBody> = mine
+                .iter()
+                .filter(|m| {
+                    m.os.family == "cdp-journal"
+                        && cdp_meta(m)["seq"].as_u64().is_some_and(|s| s >= base_seq)
+                })
+                .collect();
+            journals.sort_by_key(|m| cdp_meta(m)["seq"].as_u64().unwrap_or(0));
+            let d = &base.disks[0];
+            let confirm = DestructiveConfirmation::confirmed_by_user(&target);
+            let t = FileTarget::open(&target, d.size, true, &confirm)?;
+            engine::restore_disk(
+                &repo,
+                base,
+                0,
+                &t,
+                &RestoreOptions {
+                    workers: 4,
+                    zero_fill: true,
+                    fit: false,
+                    grow: false,
+                },
+                &JobControl::new(),
+                &|_, _| {},
+            )?;
+            drop(t);
+            let dir = tempfile_dir()?;
+            let mut out = std::fs::OpenOptions::new().write(true).open(&target)?;
+            let (mut applied, mut last_mark, mut writes) = (0, None, 0u64);
+            for (expected, j) in (base_seq..).zip(journals) {
+                let meta = cdp_meta(j);
+                let seq = meta["seq"].as_u64().unwrap_or(0);
+                if seq != expected {
+                    return Err(CliError::new(ExitCode::Error, format!("journal {expected} is missing (pruned or not shipped): the volume can only be restored to before it")));
+                }
+                let file = dir.join(format!("j{seq}"));
+                k8s_disk_to(&repo, j, 0, &file, meta["bytes"].as_u64().unwrap_or(0))?;
+                let (r, past) =
+                    cdp::journal::replay_until(&mut std::fs::File::open(&file)?, &mut out, at)?;
+                let _ = std::fs::remove_file(&file);
+                applied += 1;
+                writes += r.writes;
+                if r.last_mark.is_some() {
+                    last_mark = r.last_mark.clone();
+                }
+                if past {
+                    break;
+                }
+            }
+            out.sync_all()?;
+            let _ = std::fs::remove_dir_all(&dir);
+            let reached = last_mark.as_deref().and_then(cdp::journal::mark_time);
+            Ok(Outcome::new(
+                json!({ "base_image": base.image_id, "journals": applied, "writes": writes, "restored_to": reached }),
+                format!("Restored {name} to {} (base image {}, {applied} journals, {writes} writes replayed)\n", reached.map(core_format::timefmt::rfc3339_utc).unwrap_or_else(|| "its base image".into()), base.image_id),
+            ))
+        }
+        CdpCmd::Disable {
+            name,
+            remove_journals,
+        } => {
+            cdp::control::disable(&dir, &name, remove_journals).map_err(err)?;
+            Ok(Outcome::new(
+                json!({ "disabled": name }),
+                format!("CDP stopped for {name}: mount the logical volume itself again.\n"),
+            ))
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn cdp_cmd(_: &Ctx, _: CdpCmd) -> R<Outcome> {
+    Err(CliError::usage(
+        "continuous data protection is for Linux logical volumes",
+    ))
+}
+
+#[cfg(target_os = "linux")]
+/// `YYYY-MM-DDTHH:MM:SSZ` (UTC) to unix seconds.
+fn parse_utc(s: &str) -> Option<i64> {
+    let s = s.strip_suffix('Z').unwrap_or(s);
+    let (d, t) = s.split_once(['T', ' '])?;
+    let d: Vec<&str> = d.split('-').collect();
+    let t: Vec<&str> = t.split(':').collect();
+    if d.len() != 3 || t.len() != 3 {
+        return None;
+    }
+    let (y, mo, da) = (d[0].parse().ok()?, d[1].parse().ok()?, d[2].parse().ok()?);
+    let (h, mi, se): (i64, i64, i64) = (t[0].parse().ok()?, t[1].parse().ok()?, t[2].parse().ok()?);
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&da) || h > 23 || mi > 59 || se > 60 {
+        return None;
+    }
+    Some(core_format::timefmt::days_from_civil(y, mo, da) * 86400 + h * 3600 + mi * 60 + se)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod parse_utc_tests {
+    #[test]
+    fn utc_times() {
+        assert_eq!(super::parse_utc("1970-01-02T00:00:01Z"), Some(86401));
+        assert_eq!(
+            super::parse_utc("2026-11-24T10:00:00Z")
+                .map(core_format::timefmt::rfc3339_utc)
+                .as_deref(),
+            Some("2026-11-24T10:00:00Z")
+        );
+        assert_eq!(super::parse_utc("yesterday"), None);
+    }
+}
+
+#[cfg(test)]
+mod saas_paths {
+    use super::*;
+
+    fn item(kind: &str, path: &str) -> saas::store::Item {
+        saas::store::Item {
+            account: "ann@contoso.com".into(),
+            kind: kind.into(),
+            id: "AAMkADEyN2FhYzUwLTI".into(),
+            path: path.into(),
+            modified: String::new(),
+            size: 0,
+            hash: String::new(),
+            meta: serde_json::Value::Null,
+            chunks: vec![],
+        }
+    }
+
+    #[test]
+    fn exported_paths_stay_inside_the_folder() {
+        assert_eq!(
+            saas_rel(&item("mail", "Inbox/Re: plan?")),
+            PathBuf::from("ann@contoso.com/mail/Inbox/Re_ plan_ [AAMkADEyN2FhYzUw].eml")
+        );
+        assert_eq!(
+            saas_rel(&item("file", "../../etc/passwd")),
+            PathBuf::from("ann@contoso.com/file/etc/passwd")
+        );
+        assert_eq!(
+            saas_rel(&item("record", "Account/001A")),
+            PathBuf::from("ann@contoso.com/record/Account/001A.json")
+        );
+        assert!(!saas_rel(&item("file", "/abs/x")).is_absolute());
     }
 }

@@ -1,0 +1,20 @@
+[package]
+name = "saas"
+description = "Fenrir-Backup: Microsoft 365, Google Workspace and Salesforce data into repositories"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+core-format.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+blake3.workspace = true
+base64.workspace = true
+ureq = { version = "2.12", default-features = false, features = ["tls", "json", "proxy-from-env"] }
+ring = "0.17"
+
+[dev-dependencies]
+tempfile.workspace = true

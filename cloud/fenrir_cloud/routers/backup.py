@@ -30,7 +30,7 @@ from ..config import get_settings
 from ..deps import REAUTH_HEADER, REAUTH_MINUTES, Principal, current_principal, require_reauth, scoped_tenant
 from ..security import digest, issue_token, read_token, reauth_state
 from ..models import (BackupAgent, BackupBootCheck, BackupEnrollment, BackupImage, BackupJob, BackupRepoAccess,
-                      BackupRepository, Device, ImageBackupPlan, Tenant, utcnow)
+                      BackupRepository, Device, DrRun, DrRunbook, ImageBackupPlan, Tenant, utcnow)
 from .backup_agent import backup_settings, server_url, tls_pin
 
 router = APIRouter(prefix="/api/console/backup", tags=["Backup"])
@@ -496,6 +496,57 @@ def _settings(s) -> dict:
     return {"label": lab, "rate_limit_mib": rate, "vss_full": bool(s.get("vss_full")), "verify_sample_percent": pct,
             "full_read": bool(s.get("full_read"))}
 
+# Kubernetes clusters and SaaS tenants (backup/docs/design/kubernetes.md, saas.md). Their secret is sealed in the
+# browser to the machine that runs the jobs; only the sealed form is kept here.
+SAAS_SERVICES = ("m365", "google", "salesforce")
+_NAME = re.compile(r"[A-Za-z0-9._-]{1,63}")
+
+
+def _sealed_secret(v, what: str) -> dict:
+    ok = isinstance(v, dict) and v.get("v") == 1 and all(isinstance(v.get(k), str) and 0 < len(v[k]) <= 16384 for k in ("epk", "nonce", "ct"))
+    if not ok:
+        bad(f"the {what} must be encrypted for the machine in the browser")
+    return {"v": 1, "epk": v["epk"], "nonce": v["nonce"], "ct": v["ct"]}
+
+
+def _name_list(v, limit: int = 200) -> list[str]:
+    return [str(x).strip()[:320] for x in (v or []) if str(x).strip()][:limit]
+
+
+def _k8s_cluster(c) -> dict:
+    c = c if isinstance(c, dict) else {}
+    name = str(c.get("name") or "").strip()
+    if not _NAME.fullmatch(name):
+        bad("the cluster name may have letters, digits, -, _ and .")
+    server = str(c.get("api_server") or "").strip()
+    if not server.startswith("https://") or len(server) > 300:
+        bad("the API server is an https:// address")
+    ns = _name_list(c.get("namespaces"), 100)
+    if not ns or any(not re.fullmatch(r"[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?", n) for n in ns):
+        bad("name the namespaces to back up (lower-case Kubernetes names)")
+    return {"name": name, "api_server": server, "ca_pem": str(c.get("ca_pem") or "")[:20000],
+            "namespaces": ns, "volume_image": str(c.get("volume_image") or "").strip()[:300]}
+
+
+def _saas_tenant(t) -> dict:
+    t = t if isinstance(t, dict) else {}
+    svc = t.get("service")
+    if svc not in SAAS_SERVICES:
+        bad("the service is m365, google or salesforce")
+    out = {"service": svc, "tenant": str(t.get("tenant") or "").strip()[:200], "client_id": str(t.get("client_id") or "").strip()[:200],
+           "domain_url": str(t.get("domain_url") or "").strip()[:300], "admin": str(t.get("admin") or "").strip()[:320],
+           "users": _name_list(t.get("users"), 5000), "objects": _name_list(t.get("objects")),
+           "mail": t.get("mail") is not False, "files": t.get("files") is not False}
+    if not out["tenant"]:
+        bad("give the tenant (directory, domain or org name)")
+    if svc == "m365" and not out["client_id"]:
+        bad("give the app's client ID")
+    if svc == "google" and "@" not in out["admin"]:
+        bad("give an administrator's address to list users as")
+    if svc == "salesforce" and (not out["domain_url"].startswith("https://") or not out["client_id"]):
+        bad("give the My Domain URL (https://...) and the consumer key")
+    return out
+
 
 def normalise_kind(kind) -> dict:
     """A console-requested job, rebuilt from validated fields only."""
@@ -519,6 +570,29 @@ def normalise_kind(kind) -> dict:
         return {"type": t, "level": level, "sample_percent": pct}
     if t == "list_images":
         return {"type": t}
+    if t == "backup_kubernetes":
+        return {"type": t, "cluster": _k8s_cluster(kind.get("cluster")), "sealed_token": _sealed_secret(kind.get("sealed_token"), "token")}
+    if t == "backup_saas":
+        return {"type": t, "tenant": _saas_tenant(kind.get("tenant")), "sealed_secret": _sealed_secret(kind.get("sealed_secret"), "secret")}
+    if t == "restore_kubernetes":
+        ns = _name_list(kind.get("namespaces"), 100)
+        rename = str(kind.get("rename_to") or "").strip() or None
+        if rename and (len(ns) != 1 or not re.fullmatch(r"[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?", rename)):
+            bad("renaming needs exactly one namespace and a lower-case Kubernetes name")
+        return {"type": t, "image_id": _uuid(kind.get("image_id"), "image"), "cluster": _k8s_cluster(kind.get("cluster")),
+                "sealed_token": _sealed_secret(kind.get("sealed_token"), "token"), "namespaces": ns, "rename_to": rename,
+                "replace": bool(kind.get("replace"))}
+    if t == "restore_saas":
+        account = str(kind.get("account") or "").strip()[:320]
+        if not account:
+            bad("whose items to restore")
+        what = kind.get("kind") or None
+        if what not in (None, "mail", "file", "record"):
+            bad("restore mail, files or records")
+        return {"type": t, "image_id": _uuid(kind.get("image_id"), "image"), "tenant": _saas_tenant(kind.get("tenant")),
+                "sealed_secret": _sealed_secret(kind.get("sealed_secret"), "secret"), "account": account,
+                "to_account": str(kind.get("to_account") or "").strip()[:320] or None, "kind": what,
+                "path": str(kind.get("path") or "").strip()[:1000] or None, "overwrite": bool(kind.get("overwrite"))}
     bad("use the repository (create, reclaim space) or the restore dialog for that")
 
 
@@ -536,10 +610,20 @@ def validate_job(db: Session, agent: BackupAgent, kind: dict, repository_id: str
 
 
 @router.post("/agents/{agent_id}/jobs")
-def create_job(agent_id: str, body: dict = Body(...), p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+def create_job(agent_id: str, request: Request, body: dict = Body(...), p: Principal = Depends(current_principal),
+               db: Session = Depends(get_db)):
     p.require("respond")
     a = _agent(db, p, agent_id)
     kind = normalise_kind(body.get("kind"))
+    # Overwriting what is in the cluster or the service now: destructive permission, a fresh password check and its
+    # name typed.
+    owner = kind.get("cluster", {}).get("name") if kind["type"] == "restore_kubernetes" and kind["replace"] else \
+        kind.get("tenant", {}).get("tenant") if kind["type"] == "restore_saas" and kind["overwrite"] else None
+    if owner:
+        p.require("destructive")
+        require_reauth(request, p)
+        if str(body.get("confirm") or "").strip().lower() != owner.lower():
+            bad(f"type {owner} to confirm: this overwrites what is there now")
     repo_id = _uuid(body["repositoryId"], "repository") if body.get("repositoryId") else None
     validate_job(db, a, kind, repo_id)
     job = bk.queue(db, a, kind, repo_id, p.actor)
@@ -584,6 +668,177 @@ def local_recovery(agent_id: str, request: Request, body: dict = Body(...), p: P
     bk.record(db, p.actor, f"backup.local_recovery.{action}_requested", a.hostname, a.tenant_id, auto_start=auto)
     db.commit()
     return {"id": job.id}
+
+
+# ---------------------------------------------------------------- DR runbooks (backup/docs/design/dr-runbooks.md)
+
+def _int_in(v, lo: int, hi: int, default: int, msg: str) -> int:
+    if v is None:
+        return default
+    if not isinstance(v, int) or isinstance(v, bool) or not lo <= v <= hi:
+        bad(msg)
+    return v
+
+
+def _runbook(db: Session, p: Principal, rb_id: str) -> DrRunbook:
+    rb = db.get(DrRunbook, str(rb_id))
+    if rb is None or rb.tenant_id not in p.tenant_ids:
+        raise HTTPException(404, "No such runbook")
+    return rb
+
+
+def _runbook_groups(db: Session, p: Principal, tenant_id: str, groups) -> list:
+    if not isinstance(groups, list) or not groups or len(groups) > 20:
+        bad("a runbook has 1 to 20 groups")
+    out, seen = [], set()
+    for g in groups:
+        machines = g.get("machines") if isinstance(g, dict) else None
+        if not isinstance(machines, list) or not machines or len(machines) > 50:
+            bad("each group starts 1 to 50 machines")
+        ms = []
+        for m in machines:
+            key = str((m or {}).get("key") or "")
+            if "|" not in key or key in seen:
+                bad("each machine appears once, chosen from the backed-up machines")
+            seen.add(key)
+            host = _agent(db, p, str(m.get("hostAgentId") or ""))
+            if host.tenant_id != tenant_id:
+                bad("hosts belong to the runbook's customer")
+            caps = bk.capabilities(host)
+            if "boot_kvm" not in caps and "boot_hyperv" not in caps:
+                bad(f"{host.display_name or host.hostname} cannot start VMs (QEMU on Linux, or Hyper-V)")
+            mem, cpus = m.get("memoryMb"), m.get("cpus")
+            if (mem is not None and not (isinstance(mem, int) and 256 <= mem <= 262144)) or \
+                    (cpus is not None and not (isinstance(cpus, int) and 1 <= cpus <= 64)):
+                bad("memory must be 256 MB to 256 GB, CPUs 1 to 64")
+            directory = str(m.get("directory") or "").strip() or None
+            if directory and (len(directory) > 500 or not re.match(r"^([A-Za-z]:\\|\\\\)", directory)):
+                bad("a VM folder is a full Windows path on a Hyper-V host")
+            ms.append({"key": key, "name": str(m.get("name") or key)[:200], "hostAgentId": host.id,
+                       "memoryMb": mem, "cpus": cpus, "directory": directory})
+        out.append({"name": str(g.get("name") or f"Group {len(out) + 1}")[:120], "machines": ms})
+    return out
+
+
+def runbook_out(db: Session, rb: DrRunbook) -> dict:
+    last = db.execute(select(DrRun).where(DrRun.runbook_id == rb.id).order_by(DrRun.started_at.desc()).limit(1)).scalars().first()
+    return {"id": rb.id, "tenantId": rb.tenant_id, "name": rb.name, "groups": rb.groups, "testEveryDays": rb.test_every_days,
+            "stopAfterMinutes": rb.stop_after_minutes, "createdBy": rb.created_by, "updatedAt": iso(rb.updated_at),
+            "lastRun": run_out(last) if last else None}
+
+
+def run_out(r: DrRun) -> dict:
+    up = [i["seconds"] for i in r.items or [] if i.get("seconds") is not None and i["state"] in ("up", "warning")]
+    return {"id": r.id, "runbookId": r.runbook_id, "mode": r.mode, "state": r.state, "group": r.group, "items": r.items,
+            "startedAt": iso(r.started_at), "finishedAt": iso(r.finished_at), "startedBy": r.started_by,
+            "vmsStopped": r.vms_stopped, "stopAfterMinutes": r.stop_after_minutes,
+            "rtoSeconds": max(up) if up and r.state in ("succeeded", "warning") else None}
+
+
+@router.get("/runbooks")
+def list_runbooks(tenantId: str | None = None, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    p.require("read")
+    rows = db.execute(select(DrRunbook).where(DrRunbook.tenant_id.in_(scoped_tenant(p, tenantId)))
+                      .order_by(DrRunbook.name)).scalars().all()
+    return [runbook_out(db, rb) for rb in rows]
+
+
+@router.post("/runbooks")
+def create_runbook(body: dict = Body(...), p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    p.require("configure")
+    tenant_id = str(body.get("tenantId") or "")
+    if tenant_id not in p.tenant_ids:
+        bad("choose a customer")
+    name = str(body.get("name") or "").strip()[:120]
+    if not name:
+        bad("name the runbook")
+    rb = DrRunbook(tenant_id=tenant_id, name=name, groups=_runbook_groups(db, p, tenant_id, body.get("groups")),
+                   test_every_days=_int_in(body.get("testEveryDays"), 0, 365, 0, "test every 0 (never) to 365 days"),
+                   stop_after_minutes=_int_in(body.get("stopAfterMinutes"), 0, 7 * 1440, 60, "stop test VMs after 0 to 10080 minutes"),
+                   created_by=p.actor)
+    db.add(rb)
+    bk.record(db, p.actor, "backup.runbook.created", name, tenant_id)
+    db.commit()
+    return runbook_out(db, rb)
+
+
+@router.patch("/runbooks/{rb_id}")
+def update_runbook(rb_id: str, body: dict = Body(...), p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    p.require("configure")
+    rb = _runbook(db, p, rb_id)
+    if "name" in body:
+        rb.name = str(body["name"] or "").strip()[:120] or rb.name
+    if "groups" in body:
+        rb.groups = _runbook_groups(db, p, rb.tenant_id, body["groups"])
+    if "testEveryDays" in body:
+        rb.test_every_days = _int_in(body["testEveryDays"], 0, 365, 0, "test every 0 (never) to 365 days")
+    if "stopAfterMinutes" in body:
+        rb.stop_after_minutes = _int_in(body["stopAfterMinutes"], 0, 7 * 1440, 60, "stop test VMs after 0 to 10080 minutes")
+    rb.updated_at = utcnow()
+    bk.record(db, p.actor, "backup.runbook.updated", rb.name, rb.tenant_id)
+    db.commit()
+    return runbook_out(db, rb)
+
+
+@router.delete("/runbooks/{rb_id}")
+def delete_runbook(rb_id: str, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    p.require("configure")
+    rb = _runbook(db, p, rb_id)
+    bk.record(db, p.actor, "backup.runbook.deleted", rb.name, rb.tenant_id)
+    db.delete(rb)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/runbooks/{rb_id}/run")
+def run_runbook(rb_id: str, request: Request, body: dict = Body(default={}), p: Principal = Depends(current_principal),
+                db: Session = Depends(get_db)):
+    """A test starts the machines as VMs and stops them afterwards; a failover leaves them running (password check,
+    and the runbook's name typed)."""
+    rb = _runbook(db, p, rb_id)
+    mode = str(body.get("mode") or "test")
+    if mode == "failover":
+        p.require("destructive")
+        require_reauth(request, p)
+        if str(body.get("confirm") or "").strip() != rb.name:
+            bad("type the runbook's name to confirm the failover")
+    elif mode == "test":
+        p.require("scripts")
+    else:
+        bad("mode is test or failover")
+    if db.execute(select(func.count()).select_from(DrRun).where(DrRun.runbook_id == rb.id, DrRun.state == "running")).scalar():
+        bad("this runbook is already running")
+    run = bk.start_dr_run(db, rb, mode, p.actor)
+    bk.record(db, p.actor, f"backup.runbook.{mode}", rb.name, rb.tenant_id, run=run.id)
+    db.commit()
+    return run_out(run)
+
+
+@router.get("/runbooks/{rb_id}/runs")
+def list_runs(rb_id: str, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    p.require("read")
+    rb = _runbook(db, p, rb_id)
+    return [run_out(r) for r in db.execute(select(DrRun).where(DrRun.runbook_id == rb.id)
+                                           .order_by(DrRun.started_at.desc()).limit(50)).scalars()]
+
+
+@router.post("/runs/{run_id}/stop")
+def stop_run(run_id: str, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """End a run: machines not started yet are skipped, and the VMs it started are stopped."""
+    p.require("scripts")
+    run = db.get(DrRun, str(run_id))
+    if run is None or run.tenant_id not in p.tenant_ids:
+        raise HTTPException(404, "No such run")
+    if run.state == "running":
+        items = [dict(i) for i in run.items or []]
+        for i in items:
+            if i["state"] in ("pending", "starting"):
+                i["state"], i["message"] = "skipped", f"stopped by {p.actor}"
+        run.items, run.state, run.finished_at = items, "stopped", utcnow()
+    n = bk.stop_dr_vms(db, run, p.actor)
+    bk.record(db, p.actor, "backup.runbook.stopped", run.runbook_id, run.tenant_id, run=run.id, vms=n)
+    db.commit()
+    return run_out(run)
 
 
 @router.get("/jobs")
@@ -1286,7 +1541,17 @@ def _image_unlocked(request: Request, db: Session, p: Principal, image_id: str) 
     return im
 
 
+APP_PREFIXES = {"saas:": "saas", "k8s:": "kubernetes", "cdp:": "cdp"}
+
+
+def _app_source(i: BackupImage) -> str | None:
+    """SaaS tenants, Kubernetes clusters and CDP volumes: listed on their own, not under the machine that ran them."""
+    return next((v for k, v in APP_PREFIXES.items() if (i.machine_id or "").startswith(k)), None)
+
+
 def _device_key(i: BackupImage) -> str:
+    if _app_source(i):
+        return f"app:{i.machine_id}|"
     return f"{i.agent_id or 'host:' + (i.hostname or '')}|{i.vm_name or ''}"
 
 
@@ -1309,7 +1574,7 @@ def image_devices(request: Request, tenantId: str | None = None, p: Principal = 
                 "key": _device_key(i), "name": i.vm_name or i.hostname, "hostname": i.hostname, "vmName": i.vm_name,
                 "agentId": i.agent_id, "tenantId": i.tenant_id, "images": 0, "lastCreated": i.created_unix,
                 "firstCreated": i.created_unix, "storedBytes": 0, "lastKind": i.kind, "lastConsistency": i.consistency,
-                "anomalies": 0, "lastVerified": None, "repositories": {}}
+                "anomalies": 0, "lastVerified": None, "repositories": {}, "source": _app_source(i)}
         g["images"] += 1
         g["firstCreated"] = min(g["firstCreated"], i.created_unix)
         g["storedBytes"] += i.stored_new_bytes or 0

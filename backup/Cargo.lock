@@ -49,10 +49,12 @@ dependencies = [
  "engine",
  "filebrowse",
  "hex",
+ "k8s",
  "nbd-server",
  "protocol",
  "rustls",
  "s3store",
+ "saas",
  "serde",
  "serde_json",
  "sha2",
@@ -274,6 +276,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdp"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -359,12 +370,15 @@ name = "cli"
 version = "0.1.0"
 dependencies = [
  "azstore",
+ "cdp",
  "clap",
  "core-format",
  "engine",
  "fatfs",
+ "k8s",
  "rpassword",
  "s3store",
+ "saas",
  "serde",
  "serde_json",
  "snapshot-linux",
@@ -937,6 +951,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "k8s"
+version = "0.1.0"
+dependencies = [
+ "core-format",
+ "engine",
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "snapshot-linux",
+ "tempfile",
+ "ureq",
+ "uuid",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1284,6 +1314,21 @@ dependencies = [
  "sha2",
  "tempfile",
  "ureq",
+]
+
+[[package]]
+name = "saas"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "blake3",
+ "core-format",
+ "ring",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "ureq",
+ "uuid",
 ]
 
 [[package]]
