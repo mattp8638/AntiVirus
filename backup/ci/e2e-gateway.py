@@ -89,9 +89,20 @@ def agent(name, *args, background=False):
     return r.stdout
 
 
+def reauth(c):
+    """A fresh password check (retried if the server is momentarily busy)."""
+    for _ in range(5):
+        r = c.post("/api/console/auth/reauth", json={"password": "e2e-admin-password-123"})
+        if r.status_code < 500:
+            assert r.status_code == 200, r.text
+            return r.json()["reauthToken"]
+        time.sleep(2)
+    raise SystemExit(f"password check failed: {r.status_code} {r.text[:300]}")
+
+
 def try_unlock(c, repo_id, machine, passphrase):
     """The console's unlock: password check, then the passphrase sealed to a machine that tries it on the repository."""
-    rt = c.post("/api/console/auth/reauth", json={"password": "e2e-admin-password-123"}).json()["reauthToken"]
+    rt = reauth(c)
     sealed = seal(machine["publicKey"], json.dumps({"passphrase": passphrase, "recovery_key": None}).encode())
     r = c.post(f"/api/console/backup/repositories/{repo_id}/unlock", headers={"X-Fenrir-Reauth": rt},
                json={"agentId": machine["id"], "sealed": sealed})
@@ -196,7 +207,7 @@ try:
     # touched) and compare it with the source by SHA-256.
     images = c.get("/api/console/backup/images", params={"repositoryId": repo_id}).json()
     latest = max(images, key=lambda i: i["created"])
-    rt = c.post("/api/console/auth/reauth", json={"password": "e2e-admin-password-123"}).json()["reauthToken"]
+    rt = reauth(c)
     restored = W / "restored-disk.img"
     r = c.post("/api/console/backup/restores", headers={"X-Fenrir-Reauth": rt}, json={
         "imageId": latest["imageId"], "agentId": laptop["id"],

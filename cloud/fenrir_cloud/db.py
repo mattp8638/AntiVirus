@@ -23,7 +23,9 @@ def init_engine(url: str, pool_size: int = 5, max_overflow: int = 10) -> Engine:
     global _engine, _session_factory
     kwargs: dict = {"future": True}
     if url.startswith("sqlite"):
-        kwargs["connect_args"] = {"check_same_thread": False}
+        # Wait up to 30 s for a write lock instead of the driver's 5 s: agents polling the relay write often, and a
+        # busy database must slow a request down, not fail it ("database is locked").
+        kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
         if url in {"sqlite://", "sqlite:///:memory:"}:
             from sqlalchemy.pool import StaticPool
 
