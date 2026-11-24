@@ -357,7 +357,8 @@ def _settings(s) -> dict:
     if not isinstance(rate, int) or rate < 0:
         bad("rate limit must be a whole number of MiB/s")
     lab = str(s.get("label") or "").strip()[:200] or None
-    return {"label": lab, "rate_limit_mib": rate, "vss_full": bool(s.get("vss_full")), "verify_sample_percent": pct}
+    return {"label": lab, "rate_limit_mib": rate, "vss_full": bool(s.get("vss_full")), "verify_sample_percent": pct,
+            "full_read": bool(s.get("full_read"))}
 
 
 def normalise_kind(kind) -> dict:
@@ -1199,9 +1200,12 @@ def unlock_result(job_id: str, request: Request, p: Principal = Depends(current_
 
 @router.get("/images")
 def list_images(request: Request, tenantId: str | None = None, repositoryId: str | None = None,
-                agentId: str | None = None, device: str | None = None,
+                agentId: str | None = None, device: str | None = None, order: str = "desc",
                 p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    """Images in repositories this browser session has unlocked."""
+    """Images in repositories this browser session has unlocked: the newest 1000, newest first, or oldest first with
+    order=asc (a machine's backups in the order they were taken)."""
+    if order not in ("asc", "desc"):
+        bad("order must be asc or desc")
     p.require("read")
     unlocked = _unlocked(request, p)
     if repositoryId and repositoryId not in unlocked:
@@ -1213,8 +1217,11 @@ def list_images(request: Request, tenantId: str | None = None, repositoryId: str
     rows = db.execute(q.order_by(BackupImage.created_unix.desc()).limit(2000)).scalars().all()
     if device:
         rows = [i for i in rows if _device_key(i) == device]
+    rows = rows[:1000]
+    if order == "asc":
+        rows.reverse()
     checks = _boot_latest(db, [i.image_id for i in rows])
-    return [image_out(i, checks) for i in rows[:1000]]
+    return [image_out(i, checks) for i in rows]
 
 
 def _image(db: Session, p: Principal, image_id: str) -> BackupImage:

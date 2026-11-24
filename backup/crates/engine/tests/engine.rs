@@ -148,6 +148,7 @@ fn run_backup(repo: &Repository, disk: &MemDisk) -> engine::Result<BackupReport>
         &BackupOptions {
             workers: 3,
             rate_limit: 0,
+            changed: None,
         },
         &JobControl::new(),
         &|_| {},
@@ -853,113 +854,170 @@ fn copy_to_another_repository_restores_identically() {
     );
 }
 
-/// Dedup groups (docs/design/dedup-groups.md): two repositories in one group
-/// store the same data once; neither can read the other's manifests; pruning
-/// one never deletes chunks the other still uses.
+// ---------------------------------------------------------------- changed-block tracking
+
+/// Counts the bytes read through it.
+struct Counting<'a>(&'a MemDisk, std::sync::atomic::AtomicU64);
+
+impl DiskSource for Counting<'_> {
+    fn info(&self) -> DiskInfo {
+        self.0.info()
+    }
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        self.1.fetch_add(buf.len() as u64, Ordering::Relaxed);
+        self.0.read_at(offset, buf)
+    }
+    fn capture_plan(&self, t: &PartitionTable) -> io::Result<CapturePlan> {
+        self.0.capture_plan(t)
+    }
+}
+
+fn tracked_backup(
+    repo: &Repository,
+    disk: &MemDisk,
+    base: Uuid,
+    changed: Option<Vec<Extent>>,
+) -> (BackupReport, u64) {
+    let c = Counting(disk, Default::default());
+    let r = backup(
+        repo,
+        &[&c as &dyn DiskSource],
+        meta(),
+        &BackupOptions {
+            workers: 3,
+            changed: Some(ChangedSince {
+                base_image: base,
+                disks: vec![changed],
+                spot_check_one_in: 0,
+            }),
+            ..Default::default()
+        },
+        &JobControl::new(),
+        &|_| {},
+    )
+    .unwrap();
+    (r, c.1.load(Ordering::Relaxed))
+}
+
+fn assert_restores_used(repo: &Repository, id: Uuid, disk: &MemDisk, path: &std::path::Path) {
+    restore_to(repo, id, path);
+    let restored = std::fs::read(path).unwrap();
+    let orig = disk.data.read().unwrap();
+    let m = repo.load_manifest(&id).unwrap();
+    for e in &m.disks[0].used_extents {
+        let (a, b) = (e.0 as usize, e.end() as usize);
+        assert!(restored[a..b] == orig[a..b], "used range {e:?} differs");
+    }
+}
+
 #[test]
-fn dedup_group_members_share_chunks_and_prune_safely() {
-    use core_format::crypto::SecretKey;
-    use core_format::group::{self, GroupBackend};
-    use core_format::RecoveryKey;
-
+fn tracked_backup_reads_only_changed_chunks_and_restores_exactly() {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("group");
-    let shared: Arc<dyn Backend> = Arc::new(LocalBackend::create(&root).unwrap());
-    let info = group::create(&*shared, CS).unwrap();
-    let opts = || InitOptions {
-        chunk_size: 4 * CS, // ignored: members use the group's chunk size
-        kdf: KdfParams::INSECURE_FAST,
-        ..Default::default()
-    };
-    let member = |id: Uuid, create: bool| -> Arc<dyn Backend> {
-        let p = root.join("repos").join(id.to_string());
-        let m: Arc<dyn Backend> = Arc::new(if create {
-            LocalBackend::create(&p).unwrap()
-        } else {
-            LocalBackend::open(&p).unwrap()
-        });
-        Arc::new(GroupBackend {
-            member: m,
-            shared: shared.clone(),
-        })
-    };
-    let rk_a = RecoveryKey::generate(Uuid::new_v4()).unwrap();
-    let a = Repository::init_member(
-        member(rk_a.repo_id, true),
-        b"pass-a",
-        opts(),
-        &rk_a,
-        &info,
-        &SecretKey::generate().unwrap(),
-    )
-    .unwrap();
-    assert_eq!(a.chunk_size(), CS);
-    assert_eq!(a.config().version, 2);
-    let rk_b = RecoveryKey::generate(Uuid::new_v4()).unwrap();
-    let b = Repository::init_member(
-        member(rk_b.repo_id, true),
-        b"pass-b",
-        opts(),
-        &rk_b,
-        &info,
-        a.group_key().unwrap(),
-    )
-    .unwrap();
-
+    let repo = new_repo(dir.path());
     let disk = make_disk();
-    let ra = run_backup(&a, &disk).unwrap();
-    assert!(ra.stats.chunks_new > 0);
-    let rb = run_backup(&b, &disk).unwrap();
-    assert_eq!(
-        rb.stats.chunks_new, 0,
-        "the same data is stored once in the group"
+    let first = run_backup(&repo, &disk).unwrap();
+
+    disk.data.write().unwrap()[(7 * MIB) as usize..(7 * MIB) as usize + 4096].fill(0xAB);
+    let (second, read) = tracked_backup(
+        &repo,
+        &disk,
+        first.image_id,
+        Some(vec![Extent(7 * MIB, 4096)]),
     );
-    let chunks = shared.list("chunks").unwrap().len();
+    assert_eq!(second.read_mode, "changed_blocks");
+    assert_eq!(second.changed_base, Some(first.image_id));
+    assert!(second.full_read_reason.is_none());
+    // Over 10 MiB is in use; only the 1 MiB chunk holding the write is read,
+    // plus the partition table and file system probes.
+    assert!(read < MIB + MIB / 2, "read {read} bytes");
+    assert_eq!(second.stats.chunks_new, 1);
+    let m1 = repo.load_manifest(&first.image_id).unwrap();
+    let m2 = repo.load_manifest(&second.image_id).unwrap();
+    // Everything in use except the 1 MiB chunk with the write came from the
+    // first image.
+    let used: u64 = m2.disks[0].used_extents.iter().map(|e| e.1).sum();
+    assert_eq!(second.bytes_unchanged, used - MIB);
+    assert_eq!(m1.disks[0].chunks.len(), m2.disks[0].chunks.len());
+    assert_restores_used(&repo, second.image_id, &disk, &dir.path().join("r2.img"));
+}
 
-    // Separate members: their own manifests only, their own passphrase.
-    assert_eq!(a.list_image_ids().unwrap(), vec![ra.image_id]);
-    assert!(b.load_manifest(&ra.image_id).is_err());
-    assert!(Repository::unlock_with_passphrase(member(rk_b.repo_id, false), b"pass-a").is_err());
-    let b2 = Repository::unlock_with_passphrase(member(rk_b.repo_id, false), b"pass-b").unwrap();
-    assert_eq!(b2.chunk_id(b"x"), a.chunk_id(b"x"));
-    let out = dir.path().join("b.img");
-    restore_to(&b2, rb.image_id, &out);
-
-    // A forgets its image and prunes: B still uses every chunk.
-    a.delete_image(&ra.image_id).unwrap();
-    let p = engine::retention::prune(&a, false, &JobControl::new()).unwrap();
-    assert_eq!(p.chunks_deleted, 0);
-    assert_eq!(shared.list("chunks").unwrap().len(), chunks);
-    restore_to(&b2, rb.image_id, &dir.path().join("b2.img"));
-
-    // A reference list left by a crash (no manifest) is cleaned up by its member.
-    shared
-        .put(&group::refs_key(&a.config().repo_id, &Uuid::new_v4()), b"x")
-        .unwrap();
-    engine::retention::prune(&a, false, &JobControl::new()).unwrap();
-    assert!(shared
-        .list(&format!("refs/{}", a.config().repo_id))
+#[test]
+fn tracked_backup_reads_in_full_when_the_base_image_is_gone() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = new_repo(dir.path());
+    let disk = make_disk();
+    run_backup(&repo, &disk).unwrap();
+    let (r, read) = tracked_backup(&repo, &disk, Uuid::new_v4(), Some(vec![]));
+    assert_eq!(r.read_mode, "full");
+    assert!(r
+        .full_read_reason
+        .as_deref()
         .unwrap()
-        .is_empty());
+        .contains("cannot be used"));
+    assert!(read >= 10 * MIB);
+    assert_restores_used(&repo, r.image_id, &disk, &dir.path().join("r.img"));
+}
 
-    // A damaged list of another member: nothing is deleted.
-    let bref = group::refs_key(&b.config().repo_id, &rb.image_id);
-    let good = shared.get(&bref).unwrap();
-    let mut bad = good.clone();
-    let n = bad.len();
-    bad[n - 1] ^= 1;
-    shared.delete(&bref).unwrap();
-    shared.put(&bref, &bad).unwrap();
-    let orphan = vec![7u8; 1000];
-    a.put_chunk(&a.chunk_id(&orphan), &orphan).unwrap();
-    let e = engine::retention::prune(&a, false, &JobControl::new()).unwrap_err();
-    assert!(matches!(e, EngineError::Safety(_)), "{e}");
-    shared.delete(&bref).unwrap();
-    shared.put(&bref, &good).unwrap();
+#[test]
+fn tracked_backup_reads_disks_without_tracking_and_chunks_whose_use_changed() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = new_repo(dir.path());
+    let disk = make_disk();
+    let first = run_backup(&repo, &disk).unwrap();
 
-    // Once B lets its image go too, the chunks go.
-    b.delete_image(&rb.image_id).unwrap();
-    let p = engine::retention::prune(&b, false, &JobControl::new()).unwrap();
-    assert_eq!(p.chunks_deleted, chunks + 1);
-    assert!(shared.list("chunks").unwrap().is_empty());
+    // No tracking for the disk: read in full.
+    let (r, read) = tracked_backup(&repo, &disk, first.image_id, None);
+    assert_eq!(r.read_mode, "full");
+    assert!(read >= 10 * MIB);
+
+    // Nothing written, but more of the file system is in use (21.5 to 22
+    // MiB): that chunk cannot come from the base image.
+    let grown = MemDisk {
+        data: RwLock::new(disk.data.read().unwrap().clone()),
+        used_in_data: Some(vec![Extent(6 * MIB, 4 * MIB), Extent(20 * MIB, 2 * MIB)]),
+    };
+    let (r, read) = tracked_backup(&repo, &grown, first.image_id, Some(vec![]));
+    assert_eq!(r.read_mode, "changed_blocks");
+    assert!((MIB..2 * MIB).contains(&read), "read {read} bytes");
+    assert_restores_used(&repo, r.image_id, &grown, &dir.path().join("g.img"));
+}
+
+#[test]
+fn spot_checks_catch_a_write_the_tracker_missed() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = new_repo(dir.path());
+    let disk = make_disk();
+    let first = run_backup(&repo, &disk).unwrap();
+    let before = repo.list_image_ids().unwrap().len();
+    // Written everywhere in use, but the tracker reports nothing.
+    for e in repo.load_manifest(&first.image_id).unwrap().disks[0]
+        .used_extents
+        .iter()
+    {
+        disk.data.write().unwrap()[e.0 as usize..e.end() as usize].fill(0x5A);
+    }
+    let r = backup(
+        &repo,
+        &[&disk as &dyn DiskSource],
+        meta(),
+        &BackupOptions {
+            changed: Some(ChangedSince {
+                base_image: first.image_id,
+                disks: vec![Some(vec![])],
+                spot_check_one_in: 4,
+            }),
+            ..Default::default()
+        },
+        &JobControl::new(),
+        &|_| {},
+    );
+    assert!(
+        matches!(r, Err(EngineError::ChangeTrackingMissed(_))),
+        "{r:?}"
+    );
+    assert_eq!(
+        repo.list_image_ids().unwrap().len(),
+        before,
+        "no image written"
+    );
 }

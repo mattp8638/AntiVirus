@@ -14,6 +14,7 @@ mod jobs;
 mod linuxfix;
 mod log;
 mod names;
+mod rct;
 mod recovery;
 mod restore;
 mod setup;
