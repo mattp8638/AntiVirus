@@ -131,6 +131,13 @@ one on its own onto a Windows machine, into a new folder:
 
 Backups taken before this was added restore databases with the volume. Design: `backup/docs/design/app-restore.md`.
 
+## Backup reports for customers
+
+**Reports › Backup report** shows a customer's device backup for the last 7, 30 or 90 days: machines protected, success
+rate, restores, restore tests and malware scans, each machine's last good backup, failed backups and what to do next. It
+can be emailed on a schedule (weekly: 7 days, monthly: 30, quarterly: 90) like the other reports. See
+`docs/REPORTS_AND_BRANDING.md`.
+
 ## Finding a file across backups
 
 **Images & restore › a machine › Find a file in these backups** searches every unlocked backup of the machine by name

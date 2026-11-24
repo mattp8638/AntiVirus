@@ -1468,3 +1468,50 @@ def test_restore_to_azure_or_aws_and_keep_a_standby_vm(client, admin, tenant):
     assert standby["image_id"] == newer["image_id"]
     assert standby["target"] == {"type": "hyperv_vm", "name": "PM-ACER standby", "directory": "D:\\Standby",
                                  "replace": True, "switch": None, "start": False}
+
+
+def test_backup_report_for_a_customer_and_its_schedule(client, admin, tenant):
+    """The backup report shows machines (protected, failing, no plan), success rate, restore tests and malware scans,
+    with next steps; it is a page and a PDF, and can be emailed on a schedule like the other reports."""
+    from fenrir_cloud import mailer, reports
+    from fenrir_cloud.db import session_factory
+
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    caps = CAPS + ["scan_images"]
+    heartbeat(client, h, caps=caps)
+    repo_id = ready_repo(client, admin, tenant, agent_id, h)
+    client.post("/api/console/backup/plans", headers=admin, json={
+        "name": "Nightly", "agentId": agent_id, "repositoryId": repo_id, "job": {"type": "backup_system"},
+        "schedule": {"type": "daily", "time": "01:00", "days": [], "utc_offset_minutes": 0}, "retention": {"keep_last": 7}})
+    good, bad = image(t=0), image(t=10)
+    for im in (good,):
+        client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                    json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+        finish(client, h, heartbeat(client, h, caps=caps)["jobs"][0]["id"], images=[im])
+    client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+    finish(client, h, heartbeat(client, h, caps=caps)["jobs"][0]["id"], state="failed", error="VSS writer timed out")
+
+    with session_factory()() as db:
+        from fenrir_cloud.models import Tenant
+        t = db.get(Tenant, tenant["id"])
+        data = reports.backup_data(db, t, 30)
+        assert data["jobs"] == 2 and data["successRate"] == 50
+        assert [m["status"] for m in data["machines"]] == ["failing"]
+        assert data["failures"][0]["error"] == "VSS writer timed out"
+        steps = reports.backup_recommendations(data)
+        assert any("failing backups of M-1" in s for s in steps)
+    page = client.get("/api/console/reports/backup.html", headers=admin, params={"tenant_id": tenant["id"], "days": 30})
+    assert page.status_code == 200 and "Backup report" in page.text and "VSS writer timed out" in page.text
+    pdf = client.get("/api/console/reports/backup.pdf", headers=admin, params={"tenant_id": tenant["id"], "days": 7})
+    assert pdf.status_code == 200 and pdf.content.startswith(b"%PDF")
+    assert client.get("/api/console/reports/backup.pdf", headers=admin,
+                      params={"tenant_id": tenant["id"], "days": 12}).status_code == 400
+    saved = client.put("/api/console/reports/schedules", headers=admin, params={"tenant_id": tenant["id"]},
+                       json={"schedules": [{"kind": "backup", "every": "monthly", "to": ["it@acme.example"]}]})
+    assert saved.status_code == 200, saved.text
+    mailer.OUTBOX.clear()
+    with session_factory()() as db:
+        assert reports.send_schedules(db) == 1
+    assert mailer.OUTBOX[-1]["subject"].startswith("Backup report") and mailer.OUTBOX[-1]["attachments"][0].endswith(".pdf")
