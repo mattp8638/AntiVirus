@@ -1,0 +1,31 @@
+[package]
+name = "cli"
+description = "fenrir: command-line interface to Fenrir-Backup"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "fenrir-backup"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+core-format.workspace = true
+engine.workspace = true
+rpassword.workspace = true
+s3store.workspace = true
+azstore.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+snapshot-linux.workspace = true
+uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+snapshot-win.workspace = true
+
+[dev-dependencies]
+fatfs.workspace = true
+core-format = { workspace = true, features = ["test-util"] }
+tempfile.workspace = true

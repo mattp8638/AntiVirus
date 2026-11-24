@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 73
+LATEST_MIGRATION = 79
 
 def init_engine(url: str, pool_size: int = 5, max_overflow: int = 10) -> Engine:
     global _engine, _session_factory
@@ -529,6 +529,34 @@ def migrate(bind: Engine) -> list[int]:
                     model.__table__.create(conn, checkfirst=True)
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (73)"))
                 applied.append(73)
+            if 74 not in versions:
+                from .models import (BackupAgent, BackupBootCheck, BackupEnrollment, BackupImage, BackupJob,
+                                     BackupRepoAccess, BackupRepository, ImageBackupPlan)
+                for model in (BackupEnrollment, BackupAgent, BackupRepository, BackupRepoAccess, ImageBackupPlan,
+                              BackupJob, BackupImage, BackupBootCheck):  # device backup (backup/README.md)
+                    model.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (74)"))
+                applied.append(74)
+            if 75 not in versions:
+                ensure_columns(Base, conn)  # enrollment_tokens.include_backup: installers bundle the backup agent
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (75)"))
+                applied.append(75)
+            if 76 not in versions:
+                ensure_columns(Base, conn)  # NAS gateway: backup agents, repositories and access
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (76)"))
+                applied.append(76)
+            if 77 not in versions:
+                ensure_columns(Base, conn)  # S3 repositories with Object Lock (backup_repositories.s3)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (77)"))
+                applied.append(77)
+            if 78 not in versions:
+                ensure_columns(Base, conn)  # application-aware backups (backup_images.applications)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (78)"))
+                applied.append(78)
+            if 79 not in versions:
+                ensure_columns(Base, conn)  # off-site copies (image_backup_plans.copy_to_repository_id)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (79)"))
+                applied.append(79)
             conn.commit()
         except Exception:
             conn.rollback()

@@ -18,6 +18,7 @@ import { RunScript } from "./rmm/Scripts";
 import { SystemTab } from "./DeviceSystem";
 import { DeviceVulns } from "./DeviceVulns";
 import { DeviceDetails, DeviceOverview, useCommandLabels } from "./DeviceOverview";
+import { DeviceBackup } from "./Backups";
 
 // The map (Leaflet) is only downloaded when a phone's Location tab is opened.
 const LocationTab = lazy(() => import("./DeviceLocation"));
@@ -31,6 +32,7 @@ const SECTIONS: { key: string; label: string; subs?: string[] }[] = [
   { key: "security", label: "Security", subs: ["Alerts", "Vulnerabilities", "Microsoft Defender", "Local admin"] },
   { key: "software", label: "Software", subs: ["Patches", "Installed"] },
   { key: "activity", label: "Activity", subs: ["Scripts & jobs", "Remote actions", "Remote sessions", "Bundles & recordings"] },
+  { key: "backup", label: "Backup" },
   { key: "settings", label: "Settings", subs: ["Effective policy", "Device details"] },
 ];
 // Phones have no patches, scripts or local admin; they get Location instead, and screen sharing.
@@ -310,6 +312,7 @@ export default function DeviceDetail() {
       {section.key === "health" && <HealthTab deviceId={d.id} />}
       {section.key === "location" && <Suspense fallback={<div className="empty">Loading map…</div>}><LocationTab device={d} onChanged={() => { reload(); reloadWhere(); }} /></Suspense>}
       {section.key === "system" && <SystemTab deviceId={d.id} />}
+      {section.key === "backup" && <DeviceBackup device={d} />}
 
       {sub === "Alerts" && (
         <div className="card">

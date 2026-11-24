@@ -1,0 +1,65 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core-format",
+    "crates/snapshot-win",
+    "crates/snapshot-linux",
+    "crates/engine",
+    "crates/nbd-server",
+    "crates/agent",
+    "crates/cli",
+    "crates/vdisk",
+    "crates/protocol",
+    "crates/vmboot",
+    "crates/filebrowse",
+    "crates/s3store",
+    "crates/azstore",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/zy538324/AntiVirus"
+rust-version = "1.85"
+
+[workspace.dependencies]
+core-format = { path = "crates/core-format" }
+engine = { path = "crates/engine" }
+snapshot-linux = { path = "crates/snapshot-linux" }
+snapshot-win = { path = "crates/snapshot-win" }
+vdisk = { path = "crates/vdisk" }
+protocol = { path = "crates/protocol" }
+nbd-server = { path = "crates/nbd-server" }
+vmboot = { path = "crates/vmboot" }
+filebrowse = { path = "crates/filebrowse" }
+s3store = { path = "crates/s3store" }
+azstore = { path = "crates/azstore" }
+
+anyhow = "1"
+argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
+base64 = "0.22"
+blake3 = "1"
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+clap = { version = "4", features = ["derive", "env"] }
+crc32fast = "1"
+fatfs = { version = "0.3.6", default-features = false, features = ["std", "alloc"] }
+ed25519-dalek = { version = "2", features = ["zeroize"] }
+getrandom = "0.2"
+hex = "0.4"
+rpassword = "7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+thiserror = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+zeroize = { version = "1", features = ["derive"] }
+zstd = { version = "0.13", default-features = false }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+# Crypto and compression are slow unoptimised; keep tests fast.
+[profile.dev.package."*"]
+opt-level = 2

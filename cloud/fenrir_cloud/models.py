@@ -118,6 +118,8 @@ class EnrollmentToken(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # Installers made with this token also install the device backup agent (None: yes, the default).
+    include_backup: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
 
 class Device(Base):
@@ -2932,3 +2934,184 @@ class HeartbeatMetricsIngest(BaseModel):
     disks: list[DiskMetricIngest] = Field(default_factory=list)
     topProcesses: list[TopProcessIngest] = Field(default_factory=list)
     users: list[str] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------
+# Device backup (backup/: disk images, Hyper-V VMs, boot verification)
+# --------------------------------------------------------------------------
+# Backup agents speak the protocol in backup/crates/protocol: agent, job,
+# repository and image ids are UUIDs because the agent parses them as such.
+
+
+def new_uuid() -> str:
+    return str(uuid.uuid4())
+
+
+class BackupEnrollment(Base):
+    """One-time-per-machine installer link for the backup agent, optionally bound to a Fenrir device."""
+
+    __tablename__ = "backup_enrollments"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("bke"))
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    device_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    role: Mapped[str] = mapped_column(String(20), default="server")  # workstation | server | hyperv
+    label: Mapped[str] = mapped_column(String(200), default="")
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    uses: Mapped[int] = mapped_column(Integer, default=0)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class BackupAgent(Base):
+    """A fenrir-backup-agent installation. Its X25519 public key is what repository secrets are sealed to."""
+
+    __tablename__ = "backup_agents"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    device_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    hostname: Mapped[str] = mapped_column(String(255))
+    display_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    machine_id: Mapped[str] = mapped_column(String(200), index=True)
+    role: Mapped[str] = mapped_column(String(20), default="server")
+    os: Mapped[dict] = mapped_column(JSON, default=dict)
+    public_key: Mapped[str] = mapped_column(String(64))
+    agent_version: Mapped[str] = mapped_column(String(64), default="")
+    inventory: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    enrolled_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+    # NAS gateway: the TCP port it listens on for direct connections (None or 0: relay only), and an address other
+    # agents can use to reach it from outside its network ("host:port", e.g. a forwarded port or VPN address).
+    gateway_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gateway_address: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class BackupRepository(Base):
+    __tablename__ = "backup_repositories"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    path: Mapped[str] = mapped_column(String(1000))
+    repo_uuid: Mapped[str] = mapped_column(String(36))  # chosen by the browser, matching its recovery key
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | ready | failed
+    status_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    # Ransomware guard / legal hold: no retention or space reclamation while set.
+    hold: Mapped[bool] = mapped_column(Boolean, default=False)
+    hold_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    hold_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    maintenance_agent_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    prune_every_days: Mapped[int] = mapped_column(Integer, default=7)
+    last_prune_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    boot_agent_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    boot_every_days: Mapped[int] = mapped_column(Integer, default=0)
+    # Network share sign-in: none | machine (Windows computer account) | password (sealed per agent).
+    share_auth: Mapped[str] = mapped_column(String(20), default="none")
+    share_user: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # NAS gateway: the agent that serves this repository to machines that cannot reach it (append-only for them).
+    gateway_agent_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # S3-compatible storage (path s3://bucket/prefix): endpoint, region, path_style, lock_mode, lock_days. Not secret;
+    # the access keys are sealed per agent like a share sign-in.
+    s3: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class BackupRepoAccess(Base):
+    """A repository's passphrase (and share sign-in) sealed in the browser to one agent's key."""
+
+    __tablename__ = "backup_repo_access"
+    repository_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    agent_id: Mapped[str] = mapped_column(String(36), primary_key=True, index=True)
+    sealed: Mapped[dict] = mapped_column(JSON)
+    sealed_share: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    granted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    granted_by: Mapped[str] = mapped_column(String(200), default="")
+    # Reaches the repository through its gateway instead of the path.
+    via_gateway: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+
+class ImageBackupPlan(Base):
+    """A scheduled backup of one machine into one repository (kept apart from the governance BackupPlan)."""
+
+    __tablename__ = "backup_image_plans"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("bpl"))
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    agent_id: Mapped[str] = mapped_column(String(36), index=True)
+    repository_id: Mapped[str] = mapped_column(String(36), index=True)
+    job: Mapped[dict] = mapped_column(JSON)  # protocol JobKind
+    schedule: Mapped[dict] = mapped_column(JSON)  # interval | daily | manual
+    retention: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Off-site copy: after each backup the machine copies the new images to this repository too.
+    copy_to_repository_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+
+
+class BackupJob(Base):
+    __tablename__ = "backup_jobs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    agent_id: Mapped[str] = mapped_column(String(36), index=True)
+    repository_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    plan_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    kind: Mapped[dict] = mapped_column(JSON)
+    state: Mapped[str] = mapped_column(String(20), default="queued", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    progress: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    result: Mapped[dict | list | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    warnings: Mapped[list] = mapped_column(JSON, default=list)
+    requested_by: Mapped[str] = mapped_column(String(200), default="")
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class BackupImage(Base):
+    __tablename__ = "backup_images"
+    image_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    repository_id: Mapped[str] = mapped_column(String(36), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    agent_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    machine_id: Mapped[str] = mapped_column(String(200), index=True)
+    hostname: Mapped[str] = mapped_column(String(255))
+    created_unix: Mapped[int] = mapped_column(BigInteger, index=True)
+    kind: Mapped[str] = mapped_column(String(20))
+    consistency: Mapped[str] = mapped_column(String(30))
+    captured_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    stored_new_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    disks: Mapped[list] = mapped_column(JSON, default=list)
+    label: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    vm_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    chunks_total: Mapped[int] = mapped_column(BigInteger, default=0)
+    chunks_new: Mapped[int] = mapped_column(BigInteger, default=0)
+    bytes_new_raw: Mapped[int] = mapped_column(BigInteger, default=0)
+    anomaly: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Application components coordinated with the snapshot (Windows VSS writers), as the agent reports them.
+    applications: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+
+class BackupBootCheck(Base):
+    __tablename__ = "backup_boot_checks"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    image_id: Mapped[str] = mapped_column(String(36), index=True)
+    repository_id: Mapped[str] = mapped_column(String(36), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    agent_id: Mapped[str] = mapped_column(String(36))
+    job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    outcome: Mapped[str] = mapped_column(String(20))  # verified | screen | failed
+    method: Mapped[str] = mapped_column(String(40), default="")
+    seconds: Mapped[int] = mapped_column(Integer, default=0)
+    firmware: Mapped[str] = mapped_column(String(10), default="")
+    accel: Mapped[str] = mapped_column(String(10), default="")
+    message: Mapped[str] = mapped_column(Text, default="")
+    screenshot: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)

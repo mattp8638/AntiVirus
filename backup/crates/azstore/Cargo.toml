@@ -1,0 +1,15 @@
+[package]
+name = "azstore"
+description = "Fenrir-Backup repository storage on Azure Blob Storage, with version-level immutability"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+core-format.workspace = true
+base64.workspace = true
+hmac = "0.12"
+protocol.workspace = true
+sha2 = "0.10"
+ureq = { version = "2.12", default-features = false, features = ["tls", "proxy-from-env"] }

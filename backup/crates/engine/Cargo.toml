@@ -1,0 +1,21 @@
+[package]
+name = "engine"
+description = "Fenrir-Backup backup, restore and verify engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+blake3.workspace = true
+core-format.workspace = true
+crc32fast.workspace = true
+fatfs.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+core-format = { workspace = true, features = ["test-util"] }
+tempfile.workspace = true
+serde_json.workspace = true

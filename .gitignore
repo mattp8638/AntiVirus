@@ -45,3 +45,6 @@ agent/windows/service/build-quiet*
 *.zip
 !components/**/*.zip
 /site/
+
+# Rust build output (device backup)
+backup/target/

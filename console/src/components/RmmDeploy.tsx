@@ -41,10 +41,11 @@ export function RmmDeploy() {
   const [groupId, setGroupId] = useState("");
   const [label, setLabel] = useState("RMM deployment");
   const [days, setDays] = useState(90);
+  const [backup, setBackup] = useState(true);
   const [made, setMade] = useState<Deployment | null>(null);
   const { run, busy } = useAction();
   if (!can("configure")) return null;
-  const create = () => run(() => api<Deployment>("deploy-scripts", { body: { tenantId: tenant, groupId: groupId || null, label, expiresInDays: days } }))
+  const create = () => run(() => api<Deployment>("deploy-scripts", { body: { tenantId: tenant, groupId: groupId || null, label, expiresInDays: days, includeBackup: backup } }))
     .then((value) => { if (value) setMade(value); });
   const msi = () => run(async () => {
     if (!made) return;
@@ -72,6 +73,8 @@ export function RmmDeploy() {
         <label className="field">Label<input value={label} maxLength={200} onChange={(e) => setLabel(e.target.value)} /></label>
         <label className="field">Expires after
           <select value={days} onChange={(e) => setDays(Number(e.target.value))}>{[7, 30, 90, 180, 365].map((d) => <option key={d} value={d}>{d} days</option>)}</select></label>
+        <label className="row small" style={{ gap: 6 }} title="Also installs the device backup agent (its own service), so the machines appear under Backups">
+          <input type="checkbox" checked={backup} onChange={(e) => setBackup(e.target.checked)} /> Include device backup</label>
         <button className="primary" disabled={busy || !tenant} onClick={create}>Create deployment</button>
       </div>
       {made && <>
