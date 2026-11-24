@@ -156,6 +156,7 @@ def agent_out(db: Session, a: BackupAgent, now=None) -> dict:
                       "serial": d.get("serial") or "", "system": bool(d.get("system")), "inUse": bool(d.get("in_use"))}
                      for d in inv.get("disks") or [] if isinstance(d, dict) and d.get("path")],
         "firmware": inv.get("firmware"), "secureBoot": inv.get("secure_boot"),
+        "localRecovery": inv.get("local_recovery") if isinstance(inv.get("local_recovery"), dict) else None,
         "runningVms": [{"sessionId": v.get("session_id"), "imageId": v.get("image_id"), "startedUnix": v.get("started_unix"),
                         "vncPort": v.get("vnc_port") or 0} for v in inv.get("running_vms") or [] if isinstance(v, dict)],
         "lastBackup": ({"jobId": last_backup.id, "state": last_backup.state, "at": iso(last_backup.finished_at),
@@ -542,6 +543,44 @@ def create_job(agent_id: str, body: dict = Body(...), p: Principal = Depends(cur
     validate_job(db, a, kind, repo_id)
     job = bk.queue(db, a, kind, repo_id, p.actor)
     bk.record(db, p.actor, "backup.job.created", a.hostname, a.tenant_id, job=job.id, kind=kind["type"])
+    db.commit()
+    return {"id": job.id}
+
+
+@router.post("/agents/{agent_id}/local-recovery")
+def local_recovery(agent_id: str, request: Request, body: dict = Body(...), p: Principal = Depends(current_principal),
+                   db: Session = Depends(get_db)):
+    """Install, rebuild or remove a Windows machine's local recovery partition (backup/docs/design/local-recovery.md).
+    Installing and removing repartition its system disk: destructive permission, a fresh password check and the
+    machine's name typed."""
+    a = _agent(db, p, agent_id)
+    action = str(body.get("action") or "")
+    if action not in ("install", "refresh", "remove"):
+        bad("action is install, refresh or remove")
+    if "local_recovery" not in bk.capabilities(a):
+        bad("this machine cannot have a local recovery partition (Windows, with an up-to-date backup agent)")
+    installed = isinstance((a.inventory or {}).get("local_recovery"), dict)
+    confirm = str(body.get("confirm") or "").strip()
+    if action == "refresh":
+        p.require("configure")
+        if not installed:
+            bad("local recovery is not installed on this machine")
+    else:
+        p.require("destructive")
+        require_reauth(request, p)
+        if confirm.lower() != (a.hostname or "").lower():
+            bad(f"type the machine's name ({a.hostname}) to confirm: this repartitions its system disk")
+        if action == "install" and installed:
+            bad("local recovery is already installed; rebuild it instead")
+        if action == "remove" and not installed:
+            bad("local recovery is not installed on this machine")
+    size = body.get("sizeMb") or 0
+    if not isinstance(size, int) or not 0 <= size <= 16384:
+        bad("the recovery partition is at most 16 GB")
+    auto = bool(body.get("autoStart")) if action != "refresh" else bool(((a.inventory or {}).get("local_recovery") or {}).get("auto_start"))
+    job = bk.queue(db, a, {"type": "local_recovery", "action": action, "size_mb": size, "auto_start": auto,
+                           "confirm": confirm}, None, p.actor)
+    bk.record(db, p.actor, f"backup.local_recovery.{action}_requested", a.hostname, a.tenant_id, auto_start=auto)
     db.commit()
     return {"id": job.id}
 

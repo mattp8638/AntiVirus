@@ -161,6 +161,9 @@ pub struct Inventory {
     pub firmware: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secure_boot: Option<bool>,
+    /// The local recovery partition, when installed (Windows).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_recovery: Option<LocalRecoveryInfo>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -411,6 +414,21 @@ pub enum JobKind {
         paths: Vec<String>,
         recipient: String,
     },
+    /// The local recovery partition (docs/design/local-recovery.md):
+    /// install (shrinks the system volume; `confirm` is the machine's name),
+    /// refresh (rebuild in place), or remove (`confirm` again).
+    LocalRecovery {
+        action: LocalRecoveryAction,
+        /// Partition size in MiB (0: as needed).
+        #[serde(default)]
+        size_mb: u32,
+        /// Start Fenrir Recovery when Windows fails to start, instead of
+        /// Windows RE.
+        #[serde(default)]
+        auto_start: bool,
+        #[serde(default)]
+        confirm: String,
+    },
     /// Can this machine reach and write to `path`? Signs in to a network
     /// share first when credentials are given. Reports free space.
     CheckAccess {
@@ -438,6 +456,11 @@ impl JobKind {
             JobKind::BootCheck { .. } => "Boot check",
             JobKind::StopVm { .. } => "Stop VM",
             JobKind::CheckAccess { .. } => "Test connection",
+            JobKind::LocalRecovery { action, .. } => match action {
+                LocalRecoveryAction::Install => "Install local recovery",
+                LocalRecoveryAction::Refresh => "Refresh local recovery",
+                LocalRecoveryAction::Remove => "Remove local recovery",
+            },
             JobKind::BrowseFiles { .. } => "Browse files",
             JobKind::RestoreFiles { .. } => "Restore files",
             JobKind::DownloadFiles { .. } => "Download files",
@@ -547,6 +570,34 @@ pub struct JobSpec {
     /// group this machine can open, to take the group's key from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_source: Option<RepoAccess>,
+    /// Installing or refreshing local recovery: the settings it starts
+    /// with (this server, and an enrolment code for recovery sessions).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_settings: Option<recovery::RecoveryConfig>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalRecoveryAction {
+    Install,
+    Refresh,
+    Remove,
+}
+
+/// The local recovery partition, as the machine reports it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LocalRecoveryInfo {
+    pub disk: u32,
+    pub partition: u32,
+    pub size: u64,
+    /// When the recovery image was last built (Unix seconds).
+    pub built_unix: i64,
+    /// The agent version inside it.
+    pub agent_version: String,
+    /// Its enrolment code stops working then (Unix seconds).
+    #[serde(default)]
+    pub expires: u64,
+    pub auto_start: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

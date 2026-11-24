@@ -1001,3 +1001,47 @@ def test_msp_dashboard_across_customers(client, admin, tenant):
     d = client.get("/api/console/backup/msp", headers=admin).json()
     assert {c["name"]: c for c in d["customers"]}["Acme Dental"]["atRisk"] == 1
     assert any(a["kind"] == "overdue" and a["agentId"] == ok_id for a in d["attention"])
+
+
+def test_local_recovery_partition_jobs_and_enrolment_code(client, admin, tenant):
+    """Local recovery (backup/docs/design/local-recovery.md): typed confirmation and a password check to repartition,
+    a recovery-only code sent with each build (the previous one revoked), rebuilt after an agent update."""
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    caps = CAPS + ["local_recovery"]
+    heartbeat(client, h, caps=caps)
+    url = f"/api/console/backup/agents/{agent_id}/local-recovery"
+    step = {**admin, "X-Fenrir-Reauth": reauth(client, admin)}
+    assert client.post(url, headers=admin, json={"action": "install", "confirm": "M-1"}).json()["detail"] == "reauth_required"
+    assert client.post(url, headers=step, json={"action": "install", "confirm": "M-2"}).status_code == 400
+    assert client.post(url, headers=step, json={"action": "refresh"}).status_code == 400, "nothing to rebuild yet"
+    r = client.post(url, headers=step, json={"action": "install", "confirm": "m-1", "autoStart": True})
+    assert r.status_code == 200, r.text
+    spec = heartbeat(client, h, caps=caps)["jobs"][0]
+    assert spec["kind"]["type"] == "local_recovery" and spec["kind"]["auto_start"] is True
+    code = spec["recovery_settings"]
+    assert code["server"] == "" and code["expires"] > 0
+    pe = lambda tok, role: client.post("/backup/api/agent/enroll", json={
+        "protocol": 1, "token": tok, "hostname": "MINWINPC", "machine_id": f"pe-{role}", "role": role,
+        "os": {"family": "windows"}, "agent_version": "0.1.0", "public_key": base64.b64encode(b"p" * 32).decode()})
+    assert pe(code["token"], "server").status_code == 403, "recovery sessions only"
+    assert pe(code["token"], "recovery").status_code == 200
+    finish(client, h, spec["id"])
+
+    # Reported installed with an older agent inside: rebuilt by the scheduler, with a new code.
+    lr = {"disk": 0, "partition": 5, "size": 1 << 30, "built_unix": 1_790_000_000, "agent_version": "0.0.9",
+          "expires": code["expires"], "auto_start": True}
+    heartbeat(client, h, caps=caps, local_recovery=lr)
+    agent = next(a for a in client.get("/api/console/backup/agents", headers=admin).json() if a["id"] == agent_id)
+    assert agent["localRecovery"]["partition"] == 5
+    from fenrir_cloud.db import session_factory
+    with session_factory()() as db:
+        assert bk.refresh_local_recovery(db) == 1
+        assert bk.refresh_local_recovery(db) == 0, "one at a time"
+    spec = heartbeat(client, h, caps=caps, local_recovery=lr)["jobs"][0]
+    assert spec["kind"]["action"] == "refresh" and spec["recovery_settings"]["token"] != code["token"]
+    assert pe(code["token"], "recovery").status_code == 403, "the old code is revoked"
+    finish(client, h, spec["id"])
+    r = client.post(url, headers={**admin, "X-Fenrir-Reauth": reauth(client, admin)}, json={"action": "remove", "confirm": "M-1"})
+    assert r.status_code == 200, r.text
+    assert "recovery_settings" not in heartbeat(client, h, caps=caps, local_recovery=lr)["jobs"][0]

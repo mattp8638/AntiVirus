@@ -12,6 +12,7 @@ import os
 import time
 import uuid as uuidlib
 
+from datetime import timedelta
 from types import SimpleNamespace
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, Response
@@ -159,6 +160,18 @@ def _job_spec(db: Session, agent: BackupAgent, job: BackupJob) -> dict | None:
             return None
         repository = {**repository, "sealed_secret": unlock["sealed"]}
     spec = {"id": job.id, "kind": kind, "repository": repository}
+    # Local recovery (backup/docs/design/local-recovery.md): a year-long enrolment code for recovery sessions,
+    # replacing this machine's earlier one; the agent adds its own server address and pin.
+    if (job.kind or {}).get("type") == "local_recovery":
+        label = f"local-recovery:{agent.id}"
+        for e in db.execute(select(BackupEnrollment).where(BackupEnrollment.label == label)).scalars():
+            e.revoked = True
+        if job.kind.get("action") != "remove":
+            raw = bk.new_token()
+            expires = utcnow() + timedelta(days=bk.LOCAL_RECOVERY_DAYS)
+            db.add(BackupEnrollment(tenant_id=agent.tenant_id, device_id=agent.device_id, role="recovery", label=label,
+                                    token_hash=bk.token_hash(raw), expires_at=expires, created_by="local recovery"))
+            spec["recovery_settings"] = {"server": "", "pin": "", "token": raw, "expires": int(expires.timestamp())}
     # A new member of a dedup group: the member it takes the group's key from, which this machine must open.
     if (job.kind or {}).get("type") == "init_repository" and job.repository_id:
         repo = db.get(BackupRepository, job.repository_id)

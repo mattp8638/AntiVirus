@@ -15,6 +15,7 @@ export interface BackupAgent {
   lastSeenAt: string | null; publicKey: string; capabilities: string[]; vmCount: number; disks: string[];
   diskInfo?: { path: string; size: number; model: string; serial: string; system: boolean; inUse: boolean }[];
   firmware?: "uefi" | "bios" | null; secureBoot?: boolean | null;
+  localRecovery?: { disk: number; partition: number; size: number; built_unix: number; agent_version: string; expires: number; auto_start: boolean } | null;
   runningVms?: { sessionId: string; imageId: string; startedUnix: number; vncPort: number }[];
   lastBackup: { jobId: string; state: string; at: string; error: string | null } | null;
   runningJob: { id: string; label: string; state: string; progress: any } | null;
@@ -1261,6 +1262,47 @@ function Activity() {
 // ---------------------------------------------------------------- device page
 
 /** The Backup section of a device: its backup agent (if installed), images and recent jobs, or an install button. */
+/** The machine's own recovery partition (backup/docs/design/local-recovery.md). */
+function LocalRecoveryCard({ agent, reload }: { agent: BackupAgent; reload: () => void }) {
+  const { can } = useApp();
+  const { run, busy } = useAction();
+  const lr = agent.localRecovery;
+  const [dialog, setDialog] = useState<"install" | "remove" | null>(null);
+  const [confirm, setConfirm] = useState("");
+  const [autoStart, setAutoStart] = useState(false);
+  const send = (action: "install" | "refresh" | "remove") => run(() => api(`backup/agents/${agent.id}/local-recovery`, {
+    body: { action, confirm, autoStart },
+  }), action === "install" ? "Installing local recovery: follow it under Activity" : action === "refresh" ? "Rebuilding the recovery image" : "Removing local recovery")
+    .then((r) => { if (r) { setDialog(null); setConfirm(""); reload(); } });
+  return (
+    <div className="card" style={{ marginBottom: 14 }}>
+      <h3>Local recovery</h3>
+      {lr ? (
+        <p className="small"><Pill value="Installed" tone="good" /> A {bytes(lr.size)} recovery partition, built {ago(new Date(lr.built_unix * 1000).toISOString())} with agent {lr.agent_version}.
+          If Windows does not start, choose <b>Fenrir Recovery</b> in the boot menu{lr.auto_start ? " (it also starts by itself after failed starts)" : ""}: the machine appears as a recovery session to restore it from its backups, onto the same disk or a new one.
+          {lr.expires > 0 && <> Its enrolment code is renewed automatically.</>}</p>
+      ) : (
+        <p className="small muted">A small recovery partition with its own boot menu entry: if Windows no longer starts, start <b>Fenrir Recovery</b> and restore the machine from its backups without recovery media. Built from this machine's own Windows Recovery Environment with its network and storage drivers; about 1 GB is taken from C:.</p>
+      )}
+      <div className="row" style={{ gap: 8 }}>
+        {!lr && can("destructive") && <button disabled={!agent.online || busy} onClick={() => setDialog("install")}>Install</button>}
+        {lr && can("configure") && <button disabled={!agent.online || busy} onClick={() => send("refresh")}>Rebuild now</button>}
+        {lr && can("destructive") && <button className="danger" disabled={!agent.online || busy} onClick={() => setDialog("remove")}>Remove</button>}
+      </div>
+      {dialog && (
+        <Modal title={dialog === "install" ? "Install local recovery" : "Remove local recovery"} onClose={() => setDialog(null)}
+          footer={<button className={dialog === "remove" ? "danger" : "primary"} disabled={busy || confirm.trim().toLowerCase() !== agent.hostname.toLowerCase()} onClick={() => send(dialog)}>{dialog === "install" ? "Install" : "Remove"}</button>}>
+          {dialog === "install" ? <>
+            <div className="card warn-card small">This shrinks C: on {agent.name} and adds a recovery partition after it, plus <b>Fenrir Recovery</b> in the boot menu. Make sure a recent backup exists first. You will be asked for your password.</div>
+            <label className="row small" style={{ gap: 6, marginTop: 10 }}><input type="checkbox" checked={autoStart} onChange={(e) => setAutoStart(e.target.checked)} /> Start it automatically when Windows fails to start (instead of Windows' Startup Repair)</label>
+          </> : <div className="card warn-card small">This deletes the recovery partition and its boot menu entry, and gives the space back to C:. You will be asked for your password.</div>}
+          <label className="field" style={{ marginTop: 10 }}>Type the machine's name ({agent.hostname}) to confirm<input value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="off" /></label>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 /** A machine's backups on its device page: the same lock as Images & restore. */
 function MachineImages({ agent }: { agent: BackupAgent }) {
   const q = { tenantId: agent.tenantId };
@@ -1325,6 +1367,7 @@ export function DeviceBackup({ device }: { device: { id: string; hostname: strin
         <Stat label="Images" value={detail.data?.imageCount ?? "—"} />
         <Stat label="Plans" value={detail.data?.plans?.length ?? "—"} hint={detail.data?.plans?.map((p: Plan) => describeSchedule(p.schedule)).join(", ")} to="/backups" />
       </div>
+      {agent.capabilities.includes("local_recovery") && <LocalRecoveryCard agent={agent} reload={agents.reload} />}
       <MachineImages agent={agent} />
       <div className="card"><h3>Recent backup jobs</h3><JobsTable rows={detail.data?.jobs ?? null} /></div>
     </>
