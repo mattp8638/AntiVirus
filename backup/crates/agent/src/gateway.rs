@@ -940,6 +940,7 @@ mod tests {
             label: None,
             warnings: vec![],
             vm: None,
+            applications: vec![],
         };
         let r = engine::backup(
             &repo,

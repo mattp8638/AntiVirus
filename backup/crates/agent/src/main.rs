@@ -5,6 +5,7 @@ mod boot;
 mod browse;
 mod client;
 mod config;
+mod download;
 mod gateway;
 mod hwfix;
 mod hyperv;

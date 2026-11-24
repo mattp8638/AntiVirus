@@ -32,6 +32,8 @@ pub struct Reporter<'a> {
     client: &'a Client,
     path: String,
     last: Mutex<Option<Instant>>,
+    /// When the current phase started, for the rate and time left.
+    phase: Mutex<(String, Instant)>,
 }
 
 impl<'a> Reporter<'a> {
@@ -40,20 +42,38 @@ impl<'a> Reporter<'a> {
             client,
             path: format!("/api/agent/jobs/{job}/update"),
             last: Mutex::new(None),
+            phase: Mutex::new((String::new(), Instant::now())),
         }
     }
 
     pub fn progress(&self, phase: &str, done: u64, total: u64, message: &str) {
+        self.progress_stored(phase, done, total, 0, message)
+    }
+
+    /// Progress of a phase, with the new data stored so far (backups).
+    pub fn progress_stored(&self, phase: &str, done: u64, total: u64, stored: u64, message: &str) {
+        let started = {
+            let mut p = self.phase.lock().unwrap();
+            if p.0 != phase {
+                *p = (phase.to_string(), Instant::now());
+            }
+            p.1
+        };
         let mut l = self.last.lock().unwrap();
         if l.is_some_and(|t| t.elapsed() < Duration::from_secs(2)) && done < total {
             return;
         }
         *l = Some(Instant::now());
+        let (rate, eta_seconds) =
+            JobProgress::estimate(done, total, started.elapsed().as_secs_f64());
         let u = running(Some(JobProgress {
             phase: phase.into(),
             done,
             total,
             message: message.into(),
+            rate,
+            eta_seconds,
+            stored,
         }));
         if let Err(e) = self.client.post::<_, serde_json::Value>(&self.path, &u) {
             crate::log::warn(&format!("progress update failed: {e:#}"));
@@ -131,6 +151,17 @@ pub fn report_of(m: &ManifestBody) -> ImageReport {
         chunks_total: m.stats.chunks_total,
         chunks_new: m.stats.chunks_new,
         bytes_new_raw: m.stats.bytes_new_raw,
+        applications: m
+            .applications
+            .iter()
+            .map(|a| protocol::ImageApplication {
+                writer: a.writer.clone(),
+                component: a.component.clone(),
+                caption: a.caption.clone(),
+                included: a.included,
+                note: a.note.clone(),
+            })
+            .collect(),
     }
 }
 
@@ -141,40 +172,105 @@ fn secret(key: &AgentKey, access: &RepoAccess) -> anyhow::Result<RepoSecret> {
     Ok(serde_json::from_slice(&pt)?)
 }
 
-/// S3-compatible storage for `path` (`s3://bucket/prefix`), with the keys
-/// sealed to this machine.
-pub(crate) fn s3_backend(
+/// Object storage behind a repository: S3-compatible or Azure Blob.
+pub(crate) enum ObjectStore {
+    S3(s3store::S3Backend),
+    Azure(azstore::AzureBackend),
+}
+
+impl ObjectStore {
+    pub fn is_empty(&self) -> core_format::Result<bool> {
+        match self {
+            ObjectStore::S3(b) => b.is_empty(),
+            ObjectStore::Azure(b) => b.is_empty(),
+        }
+    }
+    pub fn check(&self) -> core_format::Result<String> {
+        match self {
+            ObjectStore::S3(b) => b.check(),
+            ObjectStore::Azure(b) => b.check(),
+        }
+    }
+    pub fn into_backend(self) -> Arc<dyn Backend> {
+        match self {
+            ObjectStore::S3(b) => Arc::new(b),
+            ObjectStore::Azure(b) => Arc::new(b),
+        }
+    }
+    fn backend(&self) -> &dyn Backend {
+        match self {
+            ObjectStore::S3(b) => b,
+            ObjectStore::Azure(b) => b,
+        }
+    }
+}
+
+/// Object storage for `path` (`s3://bucket/prefix` or
+/// `azure://container/prefix`), with the keys sealed to this machine: for
+/// S3 the access key and secret, for Azure the account name and its key or
+/// a SAS token.
+pub(crate) fn object_store(
     key: &AgentKey,
     path: &str,
     s: &protocol::S3Settings,
     sealed: Option<&protocol::seal::Sealed>,
-) -> anyhow::Result<s3store::S3Backend> {
-    let (bucket, prefix) = s3store::parse_url(path)
-        .ok_or_else(|| anyhow!("{path} is not an s3://bucket/prefix location"))?;
+) -> anyhow::Result<ObjectStore> {
     let creds = crate::share::open_credentials(
         key,
         sealed.ok_or_else(|| {
             anyhow!("this machine has no access keys for {path}; give it access again")
         })?,
     )?;
-    let lock = match s.lock_mode.as_deref() {
+    let mode = match s.lock_mode.as_deref() {
         None | Some("") | Some("none") => None,
-        Some(m) => Some(s3store::Lock {
-            mode: s3store::LockMode::parse(m)
-                .ok_or_else(|| anyhow!("unknown Object Lock mode {m}"))?,
-            days: s.lock_days,
-        }),
+        Some(m) => Some(m),
     };
-    Ok(s3store::S3Backend::new(s3store::S3Config {
-        endpoint: s.endpoint.clone(),
-        region: s.region.clone(),
-        bucket,
-        prefix,
-        path_style: s.path_style,
-        access_key: creds.username,
-        secret_key: creds.password,
-        lock,
-    })?)
+    if path.starts_with("azure://") {
+        let (container, prefix) = azstore::parse_url(path)
+            .ok_or_else(|| anyhow!("{path} is not an azure://container/prefix location"))?;
+        let lock = mode
+            .map(|m| {
+                Ok::<_, anyhow::Error>(azstore::Lock {
+                    mode: azstore::LockMode::parse(m)
+                        .ok_or_else(|| anyhow!("unknown immutability mode {m}"))?,
+                    days: s.lock_days,
+                })
+            })
+            .transpose()?;
+        return Ok(ObjectStore::Azure(azstore::AzureBackend::new(
+            azstore::AzureConfig {
+                endpoint: s.endpoint.clone(),
+                account: creds.username,
+                container,
+                prefix,
+                credential: azstore::credential_from(&creds.password),
+                lock,
+            },
+        )?));
+    }
+    let (bucket, prefix) = s3store::parse_url(path)
+        .ok_or_else(|| anyhow!("{path} is not an s3://bucket/prefix location"))?;
+    let lock = mode
+        .map(|m| {
+            Ok::<_, anyhow::Error>(s3store::Lock {
+                mode: s3store::LockMode::parse(m)
+                    .ok_or_else(|| anyhow!("unknown Object Lock mode {m}"))?,
+                days: s.lock_days,
+            })
+        })
+        .transpose()?;
+    Ok(ObjectStore::S3(s3store::S3Backend::new(
+        s3store::S3Config {
+            endpoint: s.endpoint.clone(),
+            region: s.region.clone(),
+            bucket,
+            prefix,
+            path_style: s.path_style,
+            access_key: creds.username,
+            secret_key: creds.password,
+            lock,
+        },
+    )?))
 }
 
 /// The repository's storage: its folder, S3, or a gateway (NAS gateway) when
@@ -192,14 +288,14 @@ fn storage(ctx: &Ctx, access: &RepoAccess, create: bool) -> anyhow::Result<Arc<d
         )?));
     }
     if let Some(s) = &access.s3 {
-        let b = s3_backend(ctx.key, &access.path, s, access.sealed_share.as_ref())?;
+        let b = object_store(ctx.key, &access.path, s, access.sealed_share.as_ref())?;
         if create && !b.is_empty()? {
             bail!(
-                "{} already holds data: choose an empty bucket or prefix",
+                "{} already holds data: choose an empty bucket or container, or another folder in it",
                 access.path
             );
         }
-        return Ok(Arc::new(b));
+        return Ok(b.into_backend());
     }
     let path = crate::share::prepare(ctx.key, &access.path, access.sealed_share.as_ref())?;
     Ok(if create {
@@ -271,10 +367,11 @@ fn progress_cb<'a>(
     prefix: String,
 ) -> impl Fn(&engine::Progress) + Sync + 'a {
     move |p: &engine::Progress| {
-        rep.progress(
+        rep.progress_stored(
             "reading",
             p.bytes_done,
             p.bytes_total,
+            p.bytes_stored,
             &format!("{prefix}disk {}", p.disk),
         )
     }
@@ -330,6 +427,7 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
                 label: settings.label.clone(),
                 warnings: opened.iter().flat_map(|o| o.warnings.clone()).collect(),
                 vm: None,
+                applications: vec![],
             };
             let cb = progress_cb(rep, String::new());
             let r = engine::backup(&repo, &sources, meta, &options(settings), &ctx.ctl, &cb)?;
@@ -380,6 +478,40 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
                 .map(|(id, e)| format!("image {id}: {e}"))
                 .collect();
             u.images = Some(ok.iter().map(report_of).collect());
+            // Adopting an existing repository: the server learns its ID here.
+            u.repo_uuid = Some(repo.config().repo_id);
+            Ok(u)
+        }
+        JobKind::CopyImages {
+            images,
+            full_verify,
+            ..
+        } => {
+            let src = open_repo(ctx, access.ok_or_else(|| anyhow!("no source repository"))?)?;
+            let target = spec.copy_target.as_ref().ok_or_else(|| {
+                anyhow!("this machine has no access to the destination repository; grant it access there")
+            })?;
+            let dst = open_repo(ctx, target)?;
+            let cb = |done: u64, total: u64| rep.progress("copying", done, total, &target.path);
+            let ids = (!images.is_empty()).then_some(images.as_slice());
+            let r = engine::copy::copy_images(&src, &dst, ids, *full_verify, &ctx.ctl, &cb)?;
+            let mut u = done(JobState::Succeeded);
+            u.result = Some(json!({
+                "copied": r.copied.len(),
+                "already_there": r.already_there,
+                "chunks_written": r.chunks_written,
+                "bytes_stored": r.bytes_stored,
+                "verified": r.verified,
+                "to": target.path,
+            }));
+            // The destination's catalogue lists the copies.
+            u.images = Some(
+                r.copied
+                    .iter()
+                    .filter_map(|id| dst.load_manifest(id).ok())
+                    .map(|m| report_of(&m))
+                    .collect(),
+            );
             Ok(u)
         }
         JobKind::ApplyRetention {
@@ -391,6 +523,7 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             rep.progress("retention", 0, 1, "reading images");
             let p = engine::retention::RetentionPolicy {
                 keep_last: retention.keep_last,
+                keep_hourly: retention.keep_hourly,
                 keep_daily: retention.keep_daily,
                 keep_weekly: retention.keep_weekly,
                 keep_monthly: retention.keep_monthly,
@@ -449,6 +582,21 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             *volume,
             path,
         ),
+        JobKind::DownloadFiles {
+            image_id,
+            volume,
+            paths,
+            recipient,
+        } => crate::browse::download_files(
+            ctx,
+            access.ok_or_else(|| anyhow!("no repository"))?,
+            *image_id,
+            *volume,
+            paths,
+            recipient,
+            spec.id,
+            rep,
+        ),
         JobKind::RestoreFiles {
             image_id,
             volume,
@@ -472,11 +620,11 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             sealed_share,
             s3: Some(s3),
         } => {
-            let b = s3_backend(ctx.key, path, s3, sealed_share.as_ref())?;
+            let b = object_store(ctx.key, path, s3, sealed_share.as_ref())?;
             let note = b.check()?;
             let mut u = done(JobState::Succeeded);
             u.result = Some(
-                json!({ "s3": true, "note": note, "repository": b.exists(core_format::repo::CONFIG_KEY)? }),
+                json!({ "s3": true, "note": note, "repository": b.backend().exists(core_format::repo::CONFIG_KEY)? }),
             );
             Ok(u)
         }
@@ -537,6 +685,7 @@ fn backup_system(
 ) -> anyhow::Result<JobUpdate> {
     rep.progress("snapshot", 0, 1, "creating VSS snapshot set");
     let sb = snapshot_win::prepare_system_backup(&snapshot_win::VssOptions {
+        data_disks_only: false,
         full_backup_type: s.vss_full,
         extra_disks: vec![],
     })
@@ -595,6 +744,7 @@ fn backup_system(
         label: s.label.clone(),
         warnings: lb.warnings.clone(),
         vm: None,
+        applications: vec![],
     };
     let cb = progress_cb(rep, String::new());
     let result = engine::backup(repo, &lb.sources(), meta, &options(s), &ctx.ctl, &cb);
@@ -750,6 +900,7 @@ fn backup_one_vm(
             label: s.label.clone(),
             warnings: cp.warning.iter().cloned().collect(),
             vm: Some(cp.vm.clone()),
+            applications: vec![],
         };
         let cb = progress_cb(rep, prefix.to_string());
         Ok(engine::backup(

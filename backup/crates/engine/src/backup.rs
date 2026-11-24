@@ -33,6 +33,8 @@ pub struct ImageMeta {
     pub warnings: Vec<String>,
     /// Set when imaging a VM from its host.
     pub vm: Option<core_format::manifest::VmInfo>,
+    /// Application components coordinated with the snapshot (VSS writers).
+    pub applications: Vec<core_format::manifest::ApplicationInfo>,
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +63,8 @@ pub struct Progress {
     pub bytes_done: u64,
     pub bytes_total: u64,
     pub chunks_new: u64,
+    /// New data written to the repository so far (compressed, encrypted).
+    pub bytes_stored: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -198,6 +202,7 @@ pub fn backup(
         warnings: warnings.clone(),
         stats: stats.clone(),
         vm: meta.vm,
+        applications: meta.applications,
     };
     if ctl.is_cancelled() {
         return Err(EngineError::Cancelled);
@@ -402,6 +407,7 @@ fn run_pipeline(
                 bytes_done: bytes_done.min(total),
                 bytes_total: total,
                 chunks_new: stats.chunks_new,
+                bytes_stored: stats.bytes_new_stored,
             });
         }
         let reader_result = reader.join().expect("reader thread panicked");

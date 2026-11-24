@@ -34,6 +34,9 @@ pub struct VssOptions {
     pub full_backup_type: bool,
     /// Additional physical disk numbers to include besides the system disk.
     pub extra_disks: Vec<u32>,
+    /// Leave the system disk out: image only `extra_disks` (a server's data
+    /// disks, still coordinated with its applications through VSS).
+    pub data_disks_only: bool,
 }
 
 /// A prepared system backup: sources to hand to the engine, the metadata
@@ -156,12 +159,19 @@ pub fn prepare_system_backup(opts: &VssOptions) -> Result<SystemBackup, PrepareE
     let can_read_firmware = system::enable_privilege(SE_SYSTEM_ENVIRONMENT_NAME);
 
     let mut warnings = Vec::new();
-    let sysvol = system::system_volume()?;
-    let sys_ex = ioctl::volume_disk_extents(&ioctl::open_read(sysvol.trim_end_matches('\\'))?)?;
-    if sys_ex.len() != 1 {
-        return Err(PrepareError("the system volume spans several disks (dynamic disk / Storage Spaces); not supported yet".into()));
+    let mut disk_numbers: BTreeSet<u32> = BTreeSet::new();
+    if opts.data_disks_only {
+        if opts.extra_disks.is_empty() {
+            return Err(PrepareError("choose the data disks to back up".into()));
+        }
+    } else {
+        let sysvol = system::system_volume()?;
+        let sys_ex = ioctl::volume_disk_extents(&ioctl::open_read(sysvol.trim_end_matches('\\'))?)?;
+        if sys_ex.len() != 1 {
+            return Err(PrepareError("the system volume spans several disks (dynamic disk / Storage Spaces); not supported yet".into()));
+        }
+        disk_numbers.extend(sys_ex.iter().map(|e| e.0));
     }
-    let mut disk_numbers: BTreeSet<u32> = sys_ex.iter().map(|e| e.0).collect();
     disk_numbers.extend(opts.extra_disks.iter().copied());
 
     let volumes = map_volumes();
@@ -224,6 +234,10 @@ pub fn prepare_system_backup(opts: &VssOptions) -> Result<SystemBackup, PrepareE
             VSS_BT_COPY
         },
     )?;
+    let applications = set.applications.clone();
+    if let Some(w) = crate::apps::summary(&applications) {
+        warnings.push(w);
+    }
     let consistency = if set.writer_issues.is_empty() {
         Consistency::Application
     } else {
@@ -352,6 +366,7 @@ pub fn prepare_system_backup(opts: &VssOptions) -> Result<SystemBackup, PrepareE
         label: None,
         warnings,
         vm: None,
+        applications,
     };
     if meta.machine.machine_id.is_empty() {
         return Err(PrepareError("could not read the machine GUID".into()));

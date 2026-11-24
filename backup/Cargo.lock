@@ -42,6 +42,7 @@ name = "agent"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "azstore",
  "base64",
  "clap",
  "core-format",
@@ -151,6 +152,18 @@ name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
+
+[[package]]
+name = "azstore"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "core-format",
+ "hmac",
+ "protocol",
+ "sha2",
+ "ureq",
+]
 
 [[package]]
 name = "base64"
@@ -345,6 +358,7 @@ checksum = "e0921b3876b3a1df8a1c9f912e7f94342458022c2e84288015893d83c4d62a79"
 name = "cli"
 version = "0.1.0"
 dependencies = [
+ "azstore",
  "clap",
  "core-format",
  "engine",
@@ -578,6 +592,7 @@ checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 name = "engine"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "core-format",
  "crc32fast",
  "fatfs",

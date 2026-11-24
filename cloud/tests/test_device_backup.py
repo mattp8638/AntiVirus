@@ -1,9 +1,11 @@
 """Device backup (fenrir-backup-agent): enrolment, jobs, repositories, the ransomware guard and restores."""
 
 import base64
+
+import pytest
 import uuid
 
-from conftest import ADMIN_PASSWORD, enroll
+from conftest import ADMIN_PASSWORD, enroll, login
 
 from fenrir_cloud import backup as bk
 
@@ -55,6 +57,24 @@ def ready_repo(client, admin, tenant, agent_id, h):
     return r.json()["id"]
 
 
+def reauth(client, admin):
+    return client.post("/api/console/auth/reauth", headers=admin, json={"password": ADMIN_PASSWORD}).json()["reauthToken"]
+
+
+def unlock(client, admin, h, repo_id, agent_id, caps=CAPS, base=None):
+    """Unlock a repository's images for this session: password check, then the passphrase tried on a machine."""
+    r = client.post(f"/api/console/backup/repositories/{repo_id}/unlock",
+                    headers={**admin, "X-Fenrir-Reauth": reauth(client, admin)}, json={"agentId": agent_id, "sealed": SEALED})
+    assert r.status_code == 200, r.text
+    spec = next(j for j in heartbeat(client, h, caps=caps)["jobs"] if j["id"] == r.json()["id"])
+    assert spec["kind"] == {"type": "list_images"} and spec["repository"]["sealed_secret"] == SEALED
+    finish(client, h, spec["id"])
+    out = client.get(f"/api/console/backup/unlock/{spec['id']}", headers=admin).json()
+    assert out["state"] == "unlocked", out
+    base = base or admin
+    return {**base, "X-Fenrir-Unlock": ",".join(x for x in (base.get("X-Fenrir-Unlock"), out["token"]) if x)}
+
+
 def image(machine="m-1", total=1000, new=30, raw=30 * 1024, stored=12 * 1024, t=0):
     return {"image_id": str(uuid.uuid4()), "machine_id": machine, "hostname": machine.upper(), "created": "",
             "created_unix": 1_790_000_000 + t, "kind": "system", "consistency": "vss", "captured_bytes": 10 << 30,
@@ -85,7 +105,8 @@ def test_enrol_backup_and_ransomware_hold(client, admin, tenant):
         finish(client, h, job["id"], images=[image(t=i)])
         ret = heartbeat(client, h)["jobs"][0]
         assert ret["kind"] == {"type": "apply_retention", "machine_ids": ["m-1"], "retention": {
-            "keep_last": 3, "keep_daily": 0, "keep_weekly": 0, "keep_monthly": 0, "keep_yearly": 0}, "dry_run": False}
+            "keep_last": 3, "keep_hourly": 0, "keep_daily": 0, "keep_weekly": 0, "keep_monthly": 0, "keep_yearly": 0},
+        "dry_run": False}
         finish(client, h, ret["id"])
 
     # Then most of the disk changes and nothing compresses: hold, alert, and retention waits.
@@ -114,13 +135,25 @@ def test_disk_restore_needs_typed_confirmation_and_reauth(client, admin, tenant)
     disks = [{"path": r"\\.\PhysicalDrive0", "size": 1 << 40, "model": "", "system": True},
              {"path": r"\\.\PhysicalDrive1", "size": 1 << 40, "model": "", "system": False}]
     heartbeat(client, h, disks=disks)
-    ready_repo(client, admin, tenant, agent_id, h)
+    repo_id = ready_repo(client, admin, tenant, agent_id, h)
     client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
-                json={"kind": {"type": "backup_system"}, "repositoryId": client.get(
-                    "/api/console/backup/repositories", headers=admin).json()[0]["id"]})
+                json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
     job = heartbeat(client, h)["jobs"][0]
     im = image()
+    # Application-aware (VSS component mode): the agent lists the writers' components; unknown fields are dropped.
+    im["applications"] = [{"writer": "SqlServerWriter", "component": "SQL01\\sales", "caption": "sales",
+                           "included": True, "evil": "x" * 10_000},
+                          {"writer": "Exchange", "component": "Mailbox", "included": False, "note": "on D:"}]
     finish(client, h, job["id"], images=[im])
+    # Locked until unlocked in this session: nothing listed, restores refused.
+    assert client.get("/api/console/backup/images", headers=admin).json() == []
+    locked = client.post("/api/console/backup/restores", headers=admin, json={"imageId": im["image_id"], "agentId": agent_id})
+    assert locked.status_code == 403 and locked.json()["detail"] == "repository_locked"
+    admin = unlock(client, admin, h, repo_id, agent_id)
+    listed = client.get("/api/console/backup/images", headers=admin).json()
+    apps = next(i for i in listed if i["imageId"] == im["image_id"])["applications"]
+    assert [a["writer"] for a in apps] == ["SqlServerWriter", "Exchange"] and "evil" not in apps[0]
+    assert apps[0]["included"] is True and apps[1]["note"] == "on D:"
     heartbeat(client, h, disks=disks)
     target = {"type": "disk", "device": r"\\.\PhysicalDrive1", "disk": 0, "confirm": r"\\.\PhysicalDrive1"}
     body = {"imageId": im["image_id"], "agentId": agent_id, "target": target}
@@ -176,6 +209,14 @@ def test_schedule_and_anomaly_rules():
     t = bk.next_after(daily, 1_795_219_200)  # 2026-11-19 00:00 UTC, a Thursday
     assert t is not None and (t // 86_400 + 3) % 7 == 0 and (t + 3600) % 86_400 == 2 * 3600 + 1800
     assert bk.next_after({"type": "interval", "hours": 6}, 100) == 100 + 6 * 3600
+    # Frequent backups: minutes, from 5 minutes; hourly retention.
+    assert bk.next_after({"type": "interval", "hours": 0, "minutes": 15}, 100) == 100 + 900
+    bk.validate_schedule({"type": "interval", "hours": 0, "minutes": 5})
+    for bad in ({"type": "interval", "hours": 0, "minutes": 4}, {"type": "interval", "hours": 1, "minutes": 60},
+                {"type": "interval", "hours": 0}):
+        with pytest.raises(ValueError):
+            bk.validate_schedule(bad)
+    assert bk.validate_retention({"keep_hourly": 24})["keep_hourly"] == 24
     normal = [bk.ChangeStats(1000, 30, 30, 12)] * 6
     assert bk.evaluate_anomaly(normal, bk.ChangeStats(1000, 40, 40, 16)) is None
     assert bk.evaluate_anomaly(normal, bk.ChangeStats(1000, 700, 700, 699))
@@ -273,6 +314,7 @@ def test_browse_and_restore_files(client, admin, tenant):
     im = image()
     finish(client, h, job["id"], images=[im])
     assert heartbeat(client, h, caps=caps)["poll_seconds"] == bk.POLL_SECONDS
+    admin = unlock(client, admin, h, repo_id, agent_id, caps=caps)
 
     # Volumes, then a folder; the machine polls every second meanwhile.
     r = client.post(f"/api/console/backup/images/{im['image_id']}/browse", headers=admin, json={})
@@ -506,6 +548,7 @@ def test_boot_test_on_a_hyperv_host_keeps_the_vm_when_asked(client, admin, tenan
     job = heartbeat(client, src_h)["jobs"][0]
     im = image(machine="pm-acer")
     finish(client, src_h, job["id"], images=[im])
+    admin = unlock(client, admin, src_h, repo_id, src_id)
 
     hv_id, hv_h = agent_enroll(client, e["token"], machine="hv01", key=base64.b64encode(b"h" * 32).decode())
     kept = {"session_id": str(uuid.uuid4()), "image_id": im["image_id"], "started_unix": 1_790_000_000, "vnc_port": 0, "forwards": {}}
@@ -585,6 +628,7 @@ def test_recovery_media_is_personalised_and_enrols_recovery_sessions_only(client
     finish(client, oh, job["id"], images=[im])
     assert client.post(f"/api/console/backup/repositories/{repo}/access", headers=admin,
                        json={"agentId": rid, "sealed": SEALED}).status_code == 200
+    admin = unlock(client, admin, oh, repo, owner_id)
     step = {**admin, "X-Fenrir-Reauth": client.post("/api/console/auth/reauth", headers=admin,
                                                     json={"password": ADMIN_PASSWORD}).json()["reauthToken"]}
     def restore(dev):
@@ -625,6 +669,8 @@ def test_s3_repositories_with_object_lock(client, admin, tenant):
         ("s3://backups/office", s3, False, "access key"),
         ("s3://backups/office", {**s3, "lock_days": 5}, True, "more often"),
         ("D:\\Backups", s3, True, "s3://"),
+        ("azure://Bad--Name/x", s3, True, "container name"),
+        ("azure://backups/x", {**s3, "endpoint": "ftp://x"}, True, "endpoint"),
     ]:
         r = client.post("/api/console/backup/repositories", headers=admin, json=body(path, s3v, keys))
         assert r.status_code == 400 and why in r.json()["detail"], (path, r.text)
@@ -649,3 +695,207 @@ def test_s3_repositories_with_object_lock(client, admin, tenant):
     assert r.status_code == 200, r.text
     kind = heartbeat(client, h)["jobs"][0]["kind"]
     assert kind["type"] == "check_access" and kind["s3"]["lock_mode"] == "compliance"
+    # Azure Blob: the same settings; the endpoint may carry the account (Azurite).
+    azure = {**s3, "endpoint": "http://127.0.0.1:10000/devstoreaccount1"}
+    r = client.post("/api/console/backup/repositories", headers=admin, json=body("azure://backups/office", azure))
+    assert r.status_code == 200, r.text
+
+
+def test_offsite_copy_after_each_plan_backup(client, admin, tenant):
+    """A plan's off-site copy (Fenrir-Backup offsite-copy.md): after each backup the machine copies the new images
+    to the second repository, with both repositories' access sealed to it; the copies are listed there."""
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    heartbeat(client, h)
+    local = ready_repo(client, admin, tenant, agent_id, h)
+    offsite = ready_repo(client, admin, tenant, agent_id, h)
+    body = {"name": "Nightly", "agentId": agent_id, "repositoryId": local, "job": {"type": "backup_system"},
+            "schedule": {"type": "manual"}}
+    assert client.post("/api/console/backup/plans", headers=admin, json={**body, "copyToRepositoryId": local}).status_code == 400
+    r = client.post("/api/console/backup/plans", headers=admin, json={**body, "copyToRepositoryId": offsite})
+    assert r.status_code == 200, r.text
+    plan_id = r.json()["id"]
+    assert client.get("/api/console/backup/plans", headers=admin).json()[0]["copyToRepositoryId"] == offsite
+
+    assert client.post(f"/api/console/backup/plans/{plan_id}/run", headers=admin).status_code == 200
+    job = heartbeat(client, h)["jobs"][0]
+    im = image()
+    finish(client, h, job["id"], images=[im])
+    copy = heartbeat(client, h)["jobs"][0]
+    assert copy["kind"] == {"type": "copy_images", "target_repository_id": offsite, "images": [im["image_id"]],
+                            "full_verify": False}
+    assert copy["repository"]["repository_id"] == local and copy["copy_target"]["repository_id"] == offsite
+    assert copy["copy_target"]["sealed_secret"] == SEALED
+    finish(client, h, copy["id"], images=[{**im, "image_id": str(uuid.uuid4())}])
+    assert client.get(f"/api/console/backup/images?repositoryId={offsite}", headers=admin).status_code == 403
+    admin = unlock(client, admin, h, offsite, agent_id)
+    listed = client.get(f"/api/console/backup/images?repositoryId={offsite}", headers=admin).json()
+    assert len(listed) == 1 and listed[0]["repositoryId"] == offsite
+
+    r = client.patch(f"/api/console/backup/plans/{plan_id}", headers=admin, json={"copyToRepositoryId": None})
+    assert r.status_code == 200
+    assert client.get("/api/console/backup/plans", headers=admin).json()[0]["copyToRepositoryId"] is None
+
+
+def test_move_from_fenrir_backup_existing_repository_and_plan_import(client, admin, tenant):
+    """Moving from a standalone Fenrir-Backup server (backup/docs/design/migration.md): the repository is added as
+    existing (the machine lists it and reports its ID), then the server's export recreates the plans."""
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    heartbeat(client, h)
+    body = {"name": "Moved NAS", "path": "D:\\Backups", "existing": True, "initAgentId": agent_id,
+            "access": [{"agentId": agent_id, "sealed": SEALED}]}
+    r = client.post("/api/console/backup/repositories", headers=admin, json=body)
+    assert r.status_code == 200, r.text
+    repo_id = r.json()["id"]
+    job = heartbeat(client, h)["jobs"][0]
+    assert job["kind"] == {"type": "list_images"}, "nothing is created"
+    real = str(uuid.uuid4())
+    im = image()
+    finish(client, h, job["id"], repo_uuid=real, images=[im])
+    repo = next(x for x in client.get("/api/console/backup/repositories", headers=admin).json() if x["id"] == repo_id)
+    assert repo["status"] == "ready"
+    seen = unlock(client, admin, h, repo_id, agent_id)
+    assert [i["imageId"] for i in client.get(f"/api/console/backup/images?repositoryId={repo_id}", headers=seen).json()] \
+        == [im["image_id"]], "its history came with it"
+    # The same repository again is refused.
+    r2 = client.post("/api/console/backup/repositories", headers=admin, json=body).json()["id"]
+    finish(client, h, heartbeat(client, h)["jobs"][0]["id"], repo_uuid=real, images=[])
+    dup = next(x for x in client.get("/api/console/backup/repositories", headers=admin).json() if x["id"] == r2)
+    assert dup["status"] == "failed" and "already registered" in (dup.get("statusMessage") or dup.get("status_message") or "")
+
+    export = {"format": "fenrir-backup-export", "version": 1, "repositories": [], "plans": [
+        {"name": "Nightly", "machine_id": "m-1", "hostname": "web01", "repo_uuid": real,
+         "job": {"type": "backup_system", "settings": {}}, "schedule": {"type": "interval", "hours": 0, "minutes": 30},
+         "retention": {"keep_hourly": 24, "keep_daily": 7}, "enabled": True, "copy_to_repo_uuid": None},
+        {"name": "Elsewhere", "machine_id": "not-here", "hostname": "db02", "repo_uuid": real,
+         "job": {"type": "backup_system"}, "schedule": {"type": "manual"}, "retention": None, "enabled": True},
+    ]}
+    assert client.post("/api/console/backup/import", headers=admin, json={"export": {"format": "x"}}).status_code == 400
+    r = client.post("/api/console/backup/import", headers=admin, json={"export": export})
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["created"] == ["Nightly"]
+    assert out["skipped"][0]["name"] == "Elsewhere" and "not enrolled" in out["skipped"][0]["reason"]
+    plan = client.get("/api/console/backup/plans", headers=admin).json()[0]
+    assert plan["schedule"]["minutes"] == 30 and plan["retention"]["keep_hourly"] == 24 and plan["repositoryId"] == repo_id
+    # Importing again does not duplicate it.
+    assert client.post("/api/console/backup/import", headers=admin, json={"export": export}).json()["created"] == []
+
+
+def test_backup_agent_links_by_hardware_serial_when_host_names_are_ambiguous(client, admin, tenant):
+    """Two devices with the same host name: the backup agent's hardware serial decides which is its machine, and a
+    firmware placeholder serial does not count."""
+    from fenrir_cloud.db import session_factory
+    from fenrir_cloud.models import BackupAgent, Device
+
+    enroll(client, admin, tenant, hostname="SHOP-PC", serial="CN-0X35B")
+    b = enroll(client, admin, tenant, hostname="SHOP-PC", serial="PF2ABCDE")
+    with session_factory()() as db:
+        assert sum(1 for d in db.query(Device).all() if (d.hostname or "").upper() == "SHOP-PC") == 2
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"], machine="shop-pc")
+    heartbeat(client, h, hostname="SHOP-PC", hardware_serial="To Be Filled By O.E.M.")
+    with session_factory()() as db:
+        assert bk.matching_device(db, db.get(BackupAgent, agent_id)) is None, "same name twice, no real serial"
+    heartbeat(client, h, hostname="SHOP-PC", hardware_serial="pf2abcde")
+    with session_factory()() as db:
+        agent = db.get(BackupAgent, agent_id)
+        assert bk.matching_device(db, agent) == b["deviceId"]
+        agent.device_id = None
+        db.commit()
+        assert bk.link_devices(db) == 1
+        assert db.get(BackupAgent, agent_id).device_id == b["deviceId"]
+
+
+def test_files_download_through_the_server_encrypted_for_the_browser(client, admin, tenant, tmp_path, monkeypatch):
+    """Download to the browser (backup/docs/design/file-download.md): the machine uploads ciphertext in
+    offset-checked parts; the browser fetches it once the job has finished."""
+    monkeypatch.setattr(bk, "downloads_dir", lambda: tmp_path)
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    caps = CAPS + ["restore_files"]
+    heartbeat(client, h, caps=caps)
+    ready_repo(client, admin, tenant, agent_id, h)
+    repo_id = client.get("/api/console/backup/repositories", headers=admin).json()[0]["id"]
+    client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+    im = image()
+    finish(client, h, heartbeat(client, h, caps=caps)["jobs"][0]["id"], images=[im])
+    admin = unlock(client, admin, h, repo_id, agent_id, caps=caps)
+    url = f"/api/console/backup/images/{im['image_id']}/download-files"
+    body = {"disk": 0, "partition": 2, "paths": ["/Users/ann"]}
+    assert client.post(url, headers=admin, json={**body, "recipient": "bm90IGEga2V5"}).status_code == 400
+    recipient = base64.b64encode(b"\x01" * 32).decode()
+    r = client.post(url, headers=admin, json={**body, "recipient": recipient})
+    assert r.status_code == 200, r.text
+    job_id = r.json()["id"]
+    spec = heartbeat(client, h, caps=caps)["jobs"][0]
+    assert spec["kind"]["type"] == "download_files" and spec["kind"]["recipient"] == recipient
+    up = f"/backup/api/agent/jobs/{job_id}/download?offset="
+    raw = {**h, "Content-Type": "application/octet-stream"}
+    assert client.post(up + "0", headers=raw, content=b"a" * 100).status_code == 200
+    assert client.post(up + "0", headers=raw, content=b"a" * 100).status_code == 200  # retried
+    assert client.post(up + "500", headers=raw, content=b"b" * 10).status_code == 409  # gap
+    assert client.post(up + "100", headers=raw, content=b"b" * 10).status_code == 200
+    assert client.get(f"/api/console/backup/jobs/{job_id}/download", headers=admin).status_code == 409
+    finish(client, h, job_id, result={"download": {}})
+    got = client.get(f"/api/console/backup/jobs/{job_id}/download", headers=admin)
+    assert got.status_code == 200 and got.content == b"a" * 100 + b"b" * 10
+    assert client.post(up + "110", headers=raw, content=b"c").status_code == 409, "finished"
+    assert bk.purge_downloads(0) == 1
+
+
+def test_backups_are_listed_by_device_and_open_only_after_an_unlock(client, admin, tenant, monkeypatch):
+    """Images & restore lists backed-up machines; a machine's images open after the repository passphrase (tried
+    on a machine with access, sealed to it in the browser) and a password check from the last two minutes."""
+    import time as _time
+
+    from fenrir_cloud.db import session_factory
+    from fenrir_cloud.models import BackupJob
+
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    heartbeat(client, h)
+    repo_id = ready_repo(client, admin, tenant, agent_id, h)
+    for t, vm in ((0, None), (10, None), (20, "Web VM")):
+        client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                    json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+        finish(client, h, heartbeat(client, h)["jobs"][0]["id"], images=[{**image(t=t), "vm_name": vm}])
+
+    devices = client.get("/api/console/backup/image-devices", headers=admin).json()
+    assert sorted((d["name"], d["images"]) for d in devices) == [("M-1", 2), ("Web VM", 1)]
+    host = next(d for d in devices if d["name"] == "M-1")
+    assert host["repositories"] == [{"id": repo_id, "name": "Office NAS", "images": 2, "unlocked": False}]
+    assert client.get("/api/console/backup/images", headers=admin).json() == []
+    assert client.get(f"/api/console/backup/agents/{agent_id}", headers=admin).json()["imageCount"] == 3
+
+    url = f"/api/console/backup/repositories/{repo_id}/unlock"
+    body = {"agentId": agent_id, "sealed": SEALED}
+    assert client.post(url, headers=admin, json=body).json()["detail"] == "reauth_required"
+    # A password check from more than two minutes ago is not enough.
+    step = {**admin, "X-Fenrir-Reauth": reauth(client, admin)}
+    real = _time.time
+    monkeypatch.setattr(_time, "time", lambda: real() + 180)
+    assert client.post(url, headers=step, json=body).json()["detail"] == "reauth_required"
+    monkeypatch.setattr(_time, "time", real)
+
+    # A wrong passphrase: the machine cannot open the repository; nothing unlocks.
+    job_id = client.post(url, headers={**admin, "X-Fenrir-Reauth": reauth(client, admin)}, json=body).json()["id"]
+    assert client.get(f"/api/console/backup/unlock/{job_id}", headers=admin).json() == {"state": "pending"}
+    finish(client, h, heartbeat(client, h)["jobs"][0]["id"], state="failed", error="the repository passphrase given to this machine is wrong")
+    out = client.get(f"/api/console/backup/unlock/{job_id}", headers=admin).json()
+    assert out["state"] == "failed" and "passphrase" in out["error"]
+    with session_factory()() as db:
+        assert db.get(BackupJob, job_id).kind["unlock"] == {"user": db.get(BackupJob, job_id).kind["unlock"]["user"]}, \
+            "the sealed passphrase is dropped once checked"
+
+    # The right one.
+    opened = unlock(client, admin, h, repo_id, agent_id)
+    mine = client.get("/api/console/backup/images", headers=opened, params={"device": host["key"]}).json()
+    assert len(mine) == 2 and all(i["vmName"] is None for i in mine)
+    assert next(d for d in client.get("/api/console/backup/image-devices", headers=opened).json()
+                if d["name"] == "M-1")["repositories"][0]["unlocked"] is True
+    # The unlock belongs to this sign-in: another session of the same person does not carry it.
+    elsewhere = {**login(client), "X-Fenrir-Unlock": opened["X-Fenrir-Unlock"]}
+    assert client.get("/api/console/backup/images", headers=elsewhere).json() == []

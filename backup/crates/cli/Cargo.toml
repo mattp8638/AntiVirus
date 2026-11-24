@@ -16,6 +16,7 @@ core-format.workspace = true
 engine.workspace = true
 rpassword.workspace = true
 s3store.workspace = true
+azstore.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 snapshot-linux.workspace = true

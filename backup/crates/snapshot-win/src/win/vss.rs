@@ -33,10 +33,11 @@ struct IVssBackupComponentsVtbl {
     InitializeForRestore: Slot,
     SetRestoreState: Slot,
     GatherWriterMetadata: unsafe extern "system" fn(This, *mut *mut c_void) -> HRESULT,
-    GetWriterMetadataCount: Slot,
-    GetWriterMetadata: Slot,
+    GetWriterMetadataCount: unsafe extern "system" fn(This, *mut u32) -> HRESULT,
+    GetWriterMetadata: unsafe extern "system" fn(This, u32, *mut GUID, *mut This) -> HRESULT,
     FreeWriterMetadata: unsafe extern "system" fn(This) -> HRESULT,
-    AddComponent: Slot,
+    AddComponent:
+        unsafe extern "system" fn(This, GUID, GUID, i32, *const u16, *const u16) -> HRESULT,
     PrepareForBackup: unsafe extern "system" fn(This, *mut *mut c_void) -> HRESULT,
     AbortBackup: unsafe extern "system" fn(This) -> HRESULT,
     GatherWriterStatus: unsafe extern "system" fn(This, *mut *mut c_void) -> HRESULT,
@@ -51,7 +52,8 @@ struct IVssBackupComponentsVtbl {
         *mut i32,
         *mut HRESULT,
     ) -> HRESULT,
-    SetBackupSucceeded: Slot,
+    SetBackupSucceeded:
+        unsafe extern "system" fn(This, GUID, GUID, i32, *const u16, *const u16, bool) -> HRESULT,
     SetBackupOptions: Slot,
     SetSelectedForRestore: Slot,
     SetRestoreOptions: Slot,
@@ -76,6 +78,106 @@ struct IVssBackupComponentsVtbl {
     GetSnapshotProperties: unsafe extern "system" fn(This, GUID, *mut VSS_SNAPSHOT_PROP) -> HRESULT,
     Query: Slot,
     IsVolumeSupported: unsafe extern "system" fn(This, GUID, *const u16, *mut BOOL) -> HRESULT,
+}
+
+/// `IVssExamineWriterMetadata` (vsbackup.h), only the methods used.
+#[repr(C)]
+#[allow(non_snake_case)]
+struct IVssExamineWriterMetadataVtbl {
+    QueryInterface: Slot,
+    AddRef: Slot,
+    Release: unsafe extern "system" fn(This) -> u32,
+    GetIdentity: unsafe extern "system" fn(
+        This,
+        *mut GUID,
+        *mut GUID,
+        *mut *mut u16,
+        *mut i32,
+        *mut i32,
+    ) -> HRESULT,
+    GetFileCounts: unsafe extern "system" fn(This, *mut u32, *mut u32, *mut u32) -> HRESULT,
+    GetIncludeFile: Slot,
+    GetExcludeFile: Slot,
+    GetComponent: unsafe extern "system" fn(This, u32, *mut This) -> HRESULT,
+}
+
+/// `IVssWMComponent` (vsbackup.h).
+#[repr(C)]
+#[allow(non_snake_case)]
+struct IVssWMComponentVtbl {
+    QueryInterface: Slot,
+    AddRef: Slot,
+    Release: unsafe extern "system" fn(This) -> u32,
+    GetComponentInfo: unsafe extern "system" fn(This, *mut *mut ComponentInfo) -> HRESULT,
+    FreeComponentInfo: unsafe extern "system" fn(This, *mut ComponentInfo) -> HRESULT,
+    GetFile: unsafe extern "system" fn(This, u32, *mut This) -> HRESULT,
+    GetDatabaseFile: unsafe extern "system" fn(This, u32, *mut This) -> HRESULT,
+    GetDatabaseLogFile: unsafe extern "system" fn(This, u32, *mut This) -> HRESULT,
+    GetDependency: Slot,
+}
+
+/// `VSS_COMPONENTINFO` (vsbackup.h); `bool` is one byte.
+#[repr(C)]
+struct ComponentInfo {
+    kind: i32,
+    logical_path: *mut u16,
+    name: *mut u16,
+    caption: *mut u16,
+    icon: *mut u8,
+    icon_len: u32,
+    restore_metadata: u8,
+    notify_on_backup_complete: u8,
+    selectable: u8,
+    selectable_for_restore: u8,
+    flags: u32,
+    files: u32,
+    databases: u32,
+    log_files: u32,
+    dependencies: u32,
+}
+
+/// An owned COM pointer, released on drop.
+struct Unk(This);
+
+impl Unk {
+    fn vtbl<T>(&self) -> &'static T {
+        unsafe { &**(self.0 as *const *const T) }
+    }
+}
+
+impl Drop for Unk {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // IUnknown::Release is the third slot of every interface.
+            unsafe {
+                let vt = *(self.0 as *const *const [unsafe extern "system" fn(This) -> u32; 3]);
+                ((*vt)[2])(self.0);
+            }
+        }
+    }
+}
+
+fn bstr_string(p: *mut u16) -> String {
+    if p.is_null() {
+        String::new()
+    } else {
+        unsafe { BSTR::from_raw(p) }.to_string()
+    }
+}
+
+fn guid_string(g: &GUID) -> String {
+    format!("{g:?}")
+        .trim_matches(['{', '}'])
+        .to_ascii_lowercase()
+}
+
+/// A component added to the backup, to report back on.
+struct Added {
+    instance: GUID,
+    writer: GUID,
+    kind: i32,
+    logical_path: Vec<u16>,
+    name: Vec<u16>,
 }
 
 #[link(name = "vssapi", kind = "raw-dylib")]
@@ -184,6 +286,9 @@ pub struct SnapshotSet {
     comp: Components,
     pub snapshots: Vec<Snapshot>,
     pub writer_issues: Vec<WriterIssue>,
+    /// Application components found, and whether each was added.
+    pub applications: Vec<core_format::manifest::ApplicationInfo>,
+    added: Vec<Added>,
     finished: bool,
 }
 
@@ -191,11 +296,13 @@ pub struct SnapshotSet {
 const FIRST_FAILED_STATE: i32 = 7;
 
 impl SnapshotSet {
-    /// Create a snapshot set of `volumes` with writer participation.
+    /// Create a snapshot set of `volumes`, coordinated with the writers'
+    /// components on those volumes (component mode, docs/design/app-aware.md).
     ///
     /// `backup_type`: `VSS_BT_COPY` leaves application log chains alone
-    /// (default); `VSS_BT_FULL` lets writers such as SQL Server and
-    /// Exchange truncate logs after `complete(true)`.
+    /// (default; SQL Server records a copy-only backup); `VSS_BT_FULL` lets
+    /// writers such as SQL Server and Exchange record a full backup and
+    /// truncate their logs after `complete(true)`.
     pub fn create(
         volumes: &[String],
         backup_type: VSS_BACKUP_TYPE,
@@ -212,15 +319,41 @@ impl SnapshotSet {
                 (v.InitializeForBackup)(comp.0, null_mut()),
             )?;
             check("SetContext", (v.SetContext)(comp.0, VSS_CTX_BACKUP.0))?;
-            // Whole-volume image: no component selection (all writers'
-            // components are implicitly included), bootable system state.
+            // Component mode: the components on the imaged volumes are added,
+            // so their writers treat this as a backup of them; bootable
+            // system state.
             check(
                 "SetBackupState",
-                (v.SetBackupState)(comp.0, false, true, backup_type, false),
+                (v.SetBackupState)(comp.0, true, true, backup_type, false),
             )?;
             wait("GatherWriterMetadata", |p| {
                 (v.GatherWriterMetadata)(comp.0, p)
             })?;
+            let (found, ids) = writer_components(&comp)?;
+            let sel = crate::apps::select(&found, volumes);
+            let mut added = Vec::new();
+            for &i in &sel.add {
+                let c = &found[i];
+                let (instance, writer) = ids[i];
+                let path = wide(&c.logical_path);
+                let name = wide(&c.name);
+                let lp = if c.logical_path.is_empty() {
+                    std::ptr::null()
+                } else {
+                    path.as_ptr()
+                };
+                check(
+                    "AddComponent",
+                    (v.AddComponent)(comp.0, instance, writer, c.kind, lp, name.as_ptr()),
+                )?;
+                added.push(Added {
+                    instance,
+                    writer,
+                    kind: c.kind,
+                    logical_path: path,
+                    name,
+                });
+            }
             check("FreeWriterMetadata", (v.FreeWriterMetadata)(comp.0))?;
 
             let mut set_id = GUID::zeroed();
@@ -242,6 +375,8 @@ impl SnapshotSet {
                 comp,
                 snapshots: vec![],
                 writer_issues: vec![],
+                applications: sel.report,
+                added,
                 finished: false,
             };
             let v = set.comp.vtbl();
@@ -342,11 +477,142 @@ impl SnapshotSet {
         let v = self.comp.vtbl();
         let c = self.comp.0;
         if success {
+            // Each added component is reported as backed up, so its writer
+            // can record the backup (and, for a FULL backup, truncate logs).
+            for a in &self.added {
+                let lp = if a.logical_path.len() <= 1 {
+                    std::ptr::null()
+                } else {
+                    a.logical_path.as_ptr()
+                };
+                // A component that cannot be marked still lets the others,
+                // and BackupComplete, go ahead.
+                let _ = unsafe {
+                    (v.SetBackupSucceeded)(
+                        c,
+                        a.instance,
+                        a.writer,
+                        a.kind,
+                        lp,
+                        a.name.as_ptr(),
+                        true,
+                    )
+                };
+            }
             unsafe { wait("BackupComplete", |p| (v.BackupComplete)(c, p)) }
         } else {
             unsafe { check("AbortBackup", (v.AbortBackup)(c)) }
         }
     }
+}
+
+/// Every component of every writer, with the volumes of its files, and the
+/// (writer instance, writer class) ids to add it with.
+type FoundComponents = (Vec<crate::apps::Component>, Vec<(GUID, GUID)>);
+
+unsafe fn writer_components(comp: &Components) -> Result<FoundComponents, VssError> {
+    let v = comp.vtbl();
+    let mut n = 0u32;
+    check(
+        "GetWriterMetadataCount",
+        (v.GetWriterMetadataCount)(comp.0, &mut n),
+    )?;
+    let mut out = Vec::new();
+    let mut ids = Vec::new();
+    for w in 0..n {
+        let mut instance = GUID::zeroed();
+        let mut raw: This = null_mut();
+        check(
+            "GetWriterMetadata",
+            (v.GetWriterMetadata)(comp.0, w, &mut instance, &mut raw),
+        )?;
+        let meta = Unk(raw);
+        let mv: &IVssExamineWriterMetadataVtbl = meta.vtbl();
+        let (mut inst2, mut writer_id) = (GUID::zeroed(), GUID::zeroed());
+        let (mut name, mut usage, mut source) = (null_mut(), 0i32, 0i32);
+        check(
+            "GetIdentity",
+            (mv.GetIdentity)(
+                meta.0,
+                &mut inst2,
+                &mut writer_id,
+                &mut name,
+                &mut usage,
+                &mut source,
+            ),
+        )?;
+        let writer = bstr_string(name);
+        let (mut inc, mut exc, mut count) = (0u32, 0u32, 0u32);
+        check(
+            "GetFileCounts",
+            (mv.GetFileCounts)(meta.0, &mut inc, &mut exc, &mut count),
+        )?;
+        for k in 0..count {
+            let mut rc: This = null_mut();
+            if (mv.GetComponent)(meta.0, k, &mut rc).is_err() {
+                continue;
+            }
+            let wc = Unk(rc);
+            let cv: &IVssWMComponentVtbl = wc.vtbl();
+            let mut info: *mut ComponentInfo = null_mut();
+            if (cv.GetComponentInfo)(wc.0, &mut info).is_err() || info.is_null() {
+                continue;
+            }
+            let i = &*info;
+            let mut volumes = Vec::new();
+            for (getter, count) in [
+                (cv.GetFile, i.files),
+                (cv.GetDatabaseFile, i.databases),
+                (cv.GetDatabaseLogFile, i.log_files),
+            ] {
+                for f in 0..count {
+                    let mut fd: This = null_mut();
+                    if getter(wc.0, f, &mut fd).is_err() || fd.is_null() {
+                        volumes.push(None);
+                        continue;
+                    }
+                    let desc = windows::Win32::Storage::Vss::IVssWMFiledesc::from_raw(fd);
+                    volumes.push(desc.GetPath().ok().and_then(|p| volume_of(&p.to_string())));
+                }
+            }
+            let c = crate::apps::Component {
+                writer_id: guid_string(&writer_id),
+                writer: writer.clone(),
+                // The component info's strings belong to it: copied, not freed.
+                logical_path: from_wide_ptr(i.logical_path),
+                name: from_wide_ptr(i.name),
+                caption: from_wide_ptr(i.caption),
+                kind: i.kind,
+                selectable: i.selectable != 0,
+                volumes,
+            };
+            let _ = (cv.FreeComponentInfo)(wc.0, info);
+            out.push(c);
+            ids.push((instance, writer_id));
+        }
+    }
+    Ok((out, ids))
+}
+
+/// The volume GUID name (`\\?\Volume{...}\`) holding `path` (environment
+/// variables such as `%SystemRoot%` expanded).
+fn volume_of(path: &str) -> Option<String> {
+    use windows::Win32::Storage::FileSystem::{
+        GetVolumeNameForVolumeMountPointW, GetVolumePathNameW,
+    };
+    use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
+    let src = wide(path.trim());
+    let mut expanded = vec![0u16; 32768];
+    let n =
+        unsafe { ExpandEnvironmentStringsW(PCWSTR(src.as_ptr()), Some(&mut expanded)) } as usize;
+    if n == 0 || n > expanded.len() {
+        return None;
+    }
+    let mut mount = vec![0u16; 1024];
+    unsafe { GetVolumePathNameW(PCWSTR(expanded.as_ptr()), &mut mount) }.ok()?;
+    let mut name = vec![0u16; 64];
+    unsafe { GetVolumeNameForVolumeMountPointW(PCWSTR(mount.as_ptr()), &mut name) }.ok()?;
+    Some(from_wide_ptr(name.as_ptr()))
 }
 
 impl Drop for SnapshotSet {

@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod download;
 pub mod gateway;
 pub mod net;
 pub mod recovery;
@@ -124,6 +125,11 @@ pub struct VmSummary {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Inventory {
     pub hostname: String,
+    /// The machine's hardware serial number (SMBIOS), when it has a real one:
+    /// lets a management server tie this agent to the same device's other
+    /// agents (Fenrir Cloud) when host names are ambiguous.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hardware_serial: Option<String>,
     pub os: OsSummary,
     pub agent_version: String,
     /// What this agent can do: "backup_system", "backup_disks",
@@ -224,6 +230,9 @@ pub struct AgentUpdate {
 pub struct Retention {
     #[serde(default)]
     pub keep_last: u32,
+    /// One image per hour for this many hours (frequent backups).
+    #[serde(default)]
+    pub keep_hourly: u32,
     #[serde(default)]
     pub keep_daily: u32,
     #[serde(default)]
@@ -237,6 +246,7 @@ pub struct Retention {
 impl Retention {
     pub fn keeps_everything(&self) -> bool {
         self.keep_last == 0
+            && self.keep_hourly == 0
             && self.keep_daily == 0
             && self.keep_weekly == 0
             && self.keep_monthly == 0
@@ -317,6 +327,17 @@ pub enum JobKind {
     },
     /// Report the repository's images to the server.
     ListImages,
+    /// Copy images from this job's repository to `target_repository_id`
+    /// (off-site copies, docs/design/offsite-copy.md): re-encrypted for the
+    /// destination, then verified there. Empty `images` = every image the
+    /// destination does not have.
+    CopyImages {
+        target_repository_id: Uuid,
+        #[serde(default)]
+        images: Vec<Uuid>,
+        #[serde(default)]
+        full_verify: bool,
+    },
     /// Delete images the policy no longer keeps (manifests only).
     ApplyRetention {
         /// Machine IDs to apply it to; empty = all in the repository.
@@ -380,6 +401,15 @@ pub enum JobKind {
         #[serde(default = "default_conflict")]
         conflict: String,
     },
+    /// Restore files and send them to the browser that asked, encrypted for
+    /// its one-time public key (`recipient`, X25519, base64); the server only
+    /// relays ciphertext (docs/design/file-download.md).
+    DownloadFiles {
+        image_id: Uuid,
+        volume: VolumeRef,
+        paths: Vec<String>,
+        recipient: String,
+    },
     /// Can this machine reach and write to `path`? Signs in to a network
     /// share first when credentials are given. Reports free space.
     CheckAccess {
@@ -400,6 +430,7 @@ impl JobKind {
             JobKind::BackupHyperv { .. } => "Hyper-V backup",
             JobKind::Verify { .. } => "Verify",
             JobKind::ListImages => "Refresh images",
+            JobKind::CopyImages { .. } => "Copy off-site",
             JobKind::ApplyRetention { .. } => "Apply retention",
             JobKind::Prune { .. } => "Reclaim space",
             JobKind::Restore { .. } => "Restore",
@@ -408,6 +439,7 @@ impl JobKind {
             JobKind::CheckAccess { .. } => "Test connection",
             JobKind::BrowseFiles { .. } => "Browse files",
             JobKind::RestoreFiles { .. } => "Restore files",
+            JobKind::DownloadFiles { .. } => "Download files",
         }
     }
 }
@@ -506,6 +538,10 @@ pub struct JobSpec {
     pub kind: JobKind,
     #[serde(default)]
     pub repository: Option<RepoAccess>,
+    /// The destination of a `CopyImages` job, sealed to this machine like
+    /// the source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy_target: Option<RepoAccess>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -561,6 +597,31 @@ pub struct JobProgress {
     pub total: u64,
     #[serde(default)]
     pub message: String,
+    /// Bytes per second over this phase so far (0 = not known yet).
+    #[serde(default, skip_serializing_if = "is_zero64")]
+    pub rate: u64,
+    /// Seconds left at that rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eta_seconds: Option<u64>,
+    /// New data stored in the repository so far (backups).
+    #[serde(default, skip_serializing_if = "is_zero64")]
+    pub stored: u64,
+}
+
+fn is_zero64(v: &u64) -> bool {
+    *v == 0
+}
+
+impl JobProgress {
+    /// Rate and time left for `done` of `total` after `elapsed_secs`.
+    pub fn estimate(done: u64, total: u64, elapsed_secs: f64) -> (u64, Option<u64>) {
+        if elapsed_secs < 1.0 || done == 0 {
+            return (0, None);
+        }
+        let rate = done as f64 / elapsed_secs;
+        let eta = (total > done).then(|| ((total - done) as f64 / rate).ceil() as u64);
+        (rate as u64, eta.or(Some(0)))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -611,9 +672,40 @@ pub struct ImageReport {
     pub chunks_new: u64,
     #[serde(default)]
     pub bytes_new_raw: u64,
+    /// Application components coordinated with the snapshot (VSS writers).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub applications: Vec<ImageApplication>,
+}
+
+/// An application component in an image (see core-format `ApplicationInfo`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageApplication {
+    pub writer: String,
+    pub component: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub caption: String,
+    pub included: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorBody {
     pub error: String,
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::JobProgress;
+
+    #[test]
+    fn progress_rate_and_time_left() {
+        assert_eq!(JobProgress::estimate(0, 100, 10.0), (0, None));
+        assert_eq!(JobProgress::estimate(50, 100, 0.5), (0, None), "too early");
+        assert_eq!(
+            JobProgress::estimate(100 << 20, 400 << 20, 10.0),
+            (10 << 20, Some(30))
+        );
+        assert_eq!(JobProgress::estimate(5, 5, 2.0), (2, Some(0)));
+    }
 }

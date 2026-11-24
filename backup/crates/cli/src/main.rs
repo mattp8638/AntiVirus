@@ -72,6 +72,28 @@ enum Cmd {
     Restore(RestoreCmd),
     /// Copy a disk straight onto another (no repository).
     Clone(CloneArgs),
+    /// Copy images to another repository (an off-site copy): re-encrypted
+    /// for it, then verified there.
+    Copy(CopyArgs),
+}
+
+#[derive(Args)]
+struct CopyArgs {
+    /// The destination repository (a folder, s3:// or azure://).
+    #[arg(long)]
+    to: PathBuf,
+    /// The destination's passphrase, first line of this file. Otherwise
+    /// FENRIR_TO_PASSPHRASE.
+    #[arg(long)]
+    to_passphrase_file: Option<PathBuf>,
+    /// Image ID (or unique prefix) to copy. Repeatable. Default: every image
+    /// the destination does not have.
+    #[arg(long = "image")]
+    images: Vec<String>,
+    /// Re-read every copied chunk in the destination (default: check the
+    /// manifests and that every chunk is there).
+    #[arg(long)]
+    full_verify: bool,
 }
 
 #[derive(Args)]
@@ -164,6 +186,10 @@ enum BackupCmd {
         /// Default is COPY, which leaves other backup tools' chains intact.
         #[arg(long)]
         vss_full: bool,
+        /// Windows: image only the --include-disk disks, not the system disk
+        /// (a server's data disks, coordinated with its applications).
+        #[arg(long)]
+        data_disks_only: bool,
         /// Linux: image these whole disks instead of the ones holding the
         /// system's mounts. Repeatable.
         #[arg(long = "disk")]
@@ -373,6 +399,7 @@ fn run(ctx: &Ctx, cmd: Cmd) -> R<Outcome> {
             common,
             include_disk,
             vss_full,
+            data_disks_only,
             disks,
             allow_inconsistent,
         }) => {
@@ -381,18 +408,21 @@ fn run(ctx: &Ctx, cmd: Cmd) -> R<Outcome> {
                     "--disk and --allow-inconsistent are for Linux; on Windows use --include-disk",
                 ));
             }
-            if !cfg!(windows) && (!include_disk.is_empty() || vss_full) {
+            if !cfg!(windows) && (!include_disk.is_empty() || vss_full || data_disks_only) {
                 return Err(CliError::usage(
-                    "--include-disk and --vss-full are for Windows; on Linux use --disk",
+                    "--include-disk, --vss-full and --data-disks-only are for Windows; on Linux use --disk",
                 ));
             }
             backup_system(
                 ctx,
                 common,
-                include_disk,
-                vss_full,
-                disks,
-                allow_inconsistent,
+                SystemFlags {
+                    include_disk,
+                    vss_full,
+                    data_disks_only,
+                    disks,
+                    allow_inconsistent,
+                },
             )
         }
         Cmd::Image(ImageCmd::List) => image_list(ctx),
@@ -405,6 +435,7 @@ fn run(ctx: &Ctx, cmd: Cmd) -> R<Outcome> {
         }
         Cmd::Verify(a) => verify(ctx, a),
         Cmd::Clone(a) => clone(ctx, a),
+        Cmd::Copy(a) => copy(ctx, a),
         Cmd::Restore(RestoreCmd::Disk {
             image,
             disk,
@@ -529,9 +560,61 @@ fn s3_from_env(url: &str) -> R<s3store::S3Backend> {
     })?)
 }
 
-/// The repository's storage: a folder, or S3 for `s3://` locations.
+/// `--repo azure://container/prefix`: Azure Blob Storage configured from the
+/// environment (FENRIR_AZURE_ACCOUNT, FENRIR_AZURE_KEY or FENRIR_AZURE_SAS,
+/// FENRIR_AZURE_ENDPOINT (default https://ACCOUNT.blob.core.windows.net),
+/// FENRIR_AZURE_LOCK=locked:30 or unlocked:30).
+fn azure_from_env(url: &str) -> R<azstore::AzureBackend> {
+    let (container, prefix) = azstore::parse_url(url)
+        .ok_or_else(|| CliError::usage(format!("{url}: expected azure://container/prefix")))?;
+    let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    let account = var("FENRIR_AZURE_ACCOUNT").ok_or_else(|| {
+        CliError::usage("FENRIR_AZURE_ACCOUNT is needed for an azure:// repository")
+    })?;
+    let credential = match (var("FENRIR_AZURE_KEY"), var("FENRIR_AZURE_SAS")) {
+        (Some(k), _) => azstore::Credential::AccountKey(k),
+        (None, Some(s)) => azstore::credential_from(&s),
+        _ => {
+            return Err(CliError::usage(
+                "FENRIR_AZURE_KEY (the account key) or FENRIR_AZURE_SAS is needed",
+            ))
+        }
+    };
+    let lock = match var("FENRIR_AZURE_LOCK") {
+        None => None,
+        Some(l) => {
+            let bad = || CliError::usage("FENRIR_AZURE_LOCK is locked:DAYS or unlocked:DAYS");
+            let (m, d) = l.split_once(':').unwrap_or((&l, ""));
+            Some(azstore::Lock {
+                mode: azstore::LockMode::parse(m).ok_or_else(bad)?,
+                days: d.parse().map_err(|_| bad())?,
+            })
+        }
+    };
+    Ok(azstore::AzureBackend::new(azstore::AzureConfig {
+        endpoint: var("FENRIR_AZURE_ENDPOINT")
+            .unwrap_or_else(|| format!("https://{account}.blob.core.windows.net")),
+        account,
+        container,
+        prefix,
+        credential,
+        lock,
+    })?)
+}
+
+/// The repository's storage: a folder, S3 for `s3://` locations, Azure Blob
+/// for `azure://`.
 fn backend(path: &Path, create: bool) -> R<Arc<dyn Backend>> {
     let s = path.to_string_lossy();
+    if s.starts_with("azure://") {
+        let b = azure_from_env(&s)?;
+        if create && !b.is_empty()? {
+            return Err(CliError::usage(format!(
+                "{s} already holds data: choose an empty container or another folder in it"
+            )));
+        }
+        return Ok(Arc::new(b));
+    }
     if s.starts_with("s3://") {
         let b = s3_from_env(&s)?;
         if create && !b.is_empty()? {
@@ -806,6 +889,7 @@ fn backup_disk(
         label: common.label.clone(),
         warnings: std::mem::take(&mut warnings),
         vm: None,
+        applications: vec![],
     };
     let sources: Vec<&dyn engine::DiskSource> = opened
         .iter()
@@ -823,15 +907,28 @@ fn backup_disk(
     Ok(report_outcome(r))
 }
 
-#[cfg(windows)]
-fn backup_system(
-    ctx: &Ctx,
-    common: CommonBackup,
+/// What `backup system` was asked for (some of it per platform).
+struct SystemFlags {
+    #[cfg_attr(not(windows), allow(dead_code))]
     include_disk: Vec<u32>,
+    #[cfg_attr(not(windows), allow(dead_code))]
     vss_full: bool,
-    _disks: Vec<PathBuf>,
-    _allow_inconsistent: bool,
-) -> R<Outcome> {
+    #[cfg_attr(not(windows), allow(dead_code))]
+    data_disks_only: bool,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    disks: Vec<PathBuf>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    allow_inconsistent: bool,
+}
+
+#[cfg(windows)]
+fn backup_system(ctx: &Ctx, common: CommonBackup, f: SystemFlags) -> R<Outcome> {
+    let SystemFlags {
+        include_disk,
+        vss_full,
+        data_disks_only,
+        ..
+    } = f;
     let repo = if common.dry_run {
         None
     } else {
@@ -843,6 +940,7 @@ fn backup_system(
     let sb = snapshot_win::prepare_system_backup(&snapshot_win::VssOptions {
         full_backup_type: vss_full,
         extra_disks: include_disk,
+        data_disks_only,
     })
     .map_err(|e| CliError::new(ExitCode::Error, e.to_string()))?;
     if common.dry_run {
@@ -881,15 +979,13 @@ fn backup_system(
 }
 
 #[cfg(target_os = "linux")]
-fn backup_system(
-    ctx: &Ctx,
-    common: CommonBackup,
-    _include_disk: Vec<u32>,
-    _vss_full: bool,
-    disks: Vec<PathBuf>,
-    allow_inconsistent: bool,
-) -> R<Outcome> {
+fn backup_system(ctx: &Ctx, common: CommonBackup, f: SystemFlags) -> R<Outcome> {
     use snapshot_linux::live;
+    let SystemFlags {
+        disks,
+        allow_inconsistent,
+        ..
+    } = f;
     let state = PathBuf::from("/var/lib/fenrir-backup");
     let _ = std::fs::create_dir_all(&state);
     for l in live::remove_leftover_snapshots(&state) {
@@ -946,6 +1042,7 @@ fn backup_system(
         label: common.label.clone(),
         warnings: lb.warnings.clone(),
         vm: None,
+        applications: vec![],
     };
     let pr = progress_printer(ctx.json);
     let result = engine::backup(
@@ -965,14 +1062,7 @@ fn backup_system(
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]
-fn backup_system(
-    _ctx: &Ctx,
-    _c: CommonBackup,
-    _d: Vec<u32>,
-    _f: bool,
-    _l: Vec<PathBuf>,
-    _a: bool,
-) -> R<Outcome> {
+fn backup_system(_ctx: &Ctx, _c: CommonBackup, _f: SystemFlags) -> R<Outcome> {
     Err(CliError::usage(
         "`backup system` runs on Windows (VSS) and Linux (LVM snapshots). Here, image unmounted disks with `backup disk`.",
     ))
@@ -1401,6 +1491,57 @@ fn restore(
     .with_warnings(warnings))
 }
 
+fn copy(ctx: &Ctx, a: CopyArgs) -> R<Outcome> {
+    let src = open_repo(ctx)?;
+    let pass = match &a.to_passphrase_file {
+        Some(f) => std::fs::read_to_string(f)
+            .map_err(|e| CliError::usage(format!("{}: {e}", f.display())))?
+            .lines()
+            .next()
+            .unwrap_or("")
+            .to_string(),
+        None => std::env::var("FENRIR_TO_PASSPHRASE").map_err(|_| {
+            CliError::new(
+                ExitCode::KeyError,
+                "the destination's passphrase: --to-passphrase-file or FENRIR_TO_PASSPHRASE",
+            )
+        })?,
+    };
+    let dst = Repository::unlock_with_passphrase(backend(&a.to, false)?, pass.as_bytes())?;
+    let ids = a
+        .images
+        .iter()
+        .map(|i| src.resolve_image_id(i))
+        .collect::<Result<Vec<_>, _>>()?;
+    let tty = std::io::stderr().is_terminal() && !ctx.json;
+    let pr = |done: u64, total: u64| {
+        if tty {
+            eprint!("\rcopying: {done} / {total} chunks   ");
+        }
+    };
+    let r = engine::copy::copy_images(
+        &src,
+        &dst,
+        (!ids.is_empty()).then_some(ids.as_slice()),
+        a.full_verify,
+        &JobControl::new(),
+        &pr,
+    )?;
+    if tty {
+        eprintln!();
+    }
+    let human = format!(
+        "Copied {} image(s) to {} ({} already there): {} chunks written ({}), {} already there. Verified.\n",
+        r.copied.len(),
+        a.to.display(),
+        r.already_there,
+        r.chunks_written,
+        human_bytes(r.bytes_stored),
+        r.chunks_present
+    );
+    Ok(Outcome::new(&r, human))
+}
+
 fn same_disk(a: &Path, b: &Path) -> bool {
     let c = |p: &Path| {
         std::fs::canonicalize(p)
@@ -1445,6 +1586,7 @@ fn live_source(
     release: &mut Vec<Release>,
 ) -> R<Box<dyn engine::DiskSource>> {
     let mut sb = snapshot_win::prepare_system_backup(&snapshot_win::VssOptions {
+        data_disks_only: false,
         full_backup_type: false,
         extra_disks: vec![],
     })

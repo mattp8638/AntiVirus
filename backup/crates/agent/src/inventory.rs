@@ -270,6 +270,7 @@ pub fn collect(role: &str, vms: Vec<protocol::VmSummary>, notes: Vec<String>) ->
     let fw = firmware();
     Inventory {
         hostname: hostname(),
+        hardware_serial: hardware_serial(),
         os: os(),
         agent_version: env!("CARGO_PKG_VERSION").into(),
         capabilities: capabilities(role),
@@ -283,6 +284,31 @@ pub fn collect(role: &str, vms: Vec<protocol::VmSummary>, notes: Vec<String>) ->
         firmware: fw.0,
         secure_boot: fw.1,
     }
+}
+
+/// SMBIOS system serial number, unless it is a firmware placeholder.
+pub fn hardware_serial() -> Option<String> {
+    #[cfg(windows)]
+    let s = snapshot_win::win::disks::hardware_identity().map(|(_, serial)| serial);
+    #[cfg(target_os = "linux")]
+    let s = std::fs::read_to_string("/sys/class/dmi/id/product_serial").ok();
+    #[cfg(not(any(windows, target_os = "linux")))]
+    let s: Option<String> = None;
+    s.map(|s| s.trim().to_string()).filter(|s| real_serial(s))
+}
+
+/// Not empty and not a placeholder ("To Be Filled By O.E.M.", "Default
+/// string", "System Serial Number", zeros...).
+pub fn real_serial(s: &str) -> bool {
+    let l = s.trim().to_ascii_lowercase();
+    !(l.len() < 3
+        || l.contains("o.e.m")
+        || l.contains("default")
+        || l.contains("not specified")
+        || l.contains("serial number")
+        || l.contains("none")
+        || l.chars()
+            .all(|c| c == '0' || c == '-' || c == ' ' || c == '.'))
 }
 
 /// The role for `--role auto` (the all-in-one Fenrir installer): a Hyper-V host
@@ -318,5 +344,27 @@ pub fn detect_role() -> String {
         "workstation".into()
     } else {
         "server".into()
+    }
+}
+
+#[cfg(test)]
+mod serial_tests {
+    #[test]
+    fn placeholder_serials_are_not_identities() {
+        for bad in [
+            "",
+            "0",
+            "To Be Filled By O.E.M.",
+            "Default string",
+            "System Serial Number",
+            "0000000000",
+            "None",
+            "Not Specified",
+        ] {
+            assert!(!super::real_serial(bad), "{bad:?}");
+        }
+        for good in ["CN-0X35B", "VMware-56 4d 8a", "PF2ABCDE", "1234-5678-9012"] {
+            assert!(super::real_serial(good), "{good:?}");
+        }
     }
 }

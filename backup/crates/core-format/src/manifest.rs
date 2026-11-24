@@ -253,6 +253,28 @@ pub struct ManifestBody {
     /// host. Optional in format version 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vm: Option<VmInfo>,
+    /// Application data the snapshot was coordinated with (Windows VSS
+    /// writers' components). Optional in format version 1.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub applications: Vec<ApplicationInfo>,
+}
+
+/// One application component (a VSS writer's component, such as a SQL
+/// Server database) and whether the backup included it consistently.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApplicationInfo {
+    /// Writer name, e.g. "SqlServerWriter".
+    pub writer: String,
+    /// Logical path and name, e.g. `SQLSERVER\\sales`.
+    pub component: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub caption: String,
+    /// The application prepared it for the snapshot and was told the backup
+    /// succeeded (it can record the backup or truncate its logs).
+    pub included: bool,
+    /// Why it was not included, or what else is worth knowing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// Hypervisor-level description of a backed-up VM, enough to recreate it.
@@ -514,6 +536,7 @@ pub(crate) mod tests {
             warnings: vec![],
             stats: ImageStats::default(),
             vm: None,
+            applications: vec![],
         }
     }
 

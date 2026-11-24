@@ -12,6 +12,11 @@ Fenrir server itself.
   service `FenrirBackupAgent`, `C:\Program Files\Fenrir-Backup\`, state in `C:\ProgramData\Fenrir-Backup\agent`
   (SYSTEM and Administrators only). Linux: systemd unit `fenrir-backup-agent`. macOS: `uk.fenrir-backup.agent`.
   Only administrators can stop or remove it. It never touches the security agent's `FenrirAgent` service.
+* **One device**: the backup agent is shown on its device (Devices › the device's Backup tab, and alerts carry the
+  device). It is linked by host name and, when both agents report it, the hardware serial number; when two devices
+  share a host name the serial decides. The two agents keep **separate credentials** on purpose: the backup agent's
+  key is the X25519 key repository passphrases are sealed to, and keeping it out of the security agent (and the
+  security agent's API key out of the backup agent) means a fault in one cannot open backups or act as the other.
 * **Server URL**: agents talk to `https://<this server>/backup` (enrol, heartbeat every 15 s, job updates,
   self-update downloads). They always connect out; nothing connects to them.
 * **Repositories**: folders on a local disk, a NAS or file server (`\\nas\share\folder`, `smb://`), holding
@@ -52,7 +57,8 @@ Fenrir server itself.
 
 | Action | Permission |
 |---|---|
-| View machines, repositories, plans, images, jobs | `read` |
+| View machines, repositories, plans, jobs, and the list of backed-up machines | `read` |
+| Open a machine's backups (list, browse, restore, boot test) | `read` + unlock (below) |
 | Back up now, verify, test a connection, run a plan, cancel, place a hold | `respond` |
 | Browse and restore files; restore to VHDX files or a new Hyper-V VM; boot tests; stop a test VM | `scripts` |
 | Install links, repositories, access, plans, share sign-ins, maintenance, gateways | `configure` |
@@ -60,6 +66,26 @@ Fenrir server itself.
 | Turn automatic agent updates on or off | `platform` |
 
 A disk restore also needs the device name typed exactly. Every change is in the audit log (`backup.*`).
+
+## Opening a machine's backups
+
+**Images & restore** lists the backed-up machines (and Hyper-V VMs): how many backups, the latest, space used,
+the last verified boot. The backups themselves open only after an unlock:
+
+1. Choose the machine. Enter the **repository passphrase**, **your password** and, if your account has MFA, the
+   **authenticator code**.
+2. The password and code are checked as for any sensitive action. The passphrase is encrypted in your browser for
+   a machine that already has access to the repository (the backed-up machine first, if online), which tries it on
+   the repository. Fenrir Cloud never sees it, and drops the encrypted copy once checked.
+3. If it opens the repository, that repository is unlocked **in this browser tab for 30 minutes**: its backups can
+   be listed, browsed, downloaded, restored and boot-tested. Reloading the page, signing out or **Lock** ends it
+   sooner. The unlock is tied to your sign-in, so it cannot be used from another session.
+
+The server enforces this: without a valid unlock, image lists come back empty and browse, restore, download and
+boot-test requests are refused (`repository_locked`). The device page's Backup tab uses the same unlock. The
+check needs a machine with access to be online (the same is true of any restore); it is usually done within 15
+seconds. Attempts are rate-limited and audited (`backup.repository.unlock_requested`, `backup.repository.unlocked`,
+`backup.repository.unlock_failed`). Scheduled backups, retention and automatic boot tests are not affected.
 
 ## Boot tests: restore a backup as a VM to prove it works
 
@@ -96,6 +122,37 @@ back it up from the recovery media. Disks that only hold the repository are left
 `fenrir-backup clone --source /dev/sda --target /dev/sdb --yes --grow [--live]` (Windows: `\\.\PhysicalDriveN`);
 see `backup/docs/CLI.md` and `backup/docs/design/phase-5-grow-clone.md`.
 
+## Frequent backups
+
+A plan can run every few minutes (from 5) as well as every few hours or at a time of day. A run never overlaps the
+previous one: if a backup takes longer than the interval, the next starts when it finishes. Each run reads the used
+disk space again and stores only what changed, so pick an interval longer than one backup takes. Retention has an
+**Hourly** rule (the newest image of each of the latest N hours) for many short-lived restore points. Design:
+`backup/docs/design/frequent-backups.md`.
+
+## Off-site copies
+
+A plan can copy each backup to a second repository: **Off-site copy** in the plan editor (for example a NAS
+repository copied to S3 or Azure). After each successful backup the machine copies the new images: every chunk is
+decrypted from the first repository and encrypted again for the second (each repository has its own keys), the image
+is signed for it, and the copy is verified there. Nothing leaves the machine unencrypted. The machine needs access to
+both repositories. A copy has its own image ID and is listed under its repository. The CLI does the same with
+`fenrir-backup copy --to REPO`. Design: `backup/docs/design/offsite-copy.md`.
+
+## Moving from a Fenrir-Backup server
+
+Backups made with a standalone Fenrir-Backup server move without copying anything:
+
+1. Enrol the machines here (their backup agent comes with the Fenrir agent); their machine IDs stay the same.
+2. **Repositories › New repository › It already exists**: the same location and its passphrase (encrypted in your
+   browser for each machine). The first machine opens it and lists its backups, so the history comes along; the
+   passphrase and recovery key keep working.
+3. On the old server, **Settings › Move to Fenrir Cloud › Download export** (repositories and plans, no secrets), then
+   here **Plans › Import plans from Fenrir-Backup**. Each plan is recreated for its machine and repository; any that
+   cannot be matched yet are listed with the reason.
+
+Design: `backup/docs/design/migration.md`.
+
 ## Restoring individual files
 
 **Images & restore › Browse files** (also on a device's Backup tab) opens any backup as a file explorer: pick the
@@ -111,6 +168,12 @@ volume (C:, D:, /home…), open folders, tick files or folders and restore them.
   replace it. Replacing needs the `destructive` permission and a password re-check. Files are written to a
   temporary name and renamed when complete, keep their modification time, and names are made safe for the target
   system. Nothing is written outside the chosen folder, and existing links there are not followed.
+* **Download here** sends the chosen files to your browser as a `.tar` archive (up to 4 GiB) instead of writing
+  them on a machine. Your browser makes a one-time key pair; only its public key is sent. The machine restores the
+  files to a private temporary folder, packs them, and encrypts the archive for that key (X25519 + AES-256-GCM in
+  numbered 1 MiB frames, so a changed, reordered or cut-short download is refused). The server stores only the
+  ciphertext, which it cannot read, and deletes it after 24 hours; the browser decrypts it and saves the file.
+  Audited as `backup.files.download_requested`.
 * **Permissions**: browsing and restoring files need `scripts`, like other restores. Opening a backup and every file
   restore are audited (`backup.files.browsed`, `backup.files.restore_requested`).
 * **Volumes**: NTFS (Windows) and ext2/3/4 (Linux) volumes can be browsed. Windows backups read BitLocker volumes through
@@ -186,6 +249,11 @@ owner, not Fenrir.
 * Maintenance (weekly by default, and it must run more often than the lock period) renews the locks of backups still
   in use; backups retention no longer keeps are deleted once their lock has run out.
 * S3 repositories are reached directly by every machine; the NAS gateway is not used for them.
+
+**Azure Blob Storage** works the same way (**Service › Azure Blob Storage**): the storage account name and its key
+(or a SAS token), a container and a folder in it. For immutable backups, enable version-level immutability on the
+container (and versioning on the account); each backup blob then gets an immutability policy (compliance = locked,
+nobody can shorten it; governance = unlocked), renewed by maintenance like S3 locks.
 
 Design: `backup/docs/design/phase-4-storage.md`.
 

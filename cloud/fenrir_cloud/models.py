@@ -3045,6 +3045,8 @@ class ImageBackupPlan(Base):
     job: Mapped[dict] = mapped_column(JSON)  # protocol JobKind
     schedule: Mapped[dict] = mapped_column(JSON)  # interval | daily | manual
     retention: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Off-site copy: after each backup the machine copies the new images to this repository too.
+    copy_to_repository_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -3093,6 +3095,8 @@ class BackupImage(Base):
     chunks_new: Mapped[int] = mapped_column(BigInteger, default=0)
     bytes_new_raw: Mapped[int] = mapped_column(BigInteger, default=0)
     anomaly: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Application components coordinated with the snapshot (Windows VSS writers), as the agent reports them.
+    applications: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
 class BackupBootCheck(Base):

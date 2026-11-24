@@ -2,7 +2,8 @@
 // restoring the disk. The machine that reads the image decrypts it with the repository key it was given; this server
 // only relays folder listings (kept a day) and never sees file contents.
 import { useEffect, useMemo, useState } from "react";
-import { api } from "../api";
+import { api, apiBytes } from "../api";
+import { downloadKey } from "../backup-seal";
 import { useApp } from "../app-context";
 import { ErrorNote, Modal, Pill, useListData } from "../components/ui";
 import { bytes, type BackupAgent } from "./Backups";
@@ -201,11 +202,38 @@ function RestoreFiles({ image, volume, paths, browsingAgent, onClose }: { image:
       setState({ err: (e as Error).message });
     }
   };
+  // Download here: the machine encrypts the files for a one-time key made in this browser; the server only
+  // relays ciphertext (up to 4 GiB, as a .tar).
+  const download = async () => {
+    setState({ busy: true, progress: "Preparing…" });
+    try {
+      const k = await downloadKey();
+      const { id } = await api<{ id: string }>(`backup/images/${image.imageId}/download-files`, { body: {
+        agentId: agent!.id, disk: volume.disk, partition: volume.partition, paths, recipient: k.publicB64 } });
+      const job = await waitFast(id, (j) => setState({ busy: true, progress: j.progress?.message }), 24 * 3600);
+      if (job.state !== "succeeded" && job.state !== "warning") throw new Error(job.error || "the machine could not prepare the files");
+      const header = job.result?.download;
+      if (!header?.sealed_key) throw new Error("the machine did not send a download");
+      setState({ busy: true, progress: "Downloading and decrypting…" });
+      const plain = await k.decrypt(header, await apiBytes(`backup/jobs/${id}/download`));
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([plain as BlobPart], { type: "application/x-tar" }));
+      a.download = header.file_name || "restore.tar";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+      setState({ progress: `Downloaded ${a.download}.` });
+    } catch (e) {
+      setState({ err: (e as Error).message });
+    }
+  };
   const r = state.job?.result;
   return (
     <Modal title={`Restore ${paths.length} item${paths.length === 1 ? "" : "s"}`} onClose={() => onClose(!!state.job)}
       footer={state.job ? <button className="primary" onClick={() => onClose(true)}>Done</button>
-        : <button className={conflict === "overwrite" ? "danger" : "primary"} disabled={!agent || state.busy || !target} onClick={go}>{state.busy ? "Restoring…" : "Restore"}</button>}>
+        : <>
+          <button disabled={!agent || state.busy} onClick={download} title="The machine encrypts the files for this browser; the server only relays them (up to 4 GiB, as a .tar)">Download here</button>
+          <button className={conflict === "overwrite" ? "danger" : "primary"} disabled={!agent || state.busy || !target} onClick={go}>{state.busy ? "Working…" : "Restore"}</button>
+        </>}>
       <div className="small mono" style={{ maxHeight: 90, overflowY: "auto", marginBottom: 10 }}>{paths.map((p) => <div key={p}>{p}</div>)}</div>
       {!state.job && <>
         <div className="form-grid">
@@ -233,7 +261,7 @@ function RestoreFiles({ image, volume, paths, browsingAgent, onClose }: { image:
         {where === "folder" && <label className="row small" style={{ gap: 6, marginTop: 8 }}><input type="checkbox" checked={keep} onChange={(e) => setKeep(e.target.checked)} /> Recreate the original folders inside it (e.g. …\Users\anna\Documents\report.docx)</label>}
         {where === "original" && <p className="small muted">Each item goes back to the folder it was in. {conflict === "rename" ? "Files that exist now are kept; the backup copy is written next to them." : conflict === "skip" ? "Files that exist now are left alone." : "Files that exist now are replaced. You will be asked for your password."}</p>}
       </>}
-      {state.busy && <p role="status" className="small">{state.progress || `Waiting for ${agent?.name}…`}</p>}
+      {(state.busy || state.progress) && <p role="status" className="small">{state.progress || `Waiting for ${agent?.name}…`}</p>}
       {state.err && <ErrorNote error={state.err} />}
       {state.job && r && (
         <div className="stack">
