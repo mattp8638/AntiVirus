@@ -173,10 +173,12 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "core-format",
+ "engine",
  "hmac",
  "protocol",
  "sha2",
  "ureq",
+ "vdisk",
 ]
 
 [[package]]

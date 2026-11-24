@@ -7,6 +7,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod pageblob;
+
 use std::io::Read;
 use std::time::Duration;
 

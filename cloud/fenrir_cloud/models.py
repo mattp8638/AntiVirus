@@ -3049,6 +3049,9 @@ class ImageBackupPlan(Base):
     retention: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Off-site copy: after each backup the machine copies the new images to this repository too.
     copy_to_repository_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # Standby VM: after each backup, this machine restores the new image as a VM (replacing the previous standby):
+    # {"agent_id", "type": "hyperv_vm" | "vm_files", "format", "name", "directory"}.
+    standby: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -416,6 +416,7 @@ def update_job(job_id: str, body: dict = Body(...), agent: BackupAgent = Depends
     # Retention runs after each successful plan backup (held repositories wait).
     if bk.is_backup(kind) and state in ("succeeded", "warning") and job.plan_id and repo is not None:
         bk.queue_copy(db, job.plan_id, repo.id, agent, images)
+        bk.queue_standby(db, job.plan_id, repo.id, images)
         bk.queue_retention(db, job.plan_id, repo.id, agent, images)
     if state == "failed" and kind.get("type") not in ("check_access", "list_images", "browse_files"):
         bk.raise_alert(db, job.tenant_id, agent.device_id, bk.RULE_FAILED, f"{bk.label(kind)} failed: {name}",

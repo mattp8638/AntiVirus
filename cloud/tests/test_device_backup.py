@@ -1411,3 +1411,60 @@ def test_one_sql_or_exchange_database_restores_on_its_own(client, admin, tenant)
                     "directory": "D:\\Restores", "attach_as": "sales_0901", "sql_instance": "SQL01\\FINANCE"}
     ex = {"agentId": agent_id, "component": "Microsoft Exchange Server\\DB01", "directory": "D:\\Restores"}
     assert client.post(url, headers=admin, json=ex).status_code == 200
+
+
+def test_restore_to_azure_or_aws_and_keep_a_standby_vm(client, admin, tenant):
+    """Cloud restores carry the location and keys sealed to the machine; a plan's standby VM is refreshed on its host
+    after each backup, replacing the previous one; a standby host without access is refused and alerted."""
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    caps = CAPS + ["restore_cloud", "restore_hyperv", "restore_vm_files"]
+    heartbeat(client, h, caps=caps)
+    repo_id = ready_repo(client, admin, tenant, agent_id, h)
+    client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+    im = image()
+    finish(client, h, heartbeat(client, h, caps=caps)["jobs"][0]["id"], images=[im])
+    admin = unlock(client, admin, h, repo_id, agent_id, caps=caps)
+    go = lambda target: client.post("/api/console/backup/restores", headers=admin,  # noqa: E731
+                                    json={"imageId": im["image_id"], "agentId": agent_id, "target": target})
+    az = {"type": "azure", "location": "azure://restores/pm-acer", "name": "pm-acer", "sealed": SEALED}
+    for bad_target in ({**az, "location": "azure://UPPER"}, {**az, "name": "a b"}, {**az, "sealed": None},
+                       {**az, "endpoint": "http://plain.example"}):
+        assert go(bad_target).status_code == 400, bad_target
+    assert go(az).status_code == 200
+    spec = heartbeat(client, h, caps=caps)["jobs"][0]
+    assert spec["kind"]["target"] == {**az, "endpoint": ""}
+    finish(client, h, spec["id"])
+    aws = {"type": "aws", "location": "s3://vm-import/dr", "region": "eu-west-2", "name": "pm-acer",
+           "staging": "D:\\Staging", "sealed": SEALED}
+    assert go({**aws, "staging": "relative"}).status_code == 400
+    assert go(aws).status_code == 200
+    finish(client, h, heartbeat(client, h, caps=caps)["jobs"][0]["id"])
+
+    # A plan with a standby Hyper-V VM on the same machine (a Hyper-V host).
+    plan = client.post("/api/console/backup/plans", headers=admin, json={
+        "name": "Nightly", "agentId": agent_id, "repositoryId": repo_id, "job": {"type": "backup_system"},
+        "schedule": {"type": "manual"}, "retention": {"keep_last": 7},
+        "standby": {"agentId": agent_id, "type": "hyperv_vm", "name": "PM-ACER standby", "directory": "D:\\Standby"}})
+    assert plan.status_code == 200, plan.text
+    listed = next(p for p in client.get("/api/console/backup/plans", headers=admin).json() if p["id"] == plan.json()["id"])
+    assert listed["standby"]["name"] == "PM-ACER standby"
+    bad_sb = client.patch(f"/api/console/backup/plans/{plan.json()['id']}", headers=admin,
+                          json={"standby": {"agentId": agent_id, "type": "vm_files", "format": "ova", "name": "x", "directory": "D:\\S"}})
+    assert bad_sb.status_code == 400
+    assert client.post(f"/api/console/backup/plans/{plan.json()['id']}/run", headers=admin).status_code == 200
+    job = heartbeat(client, h, caps=caps)["jobs"][0]
+    newer = image(t=500)
+    finish(client, h, job["id"], images=[newer])
+    queued = []
+    for _ in range(6):
+        jobs = heartbeat(client, h, caps=caps)["jobs"]
+        if not jobs:
+            break
+        queued.append(jobs[0]["kind"])
+        finish(client, h, jobs[0]["id"])
+    standby = next(k for k in queued if k["type"] == "restore")
+    assert standby["image_id"] == newer["image_id"]
+    assert standby["target"] == {"type": "hyperv_vm", "name": "PM-ACER standby", "directory": "D:\\Standby",
+                                 "replace": True, "switch": None, "start": False}

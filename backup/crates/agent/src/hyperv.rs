@@ -394,6 +394,24 @@ pub fn vm_exists(name: &str) -> anyhow::Result<bool> {
         == "yes")
 }
 
+const PS_VM_RUNNING: &str = r#"
+Import-Module Hyper-V
+$n = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__NAME__'))
+$vm = Get-VM -Name $n -ErrorAction SilentlyContinue
+if ($vm -and $vm.State -ne 'Off') { 'yes' } else { 'no' }
+"#;
+
+/// Whether a VM of this name exists and is not off (running, paused, saved).
+pub fn vm_in_use(name: &str) -> anyhow::Result<bool> {
+    check_vm_name(name)?;
+    Ok(run_ps(&format!(
+        "{PS_PRELUDE}{}",
+        PS_VM_RUNNING.replace("__NAME__", &b64(name))
+    ))?
+    .trim()
+        == "yes")
+}
+
 const PS_BOOT_CHECK: &str = r#"
 Import-Module Hyper-V
 $p = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__SPEC__')) | ConvertFrom-Json

@@ -420,6 +420,35 @@ def queue_copy(db: Session, plan_id: str, repo_id: str, agent: BackupAgent, imag
                       "full_verify": False}, repo_id, "copy", plan_id=plan_id)
 
 
+RULE_STANDBY = "backup.standby_failed"
+
+
+def queue_standby(db: Session, plan_id: str, repo_id: str, images: list[dict]) -> None:
+    """The plan's standby VM: the newest image just taken, restored as a VM on the standby host, replacing the
+    previous standby once the new one is ready (never a running VM)."""
+    plan = db.get(ImageBackupPlan, plan_id)
+    sb = plan.standby if plan is not None else None
+    ids = [str(i["image_id"]) for i in images if i.get("image_id")]
+    if not sb or not ids:
+        return
+    host = db.get(BackupAgent, sb.get("agent_id"))
+    if host is None or host.revoked or host.tenant_id != plan.tenant_id:
+        return
+    if db.get(BackupRepoAccess, (repo_id, host.id)) is None:
+        raise_alert(db, plan.tenant_id, host.device_id, RULE_STANDBY, f"Standby VM not updated: {sb.get('name')}",
+                    "high", f"{host.display_name or host.hostname} has no access to the plan's repository, so the "
+                    f"standby VM {sb.get('name')} was not updated. Give it access on the Repositories page.",
+                    dedupe_key=f"standby-access:{plan.id}")
+        return
+    target = {"type": sb["type"], "name": sb["name"], "directory": sb["directory"], "replace": True}
+    if sb["type"] == "vm_files":
+        target["format"] = sb.get("format") or "qcow2"
+    else:
+        target.update({"switch": None, "start": False})
+    queue(db, host, {"type": "restore", "image_id": ids[-1], "disks": [], "target": target}, repo_id, "standby",
+          plan_id=plan_id)
+
+
 def queue_retention(db: Session, plan_id: str, repo_id: str, agent: BackupAgent, images: list[dict]) -> None:
     plan = db.get(ImageBackupPlan, plan_id)
     if plan is None or keeps_everything(plan.retention):

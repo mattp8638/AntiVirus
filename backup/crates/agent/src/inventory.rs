@@ -110,6 +110,8 @@ pub fn capabilities(role: &str) -> Vec<String> {
         "backup_files",
         // File catalogues and search across backups (search.rs).
         "search_files",
+        // Restores to Azure and AWS (cloudrestore.rs).
+        "restore_cloud",
         "gateway",
         "kubernetes",
         "saas",

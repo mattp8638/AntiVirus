@@ -166,7 +166,16 @@ Design: `backup/docs/design/malware-scan.md`.
 | QEMU / KVM | qcow2 files and `start-<name>.sh` | Run the script on a KVM host (OVMF is used for UEFI systems), or import the disks with `virt-install --import` (the script shows the line) or into Proxmox |
 | VirtualBox | VDI files and `register-<name>.cmd` (Windows) or `.sh` | Run the script on the machine with VirtualBox; the VM then appears in VirtualBox Manager |
 | VMware | VMDK files (one growable file each) and `<name>.vmx` | Open the .vmx in VMware Workstation, Fusion or Player. For ESXi, copy the folder to a datastore and convert each disk with `vmkfstools -i <disk>.vmdk -d thin <new>.vmdk` |
+| Azure | a fixed VHD page blob per disk in your storage container (only data is uploaded) | Run the Azure CLI commands the job shows to make a managed disk and VM |
+| AWS | a VHDX per disk in your S3 bucket (written to a staging folder first) | Run the `aws ec2 import-image` command the job shows (needs the vmimport role) |
 | A physical disk | the disk, overwritten | See bare-metal recovery below |
+
+For Azure and AWS, the storage account key or access keys are encrypted in the browser for the restoring machine; the
+server never sees them.
+
+**Standby VM** (plan editor): after each backup, the new image is restored as a Hyper-V VM or VM files on a chosen host,
+replacing the previous standby once ready, and never while the standby VM is running (after a failover). Design:
+`backup/docs/design/cloud-restore.md`.
 
 The files go into a new folder named after the VM, in the folder you choose on the restoring machine. The VM gets the
 CPUs and memory recorded at backup (2 CPUs and 4 GB for a physical machine), the same firmware (UEFI or BIOS, with

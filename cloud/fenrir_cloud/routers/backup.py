@@ -242,6 +242,9 @@ def plan_out(p: ImageBackupPlan, names: dict[str, str]) -> dict:
             "agentName": names.get(p.agent_id, ""), "repositoryId": p.repository_id, "job": p.job,
             "label": bk.label(p.job), "schedule": p.schedule, "retention": p.retention, "enabled": p.enabled,
             "copyToRepositoryId": p.copy_to_repository_id,
+            "standby": ({"agentId": p.standby.get("agent_id"), "type": p.standby.get("type"),
+                         "format": p.standby.get("format"), "name": p.standby.get("name"),
+                         "directory": p.standby.get("directory")} if p.standby else None),
             "nextRunAt": iso(p.next_run_at), "lastRunAt": iso(p.last_run_at)}
 
 
@@ -1376,7 +1379,36 @@ def _plan_fields(db: Session, p: Principal, body: dict, plan: ImageBackupPlan | 
             if db.get(BackupRepoAccess, (c, agent_id)) is None:
                 bad("the machine has no access to the copy's repository; grant it access there first")
         out["copy_to_repository_id"] = c
+    if "standby" in body:
+        out["standby"] = _standby(db, p, body.get("standby"), plan.repository_id if plan else
+                                  _uuid(body.get("repositoryId"), "repository"))
     return out
+
+
+def _standby(db: Session, p: Principal, sb, repo_id: str) -> dict | None:
+    """A plan's standby VM, validated: a host with access to the repository that can make that kind of VM."""
+    if not sb:
+        return None
+    if not isinstance(sb, dict):
+        bad("standby must be an object")
+    host = _agent(db, p, str(sb.get("agentId") or ""))
+    kind = sb.get("type")
+    caps = bk.capabilities(host)
+    if kind == "hyperv_vm":
+        if "restore_hyperv" not in caps:
+            bad("the standby host must be a Hyper-V host")
+    elif kind == "vm_files":
+        if "restore_vm_files" not in caps or sb.get("format") not in VM_FILE_FORMATS:
+            bad("choose QEMU (qcow2), VirtualBox (vdi) or VMware (vmdk) files on a machine with an up-to-date agent")
+    else:
+        bad("a standby is a Hyper-V VM or VM files")
+    name, directory = str(sb.get("name") or ""), str(sb.get("directory") or "").strip()
+    if not VM_NAME.fullmatch(name) or not directory or len(directory) > 500:
+        bad("choose a standby VM name (letters, digits, spaces, dots, hyphens, underscores) and a folder on the host")
+    if db.get(BackupRepoAccess, (repo_id, host.id)) is None:
+        bad("the standby host has no access to the plan's repository; give it access first")
+    return {"agent_id": host.id, "type": kind, "format": sb.get("format") if kind == "vm_files" else None,
+            "name": name, "directory": directory}
 
 
 def _reschedule(plan: ImageBackupPlan) -> None:
@@ -1735,6 +1767,31 @@ def create_restore(request: Request, body: dict = Body(...), p: Principal = Depe
         if not VM_NAME.fullmatch(name) or not d:
             bad("choose a VM name (letters, digits, spaces, dots, hyphens, underscores) and a folder on the machine")
         target, need = {"type": "vm_files", "format": fmt, "name": name, "directory": d}, "restore_vm_files"
+    elif kind in ("azure", "aws"):
+        # A copy in the customer's own cloud storage, for a VM there; the keys are sealed in the browser to the machine.
+        p.require("scripts")
+        name, location = str(t.get("name") or ""), str(t.get("location") or "").strip()
+        endpoint = str(t.get("endpoint") or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", name):
+            bad("names for cloud disks are 1 to 64 letters, digits, dots, hyphens or underscores")
+        if endpoint and not re.match(r"^https://[^\s/]+(/[^\s]*)?$", endpoint):
+            bad("the endpoint must be an https:// address (leave it blank for the public cloud)")
+        sealed = _sealed(t.get("sealed"))
+        if kind == "azure":
+            if not re.fullmatch(r"azure://[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?(/[^\s]*)?", location):
+                bad("the location is azure://container/folder")
+            target = {"type": "azure", "location": location, "endpoint": endpoint, "name": name, "sealed": sealed}
+        else:
+            region, staging = str(t.get("region") or "").strip(), str(t.get("staging") or "").strip()
+            if not re.fullmatch(r"s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9](/[^\s]*)?", location):
+                bad("the location is s3://bucket/folder")
+            if region and not re.fullmatch(r"[a-z0-9-]{4,30}", region):
+                bad("unknown region")
+            if not re.match(r"^([A-Za-z]:\\|/)", staging) or len(staging) > 500:
+                bad("choose a staging folder on that machine with room for the disk files")
+            target = {"type": "aws", "location": location, "endpoint": endpoint, "region": region, "name": name,
+                      "staging": staging, "sealed": sealed}
+        need = "restore_cloud"
     elif kind == "disk":
         # Overwrites a whole disk: typed confirmation, destructive permission and a fresh password check.
         p.require("destructive")

@@ -273,6 +273,11 @@ pub enum RestoreTarget {
         switch: Option<String>,
         #[serde(default)]
         start: bool,
+        /// Standby VM: replace the VM of this name made by an earlier
+        /// standby restore, once the new disks are written (never a running
+        /// VM). docs/design/cloud-restore.md §4.
+        #[serde(default)]
+        replace: bool,
     },
     /// Disk files for another hypervisor in `directory/<name>`, with a VM
     /// definition next to them: QEMU/KVM ("qcow2", a start script),
@@ -282,6 +287,34 @@ pub enum RestoreTarget {
         format: String,
         name: String,
         directory: String,
+        /// Standby: replace the files of an earlier standby restore of this
+        /// name once the new ones are written.
+        #[serde(default)]
+        replace: bool,
+    },
+    /// Each disk as a fixed VHD page blob in an Azure storage container,
+    /// ready for a managed disk and VM (docs/design/cloud-restore.md).
+    /// `sealed` holds the storage account (username) and its key or a SAS
+    /// token (password), sealed to this agent. Agents that report
+    /// `restore_cloud`.
+    Azure {
+        /// `azure://container/prefix`.
+        location: String,
+        endpoint: String,
+        name: String,
+        sealed: seal::Sealed,
+    },
+    /// Each disk as a VHDX object in an S3 bucket, for AWS VM Import. The
+    /// VHDX is written to `staging` on this machine first and removed after
+    /// the upload. `sealed`: access key ID (username) and secret (password).
+    Aws {
+        /// `s3://bucket/prefix`.
+        location: String,
+        endpoint: String,
+        region: String,
+        name: String,
+        staging: String,
+        sealed: seal::Sealed,
     },
     /// Raw write of one image disk to a device or file. `confirm` must
     /// equal `device`: the administrator typed it.

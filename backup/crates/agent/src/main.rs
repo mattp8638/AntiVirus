@@ -5,6 +5,7 @@ mod apprestore;
 mod boot;
 mod browse;
 mod client;
+mod cloudrestore;
 mod config;
 mod download;
 mod folders;

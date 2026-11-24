@@ -8,6 +8,7 @@ mod crc32c;
 pub mod qcow2;
 mod sparse;
 pub mod vdi;
+pub mod vhd;
 pub mod vhdx;
 pub mod vmdk;
 pub mod writer;

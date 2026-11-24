@@ -152,6 +152,7 @@ fn restore_vm_files(
     m: &ManifestBody,
     disks: &[u32],
     (format, name, directory): (&str, &str, &str),
+    folder: &str,
     rep: &Reporter,
 ) -> anyhow::Result<JobUpdate> {
     use crate::vmdef::Hypervisor;
@@ -162,7 +163,7 @@ fn restore_vm_files(
         other => bail!("unknown virtual disk format {other:?}"),
     };
     crate::vmdef::check_name(name)?;
-    let dir = Path::new(directory).join(name);
+    let dir = Path::new(directory).join(folder);
     if dir.exists()
         && std::fs::read_dir(&dir)
             .map(|mut d| d.next().is_some())
@@ -304,13 +305,20 @@ fn run_target(
             directory,
             switch,
             start,
+            replace,
         } => {
             if !cfg!(windows) {
                 bail!("restoring as a Hyper-V VM runs on a Hyper-V host");
             }
             crate::hyperv::check_vm_name(name)?;
             let vm = m.vm.clone().unwrap_or_default();
-            let dir = Path::new(directory).join(safe_name(name));
+            // A standby gets a new folder each time; the old one goes once
+            // the new VM exists.
+            let dir = if *replace {
+                Path::new(directory).join(format!("{}-{}", safe_name(name), stamp(&m)))
+            } else {
+                Path::new(directory).join(safe_name(name))
+            };
             if dir.exists()
                 && std::fs::read_dir(&dir)
                     .map(|mut d| d.next().is_some())
@@ -318,17 +326,27 @@ fn run_target(
             {
                 bail!("{} already exists and is not empty", dir.display());
             }
-            if crate::hyperv::vm_exists(name)? {
+            let exists = crate::hyperv::vm_exists(name)?;
+            if exists && !*replace {
                 bail!("a VM named '{name}' already exists on this host; choose another name");
+            }
+            if exists && crate::hyperv::vm_in_use(name)? {
+                bail!("the standby VM '{name}' is running (in use after a failover?): it was left as it is. Turn it off, or turn the standby off in the plan");
             }
             let files = write_vhdx(ctx, repo, &m, disks, &dir, rep)?;
             rep.progress("creating VM", 1, 1, name);
+            if exists {
+                crate::hyperv::remove_vm(name)?;
+            }
             let spec = vm_spec(&m, name, &dir, &files, switch.clone(), *start);
             let out = crate::hyperv::run_ps(&crate::hyperv::new_vm_script(&spec)?)?;
             let mut u = done(JobState::Succeeded);
             u.result = Some(
-                json!({ "vm": name, "path": dir.display().to_string(), "output": out.trim() }),
+                json!({ "vm": name, "path": dir.display().to_string(), "output": out.trim(), "standby": replace }),
             );
+            if *replace {
+                standby_swap(ctx, &format!("hyperv:{name}"), &dir, &mut u.warnings);
+            }
             if vm.vm_id.is_empty() {
                 u.state = JobState::Warning;
                 u.warnings.push("The image has no Hyper-V settings (it was not taken from a Hyper-V host); the VM was created with defaults. Check generation, memory and network before starting it.".into());
@@ -339,7 +357,63 @@ fn run_target(
             format,
             name,
             directory,
-        } => restore_vm_files(ctx, repo, &m, disks, (format, name, directory), rep),
+            replace,
+        } => {
+            let folder = if *replace {
+                format!("{name}-{}", stamp(&m))
+            } else {
+                name.clone()
+            };
+            let mut u = restore_vm_files(
+                ctx,
+                repo,
+                &m,
+                disks,
+                (format, name, directory),
+                &folder,
+                rep,
+            )?;
+            if *replace {
+                let dir = Path::new(directory).join(&folder);
+                standby_swap(
+                    ctx,
+                    &format!("files:{format}:{name}"),
+                    &dir,
+                    &mut u.warnings,
+                );
+            }
+            Ok(u)
+        }
+        RestoreTarget::Azure {
+            location,
+            endpoint,
+            name,
+            sealed,
+        } => crate::cloudrestore::azure(
+            ctx,
+            repo,
+            &m,
+            disks,
+            (location, endpoint, name),
+            sealed,
+            rep,
+        ),
+        RestoreTarget::Aws {
+            location,
+            endpoint,
+            region,
+            name,
+            staging,
+            sealed,
+        } => crate::cloudrestore::aws(
+            ctx,
+            repo,
+            &m,
+            disks,
+            (location, endpoint, region, name, staging),
+            sealed,
+            rep,
+        ),
         RestoreTarget::Disk {
             device,
             disk,
@@ -464,6 +538,35 @@ fn run_target(
             }
             u.result = Some(result);
             Ok(u)
+        }
+    }
+}
+
+/// `20261124-120000` from the image's time, for standby folder names.
+pub fn stamp(m: &ManifestBody) -> String {
+    m.created
+        .replace([':', '-'], "")
+        .trim_end_matches('Z')
+        .replace('T', "-")
+}
+
+/// Standby restores: record the new folder for `key` and remove the one the
+/// previous standby restore made (best effort; a failure is a warning).
+fn standby_swap(ctx: &Ctx, key: &str, new: &Path, warnings: &mut Vec<String>) {
+    let file = ctx.state_dir.join("standby.json");
+    let mut map: std::collections::BTreeMap<String, String> = std::fs::read(&file)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    let old = map.insert(key.to_string(), new.display().to_string());
+    let _ = std::fs::write(&file, serde_json::to_vec_pretty(&map).unwrap_or_default());
+    if let Some(old) = old.filter(|o| Path::new(o) != new) {
+        if let Err(e) = std::fs::remove_dir_all(&old) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                warnings.push(format!(
+                    "the previous standby's files in {old} could not be removed: {e}"
+                ));
+            }
         }
     }
 }

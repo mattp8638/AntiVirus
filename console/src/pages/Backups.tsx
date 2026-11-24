@@ -40,6 +40,7 @@ interface Plan {
   id: string; name: string; agentId: string; agentName: string; repositoryId: string; job: any; label: string;
   schedule: any; retention: any; enabled: boolean; nextRunAt: string | null; lastRunAt: string | null;
   copyToRepositoryId?: string | null;
+  standby?: { agentId: string; type: string; format: string | null; name: string; directory: string } | null;
 }
 type ImageApp = { writer: string; component: string; caption?: string; included: boolean; note?: string | null };
 interface Image {
@@ -966,11 +967,13 @@ function PlanEditor({ plan, agents, repos, onClose }: { plan: Plan | null; agent
   const caps = agent?.capabilities ?? [];
   const baseKind = job ?? (caps.includes("backup_hyperv") ? { type: "backup_hyperv", vm_ids: [] } : caps.includes("backup_system") ? { type: "backup_system" } : { type: "backup_disks", paths: [] });
   const [scanAfter, setScanAfter] = useState<boolean>(!!plan?.job?.settings?.scan_after_backup);
+  const [standby, setStandby] = useState<{ agentId: string; type: string; format: string; name: string; directory: string } | null>(
+    plan?.standby ? { agentId: plan.standby.agentId, type: plan.standby.type, format: plan.standby.format ?? "qcow2", name: plan.standby.name, directory: plan.standby.directory } : null);
   const jobKind = { ...baseKind, settings: { ...(baseKind.settings ?? {}), scan_after_backup: scanAfter } };
   const repo = repoId || usable[0]?.id || "";
   const save = () => run(() => plan
-    ? api(`backup/plans/${plan.id}`, { method: "PATCH", body: { name, job: jobKind, schedule, retention, enabled, copyToRepositoryId: copyTo || null } })
-    : api("backup/plans", { body: { name, agentId, repositoryId: repo, job: jobKind, schedule, retention, enabled, copyToRepositoryId: copyTo || null } }), "Plan saved").then((r) => r !== undefined && onClose());
+    ? api(`backup/plans/${plan.id}`, { method: "PATCH", body: { name, job: jobKind, schedule, retention, enabled, copyToRepositoryId: copyTo || null, standby } })
+    : api("backup/plans", { body: { name, agentId, repositoryId: repo, job: jobKind, schedule, retention, enabled, copyToRepositoryId: copyTo || null, standby } }), "Plan saved").then((r) => r !== undefined && onClose());
   const remove = async () => { if (plan && await confirmDialog(`Delete the plan ${plan.name}? Its backups are kept.`)) run(() => api(`backup/plans/${plan.id}`, { method: "DELETE" }), "Plan deleted").then(onClose); };
   return (
     <Modal wide title={plan ? `Edit ${plan.name}` : "New backup plan"} onClose={onClose}
@@ -1031,6 +1034,17 @@ function PlanEditor({ plan, agents, repos, onClose }: { plan: Plan | null; agent
         </select></label>
         <p className="small muted">The machine copies each new image to the second repository, encrypted for it and verified there (for example a NAS backup copied to S3 or Azure). It needs access to both.</p>
       </>}
+      <h3 style={{ marginTop: 12 }}>Standby VM</h3>
+      <label className="row small" style={{ gap: 6 }}><input type="checkbox" checked={!!standby} onChange={(e) => setStandby(e.target.checked ? { agentId: agents.find((a) => a.capabilities.includes("restore_hyperv"))?.id ?? agentId, type: "hyperv_vm", format: "qcow2", name: `${agent?.name ?? "server"}-standby`.replace(/[^A-Za-z0-9 ._-]/g, "-"), directory: "D:\\Standby" } : null)} /> After each backup, refresh a ready-to-start VM from it</label>
+      {standby && <div className="form-grid">
+        <label className="field">On<select value={standby.agentId} onChange={(e) => setStandby({ ...standby, agentId: e.target.value })}>{agents.filter((a) => a.capabilities.includes("restore_hyperv") || a.capabilities.includes("restore_vm_files")).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
+        <label className="field">As<select value={standby.type === "vm_files" ? standby.format : "hyperv_vm"} onChange={(e) => setStandby(e.target.value === "hyperv_vm" ? { ...standby, type: "hyperv_vm" } : { ...standby, type: "vm_files", format: e.target.value })}>
+          <option value="hyperv_vm">A Hyper-V VM</option><option value="qcow2">QEMU / KVM files</option><option value="vdi">VirtualBox files</option><option value="vmdk">VMware files</option>
+        </select></label>
+        <label className="field">VM name<input value={standby.name} onChange={(e) => setStandby({ ...standby, name: e.target.value })} /></label>
+        <label className="field">Folder on that machine<input value={standby.directory} onChange={(e) => setStandby({ ...standby, directory: e.target.value })} /></label>
+      </div>}
+      {standby && <p className="small muted">The new disks are written to a new folder; the previous standby is replaced only once they are ready, and never while its VM is running (after a failover). The host needs access to this plan's repository.</p>}
       <h3 style={{ marginTop: 12 }}>Malware</h3>
       <label className="row small" style={{ gap: 6 }}>
         <input type="checkbox" checked={scanAfter} disabled={!caps.includes("scan_images")} onChange={(e) => setScanAfter(e.target.checked)} />
@@ -1312,6 +1326,8 @@ const RESTORE_KINDS: { value: string; label: string; cap: string; missing: strin
   { value: "qcow2", label: "QEMU / KVM: qcow2 disk files and a start script", cap: "restore_vm_files", missing: "update the backup agent" },
   { value: "vdi", label: "VirtualBox: VDI disk files and a script that registers the VM", cap: "restore_vm_files", missing: "update the backup agent" },
   { value: "vmdk", label: "VMware: VMDK disk files and a .vmx", cap: "restore_vm_files", missing: "update the backup agent" },
+  { value: "azure", label: "Azure: a VHD in a storage container, for a managed disk and VM", cap: "restore_cloud", missing: "update the backup agent" },
+  { value: "aws", label: "AWS: a VHDX in an S3 bucket, for VM Import (AMI)", cap: "restore_cloud", missing: "update the backup agent" },
   { value: "disk", label: "A physical disk (overwrites it)", cap: "restore_disk", missing: "not on this machine" },
 ];
 
@@ -1348,6 +1364,15 @@ function RestoreDialog({ image, agents, repos, onClose }: { image: Image; agents
   const [grow, setGrow] = useState(true);
   const infected = image.lastScan?.state === "infected";
   const [allowInfected, setAllowInfected] = useState(false);
+  const cloud = type === "azure" || type === "aws";
+  const [cloudLoc, setCloudLoc] = useState("");
+  const [cloudUser, setCloudUser] = useState("");
+  const [cloudSecret, setCloudSecret] = useState("");
+  const [cloudRegion, setCloudRegion] = useState("eu-west-2");
+  const [cloudEndpoint, setCloudEndpoint] = useState("");
+  const [staging, setStaging] = useState("D:\\Staging");
+  const cloudName = (image.vmName ?? image.hostname).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").slice(0, 64) || "restored";
+  const cloudOk = cloud && /^(azure|s3):\/\/[a-z0-9]/.test(cloudLoc) && cloudLoc.startsWith(type === "azure" ? "azure://" : "s3://") && !!cloudUser && !!cloudSecret && (type === "azure" || !!staging.trim());
   const vmFiles = VM_FILE_TARGETS.find((t) => t.value === type);
   const named = type === "hyperv_vm" || !!vmFiles;
   const target = type === "vhdx" ? { type, directory }
@@ -1355,7 +1380,7 @@ function RestoreDialog({ image, agents, repos, onClose }: { image: Image; agents
     : vmFiles ? { type: "vm_files", format: vmFiles.value, name: vmName, directory }
     : { type, device, disk, confirm, grow };
   const nameOk = type === "hyperv_vm" ? !!vmName.trim() : !vmFiles || VM_FILE_NAME.test(vmName);
-  const ok = type === "disk" ? device && confirm === device : directory.trim() && nameOk;
+  const ok = type === "disk" ? device && confirm === device : cloud ? cloudOk : directory.trim() && nameOk;
   // The first kind this machine can do, when it cannot do the one chosen (another machine was picked).
   const available = RESTORE_KINDS.filter((k) => caps.includes(k.cap) && (k.value !== "disk" || can("destructive")));
   useEffect(() => {
@@ -1366,7 +1391,15 @@ function RestoreDialog({ image, agents, repos, onClose }: { image: Image; agents
       const sealed: Sealed = await seal(agent.publicKey, JSON.stringify({ passphrase: pass, recovery_key: null }));
       await api(`backup/repositories/${image.repositoryId}/access`, { body: { agentId: agent.id, sealed, viaGateway: via } });
     }
-    return api("backup/restores", { body: { imageId: image.imageId, agentId, target, ...(allowInfected ? { allowInfected: true } : {}) } });
+    let finalTarget: Record<string, unknown> = target;
+    if (cloud && agent) {
+      // The storage account and key (or access key and secret) are sealed here for the restoring machine only.
+      const sealed: Sealed = await seal(agent.publicKey, JSON.stringify({ domain: "", username: cloudUser.trim(), password: cloudSecret }));
+      finalTarget = type === "azure"
+        ? { type, location: cloudLoc.trim(), endpoint: cloudEndpoint.trim(), name: cloudName, sealed }
+        : { type, location: cloudLoc.trim(), endpoint: cloudEndpoint.trim(), region: cloudRegion.trim(), name: cloudName, staging: staging.trim(), sealed };
+    }
+    return api("backup/restores", { body: { imageId: image.imageId, agentId, target: finalTarget, ...(allowInfected ? { allowInfected: true } : {}) } });
   }, "Restore queued: follow it in Activity").then((r) => r !== undefined && onClose());
   return (
     <Modal wide title={`Restore ${image.vmName ?? image.hostname} from ${unixTime(image.created)}`} onClose={onClose}
@@ -1379,7 +1412,15 @@ function RestoreDialog({ image, agents, repos, onClose }: { image: Image; agents
             return <option key={k.value} value={k.value} disabled={!yes}>{k.label}{yes ? "" : ` (${k.missing})`}</option>;
           })}
         </select></label>
-        {type !== "disk" && <label className="field">Folder on that machine<input value={directory} onChange={(e) => setDirectory(e.target.value)} placeholder={agent?.os?.family === "windows" ? "D:\\Restores" : "/srv/restores"} /></label>}
+        {cloud && <>
+          <label className="field">{type === "azure" ? "Container and folder" : "Bucket and folder"}<input value={cloudLoc} onChange={(e) => setCloudLoc(e.target.value)} placeholder={type === "azure" ? "azure://restores/pm-acer" : "s3://vm-import/pm-acer"} /></label>
+          <label className="field">{type === "azure" ? "Storage account" : "Access key ID"}<input value={cloudUser} onChange={(e) => setCloudUser(e.target.value)} autoComplete="off" /></label>
+          <label className="field">{type === "azure" ? "Account key or SAS token" : "Secret access key"}<input type="password" value={cloudSecret} onChange={(e) => setCloudSecret(e.target.value)} autoComplete="off" /></label>
+          {type === "aws" && <label className="field">Region<input value={cloudRegion} onChange={(e) => setCloudRegion(e.target.value)} /></label>}
+          {type === "aws" && <label className="field">Staging folder on that machine<input value={staging} onChange={(e) => setStaging(e.target.value)} /></label>}
+          <label className="field">Endpoint (optional)<input value={cloudEndpoint} onChange={(e) => setCloudEndpoint(e.target.value)} placeholder="blank for the public cloud" /></label>
+        </>}
+        {type !== "disk" && !cloud && <label className="field">Folder on that machine<input value={directory} onChange={(e) => setDirectory(e.target.value)} placeholder={agent?.os?.family === "windows" ? "D:\\Restores" : "/srv/restores"} /></label>}
         {named && <label className="field">VM name<input value={vmName} onChange={(e) => setVmName(e.target.value)} aria-invalid={!nameOk} /></label>}
         {type === "disk" && <>
           <label className="field">Image disk<select value={disk} onChange={(e) => setDisk(Number(e.target.value))}>{(image.disks.length ? image.disks : [{}]).map((d: any, i: number) => <option key={i} value={i}>Disk {i}{d.size ? ` (${bytes(d.size)})` : ""}</option>)}</select></label>
@@ -1394,6 +1435,8 @@ function RestoreDialog({ image, agents, repos, onClose }: { image: Image; agents
         Writes {vmFiles.files} into <span className="mono">{directory.trim() || "the folder"}{agent?.os?.family === "windows" ? "\\" : "/"}{vmName || "name"}</span>, with {vmFiles.definition}. The VM gets the CPUs and memory recorded at backup (or 2 CPUs and 4 GB), the same firmware (UEFI or BIOS) and a SATA disk controller.
         {vmFiles.value === "vmdk" && " For ESXi, copy the folder to a datastore and convert the disks with vmkfstools."}
       </p>}
+      {type === "azure" && <p className="small muted" style={{ marginTop: 8 }}>Each disk becomes a fixed VHD page blob named {cloudName}-diskN.vhd (only data is uploaded). The job then shows the Azure CLI commands that make a managed disk and VM from it. The key is encrypted in this browser for the restoring machine only.</p>}
+      {type === "aws" && <p className="small muted" style={{ marginTop: 8 }}>Each disk is written as a VHDX in the staging folder, uploaded as {cloudName}-diskN.vhdx and removed. The job then shows the AWS CLI command that imports it as an AMI (it needs the vmimport role). The secret is encrypted in this browser for the restoring machine only.</p>}
       {vmFiles && !nameOk && <ErrorNote error="VM names here can use letters, digits, spaces, dots, hyphens and underscores (up to 80), without a space at either end." />}
       {infected && <div className="card warn-card" role="alert" style={{ marginTop: 10 }}>
         <b>The latest malware scan found {image.lastScan!.findings} infected file{image.lastScan!.findings === 1 ? "" : "s"} in this backup.</b> Restoring it brings them back. Prefer an earlier clean backup, or restore and clean it before use.
