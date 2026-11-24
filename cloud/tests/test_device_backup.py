@@ -708,3 +708,48 @@ def test_offsite_copy_after_each_plan_backup(client, admin, tenant):
     r = client.patch(f"/api/console/backup/plans/{plan_id}", headers=admin, json={"copyToRepositoryId": None})
     assert r.status_code == 200
     assert client.get("/api/console/backup/plans", headers=admin).json()[0]["copyToRepositoryId"] is None
+
+
+def test_move_from_fenrir_backup_existing_repository_and_plan_import(client, admin, tenant):
+    """Moving from a standalone Fenrir-Backup server (backup/docs/design/migration.md): the repository is added as
+    existing (the machine lists it and reports its ID), then the server's export recreates the plans."""
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    heartbeat(client, h)
+    body = {"name": "Moved NAS", "path": "D:\\Backups", "existing": True, "initAgentId": agent_id,
+            "access": [{"agentId": agent_id, "sealed": SEALED}]}
+    r = client.post("/api/console/backup/repositories", headers=admin, json=body)
+    assert r.status_code == 200, r.text
+    repo_id = r.json()["id"]
+    job = heartbeat(client, h)["jobs"][0]
+    assert job["kind"] == {"type": "list_images"}, "nothing is created"
+    real = str(uuid.uuid4())
+    im = image()
+    finish(client, h, job["id"], repo_uuid=real, images=[im])
+    repo = next(x for x in client.get("/api/console/backup/repositories", headers=admin).json() if x["id"] == repo_id)
+    assert repo["status"] == "ready"
+    assert [i["imageId"] for i in client.get(f"/api/console/backup/images?repositoryId={repo_id}", headers=admin).json()] \
+        == [im["image_id"]], "its history came with it"
+    # The same repository again is refused.
+    r2 = client.post("/api/console/backup/repositories", headers=admin, json=body).json()["id"]
+    finish(client, h, heartbeat(client, h)["jobs"][0]["id"], repo_uuid=real, images=[])
+    dup = next(x for x in client.get("/api/console/backup/repositories", headers=admin).json() if x["id"] == r2)
+    assert dup["status"] == "failed" and "already registered" in (dup.get("statusMessage") or dup.get("status_message") or "")
+
+    export = {"format": "fenrir-backup-export", "version": 1, "repositories": [], "plans": [
+        {"name": "Nightly", "machine_id": "m-1", "hostname": "web01", "repo_uuid": real,
+         "job": {"type": "backup_system", "settings": {}}, "schedule": {"type": "interval", "hours": 0, "minutes": 30},
+         "retention": {"keep_hourly": 24, "keep_daily": 7}, "enabled": True, "copy_to_repo_uuid": None},
+        {"name": "Elsewhere", "machine_id": "not-here", "hostname": "db02", "repo_uuid": real,
+         "job": {"type": "backup_system"}, "schedule": {"type": "manual"}, "retention": None, "enabled": True},
+    ]}
+    assert client.post("/api/console/backup/import", headers=admin, json={"export": {"format": "x"}}).status_code == 400
+    r = client.post("/api/console/backup/import", headers=admin, json={"export": export})
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["created"] == ["Nightly"]
+    assert out["skipped"][0]["name"] == "Elsewhere" and "not enrolled" in out["skipped"][0]["reason"]
+    plan = client.get("/api/console/backup/plans", headers=admin).json()[0]
+    assert plan["schedule"]["minutes"] == 30 and plan["retention"]["keep_hourly"] == 24 and plan["repositoryId"] == repo_id
+    # Importing again does not duplicate it.
+    assert client.post("/api/console/backup/import", headers=admin, json={"export": export}).json()["created"] == []

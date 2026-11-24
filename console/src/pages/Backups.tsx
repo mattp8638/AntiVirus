@@ -461,12 +461,14 @@ function CreateRepo({ agents, onClose }: { agents: BackupAgent[]; onClose: () =>
   const [s3, setS3] = useState<S3Form>(emptyS3());
   const [saved, setSaved] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  // A repository that already exists (moved from a Fenrir-Backup server): listed, not created; its passphrase.
+  const [existing, setExisting] = useState(false);
   const isS3 = kind === "s3";
   const tenant = agents.find((a) => a.id === (creator || members[0]))?.tenantId;
   const pool = agents.filter((a) => !tenant || a.tenantId === tenant);
   const share = !isS3 && isSharePath(path);
   const location = isS3 ? s3Path(s3) : path;
-  const ok = name.trim() && (isS3 ? s3Ok(s3) : path.trim()) && pass.length >= 12 && pass === pass2 && members.length > 0 && members.includes(creator) && (!share || signinOk(signin));
+  const ok = name.trim() && (isS3 ? s3Ok(s3) : path.trim()) && (existing ? pass.length > 0 : pass.length >= 12) && pass === pass2 && members.length > 0 && members.includes(creator) && (!share || signinOk(signin));
   const download = () => {
     const blob = new Blob([recovery.fileContents], { type: "application/json" });
     const a = document.createElement("a");
@@ -478,17 +480,17 @@ function CreateRepo({ agents, onClose }: { agents: BackupAgent[]; onClose: () =>
     const res = await run(async () => {
       const access = await Promise.all(members.map(async (id) => {
         const a = agents.find((x) => x.id === id)!;
-        const secret = JSON.stringify({ passphrase: pass, recovery_key: id === creator ? recovery.fileContents : null });
+        const secret = JSON.stringify({ passphrase: pass, recovery_key: id === creator && !existing ? recovery.fileContents : null });
         return { agentId: id, sealed: await seal(a.publicKey, secret), sealedShare: isS3 ? await sealSignin(a, s3Signin(s3)) : share && signin.mode === "password" ? await sealSignin(a, signin) : null };
       }));
       return api<{ id: string; initJobId: string }>("backup/repositories", { body: {
-        name, path: location, repoUuid: recovery.repoId, initAgentId: creator, access,
+        name, path: location, ...(existing ? { existing: true } : { repoUuid: recovery.repoId }), initAgentId: creator, access,
         share_auth: isS3 ? "password" : share ? signin.mode : "none",
         share_user: isS3 ? s3.accessKey.trim() : share && signin.mode === "password" ? signinUser(signin) : null,
         s3: isS3 ? s3Settings(s3) : null } });
     });
     if (!res) return;
-    setStatus("Creating the repository on the machine…");
+    setStatus(existing ? "The machine is opening the repository and listing its backups…" : "Creating the repository on the machine…");
     const job = await waitForJob(res.initJobId);
     setStatus(job ? (job.state === "failed" ? `Failed: ${job.error}` : "Ready.") : "Still waiting for the machine: check Activity.");
   };
@@ -498,6 +500,7 @@ function CreateRepo({ agents, onClose }: { agents: BackupAgent[]; onClose: () =>
         <>
           <div className="form-grid">
             <label className="field">Name<input value={name} onChange={(e) => setName(e.target.value)} placeholder="Office NAS" /></label>
+            <label className="row small" style={{ gap: 6 }}><input type="checkbox" checked={existing} onChange={(e) => setExisting(e.target.checked)} /> It already exists (moved from a Fenrir-Backup server, or added again): its backups are listed, nothing is created. Enter its passphrase.</label>
             <label className="field">Stored on<select value={kind} onChange={(e) => setKind(e.target.value as "folder" | "s3")}><option value="folder">A folder or network share</option><option value="s3">S3 object storage (AWS, Wasabi, B2, R2, MinIO…)</option></select></label>
             {!isS3 && <label className="field">Folder (on the machines)<input value={path} onChange={(e) => setPath(e.target.value)} placeholder={"\\\\nas\\backups\\fenrir or /mnt/backup"} /></label>}
             <label className="field">Passphrase (12+ characters)<input type="password" value={pass} onChange={(e) => setPass(e.target.value)} autoComplete="new-password" /></label>
@@ -508,7 +511,7 @@ function CreateRepo({ agents, onClose }: { agents: BackupAgent[]; onClose: () =>
             <label key={a.id} className="row small" style={{ gap: 6 }}>
               <input type="checkbox" checked={members.includes(a.id)} onChange={(e) => { const m = e.target.checked ? [...members, a.id] : members.filter((x) => x !== a.id); setMembers(m); if (!m.includes(creator)) setCreator(m[0] ?? ""); }} />
               {a.name} {!a.online && <span className="muted">(offline)</span>}
-              {members.includes(a.id) && <label className="small muted" style={{ marginLeft: 8 }}><input type="radio" checked={creator === a.id} onChange={() => setCreator(a.id)} /> creates it</label>}
+              {members.includes(a.id) && <label className="small muted" style={{ marginLeft: 8 }}><input type="radio" checked={creator === a.id} onChange={() => setCreator(a.id)} /> {existing ? "opens it" : "creates it"}</label>}
             </label>
           ))}
           {isS3 && <><h3 style={{ marginTop: 12 }}>Object storage</h3><S3Fields value={s3} onChange={setS3} />
@@ -517,7 +520,9 @@ function CreateRepo({ agents, onClose }: { agents: BackupAgent[]; onClose: () =>
           {isS3 ? (s3Ok(s3) && <TestConnection agent={agents.find((a) => a.id === creator)} path={location} signin={s3Signin(s3)} s3={s3Settings(s3)} />)
             : <TestConnection agent={agents.find((a) => a.id === creator)} path={path} signin={share ? signin : null} />}
           <p className="small muted">The passphrase is encrypted in this browser for each chosen machine. This server stores only the encrypted copies and can never open the backups.</p>
-          <button className="primary" disabled={!ok} onClick={() => setStep(1)}>Next: recovery key</button>
+          {existing
+            ? <><button className="primary" disabled={!ok || busy || !!status} onClick={create}>Add repository</button>{status && <p role="status">{status}</p>}</>
+            : <button className="primary" disabled={!ok} onClick={() => setStep(1)}>Next: recovery key</button>}
         </>
       )}
       {step === 1 && (
@@ -644,7 +649,24 @@ function Plans({ agents, repos }: { agents: BackupAgent[]; repos: Repo[] }) {
   const repoName = (id: string) => repos.find((r) => r.id === id)?.name ?? "—";
   return (
     <div className="card">
-      {can("configure") && <button className="primary" style={{ marginBottom: 10 }} onClick={() => setEdit("new")}>New plan</button>}
+      {can("configure") && <div className="row" style={{ gap: 8, marginBottom: 10 }}>
+        <button className="primary" onClick={() => setEdit("new")}>New plan</button>
+        <label className="button small" title="The export from a Fenrir-Backup server's Settings › Move to Fenrir Cloud. Add its repositories here as existing first.">
+          Import plans from Fenrir-Backup
+          <input type="file" accept="application/json,.json" style={{ display: "none" }} onChange={async (e) => {
+            const f = e.target.files?.[0];
+            e.target.value = "";
+            if (!f) return;
+            let ex: unknown;
+            try { ex = JSON.parse(await f.text()); } catch { ex = null; }
+            const r = await run(() => api<{ created: string[]; skipped: { name: string; reason: string }[] }>("backup/import", { body: { export: ex, tenantId: tenantId || undefined } }));
+            if (!r) return;
+            plans.reload?.();
+            const skipped = r.skipped.map((s) => `${s.name}: ${s.reason}`).join("\n");
+            await confirmDialog(`${r.created.length} plan(s) created${r.created.length ? `: ${r.created.join(", ")}` : ""}.${skipped ? `\n\nSkipped:\n${skipped}` : ""}`);
+          }} />
+        </label>
+      </div>}
       <Table rows={plans.data} onRow={can("configure") ? setEdit : undefined} empty="No plans. A plan backs up one machine into one repository on a schedule."
         columns={[
           { key: "name", label: "Plan", render: (p) => <><b>{p.name}</b><div className="small muted">{p.label} of {p.agentName}</div></> },

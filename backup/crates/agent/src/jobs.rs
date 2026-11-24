@@ -478,6 +478,8 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
                 .map(|(id, e)| format!("image {id}: {e}"))
                 .collect();
             u.images = Some(ok.iter().map(report_of).collect());
+            // Adopting an existing repository: the server learns its ID here.
+            u.repo_uuid = Some(repo.config().repo_id);
             Ok(u)
         }
         JobKind::CopyImages {

@@ -590,9 +590,11 @@ def create_repo(body: dict = Body(...), p: Principal = Depends(current_principal
         bad("an S3 repository needs an access key and secret for every machine")
     if mode != "none" and not is_share_path(path) and not s3:
         bad(r"a share sign-in needs a network path like \\server\share\folder")
+    # An existing repository (moved from a Fenrir-Backup server, or added again): its first listing names it.
+    existing = bool(body.get("existing"))
     repo = BackupRepository(tenant_id=init.tenant_id, name=name, path=path,
-                            repo_uuid=_uuid(body.get("repoUuid"), "repository UUID"), maintenance_agent_id=init.id,
-                            share_auth=mode, share_user=user, created_by=p.actor, s3=s3)
+                            repo_uuid="" if existing else _uuid(body.get("repoUuid"), "repository UUID"),
+                            maintenance_agent_id=init.id, share_auth=mode, share_user=user, created_by=p.actor, s3=s3)
     db.add(repo)
     db.flush()
     for x in access:
@@ -604,8 +606,9 @@ def create_repo(body: dict = Body(...), p: Principal = Depends(current_principal
             bad("enter the share password for every machine")
         db.add(BackupRepoAccess(repository_id=repo.id, agent_id=a.id, sealed=_sealed(x.get("sealed")),
                                 sealed_share=share, granted_by=p.actor))
-    job = bk.queue(db, init, {"type": "init_repository"}, repo.id, p.actor)
-    bk.record(db, p.actor, "backup.repository.created", f"{name} at {path}", repo.tenant_id, share=mode)
+    job = bk.queue(db, init, {"type": "list_images" if existing else "init_repository"}, repo.id, p.actor)
+    bk.record(db, p.actor, "backup.repository.added" if existing else "backup.repository.created", f"{name} at {path}",
+              repo.tenant_id, share=mode)
     db.commit()
     return {"id": repo.id, "initJobId": job.id}
 
@@ -938,6 +941,69 @@ def update_plan(plan_id: str, body: dict = Body(...), p: Principal = Depends(cur
     bk.record(db, p.actor, "backup.plan.updated", plan.name, plan.tenant_id, fields=sorted(f))
     db.commit()
     return {"ok": True}
+
+
+@router.post("/import")
+def import_config(body: dict = Body(...), p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Recreate a Fenrir-Backup server's plans (its Settings › Move to Fenrir Cloud export). Each plan is matched to a
+    machine here by machine ID and to a repository here by repository ID (added as existing first); plans that cannot
+    be matched are reported and skipped. The export holds no secrets."""
+    p.require("configure")
+    ex = body.get("export")
+    if not isinstance(ex, dict) or ex.get("format") != "fenrir-backup-export":
+        bad("that is not a Fenrir-Backup export file")
+    tenants = scoped_tenant(p, body.get("tenantId"))
+    created, skipped = [], []
+    for raw in (ex.get("plans") or [])[:1000]:
+        if not isinstance(raw, dict):
+            continue
+        name = str(raw.get("name") or "").strip()[:120] or "Imported plan"
+        def skip(why: str):
+            skipped.append({"name": name, "reason": why})
+        agent = db.execute(select(BackupAgent).where(BackupAgent.tenant_id.in_(tenants),
+                                                     BackupAgent.machine_id == str(raw.get("machine_id") or ""),
+                                                     BackupAgent.revoked.is_(False))).scalars().first()
+        if agent is None:
+            skip(f"machine {raw.get('hostname') or raw.get('machine_id')} is not enrolled here yet")
+            continue
+        def repo_by(uuid_):
+            return db.execute(select(BackupRepository).where(BackupRepository.tenant_id == agent.tenant_id,
+                                                             BackupRepository.repo_uuid == str(uuid_ or ""),
+                                                             BackupRepository.status == "ready")).scalars().first() \
+                if uuid_ else None
+        repo = repo_by(raw.get("repo_uuid"))
+        if repo is None:
+            skip("its repository has not been added here (New repository › It already exists)")
+            continue
+        if db.get(BackupRepoAccess, (repo.id, agent.id)) is None:
+            skip(f"{agent.hostname} has no access to {repo.name} here")
+            continue
+        if db.execute(select(ImageBackupPlan).where(ImageBackupPlan.agent_id == agent.id,
+                                                    ImageBackupPlan.repository_id == repo.id,
+                                                    ImageBackupPlan.name == name)).scalars().first():
+            skip("a plan of that name already exists here")
+            continue
+        fields = {"name": name, "job": raw.get("job"), "schedule": raw.get("schedule"),
+                  "retention": raw.get("retention"), "enabled": bool(raw.get("enabled", True))}
+        copy = repo_by(raw.get("copy_to_repo_uuid"))
+        if raw.get("copy_to_repo_uuid") and copy is not None:
+            fields["copyToRepositoryId"] = copy.id
+            fields["agentId"], fields["repositoryId"] = agent.id, repo.id
+        try:
+            f = _plan_fields(db, p, fields, None)
+            validate_job(db, agent, f["job"], repo.id)
+        except HTTPException as e:
+            skip(str(e.detail))
+            continue
+        plan = ImageBackupPlan(tenant_id=agent.tenant_id, agent_id=agent.id, repository_id=repo.id, created_by=p.actor, **f)
+        _reschedule(plan)
+        db.add(plan)
+        db.flush()
+        created.append(name)
+    bk.record(db, p.actor, "backup.plans.imported", f"{len(created)} created, {len(skipped)} skipped",
+              tenants[0] if len(tenants) == 1 else None)
+    db.commit()
+    return {"created": created, "skipped": skipped}
 
 
 @router.delete("/plans/{plan_id}")

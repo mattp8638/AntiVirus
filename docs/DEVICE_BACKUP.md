@@ -113,6 +113,20 @@ is signed for it, and the copy is verified there. Nothing leaves the machine une
 both repositories. A copy has its own image ID and is listed under its repository. The CLI does the same with
 `fenrir-backup copy --to REPO`. Design: `backup/docs/design/offsite-copy.md`.
 
+## Moving from a Fenrir-Backup server
+
+Backups made with a standalone Fenrir-Backup server move without copying anything:
+
+1. Enrol the machines here (their backup agent comes with the Fenrir agent); their machine IDs stay the same.
+2. **Repositories › New repository › It already exists**: the same location and its passphrase (encrypted in your
+   browser for each machine). The first machine opens it and lists its backups, so the history comes along; the
+   passphrase and recovery key keep working.
+3. On the old server, **Settings › Move to Fenrir Cloud › Download export** (repositories and plans, no secrets), then
+   here **Plans › Import plans from Fenrir-Backup**. Each plan is recreated for its machine and repository; any that
+   cannot be matched yet are listed with the reason.
+
+Design: `backup/docs/design/migration.md`.
+
 ## Restoring individual files
 
 **Images & restore › Browse files** (also on a device's Backup tab) opens any backup as a file explorer: pick the

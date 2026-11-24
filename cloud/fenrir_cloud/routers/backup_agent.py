@@ -311,6 +311,20 @@ def update_job(job_id: str, body: dict = Body(...), agent: BackupAgent = Depends
                 bk.raise_alert(db, job.tenant_id, agent.device_id, bk.RULE_BOOT,
                                f"Backup of {name} did not boot", "high",
                                f"A boot check of image {kind.get('image_id')} failed: {_str(b.get('message'), 500)}")
+        if kind.get("type") == "list_images" and final and repo.status == "pending" and not repo.repo_uuid:
+            # Adopting an existing repository: the machine reports its ID with the listing.
+            got = str(body.get("repo_uuid") or "")
+            dup = db.execute(select(BackupRepository).where(BackupRepository.tenant_id == repo.tenant_id,
+                                                           BackupRepository.repo_uuid == got,
+                                                           BackupRepository.id != repo.id)).scalars().first() if got else None
+            if state not in ("succeeded", "warning"):
+                repo.status, repo.status_message = "failed", job.error
+            elif not got:
+                repo.status, repo.status_message = "failed", "the machine did not report the repository's ID; update its agent"
+            elif dup is not None:
+                repo.status, repo.status_message = "failed", f"this repository is already registered as {dup.name}"
+            else:
+                repo.repo_uuid, repo.status, repo.status_message = got, "ready", None
         if kind.get("type") == "init_repository" and final:
             if state in ("succeeded", "warning"):
                 ok = str(body.get("repo_uuid") or "") == repo.repo_uuid
