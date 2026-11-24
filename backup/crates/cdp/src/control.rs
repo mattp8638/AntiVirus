@@ -82,6 +82,41 @@ fn run(cmd: &str, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&o.stdout).into_owned())
 }
 
+/// `run` with a deadline: used while the device is suspended, when a hung
+/// command would hold every write to the volume. On timeout the command is
+/// killed (the caller then resumes the device).
+fn run_within(cmd: &str, args: &[&str], secs: u64) -> Result<()> {
+    let mut child = Command::new(cmd)
+        .args(args)
+        .env("LVM_SUPPRESS_FD_WARNINGS", "1")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{cmd}: {e}"))?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    loop {
+        match child.try_wait().map_err(|e| format!("{cmd}: {e}"))? {
+            Some(st) if st.success() => return Ok(()),
+            Some(_) => {
+                let mut err = String::new();
+                if let Some(mut e) = child.stderr.take() {
+                    let _ = std::io::Read::read_to_string(&mut e, &mut err);
+                }
+                return Err(format!("{cmd} {}: {}", args.join(" "), err.trim()));
+            }
+            None if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "{cmd} {} did not finish in {secs} s",
+                    args.join(" ")
+                ));
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(50)),
+        }
+    }
+}
+
 /// 512-byte sectors of a block device.
 fn sectors(dev: &str) -> Result<u64> {
     run("blockdev", &["--getsz", dev])?
@@ -184,43 +219,63 @@ pub fn usage(name: &str) -> Result<(u64, u64, bool)> {
 }
 
 /// Swap journals: the device is suspended (writes flushed and held), its
-/// table reloaded with the other journal, and resumed. With `snapshot`, an
-/// LVM snapshot of the volume is made while suspended: the state the new
-/// journal starts from. Returns the finished journal and its sequence number.
-pub fn rotate(dir: &Path, st: &mut State, snapshot: Option<&str>) -> Result<(String, u64)> {
+/// table reloaded with the other journal, and resumed. Nothing else runs
+/// while it is suspended (LVM in particular would wait on it).
+///
+/// With `snapshot`, an LVM snapshot of the volume is made right after the
+/// swap, then a timestamp mark. Replaying the new journal from its start
+/// onto that snapshot gives the volume exactly as at any mark from that one
+/// on: block writes re-applied in order end in the same state, and writes
+/// the snapshot already holds are written again with the same or later
+/// data. So a base made this way is valid from its mark (returned) on.
+/// Returns the finished journal, its sequence number and the base's mark time.
+pub fn rotate(
+    dir: &Path,
+    st: &mut State,
+    snapshot: Option<&str>,
+) -> Result<(String, u64, Option<i64>)> {
     let dm = dm_name(&st.name);
     mark(&st.name, &crate::journal::time_mark(now()))?;
     let next = 1 - st.active;
     let t = table(st, next)?;
     run("dmsetup", &["suspend", &dm])?;
-    let r = (|| -> Result<()> {
-        if let Some(snap) = snapshot {
-            let size = sectors(&format!("/dev/{}/{}", st.vg, st.lv))? / 10 * 512;
-            run(
-                "lvcreate",
-                &[
-                    "-q",
-                    "-y",
-                    "-s",
-                    "-L",
-                    &format!("{}b", size.max(64 << 20)),
-                    "-n",
-                    snap,
-                    &format!("{}/{}", st.vg, st.lv),
-                ],
-            )?;
-        }
-        run("dmsetup", &["reload", &dm, "--table", &t])?;
-        Ok(())
-    })();
+    // The kernel updates the journal's entry count only for marks and FUA
+    // writes: a last mark, with every write done and the device held, makes
+    // the finished journal count all of them (it is written before the old
+    // table goes).
+    let closed = mark(&st.name, &crate::journal::time_mark(now()));
+    let reloaded = closed.and_then(|_| run_within("dmsetup", &["reload", &dm, "--table", &t], 60));
     let resumed = run("dmsetup", &["resume", &dm]);
-    r?;
+    reloaded?;
     resumed?;
     let done = (st.journals[st.active].clone(), st.seq);
     st.active = next;
     st.seq += 1;
     save(dir, st)?;
-    Ok(done)
+    let mut base = None;
+    if let Some(snap) = snapshot {
+        let size = sectors(&format!("/dev/{}/{}", st.vg, st.lv))? / 10 * 512;
+        run_within(
+            "lvcreate",
+            &[
+                "-q",
+                "-y",
+                "-s",
+                "-L",
+                &format!("{}b", size.max(64 << 20)),
+                "-n",
+                snap,
+                &format!("{}/{}", st.vg, st.lv),
+            ],
+            300,
+        )?;
+        // The second after the snapshot: the earliest point it is valid for.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let t = now();
+        mark(&st.name, &crate::journal::time_mark(t))?;
+        base = Some(t);
+    }
+    Ok((done.0, done.1, base))
 }
 
 /// Stop CDP: the device is removed (unmount it first); the journal volumes
