@@ -34,7 +34,7 @@ const FINAL = ["succeeded", "warning", "failed", "cancelled"];
 const FS_LABEL: Record<string, string> = { ntfs: "NTFS", ext: "ext4", fat32: "FAT32", fat16: "FAT", exfat: "exFAT", xfs: "XFS", btrfs: "Btrfs", refs: "ReFS", bitlocker: "BitLocker", luks: "LUKS", swap: "swap" };
 
 /** Poll a job quickly (browsing is interactive). */
-async function waitFast(id: string, onProgress?: (j: Job) => void, seconds = 180): Promise<Job> {
+export async function waitFast(id: string, onProgress?: (j: Job) => void, seconds = 180): Promise<Job> {
   const until = Date.now() + seconds * 1000;
   while (Date.now() < until) {
     await new Promise((r) => setTimeout(r, 700));
@@ -52,7 +52,10 @@ const volumeLabel = (v: Volume) => v.mount_points[0] || v.name || `Disk ${v.disk
 const joinPath = (dir: string, name: string) => `${dir.replace(/\/+$/, "")}/${name}`;
 const when = (t?: number) => (t ? new Date(t * 1000).toLocaleString() : "—");
 
-export function FileBrowser({ image, onClose }: { image: BrowseImage; onClose: () => void }) {
+/** Where to open: a volume (by disk and partition), a folder in it, and an item to tick (search results). */
+export interface BrowseStart { disk: number; partition: number; folder: string; select?: string }
+
+export function FileBrowser({ image, onClose, start }: { image: BrowseImage; onClose: () => void; start?: BrowseStart }) {
   const [agentId, setAgentId] = useState<string | undefined>(undefined);
   const [agentName, setAgentName] = useState("");
   const [volumes, setVolumes] = useState<Volume[] | null>(null);
@@ -99,6 +102,12 @@ export function FileBrowser({ image, onClose }: { image: BrowseImage; onClose: (
       if (!res?.volumes) return;
       setVolumes(res.volumes);
       const usable = (res.volumes as Volume[]).filter((v) => v.browsable);
+      const asked = start && usable.find((v) => v.disk === start.disk && v.partition === start.partition);
+      if (asked) {
+        await openVolume(asked, start!.folder || "/");
+        if (start!.select) setSelected(new Set([start!.select]));
+        return;
+      }
       // Straight into the obvious volume: the only one, or the system drive.
       const pick = usable.length === 1 ? usable[0] : usable.find((v) => v.mount_points.some((m) => /^c:\\?$/i.test(m)));
       if (pick) await openVolume(pick);

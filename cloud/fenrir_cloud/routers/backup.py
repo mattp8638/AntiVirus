@@ -1985,6 +1985,53 @@ def list_scans(image_id: str, request: Request, p: Principal = Depends(current_p
              "agentId": r.agent_id, "agentName": names.get(r.agent_id), "jobId": r.job_id} for r in rows]
 
 
+# ---------------------------------------------------------------- search across backups
+
+SEARCH_MAX_IMAGES = 500
+
+
+@router.post("/search")
+def search_backups(request: Request, body: dict = Body(...), p: Principal = Depends(current_principal),
+                   db: Session = Depends(get_db)):
+    """Find files by name across a machine's backups. One job per repository, on a machine with access: it searches
+    the file catalogues it keeps (building missing ones for a while) and returns only the matches."""
+    p.require("scripts")
+    query = str(body.get("query") or "").strip()
+    if not query or len(query) > 200:
+        bad("type part of a file or folder name (up to 200 characters)")
+    device = str(body.get("device") or "")
+    unlocked = _unlocked(request, p)
+    rows = db.execute(select(BackupImage).where(BackupImage.tenant_id.in_(p.tenant_ids),
+                                                BackupImage.repository_id.in_(unlocked or [""]))
+                      .order_by(BackupImage.created_unix.desc())).scalars().all()
+    rows = [i for i in rows if not device or _device_key(i) == device]
+    if not rows:
+        raise HTTPException(403, "repository_locked") if device and not unlocked else bad("no unlocked backups to search")
+    by_repo: dict[str, list[BackupImage]] = {}
+    for i in rows:
+        by_repo.setdefault(i.repository_id, []).append(i)
+    jobs = []
+    for repo_id, images in by_repo.items():
+        candidates = db.execute(select(BackupAgent).join(BackupRepoAccess, BackupRepoAccess.agent_id == BackupAgent.id)
+                                .where(BackupRepoAccess.repository_id == repo_id)).scalars().all()
+        candidates = sorted((a for a in candidates if "search_files" in bk.capabilities(a)),
+                            key=lambda a: (not bk.online(a), a.id != images[0].agent_id))
+        if not candidates:
+            continue
+        a = candidates[0]
+        job = bk.queue(db, a, {"type": "search_files", "query": query,
+                               "images": [i.image_id for i in images[:SEARCH_MAX_IMAGES]], "limit": 500,
+                               "budget_secs": 120}, repo_id, p.actor)
+        jobs.append({"id": job.id, "repositoryId": repo_id, "agentId": a.id, "agentName": a.display_name or a.hostname,
+                     "agentOnline": bk.online(a), "images": min(len(images), SEARCH_MAX_IMAGES)})
+    if not jobs:
+        bad("no machine with access to these backups can search them yet: update its backup agent")
+    bk.record(db, p.actor, "backup.search", device or "all machines", rows[0].tenant_id, query=query[:200],
+              repositories=len(jobs))
+    db.commit()
+    return {"jobs": jobs}
+
+
 def _malware_guard(db: Session, im: BackupImage, body: dict, paths: list[str] | None = None) -> None:
     """Restoring infected files needs `allowInfected`: a whole image when its latest scan found malware, chosen files
     when they are (or contain) an infected file. The decision is audited by the caller's restore record."""

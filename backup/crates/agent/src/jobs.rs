@@ -537,6 +537,25 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             let repo = open_repo(ctx, access)?;
             backup_system(ctx, &repo, &access.path, settings, rep)
         }
+        JobKind::IndexImage { image_id } => {
+            let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            crate::search::index(ctx, &repo, *image_id, rep)
+        }
+        JobKind::SearchFiles {
+            query,
+            images,
+            limit,
+            budget_secs,
+        } => {
+            let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            let budget = std::time::Duration::from_secs(if *budget_secs == 0 {
+                120
+            } else {
+                (*budget_secs).min(1800)
+            } as u64);
+            let limit = if *limit == 0 { 500 } else { *limit };
+            crate::search::search(ctx, &repo, query, images, limit, budget, rep)
+        }
         JobKind::BackupFiles {
             paths,
             excludes,

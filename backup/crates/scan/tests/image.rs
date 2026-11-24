@@ -177,3 +177,43 @@ fn files_inside_ntfs_and_ext4_backups_are_scanned() {
         .filter(|f| f.path.ends_with("report.txt"))
         .all(|f| f.detections.iter().any(|d| d.kind == "hash")));
 }
+
+#[test]
+fn ntfs_and_ext4_backups_are_catalogued_and_searched() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, m) = backed_up(dir.path());
+    let disk: Arc<dyn filebrowse::Disk> =
+        Arc::new(ImageExport::new(&repo, &m, 0, 8 << 20).unwrap());
+    let mut c = catalog::Catalogue::new();
+    for (part, label) in [(1u32, "C:\\"), (2, "/home")] {
+        let mut fs = filebrowse::open(&m, disk.clone(), 0, part).unwrap();
+        c.add_volume(
+            catalog::VolumeRef {
+                label: label.into(),
+                disk: 0,
+                partition: part,
+            },
+            fs.as_mut(),
+            &|| false,
+        )
+        .unwrap();
+    }
+    let q = catalog::Query::parse("report.txt").unwrap();
+    let (hits, more) = catalog::search(&c, &q, 10);
+    assert!(!more);
+    assert_eq!(hits.len(), 2, "{hits:?}");
+    assert!(hits
+        .iter()
+        .all(|h| h.path == "/Users/anna/Documents/report.txt" && h.size == 17));
+    assert_eq!(
+        hits.iter().map(|h| h.volume.partition).collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    assert_eq!(hits[0].modified, Some(1_772_600_767));
+    let (folders, _) = catalog::search(&c, &catalog::Query::parse("anna/pictures").unwrap(), 10);
+    assert!(folders.iter().any(|h| h.folder));
+    assert!(!c
+        .entries
+        .iter()
+        .any(|e| e.p.contains("/./") || e.p.ends_with("/.")));
+}

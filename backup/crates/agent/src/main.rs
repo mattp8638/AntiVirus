@@ -20,6 +20,7 @@ mod names;
 mod rct;
 mod recovery;
 mod restore;
+mod search;
 mod setup;
 mod share;
 mod update;

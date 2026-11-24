@@ -119,6 +119,13 @@ to a folder, as a download, or **Where each item was**. They can be scanned for 
 
 Design: `backup/docs/design/file-backup.md`.
 
+## Finding a file across backups
+
+**Images & restore › a machine › Find a file in these backups** searches every unlocked backup of the machine by name
+(`budget 2026`), pattern (`*.xlsx`) or path (`Documents/report`). Results show each file with the backups that hold it;
+**Open** goes straight to it in Browse files. Each backup is indexed on the machine after it is taken; the index stays on
+the machine and only matches come back (kept a day). Design: `backup/docs/design/search.md`.
+
 ## Malware scans of backups
 
 **Images & restore › Scan** checks the files inside a backup against your threat intelligence (malicious file hashes

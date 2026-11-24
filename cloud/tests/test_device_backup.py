@@ -1326,3 +1326,51 @@ def test_folder_backups_list_under_the_machine_and_restore_files_only(client, ad
     assert client.post(f"/api/console/backup/images/{files['image_id']}/restore-files", headers=admin, json=back).status_code == 200
     assert client.post(f"/api/console/backup/images/{disks['image_id']}/restore-files", headers=admin,
                        json={**back, "partition": 2}).status_code == 400, "@original is for folder backups"
+
+
+def test_search_across_a_machines_backups(client, admin, tenant):
+    """Each new backup is indexed on the machine that took it; a search runs on a machine with access over the
+    machine's unlocked backups (newest first) and its matches are dropped from the job record after a day."""
+    from datetime import timedelta
+
+    from fenrir_cloud import backup as bk
+    from fenrir_cloud.db import session_factory
+    from fenrir_cloud.models import BackupJob
+
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    caps = CAPS + ["search_files"]
+    heartbeat(client, h, caps=caps)
+    repo_id = ready_repo(client, admin, tenant, agent_id, h)
+    older, newer = image(t=0), image(t=100)
+    for im in (older, newer):
+        client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                    json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+        finish(client, h, heartbeat(client, h, caps=caps)["jobs"][0]["id"], images=[im])
+        index = heartbeat(client, h, caps=caps)["jobs"][0]
+        assert index["kind"] == {"type": "index_image", "image_id": im["image_id"]}
+        finish(client, h, index["id"])
+
+    dev = client.get("/api/console/backup/image-devices", headers=admin).json()[0]
+    locked = client.post("/api/console/backup/search", headers=admin, json={"query": "budget", "device": dev["key"]})
+    assert locked.status_code == 403
+    admin = unlock(client, admin, h, repo_id, agent_id, caps=caps)
+    assert client.post("/api/console/backup/search", headers=admin, json={"query": " ", "device": dev["key"]}).status_code == 400
+    r = client.post("/api/console/backup/search", headers=admin, json={"query": "budget*.xlsx", "device": dev["key"]})
+    assert r.status_code == 200, r.text
+    [job] = r.json()["jobs"]
+    spec = heartbeat(client, h, caps=caps)["jobs"][0]
+    assert spec["id"] == job["id"] and spec["kind"]["type"] == "search_files"
+    assert spec["kind"]["images"] == [newer["image_id"], older["image_id"]], "newest first"
+    hit = {"image_id": newer["image_id"], "volume": {"label": "C:\\", "disk": 0, "partition": 3},
+           "path": "/Users/anna/Documents/budget 2026.xlsx", "size": 51200, "modified": 1790000000, "folder": False}
+    finish(client, h, job["id"], result={"query": "budget*.xlsx", "hits": [hit], "searched": 2, "not_indexed": [],
+                                         "truncated": False})
+    got = client.get(f"/api/console/backup/jobs/{job['id']}", headers=admin).json()
+    assert got["result"]["hits"][0]["path"].endswith("budget 2026.xlsx")
+    with session_factory()() as db:
+        j = db.get(BackupJob, job["id"])
+        j.finished_at = j.finished_at - bk.BROWSE_KEEP - timedelta(minutes=1)
+        db.commit()
+        assert bk.purge_listings(db) >= 1
+        assert db.get(BackupJob, job["id"]).result is None, "matches are not kept beyond a day"

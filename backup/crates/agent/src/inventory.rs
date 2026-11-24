@@ -108,6 +108,8 @@ pub fn capabilities(role: &str) -> Vec<String> {
         "scan_images",
         // Chosen files and folders (folders.rs).
         "backup_files",
+        // File catalogues and search across backups (search.rs).
+        "search_files",
         "gateway",
         "kubernetes",
         "saas",

@@ -73,6 +73,7 @@ BACKUP_KINDS = ("backup_system", "backup_disks", "backup_hyperv", "backup_kubern
 KIND_LABELS = {
     "init_repository": "Create repository", "backup_system": "System backup", "backup_disks": "Disk backup",
     "backup_hyperv": "Hyper-V backup", "backup_files": "Files and folders backup", "scan_image": "Malware scan",
+    "index_image": "Index files", "search_files": "Search backups",
     "verify": "Verify", "list_images": "Refresh images",
     "apply_retention": "Apply retention", "copy_images": "Copy off-site", "prune": "Reclaim space", "restore": "Restore", "boot_check": "Boot check",
     "stop_vm": "Stop VM", "check_access": "Test connection", "browse_files": "Browse files",
@@ -915,17 +916,17 @@ def poll_seconds(db: Session, agent: BackupAgent) -> int:
     """Every second while someone browses this machine's backups or waits for it to check a passphrase."""
     recent = db.execute(select(BackupJob.kind).where(
         BackupJob.agent_id == agent.id, BackupJob.created_at > utcnow() - FAST_POLL_FOR,
-        BackupJob.kind["type"].as_string().in_(("browse_files", "list_images")))).scalars().all()
-    fast = any(k.get("type") == "browse_files" or k.get("unlock") for k in recent if isinstance(k, dict))
+        BackupJob.kind["type"].as_string().in_(("browse_files", "list_images", "search_files")))).scalars().all()
+    fast = any(k.get("type") in ("browse_files", "search_files") or k.get("unlock") for k in recent if isinstance(k, dict))
     return FAST_POLL_SECONDS if fast else POLL_SECONDS
 
 
 def purge_listings(db: Session) -> int:
-    """Folder listings (file names) are kept a day, then dropped from the job record."""
+    """Folder listings and search results (file names) are kept a day, then dropped from the job record."""
     n = 0
     for j in db.execute(select(BackupJob).where(BackupJob.finished_at < utcnow() - BROWSE_KEEP,
                                                 BackupJob.result.is_not(None))).scalars():
-        if (j.kind or {}).get("type") == "browse_files":
+        if (j.kind or {}).get("type") in ("browse_files", "search_files"):
             j.result = None
             n += 1
     db.commit()

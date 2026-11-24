@@ -329,6 +329,19 @@ pub enum JobKind {
         #[serde(default)]
         settings: BackupSettings,
     },
+    /// Build (and keep on the agent) the file catalogue of an image, for
+    /// searching across backups (docs/design/search.md).
+    IndexImage { image_id: Uuid },
+    /// Search the file catalogues of `images` (newest first) for a name
+    /// or pattern; images without one are indexed while the time budget lasts.
+    SearchFiles {
+        query: String,
+        images: Vec<Uuid>,
+        #[serde(default)]
+        limit: u32,
+        #[serde(default)]
+        budget_secs: u32,
+    },
     /// Chosen files and folders (folder backup, docs/design/file-backup.md):
     /// local paths, or network shares (`\\server\share\folder`) read with
     /// the agent's own sign-in. Agents that report `backup_files`.
@@ -538,6 +551,8 @@ impl JobKind {
             JobKind::StopVm { .. } => "Stop VM",
             JobKind::ScanImage { .. } => "Malware scan",
             JobKind::BackupFiles { .. } => "Back up files and folders",
+            JobKind::IndexImage { .. } => "Index files",
+            JobKind::SearchFiles { .. } => "Search backups",
             JobKind::CheckAccess { .. } => "Test connection",
             JobKind::LocalRecovery { action, .. } => match action {
                 LocalRecoveryAction::Install => "Install local recovery",

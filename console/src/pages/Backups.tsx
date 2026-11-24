@@ -5,7 +5,8 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { api, ago, fmtTime, getToken, lockRepositories, rememberReauth as rememberReauthToken, onUnlockChange, rememberUnlock, unlockedUntil } from "../api";
 import { useApp } from "../app-context";
 import { newRecoveryKey, seal, sealSupported, type Sealed } from "../backup-seal";
-import { FileBrowser } from "./BackupFiles";
+import { FileBrowser, type BrowseStart } from "./BackupFiles";
+import { SearchBackups } from "./BackupSearch";
 import { AppsAndClusters, isAppPlan } from "./BackupApps";
 import { confirmDialog, promptDialog } from "../components/dialogs";
 import { ErrorNote, Modal, PageHead, Pill, Stat, Table, Tabs, TenantSelect, useAction, useAutoRefresh, useData, useListData } from "../components/ui";
@@ -1113,6 +1114,7 @@ function DeviceImages({ device, agents, repos, onBack, onUnlock }: {
   const [restore, setRestore] = useState<Image | null>(null);
   const [boot, setBoot] = useState<Image | null>(null);
   const [files, setFiles] = useState<Image | null>(null);
+  const [filesAt, setFilesAt] = useState<BrowseStart | undefined>(undefined);
   const [scan, setScan] = useState<Image | null>(null);
   const { can } = useApp();
   const locked = device.repositories.filter((r) => !unlockedUntil(r.id));
@@ -1127,6 +1129,8 @@ function DeviceImages({ device, agents, repos, onBack, onUnlock }: {
         <button className="small" style={{ marginLeft: "auto" }} onClick={() => { lockRepositories(device.repositories.map((r) => r.id)); onBack(); }}>Lock</button>
       </div>
       {locked.length > 0 && <p className="small">{locked.map((r) => `${r.images} backup${r.images === 1 ? "" : "s"} in ${r.name}`).join(", ")} still locked. <button className="small" onClick={onUnlock}>Unlock</button></p>}
+      {can("scripts") && <SearchBackups device={device.key} images={(images.data ?? []).map((i) => ({ imageId: i.imageId, created: i.created }))}
+        onOpen={(id, at) => { const im = images.data?.find((i) => i.imageId === id); if (im) { setFilesAt(at); setFiles(im); } }} />}
       {(device.infected ?? 0) > 0 && <div className="card warn-card" role="alert" style={{ marginBottom: 10 }}>
         <b>Malware was found in {device.infected} backup{device.infected === 1 ? "" : "s"} of {device.name}.</b>{" "}
         {device.lastCleanCreated ? <>The last clean backup was taken {unixTime(device.lastCleanCreated)}: restore from it, or from an earlier clean one.</> : "No backup of this machine has been scanned clean yet: scan an older backup to find one."}
@@ -1140,7 +1144,7 @@ function DeviceImages({ device, agents, repos, onBack, onUnlock }: {
           { key: "boot", label: "Boots?", render: (i) => i.lastBootCheck ? <Pill value={i.lastBootCheck.outcome} tone={i.lastBootCheck.outcome === "failed" ? "bad" : "good"} /> : <span className="small muted">not tested</span> },
           { key: "scan", label: "Malware", render: (i) => <ScanPill scan={i.lastScan} clean={!!device.lastCleanCreated && i.created === device.lastCleanCreated} /> },
           { key: "act", label: "", render: (i) => <div className="row" style={{ gap: 4 }}>
-            {can("scripts") && <button className="small primary" onClick={() => setFiles(i)}>Browse files</button>}
+            {can("scripts") && <button className="small primary" onClick={() => { setFilesAt(undefined); setFiles(i); }}>Browse files</button>}
             {can("scripts") && i.source !== "files" && <button className="small" onClick={() => setRestore(i)}>Restore</button>}
             {can("scripts") && i.source !== "files" && <button className="small" onClick={() => setBoot(i)}>Boot test</button>}
             {can("scripts") && <button className="small" onClick={() => setScan(i)}>Scan</button>}
@@ -1148,7 +1152,7 @@ function DeviceImages({ device, agents, repos, onBack, onUnlock }: {
         ]} />
       {restore && <RestoreDialog image={restore} agents={agents} repos={repos} onClose={() => setRestore(null)} />}
       {boot && <BootDialog image={boot} agents={agents} repos={repos} onClose={() => setBoot(null)} />}
-      {files && <FileBrowser image={files} onClose={() => setFiles(null)} />}
+      {files && <FileBrowser image={files} start={filesAt} onClose={() => setFiles(null)} />}
       {scan && <ScanDialog image={scan} agents={agents} onClose={() => { setScan(null); images.reload(); }} />}
     </div>
   );

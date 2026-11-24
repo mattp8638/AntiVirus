@@ -19,6 +19,7 @@ members = [
     "crates/cdp",
     "crates/scan",
     "crates/filebackup",
+    "crates/catalog",
 ]
 
 [workspace.package]
@@ -34,6 +35,7 @@ saas = { path = "crates/saas" }
 cdp = { path = "crates/cdp" }
 scan = { path = "crates/scan" }
 filebackup = { path = "crates/filebackup" }
+catalog = { path = "crates/catalog" }
 core-format = { path = "crates/core-format" }
 engine = { path = "crates/engine" }
 snapshot-linux = { path = "crates/snapshot-linux" }

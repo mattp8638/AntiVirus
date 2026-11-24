@@ -397,6 +397,13 @@ def update_job(job_id: str, body: dict = Body(...), agent: BackupAgent = Depends
                 repo.status_message = None if ok else "agent reported a different repository ID"
             else:
                 repo.status, repo.status_message = "failed", job.error
+    # Each new backup's file catalogue is built on the machine that took it, for searching across backups.
+    if bk.is_backup(kind) and state in ("succeeded", "warning") and repo is not None \
+            and "search_files" in bk.capabilities(agent):
+        for im in images:
+            if db.get(BackupImage, str(im.get("image_id"))) is not None:
+                bk.queue(db, agent, {"type": "index_image", "image_id": str(im.get("image_id"))}, repo.id,
+                         f"backup-agent:{agent.id}", job.plan_id)
     # A plan can scan each new backup for malware on the machine that took it.
     settings = kind.get("settings") if isinstance(kind.get("settings"), dict) else {}
     if bk.is_backup(kind) and state in ("succeeded", "warning") and settings.get("scan_after_backup") \

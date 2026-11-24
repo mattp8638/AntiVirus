@@ -22,3 +22,4 @@ engine.workspace = true
 nbd-server.workspace = true
 uuid.workspace = true
 zstd.workspace = true
+catalog.workspace = true
