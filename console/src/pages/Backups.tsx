@@ -1,8 +1,8 @@
 // Device backup: image backups of servers, PCs and Hyper-V hosts with the Fenrir backup agent (backup/ in this
 // repository). Repository passphrases and share passwords are sealed in this browser to each machine's key; the
 // server keeps only the sealed copies and can never open a backup.
-import { Fragment, useMemo, useState } from "react";
-import { api, ago, fmtTime, getToken } from "../api";
+import { Fragment, useEffect, useMemo, useState } from "react";
+import { api, ago, fmtTime, getToken, lockRepositories, rememberReauth as rememberReauthToken, onUnlockChange, rememberUnlock, unlockedUntil } from "../api";
 import { useApp } from "../app-context";
 import { newRecoveryKey, seal, sealSupported, type Sealed } from "../backup-seal";
 import { FileBrowser } from "./BackupFiles";
@@ -758,22 +758,86 @@ function agentInventoryDisks(agent?: BackupAgent): string[] {
 
 // ---------------------------------------------------------------- images, restore, boot checks
 
+interface ImageDevice {
+  key: string; name: string; hostname: string; vmName: string | null; agentId: string | null; tenantId: string;
+  images: number; lastCreated: number; firstCreated: number; storedBytes: number; lastKind: string; lastConsistency: string;
+  anomalies: number; lastVerified: string | null; repositories: { id: string; name: string; images: number; unlocked: boolean }[];
+}
+
+/** Re-render when a repository is unlocked or locked, and when an unlock runs out. */
+function useUnlocks(): number {
+  const [n, setN] = useState(0);
+  useEffect(() => {
+    const off = onUnlockChange(() => setN((x) => x + 1));
+    const t = window.setInterval(() => setN((x) => x + 1), 30_000);
+    return () => { off(); window.clearInterval(t); };
+  }, []);
+  return n;
+}
+
+// Backed-up machines first; a machine's backups open only once its repository is unlocked in this browser session:
+// the passphrase is tried on a machine with access (sealed to it here, never seen by the server), after a fresh
+// password (and MFA) check. The unlock lasts 30 minutes.
 function Images({ agents, repos }: { agents: BackupAgent[]; repos: Repo[] }) {
   const { tenantId } = useApp();
-  const [repo, setRepo] = useState("");
-  const images = useListData<Image>("backup/images", { tenantId: tenantId || undefined, repositoryId: repo || undefined }, [tenantId, repo]);
+  const tick = useUnlocks();
+  const devices = useListData<ImageDevice>("backup/image-devices", { tenantId: tenantId || undefined }, [tenantId, tick]);
+  const [open, setOpen] = useState<ImageDevice | null>(null);
+  const [asking, setAsking] = useState<ImageDevice | null>(null);
+  const [filter, setFilter] = useState("");
+  const isOpen = (d: ImageDevice) => d.repositories.some((r) => unlockedUntil(r.id));
+  const pick = (d: ImageDevice) => (isOpen(d) ? setOpen(d) : setAsking(d));
+  if (open) {
+    const current = devices.data?.find((d) => d.key === open.key) ?? open;
+    return <DeviceImages device={current} agents={agents} repos={repos} onBack={() => setOpen(null)} onUnlock={() => setAsking(current)} />;
+  }
+  const rows = (devices.data ?? null)?.filter((d) => !filter || `${d.name} ${d.hostname}`.toLowerCase().includes(filter.toLowerCase())) ?? null;
+  return (
+    <div className="card">
+      <div className="row" style={{ marginBottom: 10, gap: 8 }}>
+        <input placeholder="Find a machine" value={filter} onChange={(e) => setFilter(e.target.value)} style={{ maxWidth: 260 }} />
+        <span className="small muted">Choose a machine to see its backups. You will be asked for the repository passphrase and to confirm it's you.</span>
+        {devices.data?.some(isOpen) && <button className="small" style={{ marginLeft: "auto" }} onClick={() => lockRepositories()}>Lock all</button>}
+      </div>
+      <Table rows={rows} empty="No backups yet." onRow={pick}
+        columns={[
+          { key: "name", label: "Machine", render: (d) => <><b>{d.name}</b>{d.vmName && <span className="small muted"> · VM on {d.hostname}</span>}{d.anomalies > 0 && <div className="small" style={{ color: "#fca5a5" }}>⚠ {d.anomalies} backup{d.anomalies === 1 ? "" : "s"} flagged</div>}</> },
+          { key: "images", label: "Backups", render: (d) => <span>{d.images} <span className="small muted">since {new Date(d.firstCreated * 1000).toLocaleDateString()}</span></span> },
+          { key: "last", label: "Latest", render: (d) => <span>{unixTime(d.lastCreated)} <span className="small muted">{d.lastKind} · {d.lastConsistency}</span></span> },
+          { key: "stored", label: "Stored", render: (d) => <span className="small">{bytes(d.storedBytes)}</span> },
+          { key: "boot", label: "Last verified boot", render: (d) => d.lastVerified ? <Pill value={ago(d.lastVerified)} tone="good" /> : <span className="small muted">not tested</span> },
+          { key: "repo", label: "Repository", render: (d) => <span className="small">{d.repositories.map((r) => r.name).join(", ")}</span> },
+          { key: "lock", label: "", render: (d) => isOpen(d) ? <Pill value="Unlocked" tone="good" /> : <span className="small muted">🔒 Locked</span> },
+        ]} />
+      {asking && <UnlockDialog device={asking} agents={agents} repos={repos} onClose={(ok) => { const d = asking; setAsking(null); if (ok) setOpen(d); }} />}
+    </div>
+  );
+}
+
+function DeviceImages({ device, agents, repos, onBack, onUnlock }: {
+  device: ImageDevice; agents: BackupAgent[]; repos: Repo[]; onBack: () => void; onUnlock: () => void;
+}) {
+  const tick = useUnlocks();
+  const images = useListData<Image>("backup/images", { device: device.key }, [device.key, tick]);
   const [restore, setRestore] = useState<Image | null>(null);
   const [boot, setBoot] = useState<Image | null>(null);
   const [files, setFiles] = useState<Image | null>(null);
   const { can } = useApp();
+  const locked = device.repositories.filter((r) => !unlockedUntil(r.id));
+  const until = Math.max(...device.repositories.map((r) => unlockedUntil(r.id) ?? 0));
+  useEffect(() => { if (locked.length === device.repositories.length) onBack(); }, [tick]);  // ran out, or locked
   return (
     <div className="card">
-      <div className="row" style={{ marginBottom: 10 }}>
-        <select value={repo} onChange={(e) => setRepo(e.target.value)}><option value="">All repositories</option>{repos.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select>
+      <div className="row" style={{ marginBottom: 10, gap: 8 }}>
+        <button className="small" onClick={onBack}>← All machines</button>
+        <h3 style={{ margin: 0 }}>{device.name}{device.vmName && <span className="small muted"> · VM on {device.hostname}</span>}</h3>
+        <span className="small muted">Unlocked until {new Date(until).toLocaleTimeString()}</span>
+        <button className="small" style={{ marginLeft: "auto" }} onClick={() => { lockRepositories(device.repositories.map((r) => r.id)); onBack(); }}>Lock</button>
       </div>
-      <Table rows={images.data} empty="No images yet."
+      {locked.length > 0 && <p className="small">{locked.map((r) => `${r.images} backup${r.images === 1 ? "" : "s"} in ${r.name}`).join(", ")} still locked. <button className="small" onClick={onUnlock}>Unlock</button></p>}
+      <Table rows={images.data} empty="No backups."
         columns={[
-          { key: "what", label: "Image", render: (i) => <><b>{i.vmName ?? i.hostname}</b> <span className="small muted">{i.kind}{i.label ? ` · ${i.label}` : ""}</span>{i.anomaly && <div className="small" style={{ color: "#fca5a5" }}>⚠ {i.anomaly}</div>}</> },
+          { key: "what", label: "Backup", render: (i) => <><span>{i.kind}</span>{i.label && <span className="small muted"> · {i.label}</span>}{device.repositories.length > 1 && <div className="small muted">{repos.find((r) => r.id === i.repositoryId)?.name}</div>}{i.anomaly && <div className="small" style={{ color: "#fca5a5" }}>⚠ {i.anomaly}</div>}</> },
           { key: "created", label: "Taken", render: (i) => unixTime(i.created) },
           { key: "size", label: "Size", render: (i) => <span className="small">{bytes(i.capturedBytes)} · {bytes(i.storedNewBytes)} new</span> },
           { key: "consistency", label: "Consistency", render: (i) => <><span>{i.consistency}</span><AppsLine apps={i.applications} /></> },
@@ -788,6 +852,81 @@ function Images({ agents, repos }: { agents: BackupAgent[]; repos: Repo[] }) {
       {boot && <BootDialog image={boot} agents={agents} repos={repos} onClose={() => setBoot(null)} />}
       {files && <FileBrowser image={files} onClose={() => setFiles(null)} />}
     </div>
+  );
+}
+
+/** Repository passphrase + password (+ MFA code): the passphrase is checked by a machine with access. */
+function UnlockDialog({ device, agents, repos, onClose }: { device: ImageDevice; agents: BackupAgent[]; repos: Repo[]; onClose: (ok: boolean) => void }) {
+  const { me } = useApp();
+  const lockedRepos = device.repositories.filter((r) => !unlockedUntil(r.id));
+  const [repoId, setRepoId] = useState(lockedRepos[0]?.id ?? device.repositories[0]?.id ?? "");
+  const repo = repos.find((r) => r.id === repoId);
+  // Who checks the passphrase: a machine with access, online, the backed-up machine itself first.
+  const checkers = agents.filter((a) => repo?.agents.some((x) => x.id === a.id))
+    .sort((a, b) => Number(b.online) - Number(a.online) || Number(b.id === device.agentId) - Number(a.id === device.agentId));
+  const [agentId, setAgentId] = useState("");
+  const checker = checkers.find((a) => a.id === agentId) ?? checkers.find((a) => a.online);
+  const [pass, setPass] = useState("");
+  const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+  const [needCode, setNeedCode] = useState(!!me?.user?.mfaEnabled);
+  const [state, setState] = useState<{ busy?: string; err?: string }>({});
+  const go = async () => {
+    if (!checker) return;
+    setState({ busy: "Confirming it's you…" });
+    try {
+      try {
+        const r = await api<{ reauthToken: string; expiresInSeconds: number }>("auth/reauth", { body: { password, ...(code ? { code } : {}) } });
+        rememberReauthToken(r.reauthToken, r.expiresInSeconds);
+      } catch (e) {
+        if ((e as Error).message === "MFA code required") { setNeedCode(true); setState({ err: "Enter the code from your authenticator app." }); return; }
+        throw e;
+      }
+      setState({ busy: `Checking the passphrase on ${checker.name}…` });
+      const sealed = await seal(checker.publicKey, JSON.stringify({ passphrase: pass, recovery_key: null }));
+      const { id } = await api<{ id: string }>(`backup/repositories/${repoId}/unlock`, { body: { agentId: checker.id, sealed } });
+      const until = Date.now() + 3 * 60_000;
+      while (Date.now() < until) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const r = await api<{ state: string; error?: string; token?: string; expiresInSeconds?: number }>(`backup/unlock/${id}`);
+        if (r.state === "unlocked") {
+          rememberUnlock(repoId, r.token!, r.expiresInSeconds!);
+          setPass(""); setPassword(""); setCode("");
+          onClose(true);
+          return;
+        }
+        if (r.state === "failed") throw new Error(/passphrase/i.test(r.error ?? "") ? "That passphrase does not open this repository." : r.error || "The check failed.");
+      }
+      throw new Error(`${checker.name} did not answer in time. Is it busy with another job (see Activity)?`);
+    } catch (e) {
+      setState({ err: (e as Error).message });
+    }
+  };
+  const ok = !!checker && !!pass && !!password && (!needCode || code.length === 6) && !state.busy;
+  return (
+    <Modal title={`Open the backups of ${device.name}`} onClose={() => onClose(false)}
+      footer={<button className="primary" disabled={!ok} onClick={go}>{state.busy ? "Checking…" : "Unlock"}</button>}>
+      <form onSubmit={(e) => { e.preventDefault(); if (ok) go(); }}>
+        <div className="form-grid">
+          {device.repositories.length > 1 && <label className="field">Repository
+            <select value={repoId} onChange={(e) => { setRepoId(e.target.value); setAgentId(""); }}>
+              {device.repositories.map((r) => <option key={r.id} value={r.id}>{r.name} ({r.images} backups){unlockedUntil(r.id) ? " · unlocked" : ""}</option>)}
+            </select></label>}
+          <label className="field">Passphrase of {repo?.name ?? "the repository"}<input type="password" autoFocus value={pass} onChange={(e) => setPass(e.target.value)} autoComplete="off" /></label>
+          <label className="field">Your password<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" /></label>
+          {needCode && <label className="field">Authenticator code<input inputMode="numeric" maxLength={6} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} autoComplete="one-time-code" /></label>}
+          {checkers.length > 1 && <label className="field">Checked by
+            <select value={checker?.id ?? ""} onChange={(e) => setAgentId(e.target.value)}>
+              {checkers.map((a) => <option key={a.id} value={a.id} disabled={!a.online}>{a.name}{a.online ? "" : " (offline)"}</option>)}
+            </select></label>}
+        </div>
+        <button type="submit" hidden />
+      </form>
+      {!checker && <ErrorNote error={checkers.length ? "No machine with access to this repository is online to check the passphrase." : "No machine has access to this repository."} />}
+      <p className="small muted">The passphrase is encrypted in this browser for {checker?.name ?? "a machine with access"}, which tries it on the repository; this server never sees it. Unlocked for 30 minutes in this browser tab.</p>
+      {state.busy && <p role="status" className="small">{state.busy}</p>}
+      {state.err && <ErrorNote error={state.err} />}
+    </Modal>
   );
 }
 
@@ -997,6 +1136,36 @@ function Activity() {
 // ---------------------------------------------------------------- device page
 
 /** The Backup section of a device: its backup agent (if installed), images and recent jobs, or an install button. */
+/** A machine's backups on its device page: the same lock as Images & restore. */
+function MachineImages({ agent }: { agent: BackupAgent }) {
+  const q = { tenantId: agent.tenantId };
+  const tick = useUnlocks();
+  const devices = useListData<ImageDevice>("backup/image-devices", q, [agent.tenantId, tick]);
+  const agents = useListData<BackupAgent>("backup/agents", q, [agent.tenantId]);
+  const repos = useListData<Repo>("backup/repositories", q, [agent.tenantId]);
+  const [open, setOpen] = useState<string | null>(null);
+  const [asking, setAsking] = useState<ImageDevice | null>(null);
+  const mine = (devices.data ?? []).filter((d) => d.agentId === agent.id);
+  const isOpen = (d: ImageDevice) => d.repositories.some((r) => unlockedUntil(r.id));
+  const current = mine.find((d) => d.key === open);
+  if (current && isOpen(current)) {
+    return <DeviceImages device={current} agents={agents.data ?? []} repos={repos.data ?? []} onBack={() => setOpen(null)} onUnlock={() => setAsking(current)} />;
+  }
+  return (
+    <div className="card">
+      <h3>Images</h3>
+      <Table rows={devices.data ? mine : null} empty="No images yet. Create a plan on the Backups page." onRow={(d) => (isOpen(d) ? setOpen(d.key) : setAsking(d))}
+        columns={[
+          { key: "name", label: "Backed up", render: (d) => <b>{d.vmName ? `${d.vmName} (VM)` : "This machine"}</b> },
+          { key: "images", label: "Backups", render: (d) => d.images },
+          { key: "last", label: "Latest", render: (d) => unixTime(d.lastCreated) },
+          { key: "lock", label: "", render: (d) => isOpen(d) ? <Pill value="Unlocked" tone="good" /> : <button className="small">🔒 Open</button> },
+        ]} />
+      {asking && <UnlockDialog device={asking} agents={agents.data ?? []} repos={repos.data ?? []} onClose={(ok) => { const d = asking; setAsking(null); if (ok) setOpen(d.key); }} />}
+    </div>
+  );
+}
+
 export function DeviceBackup({ device }: { device: { id: string; hostname: string; platform: string; osVersion?: string } }) {
   const { can } = useApp();
   const { run, busy } = useAction();
@@ -1005,7 +1174,6 @@ export function DeviceBackup({ device }: { device: { id: string; hostname: strin
   const detail = useData<any>(agent ? `backup/agents/${agent.id}` : null, {}, [agent?.id]);
   const [role, setRole] = useState(/server/i.test(device.osVersion ?? "") || device.platform === "linux" ? "server" : "workstation");
   const [sent, setSent] = useState(false);
-  const [files, setFiles] = useState<Image | null>(null);
   useAutoRefresh(agents.reload, 15000);
   if (agents.data == null) return <div className="empty">Loading…</div>;
   if (!agent) return (
@@ -1029,20 +1197,10 @@ export function DeviceBackup({ device }: { device: { id: string; hostname: strin
       <div className="grid k4" style={{ marginBottom: 14 }}>
         <Stat label="Backup agent" value={agent.online ? "Online" : "Offline"} hint={`version ${agent.agentVersion}`} />
         <Stat label="Last backup" value={agent.lastBackup ? agent.lastBackup.state : "never"} hint={agent.lastBackup ? ago(agent.lastBackup.at) : undefined} accent={agent.lastBackup?.state === "failed" ? "bad" : undefined} />
-        <Stat label="Images" value={detail.data?.images?.length ?? "—"} />
+        <Stat label="Images" value={detail.data?.imageCount ?? "—"} />
         <Stat label="Plans" value={detail.data?.plans?.length ?? "—"} hint={detail.data?.plans?.map((p: Plan) => describeSchedule(p.schedule)).join(", ")} to="/backups" />
       </div>
-      <div className="card">
-        <h3>Images</h3>
-        <Table rows={detail.data?.images ?? null} empty="No images yet. Create a plan on the Backups page." columns={[
-          { key: "created", label: "Taken", render: (i: Image) => unixTime(i.created) },
-          { key: "kind", label: "Type", render: (i: Image) => `${i.kind}${i.vmName ? ` · ${i.vmName}` : ""}` },
-          { key: "size", label: "Size", render: (i: Image) => bytes(i.capturedBytes) },
-          { key: "boot", label: "Boots?", render: (i: Image) => i.lastBootCheck ? <Pill value={i.lastBootCheck.outcome} tone={i.lastBootCheck.outcome === "failed" ? "bad" : "good"} /> : "—" },
-          { key: "files", label: "", render: (i: Image) => can("scripts") && <button className="small" onClick={() => setFiles(i)}>Browse files</button> },
-        ]} />
-        {files && <FileBrowser image={files} onClose={() => setFiles(null)} />}
-      </div>
+      <MachineImages agent={agent} />
       <div className="card"><h3>Recent backup jobs</h3><JobsTable rows={detail.data?.jobs ?? null} /></div>
     </>
   );

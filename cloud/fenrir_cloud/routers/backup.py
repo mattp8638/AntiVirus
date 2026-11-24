@@ -24,7 +24,11 @@ from sqlalchemy.orm import Session
 from .. import backup as bk
 from .. import backup_gateway as gwmod
 from ..db import get_db
-from ..deps import Principal, current_principal, require_reauth, scoped_tenant
+import time
+from .. import ratelimit
+from ..config import get_settings
+from ..deps import REAUTH_HEADER, REAUTH_MINUTES, Principal, current_principal, require_reauth, scoped_tenant
+from ..security import digest, issue_token, read_token, reauth_state
 from ..models import (BackupAgent, BackupBootCheck, BackupEnrollment, BackupImage, BackupJob, BackupRepoAccess,
                       BackupRepository, Device, ImageBackupPlan, Tenant, utcnow)
 from .backup_agent import backup_settings, server_url, tls_pin
@@ -286,7 +290,7 @@ def get_agent(agent_id: str, p: Principal = Depends(current_principal), db: Sess
     repos = db.execute(select(BackupRepository).join(BackupRepoAccess, BackupRepoAccess.repository_id == BackupRepository.id)
                        .where(BackupRepoAccess.agent_id == a.id)).scalars().all()
     return {"agent": agent_out(db, a), "inventory": a.inventory, "jobs": [job_out(j, names) for j in jobs],
-            "images": [image_out(i, _boot_latest(db, [i.image_id for i in images])) for i in images][:200],
+            "imageCount": len(images),
             "plans": [plan_out(pl, names) for pl in plans],
             "repositories": [{"id": r.id, "name": r.name, "status": r.status} for r in repos]}
 
@@ -1038,18 +1042,145 @@ def run_plan(plan_id: str, p: Principal = Depends(current_principal), db: Sessio
 # --------------------------------------------------------------------------
 
 
-@router.get("/images")
-def list_images(tenantId: str | None = None, repositoryId: str | None = None, agentId: str | None = None,
-                p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+# ---------------------------------------------------------------- unlocking a repository's backups
+# Images are listed, browsed and restored only after the person proves, in this browser session, that they know the
+# repository's passphrase and confirms their password (and MFA code) moments before. The passphrase is sealed in the
+# browser to a machine that already has access; that machine tries it on the repository. This server never sees it.
+
+UNLOCK_HEADER = "X-Fenrir-Unlock"
+UNLOCK_MINUTES = 30
+FRESH_REAUTH_SECONDS = 120
+
+
+def _unlocked(request: Request, p: Principal) -> set[str]:
+    """Repository ids this browser session has unlocked (tokens in the X-Fenrir-Unlock header, comma-separated)."""
+    secret = get_settings().secret_key
+    session = digest(request.headers.get("Authorization", ""))
+    state = reauth_state(secret, p.user)
+    out: set[str] = set()
+    for t in request.headers.get(UNLOCK_HEADER, "").split(",")[:64]:
+        pl = read_token(secret, t.strip()) if t.strip() else None
+        if pl and pl.get("aud") == "backup-unlock" and pl.get("sub") == p.user.id and pl.get("session") == session \
+                and pl.get("state") == state and isinstance(pl.get("repo"), str):
+            out.add(pl["repo"])
+    return out
+
+
+def require_unlocked(request: Request, p: Principal, repo_id: str) -> None:
+    if repo_id not in _unlocked(request, p):
+        raise HTTPException(403, "repository_locked")
+
+
+def _image_unlocked(request: Request, db: Session, p: Principal, image_id: str) -> BackupImage:
+    im = _image(db, p, image_id)
+    require_unlocked(request, p, im.repository_id)
+    return im
+
+
+def _device_key(i: BackupImage) -> str:
+    return f"{i.agent_id or 'host:' + (i.hostname or '')}|{i.vm_name or ''}"
+
+
+@router.get("/image-devices")
+def image_devices(request: Request, tenantId: str | None = None, p: Principal = Depends(current_principal),
+                  db: Session = Depends(get_db)):
+    """Backed-up machines (and VMs), with a summary of their images; the images themselves need an unlock."""
     p.require("read")
-    q = select(BackupImage).where(BackupImage.tenant_id.in_(scoped_tenant(p, tenantId)))
-    if repositoryId:
-        q = q.where(BackupImage.repository_id == repositoryId)
+    rows = db.execute(select(BackupImage).where(BackupImage.tenant_id.in_(scoped_tenant(p, tenantId)))
+                      .order_by(BackupImage.created_unix.desc())).scalars().all()
+    repos = {r.id: r for r in db.execute(select(BackupRepository).where(
+        BackupRepository.id.in_({i.repository_id for i in rows}))).scalars()} if rows else {}
+    checks = _boot_latest(db, [i.image_id for i in rows]) if rows else {}
+    unlocked = _unlocked(request, p)
+    groups: dict[str, dict] = {}
+    for i in rows:
+        g = groups.get(_device_key(i))
+        if g is None:
+            g = groups[_device_key(i)] = {
+                "key": _device_key(i), "name": i.vm_name or i.hostname, "hostname": i.hostname, "vmName": i.vm_name,
+                "agentId": i.agent_id, "tenantId": i.tenant_id, "images": 0, "lastCreated": i.created_unix,
+                "firstCreated": i.created_unix, "storedBytes": 0, "lastKind": i.kind, "lastConsistency": i.consistency,
+                "anomalies": 0, "lastVerified": None, "repositories": {}}
+        g["images"] += 1
+        g["firstCreated"] = min(g["firstCreated"], i.created_unix)
+        g["storedBytes"] += i.stored_new_bytes or 0
+        g["anomalies"] += 1 if i.anomaly else 0
+        b = checks.get(i.image_id)
+        if b is not None and b.outcome == "verified" and (g["lastVerified"] is None or iso(b.at) > g["lastVerified"]):
+            g["lastVerified"] = iso(b.at)
+        r = g["repositories"].setdefault(i.repository_id, {
+            "id": i.repository_id, "name": repos[i.repository_id].name if i.repository_id in repos else "?",
+            "images": 0, "unlocked": i.repository_id in unlocked})
+        r["images"] += 1
+    out = []
+    for g in groups.values():
+        g["repositories"] = sorted(g["repositories"].values(), key=lambda r: -r["images"])
+        out.append(g)
+    return sorted(out, key=lambda g: (g["name"] or "").lower())
+
+
+@router.post("/repositories/{repo_id}/unlock")
+def unlock_repository(repo_id: str, request: Request, body: dict = Body(...), p: Principal = Depends(current_principal),
+                      db: Session = Depends(get_db)):
+    """Check the repository passphrase, sealed in the browser to a machine with access, on that machine. Needs a
+    password (and MFA) confirmation from the last two minutes."""
+    p.require("read")
+    require_reauth(request, p)
+    pl = read_token(get_settings().secret_key, request.headers.get(REAUTH_HEADER, "")) or {}
+    if int(pl.get("exp") or 0) - time.time() < REAUTH_MINUTES * 60 - FRESH_REAUTH_SECONDS:
+        raise HTTPException(403, "reauth_required")
+    ratelimit.check(f"backup-unlock:{p.user.id}", 10, 300)
+    r = _repo(db, p, repo_id)
+    a = _agent(db, p, str(body.get("agentId") or ""))
+    if a.tenant_id != r.tenant_id or db.get(BackupRepoAccess, (r.id, a.id)) is None:
+        bad("that machine has no access to this repository")
+    if not bk.online(a):
+        bad(f"{a.display_name or a.hostname} is offline; choose a machine that is online")
+    job = bk.queue(db, a, {"type": "list_images", "unlock": {"user": p.user.id, "sealed": _sealed(body.get("sealed"))}},
+                   r.id, p.actor)
+    bk.record(db, p.actor, "backup.repository.unlock_requested", r.name, r.tenant_id, machine=a.hostname)
+    db.commit()
+    return {"id": job.id}
+
+
+@router.get("/unlock/{job_id}")
+def unlock_result(job_id: str, request: Request, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """The outcome of a passphrase check; when it passed, a 30-minute unlock for this browser session."""
+    p.require("read")
+    job = db.get(BackupJob, job_id)
+    unlock = (job.kind or {}).get("unlock") if job is not None else None
+    if job is None or job.tenant_id not in p.tenant_ids or not isinstance(unlock, dict) or unlock.get("user") != p.user.id:
+        raise HTTPException(404, "No such check")
+    if job.state in ("queued", "dispatched", "running"):
+        return {"state": "pending"}
+    if job.state not in ("succeeded", "warning"):
+        return {"state": "failed", "error": job.error or f"the check was {job.state}"}
+    if job.finished_at is None or utcnow() - job.finished_at > timedelta(minutes=10):
+        return {"state": "failed", "error": "this check has expired; unlock again"}
+    secret = get_settings().secret_key
+    token = issue_token(secret, p.user.id, UNLOCK_MINUTES, aud="backup-unlock", repo=job.repository_id,
+                        session=digest(request.headers.get("Authorization", "")), state=reauth_state(secret, p.user))
+    return {"state": "unlocked", "repositoryId": job.repository_id, "token": token, "expiresInSeconds": UNLOCK_MINUTES * 60}
+
+
+@router.get("/images")
+def list_images(request: Request, tenantId: str | None = None, repositoryId: str | None = None,
+                agentId: str | None = None, device: str | None = None,
+                p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Images in repositories this browser session has unlocked."""
+    p.require("read")
+    unlocked = _unlocked(request, p)
+    if repositoryId and repositoryId not in unlocked:
+        raise HTTPException(403, "repository_locked")
+    q = select(BackupImage).where(BackupImage.tenant_id.in_(scoped_tenant(p, tenantId)),
+                                  BackupImage.repository_id.in_([repositoryId] if repositoryId else unlocked or [""]))
     if agentId:
         q = q.where(BackupImage.agent_id == agentId)
-    rows = db.execute(q.order_by(BackupImage.created_unix.desc()).limit(1000)).scalars().all()
+    rows = db.execute(q.order_by(BackupImage.created_unix.desc()).limit(2000)).scalars().all()
+    if device:
+        rows = [i for i in rows if _device_key(i) == device]
     checks = _boot_latest(db, [i.image_id for i in rows])
-    return [image_out(i, checks) for i in rows]
+    return [image_out(i, checks) for i in rows[:1000]]
 
 
 def _image(db: Session, p: Principal, image_id: str) -> BackupImage:
@@ -1062,7 +1193,7 @@ def _image(db: Session, p: Principal, image_id: str) -> BackupImage:
 @router.post("/restores")
 def create_restore(request: Request, body: dict = Body(...), p: Principal = Depends(current_principal),
                    db: Session = Depends(get_db)):
-    im = _image(db, p, str(body.get("imageId") or ""))
+    im = _image_unlocked(request, db, p, str(body.get("imageId") or ""))
     a = _agent(db, p, str(body.get("agentId") or ""))
     t = body.get("target") if isinstance(body.get("target"), dict) else {}
     kind = t.get("type")
@@ -1144,11 +1275,11 @@ def _volume(body: dict) -> dict | None:
 
 
 @router.post("/images/{image_id}/browse")
-def browse_files(image_id: str, body: dict = Body(default={}), p: Principal = Depends(current_principal),
+def browse_files(image_id: str, request: Request, body: dict = Body(default={}), p: Principal = Depends(current_principal),
                  db: Session = Depends(get_db)):
     """List an image's volumes (no volume given) or one folder. Returns a job; poll it for the listing."""
     p.require("scripts")
-    im = _image(db, p, image_id)
+    im = _image_unlocked(request, db, p, image_id)
     a = _file_agent(db, p, im, body.get("agentId"))
     path = str(body.get("path") or "/")
     if len(path) > 4000 or ".." in path.replace("\\", "/").split("/"):
@@ -1166,7 +1297,7 @@ def restore_files(image_id: str, request: Request, body: dict = Body(...), p: Pr
                   db: Session = Depends(get_db)):
     """Copy chosen files and folders out of a backup to a folder on a machine."""
     p.require("scripts")
-    im = _image(db, p, image_id)
+    im = _image_unlocked(request, db, p, image_id)
     a = _file_agent(db, p, im, body.get("agentId"))
     volume = _volume(body)
     if volume is None:
@@ -1194,12 +1325,12 @@ def restore_files(image_id: str, request: Request, body: dict = Body(...), p: Pr
 
 
 @router.post("/images/{image_id}/download-files")
-def download_files(image_id: str, body: dict = Body(...), p: Principal = Depends(current_principal),
+def download_files(image_id: str, request: Request, body: dict = Body(...), p: Principal = Depends(current_principal),
                    db: Session = Depends(get_db)):
     """Send chosen files to this browser, encrypted for its one-time key: the machine restores and encrypts them,
     this server only relays ciphertext (backup/docs/design/file-download.md)."""
     p.require("scripts")
-    im = _image(db, p, image_id)
+    im = _image_unlocked(request, db, p, image_id)
     a = _file_agent(db, p, im, body.get("agentId"))
     volume = _volume(body)
     if volume is None:
@@ -1238,10 +1369,10 @@ def get_download(job_id: str, p: Principal = Depends(current_principal), db: Ses
 
 
 @router.post("/images/{image_id}/boot-check")
-def create_boot_check(image_id: str, body: dict = Body(default={}), p: Principal = Depends(current_principal),
+def create_boot_check(image_id: str, request: Request, body: dict = Body(default={}), p: Principal = Depends(current_principal),
                       db: Session = Depends(get_db)):
     p.require("scripts")
-    im = _image(db, p, image_id)
+    im = _image_unlocked(request, db, p, image_id)
     a = _agent(db, p, str(body.get("agentId") or ""))
     mem, cpus, keep = body.get("memoryMb"), body.get("cpus"), bool(body.get("keepRunning"))
     if (mem is not None and not (isinstance(mem, int) and 256 <= mem <= 65536)) or \
@@ -1264,9 +1395,9 @@ def create_boot_check(image_id: str, body: dict = Body(default={}), p: Principal
 
 
 @router.get("/images/{image_id}/boot-checks")
-def list_boot_checks(image_id: str, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+def list_boot_checks(image_id: str, request: Request, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     p.require("read")
-    im = _image(db, p, image_id)
+    im = _image_unlocked(request, db, p, image_id)
     names = _names(db, [im.tenant_id])
     rows = db.execute(select(BackupBootCheck).where(BackupBootCheck.image_id == im.image_id)
                       .order_by(BackupBootCheck.at.desc(), BackupBootCheck.id.desc()).limit(50)).scalars().all()

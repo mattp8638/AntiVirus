@@ -57,7 +57,8 @@ Fenrir server itself.
 
 | Action | Permission |
 |---|---|
-| View machines, repositories, plans, images, jobs | `read` |
+| View machines, repositories, plans, jobs, and the list of backed-up machines | `read` |
+| Open a machine's backups (list, browse, restore, boot test) | `read` + unlock (below) |
 | Back up now, verify, test a connection, run a plan, cancel, place a hold | `respond` |
 | Browse and restore files; restore to VHDX files or a new Hyper-V VM; boot tests; stop a test VM | `scripts` |
 | Install links, repositories, access, plans, share sign-ins, maintenance, gateways | `configure` |
@@ -65,6 +66,26 @@ Fenrir server itself.
 | Turn automatic agent updates on or off | `platform` |
 
 A disk restore also needs the device name typed exactly. Every change is in the audit log (`backup.*`).
+
+## Opening a machine's backups
+
+**Images & restore** lists the backed-up machines (and Hyper-V VMs): how many backups, the latest, space used,
+the last verified boot. The backups themselves open only after an unlock:
+
+1. Choose the machine. Enter the **repository passphrase**, **your password** and, if your account has MFA, the
+   **authenticator code**.
+2. The password and code are checked as for any sensitive action. The passphrase is encrypted in your browser for
+   a machine that already has access to the repository (the backed-up machine first, if online), which tries it on
+   the repository. Fenrir Cloud never sees it, and drops the encrypted copy once checked.
+3. If it opens the repository, that repository is unlocked **in this browser tab for 30 minutes**: its backups can
+   be listed, browsed, downloaded, restored and boot-tested. Reloading the page, signing out or **Lock** ends it
+   sooner. The unlock is tied to your sign-in, so it cannot be used from another session.
+
+The server enforces this: without a valid unlock, image lists come back empty and browse, restore, download and
+boot-test requests are refused (`repository_locked`). The device page's Backup tab uses the same unlock. The
+check needs a machine with access to be online (the same is true of any restore); it is usually done within 15
+seconds. Attempts are rate-limited and audited (`backup.repository.unlock_requested`, `backup.repository.unlocked`,
+`backup.repository.unlock_failed`). Scheduled backups, retention and automatic boot tests are not affected.
 
 ## Boot tests: restore a backup as a VM to prove it works
 

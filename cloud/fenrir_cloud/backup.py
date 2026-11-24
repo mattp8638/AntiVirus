@@ -83,6 +83,8 @@ KIND_CAPABILITY = {"backup_system": "backup_system", "backup_disks": "backup_dis
 
 
 def label(kind: dict | None) -> str:
+    if (kind or {}).get("unlock"):
+        return "Passphrase check"
     return KIND_LABELS.get((kind or {}).get("type", ""), "Job")
 
 
@@ -634,10 +636,12 @@ FAST_POLL_FOR = timedelta(minutes=3)
 
 
 def poll_seconds(db: Session, agent: BackupAgent) -> int:
-    recent = db.execute(select(BackupJob.id).where(
+    """Every second while someone browses this machine's backups or waits for it to check a passphrase."""
+    recent = db.execute(select(BackupJob.kind).where(
         BackupJob.agent_id == agent.id, BackupJob.created_at > utcnow() - FAST_POLL_FOR,
-        BackupJob.kind["type"].as_string() == "browse_files")).first()
-    return FAST_POLL_SECONDS if recent else POLL_SECONDS
+        BackupJob.kind["type"].as_string().in_(("browse_files", "list_images")))).scalars().all()
+    fast = any(k.get("type") == "browse_files" or k.get("unlock") for k in recent if isinstance(k, dict))
+    return FAST_POLL_SECONDS if fast else POLL_SECONDS
 
 
 def purge_listings(db: Session) -> int:

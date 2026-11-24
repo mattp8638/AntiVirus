@@ -17,6 +17,7 @@ export function getToken(): string | null {
 }
 
 export function setToken(token: string | null) {
+  unlocks.clear();
   try {
     if (token) localStorage.setItem(TOKEN_KEY, token);
     else localStorage.removeItem(TOKEN_KEY);
@@ -35,6 +36,30 @@ export function setReauthPrompt(prompt: (() => Promise<string | null>) | null) {
 }
 export function rememberReauth(token: string, seconds: number) {
   reauthToken = { value: token, expires: Date.now() + (seconds - 10) * 1000 };
+}
+
+// Device backup: repositories unlocked in this browser session (passphrase checked on a machine, plus a fresh
+// password/MFA check). Kept in memory only, so a reload or sign-out locks them again.
+const unlocks = new Map<string, { token: string; expires: number }>();
+const unlockListeners = new Set<() => void>();
+export function rememberUnlock(repoId: string, token: string, seconds: number) {
+  unlocks.set(repoId, { token, expires: Date.now() + (seconds - 10) * 1000 });
+  unlockListeners.forEach((f) => f());
+}
+export function unlockedUntil(repoId: string): number | null {
+  const u = unlocks.get(repoId);
+  return u && u.expires > Date.now() ? u.expires : null;
+}
+export function lockRepositories(ids?: string[]) {
+  for (const id of ids ?? [...unlocks.keys()]) unlocks.delete(id);
+  unlockListeners.forEach((f) => f());
+}
+export function onUnlockChange(f: () => void): () => void {
+  unlockListeners.add(f);
+  return () => unlockListeners.delete(f);
+}
+function unlockHeader(): string {
+  return [...unlocks.values()].filter((u) => u.expires > Date.now()).map((u) => u.token).join(",");
 }
 
 let onUnauthorized: () => void = () => {};
@@ -63,6 +88,8 @@ async function rawApi<T>(path: string, options: { method?: string; body?: unknow
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
   if (reauthToken && reauthToken.expires > Date.now()) headers["X-Fenrir-Reauth"] = reauthToken.value;
+  const unlocked = unlockHeader();
+  if (unlocked) headers["X-Fenrir-Unlock"] = unlocked;
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
   const response = await fetch(url.toString(), {
     method: options.method ?? (options.body !== undefined ? "POST" : "GET"),
@@ -80,6 +107,9 @@ async function rawApi<T>(path: string, options: { method?: string; body?: unknow
   }
   if (!response.ok) {
     const detail = data && typeof data === "object" && "detail" in data ? (data as any).detail : text;
+    if (detail === "repository_locked") {
+      throw new ApiError(response.status, "These backups are locked (the unlock lasts 30 minutes). Open the machine again from Backups › Images & restore to unlock them.");
+    }
     throw new ApiError(response.status, typeof detail === "string" ? detail : JSON.stringify(detail));
   }
   return data as T;
@@ -90,6 +120,8 @@ export async function apiBytes(path: string): Promise<ArrayBuffer> {
   const headers: Record<string, string> = {};
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
+  const unlocked = unlockHeader();
+  if (unlocked) headers["X-Fenrir-Unlock"] = unlocked;
   const response = await fetch(new URL(`/api/console/${path}`, window.location.origin).toString(), { headers });
   if (response.status === 401) onUnauthorized();
   if (!response.ok) {

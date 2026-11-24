@@ -5,7 +5,7 @@ import base64
 import pytest
 import uuid
 
-from conftest import ADMIN_PASSWORD, enroll
+from conftest import ADMIN_PASSWORD, enroll, login
 
 from fenrir_cloud import backup as bk
 
@@ -55,6 +55,24 @@ def ready_repo(client, admin, tenant, agent_id, h):
     assert jobs[0]["repository"]["sealed_secret"] == SEALED
     finish(client, h, jobs[0]["id"], repo_uuid=repo_uuid)
     return r.json()["id"]
+
+
+def reauth(client, admin):
+    return client.post("/api/console/auth/reauth", headers=admin, json={"password": ADMIN_PASSWORD}).json()["reauthToken"]
+
+
+def unlock(client, admin, h, repo_id, agent_id, caps=CAPS, base=None):
+    """Unlock a repository's images for this session: password check, then the passphrase tried on a machine."""
+    r = client.post(f"/api/console/backup/repositories/{repo_id}/unlock",
+                    headers={**admin, "X-Fenrir-Reauth": reauth(client, admin)}, json={"agentId": agent_id, "sealed": SEALED})
+    assert r.status_code == 200, r.text
+    spec = next(j for j in heartbeat(client, h, caps=caps)["jobs"] if j["id"] == r.json()["id"])
+    assert spec["kind"] == {"type": "list_images"} and spec["repository"]["sealed_secret"] == SEALED
+    finish(client, h, spec["id"])
+    out = client.get(f"/api/console/backup/unlock/{spec['id']}", headers=admin).json()
+    assert out["state"] == "unlocked", out
+    base = base or admin
+    return {**base, "X-Fenrir-Unlock": ",".join(x for x in (base.get("X-Fenrir-Unlock"), out["token"]) if x)}
 
 
 def image(machine="m-1", total=1000, new=30, raw=30 * 1024, stored=12 * 1024, t=0):
@@ -117,10 +135,9 @@ def test_disk_restore_needs_typed_confirmation_and_reauth(client, admin, tenant)
     disks = [{"path": r"\\.\PhysicalDrive0", "size": 1 << 40, "model": "", "system": True},
              {"path": r"\\.\PhysicalDrive1", "size": 1 << 40, "model": "", "system": False}]
     heartbeat(client, h, disks=disks)
-    ready_repo(client, admin, tenant, agent_id, h)
+    repo_id = ready_repo(client, admin, tenant, agent_id, h)
     client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
-                json={"kind": {"type": "backup_system"}, "repositoryId": client.get(
-                    "/api/console/backup/repositories", headers=admin).json()[0]["id"]})
+                json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
     job = heartbeat(client, h)["jobs"][0]
     im = image()
     # Application-aware (VSS component mode): the agent lists the writers' components; unknown fields are dropped.
@@ -128,6 +145,11 @@ def test_disk_restore_needs_typed_confirmation_and_reauth(client, admin, tenant)
                            "included": True, "evil": "x" * 10_000},
                           {"writer": "Exchange", "component": "Mailbox", "included": False, "note": "on D:"}]
     finish(client, h, job["id"], images=[im])
+    # Locked until unlocked in this session: nothing listed, restores refused.
+    assert client.get("/api/console/backup/images", headers=admin).json() == []
+    locked = client.post("/api/console/backup/restores", headers=admin, json={"imageId": im["image_id"], "agentId": agent_id})
+    assert locked.status_code == 403 and locked.json()["detail"] == "repository_locked"
+    admin = unlock(client, admin, h, repo_id, agent_id)
     listed = client.get("/api/console/backup/images", headers=admin).json()
     apps = next(i for i in listed if i["imageId"] == im["image_id"])["applications"]
     assert [a["writer"] for a in apps] == ["SqlServerWriter", "Exchange"] and "evil" not in apps[0]
@@ -292,6 +314,7 @@ def test_browse_and_restore_files(client, admin, tenant):
     im = image()
     finish(client, h, job["id"], images=[im])
     assert heartbeat(client, h, caps=caps)["poll_seconds"] == bk.POLL_SECONDS
+    admin = unlock(client, admin, h, repo_id, agent_id, caps=caps)
 
     # Volumes, then a folder; the machine polls every second meanwhile.
     r = client.post(f"/api/console/backup/images/{im['image_id']}/browse", headers=admin, json={})
@@ -525,6 +548,7 @@ def test_boot_test_on_a_hyperv_host_keeps_the_vm_when_asked(client, admin, tenan
     job = heartbeat(client, src_h)["jobs"][0]
     im = image(machine="pm-acer")
     finish(client, src_h, job["id"], images=[im])
+    admin = unlock(client, admin, src_h, repo_id, src_id)
 
     hv_id, hv_h = agent_enroll(client, e["token"], machine="hv01", key=base64.b64encode(b"h" * 32).decode())
     kept = {"session_id": str(uuid.uuid4()), "image_id": im["image_id"], "started_unix": 1_790_000_000, "vnc_port": 0, "forwards": {}}
@@ -604,6 +628,7 @@ def test_recovery_media_is_personalised_and_enrols_recovery_sessions_only(client
     finish(client, oh, job["id"], images=[im])
     assert client.post(f"/api/console/backup/repositories/{repo}/access", headers=admin,
                        json={"agentId": rid, "sealed": SEALED}).status_code == 200
+    admin = unlock(client, admin, oh, repo, owner_id)
     step = {**admin, "X-Fenrir-Reauth": client.post("/api/console/auth/reauth", headers=admin,
                                                     json={"password": ADMIN_PASSWORD}).json()["reauthToken"]}
     def restore(dev):
@@ -702,6 +727,8 @@ def test_offsite_copy_after_each_plan_backup(client, admin, tenant):
     assert copy["repository"]["repository_id"] == local and copy["copy_target"]["repository_id"] == offsite
     assert copy["copy_target"]["sealed_secret"] == SEALED
     finish(client, h, copy["id"], images=[{**im, "image_id": str(uuid.uuid4())}])
+    assert client.get(f"/api/console/backup/images?repositoryId={offsite}", headers=admin).status_code == 403
+    admin = unlock(client, admin, h, offsite, agent_id)
     listed = client.get(f"/api/console/backup/images?repositoryId={offsite}", headers=admin).json()
     assert len(listed) == 1 and listed[0]["repositoryId"] == offsite
 
@@ -728,7 +755,8 @@ def test_move_from_fenrir_backup_existing_repository_and_plan_import(client, adm
     finish(client, h, job["id"], repo_uuid=real, images=[im])
     repo = next(x for x in client.get("/api/console/backup/repositories", headers=admin).json() if x["id"] == repo_id)
     assert repo["status"] == "ready"
-    assert [i["imageId"] for i in client.get(f"/api/console/backup/images?repositoryId={repo_id}", headers=admin).json()] \
+    seen = unlock(client, admin, h, repo_id, agent_id)
+    assert [i["imageId"] for i in client.get(f"/api/console/backup/images?repositoryId={repo_id}", headers=seen).json()] \
         == [im["image_id"]], "its history came with it"
     # The same repository again is refused.
     r2 = client.post("/api/console/backup/repositories", headers=admin, json=body).json()["id"]
@@ -794,6 +822,7 @@ def test_files_download_through_the_server_encrypted_for_the_browser(client, adm
                 json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
     im = image()
     finish(client, h, heartbeat(client, h, caps=caps)["jobs"][0]["id"], images=[im])
+    admin = unlock(client, admin, h, repo_id, agent_id, caps=caps)
     url = f"/api/console/backup/images/{im['image_id']}/download-files"
     body = {"disk": 0, "partition": 2, "paths": ["/Users/ann"]}
     assert client.post(url, headers=admin, json={**body, "recipient": "bm90IGEga2V5"}).status_code == 400
@@ -815,3 +844,58 @@ def test_files_download_through_the_server_encrypted_for_the_browser(client, adm
     assert got.status_code == 200 and got.content == b"a" * 100 + b"b" * 10
     assert client.post(up + "110", headers=raw, content=b"c").status_code == 409, "finished"
     assert bk.purge_downloads(0) == 1
+
+
+def test_backups_are_listed_by_device_and_open_only_after_an_unlock(client, admin, tenant, monkeypatch):
+    """Images & restore lists backed-up machines; a machine's images open after the repository passphrase (tried
+    on a machine with access, sealed to it in the browser) and a password check from the last two minutes."""
+    import time as _time
+
+    from fenrir_cloud.db import session_factory
+    from fenrir_cloud.models import BackupJob
+
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    heartbeat(client, h)
+    repo_id = ready_repo(client, admin, tenant, agent_id, h)
+    for t, vm in ((0, None), (10, None), (20, "Web VM")):
+        client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                    json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+        finish(client, h, heartbeat(client, h)["jobs"][0]["id"], images=[{**image(t=t), "vm_name": vm}])
+
+    devices = client.get("/api/console/backup/image-devices", headers=admin).json()
+    assert sorted((d["name"], d["images"]) for d in devices) == [("M-1", 2), ("Web VM", 1)]
+    host = next(d for d in devices if d["name"] == "M-1")
+    assert host["repositories"] == [{"id": repo_id, "name": "Office NAS", "images": 2, "unlocked": False}]
+    assert client.get("/api/console/backup/images", headers=admin).json() == []
+    assert client.get(f"/api/console/backup/agents/{agent_id}", headers=admin).json()["imageCount"] == 3
+
+    url = f"/api/console/backup/repositories/{repo_id}/unlock"
+    body = {"agentId": agent_id, "sealed": SEALED}
+    assert client.post(url, headers=admin, json=body).json()["detail"] == "reauth_required"
+    # A password check from more than two minutes ago is not enough.
+    step = {**admin, "X-Fenrir-Reauth": reauth(client, admin)}
+    real = _time.time
+    monkeypatch.setattr(_time, "time", lambda: real() + 180)
+    assert client.post(url, headers=step, json=body).json()["detail"] == "reauth_required"
+    monkeypatch.setattr(_time, "time", real)
+
+    # A wrong passphrase: the machine cannot open the repository; nothing unlocks.
+    job_id = client.post(url, headers={**admin, "X-Fenrir-Reauth": reauth(client, admin)}, json=body).json()["id"]
+    assert client.get(f"/api/console/backup/unlock/{job_id}", headers=admin).json() == {"state": "pending"}
+    finish(client, h, heartbeat(client, h)["jobs"][0]["id"], state="failed", error="the repository passphrase given to this machine is wrong")
+    out = client.get(f"/api/console/backup/unlock/{job_id}", headers=admin).json()
+    assert out["state"] == "failed" and "passphrase" in out["error"]
+    with session_factory()() as db:
+        assert db.get(BackupJob, job_id).kind["unlock"] == {"user": db.get(BackupJob, job_id).kind["unlock"]["user"]}, \
+            "the sealed passphrase is dropped once checked"
+
+    # The right one.
+    opened = unlock(client, admin, h, repo_id, agent_id)
+    mine = client.get("/api/console/backup/images", headers=opened, params={"device": host["key"]}).json()
+    assert len(mine) == 2 and all(i["vmName"] is None for i in mine)
+    assert next(d for d in client.get("/api/console/backup/image-devices", headers=opened).json()
+                if d["name"] == "M-1")["repositories"][0]["unlocked"] is True
+    # The unlock belongs to this sign-in: another session of the same person does not carry it.
+    elsewhere = {**login(client), "X-Fenrir-Unlock": opened["X-Fenrir-Unlock"]}
+    assert client.get("/api/console/backup/images", headers=elsewhere).json() == []

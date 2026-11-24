@@ -150,7 +150,15 @@ def _job_spec(db: Session, agent: BackupAgent, job: BackupJob) -> dict | None:
         repository = _access(db, agent, job.repository_id)
         if repository is None:
             return None
-    spec = {"id": job.id, "kind": job.kind, "repository": repository}
+    kind = dict(job.kind or {})
+    unlock = kind.pop("unlock", None)
+    if isinstance(unlock, dict) and repository is not None:
+        # A passphrase check (console unlock): the machine opens the repository with the passphrase just typed,
+        # sealed to it in the browser, instead of the one it was given.
+        if not unlock.get("sealed"):
+            return None
+        repository = {**repository, "sealed_secret": unlock["sealed"]}
+    spec = {"id": job.id, "kind": kind, "repository": repository}
     if (job.kind or {}).get("type") == "copy_images":
         target = _access(db, agent, str(job.kind.get("target_repository_id") or ""))
         if target is None:
@@ -370,6 +378,13 @@ def update_job(job_id: str, body: dict = Body(...), agent: BackupAgent = Depends
         bk.raise_alert(db, job.tenant_id, agent.device_id, bk.RULE_FAILED, f"{bk.label(kind)} failed: {name}",
                        "high" if bk.is_backup(kind) or kind.get("type") == "restore" else "medium",
                        f"{bk.label(kind)} on {name} failed. {job.error or ''}".strip())
+    if final and isinstance(kind.get("unlock"), dict):
+        # The typed passphrase is no longer needed once checked.
+        job.kind = {**kind, "unlock": {"user": kind["unlock"].get("user")}}
+        if repo is not None:
+            bk.record(db, f"backup-agent:{agent.id}",
+                      "backup.repository.unlocked" if state in ("succeeded", "warning") else "backup.repository.unlock_failed",
+                      repo.name, repo.tenant_id, job=job.id)
     if final:
         bk.record(db, f"backup-agent:{agent.id}", f"backup.job.{state}", job.id, job.tenant_id, kind=kind.get("type"))
     db.commit()
