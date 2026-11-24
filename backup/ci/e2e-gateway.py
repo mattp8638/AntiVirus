@@ -8,6 +8,7 @@ repository only the "gateway" can reach: first through the server relay, then di
 with the platform's Python requirements installed (cloud/requirements.txt) plus httpx and cryptography."""
 
 import base64
+import hashlib
 import json
 import os
 import shutil
@@ -190,6 +191,23 @@ try:
     print(f"  ({time.time() - t:.1f}s for 24 MiB)")
     log = (W / "laptop.log").read_text()
     print("  laptop log mentions direct address:", "18475" in log or "not reachable directly" not in log)
+
+    # AT-19: restore the latest backup to a new disk file on the laptop (an isolated target, nothing else is
+    # touched) and compare it with the source by SHA-256.
+    images = c.get("/api/console/backup/images", params={"repositoryId": repo_id}).json()
+    latest = max(images, key=lambda i: i["created"])
+    rt = c.post("/api/console/auth/reauth", json={"password": "e2e-admin-password-123"}).json()["reauthToken"]
+    restored = W / "restored-disk.img"
+    r = c.post("/api/console/backup/restores", headers={"X-Fenrir-Reauth": rt}, json={
+        "imageId": latest["imageId"], "agentId": laptop["id"],
+        "target": {"type": "disk", "device": str(restored), "disk": 0, "confirm": str(restored), "grow": False}})
+    assert r.status_code == 200, r.text
+    t = time.time()
+    wait_job(c, r.json()["id"], "restore the latest backup to a new disk file")
+    source = disk.read_bytes()
+    got = restored.read_bytes()[: len(source)]
+    assert hashlib.sha256(got).hexdigest() == hashlib.sha256(source).hexdigest(), "the restored disk differs from the source"
+    print(f"  restore verified by SHA-256 ({len(source) >> 20} MiB) in {time.time() - t:.1f}s")
     print("E2E OK")
 finally:
     for p in procs:
