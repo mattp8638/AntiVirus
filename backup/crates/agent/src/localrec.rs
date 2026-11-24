@@ -580,8 +580,16 @@ $p = Get-Partition -DiskNumber $c.DiskNumber -PartitionNumber $p.PartitionNumber
         let mut notes = Vec::new();
         if !st.bcd_entry.is_empty() {
             set_auto_start(&mut st, false)?;
-            let _ = bcd(&["/delete", &st.bcd_entry, "/cleanup"]);
-            let _ = bcd(&["/delete", &st.ramdisk_entry]);
+            for id in [st.bcd_entry.clone(), st.ramdisk_entry.clone()] {
+                if id.is_empty() {
+                    continue;
+                }
+                if let Err(e) =
+                    bcd(&["/delete", &id, "/cleanup"]).or_else(|_| bcd(&["/delete", &id, "/f"]))
+                {
+                    notes.push(format!("boot entry {id} was not removed ({e}); remove it with bcdedit /delete {id}"));
+                }
+            }
         }
         let part = ps(&format!(
             "$p = Get-Partition -DiskNumber {} | Where-Object {{ $_.Offset -eq {} -and $_.Size -eq {} }}\nif ($p) {{ $p.PartitionNumber }}",

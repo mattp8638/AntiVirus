@@ -24,8 +24,12 @@ order. Fenrir uses it unchanged; no kernel code of its own.
   the other journal, resumed — a pause of milliseconds. The finished journal (only its used part) is then stored as
   an image (OS family `cdp-journal`, details `{seq, bytes, first, last}`) in the repository: encrypted,
   deduplicated, retained like any image.
-* A **base image** is taken at the first swap and then every `--base-every` seconds: while the device is suspended
-  for the swap, an LVM snapshot of the volume is made; it is the exact state the new journal starts from. It is
+* A **base image** is taken at the first swap and then every `--base-every` seconds: right after the swap (with the
+  device running again: nothing but the table reload happens while it is suspended, as LVM would wait on a suspended
+  device), an LVM snapshot of the volume is made and then a timestamp mark is written. Replaying the new journal from
+  its start onto that snapshot gives the volume exactly as at any mark from that one on, because block writes
+  re-applied in order end in the same state (writes the snapshot already holds are written again, followed by any
+  later ones). The base is therefore valid from its mark on; earlier seconds restore from the previous base. It is
   backed up as an image (`cdp-base`, `{seq, unix}`) and the snapshot removed.
 * If `cdp run` stops (reboot, crash), the kernel keeps journalling; the next run ships that journal first. A full
   journal stops logging (`logging_disabled`) rather than blocking writes; the next swap ships it, and the next base
