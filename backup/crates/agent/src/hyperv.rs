@@ -464,6 +464,53 @@ pub fn remove_vm(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The message of a failed PowerShell run: its error stream, which arrives
+/// as serialized CLIXML (`#< CLIXML` then `<S S="Error">` lines) when its
+/// output is redirected, or as text; else the last line of its output.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn ps_error(stderr: &str, stdout: &str) -> String {
+    let text = if stderr.trim_start().starts_with("#< CLIXML") {
+        let mut parts = Vec::new();
+        let mut rest = stderr;
+        while let Some(i) = rest.find("<S S=\"Error\">") {
+            rest = &rest[i + 13..];
+            let end = rest.find("</S>").unwrap_or(rest.len());
+            parts.push(
+                rest[..end]
+                    .replace("_x000D__x000A_", "\n")
+                    .replace("_x000A_", "\n")
+                    .replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&amp;", "&")
+                    .replace("&quot;", "\"")
+                    .replace("&apos;", "'"),
+            );
+            rest = &rest[end..];
+        }
+        parts.concat()
+    } else {
+        stderr.to_string()
+    };
+    text.lines()
+        .map(str::trim)
+        .find(|l| {
+            !l.is_empty()
+                && !l.starts_with("At line")
+                && !l.starts_with('+')
+                && !l.starts_with("CategoryInfo")
+                && !l.starts_with("FullyQualifiedErrorId")
+        })
+        .map(str::to_string)
+        .or_else(|| {
+            stdout
+                .lines()
+                .map(str::trim)
+                .rfind(|l| !l.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "PowerShell failed".into())
+}
+
 /// Run a script with Windows PowerShell; returns stdout.
 pub fn run_ps(script: &str) -> anyhow::Result<String> {
     #[cfg(windows)]
@@ -487,13 +534,10 @@ pub fn run_ps(script: &str) -> anyhow::Result<String> {
             .context("starting powershell.exe")?;
         let stdout = String::from_utf8_lossy(&out.stdout).to_string();
         if !out.status.success() {
-            let err = String::from_utf8_lossy(&out.stderr);
-            let msg = err
-                .lines()
-                .find(|l| !l.trim().is_empty() && !l.starts_with("At line"))
-                .unwrap_or("PowerShell failed")
-                .trim();
-            bail!("{msg}");
+            bail!(
+                "{}",
+                ps_error(&String::from_utf8_lossy(&out.stderr), &stdout)
+            );
         }
         Ok(stdout)
     }
@@ -635,5 +679,19 @@ mod tests {
         assert_eq!(v[0].disks, vec!["C:\\dc.vhdx"]);
         let two = r#"[{"id":"a","name":"x","state":"Off","disks":[]},{"id":"b","name":"y","state":"Saved","disks":["1","2"]}]"#;
         assert_eq!(parse_vm_list(two).unwrap().len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod ps_error_tests {
+    #[test]
+    fn clixml_errors_are_decoded() {
+        let err = "#< CLIXML\r\n<Objs Version=\"1.1.0.1\" xmlns=\"http://schemas.microsoft.com/powershell/2004/04\"><S S=\"Error\">Size Not Supported _x000D__x000A_</S><S S=\"Error\">At line:5 char:1_x000D__x000A_</S></Objs>";
+        assert_eq!(super::ps_error(err, ""), "Size Not Supported");
+        assert_eq!(super::ps_error("", "a\nlast words\n"), "last words");
+        assert_eq!(
+            super::ps_error("plain &amp; simple\nAt line:1", ""),
+            "plain &amp; simple"
+        );
     }
 }

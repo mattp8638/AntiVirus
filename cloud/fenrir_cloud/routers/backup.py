@@ -30,7 +30,7 @@ from ..config import get_settings
 from ..deps import REAUTH_HEADER, REAUTH_MINUTES, Principal, current_principal, require_reauth, scoped_tenant
 from ..security import digest, issue_token, read_token, reauth_state
 from ..models import (BackupAgent, BackupBootCheck, BackupEnrollment, BackupImage, BackupJob, BackupRepoAccess,
-                      BackupRepository, Device, ImageBackupPlan, Tenant, utcnow)
+                      BackupRepository, Device, DrRun, DrRunbook, ImageBackupPlan, Tenant, utcnow)
 from .backup_agent import backup_settings, server_url, tls_pin
 
 router = APIRouter(prefix="/api/console/backup", tags=["Backup"])
@@ -583,6 +583,177 @@ def local_recovery(agent_id: str, request: Request, body: dict = Body(...), p: P
     bk.record(db, p.actor, f"backup.local_recovery.{action}_requested", a.hostname, a.tenant_id, auto_start=auto)
     db.commit()
     return {"id": job.id}
+
+
+# ---------------------------------------------------------------- DR runbooks (backup/docs/design/dr-runbooks.md)
+
+def _int_in(v, lo: int, hi: int, default: int, msg: str) -> int:
+    if v is None:
+        return default
+    if not isinstance(v, int) or isinstance(v, bool) or not lo <= v <= hi:
+        bad(msg)
+    return v
+
+
+def _runbook(db: Session, p: Principal, rb_id: str) -> DrRunbook:
+    rb = db.get(DrRunbook, str(rb_id))
+    if rb is None or rb.tenant_id not in p.tenant_ids:
+        raise HTTPException(404, "No such runbook")
+    return rb
+
+
+def _runbook_groups(db: Session, p: Principal, tenant_id: str, groups) -> list:
+    if not isinstance(groups, list) or not groups or len(groups) > 20:
+        bad("a runbook has 1 to 20 groups")
+    out, seen = [], set()
+    for g in groups:
+        machines = g.get("machines") if isinstance(g, dict) else None
+        if not isinstance(machines, list) or not machines or len(machines) > 50:
+            bad("each group starts 1 to 50 machines")
+        ms = []
+        for m in machines:
+            key = str((m or {}).get("key") or "")
+            if "|" not in key or key in seen:
+                bad("each machine appears once, chosen from the backed-up machines")
+            seen.add(key)
+            host = _agent(db, p, str(m.get("hostAgentId") or ""))
+            if host.tenant_id != tenant_id:
+                bad("hosts belong to the runbook's customer")
+            caps = bk.capabilities(host)
+            if "boot_kvm" not in caps and "boot_hyperv" not in caps:
+                bad(f"{host.display_name or host.hostname} cannot start VMs (QEMU on Linux, or Hyper-V)")
+            mem, cpus = m.get("memoryMb"), m.get("cpus")
+            if (mem is not None and not (isinstance(mem, int) and 256 <= mem <= 262144)) or \
+                    (cpus is not None and not (isinstance(cpus, int) and 1 <= cpus <= 64)):
+                bad("memory must be 256 MB to 256 GB, CPUs 1 to 64")
+            directory = str(m.get("directory") or "").strip() or None
+            if directory and (len(directory) > 500 or not re.match(r"^([A-Za-z]:\\|\\\\)", directory)):
+                bad("a VM folder is a full Windows path on a Hyper-V host")
+            ms.append({"key": key, "name": str(m.get("name") or key)[:200], "hostAgentId": host.id,
+                       "memoryMb": mem, "cpus": cpus, "directory": directory})
+        out.append({"name": str(g.get("name") or f"Group {len(out) + 1}")[:120], "machines": ms})
+    return out
+
+
+def runbook_out(db: Session, rb: DrRunbook) -> dict:
+    last = db.execute(select(DrRun).where(DrRun.runbook_id == rb.id).order_by(DrRun.started_at.desc()).limit(1)).scalars().first()
+    return {"id": rb.id, "tenantId": rb.tenant_id, "name": rb.name, "groups": rb.groups, "testEveryDays": rb.test_every_days,
+            "stopAfterMinutes": rb.stop_after_minutes, "createdBy": rb.created_by, "updatedAt": iso(rb.updated_at),
+            "lastRun": run_out(last) if last else None}
+
+
+def run_out(r: DrRun) -> dict:
+    up = [i["seconds"] for i in r.items or [] if i.get("seconds") is not None and i["state"] in ("up", "warning")]
+    return {"id": r.id, "runbookId": r.runbook_id, "mode": r.mode, "state": r.state, "group": r.group, "items": r.items,
+            "startedAt": iso(r.started_at), "finishedAt": iso(r.finished_at), "startedBy": r.started_by,
+            "vmsStopped": r.vms_stopped, "stopAfterMinutes": r.stop_after_minutes,
+            "rtoSeconds": max(up) if up and r.state in ("succeeded", "warning") else None}
+
+
+@router.get("/runbooks")
+def list_runbooks(tenantId: str | None = None, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    p.require("read")
+    rows = db.execute(select(DrRunbook).where(DrRunbook.tenant_id.in_(scoped_tenant(p, tenantId)))
+                      .order_by(DrRunbook.name)).scalars().all()
+    return [runbook_out(db, rb) for rb in rows]
+
+
+@router.post("/runbooks")
+def create_runbook(body: dict = Body(...), p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    p.require("configure")
+    tenant_id = str(body.get("tenantId") or "")
+    if tenant_id not in p.tenant_ids:
+        bad("choose a customer")
+    name = str(body.get("name") or "").strip()[:120]
+    if not name:
+        bad("name the runbook")
+    rb = DrRunbook(tenant_id=tenant_id, name=name, groups=_runbook_groups(db, p, tenant_id, body.get("groups")),
+                   test_every_days=_int_in(body.get("testEveryDays"), 0, 365, 0, "test every 0 (never) to 365 days"),
+                   stop_after_minutes=_int_in(body.get("stopAfterMinutes"), 0, 7 * 1440, 60, "stop test VMs after 0 to 10080 minutes"),
+                   created_by=p.actor)
+    db.add(rb)
+    bk.record(db, p.actor, "backup.runbook.created", name, tenant_id)
+    db.commit()
+    return runbook_out(db, rb)
+
+
+@router.patch("/runbooks/{rb_id}")
+def update_runbook(rb_id: str, body: dict = Body(...), p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    p.require("configure")
+    rb = _runbook(db, p, rb_id)
+    if "name" in body:
+        rb.name = str(body["name"] or "").strip()[:120] or rb.name
+    if "groups" in body:
+        rb.groups = _runbook_groups(db, p, rb.tenant_id, body["groups"])
+    if "testEveryDays" in body:
+        rb.test_every_days = _int_in(body["testEveryDays"], 0, 365, 0, "test every 0 (never) to 365 days")
+    if "stopAfterMinutes" in body:
+        rb.stop_after_minutes = _int_in(body["stopAfterMinutes"], 0, 7 * 1440, 60, "stop test VMs after 0 to 10080 minutes")
+    rb.updated_at = utcnow()
+    bk.record(db, p.actor, "backup.runbook.updated", rb.name, rb.tenant_id)
+    db.commit()
+    return runbook_out(db, rb)
+
+
+@router.delete("/runbooks/{rb_id}")
+def delete_runbook(rb_id: str, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    p.require("configure")
+    rb = _runbook(db, p, rb_id)
+    bk.record(db, p.actor, "backup.runbook.deleted", rb.name, rb.tenant_id)
+    db.delete(rb)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/runbooks/{rb_id}/run")
+def run_runbook(rb_id: str, request: Request, body: dict = Body(default={}), p: Principal = Depends(current_principal),
+                db: Session = Depends(get_db)):
+    """A test starts the machines as VMs and stops them afterwards; a failover leaves them running (password check,
+    and the runbook's name typed)."""
+    rb = _runbook(db, p, rb_id)
+    mode = str(body.get("mode") or "test")
+    if mode == "failover":
+        p.require("destructive")
+        require_reauth(request, p)
+        if str(body.get("confirm") or "").strip() != rb.name:
+            bad("type the runbook's name to confirm the failover")
+    elif mode == "test":
+        p.require("scripts")
+    else:
+        bad("mode is test or failover")
+    if db.execute(select(func.count()).select_from(DrRun).where(DrRun.runbook_id == rb.id, DrRun.state == "running")).scalar():
+        bad("this runbook is already running")
+    run = bk.start_dr_run(db, rb, mode, p.actor)
+    bk.record(db, p.actor, f"backup.runbook.{mode}", rb.name, rb.tenant_id, run=run.id)
+    db.commit()
+    return run_out(run)
+
+
+@router.get("/runbooks/{rb_id}/runs")
+def list_runs(rb_id: str, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    p.require("read")
+    rb = _runbook(db, p, rb_id)
+    return [run_out(r) for r in db.execute(select(DrRun).where(DrRun.runbook_id == rb.id)
+                                           .order_by(DrRun.started_at.desc()).limit(50)).scalars()]
+
+
+@router.post("/runs/{run_id}/stop")
+def stop_run(run_id: str, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """End a run: machines not started yet are skipped, and the VMs it started are stopped."""
+    p.require("scripts")
+    run = db.get(DrRun, str(run_id))
+    if run is None or run.tenant_id not in p.tenant_ids:
+        raise HTTPException(404, "No such run")
+    if run.state == "running":
+        items = [dict(i) for i in run.items or []]
+        for i in items:
+            if i["state"] in ("pending", "starting"):
+                i["state"], i["message"] = "skipped", f"stopped by {p.actor}"
+        run.items, run.state, run.finished_at = items, "stopped", utcnow()
+    n = bk.stop_dr_vms(db, run, p.actor)
+    bk.record(db, p.actor, "backup.runbook.stopped", run.runbook_id, run.tenant_id, run=run.id, vms=n)
+    db.commit()
+    return run_out(run)
 
 
 @router.get("/jobs")

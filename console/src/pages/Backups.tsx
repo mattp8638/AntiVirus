@@ -103,7 +103,7 @@ export default function Backups() {
       <PageHead title="Backups" subtitle="Image backups of servers, PCs and Hyper-V hosts into repositories you own: a NAS, a file server or a local disk. Encrypted on the machine; this server never sees the keys."
         actions={can("configure") && <button className="primary" onClick={() => setAdding(true)}>Add machines</button>} />
       {!sealSupported() && <div className="card warn-card">This browser cannot encrypt repository secrets (Web Crypto X25519 is needed). Use a current Chrome, Edge, Firefox or Safari over HTTPS.</div>}
-      <Tabs tabs={[...(msp ? ["All customers"] : []), "Overview", "Machines", "Repositories", "Plans", "Images & restore", "Activity"]} active={tab} onChange={setTab} />
+      <Tabs tabs={[...(msp ? ["All customers"] : []), "Overview", "Machines", "Repositories", "Plans", "Images & restore", "DR runbooks", "Activity"]} active={tab} onChange={setTab} />
       <ErrorNote error={overview.error || agents.error || repos.error} />
       {tab === "All customers" && <MspDashboard open={(id) => { setTenantId?.(id); setTab("Overview"); }} />}
       {tab === "Overview" && <Overview data={overview.data} agents={agents.data} />}
@@ -111,6 +111,7 @@ export default function Backups() {
       {tab === "Repositories" && <Repositories repos={repos.data} agents={agents.data ?? []} reload={reloadAll} />}
       {tab === "Plans" && <Plans agents={agents.data ?? []} repos={repos.data ?? []} />}
       {tab === "Images & restore" && <Images agents={agents.data ?? []} repos={repos.data ?? []} />}
+      {tab === "DR runbooks" && <Runbooks agents={agents.data ?? []} />}
       {tab === "Activity" && <Activity />}
       {adding && <AddMachines onClose={() => { setAdding(false); reloadAll(); }} />}
     </>
@@ -248,6 +249,144 @@ function TrendBars({ trend }: { trend: MspData["trend"] }) {
         })}
       </svg>
     </>
+  );
+}
+
+// ---------------------------------------------------------------- DR runbooks
+
+interface RbMachine { key: string; name: string; hostAgentId: string; memoryMb?: number | null; cpus?: number | null; directory?: string | null }
+interface RbGroup { name: string; machines: RbMachine[] }
+interface RbItem { group: number; groupName: string; key: string; name: string; hostAgentId: string; state: string; message: string | null; imageCreated: number | null; seconds: number | null }
+interface DrRunT { id: string; mode: string; state: string; items: RbItem[]; startedAt: string; finishedAt: string | null; startedBy: string; vmsStopped: boolean; rtoSeconds: number | null }
+interface Runbook { id: string; tenantId: string; name: string; groups: RbGroup[]; testEveryDays: number; stopAfterMinutes: number; lastRun: DrRunT | null }
+
+const RUN_TONE: Record<string, string> = { running: "blue", succeeded: "good", warning: "warn", failed: "bad", stopped: "muted", up: "good", starting: "blue", pending: "muted", skipped: "muted" };
+const dur = (s: number | null) => s == null ? "—" : s < 120 ? `${s} s` : `${Math.round(s / 60)} min`;
+
+/** Ordered recovery of several machines as VMs from their latest backups (backup/docs/design/dr-runbooks.md). */
+function Runbooks({ agents }: { agents: BackupAgent[] }) {
+  const { tenantId, can } = useApp();
+  const rbs = useListData<Runbook>("backup/runbooks", { tenantId: tenantId || undefined }, [tenantId]);
+  useAutoRefresh(rbs.reload, 10000);
+  const [edit, setEdit] = useState<Runbook | "new" | null>(null);
+  const [open, setOpen] = useState<Runbook | null>(null);
+  return (
+    <div className="card">
+      <div className="row" style={{ marginBottom: 10 }}>
+        <span className="small muted">A runbook starts machines from their latest backups as VMs on chosen hosts, group after group (databases before the servers that need them), and measures how long recovery takes. Test it regularly; fail over for real when a site is lost.</span>
+        {can("configure") && <button className="primary" style={{ marginLeft: "auto" }} onClick={() => setEdit("new")}>New runbook</button>}
+      </div>
+      <Table rows={rbs.data} empty="No runbooks yet." onRow={(r) => setOpen(r)}
+        columns={[
+          { key: "name", label: "Runbook", render: (r) => <b>{r.name}</b> },
+          { key: "groups", label: "Machines", render: (r) => <span className="small">{r.groups.map((g) => `${g.name}: ${g.machines.map((m) => m.name).join(", ")}`).join(" → ")}</span> },
+          { key: "last", label: "Last run", render: (r) => r.lastRun ? <><Pill value={`${r.lastRun.mode} ${r.lastRun.state}`} tone={RUN_TONE[r.lastRun.state]} /> <span className="small muted">{ago(r.lastRun.startedAt)}</span></> : <span className="small muted">never</span> },
+          { key: "rto", label: "Recovery time", render: (r) => dur(r.lastRun?.rtoSeconds ?? null) },
+          { key: "sched", label: "Tested", render: (r) => r.testEveryDays ? `every ${r.testEveryDays} days` : "by hand" },
+        ]} />
+      {edit && <RunbookEditor rb={edit === "new" ? null : edit} agents={agents} onClose={() => { setEdit(null); rbs.reload(); }} />}
+      {open && <RunbookRuns rb={open} onEdit={() => { setEdit(open); setOpen(null); }} onClose={() => { setOpen(null); rbs.reload(); }} />}
+    </div>
+  );
+}
+
+function RunbookEditor({ rb, agents, onClose }: { rb: Runbook | null; agents: BackupAgent[]; onClose: () => void }) {
+  const { tenantId, tenants } = useApp() as any;
+  const { run, busy } = useAction();
+  const [tenant, setTenant] = useState(rb?.tenantId ?? tenantId ?? tenants?.[0]?.id ?? "");
+  const [name, setName] = useState(rb?.name ?? "");
+  const [groups, setGroups] = useState<RbGroup[]>(rb?.groups ?? [{ name: "Group 1", machines: [] }]);
+  const [every, setEvery] = useState(rb?.testEveryDays ?? 30);
+  const [stopAfter, setStopAfter] = useState(rb?.stopAfterMinutes ?? 60);
+  const devices = useListData<ImageDevice>("backup/image-devices", { tenantId: tenant || undefined }, [tenant]);
+  const hosts = agents.filter((a) => a.tenantId === tenant && (a.capabilities.includes("boot_kvm") || a.capabilities.includes("boot_hyperv")));
+  const used = new Set(groups.flatMap((g) => g.machines.map((m) => m.key)));
+  const set = (gi: number, g: RbGroup) => setGroups(groups.map((x, i) => (i === gi ? g : x)));
+  const save = () => run(async () => {
+    const body = { tenantId: tenant, name, groups, testEveryDays: every, stopAfterMinutes: stopAfter };
+    if (rb) await api(`backup/runbooks/${rb.id}`, { method: "PATCH", body }); else await api("backup/runbooks", { body });
+  }, "Runbook saved").then(() => onClose());
+  return (
+    <Modal wide title={rb ? `Edit ${rb.name}` : "New DR runbook"} onClose={onClose}
+      footer={<>{rb && <button className="danger" onClick={() => run(() => api(`backup/runbooks/${rb.id}`, { method: "DELETE" }), "Runbook deleted").then(onClose)}>Delete</button>}
+        <button className="primary" disabled={busy || !name.trim() || !tenant || groups.some((g) => !g.machines.length || g.machines.some((m) => !m.hostAgentId))} onClick={save}>Save</button></>}>
+      <div className="form-grid">
+        <label className="field">Name<input value={name} onChange={(e) => setName(e.target.value)} placeholder="Head office" /></label>
+        {!rb && (tenants?.length ?? 0) > 1 && <label className="field">Customer<select value={tenant} onChange={(e) => { setTenant(e.target.value); setGroups([{ name: "Group 1", machines: [] }]); }}>{tenants.map((t: any) => <option key={t.id} value={t.id}>{t.name}</option>)}</select></label>}
+        <label className="field">Test it every … days (0: by hand)<input type="number" min={0} max={365} value={every} onChange={(e) => setEvery(Number(e.target.value))} /></label>
+        <label className="field">Stop test VMs after … minutes (0: leave them running)<input type="number" min={0} max={10080} value={stopAfter} onChange={(e) => setStopAfter(Number(e.target.value))} /></label>
+      </div>
+      {groups.map((g, gi) => (
+        <div key={gi} className="card" style={{ marginTop: 10 }}>
+          <div className="row" style={{ gap: 8 }}>
+            <b>{gi + 1}.</b><input value={g.name} onChange={(e) => set(gi, { ...g, name: e.target.value })} style={{ maxWidth: 220 }} />
+            <span className="small muted">{gi === 0 ? "started first" : "started once group " + gi + " is up"}</span>
+            {groups.length > 1 && <button className="small" style={{ marginLeft: "auto" }} onClick={() => setGroups(groups.filter((_, i) => i !== gi))}>Remove group</button>}
+          </div>
+          {g.machines.map((m, mi) => (
+            <div key={m.key} className="row small" style={{ gap: 8, marginTop: 6 }}>
+              <span style={{ minWidth: 140 }}>{m.name}</span>
+              <select value={m.hostAgentId} onChange={(e) => set(gi, { ...g, machines: g.machines.map((x, j) => (j === mi ? { ...x, hostAgentId: e.target.value } : x)) })}>
+                <option value="">Start on …</option>
+                {hosts.map((h) => <option key={h.id} value={h.id}>{h.name}{h.capabilities.includes("boot_hyperv") ? " (Hyper-V)" : " (QEMU)"}</option>)}
+              </select>
+              <input type="number" placeholder="Memory MB" value={m.memoryMb ?? ""} style={{ width: 110 }} onChange={(e) => set(gi, { ...g, machines: g.machines.map((x, j) => (j === mi ? { ...x, memoryMb: e.target.value ? Number(e.target.value) : null } : x)) })} />
+              <button className="small" onClick={() => set(gi, { ...g, machines: g.machines.filter((_, j) => j !== mi) })}>Remove</button>
+            </div>
+          ))}
+          <select value="" style={{ marginTop: 6 }} onChange={(e) => { const d = devices.data?.find((x) => x.key === e.target.value); if (d) set(gi, { ...g, machines: [...g.machines, { key: d.key, name: d.name, hostAgentId: hosts[0]?.id ?? "" }] }); }}>
+            <option value="">Add a backed-up machine…</option>
+            {(devices.data ?? []).filter((d) => !used.has(d.key)).map((d) => <option key={d.key} value={d.key}>{d.name}{d.vmName ? ` (VM on ${d.hostname})` : ""}</option>)}
+          </select>
+        </div>
+      ))}
+      <button style={{ marginTop: 10 }} onClick={() => setGroups([...groups, { name: `Group ${groups.length + 1}`, machines: [] }])}>Add a group</button>
+      {hosts.length === 0 && <p className="small muted">No machine of this customer can start VMs yet: a Linux host with QEMU, or a Hyper-V host.</p>}
+    </Modal>
+  );
+}
+
+function RunbookRuns({ rb, onEdit, onClose }: { rb: Runbook; onEdit: () => void; onClose: () => void }) {
+  const { can } = useApp();
+  const { run, busy } = useAction();
+  const runs = useListData<DrRunT>(`backup/runbooks/${rb.id}/runs`, {}, [rb.id]);
+  useAutoRefresh(runs.reload, 5000);
+  const [failover, setFailover] = useState(false);
+  const [confirm, setConfirm] = useState("");
+  const latest = runs.data?.[0];
+  const start = (mode: "test" | "failover") => run(() => api(`backup/runbooks/${rb.id}/run`, { body: { mode, confirm } }), mode === "test" ? "DR test started" : "Failover started").then(() => { setFailover(false); runs.reload(); });
+  return (
+    <Modal wide title={rb.name} onClose={onClose}
+      footer={<>
+        {can("configure") && <button onClick={onEdit}>Edit</button>}
+        {latest && (latest.state === "running" || (!latest.vmsStopped && latest.items.some((i) => i.state === "up" || i.state === "warning"))) && can("scripts") &&
+          <button disabled={busy} onClick={() => run(() => api(`backup/runs/${latest.id}/stop`, { body: {} }), "Stopping the VMs").then(runs.reload)}>Stop and shut the VMs down</button>}
+        {can("destructive") && <button className="danger" disabled={busy || latest?.state === "running"} onClick={() => setFailover(true)}>Fail over</button>}
+        {can("scripts") && <button className="primary" disabled={busy || latest?.state === "running"} onClick={() => start("test")}>Run a test</button>}
+      </>}>
+      {failover && <div className="card warn-card" style={{ marginBottom: 10 }}>
+        A failover starts every machine from its latest backup and leaves the VMs running as the production systems. Make sure the originals are off, or on another network, first.
+        <label className="field" style={{ marginTop: 8 }}>Type the runbook's name ({rb.name}) to confirm<input value={confirm} onChange={(e) => setConfirm(e.target.value)} /></label>
+        <button className="danger" disabled={busy || confirm !== rb.name} onClick={() => start("failover")}>Start the failover</button>
+      </div>}
+      {!latest ? <p className="muted">Not run yet.</p> : <>
+        <p><Pill value={`${latest.mode} ${latest.state}`} tone={RUN_TONE[latest.state]} /> started {ago(latest.startedAt)} by {latest.startedBy}{latest.rtoSeconds != null && <> · every machine up after <b>{dur(latest.rtoSeconds)}</b></>}{latest.vmsStopped && " · VMs stopped"}</p>
+        <Table rows={latest.items.map((i, n) => ({ ...i, id: String(n) }))} columns={[
+          { key: "groupName", label: "Group" },
+          { key: "name", label: "Machine", render: (i) => <b>{i.name}</b> },
+          { key: "state", label: "State", render: (i) => <Pill value={i.state} tone={RUN_TONE[i.state]} /> },
+          { key: "image", label: "Backup", render: (i) => i.imageCreated ? unixTime(i.imageCreated) : "—" },
+          { key: "seconds", label: "Up after", render: (i) => dur(i.seconds) },
+          { key: "message", label: "", render: (i) => <span className="small">{i.message}</span> },
+        ]} />
+      </>}
+      {(runs.data?.length ?? 0) > 1 && <><h3 style={{ marginTop: 14 }}>Earlier runs</h3>
+        <Table rows={runs.data!.slice(1)} columns={[
+          { key: "startedAt", label: "Started", render: (r) => fmtTime(r.startedAt) },
+          { key: "state", label: "Result", render: (r) => <Pill value={`${r.mode} ${r.state}`} tone={RUN_TONE[r.state]} /> },
+          { key: "rto", label: "Recovery time", render: (r) => dur(r.rtoSeconds) },
+        ]} /></>}
+    </Modal>
   );
 }
 

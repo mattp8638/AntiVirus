@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 from . import audit
 from . import backup_installers as tpl
 from .models import (Alert, Device, BackupAgent, BackupBootCheck, BackupImage, BackupJob, BackupRepoAccess, BackupRepository,
-                     ImageBackupPlan, utcnow)
+                     DrRun, DrRunbook, ImageBackupPlan, utcnow)
 
 PROTOCOL_VERSION = 1
 POLL_SECONDS = 15
@@ -565,12 +565,151 @@ def refresh_local_recovery(db: Session) -> int:
     return n
 
 
+# --------------------------------------------------------------------------
+# DR runbooks (backup/docs/design/dr-runbooks.md)
+# --------------------------------------------------------------------------
+
+RULE_DR = "backup.dr_test_failed"
+
+
+def device_key(i: BackupImage) -> str:
+    """A backed-up machine (or VM): its agent, or host name, and VM name."""
+    return f"{i.agent_id or 'host:' + (i.hostname or '')}|{i.vm_name or ''}"
+
+
+def start_dr_run(db: Session, rb: DrRunbook, mode: str, by: str) -> DrRun:
+    items = []
+    for gi, g in enumerate(rb.groups or []):
+        for m in g.get("machines") or []:
+            items.append({"group": gi, "groupName": g.get("name") or f"Group {gi + 1}", "key": m["key"],
+                          "name": m.get("name") or m["key"], "hostAgentId": m["hostAgentId"],
+                          "memoryMb": m.get("memoryMb"), "cpus": m.get("cpus"), "directory": m.get("directory"),
+                          "state": "pending", "message": None, "imageId": None, "imageCreated": None, "jobId": None,
+                          "upAt": None, "seconds": None})
+    run = DrRun(runbook_id=rb.id, tenant_id=rb.tenant_id, mode=mode, items=items, started_by=by,
+                stop_after_minutes=rb.stop_after_minutes if mode == "test" else 0)
+    db.add(run)
+    db.flush()
+    advance_dr_run(db, run)
+    return run
+
+
+def _latest_image(db: Session, key: str, host: BackupAgent) -> tuple[BackupImage | None, str | None]:
+    """The machine's newest image in a repository the host can read."""
+    agent_part, vm = key.split("|", 1)
+    q = select(BackupImage).where(BackupImage.tenant_id == host.tenant_id)
+    q = q.where(BackupImage.hostname == agent_part[5:]) if agent_part.startswith("host:") else q.where(BackupImage.agent_id == agent_part)
+    images = [i for i in db.execute(q.order_by(BackupImage.created_unix.desc())).scalars() if (i.vm_name or "") == vm]
+    if not images:
+        return None, "no backup of this machine yet"
+    for i in images:
+        if db.get(BackupRepoAccess, (i.repository_id, host.id)) is not None:
+            return i, None
+    return None, f"{host.display_name or host.hostname} has no access to the repository holding this machine's backups"
+
+
+def advance_dr_run(db: Session, run: DrRun) -> None:
+    """Start the current group's machines, collect their boot results, move on to the next group."""
+    if run.state != "running":
+        return
+    items = [dict(i) for i in run.items or []]
+    now = utcnow()
+    current = [i for i in items if i["group"] == run.group]
+    for it in current:
+        if it["state"] == "pending":
+            host = db.get(BackupAgent, it["hostAgentId"])
+            caps = capabilities(host) if host is not None and not host.revoked else []
+            if "boot_kvm" not in caps and "boot_hyperv" not in caps:
+                it["state"], it["message"] = "failed", "the host cannot start VMs (QEMU on Linux, or Hyper-V)"
+                continue
+            im, why = _latest_image(db, it["key"], host)
+            if im is None:
+                it["state"], it["message"] = "failed", why
+                continue
+            job = queue(db, host, {"type": "boot_check", "image_id": im.image_id, "keep_running": True,
+                                   "memory_mb": it.get("memoryMb"), "cpus": it.get("cpus"),
+                                   "directory": it.get("directory") if "boot_hyperv" in caps else None},
+                        im.repository_id, f"dr:{run.id}")
+            it.update(state="starting", imageId=im.image_id, imageCreated=im.created_unix, jobId=job.id)
+        elif it["state"] == "starting":
+            job = db.get(BackupJob, it["jobId"])
+            if job is None or job.state not in FINAL_STATES:
+                continue
+            check = db.execute(select(BackupBootCheck).where(BackupBootCheck.job_id == job.id)).scalars().first()
+            outcome = check.outcome if check is not None else "failed"
+            at = check.at if check is not None else job.finished_at or now
+            it["upAt"], it["seconds"] = at.isoformat() + "Z", int((at - run.started_at).total_seconds())
+            if outcome == "verified":
+                it["state"], it["message"] = "up", (check.message if check else None)
+            elif outcome == "screen":
+                it["state"] = "warning"
+                it["message"] = "started; its screen was captured but the guest did not confirm it is ready"
+            else:
+                it["state"] = "failed"
+                it["message"] = (check.message if check else None) or job.error or "it did not start"
+    if all(i["state"] not in ("pending", "starting") for i in current):
+        failed = any(i["state"] == "failed" for i in current)
+        last = max((i["group"] for i in items), default=-1)
+        if failed or run.group >= last:
+            for i in items:
+                if i["state"] == "pending":
+                    i["state"], i["message"] = "skipped", "an earlier group failed"
+            run.state = "failed" if failed else ("warning" if any(i["state"] == "warning" for i in items) else "succeeded")
+            run.finished_at = now
+        else:
+            run.group += 1
+            run.items = items
+            return advance_dr_run(db, run)  # start the next group now
+    run.items = items
+
+
+def stop_dr_vms(db: Session, run: DrRun, by: str) -> int:
+    """Stop the VMs a run started (still running on their hosts)."""
+    n = 0
+    for it in run.items or []:
+        host = db.get(BackupAgent, it.get("hostAgentId") or "")
+        if host is None or not it.get("imageId"):
+            continue
+        for vm in (host.inventory or {}).get("running_vms") or []:
+            if isinstance(vm, dict) and vm.get("image_id") == it["imageId"]:
+                queue(db, host, {"type": "stop_vm", "session_id": vm.get("session_id")}, None, by)
+                n += 1
+    run.vms_stopped = True
+    return n
+
+
+def run_dr(db: Session) -> None:
+    """Advance running DR runs; stop test VMs when their time is up; start scheduled tests."""
+    now = utcnow()
+    for run in db.execute(select(DrRun).where(DrRun.state == "running")).scalars().all():
+        before = run.state
+        advance_dr_run(db, run)
+        if before == "running" and run.state != "running" and run.mode == "test" and run.state == "failed":
+            rb = db.get(DrRunbook, run.runbook_id)
+            raise_alert(db, run.tenant_id, None, RULE_DR, f"DR test failed: {rb.name if rb else run.runbook_id}", "high",
+                        "A disaster-recovery test did not bring every machine up: " + "; ".join(
+                            f"{i['name']}: {i['message']}" for i in run.items if i["state"] == "failed"),
+                        link="/backups", dedupe_key=f"dr:{run.runbook_id}")
+    for run in db.execute(select(DrRun).where(DrRun.mode == "test", DrRun.vms_stopped.is_(False),
+                                              DrRun.state != "running")).scalars().all():
+        if run.stop_after_minutes and run.finished_at and now - run.finished_at > timedelta(minutes=run.stop_after_minutes):
+            stop_dr_vms(db, run, "dr-schedule")
+    for rb in db.execute(select(DrRunbook).where(DrRunbook.test_every_days > 0)).scalars().all():
+        last = db.execute(select(func.max(DrRun.started_at)).where(DrRun.runbook_id == rb.id)).scalar()
+        active = db.execute(select(func.count()).select_from(DrRun).where(DrRun.runbook_id == rb.id,
+                                                                          DrRun.state == "running")).scalar()
+        if not active and (last is None or now - last > timedelta(days=rb.test_every_days)) and rb.groups:
+            start_dr_run(db, rb, "test", "schedule")
+    db.commit()
+
+
 def tick(db: Session) -> None:
     """30-second scheduler: plans, boot verification, ended recovery sessions."""
     run_due_plans(db)
     run_boot_checks(db)
     expire_recovery_sessions(db)
     refresh_local_recovery(db)
+    run_dr(db)
     purge_downloads()
 
 

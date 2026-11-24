@@ -151,6 +151,16 @@ a plan, offline, on hold, the 7-day success rate, boot-verified machines and sto
 day; and one list of what needs attention (holds, failing backups, failed boot tests, overdue plans, offline agents,
 machines without a plan). Click a customer or an item to open that customer's backups.
 
+## DR runbooks
+
+**Backups › DR runbooks** describes how a site comes back: groups of machines in order (say, domain controller and
+databases, then application servers), each started from its latest backup as a VM on a host you choose (Linux with
+QEMU, or Hyper-V). **Run a test** starts group 1, waits until every machine's boot is verified, then starts the next
+group, and reports how long each machine took and the overall recovery time; the VMs are stopped afterwards (after the
+runbook's time, or with **Stop**). Tests can run on a schedule, and a failed test raises an alert. **Fail over**
+(destructive permission, password, and the runbook's name typed) does the same and leaves the VMs running. Details:
+`backup/docs/design/dr-runbooks.md`.
+
 ## Dedup groups
 
 Machines that back up to the same repository already share stored data. **Dedup group** (when adding a repository)
