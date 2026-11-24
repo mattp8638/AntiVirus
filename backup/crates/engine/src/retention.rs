@@ -216,7 +216,7 @@ pub fn forget(
     let mut retained = Vec::new();
     for d in decisions.iter().filter(|d| !d.keep) {
         if !dry_run {
-            match repo.backend().delete(&format!("manifests/{}", d.image_id)) {
+            match repo.delete_image(&d.image_id) {
                 Ok(()) => {}
                 Err(core_format::Error::Retained(_)) => {
                     retained.push(d.image_id);
@@ -259,11 +259,30 @@ pub fn prune(repo: &Repository, dry_run: bool, ctl: &JobControl) -> Result<Prune
             "manifest {id} cannot be read ({e}); its chunks are unknown, so nothing was deleted. Run a full verify and investigate before pruning"
         )));
     }
-    let referenced: HashSet<String> = all
+    let mut referenced: HashSet<String> = all
         .iter()
         .flat_map(ManifestBody::chunk_ids)
         .map(|c| c.object_key())
         .collect();
+    // A dedup group member: chunks are shared, so every member's images count
+    // (their chunk lists; docs/design/dedup-groups.md). Lists of this
+    // member's deleted images go.
+    let group = repo.group_references().map_err(|e| {
+        EngineError::Safety(format!(
+            "{e}; the group's chunks in use are unknown, so nothing was deleted"
+        ))
+    })?;
+    if let Some((live, orphans)) = &group {
+        referenced.extend(live.iter().cloned());
+        if !dry_run {
+            for k in orphans {
+                match repo.backend().delete(k) {
+                    Ok(()) | Err(core_format::Error::Retained(_)) => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
+        }
+    }
     let stored: BTreeSet<String> = repo.backend().list("chunks")?.into_iter().collect();
     let mut r = PruneReport {
         images: all.len(),
@@ -302,6 +321,13 @@ pub fn prune(repo: &Repository, dry_run: bool, ctl: &JobControl) -> Result<Prune
             keep.extend(repo.backend().list(prefix)?);
         }
         keep.push("config.json".into());
+        if repo.config().group.is_some() {
+            keep.push(core_format::group::MEMBER_KEY_FILE.into());
+            keep.extend(
+                repo.backend()
+                    .list(&format!("refs/{}", repo.config().repo_id))?,
+            );
+        }
         for k in keep {
             if !ctl.checkpoint() {
                 return Err(EngineError::Cancelled);

@@ -182,6 +182,20 @@ def image_out(i: BackupImage, checks: dict[str, BackupBootCheck]) -> dict:
             "lastBootCheck": ({"outcome": b.outcome, "at": iso(b.at), "message": b.message} if b else None)}
 
 
+_MEMBER = re.compile(r"^(.+)[\\/]repos[\\/]([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[\\/]?$", re.I)
+
+
+def dedup_member(path: str) -> str | None:
+    """The dedup group folder of a member path `<group>/repos/<uuid>` (same rule as protocol::dedup)."""
+    m = _MEMBER.match(path or "")
+    return m.group(1) if m else None
+
+
+def member_path(root: str, repo_uuid: str) -> str:
+    sep = "\\" if "\\" in root and "/" not in root else "/"
+    return f"{root.rstrip('/' + chr(92))}{sep}repos{sep}{repo_uuid}"
+
+
 def repo_out(db: Session, r: BackupRepository) -> dict:
     count, stored, last = db.execute(select(func.count(), func.coalesce(func.sum(BackupImage.stored_new_bytes), 0),
                                             func.max(BackupImage.created_unix)).where(BackupImage.repository_id == r.id)).one()
@@ -198,6 +212,7 @@ def repo_out(db: Session, r: BackupRepository) -> dict:
             "pruneEveryDays": r.prune_every_days, "lastPruneAt": iso(r.last_prune_at), "anomalies": anomalies,
             "bootAgentId": r.boot_agent_id, "bootEveryDays": r.boot_every_days, "lastVerifiedBoot": iso(verified),
             "shareAuth": r.share_auth, "shareUser": r.share_user, "isShare": is_share_path(r.path), "s3": r.s3,
+            "dedupGroup": dedup_member(r.path),
             "agents": [{"id": a.id, "name": a.display_name or a.hostname,
                         "viaGateway": bool((db.get(BackupRepoAccess, (r.id, a.id)) or SimpleNamespace(via_gateway=None)).via_gateway)}
                        for a in agents],
@@ -599,9 +614,28 @@ def create_repo(body: dict = Body(...), p: Principal = Depends(current_principal
         bad(r"a share sign-in needs a network path like \\server\share\folder")
     # An existing repository (moved from a Fenrir-Backup server, or added again): its first listing names it.
     existing = bool(body.get("existing"))
-    repo = BackupRepository(tenant_id=init.tenant_id, name=name, path=path,
-                            repo_uuid="" if existing else _uuid(body.get("repoUuid"), "repository UUID"),
-                            maintenance_agent_id=init.id, share_auth=mode, share_user=user, created_by=p.actor, s3=s3)
+    repo_uuid = "" if existing else _uuid(body.get("repoUuid"), "repository UUID")
+    # Dedup group: a member lives in <group>/repos/<its id> (backup/docs/design/dedup-groups.md).
+    dedup, dedup_source = str(body.get("dedup") or "").strip(), None
+    if dedup and existing:
+        bad("an existing repository cannot be added to a dedup group")
+    if dedup == "new":
+        if dedup_member(path):
+            bad("choose the folder for the new dedup group, not a repository inside one")
+        path = member_path(path, repo_uuid)
+    elif dedup:
+        src = _repo(db, p, dedup)
+        root = dedup_member(src.path)
+        if root is None:
+            bad("that repository is not in a dedup group")
+        if src.tenant_id != init.tenant_id:
+            bad("a dedup group never spans customers")
+        if path.rstrip("/\\") != root:
+            bad(f"a repository in this dedup group is stored in the group's folder: {root}")
+        path, dedup_source = member_path(root, repo_uuid), src.id
+    repo = BackupRepository(tenant_id=init.tenant_id, name=name, path=path, repo_uuid=repo_uuid,
+                            maintenance_agent_id=init.id, share_auth=mode, share_user=user, created_by=p.actor, s3=s3,
+                            dedup_source_id=dedup_source)
     db.add(repo)
     db.flush()
     for x in access:

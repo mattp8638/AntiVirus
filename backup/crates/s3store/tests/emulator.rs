@@ -66,7 +66,9 @@ fn s3_backend_against_an_emulator() {
 
     // Without a lock.
     let b = backend(port, "plain", "office/nas", None);
-    b.create_bucket(false).unwrap();
+    // A new repository creates its bucket; an existing one is left alone.
+    assert!(b.ensure_bucket().unwrap(), "created");
+    assert!(!b.ensure_bucket().unwrap(), "already there");
     assert!(b.is_empty().unwrap());
     assert_eq!(b.put("config.json", b"{}").unwrap(), PutOutcome::Created);
     assert_eq!(
@@ -107,7 +109,8 @@ fn s3_backend_against_an_emulator() {
         days: 1,
     });
     let l = backend(port, "immutable", "", lock);
-    l.create_bucket(true).unwrap();
+    // Created with Object Lock on, because the repository uses it.
+    assert!(l.ensure_bucket().unwrap());
     assert_eq!(
         l.put("manifests/m1", b"manifest").unwrap(),
         PutOutcome::Created

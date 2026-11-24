@@ -482,6 +482,27 @@ impl AzureBackend {
         }
     }
 
+    /// Create the container for a new repository unless it exists (with
+    /// version-level immutability when the repository uses it). Returns true
+    /// when it was created.
+    pub fn ensure_container(&self) -> Result<bool> {
+        if self.container_exists()? {
+            return Ok(false);
+        }
+        self.create_container(self.cfg.lock.is_some())?;
+        Ok(true)
+    }
+
+    /// Whether the container exists.
+    pub fn container_exists(&self) -> Result<bool> {
+        let r = self.request("HEAD", "", &[("restype", "container")], &[], b"")?;
+        match r.status {
+            200 => Ok(true),
+            404 => Ok(false),
+            _ => Err(self.fail("look up container", &self.cfg.container, &r)),
+        }
+    }
+
     /// True when nothing is stored under the prefix yet.
     pub fn is_empty(&self) -> Result<bool> {
         Ok(self.list_blobs("", Some(1))?.is_empty())

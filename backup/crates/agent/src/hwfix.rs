@@ -12,6 +12,10 @@
 //!   hive.
 //! * On Windows PE media, drivers supplied with the media or on a USB stick
 //!   (`fenrir-drivers` folder) are added with DISM.
+//! * On the Linux recovery media, the same driver folders are copied into the
+//!   restored Windows (`Windows\Fenrir\Drivers`) and that folder is added to
+//!   `DevicePath` in the SOFTWARE hive: Windows installs from it the drivers
+//!   for hardware it finds when it starts (network, chipset, graphics...).
 //!
 //! The registry is changed through [`Hive`]: on the Linux recovery media
 //! with the hivex tools (`hivexget`, `hivexregedit`, run as programs), on
@@ -83,7 +87,8 @@ pub struct WindowsFix {
     pub boot_start: Vec<String>,
     /// Drivers whose StartOverride was removed.
     pub overrides_removed: Vec<String>,
-    /// Driver packages added (Windows PE).
+    /// Driver packages added (DISM on Windows PE; staged for Windows on the
+    /// Linux media).
     pub drivers_added: Vec<String>,
     pub notes: Vec<String>,
 }
@@ -256,6 +261,186 @@ pub fn adapt(
     Ok(fix)
 }
 
+/// Where staged driver packages go, and how DevicePath names it.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub const STAGED_DRIVERS: &[&str] = &["Windows", "Fenrir", "Drivers"];
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub const STAGED_DEVICE_PATH: &str = r"%SystemRoot%\Fenrir\Drivers";
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const DEVICE_PATH_KEY: &str = r"Microsoft\Windows\CurrentVersion";
+
+/// DevicePath with `add` appended (`None`: already there). Windows' default
+/// is `%SystemRoot%\inf`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn with_device_path(current: Option<&str>, add: &str) -> Option<String> {
+    let cur = current
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .unwrap_or(r"%SystemRoot%\inf");
+    if cur.split(';').any(|p| p.trim().eq_ignore_ascii_case(add)) {
+        return None;
+    }
+    Some(format!("{cur};{add}"))
+}
+
+/// A .reg file setting one REG_EXPAND_SZ value (hivexregedit syntax).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn reg_expand_sz(prefix: &str, key: &str, name: &str, value: &str) -> String {
+    let mut bytes: Vec<u8> = value.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+    bytes.extend([0, 0]);
+    let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!(
+        "Windows Registry Editor Version 5.00\n\n[{prefix}\\{key}]\n\"{name}\"=hex(2):{}\n\n",
+        hex.join(",")
+    )
+}
+
+/// Copy driver folders into the restored Windows and add them to
+/// DevicePath (Linux recovery media). Returns what was staged.
+#[cfg(target_os = "linux")]
+fn stage_drivers(win_root: &Path, sources: &[PathBuf], fix: &mut WindowsFix) -> anyhow::Result<()> {
+    if sources.is_empty() {
+        return Ok(());
+    }
+    let software = find_ci(win_root, &["Windows", "System32", "config", "SOFTWARE"])
+        .filter(|p| p.is_file())
+        .context("the restored Windows has no SOFTWARE registry hive")?;
+    if hive_is_dirty(&software)? {
+        fix.notes.push("The SOFTWARE registry of the restored Windows has unsaved changes in its logs; driver packages were not added.".into());
+        return Ok(());
+    }
+    let windows = find_ci(win_root, &["Windows"]).context("no Windows folder")?;
+    let dest = windows.join(STAGED_DRIVERS[1]).join(STAGED_DRIVERS[2]);
+    for (i, src) in sources.iter().enumerate() {
+        let to = dest.join(format!("{:02}", i + 1));
+        copy_tree(src, &to).with_context(|| format!("copying {}", src.display()))?;
+        fix.drivers_added.push(src.display().to_string());
+    }
+    let current = Command::new("hivexget")
+        .arg(&software)
+        .arg(format!(r"\{DEVICE_PATH_KEY}"))
+        .arg("DevicePath")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim_end_matches('\n')
+                .to_string()
+        });
+    if let Some(v) = with_device_path(current.as_deref(), STAGED_DEVICE_PATH) {
+        let file = software.with_file_name("fenrir-devicepath.reg");
+        std::fs::write(
+            &file,
+            reg_expand_sz(
+                r"HKEY_LOCAL_MACHINE\SOFTWARE",
+                DEVICE_PATH_KEY,
+                "DevicePath",
+                &v,
+            ),
+        )?;
+        let o = Command::new("hivexregedit")
+            .args(["--merge", "--prefix", r"HKEY_LOCAL_MACHINE\SOFTWARE"])
+            .arg(&software)
+            .arg(&file)
+            .output()
+            .context("running hivexregedit")?;
+        let _ = std::fs::remove_file(&file);
+        if !o.status.success() {
+            bail!(
+                "hivexregedit: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            );
+        }
+    }
+    fix.notes.push(format!(
+        "Driver packages were copied to {} and Windows installs them when it finds the hardware they are for. Storage drivers that do not come with Windows are needed before Windows starts: add those from Windows PE recovery media.",
+        STAGED_DEVICE_PATH
+    ));
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for e in std::fs::read_dir(from)? {
+        let e = e?;
+        let t = e.file_type()?;
+        let dst = to.join(e.file_name());
+        if t.is_dir() {
+            copy_tree(&e.path(), &dst)?;
+        } else if t.is_file() {
+            std::fs::copy(e.path(), dst)?;
+        }
+    }
+    Ok(())
+}
+
+/// Driver folders for the Linux recovery media: the medium's own
+/// (`drivers` in the runtime folder) and `fenrir-drivers` in the root of any
+/// partition not on `target` (mounted read-only while copying). Calls `f`
+/// with them while they are mounted.
+#[cfg(target_os = "linux")]
+fn with_driver_sources<T>(target: &str, f: impl FnOnce(&[PathBuf]) -> T) -> T {
+    let rt = crate::recovery::runtime_dir();
+    let mut found: Vec<PathBuf> = vec![rt.join("drivers")];
+    let mut mounted: Vec<PathBuf> = Vec::new();
+    let target_name = Path::new(target)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if let Ok(rd) = std::fs::read_dir("/sys/class/block") {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let is_part = e.path().join("partition").exists();
+            // Not a partition of the disk just restored.
+            let parent = std::fs::canonicalize(e.path())
+                .ok()
+                .and_then(|p| {
+                    p.parent()
+                        .map(|q| q.file_name().map(|n| n.to_string_lossy().into_owned()))
+                })
+                .flatten()
+                .unwrap_or_default();
+            if !is_part || parent == target_name {
+                continue;
+            }
+            let mnt = rt.join(format!("drivers-{name}"));
+            if std::fs::create_dir_all(&mnt).is_err() {
+                continue;
+            }
+            let ok = Command::new("mount")
+                .args(["-o", "ro"])
+                .arg(format!("/dev/{name}"))
+                .arg(&mnt)
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success());
+            if !ok {
+                continue;
+            }
+            match find_ci(&mnt, &["fenrir-drivers"]) {
+                Some(d) if d.is_dir() => {
+                    found.push(d);
+                    mounted.push(mnt);
+                }
+                _ => {
+                    let _ = Command::new("umount").arg(&mnt).status();
+                }
+            }
+        }
+    }
+    let sources: Vec<PathBuf> = found
+        .into_iter()
+        .filter(|p| std::fs::read_dir(p).is_ok_and(|mut r| r.next().is_some()))
+        .collect();
+    let r = f(&sources);
+    for m in mounted {
+        let _ = Command::new("umount").arg(&m).status();
+    }
+    r
+}
+
 // ---------------------------------------------------------------------------
 // hivex (Linux recovery media)
 // ---------------------------------------------------------------------------
@@ -329,7 +514,7 @@ pub fn adapt_restored_disk(device: &str) -> anyhow::Result<Option<WindowsFix>> {
         .args(["--rereadpt", device])
         .status();
     let _ = Command::new("udevadm").arg("settle").status();
-    let mut parts = partitions(device);
+    let mut parts = partitions_of(device);
     parts.sort_by_key(|(_, size)| std::cmp::Reverse(*size));
     let ntfs: Vec<String> = parts
         .into_iter()
@@ -373,16 +558,18 @@ pub fn adapt_restored_disk(device: &str) -> anyhow::Result<Option<WindowsFix>> {
                         dirty,
                     )
                 })
+                .and_then(|mut fix| {
+                    // Other drivers (network, chipset...): installed by Windows itself.
+                    with_driver_sources(device, |src| stage_drivers(&mnt, src, &mut fix))?;
+                    Ok(fix)
+                })
                 .map(Some),
             None => Ok(None),
         };
         let _ = Command::new("sync").status();
         let _ = Command::new("umount").arg(&mnt).status();
         match r {
-            Ok(Some(mut fix)) => {
-                fix.notes.push("Drivers that do not come with Windows (some RAID controllers) can only be added from Windows PE recovery media.".into());
-                return Ok(Some(fix));
-            }
+            Ok(Some(fix)) => return Ok(Some(fix)),
             Ok(None) => continue,
             Err(e) => return Err(e),
         }
@@ -392,7 +579,7 @@ pub fn adapt_restored_disk(device: &str) -> anyhow::Result<Option<WindowsFix>> {
 
 /// Partitions of a whole disk as the kernel lists them: (device node, bytes).
 #[cfg(target_os = "linux")]
-fn partitions(device: &str) -> Vec<(String, u64)> {
+pub fn partitions_of(device: &str) -> Vec<(String, u64)> {
     let Some(name) = Path::new(device).file_name().and_then(|n| n.to_str()) else {
         return vec![];
     };
@@ -981,6 +1168,85 @@ mod tests {
         assert_eq!(
             parse_reg_query("    Start2    REG_DWORD    0x0", "Start"),
             None
+        );
+    }
+
+    #[test]
+    fn device_path_gets_the_staged_drivers_once() {
+        assert_eq!(
+            with_device_path(None, STAGED_DEVICE_PATH).unwrap(),
+            r"%SystemRoot%\inf;%SystemRoot%\Fenrir\Drivers"
+        );
+        assert_eq!(
+            with_device_path(Some(r"%SystemRoot%\inf;C:\OEM"), STAGED_DEVICE_PATH).unwrap(),
+            r"%SystemRoot%\inf;C:\OEM;%SystemRoot%\Fenrir\Drivers"
+        );
+        assert_eq!(
+            with_device_path(
+                Some(r"%SystemRoot%\inf;%systemroot%\fenrir\drivers"),
+                STAGED_DEVICE_PATH
+            ),
+            None,
+            "already there (any case)"
+        );
+        let reg = reg_expand_sz(r"HKEY_LOCAL_MACHINE\SOFTWARE", r"A\B", "DevicePath", "%x");
+        assert!(reg.contains(r"[HKEY_LOCAL_MACHINE\SOFTWARE\A\B]"));
+        assert!(
+            reg.contains("\"DevicePath\"=hex(2):25,00,78,00,00,00"),
+            "{reg}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn driver_packages_are_staged_for_windows_to_find() {
+        if !hivex() {
+            return;
+        }
+        let t = tempfile::tempdir().unwrap();
+        windows(t.path(), false);
+        let software = build(&K {
+            name: "ROOT",
+            values: vec![],
+            keys: vec![K {
+                name: "Microsoft",
+                values: vec![],
+                keys: vec![K {
+                    name: "Windows",
+                    values: vec![],
+                    keys: vec![K {
+                        name: "CurrentVersion",
+                        values: vec![("DevicePath", V::Str(r"%SystemRoot%\inf"))],
+                        keys: vec![],
+                    }],
+                }],
+            }],
+        });
+        let sw = t.path().join("Windows/System32/config/SOFTWARE");
+        std::fs::write(&sw, software).unwrap();
+        let pkg = t.path().join("stick/fenrir-drivers/nic");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("e1d.inf"), b"[Version]").unwrap();
+        std::fs::write(pkg.join("e1d.sys"), b"MZ").unwrap();
+        let mut fix = WindowsFix::default();
+        stage_drivers(t.path(), &[t.path().join("stick/fenrir-drivers")], &mut fix).unwrap();
+        assert!(t
+            .path()
+            .join("Windows/Fenrir/Drivers/01/nic/e1d.inf")
+            .is_file());
+        assert_eq!(fix.drivers_added.len(), 1);
+        let h = HivexHive { path: sw.clone() };
+        assert_eq!(
+            h.string(r"Microsoft\Windows\CurrentVersion", "DevicePath")
+                .as_deref(),
+            Some(r"%SystemRoot%\inf;%SystemRoot%\Fenrir\Drivers")
+        );
+        // Again: copied again, DevicePath unchanged.
+        stage_drivers(t.path(), &[t.path().join("stick/fenrir-drivers")], &mut fix).unwrap();
+        assert_eq!(
+            h.string(r"Microsoft\Windows\CurrentVersion", "DevicePath")
+                .as_deref(),
+            Some(r"%SystemRoot%\inf;%SystemRoot%\Fenrir\Drivers")
         );
     }
 

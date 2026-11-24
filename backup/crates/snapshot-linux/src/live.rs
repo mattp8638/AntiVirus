@@ -14,7 +14,9 @@ use std::process::Command;
 use std::sync::Arc;
 
 use core_format::extent::Extent;
-use core_format::manifest::{BootConfig, CaptureMethod, Consistency, Firmware, OsInfo};
+use core_format::manifest::{
+    ApplicationInfo, BootConfig, CaptureMethod, Consistency, Firmware, OsInfo,
+};
 use engine::composite::{CompositeDisk, HeadThenZeros, Overlay, SharedReader};
 use engine::{CapturePlan, DiskInfo, DiskSource, PartitionPlan};
 
@@ -41,6 +43,9 @@ pub struct LiveOptions {
     /// Disks holding these paths (the repository) are left out when chosen
     /// automatically.
     pub exclude_paths: Vec<PathBuf>,
+    /// Freeze/thaw hooks (`apps::HOOKS_DIR`); None runs none. Databases are
+    /// coordinated either way (apps.rs).
+    pub hooks_dir: Option<PathBuf>,
 }
 
 pub struct LiveBackup {
@@ -49,6 +54,8 @@ pub struct LiveBackup {
     pub warnings: Vec<String>,
     pub os: OsInfo,
     pub boot: BootConfig,
+    /// Applications quiesced (or not) around the snapshots.
+    pub applications: Vec<ApplicationInfo>,
     /// "vg/lv" of the snapshots we created.
     snapshots: Vec<String>,
     temps: Vec<PathBuf>,
@@ -318,6 +325,7 @@ pub fn prepare(opts: &LiveOptions) -> Result<LiveBackup, Error> {
         warnings: vec![],
         os: os_info(),
         boot: boot_config(),
+        applications: vec![],
         snapshots: vec![],
         temps: vec![],
         state_dir: opts.state_dir.clone(),
@@ -601,6 +609,23 @@ pub fn prepare(opts: &LiveOptions) -> Result<LiveBackup, Error> {
         }
     }
 
+    // Applications: quiesced from before the first frozen copy until every
+    // snapshot exists. A path counts as captured consistently when its file
+    // system is one we snapshot or freeze.
+    let mut units: BTreeMap<String, String> = BTreeMap::new();
+    for p in &pending {
+        if let Some(s) = segs.iter().find(|s| s.vg == p.vg && s.lv == p.lv) {
+            units.insert(canon(&s.dm_path), format!("{}/{}", p.vg, p.lv));
+        }
+    }
+    for (_, _, _, mp, _) in &freezes {
+        if let Some((_, src)) = mount_source(Path::new(mp)) {
+            units.insert(canon(&src), mp.clone());
+        }
+    }
+    let unit_of = |p: &Path| mount_source(p).and_then(|(_, src)| units.get(&canon(&src)).cloned());
+    let quiesce = crate::apps::begin(opts.hooks_dir.as_deref(), &unit_of);
+
     for (di, start, len, mp, fstype) in freezes {
         let (path, frozen) = freeze_copy(&built[di].1, start, len, &mp, &opts.temp_dir)?;
         live.temps.push(path.clone());
@@ -653,6 +678,10 @@ pub fn prepare(opts: &LiveOptions) -> Result<LiveBackup, Error> {
         created.insert(key, name);
         snapped = true;
     }
+    let coordinated = !quiesce.applications.is_empty() && quiesce.all_included();
+    let (applications, app_warnings) = quiesce.end();
+    live.applications = applications;
+    warnings.extend(app_warnings);
     if !created.is_empty() {
         let now = segments()?;
         for p in &pending {
@@ -703,6 +732,8 @@ pub fn prepare(opts: &LiveOptions) -> Result<LiveBackup, Error> {
     }
     live.consistency = if inconsistent {
         Consistency::Inconsistent
+    } else if snapped && coordinated {
+        Consistency::Application
     } else if snapped {
         Consistency::Crash
     } else {
@@ -727,6 +758,22 @@ fn snapshot_name(lv: &str) -> String {
         .take(40)
         .collect();
     format!("{SNAP_PREFIX}{base}-{tag}")
+}
+
+/// The mount point holding `p` and its source device.
+fn mount_source(p: &Path) -> Option<(String, String)> {
+    let p = std::fs::canonicalize(p).ok()?;
+    let mounts = std::fs::read_to_string("/proc/self/mounts").ok()?;
+    mounts
+        .lines()
+        .filter_map(|l| {
+            let mut f = l.split_whitespace();
+            let src = f.next()?;
+            let mp = f.next()?.replace("\\040", " ");
+            Some((mp, src.to_string()))
+        })
+        .filter(|(m, _)| p.starts_with(m))
+        .max_by_key(|(m, _)| m.len())
 }
 
 /// The mount point holding `p` (longest prefix in /proc/self/mounts).
