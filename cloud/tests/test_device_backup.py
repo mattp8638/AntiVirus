@@ -778,3 +778,40 @@ def test_backup_agent_links_by_hardware_serial_when_host_names_are_ambiguous(cli
         db.commit()
         assert bk.link_devices(db) == 1
         assert db.get(BackupAgent, agent_id).device_id == b["deviceId"]
+
+
+def test_files_download_through_the_server_encrypted_for_the_browser(client, admin, tenant, tmp_path, monkeypatch):
+    """Download to the browser (backup/docs/design/file-download.md): the machine uploads ciphertext in
+    offset-checked parts; the browser fetches it once the job has finished."""
+    monkeypatch.setattr(bk, "downloads_dir", lambda: tmp_path)
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    caps = CAPS + ["restore_files"]
+    heartbeat(client, h, caps=caps)
+    ready_repo(client, admin, tenant, agent_id, h)
+    repo_id = client.get("/api/console/backup/repositories", headers=admin).json()[0]["id"]
+    client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+    im = image()
+    finish(client, h, heartbeat(client, h, caps=caps)["jobs"][0]["id"], images=[im])
+    url = f"/api/console/backup/images/{im['image_id']}/download-files"
+    body = {"disk": 0, "partition": 2, "paths": ["/Users/ann"]}
+    assert client.post(url, headers=admin, json={**body, "recipient": "bm90IGEga2V5"}).status_code == 400
+    recipient = base64.b64encode(b"\x01" * 32).decode()
+    r = client.post(url, headers=admin, json={**body, "recipient": recipient})
+    assert r.status_code == 200, r.text
+    job_id = r.json()["id"]
+    spec = heartbeat(client, h, caps=caps)["jobs"][0]
+    assert spec["kind"]["type"] == "download_files" and spec["kind"]["recipient"] == recipient
+    up = f"/backup/api/agent/jobs/{job_id}/download?offset="
+    raw = {**h, "Content-Type": "application/octet-stream"}
+    assert client.post(up + "0", headers=raw, content=b"a" * 100).status_code == 200
+    assert client.post(up + "0", headers=raw, content=b"a" * 100).status_code == 200  # retried
+    assert client.post(up + "500", headers=raw, content=b"b" * 10).status_code == 409  # gap
+    assert client.post(up + "100", headers=raw, content=b"b" * 10).status_code == 200
+    assert client.get(f"/api/console/backup/jobs/{job_id}/download", headers=admin).status_code == 409
+    finish(client, h, job_id, result={"download": {}})
+    got = client.get(f"/api/console/backup/jobs/{job_id}/download", headers=admin)
+    assert got.status_code == 200 and got.content == b"a" * 100 + b"b" * 10
+    assert client.post(up + "110", headers=raw, content=b"c").status_code == 409, "finished"
+    assert bk.purge_downloads(0) == 1

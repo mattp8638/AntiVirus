@@ -9,12 +9,15 @@ Repository passphrases and share passwords arrive here already sealed in the bro
 
 from __future__ import annotations
 
+import base64
+import binascii
 import re
 import uuid as uuidlib
 from types import SimpleNamespace
 from datetime import timedelta
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -1188,6 +1191,50 @@ def restore_files(image_id: str, request: Request, body: dict = Body(...), p: Pr
               machine=a.hostname, items=len(paths), first=paths[0][:300], restore_to=target, conflict=conflict)
     db.commit()
     return {"id": job.id}
+
+
+@router.post("/images/{image_id}/download-files")
+def download_files(image_id: str, body: dict = Body(...), p: Principal = Depends(current_principal),
+                   db: Session = Depends(get_db)):
+    """Send chosen files to this browser, encrypted for its one-time key: the machine restores and encrypts them,
+    this server only relays ciphertext (backup/docs/design/file-download.md)."""
+    p.require("scripts")
+    im = _image(db, p, image_id)
+    a = _file_agent(db, p, im, body.get("agentId"))
+    volume = _volume(body)
+    if volume is None:
+        bad("choose a volume")
+    paths = [str(x) for x in body.get("paths") or [] if str(x).strip("/")]
+    if not paths or len(paths) > 1000 or any(len(x) > 4000 for x in paths):
+        bad("choose 1 to 1000 files or folders")
+    recipient = str(body.get("recipient") or "").strip()
+    try:
+        ok = len(base64.b64decode(recipient, validate=True)) == 32
+    except (binascii.Error, ValueError):
+        ok = False
+    if not ok:
+        bad("recipient must be a 32-byte X25519 public key (base64)")
+    job = bk.queue(db, a, {"type": "download_files", "image_id": im.image_id, "volume": volume, "paths": paths,
+                           "recipient": recipient}, im.repository_id, p.actor)
+    bk.record(db, p.actor, "backup.files.download_requested", im.hostname, im.tenant_id, image=im.image_id,
+              machine=a.hostname, items=len(paths), first=paths[0][:300])
+    db.commit()
+    return {"id": job.id}
+
+
+@router.get("/jobs/{job_id}/download")
+def get_download(job_id: str, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """The encrypted stream of a finished download; only the browser that asked can open it."""
+    p.require("scripts")
+    job = db.get(BackupJob, job_id)
+    if job is None or job.tenant_id not in p.tenant_ids or (job.kind or {}).get("type") != "download_files":
+        raise HTTPException(404, "No such download")
+    if job.state not in ("succeeded", "warning"):
+        raise HTTPException(409, "the download is not ready")
+    path = bk.download_path(job.id)
+    if not path.exists():
+        raise HTTPException(404, "the download has expired")
+    return FileResponse(path, media_type="application/octet-stream", headers={"Cache-Control": "no-store"})
 
 
 @router.post("/images/{image_id}/boot-check")

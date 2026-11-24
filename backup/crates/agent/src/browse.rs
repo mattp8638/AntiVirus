@@ -200,3 +200,69 @@ pub fn restore_files(
     u.result = Some(serde_json::to_value(&report)?);
     Ok(u)
 }
+
+/// Restore `paths` into a private temporary folder, then send them to the
+/// browser as an encrypted tar archive (docs/design/file-download.md).
+#[allow(clippy::too_many_arguments)]
+pub fn download_files(
+    ctx: &Ctx,
+    access: &RepoAccess,
+    image: Uuid,
+    volume: VolumeRef,
+    paths: &[String],
+    recipient: &str,
+    job: Uuid,
+    rep: &Reporter,
+) -> anyhow::Result<JobUpdate> {
+    let work = crate::config::state_dir()
+        .join("downloads")
+        .join(job.to_string());
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(work.join("files"))?;
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(work.clone());
+    let mut u = restore_files(
+        ctx,
+        access,
+        image,
+        volume,
+        paths,
+        &work.join("files").to_string_lossy(),
+        true,
+        "overwrite",
+        rep,
+    )?;
+    if u.state == JobState::Failed {
+        return Ok(u);
+    }
+    rep.progress("packing", 0, 1, "");
+    let tar = work.join("files.tar");
+    crate::download::tar_dir(&work.join("files"), &mut std::fs::File::create(&tar)?)?;
+    let name = format!("restore-{}.tar", &image.to_string()[..8]);
+    let total = std::fs::metadata(&tar)?.len();
+    let header = crate::download::encrypt_and_send(&tar, recipient, &name, |off, bytes| {
+        rep.progress("sending", off, total, "encrypted for your browser");
+        let (code, _, body) = ctx.client.raw(
+            "POST",
+            &format!("/api/agent/jobs/{job}/download?offset={off}"),
+            Some(bytes),
+            std::time::Duration::from_secs(300),
+            4096,
+        )?;
+        if code >= 300 {
+            anyhow::bail!(
+                "the server refused the upload ({code}): {}",
+                String::from_utf8_lossy(&body)
+            );
+        }
+        Ok(())
+    })?;
+    let restored = u.result.take().unwrap_or_default();
+    u.result = Some(serde_json::json!({ "download": header, "restored": restored }));
+    Ok(u)
+}

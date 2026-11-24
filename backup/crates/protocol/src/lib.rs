@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod download;
 pub mod gateway;
 pub mod net;
 pub mod recovery;
@@ -400,6 +401,15 @@ pub enum JobKind {
         #[serde(default = "default_conflict")]
         conflict: String,
     },
+    /// Restore files and send them to the browser that asked, encrypted for
+    /// its one-time public key (`recipient`, X25519, base64); the server only
+    /// relays ciphertext (docs/design/file-download.md).
+    DownloadFiles {
+        image_id: Uuid,
+        volume: VolumeRef,
+        paths: Vec<String>,
+        recipient: String,
+    },
     /// Can this machine reach and write to `path`? Signs in to a network
     /// share first when credentials are given. Reports free space.
     CheckAccess {
@@ -429,6 +439,7 @@ impl JobKind {
             JobKind::CheckAccess { .. } => "Test connection",
             JobKind::BrowseFiles { .. } => "Browse files",
             JobKind::RestoreFiles { .. } => "Restore files",
+            JobKind::DownloadFiles { .. } => "Download files",
         }
     }
 }

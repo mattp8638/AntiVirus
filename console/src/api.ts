@@ -85,6 +85,21 @@ async function rawApi<T>(path: string, options: { method?: string; body?: unknow
   return data as T;
 }
 
+/** GET a binary body from the console API (with the session's token). */
+export async function apiBytes(path: string): Promise<ArrayBuffer> {
+  const headers: Record<string, string> = {};
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const response = await fetch(new URL(`/api/console/${path}`, window.location.origin).toString(), { headers });
+  if (response.status === 401) onUnauthorized();
+  if (!response.ok) {
+    const data = safeJson(await response.text());
+    const detail = data && typeof data === "object" && "detail" in data ? (data as any).detail : `HTTP ${response.status}`;
+    throw new ApiError(response.status, String(detail));
+  }
+  return response.arrayBuffer();
+}
+
 function safeJson(text: string): unknown {
   try {
     return JSON.parse(text);

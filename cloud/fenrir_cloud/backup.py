@@ -16,6 +16,8 @@ import os
 import re
 import secrets
 import struct
+import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -73,7 +75,7 @@ KIND_LABELS = {
     "backup_hyperv": "Hyper-V backup", "verify": "Verify", "list_images": "Refresh images",
     "apply_retention": "Apply retention", "copy_images": "Copy off-site", "prune": "Reclaim space", "restore": "Restore", "boot_check": "Boot check",
     "stop_vm": "Stop VM", "check_access": "Test connection", "browse_files": "Browse files",
-    "restore_files": "Restore files",
+    "restore_files": "Restore files", "download_files": "Download files",
 }
 # Capability the agent must report for console-created jobs of each kind.
 KIND_CAPABILITY = {"backup_system": "backup_system", "backup_disks": "backup_disks", "backup_hyperv": "backup_hyperv",
@@ -225,6 +227,34 @@ PLATFORMS = {
     "macos": {"name": "macOS", "targets": MAC, "role": None, "script": "install-fenrir-backup-macos.sh", "setup": None},
 }
 ALL_TARGETS = {t.triple: t for p in PLATFORMS.values() for t in p["targets"]}
+
+
+# Encrypted file downloads waiting for the browser (backup/docs/design/file-download.md): kept a day.
+DOWNLOAD_MAX = (4 << 30) + (64 << 20)
+
+
+def downloads_dir() -> Path:
+    from .config import get_settings
+
+    return Path(get_settings().artifact_dir) / "backup-downloads"
+
+
+def download_path(job_id: str) -> Path:
+    return downloads_dir() / f"{uuid.UUID(job_id)}.bin"
+
+
+def purge_downloads(max_age_seconds: int = 86_400) -> int:
+    d, n = downloads_dir(), 0
+    if not d.is_dir():
+        return 0
+    for f in d.iterdir():
+        try:
+            if time.time() - f.stat().st_mtime >= max_age_seconds:
+                f.unlink()
+                n += 1
+        except OSError:
+            pass
+    return n
 
 
 def agents_dir() -> Path:
@@ -507,6 +537,7 @@ def tick(db: Session) -> None:
     run_due_plans(db)
     run_boot_checks(db)
     expire_recovery_sessions(db)
+    purge_downloads()
 
 
 # --------------------------------------------------------------------------

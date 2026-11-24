@@ -237,6 +237,36 @@ def _applications(v) -> list | None:
     return out or None
 
 
+@router.post("/api/agent/jobs/{job_id}/download")
+async def upload_download(job_id: str, offset: int, request: Request, agent: BackupAgent = Depends(current_backup_agent),
+                          db: Session = Depends(get_db)):
+    """The agent appends to the encrypted stream of its download_files job (backup/docs/design/file-download.md).
+    Uploads carry their offset, so a retried request is harmless; a gap is refused. Ciphertext only."""
+    job = db.get(BackupJob, job_id)
+    if job is None:
+        raise HTTPException(404, "unknown job")
+    if job.agent_id != agent.id:
+        raise HTTPException(403, "job belongs to another agent")
+    if (job.kind or {}).get("type") != "download_files" or job.state in bk.FINAL_STATES:
+        raise HTTPException(409, "not a running download")
+    body = await request.body()
+    if len(body) > 16 << 20 or offset < 0:
+        raise HTTPException(413, "upload in smaller parts")
+    path = bk.download_path(job.id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    have = path.stat().st_size if path.exists() else 0
+    end = offset + len(body)
+    if end > bk.DOWNLOAD_MAX:
+        raise HTTPException(400, "the download is too large")
+    if offset > have:
+        raise HTTPException(409, f"expected offset {have}")
+    if end > have:
+        with open(path, "r+b" if path.exists() else "wb") as f:
+            f.seek(offset)
+            f.write(body)
+    return {"have": max(end, have)}
+
+
 @router.post("/api/agent/jobs/{job_id}/update")
 def update_job(job_id: str, body: dict = Body(...), agent: BackupAgent = Depends(current_backup_agent),
                db: Session = Depends(get_db)):

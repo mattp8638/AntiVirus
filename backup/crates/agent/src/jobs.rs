@@ -582,6 +582,21 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             *volume,
             path,
         ),
+        JobKind::DownloadFiles {
+            image_id,
+            volume,
+            paths,
+            recipient,
+        } => crate::browse::download_files(
+            ctx,
+            access.ok_or_else(|| anyhow!("no repository"))?,
+            *image_id,
+            *volume,
+            paths,
+            recipient,
+            spec.id,
+            rep,
+        ),
         JobKind::RestoreFiles {
             image_id,
             volume,

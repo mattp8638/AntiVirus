@@ -147,6 +147,12 @@ volume (C:, D:, /home…), open folders, tick files or folders and restore them.
   replace it. Replacing needs the `destructive` permission and a password re-check. Files are written to a
   temporary name and renamed when complete, keep their modification time, and names are made safe for the target
   system. Nothing is written outside the chosen folder, and existing links there are not followed.
+* **Download here** sends the chosen files to your browser as a `.tar` archive (up to 4 GiB) instead of writing
+  them on a machine. Your browser makes a one-time key pair; only its public key is sent. The machine restores the
+  files to a private temporary folder, packs them, and encrypts the archive for that key (X25519 + AES-256-GCM in
+  numbered 1 MiB frames, so a changed, reordered or cut-short download is refused). The server stores only the
+  ciphertext, which it cannot read, and deletes it after 24 hours; the browser decrypts it and saves the file.
+  Audited as `backup.files.download_requested`.
 * **Permissions**: browsing and restoring files need `scripts`, like other restores. Opening a backup and every file
   restore are audited (`backup.files.browsed`, `backup.files.restore_requested`).
 * **Volumes**: NTFS (Windows) and ext2/3/4 (Linux) volumes can be browsed. Windows backups read BitLocker volumes through
