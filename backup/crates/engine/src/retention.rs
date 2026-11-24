@@ -160,6 +160,67 @@ pub fn select(images: &[Candidate], p: &RetentionPolicy) -> Vec<Decision> {
     out
 }
 
+/// A CDP image (docs/design/cdp.md): base or journal, with its sequence number.
+#[derive(Debug, Clone)]
+pub struct CdpImage {
+    pub image_id: Uuid,
+    pub machine_id: String,
+    pub created_unix: i64,
+    pub journal: bool,
+    pub seq: u64,
+}
+
+impl CdpImage {
+    fn of(m: &ManifestBody) -> Option<CdpImage> {
+        let journal = match m.os.family.as_str() {
+            "cdp-base" => false,
+            "cdp-journal" => true,
+            _ => return None,
+        };
+        let v: serde_json::Value = serde_json::from_str(&m.os.version).unwrap_or_default();
+        Some(CdpImage {
+            image_id: m.image_id,
+            machine_id: m.machine.machine_id.clone(),
+            created_unix: m.created_unix,
+            journal,
+            seq: v["seq"].as_u64().unwrap_or(0),
+        })
+    }
+}
+
+/// Decisions for CDP journals: each is kept exactly when the base it
+/// replays onto (the newest base of that volume with a sequence number not
+/// above its own) is kept; journals from before every base are useless.
+pub fn cdp_journals(images: &[CdpImage], decided: &[Decision]) -> Vec<Decision> {
+    let kept: HashSet<Uuid> = decided
+        .iter()
+        .filter(|d| d.keep)
+        .map(|d| d.image_id)
+        .collect();
+    images
+        .iter()
+        .filter(|j| j.journal)
+        .map(|j| {
+            let base = images
+                .iter()
+                .filter(|b| !b.journal && b.machine_id == j.machine_id && b.seq <= j.seq)
+                .max_by_key(|b| b.seq);
+            let keep = base.is_some_and(|b| kept.contains(&b.image_id));
+            Decision {
+                image_id: j.image_id,
+                machine_id: j.machine_id.clone(),
+                created_unix: j.created_unix,
+                keep,
+                reasons: if keep {
+                    vec!["journal of a kept base"]
+                } else {
+                    vec![]
+                },
+            }
+        })
+        .collect()
+}
+
 /// Period an image falls in for a rule (UTC).
 fn period(rule: &str, t: i64) -> i64 {
     let day = t.div_euclid(86_400);
@@ -201,9 +262,14 @@ pub fn forget(
 ) -> Result<ForgetReport> {
     let _lock = repo.lock(LockKind::Shared)?;
     let (all, _unreadable) = repo.load_all_manifests()?;
-    let cands: Vec<Candidate> = all
+    let chosen: Vec<&ManifestBody> = all
         .iter()
         .filter(|m| machine_ids.is_empty() || machine_ids.contains(&m.machine.machine_id))
+        .collect();
+    // CDP journals are not judged on their own: they follow their base.
+    let cands: Vec<Candidate> = chosen
+        .iter()
+        .filter(|m| m.os.family != "cdp-journal")
         .map(|m| Candidate {
             image_id: m.image_id,
             machine_id: m.machine.machine_id.clone(),
@@ -211,7 +277,9 @@ pub fn forget(
             parent: m.parent,
         })
         .collect();
-    let decisions = select(&cands, p);
+    let mut decisions = select(&cands, p);
+    let cdp: Vec<CdpImage> = chosen.iter().filter_map(|m| CdpImage::of(m)).collect();
+    decisions.extend(cdp_journals(&cdp, &decisions));
     let mut removed = Vec::new();
     let mut retained = Vec::new();
     for d in decisions.iter().filter(|d| !d.keep) {
@@ -346,6 +414,62 @@ pub fn prune(repo: &Repository, dry_run: bool, ctl: &JobControl) -> Result<Prune
 mod tests {
     use super::*;
     use core_format::timefmt::days_from_civil;
+
+    #[test]
+    fn cdp_journals_follow_their_base() {
+        let img = |n: u128, journal: bool, seq: u64| CdpImage {
+            image_id: Uuid::from_u128(n),
+            machine_id: "cdp:h:v".into(),
+            created_unix: n as i64,
+            journal,
+            seq,
+        };
+        // Base 1 at seq 2 (journal 1 is from before it), base 2 at seq 4.
+        let all = vec![
+            img(1, true, 1),
+            img(2, false, 2),
+            img(3, true, 2),
+            img(4, true, 3),
+            img(5, false, 4),
+            img(6, true, 4),
+            img(7, true, 5),
+        ];
+        let bases: Vec<Candidate> = all
+            .iter()
+            .filter(|i| !i.journal)
+            .map(|i| Candidate {
+                image_id: i.image_id,
+                machine_id: i.machine_id.clone(),
+                created_unix: i.created_unix,
+                parent: None,
+            })
+            .collect();
+        let p = RetentionPolicy {
+            keep_last: 1,
+            ..Default::default()
+        };
+        let d = select(&bases, &p);
+        let j = cdp_journals(&all, &d);
+        let keep: Vec<u128> = d
+            .iter()
+            .chain(&j)
+            .filter(|d| d.keep)
+            .map(|d| d.image_id.as_u128())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        assert_eq!(
+            keep,
+            vec![5, 6, 7],
+            "the newest base and its journals, nothing older"
+        );
+        let all_kept = cdp_journals(&all, &select(&bases, &RetentionPolicy::default()));
+        assert_eq!(
+            all_kept.iter().filter(|d| !d.keep).count(),
+            1,
+            "only the journal before every base goes"
+        );
+    }
 
     fn at(y: i64, m: u32, d: u32, h: i64) -> i64 {
         days_from_civil(y, m, d) * 86_400 + h * 3600

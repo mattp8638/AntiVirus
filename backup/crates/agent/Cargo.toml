@@ -19,6 +19,8 @@ engine.workspace = true
 filebrowse.workspace = true
 nbd-server.workspace = true
 hex.workspace = true
+k8s.workspace = true
+saas.workspace = true
 protocol.workspace = true
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 serde.workspace = true

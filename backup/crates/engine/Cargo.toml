@@ -12,10 +12,10 @@ core-format.workspace = true
 crc32fast.workspace = true
 fatfs.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
 core-format = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
-serde_json.workspace = true

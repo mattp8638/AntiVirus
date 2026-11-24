@@ -13,6 +13,7 @@ pub mod net;
 pub mod recovery;
 pub mod seal;
 pub mod setup;
+pub mod sources;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -429,6 +430,46 @@ pub enum JobKind {
         #[serde(default)]
         confirm: String,
     },
+    /// Back up a Kubernetes cluster's namespaces; `sealed_token` is the
+    /// service account token, sealed to this machine.
+    BackupKubernetes {
+        cluster: sources::K8sCluster,
+        sealed_token: seal::Sealed,
+    },
+    /// Restore a Kubernetes backup into the cluster: `namespaces` (all if
+    /// empty), `rename_to` renaming the one namespace given.
+    RestoreKubernetes {
+        image_id: Uuid,
+        cluster: sources::K8sCluster,
+        sealed_token: seal::Sealed,
+        #[serde(default)]
+        namespaces: Vec<String>,
+        #[serde(default)]
+        rename_to: Option<String>,
+        #[serde(default)]
+        replace: bool,
+    },
+    /// Back up a SaaS tenant; `sealed_secret` is the client secret or the
+    /// service account key, sealed to this machine.
+    BackupSaas {
+        tenant: sources::SaasTenant,
+        sealed_secret: seal::Sealed,
+    },
+    /// Put a SaaS backup's items for `account` back into the service.
+    RestoreSaas {
+        image_id: Uuid,
+        tenant: sources::SaasTenant,
+        sealed_secret: seal::Sealed,
+        account: String,
+        #[serde(default)]
+        to_account: Option<String>,
+        #[serde(default)]
+        kind: Option<String>,
+        #[serde(default)]
+        path: Option<String>,
+        #[serde(default)]
+        overwrite: bool,
+    },
     /// Can this machine reach and write to `path`? Signs in to a network
     /// share first when credentials are given. Reports free space.
     CheckAccess {
@@ -462,6 +503,10 @@ impl JobKind {
                 LocalRecoveryAction::Remove => "Remove local recovery",
             },
             JobKind::BrowseFiles { .. } => "Browse files",
+            JobKind::BackupKubernetes { .. } => "Kubernetes backup",
+            JobKind::RestoreKubernetes { .. } => "Kubernetes restore",
+            JobKind::BackupSaas { .. } => "SaaS backup",
+            JobKind::RestoreSaas { .. } => "SaaS restore",
             JobKind::RestoreFiles { .. } => "Restore files",
             JobKind::DownloadFiles { .. } => "Download files",
         }

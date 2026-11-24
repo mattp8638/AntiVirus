@@ -495,6 +495,57 @@ def _settings(s) -> dict:
     lab = str(s.get("label") or "").strip()[:200] or None
     return {"label": lab, "rate_limit_mib": rate, "vss_full": bool(s.get("vss_full")), "verify_sample_percent": pct}
 
+# Kubernetes clusters and SaaS tenants (backup/docs/design/kubernetes.md, saas.md). Their secret is sealed in the
+# browser to the machine that runs the jobs; only the sealed form is kept here.
+SAAS_SERVICES = ("m365", "google", "salesforce")
+_NAME = re.compile(r"[A-Za-z0-9._-]{1,63}")
+
+
+def _sealed_secret(v, what: str) -> dict:
+    ok = isinstance(v, dict) and v.get("v") == 1 and all(isinstance(v.get(k), str) and 0 < len(v[k]) <= 16384 for k in ("epk", "nonce", "ct"))
+    if not ok:
+        bad(f"the {what} must be encrypted for the machine in the browser")
+    return {"v": 1, "epk": v["epk"], "nonce": v["nonce"], "ct": v["ct"]}
+
+
+def _name_list(v, limit: int = 200) -> list[str]:
+    return [str(x).strip()[:320] for x in (v or []) if str(x).strip()][:limit]
+
+
+def _k8s_cluster(c) -> dict:
+    c = c if isinstance(c, dict) else {}
+    name = str(c.get("name") or "").strip()
+    if not _NAME.fullmatch(name):
+        bad("the cluster name may have letters, digits, -, _ and .")
+    server = str(c.get("api_server") or "").strip()
+    if not server.startswith("https://") or len(server) > 300:
+        bad("the API server is an https:// address")
+    ns = _name_list(c.get("namespaces"), 100)
+    if not ns or any(not re.fullmatch(r"[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?", n) for n in ns):
+        bad("name the namespaces to back up (lower-case Kubernetes names)")
+    return {"name": name, "api_server": server, "ca_pem": str(c.get("ca_pem") or "")[:20000],
+            "namespaces": ns, "volume_image": str(c.get("volume_image") or "").strip()[:300]}
+
+
+def _saas_tenant(t) -> dict:
+    t = t if isinstance(t, dict) else {}
+    svc = t.get("service")
+    if svc not in SAAS_SERVICES:
+        bad("the service is m365, google or salesforce")
+    out = {"service": svc, "tenant": str(t.get("tenant") or "").strip()[:200], "client_id": str(t.get("client_id") or "").strip()[:200],
+           "domain_url": str(t.get("domain_url") or "").strip()[:300], "admin": str(t.get("admin") or "").strip()[:320],
+           "users": _name_list(t.get("users"), 5000), "objects": _name_list(t.get("objects")),
+           "mail": t.get("mail") is not False, "files": t.get("files") is not False}
+    if not out["tenant"]:
+        bad("give the tenant (directory, domain or org name)")
+    if svc == "m365" and not out["client_id"]:
+        bad("give the app's client ID")
+    if svc == "google" and "@" not in out["admin"]:
+        bad("give an administrator's address to list users as")
+    if svc == "salesforce" and (not out["domain_url"].startswith("https://") or not out["client_id"]):
+        bad("give the My Domain URL (https://...) and the consumer key")
+    return out
+
 
 def normalise_kind(kind) -> dict:
     """A console-requested job, rebuilt from validated fields only."""
@@ -518,6 +569,29 @@ def normalise_kind(kind) -> dict:
         return {"type": t, "level": level, "sample_percent": pct}
     if t == "list_images":
         return {"type": t}
+    if t == "backup_kubernetes":
+        return {"type": t, "cluster": _k8s_cluster(kind.get("cluster")), "sealed_token": _sealed_secret(kind.get("sealed_token"), "token")}
+    if t == "backup_saas":
+        return {"type": t, "tenant": _saas_tenant(kind.get("tenant")), "sealed_secret": _sealed_secret(kind.get("sealed_secret"), "secret")}
+    if t == "restore_kubernetes":
+        ns = _name_list(kind.get("namespaces"), 100)
+        rename = str(kind.get("rename_to") or "").strip() or None
+        if rename and (len(ns) != 1 or not re.fullmatch(r"[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?", rename)):
+            bad("renaming needs exactly one namespace and a lower-case Kubernetes name")
+        return {"type": t, "image_id": _uuid(kind.get("image_id"), "image"), "cluster": _k8s_cluster(kind.get("cluster")),
+                "sealed_token": _sealed_secret(kind.get("sealed_token"), "token"), "namespaces": ns, "rename_to": rename,
+                "replace": bool(kind.get("replace"))}
+    if t == "restore_saas":
+        account = str(kind.get("account") or "").strip()[:320]
+        if not account:
+            bad("whose items to restore")
+        what = kind.get("kind") or None
+        if what not in (None, "mail", "file", "record"):
+            bad("restore mail, files or records")
+        return {"type": t, "image_id": _uuid(kind.get("image_id"), "image"), "tenant": _saas_tenant(kind.get("tenant")),
+                "sealed_secret": _sealed_secret(kind.get("sealed_secret"), "secret"), "account": account,
+                "to_account": str(kind.get("to_account") or "").strip()[:320] or None, "kind": what,
+                "path": str(kind.get("path") or "").strip()[:1000] or None, "overwrite": bool(kind.get("overwrite"))}
     bad("use the repository (create, reclaim space) or the restore dialog for that")
 
 
@@ -535,10 +609,20 @@ def validate_job(db: Session, agent: BackupAgent, kind: dict, repository_id: str
 
 
 @router.post("/agents/{agent_id}/jobs")
-def create_job(agent_id: str, body: dict = Body(...), p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+def create_job(agent_id: str, request: Request, body: dict = Body(...), p: Principal = Depends(current_principal),
+               db: Session = Depends(get_db)):
     p.require("respond")
     a = _agent(db, p, agent_id)
     kind = normalise_kind(body.get("kind"))
+    # Overwriting what is in the cluster or the service now: destructive permission, a fresh password check and its
+    # name typed.
+    owner = kind.get("cluster", {}).get("name") if kind["type"] == "restore_kubernetes" and kind["replace"] else \
+        kind.get("tenant", {}).get("tenant") if kind["type"] == "restore_saas" and kind["overwrite"] else None
+    if owner:
+        p.require("destructive")
+        require_reauth(request, p)
+        if str(body.get("confirm") or "").strip().lower() != owner.lower():
+            bad(f"type {owner} to confirm: this overwrites what is there now")
     repo_id = _uuid(body["repositoryId"], "repository") if body.get("repositoryId") else None
     validate_job(db, a, kind, repo_id)
     job = bk.queue(db, a, kind, repo_id, p.actor)
@@ -1456,7 +1540,17 @@ def _image_unlocked(request: Request, db: Session, p: Principal, image_id: str) 
     return im
 
 
+APP_PREFIXES = {"saas:": "saas", "k8s:": "kubernetes", "cdp:": "cdp"}
+
+
+def _app_source(i: BackupImage) -> str | None:
+    """SaaS tenants, Kubernetes clusters and CDP volumes: listed on their own, not under the machine that ran them."""
+    return next((v for k, v in APP_PREFIXES.items() if (i.machine_id or "").startswith(k)), None)
+
+
 def _device_key(i: BackupImage) -> str:
+    if _app_source(i):
+        return f"app:{i.machine_id}|"
     return f"{i.agent_id or 'host:' + (i.hostname or '')}|{i.vm_name or ''}"
 
 
@@ -1479,7 +1573,7 @@ def image_devices(request: Request, tenantId: str | None = None, p: Principal = 
                 "key": _device_key(i), "name": i.vm_name or i.hostname, "hostname": i.hostname, "vmName": i.vm_name,
                 "agentId": i.agent_id, "tenantId": i.tenant_id, "images": 0, "lastCreated": i.created_unix,
                 "firstCreated": i.created_unix, "storedBytes": 0, "lastKind": i.kind, "lastConsistency": i.consistency,
-                "anomalies": 0, "lastVerified": None, "repositories": {}}
+                "anomalies": 0, "lastVerified": None, "repositories": {}, "source": _app_source(i)}
         g["images"] += 1
         g["firstCreated"] = min(g["firstCreated"], i.created_unix)
         g["storedBytes"] += i.stored_new_bytes or 0

@@ -165,6 +165,49 @@ pub fn report_of(m: &ManifestBody) -> ImageReport {
     }
 }
 
+/// A cluster's API client; the token is opened here, never stored.
+fn k8s_client(
+    ctx: &Ctx,
+    cluster: &protocol::sources::K8sCluster,
+    sealed: &protocol::seal::Sealed,
+) -> anyhow::Result<k8s::Client> {
+    cluster.validate().map_err(|e| anyhow!(e))?;
+    let token = ctx
+        .key
+        .open(sealed)
+        .map_err(|e| anyhow!("{e}: enter the cluster's token again"))?;
+    let token = String::from_utf8(token.to_vec()).map_err(|_| anyhow!("the token is not text"))?;
+    k8s::Client::new(&k8s::Connect {
+        server: cluster.api_server.clone(),
+        token: token.trim().to_string(),
+        ca_pem: cluster.ca_pem.clone(),
+    })
+    .map_err(|e| anyhow!("{e}"))
+}
+
+fn saas_conn(
+    ctx: &Ctx,
+    t: &protocol::sources::SaasTenant,
+    sealed: &protocol::seal::Sealed,
+) -> anyhow::Result<(saas::run::Settings, saas::run::Conn)> {
+    t.validate().map_err(|e| anyhow!(e))?;
+    let secret = ctx
+        .key
+        .open(sealed)
+        .map_err(|e| anyhow!("{e}: enter the {} secret again", t.service))?;
+    let secret =
+        String::from_utf8(secret.to_vec()).map_err(|_| anyhow!("the secret is not text"))?;
+    let settings = saas::run::Settings {
+        service: t.service.clone(),
+        tenant: t.tenant.clone(),
+        client_id: t.client_id.clone(),
+        domain_url: t.domain_url.clone(),
+        admin: t.admin.clone(),
+    };
+    let conn = saas::run::connect(&settings, &secret).map_err(|e| anyhow!("{e}"))?;
+    Ok((settings, conn))
+}
+
 fn secret(key: &AgentKey, access: &RepoAccess) -> anyhow::Result<RepoSecret> {
     let pt = key
         .open(&access.sealed_secret)
@@ -627,6 +670,126 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
                 u.removed_images = r.removed.clone();
             }
             u.result = Some(json!({ "kept": r.kept, "removed": r.removed, "dry_run": r.dry_run }));
+            Ok(u)
+        }
+        JobKind::BackupKubernetes {
+            cluster,
+            sealed_token,
+        } => {
+            let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            let c = k8s_client(ctx, cluster, sealed_token)?;
+            let progress = |s: &str| rep.progress("kubernetes", 0, 1, s);
+            let r = k8s::repo::backup(
+                &repo,
+                &c,
+                &cluster.name,
+                &cluster.namespaces,
+                None,
+                Some(cluster.volume_image.as_str()).filter(|v| !v.is_empty()),
+                &ctx.ctl,
+                &progress,
+            )
+            .map_err(|e| anyhow!("{e}"))?;
+            let mut u = done(if r.warnings.is_empty() {
+                JobState::Succeeded
+            } else {
+                JobState::Warning
+            });
+            u.warnings = r.warnings.clone();
+            u.images = Some(vec![report_of(&repo.load_manifest(&r.image_id)?)]);
+            u.result = Some(serde_json::to_value(&r)?);
+            Ok(u)
+        }
+        JobKind::RestoreKubernetes {
+            image_id,
+            cluster,
+            sealed_token,
+            namespaces,
+            rename_to,
+            replace,
+        } => {
+            let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            let c = k8s_client(ctx, cluster, sealed_token)?;
+            let m = repo.load_manifest(image_id)?;
+            let map: Vec<(String, String)> = match (namespaces.as_slice(), rename_to) {
+                ([one], Some(to)) if !to.is_empty() => vec![(one.clone(), to.clone())],
+                (_, Some(to)) if !to.is_empty() => {
+                    return Err(anyhow!("renaming needs exactly one namespace"))
+                }
+                _ => vec![],
+            };
+            rep.progress("restoring", 0, 1, &cluster.name);
+            let volume_image = Some(cluster.volume_image.as_str()).filter(|v| !v.is_empty());
+            let r = k8s::repo::restore(&repo, &c, &m, namespaces, &map, *replace, volume_image)
+                .map_err(|e| anyhow!("{e}"))?;
+            let mut u = done(if r.failed.is_empty() {
+                JobState::Succeeded
+            } else {
+                JobState::Warning
+            });
+            u.warnings = r.failed.clone();
+            u.result = Some(serde_json::to_value(&r)?);
+            Ok(u)
+        }
+        JobKind::BackupSaas {
+            tenant,
+            sealed_secret,
+        } => {
+            let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            let (settings, conn) = saas_conn(ctx, tenant, sealed_secret)?;
+            let progress = |s: &str| rep.progress("downloading", 0, 1, s);
+            let scope = saas::run::Scope {
+                users: tenant.users.clone(),
+                objects: tenant.objects.clone(),
+                mail: tenant.mail,
+                files: tenant.files,
+            };
+            let r = saas::run::backup(&repo, &conn, &settings, &scope, None, &progress)
+                .map_err(|e| anyhow!("{e}"))?;
+            let mut u = done(if r.warnings.is_empty() {
+                JobState::Succeeded
+            } else {
+                JobState::Warning
+            });
+            u.warnings = r.warnings.clone();
+            u.images = Some(vec![report_of(&repo.load_manifest(&r.image_id)?)]);
+            u.result = Some(serde_json::to_value(&r)?);
+            Ok(u)
+        }
+        JobKind::RestoreSaas {
+            image_id,
+            tenant,
+            sealed_secret,
+            account,
+            to_account,
+            kind,
+            path,
+            overwrite,
+        } => {
+            let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            let (_, conn) = saas_conn(ctx, tenant, sealed_secret)?;
+            let m = repo.load_manifest(image_id)?;
+            rep.progress("restoring", 0, 1, account);
+            let sel = saas::run::Selection {
+                account: account.clone(),
+                to_account: to_account.clone(),
+                kind: kind.clone().filter(|k| !k.is_empty()),
+                path: path.clone().filter(|p| !p.is_empty()),
+                overwrite: *overwrite,
+            };
+            let r = saas::run::restore(&repo, &conn, &m, &sel).map_err(|e| anyhow!("{e}"))?;
+            let mut u = done(if r.failed.is_empty() {
+                JobState::Succeeded
+            } else if r.restored == 0 {
+                JobState::Failed
+            } else {
+                JobState::Warning
+            });
+            if r.restored == 0 {
+                u.error = Some(format!("nothing was restored ({} failed)", r.failed.len()));
+            }
+            u.warnings = r.failed.clone();
+            u.result = Some(serde_json::to_value(&r)?);
             Ok(u)
         }
         JobKind::Prune { dry_run } => {

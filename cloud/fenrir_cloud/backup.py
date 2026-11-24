@@ -69,13 +69,15 @@ def token_hash(raw: str) -> str:
 # Job kinds (protocol JobKind, "type"-tagged)
 # --------------------------------------------------------------------------
 
-BACKUP_KINDS = ("backup_system", "backup_disks", "backup_hyperv")
+BACKUP_KINDS = ("backup_system", "backup_disks", "backup_hyperv", "backup_kubernetes", "backup_saas")
 KIND_LABELS = {
     "init_repository": "Create repository", "backup_system": "System backup", "backup_disks": "Disk backup",
     "backup_hyperv": "Hyper-V backup", "verify": "Verify", "list_images": "Refresh images",
     "apply_retention": "Apply retention", "copy_images": "Copy off-site", "prune": "Reclaim space", "restore": "Restore", "boot_check": "Boot check",
     "stop_vm": "Stop VM", "check_access": "Test connection", "browse_files": "Browse files",
     "restore_files": "Restore files", "download_files": "Download files",
+    "backup_kubernetes": "Kubernetes backup", "restore_kubernetes": "Kubernetes restore",
+    "backup_saas": "SaaS backup", "restore_saas": "SaaS restore",
 }
 LOCAL_RECOVERY_LABELS = {"install": "Install local recovery", "refresh": "Refresh local recovery",
                          "remove": "Remove local recovery"}
@@ -83,7 +85,8 @@ LOCAL_RECOVERY_LABELS = {"install": "Install local recovery", "refresh": "Refres
 LOCAL_RECOVERY_DAYS = 365
 # Capability the agent must report for console-created jobs of each kind.
 KIND_CAPABILITY = {"backup_system": "backup_system", "backup_disks": "backup_disks", "backup_hyperv": "backup_hyperv",
-                   "verify": "verify"}
+                   "verify": "verify", "backup_kubernetes": "kubernetes", "restore_kubernetes": "kubernetes",
+                   "backup_saas": "saas", "restore_saas": "saas"}
 
 
 def label(kind: dict | None) -> str:

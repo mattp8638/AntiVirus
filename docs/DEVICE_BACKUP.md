@@ -143,6 +143,30 @@ disk space again and stores only what changed, so pick an interval longer than o
 **Hourly** rule (the newest image of each of the latest N hours) for many short-lived restore points. Design:
 `backup/docs/design/frequent-backups.md`.
 
+## Apps & clusters: Microsoft 365, Google Workspace, Salesforce, Kubernetes
+
+**Backups › Apps & clusters** backs up a customer's Microsoft 365 or Google Workspace mailboxes and drive files,
+Salesforce records, or Kubernetes namespaces (their objects, and with a volume image also their volumes' data) into
+the same repositories as machine images: encrypted, deduplicated, retained like images. One of the customer's machines
+with an up-to-date backup agent does the work. You connect the **customer's own** app registration, service account,
+connected app or cluster token (the page says which permissions); the secret is encrypted in your browser for that
+machine and stored only in that form, so this server never sees it. Backups run daily; after the first, only what
+changed is downloaded. **Restore** puts mail and files into a new "Restored <date>" folder of the same or another
+account, re-creates deleted Salesforce records, and re-creates Kubernetes namespaces (optionally under another name)
+with their volumes. Restores that overwrite what is there now (replacing Kubernetes objects, updating Salesforce
+records) need destructive permission, your password and the cluster's or tenant's name typed. These backups are
+listed by tenant or cluster under Images & restore and open with the repository's passphrase like any other. Details:
+`backup/docs/design/saas.md`, `backup/docs/design/kubernetes.md`.
+
+## Continuous data protection (Linux)
+
+For Linux servers that need every write kept, `fenrir-backup cdp` journals a logical volume with the kernel's
+`dm-log-writes` device: every second is restorable, not just each backup. A base image is taken daily and journals are
+shipped to the repository every minute; `cdp restore --at <time>` rebuilds the volume as it was at that second
+(crash-consistent). It is set up on the server with the command line for now; its images appear under Images &
+restore as the volume's name. Windows machines use frequent backups (every 5 minutes or more). Details:
+`backup/docs/design/cdp.md`.
+
 ## All customers (MSP view)
 
 With more than one customer, **Backups › All customers** shows backup health across all of them, worst first: per

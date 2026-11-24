@@ -6,6 +6,7 @@ import { api, ago, fmtTime, getToken, lockRepositories, rememberReauth as rememb
 import { useApp } from "../app-context";
 import { newRecoveryKey, seal, sealSupported, type Sealed } from "../backup-seal";
 import { FileBrowser } from "./BackupFiles";
+import { AppsAndClusters, isAppPlan } from "./BackupApps";
 import { confirmDialog, promptDialog } from "../components/dialogs";
 import { ErrorNote, Modal, PageHead, Pill, Stat, Table, Tabs, TenantSelect, useAction, useAutoRefresh, useData, useListData } from "../components/ui";
 
@@ -103,7 +104,7 @@ export default function Backups() {
       <PageHead title="Backups" subtitle="Image backups of servers, PCs and Hyper-V hosts into repositories you own: a NAS, a file server or a local disk. Encrypted on the machine; this server never sees the keys."
         actions={can("configure") && <button className="primary" onClick={() => setAdding(true)}>Add machines</button>} />
       {!sealSupported() && <div className="card warn-card">This browser cannot encrypt repository secrets (Web Crypto X25519 is needed). Use a current Chrome, Edge, Firefox or Safari over HTTPS.</div>}
-      <Tabs tabs={[...(msp ? ["All customers"] : []), "Overview", "Machines", "Repositories", "Plans", "Images & restore", "DR runbooks", "Activity"]} active={tab} onChange={setTab} />
+      <Tabs tabs={[...(msp ? ["All customers"] : []), "Overview", "Machines", "Repositories", "Plans", "Images & restore", "Apps & clusters", "DR runbooks", "Activity"]} active={tab} onChange={setTab} />
       <ErrorNote error={overview.error || agents.error || repos.error} />
       {tab === "All customers" && <MspDashboard open={(id) => { setTenantId?.(id); setTab("Overview"); }} />}
       {tab === "Overview" && <Overview data={overview.data} agents={agents.data} />}
@@ -111,6 +112,7 @@ export default function Backups() {
       {tab === "Repositories" && <Repositories repos={repos.data} agents={agents.data ?? []} reload={reloadAll} />}
       {tab === "Plans" && <Plans agents={agents.data ?? []} repos={repos.data ?? []} />}
       {tab === "Images & restore" && <Images agents={agents.data ?? []} repos={repos.data ?? []} />}
+      {tab === "Apps & clusters" && <AppsAndClusters agents={agents.data ?? []} repos={repos.data ?? []} />}
       {tab === "DR runbooks" && <Runbooks agents={agents.data ?? []} />}
       {tab === "Activity" && <Activity />}
       {adding && <AddMachines onClose={() => { setAdding(false); reloadAll(); }} />}
@@ -932,7 +934,7 @@ function Plans({ agents, repos }: { agents: BackupAgent[]; repos: Repo[] }) {
           }} />
         </label>
       </div>}
-      <Table rows={plans.data} onRow={can("configure") ? setEdit : undefined} empty="No plans. A plan backs up one machine into one repository on a schedule."
+      <Table rows={plans.data ? plans.data.filter((p) => !isAppPlan(p)) : null} onRow={can("configure") ? setEdit : undefined} empty="No plans. A plan backs up one machine into one repository on a schedule."
         columns={[
           { key: "name", label: "Plan", render: (p) => <><b>{p.name}</b><div className="small muted">{p.label} of {p.agentName}</div></> },
           { key: "repo", label: "Repository", render: (p) => repoName(p.repositoryId) },

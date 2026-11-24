@@ -1118,3 +1118,44 @@ def test_dr_runbook_starts_groups_in_order_and_stops_test_vms(client, admin, ten
     assert client.post(f"/api/console/backup/runbooks/{rb}/run", headers=step, json={"mode": "failover", "confirm": "office"}).status_code == 400
     r = client.post(f"/api/console/backup/runbooks/{rb}/run", headers=step, json={"mode": "failover", "confirm": "Office"})
     assert r.status_code == 200 and r.json()["mode"] == "failover" and r.json()["stopAfterMinutes"] == 0
+
+
+def test_kubernetes_and_saas_backups_keep_only_the_sealed_secret(client, admin, tenant):
+    """Apps & clusters (backup/docs/design/saas.md, kubernetes.md): the secret arrives sealed for the machine that
+    runs the jobs and is only forwarded; restores that overwrite need destructive rights, a password check and the
+    cluster's or tenant's name typed."""
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    caps = CAPS + ["kubernetes", "saas"]
+    heartbeat(client, h)
+    repo = ready_repo(client, admin, tenant, agent_id, h)
+    tenant_ = {"service": "salesforce", "tenant": "acme", "client_id": "key", "domain_url": "https://acme.my.salesforce.com"}
+    body = {"name": "CRM", "agentId": agent_id, "repositoryId": repo, "schedule": {"type": "manual"},
+            "job": {"type": "backup_saas", "tenant": tenant_, "sealed_secret": SEALED}}
+    r = client.post("/api/console/backup/plans", headers=admin, json=body)
+    assert r.status_code == 400 and "saas" in r.text, "the machine must report the capability"
+    heartbeat(client, h, caps=caps)
+    plain = {**body, "job": {**body["job"], "sealed_secret": "the-secret-in-clear"}}
+    assert client.post("/api/console/backup/plans", headers=admin, json=plain).status_code == 400
+    bad_url = {**body, "job": {**body["job"], "tenant": {**tenant_, "domain_url": "http://acme"}}}
+    assert client.post("/api/console/backup/plans", headers=admin, json=bad_url).status_code == 400
+    r = client.post("/api/console/backup/plans", headers=admin, json=body)
+    assert r.status_code == 200, r.text
+    assert client.post(f"/api/console/backup/plans/{r.json()['id']}/run", headers=admin).status_code == 200
+    spec = heartbeat(client, h, caps=caps)["jobs"][0]
+    assert spec["kind"]["type"] == "backup_saas" and spec["kind"]["sealed_secret"] == SEALED
+    assert spec["kind"]["tenant"]["mail"] is True and spec["repository"]["sealed_secret"] == SEALED
+
+    url = f"/api/console/backup/agents/{agent_id}/jobs"
+    cluster = {"name": "prod", "api_server": "https://k8s.lan:6443", "namespaces": ["shop"]}
+    restore = {"type": "restore_kubernetes", "image_id": str(uuid.uuid4()), "cluster": cluster, "sealed_token": SEALED,
+               "namespaces": ["shop"], "rename_to": "shop-restored"}
+    r = client.post(url, headers=admin, json={"repositoryId": repo, "kind": restore})
+    assert r.status_code == 200, r.text
+    bad_ns = {**restore, "cluster": {**cluster, "namespaces": ["Shop!"]}}
+    assert client.post(url, headers=admin, json={"repositoryId": repo, "kind": bad_ns}).status_code == 400
+    replace = {"repositoryId": repo, "kind": {**restore, "replace": True}, "confirm": "prod"}
+    assert client.post(url, headers=admin, json=replace).json()["detail"] == "reauth_required"
+    step = {**admin, "X-Fenrir-Reauth": reauth(client, admin)}
+    assert client.post(url, headers=step, json={**replace, "confirm": "staging"}).status_code == 400
+    assert client.post(url, headers=step, json=replace).status_code == 200
