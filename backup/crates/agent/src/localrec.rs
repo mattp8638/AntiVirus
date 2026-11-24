@@ -351,10 +351,11 @@ mod imp {
 $v = '__VOL__'; $size = [int64]__SIZE__
 $c = Get-Partition -DriveLetter $v
 $s = Get-PartitionSupportedSize -DriveLetter $v
-$room = $c.Size - $s.SizeMin - 2GB
+$room = $c.Size - $s.SizeMin - 2GB - 16MB
 if ($room -lt $size) { throw ("${v}: can give up at most {0} MB (the recovery partition needs {1} MB); free some space first" -f [math]::Max(0, [math]::Floor($room / 1MB)), [math]::Ceiling($size / 1MB)) }
-Resize-Partition -DriveLetter $v -Size ($c.Size - $size)
-$p = New-Partition -DiskNumber $c.DiskNumber -Size $size -AssignDriveLetter
+# A little more than the partition: alignment takes some of the freed space.
+Resize-Partition -DriveLetter $v -Size ($c.Size - $size - 16MB)
+$p = New-Partition -DiskNumber $c.DiskNumber -UseMaximumSize -AssignDriveLetter
 Format-Volume -Partition $p -FileSystem NTFS -NewFileSystemLabel '__LABEL__' -Confirm:$false | Out-Null
 $p = Get-Partition -DiskNumber $c.DiskNumber -PartitionNumber $p.PartitionNumber
 [pscustomobject]@{ disk = $c.DiskNumber; partition = $p.PartitionNumber; offset = $p.Offset; size = $p.Size;

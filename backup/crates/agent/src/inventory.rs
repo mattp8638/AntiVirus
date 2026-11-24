@@ -105,6 +105,8 @@ pub fn capabilities(role: &str) -> Vec<String> {
         "restore_vm_files",
         "restore_files",
         "gateway",
+        "kubernetes",
+        "saas",
     ]
     .iter()
     .map(|s| s.to_string())

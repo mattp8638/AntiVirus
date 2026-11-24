@@ -1,0 +1,21 @@
+[package]
+name = "k8s"
+description = "Fenrir-Backup: Kubernetes resources and volume data (Kubernetes API over HTTPS)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+core-format.workspace = true
+engine.workspace = true
+snapshot-linux.workspace = true
+uuid.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ureq = { version = "2.12", default-features = false, features = ["tls", "json"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pki-types = { version = "1.9", features = ["std"] }
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -3101,6 +3101,42 @@ class BackupImage(Base):
     applications: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
+class DrRunbook(Base):
+    """A disaster-recovery runbook (backup/docs/design/dr-runbooks.md): groups of machines started, group after
+    group, from their latest backups as VMs on chosen hosts."""
+
+    __tablename__ = "dr_runbooks"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    # [{"name": str, "machines": [{"key": "<agent id>|<vm name>", "hostAgentId", "memoryMb", "cpus", "directory"}]}]
+    groups: Mapped[list] = mapped_column(JSON, default=list)
+    test_every_days: Mapped[int] = mapped_column(Integer, default=0)
+    stop_after_minutes: Mapped[int] = mapped_column(Integer, default=60)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class DrRun(Base):
+    """One run of a runbook: a test (VMs stopped afterwards) or a failover (VMs keep running)."""
+
+    __tablename__ = "dr_runs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    runbook_id: Mapped[str] = mapped_column(String(36), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    mode: Mapped[str] = mapped_column(String(20), default="test")  # test | failover
+    state: Mapped[str] = mapped_column(String(20), default="running")  # running | succeeded | warning | failed | stopped
+    group: Mapped[int] = mapped_column(Integer, default=0)
+    # Per machine: group, key, name, hostAgentId, imageId, imageCreated, jobId, state, message, upAt, seconds
+    items: Mapped[list] = mapped_column(JSON, default=list)
+    stop_after_minutes: Mapped[int] = mapped_column(Integer, default=60)
+    vms_stopped: Mapped[bool] = mapped_column(Boolean, default=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    started_by: Mapped[str] = mapped_column(String(200), default="")
+
+
 class BackupBootCheck(Base):
     __tablename__ = "backup_boot_checks"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

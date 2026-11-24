@@ -128,7 +128,7 @@ Versions are pinned in `ui/package-lock.json`.
 | fastrand | 2.5.0 | Apache-2.0 OR MIT |
 | fiat-crypto | 0.2.9 | MIT OR Apache-2.0 OR BSD-1-Clause |
 | find-msvc-tools | 0.1.15 | MIT OR Apache-2.0 |
-| form_urlencoded | 1.2.2 | MIT OR Apache-2.0 |
+| form_urlencoded | 1.2.3 | MIT OR Apache-2.0 |
 | futures-core | 0.3.34 | MIT OR Apache-2.0 |
 | futures-task | 0.3.34 | MIT OR Apache-2.0 |
 | futures-util | 0.3.34 | MIT OR Apache-2.0 |
@@ -221,7 +221,7 @@ Versions are pinned in `ui/package-lock.json`.
 | universal-hash | 0.5.1 | MIT OR Apache-2.0 |
 | untrusted | 0.9.0 | ISC |
 | ureq | 2.12.1 | MIT OR Apache-2.0 |
-| url | 2.5.8 | MIT OR Apache-2.0 |
+| url | 2.5.9 | MIT OR Apache-2.0 |
 | utf8_iter | 1.1.0 | Apache-2.0 OR MIT |
 | utf8parse | 0.2.2 | Apache-2.0 OR MIT |
 | utf_types | 1.0.0 | Apache-2.0 OR MIT |
