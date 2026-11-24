@@ -145,6 +145,19 @@ can be emailed on a schedule (weekly: 7 days, monthly: 30, quarterly: 90) like t
 **Open** goes straight to it in Browse files. Each backup is indexed on the machine after it is taken; the index stays on
 the machine and only matches come back (kept a day). Design: `backup/docs/design/search.md`.
 
+## Legal hold
+
+A backup on legal hold is never deleted by retention, whatever the plan keeps. In **Images & restore › a machine**,
+**Legal hold** on a row holds that backup; **Hold all current backups** holds every backup the machine has now (later
+backups are not held). Both need a reason (3 to 500 characters, for example a matter number), which is shown on the row
+and recorded in the audit log. Releasing a hold needs a fresh password check and is audited too. Needs the configure
+permission.
+
+Holds are kept by the server and sent with each retention job; the agent marks held backups as kept with the reason
+"legal hold". An agent too old to understand holds is not sent retention while any backup in the repository is held:
+an alert asks for it to be updated, and nothing is deleted meanwhile. A hold does not stop someone with access to the
+repository deleting files by hand; pair it with immutable storage (S3 Object Lock, below) where that matters.
+
 ## Malware scans of backups
 
 **Images & restore › Scan** checks the files inside a backup against your threat intelligence (malicious file hashes

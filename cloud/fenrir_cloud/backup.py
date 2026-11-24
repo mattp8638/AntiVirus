@@ -460,9 +460,28 @@ def queue_retention(db: Session, plan_id: str, repo_id: str, agent: BackupAgent,
         gateway = db.get(BackupAgent, repo.gateway_agent_id)
         if gateway is not None and not gateway.revoked:
             agent = gateway
-    if machine_ids:
-        queue(db, agent, {"type": "apply_retention", "machine_ids": machine_ids, "retention": plan.retention,
-                          "dry_run": False}, repo_id, "retention", plan_id=plan_id)
+    if not machine_ids:
+        return
+    held = held_images(db, repo_id)
+    if held and "legal_hold" not in capabilities(agent):
+        # An older agent would not know to keep them: no retention until it is updated.
+        raise_alert(db, plan.tenant_id, agent.device_id, RULE_FAILED,
+                    f"Retention skipped: {agent.display_name or agent.hostname} needs an update",
+                    "medium", f"Backups in repository {repo.name if repo else repo_id} are on legal hold, and the backup "
+                    "agent that applies retention is too old to keep them. Old backups are not being deleted until it "
+                    "is updated.", dedupe_key=f"legal-hold-agent:{agent.id}")
+        return
+    kind = {"type": "apply_retention", "machine_ids": machine_ids, "retention": plan.retention, "dry_run": False}
+    if held:  # only agents with the legal_hold capability get here with holds
+        kind["held"] = held
+    queue(db, agent, kind, repo_id, "retention", plan_id=plan_id)
+
+
+def held_images(db: Session, repo_id: str) -> list[str]:
+    """Images of a repository on legal hold (never deleted by retention)."""
+    return sorted(i for (i,) in db.execute(select(BackupImage.image_id).where(
+        BackupImage.repository_id == repo_id, BackupImage.legal_hold.is_not(None))).all()
+        if i)
 
 
 # --------------------------------------------------------------------------

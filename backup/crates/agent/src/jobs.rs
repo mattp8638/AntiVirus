@@ -698,6 +698,7 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             machine_ids,
             retention,
             dry_run,
+            held,
         } => {
             let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
             rep.progress("retention", 0, 1, "reading images");
@@ -709,12 +710,14 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
                 keep_monthly: retention.keep_monthly,
                 keep_yearly: retention.keep_yearly,
             };
-            let r = engine::retention::forget(&repo, machine_ids, &p, *dry_run)?;
+            let r = engine::retention::forget_with_holds(&repo, machine_ids, &p, held, *dry_run)?;
             let mut u = done(JobState::Succeeded);
             if !dry_run {
                 u.removed_images = r.removed.clone();
             }
-            u.result = Some(json!({ "kept": r.kept, "removed": r.removed, "dry_run": r.dry_run }));
+            u.result = Some(
+                json!({ "kept": r.kept, "removed": r.removed, "dry_run": r.dry_run, "held": held.len() }),
+            );
             Ok(u)
         }
         JobKind::BackupKubernetes {

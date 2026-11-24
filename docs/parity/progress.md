@@ -31,7 +31,7 @@ The six backup entries were still `missing` from when the backup-oversight modul
   report; no discovery of third-party backup products.
 * BDR-05 `partial`: Microsoft 365, Google Workspace and Salesforce with mocked APIs; SharePoint, Teams, Entra and
   QuickBooks missing; live tenants blocked as AT-14.
-* BDR-06 `partial`: search across backups and retention; no legal hold, eDiscovery or self-service.
+* BDR-06 `partial`: search across backups, retention and legal hold; no eDiscovery or self-service.
 
 AT-19 gained an end-to-end restore with a SHA-256 comparison in the gateway job; it stays **NOT RUN** until CI records
 a result. Changed-block tracking for physical machines needs decisions first (`backup/docs/design/cbt-physical.md`).

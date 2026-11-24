@@ -434,6 +434,10 @@ pub enum JobKind {
         retention: Retention,
         #[serde(default)]
         dry_run: bool,
+        /// Images on legal hold: kept whatever the policy says. Sent only
+        /// to agents that report `legal_hold`.
+        #[serde(default)]
+        held: Vec<Uuid>,
     },
     /// Delete chunks no image references.
     Prune {

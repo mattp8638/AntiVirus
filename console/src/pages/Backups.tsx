@@ -42,12 +42,13 @@ interface Plan {
   copyToRepositoryId?: string | null;
   standby?: { agentId: string; type: string; format: string | null; name: string; directory: string } | null;
 }
-type ImageApp = { writer: string; component: string; caption?: string; included: boolean; note?: string | null };
+type ImageApp = { writer: string; component: string; caption?: string; included: boolean; note?: string | null; fileSets?: number };
 interface Image {
   imageId: string; repositoryId: string; agentId: string | null; hostname: string; created: number; kind: string;
   consistency: string; applications?: ImageApp[]; capturedBytes: number; storedNewBytes: number; disks: any[]; label: string | null; vmName: string | null;
   anomaly: string | null; lastBootCheck: { outcome: string; at: string; message: string } | null;
   lastScan?: ScanSummary | null; source?: "files" | "disks";
+  legalHold?: { reason: string; by: string; at: string } | null;
 }
 interface ScanSummary { state: "clean" | "infected" | "incomplete"; at: string; findings: number; filesScanned: number }
 
@@ -1066,7 +1067,7 @@ interface ImageDevice {
   key: string; name: string; hostname: string; vmName: string | null; agentId: string | null; tenantId: string;
   images: number; lastCreated: number; firstCreated: number; storedBytes: number; lastKind: string; lastConsistency: string;
   anomalies: number; lastVerified: string | null; repositories: { id: string; name: string; images: number; unlocked: boolean }[];
-  infected?: number; lastCleanCreated?: number | null; latestScan?: ScanSummary | null;
+  infected?: number; lastCleanCreated?: number | null; latestScan?: ScanSummary | null; held?: number;
 }
 
 /** Re-render when a repository is unlocked or locked, and when an unlock runs out. */
@@ -1130,7 +1131,26 @@ function DeviceImages({ device, agents, repos, onBack, onUnlock }: {
   const [files, setFiles] = useState<Image | null>(null);
   const [filesAt, setFilesAt] = useState<BrowseStart | undefined>(undefined);
   const [scan, setScan] = useState<Image | null>(null);
+  const [appRestore, setAppRestore] = useState<Image | null>(null);
   const { can } = useApp();
+  const { run } = useAction();
+  const toggleHold = async (i: Image) => {
+    if (i.legalHold) {
+      if (!(await confirmDialog(`Release the legal hold on the backup of ${unixTime(i.created)} (${i.legalHold.reason})? Retention may then delete it. You will be asked for your password.`))) return;
+      await run(() => api(`backup/images/${i.imageId}/legal-hold`, { body: { hold: false } }), "Hold released");
+    } else {
+      const reason = await promptDialog("Why is this backup held? (a case or matter reference)", "");
+      if (!reason) return;
+      await run(() => api(`backup/images/${i.imageId}/legal-hold`, { body: { hold: true, reason } }), "Backup held: retention will keep it");
+    }
+    images.reload();
+  };
+  const holdAll = async () => {
+    const reason = await promptDialog(`Hold every current backup of ${device.name}? Give a case or matter reference.`, "");
+    if (!reason) return;
+    await run(() => api("backup/legal-hold/device", { body: { device: device.key, reason } }), "Backups held: retention will keep them");
+    images.reload();
+  };
   const locked = device.repositories.filter((r) => !unlockedUntil(r.id));
   const until = Math.max(...device.repositories.map((r) => unlockedUntil(r.id) ?? 0));
   useEffect(() => { if (locked.length === device.repositories.length) onBack(); }, [tick]);  // ran out, or locked
@@ -1140,7 +1160,8 @@ function DeviceImages({ device, agents, repos, onBack, onUnlock }: {
         <button className="small" onClick={onBack}>← All machines</button>
         <h3 style={{ margin: 0 }}>{device.name}{device.vmName && <span className="small muted"> · VM on {device.hostname}</span>}</h3>
         <span className="small muted">Unlocked until {new Date(until).toLocaleTimeString()}</span>
-        <button className="small" style={{ marginLeft: "auto" }} onClick={() => { lockRepositories(device.repositories.map((r) => r.id)); onBack(); }}>Lock</button>
+        {can("configure") && <button className="small" style={{ marginLeft: "auto" }} onClick={holdAll}>Hold all current backups</button>}
+        <button className="small" style={can("configure") ? undefined : { marginLeft: "auto" }} onClick={() => { lockRepositories(device.repositories.map((r) => r.id)); onBack(); }}>Lock</button>
       </div>
       {locked.length > 0 && <p className="small">{locked.map((r) => `${r.images} backup${r.images === 1 ? "" : "s"} in ${r.name}`).join(", ")} still locked. <button className="small" onClick={onUnlock}>Unlock</button></p>}
       {can("scripts") && <SearchBackups device={device.key} images={(images.data ?? []).map((i) => ({ imageId: i.imageId, created: i.created }))}
@@ -1151,23 +1172,26 @@ function DeviceImages({ device, agents, repos, onBack, onUnlock }: {
       </div>}
       <Table rows={images.data} empty="No backups."
         columns={[
-          { key: "what", label: "Backup", render: (i) => <><span>{i.source === "files" ? "Files and folders" : i.kind}</span>{i.label && <span className="small muted"> · {i.label}</span>}{device.repositories.length > 1 && <div className="small muted">{repos.find((r) => r.id === i.repositoryId)?.name}</div>}{i.anomaly && <div className="small" style={{ color: "#fca5a5" }}>⚠ {i.anomaly}</div>}</> },
+          { key: "what", label: "Backup", render: (i) => <><span>{i.source === "files" ? "Files and folders" : i.kind}</span>{i.legalHold && <div className="small" title={`${i.legalHold.reason} (by ${i.legalHold.by}, ${ago(i.legalHold.at)})`}><Pill value="On legal hold" tone="warn" /> <span className="muted">{i.legalHold.reason}</span></div>}{i.label && <span className="small muted"> · {i.label}</span>}{device.repositories.length > 1 && <div className="small muted">{repos.find((r) => r.id === i.repositoryId)?.name}</div>}{i.anomaly && <div className="small" style={{ color: "#fca5a5" }}>⚠ {i.anomaly}</div>}</> },
           { key: "created", label: "Taken (oldest first)", render: (i) => unixTime(i.created) },
           { key: "size", label: "Size", render: (i) => <span className="small">{bytes(i.capturedBytes)} · {bytes(i.storedNewBytes)} new</span> },
           { key: "consistency", label: "Consistency", render: (i) => <><span>{i.consistency}</span><AppsLine apps={i.applications} /></> },
-          { key: "boot", label: "Boots?", render: (i) => i.lastBootCheck ? <Pill value={i.lastBootCheck.outcome} tone={i.lastBootCheck.outcome === "failed" ? "bad" : "good"} /> : <span className="small muted">not tested</span> },
+          { key: "boot", label: "Boots?", render: (i) => i.source === "files" ? <span className="small muted">n/a</span> : i.lastBootCheck ? <Pill value={i.lastBootCheck.outcome} tone={i.lastBootCheck.outcome === "failed" ? "bad" : "good"} /> : <span className="small muted">not tested</span> },
           { key: "scan", label: "Malware", render: (i) => <ScanPill scan={i.lastScan} clean={!!device.lastCleanCreated && i.created === device.lastCleanCreated} /> },
           { key: "act", label: "", render: (i) => <div className="row" style={{ gap: 4 }}>
             {can("scripts") && <button className="small primary" onClick={() => { setFilesAt(undefined); setFiles(i); }}>Browse files</button>}
             {can("scripts") && i.source !== "files" && <button className="small" onClick={() => setRestore(i)}>Restore</button>}
             {can("scripts") && i.source !== "files" && <button className="small" onClick={() => setBoot(i)}>Boot test</button>}
             {can("scripts") && <button className="small" onClick={() => setScan(i)}>Scan</button>}
+            {can("scripts") && restorableApps(i).length > 0 && <button className="small" onClick={() => setAppRestore(i)}>Restore a database</button>}
+            {can("configure") && <button className="small" onClick={() => toggleHold(i)}>{i.legalHold ? "Release hold" : "Legal hold"}</button>}
           </div> },
         ]} />
       {restore && <RestoreDialog image={restore} agents={agents} repos={repos} onClose={() => setRestore(null)} />}
       {boot && <BootDialog image={boot} agents={agents} repos={repos} onClose={() => setBoot(null)} />}
       {files && <FileBrowser image={files} start={filesAt} onClose={() => setFiles(null)} />}
       {scan && <ScanDialog image={scan} agents={agents} onClose={() => { setScan(null); images.reload(); }} />}
+      {appRestore && <AppRestoreDialog image={appRestore} agents={agents} onClose={() => setAppRestore(null)} />}
     </div>
   );
 }
@@ -1257,6 +1281,57 @@ function AppsLine({ apps }: { apps?: ImageApp[] }) {
   return <div className="small muted" title={title}>{missing.length
     ? <span style={{ color: "#fcd34d" }}>{missing.length} application component{missing.length === 1 ? "" : "s"} not coordinated</span>
     : <>apps: {named.length ? named.join(", ") : "Windows system state"}</>}</div>;
+}
+
+/** SQL Server and Exchange databases a backup can restore on their own (their files are listed in it). */
+function restorableApps(i: Image): ImageApp[] {
+  return (i.applications ?? []).filter((a) => (a.fileSets ?? 0) > 0 && (a.writer === "SqlServerWriter" || /exchange/i.test(a.writer)));
+}
+
+/** One SQL Server or Exchange database out of an application-aware backup. */
+function AppRestoreDialog({ image, agents, onClose }: { image: Image; agents: BackupAgent[]; onClose: () => void }) {
+  const { run, busy } = useAction();
+  const apps = restorableApps(image);
+  const [component, setComponent] = useState(apps[0]?.component ?? "");
+  const app = apps.find((a) => a.component === component);
+  const sql = app?.writer === "SqlServerWriter";
+  const able = agents.filter((a) => a.capabilities.includes("restore_apps"));
+  const [agentId, setAgentId] = useState(able.find((a) => a.id === image.agentId)?.id ?? able[0]?.id ?? "");
+  const [directory, setDirectory] = useState("D:\\Restores");
+  const db = component.split("\\").pop() ?? "";
+  const [attach, setAttach] = useState(true);
+  const [attachAs, setAttachAs] = useState(`${db}_restored`);
+  const [instance, setInstance] = useState("");
+  const infected = image.lastScan?.state === "infected";
+  const [allowInfected, setAllowInfected] = useState(false);
+  const go = () => run(() => api(`backup/images/${image.imageId}/restore-app`, { body: {
+    agentId, component, directory, ...(sql && attach ? { attachAs, sqlInstance: instance } : {}), ...(allowInfected ? { allowInfected: true } : {}) } }),
+    "Restore queued: follow it in Activity").then((r) => r !== undefined && onClose());
+  return (
+    <Modal title={`Restore a database from ${unixTime(image.created)}`} onClose={onClose}
+      footer={<button className="primary" disabled={busy || !agentId || !directory.trim() || !component || (infected && !allowInfected)} onClick={go}>Restore</button>}>
+      <div className="form-grid">
+        <label className="field">Database<select value={component} onChange={(e) => { setComponent(e.target.value); setAttachAs(`${e.target.value.split("\\").pop()}_restored`); }}>
+          {apps.map((a) => <option key={a.component} value={a.component}>{a.writer === "SqlServerWriter" ? "SQL Server" : "Exchange"}: {a.caption || a.component}</option>)}
+        </select></label>
+        <label className="field">Restored on<select value={agentId} onChange={(e) => setAgentId(e.target.value)}>
+          {able.length === 0 && <option value="">No Windows machine with an up-to-date agent</option>}
+          {able.map((a) => <option key={a.id} value={a.id}>{a.name}{a.online ? "" : " (offline)"}</option>)}
+        </select></label>
+        <label className="field">Into the folder<input value={directory} onChange={(e) => setDirectory(e.target.value)} /></label>
+      </div>
+      {sql && <>
+        <label className="row small" style={{ gap: 6, marginTop: 8 }}><input type="checkbox" checked={attach} onChange={(e) => setAttach(e.target.checked)} /> Attach it to SQL Server on that machine</label>
+        {attach && <div className="form-grid">
+          <label className="field">As database<input value={attachAs} onChange={(e) => setAttachAs(e.target.value)} /></label>
+          <label className="field">Instance<input value={instance} onChange={(e) => setInstance(e.target.value)} placeholder="blank for the default" /></label>
+        </div>}
+        <p className="small muted">The database files are copied out of the backup into a new folder named after the database, then attached under the new name, so the live database is not touched. If attaching is not allowed (the agent runs as Local System), the job leaves an attach script in the folder for a SQL Server administrator.</p>
+      </>}
+      {app && !sql && <p className="small muted">The database and log files are copied into a new folder with a script for the Exchange Management Shell: it mounts them as a recovery database and restores chosen mailboxes, or items into a folder of a mailbox.</p>}
+      {infected && <label className="row small" style={{ gap: 6, marginTop: 8 }}><input type="checkbox" checked={allowInfected} onChange={(e) => setAllowInfected(e.target.checked)} /> This backup contains malware (latest scan): restore from it anyway</label>}
+    </Modal>
+  );
 }
 
 /** A backup's latest malware scan, in words as well as colour. */

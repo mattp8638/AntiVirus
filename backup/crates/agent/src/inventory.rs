@@ -100,6 +100,8 @@ pub fn capabilities(role: &str) -> Vec<String> {
     let mut c: Vec<String> = [
         "verify",
         "maintenance",
+        // Retention keeps images on legal hold (sent with ApplyRetention).
+        "legal_hold",
         "restore_vhdx",
         // qcow2, VDI and VMDK files with a VM definition (vmdef.rs).
         "restore_vm_files",

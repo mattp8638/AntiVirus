@@ -3102,6 +3102,8 @@ class BackupImage(Base):
     anomaly: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Application components coordinated with the snapshot (Windows VSS writers), as the agent reports them.
     applications: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Legal hold: never deleted by retention until released (who, when, why).
+    legal_hold: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class DrRunbook(Base):

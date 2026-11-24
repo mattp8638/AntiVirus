@@ -187,7 +187,8 @@ def image_out(i: BackupImage, checks: dict[str, BackupBootCheck], scans: dict | 
             "vmName": i.vm_name, "anomaly": i.anomaly, "applications": i.applications or [],
             "lastBootCheck": ({"outcome": b.outcome, "at": iso(b.at), "message": b.message} if b else None),
             "lastScan": scan_out((scans or {}).get(i.image_id)),
-            "source": "files" if bk.is_folder_backup(i) else "disks"}
+            "source": "files" if bk.is_folder_backup(i) else "disks",
+            "legalHold": i.legal_hold}
 
 
 _MEMBER = re.compile(r"^(.+)[\\/]repos[\\/]([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[\\/]?$", re.I)
@@ -1625,16 +1626,18 @@ def image_devices(request: Request, tenantId: str | None = None, p: Principal = 
                 "agentId": i.agent_id, "tenantId": i.tenant_id, "images": 0, "lastCreated": i.created_unix,
                 "firstCreated": i.created_unix, "storedBytes": 0, "lastKind": i.kind, "lastConsistency": i.consistency,
                 "anomalies": 0, "lastVerified": None, "repositories": {}, "source": _app_source(i),
-                "infected": 0, "lastCleanCreated": None, "latestScan": scan_out(scans.get(i.image_id))}
+                "infected": 0, "lastCleanCreated": None, "latestScan": scan_out(scans.get(i.image_id)), "held": 0}
         g["images"] += 1
         g["firstCreated"] = min(g["firstCreated"], i.created_unix)
         g["storedBytes"] += i.stored_new_bytes or 0
         g["anomalies"] += 1 if i.anomaly else 0
+        g["held"] += 1 if i.legal_hold else 0
         sc = scans.get(i.image_id)
         if sc is not None and sc.state == "infected":
             g["infected"] += 1
         # Rows come newest first: the first clean one is the last clean restore point.
-        if sc is not None and sc.state == "clean" and g["lastCleanCreated"] is None:
+        # (a system backup: a clean folder backup does not restore the machine)
+        if sc is not None and sc.state == "clean" and g["lastCleanCreated"] is None and not bk.is_folder_backup(i):
             g["lastCleanCreated"] = i.created_unix
         b = checks.get(i.image_id)
         if b is not None and b.outcome == "verified" and (g["lastVerified"] is None or iso(b.at) > g["lastVerified"]):
@@ -2040,6 +2043,58 @@ def list_scans(image_id: str, request: Request, p: Principal = Depends(current_p
     return [{"id": r.id, "at": iso(r.at), "state": r.state, "filesScanned": r.files_scanned,
              "bytesScanned": r.bytes_scanned, "findings": r.findings or [], "summary": r.summary or {},
              "agentId": r.agent_id, "agentName": names.get(r.agent_id), "jobId": r.job_id} for r in rows]
+
+
+# ---------------------------------------------------------------- legal hold
+
+@router.post("/images/{image_id}/legal-hold")
+def set_legal_hold(image_id: str, request: Request, body: dict = Body(...), p: Principal = Depends(current_principal),
+                   db: Session = Depends(get_db)):
+    """Put a backup on legal hold (retention never deletes it) or release it. Releasing needs a fresh password check."""
+    p.require("configure")
+    im = _image_unlocked(request, db, p, image_id)
+    hold = bool(body.get("hold"))
+    if hold:
+        reason = str(body.get("reason") or "").strip()
+        if not 3 <= len(reason) <= 500:
+            bad("say why the backup is held (a case or matter reference), 3 to 500 characters")
+        if im.legal_hold is None:
+            im.legal_hold = {"reason": reason, "by": p.actor, "at": iso(utcnow())}
+            bk.record(db, p.actor, "backup.legal_hold.placed", im.vm_name or im.hostname, im.tenant_id,
+                      image=im.image_id, reason=reason)
+    elif im.legal_hold is not None:
+        require_reauth(request, p)
+        bk.record(db, p.actor, "backup.legal_hold.released", im.vm_name or im.hostname, im.tenant_id,
+                  image=im.image_id, reason=im.legal_hold.get("reason"))
+        im.legal_hold = None
+    db.commit()
+    return {"legalHold": im.legal_hold}
+
+
+@router.post("/legal-hold/device")
+def hold_device(request: Request, body: dict = Body(...), p: Principal = Depends(current_principal),
+                db: Session = Depends(get_db)):
+    """Hold every current backup of a machine in the unlocked repositories (later backups are not held)."""
+    p.require("configure")
+    device = str(body.get("device") or "")
+    reason = str(body.get("reason") or "").strip()
+    if not 3 <= len(reason) <= 500:
+        bad("say why the backups are held (a case or matter reference), 3 to 500 characters")
+    unlocked = _unlocked(request, p)
+    rows = [i for i in db.execute(select(BackupImage).where(BackupImage.tenant_id.in_(p.tenant_ids),
+                                                            BackupImage.repository_id.in_(unlocked or [""]))).scalars()
+            if _device_key(i) == device]
+    if not rows:
+        raise HTTPException(403, "repository_locked")
+    n = 0
+    for im in rows:
+        if im.legal_hold is None:
+            im.legal_hold = {"reason": reason, "by": p.actor, "at": iso(utcnow())}
+            n += 1
+    bk.record(db, p.actor, "backup.legal_hold.placed", rows[0].vm_name or rows[0].hostname, rows[0].tenant_id,
+              images=n, reason=reason)
+    db.commit()
+    return {"held": n}
 
 
 # ---------------------------------------------------------------- one application database

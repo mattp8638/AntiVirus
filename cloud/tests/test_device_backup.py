@@ -1515,3 +1515,63 @@ def test_backup_report_for_a_customer_and_its_schedule(client, admin, tenant):
     with session_factory()() as db:
         assert reports.send_schedules(db) == 1
     assert mailer.OUTBOX[-1]["subject"].startswith("Backup report") and mailer.OUTBOX[-1]["attachments"][0].endswith(".pdf")
+
+
+def test_legal_hold_keeps_backups_from_retention(client, admin, tenant):
+    """Held backups go to retention as `held`; an agent too old to honour holds gets no retention (alerted); releasing
+    a hold needs a fresh password check; everything is audited."""
+    from fenrir_cloud.db import session_factory
+    from fenrir_cloud.models import Alert
+
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    heartbeat(client, h)  # no legal_hold capability yet
+    repo_id = ready_repo(client, admin, tenant, agent_id, h)
+    plan = client.post("/api/console/backup/plans", headers=admin, json={
+        "name": "Nightly", "agentId": agent_id, "repositoryId": repo_id, "job": {"type": "backup_system"},
+        "schedule": {"type": "manual"}, "retention": {"keep_last": 1}}).json()["id"]
+
+    def backup(t, caps=CAPS):
+        assert client.post(f"/api/console/backup/plans/{plan}/run", headers=admin).status_code == 200
+        im = image(t=t)
+        finish(client, h, heartbeat(client, h, caps=caps)["jobs"][0]["id"], images=[im])
+        return im
+
+    first = backup(0)
+    for j in heartbeat(client, h)["jobs"]:
+        finish(client, h, j["id"])
+    admin = unlock(client, admin, h, repo_id, agent_id)
+    url = f"/api/console/backup/images/{first['image_id']}/legal-hold"
+    assert client.post(url, headers=admin, json={"hold": True, "reason": ""}).status_code == 400
+    r = client.post(url, headers=admin, json={"hold": True, "reason": "Matter 2026-114 (HR dispute)"})
+    assert r.status_code == 200 and r.json()["legalHold"]["reason"].startswith("Matter")
+    listed = client.get("/api/console/backup/images", headers=admin).json()
+    assert next(i for i in listed if i["imageId"] == first["image_id"])["legalHold"]["by"]
+
+    # An old agent: no retention while holds exist, and an alert says why.
+    backup(100)
+    assert not [j for j in heartbeat(client, h)["jobs"] if j["kind"]["type"] == "apply_retention"]
+    with session_factory()() as db:
+        assert db.query(Alert).filter(Alert.title.like("Retention skipped%")).count() == 1
+
+    # An up-to-date agent gets the held list with retention.
+    caps = CAPS + ["legal_hold"]
+    backup(200, caps)
+    kinds = []
+    for _ in range(4):
+        jobs = heartbeat(client, h, caps=caps)["jobs"]
+        if not jobs:
+            break
+        kinds.append(jobs[0]["kind"])
+        finish(client, h, jobs[0]["id"])
+    ret = next(k for k in kinds if k["type"] == "apply_retention")
+    assert ret["held"] == [first["image_id"]]
+
+    # Releasing needs a fresh password check.
+    assert client.post(url, headers=admin, json={"hold": False}).json()["detail"] == "reauth_required"
+    step = {**admin, "X-Fenrir-Reauth": reauth(client, admin)}
+    assert client.post(url, headers=step, json={"hold": False}).json()["legalHold"] is None
+    dev = client.get("/api/console/backup/image-devices", headers=admin).json()[0]
+    held = client.post("/api/console/backup/legal-hold/device", headers=admin,
+                       json={"device": dev["key"], "reason": "Matter 2026-120"}).json()["held"]
+    assert held == 3
