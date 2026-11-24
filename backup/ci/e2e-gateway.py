@@ -88,6 +88,22 @@ def agent(name, *args, background=False):
     return r.stdout
 
 
+def try_unlock(c, repo_id, machine, passphrase):
+    """The console's unlock: password check, then the passphrase sealed to a machine that tries it on the repository."""
+    rt = c.post("/api/console/auth/reauth", json={"password": "e2e-admin-password-123"}).json()["reauthToken"]
+    sealed = seal(machine["publicKey"], json.dumps({"passphrase": passphrase, "recovery_key": None}).encode())
+    r = c.post(f"/api/console/backup/repositories/{repo_id}/unlock", headers={"X-Fenrir-Reauth": rt},
+               json={"agentId": machine["id"], "sealed": sealed})
+    assert r.status_code == 200, r.text
+    for _ in range(120):
+        out = c.get(f"/api/console/backup/unlock/{r.json()['id']}").json()
+        if out["state"] != "pending":
+            print(f"  unlock with {'the right' if passphrase.startswith('e2e') else 'a wrong'} passphrase: {out['state']}")
+            return out
+        time.sleep(1)
+    raise SystemExit("the unlock check did not finish")
+
+
 def wait_job(c, jid, what, seconds=300):
     for _ in range(seconds):
         j = c.get(f"/api/console/backup/jobs/{jid}").json()
@@ -107,8 +123,8 @@ try:
     tenant = c.post("/api/console/tenants", json={"name": "E2E Ltd", "template": "balanced"}).json()["id"]
     link = c.post("/api/console/backup/enrollments", json={"tenantId": tenant, "role": "server"}).json()["token"]
 
-    agent("gateway", "enroll", "--server", f"{BASE}/backup", "--token", link, "--role", "server")
-    agent("laptop", "enroll", "--server", f"{BASE}/backup", "--token", link, "--role", "workstation")
+    agent("gateway", "enroll", "--server", f"{BASE}/backup", f"--token={link}", "--role", "server")
+    agent("laptop", "enroll", "--server", f"{BASE}/backup", f"--token={link}", "--role", "workstation")
     agent("gateway", "run", background=True)
     agent("laptop", "run", background=True)
     for _ in range(60):
@@ -145,7 +161,14 @@ try:
     assert any(p.name.startswith("chunks") for p in nas.iterdir()), "nothing written on the NAS"
     j = c.post(f"/api/console/backup/agents/{laptop['id']}/jobs", json={"kind": {"type": "verify", "level": "full"}, "repositoryId": repo_id}).json()
     wait_job(c, j["id"], "laptop full verify through the relay")
+    # Images open only after an unlock: a fresh password check, then the passphrase tried on a real machine.
+    assert c.get("/api/console/backup/images", params={"repositoryId": repo_id}).status_code == 403
+    assert try_unlock(c, repo_id, gw, "not the passphrase")["state"] == "failed", "a wrong passphrase must not unlock"
+    out = try_unlock(c, repo_id, gw, "e2e repository passphrase")
+    assert out["state"] == "unlocked", out
+    c.headers["X-Fenrir-Unlock"] = out["token"]
     images = c.get("/api/console/backup/images", params={"repositoryId": repo_id}).json()
+    assert images, "no images listed after the unlock"
     print("  images:", [(i["hostname"], i["capturedBytes"]) for i in images])
 
     # Retention through the gateway is refused for the laptop (append-only); the gateway itself can.
