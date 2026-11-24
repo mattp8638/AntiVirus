@@ -6,6 +6,7 @@ mod browse;
 mod client;
 mod config;
 mod download;
+mod folders;
 mod gateway;
 mod hwfix;
 mod hyperv;

@@ -186,7 +186,8 @@ def image_out(i: BackupImage, checks: dict[str, BackupBootCheck], scans: dict | 
             "capturedBytes": i.captured_bytes, "storedNewBytes": i.stored_new_bytes, "disks": i.disks, "label": i.label,
             "vmName": i.vm_name, "anomaly": i.anomaly, "applications": i.applications or [],
             "lastBootCheck": ({"outcome": b.outcome, "at": iso(b.at), "message": b.message} if b else None),
-            "lastScan": scan_out((scans or {}).get(i.image_id))}
+            "lastScan": scan_out((scans or {}).get(i.image_id)),
+            "source": "files" if bk.is_folder_backup(i) else "disks"}
 
 
 _MEMBER = re.compile(r"^(.+)[\\/]repos[\\/]([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[\\/]?$", re.I)
@@ -569,6 +570,16 @@ def normalise_kind(kind) -> dict:
     if t == "backup_hyperv":
         return {"type": t, "vm_ids": [str(x)[:100] for x in kind.get("vm_ids") or []][:200],
                 "settings": _settings(kind.get("settings"))}
+    if t == "backup_files":
+        paths = [str(x).strip() for x in kind.get("paths") or [] if str(x).strip()]
+        excludes = [str(x).strip() for x in kind.get("excludes") or [] if str(x).strip()]
+        if not paths or len(paths) > 100 or any(len(x) > 1000 or "\0" in x for x in paths):
+            bad("choose 1 to 100 files or folders to back up")
+        if any(not re.match(r"^([A-Za-z]:[\\/]|/|\\\\[^\\]+\\[^\\]+)", x) for x in paths):
+            bad("each path must be a full path on the machine: C:\\Users\\anna\\Documents, /home/anna or \\\\server\\share\\folder")
+        if len(excludes) > 200 or any(len(x) > 500 for x in excludes):
+            bad("up to 200 exclusions")
+        return {"type": t, "paths": paths, "excludes": excludes, "settings": _settings(kind.get("settings"))}
     if t == "verify":
         level, pct = kind.get("level"), kind.get("sample_percent")
         if level not in ("quick", "sample", "full") or (pct is not None and not (isinstance(pct, (int, float)) and 0 <= pct <= 100)):
@@ -1695,6 +1706,8 @@ def create_restore(request: Request, body: dict = Body(...), p: Principal = Depe
                    db: Session = Depends(get_db)):
     im = _image_unlocked(request, db, p, str(body.get("imageId") or ""))
     _malware_guard(db, im, body)
+    if bk.is_folder_backup(im):
+        bad("this is a backup of files and folders: restore them with Browse files")
     a = _agent(db, p, str(body.get("agentId") or ""))
     t = body.get("target") if isinstance(body.get("target"), dict) else {}
     kind = t.get("type")
@@ -1821,6 +1834,8 @@ def restore_files(image_id: str, request: Request, body: dict = Body(...), p: Pr
     target = str(body.get("target") or "").strip()
     if not target or len(target) > 1000:
         bad("choose the folder to restore into")
+    if target == "@original" and not bk.is_folder_backup(im):
+        bad("putting files back where they were is for backups of files and folders; choose a folder")
     conflict = body.get("conflict") or "rename"
     if conflict not in ("rename", "skip", "overwrite"):
         bad("existing files: rename, skip or overwrite")
@@ -1887,6 +1902,8 @@ def create_boot_check(image_id: str, request: Request, body: dict = Body(default
                       db: Session = Depends(get_db)):
     p.require("scripts")
     im = _image_unlocked(request, db, p, image_id)
+    if bk.is_folder_backup(im):
+        bad("a backup of files and folders has no system to boot")
     a = _agent(db, p, str(body.get("agentId") or ""))
     mem, cpus, keep = body.get("memoryMb"), body.get("cpus"), bool(body.get("keepRunning"))
     if (mem is not None and not (isinstance(mem, int) and 256 <= mem <= 65536)) or \

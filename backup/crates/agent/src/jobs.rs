@@ -537,6 +537,14 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             let repo = open_repo(ctx, access)?;
             backup_system(ctx, &repo, &access.path, settings, rep)
         }
+        JobKind::BackupFiles {
+            paths,
+            excludes,
+            settings,
+        } => {
+            let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            crate::folders::run(ctx, &repo, paths, excludes, settings, rep)
+        }
         JobKind::BackupDisks { paths, settings } => {
             let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
             let mut opened = Vec::new();

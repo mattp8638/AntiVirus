@@ -69,10 +69,11 @@ def token_hash(raw: str) -> str:
 # Job kinds (protocol JobKind, "type"-tagged)
 # --------------------------------------------------------------------------
 
-BACKUP_KINDS = ("backup_system", "backup_disks", "backup_hyperv", "backup_kubernetes", "backup_saas")
+BACKUP_KINDS = ("backup_system", "backup_disks", "backup_hyperv", "backup_kubernetes", "backup_saas", "backup_files")
 KIND_LABELS = {
     "init_repository": "Create repository", "backup_system": "System backup", "backup_disks": "Disk backup",
-    "backup_hyperv": "Hyper-V backup", "verify": "Verify", "list_images": "Refresh images",
+    "backup_hyperv": "Hyper-V backup", "backup_files": "Files and folders backup", "scan_image": "Malware scan",
+    "verify": "Verify", "list_images": "Refresh images",
     "apply_retention": "Apply retention", "copy_images": "Copy off-site", "prune": "Reclaim space", "restore": "Restore", "boot_check": "Boot check",
     "stop_vm": "Stop VM", "check_access": "Test connection", "browse_files": "Browse files",
     "restore_files": "Restore files", "download_files": "Download files",
@@ -85,6 +86,7 @@ LOCAL_RECOVERY_LABELS = {"install": "Install local recovery", "refresh": "Refres
 LOCAL_RECOVERY_DAYS = 365
 # Capability the agent must report for console-created jobs of each kind.
 KIND_CAPABILITY = {"backup_system": "backup_system", "backup_disks": "backup_disks", "backup_hyperv": "backup_hyperv",
+                   "backup_files": "backup_files",
                    "verify": "verify", "backup_kubernetes": "kubernetes", "restore_kubernetes": "kubernetes",
                    "backup_saas": "saas", "restore_saas": "saas"}
 
@@ -95,6 +97,14 @@ def label(kind: dict | None) -> str:
     if (kind or {}).get("type") == "local_recovery":
         return LOCAL_RECOVERY_LABELS.get(str(kind.get("action")), "Local recovery")
     return KIND_LABELS.get((kind or {}).get("type", ""), "Job")
+
+
+FOLDER_PREFIX = "files:"
+
+
+def is_folder_backup(image) -> bool:
+    """A backup of chosen files and folders (no disks to restore or boot)."""
+    return (getattr(image, "machine_id", None) or "").startswith(FOLDER_PREFIX)
 
 
 def is_backup(kind: dict | None) -> bool:

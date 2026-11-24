@@ -45,7 +45,7 @@ interface Image {
   imageId: string; repositoryId: string; agentId: string | null; hostname: string; created: number; kind: string;
   consistency: string; applications?: ImageApp[]; capturedBytes: number; storedNewBytes: number; disks: any[]; label: string | null; vmName: string | null;
   anomaly: string | null; lastBootCheck: { outcome: string; at: string; message: string } | null;
-  lastScan?: ScanSummary | null;
+  lastScan?: ScanSummary | null; source?: "files" | "disks";
 }
 interface ScanSummary { state: "clean" | "infected" | "incomplete"; at: string; findings: number; filesScanned: number }
 
@@ -979,16 +979,28 @@ function PlanEditor({ plan, agents, repos, onClose }: { plan: Plan | null; agent
         <label className="field">Machine<select value={agentId} disabled={!!plan} onChange={(e) => { setAgentId(e.target.value); setJob(null); setRepoId(""); }}>{agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
         <label className="field">Repository<select value={repo} disabled={!!plan} onChange={(e) => setRepoId(e.target.value)}>{usable.length === 0 && <option value="">No ready repository this machine can use</option>}{usable.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></label>
         <label className="field">What
-          <select value={jobKind.type} onChange={(e) => setJob(e.target.value === "backup_disks" ? { type: "backup_disks", paths: [] } : e.target.value === "backup_hyperv" ? { type: "backup_hyperv", vm_ids: [] } : { type: e.target.value })}>
+          <select value={jobKind.type} onChange={(e) => setJob(e.target.value === "backup_disks" ? { type: "backup_disks", paths: [] } : e.target.value === "backup_hyperv" ? { type: "backup_hyperv", vm_ids: [] } : e.target.value === "backup_files" ? { type: "backup_files", paths: [], excludes: [] } : { type: e.target.value })}>
             {caps.includes("backup_system") && <option value="backup_system">Whole system (live, consistent)</option>}
             {caps.includes("backup_disks") && <option value="backup_disks">Chosen disks</option>}
             {caps.includes("backup_hyperv") && <option value="backup_hyperv">Hyper-V VMs</option>}
+            {caps.includes("backup_files") && <option value="backup_files">Chosen files and folders</option>}
           </select>
         </label>
       </div>
       {jobKind.type === "backup_disks" && <div className="small" style={{ marginTop: 8 }}>{(agentInventoryDisks(agent)).map((d) => (
         <label key={d} className="row" style={{ gap: 6 }}><input type="checkbox" checked={jobKind.paths.includes(d)} onChange={(e) => setJob({ ...jobKind, paths: e.target.checked ? [...jobKind.paths, d] : jobKind.paths.filter((x: string) => x !== d) })} />{d}</label>
       ))}<input placeholder="or type a device path and press Enter" onKeyDown={(e) => { const v = (e.target as HTMLInputElement).value.trim(); if (e.key === "Enter" && v) setJob({ ...jobKind, paths: [...jobKind.paths, v] }); }} /></div>}
+      {jobKind.type === "backup_files" && <div className="form-grid" style={{ marginTop: 8 }}>
+        <label className="field">Files and folders (one per line)
+          <textarea rows={4} value={(jobKind.paths ?? []).join("\n")} placeholder={agent?.os?.family === "windows" ? "C:\\Users\\anna\\Documents\n\\\\nas\\share\\Accounts" : "/home/anna\n/srv/data"}
+            onChange={(e) => setJob({ ...jobKind, paths: e.target.value.split("\n").map((x) => x.trim()).filter(Boolean) })} />
+          <span className="small muted">Full paths on {agent?.name ?? "the machine"}. Network shares (\\\\server\\share\\folder) are read with the backup agent's own sign-in.</span></label>
+        <label className="field">Leave out (one per line)
+          <textarea rows={4} value={(jobKind.excludes ?? []).join("\n")} placeholder={"*.tmp\n~$*\nnode_modules"}
+            onChange={(e) => setJob({ ...jobKind, excludes: e.target.value.split("\n").map((x) => x.trim()).filter(Boolean) })} />
+          <span className="small muted">Names with * and ? wildcards, or full paths. Paging files, the recycle bin and System Volume Information are always left out.</span></label>
+      </div>}
+      {jobKind.type === "backup_files" && <p className="small muted">Only new and changed files are read after the first backup; every backup still restores on its own. On Windows the files are read from a VSS snapshot, so open files are copied too. Restore them with Images & restore › Browse files.</p>}
       {jobKind.type === "backup_hyperv" && <p className="small muted">All VMs on the host, including ones added later. Running VMs are captured with production checkpoints.</p>}
       <h3 style={{ marginTop: 12 }}>When</h3>
       <div className="form-grid">
@@ -1121,7 +1133,7 @@ function DeviceImages({ device, agents, repos, onBack, onUnlock }: {
       </div>}
       <Table rows={images.data} empty="No backups."
         columns={[
-          { key: "what", label: "Backup", render: (i) => <><span>{i.kind}</span>{i.label && <span className="small muted"> · {i.label}</span>}{device.repositories.length > 1 && <div className="small muted">{repos.find((r) => r.id === i.repositoryId)?.name}</div>}{i.anomaly && <div className="small" style={{ color: "#fca5a5" }}>⚠ {i.anomaly}</div>}</> },
+          { key: "what", label: "Backup", render: (i) => <><span>{i.source === "files" ? "Files and folders" : i.kind}</span>{i.label && <span className="small muted"> · {i.label}</span>}{device.repositories.length > 1 && <div className="small muted">{repos.find((r) => r.id === i.repositoryId)?.name}</div>}{i.anomaly && <div className="small" style={{ color: "#fca5a5" }}>⚠ {i.anomaly}</div>}</> },
           { key: "created", label: "Taken (oldest first)", render: (i) => unixTime(i.created) },
           { key: "size", label: "Size", render: (i) => <span className="small">{bytes(i.capturedBytes)} · {bytes(i.storedNewBytes)} new</span> },
           { key: "consistency", label: "Consistency", render: (i) => <><span>{i.consistency}</span><AppsLine apps={i.applications} /></> },
@@ -1129,8 +1141,8 @@ function DeviceImages({ device, agents, repos, onBack, onUnlock }: {
           { key: "scan", label: "Malware", render: (i) => <ScanPill scan={i.lastScan} clean={!!device.lastCleanCreated && i.created === device.lastCleanCreated} /> },
           { key: "act", label: "", render: (i) => <div className="row" style={{ gap: 4 }}>
             {can("scripts") && <button className="small primary" onClick={() => setFiles(i)}>Browse files</button>}
-            {can("scripts") && <button className="small" onClick={() => setRestore(i)}>Restore</button>}
-            {can("scripts") && <button className="small" onClick={() => setBoot(i)}>Boot test</button>}
+            {can("scripts") && i.source !== "files" && <button className="small" onClick={() => setRestore(i)}>Restore</button>}
+            {can("scripts") && i.source !== "files" && <button className="small" onClick={() => setBoot(i)}>Boot test</button>}
             {can("scripts") && <button className="small" onClick={() => setScan(i)}>Scan</button>}
           </div> },
         ]} />

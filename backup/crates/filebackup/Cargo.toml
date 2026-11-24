@@ -1,0 +1,20 @@
+[package]
+name = "filebackup"
+description = "Backups of chosen files and folders into Fenrir-Backup repositories"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+core-format.workspace = true
+filebrowse.workspace = true
+saas.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+blake3.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+core-format = { workspace = true, features = ["test-util"] }

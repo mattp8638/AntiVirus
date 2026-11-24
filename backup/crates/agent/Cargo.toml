@@ -18,6 +18,7 @@ core-format.workspace = true
 engine.workspace = true
 filebrowse.workspace = true
 scan.workspace = true
+filebackup.workspace = true
 nbd-server.workspace = true
 hex.workspace = true
 k8s.workspace = true

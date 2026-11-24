@@ -1278,3 +1278,51 @@ def test_backups_are_scanned_for_malware_and_infected_restores_need_acknowledgin
     finish(client, h, jobs[0]["id"], images=[third])
     queued = [j["kind"] for j in heartbeat(client, h, caps=caps)["jobs"]]
     assert any(k["type"] == "scan_image" and k["image_id"] == third["image_id"] for k in queued), queued
+
+
+def test_folder_backups_list_under_the_machine_and_restore_files_only(client, admin, tenant):
+    """A backup of chosen files and folders: validated paths, agents that report backup_files, listed with the
+    machine's backups, restored with Browse files (also back where they were); no disk restore or boot test."""
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    caps = CAPS + ["backup_files", "restore_files"]
+    heartbeat(client, h)
+    repo_id = ready_repo(client, admin, tenant, agent_id, h)
+    job = {"type": "backup_files", "paths": [r"C:\Users\anna\Documents", r"\\nas\share\Accounts"],
+           "excludes": ["*.tmp", "node_modules"]}
+    r = client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin, json={"kind": job, "repositoryId": repo_id})
+    assert "cannot" in r.json()["detail"], "an agent without backup_files is refused"
+    heartbeat(client, h, caps=caps)
+    for bad_job in ({**job, "paths": []}, {**job, "paths": ["relative\\folder"]}):
+        assert client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                           json={"kind": bad_job, "repositoryId": repo_id}).status_code == 400
+    plan = client.post("/api/console/backup/plans", headers=admin, json={
+        "name": "Documents hourly", "agentId": agent_id, "repositoryId": repo_id, "job": job,
+        "schedule": {"type": "interval", "hours": 1}, "retention": {"keep_last": 24}})
+    assert plan.status_code == 200, plan.text
+    assert client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                       json={"kind": job, "repositoryId": repo_id}).status_code == 200
+    spec = heartbeat(client, h, caps=caps)["jobs"][0]
+    assert spec["kind"]["type"] == "backup_files" and spec["kind"]["excludes"] == ["*.tmp", "node_modules"]
+    disks, files = image(t=0), {**image(machine="files:m-1", t=50), "hostname": "M-1"}
+    finish(client, h, spec["id"], images=[files])
+    client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+    finish(client, h, heartbeat(client, h, caps=caps)["jobs"][0]["id"], images=[disks])
+
+    devices = client.get("/api/console/backup/image-devices", headers=admin).json()
+    assert [(d["name"], d["images"]) for d in devices] == [("M-1", 2)], "listed with the machine's own backups"
+    admin = unlock(client, admin, h, repo_id, agent_id, caps=caps)
+    listed = {i["imageId"]: i for i in client.get("/api/console/backup/images", headers=admin).json()}
+    assert listed[files["image_id"]]["source"] == "files" and listed[disks["image_id"]]["source"] == "disks"
+
+    r = client.post("/api/console/backup/restores", headers=admin,
+                    json={"imageId": files["image_id"], "agentId": agent_id, "target": {"type": "vhdx", "directory": "D:\\R"}})
+    assert r.status_code == 400 and "Browse files" in r.json()["detail"]
+    r = client.post(f"/api/console/backup/images/{files['image_id']}/boot-check", headers=admin, json={"agentId": agent_id})
+    assert r.status_code == 400
+    back = {"agentId": agent_id, "disk": 1, "partition": 1, "paths": ["/C:/Users/anna/Documents/report.docx"],
+            "target": "@original"}
+    assert client.post(f"/api/console/backup/images/{files['image_id']}/restore-files", headers=admin, json=back).status_code == 200
+    assert client.post(f"/api/console/backup/images/{disks['image_id']}/restore-files", headers=admin,
+                       json={**back, "partition": 2}).status_code == 400, "@original is for folder backups"

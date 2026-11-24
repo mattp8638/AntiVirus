@@ -28,7 +28,7 @@ interface Volume { disk: number; partition: number; filesystem: string; size: nu
 interface Entry { name: string; kind: "file" | "dir" | "link" | "other"; size: number; modified?: number; hidden: boolean }
 interface Listing { path: string; entries: Entry[]; truncated: boolean; total: number }
 interface Job { id: string; state: string; result: any; error: string | null; warnings: string[]; progress: any }
-export interface BrowseImage { imageId: string; repositoryId: string; agentId: string | null; hostname: string; vmName: string | null; created: number }
+export interface BrowseImage { source?: string; imageId: string; repositoryId: string; agentId: string | null; hostname: string; vmName: string | null; created: number }
 
 const FINAL = ["succeeded", "warning", "failed", "cancelled"];
 const FS_LABEL: Record<string, string> = { ntfs: "NTFS", ext: "ext4", fat32: "FAT32", fat16: "FAT", exfat: "exFAT", xfs: "XFS", btrfs: "Btrfs", refs: "ReFS", bitlocker: "BitLocker", luks: "LUKS", swap: "swap" };
@@ -193,7 +193,9 @@ function RestoreFiles({ image, volume, paths, browsingAgent, onClose }: { image:
   const pool = useMemo(() => (agents.data ?? []).filter((a) => repo?.agents.some((x: any) => x.id === a.id) && a.capabilities.includes("restore_files")), [agents.data, repo]);
   const [agentId, setAgentId] = useState<string>("");
   const agent = pool.find((a) => a.id === (agentId || image.agentId || browsingAgent)) ?? pool[0];
-  const original = volume.mount_points[0];
+  // A backup of files and folders knows where each item was; a disk image's volume, its mount point.
+  const folderBackup = image.source === "files";
+  const original = folderBackup ? "@original" : volume.mount_points[0];
   // A VM's image belongs to its Hyper-V host's agent: its "original location" is inside the VM, not on the host.
   const sameMachine = agent && agent.id === image.agentId && !image.vmName;
   const [where, setWhere] = useState<"folder" | "original">("folder");
@@ -262,7 +264,7 @@ function RestoreFiles({ image, volume, paths, browsingAgent, onClose }: { image:
           <label className="field">To
             <select value={where} onChange={(e) => setWhere(e.target.value as any)}>
               <option value="folder">A folder</option>
-              {original && sameMachine && <option value="original">Original location ({original})</option>}
+              {original && sameMachine && <option value="original">{folderBackup ? "Where each item was" : `Original location (${original})`}</option>}
             </select>
           </label>
           {where === "folder" && <label className="field">Folder on {agent?.name ?? "the machine"}<input value={folder} placeholder={defaultFolder} onChange={(e) => setFolder(e.target.value)} /></label>}

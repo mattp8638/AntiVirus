@@ -329,6 +329,18 @@ pub enum JobKind {
         #[serde(default)]
         settings: BackupSettings,
     },
+    /// Chosen files and folders (folder backup, docs/design/file-backup.md):
+    /// local paths, or network shares (`\\server\share\folder`) read with
+    /// the agent's own sign-in. Agents that report `backup_files`.
+    BackupFiles {
+        paths: Vec<String>,
+        /// File or folder names (`*.tmp`, `node_modules`) or full paths to
+        /// leave out, besides the built-in ones (paging files, recycle bin).
+        #[serde(default)]
+        excludes: Vec<String>,
+        #[serde(default)]
+        settings: BackupSettings,
+    },
     /// Hyper-V VMs by ID; empty = every VM on the host.
     BackupHyperv {
         #[serde(default)]
@@ -525,6 +537,7 @@ impl JobKind {
             JobKind::BootCheck { .. } => "Boot check",
             JobKind::StopVm { .. } => "Stop VM",
             JobKind::ScanImage { .. } => "Malware scan",
+            JobKind::BackupFiles { .. } => "Back up files and folders",
             JobKind::CheckAccess { .. } => "Test connection",
             JobKind::LocalRecovery { action, .. } => match action {
                 LocalRecoveryAction::Install => "Install local recovery",

@@ -9,6 +9,7 @@
 pub use engine::composite;
 pub mod apps;
 pub mod parse;
+pub mod paths;
 
 #[cfg(windows)]
 pub mod win;

@@ -107,6 +107,18 @@ starts, with the VM's network disconnected:
   each time.
 * For a lasting copy rather than a test, use **Restore › Hyper-V: a new VM on this host** on a Hyper-V host instead.
 
+## Backing up chosen files and folders
+
+A plan's **What** can be **Chosen files and folders**: full paths, one per line (`C:\Users\anna\Documents`,
+`/home/anna`, or a network share `\\server\share\folder` read with the backup agent's own sign-in), and names or paths
+to leave out (`*.tmp`, `~$*`, `node_modules`). After the first backup only new and changed files are read; every backup
+still restores on its own. On Windows the files are read from a VSS snapshot, so open files are copied too.
+
+Folder backups are listed with the machine's other backups as **Files and folders**. Restore them with **Browse files**:
+to a folder, as a download, or **Where each item was**. They can be scanned for malware like disk images.
+
+Design: `backup/docs/design/file-backup.md`.
+
 ## Malware scans of backups
 
 **Images & restore › Scan** checks the files inside a backup against your threat intelligence (malicious file hashes

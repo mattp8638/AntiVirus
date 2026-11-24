@@ -106,6 +106,8 @@ pub fn capabilities(role: &str) -> Vec<String> {
         "restore_files",
         // Malware scans of images (malware.rs).
         "scan_images",
+        // Chosen files and folders (folders.rs).
+        "backup_files",
         "gateway",
         "kubernetes",
         "saas",

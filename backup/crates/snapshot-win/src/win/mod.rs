@@ -2,6 +2,7 @@
 
 pub mod disks;
 pub mod ioctl;
+pub mod paths;
 pub mod source;
 pub mod system;
 pub mod vss;
