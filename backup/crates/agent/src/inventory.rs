@@ -111,6 +111,7 @@ pub fn capabilities(role: &str) -> Vec<String> {
         c.push("backup_system".into());
         // Onto a disk that is not the system disk (its volumes are locked).
         c.push("restore_disk".into());
+        c.push("local_recovery".into());
         if crate::hyperv::is_host(role) {
             c.push("backup_hyperv".into());
             c.push("restore_hyperv".into());
@@ -283,6 +284,7 @@ pub fn collect(role: &str, vms: Vec<protocol::VmSummary>, notes: Vec<String>) ->
         gateway_addresses: vec![],
         firmware: fw.0,
         secure_boot: fw.1,
+        local_recovery: crate::localrec::load_state(&crate::config::state_dir()).map(|s| s.info()),
     }
 }
 

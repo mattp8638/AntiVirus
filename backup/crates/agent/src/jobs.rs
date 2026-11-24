@@ -741,7 +741,87 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
         JobKind::CheckAccess {
             path, sealed_share, ..
         } => check_access(ctx, path, sealed_share.as_ref()),
+        JobKind::LocalRecovery {
+            action,
+            size_mb,
+            auto_start,
+            confirm,
+        } => local_recovery(ctx, spec, *action, *size_mb, *auto_start, confirm, rep),
     }
+}
+
+/// Install, rebuild or remove the local recovery partition
+/// (docs/design/local-recovery.md).
+#[cfg(windows)]
+fn local_recovery(
+    ctx: &Ctx,
+    spec: &JobSpec,
+    action: protocol::LocalRecoveryAction,
+    size_mb: u32,
+    auto_start: bool,
+    confirm: &str,
+    rep: &Reporter,
+) -> anyhow::Result<JobUpdate> {
+    use protocol::LocalRecoveryAction as A;
+    let host = crate::inventory::hostname();
+    if matches!(action, A::Install | A::Remove) && !confirm.trim().eq_ignore_ascii_case(&host) {
+        bail!("type this machine's name ({host}) to confirm: installing or removing local recovery repartitions its system disk");
+    }
+    let mut u = done(JobState::Succeeded);
+    let notes = if action == A::Remove {
+        rep.progress("removing", 0, 1, "recovery partition");
+        let n = crate::localrec::remove()?;
+        u.result = Some(json!({ "removed": true }));
+        n
+    } else {
+        let mut settings = spec
+            .recovery_settings
+            .clone()
+            .ok_or_else(|| anyhow!("the server sent no recovery settings; update it"))?;
+        // The recovery system reaches the server the way this machine does.
+        if settings.server.is_empty() {
+            settings.server = ctx.cfg.server.clone();
+            settings.pin = ctx.cfg.pin.clone();
+        }
+        let settings = &settings;
+        rep.progress(
+            "building",
+            0,
+            1,
+            "recovery image from this machine's Windows RE",
+        );
+        let (st, n) = crate::localrec::install(&crate::localrec::Options {
+            volume: "C",
+            size_mb,
+            auto_start,
+            settings,
+            base_wim: None,
+            machine: &host,
+        })?;
+        u.result = Some(serde_json::to_value(st.info())?);
+        n
+    };
+    u.warnings = notes
+        .into_iter()
+        .filter(|n| n.contains("could not"))
+        .collect();
+    if !u.warnings.is_empty() {
+        u.state = JobState::Warning;
+    }
+    Ok(u)
+}
+
+#[cfg(not(windows))]
+fn local_recovery(
+    _: &Ctx,
+    _: &JobSpec,
+    _: protocol::LocalRecoveryAction,
+    _: u32,
+    _: bool,
+    _: &str,
+    _: &Reporter,
+) -> anyhow::Result<JobUpdate> {
+    bail!("local recovery partitions are for Windows; on Linux use the recovery media")
 }
 
 fn finish_backup(

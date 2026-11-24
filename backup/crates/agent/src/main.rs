@@ -12,6 +12,7 @@ mod hyperv;
 mod inventory;
 mod jobs;
 mod linuxfix;
+mod localrec;
 mod log;
 mod names;
 mod rct;
@@ -72,6 +73,27 @@ enum Cmd {
     PrepareWindows {
         #[arg(long)]
         device: String,
+    },
+    /// The local recovery partition, by hand (normally a job from the
+    /// server): `install` (repartitions VOLUME's disk: needs --yes) or
+    /// `remove`. Prints the result as JSON.
+    LocalRecovery {
+        /// install | remove
+        action: String,
+        /// Recovery settings file (server, enrolment code), for install.
+        #[arg(long)]
+        settings: Option<std::path::PathBuf>,
+        #[arg(long, default_value = "C")]
+        volume: String,
+        #[arg(long, default_value_t = 0)]
+        size_mb: u32,
+        #[arg(long)]
+        auto_start: bool,
+        /// Build from this Windows PE image instead of the machine's Windows RE.
+        #[arg(long)]
+        base_wim: Option<std::path::PathBuf>,
+        #[arg(long)]
+        yes: bool,
     },
     /// Windows service entry point.
     Service,
@@ -141,6 +163,17 @@ fn main() {
         Cmd::PrepareWindows { device } => hwfix::adapt_restored_disk(&device).map(|r| {
             println!("{}", serde_json::to_string(&r).unwrap_or_default());
         }),
+        Cmd::LocalRecovery {
+            action,
+            settings,
+            volume,
+            size_mb,
+            auto_start,
+            base_wim,
+            yes,
+        } => local_recovery_cli(
+            &action, settings, &volume, size_mb, auto_start, base_wim, yes,
+        ),
         Cmd::Service => service(),
         Cmd::Status => status(),
         Cmd::Install {
@@ -482,4 +515,53 @@ fn sleep_unless(stop: &AtomicBool, secs: u64) {
         }
         std::thread::sleep(Duration::from_secs(1));
     }
+}
+
+#[cfg(windows)]
+fn local_recovery_cli(
+    action: &str,
+    settings: Option<std::path::PathBuf>,
+    volume: &str,
+    size_mb: u32,
+    auto_start: bool,
+    base_wim: Option<std::path::PathBuf>,
+    yes: bool,
+) -> anyhow::Result<()> {
+    if !yes {
+        anyhow::bail!("this repartitions the system disk: add --yes");
+    }
+    match action {
+        "install" => {
+            let path = settings.ok_or_else(|| anyhow::anyhow!("--settings is required"))?;
+            let cfg = protocol::recovery::parse(&std::fs::read(&path)?)
+                .map_err(|e| anyhow::anyhow!(e))?
+                .ok_or_else(|| anyhow::anyhow!("{} holds no settings", path.display()))?;
+            let host = inventory::hostname();
+            let (st, notes) = localrec::install(&localrec::Options {
+                volume,
+                size_mb,
+                auto_start,
+                settings: &cfg,
+                base_wim: base_wim.as_deref(),
+                machine: &host,
+            })?;
+            println!("{}", serde_json::json!({ "state": st, "notes": notes }));
+        }
+        "remove" => println!("{}", serde_json::json!({ "notes": localrec::remove()? })),
+        other => anyhow::bail!("unknown action {other}: install or remove"),
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn local_recovery_cli(
+    _: &str,
+    _: Option<std::path::PathBuf>,
+    _: &str,
+    _: u32,
+    _: bool,
+    _: Option<std::path::PathBuf>,
+    _: bool,
+) -> anyhow::Result<()> {
+    anyhow::bail!("local recovery partitions are for Windows")
 }

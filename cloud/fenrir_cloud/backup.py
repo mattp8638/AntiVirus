@@ -77,6 +77,10 @@ KIND_LABELS = {
     "stop_vm": "Stop VM", "check_access": "Test connection", "browse_files": "Browse files",
     "restore_files": "Restore files", "download_files": "Download files",
 }
+LOCAL_RECOVERY_LABELS = {"install": "Install local recovery", "refresh": "Refresh local recovery",
+                         "remove": "Remove local recovery"}
+# How long a local recovery partition's enrolment code works (renewed whenever it is rebuilt).
+LOCAL_RECOVERY_DAYS = 365
 # Capability the agent must report for console-created jobs of each kind.
 KIND_CAPABILITY = {"backup_system": "backup_system", "backup_disks": "backup_disks", "backup_hyperv": "backup_hyperv",
                    "verify": "verify"}
@@ -85,6 +89,8 @@ KIND_CAPABILITY = {"backup_system": "backup_system", "backup_disks": "backup_dis
 def label(kind: dict | None) -> str:
     if (kind or {}).get("unlock"):
         return "Passphrase check"
+    if (kind or {}).get("type") == "local_recovery":
+        return LOCAL_RECOVERY_LABELS.get(str(kind.get("action")), "Local recovery")
     return KIND_LABELS.get((kind or {}).get("type", ""), "Job")
 
 
@@ -534,11 +540,37 @@ def check_health(db: Session) -> None:
     db.commit()
 
 
+def refresh_local_recovery(db: Session) -> int:
+    """Rebuild local recovery partitions after an agent update, or when their enrolment code has under 60 days left
+    (backup/docs/design/local-recovery.md). One at a time; not within a day of a failed attempt."""
+    now = utcnow()
+    n = 0
+    for a in db.execute(select(BackupAgent).where(BackupAgent.revoked.is_(False), BackupAgent.role != "recovery")).scalars():
+        inv = a.inventory or {}
+        lr = inv.get("local_recovery")
+        if not isinstance(lr, dict):
+            continue
+        expires = int(lr.get("expires") or 0)
+        if lr.get("agent_version") == inv.get("agent_version") and not (expires and expires < now.timestamp() + 60 * 86400):
+            continue
+        busy = [j for j in db.execute(select(BackupJob).where(BackupJob.agent_id == a.id)).scalars()
+                if (j.kind or {}).get("type") == "local_recovery" and
+                (j.state in ACTIVE_STATES or (j.state in ("failed", "cancelled") and j.created_at > now - timedelta(days=1)))]
+        if busy:
+            continue
+        queue(db, a, {"type": "local_recovery", "action": "refresh", "size_mb": 0, "auto_start": bool(lr.get("auto_start")),
+                      "confirm": ""}, None, "schedule")
+        n += 1
+    db.commit()
+    return n
+
+
 def tick(db: Session) -> None:
     """30-second scheduler: plans, boot verification, ended recovery sessions."""
     run_due_plans(db)
     run_boot_checks(db)
     expire_recovery_sessions(db)
+    refresh_local_recovery(db)
     purge_downloads()
 
 

@@ -15,6 +15,7 @@ export interface BackupAgent {
   lastSeenAt: string | null; publicKey: string; capabilities: string[]; vmCount: number; disks: string[];
   diskInfo?: { path: string; size: number; model: string; serial: string; system: boolean; inUse: boolean }[];
   firmware?: "uefi" | "bios" | null; secureBoot?: boolean | null;
+  localRecovery?: { disk: number; partition: number; size: number; built_unix: number; agent_version: string; expires: number; auto_start: boolean } | null;
   runningVms?: { sessionId: string; imageId: string; startedUnix: number; vncPort: number }[];
   lastBackup: { jobId: string; state: string; at: string; error: string | null } | null;
   runningJob: { id: string; label: string; state: string; progress: any } | null;
@@ -86,7 +87,9 @@ async function waitForJob(id: string, tries = 90): Promise<Job | null> {
 
 export default function Backups() {
   const { tenantId } = useApp();
-  const [tab, setTab] = useState("Overview");
+  const { tenants, setTenantId } = useApp() as any;
+  const msp = (tenants?.length ?? 0) > 1;
+  const [tab, setTab] = useState(msp && !tenantId ? "All customers" : "Overview");
   const q = { tenantId: tenantId || undefined };
   const overview = useData<any>("backup/overview", q, [tenantId]);
   const agents = useListData<BackupAgent>("backup/agents", q, [tenantId]);
@@ -100,8 +103,9 @@ export default function Backups() {
       <PageHead title="Backups" subtitle="Image backups of servers, PCs and Hyper-V hosts into repositories you own: a NAS, a file server or a local disk. Encrypted on the machine; this server never sees the keys."
         actions={can("configure") && <button className="primary" onClick={() => setAdding(true)}>Add machines</button>} />
       {!sealSupported() && <div className="card warn-card">This browser cannot encrypt repository secrets (Web Crypto X25519 is needed). Use a current Chrome, Edge, Firefox or Safari over HTTPS.</div>}
-      <Tabs tabs={["Overview", "Machines", "Repositories", "Plans", "Images & restore", "Activity"]} active={tab} onChange={setTab} />
+      <Tabs tabs={[...(msp ? ["All customers"] : []), "Overview", "Machines", "Repositories", "Plans", "Images & restore", "Activity"]} active={tab} onChange={setTab} />
       <ErrorNote error={overview.error || agents.error || repos.error} />
+      {tab === "All customers" && <MspDashboard open={(id) => { setTenantId?.(id); setTab("Overview"); }} />}
       {tab === "Overview" && <Overview data={overview.data} agents={agents.data} />}
       {tab === "Machines" && <Machines agents={agents.data} repos={repos.data ?? []} reload={reloadAll} />}
       {tab === "Repositories" && <Repositories repos={repos.data} agents={agents.data ?? []} reload={reloadAll} />}
@@ -139,6 +143,110 @@ function Overview({ data, agents }: { data: any; agents: BackupAgent[] | null })
           ]} />
         )}
       </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------- all customers (MSP)
+
+interface MspCustomer {
+  tenantId: string; name: string; status: "critical" | "warning" | "ok"; machines: number; protected: number; atRisk: number;
+  failing: number; unprotected: number; offline: number; storedBytes: number; holds: number; anomalies7d: number;
+  bootVerified: number; successRate7d: number | null; lastBackup: string | null;
+}
+interface MspIssue { tenantId: string; tenantName: string; kind: string; detail: string; agentId: string | null; machine: string; since: string | null }
+interface MspData { totals: any; customers: MspCustomer[]; attention: MspIssue[]; trend: { day: string; succeeded: number; warning: number; failed: number }[] }
+
+const STATUS_TONE: Record<string, string> = { critical: "bad", warning: "warn", ok: "good" };
+const STATUS_TEXT: Record<string, string> = { critical: "⛔ Critical", warning: "⚠ Needs attention", ok: "✓ Healthy" };
+const ISSUE_TEXT: Record<string, string> = { hold: "Ransomware hold", failing: "Backup failing", boot_failed: "Boot test failed", overdue: "Overdue", offline: "Agent offline", no_plan: "No backup plan" };
+
+/** Backup health across every customer, worst first (the MSP view). */
+function MspDashboard({ open }: { open: (tenantId: string) => void }) {
+  const d = useData<MspData>("backup/msp", {}, []);
+  useAutoRefresh(d.reload, 60000);
+  if (d.error) return <ErrorNote error={d.error} />;
+  if (!d.data) return <div className="empty">Loading…</div>;
+  const t = d.data.totals;
+  const pct = (a: number, b: number) => (b ? `${Math.round((100 * a) / b)}%` : "—");
+  return (
+    <>
+      <div className="grid k4" style={{ marginBottom: 14 }}>
+        <Stat label="Machines protected" value={pct(t.protected, t.machines)} hint={`${t.protected} of ${t.machines} machines, ${t.customers} customers`} />
+        <Stat label="Failing or at risk" value={t.failing + t.atRisk} hint={`${t.failing} failing, ${t.atRisk} overdue, ${t.unprotected} without a plan`} accent={t.failing ? "bad" : undefined} />
+        <Stat label="Backups, last 7 days" value={t.successRate7d == null ? "—" : `${t.successRate7d}% ok`} hint={`${t.ok7d} of ${t.jobs7d} succeeded`} />
+        <Stat label="Stored" value={bytes(t.storedBytes)} hint={`${t.holds} on hold · ${t.bootVerified} machines boot-verified in 30 days`} accent={t.holds ? "bad" : undefined} />
+      </div>
+      <div className="card" style={{ marginBottom: 14 }}>
+        <h3>Backups per day</h3>
+        <TrendBars trend={d.data.trend} />
+      </div>
+      <div className="card" style={{ marginBottom: 14 }}>
+        <h3>Customers</h3>
+        <Table rows={d.data.customers.map((c) => ({ ...c, id: c.tenantId }))} onRow={(c) => open(c.tenantId)} empty="No customer has backups yet."
+          columns={[
+            { key: "name", label: "Customer", render: (c) => <b>{c.name}</b> },
+            { key: "status", label: "Status", render: (c) => <Pill value={STATUS_TEXT[c.status]} tone={STATUS_TONE[c.status]} /> },
+            { key: "prot", label: "Protected", render: (c) => `${c.protected}/${c.machines}` },
+            { key: "issues", label: "Issues", render: (c) => <span className="small">{[
+              c.failing && `${c.failing} failing`, c.atRisk && `${c.atRisk} overdue`, c.unprotected && `${c.unprotected} without a plan`,
+              c.offline && `${c.offline} offline`, c.holds && `${c.holds} on hold`, c.anomalies7d && `${c.anomalies7d} anomalies`,
+            ].filter(Boolean).join(" · ") || "none"}</span> },
+            { key: "rate", label: "Success (7 days)", render: (c) => c.successRate7d == null ? "—" : `${c.successRate7d}%` },
+            { key: "boot", label: "Boot-verified", render: (c) => `${c.bootVerified}/${c.machines}` },
+            { key: "last", label: "Last backup", render: (c) => c.lastBackup ? ago(c.lastBackup) : "—" },
+            { key: "stored", label: "Stored", render: (c) => bytes(c.storedBytes) },
+          ]} />
+      </div>
+      <div className="card">
+        <h3>Needs attention</h3>
+        <Table rows={d.data.attention.map((a, i) => ({ ...a, id: String(i) }))} onRow={(a) => open(a.tenantId)} empty="Nothing: every machine is protected."
+          columns={[
+            { key: "kind", label: "Issue", render: (a) => <Pill value={ISSUE_TEXT[a.kind] ?? a.kind} tone={["hold", "failing", "boot_failed"].includes(a.kind) ? "bad" : "warn"} /> },
+            { key: "tenantName", label: "Customer" },
+            { key: "machine", label: "Machine" },
+            { key: "detail", label: "Detail", render: (a) => <span className="small">{a.detail}</span> },
+            { key: "since", label: "Since", render: (a) => a.since ? ago(a.since) : "—" },
+          ]} />
+      </div>
+    </>
+  );
+}
+
+/** Stacked daily bars: succeeded / with warnings / failed (status colors, with a legend and per-day tooltips). */
+function TrendBars({ trend }: { trend: MspData["trend"] }) {
+  const parts = [
+    { key: "succeeded" as const, label: "Succeeded", color: "var(--green)" },
+    { key: "warning" as const, label: "With warnings", color: "var(--amber)" },
+    { key: "failed" as const, label: "Failed", color: "var(--red)" },
+  ];
+  const max = Math.max(1, ...trend.map((d) => d.succeeded + d.warning + d.failed));
+  const W = 28, H = 110, GAP = 10;
+  return (
+    <>
+      <div className="row small" style={{ gap: 14, marginBottom: 6 }}>
+        {parts.map((p) => <span key={p.key} className="row" style={{ gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: p.color, display: "inline-block" }} />{p.label}</span>)}
+      </div>
+      <svg role="img" aria-label="Backups per day for the last 14 days" viewBox={`0 0 ${trend.length * (W + GAP)} ${H + 18}`} style={{ width: "100%", maxWidth: 560, height: "auto" }}>
+        {trend.map((d, i) => {
+          let y = H;
+          const total = d.succeeded + d.warning + d.failed;
+          return (
+            <g key={d.day}>
+              <title>{`${d.day}: ${d.succeeded} succeeded, ${d.warning} with warnings, ${d.failed} failed`}</title>
+              <rect x={i * (W + GAP)} y={0} width={W} height={H} fill="transparent" />
+              {parts.map((p) => {
+                const h = (d[p.key] / max) * H;
+                if (!h) return null;
+                y -= h;
+                return <rect key={p.key} x={i * (W + GAP)} y={y + 1} width={W} height={Math.max(h - 2, 1)} rx={2} fill={p.color} />;
+              })}
+              {!total && <rect x={i * (W + GAP)} y={H - 1} width={W} height={1} fill="var(--line-2)" />}
+              <text x={i * (W + GAP) + W / 2} y={H + 13} textAnchor="middle" fontSize="9" fill="var(--muted)">{d.day.slice(8)}</text>
+            </g>
+          );
+        })}
+      </svg>
     </>
   );
 }
@@ -1155,6 +1263,47 @@ function Activity() {
 // ---------------------------------------------------------------- device page
 
 /** The Backup section of a device: its backup agent (if installed), images and recent jobs, or an install button. */
+/** The machine's own recovery partition (backup/docs/design/local-recovery.md). */
+function LocalRecoveryCard({ agent, reload }: { agent: BackupAgent; reload: () => void }) {
+  const { can } = useApp();
+  const { run, busy } = useAction();
+  const lr = agent.localRecovery;
+  const [dialog, setDialog] = useState<"install" | "remove" | null>(null);
+  const [confirm, setConfirm] = useState("");
+  const [autoStart, setAutoStart] = useState(false);
+  const send = (action: "install" | "refresh" | "remove") => run(() => api(`backup/agents/${agent.id}/local-recovery`, {
+    body: { action, confirm, autoStart },
+  }), action === "install" ? "Installing local recovery: follow it under Activity" : action === "refresh" ? "Rebuilding the recovery image" : "Removing local recovery")
+    .then((r) => { if (r) { setDialog(null); setConfirm(""); reload(); } });
+  return (
+    <div className="card" style={{ marginBottom: 14 }}>
+      <h3>Local recovery</h3>
+      {lr ? (
+        <p className="small"><Pill value="Installed" tone="good" /> A {bytes(lr.size)} recovery partition, built {ago(new Date(lr.built_unix * 1000).toISOString())} with agent {lr.agent_version}.
+          If Windows does not start, choose <b>Fenrir Recovery</b> in the boot menu{lr.auto_start ? " (it also starts by itself after failed starts)" : ""}: the machine appears as a recovery session to restore it from its backups, onto the same disk or a new one.
+          {lr.expires > 0 && <> Its enrolment code is renewed automatically.</>}</p>
+      ) : (
+        <p className="small muted">A small recovery partition with its own boot menu entry: if Windows no longer starts, start <b>Fenrir Recovery</b> and restore the machine from its backups without recovery media. Built from this machine's own Windows Recovery Environment with its network and storage drivers; about 1 GB is taken from C:.</p>
+      )}
+      <div className="row" style={{ gap: 8 }}>
+        {!lr && can("destructive") && <button disabled={!agent.online || busy} onClick={() => setDialog("install")}>Install</button>}
+        {lr && can("configure") && <button disabled={!agent.online || busy} onClick={() => send("refresh")}>Rebuild now</button>}
+        {lr && can("destructive") && <button className="danger" disabled={!agent.online || busy} onClick={() => setDialog("remove")}>Remove</button>}
+      </div>
+      {dialog && (
+        <Modal title={dialog === "install" ? "Install local recovery" : "Remove local recovery"} onClose={() => setDialog(null)}
+          footer={<button className={dialog === "remove" ? "danger" : "primary"} disabled={busy || confirm.trim().toLowerCase() !== agent.hostname.toLowerCase()} onClick={() => send(dialog)}>{dialog === "install" ? "Install" : "Remove"}</button>}>
+          {dialog === "install" ? <>
+            <div className="card warn-card small">This shrinks C: on {agent.name} and adds a recovery partition after it, plus <b>Fenrir Recovery</b> in the boot menu. Make sure a recent backup exists first. You will be asked for your password.</div>
+            <label className="row small" style={{ gap: 6, marginTop: 10 }}><input type="checkbox" checked={autoStart} onChange={(e) => setAutoStart(e.target.checked)} /> Start it automatically when Windows fails to start (instead of Windows' Startup Repair)</label>
+          </> : <div className="card warn-card small">This deletes the recovery partition and its boot menu entry, and gives the space back to C:. You will be asked for your password.</div>}
+          <label className="field" style={{ marginTop: 10 }}>Type the machine's name ({agent.hostname}) to confirm<input value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="off" /></label>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 /** A machine's backups on its device page: the same lock as Images & restore. */
 function MachineImages({ agent }: { agent: BackupAgent }) {
   const q = { tenantId: agent.tenantId };
@@ -1219,6 +1368,7 @@ export function DeviceBackup({ device }: { device: { id: string; hostname: strin
         <Stat label="Images" value={detail.data?.imageCount ?? "—"} />
         <Stat label="Plans" value={detail.data?.plans?.length ?? "—"} hint={detail.data?.plans?.map((p: Plan) => describeSchedule(p.schedule)).join(", ")} to="/backups" />
       </div>
+      {agent.capabilities.includes("local_recovery") && <LocalRecoveryCard agent={agent} reload={agents.reload} />}
       <MachineImages agent={agent} />
       <div className="card"><h3>Recent backup jobs</h3><JobsTable rows={detail.data?.jobs ?? null} /></div>
     </>

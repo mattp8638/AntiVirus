@@ -147,6 +147,14 @@ setting `full_read` turns this off. Retention has an
 **Hourly** rule (the newest image of each of the latest N hours) for many short-lived restore points. Design:
 `backup/docs/design/frequent-backups.md`.
 
+## All customers (MSP view)
+
+With more than one customer, **Backups › All customers** shows backup health across all of them, worst first: per
+customer the machines protected (every scheduled plan succeeded within twice its interval), failing, overdue, without
+a plan, offline, on hold, the 7-day success rate, boot-verified machines and storage; a 14-day chart of backups per
+day; and one list of what needs attention (holds, failing backups, failed boot tests, overdue plans, offline agents,
+machines without a plan). Click a customer or an item to open that customer's backups.
+
 ## Dedup groups
 
 Machines that back up to the same repository already share stored data. **Dedup group** (when adding a repository)
@@ -236,6 +244,15 @@ and a note to grow them once mounted) or smaller if every partition fits. UEFI s
 started in a different firmware mode from the backed-up system, the job says which setting to change. Sessions do not
 raise offline alerts and are removed a week after they were last seen. The recovery screen also restores without a
 server, from a repository on a USB disk or an SMB share.
+
+**Local recovery partition (Windows).** Instead of a stick: on a machine's Backup tab, **Local recovery › Install**
+(destructive permission, password and the machine's name typed) shrinks C: by about 1 GB and adds a hidden recovery
+partition with a **Fenrir Recovery** boot menu entry, built from the machine's own Windows Recovery Environment with its
+network and storage drivers. If Windows no longer starts, choose it in the boot menu (or let it start by itself after
+failed starts, an option): the machine appears as a recovery session, and you restore it from its backups onto the same
+disk or a new one, on this or different hardware, as with recovery media. The partition's enrolment code (recovery
+sessions only) is renewed whenever it is rebuilt, which happens after each agent update; **Remove** gives the space
+back to C:. Details: `backup/docs/design/local-recovery.md`.
 
 **Different hardware.** A restored Windows gets its own storage drivers (AHCI, NVMe, Intel RST, common RAID/SAS
 controllers, Hyper-V, VMware, virtio) set to start at boot in its registry, so moving from RAID to AHCI, SATA to NVMe
