@@ -14,7 +14,7 @@ import binascii
 import re
 import uuid as uuidlib
 from types import SimpleNamespace
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
@@ -280,6 +280,141 @@ def overview(tenantId: str | None = None, p: Principal = Depends(current_princip
                         "failed": sum(1 for j in backups if j.state == "failed")},
             "holds": [{"id": r.id, "name": r.name, "reason": r.hold_reason, "since": iso(r.hold_since)} for r in repos if r.hold],
             "autoUpdate": backup_settings(db).get("autoUpdate", True)}
+
+
+def plan_period(schedule: dict) -> int | None:
+    """Seconds between a plan's scheduled backups (None: manual)."""
+    t = (schedule or {}).get("type")
+    if t == "interval":
+        return int(schedule.get("hours") or 0) * 3600 + int(schedule.get("minutes") or 0) * 60 or None
+    return {"daily": 86_400, "weekly": 7 * 86_400}.get(t)
+
+
+SEVERITY = {"hold": 0, "failing": 1, "boot_failed": 2, "overdue": 3, "offline": 4, "no_plan": 5}
+
+
+@router.get("/msp")
+def msp_dashboard(p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Backup health across every customer this person manages (the MSP view): per customer and per machine."""
+    p.require("read")
+    tenants = sorted(p.tenant_ids)
+    names = {t.id: t.name for t in db.execute(select(Tenant).where(Tenant.id.in_(tenants))).scalars()}
+    now = utcnow()
+    agents = [a for a in db.execute(select(BackupAgent).where(BackupAgent.tenant_id.in_(tenants),
+                                                              BackupAgent.revoked.is_(False))).scalars()
+              if a.role != "recovery"]
+    plans = db.execute(select(ImageBackupPlan).where(ImageBackupPlan.tenant_id.in_(tenants),
+                                                     ImageBackupPlan.enabled.is_(True))).scalars().all()
+    repos = db.execute(select(BackupRepository).where(BackupRepository.tenant_id.in_(tenants))).scalars().all()
+    since14 = now - timedelta(days=14)
+    jobs = db.execute(select(BackupJob).where(BackupJob.tenant_id.in_(tenants), BackupJob.finished_at > since14)).scalars().all()
+    backups = [j for j in jobs if bk.is_backup(j.kind)]
+    last_ok: dict[str, datetime] = dict(db.execute(
+        select(BackupJob.plan_id, func.max(BackupJob.finished_at))
+        .where(BackupJob.tenant_id.in_(tenants), BackupJob.plan_id.is_not(None),
+               BackupJob.state.in_(("succeeded", "warning")))
+        .group_by(BackupJob.plan_id)).all())
+    stored = dict(db.execute(select(BackupImage.tenant_id, func.coalesce(func.sum(BackupImage.stored_new_bytes), 0))
+                             .where(BackupImage.tenant_id.in_(tenants)).group_by(BackupImage.tenant_id)).all())
+    month = now - timedelta(days=30)
+    checks = db.execute(select(BackupBootCheck).where(BackupBootCheck.tenant_id.in_(tenants),
+                                                      BackupBootCheck.at > month)).scalars().all()
+    images_of = dict(db.execute(select(BackupImage.image_id, BackupImage.agent_id)
+                                .where(BackupImage.tenant_id.in_(tenants))).all())
+    verified_agents = {images_of.get(c.image_id) for c in checks if c.outcome == "verified"}
+    latest_check: dict[str, BackupBootCheck] = {}
+    for c in sorted(checks, key=lambda c: c.at):
+        if images_of.get(c.image_id):
+            latest_check[images_of[c.image_id]] = c
+    anomalies = dict(db.execute(select(BackupImage.tenant_id, func.count()).where(
+        BackupImage.tenant_id.in_(tenants), BackupImage.anomaly.is_not(None),
+        BackupImage.created_unix > int((now - timedelta(days=7)).timestamp())).group_by(BackupImage.tenant_id)).all())
+
+    attention: list[dict] = []
+    per: dict[str, dict] = {}
+
+    def row(tid: str) -> dict:
+        return per.setdefault(tid, {"tenantId": tid, "name": names.get(tid, tid), "machines": 0, "protected": 0,
+                                    "atRisk": 0, "failing": 0, "unprotected": 0, "offline": 0, "storedBytes": 0,
+                                    "holds": 0, "anomalies7d": 0, "bootVerified": 0, "jobs7d": 0, "ok7d": 0,
+                                    "lastBackup": None})
+
+    def flag(a: BackupAgent | None, tid: str, kind: str, detail: str, since=None, name: str | None = None):
+        attention.append({"tenantId": tid, "tenantName": names.get(tid, tid), "kind": kind, "detail": detail,
+                          "agentId": a.id if a else None,
+                          "machine": name or ((a.display_name or a.hostname) if a else ""), "since": iso(since)})
+
+    for a in agents:
+        r = row(a.tenant_id)
+        r["machines"] += 1
+        name = a.display_name or a.hostname
+        mine = [pl for pl in plans if pl.agent_id == a.id and plan_period(pl.schedule)]
+        mine_jobs = sorted((j for j in backups if j.agent_id == a.id), key=lambda j: j.finished_at)
+        last = mine_jobs[-1] if mine_jobs else None
+        offline = a.last_seen_at is None or now - a.last_seen_at > timedelta(hours=24)
+        overdue = []
+        for pl in mine:
+            ok = last_ok.get(pl.id)
+            if (ok or pl.created_at) < now - timedelta(seconds=2 * plan_period(pl.schedule) + 3600):
+                overdue.append((pl, ok))
+        if not mine:
+            r["unprotected"] += 1
+            flag(a, a.tenant_id, "no_plan", "no scheduled backup plan")
+        elif last is not None and last.state == "failed":
+            r["failing"] += 1
+            flag(a, a.tenant_id, "failing", (last.error or "the last backup failed")[:300], last.finished_at)
+        elif overdue:
+            r["atRisk"] += 1
+            pl, ok = overdue[0]
+            flag(a, a.tenant_id, "overdue", f"{pl.name}: no successful backup " + (f"since {ok:%Y-%m-%d %H:%M} UTC" if ok else "yet"), ok)
+        else:
+            r["protected"] += 1
+        if offline:
+            r["offline"] += 1
+            flag(a, a.tenant_id, "offline", "the backup agent has not checked in for a day", a.last_seen_at)
+        if a.id in verified_agents:
+            r["bootVerified"] += 1
+        lc = latest_check.get(a.id)
+        if lc is not None and lc.outcome == "failed":
+            flag(a, a.tenant_id, "boot_failed", "the latest boot test failed", lc.at)
+        if last is not None and (r["lastBackup"] is None or iso(last.finished_at) > r["lastBackup"]):
+            r["lastBackup"] = iso(last.finished_at)
+    week = now - timedelta(days=7)
+    for j in backups:
+        if j.finished_at > week:
+            r = row(j.tenant_id)
+            r["jobs7d"] += 1
+            r["ok7d"] += j.state in ("succeeded", "warning")
+    for repo in repos:
+        if repo.hold:
+            row(repo.tenant_id)["holds"] += 1
+            flag(None, repo.tenant_id, "hold", repo.hold_reason or "retention is on hold", repo.hold_since,
+                 name=f"repository {repo.name}")
+    for tid, n in stored.items():
+        row(tid)["storedBytes"] = int(n or 0)
+    for tid, n in anomalies.items():
+        row(tid)["anomalies7d"] = int(n)
+    customers = []
+    for r in per.values():
+        r["successRate7d"] = round(100 * r["ok7d"] / r["jobs7d"]) if r["jobs7d"] else None
+        r["status"] = "critical" if r["holds"] or r["failing"] or r["anomalies7d"] else \
+            "warning" if r["atRisk"] or r["offline"] or r["unprotected"] else "ok"
+        customers.append(r)
+    order = {"critical": 0, "warning": 1, "ok": 2}
+    customers.sort(key=lambda r: (order[r["status"]], r["name"].lower()))
+    attention.sort(key=lambda x: (SEVERITY[x["kind"]], x["tenantName"].lower(), x["machine"].lower()))
+    trend = []
+    for d in range(13, -1, -1):
+        day = (now - timedelta(days=d)).date()
+        js = [j for j in backups if j.finished_at.date() == day]
+        trend.append({"day": day.isoformat(), "succeeded": sum(j.state == "succeeded" for j in js),
+                      "warning": sum(j.state == "warning" for j in js), "failed": sum(j.state == "failed" for j in js)})
+    keys = ("machines", "protected", "atRisk", "failing", "unprotected", "offline", "storedBytes", "holds",
+            "anomalies7d", "bootVerified", "jobs7d", "ok7d")
+    totals = {k: sum(r[k] for r in customers) for k in keys}
+    totals["customers"] = len(customers)
+    totals["successRate7d"] = round(100 * totals["ok7d"] / totals["jobs7d"]) if totals["jobs7d"] else None
+    return {"totals": totals, "customers": customers, "attention": attention[:200], "trend": trend}
 
 
 @router.get("/agents")

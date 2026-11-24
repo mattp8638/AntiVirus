@@ -948,3 +948,56 @@ def test_dedup_group_repositories_share_storage_and_key(client, admin, tenant):
     t2, h2 = agent_enroll(client, e2["token"], machine="m-3", key=base64.b64encode(b"t" * 32).decode())
     heartbeat(client, h2)
     assert create(str(uuid.uuid4()), a, agent=t2).status_code == 400
+
+
+def test_msp_dashboard_across_customers(client, admin, tenant):
+    """The MSP view: every customer's backup health, worst first, and the machines that need attention."""
+    from fenrir_cloud.db import session_factory
+    from fenrir_cloud.models import ImageBackupPlan
+
+    e = link(client, admin, tenant)
+    ok_id, ok_h = agent_enroll(client, e["token"], machine="good")
+    heartbeat(client, ok_h)
+    repo = ready_repo(client, admin, tenant, ok_id, ok_h)
+    bad_id, bad_h = agent_enroll(client, e["token"], machine="bad", key=base64.b64encode(b"b" * 32).decode())
+    heartbeat(client, bad_h)
+    assert client.post(f"/api/console/backup/repositories/{repo}/access", headers=admin,
+                       json={"agentId": bad_id, "sealed": SEALED}).status_code == 200
+    plan = lambda agent: client.post("/api/console/backup/plans", headers=admin, json={
+        "name": f"Nightly {agent[:4]}", "agentId": agent, "repositoryId": repo, "job": {"type": "backup_system"},
+        "schedule": {"type": "daily", "time": "01:00"}}).json()["id"]
+    good_plan, bad_plan = plan(ok_id), plan(bad_id)
+    for pid, h, state in ((good_plan, ok_h, "succeeded"), (bad_plan, bad_h, "failed")):
+        assert client.post(f"/api/console/backup/plans/{pid}/run", headers=admin).status_code == 200
+        job = heartbeat(client, h)["jobs"][0]
+        finish(client, h, job["id"], state=state, **({"images": [image(machine="good")]} if state == "succeeded" else {"error": "disk read error"}))
+    # A third machine with no plan, in another customer.
+    other = client.post("/api/console/tenants", json={"name": "Zeta Ltd", "template": "balanced"}, headers=admin).json()
+    e2 = link(client, admin, other)
+    lonely, h3 = agent_enroll(client, e2["token"], machine="lonely", key=base64.b64encode(b"z" * 32).decode())
+    heartbeat(client, h3)
+
+    d = client.get("/api/console/backup/msp", headers=admin).json()
+    by = {c["name"]: c for c in d["customers"]}
+    acme, zeta = by["Acme Dental"], by["Zeta Ltd"]
+    assert (acme["machines"], acme["protected"], acme["failing"]) == (2, 1, 1)
+    assert acme["status"] == "critical" and zeta["status"] == "warning" and zeta["unprotected"] == 1
+    assert [c["name"] for c in d["customers"]][:2] == ["Acme Dental", "Zeta Ltd"], "worst first"
+    kinds = [(a["kind"], a["agentId"]) for a in d["attention"]]
+    assert ("failing", bad_id) in kinds and ("no_plan", lonely) in kinds
+    assert kinds.index(("failing", bad_id)) < kinds.index(("no_plan", lonely))
+    assert d["totals"]["machines"] == 3 and d["totals"]["customers"] == 2
+    assert d["trend"][-1]["succeeded"] == 1 and d["trend"][-1]["failed"] == 1
+    assert d["totals"]["successRate7d"] == 50
+
+    # The good plan last succeeded 3 days ago: at risk (a daily plan is overdue after two days).
+    from datetime import timedelta
+    from fenrir_cloud.models import BackupJob, utcnow
+    with session_factory()() as db:
+        for j in db.query(BackupJob).filter(BackupJob.plan_id == good_plan):
+            j.finished_at = utcnow() - timedelta(days=3)
+        db.get(ImageBackupPlan, good_plan).created_at = utcnow() - timedelta(days=10)
+        db.commit()
+    d = client.get("/api/console/backup/msp", headers=admin).json()
+    assert {c["name"]: c for c in d["customers"]}["Acme Dental"]["atRisk"] == 1
+    assert any(a["kind"] == "overdue" and a["agentId"] == ok_id for a in d["attention"])

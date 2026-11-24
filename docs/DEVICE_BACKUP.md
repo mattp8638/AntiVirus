@@ -143,6 +143,14 @@ disk space again and stores only what changed, so pick an interval longer than o
 **Hourly** rule (the newest image of each of the latest N hours) for many short-lived restore points. Design:
 `backup/docs/design/frequent-backups.md`.
 
+## All customers (MSP view)
+
+With more than one customer, **Backups › All customers** shows backup health across all of them, worst first: per
+customer the machines protected (every scheduled plan succeeded within twice its interval), failing, overdue, without
+a plan, offline, on hold, the 7-day success rate, boot-verified machines and storage; a 14-day chart of backups per
+day; and one list of what needs attention (holds, failing backups, failed boot tests, overdue plans, offline agents,
+machines without a plan). Click a customer or an item to open that customer's backups.
+
 ## Dedup groups
 
 Machines that back up to the same repository already share stored data. **Dedup group** (when adding a repository)

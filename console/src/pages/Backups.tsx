@@ -86,7 +86,9 @@ async function waitForJob(id: string, tries = 90): Promise<Job | null> {
 
 export default function Backups() {
   const { tenantId } = useApp();
-  const [tab, setTab] = useState("Overview");
+  const { tenants, setTenantId } = useApp() as any;
+  const msp = (tenants?.length ?? 0) > 1;
+  const [tab, setTab] = useState(msp && !tenantId ? "All customers" : "Overview");
   const q = { tenantId: tenantId || undefined };
   const overview = useData<any>("backup/overview", q, [tenantId]);
   const agents = useListData<BackupAgent>("backup/agents", q, [tenantId]);
@@ -100,8 +102,9 @@ export default function Backups() {
       <PageHead title="Backups" subtitle="Image backups of servers, PCs and Hyper-V hosts into repositories you own: a NAS, a file server or a local disk. Encrypted on the machine; this server never sees the keys."
         actions={can("configure") && <button className="primary" onClick={() => setAdding(true)}>Add machines</button>} />
       {!sealSupported() && <div className="card warn-card">This browser cannot encrypt repository secrets (Web Crypto X25519 is needed). Use a current Chrome, Edge, Firefox or Safari over HTTPS.</div>}
-      <Tabs tabs={["Overview", "Machines", "Repositories", "Plans", "Images & restore", "Activity"]} active={tab} onChange={setTab} />
+      <Tabs tabs={[...(msp ? ["All customers"] : []), "Overview", "Machines", "Repositories", "Plans", "Images & restore", "Activity"]} active={tab} onChange={setTab} />
       <ErrorNote error={overview.error || agents.error || repos.error} />
+      {tab === "All customers" && <MspDashboard open={(id) => { setTenantId?.(id); setTab("Overview"); }} />}
       {tab === "Overview" && <Overview data={overview.data} agents={agents.data} />}
       {tab === "Machines" && <Machines agents={agents.data} repos={repos.data ?? []} reload={reloadAll} />}
       {tab === "Repositories" && <Repositories repos={repos.data} agents={agents.data ?? []} reload={reloadAll} />}
@@ -139,6 +142,110 @@ function Overview({ data, agents }: { data: any; agents: BackupAgent[] | null })
           ]} />
         )}
       </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------- all customers (MSP)
+
+interface MspCustomer {
+  tenantId: string; name: string; status: "critical" | "warning" | "ok"; machines: number; protected: number; atRisk: number;
+  failing: number; unprotected: number; offline: number; storedBytes: number; holds: number; anomalies7d: number;
+  bootVerified: number; successRate7d: number | null; lastBackup: string | null;
+}
+interface MspIssue { tenantId: string; tenantName: string; kind: string; detail: string; agentId: string | null; machine: string; since: string | null }
+interface MspData { totals: any; customers: MspCustomer[]; attention: MspIssue[]; trend: { day: string; succeeded: number; warning: number; failed: number }[] }
+
+const STATUS_TONE: Record<string, string> = { critical: "bad", warning: "warn", ok: "good" };
+const STATUS_TEXT: Record<string, string> = { critical: "⛔ Critical", warning: "⚠ Needs attention", ok: "✓ Healthy" };
+const ISSUE_TEXT: Record<string, string> = { hold: "Ransomware hold", failing: "Backup failing", boot_failed: "Boot test failed", overdue: "Overdue", offline: "Agent offline", no_plan: "No backup plan" };
+
+/** Backup health across every customer, worst first (the MSP view). */
+function MspDashboard({ open }: { open: (tenantId: string) => void }) {
+  const d = useData<MspData>("backup/msp", {}, []);
+  useAutoRefresh(d.reload, 60000);
+  if (d.error) return <ErrorNote error={d.error} />;
+  if (!d.data) return <div className="empty">Loading…</div>;
+  const t = d.data.totals;
+  const pct = (a: number, b: number) => (b ? `${Math.round((100 * a) / b)}%` : "—");
+  return (
+    <>
+      <div className="grid k4" style={{ marginBottom: 14 }}>
+        <Stat label="Machines protected" value={pct(t.protected, t.machines)} hint={`${t.protected} of ${t.machines} machines, ${t.customers} customers`} />
+        <Stat label="Failing or at risk" value={t.failing + t.atRisk} hint={`${t.failing} failing, ${t.atRisk} overdue, ${t.unprotected} without a plan`} accent={t.failing ? "bad" : undefined} />
+        <Stat label="Backups, last 7 days" value={t.successRate7d == null ? "—" : `${t.successRate7d}% ok`} hint={`${t.ok7d} of ${t.jobs7d} succeeded`} />
+        <Stat label="Stored" value={bytes(t.storedBytes)} hint={`${t.holds} on hold · ${t.bootVerified} machines boot-verified in 30 days`} accent={t.holds ? "bad" : undefined} />
+      </div>
+      <div className="card" style={{ marginBottom: 14 }}>
+        <h3>Backups per day</h3>
+        <TrendBars trend={d.data.trend} />
+      </div>
+      <div className="card" style={{ marginBottom: 14 }}>
+        <h3>Customers</h3>
+        <Table rows={d.data.customers.map((c) => ({ ...c, id: c.tenantId }))} onRow={(c) => open(c.tenantId)} empty="No customer has backups yet."
+          columns={[
+            { key: "name", label: "Customer", render: (c) => <b>{c.name}</b> },
+            { key: "status", label: "Status", render: (c) => <Pill value={STATUS_TEXT[c.status]} tone={STATUS_TONE[c.status]} /> },
+            { key: "prot", label: "Protected", render: (c) => `${c.protected}/${c.machines}` },
+            { key: "issues", label: "Issues", render: (c) => <span className="small">{[
+              c.failing && `${c.failing} failing`, c.atRisk && `${c.atRisk} overdue`, c.unprotected && `${c.unprotected} without a plan`,
+              c.offline && `${c.offline} offline`, c.holds && `${c.holds} on hold`, c.anomalies7d && `${c.anomalies7d} anomalies`,
+            ].filter(Boolean).join(" · ") || "none"}</span> },
+            { key: "rate", label: "Success (7 days)", render: (c) => c.successRate7d == null ? "—" : `${c.successRate7d}%` },
+            { key: "boot", label: "Boot-verified", render: (c) => `${c.bootVerified}/${c.machines}` },
+            { key: "last", label: "Last backup", render: (c) => c.lastBackup ? ago(c.lastBackup) : "—" },
+            { key: "stored", label: "Stored", render: (c) => bytes(c.storedBytes) },
+          ]} />
+      </div>
+      <div className="card">
+        <h3>Needs attention</h3>
+        <Table rows={d.data.attention.map((a, i) => ({ ...a, id: String(i) }))} onRow={(a) => open(a.tenantId)} empty="Nothing: every machine is protected."
+          columns={[
+            { key: "kind", label: "Issue", render: (a) => <Pill value={ISSUE_TEXT[a.kind] ?? a.kind} tone={["hold", "failing", "boot_failed"].includes(a.kind) ? "bad" : "warn"} /> },
+            { key: "tenantName", label: "Customer" },
+            { key: "machine", label: "Machine" },
+            { key: "detail", label: "Detail", render: (a) => <span className="small">{a.detail}</span> },
+            { key: "since", label: "Since", render: (a) => a.since ? ago(a.since) : "—" },
+          ]} />
+      </div>
+    </>
+  );
+}
+
+/** Stacked daily bars: succeeded / with warnings / failed (status colors, with a legend and per-day tooltips). */
+function TrendBars({ trend }: { trend: MspData["trend"] }) {
+  const parts = [
+    { key: "succeeded" as const, label: "Succeeded", color: "var(--green)" },
+    { key: "warning" as const, label: "With warnings", color: "var(--amber)" },
+    { key: "failed" as const, label: "Failed", color: "var(--red)" },
+  ];
+  const max = Math.max(1, ...trend.map((d) => d.succeeded + d.warning + d.failed));
+  const W = 28, H = 110, GAP = 10;
+  return (
+    <>
+      <div className="row small" style={{ gap: 14, marginBottom: 6 }}>
+        {parts.map((p) => <span key={p.key} className="row" style={{ gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: p.color, display: "inline-block" }} />{p.label}</span>)}
+      </div>
+      <svg role="img" aria-label="Backups per day for the last 14 days" viewBox={`0 0 ${trend.length * (W + GAP)} ${H + 18}`} style={{ width: "100%", maxWidth: 560, height: "auto" }}>
+        {trend.map((d, i) => {
+          let y = H;
+          const total = d.succeeded + d.warning + d.failed;
+          return (
+            <g key={d.day}>
+              <title>{`${d.day}: ${d.succeeded} succeeded, ${d.warning} with warnings, ${d.failed} failed`}</title>
+              <rect x={i * (W + GAP)} y={0} width={W} height={H} fill="transparent" />
+              {parts.map((p) => {
+                const h = (d[p.key] / max) * H;
+                if (!h) return null;
+                y -= h;
+                return <rect key={p.key} x={i * (W + GAP)} y={y + 1} width={W} height={Math.max(h - 2, 1)} rx={2} fill={p.color} />;
+              })}
+              {!total && <rect x={i * (W + GAP)} y={H - 1} width={W} height={1} fill="var(--line-2)" />}
+              <text x={i * (W + GAP) + W / 2} y={H + 13} textAnchor="middle" fontSize="9" fill="var(--muted)">{d.day.slice(8)}</text>
+            </g>
+          );
+        })}
+      </svg>
     </>
   );
 }
