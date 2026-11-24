@@ -1193,3 +1193,88 @@ def test_kubernetes_and_saas_backups_keep_only_the_sealed_secret(client, admin, 
     step = {**admin, "X-Fenrir-Reauth": reauth(client, admin)}
     assert client.post(url, headers=step, json={**replace, "confirm": "staging"}).status_code == 400
     assert client.post(url, headers=step, json=replace).status_code == 200
+
+
+def test_backups_are_scanned_for_malware_and_infected_restores_need_acknowledging(client, admin, tenant):
+    """A scan job carries the customer's detection content; findings are stored, alerted and shown; the last clean
+    backup is reported; restoring infected files needs allowInfected; a plan can scan each new backup."""
+    from fenrir_cloud.db import session_factory
+    from fenrir_cloud.models import Alert
+
+    bad_sha, good_sha = "ab" * 32, "cd" * 32
+    assert client.post("/api/console/intel/indicators", headers=admin,
+                       json={"values": [bad_sha], "verdict": "malicious"}).status_code == 200
+    client.post("/api/console/intel/indicators", headers=admin, json={"values": [good_sha], "verdict": "malicious"})
+    client.post("/api/console/intel/indicators", headers=admin, json={"values": [good_sha], "verdict": "allow"})
+    client.post("/api/console/intel/yara", headers=admin,
+                json={"name": "test.yar", "source": "rule T { strings: $a = \"x\" condition: $a }"})
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    caps = CAPS + ["scan_images"]
+    heartbeat(client, h, caps=caps)
+    repo_id = ready_repo(client, admin, tenant, agent_id, h)
+    old, new = image(t=0), image(t=100)
+    for im in (old, new):
+        client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                    json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+        finish(client, h, heartbeat(client, h, caps=caps)["jobs"][0]["id"], images=[im])
+    admin = unlock(client, admin, h, repo_id, agent_id, caps=caps)
+
+    def scan(im, findings, **body):
+        r = client.post(f"/api/console/backup/images/{im['image_id']}/scan", headers=admin, json=body)
+        assert r.status_code == 200, r.text
+        spec = next(j for j in heartbeat(client, h, caps=caps)["jobs"] if j["id"] == r.json()["id"])
+        return spec, lambda: finish(client, h, spec["id"], state="warning" if findings else "succeeded", result={
+            "image_id": im["image_id"], "scan": {"files_scanned": 120, "bytes_scanned": 9 << 20,
+                                                 "volumes_scanned": ["C:\\"], "findings": findings,
+                                                 "rule_errors": [], "rules_used": 1, "indicators_used": 1}})
+
+    spec, done = scan(old, [])
+    k = spec["kind"]
+    assert k["type"] == "scan_image" and k["selection"] == "executables"
+    assert bad_sha in k["indicators"] and good_sha not in k["indicators"], "allow-listed hashes are left out"
+    assert [r["name"] for r in k["rules"]] == ["test.yar"]
+    done()
+    infected = [{"volume": "C:\\", "path": "/Users/anna/Downloads/invoice.exe", "size": 4096, "sha256": bad_sha,
+                 "detections": [{"kind": "hash", "name": "SHA-256 indicator"}], "evil": "x" * 9999}]
+    spec, done = scan(new, infected, allFiles=True)
+    assert spec["kind"]["selection"] == "all"
+    done()
+
+    listed = {i["imageId"]: i for i in client.get("/api/console/backup/images", headers=admin).json()}
+    assert listed[old["image_id"]]["lastScan"]["state"] == "clean"
+    assert listed[new["image_id"]]["lastScan"] == {**listed[new["image_id"]]["lastScan"], "state": "infected", "findings": 1}
+    dev = next(d for d in client.get("/api/console/backup/image-devices", headers=admin).json() if d["name"] == "M-1")
+    assert dev["infected"] == 1 and dev["lastCleanCreated"] == old["created_unix"]
+    scans = client.get(f"/api/console/backup/images/{new['image_id']}/scans", headers=admin).json()
+    assert scans[0]["findings"][0]["path"].endswith("invoice.exe") and "evil" not in scans[0]["findings"][0]
+    with session_factory()() as db:
+        alert = db.query(Alert).filter(Alert.title.like("Malware found in a backup of%")).one()
+        assert alert.severity == "critical"
+
+    # Restoring the infected image needs acknowledging; restoring a clean file from it does not.
+    body = {"imageId": new["image_id"], "agentId": agent_id, "target": {"type": "vhdx", "directory": "D:\\R"}}
+    r = client.post("/api/console/backup/restores", headers=admin, json=body)
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "image_infected"
+    assert client.post("/api/console/backup/restores", headers=admin, json={**body, "allowInfected": True}).status_code == 200
+    files = {"agentId": agent_id, "disk": 0, "partition": 1, "target": "D:\\R",
+             "paths": ["/Users/anna/Documents/report.txt"]}
+    for j in heartbeat(client, h, caps=caps + ["restore_files"])["jobs"]:
+        finish(client, h, j["id"])  # the image restore above
+    ok = client.post(f"/api/console/backup/images/{new['image_id']}/restore-files", headers=admin, json=files)
+    assert ok.status_code == 200, ok.text
+    blocked = client.post(f"/api/console/backup/images/{new['image_id']}/restore-files", headers=admin,
+                          json={**files, "paths": ["/Users/anna"]})
+    assert blocked.status_code == 409 and blocked.json()["detail"]["infected"] == ["/Users/anna/Downloads/invoice.exe"]
+
+    # A plan that scans after each backup queues a scan for the new image on the same machine.
+    for j in heartbeat(client, h, caps=caps + ["restore_files"])["jobs"]:
+        finish(client, h, j["id"])  # the file restore
+    r = client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                    json={"kind": {"type": "backup_system", "settings": {"scan_after_backup": True}}, "repositoryId": repo_id})
+    assert r.status_code == 200, r.text
+    third = image(t=200)
+    jobs = heartbeat(client, h, caps=caps)["jobs"]
+    finish(client, h, jobs[0]["id"], images=[third])
+    queued = [j["kind"] for j in heartbeat(client, h, caps=caps)["jobs"]]
+    assert any(k["type"] == "scan_image" and k["image_id"] == third["image_id"] for k in queued), queued

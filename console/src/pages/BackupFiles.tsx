@@ -2,11 +2,27 @@
 // restoring the disk. The machine that reads the image decrypts it with the repository key it was given; this server
 // only relays folder listings (kept a day) and never sees file contents.
 import { useEffect, useMemo, useState } from "react";
-import { api, apiBytes } from "../api";
+import { api, apiBytes, ApiError } from "../api";
+import { confirmDialog } from "../components/dialogs";
 import { downloadKey } from "../backup-seal";
 import { useApp } from "../app-context";
 import { ErrorNote, Modal, Pill, useListData } from "../components/ui";
 import { bytes, type BackupAgent } from "./Backups";
+
+/** POST, and when the files asked for are infected (latest malware scan), ask before sending again with allowInfected. */
+async function postAllowingInfected<T>(path: string, body: Record<string, unknown>): Promise<T> {
+  try {
+    return await api<T>(path, { body });
+  } catch (e) {
+    const d = e instanceof ApiError ? (e.detail as { code?: string; infected?: string[]; count?: number } | undefined) : undefined;
+    if (d?.code !== "image_infected") throw e;
+    const list = (d.infected ?? []).slice(0, 5).join("\n");
+    if (!(await confirmDialog(`The latest malware scan found ${d.count} infected file${d.count === 1 ? "" : "s"} in what you chose:\n${list}${(d.count ?? 0) > 5 ? "\n…" : ""}\n\nRestore them anyway?`))) {
+      throw new Error("Not restored: the files include malware found by the latest scan.");
+    }
+    return api<T>(path, { body: { ...body, allowInfected: true } });
+  }
+}
 
 interface Volume { disk: number; partition: number; filesystem: string; size: number; mount_points: string[]; name: string; browsable: boolean; note?: string }
 interface Entry { name: string; kind: "file" | "dir" | "link" | "other"; size: number; modified?: number; hidden: boolean }
@@ -193,9 +209,9 @@ function RestoreFiles({ image, volume, paths, browsingAgent, onClose }: { image:
   const go = async () => {
     setState({ busy: true });
     try {
-      const { id } = await api<{ id: string }>(`backup/images/${image.imageId}/restore-files`, { body: {
+      const { id } = await postAllowingInfected<{ id: string }>(`backup/images/${image.imageId}/restore-files`, {
         agentId: agent!.id, disk: volume.disk, partition: volume.partition, paths, target,
-        keepStructure: where === "original" ? true : keep, conflict } });
+        keepStructure: where === "original" ? true : keep, conflict });
       const job = await waitFast(id, (j) => setState({ busy: true, progress: j.progress?.message }), 24 * 3600);
       setState({ job });
     } catch (e) {
@@ -208,8 +224,8 @@ function RestoreFiles({ image, volume, paths, browsingAgent, onClose }: { image:
     setState({ busy: true, progress: "Preparing…" });
     try {
       const k = await downloadKey();
-      const { id } = await api<{ id: string }>(`backup/images/${image.imageId}/download-files`, { body: {
-        agentId: agent!.id, disk: volume.disk, partition: volume.partition, paths, recipient: k.publicB64 } });
+      const { id } = await postAllowingInfected<{ id: string }>(`backup/images/${image.imageId}/download-files`, {
+        agentId: agent!.id, disk: volume.disk, partition: volume.partition, paths, recipient: k.publicB64 });
       const job = await waitFast(id, (j) => setState({ busy: true, progress: j.progress?.message }), 24 * 3600);
       if (job.state !== "succeeded" && job.state !== "warning") throw new Error(job.error || "the machine could not prepare the files");
       const header = job.result?.download;

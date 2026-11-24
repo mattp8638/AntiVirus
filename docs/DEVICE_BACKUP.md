@@ -60,7 +60,7 @@ Fenrir server itself.
 | View machines, repositories, plans, jobs, and the list of backed-up machines | `read` |
 | Open a machine's backups (list, browse, restore, boot test) | `read` + unlock (below) |
 | Back up now, verify, test a connection, run a plan, cancel, place a hold | `respond` |
-| Browse and restore files; restore to VHDX files, a new Hyper-V VM, or VM files for QEMU, VirtualBox or VMware; boot tests; stop a test VM | `scripts` |
+| Browse and restore files; restore to VHDX files, a new Hyper-V VM, or VM files for QEMU, VirtualBox or VMware; boot tests; malware scans; stop a test VM | `scripts` |
 | Install links, repositories, access, plans, share sign-ins, maintenance, gateways | `configure` |
 | Overwrite a physical disk, replace existing files with backup copies, release a hold, reclaim space | `destructive` + password re-check |
 | Turn automatic agent updates on or off | `platform` |
@@ -106,6 +106,23 @@ starts, with the VM's network disconnected:
 * Scheduled boot verification (repository settings) tests each machine's newest image regularly and removes the VM
   each time.
 * For a lasting copy rather than a test, use **Restore › Hyper-V: a new VM on this host** on a Hyper-V host instead.
+
+## Malware scans of backups
+
+**Images & restore › Scan** checks the files inside a backup against your threat intelligence (malicious file hashes
+and YARA rules under Protection › Threat intelligence). The machine the backup came from (or another with access) reads
+the files from the repository; contents never leave it and only findings are reported. By default programs, scripts,
+shortcuts and macro documents are checked; **Every file** checks the rest too. Files that did not change since an
+earlier scan of the same machine are not read again.
+
+* Each backup shows **clean**, **infected** or **scan incomplete**; a machine with infected backups shows a warning and
+  its **last clean** backup.
+* Malware found raises a critical alert (`backup.malware_found`).
+* Restoring an infected backup, or files that include an infected one, asks for **Restore it anyway**; the choice is in
+  the audit log.
+* A plan can **scan each new backup for malware** (plan editor › Malware).
+
+Design: `backup/docs/design/malware-scan.md`.
 
 ## Restoring to a virtual machine
 

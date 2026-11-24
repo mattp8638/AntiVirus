@@ -14,6 +14,7 @@ mod jobs;
 mod linuxfix;
 mod localrec;
 mod log;
+mod malware;
 mod names;
 mod rct;
 mod recovery;

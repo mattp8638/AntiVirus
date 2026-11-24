@@ -3,7 +3,7 @@
 const TOKEN_KEY = "fenrir.token";
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(public status: number, message: string, public detail?: unknown) {
     super(message);
   }
 }
@@ -110,6 +110,10 @@ async function rawApi<T>(path: string, options: { method?: string; body?: unknow
     if (detail === "repository_locked") {
       throw new ApiError(response.status, "These backups are locked (the unlock lasts 30 minutes). Open the machine again from Backups › Images & restore to unlock them.");
     }
+    if (detail && typeof detail === "object" && (detail as any).code === "image_infected") {
+      const d = detail as { message: string; infected: string[]; count: number };
+      throw new ApiError(response.status, `${d.message} ${d.infected.slice(0, 3).join(", ")}${d.count > 3 ? ` and ${d.count - 3} more` : ""}. Tick "restore it anyway" to go ahead.`, detail);
+    }
     throw new ApiError(response.status, typeof detail === "string" ? detail : JSON.stringify(detail));
   }
   return data as T;
@@ -187,6 +191,10 @@ export async function uploadFile<T = any>(path: string, file: Blob, query: Recor
   }
   if (!response.ok) {
     const detail = data && typeof data === "object" && "detail" in data ? (data as any).detail : text;
+    if (detail && typeof detail === "object" && (detail as any).code === "image_infected") {
+      const d = detail as { message: string; infected: string[]; count: number };
+      throw new ApiError(response.status, `${d.message} ${d.infected.slice(0, 3).join(", ")}${d.count > 3 ? ` and ${d.count - 3} more` : ""}. Tick "restore it anyway" to go ahead.`, detail);
+    }
     throw new ApiError(response.status, typeof detail === "string" ? detail : JSON.stringify(detail));
   }
   return data as T;

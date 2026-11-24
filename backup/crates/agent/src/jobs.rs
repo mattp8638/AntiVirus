@@ -826,6 +826,23 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             crate::boot::run(ctx, &repo, &req, rep)
         }
         JobKind::StopVm { session_id } => crate::boot::stop_vm(*session_id),
+        JobKind::ScanImage {
+            image_id,
+            indicators,
+            rules,
+            selection,
+            max_file_mib,
+        } => {
+            let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            let req = crate::malware::ScanRequest {
+                image_id: *image_id,
+                indicators,
+                rules,
+                selection,
+                max_file_mib: *max_file_mib,
+            };
+            crate::malware::run(ctx, &repo, &req, rep)
+        }
         JobKind::BrowseFiles {
             image_id,
             volume,

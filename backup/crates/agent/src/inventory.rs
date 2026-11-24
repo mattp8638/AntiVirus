@@ -104,6 +104,8 @@ pub fn capabilities(role: &str) -> Vec<String> {
         // qcow2, VDI and VMDK files with a VM definition (vmdef.rs).
         "restore_vm_files",
         "restore_files",
+        // Malware scans of images (malware.rs).
+        "scan_images",
         "gateway",
         "kubernetes",
         "saas",

@@ -30,7 +30,7 @@ from ..config import get_settings
 from ..deps import REAUTH_HEADER, REAUTH_MINUTES, Principal, current_principal, require_reauth, scoped_tenant
 from ..security import digest, issue_token, read_token, reauth_state
 from ..models import (BackupAgent, BackupBootCheck, BackupEnrollment, BackupImage, BackupJob, BackupRepoAccess,
-                      BackupRepository, Device, DrRun, DrRunbook, ImageBackupPlan, Tenant, utcnow)
+                      BackupRepository, BackupScan, Device, DrRun, DrRunbook, ImageBackupPlan, Tenant, utcnow)
 from .backup_agent import backup_settings, server_url, tls_pin
 
 router = APIRouter(prefix="/api/console/backup", tags=["Backup"])
@@ -174,13 +174,19 @@ def job_out(j: BackupJob, names: dict[str, str]) -> dict:
             "requestedBy": j.requested_by, "cancelRequested": j.cancel_requested}
 
 
-def image_out(i: BackupImage, checks: dict[str, BackupBootCheck]) -> dict:
+def scan_out(r) -> dict | None:
+    return {"state": r.state, "at": iso(r.at), "findings": len(r.findings or []), "filesScanned": r.files_scanned} \
+        if r is not None else None
+
+
+def image_out(i: BackupImage, checks: dict[str, BackupBootCheck], scans: dict | None = None) -> dict:
     b = checks.get(i.image_id)
     return {"imageId": i.image_id, "repositoryId": i.repository_id, "agentId": i.agent_id, "machineId": i.machine_id,
             "hostname": i.hostname, "created": i.created_unix, "kind": i.kind, "consistency": i.consistency,
             "capturedBytes": i.captured_bytes, "storedNewBytes": i.stored_new_bytes, "disks": i.disks, "label": i.label,
             "vmName": i.vm_name, "anomaly": i.anomaly, "applications": i.applications or [],
-            "lastBootCheck": ({"outcome": b.outcome, "at": iso(b.at), "message": b.message} if b else None)}
+            "lastBootCheck": ({"outcome": b.outcome, "at": iso(b.at), "message": b.message} if b else None),
+            "lastScan": scan_out((scans or {}).get(i.image_id))}
 
 
 _MEMBER = re.compile(r"^(.+)[\\/]repos[\\/]([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[\\/]?$", re.I)
@@ -494,7 +500,7 @@ def _settings(s) -> dict:
         bad("rate limit must be a whole number of MiB/s")
     lab = str(s.get("label") or "").strip()[:200] or None
     return {"label": lab, "rate_limit_mib": rate, "vss_full": bool(s.get("vss_full")), "verify_sample_percent": pct,
-            "full_read": bool(s.get("full_read"))}
+            "full_read": bool(s.get("full_read")), "scan_after_backup": bool(s.get("scan_after_backup"))}
 
 # Kubernetes clusters and SaaS tenants (backup/docs/design/kubernetes.md, saas.md). Their secret is sealed in the
 # browser to the machine that runs the jobs; only the sealed form is kept here.
@@ -1565,6 +1571,7 @@ def image_devices(request: Request, tenantId: str | None = None, p: Principal = 
     repos = {r.id: r for r in db.execute(select(BackupRepository).where(
         BackupRepository.id.in_({i.repository_id for i in rows}))).scalars()} if rows else {}
     checks = _boot_latest(db, [i.image_id for i in rows]) if rows else {}
+    scans = bk.scan_latest(db, [i.image_id for i in rows]) if rows else {}
     unlocked = _unlocked(request, p)
     groups: dict[str, dict] = {}
     for i in rows:
@@ -1574,11 +1581,18 @@ def image_devices(request: Request, tenantId: str | None = None, p: Principal = 
                 "key": _device_key(i), "name": i.vm_name or i.hostname, "hostname": i.hostname, "vmName": i.vm_name,
                 "agentId": i.agent_id, "tenantId": i.tenant_id, "images": 0, "lastCreated": i.created_unix,
                 "firstCreated": i.created_unix, "storedBytes": 0, "lastKind": i.kind, "lastConsistency": i.consistency,
-                "anomalies": 0, "lastVerified": None, "repositories": {}, "source": _app_source(i)}
+                "anomalies": 0, "lastVerified": None, "repositories": {}, "source": _app_source(i),
+                "infected": 0, "lastCleanCreated": None, "latestScan": scan_out(scans.get(i.image_id))}
         g["images"] += 1
         g["firstCreated"] = min(g["firstCreated"], i.created_unix)
         g["storedBytes"] += i.stored_new_bytes or 0
         g["anomalies"] += 1 if i.anomaly else 0
+        sc = scans.get(i.image_id)
+        if sc is not None and sc.state == "infected":
+            g["infected"] += 1
+        # Rows come newest first: the first clean one is the last clean restore point.
+        if sc is not None and sc.state == "clean" and g["lastCleanCreated"] is None:
+            g["lastCleanCreated"] = i.created_unix
         b = checks.get(i.image_id)
         if b is not None and b.outcome == "verified" and (g["lastVerified"] is None or iso(b.at) > g["lastVerified"]):
             g["lastVerified"] = iso(b.at)
@@ -1660,7 +1674,8 @@ def list_images(request: Request, tenantId: str | None = None, repositoryId: str
     if order == "asc":
         rows.reverse()
     checks = _boot_latest(db, [i.image_id for i in rows])
-    return [image_out(i, checks) for i in rows]
+    scans = bk.scan_latest(db, [i.image_id for i in rows])
+    return [image_out(i, checks, scans) for i in rows]
 
 
 def _image(db: Session, p: Principal, image_id: str) -> BackupImage:
@@ -1679,6 +1694,7 @@ VM_NAME = re.compile(r"[A-Za-z0-9._-](?:[A-Za-z0-9 ._-]{0,78}[A-Za-z0-9._-])?")
 def create_restore(request: Request, body: dict = Body(...), p: Principal = Depends(current_principal),
                    db: Session = Depends(get_db)):
     im = _image_unlocked(request, db, p, str(body.get("imageId") or ""))
+    _malware_guard(db, im, body)
     a = _agent(db, p, str(body.get("agentId") or ""))
     t = body.get("target") if isinstance(body.get("target"), dict) else {}
     kind = t.get("type")
@@ -1736,7 +1752,8 @@ def create_restore(request: Request, body: dict = Body(...), p: Principal = Depe
     job = bk.queue(db, a, {"type": "restore", "image_id": im.image_id, "disks": disks, "target": target},
                    im.repository_id, p.actor)
     bk.record(db, p.actor, "backup.restore.requested", im.hostname, im.tenant_id, image=im.image_id,
-              machine=a.hostname, restore_to=kind, device=target.get("device"), format=target.get("format"))
+              machine=a.hostname, restore_to=kind, device=target.get("device"), format=target.get("format"),
+              infected_acknowledged=body.get("allowInfected") is True)
     db.commit()
     return {"id": job.id}
 
@@ -1798,6 +1815,7 @@ def restore_files(image_id: str, request: Request, body: dict = Body(...), p: Pr
     if volume is None:
         bad("choose a volume")
     paths = [str(x) for x in body.get("paths") or [] if str(x).strip("/")]
+    _malware_guard(db, im, body, paths)
     if not paths or len(paths) > 1000 or any(len(x) > 4000 for x in paths):
         bad("choose 1 to 1000 files or folders")
     target = str(body.get("target") or "").strip()
@@ -1831,6 +1849,7 @@ def download_files(image_id: str, request: Request, body: dict = Body(...), p: P
     if volume is None:
         bad("choose a volume")
     paths = [str(x) for x in body.get("paths") or [] if str(x).strip("/")]
+    _malware_guard(db, im, body, paths)
     if not paths or len(paths) > 1000 or any(len(x) > 4000 for x in paths):
         bad("choose 1 to 1000 files or folders")
     recipient = str(body.get("recipient") or "").strip()
@@ -1899,6 +1918,73 @@ def list_boot_checks(image_id: str, request: Request, p: Principal = Depends(cur
     return [{"id": b.id, "at": iso(b.at), "outcome": b.outcome, "method": b.method, "seconds": b.seconds,
              "firmware": b.firmware, "accel": b.accel, "message": b.message, "hasScreenshot": b.screenshot is not None,
              "agentId": b.agent_id, "agentName": names.get(b.agent_id), "jobId": b.job_id} for b in rows]
+
+
+# ---------------------------------------------------------------- malware scans of images
+
+def _scan_agent(db: Session, p: Principal, im: BackupImage, agent_id: str | None) -> BackupAgent:
+    """The machine that scans: the one asked for, else the one the backup came from, else any online one with access."""
+    def able(a: BackupAgent) -> bool:
+        return a.tenant_id == im.tenant_id and "scan_images" in bk.capabilities(a) \
+            and db.get(BackupRepoAccess, (im.repository_id, a.id)) is not None
+    if agent_id:
+        a = _agent(db, p, agent_id)
+        if not able(a):
+            bad("that machine cannot scan this backup (it needs access to the repository and an up-to-date agent)")
+        return a
+    candidates = db.execute(select(BackupAgent).join(BackupRepoAccess, BackupRepoAccess.agent_id == BackupAgent.id)
+                            .where(BackupRepoAccess.repository_id == im.repository_id)).scalars().all()
+    candidates = sorted((a for a in candidates if able(a)),
+                        key=lambda a: (not bk.online(a), a.id != im.agent_id))
+    if not candidates:
+        bad("no machine with access to this repository can scan backups yet: update its backup agent")
+    return candidates[0]
+
+
+@router.post("/images/{image_id}/scan")
+def create_scan(image_id: str, request: Request, body: dict = Body(default={}), p: Principal = Depends(current_principal),
+                db: Session = Depends(get_db)):
+    """Scan the files inside a backup for malware on a machine with access (contents never leave it)."""
+    p.require("scripts")
+    im = _image_unlocked(request, db, p, image_id)
+    a = _scan_agent(db, p, im, body.get("agentId"))
+    selection = "all" if body.get("allFiles") else "executables"
+    job = bk.queue_scan(db, a, im, p.actor, selection)
+    bk.record(db, p.actor, "backup.scan.requested", im.vm_name or im.hostname, im.tenant_id, image=im.image_id,
+              machine=a.hostname, selection=selection)
+    db.commit()
+    return {"id": job.id, "agentId": a.id}
+
+
+@router.get("/images/{image_id}/scans")
+def list_scans(image_id: str, request: Request, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    p.require("read")
+    im = _image_unlocked(request, db, p, image_id)
+    rows = db.execute(select(BackupScan).where(BackupScan.image_id == im.image_id)
+                      .order_by(BackupScan.at.desc(), BackupScan.id.desc()).limit(20)).scalars().all()
+    names = _names(db, [im.tenant_id])
+    return [{"id": r.id, "at": iso(r.at), "state": r.state, "filesScanned": r.files_scanned,
+             "bytesScanned": r.bytes_scanned, "findings": r.findings or [], "summary": r.summary or {},
+             "agentId": r.agent_id, "agentName": names.get(r.agent_id), "jobId": r.job_id} for r in rows]
+
+
+def _malware_guard(db: Session, im: BackupImage, body: dict, paths: list[str] | None = None) -> None:
+    """Restoring infected files needs `allowInfected`: a whole image when its latest scan found malware, chosen files
+    when they are (or contain) an infected file. The decision is audited by the caller's restore record."""
+    sc = bk.scan_latest(db, [im.image_id]).get(im.image_id)
+    if sc is None or sc.state != "infected" or body.get("allowInfected") is True:
+        return
+    hits = [f.get("path", "") for f in sc.findings or []]
+    if paths is not None:
+        def covers(sel: str, hit: str) -> bool:
+            a, b = sel.rstrip("/").lower(), hit.lower()
+            return b == a or b.startswith(a + "/") or a == ""
+        hits = [h for h in hits if any(covers(x, h) for x in paths)]
+        if not hits:
+            return
+    raise HTTPException(409, {"code": "image_infected", "infected": hits[:20], "count": len(hits),
+                              "message": f"The latest malware scan found {len(hits)} infected file"
+                                         f"{'s' if len(hits) != 1 else ''} in what you are restoring."})
 
 
 @router.get("/boot-checks/{check_id}/screenshot.png")

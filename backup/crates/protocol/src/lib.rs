@@ -395,6 +395,22 @@ pub enum JobKind {
     },
     /// Power off a VM left running by a boot check.
     StopVm { session_id: Uuid },
+    /// Scan the files inside an image for malware with the platform's
+    /// detection content: malicious SHA-256 values and YARA rules
+    /// (docs/design/malware-scan.md). Agents that report `scan_images`.
+    ScanImage {
+        image_id: Uuid,
+        #[serde(default)]
+        indicators: Vec<String>,
+        #[serde(default)]
+        rules: Vec<ScanRule>,
+        /// "executables" (default) or "all".
+        #[serde(default)]
+        selection: String,
+        /// Files larger than this are not scanned (MiB, default 64).
+        #[serde(default)]
+        max_file_mib: u32,
+    },
     /// Without `volume`: the image's volumes. With it: the folder `path`
     /// (`/`-separated from the volume root) in that volume.
     BrowseFiles {
@@ -508,6 +524,7 @@ impl JobKind {
             JobKind::Restore { .. } => "Restore",
             JobKind::BootCheck { .. } => "Boot check",
             JobKind::StopVm { .. } => "Stop VM",
+            JobKind::ScanImage { .. } => "Malware scan",
             JobKind::CheckAccess { .. } => "Test connection",
             JobKind::LocalRecovery { action, .. } => match action {
                 LocalRecoveryAction::Install => "Install local recovery",
@@ -534,6 +551,13 @@ pub struct VolumeRef {
 
 fn default_conflict() -> String {
     "rename".into()
+}
+
+/// One YARA rule source of a `ScanImage` job.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScanRule {
+    pub name: String,
+    pub source: String,
 }
 
 /// Where the repository is and the secret to open it, sealed to this agent.

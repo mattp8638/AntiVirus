@@ -3137,6 +3137,24 @@ class DrRun(Base):
     started_by: Mapped[str] = mapped_column(String(200), default="")
 
 
+class BackupScan(Base):
+    """A malware scan of the files inside a backup image (agent malware.rs). Findings list paths and what matched;
+    file contents never reach the server."""
+    __tablename__ = "backup_scans"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    image_id: Mapped[str] = mapped_column(String(36), index=True)
+    repository_id: Mapped[str] = mapped_column(String(36), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    agent_id: Mapped[str] = mapped_column(String(36))
+    job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    state: Mapped[str] = mapped_column(String(20))  # clean | infected | incomplete
+    files_scanned: Mapped[int] = mapped_column(Integer, default=0)
+    bytes_scanned: Mapped[int] = mapped_column(BigInteger, default=0)
+    findings: Mapped[list] = mapped_column(JSON, default=list)
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
 class BackupBootCheck(Base):
     __tablename__ = "backup_boot_checks"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

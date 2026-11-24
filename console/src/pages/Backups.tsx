@@ -45,7 +45,9 @@ interface Image {
   imageId: string; repositoryId: string; agentId: string | null; hostname: string; created: number; kind: string;
   consistency: string; applications?: ImageApp[]; capturedBytes: number; storedNewBytes: number; disks: any[]; label: string | null; vmName: string | null;
   anomaly: string | null; lastBootCheck: { outcome: string; at: string; message: string } | null;
+  lastScan?: ScanSummary | null;
 }
+interface ScanSummary { state: "clean" | "infected" | "incomplete"; at: string; findings: number; filesScanned: number }
 
 const FINAL = ["succeeded", "warning", "failed", "cancelled"];
 const STATE_TONE: Record<string, string> = { succeeded: "good", warning: "warn", failed: "bad", cancelled: "muted", queued: "muted", dispatched: "blue", running: "blue" };
@@ -961,7 +963,9 @@ function PlanEditor({ plan, agents, repos, onClose }: { plan: Plan | null; agent
   const [enabled, setEnabled] = useState(plan?.enabled ?? true);
   const [copyTo, setCopyTo] = useState(plan?.copyToRepositoryId ?? "");
   const caps = agent?.capabilities ?? [];
-  const jobKind = job ?? (caps.includes("backup_hyperv") ? { type: "backup_hyperv", vm_ids: [] } : caps.includes("backup_system") ? { type: "backup_system" } : { type: "backup_disks", paths: [] });
+  const baseKind = job ?? (caps.includes("backup_hyperv") ? { type: "backup_hyperv", vm_ids: [] } : caps.includes("backup_system") ? { type: "backup_system" } : { type: "backup_disks", paths: [] });
+  const [scanAfter, setScanAfter] = useState<boolean>(!!plan?.job?.settings?.scan_after_backup);
+  const jobKind = { ...baseKind, settings: { ...(baseKind.settings ?? {}), scan_after_backup: scanAfter } };
   const repo = repoId || usable[0]?.id || "";
   const save = () => run(() => plan
     ? api(`backup/plans/${plan.id}`, { method: "PATCH", body: { name, job: jobKind, schedule, retention, enabled, copyToRepositoryId: copyTo || null } })
@@ -1014,6 +1018,12 @@ function PlanEditor({ plan, agents, repos, onClose }: { plan: Plan | null; agent
         </select></label>
         <p className="small muted">The machine copies each new image to the second repository, encrypted for it and verified there (for example a NAS backup copied to S3 or Azure). It needs access to both.</p>
       </>}
+      <h3 style={{ marginTop: 12 }}>Malware</h3>
+      <label className="row small" style={{ gap: 6 }}>
+        <input type="checkbox" checked={scanAfter} disabled={!caps.includes("scan_images")} onChange={(e) => setScanAfter(e.target.checked)} />
+        Scan each new backup for malware on this machine{caps.includes("scan_images") ? "" : " (update its backup agent first)"}
+      </label>
+      <p className="small muted">Programs, scripts and macro documents in the backup are checked against your threat intelligence (malicious file hashes and YARA rules). Files are read on the machine, never sent anywhere; only findings are reported. Unchanged files are not read again.</p>
       <label className="row small" style={{ gap: 6 }}><input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} /> Enabled</label>
     </Modal>
   );
@@ -1029,6 +1039,7 @@ interface ImageDevice {
   key: string; name: string; hostname: string; vmName: string | null; agentId: string | null; tenantId: string;
   images: number; lastCreated: number; firstCreated: number; storedBytes: number; lastKind: string; lastConsistency: string;
   anomalies: number; lastVerified: string | null; repositories: { id: string; name: string; images: number; unlocked: boolean }[];
+  infected?: number; lastCleanCreated?: number | null; latestScan?: ScanSummary | null;
 }
 
 /** Re-render when a repository is unlocked or locked, and when an unlock runs out. */
@@ -1068,7 +1079,7 @@ function Images({ agents, repos }: { agents: BackupAgent[]; repos: Repo[] }) {
       </div>
       <Table rows={rows} empty="No backups yet." onRow={pick}
         columns={[
-          { key: "name", label: "Machine", render: (d) => <><b>{d.name}</b>{d.vmName && <span className="small muted"> · VM on {d.hostname}</span>}{d.anomalies > 0 && <div className="small" style={{ color: "#fca5a5" }}>⚠ {d.anomalies} backup{d.anomalies === 1 ? "" : "s"} flagged</div>}</> },
+          { key: "name", label: "Machine", render: (d) => <><b>{d.name}</b>{d.vmName && <span className="small muted"> · VM on {d.hostname}</span>}{d.anomalies > 0 && <div className="small" style={{ color: "#fca5a5" }}>⚠ {d.anomalies} backup{d.anomalies === 1 ? "" : "s"} flagged</div>}{(d.infected ?? 0) > 0 && <div className="small" style={{ color: "#fca5a5" }}>⚠ Malware in {d.infected} backup{d.infected === 1 ? "" : "s"}</div>}</> },
           { key: "images", label: "Backups", render: (d) => <span>{d.images} <span className="small muted">since {new Date(d.firstCreated * 1000).toLocaleDateString()}</span></span> },
           { key: "last", label: "Latest", render: (d) => <span>{unixTime(d.lastCreated)} <span className="small muted">{d.lastKind} · {d.lastConsistency}</span></span> },
           { key: "stored", label: "Stored", render: (d) => <span className="small">{bytes(d.storedBytes)}</span> },
@@ -1090,6 +1101,7 @@ function DeviceImages({ device, agents, repos, onBack, onUnlock }: {
   const [restore, setRestore] = useState<Image | null>(null);
   const [boot, setBoot] = useState<Image | null>(null);
   const [files, setFiles] = useState<Image | null>(null);
+  const [scan, setScan] = useState<Image | null>(null);
   const { can } = useApp();
   const locked = device.repositories.filter((r) => !unlockedUntil(r.id));
   const until = Math.max(...device.repositories.map((r) => unlockedUntil(r.id) ?? 0));
@@ -1103,6 +1115,10 @@ function DeviceImages({ device, agents, repos, onBack, onUnlock }: {
         <button className="small" style={{ marginLeft: "auto" }} onClick={() => { lockRepositories(device.repositories.map((r) => r.id)); onBack(); }}>Lock</button>
       </div>
       {locked.length > 0 && <p className="small">{locked.map((r) => `${r.images} backup${r.images === 1 ? "" : "s"} in ${r.name}`).join(", ")} still locked. <button className="small" onClick={onUnlock}>Unlock</button></p>}
+      {(device.infected ?? 0) > 0 && <div className="card warn-card" role="alert" style={{ marginBottom: 10 }}>
+        <b>Malware was found in {device.infected} backup{device.infected === 1 ? "" : "s"} of {device.name}.</b>{" "}
+        {device.lastCleanCreated ? <>The last clean backup was taken {unixTime(device.lastCleanCreated)}: restore from it, or from an earlier clean one.</> : "No backup of this machine has been scanned clean yet: scan an older backup to find one."}
+      </div>}
       <Table rows={images.data} empty="No backups."
         columns={[
           { key: "what", label: "Backup", render: (i) => <><span>{i.kind}</span>{i.label && <span className="small muted"> · {i.label}</span>}{device.repositories.length > 1 && <div className="small muted">{repos.find((r) => r.id === i.repositoryId)?.name}</div>}{i.anomaly && <div className="small" style={{ color: "#fca5a5" }}>⚠ {i.anomaly}</div>}</> },
@@ -1110,15 +1126,18 @@ function DeviceImages({ device, agents, repos, onBack, onUnlock }: {
           { key: "size", label: "Size", render: (i) => <span className="small">{bytes(i.capturedBytes)} · {bytes(i.storedNewBytes)} new</span> },
           { key: "consistency", label: "Consistency", render: (i) => <><span>{i.consistency}</span><AppsLine apps={i.applications} /></> },
           { key: "boot", label: "Boots?", render: (i) => i.lastBootCheck ? <Pill value={i.lastBootCheck.outcome} tone={i.lastBootCheck.outcome === "failed" ? "bad" : "good"} /> : <span className="small muted">not tested</span> },
+          { key: "scan", label: "Malware", render: (i) => <ScanPill scan={i.lastScan} clean={!!device.lastCleanCreated && i.created === device.lastCleanCreated} /> },
           { key: "act", label: "", render: (i) => <div className="row" style={{ gap: 4 }}>
             {can("scripts") && <button className="small primary" onClick={() => setFiles(i)}>Browse files</button>}
             {can("scripts") && <button className="small" onClick={() => setRestore(i)}>Restore</button>}
             {can("scripts") && <button className="small" onClick={() => setBoot(i)}>Boot test</button>}
+            {can("scripts") && <button className="small" onClick={() => setScan(i)}>Scan</button>}
           </div> },
         ]} />
       {restore && <RestoreDialog image={restore} agents={agents} repos={repos} onClose={() => setRestore(null)} />}
       {boot && <BootDialog image={boot} agents={agents} repos={repos} onClose={() => setBoot(null)} />}
       {files && <FileBrowser image={files} onClose={() => setFiles(null)} />}
+      {scan && <ScanDialog image={scan} agents={agents} onClose={() => { setScan(null); images.reload(); }} />}
     </div>
   );
 }
@@ -1210,6 +1229,66 @@ function AppsLine({ apps }: { apps?: ImageApp[] }) {
     : <>apps: {named.length ? named.join(", ") : "Windows system state"}</>}</div>;
 }
 
+/** A backup's latest malware scan, in words as well as colour. */
+function ScanPill({ scan, clean }: { scan?: ScanSummary | null; clean?: boolean }) {
+  if (!scan) return <span className="small muted">not scanned</span>;
+  if (scan.state === "infected") return <Pill value={`⚠ ${scan.findings} infected`} tone="bad" />;
+  if (scan.state === "incomplete") return <Pill value="scan incomplete" tone="warn" />;
+  return <span><Pill value="clean" tone="good" />{clean && <span className="small muted"> · last clean</span>}</span>;
+}
+
+interface ScanRecord {
+  id: number; at: string; state: string; filesScanned: number; bytesScanned: number; agentName: string | null; jobId: string | null;
+  findings: { volume: string; path: string; size: number; sha256: string; detections: { kind: string; name: string }[] }[];
+  summary: { volumes_scanned?: string[]; volumes_skipped?: string[]; rule_errors?: string[]; files_cached?: number;
+    files_skipped_large?: number; files_unreadable?: number; rules_used?: number; indicators_used?: number; truncated?: boolean; selection?: string; error?: string };
+}
+
+/** Scan a backup for malware on a machine with access, and see what earlier scans found. */
+function ScanDialog({ image, agents, onClose }: { image: Image; agents: BackupAgent[]; onClose: () => void }) {
+  const { run, busy } = useAction();
+  const scans = useListData<ScanRecord>(`backup/images/${image.imageId}/scans`);
+  useAutoRefresh(scans.reload, 5000);
+  const [all, setAll] = useState(false);
+  const able = agents.filter((a) => a.capabilities.includes("scan_images"));
+  const [agentId, setAgentId] = useState("");
+  const last = scans.data?.[0];
+  const go = () => run(() => api(`backup/images/${image.imageId}/scan`, { body: { allFiles: all, ...(agentId ? { agentId } : {}) } }),
+    "Scan queued: results appear here and in Activity");
+  return (
+    <Modal wide title={`Malware scan: ${image.vmName ?? image.hostname}, ${unixTime(image.created)}`} onClose={onClose}
+      footer={<button className="primary" disabled={busy || able.length === 0} onClick={go}>Scan now</button>}>
+      <div className="form-grid">
+        <label className="field">Scanned by<select value={agentId} onChange={(e) => setAgentId(e.target.value)}>
+          <option value="">The machine it came from, or another with access</option>
+          {able.map((a) => <option key={a.id} value={a.id}>{a.name}{a.online ? "" : " (offline)"}</option>)}
+        </select></label>
+      </div>
+      <label className="row small" style={{ gap: 6, marginTop: 6 }}><input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)} />
+        Every file (slower). Otherwise programs, libraries, scripts, shortcuts and macro documents, and files in Unix program and temporary folders.</label>
+      <p className="small muted">The machine reads the files from the backup and checks them against your threat intelligence (Protection › Threat intelligence: malicious file hashes and YARA rules). File contents never leave it; only findings are reported. Files up to 64 MB are scanned.</p>
+      {able.length === 0 && <ErrorNote error="No backup agent here can scan yet: update the backup agents (Backups › Machines)." />}
+      {last && <>
+        <h3 style={{ marginTop: 12 }}>Latest scan: <ScanPill scan={{ state: last.state as ScanSummary["state"], at: last.at, findings: last.findings.length, filesScanned: last.filesScanned }} /></h3>
+        <p className="small muted">{ago(last.at)} by {last.agentName ?? "a machine"}: {last.filesScanned.toLocaleString()} files ({last.summary.files_cached ?? 0} unchanged since an earlier scan, {bytes(last.bytesScanned)} read)
+          {last.summary.volumes_scanned?.length ? `, volumes ${last.summary.volumes_scanned.join(", ")}` : ""}; {last.summary.rules_used ?? 0} YARA rule files and {(last.summary.indicators_used ?? 0).toLocaleString()} file hashes.</p>
+        {last.summary.error && <ErrorNote error={last.summary.error} />}
+        {(last.summary.volumes_skipped ?? []).length > 0 && <p className="small">Not scanned: {last.summary.volumes_skipped!.join("; ")}</p>}
+        {(last.summary.rule_errors ?? []).length > 0 && <p className="small">Rules that could not be used: {last.summary.rule_errors!.join("; ")}</p>}
+        {last.findings.length > 0 && <Table rows={last.findings} empty=""
+          columns={[
+            { key: "path", label: "Infected file", render: (f) => <span className="mono small">{f.volume} {f.path}</span> },
+            { key: "what", label: "Detected as", render: (f) => <span className="small">{f.detections.map((d) => d.name).join(", ")}</span> },
+            { key: "size", label: "Size", render: (f) => <span className="small">{bytes(f.size)}</span> },
+            { key: "sha", label: "SHA-256", render: (f) => <span className="mono small" title={f.sha256}>{f.sha256.slice(0, 16)}…</span> },
+          ]} />}
+        {last.summary.truncated && <p className="small muted">Only the first 1000 findings are listed.</p>}
+      </>}
+      {scans.data && scans.data.length > 1 && <p className="small muted">Earlier scans: {scans.data.slice(1).map((r) => `${r.state} ${ago(r.at)}`).join(", ")}.</p>}
+    </Modal>
+  );
+}
+
 /** Where a backup can be restored to, and the capability the restoring machine needs for each. */
 const RESTORE_KINDS: { value: string; label: string; cap: string; missing: string }[] = [
   { value: "hyperv_vm", label: "Hyper-V: a new VM on this host", cap: "restore_hyperv", missing: "needs a Hyper-V host" },
@@ -1251,6 +1330,8 @@ function RestoreDialog({ image, agents, repos, onClose }: { image: Image; agents
   const [confirm, setConfirm] = useState("");
   const [disk, setDisk] = useState(0);
   const [grow, setGrow] = useState(true);
+  const infected = image.lastScan?.state === "infected";
+  const [allowInfected, setAllowInfected] = useState(false);
   const vmFiles = VM_FILE_TARGETS.find((t) => t.value === type);
   const named = type === "hyperv_vm" || !!vmFiles;
   const target = type === "vhdx" ? { type, directory }
@@ -1269,11 +1350,11 @@ function RestoreDialog({ image, agents, repos, onClose }: { image: Image; agents
       const sealed: Sealed = await seal(agent.publicKey, JSON.stringify({ passphrase: pass, recovery_key: null }));
       await api(`backup/repositories/${image.repositoryId}/access`, { body: { agentId: agent.id, sealed, viaGateway: via } });
     }
-    return api("backup/restores", { body: { imageId: image.imageId, agentId, target } });
+    return api("backup/restores", { body: { imageId: image.imageId, agentId, target, ...(allowInfected ? { allowInfected: true } : {}) } });
   }, "Restore queued: follow it in Activity").then((r) => r !== undefined && onClose());
   return (
     <Modal wide title={`Restore ${image.vmName ?? image.hostname} from ${unixTime(image.created)}`} onClose={onClose}
-      footer={<button className={type === "disk" ? "danger" : "primary"} disabled={busy || !ok || !agentId || (needsAccess && !pass)} onClick={go}>{type === "disk" ? "Overwrite the disk" : needsAccess ? "Give access and restore" : "Restore"}</button>}>
+      footer={<button className={type === "disk" ? "danger" : "primary"} disabled={busy || !ok || !agentId || (needsAccess && !pass) || (infected && !allowInfected)} onClick={go}>{type === "disk" ? "Overwrite the disk" : needsAccess ? "Give access and restore" : "Restore"}</button>}>
       <div className="form-grid">
         <label className="field">Machine that restores<select value={agentId} onChange={(e) => setAgentId(e.target.value)}>{pool.map((a) => <option key={a.id} value={a.id}>{a.name}{a.capabilities.includes("restore_hyperv") ? " · Hyper-V" : ""}{a.role === "recovery" ? " · recovery session" : ""}{hasAccess(a.id) ? "" : " · no access yet"}</option>)}</select></label>
         <label className="field">Restore to<select value={type} onChange={(e) => setType(e.target.value)}>
@@ -1298,6 +1379,10 @@ function RestoreDialog({ image, agents, repos, onClose }: { image: Image; agents
         {vmFiles.value === "vmdk" && " For ESXi, copy the folder to a datastore and convert the disks with vmkfstools."}
       </p>}
       {vmFiles && !nameOk && <ErrorNote error="VM names here can use letters, digits, spaces, dots, hyphens and underscores (up to 80), without a space at either end." />}
+      {infected && <div className="card warn-card" role="alert" style={{ marginTop: 10 }}>
+        <b>The latest malware scan found {image.lastScan!.findings} infected file{image.lastScan!.findings === 1 ? "" : "s"} in this backup.</b> Restoring it brings them back. Prefer an earlier clean backup, or restore and clean it before use.
+        <label className="row small" style={{ gap: 6, marginTop: 6 }}><input type="checkbox" checked={allowInfected} onChange={(e) => setAllowInfected(e.target.checked)} /> Restore it anyway</label>
+      </div>}
       {needsAccess && (
         <div className="card" style={{ marginTop: 10 }}>
           <b>{agent?.name} has no access to {repo?.name ?? "this repository"} yet.</b>

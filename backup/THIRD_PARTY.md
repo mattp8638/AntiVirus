@@ -50,6 +50,7 @@ Regenerate the Rust tables with `scripts/third-party.py` after changing dependen
 | zstd | 0.13.5 | BSD-3-Clause | zstd compression |
 | zstd-safe | 7.4.1 | BSD-3-Clause | zstd binding layer |
 | zstd-sys | 2.1.3+zstd.1.5.7 | BSD-3-Clause AND BSD-2-Clause | Bundled zstd C library (BSD-3-Clause) |
+| boreal | 1.4 | MIT OR Apache-2.0 | YARA rules in malware scans of backups (`scan`) |
 
 ## Web UI (`ui/`)
 
@@ -69,6 +70,7 @@ Versions are pinned in `ui/package-lock.json`.
 | aead | 0.5.2 | MIT OR Apache-2.0 |
 | aes | 0.8.4 | MIT OR Apache-2.0 |
 | aes-gcm | 0.10.3 | Apache-2.0 OR MIT |
+| aho-corasick | 1.1.5 | Unlicense OR MIT |
 | anstream | 1.0.0 | MIT OR Apache-2.0 |
 | anstyle | 1.0.14 | MIT OR Apache-2.0 |
 | anstyle-parse | 1.0.0 | MIT OR Apache-2.0 |
@@ -88,6 +90,8 @@ Versions are pinned in `ui/package-lock.json`.
 | blake2 | 0.10.6 | MIT OR Apache-2.0 |
 | blake3 | 1.8.7 | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception |
 | block-buffer | 0.10.4 | MIT OR Apache-2.0 |
+| boreal | 1.4.0 | MIT OR Apache-2.0 |
+| boreal-parser | 1.2.0 | MIT OR Apache-2.0 |
 | bumpalo | 3.20.4 | MIT OR Apache-2.0 |
 | bytemuck | 1.25.2 | Zlib OR Apache-2.0 OR MIT |
 | byteorder | 1.5.0 | Unlicense OR MIT |
@@ -100,6 +104,7 @@ Versions are pinned in `ui/package-lock.json`.
 | clap_builder | 4.6.7 | MIT OR Apache-2.0 |
 | clap_derive | 4.6.9 | MIT OR Apache-2.0 |
 | clap_lex | 1.1.2 | MIT OR Apache-2.0 |
+| codespan-reporting | 0.13.1 | Apache-2.0 |
 | colorchoice | 1.0.5 | MIT OR Apache-2.0 |
 | const-oid | 0.9.6 | Apache-2.0 OR MIT |
 | constant_time_eq | 0.4.2 | CC0-1.0 OR MIT-0 OR Apache-2.0 |
@@ -124,8 +129,8 @@ Versions are pinned in `ui/package-lock.json`.
 | enumn | 0.1.14 | MIT OR Apache-2.0 |
 | errno | 0.3.15 | MIT OR Apache-2.0 |
 | ext4-view | 1.0.0 | MIT OR Apache-2.0 |
-| fatfs | 0.3.6 | MIT |
 | fastrand | 2.5.0 | Apache-2.0 OR MIT |
+| fatfs | 0.3.6 | MIT |
 | fiat-crypto | 0.2.9 | MIT OR Apache-2.0 OR BSD-1-Clause |
 | find-msvc-tools | 0.1.15 | MIT OR Apache-2.0 |
 | form_urlencoded | 1.2.3 | MIT OR Apache-2.0 |
@@ -162,9 +167,11 @@ Versions are pinned in `ui/package-lock.json`.
 | md-5 | 0.10.6 | MIT OR Apache-2.0 |
 | memchr | 2.8.3 | Unlicense OR MIT |
 | memoffset | 0.9.1 | MIT |
+| nom | 8.0.0 | MIT |
 | nt-string | 0.1.2 | MIT OR Apache-2.0 |
 | ntfs | 0.4.0 | MIT OR Apache-2.0 |
 | num-conv | 0.2.2 | MIT OR Apache-2.0 |
+| object | 0.40.0 | Apache-2.0 OR MIT |
 | once_cell | 1.21.4 | MIT OR Apache-2.0 |
 | once_cell_polyfill | 1.70.2 | MIT OR Apache-2.0 |
 | opaque-debug | 0.3.1 | MIT OR Apache-2.0 |
@@ -181,6 +188,8 @@ Versions are pinned in `ui/package-lock.json`.
 | quote | 1.0.47 | MIT OR Apache-2.0 |
 | r-efi | 6.0.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later |
 | rand_core | 0.6.4 | MIT OR Apache-2.0 |
+| regex-automata | 0.4.19 | MIT OR Apache-2.0 |
+| regex-syntax | 0.8.12 | MIT OR Apache-2.0 |
 | ring | 0.17.14 | Apache-2.0 AND ISC |
 | rpassword | 7.5.5 | Apache-2.0 |
 | rtoolbox | 0.0.6 | Apache-2.0 |
@@ -195,6 +204,7 @@ Versions are pinned in `ui/package-lock.json`.
 | serde_core | 1.0.229 | MIT OR Apache-2.0 |
 | serde_derive | 1.0.229 | MIT OR Apache-2.0 |
 | serde_json | 1.0.154 | MIT OR Apache-2.0 |
+| sha1 | 0.10.7 | MIT OR Apache-2.0 |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 |
 | shlex | 2.0.1 | MIT OR Apache-2.0 |
 | signature | 2.2.0 | Apache-2.0 OR MIT |
@@ -210,14 +220,17 @@ Versions are pinned in `ui/package-lock.json`.
 | syn | 3.0.10 | MIT OR Apache-2.0 |
 | synstructure | 0.14.0 | MIT |
 | tempfile | 3.27.0 | MIT OR Apache-2.0 |
+| termcolor | 1.4.1 | Unlicense OR MIT |
 | thiserror | 2.0.21 | MIT OR Apache-2.0 |
 | thiserror-impl | 2.0.21 | MIT OR Apache-2.0 |
 | time | 0.3.55 | MIT OR Apache-2.0 |
 | time-core | 0.1.9 | MIT OR Apache-2.0 |
 | time-macros | 0.2.32 | MIT OR Apache-2.0 |
 | tinystr | 0.8.5 | Unicode-3.0 |
+| tlsh2 | 1.1.0 | Apache-2.0 OR BSD-3-Clause |
 | typenum | 1.20.1 | MIT OR Apache-2.0 |
 | unicode-ident | 1.0.27 | (MIT OR Apache-2.0) AND Unicode-3.0 |
+| unicode-width | 0.2.3 | MIT OR Apache-2.0 |
 | universal-hash | 0.5.1 | MIT OR Apache-2.0 |
 | untrusted | 0.9.0 | ISC |
 | ureq | 2.12.1 | MIT OR Apache-2.0 |
@@ -235,6 +248,7 @@ Versions are pinned in `ui/package-lock.json`.
 | webpki-roots | 0.26.11 | CDLA-Permissive-2.0 |
 | webpki-roots | 1.0.12 | CDLA-Permissive-2.0 |
 | widestring | 1.2.1 | MIT OR Apache-2.0 |
+| winapi-util | 0.1.11 | Unlicense OR MIT |
 | windows | 0.62.2 | MIT OR Apache-2.0 |
 | windows-collections | 0.3.2 | MIT OR Apache-2.0 |
 | windows-core | 0.62.2 | MIT OR Apache-2.0 |
