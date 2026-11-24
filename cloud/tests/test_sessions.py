@@ -106,3 +106,35 @@ def test_remote_viewer_is_cut_off_when_its_console_session_ends(client, admin, t
         with client.websocket_connect(f"/ws/remote/{second['id']}/viewer?token={token}") as ws:
             ws.receive_text()
     assert refused.value.code == 4401
+
+
+def test_session_touch_does_not_hold_the_write_lock(tmp_path):
+    """A touched session is saved at once: left pending, a platform admin's request held the SQLite write lock and its
+    own rate-limit check (a separate connection) waited 30 s and failed with "database is locked"."""
+    import dataclasses
+    from datetime import timedelta
+
+    from fastapi.testclient import TestClient
+    from sqlalchemy import event
+
+    from fenrir_cloud import db as fdb
+    from fenrir_cloud.config import Settings
+    from fenrir_cloud.main import create_app
+    from fenrir_cloud.models import UserSession
+
+    settings = dataclasses.replace(Settings(), database_url=f"sqlite:///{tmp_path / 'f.db'}",
+                                   bootstrap_admin_password=ADMIN_PASSWORD, secret_key="test-secret",
+                                   public_base_url="https://fenrir.test", dns_blocklists_enabled=False, require_mfa=False)
+    with TestClient(create_app(settings)) as client:
+        headers = login(client)
+
+        @event.listens_for(fdb.engine(), "checkout")
+        def _fail_fast(dbapi_conn, _record, _proxy):  # 2 s instead of 30 s if the lock is still held
+            dbapi_conn.execute("PRAGMA busy_timeout=2000")
+
+        with fdb.session_factory()() as s:
+            for row in s.query(UserSession).all():
+                row.last_seen_at -= timedelta(minutes=5)
+            s.commit()
+        r = client.post("/api/console/auth/reauth", headers=headers, json={"password": ADMIN_PASSWORD})
+        assert r.status_code == 200, r.text
