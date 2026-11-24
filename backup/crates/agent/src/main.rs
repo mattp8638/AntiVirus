@@ -11,6 +11,7 @@ mod hwfix;
 mod hyperv;
 mod inventory;
 mod jobs;
+mod linuxfix;
 mod log;
 mod names;
 mod rct;

@@ -12,6 +12,7 @@ pub mod crypto;
 pub mod error;
 pub mod extent;
 pub mod fsdetect;
+pub mod group;
 pub mod io;
 pub mod keys;
 pub mod lock;

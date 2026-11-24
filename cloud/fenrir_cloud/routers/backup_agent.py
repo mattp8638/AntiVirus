@@ -159,6 +159,14 @@ def _job_spec(db: Session, agent: BackupAgent, job: BackupJob) -> dict | None:
             return None
         repository = {**repository, "sealed_secret": unlock["sealed"]}
     spec = {"id": job.id, "kind": kind, "repository": repository}
+    # A new member of a dedup group: the member it takes the group's key from, which this machine must open.
+    if (job.kind or {}).get("type") == "init_repository" and job.repository_id:
+        repo = db.get(BackupRepository, job.repository_id)
+        if repo is not None and repo.dedup_source_id:
+            source = _access(db, agent, repo.dedup_source_id)
+            if source is None:
+                return None
+            spec["group_source"] = source
     if (job.kind or {}).get("type") == "copy_images":
         target = _access(db, agent, str(job.kind.get("target_repository_id") or ""))
         if target is None:
@@ -196,7 +204,11 @@ def heartbeat(body: dict = Body(...), agent: BackupAgent = Depends(current_backu
             spec = _job_spec(db, agent, job)
             if spec is None:
                 job.state, job.finished_at = "failed", now
-                job.error = "This machine has not been given access to the repository. Grant access on the Backups page."
+                joining = (job.kind or {}).get("type") == "init_repository" and job.repository_id and \
+                    getattr(db.get(BackupRepository, job.repository_id), "dedup_source_id", None)
+                job.error = ("This machine has no access to the repository whose dedup group the new one joins. "
+                             "Grant it access there first.") if joining else \
+                    "This machine has not been given access to the repository. Grant access on the Backups page."
                 continue
             job.state, job.dispatched_at = "dispatched", now
             jobs.append(spec)

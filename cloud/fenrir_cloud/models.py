@@ -3017,6 +3017,8 @@ class BackupRepository(Base):
     # S3-compatible storage (path s3://bucket/prefix): endpoint, region, path_style, lock_mode, lock_days. Not secret;
     # the access keys are sealed per agent like a share sign-in.
     s3: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Dedup group (backup/docs/design/dedup-groups.md): the repository whose group key a new member takes.
+    dedup_source_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
 
 class BackupRepoAccess(Base):

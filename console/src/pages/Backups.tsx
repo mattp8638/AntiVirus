@@ -26,6 +26,7 @@ interface Repo {
   bootAgentId: string | null; bootEveryDays: number; lastVerifiedBoot: string | null; shareAuth: string; shareUser: string | null;
   isShare: boolean; agents: { id: string; name: string; viaGateway?: boolean }[];
   s3?: S3Settings | null;
+  dedupGroup?: string | null;
   gateway: { agentId: string; name: string; online: boolean; port: number; address: string | null; addresses: string[] } | null;
 }
 interface Job {
@@ -328,7 +329,7 @@ function S3Fields({ value: f, onChange }: { value: S3Form; onChange: (f: S3Form)
       </select></label>
       <label className="field">Endpoint<input value={f.endpoint} onChange={(e) => set({ endpoint: e.target.value })} placeholder={f.azure ? "https://account.blob.core.windows.net" : "https://s3.eu-west-2.amazonaws.com"} /></label>
       {!f.azure && <label className="field">Region<input value={f.region} onChange={(e) => set({ region: e.target.value })} placeholder="eu-west-2 (us-east-1 for most others)" /></label>}
-      <label className="field">{f.azure ? "Container (with version-level immutability for locked backups)" : "Bucket (created with Object Lock enabled)"}<input value={f.bucket} onChange={(e) => set({ bucket: e.target.value.toLowerCase() })} /></label>
+      <label className="field">{f.azure ? "Container (created if missing; with version-level immutability for locked backups)" : "Bucket (created if missing; an existing one needs Object Lock for locked backups)"}<input value={f.bucket} onChange={(e) => set({ bucket: e.target.value.toLowerCase() })} /></label>
       <label className="field">Folder in the {f.azure ? "container" : "bucket"}<input value={f.prefix} onChange={(e) => set({ prefix: e.target.value })} /></label>
       <label className="field">{f.azure ? "Storage account name" : "Access key ID"}<input value={f.accessKey} onChange={(e) => set(f.azure ? { accessKey: e.target.value, endpoint: `https://${e.target.value.trim() || "<account>"}.blob.core.windows.net` } : { accessKey: e.target.value })} autoComplete="off" /></label>
       <label className="field">{f.azure ? "Account key or SAS token" : "Secret access key"}<input type="password" value={f.secretKey} onChange={(e) => set({ secretKey: e.target.value })} autoComplete="new-password" /></label>
@@ -396,7 +397,7 @@ function Repositories({ repos, agents, reload }: { repos: Repo[] | null; agents:
         return (
           <div key={r.id} className={`card${r.hold ? " warn-card" : ""}`} style={{ marginBottom: 12 }}>
             <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-              <div><b>{r.name}</b> <span className="small muted">{tenantName(r.tenantId)}</span><div className="mono small">{r.path}</div></div>
+              <div><b>{r.name}</b> <span className="small muted">{tenantName(r.tenantId)}</span><div className="mono small">{r.path}</div>{r.dedupGroup && <Pill value="dedup group" tone="blue" />}</div>
               <div className="row" style={{ gap: 6 }}><StatePill state={r.status} />{r.hold && <Pill value="on hold" tone="bad" />}</div>
             </div>
             {r.statusMessage && <div className="small" style={{ color: "#fca5a5" }}>{r.statusMessage}</div>}
@@ -438,7 +439,7 @@ function Repositories({ repos, agents, reload }: { repos: Repo[] | null; agents:
           </div>
         );
       })}
-      {creating && <CreateRepo agents={agents} onClose={() => { setCreating(false); reload(); }} />}
+      {creating && <CreateRepo agents={agents} repos={repos ?? []} onClose={() => { setCreating(false); reload(); }} />}
       {grant && <GrantAccess repo={grant} agents={agents} onClose={() => { setGrant(null); reload(); }} />}
       {share && <ShareSignin repo={share} agents={agents} onClose={() => { setShare(null); reload(); }} />}
       {gateway && <GatewayDialog repo={gateway} agents={agents} onClose={() => { setGateway(null); reload(); }} />}
@@ -446,9 +447,13 @@ function Repositories({ repos, agents, reload }: { repos: Repo[] | null; agents:
   );
 }
 
-function CreateRepo({ agents, onClose }: { agents: BackupAgent[]; onClose: () => void }) {
+function CreateRepo({ agents, repos, onClose }: { agents: BackupAgent[]; repos: Repo[]; onClose: () => void }) {
   const { run, busy } = useAction();
   const recovery = useMemo(() => newRecoveryKey(), []);
+  // Dedup group: "" none, "new" starts one in the folder, or a repository whose group to join (same customer).
+  const [dedup, setDedup] = useState("");
+  const groups = repos.filter((r) => r.dedupGroup && r.status === "ready");
+  const joining = groups.find((r) => r.id === dedup);
   const [step, setStep] = useState(0);
   const [name, setName] = useState("");
   const [path, setPath] = useState("");
@@ -484,7 +489,7 @@ function CreateRepo({ agents, onClose }: { agents: BackupAgent[]; onClose: () =>
         return { agentId: id, sealed: await seal(a.publicKey, secret), sealedShare: isS3 ? await sealSignin(a, s3Signin(s3)) : share && signin.mode === "password" ? await sealSignin(a, signin) : null };
       }));
       return api<{ id: string; initJobId: string }>("backup/repositories", { body: {
-        name, path: location, ...(existing ? { existing: true } : { repoUuid: recovery.repoId }), initAgentId: creator, access,
+        name, path: location, ...(existing ? { existing: true } : { repoUuid: recovery.repoId, dedup: dedup || null }), initAgentId: creator, access,
         share_auth: isS3 ? "password" : share ? signin.mode : "none",
         share_user: isS3 ? s3.accessKey.trim() : share && signin.mode === "password" ? signinUser(signin) : null,
         s3: isS3 ? s3Settings(s3) : null } });
@@ -501,6 +506,19 @@ function CreateRepo({ agents, onClose }: { agents: BackupAgent[]; onClose: () =>
           <div className="form-grid">
             <label className="field">Name<input value={name} onChange={(e) => setName(e.target.value)} placeholder="Office NAS" /></label>
             <label className="row small" style={{ gap: 6 }}><input type="checkbox" checked={existing} onChange={(e) => setExisting(e.target.checked)} /> It already exists (moved from a Fenrir-Backup server, or added again): its backups are listed, nothing is created. Enter its passphrase.</label>
+            {!existing && <label className="field">Dedup group
+              <select value={dedup} onChange={(e) => {
+                const v = e.target.value;
+                setDedup(v);
+                const r = groups.find((g) => g.id === v);
+                if (r) { setKind(r.s3 ? "s3" : "folder"); if (!r.s3) setPath(r.dedupGroup ?? ""); }
+              }}>
+                <option value="">None</option>
+                <option value="new">Start a dedup group in this location</option>
+                {groups.map((r) => <option key={r.id} value={r.id}>Share storage with {r.name}</option>)}
+              </select>
+            </label>}
+            {dedup && <p className="small muted" style={{ gridColumn: "1 / -1" }}>Repositories in one dedup group store data they have in common once. Each keeps its own passphrase and backups, but anyone with one member's passphrase can read the group's stored data, so groups never span customers.{joining && <> Stored in {joining.name}'s group location, <span className="mono">{joining.dedupGroup}</span>, with the same sign-in; the machine that creates it must already have access to {joining.name}.</>}</p>}
             <label className="field">Stored on<select value={kind} onChange={(e) => setKind(e.target.value as "folder" | "s3")}><option value="folder">A folder or network share</option><option value="s3">S3 object storage (AWS, Wasabi, B2, R2, MinIO…)</option></select></label>
             {!isS3 && <label className="field">Folder (on the machines)<input value={path} onChange={(e) => setPath(e.target.value)} placeholder={"\\\\nas\\backups\\fenrir or /mnt/backup"} /></label>}
             <label className="field">Passphrase (12+ characters)<input type="password" value={pass} onChange={(e) => setPass(e.target.value)} autoComplete="new-password" /></label>

@@ -267,8 +267,19 @@ fn open_local(
     path: &str,
     share: Option<&protocol::seal::Sealed>,
 ) -> anyhow::Result<Arc<dyn Backend>> {
-    let p = crate::share::prepare(key, path, share)?;
-    Ok(Arc::new(LocalBackend::open(&p)?))
+    let folder = |p: &str| -> anyhow::Result<Arc<dyn Backend>> {
+        Ok(Arc::new(LocalBackend::open(crate::share::prepare(
+            key, p, share,
+        )?)?))
+    };
+    // A dedup group member: its folder plus the group's shared store.
+    if let Some((root, _)) = core_format::group::split_member_path(path) {
+        return Ok(Arc::new(core_format::group::GroupBackend {
+            member: folder(path)?,
+            shared: folder(&root)?,
+        }));
+    }
+    folder(path)
 }
 
 impl Gateway {

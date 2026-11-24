@@ -119,6 +119,19 @@ system that cannot be snapshotted (a root file system without LVM, LUKS, softwar
 back it up from the recovery media. Disks that only hold the repository are left out. Details:
 `backup/docs/design/phase-6.md`.
 
+**Databases and other applications** are coordinated with the snapshots, and listed with the image like VSS writers on
+Windows (the image is then *application*-consistent):
+
+* MySQL / MariaDB: tables are locked (`FLUSH TABLES WITH READ LOCK`) while the snapshots are taken. The agent connects
+  as root over the server's socket; if that needs a password, put `[client]` `user=` and `password=` in
+  `/etc/fenrir-backup/mysql.cnf` (readable by root only).
+* PostgreSQL: a checkpoint first; the cluster counts as coordinated when its data, write-ahead log and tablespaces are
+  on one logical volume (one snapshot is one instant, which PostgreSQL recovers from like after a power cut).
+* Anything else: executables in `/etc/fenrir-backup/hooks.d` run with `freeze` before and `thaw` after (owned by root,
+  not writable by others).
+
+Applications whose data is not on the imaged disks are left alone. Details: `backup/docs/design/app-aware-linux.md`.
+
 **Cloning a disk** without a repository (an upgrade to a bigger disk, for instance) is done with the agent's CLI:
 `fenrir-backup clone --source /dev/sda --target /dev/sdb --yes --grow [--live]` (Windows: `\\.\PhysicalDriveN`);
 see `backup/docs/CLI.md` and `backup/docs/design/phase-5-grow-clone.md`.
@@ -133,6 +146,17 @@ written since the last backup, with a full read each week and spot checks agains
 setting `full_read` turns this off. Retention has an
 **Hourly** rule (the newest image of each of the latest N hours) for many short-lived restore points. Design:
 `backup/docs/design/frequent-backups.md`.
+
+## Dedup groups
+
+Machines that back up to the same repository already share stored data. **Dedup group** (when adding a repository)
+lets several repositories in one location share it too: data they have in common is stored once, while each keeps its
+own passphrase, recovery key, machines and backups. Start a group with **Start a dedup group in this location**, then
+add repositories with **Share storage with …** (same location and sign-in; the machine that creates one must already
+have access to the repository it joins). Anyone with one member's passphrase can read the data stored for the whole
+group (not the other members' lists of backups), so a group belongs to one customer and never spans customers.
+Reclaiming space in one member never deletes data another member still uses. An existing repository cannot be moved
+into a group. Details: `backup/docs/design/dedup-groups.md`.
 
 ## Off-site copies
 
@@ -216,7 +240,12 @@ server, from a repository on a USB disk or an SMB share.
 **Different hardware.** A restored Windows gets its own storage drivers (AHCI, NVMe, Intel RST, common RAID/SAS
 controllers, Hyper-V, VMware, virtio) set to start at boot in its registry, so moving from RAID to AHCI, SATA to NVMe
 or a physical machine to a VM does not stop it with INACCESSIBLE_BOOT_DEVICE (a copy of the hive is kept as
-`SYSTEM.fenrir-before-hardware`; the job lists the changes).
+`SYSTEM.fenrir-before-hardware`; the job lists the changes). Other drivers (network, chipset, graphics): put the
+driver packages in a `fenrir-drivers` folder on a USB stick; the recovery media copies them into the restored Windows
+and adds them to the folders Windows searches (`DevicePath`), so Windows installs them itself when it first starts.
+A restored **Linux** system gets an initramfs with all storage drivers, rebuilt inside it (dracut without host-only,
+or initramfs-tools with `MODULES=most`), so it finds its root file system on the new controller. Details:
+`backup/docs/design/phase-5-hardware.md`.
 
 **BitLocker.** The Windows agent backs volumes up through their VSS snapshot, which reads them decrypted (the image is
 encrypted with the repository key instead), so a restored Windows starts without the BitLocker recovery key; the job
@@ -245,8 +274,9 @@ repository › Stored on › S3 object storage**. With **Object Lock** in compli
 days chosen: nobody can delete or overwrite it before then, not ransomware holding the keys, not the storage account
 owner, not Fenrir.
 
-* Create the bucket with Object Lock enabled (only possible at creation), without a default retention: Fenrir locks
-  each object itself. Give Fenrir its own access key limited to the bucket (`PutObject`, `GetObject`, `ListBucket`,
+* Creating the repository creates the bucket (or Azure container) if it does not exist yet, with Object Lock (or
+  version-level immutability) on when you choose a lock; the key then also needs `CreateBucket`. A bucket you create
+  yourself needs Object Lock enabled at creation, without a default retention: Fenrir locks each object itself. Give Fenrir its own access key limited to the bucket (`PutObject`, `GetObject`, `ListBucket`,
   `DeleteObject`, `DeleteObjectVersion`, `Get/PutObjectRetention`).
 * The keys are sealed in your browser for each machine, like a share sign-in; this server never sees them.
   **Test connection** checks the bucket really refuses to delete a locked object.

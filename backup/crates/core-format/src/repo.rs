@@ -36,6 +36,9 @@ pub struct RepoConfig {
     pub zstd_level: i32,
     pub hash: String,
     pub encryption: String,
+    /// Member of this dedup group (format version 2; group.rs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<Uuid>,
 }
 
 impl RepoConfig {
@@ -45,7 +48,9 @@ impl RepoConfig {
                 "config.json is not a Fenrir-Backup repository config".into(),
             ));
         }
-        if self.version != 1 {
+        // Version 2: a dedup group member (older versions cannot read its
+        // chunks, so they must refuse it).
+        if !matches!((self.version, self.group.is_some()), (1, false) | (2, true)) {
             return Err(Error::UnsupportedVersion {
                 what: "repository",
                 version: self.version,
@@ -110,6 +115,8 @@ pub struct Repository {
     backend: Arc<dyn Backend>,
     config: RepoConfig,
     keys: Arc<RepoKeys>,
+    /// The dedup group's key (members only).
+    group_key: Option<Arc<SecretKey>>,
 }
 
 impl std::fmt::Debug for Repository {
@@ -161,6 +168,7 @@ impl Repository {
             zstd_level: opts.zstd_level,
             hash: "blake3-keyed".into(),
             encryption: "xchacha20poly1305".into(),
+            group: None,
         };
         config.check()?;
         let master = SecretKey::generate()?;
@@ -183,7 +191,87 @@ impl Repository {
             backend,
             config,
             keys: Arc::new(RepoKeys::from_master(master)),
+            group_key: None,
         })
+    }
+
+    /// Create a member of a dedup group. `backend` routes to the group
+    /// (`group::GroupBackend`); `group_key` is a new group's key or the one
+    /// another member holds (`Repository::group_key`).
+    pub fn init_member(
+        backend: Arc<dyn Backend>,
+        passphrase: &[u8],
+        opts: InitOptions,
+        recovery: &RecoveryKey,
+        group: &crate::group::GroupInfo,
+        group_key: &SecretKey,
+    ) -> Result<Repository> {
+        if backend.exists(CONFIG_KEY)? {
+            return Err(Error::InvalidArgument(
+                "a repository already exists here".into(),
+            ));
+        }
+        let config = RepoConfig {
+            format: REPO_FORMAT.into(),
+            version: 2,
+            repo_id: recovery.repo_id,
+            created: crate::timefmt::rfc3339_utc(crate::timefmt::now_unix()),
+            // Chunks are shared, so every member cuts them the same way.
+            chunk_size: group.chunk_size,
+            zstd_level: opts.zstd_level,
+            hash: "blake3-keyed".into(),
+            encryption: "xchacha20poly1305".into(),
+            group: Some(group.group_id),
+        };
+        config.check()?;
+        let master = SecretKey::generate()?;
+        let pslot = KeySlot::wrap_with_passphrase(&config.repo_id, &master, passphrase, opts.kdf)?;
+        let rslot = KeySlot::wrap_with_recovery_key(&config.repo_id, &master, recovery)?;
+        for slot in [&pslot, &rslot] {
+            put_new(
+                &*backend,
+                &format!("keys/{}.json", slot.slot_id),
+                &serde_json::to_vec_pretty(slot)?,
+            )?;
+        }
+        put_new(
+            &*backend,
+            crate::group::MEMBER_KEY_FILE,
+            &crate::group::seal_member_key(&master, &group.group_id, &config.repo_id, group_key)?,
+        )?;
+        put_new(&*backend, CONFIG_KEY, &serde_json::to_vec_pretty(&config)?)?;
+        Self::unlocked(backend, config, master)
+    }
+
+    /// An unlocked repository from its master key (a member also opens the
+    /// group key it holds).
+    fn unlocked(
+        backend: Arc<dyn Backend>,
+        config: RepoConfig,
+        master: SecretKey,
+    ) -> Result<Repository> {
+        let mut keys = RepoKeys::from_master(master);
+        let group_key = match config.group {
+            None => None,
+            Some(g) => {
+                let raw = backend.get(crate::group::MEMBER_KEY_FILE)?;
+                let gk = crate::group::open_member_key(&keys.master, &g, &config.repo_id, &raw)?;
+                keys.chunk_id = gk.derive(crate::keys::context::CHUNK_ID);
+                keys.chunk_enc = gk.derive(crate::keys::context::CHUNK_ENC);
+                Some(Arc::new(gk))
+            }
+        };
+        Ok(Repository {
+            backend,
+            config,
+            keys: Arc::new(keys),
+            group_key,
+        })
+    }
+
+    /// The dedup group's key, for creating another member of the group.
+    pub fn group_key(&self) -> Option<&SecretKey> {
+        self.group_key.as_deref()
     }
 
     pub fn read_config(backend: &dyn Backend) -> Result<RepoConfig> {
@@ -219,13 +307,7 @@ impl Repository {
             .filter(|s| s.kind == SlotKind::Passphrase)
         {
             match slot.unwrap_with_passphrase(&config.repo_id, passphrase) {
-                Ok(master) => {
-                    return Ok(Repository {
-                        backend,
-                        config,
-                        keys: Arc::new(RepoKeys::from_master(master)),
-                    })
-                }
+                Ok(master) => return Self::unlocked(backend, config, master),
                 Err(Error::WrongKey) => continue,
                 Err(e) => return Err(e),
             }
@@ -249,11 +331,7 @@ impl Repository {
             })?;
         let slot: KeySlot = serde_json::from_slice(&raw)?;
         let master = slot.unwrap_with_recovery_key(&config.repo_id, rk)?;
-        Ok(Repository {
-            backend,
-            config,
-            keys: Arc::new(RepoKeys::from_master(master)),
-        })
+        Self::unlocked(backend, config, master)
     }
 
     pub fn add_passphrase(&self, passphrase: &[u8], kdf: KdfParams) -> Result<Uuid> {
@@ -438,6 +516,17 @@ impl Repository {
             &self.keys.manifest_enc,
             self.config.zstd_level.max(1),
         )?;
+        // A group member first tells the group which chunks the image uses,
+        // so that no other member's prune deletes them (a reference left by a
+        // crash before the manifest only keeps chunks longer).
+        if let Some(gk) = &self.group_key {
+            let ids: Vec<ChunkId> = body.chunk_ids().into_iter().collect();
+            let refs = crate::group::seal_refs(gk, &self.config.repo_id, &body.image_id, &ids)?;
+            self.backend.put(
+                &crate::group::refs_key(&self.config.repo_id, &body.image_id),
+                &refs,
+            )?;
+        }
         match self
             .backend
             .put(&format!("manifests/{}", body.image_id), &sealed)?
@@ -492,6 +581,51 @@ impl Repository {
                 .then(a.image_id.cmp(&b.image_id))
         });
         Ok((ok, bad))
+    }
+
+    /// Delete an image's manifest (and, in a dedup group, its chunk list
+    /// afterwards). Its chunks stay until a prune.
+    pub fn delete_image(&self, image_id: &Uuid) -> Result<()> {
+        self.backend.delete(&format!("manifests/{image_id}"))?;
+        if self.group_key.is_some() {
+            match self
+                .backend
+                .delete(&crate::group::refs_key(&self.config.repo_id, image_id))
+            {
+                Ok(()) | Err(Error::NotFound(_)) | Err(Error::Retained(_)) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    /// Chunks referenced by any member of this repository's dedup group
+    /// (object keys), and this member's references whose manifest is gone.
+    /// `None` for a repository in no group. Fails if a reference list
+    /// cannot be read: nothing may then be pruned.
+    pub fn group_references(
+        &self,
+    ) -> Result<Option<(std::collections::HashSet<String>, Vec<String>)>> {
+        let Some(gk) = &self.group_key else {
+            return Ok(None);
+        };
+        let mine: std::collections::HashSet<Uuid> = self.list_image_ids()?.into_iter().collect();
+        let mut live = std::collections::HashSet::new();
+        let mut orphans = Vec::new();
+        for k in self.backend.list("refs")? {
+            let Some((repo, image)) = crate::group::parse_refs_key(&k) else {
+                continue;
+            };
+            if repo == self.config.repo_id && !mine.contains(&image) {
+                orphans.push(k);
+                continue;
+            }
+            let raw = self.backend.get(&k)?;
+            let ids = crate::group::open_refs(gk, &repo, &image, &raw)
+                .map_err(|e| Error::integrity(format!("chunk list {k}: {e}")))?;
+            live.extend(ids.iter().map(ChunkId::object_key));
+        }
+        Ok(Some((live, orphans)))
     }
 
     /// Resolve a full UUID or a unique prefix of one.
