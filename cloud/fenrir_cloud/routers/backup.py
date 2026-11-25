@@ -522,7 +522,7 @@ def _settings(s) -> dict:
 
 # Kubernetes clusters and SaaS tenants (backup/docs/design/kubernetes.md, saas.md). Their secret is sealed in the
 # browser to the machine that runs the jobs; only the sealed form is kept here.
-SAAS_SERVICES = ("m365", "google", "salesforce")
+SAAS_SERVICES = ("m365", "google", "salesforce", "quickbooks")
 _NAME = re.compile(r"[A-Za-z0-9._-]{1,63}")
 
 
@@ -556,7 +556,7 @@ def _saas_tenant(t) -> dict:
     t = t if isinstance(t, dict) else {}
     svc = t.get("service")
     if svc not in SAAS_SERVICES:
-        bad("the service is m365, google or salesforce")
+        bad("the service is m365, google, salesforce or quickbooks")
     out = {"service": svc, "tenant": str(t.get("tenant") or "").strip()[:200], "client_id": str(t.get("client_id") or "").strip()[:200],
            "domain_url": str(t.get("domain_url") or "").strip()[:300], "admin": str(t.get("admin") or "").strip()[:320],
            "users": _name_list(t.get("users"), 5000), "objects": _name_list(t.get("objects")),
@@ -572,6 +572,13 @@ def _saas_tenant(t) -> dict:
         bad("give an administrator's address to list users as")
     if svc == "salesforce" and (not out["domain_url"].startswith("https://") or not out["client_id"]):
         bad("give the My Domain URL (https://...) and the consumer key")
+    if svc == "quickbooks":
+        if not out["client_id"]:
+            bad("give the Intuit app's client ID")
+        if not out["tenant"].isdigit():
+            bad("the company (realm) ID is a number")
+        if out["domain_url"] and not out["domain_url"].startswith("https://"):
+            bad("the QuickBooks API address must start with https://")
     return out
 
 

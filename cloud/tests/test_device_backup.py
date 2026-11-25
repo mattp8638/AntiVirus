@@ -1921,3 +1921,24 @@ def test_ediscovery_case_holds_searches_exports_and_chain_of_custody(client, adm
     images = {i["imageId"]: i for i in client.get(f"/api/console/backup/images?repositoryId={repo}", headers=admin).json()}
     assert images[later["image_id"]]["legalHold"] is None
     assert images[first["image_id"]]["legalHold"]["reason"] == "HR matter"
+
+
+def test_quickbooks_online_plans(client, admin, tenant):
+    """QuickBooks Online: the company (realm) ID and the Intuit app's client ID; only the sealed secret is kept."""
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    caps = CAPS + ["saas"]
+    heartbeat(client, h, caps=caps)
+    repo = ready_repo(client, admin, tenant, agent_id, h)
+    heartbeat(client, h, caps=caps)
+    t = {"service": "quickbooks", "tenant": "9130350000000000", "client_id": "ABc", "objects": ["Customer", "Invoice"]}
+    body = {"name": "Books", "agentId": agent_id, "repositoryId": repo, "schedule": {"type": "manual"},
+            "job": {"type": "backup_saas", "tenant": t, "sealed_secret": SEALED}}
+    for bad_t in ({**t, "tenant": "acme"}, {**t, "client_id": ""}, {**t, "domain_url": "http://sandbox"}):
+        assert client.post("/api/console/backup/plans", headers=admin, json={**body, "job": {**body["job"], "tenant": bad_t}}).status_code == 400
+    r = client.post("/api/console/backup/plans", headers=admin, json=body)
+    assert r.status_code == 200, r.text
+    assert client.post(f"/api/console/backup/plans/{r.json()['id']}/run", headers=admin).status_code == 200
+    spec = heartbeat(client, h, caps=caps)["jobs"][0]
+    assert spec["kind"]["tenant"]["service"] == "quickbooks" and spec["kind"]["tenant"]["objects"] == ["Customer", "Invoice"]
+    assert spec["kind"]["sealed_secret"] == SEALED

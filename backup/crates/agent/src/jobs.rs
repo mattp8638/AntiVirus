@@ -205,7 +205,10 @@ fn saas_conn(
         domain_url: t.domain_url.clone(),
         admin: t.admin.clone(),
     };
-    let conn = saas::run::connect(&settings, &secret).map_err(|e| anyhow!("{e}"))?;
+    // Rotating refresh tokens (QuickBooks) are kept in the agent's own state folder.
+    let state = crate::config::state_dir().join("saas");
+    let conn =
+        saas::run::connect_in(&settings, &secret, Some(&state)).map_err(|e| anyhow!("{e}"))?;
     Ok((settings, conn))
 }
 

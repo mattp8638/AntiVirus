@@ -262,17 +262,20 @@ enum CdpCmd {
 /// Which SaaS service and its credentials (secrets come from files).
 #[derive(clap::Args, Clone)]
 struct SaasService {
-    /// m365 | google | salesforce
+    /// m365 | google | salesforce | quickbooks
     #[arg(long)]
     service: String,
     /// Microsoft 365: directory (tenant) ID or domain. Google: the Workspace
-    /// domain. Salesforce: a name for the org.
+    /// domain. Salesforce: a name for the org. QuickBooks: the company
+    /// (realm) ID.
     #[arg(long)]
     tenant: String,
     /// Microsoft 365 / Salesforce: the app registration's or connected app's client ID.
     #[arg(long)]
     client_id: Option<String>,
     /// Microsoft 365 / Salesforce: a file holding the client secret.
+    /// QuickBooks: a JSON file {"client_secret": ..., "refresh_token": ...};
+    /// the newest refresh token is kept beside it.
     #[arg(long)]
     secret_file: Option<PathBuf>,
     /// Google: the service account's JSON key file.
@@ -281,7 +284,8 @@ struct SaasService {
     /// Google: a Workspace administrator (to list users).
     #[arg(long)]
     admin: Option<String>,
-    /// Salesforce: https://<my-domain>.my.salesforce.com
+    /// Salesforce: https://<my-domain>.my.salesforce.com. QuickBooks: the
+    /// API address (default production; https://sandbox-quickbooks.api.intuit.com).
     #[arg(long)]
     domain_url: Option<String>,
 }
@@ -2321,7 +2325,10 @@ fn saas_conn(s: &SaasService) -> R<(saas::run::Settings, saas::run::Conn)> {
         domain_url: s.domain_url.clone().unwrap_or_default(),
         admin: s.admin.clone().unwrap_or_default(),
     };
-    let conn = saas::run::connect(&settings, &secret).map_err(|e| CliError::usage(e.0))?;
+    // Rotating refresh tokens (QuickBooks) are kept next to the secret file.
+    let state = file.parent().map(|p| p.to_path_buf());
+    let conn = saas::run::connect_in(&settings, &secret, state.as_deref())
+        .map_err(|e| CliError::usage(e.0))?;
     Ok((settings, conn))
 }
 

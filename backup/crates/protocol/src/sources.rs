@@ -25,7 +25,7 @@ pub struct K8sCluster {
 /// A SaaS tenant: the service and the non-secret parts of the customer's app.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SaasTenant {
-    /// "m365", "google" or "salesforce".
+    /// "m365", "google", "salesforce" or "quickbooks".
     pub service: String,
     pub tenant: String,
     #[serde(default)]
@@ -55,12 +55,12 @@ fn yes() -> bool {
     true
 }
 
-pub const SAAS_SERVICES: &[&str] = &["m365", "google", "salesforce"];
+pub const SAAS_SERVICES: &[&str] = &["m365", "google", "salesforce", "quickbooks"];
 
 impl SaasTenant {
     pub fn validate(&self) -> Result<(), String> {
         if !SAAS_SERVICES.contains(&self.service.as_str()) {
-            return Err("the service is m365, google or salesforce".into());
+            return Err("the service is m365, google, salesforce or quickbooks".into());
         }
         if self.tenant.trim().is_empty() {
             return Err("give the tenant (directory, domain or org name)".into());
@@ -74,6 +74,17 @@ impl SaasTenant {
                 if !self.domain_url.starts_with("https://") || self.client_id.trim().is_empty() =>
             {
                 Err("give the My Domain URL (https://...) and the consumer key".into())
+            }
+            "quickbooks" if self.client_id.trim().is_empty() => {
+                Err("give the Intuit app's client ID".into())
+            }
+            "quickbooks" if !self.tenant.chars().all(|c| c.is_ascii_digit()) => {
+                Err("the company (realm) ID is a number".into())
+            }
+            "quickbooks"
+                if !self.domain_url.is_empty() && !self.domain_url.starts_with("https://") =>
+            {
+                Err("the QuickBooks API address must start with https://".into())
             }
             _ => Ok(()),
         }

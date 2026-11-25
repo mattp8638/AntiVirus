@@ -31,7 +31,7 @@ Overall parity: **not passed**. MVP: **not yet declared**.
 * BDR-06 `implemented-unverified`: SaaS search, archive tiers, self-service restore in the client portal, and eDiscovery
   cases (custodian holds, kept searches, hashed exports, chain-of-custody manifest).
 * BDR-04: other backup software on each machine, daily storage and credential checks, offline media rotation alerts.
-* BDR-05: SharePoint, Teams messages and Entra ID objects (mocked APIs).
+* BDR-05: SharePoint, Teams messages, Entra ID objects and QuickBooks Online (mocked APIs).
 
 ## 2026-11-24 backup re-assessment (BDR-01 to BDR-06, AT-19)
 

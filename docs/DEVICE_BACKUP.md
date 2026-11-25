@@ -270,7 +270,7 @@ setting `full_read` turns this off. Retention has an
 **Hourly** rule (the newest image of each of the latest N hours) for many short-lived restore points. Design:
 `backup/docs/design/frequent-backups.md`.
 
-## Apps & clusters: Microsoft 365, Google Workspace, Salesforce, Kubernetes
+## Apps & clusters: Microsoft 365, Google Workspace, Salesforce, QuickBooks Online, Kubernetes
 
 **Backups › Apps & clusters** backs up a customer's Microsoft 365 or Google Workspace mailboxes and drive files,
 Salesforce records, or Kubernetes namespaces (their objects, and with a volume image also their volumes' data) into
@@ -291,6 +291,15 @@ folder of the site's document library; Entra users, groups and applications are 
 settings (passwords and secrets are never in a backup). Teams messages are kept and searchable but cannot be posted
 back as the original authors: Microsoft offers no way to recreate channel history. Searching a machine's backups also
 finds mail, files, records, Teams messages and Entra objects in these backups, by subject, name or path.
+
+**QuickBooks Online**: the customer's own Intuit app (Accounting scope), connected to the company once. Enter the
+company (realm) ID, the app's client ID, its client secret and the refresh token from that connection; the secret and
+token are encrypted in your browser for the machine that runs the backups. Every list and transaction type is backed
+up (or the entities you name), incrementally after the first run. Intuit replaces the refresh token as it is used:
+the machine keeps the newest one itself, so the token you entered is only the first link. If backups stop with a
+sign-in error after the machine was rebuilt, or after 100 days without a backup, connect the company again and paste
+the new refresh token. Restore re-creates deleted customers, invoices and other entities (QuickBooks gives them new
+numbers) and, if you tick it, puts the backed-up values back on ones that still exist.
 
 ## Continuous data protection (Linux)
 

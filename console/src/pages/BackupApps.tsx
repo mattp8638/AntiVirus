@@ -9,11 +9,12 @@ import { confirmDialog } from "../components/dialogs";
 import { ErrorNote, Modal, Pill, Table, useAction, useListData } from "../components/ui";
 import type { BackupAgent } from "./Backups";
 
-type Kind = "m365" | "google" | "salesforce" | "kubernetes";
+type Kind = "m365" | "google" | "salesforce" | "quickbooks" | "kubernetes";
 const KINDS: { id: Kind; label: string; secret: string; help: string }[] = [
   { id: "m365", label: "Microsoft 365", secret: "Client secret", help: "An app registration in the customer's Entra ID with application permissions User.Read.All, Mail.ReadWrite and Files.ReadWrite.All (admin consent)." },
   { id: "google", label: "Google Workspace", secret: "Service account key (JSON)", help: "A service account with domain-wide delegation for gmail.readonly, drive.readonly and admin.directory.user.readonly (and gmail.insert, gmail.labels, gmail.modify, drive to restore)." },
   { id: "salesforce", label: "Salesforce", secret: "Consumer secret", help: "A connected app with the client credentials flow and a run-as user that can view all data." },
+  { id: "quickbooks", label: "QuickBooks Online", secret: "Client secret", help: "The customer's Intuit app (Accounting scope), connected to the company once: its client ID, client secret and refresh token. Intuit replaces the refresh token as it is used; the machine keeps the newest itself." },
   { id: "kubernetes", label: "Kubernetes", secret: "Service account token", help: "A service account that can read (and, to restore, create) the namespaces' objects; with volume data, also create pods, claims and volume snapshots." },
 ];
 const SOURCE_TYPES = ["backup_saas", "backup_kubernetes"];
@@ -85,13 +86,14 @@ function Connect({ agents, repos, onClose }: { agents: BackupAgent[]; repos: Rep
   const [files, setFiles] = useState(true);
   const [m365, setM365] = useState({ sites: false, teams: false, directory: false });
   const [secret, setSecret] = useState("");
+  const [refresh, setRefresh] = useState("");
   const meta = KINDS.find((k) => k.id === kind)!;
   const field = (k: keyof typeof f, label: string, placeholder = "") =>
     <label className="field">{label}<input value={f[k]} placeholder={placeholder} onChange={(e) => setF({ ...f, [k]: e.target.value })} /></label>;
   const save = () => run(async () => {
     if (!agent) throw new Error("choose the machine that runs the backups");
     if (!sealSupported()) throw new Error("This browser cannot encrypt secrets (Web Crypto X25519 is needed).");
-    const sealed = await seal(agent.publicKey, secret.trim());
+    const sealed = await seal(agent.publicKey, kind === "quickbooks" ? JSON.stringify({ client_secret: secret.trim(), refresh_token: refresh.trim() }) : secret.trim());
     const job = kind === "kubernetes"
       ? { type: "backup_kubernetes", sealed_token: sealed, cluster: { name: f.name.trim(), api_server: f.api_server.trim(), ca_pem: f.ca_pem.trim(), namespaces: words(f.namespaces), volume_image: f.volume_image.trim() } }
       : { type: "backup_saas", sealed_secret: sealed, tenant: { service: kind, tenant: f.tenant.trim(), client_id: f.client_id.trim(), domain_url: f.domain_url.trim(), admin: f.admin.trim(), users: words(f.users), objects: words(f.objects), mail, files, ...(kind === "m365" ? m365 : {}) } };
@@ -102,7 +104,7 @@ function Connect({ agents, repos, onClose }: { agents: BackupAgent[]; repos: Rep
   }, "Connected").then((r) => r !== undefined && onClose());
   return (
     <Modal wide title="Connect a service or cluster" onClose={onClose}
-      footer={<button className="primary" disabled={busy || !agent || !repo || !secret.trim()} onClick={save}>Connect</button>}>
+      footer={<button className="primary" disabled={busy || !agent || !repo || !secret.trim() || (kind === "quickbooks" && !refresh.trim())} onClick={save}>Connect</button>}>
       <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
         {KINDS.map((k) => <button key={k.id} className={kind === k.id ? "primary small" : "small"} onClick={() => { setKind(k.id); setAgentId(""); setRepoId(""); }}>{k.label}</button>)}
       </div>
@@ -122,10 +124,11 @@ function Connect({ agents, repos, onClose }: { agents: BackupAgent[]; repos: Rep
           {field("namespaces", "Namespaces (spaces or commas)", "shop payments")}
           {field("volume_image", "Volume data: fenrir-backup image the cluster can pull (empty: objects only)", "registry.example.lan/fenrir-backup:latest")}
         </> : <>
-          {field("tenant", kind === "m365" ? "Tenant (directory ID or domain)" : kind === "google" ? "Domain" : "Org name", kind === "m365" ? "contoso.onmicrosoft.com" : kind === "google" ? "example.com" : "acme")}
-          {kind === "google" ? field("admin", "Administrator to list users as", "admin@example.com") : field("client_id", kind === "m365" ? "Application (client) ID" : "Consumer key")}
+          {field("tenant", kind === "m365" ? "Tenant (directory ID or domain)" : kind === "google" ? "Domain" : kind === "quickbooks" ? "Company ID (realm ID)" : "Org name", kind === "m365" ? "contoso.onmicrosoft.com" : kind === "google" ? "example.com" : kind === "quickbooks" ? "9130350000000000" : "acme")}
+          {kind === "google" ? field("admin", "Administrator to list users as", "admin@example.com") : field("client_id", kind === "m365" ? "Application (client) ID" : kind === "quickbooks" ? "Client ID" : "Consumer key")}
           {kind === "salesforce" && field("domain_url", "My Domain URL", "https://acme.my.salesforce.com")}
-          {kind === "salesforce" ? field("objects", "Objects (empty: standard and custom)") : field("users", "Users (empty: everyone)")}
+          {kind === "quickbooks" && field("domain_url", "API address (empty: QuickBooks Online; sandbox: https://sandbox-quickbooks.api.intuit.com)")}
+          {kind === "salesforce" ? field("objects", "Objects (empty: standard and custom)") : kind === "quickbooks" ? field("objects", "Entities (empty: lists and every transaction type)", "Customer Invoice Bill") : field("users", "Users (empty: everyone)")}
         </>}
         <label className="field">Back up every day at<input type="time" value={f.time} onChange={(e) => setF({ ...f, time: e.target.value })} /></label>
       </div>
@@ -142,6 +145,9 @@ function Connect({ agents, repos, onClose }: { agents: BackupAgent[]; repos: Rep
       <label className="field">{meta.secret} — encrypted in this browser for {agent?.name ?? "the machine"}
         <textarea rows={kind === "google" ? 5 : 2} value={secret} onChange={(e) => setSecret(e.target.value)} autoComplete="off" spellCheck={false} />
       </label>
+      {kind === "quickbooks" && <label className="field">Refresh token — encrypted like the secret
+        <textarea rows={2} value={refresh} onChange={(e) => setRefresh(e.target.value)} autoComplete="off" spellCheck={false} />
+      </label>}
     </Modal>
   );
 }
