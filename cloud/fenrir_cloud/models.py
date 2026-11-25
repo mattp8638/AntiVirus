@@ -3800,3 +3800,42 @@ class GoogleWorkspacePosture(Base):
     summary: Mapped[dict] = mapped_column(JSON, default=dict)
     created_by: Mapped[str] = mapped_column(String(200), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class PurviewBaseline(Base):
+    """A Purview template (M365-27): the retention labels a customer's tenant should have."""
+    __tablename__ = "purview_baselines"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("pvb"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)  # the MSP or customer that owns the template
+    name: Mapped[str] = mapped_column(String(200))
+    retention_labels: Mapped[list] = mapped_column(JSON, default=list)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class PurviewInventory(Base):
+    """The latest read of a tenant's Purview labels, and the drift from a template."""
+    __tablename__ = "purview_inventories"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("pvi"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    connection_id: Mapped[str] = mapped_column(String(32), index=True)
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    taken_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class PurviewChange(Base):
+    """A proposed Purview change (M365-27). It affects how customer data is kept or deleted, so a second person must
+    approve it before Fenrir makes it."""
+    __tablename__ = "purview_changes"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("pvc"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    connection_id: Mapped[str] = mapped_column(String(32), index=True)
+    baseline_id: Mapped[str] = mapped_column(String(32))
+    plan: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="proposed")  # proposed | rejected | completed | partial | failed
+    requested_by: Mapped[str] = mapped_column(String(200), default="")
+    reviewed_by: Mapped[str] = mapped_column(String(200), default="")
+    review_note: Mapped[str] = mapped_column(String(1000), default="")
+    results: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

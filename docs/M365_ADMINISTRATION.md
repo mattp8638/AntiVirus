@@ -52,6 +52,33 @@ The first reviewed write-administration increment is described in [M365_ACTIONS.
 
 PR #9 provides encrypted direct-tenant application connections and on-demand, read-only users, subscribed licences and Secure Score snapshots. It does not yet implement tenant write administration, GDAP, workload management or baseline enforcement. No live tenant changes have been made as part of this requirement update.
 
+## Purview retention and sensitivity labels (M365-27)
+
+The **Purview labels** tab on a tenant reads the tenant's retention and sensitivity labels and compares retention
+labels with a template. The code is in `cloud/fenrir_cloud/m365_purview.py`.
+
+What Fenrir can do depends on what Microsoft Graph offers:
+
+| Item | Read | Change |
+|---|---|---|
+| Retention labels | yes | create only |
+| Sensitivity labels | yes (Graph beta) | no |
+| DLP policies, retention policies, sensitive information types | no, shown as unavailable | no |
+
+DLP policies, retention policies and sensitive information types are not in Graph; they need Security & Compliance
+PowerShell. Fenrir shows them as unavailable rather than compliant.
+
+**Drift.** A template lists retention labels with a period, a trigger, behaviour during retention and an action
+after it. Each label is reported as *missing*, *different* (field by field) or *matching*.
+
+**Deploying.** A deployment proposes creating the missing labels. A label that exists with different settings is
+left for a person to change in Purview: changing it could alter what already-labelled content keeps or deletes.
+
+A **second person** must approve the change before Fenrir makes it. The person who proposed it cannot approve it,
+and approving requires step-up authentication. Each label's result and the reviewer's note are recorded and audited.
+
+The permissions (`RecordsManagement.ReadWrite.All`, `InformationProtectionPolicy.Read.All`) are opt-in.
+
 ## Microsoft 365 Copilot (M365-29)
 
 The **Reports** tab has a *Microsoft 365 Copilot licences and adoption* report, built only from Microsoft's data.

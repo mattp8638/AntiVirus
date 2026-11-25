@@ -100,6 +100,9 @@ FEATURES: dict[str, dict] = {
                     "app": ["Application.ReadWrite.All", "DelegatedPermissionGrant.ReadWrite.All"], "delegated": None, "optIn": True,
                     "note": "Not requested by default: add Application.ReadWrite.All and DelegatedPermissionGrant.ReadWrite.All to "
                             "Fenrir's app in Entra and grant admin consent to use these actions."},
+    "purview.labels": {"title": "Purview retention and sensitivity labels", "area": "Compliance",
+                       "app": ["RecordsManagement.ReadWrite.All", "InformationProtectionPolicy.Read.All"], "delegated": None, "optIn": True,
+                       "note": "Not requested by default: add RecordsManagement.ReadWrite.All and InformationProtectionPolicy.Read.All to use Purview labels."},
     "license.assign": {"title": "Assign and remove licences", "area": "Identity",
                        "app": ["LicenseAssignment.ReadWrite.All", "User.Read.All"], "delegated": ["LicenseAssignment.ReadWrite.All", "User.Read.All"]},
     "group.members": {"title": "Change group membership", "area": "Identity", "app": ["GroupMember.ReadWrite.All", "User.Read.All"],
