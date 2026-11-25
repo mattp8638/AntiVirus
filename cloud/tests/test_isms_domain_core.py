@@ -241,3 +241,18 @@ def test_sample_small_populations_and_odd_sizes():
 
 def test_suggested_sample_size_ladder():
     assert [suggested_sample_size(n) for n in (3, 20, 80, 200, 1000)] == [3, 5, 10, 15, 25]
+
+
+# Statement of Applicability status --------------------------------------------------------------------------
+
+def test_soa_status_follows_the_weakest_control():
+    from fenrir_cloud.isms.domain.soa import soa_status
+
+    assert soa_status(False, ["implemented_evidenced"]) == "Not applicable"
+    assert soa_status(True, []) == "Not started"
+    assert soa_status(True, ["not_applicable"]) == "Not started"
+    assert soa_status(True, ["implemented_evidenced", "implemented_evidenced"]) == "Implemented and evidenced"
+    assert soa_status(True, ["implemented_evidenced", "implemented"]) == "Implemented"
+    assert soa_status(True, ["implemented", "not_started"]) == "In progress"
+    assert soa_status(True, ["in_progress"]) == "In progress"
+    assert soa_status(True, ["not_started", "not_applicable"]) == "Not started"
