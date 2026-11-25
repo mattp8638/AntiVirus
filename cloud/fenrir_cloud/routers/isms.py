@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..deps import Principal, current_principal
-from ..isms import access, memberships, organization, programme, rls
+from ..isms import access, memberships, organization, programme, risk_register, rls
 from ..isms.access import ROLE_PERMISSIONS, TENANT_ROLES
 from ..isms.models import IsmsAsset, IsmsMembership, IsmsTenantControl
 from ..isms.scope import get_scoped, scoped
@@ -496,3 +496,111 @@ def export_soa(tenant_id: str, framework: str, principal: Principal = Depends(cu
 def get_readiness(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
     require_isms(db, principal, tenant_id, "controls.view")
     return {"frameworks": programme.readiness(db, tenant_id)}
+
+
+# Risk (ISO 27001 6.1.2, 6.1.3, 8.2, 8.3) ------------------------------------------------------------------------
+
+def _members(db: Session, tenant_id: str) -> set[str]:
+    return {m.user_id for m in db.execute(select(IsmsMembership).where(IsmsMembership.tenant_id == tenant_id)).scalars()}
+
+
+@router.get("/risk/method")
+def get_risk_method(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    require_isms(db, principal, tenant_id, "risks.view")
+    return risk_register.method_dict(*risk_register.get_method(db, tenant_id))
+
+
+@router.put("/risk/method")
+def put_risk_method(body: TenantBody, principal: Principal = Depends(current_principal),
+                    db: Session = Depends(isms_db)):
+    """Saves the risk method; each change makes a new version."""
+    require_isms(db, principal, body.tenant_id, "programme.manage")
+    version = risk_register.save_method(db, body.tenant_id, principal.actor,
+                                        risk_register.parse_method(dict(body.model_extra or {})))
+    db.commit()
+    return risk_register.method_dict(*risk_register.get_method(db, body.tenant_id)) | {"version": version}
+
+
+@router.get("/risks")
+def list_risks(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    require_isms(db, principal, tenant_id, "risks.view")
+    return {"risks": risk_register.risk_views(db, tenant_id), "heatMap": risk_register.heat_map(db, tenant_id),
+            "treatments": risk_register.TREATMENTS}
+
+
+def _risk_row(db: Session, principal: Principal, risk_id: str):
+    from ..isms.models import IsmsRisk
+
+    return get_scoped(db, IsmsRisk, risk_id, principal)
+
+
+def _save_controls(db, row, principal, body: dict) -> None:
+    if "controlIds" in body:
+        risk_register.set_controls(db, row, principal.actor, [str(c) for c in body.get("controlIds") or []])
+
+
+@router.post("/risks")
+def add_risk(body: TenantBody, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    require_isms(db, principal, body.tenant_id, "risks.edit")
+    data = dict(body.model_extra or {})
+    row = risk_register.save_risk(db, body.tenant_id, principal.actor, data, _members(db, body.tenant_id))
+    _save_controls(db, row, principal, data)
+    db.commit()
+    return risk_register.risk_views(db, row.tenant_id, row.id)[0]
+
+
+@router.patch("/risks/{risk_id}")
+def update_risk(risk_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                db: Session = Depends(isms_db)):
+    """Edits a risk. Its owner can edit it without broader rights, but only people who can edit every risk can change
+    the owner."""
+    row = _risk_row(db, principal, risk_id)
+    role = memberships.active_role(db, principal.user, row.tenant_id)
+    if not access.can_on_record(role, principal.user.id, "risks.edit", row.owner_user_id):
+        raise HTTPException(403, f"Your ISMS role ({role or 'none'}) cannot do this (risks.edit)")
+    if (body.get("ownerId") or None) != row.owner_user_id and not access.can(role, "risks.edit"):
+        raise HTTPException(403, "Only people who can edit every risk can change its owner")
+    risk_register.save_risk(db, row.tenant_id, principal.actor, body, _members(db, row.tenant_id), row)
+    _save_controls(db, row, principal, body)
+    db.commit()
+    return risk_register.risk_views(db, row.tenant_id, row.id)[0]
+
+
+class Acceptance(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    rationale: str = Field(max_length=4000)
+
+
+@router.post("/risks/{risk_id}/accept")
+def accept_risk(risk_id: str, body: Acceptance, principal: Principal = Depends(current_principal),
+                db: Session = Depends(isms_db)):
+    """The risk owner accepts the residual risk."""
+    row = _risk_row(db, principal, risk_id)
+    require_isms(db, principal, row.tenant_id, "risks.view")
+    risk_register.accept(db, row, principal.actor, principal.user.id, body.rationale)
+    db.commit()
+    return risk_register.risk_views(db, row.tenant_id, row.id)[0]
+
+
+@router.post("/risks/snapshots")
+def take_snapshot(body: TenantBody, principal: Principal = Depends(current_principal),
+                  db: Session = Depends(isms_db)):
+    require_isms(db, principal, body.tenant_id, "risks.edit")
+    row = risk_register.snapshot(db, body.tenant_id, principal.actor, principal.user.id,
+                                 str((body.model_extra or {}).get("reason") or "manual"))
+    db.commit()
+    return {"id": row.id, "takenAt": _iso(row.taken_at), "risks": len(row.payload["risks"])}
+
+
+@router.get("/risks/snapshots")
+def list_snapshots(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    from ..isms.models import IsmsRiskSnapshot
+
+    require_isms(db, principal, tenant_id, "risks.view")
+    rows = db.execute(scoped(IsmsRiskSnapshot, principal, tenant_id).order_by(IsmsRiskSnapshot.taken_at.desc())
+                      .limit(50)).scalars().all()
+    names = {u.id: (u.name or u.email) for u in db.execute(select(User).where(
+        User.id.in_([r.taken_by_user_id for r in rows if r.taken_by_user_id]))).scalars()}
+    return {"snapshots": [{"id": r.id, "takenAt": _iso(r.taken_at), "reason": r.reason,
+                           "takenBy": names.get(r.taken_by_user_id), "risks": len(r.payload.get("risks", []))}
+                          for r in rows]}
