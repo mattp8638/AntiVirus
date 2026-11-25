@@ -3150,6 +3150,36 @@ class DrRun(Base):
     started_by: Mapped[str] = mapped_column(String(200), default="")
 
 
+class AiSystem(Base):
+    """An AI system or use-case in a customer's AI-governance inventory (GRC-21): what it does, the model and its
+    supplier, the data it uses, its risk and impact assessment, the human oversight around it, and its approval."""
+    __tablename__ = "ai_systems"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ais"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    purpose: Mapped[str] = mapped_column(Text, default="")
+    owner: Mapped[str] = mapped_column(String(200), default="")
+    provider: Mapped[str] = mapped_column(String(200), default="")  # model and supplier
+    vendor_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    deployment: Mapped[str] = mapped_column(String(20), default="internal")  # internal | customer-facing | embedded
+    data_categories: Mapped[list] = mapped_column(JSON, default=list)
+    answers: Mapped[dict] = mapped_column(JSON, default=dict)
+    suggested_tier: Mapped[str] = mapped_column(String(20), default="")
+    tier: Mapped[str] = mapped_column(String(20), default="")  # unacceptable | high | limited | minimal (confirmed)
+    tier_rationale: Mapped[str] = mapped_column(Text, default="")
+    impacts: Mapped[str] = mapped_column(Text, default="")
+    oversight: Mapped[list] = mapped_column(JSON, default=list)  # [{measure, owner, frequency}]
+    status: Mapped[str] = mapped_column(String(20), default="proposed")  # proposed | approved | in_use | retired | rejected
+    approved_by: Mapped[str] = mapped_column(String(200), default="")
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    review_due: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    evidence_ids: Mapped[list] = mapped_column(JSON, default=list)
+    history: Mapped[list] = mapped_column(JSON, default=list)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class GrcGap(Base):
     """A control gap or governance exception being treated (FLOW-06): where it came from, the affected devices, the
     owner and the ticket doing the work, the treatment, the evidence, and the review that closes it."""

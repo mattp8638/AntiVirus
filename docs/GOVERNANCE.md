@@ -152,3 +152,14 @@ compensating control, or accept the risk with a justification) and attach eviden
 A reviewer **closes** it only when the evidence is attached and, for a remediated control gap, the control's
 signals pass **now**; otherwise it is refused, or the reviewer **sends it back**. If the control fails again later,
 its gap reopens with its history. Every step is on the gap's timeline and in the audit log.
+
+## AI governance
+
+**Compliance & GRC › AI governance** keeps an inventory of the AI systems and use-cases a customer runs or plans:
+purpose, owner, the model and its supplier (linked to the third-party register when data goes to it), deployment and
+the data used. A short assessment (our own questions, written with ISO/IEC 42001 and the EU AI Act in mind) suggests a
+risk tier, from unacceptable to minimal; a person confirms the tier, and must explain a tier lower than suggested.
+Approval is refused while points are open: unanswered questions, an unconfirmed tier, too few human-oversight measures
+for the tier (two for high risk), no impact assessment when personal data is used, an unlinked supplier, or no
+evidence for a high-risk system. Changing how an approved system is used withdraws its approval. The suggested tier
+is guidance, not a legal classification; expert review and certification remain outside services.
