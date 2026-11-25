@@ -9,7 +9,7 @@ import { COMPLIANCE_SECTION, SectionTabs } from "../../components/sections";
 export default function Trust() {
   const { tenantId, can } = useApp();
   const { run, busy } = useAction();
-  const { data: c, reload } = useData<any>("trust", { tenantId: tenantId || undefined }, [tenantId]);
+  const { data: c, reload } = useData<any>(tenantId ? "trust" : null, { tenantId: tenantId || undefined }, [tenantId]);
   const [tab, setTab] = useState("Settings");
   const [f, setF] = useState<any>(null);
   const form = f ?? { slug: c?.slug ?? "", title: c?.title ?? "", overview: c?.overview ?? "", contact: c?.contact ?? "", ndaText: c?.ndaText ?? "", defaultDays: c?.defaultDays ?? 30, published: c?.published ?? false };

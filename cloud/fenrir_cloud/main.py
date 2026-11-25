@@ -49,6 +49,7 @@ from .routers import ai_governance as ai_governance_router
 from .routers import esign as esign_router
 from .routers import connectors as connectors_router
 from .routers import attack_paths as attack_paths_router
+from .routers import m365_bulk as m365_bulk_router
 from .routers import rollouts as rollouts_router
 from .routers import apikeys as apikeys_router
 from .routers import roles as roles_router
@@ -363,7 +364,7 @@ def _poll_msp_mailbox(db) -> None:
 
 def _scheduled_jobs() -> list[tuple[str, int, object]]:
     """(name, every N passes of 30 seconds, job), in the order they run within a pass."""
-    from . import condition_remediation, m365_lifecycle, m365_signin_security, network, remediation, topology
+    from . import condition_remediation, m365_bulk, m365_lifecycle, m365_signin_security, network, remediation, topology
     from . import backup as device_backup
     from .routers import artifacts as artifact_store
 
@@ -373,6 +374,7 @@ def _scheduled_jobs() -> list[tuple[str, int, object]]:
         ("remote.expire-sessions", 1, remote.expire_sessions),
         ("m365.temp-admin-expiry", 2, m365_lifecycle.expire_temp_admins),  # every minute
         ("m365.workflows-waiting", 2, m365_lifecycle.advance_waiting),  # hybrid AD steps and Entra Connect sync
+        ("m365.bulk", 1, m365_bulk.tick),  # M365-30: scheduled and running cross-tenant bulk jobs
         ("m365.signin-protection", 20, m365_signin_security.tick),  # every ten minutes: impossible travel and unusual sign-ins
         ("events.outbox", 1, events.process),  # after the jobs above, so their events go out in the same pass
         ("network", 1, network.tick),
@@ -688,6 +690,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(esign_router.page)
     app.include_router(connectors_router.router)
     app.include_router(attack_paths_router.router)
+    app.include_router(m365_bulk_router.router)
     app.include_router(grc_assurance_router.public)
     app.include_router(protection.router)
     app.include_router(protection.console)

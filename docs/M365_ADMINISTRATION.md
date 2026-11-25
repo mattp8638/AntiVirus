@@ -52,6 +52,56 @@ The first reviewed write-administration increment is described in [M365_ACTIONS.
 
 PR #9 provides encrypted direct-tenant application connections and on-demand, read-only users, subscribed licences and Secure Score snapshots. It does not yet implement tenant write administration, GDAP, workload management or baseline enforcement. No live tenant changes have been made as part of this requirement update.
 
+## Bulk and scheduled actions across tenants (M365-30)
+
+**Microsoft 365 across customers → Bulk actions** runs one action against many tenants, or against many users
+across tenants. The code is in `cloud/fenrir_cloud/m365_bulk.py` and `routers/m365_bulk.py`.
+
+Supported actions:
+* Check a standard (read-only).
+* Deploy a standard. A tenant that is already compliant is skipped.
+* Sign users out everywhere.
+* Block or allow sign-in.
+* Update department, job title or usage location.
+
+Actions that produce secrets (password resets, Temporary Access Passes) and actions that create objects are not
+available in bulk.
+
+**Fixed targets.** Each target is checked when the job is created:
+* the customer is one you manage;
+* the connection is working;
+* the connection's last permission check does not show the action missing.
+
+Targets that fail a check are listed with the reason. The rest are stored with a SHA-256 of the list, and the job
+cannot be edited. If the stored list no longer matches its hash, the job is refused without running anything.
+
+**Confirming a job.** Creating a job that changes tenants requires step-up authentication and typing the number of
+targets.
+
+**Run-time checks.** Before each item runs, Fenrir checks again that the technician who created the job:
+* is still active;
+* still holds the permission;
+* still reaches the customer.
+
+It also checks that the connection still exists. If any check fails, that item is skipped with the reason.
+
+**Throttling.** When Microsoft returns 429 with Retry-After, the item and the rest of that tenant's items wait until
+then. Other tenants carry on. After five throttled tries, the item fails.
+
+**Checkpoints and unknown outcomes.** Each item's outcome is committed before the next item starts. An item left
+running by a crash becomes `unknown` and is never sent again. **Reconcile** reads the tenant to settle unknown items:
+* sign-in state and profile fields are read from the user;
+* standards are re-evaluated;
+* sign-outs leave no state to read, so a technician must mark them done, not done, or retry.
+
+**Cancelling.** Cancelling stops new items from starting.
+
+**Scheduling.** A job can be scheduled up to 90 days ahead. The scheduler starts it at that time and continues
+running jobs every 30 seconds. **Run now** works through a job straight away.
+
+**Results.** Counts are kept per status and per customer, and each customer's audit log gets its own result entry. A
+job ends as `completed`, `partial`, `failed` or `cancelled`.
+
 ## Reference material
 
 Reviewed official CIPP documentation on 2026-10-23:

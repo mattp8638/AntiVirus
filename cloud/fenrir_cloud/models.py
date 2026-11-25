@@ -3596,3 +3596,48 @@ class BackupBootCheck(Base):
     accel: Mapped[str] = mapped_column(String(10), default="")
     message: Mapped[str] = mapped_column(Text, default="")
     screenshot: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+
+
+class M365BulkJob(Base):
+    """One action across many Microsoft 365 tenants (M365-30). The targets are fixed when the job is created (with a
+    SHA-256 of the list); each becomes an M365BulkItem whose outcome is recorded on its own, so one tenant's failure
+    never hides another's result."""
+    __tablename__ = "m365_bulk_jobs"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("mbj"))
+    name: Mapped[str] = mapped_column(String(200))
+    operation: Mapped[str] = mapped_column(String(40))
+    parameters: Mapped[dict] = mapped_column(JSON, default=dict)
+    targets: Mapped[list] = mapped_column(JSON, default=list)  # immutable snapshot
+    targets_hash: Mapped[str] = mapped_column(String(64))
+    excluded: Mapped[list] = mapped_column(JSON, default=list)  # targets left out at creation, with the reason
+    tenant_ids: Mapped[list] = mapped_column(JSON, default=list)
+    # scheduled | queued | running | cancelling | completed | partial | failed | cancelled
+    status: Mapped[str] = mapped_column(String(20), default="queued", index=True)
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_by_user_id: Mapped[str] = mapped_column(String(32), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cancelled_by: Mapped[str] = mapped_column(String(200), default="")
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class M365BulkItem(Base):
+    """One tenant/target of a bulk job: its own status, attempts, Retry-After wait and result (the checkpoint)."""
+    __tablename__ = "m365_bulk_items"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("mbi"))
+    job_id: Mapped[str] = mapped_column(String(32), index=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    connection_id: Mapped[str] = mapped_column(String(32))
+    target_id: Mapped[str] = mapped_column(String(64), default="")
+    label: Mapped[str] = mapped_column(String(300), default="")
+    # pending | running | succeeded | failed | unknown | skipped | cancelled
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    not_before: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolved_by: Mapped[str] = mapped_column(String(200), default="")

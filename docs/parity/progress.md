@@ -9,9 +9,9 @@ Baseline of the review: `main` at `790e364`. Work branch: `claude/jolly-goodall-
 | State | Count |
 |---|---|
 | verified | 6 (FIX-01 to FIX-05, FIX-08) |
-| implemented-unverified | 33 |
+| implemented-unverified | 34 |
 | partial | 121 |
-| missing | 16 (RMM-14, MDM-02, AV-15, AV-16, AV-21, M365-09/11/14/15/27/29/30/32, VULN-08, VULN-12, VULN-13) |
+| missing | 15 (RMM-14, MDM-02, AV-15, AV-16, AV-21, M365-09/11/14/15/27/29/32, VULN-08, VULN-12, VULN-13) |
 | externally-blocked | 2 (FIX-06; AV-24 needs a Microsoft-signed kernel filter) |
 
 Overall parity: **not passed**. MVP: **not yet declared**.
@@ -30,6 +30,7 @@ Each entry below cites its code and tests in `catalogue.csv` and is `implemented
 * AGT-09 supply chain: hash-locked Python installs, a CI check that fails on any unlocked install or stale lock,
   reproducible agent builds checked in CI, on top of the existing SBOMs and release provenance
   (`docs/SUPPLY_CHAIN.md`).
+* M365-30 cross-tenant bulk and scheduled actions (mocked Microsoft responses).
 * AV-24 `externally-blocked`: needs a Microsoft-signed kernel filter.
 
 ## 2026-11-25 backup: AT-19 in CI, FLOW-07, BDR-06

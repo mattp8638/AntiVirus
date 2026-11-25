@@ -46,9 +46,21 @@ METHOD_COLLECTIONS = {
 
 
 class ProviderError(Exception):
-    def __init__(self, message, uncertain=False):
+    def __init__(self, message, uncertain=False, retry_after: float | None = None):
         super().__init__(message)
         self.uncertain = uncertain
+        self.retry_after = retry_after  # set when Microsoft throttled the request (429) and said when to retry
+
+
+def retry_after(response: httpx.Response) -> float | None:
+    """Seconds Microsoft asked us to wait (Retry-After) on a throttled answer; None when it was not throttling."""
+    if response.status_code not in (429, 503):
+        return None
+    value = response.headers.get("Retry-After", "")
+    try:
+        return max(1.0, min(float(value), 3600.0))
+    except ValueError:
+        return 30.0
 
 
 @contextmanager
@@ -244,6 +256,8 @@ def new_password(length: int = 16) -> str:
 
 def _rejected(exc: httpx.HTTPStatusError, what: str = "the action") -> ProviderError:
     status = exc.response.status_code
+    if status == 429:  # throttled before Microsoft did anything: safe to try again after Retry-After
+        return ProviderError(f"Microsoft throttled {what}." + microsoft_said(exc.response), retry_after=retry_after(exc.response))
     return ProviderError(f"Microsoft rejected {what}." + microsoft_said(exc.response), uncertain=status >= 500 or status == 408)
 
 
