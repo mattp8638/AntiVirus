@@ -2,4 +2,5 @@
 
 #[cfg(target_os = "linux")]
 pub mod control;
+pub mod era;
 pub mod journal;

@@ -165,6 +165,10 @@ pub struct Inventory {
     /// The local recovery partition, when installed (Windows).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_recovery: Option<LocalRecoveryInfo>,
+    /// Other backup software found on the machine (installed programs and
+    /// services that say they back up or replicate, the OS's own backup).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub other_backup: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -673,7 +677,23 @@ pub struct S3Settings {
     pub lock_mode: Option<String>,
     #[serde(default)]
     pub lock_days: u32,
+    /// Archive tier for backup data (chunks): S3 `STANDARD_IA`,
+    /// `ONEZONE_IA`, `INTELLIGENT_TIERING` or `GLACIER_IR`; Azure `Cool` or
+    /// `Cold`. Only tiers read without a restore request; the repository's
+    /// configuration, manifests and locks stay in the default tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_class: Option<String>,
 }
+
+/// Storage classes that can be read at once (no restore request first).
+pub const S3_STORAGE_CLASSES: &[&str] = &[
+    "STANDARD",
+    "STANDARD_IA",
+    "ONEZONE_IA",
+    "INTELLIGENT_TIERING",
+    "GLACIER_IR",
+];
+pub const AZURE_ACCESS_TIERS: &[&str] = &["Hot", "Cool", "Cold"];
 
 fn default_region() -> String {
     "us-east-1".into()
@@ -726,6 +746,10 @@ pub struct JobSpec {
     /// the source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub copy_target: Option<RepoAccess>,
+    /// An offline media set (rotated removable drives): the other drives of
+    /// the set, tried in order when `copy_target` is not attached.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub copy_alternatives: Vec<RepoAccess>,
     /// Creating a repository in an existing dedup group: a member of the
     /// group this machine can open, to take the group's key from.
     #[serde(default, skip_serializing_if = "Option::is_none")]

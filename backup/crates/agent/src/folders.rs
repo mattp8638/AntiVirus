@@ -1,7 +1,9 @@
 //! Folder backups: chosen files and folders (crate `filebackup`, design:
 //! docs/design/file-backup.md). On Windows the volumes holding them are
-//! snapshotted with VSS first, so open and locked files are copied as they
-//! were at one moment; network shares and other systems read the live files.
+//! snapshotted with VSS first, and on macOS the Data volume with an APFS
+//! local snapshot (`/` then means the whole Data volume), so open files are
+//! copied as they were at one moment; network shares and Linux read the
+//! live files.
 
 use anyhow::anyhow;
 use core_format::manifest::MachineInfo;
@@ -33,14 +35,18 @@ pub fn run(
         machine_id: machine_id(ctx),
         hostname: crate::inventory::hostname(),
     };
-    #[cfg_attr(not(windows), allow(unused_mut))]
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(unused_mut))]
     let mut notes: Vec<String> = Vec::new();
     rep.progress("snapshot", 0, 1, "preparing");
+    // What the files were read from, reported with the result.
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(unused_mut))]
+    let mut snapshot: Option<String> = None;
 
     #[cfg(windows)]
     let snap = match snapshot_win::win::paths::PathSnapshot::create(paths) {
         Ok(s) => {
             notes.extend(s.notes.iter().cloned());
+            snapshot = Some("VSS".to_string());
             Some(s)
         }
         Err(e) => {
@@ -53,7 +59,24 @@ pub fn run(
         Some(s) if !p.starts_with("UNC/") => s.translate(p),
         _ => filebackup::live(p),
     };
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    let snap = match crate::macsnap::Snapshot::create() {
+        Ok(s) => {
+            notes.extend(s.notes.iter().cloned());
+            snapshot = Some(format!("APFS {}", s.name()));
+            Some(s)
+        }
+        Err(e) => {
+            notes.push(format!("No APFS snapshot ({e}): files were read live, so files open for writing may be inconsistent"));
+            None
+        }
+    };
+    #[cfg(target_os = "macos")]
+    let translate = |p: &str| match &snap {
+        Some(s) if !p.starts_with("UNC/") => s.translate(&filebackup::live(p)),
+        _ => filebackup::live(p),
+    };
+    #[cfg(not(any(windows, target_os = "macos")))]
     let translate = |p: &str| filebackup::live(p);
 
     let progress = |path: &str, bytes: u64, files: u64| {
@@ -83,6 +106,12 @@ pub fn run(
             notes.push(format!("releasing the VSS snapshot: {e}"));
         }
     }
+    #[cfg(target_os = "macos")]
+    if let Some(sn) = snap {
+        if let Err(e) = sn.finish() {
+            notes.push(format!("removing the APFS snapshot: {e}"));
+        }
+    }
     let r = r.map_err(|e| anyhow!("{e}"))?;
     let m = repo.load_manifest(&r.image_id)?;
     let mut warnings = notes;
@@ -98,7 +127,7 @@ pub fn run(
         "image_id": r.image_id, "files": r.files, "folders": r.folders, "bytes": r.bytes,
         "files_read": r.files_read, "bytes_read": r.bytes_read, "files_unchanged": r.files_unchanged,
         "files_failed": r.files_failed, "excluded": r.excluded,
-    }] }));
+    }], "snapshot": snapshot }));
     Ok(u)
 }
 

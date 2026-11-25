@@ -61,3 +61,14 @@ Both repositories must use the same chunk size (chunk indexes are offsets).
   copy now; the plan's copy can be turned off; a plan cannot copy into its
   own repository.
 * CLI: copy with the destination's own passphrase, then restore from it.
+
+## Offline media rotation
+
+For copies kept away from the network (an air gap), several removable drives are rotated: one is attached to the
+machine that makes the copies while the others are stored off-site. Each drive is a repository of its own (its
+own passphrase and recovery key) and all of them are given the same **offline media set** name (Repositories ›
+Offline media set). A plan's off-site copy pointing at any drive of the set then goes to whichever drive is
+attached: the server sends the other drives as alternatives and the agent uses the first that opens. A drive
+receives every backup it does not have yet, not only the latest, since it may have been away for weeks. The copies
+are listed under the drive that received them. When no drive of the set has had a copy for 8 days, an alert asks
+for the next drive of the rotation to be attached; when no drive is attached at all the copy job says so.

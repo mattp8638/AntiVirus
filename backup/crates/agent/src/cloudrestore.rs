@@ -122,6 +122,7 @@ pub fn azure(
             prefix: prefix.clone(),
             credential: azstore::credential_from(&creds.password),
             lock: None,
+            access_tier: None,
         })
     };
     let mut urls = Vec::new();
@@ -193,6 +194,7 @@ pub fn aws(
         access_key: creds.username,
         secret_key: creds.password,
         lock: None,
+        storage_class: None,
     })?;
     let dir = Path::new(staging.trim()).join(format!("fenrir-{name}-{}", crate::restore::stamp(m)));
     if !Path::new(staging.trim()).is_absolute() {

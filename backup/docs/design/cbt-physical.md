@@ -1,6 +1,7 @@
 # Decision record: changed-block tracking for physical machines
 
-Status: **proposed, needs decisions** (see section 5). Hyper-V VMs already
+Status: **Linux built (dm-era), Windows not planned** (a kernel filter driver
+needs Microsoft attestation signing, which is not available). See section 6. Hyper-V VMs already
 have changed-block tracking through RCT (`frequent-backups.md` §3.1).
 
 ## 1. Problem
@@ -71,3 +72,28 @@ must be exact by design.
   continuous data protection are crowded patent areas; a freedom-to-operate
   review is advised (the techniques above are long-standing and documented
   publicly, but this is not legal advice).
+
+## 6. What was built (Linux)
+
+`fenrir-backup cbt` (CLI; `crates/cdp/src/era.rs`):
+
+* `cbt enable --name N --volume /dev/vg/lv` (unmounted): a 32 MiB metadata LV
+  `<lv>-fenrir-era` and the device-mapper `era` target over the volume,
+  `/dev/mapper/fenrir-era-N`, which is mounted from then on (as with CDP).
+* `cbt backup --name N`: with the file system frozen (`fsfreeze`), the era is
+  checkpointed and an LVM snapshot of the volume made; the file system is then
+  thawed. The blocks written since the previous backup's checkpoint are listed
+  by `era_invalidate --written-since` from a metadata snapshot, and the engine
+  reads only those (`ChangedSince`), taking every other chunk from the previous
+  image after checking about one in 64 of them. The first backup, or `--full`,
+  reads everything. The saved era only moves forward after a backup succeeds,
+  so a failed backup makes the next one read more, never less.
+* Recovery is unchanged: the images are ordinary disk images of the volume.
+
+Proof: CI job `cbt` (`ci/e2e-cbt.sh`) on a real kernel: after 1 MiB of a 40 MiB
+file changes, the second backup reads only the changed blocks (more than 30 MiB
+taken unread from the first image) and its restore gives a clean ext4 with
+byte-identical files.
+
+Windows physical machines keep reading their used blocks (VSS) on each backup;
+Hyper-V VMs use RCT.

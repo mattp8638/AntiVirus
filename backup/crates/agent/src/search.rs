@@ -127,6 +127,17 @@ pub fn index(
     image: Uuid,
     rep: &Reporter,
 ) -> anyhow::Result<JobUpdate> {
+    // SaaS backups carry their own index of items: nothing to build.
+    if repo
+        .load_manifest(&image)
+        .is_ok_and(|m| m.os.family == "saas")
+    {
+        let mut u = finished(JobState::Succeeded);
+        u.result = Some(
+            json!({ "image_id": image, "entries": 0, "note": "SaaS backups are searched through their own index" }),
+        );
+        return Ok(u);
+    }
     let c = match cached(ctx, repo, image) {
         Some(c) => c,
         None => build(ctx, repo, image, rep)?,
@@ -153,6 +164,8 @@ pub fn search(
     let started = Instant::now();
     let (mut hits, mut searched, mut not_indexed, mut truncated) =
         (Vec::new(), 0usize, Vec::new(), false);
+    // Items of SaaS backups (mail, files, records, messages), from their index.
+    let mut saas_hits: Vec<serde_json::Value> = Vec::new();
     let known: std::collections::HashSet<Uuid> = repo.list_image_ids()?.into_iter().collect();
     for (n, id) in images.iter().enumerate() {
         if ctx.ctl.is_cancelled() {
@@ -162,6 +175,31 @@ pub fn search(
             continue;
         }
         rep.progress("searching", n as u64, images.len() as u64, "");
+        if let Ok(m) = repo.load_manifest(id) {
+            if m.os.family == "saas" {
+                let Ok(idx) = saas::store::read_index(repo, &m) else {
+                    not_indexed.push(*id);
+                    continue;
+                };
+                searched += 1;
+                for it in &idx.items {
+                    if saas_matches(&q, it) {
+                        if hits.len() + saas_hits.len() >= limit {
+                            truncated = true;
+                            break;
+                        }
+                        saas_hits.push(json!({
+                            "image_id": id, "account": it.account, "kind": it.kind, "path": it.path,
+                            "size": it.size, "modified": it.modified, "folder": false,
+                        }));
+                    }
+                }
+                if truncated {
+                    break;
+                }
+                continue;
+            }
+        }
         let cat = match cached(ctx, repo, *id) {
             Some(c) => c,
             None if started.elapsed() < budget => match build(ctx, repo, *id, rep) {
@@ -190,10 +228,63 @@ pub fn search(
         "hits": hits.iter().map(|(id, h)| json!({
             "image_id": id, "volume": h.volume, "path": h.path, "size": h.size,
             "modified": h.modified, "folder": h.folder,
-        })).collect::<Vec<_>>(),
+        })).chain(saas_hits).collect::<Vec<_>>(),
         "searched": searched,
         "not_indexed": not_indexed,
         "truncated": truncated,
     }));
     Ok(u)
+}
+
+/// Whether a SaaS item matches: its path (folder and subject, file path,
+/// object and record ID) or, with its account, its name.
+fn saas_matches(q: &catalog::Query, it: &saas::store::Item) -> bool {
+    let name = it.meta["name"]
+        .as_str()
+        .or(it.meta["subject"].as_str())
+        .unwrap_or("");
+    q.matches(&it.path)
+        || (!name.is_empty() && q.matches(&format!("{}/{}/{name}", it.account, it.path)))
+}
+
+#[cfg(test)]
+mod saas_search_tests {
+    use super::saas_matches;
+    use serde_json::json;
+
+    fn item(kind: &str, path: &str, meta: serde_json::Value) -> saas::store::Item {
+        saas::store::Item {
+            account: "ann@contoso.com".into(),
+            kind: kind.into(),
+            id: "x".into(),
+            path: path.into(),
+            modified: String::new(),
+            size: 0,
+            hash: String::new(),
+            meta,
+            chunks: vec![],
+        }
+    }
+
+    #[test]
+    fn mail_files_and_records() {
+        let q = |s: &str| catalog::Query::parse(s).unwrap();
+        let mail = item(
+            "mail",
+            "Inbox/Budget for 2026",
+            json!({ "subject": "Budget for 2026" }),
+        );
+        assert!(saas_matches(&q("budget"), &mail));
+        assert!(saas_matches(&q("budget 2026"), &mail));
+        assert!(!saas_matches(&q("invoice"), &mail));
+        let file = item("file", "Docs/plan.xlsx", json!({}));
+        assert!(saas_matches(&q("*.xlsx"), &file));
+        assert!(saas_matches(&q("docs/plan*"), &file));
+        let rec = item(
+            "record",
+            "Account/001A",
+            json!({ "object": "Account", "name": "Acme Ltd" }),
+        );
+        assert!(saas_matches(&q("acme"), &rec), "a record by its name");
+    }
 }

@@ -73,6 +73,8 @@ pub struct AzureConfig {
     pub prefix: String,
     pub credential: Credential,
     pub lock: Option<Lock>,
+    /// Access tier for chunk blobs: "Cool" or "Cold" (online tiers).
+    pub access_tier: Option<String>,
 }
 
 impl std::fmt::Debug for AzureConfig {
@@ -614,6 +616,14 @@ impl Backend for AzureBackend {
         if Self::lockable(key) {
             h.extend(self.lock_headers(self.lock_until()));
         }
+        if let Some(t) = self
+            .cfg
+            .access_tier
+            .as_ref()
+            .filter(|_| key.starts_with("chunks/") || key.contains("/chunks/"))
+        {
+            h.push(("x-ms-access-tier", t.clone()));
+        }
         let r = self.request("PUT", &blob, &[], &h, data)?;
         match r.status {
             201 => Ok(PutOutcome::Created),
@@ -771,6 +781,7 @@ mod tests {
             prefix: String::new(),
             credential: Credential::AccountKey("very-secret".into()),
             lock: None,
+            access_tier: None,
         };
         assert!(!format!("{c:?}").contains("very-secret"));
     }
