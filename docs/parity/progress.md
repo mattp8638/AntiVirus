@@ -9,12 +9,28 @@ Baseline of the review: `main` at `790e364`. Work branch: `claude/jolly-goodall-
 | State | Count |
 |---|---|
 | verified | 6 (FIX-01 to FIX-05, FIX-08) |
-| implemented-unverified | 19 (FIX-07, AGT-04, CORE-03, FLOW-01/02/04/07/09, BDR-01/02/04/06 and 7 requirements the brief marked U) |
-| partial | 120 |
-| missing | 32 |
-| externally-blocked | 1 (FIX-06) |
+| implemented-unverified | 33 |
+| partial | 121 |
+| missing | 16 (RMM-14, MDM-02, AV-15, AV-16, AV-21, M365-09/11/14/15/27/29/30/32, VULN-08, VULN-12, VULN-13) |
+| externally-blocked | 2 (FIX-06; AV-24 needs a Microsoft-signed kernel filter) |
 
 Overall parity: **not passed**. MVP: **not yet declared**.
+
+## 2026-11-25 missing entries built (GRC, flows, attack surface, supply chain)
+
+Each entry below cites its code and tests in `catalogue.csv` and is `implemented-unverified` unless stated. None is
+`verified` yet: that needs its acceptance scenario on real tenants and agents.
+
+* GRC-17 continuity plans and exercises; GRC-08 policy acknowledgement by staff; GRC-18 registers and GRC-13
+  management reviews; GRC-15 security questionnaires; GRC-14 trust centre with FLOW-10 gated disclosure; GRC-21 AI
+  governance; GRC-09 agreements and e-signature; GRC-11 evidence connectors.
+* FLOW-06 control gap to treated, evidenced exception; FLOW-03 incident to restoration and governance evidence.
+* VULN-19 attack paths (analysis, not an executed test); VULN-22 `partial`: outbound scans, monitors and webhooks
+  refuse private, loopback and metadata addresses and pin the resolved address.
+* AGT-09 supply chain: hash-locked Python installs, a CI check that fails on any unlocked install or stale lock,
+  reproducible agent builds checked in CI, on top of the existing SBOMs and release provenance
+  (`docs/SUPPLY_CHAIN.md`).
+* AV-24 `externally-blocked`: needs a Microsoft-signed kernel filter.
 
 ## 2026-11-25 backup: AT-19 in CI, FLOW-07, BDR-06
 

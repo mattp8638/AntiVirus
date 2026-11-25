@@ -142,8 +142,8 @@ FROM backup-agents-${FENRIR_AGENTS} AS backup-agents
 FROM python:3.13-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 FENRIR_CONSOLE_DIR=/app/console/dist
 WORKDIR /app/cloud
-COPY cloud/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt "psycopg[binary]>=3.2"
+COPY cloud/requirements.lock ./
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 COPY cloud/ ./
 COPY catalogue/ /app/catalogue/
 COPY ml/fenrir_ml /app/ml/fenrir_ml

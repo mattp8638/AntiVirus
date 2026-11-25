@@ -1,0 +1,5 @@
+# Inputs for the hash-locked installs (AGT-09). Edit requirements.txt, then regenerate both locks:
+#   pip-compile --generate-hashes --strip-extras --allow-unsafe -o requirements.lock requirements-deploy.in
+#   pip-compile --generate-hashes --strip-extras --allow-unsafe -o requirements-dev.lock requirements-dev.in
+-r requirements.txt
+psycopg[binary]>=3.2

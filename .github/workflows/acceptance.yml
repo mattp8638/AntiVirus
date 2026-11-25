@@ -38,7 +38,7 @@ jobs:
           cache-dependency-path: agent/linux/go.sum
       - name: Install the server and build the agent
         run: |
-          pip install -r cloud/requirements.txt
+          pip install --require-hashes -r cloud/requirements.lock
           go -C agent/linux build -o "$RUNNER_TEMP/fenrir-agent" ./cmd/fenrir-agent
       - name: Start Fenrir
         working-directory: cloud
@@ -90,7 +90,7 @@ jobs:
         # own step is gone before the agent can enrol. The agent itself runs as a Windows service and is unaffected.
         shell: pwsh
         run: |
-          pip install -r cloud/requirements.txt
+          pip install -r cloud/requirements.txt  # supply-chain: unlocked (the hash lock is resolved on Linux: uvloop, no colorama)
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $temp = $env:RUNNER_TEMP -replace '\\', '/'
           $env:FENRIR_DATABASE_URL = "sqlite:///$temp/fenrir.db"
