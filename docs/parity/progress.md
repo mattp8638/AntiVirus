@@ -24,6 +24,8 @@ Overall parity: **not passed**. MVP: **not yet declared**.
   folder backups never initialised COM on the job thread, so VSS failed and files were read live; fixed, and the
   folder backup now reads from a VSS snapshot. macOS runners refuse local APFS snapshots, so the macOS folder backup
   falls back to live files with a warning there.
+* Bare-metal recovery from the recovery ISO is proven in CI too (job recovery-e2e, [run 45569395053](https://github.com/zy538324/Fenrir-Backup/actions/runs/45569395053)): the
+  tracker had still listed it as not booted in CI.
 * FLOW-07 `implemented-unverified`: failed backup -> incident -> authorised isolated recovery (boot check VM) ->
   hashed evidence with measured RTO and RPO; proven with simulated agents only.
 * BDR-06 `implemented-unverified`: SaaS search, archive tiers and self-service restore in the client portal; eDiscovery
@@ -41,7 +43,7 @@ The six backup entries were still `missing` from when the backup-oversight modul
 * BDR-02 `implemented-unverified`: Object Lock and Azure immutability (emulator tests, now run in CI), append-only
   gateway access, ransomware hold, passphrase plus MFA unlock.
 * BDR-03 `partial`: file, disk, bare-metal, VM, cloud and single-database restore, boot verification, DR runbooks,
-  malware scans with the last clean point; the recovery ISO's boot and restore is not proven in CI.
+  malware scans with the last clean point; the recovery ISO's boot and restore is proven in CI (2026-11-25).
 * BDR-04 `implemented-unverified`: agent-executed jobs as evidence, deduplicated alerts, MSP view, scheduled backup
   report; no discovery of third-party backup products.
 * BDR-05 `partial`: Microsoft 365, Google Workspace and Salesforce with mocked APIs; SharePoint, Teams, Entra and
