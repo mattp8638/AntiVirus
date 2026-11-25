@@ -88,7 +88,8 @@ Each phase is a set of small vertical slices: migration, domain logic, API, cons
    - Done: ISMS roles (`isms_memberships`, migration 88) with the API (`/api/console/isms`), audit events and the **ISMS roles** tab; row-level security on PostgreSQL (`isms/rls.py`), tested on a real server by `tests/test_isms_rls.py` with a non-superuser account.
    - Found: the official PostgreSQL image makes `POSTGRES_USER` a superuser, and superusers bypass row-level security, so a default install relies on the application's tenant scoping alone. The platform readiness page now says so. Moving installs to a non-superuser database account is a separate deployment change.
    - Done: organization and scope (scope with versions, context issues, interested parties, legal entities, sites) and the asset register with all-or-nothing CSV import (migration 89), with the **Organization** and **Assets** tabs.
-   - Next: controls and assessments, then onboarding answers and the Statement of Applicability.
+   - Done: the content library (`isms_content_packs`: immutable pack versions published at startup), framework choice pinned to a pack version, onboarding questions and answers, applicability preview and apply, manual overrides with justifications, and the customer's controls with owners, manual states and notes (migration 90), with the **Programme setup** and **ISMS controls** tabs.
+   - Next: control assessment ("is this in place today?", including "does not apply"), then the Statement of Applicability and its export.
 3. **Documents.** Templates, generation to Word and PDF, approval with immutable versions, acknowledgement.
 4. **Management system.** People and training, internal audit, management review, improvement, objectives and metrics, ISMS change log.
 5. **Assurance and MSP.** Auditor portal, supplier and incident links, portfolio view across customers, template push, dashboards and digests.

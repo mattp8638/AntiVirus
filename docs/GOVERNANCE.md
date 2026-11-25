@@ -61,6 +61,18 @@ Open **Governance → ISMS roles** with a customer chosen in the tenant picker.
 - A person can only be given a role in a customer they can already see in Fenrir. Client portal accounts can only be staff.
 - Every role given, changed or removed is recorded in the audit log.
 
+## Programme setup and ISMS controls
+
+**Programme setup** needs an ISMS role that can run the programme.
+
+1. Choose the frameworks the customer runs. Each stays on the content version chosen; a newer version is shown as available and is only adopted after a reviewed upgrade.
+2. Answer the questions the chosen frameworks ask about the organization (for example whether it develops software or has premises).
+3. **Review the changes** shows which requirements, controls and document sections would start or stop applying, and why. Nothing is saved until you choose **Apply**.
+
+Mandatory clauses always apply. A requirement or control can be included or excluded by hand with a written justification, except that mandatory clauses and anything a rule requires cannot be excluded.
+
+**ISMS controls** lists the customer's controls from the common control library. A control is not applicable when no applicable requirement needs it; its owner, state and notes are kept for when it applies again. ISMS managers set owners and states. A control's owner can change its state and notes, but not hand it to someone else. "Implemented with evidence" is set from current evidence, not by hand.
+
 ## Organization, scope and assets
 
 These tabs need an ISMS role that can run the programme (ISMS manager or ISMS administrator).

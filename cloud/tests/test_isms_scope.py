@@ -12,8 +12,9 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
-from fenrir_cloud.isms.models import (IsmsAsset, IsmsContextIssue, IsmsEntity, IsmsInterestedParty, IsmsMembership,
-                                      IsmsScope, IsmsSite)
+from fenrir_cloud.isms.models import (IsmsApplicability, IsmsApplicabilityOverride, IsmsAsset, IsmsContextIssue,
+                                      IsmsEntity, IsmsInterestedParty, IsmsMembership, IsmsProfileAnswer, IsmsScope,
+                                      IsmsSite, IsmsTenantControl, IsmsTenantFramework)
 from fenrir_cloud.isms.scope import TENANT_TABLES, get_scoped, require_same_tenant, scoped, tenant_table
 from fenrir_cloud.models import Base, GrcPolicy
 
@@ -26,6 +27,15 @@ FACTORIES: dict[type, callable] = {
     IsmsContextIssue: lambda t: IsmsContextIssue(tenant_id=t, kind="external", description="New regulation"),
     IsmsInterestedParty: lambda t: IsmsInterestedParty(tenant_id=t, name="Customers"),
     IsmsAsset: lambda t: IsmsAsset(tenant_id=t, type="system", name="CRM"),
+    IsmsTenantFramework: lambda t: IsmsTenantFramework(tenant_id=t, framework="iso27001", pack_id="iso27001-2022",
+                                                       pack_version="1.1.0"),
+    IsmsProfileAnswer: lambda t: IsmsProfileAnswer(tenant_id=t, question_ref="develops_software", value=True),
+    IsmsApplicability: lambda t: IsmsApplicability(tenant_id=t, target_type="control", target_key="CC-BKP-01",
+                                                   applicable=True, source="derived", reason="Needed."),
+    IsmsApplicabilityOverride: lambda t: IsmsApplicabilityOverride(tenant_id=t, target_type="control",
+                                                                   target_key="CC-BKP-01", applicable=False,
+                                                                   justification="Not used."),
+    IsmsTenantControl: lambda t: IsmsTenantControl(tenant_id=t, ref="CC-BKP-01", title="Backups", statement="x"),
 }
 
 

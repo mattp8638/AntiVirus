@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
+from typing import Any
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..db import Base
@@ -105,3 +106,91 @@ class IsmsAsset(_Row, Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     classification: Mapped[str] = mapped_column(String(20), default="internal")
     owner_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+
+class IsmsContentPack(Base):
+    """One published version of a content pack (platform content, not tenant data; see ``library.py``)."""
+    __tablename__ = "isms_content_packs"
+    __table_args__ = (UniqueConstraint("pack_id", "pack_version", name="uq_isms_content_pack_version"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("icp"))
+    pack_id: Mapped[str] = mapped_column(String(80), index=True)
+    pack_version: Mapped[str] = mapped_column(String(20))
+    kind: Mapped[str] = mapped_column(String(20))  # framework | control-library | templates
+    framework: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    licence: Mapped[str] = mapped_column(String(120))
+    data: Mapped[dict] = mapped_column(JSON)
+    sha256: Mapped[str] = mapped_column(String(64))
+    published_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+@tenant_table
+class IsmsTenantFramework(_Row, Base):
+    """A framework the customer runs, pinned to the pack version chosen (upgrades are reviewed, never automatic)."""
+    __tablename__ = "isms_tenant_frameworks"
+    __table_args__ = (UniqueConstraint("tenant_id", "framework", name="uq_isms_tenant_framework"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("itf"))
+    framework: Mapped[str] = mapped_column(String(80))
+    pack_id: Mapped[str] = mapped_column(String(80))
+    pack_version: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(30), default="target_certification")  # in_scope | target_certification | certified
+    target_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+
+@tenant_table
+class IsmsProfileAnswer(_Row, Base):
+    """An answer to an onboarding question, by the question's stable ref."""
+    __tablename__ = "isms_profile_answers"
+    __table_args__ = (UniqueConstraint("tenant_id", "question_ref", name="uq_isms_profile_answer"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ipa"))
+    question_ref: Mapped[str] = mapped_column(String(80))
+    value: Mapped[Any] = mapped_column(JSON)
+
+
+@tenant_table
+class IsmsApplicability(_Row, Base):
+    """The applicability engine's decision for one requirement, control or template section, with its reason."""
+    __tablename__ = "isms_applicability"
+    __table_args__ = (UniqueConstraint("tenant_id", "target_type", "target_key", name="uq_isms_applicability"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("iap"))
+    target_type: Mapped[str] = mapped_column(String(20))  # requirement | control | template_section
+    target_key: Mapped[str] = mapped_column(String(200))  # requirement: <framework>:<ref>; otherwise the ref
+    applicable: Mapped[bool] = mapped_column(Boolean)
+    source: Mapped[str] = mapped_column(String(20))  # default | mandatory | rule | override | derived
+    rule_refs: Mapped[list] = mapped_column(JSON, default=list)
+    reason: Mapped[str] = mapped_column(Text)
+    justification: Mapped[str | None] = mapped_column(Text, nullable=True)
+    locked: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+@tenant_table
+class IsmsApplicabilityOverride(_Row, Base):
+    """A manual decision on applicability, always with a justification."""
+    __tablename__ = "isms_applicability_overrides"
+    __table_args__ = (UniqueConstraint("tenant_id", "target_type", "target_key", name="uq_isms_applicability_override"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("iao"))
+    target_type: Mapped[str] = mapped_column(String(20))
+    target_key: Mapped[str] = mapped_column(String(200))
+    applicable: Mapped[bool] = mapped_column(Boolean)
+    justification: Mapped[str] = mapped_column(Text)
+    set_by_control: Mapped[str | None] = mapped_column(String(40), nullable=True)  # from a "does not apply" answer
+
+
+@tenant_table
+class IsmsTenantControl(_Row, Base):
+    """A control in the customer's programme: from the common control library, or one the customer added."""
+    __tablename__ = "isms_tenant_controls"
+    __table_args__ = (UniqueConstraint("tenant_id", "ref", name="uq_isms_tenant_control"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("itc"))
+    ref: Mapped[str] = mapped_column(String(40))
+    common: Mapped[bool] = mapped_column(Boolean, default=True)  # False for the customer's own controls
+    title: Mapped[str] = mapped_column(String(300))
+    statement: Mapped[str] = mapped_column(Text)
+    owner_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    state: Mapped[str] = mapped_column(String(30), default="not_started")
+    frequency: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # "Is this in place today?": yes | partly | no | not_relevant, and how it is done (shown in the SoA).
+    assessment: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    implementation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    assessed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    assessed_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)

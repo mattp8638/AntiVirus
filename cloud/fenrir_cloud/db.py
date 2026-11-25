@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 89
+LATEST_MIGRATION = 90
 
 def init_engine(url: str, pool_size: int = 5, max_overflow: int = 10) -> Engine:
     global _engine, _session_factory
@@ -611,6 +611,17 @@ def migrate(bind: Engine) -> list[int]:
                 rls.enable(conn, [m.__tablename__ for m in tables])
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (89)"))
                 applied.append(89)
+            if 90 not in versions:
+                # ISMS content library, framework choices, onboarding answers, applicability and the customer's controls.
+                from .isms import models as isms_models, rls
+                isms_models.IsmsContentPack.__table__.create(conn, checkfirst=True)  # platform content: no tenant_id
+                tables = [isms_models.IsmsTenantFramework, isms_models.IsmsProfileAnswer, isms_models.IsmsApplicability,
+                          isms_models.IsmsApplicabilityOverride, isms_models.IsmsTenantControl]
+                for model in tables:
+                    model.__table__.create(conn, checkfirst=True)
+                rls.enable(conn, [m.__tablename__ for m in tables])
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (90)"))
+                applied.append(90)
             conn.commit()
         except Exception:
             conn.rollback()
