@@ -60,6 +60,7 @@ from .routers import google_workspace as google_workspace_router
 from .routers import m365_purview as m365_purview_router
 from .routers import infra as infra_router
 from .routers import workload as workload_router
+from .routers import sandbox as sandbox_router
 from .routers import rollouts as rollouts_router
 from .routers import apikeys as apikeys_router
 from .routers import roles as roles_router
@@ -375,7 +376,7 @@ def _poll_msp_mailbox(db) -> None:
 
 def _scheduled_jobs() -> list[tuple[str, int, object]]:
     """(name, every N passes of 30 seconds, job), in the order they run within a pass."""
-    from . import condition_remediation, m365_absence, m365_bulk, m365_lifecycle, m365_signin_security, network, remediation, topology, web_assessment, infra
+    from . import condition_remediation, m365_absence, m365_bulk, m365_lifecycle, m365_signin_security, network, remediation, topology, web_assessment, infra, sandbox
     from . import backup as device_backup
     from .routers import artifacts as artifact_store
 
@@ -389,6 +390,7 @@ def _scheduled_jobs() -> list[tuple[str, int, object]]:
         ("m365.absences", 2, m365_absence.tick),  # M365-09: start and revert scheduled absences every minute
         ("web-assessments", 2, web_assessment.tick),  # VULN-08: queued web application assessments
         ("infrastructure", 2, infra.tick),  # RMM-14: hypervisor and vCenter polling when due
+        ("sandbox", 2, sandbox.tick),  # AV-15: collect, submit and poll approved sandbox submissions
         ("m365.signin-protection", 20, m365_signin_security.tick),  # every ten minutes: impossible travel and unusual sign-ins
         ("events.outbox", 1, events.process),  # after the jobs above, so their events go out in the same pass
         ("network", 1, network.tick),
@@ -716,6 +718,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(infra_router.router)
     app.include_router(infra_router.agent_router)
     app.include_router(workload_router.router)
+    app.include_router(sandbox_router.router)
     app.include_router(grc_assurance_router.public)
     app.include_router(protection.router)
     app.include_router(protection.console)

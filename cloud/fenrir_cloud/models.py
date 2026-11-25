@@ -3905,3 +3905,48 @@ class WorkloadReport(Base):
     data: Mapped[dict] = mapped_column(JSON, default=dict)
     findings: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+class SandboxProvider(Base):
+    """A sandbox the MSP has a licence for (AV-15): a CAPE-compatible REST API. The key is encrypted."""
+    __tablename__ = "sandbox_providers"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("sbp"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    kind: Mapped[str] = mapped_column(String(20), default="cape")
+    base_url: Mapped[str] = mapped_column(String(300))
+    credentials_envelope: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(20), default="unchecked")
+    last_error: Mapped[str] = mapped_column(String(500), default="")
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class SandboxSubmission(Base):
+    """One file or hash sent for sandbox analysis (AV-15): the approval, the sample's path through Fenrir, the provider's
+    task and the verdict, tied to the alert or incident it came from."""
+    __tablename__ = "sandbox_submissions"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("sbs"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    provider_id: Mapped[str] = mapped_column(String(32), default="")
+    sha256: Mapped[str] = mapped_column(String(64), index=True)
+    filename: Mapped[str] = mapped_column(String(300), default="")
+    path: Mapped[str] = mapped_column(String(1000), default="")
+    quarantine_record: Mapped[str] = mapped_column(String(100), default="")
+    mode: Mapped[str] = mapped_column(String(10), default="file")  # file | hash
+    alert_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    incident_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # awaiting_approval | approved | collecting | submitted | completed | refused | rejected | failed
+    status: Mapped[str] = mapped_column(String(20), default="awaiting_approval", index=True)
+    reason: Mapped[str] = mapped_column(String(500), default="")
+    requested_by: Mapped[str] = mapped_column(String(200), default="")
+    approved_by: Mapped[str] = mapped_column(String(200), default="")
+    command_id: Mapped[str] = mapped_column(String(32), default="")
+    artifact_id: Mapped[str] = mapped_column(String(32), default="")
+    task_id: Mapped[str] = mapped_column(String(100), default="")
+    verdict: Mapped[str] = mapped_column(String(20), default="")  # malicious | suspicious | clean | unknown
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    report: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

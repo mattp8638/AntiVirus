@@ -898,6 +898,10 @@ func (a *Agent) ExecuteContext(ctx context.Context, cmd Command) (map[string]int
 		return PatchScanContext(ctx)
 	case "pii.scan":
 		return PIIScanContext(ctx, cmd.PayloadJSON)
+	case "sample.collect":
+		return SampleCollect(cmd.PayloadJSON, a.scanner, func(name string, data []byte) (string, error) {
+			return a.client.UploadArtifact(cmd.ID, name, data)
+		})
 	case "fim.scan":
 		return FimScanContext(ctx, cmd.PayloadJSON)
 	case "container.inventory":
