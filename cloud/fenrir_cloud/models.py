@@ -61,6 +61,8 @@ class User(Base):
     mfa_secret: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # CORE-02: limit the user to these customers (each within their own tenant's subtree); None = the whole subtree.
     assigned_tenant_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Self-service restore (BDR-06): portal users may browse and download files from these devices' backups.
+    backup_restore_devices: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
 class AuditLog(Base):
@@ -3019,6 +3021,12 @@ class BackupRepository(Base):
     s3: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Dedup group (backup/docs/design/dedup-groups.md): the repository whose group key a new member takes.
     dedup_source_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # Offline media set (rotated removable drives, backup/docs/design/offsite-copy.md): copies go to whichever
+    # drive of the set is attached.
+    media_set: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    # Daily storage check with a machine's own sign-in: when, and what failed (None: reachable).
+    storage_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    storage_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class BackupRepoAccess(Base):

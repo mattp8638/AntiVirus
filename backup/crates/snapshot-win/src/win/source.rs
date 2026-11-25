@@ -104,11 +104,18 @@ struct VolumeInfo {
 }
 
 fn init_com() -> Result<(), PrepareError> {
+    com_for_vss().map_err(|hr| PrepareError(format!("CoInitializeEx: {hr:?}")))
+}
+
+/// COM on this thread, with the security VSS needs. Every thread that uses
+/// VSS calls it first (without it InitializeForBackup fails with
+/// VSS_E_UNEXPECTED).
+pub(super) fn com_for_vss() -> Result<(), windows::core::HRESULT> {
     unsafe {
         let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
         // S_FALSE (already initialised) is fine; RPC_E_CHANGED_MODE is not.
         if hr.is_err() {
-            return Err(PrepareError(format!("CoInitializeEx: {hr:?}")));
+            return Err(hr);
         }
         // VSS needs at least identify-level impersonation; ignore "too
         // late" if the host process already configured security.

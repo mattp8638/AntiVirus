@@ -65,6 +65,8 @@ pub struct S3Config {
     pub access_key: String,
     pub secret_key: String,
     pub lock: Option<Lock>,
+    /// Storage class for chunk objects (see `protocol::S3_STORAGE_CLASSES`).
+    pub storage_class: Option<String>,
 }
 
 impl std::fmt::Debug for S3Config {
@@ -80,6 +82,12 @@ impl std::fmt::Debug for S3Config {
             .field("lock", &self.lock)
             .finish()
     }
+}
+
+/// Chunk objects (`chunks/...`, also in a dedup group's shared store): the
+/// bulk of a repository, and what an archive tier applies to.
+pub fn is_chunk(key: &str) -> bool {
+    key.starts_with("chunks/") || key.contains("/chunks/")
 }
 
 /// `s3://bucket/some/prefix` → ("bucket", "some/prefix").
@@ -491,6 +499,9 @@ impl Backend for S3Backend {
         if Self::lockable(key) {
             h.extend(self.lock_headers(self.lock_until()));
         }
+        if let Some(c) = self.cfg.storage_class.as_ref().filter(|_| is_chunk(key)) {
+            h.push(("x-amz-storage-class", c.clone()));
+        }
         let r = self.request("PUT", &obj, &[], &h, data)?;
         match r.status {
             200 => Ok(PutOutcome::Created),
@@ -647,6 +658,7 @@ mod tests {
             access_key: "AKID".into(),
             secret_key: "very-secret".into(),
             lock: None,
+            storage_class: None,
         };
         assert!(!format!("{c:?}").contains("very-secret"));
     }

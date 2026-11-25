@@ -138,6 +138,15 @@ rate, restores, restore tests and malware scans, each machine's last good backup
 can be emailed on a schedule (weekly: 7 days, monthly: 30, quarterly: 90) like the other reports. See
 `docs/REPORTS_AND_BRANDING.md`.
 
+## Self-service restore in the client portal
+
+Under **Backups › Self-service**, tick the devices each client-portal user (role `client`) may restore from. Those
+users then see **My backups** in the portal, open a backup, find files and download them: the machine that reads the
+backup encrypts the files for the user's browser and this server only relays them. Granting a device is the
+authorisation (users do not need the repository passphrase), so grant only a person's own machines. Every browse and
+download is in the audit log under the user's name, users never see each other's jobs, and files the latest malware
+scan found infected are refused.
+
 ## Finding a file across backups
 
 **Images & restore › a machine › Find a file in these backups** searches every unlocked backup of the machine by name
@@ -259,6 +268,13 @@ records) need destructive permission, your password and the cluster's or tenant'
 listed by tenant or cluster under Images & restore and open with the repository's passphrase like any other. Details:
 `backup/docs/design/saas.md`, `backup/docs/design/kubernetes.md`.
 
+For Microsoft 365, tick **SharePoint sites**, **Teams messages** and **Entra ID** to back those up too (each needs the
+permission shown beside it; Microsoft approves the Teams one per app). SharePoint files restore into a "Restored"
+folder of the site's document library; Entra users, groups and applications are re-created from their saved
+settings (passwords and secrets are never in a backup). Teams messages are kept and searchable but cannot be posted
+back as the original authors: Microsoft offers no way to recreate channel history. Searching a machine's backups also
+finds mail, files, records, Teams messages and Entra objects in these backups, by subject, name or path.
+
 ## Continuous data protection (Linux)
 
 For Linux servers that need every write kept, `fenrir-backup cdp` journals a logical volume with the kernel's
@@ -305,6 +321,17 @@ decrypted from the first repository and encrypted again for the second (each rep
 is signed for it, and the copy is verified there. Nothing leaves the machine unencrypted. The machine needs access to
 both repositories. A copy has its own image ID and is listed under its repository. The CLI does the same with
 `fenrir-backup copy --to REPO`. Design: `backup/docs/design/offsite-copy.md`.
+
+**Offline media rotation.** Give two or more repositories (USB drives you swap weekly, say) the same **Media set**
+name on their repository cards. A plan copying to any drive of the set copies to whichever is attached when it runs,
+and copies everything that drive lacks, so a drive that was away for weeks catches up. An alert is raised when no
+drive of a set has had a copy for 8 days.
+
+**Archive tiers.** For S3 or Azure repositories, **Storage tier for backup data** puts the chunks (not the indexes
+and manifests) in a cheaper tier: S3 Standard-IA, One Zone-IA, Intelligent-Tiering or Glacier Instant Retrieval, or
+Azure Cool or Cold. Only tiers that read back at once are offered: verification, restores and space reclamation read
+chunks directly, so tiers that need a thaw first (Glacier Flexible, Deep Archive, Azure Archive) are refused. Mind
+the providers' minimum storage periods and per-read fees.
 
 ## Moving from a Fenrir-Backup server
 
@@ -460,6 +487,22 @@ Alerts go to the normal alert queue (category `backup`):
   hold once the machine is clean.
 * `backup.job_failed`, `backup.boot_failed`, `backup.agent_offline` (24 h), `backup.overdue` (no successful plan
   backup for 3 days). Offline and overdue alerts resolve themselves when the machine recovers.
+
+* `backup.storage_unreachable` (high): the daily check of a repository's storage failed (expired key or password,
+  full or missing share or bucket). A machine with access tests the storage once a day with its own sign-in; the
+  repository card shows the last check. Resolves when a check passes.
+* `backup.offline_copy_overdue`: no drive of an offline media set received a copy for 8 days.
+
+A failed plan backup also opens a **backup-failure incident** for the device (FLOW-07). On the incident, **Recover in
+isolation** boots the newest good backup (or one you choose) as a VM on a boot host with no route to the production
+machine; it needs respond rights and your password again. The result is added to the incident's evidence (hashed),
+with the job, the backup used, how the VM was verified, and the measured recovery time (request to verified boot)
+and recovery point (failure to the backup's time). The checklist's closure gate is met when a backup of the machine
+succeeds again.
+
+The device page lists **other backup software** the agent found on the machine (by what installed programs and
+services call themselves, and Windows Server Backup, File History or Time Machine when set up): two products imaging
+the same disks can interfere with each other's snapshots.
 
 Retention runs after each successful plan backup. Space is reclaimed on the repository's maintenance machine every
 N days (default 7). Boot verification boots each machine's newest image in an isolated VM on a chosen host (Linux

@@ -17,6 +17,7 @@ export interface BackupAgent {
   lastSeenAt: string | null; publicKey: string; capabilities: string[]; vmCount: number; disks: string[];
   diskInfo?: { path: string; size: number; model: string; serial: string; system: boolean; inUse: boolean }[];
   firmware?: "uefi" | "bios" | null; secureBoot?: boolean | null;
+  otherBackup?: string[];
   localRecovery?: { disk: number; partition: number; size: number; built_unix: number; agent_version: string; expires: number; auto_start: boolean } | null;
   runningVms?: { sessionId: string; imageId: string; startedUnix: number; vncPort: number }[];
   lastBackup: { jobId: string; state: string; at: string; error: string | null } | null;
@@ -30,6 +31,7 @@ interface Repo {
   isShare: boolean; agents: { id: string; name: string; viaGateway?: boolean }[];
   s3?: S3Settings | null;
   dedupGroup?: string | null;
+  mediaSet?: string | null; storageCheckedAt?: string | null; storageError?: string | null;
   gateway: { agentId: string; name: string; online: boolean; port: number; address: string | null; addresses: string[] } | null;
 }
 interface Job {
@@ -109,7 +111,7 @@ export default function Backups() {
       <PageHead title="Backups" subtitle="Image backups of servers, PCs and Hyper-V hosts into repositories you own: a NAS, a file server or a local disk. Encrypted on the machine; this server never sees the keys."
         actions={can("configure") && <button className="primary" onClick={() => setAdding(true)}>Add machines</button>} />
       {!sealSupported() && <div className="card warn-card">This browser cannot encrypt repository secrets (Web Crypto X25519 is needed). Use a current Chrome, Edge, Firefox or Safari over HTTPS.</div>}
-      <Tabs tabs={[...(msp ? ["All customers"] : []), "Overview", "Machines", "Repositories", "Plans", "Images & restore", "Apps & clusters", "DR runbooks", "Activity"]} active={tab} onChange={setTab} />
+      <Tabs tabs={[...(msp ? ["All customers"] : []), "Overview", "Machines", "Repositories", "Plans", "Images & restore", "Apps & clusters", "DR runbooks", "Self-service", "Activity"]} active={tab} onChange={setTab} />
       <ErrorNote error={overview.error || agents.error || repos.error} />
       {tab === "All customers" && <MspDashboard open={(id) => { setTenantId?.(id); setTab("Overview"); }} />}
       {tab === "Overview" && <Overview data={overview.data} agents={agents.data} />}
@@ -119,6 +121,7 @@ export default function Backups() {
       {tab === "Images & restore" && <Images agents={agents.data ?? []} repos={repos.data ?? []} />}
       {tab === "Apps & clusters" && <AppsAndClusters agents={agents.data ?? []} repos={repos.data ?? []} />}
       {tab === "DR runbooks" && <Runbooks agents={agents.data ?? []} />}
+      {tab === "Self-service" && <SelfService agents={agents.data ?? []} />}
       {tab === "Activity" && <Activity />}
       {adding && <AddMachines onClose={() => { setAdding(false); reloadAll(); }} />}
     </>
@@ -563,11 +566,14 @@ function SigninFields({ value, onChange }: { value: Signin; onChange: (s: Signin
   );
 }
 
-interface S3Settings { endpoint: string; region: string; path_style: boolean; lock_mode: "governance" | "compliance" | null; lock_days: number }
-interface S3Form { azure?: boolean; endpoint: string; region: string; bucket: string; prefix: string; pathStyle: boolean; lockMode: "none" | "governance" | "compliance"; lockDays: number; accessKey: string; secretKey: string }
-const emptyS3 = (): S3Form => ({ endpoint: "https://s3.eu-west-2.amazonaws.com", region: "eu-west-2", bucket: "", prefix: "fenrir", pathStyle: false, lockMode: "compliance", lockDays: 30, accessKey: "", secretKey: "" });
+interface S3Settings { endpoint: string; region: string; path_style: boolean; lock_mode: "governance" | "compliance" | null; lock_days: number; storage_class?: string | null }
+interface S3Form { azure?: boolean; endpoint: string; region: string; bucket: string; prefix: string; pathStyle: boolean; lockMode: "none" | "governance" | "compliance"; lockDays: number; accessKey: string; secretKey: string; tier?: string }
+const emptyS3 = (): S3Form => ({ endpoint: "https://s3.eu-west-2.amazonaws.com", region: "eu-west-2", bucket: "", prefix: "fenrir", pathStyle: false, lockMode: "compliance", lockDays: 30, accessKey: "", secretKey: "", tier: "" });
+// Instant-read tiers only: restores and verification read chunks directly (docs: archive tiers).
+const S3_TIERS: [string, string][] = [["STANDARD_IA", "Standard-IA: cheaper storage, a fee per read"], ["ONEZONE_IA", "One Zone-IA: one data centre"], ["INTELLIGENT_TIERING", "Intelligent-Tiering: moves cold data by itself"], ["GLACIER_IR", "Glacier Instant Retrieval: cheapest that still reads at once"], ["STANDARD", "Standard"]];
+const AZURE_TIERS: [string, string][] = [["Cool", "Cool: cheaper storage, a fee per read (30 days minimum)"], ["Cold", "Cold: cheaper still (90 days minimum)"], ["Hot", "Hot"]];
 const s3Path = (f: S3Form) => `${f.azure ? "azure" : "s3"}://${f.bucket.trim()}${f.prefix.trim() ? "/" + f.prefix.trim().replace(/^\/+|\/+$/g, "") : ""}`;
-const s3Settings = (f: S3Form): S3Settings => ({ endpoint: f.endpoint.trim().replace(/\/+$/, ""), region: f.region.trim() || "us-east-1", path_style: f.pathStyle, lock_mode: f.lockMode === "none" ? null : f.lockMode, lock_days: f.lockMode === "none" ? 0 : f.lockDays });
+const s3Settings = (f: S3Form): S3Settings => ({ endpoint: f.endpoint.trim().replace(/\/+$/, ""), region: f.region.trim() || "us-east-1", path_style: f.pathStyle, lock_mode: f.lockMode === "none" ? null : f.lockMode, lock_days: f.lockMode === "none" ? 0 : f.lockDays, ...(f.tier ? { storage_class: f.tier } : {}) });
 const s3Signin = (f: S3Form): Signin => ({ mode: "password", domain: "", username: f.accessKey.trim(), password: f.secretKey });
 const s3Ok = (f: S3Form) => (f.azure ? /^https?:\/\/[^/\s]+(\/\S*)?$/ : /^https?:\/\/[^/\s]+$/).test(f.endpoint.trim().replace(/\/+$/, "")) && (f.azure ? /^[a-z0-9](?!.*--)[a-z0-9-]{1,61}[a-z0-9]$/ : /^[a-z0-9.-]{3,63}$/).test(f.bucket.trim()) && !!f.accessKey.trim() && !!f.secretKey && (f.lockMode === "none" || (f.lockDays > 7 && f.lockDays <= 36500));
 
@@ -593,6 +599,10 @@ function S3Fields({ value: f, onChange }: { value: S3Form; onChange: (f: S3Form)
         <option value="none">Off</option>
       </select></label>
       {f.lockMode !== "none" && <label className="field">Keep each backup locked for (days, more than 7)<input type="number" min={8} max={36500} value={f.lockDays} onChange={(e) => set({ lockDays: Number(e.target.value) })} /></label>}
+      <label className="field">Storage tier for backup data<select value={f.tier ?? ""} onChange={(e) => set({ tier: e.target.value })}>
+        <option value="">The {f.azure ? "account's default" : "bucket's default"} tier</option>
+        {(f.azure ? AZURE_TIERS : S3_TIERS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+      </select></label>
       {!f.azure && <label className="row small" style={{ gap: 6 }}><input type="checkbox" checked={f.pathStyle} onChange={(e) => set({ pathStyle: e.target.checked })} /> Path-style addresses (MinIO and most self-hosted storage)</label>}
     </div>
   );
@@ -659,8 +669,15 @@ function Repositories({ repos, agents, reload }: { repos: Repo[] | null; agents:
             <div className="small" style={{ marginTop: 6 }}>
               {r.images} images · {bytes(r.storedBytes)} stored · last {unixTime(r.lastImage)} · machines: {r.agents.map((a) => a.name).join(", ") || "none"}
               {r.isShare && <> · share sign-in: {r.shareAuth === "password" ? r.shareUser : r.shareAuth === "machine" ? "computer account" : "none"}</>}
-              {r.s3 && <> · object storage, key {r.shareUser} · {r.s3.lock_mode ? `Object Lock ${r.s3.lock_mode}, ${r.s3.lock_days} days` : "no Object Lock"}</>}
+              {r.s3 && <> · object storage, key {r.shareUser} · {r.s3.lock_mode ? `Object Lock ${r.s3.lock_mode}, ${r.s3.lock_days} days` : "no Object Lock"}{r.s3.storage_class ? ` · tier ${r.s3.storage_class}` : ""}</>}
             </div>
+            {r.status === "ready" && !r.gateway && (
+              <div className="small" style={{ marginTop: 4 }}>
+                {r.storageError ? <><Pill value="storage unreachable" tone="bad" /> <span style={{ color: "#fca5a5" }}>{r.storageError}</span> (checked {fmtTime(r.storageCheckedAt ?? null)})</>
+                  : r.storageCheckedAt ? <span className="muted">Storage reachable, checked daily (last {fmtTime(r.storageCheckedAt)})</span> : <span className="muted">Storage is checked daily</span>}
+              </div>
+            )}
+            {r.mediaSet && <div className="small" style={{ marginTop: 4 }}>Offline media set <b>{r.mediaSet}</b>: copies go to whichever drive of the set is attached; rotate drives at least weekly.</div>}
             {r.gateway && (
               <div className="small" style={{ marginTop: 4 }}>
                 Gateway: <b>{r.gateway.name}</b> {r.gateway.online ? "" : <Pill value="offline" tone="bad" />} serves it to{" "}
@@ -685,6 +702,7 @@ function Repositories({ repos, agents, reload }: { repos: Repo[] | null; agents:
                 const d = await promptDialog(`Boot-test each machine's newest image every how many days on ${bootHosts[0].name}? (0 = off)`, String(r.bootEveryDays || 7));
                 if (d !== null) act(() => api(`backup/repositories/${r.id}/boot-verification`, { body: Number(d) > 0 ? { agentId: bootHosts[0].id, everyDays: Number(d) } : {} }), "Boot verification saved");
               }}>Boot verification</button>}
+              {can("configure") && <button className="small" onClick={async () => { const m = await promptDialog("Offline media set (rotating drives): name shared by the drives of the set, empty for none", r.mediaSet ?? ""); if (m !== null) act(() => api(`backup/repositories/${r.id}/media-set`, { body: { mediaSet: m.trim() || null } }), "Media set saved"); }}>Media set</button>}
               {can("configure") && <button className="small danger" onClick={async () => { if (await confirmDialog(`Forget ${r.name}? The server forgets it; the backup data on the storage is not touched.`)) act(() => api(`backup/repositories/${r.id}`, { method: "DELETE" }), "Repository forgotten"); }}>Forget</button>}
             </div>
             {r.agents.length > 0 && can("configure") && (
@@ -1765,8 +1783,48 @@ export function DeviceBackup({ device }: { device: { id: string; hostname: strin
         <Stat label="Plans" value={detail.data?.plans?.length ?? "—"} hint={detail.data?.plans?.map((p: Plan) => describeSchedule(p.schedule)).join(", ")} to="/backups" />
       </div>
       {agent.capabilities.includes("local_recovery") && <LocalRecoveryCard agent={agent} reload={agents.reload} />}
+      {(agent.otherBackup?.length ?? 0) > 0 && (
+        <div className="card" style={{ marginBottom: 14 }}>
+          <h3>Other backup software</h3>
+          <p className="small muted">Found on this machine by name (installed programs, services, the operating system's own backup). Two products backing up the same disks at once can slow the machine or interfere with snapshots.</p>
+          <div className="small">{agent.otherBackup!.join(" · ")}</div>
+        </div>
+      )}
       <MachineImages agent={agent} />
       <div className="card"><h3>Recent backup jobs</h3><JobsTable rows={detail.data?.jobs ?? null} /></div>
     </>
+  );
+}
+
+/** Self-service restore: which client-portal users may find and download files from which devices' backups. */
+function SelfService({ agents }: { agents: BackupAgent[] }) {
+  const { can } = useApp();
+  const { run, busy } = useAction();
+  const { data: users, reload } = useListData<any>("backup/self-service");
+  const devices = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const a of agents) if (a.deviceId && a.role !== "recovery") m.set(a.deviceId, a.name);
+    return [...m.entries()].sort((x, y) => x[1].localeCompare(y[1]));
+  }, [agents]);
+  const toggle = (u: any, id: string) => {
+    const next = u.deviceIds.includes(id) ? u.deviceIds.filter((x: string) => x !== id) : [...u.deviceIds, id];
+    run(() => api(`backup/self-service/${u.id}`, { method: "PUT", body: { deviceIds: next } }), "Saved").then(reload);
+  };
+  return (
+    <div className="card">
+      <p className="small muted" style={{ marginTop: 0 }}>Client-portal users can find and download files from the backups of the devices ticked here, without the repository passphrase: granting a device is the authorisation, so grant only a user's own machines. Every browse and download is in the audit log; files a malware scan found infected are refused. Add portal users under Settings &gt; Users with the client role.</p>
+      {users?.length === 0 && <div className="empty">No client-portal users yet.</div>}
+      {users?.map((u) => (
+        <div key={u.id} style={{ padding: "8px 0", borderTop: "1px solid #172138" }}>
+          <b>{u.name || u.email}</b> <span className="small muted">{u.email}</span>
+          <div className="row small" style={{ gap: 12, flexWrap: "wrap", marginTop: 4 }}>
+            {devices.length === 0 && <span className="muted">No devices with a backup agent.</span>}
+            {devices.map(([id, name]) => (
+              <label key={id} className="row" style={{ gap: 4 }}><input type="checkbox" disabled={!can("configure") || busy} checked={u.deviceIds.includes(id)} onChange={() => toggle(u, id)} /> {name}</label>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }

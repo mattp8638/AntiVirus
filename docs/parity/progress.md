@@ -9,12 +9,29 @@ Baseline of the review: `main` at `790e364`. Work branch: `claude/jolly-goodall-
 | State | Count |
 |---|---|
 | verified | 6 (FIX-01 to FIX-05, FIX-08) |
-| implemented-unverified | 17 (FIX-07, AGT-04, CORE-03, FLOW-01/02/04/09, BDR-01/02/04 and 7 requirements the brief marked U) |
-| partial | 121 |
-| missing | 33 |
+| implemented-unverified | 19 (FIX-07, AGT-04, CORE-03, FLOW-01/02/04/07/09, BDR-01/02/04/06 and 7 requirements the brief marked U) |
+| partial | 120 |
+| missing | 32 |
 | externally-blocked | 1 (FIX-06) |
 
 Overall parity: **not passed**. MVP: **not yet declared**.
+
+## 2026-11-25 backup: AT-19 in CI, FLOW-07, BDR-06
+
+* AT-19 now has a CI result: real agents back up and restore through the server, byte-exact, on Linux, Windows and
+  macOS ([zy538324/Fenrir-Backup run 45570567500](https://github.com/zy538324/Fenrir-Backup/actions/runs/45570567500),
+  job agent-roundtrip; the engine and agent are the ones synced into `backup/`). The Windows run exposed a real defect:
+  folder backups never initialised COM on the job thread, so VSS failed and files were read live; fixed, and the
+  folder backup now reads from a VSS snapshot. macOS runners refuse local APFS snapshots, so the macOS folder backup
+  falls back to live files with a warning there.
+* Bare-metal recovery from the recovery ISO is proven in CI too (job recovery-e2e, [run 45569395053](https://github.com/zy538324/Fenrir-Backup/actions/runs/45569395053)): the
+  tracker had still listed it as not booted in CI.
+* FLOW-07 `implemented-unverified`: failed backup -> incident -> authorised isolated recovery (boot check VM) ->
+  hashed evidence with measured RTO and RPO; proven with simulated agents only.
+* BDR-06 `implemented-unverified`: SaaS search, archive tiers and self-service restore in the client portal; eDiscovery
+  case handling stays open.
+* BDR-04: other backup software on each machine, daily storage and credential checks, offline media rotation alerts.
+* BDR-05: SharePoint, Teams messages and Entra ID objects (mocked APIs).
 
 ## 2026-11-24 backup re-assessment (BDR-01 to BDR-06, AT-19)
 
@@ -26,7 +43,7 @@ The six backup entries were still `missing` from when the backup-oversight modul
 * BDR-02 `implemented-unverified`: Object Lock and Azure immutability (emulator tests, now run in CI), append-only
   gateway access, ransomware hold, passphrase plus MFA unlock.
 * BDR-03 `partial`: file, disk, bare-metal, VM, cloud and single-database restore, boot verification, DR runbooks,
-  malware scans with the last clean point; the recovery ISO's boot and restore is not proven in CI.
+  malware scans with the last clean point; the recovery ISO's boot and restore is proven in CI (2026-11-25).
 * BDR-04 `implemented-unverified`: agent-executed jobs as evidence, deduplicated alerts, MSP view, scheduled backup
   report; no discovery of third-party backup products.
 * BDR-05 `partial`: Microsoft 365, Google Workspace and Salesforce with mocked APIs; SharePoint, Teams, Entra and

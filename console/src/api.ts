@@ -126,7 +126,7 @@ export async function apiBytes(path: string): Promise<ArrayBuffer> {
   if (token) headers.Authorization = `Bearer ${token}`;
   const unlocked = unlockHeader();
   if (unlocked) headers["X-Fenrir-Unlock"] = unlocked;
-  const response = await fetch(new URL(`/api/console/${path}`, window.location.origin).toString(), { headers });
+  const response = await fetch(new URL(path.startsWith("/") ? path : `/api/console/${path}`, window.location.origin).toString(), { headers });
   if (response.status === 401) onUnauthorized();
   if (!response.ok) {
     const data = safeJson(await response.text());

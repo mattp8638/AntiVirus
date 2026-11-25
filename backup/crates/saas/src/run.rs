@@ -41,6 +41,14 @@ pub struct Scope {
     pub mail: bool,
     #[serde(default = "yes")]
     pub files: bool,
+    /// Microsoft 365: SharePoint document libraries, Teams channel
+    /// messages, Entra ID objects (each needs its own permission).
+    #[serde(default)]
+    pub sites: bool,
+    #[serde(default)]
+    pub teams: bool,
+    #[serde(default)]
+    pub directory: bool,
 }
 
 impl Default for Scope {
@@ -50,6 +58,9 @@ impl Default for Scope {
             objects: vec![],
             mail: true,
             files: true,
+            sites: false,
+            teams: false,
+            directory: false,
         }
     }
 }
@@ -133,6 +144,9 @@ pub fn backup(
                 users: scope.users.clone(),
                 mail: scope.mail,
                 files: scope.files,
+                sites: scope.sites,
+                teams: scope.teams,
+                directory: scope.directory,
             },
             progress,
         ),
@@ -239,6 +253,11 @@ pub fn restore(
         let data = store::read_item(repo, it).map_err(fe)?;
         let r = match (conn, it.kind.as_str()) {
             (Conn::M365(c), "file") => c.restore_file(&target, &folder, it, &data),
+            (Conn::M365(c), "site-file") => c.restore_site_file(&folder, it, &data),
+            (Conn::M365(c), "directory") => c.restore_directory(it, &data).map(|_| ()),
+            (Conn::M365(_), "teams-message") => Err(err(
+                "Teams messages are kept for export: Microsoft Graph cannot post them again as their authors",
+            )),
             (Conn::M365(c), "mail") => {
                 let orig = it.meta["folder"].as_str().unwrap_or("Mail").to_string();
                 let fid = match m365_folders.get(&orig) {

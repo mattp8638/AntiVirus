@@ -59,6 +59,7 @@ fn backend(port: u16, container: &str, prefix: &str, key: &str) -> AzureBackend 
         prefix: prefix.into(),
         credential: Credential::AccountKey(key.into()),
         lock: None,
+        access_tier: None,
     })
     .unwrap()
 }

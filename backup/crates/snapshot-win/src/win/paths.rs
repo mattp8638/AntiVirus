@@ -63,6 +63,10 @@ impl PathSnapshot {
             });
         }
         let volumes: Vec<String> = mounts.iter().map(|(_, v)| v.clone()).collect();
+        super::source::com_for_vss().map_err(|hr| VssError {
+            step: "CoInitializeEx",
+            hr,
+        })?;
         let set = SnapshotSet::create(&volumes, VSS_BT_COPY)?;
         let mut map = PathMap::default();
         for (mount, volume) in &mounts {

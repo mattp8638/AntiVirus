@@ -52,6 +52,7 @@ fn backend(port: u16, bucket: &str, prefix: &str, lock: Option<Lock>) -> S3Backe
         access_key: std::env::var("FENRIR_TEST_S3_KEY").unwrap_or_else(|_| "testing".into()),
         secret_key: std::env::var("FENRIR_TEST_S3_SECRET").unwrap_or_else(|_| "testing".into()),
         lock,
+        storage_class: None,
     })
     .unwrap()
 }
@@ -171,4 +172,38 @@ fn a_large_file_uploads_in_parts_as_one_object() {
         "one object, byte for byte"
     );
     assert_eq!(b.s3_uri("disk0.vhdx"), "s3://vm-import/pm-acer/disk0.vhdx");
+}
+
+#[test]
+fn chunks_go_to_the_archive_tier() {
+    let Some(emu) = start() else {
+        eprintln!("FENRIR_TEST_S3 not set: skipped");
+        return;
+    };
+    let mut cfg = S3Config {
+        endpoint: format!("http://127.0.0.1:{}", emu.1),
+        region: "us-east-1".into(),
+        bucket: "archive".into(),
+        prefix: "long-term".into(),
+        path_style: true,
+        access_key: std::env::var("FENRIR_TEST_S3_KEY").unwrap_or_else(|_| "testing".into()),
+        secret_key: std::env::var("FENRIR_TEST_S3_SECRET").unwrap_or_else(|_| "testing".into()),
+        lock: None,
+        storage_class: Some("STANDARD_IA".into()),
+    };
+    let b = S3Backend::new(cfg.clone()).unwrap();
+    b.ensure_bucket().unwrap();
+    // Chunks are written with the class and read back at once; the catalogue stays default.
+    assert_eq!(
+        b.put("chunks/ab/abcdef", b"data").unwrap(),
+        PutOutcome::Created
+    );
+    assert_eq!(b.put("config.json", b"{}").unwrap(), PutOutcome::Created);
+    assert_eq!(b.get("chunks/ab/abcdef").unwrap(), b"data");
+    assert!(s3store::is_chunk("chunks/ab/abcdef") && s3store::is_chunk("group1/chunks/ab/x"));
+    assert!(!s3store::is_chunk("config.json") && !s3store::is_chunk("manifests/x"));
+    // A class the service does not know is refused by it.
+    cfg.storage_class = Some("NOT_A_CLASS".into());
+    let bad = S3Backend::new(cfg).unwrap();
+    assert!(bad.put("chunks/cd/cdef", b"x").is_err());
 }

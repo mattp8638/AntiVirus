@@ -79,6 +79,9 @@ enum Cmd {
     /// Continuous data protection of Linux volumes (any second restorable).
     #[command(subcommand)]
     Cdp(CdpCmd),
+    /// Changed-block tracking of Linux volumes: backups read only what changed.
+    #[command(subcommand)]
+    Cbt(CbtCmd),
     /// Copy a disk straight onto another (no repository).
     Clone(CloneArgs),
     /// Copy images to another repository (an off-site copy): re-encrypted
@@ -157,6 +160,44 @@ enum RepoCmd {
     },
     /// Show repository parameters and usage.
     Info,
+}
+
+/// Changed-block tracking of a Linux logical volume with device-mapper
+/// `era` (docs/design/cbt-physical.md).
+#[derive(Subcommand)]
+enum CbtCmd {
+    /// Start tracking an unmounted logical volume; mount the device it
+    /// prints from then on.
+    Enable {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        volume: String,
+        /// Tracking granularity in KiB (a power of two, 4 to 1024).
+        #[arg(long, default_value_t = 64)]
+        block_kib: u64,
+    },
+    /// Back the volume up, reading only the blocks written since the
+    /// previous backup (the first reads everything).
+    Backup {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        label: Option<String>,
+        /// Read everything this time (and check the tracking).
+        #[arg(long)]
+        full: bool,
+    },
+    /// The tracking state and the current era.
+    Status {
+        #[arg(long)]
+        name: String,
+    },
+    /// Stop tracking (unmount first); the volume is left as it is.
+    Disable {
+        #[arg(long)]
+        name: String,
+    },
 }
 
 /// Continuous data protection of a Linux logical volume.
@@ -263,6 +304,16 @@ enum SaasCmd {
         /// Leave files out (OneDrive, Google Drive).
         #[arg(long)]
         no_files: bool,
+        /// Microsoft 365: SharePoint sites' document libraries (Sites.ReadWrite.All).
+        #[arg(long)]
+        sites: bool,
+        /// Microsoft 365: Teams channel messages (ChannelMessage.Read.All).
+        #[arg(long)]
+        teams: bool,
+        /// Microsoft 365: Entra ID objects and Conditional Access policies
+        /// (Directory.Read.All, Policy.Read.All).
+        #[arg(long)]
+        directory: bool,
         #[arg(long)]
         label: Option<String>,
     },
@@ -676,6 +727,7 @@ fn run(ctx: &Ctx, cmd: Cmd) -> R<Outcome> {
         Cmd::K8s(k) => k8s_cmd(ctx, k),
         Cmd::Saas(c) => saas_cmd(ctx, c),
         Cmd::Cdp(c) => cdp_cmd(ctx, c),
+        Cmd::Cbt(c) => cbt_cmd(ctx, c),
         Cmd::Restore(RestoreCmd::Disk {
             image,
             disk,
@@ -797,6 +849,8 @@ fn s3_from_env(url: &str) -> R<s3store::S3Backend> {
         access_key: need("AWS_ACCESS_KEY_ID")?,
         secret_key: need("AWS_SECRET_ACCESS_KEY")?,
         lock,
+        // Archive tier for chunks (STANDARD_IA, GLACIER_IR, ...).
+        storage_class: var("FENRIR_S3_STORAGE_CLASS").filter(|c| !c.is_empty()),
     })?)
 }
 
@@ -839,6 +893,8 @@ fn azure_from_env(url: &str) -> R<azstore::AzureBackend> {
         prefix,
         credential,
         lock,
+        // Archive tier for chunks (Cool, Cold).
+        access_tier: var("FENRIR_AZURE_TIER").filter(|c| !c.is_empty()),
     })?)
 }
 
@@ -2324,6 +2380,9 @@ fn saas_cmd(ctx: &Ctx, c: SaasCmd) -> R<Outcome> {
             objects,
             no_mail,
             no_files,
+            sites,
+            teams,
+            directory,
             label,
         } => {
             let (settings, conn) = saas_conn(&svc)?;
@@ -2338,6 +2397,9 @@ fn saas_cmd(ctx: &Ctx, c: SaasCmd) -> R<Outcome> {
                     objects,
                     mail: !no_mail,
                     files: !no_files,
+                    sites,
+                    teams,
+                    directory,
                 },
                 label,
                 &|s: &str| {
@@ -2767,6 +2829,125 @@ fn cdp_cmd(ctx: &Ctx, c: CdpCmd) -> R<Outcome> {
             ))
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn cbt_cmd(ctx: &Ctx, c: CbtCmd) -> R<Outcome> {
+    use cdp::era;
+    let dir = cdp_state_dir();
+    let err = |e: String| CliError::new(ExitCode::Error, e);
+    match c {
+        CbtCmd::Enable {
+            name,
+            volume,
+            block_kib,
+        } => {
+            let st = era::enable(&dir, &name, &volume, block_kib).map_err(err)?;
+            let dev = era::device(&name);
+            Ok(Outcome::new(
+                json!({ "device": dev, "state": st }),
+                format!("Change tracking enabled for {volume}: mount {} instead of it from now on (and in /etc/fstab).\n", dev.display()),
+            ))
+        }
+        CbtCmd::Status { name } => {
+            let st = era::load(&dir, &name).map_err(err)?;
+            let era_now = era::current_era(&name).map_err(err)?;
+            Ok(Outcome::new(
+                json!({ "state": st, "current_era": era_now }),
+                format!(
+                    "{name}: era {era_now}, last image {}\n",
+                    st.last_image.as_deref().unwrap_or("none")
+                ),
+            ))
+        }
+        CbtCmd::Disable { name } => {
+            era::disable(&dir, &name).map_err(err)?;
+            Ok(Outcome::new(
+                json!({ "disabled": name }),
+                format!(
+                    "Change tracking stopped for {name}: mount the logical volume itself again.\n"
+                ),
+            ))
+        }
+        CbtCmd::Backup { name, label, full } => {
+            let mut st = era::load(&dir, &name).map_err(err)?;
+            let snap = format!("{}-fenrir-cbt", st.lv);
+            let (snap_path, era_now) = era::snapshot(&st, &snap).map_err(err)?;
+            let remove = || {
+                let _ = std::process::Command::new("lvremove")
+                    .args(["-q", "-y", &snap_path])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+            };
+            let r = (|| -> R<engine::BackupReport> {
+                let changed = match (&st.last_image, st.since_era, full) {
+                    (Some(base), Some(since), false) => {
+                        let ranges = era::written_since(&st, since).map_err(err)?;
+                        Some(engine::ChangedSince {
+                            base_image: base
+                                .parse()
+                                .map_err(|_| CliError::usage("bad base image in the state"))?,
+                            disks: vec![Some(
+                                ranges
+                                    .into_iter()
+                                    .map(|(o, l)| core_format::extent::Extent(o, l))
+                                    .collect(),
+                            )],
+                            spot_check_one_in: 64,
+                        })
+                    }
+                    _ => None,
+                };
+                let repo = open_repo(ctx)?;
+                let src = snapshot_linux::open_disk(Path::new(&snap_path), false)
+                    .map_err(|e| CliError::new(ExitCode::Error, e.to_string()))?;
+                let m = engine::ImageMeta {
+                    machine: MachineInfo {
+                        machine_id: format!("cbt:{}:{name}", hostname()),
+                        hostname: format!("{} ({name})", hostname()),
+                    },
+                    consistency: core_format::manifest::Consistency::Crash,
+                    os: Default::default(),
+                    boot: Default::default(),
+                    drivers: vec![],
+                    label: label.clone().or_else(|| Some(format!("volume {name}"))),
+                    warnings: vec![],
+                    vm: None,
+                    applications: vec![],
+                };
+                Ok(engine::backup(
+                    &repo,
+                    &[&src.source as &dyn engine::DiskSource],
+                    m,
+                    &engine::BackupOptions {
+                        changed,
+                        ..Default::default()
+                    },
+                    &JobControl::new(),
+                    &|_| {},
+                )?)
+            })();
+            remove();
+            let r = r?;
+            st.last_image = Some(r.image_id.to_string());
+            st.since_era = Some(era_now);
+            era::save(&dir, &st).map_err(err)?;
+            Ok(Outcome::new(
+                json!({ "image_id": r.image_id, "read_mode": r.read_mode, "bytes_unchanged": r.bytes_unchanged,
+                        "full_read_reason": r.full_read_reason, "era": era_now }),
+                format!("Backed up {name} as image {} ({}; {} bytes taken from the previous image unread)\n",
+                    r.image_id, r.read_mode, r.bytes_unchanged),
+            ))
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn cbt_cmd(_: &Ctx, _: CbtCmd) -> R<Outcome> {
+    Err(CliError::usage(
+        "changed-block tracking with dm-era is for Linux logical volumes; Hyper-V VMs use RCT",
+    ))
 }
 
 #[cfg(not(target_os = "linux"))]

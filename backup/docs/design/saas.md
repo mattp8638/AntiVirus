@@ -32,6 +32,27 @@ credentials flow.
   320 KiB multiples above 4 MB); messages into `Restored <date>/<original folder>` (created as mail folders).
 * An error for one user keeps that user's previous items and cursors and is reported; the others continue.
 
+### SharePoint, Teams and Entra ID (opt-in)
+
+Each needs its own application permission, so each is chosen separately (`--sites`, `--teams`, `--directory`;
+checkboxes when connecting):
+
+* **SharePoint** (`Sites.ReadWrite.All`): every site (`/sites?search=*`), every document library (drive) of it,
+  through the drive's delta query like OneDrive. Items are `site-file`, account = the site's address, path =
+  `<library>/<folders>/<name>`. Restore puts files back into the same library under `Restored <date>/`.
+* **Teams** (`ChannelMessage.Read.All`; Microsoft approves this permission for each app): every team's channels,
+  their messages through the channel delta query and each changed thread's replies, as JSON (`teams-message`,
+  account `team:<name>`, path `<channel>/<thread>/<message>`). Files shared in channels are in the team's
+  SharePoint site. Microsoft Graph does not allow posting messages back as their original authors, so these are
+  kept for export and eDiscovery, not restored into Teams.
+* **Entra ID** (`Directory.Read.All`, `Policy.Read.All`): users, groups with their member IDs, applications, service
+  principals, directory roles with members, and Conditional Access policies (Entra ID P1), as JSON
+  (`directory`, account `directory:<tenant>`), read in full each time. Restore: deleted users, groups,
+  applications and service principals from the directory's recycle bin (30 days); after that a group is created
+  again with its members that still exist, and a Conditional Access policy is created again **disabled** for
+  review. Users cannot be created again as they were (passwords are not backed up); other objects are kept for
+  reference and export.
+
 ## Google Workspace (`saas::google`)
 
 Setup: a service account with a JSON key and **domain-wide delegation** in the Admin console for

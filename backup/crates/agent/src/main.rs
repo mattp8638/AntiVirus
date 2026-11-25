@@ -7,6 +7,7 @@ mod browse;
 mod client;
 mod cloudrestore;
 mod config;
+mod discover;
 mod download;
 mod folders;
 mod gateway;
@@ -17,6 +18,8 @@ mod jobs;
 mod linuxfix;
 mod localrec;
 mod log;
+#[cfg(target_os = "macos")]
+mod macsnap;
 mod malware;
 mod names;
 mod rct;

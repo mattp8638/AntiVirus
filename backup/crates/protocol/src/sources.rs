@@ -42,6 +42,13 @@ pub struct SaasTenant {
     pub mail: bool,
     #[serde(default = "yes")]
     pub files: bool,
+    /// Microsoft 365: SharePoint, Teams, Entra ID (opt-in: extra permissions).
+    #[serde(default)]
+    pub sites: bool,
+    #[serde(default)]
+    pub teams: bool,
+    #[serde(default)]
+    pub directory: bool,
 }
 
 fn yes() -> bool {

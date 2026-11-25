@@ -328,4 +328,11 @@ Versions are pinned in `ui/package-lock.json`.
   (ntfs-3g, GPL-2.0) and on Windows `diskpart`, run as separate programs
   through their documented command lines; nothing from them is linked into
   Fenrir-Backup. The recovery image installs them from Debian.
+* Continuous data protection and changed-block tracking on Linux: the
+  kernel's device-mapper `log-writes` and `era` targets through `dmsetup`
+  (lvm2, GPL-2.0/LGPL-2.1), and `era_invalidate` (thin-provisioning-tools,
+  GPL-3.0), installed by the administrator and run as separate programs
+  through their documented command lines; nothing from them is linked into
+  or shipped with Fenrir-Backup. The journal format is read from the
+  kernel's published documentation (`log-writes.rst`).
 * macOS: `ioreg`, `sw_vers`, launchd.

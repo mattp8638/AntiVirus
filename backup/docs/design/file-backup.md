@@ -50,6 +50,20 @@ chunk at a time.
   skipped. A file that cannot be read is reported (at most 200 listed) and
   the backup goes on.
 
+### macOS: the whole Data volume from an APFS snapshot
+
+On macOS the agent makes an APFS local snapshot (`tmutil localsnapshot`), mounts the Data volume's snapshot
+read-only (`mount_apfs -s`) and reads the chosen paths from it, so every file is as it was at one moment; the
+snapshot is deleted afterwards. Choosing `/` backs up the whole Data volume (users' folders, applications,
+`/Library`, `/private`, `/usr/local` and so on): the sealed, signed system volume is not backed up, since it is
+restored by installing macOS (from macOS Recovery), after which the Data volume is restored into it. The agent
+needs to run as root with Full Disk Access (System Settings › Privacy & Security); without a snapshot the files are
+read live and the backup says so. The job result names the snapshot used (`APFS …`, or `VSS` on Windows), and
+the CI round trip runs on macOS too. GitHub's hosted macOS runners refuse local snapshots (tmutil has no
+Full Disk Access there, and creating APFS snapshots any other way needs an entitlement Apple grants only to
+signed apps), so CI checks that the backup falls back to the live files and says so, and that the restore is
+byte-exact; the snapshot path itself needs a Mac where the agent has Full Disk Access.
+
 ## 4. Restore
 
 The index is presented as a browsable volume (`IndexVolume`), so

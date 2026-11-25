@@ -84,6 +84,57 @@ fn serve(state: Arc<Mutex<State>>) -> String {
                         },
                     )
                 }
+                ("GET", "/v1.0/sites") => j(
+                    json!({ "value": [{ "id": "s1", "displayName": "Finance", "webUrl": "https://contoso.sharepoint.com/sites/finance" }] }),
+                ),
+                ("GET", "/v1.0/sites/s1/drives") => {
+                    j(json!({ "value": [{ "id": "d1", "name": "Documents" }] }))
+                }
+                ("GET", "/v1.0/drives/d1/root/delta") => j(json!({
+                    "value": [{ "id": "sf1", "name": "budget.xlsx", "file": { "mimeType": "application/vnd.ms-excel" }, "parentReference": { "path": "/drives/d1/root:/2026" } }],
+                    "@odata.deltaLink": format!("{b2}/v1.0/site-delta-2") })),
+                ("GET", "/v1.0/site-delta-2") => {
+                    j(json!({ "value": [], "@odata.deltaLink": format!("{b2}/v1.0/site-delta-3") }))
+                }
+                ("GET", "/v1.0/groups") if path.contains("resourceProvisioningOptions") => {
+                    j(json!({ "value": [{ "id": "t1", "displayName": "Project X" }] }))
+                }
+                ("GET", "/v1.0/groups") => j(
+                    json!({ "value": [{ "id": "g1", "displayName": "Sales", "mailNickname": "sales",
+                    "securityEnabled": true, "mailEnabled": false, "groupTypes": [] }] }),
+                ),
+                ("GET", "/v1.0/groups/g1/members") => j(json!({ "value": [{ "id": "u1" }] })),
+                ("GET", "/v1.0/teams/t1/channels") => {
+                    j(json!({ "value": [{ "id": "c1", "displayName": "General" }] }))
+                }
+                ("GET", "/v1.0/teams/t1/channels/c1/messages/delta") => j(json!({
+                    "value": [{ "id": "tm1", "createdDateTime": "2026-11-02T09:00:00Z", "from": { "user": { "displayName": "Ann" } }, "body": { "content": "Kick-off at 10" } }],
+                    "@odata.deltaLink": format!("{b2}/v1.0/teams-delta-2") })),
+                ("GET", "/v1.0/teams/t1/channels/c1/messages/tm1/replies") => j(json!({
+                    "value": [{ "id": "tm2", "replyToId": "tm1", "from": { "user": { "displayName": "Bob" } }, "body": { "content": "OK" } }] })),
+                ("GET", "/v1.0/teams-delta-2") => j(
+                    json!({ "value": [], "@odata.deltaLink": format!("{b2}/v1.0/teams-delta-3") }),
+                ),
+                ("GET", "/v1.0/applications")
+                | ("GET", "/v1.0/servicePrincipals")
+                | ("GET", "/v1.0/directoryRoles") => j(json!({ "value": [] })),
+                ("GET", "/v1.0/identity/conditionalAccess/policies") => j(
+                    json!({ "value": [{ "id": "p1", "displayName": "MFA for admins",
+                    "state": "enabled", "createdDateTime": "2026-01-01T00:00:00Z", "conditions": { "users": { "includeRoles": ["admin"] } } }] }),
+                ),
+                ("POST", q) if q.starts_with("/v1.0/directory/deletedItems/") => {
+                    let b = "not in the recycle bin";
+                    s.write_all(format!("HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{b}", b.len()).as_bytes()).unwrap();
+                    continue;
+                }
+                ("POST", "/v1.0/groups") => {
+                    state
+                        .lock()
+                        .unwrap()
+                        .uploads
+                        .push(("/v1.0/groups".into(), body.clone()));
+                    j(json!({ "id": "newg" }))
+                }
                 ("POST", "/v1.0/users/u1/mailFolders") => j(json!({ "id": "restored" })),
                 ("POST", q) | ("PUT", q) => {
                     state
@@ -140,6 +191,7 @@ fn m365_full_incremental_and_restore() {
         users: vec![],
         mail: true,
         files: true,
+        ..Default::default()
     };
 
     // Full backup.
@@ -216,4 +268,129 @@ fn m365_full_incremental_and_restore() {
             .unwrap(),
         b"Subject: Subject m1\r\n\r\nBody of m1\r\n"
     );
+}
+
+#[test]
+fn m365_sharepoint_teams_and_entra() {
+    for v in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ] {
+        std::env::remove_var(v);
+    }
+    let state = Arc::new(Mutex::new(State::default()));
+    let base = serve(state.clone());
+    let mut cfg = Config::new("contoso", "app", "secret");
+    cfg.login_base = base.clone();
+    cfg.graph_base = base.clone();
+    let m = M365::new(cfg);
+    let dir = tempfile::tempdir().unwrap();
+    let b: Arc<dyn Backend> = Arc::new(LocalBackend::create(dir.path().join("r")).unwrap());
+    let (repo, _) = Repository::init(
+        b,
+        b"pw",
+        InitOptions {
+            kdf: KdfParams::INSECURE_FAST,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let opts = Options {
+        sites: true,
+        teams: true,
+        directory: true,
+        ..Default::default()
+    };
+
+    let mut w = store::Writer::new(&repo, "m365", "contoso");
+    m.backup(&mut w, None, &opts, &|_| {}).unwrap();
+    assert!(w.index.warnings.is_empty(), "{:?}", w.index.warnings);
+    w.finish(None, std::time::Instant::now()).unwrap();
+    let (_, idx) = store::previous(&repo, "m365", "contoso").unwrap().unwrap();
+    let find = |kind: &str, id: &str| {
+        idx.items
+            .iter()
+            .find(|i| i.kind == kind && i.id == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("{kind} {id}"))
+    };
+    let sf = find("site-file", "sf1");
+    assert_eq!(sf.account, "https://contoso.sharepoint.com/sites/finance");
+    assert_eq!(sf.path, "Documents/2026/budget.xlsx");
+    assert_eq!(
+        find("teams-message", "tm2").path,
+        "General/tm1/tm2",
+        "replies are kept under their thread"
+    );
+    let g = find("directory", "g1");
+    let gj: serde_json::Value =
+        serde_json::from_slice(&store::read_item(&repo, &g).unwrap()).unwrap();
+    assert_eq!(gj["fenrir_members"], json!(["u1"]));
+    find("directory", "p1");
+    find("directory", "u1");
+    assert!(state
+        .lock()
+        .unwrap()
+        .downloads
+        .iter()
+        .any(|d| d == "/v1.0/drives/d1/items/sf1/content"));
+
+    // Incremental: nothing changed, nothing downloaded again, everything kept.
+    state.lock().unwrap().downloads.clear();
+    let mut w = store::Writer::new(&repo, "m365", "contoso");
+    m.backup(&mut w, Some(&idx), &opts, &|_| {}).unwrap();
+    assert!(w.index.warnings.is_empty(), "{:?}", w.index.warnings);
+    assert!(state.lock().unwrap().downloads.is_empty());
+    let kinds: Vec<&str> = w.index.items.iter().map(|i| i.kind.as_str()).collect();
+    assert_eq!(kinds.iter().filter(|k| **k == "teams-message").count(), 2);
+    assert_eq!(kinds.iter().filter(|k| **k == "site-file").count(), 1);
+    w.finish(None, std::time::Instant::now()).unwrap();
+
+    // Restores: the file into its library, the group created again with its member, the policy disabled.
+    m.restore_site_file(
+        "Restored 2026-11-24",
+        &sf,
+        &store::read_item(&repo, &sf).unwrap(),
+    )
+    .unwrap();
+    let r = m
+        .restore_directory(&g, &store::read_item(&repo, &g).unwrap())
+        .unwrap();
+    assert!(r.contains("created again"), "{r}");
+    let p = find("directory", "p1");
+    m.restore_directory(&p, &store::read_item(&repo, &p).unwrap())
+        .unwrap();
+    let u = find("directory", "u1");
+    assert!(
+        m.restore_directory(&u, &store::read_item(&repo, &u).unwrap())
+            .is_err(),
+        "users only from the recycle bin"
+    );
+    let up = state.lock().unwrap().uploads.clone();
+    assert!(
+        up.iter()
+            .any(|(p, _)| p
+                == "/v1.0/drives/d1/root:/Restored%202026-11-24/2026/budget.xlsx:/content"),
+        "{:?}",
+        up.iter().map(|x| &x.0).collect::<Vec<_>>()
+    );
+    let grp: serde_json::Value =
+        serde_json::from_slice(&up.iter().find(|(p, _)| p == "/v1.0/groups").unwrap().1).unwrap();
+    assert_eq!(grp["mailNickname"], "sales");
+    assert!(up
+        .iter()
+        .any(|(p, _)| p == "/v1.0/groups/newg/members/$ref"));
+    let pol: serde_json::Value = serde_json::from_slice(
+        &up.iter()
+            .find(|(p, _)| p == "/v1.0/identity/conditionalAccess/policies")
+            .unwrap()
+            .1,
+    )
+    .unwrap();
+    assert_eq!(pol["state"], "disabled");
+    assert!(pol.get("id").is_none());
 }
