@@ -9,9 +9,9 @@ Baseline of the review: `main` at `790e364`. Work branch: `claude/jolly-goodall-
 | State | Count |
 |---|---|
 | verified | 6 (FIX-01 to FIX-05, FIX-08) |
-| implemented-unverified | 41 |
+| implemented-unverified | 42 |
 | partial | 127 |
-| missing | 2 (MDM-02, AV-16) |
+| missing | 1 (MDM-02) |
 | externally-blocked | 2 (FIX-06; AV-24 needs a Microsoft-signed kernel filter) |
 
 Overall parity: **not passed**. MVP: **not yet declared**.
@@ -36,6 +36,8 @@ Each entry below cites its code and tests in `catalogue.csv` and is `implemented
 * M365-29 `partial`: Copilot licence and adoption report from Microsoft's data.
 * M365-32 domain diagnostics and a read-only, audited Graph explorer.
 * VULN-08 safe web application assessment (confirmed vs suspected findings, untested categories listed).
+* AV-16 re-assessed as `implemented-unverified`: the email modules already cover it; attachment sandboxing added, and
+  endpoint link protection versus mailbox protection, plus provider restrictions, documented.
 * AV-15 `partial`: sandbox submission workflow with approval and confidential-data controls; needs a licensed sandbox to verify live.
 * AV-21 `partial`: file integrity monitoring and container runtime posture on Linux and macOS, with a support matrix.
 * RMM-14 `partial`: Proxmox VE and vCenter monitoring through their APIs, with dependency-aware alerts.

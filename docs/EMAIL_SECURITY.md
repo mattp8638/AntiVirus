@@ -18,6 +18,36 @@ Modules**). The page is laid out like Microsoft Defender:
 
 **Setting it up step by step:** [EMAIL_SECURITY_SETUP.md](EMAIL_SECURITY_SETUP.md).
 
+### Two different kinds of protection (AV-16)
+
+Fenrir protects email in two separate ways. They are not interchangeable.
+
+| | Endpoint link protection | Mailbox and email-service protection |
+|---|---|---|
+| Where | On the managed device: the DNS resolver, local DNS proxy, Apple web-protection profile and Android Private DNS ([DNS_PROTECTION.md](DNS_PROTECTION.md), [APPLE_WEB_PROTECTION.md](APPLE_WEB_PROTECTION.md)) | In Microsoft 365 (shadow mode, protect mode) or in front of it (gateway) |
+| What it stops | A known-bad site when someone clicks a link, in any mail client, browser or app | The message itself: quarantined, moved to Junk, tagged or held before delivery |
+| Covers | Only managed devices, at click time | Every mailbox of the connected domain, whichever device reads it |
+| Sees | Domain names looked up | Headers, sender, links and attachments of each message |
+| Needs | The agent, a profile or Private DNS on the device | The provider access in the table below |
+
+Neither replaces the other. Endpoint link protection does not quarantine mail. Mailbox protection does not stop a
+click on a phone that Fenrir does not manage.
+
+### Provider restrictions
+
+| Capability | Microsoft 365 mailbox (Graph) | Fenrir gateway | Other providers (Google Workspace, on-premises Exchange) |
+|---|---|---|---|
+| Scan new mail | `Mail.Read` | yes (MX points at Fenrir) | gateway only |
+| Quarantine, Junk, tag | `Mail.ReadWrite`, after delivery | before delivery | gateway only |
+| Release from quarantine | back to the Inbox | re-delivered to the mail host | gateway only |
+| Download the original | fetched from Microsoft on demand | while held in quarantine | gateway only |
+| Attachment sandboxing ([SANDBOX.md](SANDBOX.md)) | hash lookup only: Fenrir keeps no copy | the attachment is sent from the encrypted quarantine copy | gateway only |
+| Microsoft's own verdict for comparison | yes | no (no Microsoft headers before delivery) | no |
+| Defender for Office 365 Safe Links and Safe Attachments | checked as standards; switching them on needs the Defender licence | n/a | n/a |
+
+Live verification needs a customer's mail flow: a Microsoft 365 tenant with the permissions above, or a domain whose
+MX can point at the gateway.
+
 A sensible rollout per customer: shadow mode for one to two weeks while you label what the two sides disagree on, then
 protect mode, then (optionally) the gateway.
 
@@ -257,8 +287,8 @@ own queue.
 
 ### Not done (yet)
 
-Outbound filtering (Microsoft 365 still sends outbound mail itself), attachment sandboxing, click-time link checks,
-ARC sealing (adding `[Suspicious]` to subjects can break the sender's DKIM; leave it off unless you need it).
+Outbound filtering (Microsoft 365 still sends outbound mail itself), rewriting links for click-time checks in the
+message itself (managed devices are protected at click time by DNS protection instead; see the table above), ARC sealing (adding `[Suspicious]` to subjects can break the sender's DKIM; leave it off unless you need it).
 
 ---
 

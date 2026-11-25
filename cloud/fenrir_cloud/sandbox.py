@@ -84,14 +84,15 @@ def _pii_paths(db: Session, device_id: str | None) -> set[str]:
 
 
 def request(db: Session, tenant_id: str, sha256: str, actor: str, *, filename: str = "", path: str = "", device_id: str | None = None,
-            quarantine_record: str = "", alert_id: str | None = None, incident_id: str | None = None) -> SandboxSubmission:
+            quarantine_record: str = "", alert_id: str | None = None, incident_id: str | None = None,
+            email_scan_id: str | None = None) -> SandboxSubmission:
     sha256 = sha256.lower()
     if not SHA.match(sha256):
         raise SandboxError("A SHA-256 is needed")
     conf = settings(db, tenant_id)
     sub = SandboxSubmission(tenant_id=tenant_id, device_id=device_id, sha256=sha256, filename=filename[:300] or PurePosixPath(path).name,
                             path=path[:1000], quarantine_record=quarantine_record, alert_id=alert_id, incident_id=incident_id,
-                            mode="hash" if conf.get("mode", "file") == "hash" else "file", requested_by=actor)
+                            mode="hash" if conf.get("mode", "file") == "hash" else "file", requested_by=actor, email_scan_id=email_scan_id)
     db.add(sub)
     db.flush()
 
@@ -113,7 +114,7 @@ def request(db: Session, tenant_id: str, sha256: str, actor: str, *, filename: s
     if lowered and lowered in _pii_paths(db, device_id):
         return refuse("PII discovery found personal data in this file; it is never sent outside")
     ext = _ext(filename or path)
-    if sub.mode == "file" and not quarantine_record:
+    if sub.mode == "file" and not quarantine_record and not email_scan_id:
         sub.mode = "hash"  # no quarantined copy to send: look the hash up only
     if ext in DOCUMENTS:
         sub.reason = "Documents may hold customer data: a second person must approve"
@@ -200,6 +201,42 @@ def _artifact_bytes(db: Session, artifact_id: str) -> bytes:
     return (artifact_dir() / art.storage_name).read_bytes()
 
 
+def email_attachment(db: Session, scan_id: str, sha256: str) -> bytes:
+    """The attachment with this SHA-256 from a message Fenrir's gateway holds in quarantine."""
+    import hashlib
+    from email import policy
+    from email.parser import BytesParser
+
+    from .models import EmailQuarantine
+
+    held = db.scalars(select(EmailQuarantine).where(EmailQuarantine.scan_id == scan_id)).first()
+    if held is None:
+        raise SandboxError("The gateway no longer holds this message, so its attachment cannot be sent")
+    message = BytesParser(policy=policy.default).parsebytes(crypto.decrypt_bytes(held.envelope, f"email-quarantine:{scan_id}"))
+    for part in message.walk():
+        if part.is_multipart():
+            continue
+        data = part.get_payload(decode=True) or b""
+        if data and hashlib.sha256(data).hexdigest() == sha256:
+            return data
+    raise SandboxError("No attachment with that SHA-256 in the held message")
+
+
+def request_email(db: Session, scan, sha256: str, actor: str) -> SandboxSubmission:
+    """Submit one attachment of a scanned message. Gateway messages in quarantine can be uploaded; for mailbox messages
+    only the hash is looked up (Fenrir does not keep a copy)."""
+    att = next((a for a in scan.attachments or [] if str(a.get("sha256", "")).lower() == sha256.lower()), None)
+    if att is None:
+        raise SandboxError("That message has no attachment with this SHA-256")
+    from .models import EmailQuarantine
+
+    held = (scan.source or "graph") == "gateway" and db.scalars(select(EmailQuarantine).where(EmailQuarantine.scan_id == scan.id)).first()
+    sub = request(db, scan.tenant_id, sha256, actor, filename=att.get("name") or "", email_scan_id=scan.id if held else None)
+    if not held and sub.status != "refused":
+        sub.mode, sub.reason = "hash", (sub.reason + "; " if sub.reason else "") + "only the hash is looked up (Fenrir keeps no copy of mailbox messages)"
+    return sub
+
+
 def _record_verdict(db: Session, sub: SandboxSubmission, result: dict) -> None:
     sub.status, sub.verdict, sub.score, sub.report, sub.updated_at = "completed", result["verdict"], result["score"], result, utcnow()
     text = (f"Sandbox verdict for {sub.filename or sub.sha256[:12]}: {result['verdict']}"
@@ -236,6 +273,12 @@ def advance(db: Session, sub: SandboxSubmission) -> None:
                     sub.task_id, sub.status, sub.reason = task, "submitted", "Known to the sandbox: using its earlier analysis"
                 elif sub.mode == "hash":
                     sub.status, sub.verdict, sub.reason = "completed", "unknown", "The sandbox has not seen this hash; the file was not sent (hash-only mode)"
+                elif sub.email_scan_id:
+                    data = email_attachment(db, sub.email_scan_id, sub.sha256)
+                    sub.task_id = submit_file(provider, client, f"{sub.sha256}{_ext(sub.filename)}", data)
+                    sub.status, sub.reason = "submitted", "Attachment sent from the gateway quarantine; waiting for the sandbox"
+                    audit.record(db, "system:sandbox", "sandbox.submitted", sub.id, sub.tenant_id, sha256=sub.sha256, task=sub.task_id,
+                                 provider=provider.name, source="email quarantine")
                 else:
                     device = db.get(Device, sub.device_id) if sub.device_id else None
                     if device is None:

@@ -138,3 +138,25 @@ def review(sub_id: str, body: Review, p: Principal = Depends(current_principal),
         raise HTTPException(409, str(exc)) from None
     db.commit()
     return to_dict(sub)
+
+
+class EmailSubmit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    sha256: str = Field(min_length=64, max_length=64)
+
+
+@router.post("/email/{scan_id}")
+def submit_email(scan_id: str, body: EmailSubmit, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Submit one attachment of a scanned email (AV-16): uploaded from the gateway quarantine, or looked up by hash."""
+    from ..models import EmailScan
+
+    p.require("respond")
+    scan = db.get(EmailScan, scan_id)
+    if scan is None or scan.tenant_id not in p.tenant_ids:
+        raise HTTPException(404, "Message not found")
+    try:
+        sub = sandbox.request_email(db, scan, body.sha256, p.actor)
+    except sandbox.SandboxError as exc:
+        raise HTTPException(400, str(exc)) from None
+    db.commit()
+    return to_dict(sub)

@@ -3937,6 +3937,7 @@ class SandboxSubmission(Base):
     mode: Mapped[str] = mapped_column(String(10), default="file")  # file | hash
     alert_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     incident_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    email_scan_id: Mapped[str | None] = mapped_column(String(32), nullable=True)  # an attachment of a quarantined gateway message
     # awaiting_approval | approved | collecting | submitted | completed | refused | rejected | failed
     status: Mapped[str] = mapped_column(String(20), default="awaiting_approval", index=True)
     reason: Mapped[str] = mapped_column(String(500), default="")

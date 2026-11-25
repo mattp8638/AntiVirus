@@ -151,3 +151,33 @@ def test_windows_device_falls_back_to_hash_lookup(client, admin, tenant, cape):
     run_tick()
     with database.session_factory()() as db:
         assert db.get(SandboxSubmission, sub2["id"]).verdict == "malicious"  # known hash: the earlier analysis is used
+
+
+def test_gateway_attachment_is_sent_from_quarantine_and_mailbox_attachment_hash_only(client, admin, tenant, cape):
+    from email.message import EmailMessage
+
+    from fenrir_cloud import crypto
+    from fenrir_cloud.models import EmailQuarantine, EmailScan
+
+    setup(client, admin, tenant, autoApproveExecutables=True)
+    msg = EmailMessage()
+    msg["From"], msg["To"], msg["Subject"] = "bad@evil.example", "sam@acme.example", "Invoice"
+    msg.set_content("see attached")
+    msg.add_attachment(SAMPLE, maintype="application", subtype="octet-stream", filename="invoice.exe")
+    with database.session_factory()() as db:
+        gw = EmailScan(tenant_id=tenant["id"], connection_id="gwd_1", mailbox="sam@acme.example", message_id="m1", received_at=utcnow(),
+                       source="gateway", verdict="malware", attachments=[{"name": "invoice.exe", "size": len(SAMPLE), "sha256": SHA}])
+        mb = EmailScan(tenant_id=tenant["id"], connection_id="m365_1", mailbox="sam@acme.example", message_id="m2", received_at=utcnow(),
+                       source="graph", attachments=[{"name": "invoice.exe", "size": len(SAMPLE), "sha256": SHA}])
+        db.add_all([gw, mb])
+        db.flush()
+        db.add(EmailQuarantine(scan_id=gw.id, tenant_id=tenant["id"], envelope=crypto.encrypt(msg.as_bytes(), f"email-quarantine:{gw.id}")))
+        db.commit()
+        gw_id, mb_id = gw.id, mb.id
+    sub = client.post(f"{URL}/email/{gw_id}", headers=admin, json={"sha256": SHA}).json()
+    assert sub["status"] == "approved" and sub["emailScanId"] == gw_id and sub["mode"] == "file"
+    run_tick()
+    assert cape["uploads"] and SAMPLE in cape["uploads"][0]  # sent from the encrypted quarantine copy, no agent involved
+    other = client.post(f"{URL}/email/{mb_id}", headers=admin, json={"sha256": SHA}).json()
+    assert other["mode"] == "hash" and "keeps no copy" in other["reason"]
+    assert client.post(f"{URL}/email/{mb_id}", headers=admin, json={"sha256": "0" * 64}).status_code == 400
