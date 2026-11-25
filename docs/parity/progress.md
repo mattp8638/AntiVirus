@@ -26,6 +26,8 @@ Overall parity: **not passed**. MVP: **not yet declared**.
   falls back to live files with a warning there.
 * Bare-metal recovery from the recovery ISO is proven in CI too (job recovery-e2e, [run 45569395053](https://github.com/zy538324/Fenrir-Backup/actions/runs/45569395053)): the
   tracker had still listed it as not booted in CI.
+* BDR-03: one SQL Server database restored and attached by a real agent through the server, verified in CI
+  (windows-sql, [run 45605303910](https://github.com/zy538324/Fenrir-Backup/actions/runs/45605303910)); the new journey found and fixed an attach defect.
 * FLOW-07 `implemented-unverified`: failed backup -> incident -> authorised isolated recovery (boot check VM) ->
   hashed evidence with measured RTO and RPO; proven with simulated agents only.
 * BDR-06 `implemented-unverified`: SaaS search, archive tiers, self-service restore in the client portal, and eDiscovery
