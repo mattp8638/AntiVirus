@@ -54,6 +54,7 @@ from .routers import m365_config as m365_config_router
 from .routers import m365_absence as m365_absence_router
 from .routers import m365_apps as m365_apps_router
 from .routers import web_assessment as web_assessment_router
+from .routers import firewall_config as firewall_config_router
 from .routers import rollouts as rollouts_router
 from .routers import apikeys as apikeys_router
 from .routers import roles as roles_router
@@ -702,6 +703,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(m365_absence_router.router)
     app.include_router(m365_apps_router.router)
     app.include_router(web_assessment_router.router)
+    app.include_router(firewall_config_router.router)
     app.include_router(grc_assurance_router.public)
     app.include_router(protection.router)
     app.include_router(protection.console)

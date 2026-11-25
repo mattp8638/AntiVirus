@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 103
+LATEST_MIGRATION = 104
 
 def init_engine(url: str, pool_size: int = 5, max_overflow: int = 10) -> Engine:
     global _engine, _session_factory
@@ -665,6 +665,10 @@ def migrate(bind: Engine) -> list[int]:
                 Base.metadata.create_all(conn, tables=[Base.metadata.tables["web_assessments"]])  # VULN-08
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (103)"))
                 applied.append(103)
+            if 104 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["firewall_assessments"]])  # VULN-13
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (104)"))
+                applied.append(104)
             conn.commit()
         except Exception:
             conn.rollback()

@@ -3753,3 +3753,20 @@ class WebAssessment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class FirewallAssessment(Base):
+    """A configuration assessment of a firewall or router (VULN-13) from an exported configuration file. Only the
+    findings and the file's SHA-256 are kept, never the file (it holds password hashes and keys)."""
+    __tablename__ = "firewall_assessments"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("fwa"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    label: Mapped[str] = mapped_column(String(200), default="")
+    vendor: Mapped[str] = mapped_column(String(40), default="")
+    file_sha256: Mapped[str] = mapped_column(String(64))
+    firmware: Mapped[dict] = mapped_column(JSON, default=dict)
+    findings: Mapped[list] = mapped_column(JSON, default=list)
+    untested: Mapped[list] = mapped_column(JSON, default=list)
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
