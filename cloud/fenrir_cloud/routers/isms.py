@@ -11,9 +11,9 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..deps import Principal, current_principal
-from ..isms import access, memberships, organization, rls
+from ..isms import access, memberships, organization, programme, rls
 from ..isms.access import ROLE_PERMISSIONS, TENANT_ROLES
-from ..isms.models import IsmsAsset, IsmsMembership
+from ..isms.models import IsmsAsset, IsmsMembership, IsmsTenantControl
 from ..isms.scope import get_scoped, scoped
 from ..models import User
 
@@ -55,7 +55,8 @@ def me(tenant_id: str, principal: Principal = Depends(current_principal), db: Se
     """The signed-in person's ISMS role in one customer, and whether they can manage ISMS roles there."""
     principal.check_tenant(tenant_id)
     role = memberships.active_role(db, principal.user, tenant_id)
-    return {"tenantId": tenant_id, "role": role, "permissions": sorted(ROLE_PERMISSIONS.get(role or "", ())),
+    return {"tenantId": tenant_id, "userId": principal.user.id, "role": role,
+            "permissions": sorted(ROLE_PERMISSIONS.get(role or "", ())),
             "canManageRoles": memberships.can_manage(db, principal, tenant_id)}
 
 
@@ -267,3 +268,160 @@ def list_members(tenant_id: str, principal: Principal = Depends(current_principa
     rows = db.execute(select(User, IsmsMembership.role).join(IsmsMembership, IsmsMembership.user_id == User.id)
                       .where(IsmsMembership.tenant_id == tenant_id).order_by(User.email)).all()
     return {"members": [{"id": u.id, "email": u.email, "name": u.name, "role": role} for u, role in rows]}
+
+
+# Programme: frameworks, onboarding answers, applicability and controls ---------------------------------------------
+
+class FrameworkChoice(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    status: str = "target_certification"
+    target_date: str | None = Field(default=None, alias="targetDate")
+
+
+class Frameworks(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    tenant_id: str = Field(alias="tenantId", min_length=1, max_length=32)
+    frameworks: dict[str, FrameworkChoice]
+
+
+@router.get("/programme/frameworks")
+def get_frameworks(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    require_isms(db, principal, tenant_id, "programme.manage")
+    return {"frameworks": programme.framework_options(db, tenant_id)}
+
+
+@router.put("/programme/frameworks")
+def put_frameworks(body: Frameworks, principal: Principal = Depends(current_principal),
+                   db: Session = Depends(isms_db)):
+    """Chooses the customer's frameworks. Applicability is not recomputed until the change is reviewed and applied."""
+    require_isms(db, principal, body.tenant_id, "programme.manage")
+    programme.set_frameworks(db, body.tenant_id, principal.actor,
+                             {k: {"status": v.status, "targetDate": v.target_date} for k, v in body.frameworks.items()})
+    db.commit()
+    return {"frameworks": programme.framework_options(db, body.tenant_id)}
+
+
+@router.get("/programme/questions")
+def get_questions(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    require_isms(db, principal, tenant_id, "programme.manage")
+    return {"questions": programme.questions(db, tenant_id)}
+
+
+class Answers(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    tenant_id: str = Field(alias="tenantId", min_length=1, max_length=32)
+    answers: dict[str, object | None] = Field(default_factory=dict)
+
+
+def _decision(d) -> dict:
+    return {"type": d.type, "key": d.key, "applicable": d.applicable, "source": d.source, "reason": d.reason,
+            "ruleRefs": list(d.rule_refs), "locked": d.locked, "justification": d.justification}
+
+
+def _preview(p) -> dict:
+    decisions = list(p.decisions.values())
+    counts = {t: {"applicable": sum(1 for d in decisions if d.type == t and d.applicable),
+                  "excluded": sum(1 for d in decisions if d.type == t and not d.applicable)}
+              for t in ("requirement", "control", "template_section")}
+    return {"changes": [{"key": c.key, "type": c.type, "item": c.item, "from": c.before, "to": c.after,
+                         "reason": c.reason} for c in p.changes],
+            "rejectedOverrides": [{"type": r.override.type, "key": r.override.key, "problem": r.problem}
+                                  for r in p.rejected], "counts": counts}
+
+
+@router.post("/programme/preview")
+def preview_applicability(body: Answers, principal: Principal = Depends(current_principal),
+                          db: Session = Depends(isms_db)):
+    """What applying these answers would change, without saving anything."""
+    require_isms(db, principal, body.tenant_id, "programme.manage")
+    return _preview(programme.preview(db, body.tenant_id, body.answers))
+
+
+@router.post("/programme/apply")
+def apply_applicability(body: Answers, principal: Principal = Depends(current_principal),
+                        db: Session = Depends(isms_db)):
+    """Saves the answers and applies applicability: decisions, and the customer's controls."""
+    require_isms(db, principal, body.tenant_id, "programme.manage")
+    result = programme.apply(db, body.tenant_id, principal.actor, body.answers)
+    db.commit()
+    return _preview(result)
+
+
+@router.get("/programme/applicability")
+def get_applicability(tenant_id: str, principal: Principal = Depends(current_principal),
+                      db: Session = Depends(isms_db)):
+    """The applied decisions, with the manual overrides."""
+    require_isms(db, principal, tenant_id, "controls.view")
+    decisions = programme.current_decisions(db, tenant_id)
+    return {"decisions": [_decision(d) for d in decisions.values()],
+            "overrides": [{"type": o.target_type, "key": o.target_key, "applicable": o.applicable,
+                           "justification": o.justification, "setByControl": o.set_by_control}
+                          for o in programme.overrides(db, tenant_id)]}
+
+
+class Override(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    tenant_id: str = Field(alias="tenantId", min_length=1, max_length=32)
+    type: str
+    key: str = Field(min_length=1, max_length=200)
+    applicable: bool
+    justification: str = Field(max_length=4000)
+
+
+@router.put("/programme/overrides")
+def put_override(body: Override, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    """Records a manual applicability decision with its justification, then applies applicability."""
+    require_isms(db, principal, body.tenant_id, "programme.manage")
+    programme.set_override(db, body.tenant_id, principal.actor, body.type, body.key, body.applicable,
+                           body.justification)
+    result = programme.apply(db, body.tenant_id, principal.actor)
+    db.commit()
+    return _preview(result)
+
+
+@router.delete("/programme/overrides")
+def delete_override(tenant_id: str, type: str, key: str, principal: Principal = Depends(current_principal),
+                    db: Session = Depends(isms_db)):
+    require_isms(db, principal, tenant_id, "programme.manage")
+    programme.remove_override(db, tenant_id, principal.actor, type, key)
+    result = programme.apply(db, tenant_id, principal.actor)
+    db.commit()
+    return _preview(result)
+
+
+@router.get("/controls")
+def list_controls(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    require_isms(db, principal, tenant_id, "controls.view")
+    rows = programme.control_rows(db, tenant_id)
+    owners = {u.id: u for u in db.execute(select(User).where(
+        User.id.in_([r["ownerId"] for r in rows if r["ownerId"]]))).scalars()}
+    for r in rows:
+        owner = owners.get(r["ownerId"] or "")
+        r["ownerName"] = (owner.name or owner.email) if owner else None
+    return {"controls": rows, "manualStates": programme.MANUAL_STATES}
+
+
+class ControlUpdate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    owner_id: str | None = Field(default=None, alias="ownerId")
+    state: str | None = None
+    notes: str | None = Field(default=None, max_length=4000)
+
+
+@router.patch("/controls/{control_id}")
+def patch_control(control_id: str, body: ControlUpdate, principal: Principal = Depends(current_principal),
+                  db: Session = Depends(isms_db)):
+    """Sets a control's owner, state and notes. Owners can edit their own controls (record-level override)."""
+    row = get_scoped(db, IsmsTenantControl, control_id, principal)
+    role = memberships.active_role(db, principal.user, row.tenant_id)
+    if not access.can_on_record(role, principal.user.id, "controls.edit", row.owner_user_id):
+        raise HTTPException(403, f"Your ISMS role ({role or 'none'}) cannot do this (controls.edit)")
+    owner_given = "owner_id" in body.model_fields_set  # an explicit null clears the owner
+    if owner_given and not access.can(role, "controls.edit"):
+        raise HTTPException(403, "Only people who can edit every control can change its owner")
+    members = {m.user_id for m in db.execute(select(IsmsMembership).where(
+        IsmsMembership.tenant_id == row.tenant_id)).scalars()}
+    programme.update_control(db, row, principal.actor, (body.owner_id or "") if owner_given else None, body.state,
+                             body.notes, members)
+    db.commit()
+    return next(r for r in programme.control_rows(db, row.tenant_id) if r["id"] == row.id)
