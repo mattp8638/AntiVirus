@@ -3770,3 +3770,33 @@ class FirewallAssessment(Base):
     summary: Mapped[dict] = mapped_column(JSON, default=dict)
     created_by: Mapped[str] = mapped_column(String(200), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class GoogleWorkspaceConnection(Base):
+    """A customer's Google Workspace, reached with a service account and domain-wide delegation (VULN-12). The key is
+    encrypted; the scopes granted are recorded, read-only unless the customer allowed changes."""
+    __tablename__ = "google_workspace_connections"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("gws"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    domain: Mapped[str] = mapped_column(String(253))
+    admin_email: Mapped[str] = mapped_column(String(320))  # the admin the service account acts as
+    client_email: Mapped[str] = mapped_column(String(320))
+    credentials_envelope: Mapped[dict] = mapped_column(JSON)
+    allow_changes: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(20), default="not_checked")
+    last_error: Mapped[str] = mapped_column(String(500), default="")
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class GoogleWorkspacePosture(Base):
+    """One posture assessment of a Google Workspace (VULN-12): each check's result and the evidence, plus the checks
+    that could not be made and why."""
+    __tablename__ = "google_workspace_postures"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("gwp"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    connection_id: Mapped[str] = mapped_column(String(32), index=True)
+    checks: Mapped[list] = mapped_column(JSON, default=list)
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

@@ -9,9 +9,9 @@ Baseline of the review: `main` at `790e364`. Work branch: `claude/jolly-goodall-
 | State | Count |
 |---|---|
 | verified | 6 (FIX-01 to FIX-05, FIX-08) |
-| implemented-unverified | 40 |
+| implemented-unverified | 41 |
 | partial | 123 |
-| missing | 7 (RMM-14, MDM-02, AV-15, AV-16, AV-21, M365-27, VULN-12) |
+| missing | 6 (RMM-14, MDM-02, AV-15, AV-16, AV-21, M365-27) |
 | externally-blocked | 2 (FIX-06; AV-24 needs a Microsoft-signed kernel filter) |
 
 Overall parity: **not passed**. MVP: **not yet declared**.
@@ -36,6 +36,7 @@ Each entry below cites its code and tests in `catalogue.csv` and is `implemented
 * M365-29 `partial`: Copilot licence and adoption report from Microsoft's data.
 * M365-32 domain diagnostics and a read-only, audited Graph explorer.
 * VULN-08 safe web application assessment (confirmed vs suspected findings, untested categories listed).
+* VULN-12 Google Workspace posture with explicit scopes and verified safe changes.
 * VULN-13 `partial`: pfSense and OPNsense configuration assessment from uploaded exports; other vendors refused.
 * AV-24 `externally-blocked`: needs a Microsoft-signed kernel filter.
 
