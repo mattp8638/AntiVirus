@@ -1,0 +1,6 @@
+# The five Cyber Essentials technical control themes.
+- { ref: ce-firewalls, title: "Firewalls", sort: 1, licence: crown-copyright-pending }
+- { ref: ce-secure-configuration, title: "Secure configuration", sort: 2, licence: crown-copyright-pending }
+- { ref: ce-security-updates, title: "Security update management", sort: 3, licence: crown-copyright-pending }
+- { ref: ce-user-access, title: "User access control", sort: 4, licence: crown-copyright-pending }
+- { ref: ce-malware, title: "Malware protection", sort: 5, licence: crown-copyright-pending }

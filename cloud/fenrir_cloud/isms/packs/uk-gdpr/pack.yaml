@@ -1,0 +1,14 @@
+# UK GDPR: articles that set duties for controllers and processors. legislation.gov.uk content is
+# available under the Open Government Licence v3.0. Short titles are our own summaries.
+id: uk-gdpr
+kind: framework
+framework: uk-gdpr
+name: UK GDPR
+publisher: UK Parliament
+version: "2021"
+pack_version: 1.0.0
+certifiable: false
+licence: open
+attribution: "Contains public sector information licensed under the Open Government Licence v3.0 (UK GDPR, as retained and amended). Short titles are platform summaries."
+depends_on: [common-controls]
+requires_modules: [privacy]

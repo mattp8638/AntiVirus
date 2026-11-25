@@ -1,0 +1,13 @@
+# ISO/IEC 42001:2023: clause and Annex A structure. Identifiers and titles only; guidance is original.
+id: iso42001-2023
+kind: framework
+framework: iso42001
+name: ISO/IEC 42001
+publisher: ISO/IEC
+version: "2023"
+pack_version: 1.0.0
+certifiable: true
+licence: id-and-title
+attribution: "ISO/IEC 42001:2023, (c) ISO/IEC. Identifiers and titles only."
+depends_on: [common-controls]
+requires_modules: [ai-management]

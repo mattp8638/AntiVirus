@@ -1,0 +1,53 @@
+# NCSC CAF contributing outcomes to common controls v1.
+- { requirement: A1.a, control: CC-GOV-02, strength: satisfies, rationale: "Supports board direction.", licence: original }
+- { requirement: A1.b, control: CC-GOV-02, strength: satisfies, rationale: "Supports roles and responsibilities.", licence: original }
+- { requirement: A1.c, control: CC-GOV-02, strength: satisfies, rationale: "Supports decision-making.", licence: original }
+- { requirement: A1.c, control: CC-GOV-06, strength: partial, rationale: "Supports decision-making.", licence: original }
+- { requirement: A2.a, control: CC-GOV-06, strength: satisfies, rationale: "Supports risk management process.", licence: original }
+- { requirement: A2.b, control: CC-GOV-10, strength: satisfies, rationale: "Supports assurance.", licence: original }
+- { requirement: A2.b, control: CC-GOV-11, strength: partial, rationale: "Supports assurance.", licence: original }
+- { requirement: A3.a, control: CC-AST-01, strength: satisfies, rationale: "Supports asset management.", licence: original }
+- { requirement: A4.a, control: CC-SUP-01, strength: satisfies, rationale: "Supports supply chain.", licence: original }
+- { requirement: A4.a, control: CC-SUP-02, strength: partial, rationale: "Supports supply chain.", licence: original }
+- { requirement: B1.a, control: CC-GOV-01, strength: satisfies, rationale: "Supports policy and process development.", licence: original }
+- { requirement: B1.a, control: CC-GOV-12, strength: partial, rationale: "Supports policy and process development.", licence: original }
+- { requirement: B1.b, control: CC-GOV-11, strength: satisfies, rationale: "Supports policy and process implementation.", licence: original }
+- { requirement: B2.a, control: CC-IAM-01, strength: satisfies, rationale: "Supports identity verification, authentication and authorization.", licence: original }
+- { requirement: B2.a, control: CC-IAM-02, strength: partial, rationale: "Supports identity verification, authentication and authorization.", licence: original }
+- { requirement: B2.b, control: CC-END-01, strength: satisfies, rationale: "Supports device management.", licence: original }
+- { requirement: B2.c, control: CC-IAM-03, strength: satisfies, rationale: "Supports privileged user management.", licence: original }
+- { requirement: B2.d, control: CC-ACC-01, strength: satisfies, rationale: "Supports identity and access management.", licence: original }
+- { requirement: B3.a, control: CC-CLS-01, strength: satisfies, rationale: "Supports understanding data.", licence: original }
+- { requirement: B3.b, control: CC-CRY-01, strength: satisfies, rationale: "Supports data in transit.", licence: original }
+- { requirement: B3.b, control: CC-TRF-01, strength: partial, rationale: "Supports data in transit.", licence: original }
+- { requirement: B3.c, control: CC-CRY-01, strength: satisfies, rationale: "Supports stored data.", licence: original }
+- { requirement: B3.c, control: CC-DLP-01, strength: partial, rationale: "Supports stored data.", licence: original }
+- { requirement: B3.d, control: CC-END-01, strength: satisfies, rationale: "Supports mobile data.", licence: original }
+- { requirement: B3.d, control: CC-HR-03, strength: partial, rationale: "Supports mobile data.", licence: original }
+- { requirement: B3.e, control: CC-MED-01, strength: satisfies, rationale: "Supports media and equipment sanitization.", licence: original }
+- { requirement: B4.a, control: CC-APP-01, strength: satisfies, rationale: "Supports secure by design.", licence: original }
+- { requirement: B4.b, control: CC-CFG-01, strength: satisfies, rationale: "Supports secure configuration.", licence: original }
+- { requirement: B4.c, control: CC-IAM-03, strength: satisfies, rationale: "Supports secure management.", licence: original }
+- { requirement: B4.c, control: CC-CHG-01, strength: partial, rationale: "Supports secure management.", licence: original }
+- { requirement: B4.d, control: CC-VUL-01, strength: satisfies, rationale: "Supports vulnerability management.", licence: original }
+- { requirement: B5.a, control: CC-BCM-01, strength: satisfies, rationale: "Supports resilience preparation.", licence: original }
+- { requirement: B5.b, control: CC-BCM-02, strength: satisfies, rationale: "Supports design for resilience.", licence: original }
+- { requirement: B5.b, control: CC-NET-01, strength: partial, rationale: "Supports design for resilience.", licence: original }
+- { requirement: B5.c, control: CC-BKP-01, strength: satisfies, rationale: "Supports backups.", licence: original }
+- { requirement: B6.a, control: CC-AWR-01, strength: satisfies, rationale: "Supports cyber security culture.", licence: original }
+- { requirement: B6.b, control: CC-AWR-01, strength: satisfies, rationale: "Supports cyber security training.", licence: original }
+- { requirement: C1.a, control: CC-LOG-01, strength: satisfies, rationale: "Supports monitoring coverage.", licence: original }
+- { requirement: C1.b, control: CC-LOG-01, strength: satisfies, rationale: "Supports securing logs.", licence: original }
+- { requirement: C1.c, control: CC-LOG-01, strength: satisfies, rationale: "Supports generating alerts.", licence: original }
+- { requirement: C1.d, control: CC-INC-01, strength: satisfies, rationale: "Supports identifying security incidents.", licence: original }
+- { requirement: C1.d, control: CC-INC-03, strength: partial, rationale: "Supports identifying security incidents.", licence: original }
+- { requirement: C1.e, control: CC-LOG-01, strength: satisfies, rationale: "Supports monitoring tools and skills.", licence: original }
+- { requirement: C2.a, control: CC-LOG-01, strength: satisfies, rationale: "Supports system abnormalities for attack detection.", licence: original }
+- { requirement: C2.b, control: CC-GOV-05, strength: satisfies, rationale: "Supports proactive attack discovery.", licence: original }
+- { requirement: D1.a, control: CC-INC-01, strength: satisfies, rationale: "Supports response plan.", licence: original }
+- { requirement: D1.b, control: CC-INC-01, strength: satisfies, rationale: "Supports response and recovery capability.", licence: original }
+- { requirement: D1.b, control: CC-BCM-01, strength: partial, rationale: "Supports response and recovery capability.", licence: original }
+- { requirement: D1.c, control: CC-INC-01, strength: satisfies, rationale: "Supports testing and exercising.", licence: original }
+- { requirement: D1.c, control: CC-BCM-01, strength: partial, rationale: "Supports testing and exercising.", licence: original }
+- { requirement: D2.a, control: CC-INC-02, strength: satisfies, rationale: "Supports incident root cause analysis.", licence: original }
+- { requirement: D2.b, control: CC-INC-02, strength: satisfies, rationale: "Supports using incidents to drive improvements.", licence: original }

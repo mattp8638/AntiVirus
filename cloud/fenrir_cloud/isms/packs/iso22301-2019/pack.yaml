@@ -1,0 +1,13 @@
+# ISO 22301:2019 with Amd 1:2024: clause structure. Identifiers and titles only; guidance is original.
+id: iso22301-2019
+kind: framework
+framework: iso22301
+name: ISO 22301
+publisher: ISO
+version: "2019+amd1-2024"
+pack_version: 1.0.0
+certifiable: true
+licence: id-and-title
+attribution: "ISO 22301:2019 and Amd 1:2024, (c) ISO. Identifiers and titles only."
+depends_on: [common-controls]
+requires_modules: [business-continuity]

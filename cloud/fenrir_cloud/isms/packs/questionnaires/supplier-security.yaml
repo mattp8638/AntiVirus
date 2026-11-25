@@ -1,0 +1,17 @@
+# Supplier security questionnaire, original wording. Used to assess suppliers before and during
+# a contract. Weights add up to the score; a "no" to a critical question fails the assessment.
+id: supplier-security
+title: Supplier security questionnaire
+version: 1.0.0
+licence: original
+questions:
+  - { ref: q-certification, text: "Does the supplier hold a current security certification (for example ISO/IEC 27001 or Cyber Essentials Plus) covering the service?", weight: 2 }
+  - { ref: q-policy, text: "Does the supplier have an approved information security policy that its staff follow?", weight: 1 }
+  - { ref: q-access, text: "Is access to our data limited to named staff who need it, with multi-factor authentication?", weight: 3, critical: true }
+  - { ref: q-encryption, text: "Is our data encrypted in transit and at rest?", weight: 2, critical: true }
+  - { ref: q-location, text: "Is our data kept in the UK or a country with adequate data protection?", weight: 2 }
+  - { ref: q-subcontractors, text: "Does the supplier tell us about, and control, subcontractors that handle our data?", weight: 1 }
+  - { ref: q-incidents, text: "Will the supplier tell us about security incidents affecting our data within 24 hours?", weight: 2, critical: true }
+  - { ref: q-backup, text: "Is our data backed up and is recovery tested?", weight: 1 }
+  - { ref: q-vulnerability, text: "Does the supplier patch critical vulnerabilities promptly and test its own security?", weight: 2 }
+  - { ref: q-exit, text: "Will the supplier return and delete our data when the contract ends?", weight: 1 }

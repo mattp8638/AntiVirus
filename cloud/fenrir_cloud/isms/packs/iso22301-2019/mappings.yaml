@@ -1,0 +1,35 @@
+# ISO 22301:2019 clauses to common controls v1.
+- { requirement: "4.1", control: CC-GOV-07, strength: partial, rationale: "Record the internal and external issues that shape what continuity arrangements must achieve, and revisit them when the business changes.", licence: original }
+- { requirement: "4.1", control: CC-BCM-01, strength: related, rationale: "Record the internal and external issues that shape what continuity arrangements must achieve, and revisit them when the business changes.", licence: original }
+- { requirement: "4.2", control: CC-GOV-07, strength: satisfies, rationale: "List customers, regulators and others who depend on continued service, the legal and contractual duties that apply, and which of these the BCMS will meet.", licence: original }
+- { requirement: "4.3", control: CC-BCM-01, strength: partial, rationale: "Write down which products, services, sites and activities the BCMS covers, and explain any exclusions.", licence: original }
+- { requirement: "4.4", control: CC-BCM-01, strength: partial, rationale: "Run the BCMS as a managed system: processes, records and improvement, kept in this platform.", licence: original }
+- { requirement: "5.1", control: CC-GOV-02, strength: partial, rationale: "Top management sponsors continuity, provides resources and takes part in reviews and exercises.", licence: original }
+- { requirement: "5.2", control: CC-GOV-01, strength: satisfies, rationale: "Approve and publish a business continuity policy that sets direction and commitments, and review it each year.", licence: original }
+- { requirement: "5.3", control: CC-GOV-02, strength: satisfies, rationale: "Name who owns the BCMS, who leads incident response and who can invoke plans.", licence: original }
+- { requirement: "6.1", control: CC-GOV-06, strength: partial, rationale: "Identify risks to the BCMS achieving its outcomes and plan how to address them.", licence: original }
+- { requirement: "6.2", control: CC-GOV-06, strength: partial, rationale: "Set measurable continuity objectives with owners, resources and dates.", licence: original }
+- { requirement: "6.3", control: CC-CHG-01, strength: related, rationale: "Plan changes to the BCMS deliberately, considering their purpose and consequences.", licence: original }
+- { requirement: "7.1", control: CC-GOV-02, strength: related, rationale: "Make sure people, budget and tools for continuity are available.", licence: original }
+- { requirement: "7.2", control: CC-AWR-01, strength: partial, rationale: "Make sure people with continuity roles are competent and keep records of training and experience.", licence: original }
+- { requirement: "7.2", control: CC-HR-01, strength: related, rationale: "Make sure people with continuity roles are competent and keep records of training and experience.", licence: original }
+- { requirement: "7.3", control: CC-AWR-01, strength: satisfies, rationale: "Staff know the policy, their part in a disruption and how to report one.", licence: original }
+- { requirement: "7.4", control: CC-INC-01, strength: partial, rationale: "Decide what is communicated about continuity, to whom, when and how, including during disruption.", licence: original }
+- { requirement: "7.5", control: CC-GOV-08, strength: satisfies, rationale: "Keep BCMS documents and records controlled, current and available when needed, including during disruption.", licence: original }
+- { requirement: "7.5", control: CC-GOV-12, strength: partial, rationale: "Keep BCMS documents and records controlled, current and available when needed, including during disruption.", licence: original }
+- { requirement: "8.1", control: CC-BCM-01, strength: partial, rationale: "Plan and control the continuity processes and any that are outsourced.", licence: original }
+- { requirement: "8.1", control: CC-SUP-02, strength: related, rationale: "Plan and control the continuity processes and any that are outsourced.", licence: original }
+- { requirement: "8.2", control: CC-BCM-01, strength: satisfies, rationale: "Analyse the impact of disruption over time for each activity, set the MTPD, RTO and RPO, and assess risks of disruption.", licence: original }
+- { requirement: "8.3", control: CC-BCM-01, strength: satisfies, rationale: "Choose strategies and solutions that meet the recovery objectives, and the resources they need.", licence: original }
+- { requirement: "8.3", control: CC-BCM-02, strength: partial, rationale: "Choose strategies and solutions that meet the recovery objectives, and the resources they need.", licence: original }
+- { requirement: "8.4", control: CC-BCM-01, strength: satisfies, rationale: "Write plans with invocation criteria, roles, recovery steps and communications, and a response structure to use them.", licence: original }
+- { requirement: "8.4", control: CC-INC-01, strength: partial, rationale: "Write plans with invocation criteria, roles, recovery steps and communications, and a response structure to use them.", licence: original }
+- { requirement: "8.5", control: CC-BCM-01, strength: satisfies, rationale: "Exercise plans regularly against realistic scenarios and record results against recovery objectives.", licence: original }
+- { requirement: "8.5", control: CC-BKP-01, strength: related, rationale: "Exercise plans regularly against realistic scenarios and record results against recovery objectives.", licence: original }
+- { requirement: "8.6", control: CC-BCM-01, strength: partial, rationale: "Check plans and capabilities stay suitable, including those of key suppliers, after exercises, incidents and changes.", licence: original }
+- { requirement: "8.6", control: CC-SUP-02, strength: partial, rationale: "Check plans and capabilities stay suitable, including those of key suppliers, after exercises, incidents and changes.", licence: original }
+- { requirement: "9.1", control: CC-GOV-11, strength: partial, rationale: "Decide what to measure about continuity performance and review the results.", licence: original }
+- { requirement: "9.2", control: CC-GOV-10, strength: partial, rationale: "Audit the BCMS on a planned programme and act on findings.", licence: original }
+- { requirement: "9.3", control: CC-GOV-10, strength: related, rationale: "Top management reviews the BCMS at planned intervals and records decisions.", licence: original }
+- { requirement: "10.1", control: CC-INC-02, strength: partial, rationale: "Correct problems found in exercises, incidents and audits, and fix their causes.", licence: original }
+- { requirement: "10.2", control: CC-INC-02, strength: related, rationale: "Improve the BCMS based on results, reviews and lessons learned.", licence: original }

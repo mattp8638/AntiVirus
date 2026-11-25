@@ -1,0 +1,28 @@
+# ISO/IEC 27001:2022 with Amendment 1:2024. Identifiers and short titles only; all guidance is original.
+id: iso27001-2022
+kind: framework
+framework: iso27001
+name: ISO/IEC 27001
+publisher: ISO/IEC
+version: "2022+amd1-2024"
+pack_version: 1.1.0
+certifiable: true
+licence: id-and-title
+attribution: "ISO/IEC 27001:2022 and Amd 1:2024, (c) ISO/IEC. Identifiers and titles only."
+depends_on: [common-controls]
+# Modules a tenant needs to run and evidence an ISO 27001 ISMS (locked on during onboarding).
+requires_modules:
+  - organization-scope
+  - framework-library
+  - controls
+  - soa
+  - assets
+  - risk
+  - documents
+  - evidence
+  - tasks
+  - people-training
+  - audit
+  - management-review
+  - improvement
+  - objectives-metrics

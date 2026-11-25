@@ -1,0 +1,7 @@
+# Platform common control library v1. One owner, one test procedure and one evidence set per control.
+id: common-controls
+kind: control-library
+title: Common controls
+version: "1"
+pack_version: 1.0.0
+licence: original

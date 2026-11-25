@@ -1,0 +1,14 @@
+# NCSC Cyber Assessment Framework: objectives, principles and contributing outcome identifiers
+# with short titles only (reuse terms unconfirmed, D6). Structure follows CAF 3.2; check against
+# CAF 4.0 when the reuse terms are confirmed and publish a new pack version.
+id: ncsc-caf
+kind: framework
+framework: ncsc-caf
+name: NCSC Cyber Assessment Framework
+publisher: NCSC
+version: "3.2"
+pack_version: 1.0.0
+certifiable: false
+licence: crown-copyright-pending
+attribution: "NCSC Cyber Assessment Framework, Crown copyright. Identifiers and short titles only."
+depends_on: [common-controls]

@@ -1,0 +1,274 @@
+# Clauses 4 to 10 (mandatory, with original guidance) and the 93 Annex A controls (identifiers and short titles).
+- ref: "4.1"
+  group: clause-4
+  short_title: "Understanding the organization and its context"
+  mandatory: true
+  guidance: "Record the internal and external issues that affect what the ISMS must achieve, including whether climate change is a relevant issue, and review them when things change."
+  licence: id-and-title
+- ref: "4.2"
+  group: clause-4
+  short_title: "Understanding the needs and expectations of interested parties"
+  mandatory: true
+  guidance: "List the people and bodies with an interest in information security, what they require (including any climate related requirements) and which of those requirements the ISMS will address."
+  licence: id-and-title
+- ref: "4.3"
+  group: clause-4
+  short_title: "Determining the scope of the information security management system"
+  mandatory: true
+  guidance: "Write down what the ISMS covers: which parts of the organization, which sites and services, and where it stops. Record the interfaces with things outside the scope."
+  licence: id-and-title
+- ref: "4.4"
+  group: clause-4
+  short_title: "Information security management system"
+  mandatory: true
+  guidance: "Set up the ISMS as a set of connected processes, then run, maintain and improve it."
+  licence: id-and-title
+- ref: "5.1"
+  group: clause-5
+  short_title: "Leadership and commitment"
+  mandatory: true
+  guidance: "Top management shows it backs the ISMS: it sets direction, provides resources, links security to business processes and holds people to account."
+  licence: id-and-title
+- ref: "5.2"
+  group: clause-5
+  short_title: "Policy"
+  mandatory: true
+  guidance: "Top management sets an information security policy that fits the organization, commits to meeting requirements and to improvement, and makes sure staff know about it."
+  licence: id-and-title
+- ref: "5.3"
+  group: clause-5
+  short_title: "Organizational roles, responsibilities and authorities"
+  mandatory: true
+  guidance: "Assign and communicate who is responsible for the ISMS conforming and for reporting on its performance to top management."
+  licence: id-and-title
+- ref: "6.1.1"
+  group: clause-6
+  short_title: "Actions to address risks and opportunities: general"
+  mandatory: true
+  guidance: "Work out the risks and opportunities that could stop the ISMS achieving its outcomes, and plan how to deal with them."
+  licence: id-and-title
+- ref: "6.1.2"
+  group: clause-6
+  short_title: "Information security risk assessment"
+  mandatory: true
+  guidance: "Define and use a repeatable way to identify, analyse and evaluate information security risks, with criteria for acceptance, and keep the results."
+  licence: id-and-title
+- ref: "6.1.3"
+  group: clause-6
+  short_title: "Information security risk treatment"
+  mandatory: true
+  guidance: "Decide how each assessed risk will be treated, choose the controls needed, compare them with Annex A, produce the Statement of Applicability and get risk owners to approve the treatment plan and residual risk."
+  licence: id-and-title
+- ref: "6.2"
+  group: clause-6
+  short_title: "Information security objectives and planning to achieve them"
+  mandatory: true
+  guidance: "Set measurable security objectives, decide what will be done, by whom and by when, and how results will be judged."
+  licence: id-and-title
+- ref: "6.3"
+  group: clause-6
+  short_title: "Planning of changes"
+  mandatory: true
+  guidance: "Plan changes to the ISMS before making them, and keep a record."
+  licence: id-and-title
+- ref: "7.1"
+  group: clause-7
+  short_title: "Resources"
+  mandatory: true
+  guidance: "Provide the people, budget and tools the ISMS needs."
+  licence: id-and-title
+- ref: "7.2"
+  group: clause-7
+  short_title: "Competence"
+  mandatory: true
+  guidance: "Decide what competence each security role needs, make sure people have it, and keep evidence."
+  licence: id-and-title
+- ref: "7.3"
+  group: clause-7
+  short_title: "Awareness"
+  mandatory: true
+  guidance: "Make sure staff know the policy, how they contribute and what happens if they do not follow it."
+  licence: id-and-title
+- ref: "7.4"
+  group: clause-7
+  short_title: "Communication"
+  mandatory: true
+  guidance: "Decide what to communicate about security, when, to whom and how."
+  licence: id-and-title
+- ref: "7.5.1"
+  group: clause-7
+  short_title: "Documented information: general"
+  mandatory: true
+  guidance: "Keep the documents the standard requires and any others the ISMS needs to be effective."
+  licence: id-and-title
+- ref: "7.5.2"
+  group: clause-7
+  short_title: "Creating and updating"
+  mandatory: true
+  guidance: "Give documents proper identification, format and review and approval before use."
+  licence: id-and-title
+- ref: "7.5.3"
+  group: clause-7
+  short_title: "Control of documented information"
+  mandatory: true
+  guidance: "Control who can see and change documents, keep versions, and keep them available and protected."
+  licence: id-and-title
+- ref: "8.1"
+  group: clause-8
+  short_title: "Operational planning and control"
+  mandatory: true
+  guidance: "Plan and run the processes the ISMS needs, keep evidence that they ran as planned, and control outsourced processes."
+  licence: id-and-title
+- ref: "8.2"
+  group: clause-8
+  short_title: "Information security risk assessment"
+  mandatory: true
+  guidance: "Repeat risk assessments at planned intervals and after significant change, and keep the results."
+  licence: id-and-title
+- ref: "8.3"
+  group: clause-8
+  short_title: "Information security risk treatment"
+  mandatory: true
+  guidance: "Carry out the risk treatment plan and keep the results."
+  licence: id-and-title
+- ref: "9.1"
+  group: clause-9
+  short_title: "Monitoring, measurement, analysis and evaluation"
+  mandatory: true
+  guidance: "Decide what to measure, how and when, and evaluate the results to judge security performance."
+  licence: id-and-title
+- ref: "9.2.1"
+  group: clause-9
+  short_title: "Internal audit: general"
+  mandatory: true
+  guidance: "Run internal audits at planned intervals to check the ISMS meets requirements and works in practice."
+  licence: id-and-title
+- ref: "9.2.2"
+  group: clause-9
+  short_title: "Internal audit programme"
+  mandatory: true
+  guidance: "Plan an audit programme with criteria, scope, impartial auditors and reporting to management."
+  licence: id-and-title
+- ref: "9.3.1"
+  group: clause-9
+  short_title: "Management review: general"
+  mandatory: true
+  guidance: "Top management reviews the ISMS at planned intervals."
+  licence: id-and-title
+- ref: "9.3.2"
+  group: clause-9
+  short_title: "Management review inputs"
+  mandatory: true
+  guidance: "Cover the required topics in each review, including changes, feedback, performance trends, audit results and risk status."
+  licence: id-and-title
+- ref: "9.3.3"
+  group: clause-9
+  short_title: "Management review results"
+  mandatory: true
+  guidance: "Record decisions on improvement and any changes needed to the ISMS."
+  licence: id-and-title
+- ref: "10.1"
+  group: clause-10
+  short_title: "Continual improvement"
+  mandatory: true
+  guidance: "Keep improving how suitable, adequate and effective the ISMS is."
+  licence: id-and-title
+- ref: "10.2"
+  group: clause-10
+  short_title: "Nonconformity and corrective action"
+  mandatory: true
+  guidance: "When something does not conform, fix it, find the cause, act to stop it recurring and check the action worked."
+  licence: id-and-title
+- { ref: A.5.1, group: annex-a-5, short_title: "Policies for information security", licence: id-and-title }
+- { ref: A.5.2, group: annex-a-5, short_title: "Information security roles and responsibilities", licence: id-and-title }
+- { ref: A.5.3, group: annex-a-5, short_title: "Segregation of duties", licence: id-and-title }
+- { ref: A.5.4, group: annex-a-5, short_title: "Management responsibilities", licence: id-and-title }
+- { ref: A.5.5, group: annex-a-5, short_title: "Contact with authorities", licence: id-and-title }
+- { ref: A.5.6, group: annex-a-5, short_title: "Contact with special interest groups", licence: id-and-title }
+- { ref: A.5.7, group: annex-a-5, short_title: "Threat intelligence", licence: id-and-title }
+- { ref: A.5.8, group: annex-a-5, short_title: "Information security in project management", licence: id-and-title }
+- { ref: A.5.9, group: annex-a-5, short_title: "Inventory of information and other associated assets", licence: id-and-title }
+- { ref: A.5.10, group: annex-a-5, short_title: "Acceptable use of information and other associated assets", licence: id-and-title }
+- { ref: A.5.11, group: annex-a-5, short_title: "Return of assets", licence: id-and-title }
+- { ref: A.5.12, group: annex-a-5, short_title: "Classification of information", licence: id-and-title }
+- { ref: A.5.13, group: annex-a-5, short_title: "Labelling of information", licence: id-and-title }
+- { ref: A.5.14, group: annex-a-5, short_title: "Information transfer", licence: id-and-title }
+- { ref: A.5.15, group: annex-a-5, short_title: "Access control", licence: id-and-title }
+- { ref: A.5.16, group: annex-a-5, short_title: "Identity management", licence: id-and-title }
+- { ref: A.5.17, group: annex-a-5, short_title: "Authentication information", licence: id-and-title }
+- { ref: A.5.18, group: annex-a-5, short_title: "Access rights", licence: id-and-title }
+- { ref: A.5.19, group: annex-a-5, short_title: "Information security in supplier relationships", licence: id-and-title }
+- { ref: A.5.20, group: annex-a-5, short_title: "Addressing information security within supplier agreements", licence: id-and-title }
+- { ref: A.5.21, group: annex-a-5, short_title: "Managing information security in the ICT supply chain", licence: id-and-title }
+- { ref: A.5.22, group: annex-a-5, short_title: "Monitoring, review and change management of supplier services", licence: id-and-title }
+- { ref: A.5.23, group: annex-a-5, short_title: "Information security for use of cloud services", licence: id-and-title }
+- { ref: A.5.24, group: annex-a-5, short_title: "Information security incident management planning and preparation", licence: id-and-title }
+- { ref: A.5.25, group: annex-a-5, short_title: "Assessment and decision on information security events", licence: id-and-title }
+- { ref: A.5.26, group: annex-a-5, short_title: "Response to information security incidents", licence: id-and-title }
+- { ref: A.5.27, group: annex-a-5, short_title: "Learning from information security incidents", licence: id-and-title }
+- { ref: A.5.28, group: annex-a-5, short_title: "Collection of evidence", licence: id-and-title }
+- { ref: A.5.29, group: annex-a-5, short_title: "Information security during disruption", licence: id-and-title }
+- { ref: A.5.30, group: annex-a-5, short_title: "ICT readiness for business continuity", licence: id-and-title }
+- { ref: A.5.31, group: annex-a-5, short_title: "Legal, statutory, regulatory and contractual requirements", licence: id-and-title }
+- { ref: A.5.32, group: annex-a-5, short_title: "Intellectual property rights", licence: id-and-title }
+- { ref: A.5.33, group: annex-a-5, short_title: "Protection of records", licence: id-and-title }
+- { ref: A.5.34, group: annex-a-5, short_title: "Privacy and protection of PII", licence: id-and-title }
+- { ref: A.5.35, group: annex-a-5, short_title: "Independent review of information security", licence: id-and-title }
+- { ref: A.5.36, group: annex-a-5, short_title: "Compliance with policies, rules and standards for information security", licence: id-and-title }
+- { ref: A.5.37, group: annex-a-5, short_title: "Documented operating procedures", licence: id-and-title }
+- { ref: A.6.1, group: annex-a-6, short_title: "Screening", licence: id-and-title }
+- { ref: A.6.2, group: annex-a-6, short_title: "Terms and conditions of employment", licence: id-and-title }
+- { ref: A.6.3, group: annex-a-6, short_title: "Information security awareness, education and training", licence: id-and-title }
+- { ref: A.6.4, group: annex-a-6, short_title: "Disciplinary process", licence: id-and-title }
+- { ref: A.6.5, group: annex-a-6, short_title: "Responsibilities after termination or change of employment", licence: id-and-title }
+- { ref: A.6.6, group: annex-a-6, short_title: "Confidentiality or non-disclosure agreements", licence: id-and-title }
+- { ref: A.6.7, group: annex-a-6, short_title: "Remote working", licence: id-and-title }
+- { ref: A.6.8, group: annex-a-6, short_title: "Information security event reporting", licence: id-and-title }
+- { ref: A.7.1, group: annex-a-7, short_title: "Physical security perimeters", licence: id-and-title }
+- { ref: A.7.2, group: annex-a-7, short_title: "Physical entry", licence: id-and-title }
+- { ref: A.7.3, group: annex-a-7, short_title: "Securing offices, rooms and facilities", licence: id-and-title }
+- { ref: A.7.4, group: annex-a-7, short_title: "Physical security monitoring", licence: id-and-title }
+- { ref: A.7.5, group: annex-a-7, short_title: "Protecting against physical and environmental threats", licence: id-and-title }
+- { ref: A.7.6, group: annex-a-7, short_title: "Working in secure areas", licence: id-and-title }
+- { ref: A.7.7, group: annex-a-7, short_title: "Clear desk and clear screen", licence: id-and-title }
+- { ref: A.7.8, group: annex-a-7, short_title: "Equipment siting and protection", licence: id-and-title }
+- { ref: A.7.9, group: annex-a-7, short_title: "Security of assets off-premises", licence: id-and-title }
+- { ref: A.7.10, group: annex-a-7, short_title: "Storage media", licence: id-and-title }
+- { ref: A.7.11, group: annex-a-7, short_title: "Supporting utilities", licence: id-and-title }
+- { ref: A.7.12, group: annex-a-7, short_title: "Cabling security", licence: id-and-title }
+- { ref: A.7.13, group: annex-a-7, short_title: "Equipment maintenance", licence: id-and-title }
+- { ref: A.7.14, group: annex-a-7, short_title: "Secure disposal or re-use of equipment", licence: id-and-title }
+- { ref: A.8.1, group: annex-a-8, short_title: "User endpoint devices", licence: id-and-title }
+- { ref: A.8.2, group: annex-a-8, short_title: "Privileged access rights", licence: id-and-title }
+- { ref: A.8.3, group: annex-a-8, short_title: "Information access restriction", licence: id-and-title }
+- { ref: A.8.4, group: annex-a-8, short_title: "Access to source code", licence: id-and-title }
+- { ref: A.8.5, group: annex-a-8, short_title: "Secure authentication", licence: id-and-title }
+- { ref: A.8.6, group: annex-a-8, short_title: "Capacity management", licence: id-and-title }
+- { ref: A.8.7, group: annex-a-8, short_title: "Protection against malware", licence: id-and-title }
+- { ref: A.8.8, group: annex-a-8, short_title: "Management of technical vulnerabilities", licence: id-and-title }
+- { ref: A.8.9, group: annex-a-8, short_title: "Configuration management", licence: id-and-title }
+- { ref: A.8.10, group: annex-a-8, short_title: "Information deletion", licence: id-and-title }
+- { ref: A.8.11, group: annex-a-8, short_title: "Data masking", licence: id-and-title }
+- { ref: A.8.12, group: annex-a-8, short_title: "Data leakage prevention", licence: id-and-title }
+- { ref: A.8.13, group: annex-a-8, short_title: "Information backup", licence: id-and-title }
+- { ref: A.8.14, group: annex-a-8, short_title: "Redundancy of information processing facilities", licence: id-and-title }
+- { ref: A.8.15, group: annex-a-8, short_title: "Logging", licence: id-and-title }
+- { ref: A.8.16, group: annex-a-8, short_title: "Monitoring activities", licence: id-and-title }
+- { ref: A.8.17, group: annex-a-8, short_title: "Clock synchronization", licence: id-and-title }
+- { ref: A.8.18, group: annex-a-8, short_title: "Use of privileged utility programs", licence: id-and-title }
+- { ref: A.8.19, group: annex-a-8, short_title: "Installation of software on operational systems", licence: id-and-title }
+- { ref: A.8.20, group: annex-a-8, short_title: "Networks security", licence: id-and-title }
+- { ref: A.8.21, group: annex-a-8, short_title: "Security of network services", licence: id-and-title }
+- { ref: A.8.22, group: annex-a-8, short_title: "Segregation of networks", licence: id-and-title }
+- { ref: A.8.23, group: annex-a-8, short_title: "Web filtering", licence: id-and-title }
+- { ref: A.8.24, group: annex-a-8, short_title: "Use of cryptography", licence: id-and-title }
+- { ref: A.8.25, group: annex-a-8, short_title: "Secure development life cycle", licence: id-and-title }
+- { ref: A.8.26, group: annex-a-8, short_title: "Application security requirements", licence: id-and-title }
+- { ref: A.8.27, group: annex-a-8, short_title: "Secure system architecture and engineering principles", licence: id-and-title }
+- { ref: A.8.28, group: annex-a-8, short_title: "Secure coding", licence: id-and-title }
+- { ref: A.8.29, group: annex-a-8, short_title: "Security testing in development and acceptance", licence: id-and-title }
+- { ref: A.8.30, group: annex-a-8, short_title: "Outsourced development", licence: id-and-title }
+- { ref: A.8.31, group: annex-a-8, short_title: "Separation of development, test and production environments", licence: id-and-title }
+- { ref: A.8.32, group: annex-a-8, short_title: "Change management", licence: id-and-title }
+- { ref: A.8.33, group: annex-a-8, short_title: "Test information", licence: id-and-title }
+- { ref: A.8.34, group: annex-a-8, short_title: "Protection of information systems during audit testing", licence: id-and-title }
