@@ -40,6 +40,7 @@ from .routers import m365_intune as m365_intune_router
 from .routers import m365_reports as m365_reports_router
 from .routers import m365_collaboration as m365_collaboration_router
 from .routers import grc_programme as grc_programme_router
+from .routers import continuity as continuity_router
 from .routers import rollouts as rollouts_router
 from .routers import apikeys as apikeys_router
 from .routers import roles as roles_router
@@ -654,6 +655,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(hybrid_router.agent_router)
     app.include_router(network_router.agent)
     app.include_router(grc_assurance_router.router)
+    app.include_router(continuity_router.router)
     app.include_router(grc_assurance_router.public)
     app.include_router(protection.router)
     app.include_router(protection.console)

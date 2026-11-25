@@ -61,3 +61,24 @@ sudo docker compose \
 ```
 
 This catalogue change needs no new database migration or volume reset. Check that the cloud service is healthy, refresh the browser, and reopen **Add framework**. If an old list persists, confirm the VPS pulled the merged commit and that the cloud image was rebuilt. See the main README for health checks and log collection.
+
+## Business continuity
+
+**Compliance & GRC › Business continuity** holds each customer's continuity plans. A plan lists the business
+services with their impact if lost, how critical they are, how long the business can be without them (RTO) and how
+much recent data it can afford to lose (RPO), what each depends on, and the backed-up machines and DR runbook that
+recover it. Dependency cycles are refused, and the plan shows the recovery order the dependencies imply.
+
+Approving a plan records the version, the approver and a hash of what was approved; a later change shows as
+"changed since approval" until approved again. Approval is not proof. Each service is also measured, live:
+
+* the age of its machines' newest backups against its RPO;
+* whether those backups were boot-verified in the last 90 days;
+* the recovery time of its DR runbook's latest run against its RTO, and whether every machine came up;
+* whether a dependency has a longer RTO than the service itself.
+
+A service shows as **exercised** only when a technical exercise in the last year met its RTO and nothing has
+slipped since; **measured** when a DR run met the target but no exercise was recorded; **gap** when any finding is
+open; **planned** otherwise. A technical exercise takes its numbers from a DR runbook run, never from typed values;
+a tabletop exercise records its outcome, lessons and actions. Actions are ticked off as they are done, and the
+**review pack** collects the approved plan, the current assessment, the exercises and the open actions.

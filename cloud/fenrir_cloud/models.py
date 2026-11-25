@@ -3150,6 +3150,51 @@ class DrRun(Base):
     started_by: Mapped[str] = mapped_column(String(200), default="")
 
 
+class ContinuityPlan(Base):
+    """A business continuity plan (GRC-17): business services with their impact (BIA), recovery targets, dependencies
+    and the devices and DR runbooks that recover them. Approval versions the plan; it does not prove it works."""
+    __tablename__ = "continuity_plans"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("bcp"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    scope: Mapped[str] = mapped_column(Text, default="")
+    owner: Mapped[str] = mapped_column(String(200), default="")
+    status: Mapped[str] = mapped_column(String(20), default="draft")  # draft | approved | retired
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    approved_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    approved_by: Mapped[str] = mapped_column(String(200), default="")
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    approved_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    review_due: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    services: Mapped[list] = mapped_column(JSON, default=list)
+    updated_by: Mapped[str] = mapped_column(String(200), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ContinuityExercise(Base):
+    """A continuity exercise: a tabletop walk-through, or a technical recovery tied to a DR runbook run whose measured
+    recovery times are recorded against the plan's targets. Lessons and actions are tracked to closure."""
+    __tablename__ = "continuity_exercises"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("bcx"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    plan_id: Mapped[str] = mapped_column(String(32), index=True)
+    plan_version: Mapped[int] = mapped_column(Integer, default=1)
+    kind: Mapped[str] = mapped_column(String(20), default="tabletop")  # tabletop | technical
+    title: Mapped[str] = mapped_column(String(300))
+    scenario: Mapped[str] = mapped_column(Text, default="")
+    held_on: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    participants: Mapped[list] = mapped_column(JSON, default=list)
+    services: Mapped[list] = mapped_column(JSON, default=list)  # service ids exercised
+    dr_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    outcome: Mapped[str] = mapped_column(String(20), default="pending")  # pending | passed | partial | failed
+    results: Mapped[dict] = mapped_column(JSON, default=dict)  # per service: measured vs target
+    lessons: Mapped[str] = mapped_column(Text, default="")
+    actions: Mapped[list] = mapped_column(JSON, default=list)  # [{id, text, owner, due, done, doneAt}]
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class BackupCase(Base):
     """An eDiscovery case (backup/docs/design/ediscovery.md): custodians (machines, SaaS tenants and accounts), a
     legal hold on their backups while the case is open, saved searches and exports with a chain-of-custody record."""
