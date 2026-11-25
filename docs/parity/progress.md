@@ -10,8 +10,8 @@ Baseline of the review: `main` at `790e364`. Work branch: `claude/jolly-goodall-
 |---|---|
 | verified | 6 (FIX-01 to FIX-05, FIX-08) |
 | implemented-unverified | 42 |
-| partial | 127 |
-| missing | 1 (MDM-02) |
+| partial | 128 |
+| missing | 0 |
 | externally-blocked | 2 (FIX-06; AV-24 needs a Microsoft-signed kernel filter) |
 
 Overall parity: **not passed**. MVP: **not yet declared**.
@@ -36,6 +36,7 @@ Each entry below cites its code and tests in `catalogue.csv` and is `implemented
 * M365-29 `partial`: Copilot licence and adoption report from Microsoft's data.
 * M365-32 domain diagnostics and a read-only, audited Graph explorer.
 * VULN-08 safe web application assessment (confirmed vs suspected findings, untested categories listed).
+* MDM-02 `partial`: Apple MDM protocol (enrolment, signed check-ins, commands, push, renewal reminders); ADE not built.
 * AV-16 re-assessed as `implemented-unverified`: the email modules already cover it; attachment sandboxing added, and
   endpoint link protection versus mailbox protection, plus provider restrictions, documented.
 * AV-15 `partial`: sandbox submission workflow with approval and confidential-data controls; needs a licensed sandbox to verify live.

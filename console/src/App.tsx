@@ -14,6 +14,7 @@ import GoogleWorkspace from "./pages/GoogleWorkspace";
 import Infrastructure from "./pages/Infrastructure";
 import WorkloadProtection from "./pages/WorkloadProtection";
 import Sandbox from "./pages/Sandbox";
+import AppleMdm from "./pages/AppleMdm";
 import Assurance from "./pages/grc/Assurance";
 import Continuity from "./pages/grc/Continuity";
 import Registers from "./pages/grc/Registers";
@@ -146,6 +147,7 @@ const NAV: NavSection[] = [
       { module: "protection", to: "/protection-health", label: "Protection health", icon: "⛨" },
       { module: "protection", to: "/workload-protection", label: "Workload protection", icon: "▦" },
       { module: "protection", to: "/sandbox", label: "Sandbox analysis", icon: "◫" },
+      { module: "protection", to: "/apple-mdm", label: "Apple devices (MDM)", icon: "⌘" },
       { module: "security", to: "/dns", label: "DNS protection", icon: "◈" },
       { module: "email", to: "/email-security", label: "Email security", icon: "✉" },
     ],
@@ -545,6 +547,7 @@ function Shell() {
             <Route path="/infrastructure" element={<Infrastructure />} />
             <Route path="/workload-protection" element={<WorkloadProtection />} />
             <Route path="/sandbox" element={<Sandbox />} />
+            <Route path="/apple-mdm" element={<AppleMdm />} />
             <Route path="/network-topology" element={<NetworkTopology />} />
             <Route path="/out-of-band" element={<OutOfBand />} />
             <Route path="/remediation-packages" element={<RemediationPackages />} />

@@ -3951,3 +3951,69 @@ class SandboxSubmission(Base):
     report: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AppleMdmConfig(Base):
+    """Apple MDM for one MSP or customer (MDM-02): the APNs push certificate (from Apple's Push Certificates Portal), the
+    Fenrir MDM certificate authority that issues device identities, and the Apple Business Manager token's expiry."""
+    __tablename__ = "apple_mdm_configs"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("amc"))
+    tenant_id: Mapped[str] = mapped_column(String(32), unique=True)
+    push_envelope: Mapped[dict] = mapped_column(JSON, default=dict)  # {cert, key} PEM, encrypted
+    push_topic: Mapped[str] = mapped_column(String(200), default="")
+    push_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ca_cert_pem: Mapped[str] = mapped_column(Text, default="")
+    ca_key_envelope: Mapped[dict] = mapped_column(JSON, default=dict)
+    abm_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    server_url: Mapped[str] = mapped_column(String(300), default="")
+    updated_by: Mapped[str] = mapped_column(String(200), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AppleEnrollment(Base):
+    """An enrolment profile handed out for one device: the identity certificate's serial ties the device to it."""
+    __tablename__ = "apple_enrollments"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("aen"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    config_id: Mapped[str] = mapped_column(String(32))
+    cert_serial: Mapped[str] = mapped_column(String(64), unique=True)
+    label: Mapped[str] = mapped_column(String(200), default="")
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class AppleDevice(Base):
+    """An iPhone, iPad or Mac enrolled in Fenrir's Apple MDM."""
+    __tablename__ = "apple_devices"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("apd"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    enrollment_id: Mapped[str] = mapped_column(String(32))
+    udid: Mapped[str] = mapped_column(String(100), unique=True)
+    serial_number: Mapped[str] = mapped_column(String(64), default="")
+    model: Mapped[str] = mapped_column(String(100), default="")
+    os_version: Mapped[str] = mapped_column(String(40), default="")
+    push_token: Mapped[str] = mapped_column(String(200), default="")
+    push_magic: Mapped[str] = mapped_column(String(100), default="")
+    unlock_token_envelope: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="enrolling")  # enrolling | enrolled | removed
+    info: Mapped[dict] = mapped_column(JSON, default=dict)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    enrolled_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AppleMdmCommand(Base):
+    """A command queued for an Apple device and its result."""
+    __tablename__ = "apple_mdm_commands"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("amd"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    uuid: Mapped[str] = mapped_column(String(64), unique=True)
+    request_type: Mapped[str] = mapped_column(String(60))
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(20), default="queued")  # queued | sent | acknowledged | error | not_now
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    requested_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
