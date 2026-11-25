@@ -97,55 +97,49 @@ fn unique(root: &Path, rel: PathBuf, used: &mut HashSet<PathBuf>) -> PathBuf {
     cand
 }
 
-pub fn export_saas(
-    ctx: &Ctx,
-    access: &RepoAccess,
+/// What `write_items` produced: manifest entries, items that failed, the
+/// service and tenant, and when the backup was taken.
+pub struct Written {
+    pub entries: Vec<serde_json::Value>,
+    pub failed: Vec<serde_json::Value>,
+    pub service: String,
+    pub tenant: String,
+    pub backed_up: String,
+}
+
+/// Read the chosen items of a SaaS backup into `root` (each checked
+/// against its backup-time hash) and list them with their SHA-256.
+pub fn write_items(
+    repo: &core_format::Repository,
     image: Uuid,
     filter: &Filter,
-    recipient: &str,
-    job: Uuid,
-    rep: &Reporter,
-) -> anyhow::Result<JobUpdate> {
+    root: &Path,
+    step: &dyn Fn(usize, usize, &str) -> anyhow::Result<()>,
+) -> anyhow::Result<Written> {
     use sha2::{Digest, Sha256};
-    let repo = open_repo(ctx, access)?;
     let m = repo.load_manifest(&image)?;
     if m.os.family != "saas" {
         bail!("that backup is not of a cloud service; export its files with a file download");
     }
-    let idx = saas::store::read_index(&repo, &m)?;
+    let idx = saas::store::read_index(repo, &m)?;
     let chosen: Vec<&saas::store::Item> = idx.items.iter().filter(|i| filter.wants(i)).collect();
     if chosen.is_empty() {
         bail!("no item of this backup matches");
     }
-    let work = crate::config::state_dir()
-        .join("downloads")
-        .join(job.to_string());
-    let _ = std::fs::remove_dir_all(&work);
-    let root = work.join("items");
-    std::fs::create_dir_all(&root)?;
-    struct Cleanup(PathBuf);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    let _cleanup = Cleanup(work.clone());
+    std::fs::create_dir_all(root)?;
     let (mut entries, mut failed, mut used) = (Vec::new(), Vec::new(), HashSet::new());
     let mut bytes = 0u64;
     for (n, it) in chosen.iter().enumerate() {
-        if ctx.ctl.is_cancelled() {
-            bail!("cancelled");
-        }
-        rep.progress("reading", n as u64, chosen.len() as u64, &it.path);
+        step(n, chosen.len(), &it.path)?;
         // read_item checks the bytes against the hash recorded at backup time.
-        match saas::store::read_item(&repo, it) {
+        match saas::store::read_item(repo, it) {
             Ok(data) => {
                 bytes += data.len() as u64;
                 if bytes > crate::download::MAX_BYTES {
                     bail!("the items come to more than a download carries (4 GiB): export fewer at a time");
                 }
-                let rel = unique(&root, file_name(it), &mut used);
-                std::fs::create_dir_all(root.join(&rel).parent().unwrap_or(&root))?;
+                let rel = unique(root, file_name(it), &mut used);
+                std::fs::create_dir_all(root.join(&rel).parent().unwrap_or(root))?;
                 std::fs::write(root.join(&rel), &data)?;
                 entries.push(serde_json::json!({
                     "file": rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/"),
@@ -158,14 +152,65 @@ pub fn export_saas(
                 .push(serde_json::json!({ "id": it.id, "path": it.path, "error": e.to_string() })),
         }
     }
+    Ok(Written {
+        entries,
+        failed,
+        service: idx.service,
+        tenant: idx.tenant,
+        backed_up: m.created,
+    })
+}
+
+pub fn export_saas(
+    ctx: &Ctx,
+    access: &RepoAccess,
+    image: Uuid,
+    filter: &Filter,
+    recipient: &str,
+    job: Uuid,
+    rep: &Reporter,
+) -> anyhow::Result<JobUpdate> {
+    let repo = open_repo(ctx, access)?;
+    let work = crate::config::state_dir()
+        .join("downloads")
+        .join(job.to_string());
+    let _ = std::fs::remove_dir_all(&work);
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(work.clone());
+    let root = work.join("items");
+    let w = write_items(&repo, image, filter, &root, &|n, total, path| {
+        if ctx.ctl.is_cancelled() {
+            bail!("cancelled");
+        }
+        rep.progress("reading", n as u64, total as u64, path);
+        Ok(())
+    })?;
+    let failed = w.failed.len();
+    let warnings: Vec<String> = w
+        .failed
+        .iter()
+        .map(|f| {
+            format!(
+                "{}: {}",
+                f["path"].as_str().unwrap_or(""),
+                f["error"].as_str().unwrap_or("")
+            )
+        })
+        .take(100)
+        .collect();
     let (sha, count) = crate::download::write_manifest(
         &root,
         serde_json::json!({
-            "image_id": image, "service": idx.service, "tenant": idx.tenant, "backed_up": m.created,
+            "image_id": image, "service": w.service, "tenant": w.tenant, "backed_up": w.backed_up,
             "filter": { "accounts": filter.accounts, "kinds": filter.kinds, "items": filter.items.len() },
-            "failed": failed,
+            "failed": w.failed,
         }),
-        entries,
+        w.entries,
     )?;
     rep.progress("packing", 0, 1, "");
     let tar = work.join("export.tar");
@@ -178,25 +223,14 @@ pub fn export_saas(
         recipient,
         &format!("ediscovery-{}.tar", &image.to_string()[..8]),
     )?;
-    let state = if failed.is_empty() {
+    let mut u = finished(if failed == 0 {
         JobState::Succeeded
     } else {
         JobState::Warning
-    };
-    let mut u = finished(state);
-    u.warnings = failed
-        .iter()
-        .map(|f| {
-            format!(
-                "{}: {}",
-                f["path"].as_str().unwrap_or(""),
-                f["error"].as_str().unwrap_or("")
-            )
-        })
-        .take(100)
-        .collect();
+    });
+    u.warnings = warnings;
     u.result = Some(serde_json::json!({
-        "download": header, "manifest_sha256": sha, "manifest_files": count, "failed": failed.len(),
+        "download": header, "manifest_sha256": sha, "manifest_files": count, "failed": failed,
     }));
     Ok(u)
 }

@@ -311,7 +311,10 @@ mod manifest_tests {
         std::fs::write(d.join("a/x.txt"), b"abc").unwrap();
         let files = super::hash_tree(&d).unwrap();
         assert_eq!(files[0]["file"], "a/x.txt");
-        assert_eq!(files[0]["sha256"], "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(
+            files[0]["sha256"],
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
         let (sha, n) = super::write_manifest(&d, serde_json::json!({}), files).unwrap();
         assert_eq!(n, 1);
         let bytes = std::fs::read(d.join(super::MANIFEST)).unwrap();

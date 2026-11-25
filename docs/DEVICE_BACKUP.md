@@ -138,6 +138,23 @@ rate, restores, restore tests and malware scans, each machine's last good backup
 can be emailed on a schedule (weekly: 7 days, monthly: 30, quarterly: 90) like the other reports. See
 `docs/REPORTS_AND_BRANDING.md`.
 
+## eDiscovery cases
+
+**Backups › eDiscovery** opens a case for a matter: name it, give the matter reference, and choose its
+**custodians**: machines, and cloud-service tenants (optionally only some mailboxes or users). While the case is
+open their backups are on legal hold, and with "also hold backups taken while the case is open" every later backup
+of a custodian is held as it arrives. Closing the case (password check) releases the holds it placed; holds placed
+by hand or by another open case stay.
+
+**Search custodians** runs on the machines that keep the backups and keeps the matches with the case. Tick matches
+and **Export**: the machine restores them and writes `fenrir-manifest.json` into the archive with each item's
+SHA-256 (mail as `.eml`, files as themselves, records and directory objects as JSON; cloud items are checked against
+the hash taken at backup time), then encrypts the archive for your browser. When you download it, your browser
+records the SHA-256 of what it saved. **Chain-of-custody manifest** downloads the case's record: custodians, held
+backups, searches, every export with the agent's manifest hash, the hash of the encrypted stream this server relayed
+and your browser's receipt, and the case's audit entries, sealed with the SHA-256 of the record itself. Searching and
+exporting need the repositories unlocked, as for any restore. Design: `backup/docs/design/ediscovery.md`.
+
 ## Self-service restore in the client portal
 
 Under **Backups › Self-service**, tick the devices each client-portal user (role `client`) may restore from. Those
