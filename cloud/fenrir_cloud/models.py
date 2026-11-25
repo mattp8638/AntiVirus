@@ -3641,3 +3641,39 @@ class M365BulkItem(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     resolved_by: Mapped[str] = mapped_column(String(200), default="")
+
+
+class M365ConfigSnapshot(Base):
+    """A backup of a tenant's configuration (M365-14): each supported resource's objects as Microsoft returned them,
+    a SHA-256 per object and of the whole snapshot, and which resources could not be read and why."""
+    __tablename__ = "m365_config_snapshots"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("mcs"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    connection_id: Mapped[str] = mapped_column(String(32), index=True)
+    resources: Mapped[dict] = mapped_column(JSON, default=dict)  # resource -> [object]
+    references: Mapped[dict] = mapped_column(JSON, default=dict)  # groups/users/locations by id, for translation
+    hashes: Mapped[dict] = mapped_column(JSON, default=dict)  # resource -> {object key: sha256}
+    errors: Mapped[dict] = mapped_column(JSON, default=dict)  # resource -> why it was not read
+    digest: Mapped[str] = mapped_column(String(64), default="")
+    changes: Mapped[dict] = mapped_column(JSON, default=dict)  # compared with the previous snapshot of this connection
+    taken_by: Mapped[str] = mapped_column(String(200), default="")
+    taken_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # last backup that found no change
+
+
+class M365ConfigRestore(Base):
+    """A restore of snapshot objects into a tenant: the reviewed plan (create/update/blocked per object, with the
+    reference translations) and the outcome of each object."""
+    __tablename__ = "m365_config_restores"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("mcr"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    connection_id: Mapped[str] = mapped_column(String(32))
+    snapshot_id: Mapped[str] = mapped_column(String(32), index=True)
+    plan: Mapped[list] = mapped_column(JSON, default=list)
+    options: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(20), default="planned")  # planned | running | completed | partial | failed
+    results: Mapped[list] = mapped_column(JSON, default=list)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    executed_by: Mapped[str] = mapped_column(String(200), default="")
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

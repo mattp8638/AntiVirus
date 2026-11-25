@@ -52,6 +52,57 @@ The first reviewed write-administration increment is described in [M365_ACTIONS.
 
 PR #9 provides encrypted direct-tenant application connections and on-demand, read-only users, subscribed licences and Secure Score snapshots. It does not yet implement tenant write administration, GDAP, workload management or baseline enforcement. No live tenant changes have been made as part of this requirement update.
 
+## Tenant configuration backup, comparison and restore (M365-14)
+
+The **Configuration backup** tab on a tenant backs up its configuration every day, and on demand. The code is in
+`cloud/fenrir_cloud/m365_config.py`.
+
+What is backed up:
+* Conditional Access policies and named locations
+* the authorization policy (user and guest defaults)
+* security defaults
+* the authentication methods policy
+* Intune compliance policies and configuration profiles
+
+Read-only fields are dropped, and every object gets a SHA-256 (the snapshot gets one too). A resource Microsoft will
+not return, for example for lack of permission or licence, is recorded with the reason. It is never stored as empty.
+
+**History.** A new version is kept only when something changed. Each version lists what was added, removed and
+changed since the previous one, field by field.
+
+**Comparison.** Any two versions can be compared, including versions from different tenants. References to groups,
+users and named locations are compared by name, so the same policy in two tenants matches even though the IDs differ.
+
+**Restore** is planned first. Planning reads the target tenant (the same tenant or another customer's) and writes
+nothing. For each chosen object the plan shows one of:
+* *create*;
+* *update*, with the fields that would change;
+* *unchanged*;
+* *blocked*, with the reason.
+
+References are translated by name:
+* groups by display name;
+* users by user principal name;
+* named locations by display name. A named location restored in the same run is created first.
+
+A reference with no match in the target blocks the object. Conditional Access policies are written report-only unless
+**Keep state** is chosen.
+
+Running a restore requires all of the following:
+* step-up authentication;
+* typing the number of objects it will change;
+* a plan less than 30 minutes old.
+
+A restore runs only once. Each object's result is recorded and audited. A snapshot that no longer matches its SHA-256
+is refused.
+
+**Not restored**, as the page says:
+* The authentication methods policy is backed up and compared only. Microsoft accepts it one method at a time, with
+  group targets.
+* Intune assignments are not backed up.
+* Intune profiles holding encrypted values (Wi-Fi keys, VPN secrets, encrypted OMA-URI settings) cannot be read back
+  from Microsoft, so they cannot be restored.
+
 ## Bulk and scheduled actions across tenants (M365-30)
 
 **Microsoft 365 across customers → Bulk actions** runs one action against many tenants, or against many users

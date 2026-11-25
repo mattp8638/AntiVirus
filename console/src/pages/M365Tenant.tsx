@@ -7,6 +7,7 @@ import M365Intune from "./M365Intune";
 import M365Reports from "./M365Reports";
 import M365Collaboration from "./M365Collaboration";
 import { M365Logs } from "./M365Logs";
+import M365Config from "./M365Config";
 import { M365Connect } from "../components/M365Connect";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useState } from "react";
@@ -158,7 +159,7 @@ export default function M365Tenant() {
     <ErrorNote error={error || ws.lastError || null} />
     {missing > 0 && <p className="small" style={{ color: "#fcd34d" }}>{missing} features need permissions this connection does not have. <button className="link" onClick={() => setTab("Permissions")}>See which</button></p>}
     {ws.secretExpiresAt && <p className="small muted">App secret expires {fmtTime(ws.secretExpiresAt)}.</p>}
-    <Tabs tabs={["Overview", "Users and groups", "Exchange", "Teams and SharePoint", "Intune", "Sign-in protection", "Reports", "Onboarding and offboarding", "Logs", "Permissions"]} active={tab} onChange={setTab} />
+    <Tabs tabs={["Overview", "Users and groups", "Exchange", "Teams and SharePoint", "Intune", "Sign-in protection", "Reports", "Onboarding and offboarding", "Logs", "Configuration backup", "Permissions"]} active={tab} onChange={setTab} />
     {tab === "Overview" && <Overview ws={ws} />}
     {tab === "Users and groups" && <M365Administration key={ws.id} connection={ws} />}
     {tab === "Exchange" && <M365Exchange key={ws.id} connection={ws} />}
@@ -168,6 +169,7 @@ export default function M365Tenant() {
     {tab === "Reports" && <M365Reports key={ws.id} connection={ws} />}
     {tab === "Onboarding and offboarding" && <M365Lifecycle key={ws.id} connection={ws} />}
     {tab === "Logs" && <M365Logs key={ws.id} connection={ws} onCollected={reload} />}
+    {tab === "Configuration backup" && <M365Config key={ws.id} connection={ws} />}
     {tab === "Permissions" && <Permissions ws={ws} reload={reload} onSignIn={() => setSignIn(true)} />}
     {secret && <RecordEditor title="Replace application secret" tenant={false} fields={[{ key: "clientSecret", label: "New client secret", type: "password", required: true }]}
       onSave={({ clientSecret }) => api(`m365/connections/${ws.id}/secret`, { method: "PUT", body: { clientSecret } })} onClose={() => setSecret(false)} />}
