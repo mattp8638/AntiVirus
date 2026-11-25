@@ -73,6 +73,16 @@ Mandatory clauses always apply. A requirement or control can be included or excl
 
 **ISMS controls** lists the customer's controls from the common control library. A control is not applicable when no applicable requirement needs it; its owner, state and notes are kept for when it applies again. ISMS managers set owners and states. A control's owner can change its state and notes, but not hand it to someone else. "Implemented with evidence" is set from current evidence, not by hand.
 
+### Is this in place today?
+
+Open a control on **ISMS controls** to answer whether it is in place: yes, partly, no, or (for ISMS managers) it does not apply. Yes and partly need a description of how it is done, which appears in the Statement of Applicability. "It does not apply" needs a justification and excludes the control and every requirement it fully satisfies; a later answer brings them back.
+
+### Statement of Applicability
+
+**Statement of Applicability** lists every non-mandatory requirement of a framework (for ISO 27001, the 93 Annex A controls) with its applicability, the reason or justification, the controls that implement it, its status and owners, and shows the framework's readiness. **Download (Excel)** gives a workbook with a cover sheet and one filterable sheet; every download is recorded in the audit log. Text in the workbook is always stored as plain text, never as a formula.
+
+Readiness is the share of applicable requirements that are met, where a requirement is met when every control that fully satisfies it is implemented with current evidence.
+
 ## Organization, scope and assets
 
 These tabs need an ISMS role that can run the programme (ISMS manager or ISMS administrator).

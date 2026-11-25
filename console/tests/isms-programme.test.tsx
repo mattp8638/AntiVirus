@@ -6,7 +6,9 @@ let responses: Record<string, any> = {};
 vi.mock("../src/app-context", () => ({
   useApp: () => ({ tenantId: "ten_a", can: () => true, toast: () => {}, me: { tenants: [] } }),
 }));
+const downloads: string[] = [];
 vi.mock("../src/api", () => ({
+  downloadFile: async (path: string) => { downloads.push(path); },
   api: async (path: string, options: any = {}) => {
     calls.push({ path, options });
     const r = responses[path];
@@ -15,7 +17,7 @@ vi.mock("../src/api", () => ({
 }));
 afterEach(() => { cleanup(); calls.length = 0; responses = {}; });
 
-import { IsmsControlsTab, IsmsProgrammeTab } from "../src/pages/grc/IsmsProgramme";
+import { IsmsControlsTab, IsmsProgrammeTab, IsmsSoaTab } from "../src/pages/grc/IsmsProgramme";
 
 const iso = { framework: "iso27001", name: "ISO/IEC 27001", version: "2022", packVersion: "1.1.0", pinnedVersion: "1.1.0", certifiable: true,
               requirementCount: 123, selected: true, status: "target_certification", targetDate: null, licence: "id-and-title" };
@@ -63,4 +65,40 @@ test("a control owner can change the state and notes of their control but not it
   fireEvent.change(screen.getByLabelText("State"), { target: { value: "in_progress" } });
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   await waitFor(() => expect(calls.find((c) => c.options.method === "PATCH")!.options.body).toEqual({ notes: "", state: "in_progress" }));
+});
+
+test("the Statement of Applicability shows readiness, filters exclusions and downloads the workbook", async () => {
+  responses = {
+    "isms/me": { role: "auditor", permissions: ["controls.view"] },
+    "isms/readiness": { frameworks: [{ framework: "iso27001", met: 4, partial: 6, notMet: 76, applicable: 86, notApplicable: 7, withoutControls: 0, score: 4.7,
+                                       formula: "Readiness = met / applicable.", coverage: { evidenced: 4, applicable: 53, score: 7.5 } }] },
+    "isms/soa": { rows: [
+      { ref: "A.8.13", title: "Information backup", group: "Technological", applicable: true, reason: "In scope.", justification: null, controls: [{ ref: "CC-BKP-01" }], status: "Implemented and evidenced", owners: ["Kim"] },
+      { ref: "A.8.25", title: "Secure development life cycle", group: "Technological", applicable: false, reason: "No development.", justification: null, controls: [], status: "Not applicable", owners: [] }] },
+  };
+  render(<IsmsSoaTab />);
+  await screen.findByText(/Readiness 4.7%/);
+  expect(screen.getByText(/4 of 86 applicable requirements met/)).toBeTruthy();
+  fireEvent.change(screen.getByLabelText("Show"), { target: { value: "excluded" } });
+  expect(screen.queryByText("Information backup")).toBeNull();
+  expect(screen.getByText("No development.")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Download (Excel)" }));
+  await waitFor(() => expect(downloads).toEqual(["isms/soa/export?tenant_id=ten_a&framework=iso27001"]));
+});
+
+test("only managers are offered the does-not-apply answer", async () => {
+  const control = { id: "c1", ref: "CC-PHY-01", title: "Physical security", statement: "Secure premises.", state: "not_started", ownerId: "u1", ownerName: "Kim",
+                    notes: "", applicable: true, reason: "Needed.", requirements: [], satisfies: ["iso27001:A.7.1"], assessment: null, implementation: null };
+  responses = { "isms/me": { userId: "u1", role: "control_owner", permissions: ["controls.view"] },
+                "isms/controls": { controls: [control], manualStates: ["not_started", "in_progress", "implemented"] } };
+  render(<IsmsControlsTab />);
+  fireEvent.click(await screen.findByText("Physical security"));
+  expect(screen.getByRole("radio", { name: "Yes, it is in place" })).toBeTruthy();
+  expect(screen.queryByRole("radio", { name: "It does not apply to us" })).toBeNull();
+  fireEvent.click(screen.getByRole("radio", { name: "Yes, it is in place" }));
+  const save = screen.getByRole("button", { name: "Save answer" }) as HTMLButtonElement;
+  expect(save.disabled).toBe(true);  // a description is required
+  fireEvent.change(screen.getByLabelText(/How it is done today/), { target: { value: "Badge access" } });
+  fireEvent.click(save);
+  await waitFor(() => expect(calls.find((c) => c.path === "isms/controls/c1/assessment")!.options.body).toEqual({ answer: "yes", implementation: "Badge access" }));
 });

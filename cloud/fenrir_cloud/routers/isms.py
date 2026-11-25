@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -425,3 +426,73 @@ def patch_control(control_id: str, body: ControlUpdate, principal: Principal = D
                              body.notes, members)
     db.commit()
     return next(r for r in programme.control_rows(db, row.tenant_id) if r["id"] == row.id)
+
+
+class Assessment(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    answer: str
+    implementation: str = Field(default="", max_length=4000)
+    justification: str | None = Field(default=None, max_length=4000)
+    owner_id: str | None = Field(default=None, alias="ownerId")
+
+
+@router.post("/controls/{control_id}/assessment")
+def assess_control(control_id: str, body: Assessment, principal: Principal = Depends(current_principal),
+                   db: Session = Depends(isms_db)):
+    """"Is this in place today?" for a control. "not_relevant" excludes the control and what it fully satisfies."""
+    row = get_scoped(db, IsmsTenantControl, control_id, principal)
+    role = memberships.active_role(db, principal.user, row.tenant_id)
+    if not access.can_on_record(role, principal.user.id, "controls.edit", row.owner_user_id):
+        raise HTTPException(403, f"Your ISMS role ({role or 'none'}) cannot do this (controls.edit)")
+    owner_given = "owner_id" in body.model_fields_set
+    if owner_given and not access.can(role, "controls.edit"):
+        raise HTTPException(403, "Only people who can edit every control can change its owner")
+    if body.answer == "not_relevant" and not access.can(role, "programme.manage"):
+        raise HTTPException(403, "Only people who run the programme can exclude a control")
+    members = {m.user_id for m in db.execute(select(IsmsMembership).where(
+        IsmsMembership.tenant_id == row.tenant_id)).scalars()}
+    try:
+        programme.assess_control(db, row, principal.actor, principal.user.id, body.answer, body.implementation,
+                                 body.justification, (body.owner_id or "") if owner_given else None, members)
+    except HTTPException:
+        db.rollback()
+        raise
+    db.commit()
+    return next(r for r in programme.control_rows(db, row.tenant_id) if r["id"] == row.id)
+
+
+@router.get("/soa")
+def get_soa(tenant_id: str, framework: str, principal: Principal = Depends(current_principal),
+            db: Session = Depends(isms_db)):
+    require_isms(db, principal, tenant_id, "controls.view")
+    return {"framework": framework, "rows": programme.soa_rows(db, tenant_id, framework)}
+
+
+@router.get("/soa/export")
+def export_soa(tenant_id: str, framework: str, principal: Principal = Depends(current_principal),
+               db: Session = Depends(isms_db)):
+    """The Statement of Applicability as an Excel workbook. Every export is audited."""
+    from .. import audit
+    from ..isms import soa_export
+    from ..models import Tenant
+
+    require_isms(db, principal, tenant_id, "controls.view")
+    rows = programme.soa_rows(db, tenant_id, framework)
+    pinned = next(f for f in programme.tenant_frameworks(db, tenant_id) if f.framework == framework)
+    pack = programme.library.get(db, pinned.pack_id, pinned.pack_version)
+    tenant = db.get(Tenant, tenant_id)
+    now = datetime.now(timezone.utc)
+    data = soa_export.build_workbook(rows, tenant.name, pack.data["meta"]["name"], pack.data["meta"]["version"],
+                                     principal.user.name or principal.actor, now)
+    audit.record(db, principal.actor, "isms.soa_exported", framework, tenant_id, rows=len(rows))
+    db.commit()
+    name = f"Statement of Applicability {tenant.name} {framework} {now:%Y-%m-%d}.xlsx"
+    safe = "".join(c if c.isalnum() or c in " ._-" else "_" for c in name)
+    return Response(content=data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="{safe}"'})
+
+
+@router.get("/readiness")
+def get_readiness(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    require_isms(db, principal, tenant_id, "controls.view")
+    return {"frameworks": programme.readiness(db, tenant_id)}

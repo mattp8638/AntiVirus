@@ -376,3 +376,131 @@ def update_control(db: Session, row: IsmsTenantControl, actor: str, owner_id: st
         audit.record(db, actor, "isms.control_updated", row.ref, row.tenant_id, **{
             {"owner_user_id": "ownerId"}.get(k, k): v for k, v in changes.items()})
     return row
+
+
+# Control assessment: "is this in place today?" ------------------------------------------------------------------
+
+ASSESSMENTS = ("yes", "partly", "no", "not_relevant")
+_ASSESSED_STATE = {"yes": "implemented", "partly": "in_progress", "no": "not_started"}
+
+
+def assess_control(db: Session, row: IsmsTenantControl, actor: str, user_id: str, answer: str, implementation: str,
+                   justification: str | None, owner_id: str | None, members: set[str]) -> None:
+    """Records the answer for a control.
+
+    * yes, partly, no: sets the state (implemented, in progress, not started) and how it is done. Evidenced controls
+      stay evidenced while the answer is yes.
+    * not_relevant: excludes the control and every requirement it fully satisfies, with the same justification, so
+      the Statement of Applicability shows the decision. A later answer removes those exclusions again.
+
+    The caller rolls back on error: a rejected exclusion (a mandatory clause, or a rule requirement) changes nothing.
+    """
+    if answer not in ASSESSMENTS:
+        raise _error("Choose an answer.")
+    implementation = js_trim(implementation or "")[:4000]
+    if answer in ("yes", "partly") and not implementation:
+        raise _error("Describe how this is done today. The description appears in your Statement of Applicability.")
+    if owner_id and owner_id not in members:
+        raise _error("The owner must be a member of this organization.")
+    tenant_id = row.tenant_id
+    had = db.execute(delete(IsmsApplicabilityOverride).where(
+        IsmsApplicabilityOverride.tenant_id == tenant_id,
+        IsmsApplicabilityOverride.set_by_control == row.ref)).rowcount
+    db.flush()
+    now = utcnow()
+    if owner_id is not None:
+        row.owner_user_id = owner_id or None
+    row.assessment, row.implementation = answer, implementation or None
+    row.assessed_at, row.assessed_by_user_id, row.updated_at, row.updated_by = now, user_id, now, actor
+    if answer == "not_relevant":
+        reason = js_trim(justification or "")[:4000]
+        if not reason:
+            raise _error("Explain why this does not apply. The justification appears in your Statement of "
+                         "Applicability.")
+        satisfies = next((c["satisfies"] for c in control_rows(db, tenant_id) if c["id"] == row.id), [])
+        targets = [("control", row.ref), *(("requirement", key) for key in satisfies)]
+        for target_type, key in targets:
+            existing = db.execute(select(IsmsApplicabilityOverride).where(
+                IsmsApplicabilityOverride.tenant_id == tenant_id, IsmsApplicabilityOverride.target_type == target_type,
+                IsmsApplicabilityOverride.target_key == key)).scalar_one_or_none()
+            if existing is None:
+                db.add(IsmsApplicabilityOverride(tenant_id=tenant_id, target_type=target_type, target_key=key,
+                                                 applicable=False, justification=reason, set_by_control=row.ref,
+                                                 updated_by=actor))
+            else:
+                existing.applicable, existing.justification, existing.set_by_control = False, reason, row.ref
+                existing.updated_at, existing.updated_by = now, actor
+        db.flush()
+        result = apply(db, tenant_id, actor)
+        keys = {k for _, k in targets}
+        rejected = [r for r in result.rejected if r.override.key in keys]
+        if rejected:
+            raise _error(" ".join(f"{r.override.key.split(':', 1)[-1]}: {r.problem}" for r in rejected))
+    else:
+        if had:
+            apply(db, tenant_id, actor)
+        state = _ASSESSED_STATE[answer]
+        if row.state == "not_applicable" or (row.state == "implemented_evidenced" and state == "implemented"):
+            pass
+        else:
+            row.state = state
+    audit.record(db, actor, "isms.control_assessed", row.ref, tenant_id, answer=answer,
+                 justification=js_trim(justification or "")[:4000] or None)
+
+
+# Statement of Applicability and readiness -----------------------------------------------------------------------
+
+def soa_rows(db: Session, tenant_id: str, framework: str) -> list[dict]:
+    """Every requirement of the framework that is not mandatory (for ISO 27001 the 93 Annex A controls), with its
+    applicability, justification, implementing controls, status and owners."""
+    from ..models import User
+    from .domain.soa import soa_status
+
+    pack = next((p for p in pinned_packs(db, tenant_id) if p["meta"]["framework"] == framework), None)
+    if pack is None:
+        raise _error("That framework is not in this customer's programme.", 404)
+    groups = {g["ref"]: g["title"] for g in pack["groups"]}
+    implementing: dict[str, list[str]] = {}
+    for m in pack["mappings"]:
+        if m["strength"] == "satisfies":
+            implementing.setdefault(m["requirement"], []).append(m["control"])
+    decisions = {r.target_key: r for r in db.execute(select(IsmsApplicability).where(
+        IsmsApplicability.tenant_id == tenant_id, IsmsApplicability.target_type == "requirement")).scalars()}
+    tcs = {c.ref: c for c in controls(db, tenant_id)}
+    owner_ids = {c.owner_user_id for c in tcs.values() if c.owner_user_id}
+    names = {u.id: (u.name or u.email) for u in db.execute(select(User).where(User.id.in_(owner_ids))).scalars()} \
+        if owner_ids else {}
+    out = []
+    for r in pack["requirements"]:
+        if r.get("mandatory"):
+            continue
+        d = decisions.get(f"{framework}:{r['ref']}")
+        applicable = d.applicable if d else True
+        cs = [tcs[ref] for ref in sorted(set(implementing.get(r["ref"], []))) if ref in tcs]
+        out.append({"ref": r["ref"], "title": r["short_title"], "group": groups.get(r["group"], r["group"]),
+                    "applicable": applicable, "source": d.source if d else "default", "reason": d.reason if d else "",
+                    "justification": d.justification if d else None, "locked": bool(d and d.locked),
+                    "controls": [{"ref": c.ref, "title": c.title, "state": c.state, "implementation": c.implementation}
+                                 for c in cs],
+                    "owners": sorted({names[c.owner_user_id] for c in cs if c.owner_user_id in names}),
+                    "status": soa_status(applicable, [c.state for c in cs])})
+    return out
+
+
+def readiness(db: Session, tenant_id: str) -> list[dict]:
+    """Readiness per chosen framework from its Statement of Applicability rows (see ``domain/readiness.py`` for the
+    formula), with the share of applicable controls implemented with current evidence."""
+    from .domain.readiness import ReadinessRequirement, compute_readiness, control_coverage
+
+    coverage = control_coverage([c.state for c in controls(db, tenant_id)])
+    out = []
+    for f in tenant_frameworks(db, tenant_id):
+        rows = soa_rows(db, tenant_id, f.framework)
+        result = compute_readiness([ReadinessRequirement(r["ref"], r["applicable"],
+                                                         tuple(c["state"] for c in r["controls"])) for r in rows])
+        out.append({"framework": f.framework, "met": result.met, "partial": result.partial, "notMet": result.not_met,
+                    "applicable": result.applicable, "notApplicable": result.not_applicable,
+                    "withoutControls": result.without_controls, "score": result.score, "formula": result.formula,
+                    "coverage": {"evidenced": coverage.evidenced, "applicable": coverage.applicable,
+                                 "score": coverage.score}})
+    return out

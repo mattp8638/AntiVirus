@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../../api";
+import { api, downloadFile } from "../../api";
 import { useApp } from "../../app-context";
 import { displayValue } from "../../components/DisplayValue";
 import { ErrorNote, Modal, Pill, Table, useAction, useData } from "../../components/ui";
@@ -122,6 +122,29 @@ export function IsmsControlsTab() {
   </div>;
 }
 
+const ANSWERS: [string, string][] = [["yes", "Yes, it is in place"], ["partly", "Partly"], ["no", "No, not yet"], ["not_relevant", "It does not apply to us"]];
+
+function Assessment({ control, canExclude, onDone }: { control: any; canExclude: boolean; onDone: () => void }) {
+  const [answer, setAnswer] = useState(control.assessment ?? "");
+  const [implementation, setImplementation] = useState(control.implementation ?? "");
+  const [justification, setJustification] = useState("");
+  const { run, busy } = useAction();
+  const options = ANSWERS.filter(([v]) => v !== "not_relevant" || canExclude);
+  const save = async () => {
+    const body: any = { answer, implementation };
+    if (answer === "not_relevant") body.justification = justification;
+    if (await run(() => api(`isms/controls/${control.id}/assessment`, { body }), "Answer saved")) onDone();
+  };
+  const needsText = answer === "yes" || answer === "partly";
+  return <fieldset className="field"><legend>Is this in place today?</legend>
+    {options.map(([v, label]) => <label key={v} className="row" style={{ gap: 6 }}><input type="radio" name={`assess-${control.id}`} checked={answer === v} onChange={() => setAnswer(v)} />{label}</label>)}
+    {answer && answer !== "not_relevant" && <label className="field">{needsText ? "How it is done today (required, shown in the Statement of Applicability)" : "Notes on what is missing (optional)"}<textarea rows={3} value={implementation} onChange={(e) => setImplementation(e.target.value)} /></label>}
+    {answer === "not_relevant" && <><p className="small muted">This excludes the control and the requirements it fully satisfies: {safeArray<string>(control.satisfies).join(", ") || "none"}.</p>
+      <label className="field">Why it does not apply (required, shown in the Statement of Applicability)<textarea rows={3} value={justification} onChange={(e) => setJustification(e.target.value)} /></label></>}
+    <button disabled={busy || !answer || (needsText && !implementation.trim()) || (answer === "not_relevant" && !justification.trim())} onClick={save}>Save answer</button>
+  </fieldset>;
+}
+
 function ControlEditor({ control, members, canEditAll, isOwner, manualStates, onClose }: { control: any; members: any[]; canEditAll: boolean; isOwner: boolean; manualStates: string[]; onClose: () => void }) {
   const [state, setState] = useState(control.state);
   const [owner, setOwner] = useState(control.ownerId ?? "");
@@ -139,6 +162,7 @@ function ControlEditor({ control, members, canEditAll, isOwner, manualStates, on
     <p className="small"><b>{control.applicable ? "Applies" : "Not applicable"}:</b> {displayValue(control.reason)}</p>
     {control.testProcedure && <p className="small"><b>How to test it:</b> {displayValue(control.testProcedure)}</p>}
     <p className="small"><b>Requirements it serves:</b> {safeArray<string>(control.requirements).join(", ") || "None"}</p>
+    {canEdit && <Assessment control={control} canExclude={canEditAll} onDone={onClose} />}
     {canEdit && control.applicable && <label className="field">State<select value={manualStates.includes(state) ? state : ""} onChange={(e) => setState(e.target.value)}>
       {!manualStates.includes(state) && <option value="">{STATE_LABEL[state] ?? state}</option>}
       {manualStates.map((s) => <option key={s} value={s}>{STATE_LABEL[s]}</option>)}</select></label>}
@@ -146,4 +170,44 @@ function ControlEditor({ control, members, canEditAll, isOwner, manualStates, on
       <option value="">None</option>{members.map((m) => <option key={m.id} value={m.id}>{m.name ? `${m.name} (${m.email})` : m.email}</option>)}</select></label>}
     {canEdit && <label className="field">Notes<textarea rows={3} value={notes} onChange={(e) => setNotes(e.target.value)} /></label>}
   </Modal>;
+}
+
+const SOA_TONE: Record<string, string> = { "Not applicable": "muted", "Not started": "bad", "In progress": "warn", Implemented: "good", "Implemented and evidenced": "good" };
+
+/** The Statement of Applicability for one framework, with readiness and the Excel download. */
+export function IsmsSoaTab() {
+  const { tenantId, me, perms } = useIsms();
+  const allowed = perms.includes("controls.view");
+  const { data: ready, error: readyError } = useData<any>(tenantId && allowed ? "isms/readiness" : null, { tenant_id: tenantId }, [tenantId, allowed]);
+  const frameworks = safeArray<any>(ready?.frameworks);
+  const [framework, setFramework] = useState("");
+  const current = framework || frameworks[0]?.framework || "";
+  const { data, error } = useData<any>(tenantId && allowed && current ? "isms/soa" : null, { tenant_id: tenantId, framework: current }, [tenantId, current, allowed]);
+  const [filter, setFilter] = useState("all");
+  const { run, busy } = useAction();
+  if (!tenantId) return <p className="muted">Choose a customer in the tenant picker to see its Statement of Applicability.</p>;
+  if (!allowed) return <NoAccess me={me} what="view the Statement of Applicability" />;
+  if (ready && !frameworks.length) return <p className="muted">No frameworks yet. Choose one on the Programme setup tab and apply applicability.</p>;
+  const r = frameworks.find((f) => f.framework === current);
+  const rows = safeArray<any>(data?.rows).filter((x) => filter === "all" || (filter === "excluded" ? !x.applicable : x.applicable && x.status !== "Implemented and evidenced"));
+  const download = () => run(() => downloadFile(`isms/soa/export?tenant_id=${encodeURIComponent(tenantId)}&framework=${encodeURIComponent(current)}`, "statement-of-applicability.xlsx"), "Statement of Applicability downloaded");
+  return <div className="card">
+    <ErrorNote error={readyError || error} />
+    <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "end", marginBottom: 8 }}>
+      {frameworks.length > 1 && <label className="field">Framework<select value={current} onChange={(e) => setFramework(e.target.value)}>
+        {frameworks.map((f) => <option key={f.framework} value={f.framework}>{f.framework}</option>)}</select></label>}
+      <label className="field">Show<select value={filter} onChange={(e) => setFilter(e.target.value)}>
+        <option value="all">Everything</option><option value="open">Applicable and not yet evidenced</option><option value="excluded">Excluded</option></select></label>
+      <span style={{ flex: 1 }} />
+      <button disabled={busy || !current} onClick={download}>Download (Excel)</button>
+    </div>
+    {r && <p className="small"><b>Readiness {r.score === null ? "not yet measurable" : `${r.score}%`}</b>: {r.met} of {r.applicable} applicable requirements met, {r.partial} partly met, {r.notApplicable} excluded. Controls evidenced: {r.coverage.score === null ? "none apply yet" : `${r.coverage.evidenced} of ${r.coverage.applicable} (${r.coverage.score}%)`}.
+      <span className="muted"> {displayValue(r.formula)}</span></p>}
+    <Table rows={rows.map((x) => ({ ...x, id: x.ref }))} empty="Nothing to show." columns={[
+      { key: "ref", label: "Control", render: (x) => <><b>{displayValue(x.ref)}</b> {displayValue(x.title)}<div className="small muted">{displayValue(x.group)}</div></> },
+      { key: "applicable", label: "Applicable", render: (x) => <><Pill value={x.applicable ? "yes" : "no"} tone={x.applicable ? "good" : "muted"} /><div className="small">{displayValue(x.justification ?? x.reason)}</div></> },
+      { key: "controls", label: "Implemented by", render: (x) => <span className="small">{safeArray<any>(x.controls).map((c) => c.ref).join(", ") || "None"}</span> },
+      { key: "status", label: "Status", render: (x) => <Pill value={x.status} tone={SOA_TONE[x.status]} /> },
+      { key: "owners", label: "Owner", render: (x) => <span className="small">{safeArray<string>(x.owners).join(", ")}</span> }]} />
+  </div>;
 }
