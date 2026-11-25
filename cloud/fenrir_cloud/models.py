@@ -3839,3 +3839,45 @@ class PurviewChange(Base):
     results: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class InfraSource(Base):
+    """A hypervisor or virtualisation manager Fenrir polls through its own API (RMM-14): Proxmox VE or VMware vCenter.
+    Reached directly (public endpoints) or through a probe device on the customer's network."""
+    __tablename__ = "infra_sources"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ifs"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    provider: Mapped[str] = mapped_column(String(20))  # proxmox | vsphere
+    base_url: Mapped[str] = mapped_column(String(300))
+    route: Mapped[str] = mapped_column(String(10), default="agent")  # direct | agent
+    probe_device_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    credentials_envelope: Mapped[dict] = mapped_column(JSON, default=dict)
+    tls_insecure: Mapped[bool] = mapped_column(Boolean, default=False)
+    poll_minutes: Mapped[int] = mapped_column(Integer, default=5)
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | ok | unreachable | auth_failed | error
+    last_error: Mapped[str] = mapped_column(String(500), default="")
+    last_polled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class InfraAsset(Base):
+    """A host, virtual machine or datastore read from an infrastructure source, with its parent (relationship), the
+    state the provider reported, the state it is expected to be in, and whether an alert is open or suppressed."""
+    __tablename__ = "infra_assets"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ifa"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    source_id: Mapped[str] = mapped_column(String(32), index=True)
+    kind: Mapped[str] = mapped_column(String(20))  # host | vm | storage
+    external_id: Mapped[str] = mapped_column(String(200))
+    name: Mapped[str] = mapped_column(String(300), default="")
+    parent_external_id: Mapped[str] = mapped_column(String(200), default="")
+    state: Mapped[str] = mapped_column(String(40), default="unknown")
+    expected_state: Mapped[str] = mapped_column(String(40), default="")  # running | stopped | "" (not watched)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    health: Mapped[str] = mapped_column(String(20), default="ok")  # ok | alert | suppressed | unknown
+    reason: Mapped[str] = mapped_column(String(500), default="")
+    missing: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    __table_args__ = (UniqueConstraint("source_id", "kind", "external_id", name="uq_infra_asset"),)

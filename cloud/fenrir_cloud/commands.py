@@ -58,6 +58,9 @@ CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("amt.wsman", "Intel AMT request", "Remote access", permission="respond", platforms=ALL,
                 description="Sent by Out-of-band management: WS-Management calls to an Intel AMT engine on this device's LAN. "
                             "The agent fetches the AMT credential for the one command; it is never in the payload."),
+    CommandSpec("infra.poll", "Poll virtual infrastructure", "Investigation", platforms=("linux", "macos"),
+                description="Sent automatically for Proxmox or vCenter sources reached through this device: read-only API calls. "
+                            "The agent fetches the credential for the one command; it is never in the payload."),
     CommandSpec("network.probe", "Probe network services", "Investigation", platforms=ALL,
                 description="Sent automatically for network monitors that probe from this device; checks TCP services on its LAN."),
     CommandSpec("script.run", "Run script", "Administration", permission="configure", platforms=ALL,

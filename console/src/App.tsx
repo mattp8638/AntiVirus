@@ -11,6 +11,7 @@ import AttackPaths from "./pages/AttackPaths";
 import WebAssessments from "./pages/WebAssessments";
 import FirewallAssessments from "./pages/FirewallAssessments";
 import GoogleWorkspace from "./pages/GoogleWorkspace";
+import Infrastructure from "./pages/Infrastructure";
 import Assurance from "./pages/grc/Assurance";
 import Continuity from "./pages/grc/Continuity";
 import Registers from "./pages/grc/Registers";
@@ -164,6 +165,7 @@ const NAV: NavSection[] = [
       { module: "identity", to: "/m365", label: "Microsoft 365", icon: "▦", also: ["/m365-partner"] },
       { module: "identity", to: "/active-directory", label: "Active Directory", icon: "⌘" },
       { module: "network", to: "/network", label: "Network", icon: "⌁", also: ["/network-topology"] },
+      { module: "network", to: "/infrastructure", label: "Infrastructure", icon: "▥" },
     ],
   },
   {
@@ -536,6 +538,7 @@ function Shell() {
             <Route path="/m365/:connectionId" element={<M365Tenant />} />
             <Route path="/m365-partner" element={<M365Partner />} />
             <Route path="/network" element={<Network />} />
+            <Route path="/infrastructure" element={<Infrastructure />} />
             <Route path="/network-topology" element={<NetworkTopology />} />
             <Route path="/out-of-band" element={<OutOfBand />} />
             <Route path="/remediation-packages" element={<RemediationPackages />} />

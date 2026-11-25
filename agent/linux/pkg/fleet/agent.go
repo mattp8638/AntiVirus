@@ -906,6 +906,12 @@ func (a *Agent) ExecuteContext(ctx context.Context, cmd Command) (map[string]int
 			return nil, fmt.Errorf("could not get the AMT credential: %w", err)
 		}
 		return AmtWsmanContext(ctx, cmd.PayloadJSON, cred, nil)
+	case "infra.poll":
+		cred, err := a.client.FetchInfraCredential(cmd.ID)
+		if err != nil {
+			return nil, fmt.Errorf("could not get the infrastructure credential: %w", err)
+		}
+		return InfraPollContext(ctx, cred, nil)
 	case "patch.install":
 		return PatchInstallContext(ctx, cmd.PayloadJSON)
 	case "software.install":
