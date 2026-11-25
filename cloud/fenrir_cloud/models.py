@@ -3150,6 +3150,33 @@ class DrRun(Base):
     started_by: Mapped[str] = mapped_column(String(200), default="")
 
 
+class GrcGap(Base):
+    """A control gap or governance exception being treated (FLOW-06): where it came from, the affected devices, the
+    owner and the ticket doing the work, the treatment, the evidence, and the review that closes it."""
+    __tablename__ = "grc_gaps"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("gap"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    source: Mapped[str] = mapped_column(String(20))  # control | exception | risk | manual
+    source_ref: Mapped[str] = mapped_column(String(80), default="")
+    title: Mapped[str] = mapped_column(String(300))
+    description: Mapped[str] = mapped_column(Text, default="")
+    devices: Mapped[list] = mapped_column(JSON, default=list)
+    owner: Mapped[str] = mapped_column(String(200), default="")
+    due: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    treatment: Mapped[str] = mapped_column(String(20), default="remediate")  # remediate | compensate | accept
+    justification: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(20), default="open")  # open | treating | in_review | closed
+    ticket_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    evidence_ids: Mapped[list] = mapped_column(JSON, default=list)
+    submitted_by: Mapped[str] = mapped_column(String(200), default="")
+    review: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    reopened: Mapped[int] = mapped_column(Integer, default=0)
+    timeline: Mapped[list] = mapped_column(JSON, default=list)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class TrustCentre(Base):
     """A customer's trust centre (GRC-14): a public page of their security documents, some public and some gated
     behind an access request with an NDA."""

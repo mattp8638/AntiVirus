@@ -261,6 +261,9 @@ def tick(db: Session) -> None:
             continue
         try:
             collect(db, tenant)
+            from . import gaps
+
+            gaps.scan(db, tenant)  # failing controls become owned gaps (FLOW-06)
             db.commit()
         except Exception as exc:  # noqa: BLE001 - one customer's failure must not stop the others
             db.rollback()

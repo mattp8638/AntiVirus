@@ -12,6 +12,7 @@ import Continuity from "./pages/grc/Continuity";
 import Registers from "./pages/grc/Registers";
 import Questionnaires from "./pages/grc/Questionnaires";
 import Trust from "./pages/grc/Trust";
+import Gaps from "./pages/grc/Gaps";
 import SocWorkflows from "./pages/SocWorkflows";
 import { FormEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
@@ -183,7 +184,7 @@ const NAV: NavSection[] = [
       { module: "documentation", to: "/vault", label: "Credential vault", icon: "⚿" },
     ],
   },
-  { group: "Governance", icon: "✓", items: [{ module: "governance", to: "/governance", label: "Compliance & GRC", icon: "✓", also: ["/continuous-compliance", "/compliance", "/continuity", "/registers", "/questionnaires", "/trust-centre"] }] },
+  { group: "Governance", icon: "✓", items: [{ module: "governance", to: "/governance", label: "Compliance & GRC", icon: "✓", also: ["/continuous-compliance", "/compliance", "/continuity", "/registers", "/questionnaires", "/trust-centre", "/gaps"] }] },
   {
     group: "Admin", icon: "⚙",
     items: [
@@ -530,6 +531,7 @@ function Shell() {
             <Route path="/registers" element={<Registers />} />
             <Route path="/questionnaires" element={<Questionnaires />} />
             <Route path="/trust-centre" element={<Trust />} />
+            <Route path="/gaps" element={<Gaps />} />
             <Route path="/governance/policies/:id" element={<GrcPolicyEditor />} />
             <Route path="/governance/:tenantId/:framework" element={<ProgrammeDetail />} />
             <Route path="/soc-workflows" element={<SocWorkflows />} />

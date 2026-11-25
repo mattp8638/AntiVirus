@@ -44,6 +44,7 @@ from .routers import continuity as continuity_router
 from .routers import grc_registers as grc_registers_router
 from .routers import questionnaires as questionnaires_router
 from .routers import trust as trust_router
+from .routers import gaps as gaps_router
 from .routers import rollouts as rollouts_router
 from .routers import apikeys as apikeys_router
 from .routers import roles as roles_router
@@ -670,6 +671,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(trust_router.router)
     app.include_router(trust_router.public)
     app.include_router(trust_router.page)
+    app.include_router(gaps_router.router)
     app.include_router(grc_assurance_router.public)
     app.include_router(protection.router)
     app.include_router(protection.console)

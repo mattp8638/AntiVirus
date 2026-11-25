@@ -140,3 +140,15 @@ request). Approving the request emails a link that works until it **expires** (3
 stops it at once, and **Withdraw** stops a document for everyone. Every download, and every refused attempt, is in
 the **access log** with the requester and address. The page states when it was generated, and each document its
 as-of date, so customers and auditors see exactly how current each document is.
+
+## Gaps
+
+**Compliance & GRC › Gaps** tracks what is wrong until it is fixed. With continuous compliance on, every failing
+common control opens a gap by itself (also **Check controls now**), naming the customer's devices that its evidence
+mentions; a gap can also be raised from a policy-acknowledgement exception, a business risk, or by hand. Give it an
+owner and a due date, **open a ticket** for the work on the service desk, choose the treatment (remediate, a
+compensating control, or accept the risk with a justification) and attach evidence, then **submit for review**.
+
+A reviewer **closes** it only when the evidence is attached and, for a remediated control gap, the control's
+signals pass **now**; otherwise it is refused, or the reviewer **sends it back**. If the control fails again later,
+its gap reopens with its history. Every step is on the gap's timeline and in the audit log.
