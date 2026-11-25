@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -257,3 +257,64 @@ def portal_job_download(job_id: str, principal: Principal = Depends(_portal), db
     if not path.exists():
         raise HTTPException(404, "the download has expired")
     return FileResponse(path, media_type="application/octet-stream", headers={"Cache-Control": "no-store"})
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Policies to read and acknowledge (GRC-08)
+# ---------------------------------------------------------------------------------------------------------------------
+
+from .. import attestation as att  # noqa: E402
+from ..models import GrcPolicy, PolicyAttestation  # noqa: E402
+
+
+@router.get("/policies")
+def portal_policies(principal: Principal = Depends(_portal), db: Session = Depends(get_db)):
+    out = []
+    for a in db.execute(select(PolicyAttestation).where(PolicyAttestation.user_id == principal.user.id,
+                                                        PolicyAttestation.removed.is_(False))).scalars():
+        policy = db.get(GrcPolicy, a.policy_id)
+        cur = att.approved_text(db, policy) if policy else None
+        if cur is None:
+            continue
+        v, title, _ = cur
+        out.append({"policyId": policy.id, "title": title, "version": v, "status": att.status(a, policy),
+                    "acknowledgedVersion": a.acknowledged_version,
+                    "acknowledgedAt": a.acknowledged_at.isoformat() if a.acknowledged_at else None})
+    return sorted(out, key=lambda x: (x["status"] == "current", x["title"]))
+
+
+def _assigned(db: Session, principal: Principal, policy_id: str) -> tuple[PolicyAttestation, GrcPolicy]:
+    a = db.execute(select(PolicyAttestation).where(PolicyAttestation.user_id == principal.user.id,
+                                                   PolicyAttestation.policy_id == policy_id,
+                                                   PolicyAttestation.removed.is_(False))).scalar_one_or_none()
+    policy = db.get(GrcPolicy, policy_id) if a else None
+    if a is None or policy is None:
+        raise HTTPException(404, "Not found")
+    return a, policy
+
+
+@router.get("/policies/{policy_id}")
+def portal_policy(policy_id: str, principal: Principal = Depends(_portal), db: Session = Depends(get_db)):
+    a, policy = _assigned(db, principal, policy_id)
+    cur = att.approved_text(db, policy)
+    if cur is None:
+        raise HTTPException(404, "Not found")
+    v, title, body = cur
+    return {"policyId": policy.id, "title": title, "version": v, "body": body, "sha256": att.text_sha256(title, body),
+            "status": att.status(a, policy)}
+
+
+@router.post("/policies/{policy_id}/acknowledge")
+def portal_acknowledge(policy_id: str, request: Request, body: dict = Body(...), principal: Principal = Depends(_portal),
+                       db: Session = Depends(get_db)):
+    """I have read and accept this version: recorded with the hash of the text that was shown."""
+    if body.get("confirm") is not True:
+        raise HTTPException(400, "Tick that you have read and accept the policy")
+    a, policy = _assigned(db, principal, policy_id)
+    try:
+        row = att.acknowledge(db, a, policy, principal.user, int(body.get("version") or 0), str(body.get("sha256") or ""),
+                              request.client.host if request.client else "", request.headers.get("user-agent", ""))
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    db.commit()
+    return {"acknowledgedVersion": row.version, "at": row.at.isoformat(), "sha256": row.sha256}

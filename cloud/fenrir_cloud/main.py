@@ -254,6 +254,12 @@ def _purge_telemetry(db, settings: Settings) -> dict:
     return removed
 
 
+def _attestation_reminders(db) -> None:
+    from . import attestation
+
+    attestation.remind(db)
+
+
 def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
     """Hourly jobs, in order."""
     from . import (autodoc, billing_sync, client360, darkweb, defender, grc_automation, group_rules, m365_partner, m365_reports,
@@ -271,7 +277,7 @@ def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
              ("reports.schedules", reports.send_schedules),
              ("billing.sync", billing_sync.tick), ("clients.health", client360.tick),
              ("defender", defender.tick), ("web.profiles", web_profile.tick), ("groups.rules", group_rules.tick),
-             ("backup.hourly", device_backup.hourly)]
+             ("backup.hourly", device_backup.hourly), ("grc.attestation", _attestation_reminders)]
     if settings.intel_feeds_enabled:
         from . import threat_feeds
 

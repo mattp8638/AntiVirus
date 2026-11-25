@@ -82,3 +82,16 @@ slipped since; **measured** when a DR run met the target but no exercise was rec
 open; **planned** otherwise. A technical exercise takes its numbers from a DR runbook run, never from typed values;
 a tabletop exercise records its outcome, lessons and actions. Actions are ticked off as they are done, and the
 **review pack** collects the approved plan, the current assessment, the exercises and the open actions.
+
+## Staff acknowledgement of policies
+
+On a policy, **Ask all portal users** asks the customer's people (their client-portal accounts) to read and accept
+it. They see it under **Policies** in the portal once a version is approved, read the approved text and tick that
+they accept it. Each acceptance is kept and never changed: the person, the version, the SHA-256 of the exact title
+and text they were shown, the time and the address it came from. Accepting fails if a newer version was approved
+meanwhile or the text differs from the approved one.
+
+Approving a new version asks everyone again. People are **outstanding** until their due date (14 days from being
+asked or from the new version), then **overdue**, and are reminded by email every 7 days (at most six times). An
+**exception** (a reason and an end date) excuses someone until that date; **Remove** stops asking someone who left,
+keeping their record. **Evidence (CSV)** lists every acceptance of every version with its hash.

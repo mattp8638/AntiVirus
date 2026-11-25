@@ -666,3 +666,111 @@ def delete_evidence(evidence_id: str, principal: Principal = Depends(current_pri
     db.delete(row)
     db.commit()
     return {"ok": True}
+
+
+# --- acknowledgement by staff (GRC-08) -------------------------------------------------------------------------------
+
+from .. import attestation as att  # noqa: E402
+from ..models import PolicyAcknowledgement, PolicyAttestation, User  # noqa: E402
+
+
+class AssignBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    userIds: list[str] = Field(default_factory=list, max_length=5000)
+    allPortalUsers: bool = False
+    dueDays: int = Field(default=14, ge=1, le=365)
+
+
+@router.post("/policies/{policy_id}/assignments")
+def assign_policy(policy_id: str, body: AssignBody, principal: Principal = Depends(current_principal),
+                  db: Session = Depends(get_db)):
+    """Ask the customer's people (client-portal users) to read and acknowledge the policy's approved version."""
+    principal.require("grc")
+    policy = _owned_policy(db, principal, policy_id)
+    if policy.status == "retired":
+        raise HTTPException(409, "A retired policy cannot be assigned")
+    q = select(User).where(User.tenant_id == policy.tenant_id, User.role == "client", User.active.is_(True))
+    users = db.execute(q).scalars().all()
+    if not body.allPortalUsers:
+        users = [u for u in users if u.id in set(body.userIds)]
+    if not users:
+        raise HTTPException(400, "Choose the customer's portal users to ask")
+    n = att.assign(db, policy, users, body.dueDays, principal.actor)
+    audit.record(db, principal.actor, "grc.policy_assigned", policy.title, policy.tenant_id, people=len(users), new=n)
+    db.commit()
+    return {"assigned": n}
+
+
+@router.get("/policies/{policy_id}/attestations")
+def policy_attestations(policy_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    principal.require("read")
+    policy = _owned_policy(db, principal, policy_id)
+    rows = db.execute(select(PolicyAttestation).where(PolicyAttestation.policy_id == policy.id)
+                      .order_by(PolicyAttestation.email)).scalars().all()
+    history = db.execute(select(PolicyAcknowledgement).where(PolicyAcknowledgement.policy_id == policy.id)
+                         .order_by(PolicyAcknowledgement.at.desc())).scalars().all()
+    people = []
+    for a in rows:
+        mine = [h for h in history if h.attestation_id == a.id]
+        people.append({"id": a.id, "email": a.email, "status": att.status(a, policy), "assignedAt": a.assigned_at.isoformat(),
+                       "dueDays": a.due_days, "acknowledgedVersion": a.acknowledged_version,
+                       "acknowledgedAt": a.acknowledged_at.isoformat() if a.acknowledged_at else None,
+                       "exception": a.exception, "reminders": a.reminders,
+                       "history": [{"version": h.version, "sha256": h.sha256, "at": h.at.isoformat(), "ip": h.ip} for h in mine]})
+    counts: dict[str, int] = {}
+    for p in people:
+        counts[p["status"]] = counts.get(p["status"], 0) + 1
+    return {"policyId": policy.id, "approvedVersion": policy.approved_version, "counts": counts, "people": people}
+
+
+class ExceptionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(default="", max_length=1000)
+    until: str | None = None  # YYYY-MM-DD; None clears the exception
+
+
+@router.post("/attestations/{attestation_id}/exception")
+def attestation_exception(attestation_id: str, body: ExceptionBody, principal: Principal = Depends(current_principal),
+                          db: Session = Depends(get_db)):
+    principal.require("grc")
+    a = db.get(PolicyAttestation, attestation_id)
+    if a is None or a.tenant_id not in principal.tenant_ids:
+        raise HTTPException(404, "Not found")
+    if body.until:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", body.until) or len(body.reason.strip()) < 3:
+            raise HTTPException(400, "An exception needs a reason and an end date (YYYY-MM-DD)")
+        a.exception = {"reason": body.reason.strip(), "until": body.until, "by": principal.actor, "at": utcnow().isoformat()}
+    else:
+        a.exception = None
+    audit.record(db, principal.actor, "grc.policy_exception", a.email, a.tenant_id, policy=a.policy_id,
+                 until=body.until, reason=body.reason[:200])
+    db.commit()
+    return {"exception": a.exception}
+
+
+@router.delete("/attestations/{attestation_id}")
+def remove_attestation(attestation_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """No longer asked (they left); their acknowledgements are kept."""
+    principal.require("grc")
+    a = db.get(PolicyAttestation, attestation_id)
+    if a is None or a.tenant_id not in principal.tenant_ids:
+        raise HTTPException(404, "Not found")
+    a.removed = True
+    audit.record(db, principal.actor, "grc.policy_unassigned", a.email, a.tenant_id, policy=a.policy_id)
+    db.commit()
+    return {"removed": True}
+
+
+@router.get("/policies/{policy_id}/attestations.csv")
+def attestations_csv(policy_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Evidence for an audit: every acknowledgement of every version, with the hash of the text accepted."""
+    principal.require("read")
+    policy = _owned_policy(db, principal, policy_id)
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(["email", "version", "title", "sha256", "acknowledged_at_utc", "ip"])
+    for h in db.execute(select(PolicyAcknowledgement).where(PolicyAcknowledgement.policy_id == policy.id)
+                        .order_by(PolicyAcknowledgement.at)).scalars():
+        w.writerow([h.email, h.version, h.title, h.sha256, h.at.isoformat(), h.ip])
+    return Response(out.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="acknowledgements-{policy.id}.csv"'})

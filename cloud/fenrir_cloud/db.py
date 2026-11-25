@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 88
+LATEST_MIGRATION = 89
 
 def init_engine(url: str, pool_size: int = 5, max_overflow: int = 10) -> Engine:
     global _engine, _session_factory
@@ -598,6 +598,11 @@ def migrate(bind: Engine) -> list[int]:
                                                        Base.metadata.tables["continuity_exercises"]])  # GRC-17
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (88)"))
                 applied.append(88)
+            if 89 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["policy_attestations"],
+                                                       Base.metadata.tables["policy_acknowledgements"]])  # GRC-08
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (89)"))
+                applied.append(89)
             conn.commit()
         except Exception:
             conn.rollback()

@@ -5,6 +5,7 @@ import { api, fmtTime, money } from "../api";
 import { useApp } from "../app-context";
 import { Modal, Pill, Table, Tabs, useAction, useData, useListData } from "../components/ui";
 import { FileBrowser, type BrowseImage } from "./BackupFiles";
+import { Markdown } from "../components/Markdown";
 
 export default function Portal() {
   const { logout } = useApp();
@@ -19,6 +20,8 @@ export default function Portal() {
   // Self-service restore: only for devices the IT provider granted to this user.
   const { data: backups } = useListData<BrowseImage>("/api/portal/backups");
   const [browsing, setBrowsing] = useState<BrowseImage | null>(null);
+  const { data: policies, reload: reloadPolicies } = useListData<any>("/api/portal/policies");
+  const [reading, setReading] = useState<string | null>(null);
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto", padding: 24 }}>
       <div className="row" style={{ marginBottom: 20 }}>
@@ -29,8 +32,12 @@ export default function Portal() {
         <button className="primary" onClick={() => setCreating(true)}>Get help</button>
         <button className="small" onClick={logout}>Sign out</button>
       </div>
-      <Tabs tabs={["My requests", "Knowledge base", "Invoices", "Devices", ...(backups?.length ? ["My backups"] : [])]} active={tab} onChange={setTab} />
+      <Tabs tabs={["My requests", "Knowledge base", "Invoices", "Devices", ...(policies?.length ? [`Policies${policies.some((p: any) => p.status !== "current") ? " (to read)" : ""}`] : []), ...(backups?.length ? ["My backups"] : [])]} active={tab} onChange={setTab} />
       <div className="card">
+        {tab.startsWith("Policies") && <Table rows={policies} onRow={(p: any) => setReading(p.policyId)} empty="No policies to read." columns={[
+          { key: "title", label: "Policy", render: (p: any) => <b>{displayValue(p.title)}</b> },
+          { key: "version", label: "Version", render: (p: any) => `v${p.version}` },
+          { key: "status", label: "", render: (p: any) => <Pill value={p.status === "current" ? `accepted ${fmtTime(p.acknowledgedAt)}` : "please read"} tone={p.status === "current" ? "good" : "warn"} /> }]} />}
         {tab === "My backups" && <>
           <p className="small muted" style={{ marginTop: 0 }}>Backups of your devices. Open one to find files and download them as they were then.</p>
           <Table rows={backups} onRow={(b) => setBrowsing(b)} empty="No backups yet." columns={[
@@ -56,6 +63,7 @@ export default function Portal() {
       {creating && <NewRequest onClose={() => { setCreating(false); reload(); }} />}
       {open && <RequestDetail id={open} onClose={() => { setOpen(null); reload(); }} />}
       {browsing && <FileBrowser image={browsing} portal onClose={() => setBrowsing(null)} />}
+      {reading && <ReadPolicy id={reading} onClose={() => { setReading(null); reloadPolicies(); }} />}
     </div>
   );
 }
@@ -97,6 +105,22 @@ function RequestDetail({ id, onClose }: { id: string; onClose: () => void }) {
         {!data.closed && <button disabled={busy} onClick={() => reply(true)}>It's fixed — close it</button>}
         <button className="primary" disabled={busy || !text} onClick={() => reply()}>Send reply</button>
       </div>
+    </Modal>
+  );
+}
+
+function ReadPolicy({ id, onClose }: { id: string; onClose: () => void }) {
+  const { data } = useData<any>(`/api/portal/policies/${id}`);
+  const { run, busy } = useAction();
+  const [ok, setOk] = useState(false);
+  if (!data) return null;
+  return (
+    <Modal title={`${data.title} (version ${data.version})`} onClose={onClose}
+      footer={data.status === "current" ? <button onClick={onClose}>Close</button> : <>
+        <label className="row small" style={{ gap: 6 }}><input type="checkbox" checked={ok} onChange={(e) => setOk(e.target.checked)} /> I have read this policy and accept it</label>
+        <button className="primary" disabled={!ok || busy} onClick={() => run(() => api(`/api/portal/policies/${id}/acknowledge`, { body: { version: data.version, sha256: data.sha256, confirm: true } }), "Thank you: your acceptance is recorded").then((r) => r && onClose())}>Accept</button>
+      </>}>
+      <Markdown text={data.body} />
     </Modal>
   );
 }

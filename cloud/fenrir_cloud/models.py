@@ -3150,6 +3150,43 @@ class DrRun(Base):
     started_by: Mapped[str] = mapped_column(String(200), default="")
 
 
+class PolicyAttestation(Base):
+    """A policy assigned to a person to read and acknowledge (GRC-08). They are current when they acknowledged the
+    policy's approved version; a new approved version makes them due again. An exception excuses them until a date."""
+    __tablename__ = "policy_attestations"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("pat"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    policy_id: Mapped[str] = mapped_column(String(32), index=True)
+    user_id: Mapped[str] = mapped_column(String(32), index=True)
+    email: Mapped[str] = mapped_column(String(200), default="")
+    assigned_by: Mapped[str] = mapped_column(String(200), default="")
+    assigned_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    due_days: Mapped[int] = mapped_column(Integer, default=14)
+    acknowledged_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    exception: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # {reason, until, by, at}
+    last_reminded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reminders: Mapped[int] = mapped_column(Integer, default=0)
+    removed: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class PolicyAcknowledgement(Base):
+    """One acknowledgement, never changed: who, which version, the SHA-256 of the exact text shown, when and from where."""
+    __tablename__ = "policy_acknowledgements"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("pak"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    attestation_id: Mapped[str] = mapped_column(String(32), index=True)
+    policy_id: Mapped[str] = mapped_column(String(32), index=True)
+    user_id: Mapped[str] = mapped_column(String(32))
+    email: Mapped[str] = mapped_column(String(200))
+    version: Mapped[int] = mapped_column(Integer)
+    title: Mapped[str] = mapped_column(String(300))
+    sha256: Mapped[str] = mapped_column(String(64))
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    ip: Mapped[str] = mapped_column(String(64), default="")
+    user_agent: Mapped[str] = mapped_column(String(300), default="")
+
+
 class ContinuityPlan(Base):
     """A business continuity plan (GRC-17): business services with their impact (BIA), recovery targets, dependencies
     and the devices and DR runbooks that recover them. Approval versions the plan; it does not prove it works."""
