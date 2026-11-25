@@ -1,0 +1,8 @@
+# ISO 22301:2019 clause structure. Identifiers and titles only.
+- { ref: clause-4, title: "Context of the organization", sort: 4, licence: id-and-title }
+- { ref: clause-5, title: "Leadership", sort: 5, licence: id-and-title }
+- { ref: clause-6, title: "Planning", sort: 6, licence: id-and-title }
+- { ref: clause-7, title: "Support", sort: 7, licence: id-and-title }
+- { ref: clause-8, title: "Operation", sort: 8, licence: id-and-title }
+- { ref: clause-9, title: "Performance evaluation", sort: 9, licence: id-and-title }
+- { ref: clause-10, title: "Improvement", sort: 10, licence: id-and-title }

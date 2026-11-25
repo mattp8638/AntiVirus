@@ -1,0 +1,400 @@
+# Common controls v1. Platform-authored wording, mapped to frameworks in each framework pack.
+- ref: CC-GOV-01
+  title: "Information security policy set is approved and communicated"
+  statement: "A set of information security policies is approved by management, published to everyone it applies to, acknowledged by staff and reviewed at least once a year."
+  test_procedure: "Check the policy set has a current approval record, that review dates have not passed and that acknowledgement records exist for a sample of staff."
+  default_frequency: annual
+  evidence_types: [document, record]
+  licence: original
+- ref: CC-GOV-02
+  title: "Security roles and management responsibilities are assigned"
+  statement: "Security responsibilities are written into role descriptions, accepted by the people who hold them, and managers require staff to follow policy."
+  test_procedure: "Inspect the RACI and a sample of role descriptions; interview two managers about how they enforce policy."
+  default_frequency: annual
+  evidence_types: [document, record]
+  licence: original
+- ref: CC-GOV-03
+  title: "Conflicting duties are separated"
+  statement: "Duties that could allow one person to misuse or hide misuse of information (for example raising and approving payments, or changing and approving code) are split, or compensating checks are recorded."
+  test_procedure: "Review the segregation matrix and test a sample of high risk transactions for separate approvers."
+  default_frequency: annual
+  evidence_types: [document, report]
+  licence: original
+- ref: CC-GOV-04
+  title: "Contacts with authorities and specialist groups are maintained"
+  statement: "A list of regulators, law enforcement, emergency services and specialist security groups is kept current, with who contacts them and when."
+  test_procedure: "Check the contact list was reviewed in the last year and that membership of named groups is current."
+  default_frequency: annual
+  evidence_types: [record]
+  licence: original
+- ref: CC-GOV-05
+  title: "Threat intelligence is collected and acted on"
+  statement: "Relevant threat information is gathered from named sources, reviewed on a schedule and turned into actions where needed."
+  test_procedure: "Review the threat intelligence log for the period and trace two items to resulting actions."
+  default_frequency: monthly
+  evidence_types: [record, report]
+  licence: original
+- ref: CC-GOV-06
+  title: "Security is built into projects"
+  statement: "Every project with an information component records security requirements and a risk assessment at initiation and checks them before go-live."
+  test_procedure: "Sample recent projects and confirm a security checkpoint was completed at initiation and go-live."
+  default_frequency: quarterly
+  evidence_types: [record]
+  licence: original
+- ref: CC-GOV-07
+  title: "Legal, regulatory and contractual requirements are tracked"
+  statement: "A register lists the laws, regulations, contracts and licences that affect information security, including intellectual property, with owners and how each is met."
+  test_procedure: "Check the register was reviewed this year and sample software licences against installed counts."
+  default_frequency: annual
+  evidence_types: [document, record]
+  licence: original
+- ref: CC-GOV-08
+  title: "Records are retained and protected"
+  statement: "Records are kept for defined retention periods, protected from loss and tampering, and destroyed securely when no longer needed."
+  test_procedure: "Compare the retention schedule with a sample of record stores and disposal logs."
+  default_frequency: annual
+  evidence_types: [document, record]
+  licence: original
+- ref: CC-GOV-09
+  title: "Personal data is protected"
+  statement: "A privacy programme identifies the personal data held, the lawful basis, and the safeguards in place, and meets data protection law."
+  test_procedure: "Review the records of processing, recent data protection impact assessments and the handling of data subject requests."
+  default_frequency: annual
+  evidence_types: [document, record]
+  licence: original
+- ref: CC-GOV-10
+  title: "Information security is independently reviewed"
+  statement: "Someone independent of the work reviews the approach to information security at planned intervals and after significant change."
+  test_procedure: "Inspect the latest independent review report and the actions arising from it."
+  default_frequency: annual
+  evidence_types: [report]
+  licence: original
+- ref: CC-GOV-11
+  title: "Compliance with security policy is checked"
+  statement: "Managers and system owners check compliance with security policies and standards on a schedule and correct gaps."
+  test_procedure: "Review the compliance check results for the period and follow up a sample of gaps to closure."
+  default_frequency: quarterly
+  evidence_types: [report, record]
+  licence: original
+- ref: CC-GOV-12
+  title: "Operating procedures are documented"
+  statement: "Procedures for operating information systems are written down, kept current and available to the people who need them."
+  test_procedure: "Sample procedures for key systems and confirm they are current and accessible."
+  default_frequency: annual
+  evidence_types: [document]
+  licence: original
+- ref: CC-AST-01
+  title: "Information and associated assets are inventoried with owners"
+  statement: "An inventory of information, systems and other associated assets is kept current, and every entry has a named owner."
+  test_procedure: "Reconcile the inventory against a discovery source and confirm owners are named."
+  default_frequency: quarterly
+  evidence_types: [report, record]
+  licence: original
+- ref: CC-AST-02
+  title: "Assets are returned when people leave"
+  statement: "People return organization equipment and information when their employment or contract ends, and this is checked."
+  test_procedure: "Sample leavers and confirm a signed return checklist exists."
+  default_frequency: quarterly
+  evidence_types: [record]
+  licence: original
+- ref: CC-AUP-01
+  title: "Acceptable use rules are accepted by staff"
+  statement: "Staff and contractors accept written rules for using information and equipment before they get access, and again when the rules change."
+  test_procedure: "Take a sample of recent joiners and confirm each accepted the current rules before access was granted."
+  default_frequency: annual
+  evidence_types: [record]
+  licence: original
+- ref: CC-CLS-01
+  title: "Information is classified and labelled"
+  statement: "Information is classified by its sensitivity using a defined scheme, and labelled so people know how to handle it."
+  test_procedure: "Inspect a sample of documents and systems for correct classification and labels."
+  default_frequency: annual
+  evidence_types: [document, screenshot]
+  licence: original
+- ref: CC-TRF-01
+  title: "Information transfer is controlled"
+  statement: "Rules and agreements govern how information is sent to others by any means, with protection matching its classification."
+  test_procedure: "Review transfer agreements and test a sample of external transfers against the rules."
+  default_frequency: annual
+  evidence_types: [document, record]
+  licence: original
+- ref: CC-ACC-01
+  title: "Access is granted by role and reviewed"
+  statement: "Access to systems and information is granted on the basis of role and need, approved by the owner, and reviewed every quarter."
+  test_procedure: "Inspect the latest quarterly access review for completeness and sign-off; check restrictions on sensitive information."
+  default_frequency: quarterly
+  evidence_types: [report, record]
+  licence: original
+- ref: CC-IAM-01
+  title: "Identities are managed across their lifecycle"
+  statement: "Every person and system account has a unique identity that is created on approval, changed when roles change and removed promptly when no longer needed."
+  test_procedure: "Compare HR joiner and leaver records with account creation and disable dates."
+  default_frequency: quarterly
+  evidence_types: [report, record]
+  licence: original
+- ref: CC-IAM-02
+  title: "Authentication is strong and secrets are protected"
+  statement: "Multi-factor authentication protects remote access, cloud services and privileged accounts; passwords and other secrets follow rules for issue, storage and change."
+  test_procedure: "Check MFA coverage reports and the configuration of password and secret policies."
+  default_frequency: monthly
+  evidence_types: [configuration, report]
+  licence: original
+- ref: CC-IAM-03
+  title: "Privileged access is restricted and monitored"
+  statement: "Administrative rights are granted only when needed, separately from everyday accounts, reviewed regularly and logged; utility programs that can bypass controls are restricted."
+  test_procedure: "Review the privileged account list, its last review and a sample of privileged activity logs."
+  default_frequency: quarterly
+  evidence_types: [report, log]
+  licence: original
+- ref: CC-SUP-01
+  title: "Supplier security is assessed and contracted"
+  statement: "Suppliers that handle our information or services are assessed for security before onboarding, including their own supply chain, and have security terms in their contracts."
+  test_procedure: "Check a sample of high tier suppliers for a current assessment and signed security terms."
+  default_frequency: annual
+  evidence_types: [document, record]
+  licence: original
+- ref: CC-SUP-02
+  title: "Supplier services are monitored"
+  statement: "Supplier security performance is reviewed on a schedule matched to their risk tier, and changes to their services are assessed."
+  test_procedure: "Review supplier review records for the period against the schedule."
+  default_frequency: quarterly
+  evidence_types: [record, report]
+  licence: original
+- ref: CC-CLD-01
+  title: "Cloud services are acquired and managed securely"
+  statement: "Cloud services are chosen, configured, used and exited under defined security requirements, with shared responsibilities recorded."
+  test_procedure: "Review the cloud service register and a sample of configuration checks."
+  default_frequency: annual
+  evidence_types: [document, configuration]
+  licence: original
+- ref: CC-INC-01
+  title: "Incident response procedure is defined and exercised"
+  statement: "A documented procedure sets out how incidents are assessed, contained and resolved, with named roles. It is exercised at least once a year."
+  test_procedure: "Review the procedure, the last exercise report and the actions raised from it."
+  default_frequency: annual
+  evidence_types: [document, report]
+  licence: original
+- ref: CC-INC-02
+  title: "Incidents are learned from and evidence is preserved"
+  statement: "After significant incidents the root cause is recorded and improvements tracked; evidence is collected and kept in a way that preserves its integrity."
+  test_procedure: "Sample closed incidents for a post-incident review and an evidence handling record."
+  default_frequency: quarterly
+  evidence_types: [record]
+  licence: original
+- ref: CC-INC-03
+  title: "Staff report security events promptly"
+  statement: "Staff know how to report security events and weaknesses, and reports reach the right people quickly."
+  test_procedure: "Check reporting channels are published and test a sample of recent reports for response times."
+  default_frequency: quarterly
+  evidence_types: [record, report]
+  licence: original
+- ref: CC-BCM-01
+  title: "Security continues during disruption"
+  statement: "Continuity plans keep information security in place during disruption, and ICT recovery capability is planned and tested against agreed recovery objectives."
+  test_procedure: "Review continuity plans and the latest recovery test results against objectives."
+  default_frequency: annual
+  evidence_types: [document, report]
+  licence: original
+- ref: CC-BCM-02
+  title: "Critical systems have enough redundancy"
+  statement: "Systems that support critical services have redundancy sufficient to meet availability requirements."
+  test_procedure: "Review the availability design and the results of the last failover test."
+  default_frequency: annual
+  evidence_types: [document, report]
+  licence: original
+- ref: CC-HR-01
+  title: "People are screened before joining"
+  statement: "Background checks proportionate to the role and the information accessed are completed before people start, and repeated where required."
+  test_procedure: "Sample recent joiners and confirm checks were completed before start dates."
+  default_frequency: quarterly
+  evidence_types: [record]
+  licence: original
+- ref: CC-HR-02
+  title: "Employment terms cover security, confidentiality and leaving"
+  statement: "Contracts and NDAs set out security responsibilities that continue after leaving; a disciplinary process applies to breaches."
+  test_procedure: "Review contract templates, NDA records for a sample of staff and the disciplinary procedure."
+  default_frequency: annual
+  evidence_types: [document, record]
+  licence: original
+- ref: CC-AWR-01
+  title: "Staff receive security awareness training"
+  statement: "Everyone receives security awareness training when they join and at least annually, with role-based training where needed."
+  test_procedure: "Check training completion reports against the staff list."
+  default_frequency: annual
+  evidence_types: [report]
+  licence: original
+- ref: CC-HR-03
+  title: "Remote working and off-site equipment are protected"
+  statement: "Rules protect information accessed, processed or stored outside the organization and equipment used off-site."
+  test_procedure: "Review the remote working rules and a sample of device compliance results."
+  default_frequency: annual
+  evidence_types: [document, report]
+  licence: original
+- ref: CC-PHY-01
+  title: "Premises have secure perimeters and controlled entry"
+  statement: "Sites have defined security perimeters, entry is limited to authorized people, and secure areas have extra rules."
+  test_procedure: "Inspect entry logs, visitor records and a walk-round of the perimeter."
+  default_frequency: quarterly
+  evidence_types: [record, log]
+  licence: original
+- ref: CC-PHY-02
+  title: "Premises are monitored"
+  statement: "Sites are monitored for unauthorized physical access, for example by alarms or cameras."
+  test_procedure: "Check monitoring is operational and alarm test records are current."
+  default_frequency: quarterly
+  evidence_types: [record]
+  licence: original
+- ref: CC-PHY-03
+  title: "Facilities are protected from environmental threats and utility failure"
+  statement: "Premises and equipment are protected from fire, flood and other environmental threats, with resilient power, telecommunications and cabling."
+  test_procedure: "Review maintenance and test records for fire, power and environmental systems."
+  default_frequency: annual
+  evidence_types: [record, report]
+  licence: original
+- ref: CC-PHY-04
+  title: "Desks and screens are kept clear"
+  statement: "Papers and removable media are put away and screens lock when unattended."
+  test_procedure: "Carry out and record a clear desk spot check."
+  default_frequency: quarterly
+  evidence_types: [record]
+  licence: original
+- ref: CC-PHY-05
+  title: "Equipment is sited safely and maintained"
+  statement: "Equipment is positioned to reduce risk and maintained according to manufacturer guidance."
+  test_procedure: "Review the equipment maintenance log for the period."
+  default_frequency: annual
+  evidence_types: [record]
+  licence: original
+- ref: CC-MED-01
+  title: "Storage media and data are disposed of securely"
+  statement: "Removable media is controlled, and equipment and media are wiped or destroyed securely before reuse or disposal; data is deleted when no longer required."
+  test_procedure: "Sample disposal certificates and deletion records against the asset register."
+  default_frequency: quarterly
+  evidence_types: [record]
+  licence: original
+- ref: CC-END-01
+  title: "User endpoint devices are managed"
+  statement: "Laptops, desktops and mobile devices are enrolled in management, encrypted and kept to a secure baseline."
+  test_procedure: "Check the device management report for enrolment, encryption and compliance rates."
+  default_frequency: monthly
+  evidence_types: [report, configuration]
+  licence: original
+- ref: CC-MAL-01
+  title: "Malware protection is active on every device"
+  statement: "Every endpoint and server runs current malware protection with real-time scanning, and alerts are acted on."
+  test_procedure: "Check the protection coverage report and a sample of alerts for response."
+  default_frequency: monthly
+  evidence_types: [report]
+  licence: original
+- ref: CC-VUL-01
+  title: "Vulnerabilities are found and fixed in time"
+  statement: "Systems are scanned for vulnerabilities and patched within defined timescales, with critical issues fixed within 14 days."
+  test_procedure: "Review scan results and patch reports for the period against the timescales."
+  default_frequency: monthly
+  evidence_types: [report]
+  licence: original
+- ref: CC-CFG-01
+  title: "Systems follow secure configuration baselines"
+  statement: "Hardware, software, services and networks are built to documented secure baselines, software installation is controlled, and drift is detected and corrected."
+  test_procedure: "Compare a sample of systems with their baseline and check drift reports."
+  default_frequency: monthly
+  evidence_types: [configuration, report]
+  licence: original
+- ref: CC-CAP-01
+  title: "Capacity is monitored and planned"
+  statement: "Use of key resources is monitored and future capacity is planned to meet demand."
+  test_procedure: "Review capacity reports and the latest capacity plan."
+  default_frequency: quarterly
+  evidence_types: [report]
+  licence: original
+- ref: CC-DLP-01
+  title: "Sensitive data is masked and leakage is prevented"
+  statement: "Sensitive data is masked where full values are not needed, and measures detect and block unauthorized disclosure."
+  test_procedure: "Review data leakage prevention policies, alerts and a sample of masked data sets."
+  default_frequency: quarterly
+  evidence_types: [configuration, report]
+  licence: original
+- ref: CC-BKP-01
+  title: "Backups are taken daily, encrypted and test-restored quarterly"
+  statement: "Business data and system configuration are backed up every day to encrypted storage separate from production, and a restore is tested every quarter."
+  test_procedure: "Inspect backup job reports for the period, confirm encryption settings and review the latest quarterly restore test record."
+  default_frequency: quarterly
+  evidence_types: [report, configuration, record]
+  licence: original
+- ref: CC-LOG-01
+  title: "Activity is logged, monitored and time synchronized"
+  statement: "Security relevant events are logged and protected, monitored for anomalies, and system clocks are synchronized to a reliable source."
+  test_procedure: "Review log retention settings, monitoring alerts handled in the period and time source configuration."
+  default_frequency: monthly
+  evidence_types: [log, configuration, report]
+  licence: original
+- ref: CC-NET-01
+  title: "Networks are secured and segregated"
+  statement: "Networks and network services are secured, managed and segregated by trust level, with agreed security features for network services."
+  test_procedure: "Review network diagrams, firewall rule reviews and segregation tests."
+  default_frequency: quarterly
+  evidence_types: [configuration, report]
+  licence: original
+- ref: CC-WEB-01
+  title: "Web access is filtered"
+  statement: "Access to malicious or unsuitable websites is blocked by web or DNS filtering on all managed devices."
+  test_procedure: "Check filtering coverage and test that a known test site is blocked."
+  default_frequency: monthly
+  evidence_types: [report, configuration]
+  licence: original
+- ref: CC-CRY-01
+  title: "Cryptography is used according to rules"
+  statement: "Rules set out where encryption is required, which algorithms are acceptable and how keys are managed."
+  test_procedure: "Review the cryptography standard and sample system configurations for compliance."
+  default_frequency: annual
+  evidence_types: [document, configuration]
+  licence: original
+- ref: CC-APP-01
+  title: "Applications and systems are designed securely"
+  statement: "Security requirements are set when acquiring or building applications, and systems are designed using documented secure architecture principles."
+  test_procedure: "Sample recent acquisitions or designs for recorded security requirements and an architecture review."
+  default_frequency: annual
+  evidence_types: [document, record]
+  licence: original
+- ref: CC-DEV-01
+  title: "Secure development process is followed"
+  statement: "Software is built under a defined process that covers coding standards, peer review and dependency checks."
+  test_procedure: "Select recent releases and confirm each passed review and dependency scanning."
+  default_frequency: quarterly
+  evidence_types: [record, report]
+  licence: original
+- ref: CC-DEV-02
+  title: "Software is security tested and test data is protected"
+  statement: "Security testing is done during development and before acceptance, and test data is chosen and protected appropriately."
+  test_procedure: "Review security test results for recent releases and how test data was sourced."
+  default_frequency: quarterly
+  evidence_types: [report, record]
+  licence: original
+- ref: CC-DEV-03
+  title: "Development environments and source code are protected"
+  statement: "Development, test and production environments are separated, and access to source code is restricted and logged."
+  test_procedure: "Check environment separation and the source code access list."
+  default_frequency: quarterly
+  evidence_types: [configuration, report]
+  licence: original
+- ref: CC-DEV-04
+  title: "Outsourced development is supervised"
+  statement: "Outsourced development is governed by contract terms and monitored for security."
+  test_procedure: "Review contracts and the latest security review of outsourced work."
+  default_frequency: annual
+  evidence_types: [document, record]
+  licence: original
+- ref: CC-CHG-01
+  title: "Changes are controlled"
+  statement: "Changes to information processing facilities and systems are assessed, approved, tested and recorded."
+  test_procedure: "Sample changes from the period for approval and testing records."
+  default_frequency: monthly
+  evidence_types: [record]
+  licence: original
+- ref: CC-AUD-01
+  title: "Audit testing does not disrupt operations"
+  statement: "Audit tests on operational systems are planned and agreed with system owners to limit disruption."
+  test_procedure: "Review the agreement for the last technical audit."
+  default_frequency: annual
+  evidence_types: [record]
+  licence: original

@@ -1,0 +1,40 @@
+# CAF contributing outcomes (identifiers and short titles).
+- { ref: A1.a, group: a1, short_title: "Board direction", licence: crown-copyright-pending }
+- { ref: A1.b, group: a1, short_title: "Roles and responsibilities", licence: crown-copyright-pending }
+- { ref: A1.c, group: a1, short_title: "Decision-making", licence: crown-copyright-pending }
+- { ref: A2.a, group: a2, short_title: "Risk management process", licence: crown-copyright-pending }
+- { ref: A2.b, group: a2, short_title: "Assurance", licence: crown-copyright-pending }
+- { ref: A3.a, group: a3, short_title: "Asset management", licence: crown-copyright-pending }
+- { ref: A4.a, group: a4, short_title: "Supply chain", licence: crown-copyright-pending }
+- { ref: B1.a, group: b1, short_title: "Policy and process development", licence: crown-copyright-pending }
+- { ref: B1.b, group: b1, short_title: "Policy and process implementation", licence: crown-copyright-pending }
+- { ref: B2.a, group: b2, short_title: "Identity verification, authentication and authorization", licence: crown-copyright-pending }
+- { ref: B2.b, group: b2, short_title: "Device management", licence: crown-copyright-pending }
+- { ref: B2.c, group: b2, short_title: "Privileged user management", licence: crown-copyright-pending }
+- { ref: B2.d, group: b2, short_title: "Identity and access management", licence: crown-copyright-pending }
+- { ref: B3.a, group: b3, short_title: "Understanding data", licence: crown-copyright-pending }
+- { ref: B3.b, group: b3, short_title: "Data in transit", licence: crown-copyright-pending }
+- { ref: B3.c, group: b3, short_title: "Stored data", licence: crown-copyright-pending }
+- { ref: B3.d, group: b3, short_title: "Mobile data", licence: crown-copyright-pending }
+- { ref: B3.e, group: b3, short_title: "Media and equipment sanitization", licence: crown-copyright-pending }
+- { ref: B4.a, group: b4, short_title: "Secure by design", licence: crown-copyright-pending }
+- { ref: B4.b, group: b4, short_title: "Secure configuration", licence: crown-copyright-pending }
+- { ref: B4.c, group: b4, short_title: "Secure management", licence: crown-copyright-pending }
+- { ref: B4.d, group: b4, short_title: "Vulnerability management", licence: crown-copyright-pending }
+- { ref: B5.a, group: b5, short_title: "Resilience preparation", licence: crown-copyright-pending }
+- { ref: B5.b, group: b5, short_title: "Design for resilience", licence: crown-copyright-pending }
+- { ref: B5.c, group: b5, short_title: "Backups", licence: crown-copyright-pending }
+- { ref: B6.a, group: b6, short_title: "Cyber security culture", licence: crown-copyright-pending }
+- { ref: B6.b, group: b6, short_title: "Cyber security training", licence: crown-copyright-pending }
+- { ref: C1.a, group: c1, short_title: "Monitoring coverage", licence: crown-copyright-pending }
+- { ref: C1.b, group: c1, short_title: "Securing logs", licence: crown-copyright-pending }
+- { ref: C1.c, group: c1, short_title: "Generating alerts", licence: crown-copyright-pending }
+- { ref: C1.d, group: c1, short_title: "Identifying security incidents", licence: crown-copyright-pending }
+- { ref: C1.e, group: c1, short_title: "Monitoring tools and skills", licence: crown-copyright-pending }
+- { ref: C2.a, group: c2, short_title: "System abnormalities for attack detection", licence: crown-copyright-pending }
+- { ref: C2.b, group: c2, short_title: "Proactive attack discovery", licence: crown-copyright-pending }
+- { ref: D1.a, group: d1, short_title: "Response plan", licence: crown-copyright-pending }
+- { ref: D1.b, group: d1, short_title: "Response and recovery capability", licence: crown-copyright-pending }
+- { ref: D1.c, group: d1, short_title: "Testing and exercising", licence: crown-copyright-pending }
+- { ref: D2.a, group: d2, short_title: "Incident root cause analysis", licence: crown-copyright-pending }
+- { ref: D2.b, group: d2, short_title: "Using incidents to drive improvements", licence: crown-copyright-pending }

@@ -1,0 +1,5 @@
+# Chapters of the UK GDPR that carry organizational duties.
+- { ref: ch-2, title: "Chapter II Principles", sort: 1, licence: open }
+- { ref: ch-3, title: "Chapter III Rights of the data subject", sort: 2, licence: open }
+- { ref: ch-4, title: "Chapter IV Controller and processor", sort: 3, licence: open }
+- { ref: ch-5, title: "Chapter V Transfers outside the UK", sort: 4, licence: open }

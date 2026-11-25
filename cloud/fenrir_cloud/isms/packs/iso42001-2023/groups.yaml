@@ -1,0 +1,18 @@
+# ISO/IEC 42001:2023 clause and Annex A structure. Identifiers and titles only.
+- { ref: clause-4, title: "Context of the organization", sort: 4, licence: id-and-title }
+- { ref: clause-5, title: "Leadership", sort: 5, licence: id-and-title }
+- { ref: clause-6, title: "Planning", sort: 6, licence: id-and-title }
+- { ref: clause-7, title: "Support", sort: 7, licence: id-and-title }
+- { ref: clause-8, title: "Operation", sort: 8, licence: id-and-title }
+- { ref: clause-9, title: "Performance evaluation", sort: 9, licence: id-and-title }
+- { ref: clause-10, title: "Improvement", sort: 10, licence: id-and-title }
+- { ref: annex-a, title: "Annex A", sort: 11, licence: id-and-title }
+- { ref: a-2, parent: annex-a, title: "A.2 Policies related to AI", sort: 12, licence: id-and-title }
+- { ref: a-3, parent: annex-a, title: "A.3 Internal organization", sort: 13, licence: id-and-title }
+- { ref: a-4, parent: annex-a, title: "A.4 Resources for AI systems", sort: 14, licence: id-and-title }
+- { ref: a-5, parent: annex-a, title: "A.5 Assessing impacts of AI systems", sort: 15, licence: id-and-title }
+- { ref: a-6, parent: annex-a, title: "A.6 AI system life cycle", sort: 16, licence: id-and-title }
+- { ref: a-7, parent: annex-a, title: "A.7 Data for AI systems", sort: 17, licence: id-and-title }
+- { ref: a-8, parent: annex-a, title: "A.8 Information for interested parties of AI systems", sort: 18, licence: id-and-title }
+- { ref: a-9, parent: annex-a, title: "A.9 Use of AI systems", sort: 19, licence: id-and-title }
+- { ref: a-10, parent: annex-a, title: "A.10 Third-party and customer relationships", sort: 20, licence: id-and-title }

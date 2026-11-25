@@ -1,0 +1,157 @@
+# Clauses 4 to 10 with original guidance. Identifiers and titles only.
+- ref: "4.1"
+  group: clause-4
+  short_title: "Understanding the organization and its context"
+  mandatory: true
+  guidance: "Record the internal and external issues that shape what continuity arrangements must achieve, and revisit them when the business changes."
+  licence: id-and-title
+- ref: "4.2"
+  group: clause-4
+  short_title: "Understanding the needs and expectations of interested parties"
+  mandatory: true
+  guidance: "List customers, regulators and others who depend on continued service, the legal and contractual duties that apply, and which of these the BCMS will meet."
+  licence: id-and-title
+- ref: "4.3"
+  group: clause-4
+  short_title: "Determining the scope of the business continuity management system"
+  mandatory: true
+  guidance: "Write down which products, services, sites and activities the BCMS covers, and explain any exclusions."
+  licence: id-and-title
+- ref: "4.4"
+  group: clause-4
+  short_title: "Business continuity management system"
+  mandatory: true
+  guidance: "Run the BCMS as a managed system: processes, records and improvement, kept in this platform."
+  licence: id-and-title
+- ref: "5.1"
+  group: clause-5
+  short_title: "Leadership and commitment"
+  mandatory: true
+  guidance: "Top management sponsors continuity, provides resources and takes part in reviews and exercises."
+  licence: id-and-title
+- ref: "5.2"
+  group: clause-5
+  short_title: "Policy"
+  mandatory: true
+  guidance: "Approve and publish a business continuity policy that sets direction and commitments, and review it each year."
+  licence: id-and-title
+- ref: "5.3"
+  group: clause-5
+  short_title: "Roles, responsibilities and authorities"
+  mandatory: true
+  guidance: "Name who owns the BCMS, who leads incident response and who can invoke plans."
+  licence: id-and-title
+- ref: "6.1"
+  group: clause-6
+  short_title: "Actions to address risks and opportunities"
+  mandatory: true
+  guidance: "Identify risks to the BCMS achieving its outcomes and plan how to address them."
+  licence: id-and-title
+- ref: "6.2"
+  group: clause-6
+  short_title: "Business continuity objectives and planning to achieve them"
+  mandatory: true
+  guidance: "Set measurable continuity objectives with owners, resources and dates."
+  licence: id-and-title
+- ref: "6.3"
+  group: clause-6
+  short_title: "Planning changes to the business continuity management system"
+  mandatory: true
+  guidance: "Plan changes to the BCMS deliberately, considering their purpose and consequences."
+  licence: id-and-title
+- ref: "7.1"
+  group: clause-7
+  short_title: "Resources"
+  mandatory: true
+  guidance: "Make sure people, budget and tools for continuity are available."
+  licence: id-and-title
+- ref: "7.2"
+  group: clause-7
+  short_title: "Competence"
+  mandatory: true
+  guidance: "Make sure people with continuity roles are competent and keep records of training and experience."
+  licence: id-and-title
+- ref: "7.3"
+  group: clause-7
+  short_title: "Awareness"
+  mandatory: true
+  guidance: "Staff know the policy, their part in a disruption and how to report one."
+  licence: id-and-title
+- ref: "7.4"
+  group: clause-7
+  short_title: "Communication"
+  mandatory: true
+  guidance: "Decide what is communicated about continuity, to whom, when and how, including during disruption."
+  licence: id-and-title
+- ref: "7.5"
+  group: clause-7
+  short_title: "Documented information"
+  mandatory: true
+  guidance: "Keep BCMS documents and records controlled, current and available when needed, including during disruption."
+  licence: id-and-title
+- ref: "8.1"
+  group: clause-8
+  short_title: "Operational planning and control"
+  mandatory: true
+  guidance: "Plan and control the continuity processes and any that are outsourced."
+  licence: id-and-title
+- ref: "8.2"
+  group: clause-8
+  short_title: "Business impact analysis and risk assessment"
+  mandatory: true
+  guidance: "Analyse the impact of disruption over time for each activity, set the MTPD, RTO and RPO, and assess risks of disruption."
+  licence: id-and-title
+- ref: "8.3"
+  group: clause-8
+  short_title: "Business continuity strategies and solutions"
+  mandatory: true
+  guidance: "Choose strategies and solutions that meet the recovery objectives, and the resources they need."
+  licence: id-and-title
+- ref: "8.4"
+  group: clause-8
+  short_title: "Business continuity plans and procedures"
+  mandatory: true
+  guidance: "Write plans with invocation criteria, roles, recovery steps and communications, and a response structure to use them."
+  licence: id-and-title
+- ref: "8.5"
+  group: clause-8
+  short_title: "Exercise programme"
+  mandatory: true
+  guidance: "Exercise plans regularly against realistic scenarios and record results against recovery objectives."
+  licence: id-and-title
+- ref: "8.6"
+  group: clause-8
+  short_title: "Evaluation of business continuity documentation and capabilities"
+  mandatory: true
+  guidance: "Check plans and capabilities stay suitable, including those of key suppliers, after exercises, incidents and changes."
+  licence: id-and-title
+- ref: "9.1"
+  group: clause-9
+  short_title: "Monitoring, measurement, analysis and evaluation"
+  mandatory: true
+  guidance: "Decide what to measure about continuity performance and review the results."
+  licence: id-and-title
+- ref: "9.2"
+  group: clause-9
+  short_title: "Internal audit"
+  mandatory: true
+  guidance: "Audit the BCMS on a planned programme and act on findings."
+  licence: id-and-title
+- ref: "9.3"
+  group: clause-9
+  short_title: "Management review"
+  mandatory: true
+  guidance: "Top management reviews the BCMS at planned intervals and records decisions."
+  licence: id-and-title
+- ref: "10.1"
+  group: clause-10
+  short_title: "Nonconformity and corrective action"
+  mandatory: true
+  guidance: "Correct problems found in exercises, incidents and audits, and fix their causes."
+  licence: id-and-title
+- ref: "10.2"
+  group: clause-10
+  short_title: "Continual improvement"
+  mandatory: true
+  guidance: "Improve the BCMS based on results, reviews and lessons learned."
+  licence: id-and-title

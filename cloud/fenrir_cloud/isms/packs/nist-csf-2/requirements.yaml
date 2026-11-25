@@ -1,0 +1,107 @@
+# The 106 CSF 2.0 subcategory identifiers with platform summaries as short titles.
+- { ref: GV.OC-01, group: gv-oc, short_title: "Mission is understood and informs risk management", licence: open }
+- { ref: GV.OC-02, group: gv-oc, short_title: "Stakeholder needs and expectations are understood", licence: open }
+- { ref: GV.OC-03, group: gv-oc, short_title: "Legal, regulatory and contractual requirements are managed", licence: open }
+- { ref: GV.OC-04, group: gv-oc, short_title: "Critical objectives, capabilities and services are understood", licence: open }
+- { ref: GV.OC-05, group: gv-oc, short_title: "Dependencies on the organization are understood", licence: open }
+- { ref: GV.RM-01, group: gv-rm, short_title: "Risk management objectives are agreed", licence: open }
+- { ref: GV.RM-02, group: gv-rm, short_title: "Risk appetite and tolerance are set and communicated", licence: open }
+- { ref: GV.RM-03, group: gv-rm, short_title: "Cyber risk is part of enterprise risk management", licence: open }
+- { ref: GV.RM-04, group: gv-rm, short_title: "Risk response options are set out", licence: open }
+- { ref: GV.RM-05, group: gv-rm, short_title: "Lines of communication for risk are established", licence: open }
+- { ref: GV.RM-06, group: gv-rm, short_title: "A standard method for assessing risk is used", licence: open }
+- { ref: GV.RM-07, group: gv-rm, short_title: "Positive risks are identified and considered", licence: open }
+- { ref: GV.RR-01, group: gv-rr, short_title: "Leadership is accountable for cyber risk", licence: open }
+- { ref: GV.RR-02, group: gv-rr, short_title: "Cyber roles and authorities are set and communicated", licence: open }
+- { ref: GV.RR-03, group: gv-rr, short_title: "Adequate resources are allocated", licence: open }
+- { ref: GV.RR-04, group: gv-rr, short_title: "Cybersecurity is part of HR practices", licence: open }
+- { ref: GV.PO-01, group: gv-po, short_title: "Cyber policy is set, communicated and enforced", licence: open }
+- { ref: GV.PO-02, group: gv-po, short_title: "Cyber policy is reviewed and updated", licence: open }
+- { ref: GV.OV-01, group: gv-ov, short_title: "Strategy outcomes are reviewed to adjust direction", licence: open }
+- { ref: GV.OV-02, group: gv-ov, short_title: "Strategy is reviewed to cover requirements and risks", licence: open }
+- { ref: GV.OV-03, group: gv-ov, short_title: "Risk management performance is evaluated", licence: open }
+- { ref: GV.SC-01, group: gv-sc, short_title: "A supply chain risk programme is set up", licence: open }
+- { ref: GV.SC-02, group: gv-sc, short_title: "Supplier security roles are set and coordinated", licence: open }
+- { ref: GV.SC-03, group: gv-sc, short_title: "Supply chain risk is part of risk management", licence: open }
+- { ref: GV.SC-04, group: gv-sc, short_title: "Suppliers are known and ranked by criticality", licence: open }
+- { ref: GV.SC-05, group: gv-sc, short_title: "Security requirements are written into supplier contracts", licence: open }
+- { ref: GV.SC-06, group: gv-sc, short_title: "Due diligence happens before engaging suppliers", licence: open }
+- { ref: GV.SC-07, group: gv-sc, short_title: "Supplier risks are monitored over the relationship", licence: open }
+- { ref: GV.SC-08, group: gv-sc, short_title: "Suppliers take part in incident planning and response", licence: open }
+- { ref: GV.SC-09, group: gv-sc, short_title: "Supply chain security is part of the lifecycle", licence: open }
+- { ref: GV.SC-10, group: gv-sc, short_title: "Plans cover what happens when a supplier relationship ends", licence: open }
+- { ref: ID.AM-01, group: id-am, short_title: "Hardware is inventoried", licence: open }
+- { ref: ID.AM-02, group: id-am, short_title: "Software, services and systems are inventoried", licence: open }
+- { ref: ID.AM-03, group: id-am, short_title: "Network data flows are documented", licence: open }
+- { ref: ID.AM-04, group: id-am, short_title: "Supplier services are inventoried", licence: open }
+- { ref: ID.AM-05, group: id-am, short_title: "Assets are prioritized by criticality and impact", licence: open }
+- { ref: ID.AM-07, group: id-am, short_title: "Data and its metadata are inventoried", licence: open }
+- { ref: ID.AM-08, group: id-am, short_title: "Assets are managed across their lifecycle", licence: open }
+- { ref: ID.RA-01, group: id-ra, short_title: "Asset vulnerabilities are identified and recorded", licence: open }
+- { ref: ID.RA-02, group: id-ra, short_title: "Threat intelligence is received", licence: open }
+- { ref: ID.RA-03, group: id-ra, short_title: "Internal and external threats are identified", licence: open }
+- { ref: ID.RA-04, group: id-ra, short_title: "Likelihood and impact of threats are identified", licence: open }
+- { ref: ID.RA-05, group: id-ra, short_title: "Risks are prioritized using threats, vulnerabilities and impact", licence: open }
+- { ref: ID.RA-06, group: id-ra, short_title: "Risk responses are chosen and tracked", licence: open }
+- { ref: ID.RA-07, group: id-ra, short_title: "Changes and exceptions are risk-assessed", licence: open }
+- { ref: ID.RA-08, group: id-ra, short_title: "Vulnerability disclosures are handled", licence: open }
+- { ref: ID.RA-09, group: id-ra, short_title: "Hardware and software authenticity is checked before use", licence: open }
+- { ref: ID.RA-10, group: id-ra, short_title: "Critical suppliers are assessed before acquisition", licence: open }
+- { ref: ID.IM-01, group: id-im, short_title: "Improvements are found through evaluations", licence: open }
+- { ref: ID.IM-02, group: id-im, short_title: "Improvements are found through tests and exercises", licence: open }
+- { ref: ID.IM-03, group: id-im, short_title: "Improvements are found through operations", licence: open }
+- { ref: ID.IM-04, group: id-im, short_title: "Incident response plans are kept and improved", licence: open }
+- { ref: PR.AA-01, group: pr-aa, short_title: "Identities and credentials are managed", licence: open }
+- { ref: PR.AA-02, group: pr-aa, short_title: "Identities are proofed and bound to credentials", licence: open }
+- { ref: PR.AA-03, group: pr-aa, short_title: "Users, services and hardware are authenticated", licence: open }
+- { ref: PR.AA-04, group: pr-aa, short_title: "Identity assertions are protected and verified", licence: open }
+- { ref: PR.AA-05, group: pr-aa, short_title: "Access permissions follow least privilege and are reviewed", licence: open }
+- { ref: PR.AA-06, group: pr-aa, short_title: "Physical access is managed by risk", licence: open }
+- { ref: PR.AT-01, group: pr-at, short_title: "Staff get awareness and training", licence: open }
+- { ref: PR.AT-02, group: pr-at, short_title: "Specialist roles get role-based training", licence: open }
+- { ref: PR.DS-01, group: pr-ds, short_title: "Data at rest is protected", licence: open }
+- { ref: PR.DS-02, group: pr-ds, short_title: "Data in transit is protected", licence: open }
+- { ref: PR.DS-10, group: pr-ds, short_title: "Data in use is protected", licence: open }
+- { ref: PR.DS-11, group: pr-ds, short_title: "Backups are made, protected and tested", licence: open }
+- { ref: PR.PS-01, group: pr-ps, short_title: "Configuration management is practised", licence: open }
+- { ref: PR.PS-02, group: pr-ps, short_title: "Software is maintained, replaced and removed by risk", licence: open }
+- { ref: PR.PS-03, group: pr-ps, short_title: "Hardware is maintained, replaced and removed by risk", licence: open }
+- { ref: PR.PS-04, group: pr-ps, short_title: "Logs are generated for continuous monitoring", licence: open }
+- { ref: PR.PS-05, group: pr-ps, short_title: "Unauthorized software cannot be installed or run", licence: open }
+- { ref: PR.PS-06, group: pr-ps, short_title: "Secure development practices are followed", licence: open }
+- { ref: PR.IR-01, group: pr-ir, short_title: "Networks are protected from unauthorized access", licence: open }
+- { ref: PR.IR-02, group: pr-ir, short_title: "Assets are protected from environmental threats", licence: open }
+- { ref: PR.IR-03, group: pr-ir, short_title: "Resilience mechanisms work in normal and adverse conditions", licence: open }
+- { ref: PR.IR-04, group: pr-ir, short_title: "Enough capacity is kept for availability", licence: open }
+- { ref: DE.CM-01, group: de-cm, short_title: "Networks and network services are monitored", licence: open }
+- { ref: DE.CM-02, group: de-cm, short_title: "The physical environment is monitored", licence: open }
+- { ref: DE.CM-03, group: de-cm, short_title: "Personnel activity and technology use are monitored", licence: open }
+- { ref: DE.CM-06, group: de-cm, short_title: "External service provider activity is monitored", licence: open }
+- { ref: DE.CM-09, group: de-cm, short_title: "Computing hardware, software and data are monitored", licence: open }
+- { ref: DE.AE-02, group: de-ae, short_title: "Potentially adverse events are analysed", licence: open }
+- { ref: DE.AE-03, group: de-ae, short_title: "Information is correlated from several sources", licence: open }
+- { ref: DE.AE-04, group: de-ae, short_title: "The impact and scope of events are understood", licence: open }
+- { ref: DE.AE-06, group: de-ae, short_title: "Event information goes to the right people", licence: open }
+- { ref: DE.AE-07, group: de-ae, short_title: "Threat intelligence informs analysis", licence: open }
+- { ref: DE.AE-08, group: de-ae, short_title: "Incidents are declared when criteria are met", licence: open }
+- { ref: RS.MA-01, group: rs-ma, short_title: "The response plan is executed with relevant parties", licence: open }
+- { ref: RS.MA-02, group: rs-ma, short_title: "Incident reports are triaged and validated", licence: open }
+- { ref: RS.MA-03, group: rs-ma, short_title: "Incidents are categorized and prioritized", licence: open }
+- { ref: RS.MA-04, group: rs-ma, short_title: "Incidents are escalated as needed", licence: open }
+- { ref: RS.MA-05, group: rs-ma, short_title: "Criteria for starting recovery are applied", licence: open }
+- { ref: RS.AN-03, group: rs-an, short_title: "Analysis finds what happened and the root cause", licence: open }
+- { ref: RS.AN-06, group: rs-an, short_title: "Investigation actions are recorded and preserved", licence: open }
+- { ref: RS.AN-07, group: rs-an, short_title: "Incident data and metadata are collected with integrity", licence: open }
+- { ref: RS.AN-08, group: rs-an, short_title: "Incident magnitude is estimated and confirmed", licence: open }
+- { ref: RS.CO-02, group: rs-co, short_title: "Stakeholders are notified of incidents", licence: open }
+- { ref: RS.CO-03, group: rs-co, short_title: "Information is shared with designated stakeholders", licence: open }
+- { ref: RS.MI-01, group: rs-mi, short_title: "Incidents are contained", licence: open }
+- { ref: RS.MI-02, group: rs-mi, short_title: "Incidents are eradicated", licence: open }
+- { ref: RC.RP-01, group: rc-rp, short_title: "The recovery part of the response plan is executed", licence: open }
+- { ref: RC.RP-02, group: rc-rp, short_title: "Recovery actions are chosen, scoped and prioritized", licence: open }
+- { ref: RC.RP-03, group: rc-rp, short_title: "Backups and restored assets are checked before use", licence: open }
+- { ref: RC.RP-04, group: rc-rp, short_title: "Critical functions are restored to a normal state", licence: open }
+- { ref: RC.RP-05, group: rc-rp, short_title: "Restored assets are verified to be working", licence: open }
+- { ref: RC.RP-06, group: rc-rp, short_title: "The end of recovery is declared and documented", licence: open }
+- { ref: RC.CO-03, group: rc-co, short_title: "Recovery progress is communicated to stakeholders", licence: open }
+- { ref: RC.CO-04, group: rc-co, short_title: "Public updates on recovery are shared through approved channels", licence: open }

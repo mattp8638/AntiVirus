@@ -1,0 +1,29 @@
+# Functions and categories. Category refs are lower-case group refs (for example gv-oc).
+- { ref: fn-gv, title: "Govern", sort: 1, licence: open }
+- { ref: fn-id, title: "Identify", sort: 2, licence: open }
+- { ref: fn-pr, title: "Protect", sort: 3, licence: open }
+- { ref: fn-de, title: "Detect", sort: 4, licence: open }
+- { ref: fn-rs, title: "Respond", sort: 5, licence: open }
+- { ref: fn-rc, title: "Recover", sort: 6, licence: open }
+- { ref: gv-oc, parent: fn-gv, title: "GV.OC Organizational context", sort: 10, licence: open }
+- { ref: gv-rm, parent: fn-gv, title: "GV.RM Risk management strategy", sort: 11, licence: open }
+- { ref: gv-rr, parent: fn-gv, title: "GV.RR Roles, responsibilities and authorities", sort: 12, licence: open }
+- { ref: gv-po, parent: fn-gv, title: "GV.PO Policy", sort: 13, licence: open }
+- { ref: gv-ov, parent: fn-gv, title: "GV.OV Oversight", sort: 14, licence: open }
+- { ref: gv-sc, parent: fn-gv, title: "GV.SC Cybersecurity supply chain risk management", sort: 15, licence: open }
+- { ref: id-am, parent: fn-id, title: "ID.AM Asset management", sort: 16, licence: open }
+- { ref: id-ra, parent: fn-id, title: "ID.RA Risk assessment", sort: 17, licence: open }
+- { ref: id-im, parent: fn-id, title: "ID.IM Improvement", sort: 18, licence: open }
+- { ref: pr-aa, parent: fn-pr, title: "PR.AA Identity management, authentication and access control", sort: 19, licence: open }
+- { ref: pr-at, parent: fn-pr, title: "PR.AT Awareness and training", sort: 20, licence: open }
+- { ref: pr-ds, parent: fn-pr, title: "PR.DS Data security", sort: 21, licence: open }
+- { ref: pr-ps, parent: fn-pr, title: "PR.PS Platform security", sort: 22, licence: open }
+- { ref: pr-ir, parent: fn-pr, title: "PR.IR Technology infrastructure resilience", sort: 23, licence: open }
+- { ref: de-cm, parent: fn-de, title: "DE.CM Continuous monitoring", sort: 24, licence: open }
+- { ref: de-ae, parent: fn-de, title: "DE.AE Adverse event analysis", sort: 25, licence: open }
+- { ref: rs-ma, parent: fn-rs, title: "RS.MA Incident management", sort: 26, licence: open }
+- { ref: rs-an, parent: fn-rs, title: "RS.AN Incident analysis", sort: 27, licence: open }
+- { ref: rs-co, parent: fn-rs, title: "RS.CO Incident response reporting and communication", sort: 28, licence: open }
+- { ref: rs-mi, parent: fn-rs, title: "RS.MI Incident mitigation", sort: 29, licence: open }
+- { ref: rc-rp, parent: fn-rc, title: "RC.RP Incident recovery plan execution", sort: 30, licence: open }
+- { ref: rc-co, parent: fn-rc, title: "RC.CO Incident recovery communication", sort: 31, licence: open }

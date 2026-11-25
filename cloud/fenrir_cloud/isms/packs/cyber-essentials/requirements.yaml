@@ -1,0 +1,20 @@
+# Cyber Essentials requirements as checks against our reference numbers. Titles are our own wording.
+- { ref: CE-FW-01, group: ce-firewalls, short_title: "Every device in scope is protected by a boundary or host firewall", licence: crown-copyright-pending }
+- { ref: CE-FW-02, group: ce-firewalls, short_title: "Default firewall administrator passwords are changed", licence: crown-copyright-pending }
+- { ref: CE-FW-03, group: ce-firewalls, short_title: "Firewall administration is not open to the internet without strong protection", licence: crown-copyright-pending }
+- { ref: CE-FW-04, group: ce-firewalls, short_title: "Inbound rules are approved, documented and removed when unused", licence: crown-copyright-pending }
+- { ref: CE-FW-05, group: ce-firewalls, short_title: "Devices on untrusted networks run a software firewall", licence: crown-copyright-pending }
+- { ref: CE-SC-01, group: ce-secure-configuration, short_title: "Unnecessary accounts and software are removed or disabled", licence: crown-copyright-pending }
+- { ref: CE-SC-02, group: ce-secure-configuration, short_title: "Default and guessable passwords are changed", licence: crown-copyright-pending }
+- { ref: CE-SC-03, group: ce-secure-configuration, short_title: "Auto-run of untrusted content is disabled", licence: crown-copyright-pending }
+- { ref: CE-SC-04, group: ce-secure-configuration, short_title: "Devices need a PIN, password or biometric to unlock", licence: crown-copyright-pending }
+- { ref: CE-SU-01, group: ce-security-updates, short_title: "Software is licensed and supported by its maker", licence: crown-copyright-pending }
+- { ref: CE-SU-02, group: ce-security-updates, short_title: "High and critical security updates are applied within 14 days", licence: crown-copyright-pending }
+- { ref: CE-SU-03, group: ce-security-updates, short_title: "Unsupported software is removed or isolated", licence: crown-copyright-pending }
+- { ref: CE-UA-01, group: ce-user-access, short_title: "User accounts are created and approved through a defined process", licence: crown-copyright-pending }
+- { ref: CE-UA-02, group: ce-user-access, short_title: "Each person signs in with their own credentials", licence: crown-copyright-pending }
+- { ref: CE-UA-03, group: ce-user-access, short_title: "Administrator accounts are used only for administration", licence: crown-copyright-pending }
+- { ref: CE-UA-04, group: ce-user-access, short_title: "Multi-factor authentication protects cloud services", licence: crown-copyright-pending }
+- { ref: CE-UA-05, group: ce-user-access, short_title: "Accounts are removed or disabled when no longer needed", licence: crown-copyright-pending }
+- { ref: CE-MP-01, group: ce-malware, short_title: "Anti-malware is active and current, or only approved apps can run", licence: crown-copyright-pending }
+- { ref: CE-MP-02, group: ce-malware, short_title: "Malicious websites and links are blocked or warned about", licence: crown-copyright-pending }

@@ -1,0 +1,27 @@
+# Cyber Essentials to common controls v1.
+- { requirement: CE-FW-01, control: CC-NET-01, strength: satisfies, rationale: "Networks are secured and segregated.", licence: original }
+- { requirement: CE-FW-02, control: CC-CFG-01, strength: satisfies, rationale: "Default credentials removed under secure configuration and authentication rules.", licence: original }
+- { requirement: CE-FW-02, control: CC-IAM-02, strength: partial, rationale: "Default credentials removed under secure configuration and authentication rules.", licence: original }
+- { requirement: CE-FW-03, control: CC-NET-01, strength: satisfies, rationale: "Management interfaces restricted at the network boundary.", licence: original }
+- { requirement: CE-FW-04, control: CC-NET-01, strength: satisfies, rationale: "Rule changes go through change control.", licence: original }
+- { requirement: CE-FW-04, control: CC-CHG-01, strength: partial, rationale: "Rule changes go through change control.", licence: original }
+- { requirement: CE-FW-05, control: CC-END-01, strength: satisfies, rationale: "Endpoint management enforces host firewalls.", licence: original }
+- { requirement: CE-SC-01, control: CC-CFG-01, strength: satisfies, rationale: "Secure baselines remove unused accounts and software.", licence: original }
+- { requirement: CE-SC-02, control: CC-IAM-02, strength: satisfies, rationale: "Authentication rules forbid default passwords.", licence: original }
+- { requirement: CE-SC-03, control: CC-CFG-01, strength: satisfies, rationale: "Baselines disable auto-run.", licence: original }
+- { requirement: CE-SC-04, control: CC-END-01, strength: satisfies, rationale: "Endpoint management enforces device unlock.", licence: original }
+- { requirement: CE-SU-01, control: CC-VUL-01, strength: satisfies, rationale: "Unsupported software is tracked and removed.", licence: original }
+- { requirement: CE-SU-02, control: CC-VUL-01, strength: satisfies, rationale: "Vulnerabilities are fixed within set times.", licence: original }
+- { requirement: CE-SU-03, control: CC-VUL-01, strength: satisfies, rationale: "Inventory identifies unsupported software for removal.", licence: original }
+- { requirement: CE-SU-03, control: CC-AST-01, strength: partial, rationale: "Inventory identifies unsupported software for removal.", licence: original }
+- { requirement: CE-UA-01, control: CC-IAM-01, strength: satisfies, rationale: "Identity lifecycle and role-based access.", licence: original }
+- { requirement: CE-UA-01, control: CC-ACC-01, strength: partial, rationale: "Identity lifecycle and role-based access.", licence: original }
+- { requirement: CE-UA-02, control: CC-IAM-01, strength: satisfies, rationale: "Identities are unique to people.", licence: original }
+- { requirement: CE-UA-03, control: CC-IAM-03, strength: satisfies, rationale: "Privileged access is restricted.", licence: original }
+- { requirement: CE-UA-04, control: CC-IAM-02, strength: satisfies, rationale: "Strong authentication on cloud services.", licence: original }
+- { requirement: CE-UA-04, control: CC-CLD-01, strength: partial, rationale: "Strong authentication on cloud services.", licence: original }
+- { requirement: CE-UA-05, control: CC-IAM-01, strength: satisfies, rationale: "Leavers lose access promptly.", licence: original }
+- { requirement: CE-UA-05, control: CC-AST-02, strength: partial, rationale: "Leavers lose access promptly.", licence: original }
+- { requirement: CE-MP-01, control: CC-MAL-01, strength: satisfies, rationale: "Malware protection on every device.", licence: original }
+- { requirement: CE-MP-02, control: CC-WEB-01, strength: satisfies, rationale: "Web filtering and malware scanning.", licence: original }
+- { requirement: CE-MP-02, control: CC-MAL-01, strength: partial, rationale: "Web filtering and malware scanning.", licence: original }
