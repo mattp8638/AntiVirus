@@ -24,7 +24,7 @@ from ..serialize import to_dict
 agent = APIRouter(prefix="/api/v1", tags=["Agent artifacts"])
 console = APIRouter(prefix="/api/console", tags=["Device artifacts"])
 
-BUNDLE_COMMANDS = {"forensics.collect", "support.bundle", "support.bundle.sanitized"}
+BUNDLE_COMMANDS = {"forensics.collect", "support.bundle", "support.bundle.sanitized", "sample.collect"}
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
 

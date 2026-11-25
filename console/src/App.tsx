@@ -7,7 +7,22 @@ import NetworkTopology from "./pages/NetworkTopology";
 import OutOfBand from "./pages/OutOfBand";
 import RemediationPackages from "./pages/rmm/RemediationPackages";
 import Governance from "./pages/Governance";
+import AttackPaths from "./pages/AttackPaths";
+import WebAssessments from "./pages/WebAssessments";
+import FirewallAssessments from "./pages/FirewallAssessments";
+import GoogleWorkspace from "./pages/GoogleWorkspace";
+import Infrastructure from "./pages/Infrastructure";
+import WorkloadProtection from "./pages/WorkloadProtection";
+import Sandbox from "./pages/Sandbox";
+import AppleMdm from "./pages/AppleMdm";
 import Assurance from "./pages/grc/Assurance";
+import Continuity from "./pages/grc/Continuity";
+import Registers from "./pages/grc/Registers";
+import Questionnaires from "./pages/grc/Questionnaires";
+import Trust from "./pages/grc/Trust";
+import Gaps from "./pages/grc/Gaps";
+import AiGovernance from "./pages/grc/AiGovernance";
+import Agreements from "./pages/grc/Agreements";
 import SocWorkflows from "./pages/SocWorkflows";
 import { FormEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
@@ -130,6 +145,9 @@ const NAV: NavSection[] = [
     items: [
       { module: "protection", to: "/policies", label: "Protection policies", icon: "⚙" },
       { module: "protection", to: "/protection-health", label: "Protection health", icon: "⛨" },
+      { module: "protection", to: "/workload-protection", label: "Workload protection", icon: "▦" },
+      { module: "protection", to: "/sandbox", label: "Sandbox analysis", icon: "◫" },
+      { module: "protection", to: "/apple-mdm", label: "Apple devices (MDM)", icon: "⌘" },
       { module: "security", to: "/dns", label: "DNS protection", icon: "◈" },
       { module: "email", to: "/email-security", label: "Email security", icon: "✉" },
     ],
@@ -138,6 +156,10 @@ const NAV: NavSection[] = [
     group: "Exposure & testing", icon: "⚠",
     items: [
       { module: "vulnerabilities", to: "/vulnerabilities", label: "Vulnerabilities", icon: "⚠" },
+      { module: "vulnerabilities", to: "/attack-paths", label: "Attack paths", icon: "⇢" },
+      { module: "vulnerabilities", to: "/web-assessments", label: "Web app assessment", icon: "⌘" },
+      { module: "vulnerabilities", to: "/firewall-assessments", label: "Firewall configuration", icon: "▤" },
+      { module: "vulnerabilities", to: "/google-workspace", label: "Google Workspace", icon: "G" },
       { module: "network", to: "/attack-surface", label: "Attack surface", icon: "◍" },
       { module: "pentest", to: "/pentest", label: "Penetration testing", icon: "⚑" },
       { module: "identity", to: "/exposure", label: "Data & identity exposure", icon: "⚇" },
@@ -149,6 +171,7 @@ const NAV: NavSection[] = [
       { module: "identity", to: "/m365", label: "Microsoft 365", icon: "▦", also: ["/m365-partner"] },
       { module: "identity", to: "/active-directory", label: "Active Directory", icon: "⌘" },
       { module: "network", to: "/network", label: "Network", icon: "⌁", also: ["/network-topology"] },
+      { module: "network", to: "/infrastructure", label: "Infrastructure", icon: "▥" },
     ],
   },
   {
@@ -179,7 +202,7 @@ const NAV: NavSection[] = [
       { module: "documentation", to: "/vault", label: "Credential vault", icon: "⚿" },
     ],
   },
-  { group: "Governance", icon: "✓", items: [{ module: "governance", to: "/governance", label: "Compliance & GRC", icon: "✓", also: ["/continuous-compliance", "/compliance"] }] },
+  { group: "Governance", icon: "✓", items: [{ module: "governance", to: "/governance", label: "Compliance & GRC", icon: "✓", also: ["/continuous-compliance", "/compliance", "/continuity", "/registers", "/questionnaires", "/trust-centre", "/gaps", "/ai-governance", "/agreements"] }] },
   {
     group: "Admin", icon: "⚙",
     items: [
@@ -482,6 +505,10 @@ function Shell() {
             <Route path="/dns" element={<Dns />} />
             <Route path="/intel" element={<Intel />} />
             <Route path="/vulnerabilities" element={<Vulnerabilities />} />
+            <Route path="/attack-paths" element={<AttackPaths />} />
+            <Route path="/web-assessments" element={<WebAssessments />} />
+            <Route path="/firewall-assessments" element={<FirewallAssessments />} />
+            <Route path="/google-workspace" element={<GoogleWorkspace />} />
             <Route path="/exposure" element={<Exposure />} />
             <Route path="/active-directory" element={<ActiveDirectory />} />
             <Route path="/attack-surface" element={<AttackSurface />} />
@@ -517,11 +544,22 @@ function Shell() {
             <Route path="/m365/:connectionId" element={<M365Tenant />} />
             <Route path="/m365-partner" element={<M365Partner />} />
             <Route path="/network" element={<Network />} />
+            <Route path="/infrastructure" element={<Infrastructure />} />
+            <Route path="/workload-protection" element={<WorkloadProtection />} />
+            <Route path="/sandbox" element={<Sandbox />} />
+            <Route path="/apple-mdm" element={<AppleMdm />} />
             <Route path="/network-topology" element={<NetworkTopology />} />
             <Route path="/out-of-band" element={<OutOfBand />} />
             <Route path="/remediation-packages" element={<RemediationPackages />} />
             <Route path="/governance" element={<Governance />} />
             <Route path="/continuous-compliance" element={<Assurance />} />
+            <Route path="/continuity" element={<Continuity />} />
+            <Route path="/registers" element={<Registers />} />
+            <Route path="/questionnaires" element={<Questionnaires />} />
+            <Route path="/trust-centre" element={<Trust />} />
+            <Route path="/gaps" element={<Gaps />} />
+            <Route path="/ai-governance" element={<AiGovernance />} />
+            <Route path="/agreements" element={<Agreements />} />
             <Route path="/governance/policies/:id" element={<GrcPolicyEditor />} />
             <Route path="/governance/:tenantId/:framework" element={<ProgrammeDetail />} />
             <Route path="/soc-workflows" element={<SocWorkflows />} />

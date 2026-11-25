@@ -331,7 +331,12 @@ def _post(url: str, payload: dict, secret: str) -> None:
     headers = {"Content-Type": "application/json"}
     if secret:
         headers["X-Fenrir-Signature"] = "sha256=" + hmac.new(secret.encode(), data, hashlib.sha256).hexdigest()
-    response = httpx.post(url, content=data, headers=headers, timeout=5.0)
+    from urllib.parse import urlsplit
+
+    from . import netguard
+
+    netguard.guard_url_host(urlsplit(url).hostname or "")  # never post to the server's own or private network
+    response = httpx.post(url, content=data, headers=headers, timeout=5.0, follow_redirects=False)
     if response.status_code >= 300:
         raise RuntimeError(f"webhook answered HTTP {response.status_code}")
 

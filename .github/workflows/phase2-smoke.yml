@@ -43,7 +43,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install tests
-        run: pip install -r cloud/requirements-dev.txt "psycopg[binary]>=3.2"
+        run: pip install --require-hashes -r cloud/requirements-dev.lock
       - name: Verify legacy device upgrades and readiness on PostgreSQL first
         working-directory: cloud
         env:
@@ -90,7 +90,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install tests
-        run: pip install -r cloud/requirements-dev.txt "psycopg[binary]>=3.2"
+        run: pip install --require-hashes -r cloud/requirements-dev.lock
       - name: Run this shard of all tests with real PostgreSQL
         working-directory: cloud
         env:
@@ -113,7 +113,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install isolated console test API
-        run: python -m pip install -r cloud/requirements-dev.txt
+        run: python -m pip install --require-hashes -r cloud/requirements-dev.lock
       - name: Compile and test the console
         working-directory: console
         env:

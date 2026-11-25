@@ -9,12 +9,43 @@ Baseline of the review: `main` at `790e364`. Work branch: `claude/jolly-goodall-
 | State | Count |
 |---|---|
 | verified | 6 (FIX-01 to FIX-05, FIX-08) |
-| implemented-unverified | 19 (FIX-07, AGT-04, CORE-03, FLOW-01/02/04/07/09, BDR-01/02/04/06 and 7 requirements the brief marked U) |
-| partial | 120 |
-| missing | 32 |
-| externally-blocked | 1 (FIX-06) |
+| implemented-unverified | 42 |
+| partial | 128 |
+| missing | 0 |
+| externally-blocked | 2 (FIX-06; AV-24 needs a Microsoft-signed kernel filter) |
 
 Overall parity: **not passed**. MVP: **not yet declared**.
+
+## 2026-11-25 missing entries built (GRC, flows, attack surface, supply chain)
+
+Each entry below cites its code and tests in `catalogue.csv` and is `implemented-unverified` unless stated. None is
+`verified` yet: that needs its acceptance scenario on real tenants and agents.
+
+* GRC-17 continuity plans and exercises; GRC-08 policy acknowledgement by staff; GRC-18 registers and GRC-13
+  management reviews; GRC-15 security questionnaires; GRC-14 trust centre with FLOW-10 gated disclosure; GRC-21 AI
+  governance; GRC-09 agreements and e-signature; GRC-11 evidence connectors.
+* FLOW-06 control gap to treated, evidenced exception; FLOW-03 incident to restoration and governance evidence.
+* VULN-19 attack paths (analysis, not an executed test); VULN-22 `partial`: outbound scans, monitors and webhooks
+  refuse private, loopback and metadata addresses and pin the resolved address.
+* AGT-09 supply chain: hash-locked Python installs, a CI check that fails on any unlocked install or stale lock,
+  reproducible agent builds checked in CI, on top of the existing SBOMs and release provenance
+  (`docs/SUPPLY_CHAIN.md`).
+* M365-30 cross-tenant bulk and scheduled actions; M365-14 tenant configuration backup, comparison and restore;
+  M365-09 scheduled absences with reversion; M365-11 apps, consent and credential expiry; M365-15 modelled
+  Conditional Access gap analysis (mocked Microsoft responses).
+* M365-29 `partial`: Copilot licence and adoption report from Microsoft's data.
+* M365-32 domain diagnostics and a read-only, audited Graph explorer.
+* VULN-08 safe web application assessment (confirmed vs suspected findings, untested categories listed).
+* MDM-02 `partial`: Apple MDM protocol (enrolment, signed check-ins, commands, push, renewal reminders); ADE not built.
+* AV-16 re-assessed as `implemented-unverified`: the email modules already cover it; attachment sandboxing added, and
+  endpoint link protection versus mailbox protection, plus provider restrictions, documented.
+* AV-15 `partial`: sandbox submission workflow with approval and confidential-data controls; needs a licensed sandbox to verify live.
+* AV-21 `partial`: file integrity monitoring and container runtime posture on Linux and macOS, with a support matrix.
+* RMM-14 `partial`: Proxmox VE and vCenter monitoring through their APIs, with dependency-aware alerts.
+* M365-27 `partial`: Purview retention and sensitivity labels with template drift and two-person reviewed deployment.
+* VULN-12 Google Workspace posture with explicit scopes and verified safe changes.
+* VULN-13 `partial`: pfSense and OPNsense configuration assessment from uploaded exports; other vendors refused.
+* AV-24 `externally-blocked`: needs a Microsoft-signed kernel filter.
 
 ## 2026-11-25 backup: AT-19 in CI, FLOW-07, BDR-06
 

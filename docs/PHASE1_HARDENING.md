@@ -19,3 +19,21 @@ Back up the database and vault key material before upgrading. Startup applies th
 Regression tests cover concurrent SQLite event workers and rate-limit checks, rollback recovery, rate-limit persistence, legacy database preservation and repeatable upgrades, proof binding and invalidation, malformed token expiry, explicit vault key validation and legacy key retirement. Existing cloud tests cover agent API contracts and existing modules. PostgreSQL and agent build validation use the existing platform CI workflow; local SQLite results do not establish PostgreSQL validation.
 
 The six MSP expansion modules remain subsequent work: Documentation & Credential Vault, Microsoft 365 Management, Network Monitoring, SIEM/XDR improvements, GRC/ISMS, and Backup & Disaster Recovery. This change supplies shared foundations; it does not claim those modules are implemented.
+
+## Outbound connections to customer-supplied addresses (VULN-22)
+
+The server connects to addresses customers give it in three places: external exposure scans, service checks run
+from the server, and webhooks. All three go through `fenrir_cloud/netguard.py`:
+
+* Only public internet addresses are reachable. Private (RFC 1918), loopback, link-local, carrier-grade NAT,
+  documentation, multicast, reserved and cloud-metadata addresses (169.254.169.254, fd00:ec2::254 and others) are
+  refused, including as IPv4-mapped IPv6.
+* A host name must resolve to public addresses only; one private address among them refuses it (a common DNS
+  rebinding set-up). The exposure scanner then connects to the address it checked for every port and for the TLS
+  check (the certificate is still verified for the name), so a second lookup cannot redirect it.
+* Webhooks are checked when created and before every delivery, and never follow redirects.
+* Private targets are checked from a probe device on the customer's own network, never from the server.
+  A self-hosted installation for one organisation may allow private targets with `FENRIR_ALLOW_PRIVATE_TARGETS=true`;
+  loopback and metadata addresses stay refused even then.
+* Exposure scans are rate-limited to 30 an hour per customer; penetration tests keep their own default-deny scope
+  engine (`pentest/scope.py`).

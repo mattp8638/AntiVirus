@@ -40,6 +40,28 @@ from .routers import m365_intune as m365_intune_router
 from .routers import m365_reports as m365_reports_router
 from .routers import m365_collaboration as m365_collaboration_router
 from .routers import grc_programme as grc_programme_router
+from .routers import continuity as continuity_router
+from .routers import grc_registers as grc_registers_router
+from .routers import questionnaires as questionnaires_router
+from .routers import trust as trust_router
+from .routers import gaps as gaps_router
+from .routers import ai_governance as ai_governance_router
+from .routers import esign as esign_router
+from .routers import connectors as connectors_router
+from .routers import attack_paths as attack_paths_router
+from .routers import m365_bulk as m365_bulk_router
+from .routers import m365_config as m365_config_router
+from .routers import m365_absence as m365_absence_router
+from .routers import m365_apps as m365_apps_router
+from .routers import web_assessment as web_assessment_router
+from .routers import firewall_config as firewall_config_router
+from .routers import m365_tools as m365_tools_router
+from .routers import google_workspace as google_workspace_router
+from .routers import m365_purview as m365_purview_router
+from .routers import infra as infra_router
+from .routers import workload as workload_router
+from .routers import sandbox as sandbox_router
+from .routers import apple_mdm as apple_mdm_router
 from .routers import rollouts as rollouts_router
 from .routers import apikeys as apikeys_router
 from .routers import roles as roles_router
@@ -253,9 +275,21 @@ def _purge_telemetry(db, settings: Settings) -> dict:
     return removed
 
 
+def _agreements_expiry(db) -> None:
+    from .routers import esign
+
+    esign.expire_due(db)
+
+
+def _attestation_reminders(db) -> None:
+    from . import attestation
+
+    attestation.remind(db)
+
+
 def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
     """Hourly jobs, in order."""
-    from . import (autodoc, billing_sync, client360, darkweb, defender, grc_automation, group_rules, m365_partner, m365_reports,
+    from . import (autodoc, billing_sync, client360, darkweb, defender, grc_automation, group_rules, m365_apps, m365_config, workload, apple_mdm, m365_partner, m365_reports,
                    m365_standards, m365_workspace, reports, tprm, web_profile)
     from . import backup as device_backup
 
@@ -270,7 +304,10 @@ def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
              ("reports.schedules", reports.send_schedules),
              ("billing.sync", billing_sync.tick), ("clients.health", client360.tick),
              ("defender", defender.tick), ("web.profiles", web_profile.tick), ("groups.rules", group_rules.tick),
-             ("backup.hourly", device_backup.hourly)]
+             ("backup.hourly", device_backup.hourly), ("grc.attestation", _attestation_reminders),
+             ("agreements.expiry", _agreements_expiry), ("m365.config-backup", m365_config.tick),
+             ("m365.apps", m365_apps.tick), ("workload.scans", workload.tick),
+             ("apple-mdm.renewals", apple_mdm.tick)]
     if settings.intel_feeds_enabled:
         from . import threat_feeds
 
@@ -341,7 +378,7 @@ def _poll_msp_mailbox(db) -> None:
 
 def _scheduled_jobs() -> list[tuple[str, int, object]]:
     """(name, every N passes of 30 seconds, job), in the order they run within a pass."""
-    from . import condition_remediation, m365_lifecycle, m365_signin_security, network, remediation, topology
+    from . import condition_remediation, m365_absence, m365_bulk, m365_lifecycle, m365_signin_security, network, remediation, topology, web_assessment, infra, sandbox
     from . import backup as device_backup
     from .routers import artifacts as artifact_store
 
@@ -351,6 +388,11 @@ def _scheduled_jobs() -> list[tuple[str, int, object]]:
         ("remote.expire-sessions", 1, remote.expire_sessions),
         ("m365.temp-admin-expiry", 2, m365_lifecycle.expire_temp_admins),  # every minute
         ("m365.workflows-waiting", 2, m365_lifecycle.advance_waiting),  # hybrid AD steps and Entra Connect sync
+        ("m365.bulk", 1, m365_bulk.tick),  # M365-30: scheduled and running cross-tenant bulk jobs
+        ("m365.absences", 2, m365_absence.tick),  # M365-09: start and revert scheduled absences every minute
+        ("web-assessments", 2, web_assessment.tick),  # VULN-08: queued web application assessments
+        ("infrastructure", 2, infra.tick),  # RMM-14: hypervisor and vCenter polling when due
+        ("sandbox", 2, sandbox.tick),  # AV-15: collect, submit and poll approved sandbox submissions
         ("m365.signin-protection", 20, m365_signin_security.tick),  # every ten minutes: impossible travel and unusual sign-ins
         ("events.outbox", 1, events.process),  # after the jobs above, so their events go out in the same pass
         ("network", 1, network.tick),
@@ -654,6 +696,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(hybrid_router.agent_router)
     app.include_router(network_router.agent)
     app.include_router(grc_assurance_router.router)
+    app.include_router(continuity_router.router)
+    app.include_router(grc_registers_router.router)
+    app.include_router(questionnaires_router.router)
+    app.include_router(trust_router.router)
+    app.include_router(trust_router.public)
+    app.include_router(trust_router.page)
+    app.include_router(gaps_router.router)
+    app.include_router(ai_governance_router.router)
+    app.include_router(esign_router.router)
+    app.include_router(esign_router.page)
+    app.include_router(connectors_router.router)
+    app.include_router(attack_paths_router.router)
+    app.include_router(m365_bulk_router.router)
+    app.include_router(m365_config_router.router)
+    app.include_router(m365_absence_router.router)
+    app.include_router(m365_apps_router.router)
+    app.include_router(web_assessment_router.router)
+    app.include_router(firewall_config_router.router)
+    app.include_router(m365_tools_router.router)
+    app.include_router(google_workspace_router.router)
+    app.include_router(m365_purview_router.router)
+    app.include_router(infra_router.router)
+    app.include_router(infra_router.agent_router)
+    app.include_router(workload_router.router)
+    app.include_router(sandbox_router.router)
+    app.include_router(apple_mdm_router.router)
+    app.include_router(apple_mdm_router.device_router)
     app.include_router(grc_assurance_router.public)
     app.include_router(protection.router)
     app.include_router(protection.console)

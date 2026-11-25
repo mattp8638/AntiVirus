@@ -85,6 +85,24 @@ FEATURES: dict[str, dict] = {
     "user.out_of_office": {"title": "Set out-of-office replies", "area": "Identity", "app": ["MailboxSettings.ReadWrite"], "delegated": None,
                            "note": "Microsoft Graph can only set another user's automatic replies with an app connection. "
                                    "GDAP connections get this with the Exchange batch."},
+    "user.absence": {"title": "Scheduled absences (replies, forwarding, calendar delegation)", "area": "Identity",
+                     "app": ["MailboxSettings.ReadWrite", "Calendars.ReadWrite"], "delegated": None,
+                     "note": "Inbox rules and calendar permissions of another user need an app connection."},
+    "config.backup": {"title": "Back up and restore tenant configuration", "area": "Identity",
+                      "app": ["Policy.Read.All", "Policy.ReadWrite.ConditionalAccess", "Policy.ReadWrite.Authorization",
+                              "Policy.ReadWrite.SecurityDefaults", "DeviceManagementConfiguration.ReadWrite.All", "Group.Read.All"],
+                      "delegated": ["Policy.Read.All", "Policy.ReadWrite.ConditionalAccess", "DeviceManagementConfiguration.ReadWrite.All"]},
+    "apps.inventory": {"title": "Enterprise apps, app registrations and consent (read)", "area": "Identity",
+                       "app": ["Application.Read.All", "DelegatedPermissionGrant.Read.All"], "delegated": ["Application.Read.All"]},
+    # Opt-in: Application.ReadWrite.All can be used to grant any permission, so Fenrir does not ask for it by default.
+    # An administrator who wants these actions adds the permissions to Fenrir's app in Entra and grants consent.
+    "apps.manage": {"title": "Turn enterprise apps off, remove expired credentials, revoke consent", "area": "Identity",
+                    "app": ["Application.ReadWrite.All", "DelegatedPermissionGrant.ReadWrite.All"], "delegated": None, "optIn": True,
+                    "note": "Not requested by default: add Application.ReadWrite.All and DelegatedPermissionGrant.ReadWrite.All to "
+                            "Fenrir's app in Entra and grant admin consent to use these actions."},
+    "purview.labels": {"title": "Purview retention and sensitivity labels", "area": "Compliance",
+                       "app": ["RecordsManagement.ReadWrite.All", "InformationProtectionPolicy.Read.All"], "delegated": None, "optIn": True,
+                       "note": "Not requested by default: add RecordsManagement.ReadWrite.All and InformationProtectionPolicy.Read.All to use Purview labels."},
     "license.assign": {"title": "Assign and remove licences", "area": "Identity",
                        "app": ["LicenseAssignment.ReadWrite.All", "User.Read.All"], "delegated": ["LicenseAssignment.ReadWrite.All", "User.Read.All"]},
     "group.members": {"title": "Change group membership", "area": "Identity", "app": ["GroupMember.ReadWrite.All", "User.Read.All"],
@@ -150,7 +168,7 @@ APP_PERMISSIONS = _ordered(["User.Read.All", "Organization.Read.All", "Directory
                             "AuditLog.Read.All", "Reports.Read.All", "User.ReadWrite.All", "User.RevokeSessions.All",
                             "User.EnableDisableAccount.All", "LicenseAssignment.ReadWrite.All", "GroupMember.ReadWrite.All",
                             "SecurityAlert.Read.All"]
-                           + [p for f in FEATURES.values() for p in (f["app"] or [])])
+                           + [p for f in FEATURES.values() if not f.get("optIn") for p in (f["app"] or [])])
 DELEGATED_PERMISSIONS = _ordered(["Directory.Read.All", "Organization.Read.All", "Domain.Read.All", "User.ReadWrite.All", "Group.ReadWrite.All",
                                   "AuditLog.Read.All", "Reports.Read.All", "UserAuthenticationMethod.Read.All", "SecurityEvents.Read.All",
                                   "Policy.Read.All", "Policy.ReadWrite.ConditionalAccess", "Application.Read.All",

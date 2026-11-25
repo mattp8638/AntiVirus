@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 87
+LATEST_MIGRATION = 110
 
 def init_engine(url: str, pool_size: int = 5, max_overflow: int = 10) -> Engine:
     global _engine, _session_factory
@@ -593,6 +593,109 @@ def migrate(bind: Engine) -> list[int]:
                 Base.metadata.create_all(conn, tables=[Base.metadata.tables["backup_cases"]])  # eDiscovery cases
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (87)"))
                 applied.append(87)
+            if 88 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["continuity_plans"],
+                                                       Base.metadata.tables["continuity_exercises"]])  # GRC-17
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (88)"))
+                applied.append(88)
+            if 89 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["policy_attestations"],
+                                                       Base.metadata.tables["policy_acknowledgements"]])  # GRC-08
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (89)"))
+                applied.append(89)
+            if 90 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables[t] for t in (
+                    "grc_register_entries", "grc_register_exports", "grc_objectives", "grc_reviews")])  # GRC-13, GRC-18
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (90)"))
+                applied.append(90)
+            if 91 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["grc_answers"],
+                                                       Base.metadata.tables["grc_questionnaires"]])  # GRC-15
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (91)"))
+                applied.append(91)
+            if 92 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables[t] for t in (
+                    "trust_centres", "trust_documents", "trust_requests", "trust_access_log")])  # GRC-14
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (92)"))
+                applied.append(92)
+            if 93 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["grc_gaps"]])  # FLOW-06
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (93)"))
+                applied.append(93)
+            if 94 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["ai_systems"]])  # GRC-21
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (94)"))
+                applied.append(94)
+            if 95 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["agreement_templates"],
+                                                       Base.metadata.tables["agreements"]])  # GRC-09
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (95)"))
+                applied.append(95)
+            if 96 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["grc_connectors"]])  # GRC-11
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (96)"))
+                applied.append(96)
+            if 97 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["attack_path_runs"]])  # VULN-19
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (97)"))
+                applied.append(97)
+            if 98 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["m365_bulk_jobs"],
+                                                       Base.metadata.tables["m365_bulk_items"]])  # M365-30
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (98)"))
+                applied.append(98)
+            if 99 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["m365_config_snapshots"],
+                                                       Base.metadata.tables["m365_config_restores"]])  # M365-14
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (99)"))
+                applied.append(99)
+            if 100 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["m365_absences"]])  # M365-09
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (100)"))
+                applied.append(100)
+            if 101 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["m365_app_reports"]])  # M365-11
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (101)"))
+                applied.append(101)
+            if 102 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["m365_ca_simulations"]])  # M365-15
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (102)"))
+                applied.append(102)
+            if 103 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["web_assessments"]])  # VULN-08
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (103)"))
+                applied.append(103)
+            if 104 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["firewall_assessments"]])  # VULN-13
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (104)"))
+                applied.append(104)
+            if 105 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["google_workspace_connections"],
+                                                       Base.metadata.tables["google_workspace_postures"]])  # VULN-12
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (105)"))
+                applied.append(105)
+            if 106 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["purview_baselines"], Base.metadata.tables["purview_inventories"],
+                                                       Base.metadata.tables["purview_changes"]])  # M365-27
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (106)"))
+                applied.append(106)
+            if 107 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["infra_sources"], Base.metadata.tables["infra_assets"]])  # RMM-14
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (107)"))
+                applied.append(107)
+            if 108 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["fim_baselines"], Base.metadata.tables["workload_reports"]])  # AV-21
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (108)"))
+                applied.append(108)
+            if 109 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["sandbox_providers"], Base.metadata.tables["sandbox_submissions"]])  # AV-15
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (109)"))
+                applied.append(109)
+            if 110 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables[t] for t in (
+                    "apple_mdm_configs", "apple_enrollments", "apple_devices", "apple_mdm_commands")])  # MDM-02
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (110)"))
+                applied.append(110)
             conn.commit()
         except Exception:
             conn.rollback()

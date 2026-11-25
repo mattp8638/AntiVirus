@@ -3150,6 +3150,398 @@ class DrRun(Base):
     started_by: Mapped[str] = mapped_column(String(200), default="")
 
 
+class AttackPathRun(Base):
+    """One attack-path analysis of a customer (VULN-19): the paths found, each edge marked observed or inferred,
+    and which paths are new or resolved since the previous run."""
+    __tablename__ = "attack_path_runs"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("apr"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    paths: Mapped[list] = mapped_column(JSON, default=list)
+    new: Mapped[list] = mapped_column(JSON, default=list)
+    resolved: Mapped[list] = mapped_column(JSON, default=list)
+    inputs: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class GrcConnector(Base):
+    """A source of continuous compliance evidence (GRC-11): GitHub, an HR roster. Its last success and error are
+    kept; evidence older than max_age_hours is stale and counts as unknown, never as passing."""
+    __tablename__ = "grc_connectors"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("gcn"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    kind: Mapped[str] = mapped_column(String(20))  # github | hr_roster
+    name: Mapped[str] = mapped_column(String(200))
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    secret: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # encrypted envelope
+    max_age_hours: Mapped[int] = mapped_column(Integer, default=26)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AgreementTemplate(Base):
+    """An agreement template with {{variables}} (GRC-09)."""
+    __tablename__ = "agreement_templates"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("agt"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    body: Mapped[str] = mapped_column(Text)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Agreement(Base):
+    """An agreement sent for signature: its text frozen with a hash, the parties in signing order, and a
+    hash-chained record of every event to completion (GRC-09)."""
+    __tablename__ = "agreements"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("agr"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    title: Mapped[str] = mapped_column(String(300))
+    body: Mapped[str] = mapped_column(Text)
+    sha256: Mapped[str] = mapped_column(String(64))
+    template_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    order: Mapped[str] = mapped_column(String(12), default="sequential")  # sequential | parallel
+    parties: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="draft")  # draft | sent | completed | declined | expired | voided
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    events: Mapped[list] = mapped_column(JSON, default=list)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AiSystem(Base):
+    """An AI system or use-case in a customer's AI-governance inventory (GRC-21): what it does, the model and its
+    supplier, the data it uses, its risk and impact assessment, the human oversight around it, and its approval."""
+    __tablename__ = "ai_systems"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ais"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    purpose: Mapped[str] = mapped_column(Text, default="")
+    owner: Mapped[str] = mapped_column(String(200), default="")
+    provider: Mapped[str] = mapped_column(String(200), default="")  # model and supplier
+    vendor_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    deployment: Mapped[str] = mapped_column(String(20), default="internal")  # internal | customer-facing | embedded
+    data_categories: Mapped[list] = mapped_column(JSON, default=list)
+    answers: Mapped[dict] = mapped_column(JSON, default=dict)
+    suggested_tier: Mapped[str] = mapped_column(String(20), default="")
+    tier: Mapped[str] = mapped_column(String(20), default="")  # unacceptable | high | limited | minimal (confirmed)
+    tier_rationale: Mapped[str] = mapped_column(Text, default="")
+    impacts: Mapped[str] = mapped_column(Text, default="")
+    oversight: Mapped[list] = mapped_column(JSON, default=list)  # [{measure, owner, frequency}]
+    status: Mapped[str] = mapped_column(String(20), default="proposed")  # proposed | approved | in_use | retired | rejected
+    approved_by: Mapped[str] = mapped_column(String(200), default="")
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    review_due: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    evidence_ids: Mapped[list] = mapped_column(JSON, default=list)
+    history: Mapped[list] = mapped_column(JSON, default=list)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class GrcGap(Base):
+    """A control gap or governance exception being treated (FLOW-06): where it came from, the affected devices, the
+    owner and the ticket doing the work, the treatment, the evidence, and the review that closes it."""
+    __tablename__ = "grc_gaps"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("gap"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    source: Mapped[str] = mapped_column(String(20))  # control | exception | risk | manual
+    source_ref: Mapped[str] = mapped_column(String(80), default="")
+    title: Mapped[str] = mapped_column(String(300))
+    description: Mapped[str] = mapped_column(Text, default="")
+    devices: Mapped[list] = mapped_column(JSON, default=list)
+    owner: Mapped[str] = mapped_column(String(200), default="")
+    due: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    treatment: Mapped[str] = mapped_column(String(20), default="remediate")  # remediate | compensate | accept
+    justification: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(20), default="open")  # open | treating | in_review | closed
+    ticket_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    evidence_ids: Mapped[list] = mapped_column(JSON, default=list)
+    submitted_by: Mapped[str] = mapped_column(String(200), default="")
+    review: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    reopened: Mapped[int] = mapped_column(Integer, default=0)
+    timeline: Mapped[list] = mapped_column(JSON, default=list)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class TrustCentre(Base):
+    """A customer's trust centre (GRC-14): a public page of their security documents, some public and some gated
+    behind an access request with an NDA."""
+    __tablename__ = "trust_centres"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("tcn"))
+    tenant_id: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    slug: Mapped[str] = mapped_column(String(60), unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    overview: Mapped[str] = mapped_column(Text, default="")
+    contact: Mapped[str] = mapped_column(String(200), default="")
+    nda_text: Mapped[str] = mapped_column(Text, default="")
+    published: Mapped[bool] = mapped_column(Boolean, default=False)
+    default_days: Mapped[int] = mapped_column(Integer, default=30)
+    updated_by: Mapped[str] = mapped_column(String(200), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class TrustDocument(Base):
+    """A document on a trust centre, frozen when it was added (its content, as-of date and hash), shown only after
+    its disclosure was approved."""
+    __tablename__ = "trust_documents"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("tdc"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    title: Mapped[str] = mapped_column(String(300))
+    description: Mapped[str] = mapped_column(Text, default="")
+    kind: Mapped[str] = mapped_column(String(20))  # policy | evidence | snapshot | note
+    source_id: Mapped[str] = mapped_column(String(40), default="")
+    access: Mapped[str] = mapped_column(String(10), default="gated")  # public | gated
+    filename: Mapped[str] = mapped_column(String(255), default="")
+    content_type: Mapped[str] = mapped_column(String(120), default="text/plain")
+    content: Mapped[dict] = mapped_column(JSON)  # encrypted envelope
+    sha256: Mapped[str] = mapped_column(String(64))
+    as_of: Mapped[datetime] = mapped_column(DateTime)
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | approved | withdrawn
+    approved_by: Mapped[str] = mapped_column(String(200), default="")
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    added_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class TrustAccessRequest(Base):
+    """A request for gated documents: who, why, the NDA accepted (its hash), and once approved an access link that
+    expires and can be revoked."""
+    __tablename__ = "trust_requests"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("trq"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    email: Mapped[str] = mapped_column(String(200))
+    company: Mapped[str] = mapped_column(String(200), default="")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    nda_sha256: Mapped[str] = mapped_column(String(64), default="")
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | approved | denied | revoked
+    documents: Mapped[list] = mapped_column(JSON, default=list)  # document ids granted ([] = every gated document)
+    token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    decided_by: Mapped[str] = mapped_column(String(200), default="")
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ip: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class TrustAccessLog(Base):
+    __tablename__ = "trust_access_log"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    document_id: Mapped[str] = mapped_column(String(32), index=True)
+    request_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    email: Mapped[str] = mapped_column(String(200), default="")
+    outcome: Mapped[str] = mapped_column(String(20))  # served | refused
+    reason: Mapped[str] = mapped_column(String(200), default="")
+    ip: Mapped[str] = mapped_column(String(64), default="")
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class GrcAnswer(Base):
+    """A reusable approved answer to a security question (GRC-15), with the evidence and policies behind it."""
+    __tablename__ = "grc_answers"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ans"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    question: Mapped[str] = mapped_column(Text)
+    answer: Mapped[str] = mapped_column(Text, default="")
+    tags: Mapped[list] = mapped_column(JSON, default=list)
+    evidence_ids: Mapped[list] = mapped_column(JSON, default=list)
+    policy_ids: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="draft")  # draft | approved | retired
+    approved_by: Mapped[str] = mapped_column(String(200), default="")
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    review_months: Mapped[int] = mapped_column(Integer, default=12)
+    updated_by: Mapped[str] = mapped_column(String(200), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class GrcQuestionnaire(Base):
+    """A security questionnaire a customer of the business sent it (GRC-15): questions, assigned answerers, answers
+    suggested from the library and reviewed by a person, and its export."""
+    __tablename__ = "grc_questionnaires"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("qst"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    title: Mapped[str] = mapped_column(String(300))
+    counterparty: Mapped[str] = mapped_column(String(200), default="")
+    due: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="open")  # open | in_review | completed
+    questions: Mapped[list] = mapped_column(JSON, default=list)
+    exports: Mapped[list] = mapped_column(JSON, default=list)  # [{at, by, sha256}]
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class GrcRegisterEntry(Base):
+    """An entry of a contextual register (GRC-18): business risks, opportunities, interested parties, internal and
+    external issues, PESTEL factors, and the improvement register (GRC-13). Each change keeps a version."""
+    __tablename__ = "grc_register_entries"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("reg"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    register: Mapped[str] = mapped_column(String(30), index=True)
+    ref: Mapped[str] = mapped_column(String(20))
+    title: Mapped[str] = mapped_column(String(300))
+    description: Mapped[str] = mapped_column(Text, default="")
+    category: Mapped[str] = mapped_column(String(40), default="")
+    owner: Mapped[str] = mapped_column(String(200), default="")
+    status: Mapped[str] = mapped_column(String(20), default="open")
+    likelihood: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    impact: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    residual_likelihood: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    residual_impact: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    treatment: Mapped[str] = mapped_column(String(20), default="")
+    treatment_plan: Mapped[str] = mapped_column(Text, default="")
+    links: Mapped[list] = mapped_column(JSON, default=list)
+    actions: Mapped[list] = mapped_column(JSON, default=list)
+    review_due: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reviewed_by: Mapped[str] = mapped_column(String(200), default="")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    history: Mapped[list] = mapped_column(JSON, default=list)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class GrcRegisterExport(Base):
+    """A register as exported on a date, kept with its hash so it can be produced again unchanged."""
+    __tablename__ = "grc_register_exports"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("rgx"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    register: Mapped[str] = mapped_column(String(30))
+    rows: Mapped[list] = mapped_column(JSON, default=list)
+    sha256: Mapped[str] = mapped_column(String(64))
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class GrcObjective(Base):
+    """A security or management objective with a KPI, its target and its measurements over time (GRC-13)."""
+    __tablename__ = "grc_objectives"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("obj"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    title: Mapped[str] = mapped_column(String(300))
+    description: Mapped[str] = mapped_column(Text, default="")
+    owner: Mapped[str] = mapped_column(String(200), default="")
+    kpi: Mapped[str] = mapped_column(String(200), default="")
+    unit: Mapped[str] = mapped_column(String(40), default="")
+    target: Mapped[float | None] = mapped_column(Float, nullable=True)
+    direction: Mapped[str] = mapped_column(String(10), default="higher")  # higher | lower is better
+    due: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="active")  # active | achieved | dropped
+    measurements: Mapped[list] = mapped_column(JSON, default=list)  # [{at, value, by, note}]
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class GrcReview(Base):
+    """A management review (GRC-13): its input pack built from the current records (kept with a hash), the
+    decisions taken and the actions with owners."""
+    __tablename__ = "grc_reviews"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("rev"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    title: Mapped[str] = mapped_column(String(300))
+    held_on: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="planned")  # planned | held
+    attendees: Mapped[list] = mapped_column(JSON, default=list)
+    pack: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    pack_sha256: Mapped[str] = mapped_column(String(64), default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    decisions: Mapped[list] = mapped_column(JSON, default=list)
+    actions: Mapped[list] = mapped_column(JSON, default=list)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class PolicyAttestation(Base):
+    """A policy assigned to a person to read and acknowledge (GRC-08). They are current when they acknowledged the
+    policy's approved version; a new approved version makes them due again. An exception excuses them until a date."""
+    __tablename__ = "policy_attestations"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("pat"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    policy_id: Mapped[str] = mapped_column(String(32), index=True)
+    user_id: Mapped[str] = mapped_column(String(32), index=True)
+    email: Mapped[str] = mapped_column(String(200), default="")
+    assigned_by: Mapped[str] = mapped_column(String(200), default="")
+    assigned_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    due_days: Mapped[int] = mapped_column(Integer, default=14)
+    acknowledged_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    exception: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # {reason, until, by, at}
+    last_reminded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reminders: Mapped[int] = mapped_column(Integer, default=0)
+    removed: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class PolicyAcknowledgement(Base):
+    """One acknowledgement, never changed: who, which version, the SHA-256 of the exact text shown, when and from where."""
+    __tablename__ = "policy_acknowledgements"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("pak"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    attestation_id: Mapped[str] = mapped_column(String(32), index=True)
+    policy_id: Mapped[str] = mapped_column(String(32), index=True)
+    user_id: Mapped[str] = mapped_column(String(32))
+    email: Mapped[str] = mapped_column(String(200))
+    version: Mapped[int] = mapped_column(Integer)
+    title: Mapped[str] = mapped_column(String(300))
+    sha256: Mapped[str] = mapped_column(String(64))
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    ip: Mapped[str] = mapped_column(String(64), default="")
+    user_agent: Mapped[str] = mapped_column(String(300), default="")
+
+
+class ContinuityPlan(Base):
+    """A business continuity plan (GRC-17): business services with their impact (BIA), recovery targets, dependencies
+    and the devices and DR runbooks that recover them. Approval versions the plan; it does not prove it works."""
+    __tablename__ = "continuity_plans"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("bcp"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    scope: Mapped[str] = mapped_column(Text, default="")
+    owner: Mapped[str] = mapped_column(String(200), default="")
+    status: Mapped[str] = mapped_column(String(20), default="draft")  # draft | approved | retired
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    approved_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    approved_by: Mapped[str] = mapped_column(String(200), default="")
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    approved_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    review_due: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    services: Mapped[list] = mapped_column(JSON, default=list)
+    updated_by: Mapped[str] = mapped_column(String(200), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ContinuityExercise(Base):
+    """A continuity exercise: a tabletop walk-through, or a technical recovery tied to a DR runbook run whose measured
+    recovery times are recorded against the plan's targets. Lessons and actions are tracked to closure."""
+    __tablename__ = "continuity_exercises"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("bcx"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    plan_id: Mapped[str] = mapped_column(String(32), index=True)
+    plan_version: Mapped[int] = mapped_column(Integer, default=1)
+    kind: Mapped[str] = mapped_column(String(20), default="tabletop")  # tabletop | technical
+    title: Mapped[str] = mapped_column(String(300))
+    scenario: Mapped[str] = mapped_column(Text, default="")
+    held_on: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    participants: Mapped[list] = mapped_column(JSON, default=list)
+    services: Mapped[list] = mapped_column(JSON, default=list)  # service ids exercised
+    dr_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    outcome: Mapped[str] = mapped_column(String(20), default="pending")  # pending | passed | partial | failed
+    results: Mapped[dict] = mapped_column(JSON, default=dict)  # per service: measured vs target
+    lessons: Mapped[str] = mapped_column(Text, default="")
+    actions: Mapped[list] = mapped_column(JSON, default=list)  # [{id, text, owner, due, done, doneAt}]
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class BackupCase(Base):
     """An eDiscovery case (backup/docs/design/ediscovery.md): custodians (machines, SaaS tenants and accounts), a
     legal hold on their backups while the case is open, saved searches and exports with a chain-of-custody record."""
@@ -3204,3 +3596,424 @@ class BackupBootCheck(Base):
     accel: Mapped[str] = mapped_column(String(10), default="")
     message: Mapped[str] = mapped_column(Text, default="")
     screenshot: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+
+
+class M365BulkJob(Base):
+    """One action across many Microsoft 365 tenants (M365-30). The targets are fixed when the job is created (with a
+    SHA-256 of the list); each becomes an M365BulkItem whose outcome is recorded on its own, so one tenant's failure
+    never hides another's result."""
+    __tablename__ = "m365_bulk_jobs"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("mbj"))
+    name: Mapped[str] = mapped_column(String(200))
+    operation: Mapped[str] = mapped_column(String(40))
+    parameters: Mapped[dict] = mapped_column(JSON, default=dict)
+    targets: Mapped[list] = mapped_column(JSON, default=list)  # immutable snapshot
+    targets_hash: Mapped[str] = mapped_column(String(64))
+    excluded: Mapped[list] = mapped_column(JSON, default=list)  # targets left out at creation, with the reason
+    tenant_ids: Mapped[list] = mapped_column(JSON, default=list)
+    # scheduled | queued | running | cancelling | completed | partial | failed | cancelled
+    status: Mapped[str] = mapped_column(String(20), default="queued", index=True)
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_by_user_id: Mapped[str] = mapped_column(String(32), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cancelled_by: Mapped[str] = mapped_column(String(200), default="")
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class M365BulkItem(Base):
+    """One tenant/target of a bulk job: its own status, attempts, Retry-After wait and result (the checkpoint)."""
+    __tablename__ = "m365_bulk_items"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("mbi"))
+    job_id: Mapped[str] = mapped_column(String(32), index=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    connection_id: Mapped[str] = mapped_column(String(32))
+    target_id: Mapped[str] = mapped_column(String(64), default="")
+    label: Mapped[str] = mapped_column(String(300), default="")
+    # pending | running | succeeded | failed | unknown | skipped | cancelled
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    not_before: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolved_by: Mapped[str] = mapped_column(String(200), default="")
+
+
+class M365ConfigSnapshot(Base):
+    """A backup of a tenant's configuration (M365-14): each supported resource's objects as Microsoft returned them,
+    a SHA-256 per object and of the whole snapshot, and which resources could not be read and why."""
+    __tablename__ = "m365_config_snapshots"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("mcs"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    connection_id: Mapped[str] = mapped_column(String(32), index=True)
+    resources: Mapped[dict] = mapped_column(JSON, default=dict)  # resource -> [object]
+    references: Mapped[dict] = mapped_column(JSON, default=dict)  # groups/users/locations by id, for translation
+    hashes: Mapped[dict] = mapped_column(JSON, default=dict)  # resource -> {object key: sha256}
+    errors: Mapped[dict] = mapped_column(JSON, default=dict)  # resource -> why it was not read
+    digest: Mapped[str] = mapped_column(String(64), default="")
+    changes: Mapped[dict] = mapped_column(JSON, default=dict)  # compared with the previous snapshot of this connection
+    taken_by: Mapped[str] = mapped_column(String(200), default="")
+    taken_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # last backup that found no change
+
+
+class M365ConfigRestore(Base):
+    """A restore of snapshot objects into a tenant: the reviewed plan (create/update/blocked per object, with the
+    reference translations) and the outcome of each object."""
+    __tablename__ = "m365_config_restores"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("mcr"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    connection_id: Mapped[str] = mapped_column(String(32))
+    snapshot_id: Mapped[str] = mapped_column(String(32), index=True)
+    plan: Mapped[list] = mapped_column(JSON, default=list)
+    options: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(20), default="planned")  # planned | running | completed | partial | failed
+    results: Mapped[list] = mapped_column(JSON, default=list)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    executed_by: Mapped[str] = mapped_column(String(200), default="")
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class M365Absence(Base):
+    """A scheduled absence of a Microsoft 365 user (M365-09): automatic replies, forwarding and calendar delegation
+    switched on at the start and reverted at the end. What was there before is captured at the start so it can be
+    put back; a reversion that fails raises an alert for the operator."""
+    __tablename__ = "m365_absences"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("mab"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    connection_id: Mapped[str] = mapped_column(String(32), index=True)
+    user_id: Mapped[str] = mapped_column(String(64))
+    user_label: Mapped[str] = mapped_column(String(300), default="")
+    starts_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    ends_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    settings: Mapped[dict] = mapped_column(JSON, default=dict)
+    # scheduled | active | ended | cancelled | start_failed | revert_failed
+    status: Mapped[str] = mapped_column(String(20), default="scheduled", index=True)
+    previous: Mapped[dict] = mapped_column(JSON, default=dict)
+    applied: Mapped[dict] = mapped_column(JSON, default=dict)
+    log: Mapped[list] = mapped_column(JSON, default=list)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class M365AppReport(Base):
+    """The last inventory of a tenant's app registrations, service principals, consent grants, consent requests and
+    directory extensions (M365-11), with credential expiry and permission risk worked out."""
+    __tablename__ = "m365_app_reports"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("mar"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    connection_id: Mapped[str] = mapped_column(String(32), index=True)
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    taken_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class M365CaSimulation(Base):
+    """A modelled Conditional Access evaluation (M365-15): which policies would apply to each sign-in scenario and what
+    they would require, worked out by Fenrir from a configuration backup. It is never a real sign-in or a test of the
+    tenant; the inputs (scenarios, the snapshot and its SHA-256) and the confidence of each result are kept."""
+    __tablename__ = "m365_ca_simulations"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("mcsim"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    connection_id: Mapped[str] = mapped_column(String(32), index=True)
+    snapshot_id: Mapped[str] = mapped_column(String(32))
+    snapshot_digest: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(20), default="gap-analysis")  # gap-analysis | what-if
+    scenarios: Mapped[list] = mapped_column(JSON, default=list)
+    results: Mapped[list] = mapped_column(JSON, default=list)
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class WebAssessment(Base):
+    """A safe web application assessment (VULN-08) of a site on an attested external asset: the profile and limits it
+    ran with, the pages crawled, findings split into confirmed and suspected with the request and response that show
+    them, and the OWASP Top 10 categories it did not test."""
+    __tablename__ = "web_assessments"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("wa"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    asset_id: Mapped[str] = mapped_column(String(32), index=True)
+    url: Mapped[str] = mapped_column(String(500))
+    profile: Mapped[str] = mapped_column(String(20), default="passive")  # passive | standard
+    config: Mapped[dict] = mapped_column(JSON, default=dict)  # limits, whether authenticated (never the secret itself)
+    auth_envelope: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # encrypted; deleted when the run ends
+    status: Mapped[str] = mapped_column(String(20), default="queued", index=True)  # queued | running | completed | failed
+    pages: Mapped[list] = mapped_column(JSON, default=list)
+    findings: Mapped[list] = mapped_column(JSON, default=list)
+    untested: Mapped[list] = mapped_column(JSON, default=list)
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str] = mapped_column(String(500), default="")
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class FirewallAssessment(Base):
+    """A configuration assessment of a firewall or router (VULN-13) from an exported configuration file. Only the
+    findings and the file's SHA-256 are kept, never the file (it holds password hashes and keys)."""
+    __tablename__ = "firewall_assessments"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("fwa"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    label: Mapped[str] = mapped_column(String(200), default="")
+    vendor: Mapped[str] = mapped_column(String(40), default="")
+    file_sha256: Mapped[str] = mapped_column(String(64))
+    firmware: Mapped[dict] = mapped_column(JSON, default=dict)
+    findings: Mapped[list] = mapped_column(JSON, default=list)
+    untested: Mapped[list] = mapped_column(JSON, default=list)
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class GoogleWorkspaceConnection(Base):
+    """A customer's Google Workspace, reached with a service account and domain-wide delegation (VULN-12). The key is
+    encrypted; the scopes granted are recorded, read-only unless the customer allowed changes."""
+    __tablename__ = "google_workspace_connections"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("gws"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    domain: Mapped[str] = mapped_column(String(253))
+    admin_email: Mapped[str] = mapped_column(String(320))  # the admin the service account acts as
+    client_email: Mapped[str] = mapped_column(String(320))
+    credentials_envelope: Mapped[dict] = mapped_column(JSON)
+    allow_changes: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(20), default="not_checked")
+    last_error: Mapped[str] = mapped_column(String(500), default="")
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class GoogleWorkspacePosture(Base):
+    """One posture assessment of a Google Workspace (VULN-12): each check's result and the evidence, plus the checks
+    that could not be made and why."""
+    __tablename__ = "google_workspace_postures"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("gwp"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    connection_id: Mapped[str] = mapped_column(String(32), index=True)
+    checks: Mapped[list] = mapped_column(JSON, default=list)
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class PurviewBaseline(Base):
+    """A Purview template (M365-27): the retention labels a customer's tenant should have."""
+    __tablename__ = "purview_baselines"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("pvb"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)  # the MSP or customer that owns the template
+    name: Mapped[str] = mapped_column(String(200))
+    retention_labels: Mapped[list] = mapped_column(JSON, default=list)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class PurviewInventory(Base):
+    """The latest read of a tenant's Purview labels, and the drift from a template."""
+    __tablename__ = "purview_inventories"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("pvi"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    connection_id: Mapped[str] = mapped_column(String(32), index=True)
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    taken_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class PurviewChange(Base):
+    """A proposed Purview change (M365-27). It affects how customer data is kept or deleted, so a second person must
+    approve it before Fenrir makes it."""
+    __tablename__ = "purview_changes"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("pvc"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    connection_id: Mapped[str] = mapped_column(String(32), index=True)
+    baseline_id: Mapped[str] = mapped_column(String(32))
+    plan: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="proposed")  # proposed | rejected | completed | partial | failed
+    requested_by: Mapped[str] = mapped_column(String(200), default="")
+    reviewed_by: Mapped[str] = mapped_column(String(200), default="")
+    review_note: Mapped[str] = mapped_column(String(1000), default="")
+    results: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class InfraSource(Base):
+    """A hypervisor or virtualisation manager Fenrir polls through its own API (RMM-14): Proxmox VE or VMware vCenter.
+    Reached directly (public endpoints) or through a probe device on the customer's network."""
+    __tablename__ = "infra_sources"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ifs"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    provider: Mapped[str] = mapped_column(String(20))  # proxmox | vsphere
+    base_url: Mapped[str] = mapped_column(String(300))
+    route: Mapped[str] = mapped_column(String(10), default="agent")  # direct | agent
+    probe_device_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    credentials_envelope: Mapped[dict] = mapped_column(JSON, default=dict)
+    tls_insecure: Mapped[bool] = mapped_column(Boolean, default=False)
+    poll_minutes: Mapped[int] = mapped_column(Integer, default=5)
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | ok | unreachable | auth_failed | error
+    last_error: Mapped[str] = mapped_column(String(500), default="")
+    last_polled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class InfraAsset(Base):
+    """A host, virtual machine or datastore read from an infrastructure source, with its parent (relationship), the
+    state the provider reported, the state it is expected to be in, and whether an alert is open or suppressed."""
+    __tablename__ = "infra_assets"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ifa"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    source_id: Mapped[str] = mapped_column(String(32), index=True)
+    kind: Mapped[str] = mapped_column(String(20))  # host | vm | storage
+    external_id: Mapped[str] = mapped_column(String(200))
+    name: Mapped[str] = mapped_column(String(300), default="")
+    parent_external_id: Mapped[str] = mapped_column(String(200), default="")
+    state: Mapped[str] = mapped_column(String(40), default="unknown")
+    expected_state: Mapped[str] = mapped_column(String(40), default="")  # running | stopped | "" (not watched)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    health: Mapped[str] = mapped_column(String(20), default="ok")  # ok | alert | suppressed | unknown
+    reason: Mapped[str] = mapped_column(String(500), default="")
+    missing: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    __table_args__ = (UniqueConstraint("source_id", "kind", "external_id", name="uq_infra_asset"),)
+
+
+class FimBaseline(Base):
+    """The accepted state of a device's watched files (AV-21 file integrity monitoring), kept in the cloud so nothing on
+    the device can change it."""
+    __tablename__ = "fim_baselines"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("fimb"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str] = mapped_column(String(32), unique=True)
+    manifest: Mapped[dict] = mapped_column(JSON, default=dict)  # path -> {sha256, size, mode, uid, gid, mtime, link}
+    set_by: Mapped[str] = mapped_column(String(200), default="")
+    set_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class WorkloadReport(Base):
+    """A file integrity scan or container inventory of a device (AV-21), with what it found."""
+    __tablename__ = "workload_reports"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("wlr"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    kind: Mapped[str] = mapped_column(String(20))  # fim | containers
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    findings: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+class SandboxProvider(Base):
+    """A sandbox the MSP has a licence for (AV-15): a CAPE-compatible REST API. The key is encrypted."""
+    __tablename__ = "sandbox_providers"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("sbp"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    kind: Mapped[str] = mapped_column(String(20), default="cape")
+    base_url: Mapped[str] = mapped_column(String(300))
+    credentials_envelope: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(20), default="unchecked")
+    last_error: Mapped[str] = mapped_column(String(500), default="")
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class SandboxSubmission(Base):
+    """One file or hash sent for sandbox analysis (AV-15): the approval, the sample's path through Fenrir, the provider's
+    task and the verdict, tied to the alert or incident it came from."""
+    __tablename__ = "sandbox_submissions"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("sbs"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    provider_id: Mapped[str] = mapped_column(String(32), default="")
+    sha256: Mapped[str] = mapped_column(String(64), index=True)
+    filename: Mapped[str] = mapped_column(String(300), default="")
+    path: Mapped[str] = mapped_column(String(1000), default="")
+    quarantine_record: Mapped[str] = mapped_column(String(100), default="")
+    mode: Mapped[str] = mapped_column(String(10), default="file")  # file | hash
+    alert_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    incident_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    email_scan_id: Mapped[str | None] = mapped_column(String(32), nullable=True)  # an attachment of a quarantined gateway message
+    # awaiting_approval | approved | collecting | submitted | completed | refused | rejected | failed
+    status: Mapped[str] = mapped_column(String(20), default="awaiting_approval", index=True)
+    reason: Mapped[str] = mapped_column(String(500), default="")
+    requested_by: Mapped[str] = mapped_column(String(200), default="")
+    approved_by: Mapped[str] = mapped_column(String(200), default="")
+    command_id: Mapped[str] = mapped_column(String(32), default="")
+    artifact_id: Mapped[str] = mapped_column(String(32), default="")
+    task_id: Mapped[str] = mapped_column(String(100), default="")
+    verdict: Mapped[str] = mapped_column(String(20), default="")  # malicious | suspicious | clean | unknown
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    report: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AppleMdmConfig(Base):
+    """Apple MDM for one MSP or customer (MDM-02): the APNs push certificate (from Apple's Push Certificates Portal), the
+    Fenrir MDM certificate authority that issues device identities, and the Apple Business Manager token's expiry."""
+    __tablename__ = "apple_mdm_configs"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("amc"))
+    tenant_id: Mapped[str] = mapped_column(String(32), unique=True)
+    push_envelope: Mapped[dict] = mapped_column(JSON, default=dict)  # {cert, key} PEM, encrypted
+    push_topic: Mapped[str] = mapped_column(String(200), default="")
+    push_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ca_cert_pem: Mapped[str] = mapped_column(Text, default="")
+    ca_key_envelope: Mapped[dict] = mapped_column(JSON, default=dict)
+    abm_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    server_url: Mapped[str] = mapped_column(String(300), default="")
+    updated_by: Mapped[str] = mapped_column(String(200), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AppleEnrollment(Base):
+    """An enrolment profile handed out for one device: the identity certificate's serial ties the device to it."""
+    __tablename__ = "apple_enrollments"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("aen"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    config_id: Mapped[str] = mapped_column(String(32))
+    cert_serial: Mapped[str] = mapped_column(String(64), unique=True)
+    label: Mapped[str] = mapped_column(String(200), default="")
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class AppleDevice(Base):
+    """An iPhone, iPad or Mac enrolled in Fenrir's Apple MDM."""
+    __tablename__ = "apple_devices"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("apd"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    enrollment_id: Mapped[str] = mapped_column(String(32))
+    udid: Mapped[str] = mapped_column(String(100), unique=True)
+    serial_number: Mapped[str] = mapped_column(String(64), default="")
+    model: Mapped[str] = mapped_column(String(100), default="")
+    os_version: Mapped[str] = mapped_column(String(40), default="")
+    push_token: Mapped[str] = mapped_column(String(200), default="")
+    push_magic: Mapped[str] = mapped_column(String(100), default="")
+    unlock_token_envelope: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="enrolling")  # enrolling | enrolled | removed
+    info: Mapped[dict] = mapped_column(JSON, default=dict)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    enrolled_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AppleMdmCommand(Base):
+    """A command queued for an Apple device and its result."""
+    __tablename__ = "apple_mdm_commands"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("amd"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    uuid: Mapped[str] = mapped_column(String(64), unique=True)
+    request_type: Mapped[str] = mapped_column(String(60))
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(20), default="queued")  # queued | sent | acknowledged | error | not_now
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    requested_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

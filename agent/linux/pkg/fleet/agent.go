@@ -898,6 +898,14 @@ func (a *Agent) ExecuteContext(ctx context.Context, cmd Command) (map[string]int
 		return PatchScanContext(ctx)
 	case "pii.scan":
 		return PIIScanContext(ctx, cmd.PayloadJSON)
+	case "sample.collect":
+		return SampleCollect(cmd.PayloadJSON, a.scanner, func(name string, data []byte) (string, error) {
+			return a.client.UploadArtifact(cmd.ID, name, data)
+		})
+	case "fim.scan":
+		return FimScanContext(ctx, cmd.PayloadJSON)
+	case "container.inventory":
+		return ContainerInventoryContext(ctx)
 	case "network.discover":
 		return a.DiscoverContext(ctx, cmd.PayloadJSON, func() ([]SnmpCredential, error) { return a.client.FetchSnmpCredentials(cmd.ID) })
 	case "amt.wsman":
@@ -906,6 +914,12 @@ func (a *Agent) ExecuteContext(ctx context.Context, cmd Command) (map[string]int
 			return nil, fmt.Errorf("could not get the AMT credential: %w", err)
 		}
 		return AmtWsmanContext(ctx, cmd.PayloadJSON, cred, nil)
+	case "infra.poll":
+		cred, err := a.client.FetchInfraCredential(cmd.ID)
+		if err != nil {
+			return nil, fmt.Errorf("could not get the infrastructure credential: %w", err)
+		}
+		return InfraPollContext(ctx, cred, nil)
 	case "patch.install":
 		return PatchInstallContext(ctx, cmd.PayloadJSON)
 	case "software.install":

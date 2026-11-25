@@ -11,6 +11,9 @@ customer's contacts or the MSP (``Tenant.settings["m365Reports"]``: ``[{report, 
 ``onedrive``         OneDrive storage and last activity (last 30 days)
 ``guests``           guest accounts, when invited and their last sign-in
 ``admins``           who holds each directory admin role
+``copilot``          who holds a Microsoft 365 Copilot licence, when each person last used Copilot and in which apps
+                     (Microsoft's Copilot usage report, last 30 days), and licences nobody uses. Only Microsoft's data:
+                     no licence means no rows, and a usage report Microsoft will not give is said to be unavailable
 Microsoft may conceal user names in usage reports (Microsoft 365 admin centre > Settings > Org settings > Reports);
 the report then says so.
 """
@@ -37,6 +40,7 @@ REPORTS = {
     "onedrive": "OneDrive usage",
     "guests": "Guest users",
     "admins": "Admin roles",
+    "copilot": "Microsoft 365 Copilot licences and adoption",
 }
 INACTIVE_DAYS = 30
 
@@ -225,8 +229,53 @@ def _admins(client, headers):
         (" (Microsoft recommends 2 to 4)." if globals_ > 4 or globals_ < 2 else ".")
 
 
+COPILOT_USAGE = "https://graph.microsoft.com/beta/reports/getMicrosoft365CopilotUsageUserDetail(period='D30')"
+COPILOT_APPS = {"microsoftTeamsCopilotLastActivityDate": "Teams", "wordCopilotLastActivityDate": "Word", "excelCopilotLastActivityDate": "Excel",
+                "powerPointCopilotLastActivityDate": "PowerPoint", "outlookCopilotLastActivityDate": "Outlook",
+                "oneNoteCopilotLastActivityDate": "OneNote", "loopCopilotLastActivityDate": "Loop",
+                "copilotChatLastActivityDate": "Copilot Chat"}
+
+
+def _copilot(client, headers):
+    skus = [s for s in _all(client, headers, "/subscribedSkus") if "COPILOT" in str(s.get("skuPartNumber", "")).upper()]
+    if not skus:
+        return [], ["user", "licence", "lastActivity", "apps", "status"], "No Microsoft 365 Copilot licences in this tenant."
+    ids = {s["skuId"]: s.get("skuPartNumber") for s in skus}
+    users = _all(client, headers, "/users?$select=userPrincipalName,displayName,accountEnabled,assignedLicenses&$top=999")
+    holders = {u.get("userPrincipalName", "").lower(): (u, next(ids[lic["skuId"]] for lic in u.get("assignedLicenses") or [] if lic.get("skuId") in ids))
+               for u in users if any(lic.get("skuId") in ids for lic in u.get("assignedLicenses") or [])}
+    usage, note = {}, ""
+    response = client.get(COPILOT_USAGE, headers=headers)
+    if response.status_code < 400:
+        for r in (response.json().get("value") or []):
+            usage[str(r.get("userPrincipalName", "")).lower()] = r
+    else:
+        note = " Copilot usage is unavailable: " + _refused(response)
+    rows = []
+    for upn, (u, sku) in sorted(holders.items()):
+        r = usage.get(upn)
+        last = _when((r or {}).get("lastActivityDate"))
+        apps = sorted(name for field, name in COPILOT_APPS.items() if (r or {}).get(field))
+        if note:
+            status = "usage unavailable"
+        elif not u.get("accountEnabled"):
+            status = "account disabled"
+        elif last is None:
+            status = "not used in 30 days"
+        else:
+            status = "active"
+        rows.append({"user": upn, "licence": sku, "lastActivity": last.date().isoformat() if last else "", "apps": ", ".join(apps), "status": status})
+    bought = sum(int((s.get("prepaidUnits") or {}).get("enabled") or 0) for s in skus)
+    active = sum(1 for r in rows if r["status"] == "active")
+    idle = sum(1 for r in rows if r["status"] in ("not used in 30 days", "account disabled"))
+    concealed = " (user names are hidden by the tenant's report privacy setting)" if usage and _concealed(list(usage.values()), "userPrincipalName") else ""
+    summary = (f"{bought} Copilot licence(s) bought, {len(rows)} assigned, {active} used in the last 30 days, {idle} assigned but unused."
+               + note + concealed)
+    return rows, ["user", "licence", "lastActivity", "apps", "status"], summary
+
+
 BUILDERS = {"inactive-users": _inactive, "licences": _licences, "mfa": _mfa, "mailboxes": _mailboxes, "onedrive": _onedrive,
-            "guests": _guests, "admins": _admins}
+            "guests": _guests, "admins": _admins, "copilot": _copilot}
 
 
 def to_csv(report: dict) -> str:

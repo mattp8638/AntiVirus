@@ -99,3 +99,21 @@ The supplier register is kept per customer (`tprm.py`).
   - sends the questionnaire again (unless `tprm.autoReassess` is off for the customer).
 - **Certificates and contracts.** Those expiring within 30 days open a ticket once. Posture is rescanned weekly.
 - **Signal.** The third-party risk signal passes when every high and critical supplier is assessed on schedule, none is at critical residual risk, and no supplier document has expired.
+
+## Evidence connectors and stale data
+
+**Continuous assurance › Connectors** adds sources beyond the devices and Microsoft 365:
+
+* **GitHub**: with a read-only token, every hour it checks that each repository's default branch requires a
+  reviewed pull request, and counts open critical Dependabot alerts. These feed the new **Secure development**
+  control (ISO 27001 A.8.25, A.8.28, A.8.32; NIST CSF PR.PS; SOC 2 CC8.1).
+* **HR roster**: upload the people list as CSV (`email`, `status` active or leaver, `leave_date`); leavers who still
+  have an active Fenrir or Microsoft 365 account fail **Account lifecycle**.
+
+Fenrir's own records add signals too: **Backup and recovery** (every backed-up machine has a backup in the last 48
+hours and a backup was boot-verified in the last 90 days), **Risk assessment** (risks recorded, scored and reviewed on
+time) and **Security policy** (at least 90% of the people asked have acknowledged the current versions).
+
+A connector that has never collected, keeps failing, or whose last success is older than its maximum age (26 hours
+for GitHub, 35 days for a roster) gives **no verdict**: its signals show the reason instead of a result, and a control
+with no current data shows as manual, never as met. Microsoft 365 data older than 48 hours is treated the same way.

@@ -105,7 +105,7 @@ def test_quotes_delete_unless_accepted(client, admin, tenant):
 
 def test_network_monitors_can_be_deleted(client, admin, tenant):
     monitor = ok(client.post("/api/console/network/monitors", headers=admin, json={"tenantId": tenant["id"], "name": "Website",
-                                                                                  "address": "203.0.113.10", "port": 443}))
+                                                                                  "address": "1.1.1.1", "port": 443}))
     ok(client.delete(f"/api/console/network/monitors/{monitor['id']}", headers=admin))
     assert client.get("/api/console/network/monitors", headers=admin).json() == []
 
@@ -134,7 +134,7 @@ def test_another_customer_cannot_delete_these(client, admin, tenant):
     ops = login(client, "ops@other.example", "other-password-123")
     policy = ok(client.post("/api/console/policies", headers=admin, json={"tenantId": tenant["id"], "name": "Ours"}))
     monitor = ok(client.post("/api/console/network/monitors", headers=admin, json={"tenantId": tenant["id"], "name": "Site",
-                                                                                  "address": "203.0.113.10", "port": 443}))
+                                                                                  "address": "1.1.1.1", "port": 443}))
     asset = ok(client.post("/api/console/exposure/assets", headers=admin, json={"tenantId": tenant["id"], "target": "acme.example",
                                                                                "ownershipConfirmed": True}))
     for path in (f"policies/{policy['id']}", f"network/monitors/{monitor['id']}", f"exposure/assets/{asset['id']}"):

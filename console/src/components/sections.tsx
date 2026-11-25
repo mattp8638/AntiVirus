@@ -9,6 +9,13 @@ export const COMPLIANCE_SECTION: SectionItem[] = [
   { to: "/governance", label: "Programmes" },
   { to: "/continuous-compliance", label: "Continuous assurance" },
   { to: "/compliance", label: "Live posture" },
+  { to: "/registers", label: "Registers & reviews" },
+  { to: "/gaps", label: "Gaps" },
+  { to: "/questionnaires", label: "Questionnaires" },
+  { to: "/trust-centre", label: "Trust centre" },
+  { to: "/ai-governance", label: "AI governance" },
+  { to: "/agreements", label: "Agreements" },
+  { to: "/continuity", label: "Business continuity" },
 ];
 export const NETWORK_SECTION: SectionItem[] = [
   { to: "/network", label: "Service checks" },

@@ -18,11 +18,12 @@ export default function Assurance() {
       <SectionTabs items={COMPLIANCE_SECTION} />
       <PageHead title="Continuous compliance"
                 subtitle="Live control signals mapped across every framework, evidence collected automatically, endpoint baselines enforced on devices, and supplier risk kept current." />
-      <Tabs tabs={["Controls", "Evidence automation", "Baselines", "Suppliers"]} active={tab} onChange={setTab} />
+      <Tabs tabs={["Controls", "Evidence automation", "Connectors", "Baselines", "Suppliers"]} active={tab} onChange={setTab} />
       {tab !== "Suppliers" && !tenantId ? <div className="card empty">Choose a customer to see their controls, evidence and baselines.</div> : <>
         {tab === "Controls" && <Controls tenantId={tenantId!} />}
         {tab === "Evidence automation" && <Automation tenantId={tenantId!} />}
         {tab === "Baselines" && <Baselines tenantId={tenantId!} />}
+        {tab === "Connectors" && <Connectors tenantId={tenantId!} />}
       </>}
       {tab === "Suppliers" && <Suppliers />}
     </>
@@ -257,5 +258,34 @@ function SupplierDetail({ vendor, onClose, onEdit }: { vendor: any; onClose: () 
                        { key: "findings", label: "Findings", render: (a) => (a.findings || []).map((f: any) => <div key={f.question} className="small"><Pill value={f.severity} tone={f.severity === "high" ? "bad" : "warn"} /> {displayValue(f.text)} <i>({f.answer}{f.comment ? `: ${f.comment}` : ""})</i></div>) }]} />
       {v.documents?.length > 0 && <><h4>Documents</h4><ul className="small">{v.documents.map((d: any, i: number) => <li key={i}>{displayValue(d.type)} {displayValue(d.name)}: expires {fmtTime(d.expiresAt)}</li>)}</ul></>}
     </Modal>
+  );
+}
+
+/** GRC-11: sources of continuous evidence; a failing or stale connector gives no verdict, never a pass. */
+function Connectors({ tenantId }: { tenantId: string }) {
+  const { can } = useApp();
+  const { run, busy } = useAction();
+  const { data, reload } = useListData<any>("grc/connectors", { tenantId });
+  const [gh, setGh] = useState({ org: "", token: "" });
+  return (
+    <>
+      <p className="small muted">Each connector records when it last collected and why it failed. Data older than the connector's maximum age is stale: its controls show "no data" with the reason instead of passing.</p>
+      {can("grc") && <div className="card"><div className="form-grid">
+        <label className="field">GitHub organisation<input value={gh.org} onChange={(e) => setGh({ ...gh, org: e.target.value })} /></label>
+        <label className="field">Read-only token (repository administration and Dependabot alerts: read)<input type="password" value={gh.token} onChange={(e) => setGh({ ...gh, token: e.target.value })} autoComplete="off" /></label>
+      </div>
+        <button className="primary" disabled={busy || !gh.org || !gh.token} onClick={() => run(() => api("grc/connectors", { body: { tenantId, kind: "github", ...gh } }), "Connected").then(() => { setGh({ org: "", token: "" }); reload(); })}>Connect GitHub</button>
+        <button style={{ marginLeft: 6 }} disabled={busy} onClick={() => run(() => api("grc/connectors", { body: { tenantId, kind: "hr_roster" } }), "HR roster added: upload the CSV").then(reload)}>Add an HR roster</button>
+      </div>}
+      <Table rows={data} empty="No connectors." columns={[
+        { key: "name", label: "Connector", render: (c) => <><b>{c.name}</b><div className="small muted">{c.kind}{c.kind === "hr_roster" && ` · ${c.rosterSize} people`}</div></> },
+        { key: "problem", label: "State", render: (c) => c.problem ? <Pill value={c.problem} tone="warn" /> : <Pill value={`collected ${ago(c.lastSuccessAt)}`} tone="good" /> },
+        { key: "result", label: "Last result", render: (c) => <span className="small">{c.kind === "github" ? `${c.result.repos ?? "?"} repos, ${(c.result.unprotected ?? []).length} unprotected, ${c.result.criticalAlerts ?? "?"} critical alerts` : `${c.result.leavers ?? "?"} leavers, ${(c.result.stillActive ?? []).length} still active`}</span> },
+        { key: "id", label: "", render: (c) => can("grc") && <div className="row" style={{ gap: 4 }}>
+          {c.kind === "hr_roster" && <button className="small" onClick={() => { const csv = window.prompt("Paste the roster CSV (email,status,leave_date)"); if (csv) run(() => api(`grc/connectors/${c.id}/roster`, { body: { csv } }), "Roster checked").then(reload); }}>Upload roster</button>}
+          {c.kind === "github" && <button className="small" onClick={() => run(() => api(`grc/connectors/${c.id}/run`, { body: {} }), "Collected").then(reload)}>Collect now</button>}
+          <button className="small ghost" onClick={() => run(() => api(`grc/connectors/${c.id}`, { method: "DELETE" }), "Removed").then(reload)}>Remove</button>
+        </div> }]} />
+    </>
   );
 }

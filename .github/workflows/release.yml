@@ -28,7 +28,7 @@ jobs:
         with: { python-version: "3.13" }
       - uses: actions/setup-node@v4
         with: { node-version: "22" }
-      - run: pip install -r cloud/requirements-dev.txt
+      - run: pip install --require-hashes -r cloud/requirements-dev.lock
       - name: Server tests
         working-directory: cloud
         run: python -m pytest -q

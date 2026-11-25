@@ -36,7 +36,7 @@ def test_webhooks_are_delivered_from_the_outbox_and_retried(client, admin, tenan
                        json={"url": "https://hooks.example/fenrir", "events": ["incident.created"], "tenantId": tenant["id"]}).json()
     answers, sent = [500, 204], []
 
-    def fake_post(url, content=None, headers=None, timeout=None):
+    def fake_post(url, content=None, headers=None, timeout=None, **kwargs):
         sent.append({"url": url, "signature": headers.get("X-Fenrir-Signature", ""), "body": json.loads(content)})
         return httpx.Response(answers.pop(0))
 
@@ -67,7 +67,7 @@ def test_an_unreachable_webhook_host_costs_one_timeout_per_burst(client, admin, 
     client.post("/api/console/webhooks", headers=admin, json={"url": "https://down.example/hook", "events": ["*"], "tenantId": tenant["id"]})
     calls = []
 
-    def unreachable(url, content=None, headers=None, timeout=None):
+    def unreachable(url, content=None, headers=None, timeout=None, **kwargs):
         calls.append(url)
         raise httpx.ConnectTimeout("timed out")
 

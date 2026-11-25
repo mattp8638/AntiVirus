@@ -508,6 +508,14 @@ def create_webhook(body: dict = Body(...), principal: Principal = Depends(curren
     url = str(body.get("url") or "")
     if not url.startswith("https://"):
         raise HTTPException(400, "Webhook URLs must use https://")
+    from urllib.parse import urlsplit
+
+    from .. import netguard
+
+    try:
+        netguard.guard_url_host(urlsplit(url).hostname or "")
+    except netguard.Blocked as exc:
+        raise HTTPException(400, f"Webhook host refused: {exc}") from exc
     hook = Webhook(tenant_id=tenant_id, name=str(body.get("name") or "Webhook"), url=url, kind=str(body.get("kind") or "generic"),
                    events=body.get("events") or ["incident.created"], secret=new_secret("whs", 18))
     db.add(hook)

@@ -142,6 +142,7 @@ export function PolicyEditor() {
               <button className="small" onClick={() => run(() => downloadFile(`grc/policies/${id}/download?version=${v.version}`, `${v.title}-v${v.version}.md`))}>Download</button>
             </div>)}
           </div>
+          <Acknowledgements policyId={id} approved={!!data.approvedVersion} />
         </div>
       </div>
       {viewing && <Modal title={`${viewing.title} - v${viewing.version}`} onClose={() => setViewing(null)} wide>
@@ -163,5 +164,37 @@ function TemplatePreview({ templateKey, owner, contact }: { templateKey: string;
       <div className="card" style={{ maxHeight: 360, overflow: "auto", marginTop: 6 }}><Markdown text={text} /></div>
       <p className="small muted">Placeholders such as {"{{organisation}}"} are filled in from the customer when the policy is created.</p>
     </details>
+  );
+}
+
+const ACK_TONE: Record<string, string> = { current: "good", outstanding: "warn", overdue: "bad", exception: "blue", removed: "muted" };
+
+/** GRC-08: who has read and accepted the approved version, who is due, and exceptions. */
+function Acknowledgements({ policyId, approved }: { policyId: string; approved: boolean }) {
+  const { can } = useApp();
+  const { run, busy } = useAction();
+  const { data, reload } = useData<any>(`grc/policies/${policyId}/attestations`, undefined, [policyId]);
+  const people: any[] = data?.people ?? [];
+  return (
+    <div className="card">
+      <h3 style={{ marginTop: 0 }}>Staff acknowledgement</h3>
+      <p className="small muted">The customer's portal users read the approved version in the portal and accept it; each acceptance is kept with the hash of the exact text. A new approved version asks everyone again.</p>
+      {data?.counts && <p className="small">{Object.entries(data.counts).map(([k, v]) => `${v} ${k}`).join(" · ") || "Nobody asked yet."}</p>}
+      {can("grc") && <button className="small" disabled={busy} onClick={() => run(() => api(`grc/policies/${policyId}/assignments`, { body: { allPortalUsers: true, dueDays: 14 } }), approved ? "Portal users asked to acknowledge" : "Assigned: they are asked once a version is approved").then(reload)}>Ask all portal users</button>}
+      {people.length > 0 && <button className="small" style={{ marginLeft: 6 }} onClick={() => run(() => downloadFile(`grc/policies/${policyId}/attestations.csv`, `acknowledgements-${policyId}.csv`))}>Evidence (CSV)</button>}
+      {people.map((p) => (
+        <div key={p.id} className="row small" style={{ gap: 6, marginTop: 4, flexWrap: "wrap" }}>
+          <Pill value={p.status} tone={ACK_TONE[p.status]} /> <span style={{ flex: 1 }}>{p.email}{p.acknowledgedAt && ` · v${p.acknowledgedVersion} ${fmtTime(p.acknowledgedAt)}`}{p.exception && ` · ${p.exception.reason} until ${p.exception.until}`}</span>
+          {can("grc") && p.status !== "removed" && <button className="small ghost" onClick={async () => {
+            const reason = window.prompt("Reason for the exception (leave empty to clear it)", p.exception?.reason ?? "");
+            if (reason === null) return;
+            const until = reason ? window.prompt("Exception ends on (YYYY-MM-DD)", p.exception?.until ?? "") : null;
+            if (reason && !until) return;
+            run(() => api(`grc/attestations/${p.id}/exception`, { body: { reason, until: reason ? until : null } }), "Saved").then(reload);
+          }}>Exception…</button>}
+          {can("grc") && p.status !== "removed" && <button className="small ghost" onClick={() => run(() => api(`grc/attestations/${p.id}`, { method: "DELETE" }), "No longer asked").then(reload)}>Remove</button>}
+        </div>
+      ))}
+    </div>
   );
 }

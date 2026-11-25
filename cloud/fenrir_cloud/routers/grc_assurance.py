@@ -144,7 +144,7 @@ def _apply_vendor(row: Vendor, body: dict) -> None:
                                ("notes", "notes", 8000)):
         if field in body:
             setattr(row, attr, str(body[field] or "").strip()[:limit])
-    row.domain = row.domain.lower().removeprefix("https://").removeprefix("http://").split("/")[0]
+    row.domain = (row.domain or "").lower().removeprefix("https://").removeprefix("http://").split("/")[0]
     if "criticality" in body:
         if body["criticality"] not in tprm.CRITICALITY:
             raise HTTPException(422, f"criticality must be one of {', '.join(tprm.CRITICALITY)}")
@@ -173,7 +173,9 @@ def list_vendors(tenant_id: str | None = None, principal: Principal = Depends(cu
 def create_vendor(body: dict = Body(...), principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     principal.require("grc")
     tenant = _tenant(db, principal, body.get("tenantId"))
-    row = Vendor(tenant_id=tenant.id, name="", created_by=principal.actor, created_at=utcnow())
+    # Column defaults apply only on insert, but the vendor is scored before that.
+    row = Vendor(tenant_id=tenant.id, name="", domain="", criticality="medium", data_access="none", status="active",
+                 documents=[], posture={}, created_by=principal.actor, created_at=utcnow())
     _apply_vendor(row, body)
     tprm.rescore(row)
     tprm.schedule_review(row)
