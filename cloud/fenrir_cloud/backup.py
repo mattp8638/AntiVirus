@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from . import audit
 from . import backup_installers as tpl
-from .models import (Alert, Device, BackupAgent, BackupBootCheck, BackupImage, BackupJob, BackupRepoAccess, BackupRepository,
+from .models import (Alert, Device, Incident, IncidentEvidence, BackupAgent, BackupBootCheck, BackupImage, BackupJob, BackupRepoAccess, BackupRepository,
                      BackupScan, DrRun, DrRunbook, ImageBackupPlan, Indicator, YaraRule, utcnow)
 
 PROTOCOL_VERSION = 1
@@ -378,17 +378,19 @@ def online(agent: BackupAgent, now: datetime | None = None) -> bool:
 
 
 def raise_alert(db: Session, tenant_id: str, device_id: str | None, rule: str, title: str, severity: str,
-                description: str, link: str = "/backups", dedupe_key: str | None = None) -> None:
+                description: str, link: str = "/backups", dedupe_key: str | None = None) -> Alert | None:
     """An alert in the normal queue. With `dedupe_key`, at most one open alert per key."""
     if dedupe_key:
         open_ = db.execute(select(Alert).where(Alert.tenant_id == tenant_id, Alert.rule_id == rule,
                                                Alert.status.in_(("new", "triaged")))).scalars().all()
         if any((a.details or {}).get("key") == dedupe_key for a in open_):
-            return
-    db.add(Alert(tenant_id=tenant_id, device_id=device_id, rule_id=rule, title=title[:300], severity=severity,
-                 mitre=["T1486"] if rule == RULE_RANSOMWARE else [], event_ids=[],
-                 details={"category": "backup", "source": "Fenrir backup", "description": description,
-                          "link": link, "key": dedupe_key}))
+            return None
+    a = Alert(tenant_id=tenant_id, device_id=device_id, rule_id=rule, title=title[:300], severity=severity,
+              mitre=["T1486"] if rule == RULE_RANSOMWARE else [], event_ids=[],
+              details={"category": "backup", "source": "Fenrir backup", "description": description,
+                       "link": link, "key": dedupe_key})
+    db.add(a)
+    return a
 
 
 def resolve_alerts(db: Session, tenant_id: str, rule: str, dedupe_key: str, note: str) -> None:
@@ -1109,3 +1111,135 @@ def hourly(db: Session) -> None:
 
 def record(db: Session, actor: str, action: str, target: str, tenant_id: str | None, **details) -> None:
     audit.record(db, actor, action, target, tenant_id=tenant_id, **details)
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# FLOW-07: a failed backup opens an incident; an authorised recovery runs in an isolated VM (a boot check of the
+# newest good backup on a boot host, no network to the production machine); the result is kept as evidence with the
+# measured recovery time and recovery point.
+# ---------------------------------------------------------------------------------------------------------------------
+
+PLAYBOOK_BACKUP = "backup_failure"
+INCIDENT_OPEN = ("open", "investigating", "contained")
+RECOVERY_BY = "incident:"
+BACKUP_CHECKLIST = [
+    {"stage": "triage", "task": "Find why the backup failed (job error, storage health, the machine)", "done": False},
+    {"stage": "recover", "task": "Recover the newest good backup to an isolated VM", "done": False},
+    {"stage": "verify", "task": "Recovery verified: the system booted, RTO and RPO recorded", "done": False},
+    {"stage": "closure_gate", "task": "A new backup of the machine succeeded", "done": False},
+]
+
+
+def backup_incident(db: Session, job: BackupJob, agent: BackupAgent, alert: Alert | None) -> Incident:
+    """The open backup-failure incident of this machine (one per machine at a time), with the failure on its
+    timeline and the alert attached."""
+    now = utcnow()
+    name = agent.display_name or agent.hostname
+    q = select(Incident).where(Incident.tenant_id == job.tenant_id, Incident.playbook == PLAYBOOK_BACKUP,
+                               Incident.status.in_(INCIDENT_OPEN))
+    q = q.where(Incident.device_id == agent.device_id) if agent.device_id else q.where(Incident.device_id.is_(None))
+    inc = next((i for i in db.execute(q).scalars()
+                if agent.device_id or any(t.get("agentId") == agent.id for t in i.timeline or [])), None)
+    if inc is None:
+        inc = Incident(tenant_id=job.tenant_id, device_id=agent.device_id, title=f"Backup failed on {name}",
+                       severity="high", mitre=[], playbook=PLAYBOOK_BACKUP, checklist=[dict(c) for c in BACKUP_CHECKLIST],
+                       timeline=[], created_at=now)
+        db.add(inc)
+        db.flush()
+    inc.timeline = (inc.timeline or []) + [{"at": now.isoformat(), "kind": "backup_failure", "agentId": agent.id,
+                                            "jobId": job.id, "text": f"{label(job.kind)} failed: {(job.error or '')[:300]}"}]
+    if alert is not None:
+        db.flush()
+        alert.incident_id = inc.id
+        inc.alert_count = (inc.alert_count or 0) + 1
+    inc.updated_at = now
+    return inc
+
+
+def backup_succeeded(db: Session, agent: BackupAgent) -> None:
+    """A new backup of the machine after a failure: the incident's closure gate is met."""
+    q = select(Incident).where(Incident.tenant_id == agent.tenant_id, Incident.playbook == PLAYBOOK_BACKUP,
+                               Incident.status.in_(INCIDENT_OPEN))
+    q = q.where(Incident.device_id == agent.device_id) if agent.device_id else q.where(Incident.device_id.is_(None))
+    for inc in db.execute(q).scalars():
+        if not agent.device_id and not any(t.get("agentId") == agent.id for t in inc.timeline or []):
+            continue
+        if any(c.get("stage") == "closure_gate" and c.get("done") for c in inc.checklist or []):
+            continue
+        inc.checklist = [{**c, "done": True} if c.get("stage") in ("closure_gate", "triage") else c
+                         for c in inc.checklist or []]
+        inc.timeline = (inc.timeline or []) + [{"at": utcnow().isoformat(), "kind": "backup_ok", "agentId": agent.id,
+                                                "text": "A backup of the machine succeeded again"}]
+        inc.updated_at = utcnow()
+
+
+def recovery_candidates(db: Session, inc: Incident) -> list[BackupImage]:
+    """Bootable backups of the incident's machine, newest first."""
+    agents = db.execute(select(BackupAgent.id).where(BackupAgent.tenant_id == inc.tenant_id,
+                                                     BackupAgent.device_id == inc.device_id)).scalars().all() \
+        if inc.device_id else [t.get("agentId") for t in inc.timeline or [] if t.get("agentId")]
+    if not agents:
+        return []
+    rows = db.execute(select(BackupImage).where(BackupImage.tenant_id == inc.tenant_id,
+                                                BackupImage.agent_id.in_(agents))
+                      .order_by(BackupImage.created_unix.desc())).scalars().all()
+    return [i for i in rows if not is_folder_backup(i) and i.kind not in ("saas", "kubernetes", "cdp")]
+
+
+def boot_host(db: Session, im: BackupImage) -> BackupAgent | None:
+    """The repository's boot verification host, else any machine with access that can boot VMs (online first)."""
+    repo = db.get(BackupRepository, im.repository_id)
+    hosts = db.execute(select(BackupAgent).join(BackupRepoAccess, BackupRepoAccess.agent_id == BackupAgent.id)
+                       .where(BackupRepoAccess.repository_id == im.repository_id,
+                              BackupAgent.revoked.is_(False))).scalars().all()
+    hosts = [a for a in hosts if {"boot_kvm", "boot_hyperv"} & set(capabilities(a))]
+    hosts.sort(key=lambda a: (a.id != (repo.boot_agent_id if repo else None), not online(a)))
+    return hosts[0] if hosts else None
+
+
+def record_recovery(db: Session, job: BackupJob, agent: BackupAgent, state: str, check: dict | None) -> None:
+    """An isolated recovery started from an incident finished: evidence (hashed), the measured RTO (request to
+    verified boot) and RPO (failure to the recovered backup's point in time), and the checklist."""
+    inc = db.get(Incident, job.requested_by[len(RECOVERY_BY):])
+    if inc is None or inc.tenant_id != job.tenant_id:
+        return
+    im = db.get(BackupImage, str(job.kind.get("image_id")))
+    outcome = (check or {}).get("outcome") if state in ("succeeded", "warning") else "failed"
+    outcome = outcome if outcome in ("verified", "screen") else "failed"
+    finished = job.finished_at or utcnow()
+    rto = int((finished - job.created_at).total_seconds())
+    failed_at = next((datetime.fromisoformat(t["at"]) for t in inc.timeline or [] if t.get("kind") == "backup_failure"),
+                     inc.created_at)
+    rpo = int(failed_at.replace(tzinfo=timezone.utc).timestamp() - im.created_unix) if im else None
+    evidence = {
+        "flow": "FLOW-07", "incidentId": inc.id, "jobId": job.id, "outcome": outcome,
+        "bootHost": agent.display_name or agent.hostname, "method": (check or {}).get("method"),
+        "bootSeconds": (check or {}).get("seconds"), "firmware": (check or {}).get("firmware"),
+        "message": ((check or {}).get("message") or job.error or "")[:1000],
+        "requestedAt": job.created_at.isoformat(), "finishedAt": finished.isoformat(),
+        "rtoSeconds": rto, "rpoSeconds": rpo, "failedAt": failed_at.isoformat(),
+        "recovered": {"imageId": im.image_id, "repositoryId": im.repository_id, "machine": im.hostname,
+                      "createdUnix": im.created_unix, "kind": im.kind, "consistency": im.consistency,
+                      "capturedBytes": im.captured_bytes, "disks": im.disks,
+                      "applications": [a.get("writer") for a in im.applications or []]} if im else None,
+        "isolation": "boot check VM on the boot host: user-mode networking only, no route to the production machine",
+    }
+    content = json.dumps(evidence, sort_keys=True, default=str)
+    db.add(IncidentEvidence(incident_id=inc.id, tenant_id=inc.tenant_id,
+                            name=f"Isolated recovery {outcome}"[:200], content=content,
+                            sha256=hashlib.sha256(content.encode()).hexdigest(), author=f"backup-agent:{agent.id}"))
+    ok = outcome == "verified"
+    text = (f"Isolated recovery {'verified' if ok else outcome}: backup of {im.hostname if im else '?'} "
+            f"from {datetime.fromtimestamp(im.created_unix, timezone.utc).isoformat() if im else '?'}, "
+            f"RTO {rto}s, RPO {rpo}s" if rpo is not None else f"Isolated recovery {outcome}, RTO {rto}s")
+    inc.timeline = (inc.timeline or []) + [{"at": utcnow().isoformat(), "kind": "recovery_result", "jobId": job.id,
+                                            "outcome": outcome, "rtoSeconds": rto, "rpoSeconds": rpo, "text": text}]
+    if ok:
+        inc.checklist = [{**c, "done": True} if c.get("stage") in ("recover", "verify") else c
+                         for c in inc.checklist or []]
+    else:
+        # The boot check's own failure alert says why; the next try can use an older backup.
+        inc.checklist = [{**c, "done": True} if c.get("stage") == "recover" else c for c in inc.checklist or []]
+    inc.updated_at = utcnow()
+    record(db, f"backup-agent:{agent.id}", "backup.incident.recovery_result", inc.id, inc.tenant_id, outcome=outcome,
+           rto_seconds=rto, rpo_seconds=rpo, job=job.id)

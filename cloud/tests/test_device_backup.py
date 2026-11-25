@@ -1696,3 +1696,68 @@ def test_m365_sites_teams_directory_and_archive_tiers(client, admin, tenant):
     assert r.status_code == 200, r.text
     spec = next(j for j in heartbeat(client, h, caps=caps)["jobs"] if j["kind"]["type"] == "init_repository")
     assert spec["repository"]["s3"]["storage_class"] == "GLACIER_IR"
+
+
+def test_flow07_failed_backup_incident_isolated_recovery_with_measured_rto_rpo(client, admin, tenant):
+    """FLOW-07: a failed plan backup raises an incident; an authorised recovery (password re-check) boots the newest
+    good backup in an isolated VM on a boot host; the result is hashed evidence on the incident with the measured
+    RTO and RPO, and a later good backup meets the closure gate."""
+    import hashlib
+    import json
+
+    from fenrir_cloud.db import session_factory
+    from fenrir_cloud.models import Incident, IncidentEvidence
+
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    heartbeat(client, h)
+    repo = ready_repo(client, admin, tenant, agent_id, h)
+    plan = client.post("/api/console/backup/plans", headers=admin, json={
+        "name": "Nightly", "agentId": agent_id, "repositoryId": repo, "job": {"type": "backup_system"},
+        "schedule": {"type": "manual"}}).json()["id"]
+    run = lambda: client.post(f"/api/console/backup/plans/{plan}/run", headers=admin)  # noqa: E731
+    assert run().status_code == 200
+    good = image(t=0)
+    finish(client, h, heartbeat(client, h)["jobs"][0]["id"], images=[good])
+    while (jobs := heartbeat(client, h)["jobs"]):  # retention and the catalogue job
+        finish(client, h, jobs[0]["id"])
+    assert run().status_code == 200
+    finish(client, h, heartbeat(client, h)["jobs"][0]["id"], state="failed", error="the disk could not be read")
+
+    with session_factory()() as db:
+        inc = db.query(Incident).filter(Incident.playbook == bk.PLAYBOOK_BACKUP).one()
+        assert inc.status == "open" and inc.alert_count == 1 and "Backup failed" in inc.title
+        inc_id = inc.id
+
+    info = client.get(f"/api/console/backup/incidents/{inc_id}/recovery", headers=admin).json()
+    assert info["candidates"][0]["imageId"] == good["image_id"]
+    assert info["candidates"][0]["bootHost"]["id"] == agent_id
+    url = f"/api/console/backup/incidents/{inc_id}/recover"
+    assert client.post(url, headers=admin, json={}).json()["detail"] == "reauth_required"
+    step = {**admin, "X-Fenrir-Reauth": reauth(client, admin)}
+    r = client.post(url, headers=step, json={})
+    assert r.status_code == 200, r.text
+    assert client.post(url, headers=step, json={}).status_code == 400, "one recovery at a time"
+    spec = heartbeat(client, h)["jobs"][0]
+    assert spec["id"] == r.json()["id"] and spec["kind"]["type"] == "boot_check"
+    assert spec["kind"]["image_id"] == good["image_id"] and spec["kind"]["keep_running"] is False
+    finish(client, h, spec["id"], boot_check={"image_id": good["image_id"], "outcome": "verified", "method": "guest agent",
+                                             "seconds": 41, "firmware": "uefi"})
+
+    with session_factory()() as db:
+        inc = db.get(Incident, inc_id)
+        assert inc.status == "investigating"
+        res = [t for t in inc.timeline if t["kind"] == "recovery_result"][0]
+        assert res["outcome"] == "verified" and res["rtoSeconds"] >= 0 and res["rpoSeconds"] > 0
+        done = {c["stage"]: c["done"] for c in inc.checklist}
+        assert done["recover"] and done["verify"] and not done["closure_gate"]
+        ev = db.query(IncidentEvidence).filter(IncidentEvidence.incident_id == inc_id).one()
+        assert hashlib.sha256(ev.content.encode()).hexdigest() == ev.sha256
+        body = json.loads(ev.content)
+        assert body["flow"] == "FLOW-07" and body["recovered"]["imageId"] == good["image_id"]
+        assert body["rpoSeconds"] == res["rpoSeconds"] and body["method"] == "guest agent"
+
+    assert run().status_code == 200
+    finish(client, h, heartbeat(client, h)["jobs"][0]["id"], images=[image(t=86_400)])
+    with session_factory()() as db:
+        assert {c["stage"]: c["done"] for c in db.get(Incident, inc_id).checklist}["closure_gate"]

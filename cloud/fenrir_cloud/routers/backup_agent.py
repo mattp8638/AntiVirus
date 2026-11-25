@@ -435,9 +435,16 @@ def update_job(job_id: str, body: dict = Body(...), agent: BackupAgent = Depends
         bk.queue_standby(db, job.plan_id, repo.id, images)
         bk.queue_retention(db, job.plan_id, repo.id, agent, images)
     if state == "failed" and kind.get("type") not in ("check_access", "list_images", "browse_files"):
-        bk.raise_alert(db, job.tenant_id, agent.device_id, bk.RULE_FAILED, f"{bk.label(kind)} failed: {name}",
-                       "high" if bk.is_backup(kind) or kind.get("type") == "restore" else "medium",
-                       f"{bk.label(kind)} on {name} failed. {job.error or ''}".strip())
+        alert = bk.raise_alert(db, job.tenant_id, agent.device_id, bk.RULE_FAILED, f"{bk.label(kind)} failed: {name}",
+                               "high" if bk.is_backup(kind) or kind.get("type") == "restore" else "medium",
+                               f"{bk.label(kind)} on {name} failed. {job.error or ''}".strip())
+        if bk.is_backup(kind) and job.plan_id:
+            bk.backup_incident(db, job, agent, alert)
+    if bk.is_backup(kind) and state in ("succeeded", "warning") and job.plan_id:
+        bk.backup_succeeded(db, agent)
+    if kind.get("type") == "boot_check" and final and (job.requested_by or "").startswith(bk.RECOVERY_BY):
+        b = body.get("boot_check") if isinstance(body.get("boot_check"), dict) else None
+        bk.record_recovery(db, job, agent, state, b)
     if final and isinstance(kind.get("unlock"), dict):
         # The typed passphrase is no longer needed once checked.
         job.kind = {**kind, "unlock": {"user": kind["unlock"].get("user")}}

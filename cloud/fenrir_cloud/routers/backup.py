@@ -14,7 +14,7 @@ import binascii
 import re
 import uuid as uuidlib
 from types import SimpleNamespace
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
@@ -30,7 +30,7 @@ from ..config import get_settings
 from ..deps import REAUTH_HEADER, REAUTH_MINUTES, Principal, current_principal, require_reauth, scoped_tenant
 from ..security import digest, issue_token, read_token, reauth_state
 from ..models import (BackupAgent, BackupBootCheck, BackupEnrollment, BackupImage, BackupJob, BackupRepoAccess,
-                      BackupRepository, BackupScan, Device, DrRun, DrRunbook, ImageBackupPlan, Tenant, utcnow)
+                      BackupRepository, BackupScan, Device, DrRun, DrRunbook, ImageBackupPlan, Incident, Tenant, utcnow)
 from .backup_agent import backup_settings, server_url, tls_pin
 
 router = APIRouter(prefix="/api/console/backup", tags=["Backup"])
@@ -1987,6 +1987,67 @@ def get_download(job_id: str, p: Principal = Depends(current_principal), db: Ses
     if not path.exists():
         raise HTTPException(404, "the download has expired")
     return FileResponse(path, media_type="application/octet-stream", headers={"Cache-Control": "no-store"})
+
+
+def _backup_incident(db: Session, p: Principal, incident_id: str) -> Incident:
+    inc = db.get(Incident, incident_id)
+    if inc is None or inc.tenant_id not in p.tenant_ids or inc.playbook != bk.PLAYBOOK_BACKUP:
+        raise HTTPException(404, "no such backup incident")
+    return inc
+
+
+@router.get("/incidents/{incident_id}/recovery")
+def incident_recovery(incident_id: str, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """FLOW-07: the backups an isolated recovery can use, the boot host for each, and the recoveries so far."""
+    p.require("respond")
+    inc = _backup_incident(db, p, incident_id)
+    out = []
+    for im in bk.recovery_candidates(db, inc)[:10]:
+        host = bk.boot_host(db, im)
+        out.append({"imageId": im.image_id, "createdUnix": im.created_unix, "hostname": im.hostname, "kind": im.kind,
+                    "repositoryId": im.repository_id,
+                    "bootHost": {"id": host.id, "name": host.display_name or host.hostname, "online": bk.online(host)}
+                    if host else None})
+    runs = [t for t in inc.timeline or [] if t.get("kind") in ("recovery_requested", "recovery_result")]
+    return {"incidentId": inc.id, "candidates": out, "runs": runs}
+
+
+@router.post("/incidents/{incident_id}/recover")
+def incident_recover(incident_id: str, request: Request, body: dict = Body(default={}),
+                     p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """FLOW-07: an authorised recovery (respond rights and a fresh password check) of the machine's newest good
+    backup, or the one chosen, into an isolated VM on a boot host. The result arrives as incident evidence."""
+    p.require("respond")
+    p.require("scripts")
+    require_reauth(request, p)
+    inc = _backup_incident(db, p, incident_id)
+    if inc.status not in bk.INCIDENT_OPEN:
+        bad("the incident is closed")
+    candidates = bk.recovery_candidates(db, inc)
+    want = str(body.get("imageId") or "")
+    im = next((i for i in candidates if i.image_id == want), None) if want else (candidates[0] if candidates else None)
+    if im is None:
+        bad("no bootable backup of this machine to recover")
+    host = bk.boot_host(db, im)
+    if host is None:
+        bad("no machine with access to that backup can run VMs (QEMU on Linux, or Hyper-V on Windows)")
+    active = db.execute(select(BackupJob).where(BackupJob.requested_by == bk.RECOVERY_BY + inc.id,
+                                                BackupJob.state.in_(bk.ACTIVE_STATES))).scalars().first()
+    if active is not None:
+        bad("a recovery for this incident is already running")
+    job = bk.queue(db, host, {"type": "boot_check", "image_id": im.image_id, "keep_running": False, "memory_mb": None,
+                              "cpus": None}, im.repository_id, bk.RECOVERY_BY + inc.id)
+    inc.timeline = (inc.timeline or []) + [{"at": utcnow().isoformat(), "kind": "recovery_requested", "jobId": job.id,
+                                            "imageId": im.image_id, "by": p.actor,
+                                            "text": f"{p.actor} started an isolated recovery of the backup from "
+                                                    f"{datetime.fromtimestamp(im.created_unix, timezone.utc).isoformat()} "
+                                                    f"on {host.display_name or host.hostname}"}]
+    if inc.status == "open":
+        inc.status = "investigating"
+    inc.updated_at = utcnow()
+    bk.record(db, p.actor, "backup.incident.recover", inc.id, inc.tenant_id, image=im.image_id, host=host.id, job=job.id)
+    db.commit()
+    return {"id": job.id, "imageId": im.image_id, "bootHost": host.display_name or host.hostname}
 
 
 @router.post("/images/{image_id}/boot-check")
