@@ -898,6 +898,10 @@ func (a *Agent) ExecuteContext(ctx context.Context, cmd Command) (map[string]int
 		return PatchScanContext(ctx)
 	case "pii.scan":
 		return PIIScanContext(ctx, cmd.PayloadJSON)
+	case "fim.scan":
+		return FimScanContext(ctx, cmd.PayloadJSON)
+	case "container.inventory":
+		return ContainerInventoryContext(ctx)
 	case "network.discover":
 		return a.DiscoverContext(ctx, cmd.PayloadJSON, func() ([]SnmpCredential, error) { return a.client.FetchSnmpCredentials(cmd.ID) })
 	case "amt.wsman":

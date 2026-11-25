@@ -12,6 +12,7 @@ import WebAssessments from "./pages/WebAssessments";
 import FirewallAssessments from "./pages/FirewallAssessments";
 import GoogleWorkspace from "./pages/GoogleWorkspace";
 import Infrastructure from "./pages/Infrastructure";
+import WorkloadProtection from "./pages/WorkloadProtection";
 import Assurance from "./pages/grc/Assurance";
 import Continuity from "./pages/grc/Continuity";
 import Registers from "./pages/grc/Registers";
@@ -142,6 +143,7 @@ const NAV: NavSection[] = [
     items: [
       { module: "protection", to: "/policies", label: "Protection policies", icon: "⚙" },
       { module: "protection", to: "/protection-health", label: "Protection health", icon: "⛨" },
+      { module: "protection", to: "/workload-protection", label: "Workload protection", icon: "▦" },
       { module: "security", to: "/dns", label: "DNS protection", icon: "◈" },
       { module: "email", to: "/email-security", label: "Email security", icon: "✉" },
     ],
@@ -539,6 +541,7 @@ function Shell() {
             <Route path="/m365-partner" element={<M365Partner />} />
             <Route path="/network" element={<Network />} />
             <Route path="/infrastructure" element={<Infrastructure />} />
+            <Route path="/workload-protection" element={<WorkloadProtection />} />
             <Route path="/network-topology" element={<NetworkTopology />} />
             <Route path="/out-of-band" element={<OutOfBand />} />
             <Route path="/remediation-packages" element={<RemediationPackages />} />

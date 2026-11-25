@@ -338,6 +338,10 @@ def on_command_complete(db: Session, device: Device, command: Command) -> None:
         from . import network
 
         network.apply_probe_results(db, device, command)
+    elif command.type in ("fim.scan", "container.inventory"):
+        from . import workload
+
+        workload.on_command_complete(db, device, command)
     elif command.type == "infra.poll":
         from . import infra
 

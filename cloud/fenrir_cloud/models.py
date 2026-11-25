@@ -3881,3 +3881,27 @@ class InfraAsset(Base):
     missing: Mapped[bool] = mapped_column(Boolean, default=False)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     __table_args__ = (UniqueConstraint("source_id", "kind", "external_id", name="uq_infra_asset"),)
+
+
+class FimBaseline(Base):
+    """The accepted state of a device's watched files (AV-21 file integrity monitoring), kept in the cloud so nothing on
+    the device can change it."""
+    __tablename__ = "fim_baselines"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("fimb"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str] = mapped_column(String(32), unique=True)
+    manifest: Mapped[dict] = mapped_column(JSON, default=dict)  # path -> {sha256, size, mode, uid, gid, mtime, link}
+    set_by: Mapped[str] = mapped_column(String(200), default="")
+    set_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class WorkloadReport(Base):
+    """A file integrity scan or container inventory of a device (AV-21), with what it found."""
+    __tablename__ = "workload_reports"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("wlr"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[str] = mapped_column(String(32), index=True)
+    kind: Mapped[str] = mapped_column(String(20))  # fim | containers
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    findings: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)

@@ -59,6 +59,7 @@ from .routers import m365_tools as m365_tools_router
 from .routers import google_workspace as google_workspace_router
 from .routers import m365_purview as m365_purview_router
 from .routers import infra as infra_router
+from .routers import workload as workload_router
 from .routers import rollouts as rollouts_router
 from .routers import apikeys as apikeys_router
 from .routers import roles as roles_router
@@ -286,7 +287,7 @@ def _attestation_reminders(db) -> None:
 
 def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
     """Hourly jobs, in order."""
-    from . import (autodoc, billing_sync, client360, darkweb, defender, grc_automation, group_rules, m365_apps, m365_config, m365_partner, m365_reports,
+    from . import (autodoc, billing_sync, client360, darkweb, defender, grc_automation, group_rules, m365_apps, m365_config, workload, m365_partner, m365_reports,
                    m365_standards, m365_workspace, reports, tprm, web_profile)
     from . import backup as device_backup
 
@@ -303,7 +304,7 @@ def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
              ("defender", defender.tick), ("web.profiles", web_profile.tick), ("groups.rules", group_rules.tick),
              ("backup.hourly", device_backup.hourly), ("grc.attestation", _attestation_reminders),
              ("agreements.expiry", _agreements_expiry), ("m365.config-backup", m365_config.tick),
-             ("m365.apps", m365_apps.tick)]
+             ("m365.apps", m365_apps.tick), ("workload.scans", workload.tick)]
     if settings.intel_feeds_enabled:
         from . import threat_feeds
 
@@ -714,6 +715,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(m365_purview_router.router)
     app.include_router(infra_router.router)
     app.include_router(infra_router.agent_router)
+    app.include_router(workload_router.router)
     app.include_router(grc_assurance_router.public)
     app.include_router(protection.router)
     app.include_router(protection.console)
