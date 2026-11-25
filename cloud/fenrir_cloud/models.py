@@ -3729,3 +3729,27 @@ class M365CaSimulation(Base):
     summary: Mapped[dict] = mapped_column(JSON, default=dict)
     created_by: Mapped[str] = mapped_column(String(200), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class WebAssessment(Base):
+    """A safe web application assessment (VULN-08) of a site on an attested external asset: the profile and limits it
+    ran with, the pages crawled, findings split into confirmed and suspected with the request and response that show
+    them, and the OWASP Top 10 categories it did not test."""
+    __tablename__ = "web_assessments"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("wa"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    asset_id: Mapped[str] = mapped_column(String(32), index=True)
+    url: Mapped[str] = mapped_column(String(500))
+    profile: Mapped[str] = mapped_column(String(20), default="passive")  # passive | standard
+    config: Mapped[dict] = mapped_column(JSON, default=dict)  # limits, whether authenticated (never the secret itself)
+    auth_envelope: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # encrypted; deleted when the run ends
+    status: Mapped[str] = mapped_column(String(20), default="queued", index=True)  # queued | running | completed | failed
+    pages: Mapped[list] = mapped_column(JSON, default=list)
+    findings: Mapped[list] = mapped_column(JSON, default=list)
+    untested: Mapped[list] = mapped_column(JSON, default=list)
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str] = mapped_column(String(500), default="")
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

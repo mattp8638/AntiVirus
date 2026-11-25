@@ -8,6 +8,7 @@ import OutOfBand from "./pages/OutOfBand";
 import RemediationPackages from "./pages/rmm/RemediationPackages";
 import Governance from "./pages/Governance";
 import AttackPaths from "./pages/AttackPaths";
+import WebAssessments from "./pages/WebAssessments";
 import Assurance from "./pages/grc/Assurance";
 import Continuity from "./pages/grc/Continuity";
 import Registers from "./pages/grc/Registers";
@@ -147,6 +148,7 @@ const NAV: NavSection[] = [
     items: [
       { module: "vulnerabilities", to: "/vulnerabilities", label: "Vulnerabilities", icon: "⚠" },
       { module: "vulnerabilities", to: "/attack-paths", label: "Attack paths", icon: "⇢" },
+      { module: "vulnerabilities", to: "/web-assessments", label: "Web app assessment", icon: "⌘" },
       { module: "network", to: "/attack-surface", label: "Attack surface", icon: "◍" },
       { module: "pentest", to: "/pentest", label: "Penetration testing", icon: "⚑" },
       { module: "identity", to: "/exposure", label: "Data & identity exposure", icon: "⚇" },
@@ -492,6 +494,7 @@ function Shell() {
             <Route path="/intel" element={<Intel />} />
             <Route path="/vulnerabilities" element={<Vulnerabilities />} />
             <Route path="/attack-paths" element={<AttackPaths />} />
+            <Route path="/web-assessments" element={<WebAssessments />} />
             <Route path="/exposure" element={<Exposure />} />
             <Route path="/active-directory" element={<ActiveDirectory />} />
             <Route path="/attack-surface" element={<AttackSurface />} />
