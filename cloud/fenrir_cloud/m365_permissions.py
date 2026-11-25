@@ -85,6 +85,13 @@ FEATURES: dict[str, dict] = {
     "user.out_of_office": {"title": "Set out-of-office replies", "area": "Identity", "app": ["MailboxSettings.ReadWrite"], "delegated": None,
                            "note": "Microsoft Graph can only set another user's automatic replies with an app connection. "
                                    "GDAP connections get this with the Exchange batch."},
+    "user.absence": {"title": "Scheduled absences (replies, forwarding, calendar delegation)", "area": "Identity",
+                     "app": ["MailboxSettings.ReadWrite", "Calendars.ReadWrite"], "delegated": None,
+                     "note": "Inbox rules and calendar permissions of another user need an app connection."},
+    "config.backup": {"title": "Back up and restore tenant configuration", "area": "Identity",
+                      "app": ["Policy.Read.All", "Policy.ReadWrite.ConditionalAccess", "Policy.ReadWrite.Authorization",
+                              "Policy.ReadWrite.SecurityDefaults", "DeviceManagementConfiguration.ReadWrite.All", "Group.Read.All"],
+                      "delegated": ["Policy.Read.All", "Policy.ReadWrite.ConditionalAccess", "DeviceManagementConfiguration.ReadWrite.All"]},
     "license.assign": {"title": "Assign and remove licences", "area": "Identity",
                        "app": ["LicenseAssignment.ReadWrite.All", "User.Read.All"], "delegated": ["LicenseAssignment.ReadWrite.All", "User.Read.All"]},
     "group.members": {"title": "Change group membership", "area": "Identity", "app": ["GroupMember.ReadWrite.All", "User.Read.All"],

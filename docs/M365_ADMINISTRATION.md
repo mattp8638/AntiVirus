@@ -52,6 +52,32 @@ The first reviewed write-administration increment is described in [M365_ACTIONS.
 
 PR #9 provides encrypted direct-tenant application connections and on-demand, read-only users, subscribed licences and Secure Score snapshots. It does not yet implement tenant write administration, GDAP, workload management or baseline enforcement. No live tenant changes have been made as part of this requirement update.
 
+## Scheduled absences (M365-09)
+
+The **Absences** tab on a tenant schedules a user's absence: automatic replies, forwarding to a colleague (optionally
+without keeping a copy) and calendar access for delegates. The code is in `cloud/fenrir_cloud/m365_absence.py`.
+
+When the absence starts, Fenrir first records the user's current automatic replies and calendar permissions. Then it
+applies each part:
+* automatic replies use Microsoft's own scheduled window, so they start and stop on time even if Fenrir is
+  unreachable;
+* forwarding is an inbox rule named "Fenrir: absence forwarding";
+* each delegate gets calendar permission.
+
+Each step's progress is saved as it happens, so a retry never repeats a step that already succeeded.
+
+When the absence ends, Fenrir reverts only what it changed:
+* it removes the rule it created;
+* it removes the calendar permissions it granted (a delegate who already had access keeps it);
+* it puts the automatic replies back. A recorded schedule that has already passed is not brought back.
+
+A failed step is retried every minute. After five failures the absence becomes *revert failed*, a high-severity alert
+lists exactly what is still in place (for example, forwarding left on), and the audit log records it. **Try reverting
+again** retries the revert.
+
+Scheduling forwarding or delegation requires step-up authentication. Absences for the same user cannot overlap. The
+connection needs `MailboxSettings.ReadWrite` and `Calendars.ReadWrite` (feature *Scheduled absences*).
+
 ## Tenant configuration backup, comparison and restore (M365-14)
 
 The **Configuration backup** tab on a tenant backs up its configuration every day, and on demand. The code is in

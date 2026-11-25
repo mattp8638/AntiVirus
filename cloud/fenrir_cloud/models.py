@@ -3677,3 +3677,26 @@ class M365ConfigRestore(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     executed_by: Mapped[str] = mapped_column(String(200), default="")
     executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class M365Absence(Base):
+    """A scheduled absence of a Microsoft 365 user (M365-09): automatic replies, forwarding and calendar delegation
+    switched on at the start and reverted at the end. What was there before is captured at the start so it can be
+    put back; a reversion that fails raises an alert for the operator."""
+    __tablename__ = "m365_absences"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("mab"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    connection_id: Mapped[str] = mapped_column(String(32), index=True)
+    user_id: Mapped[str] = mapped_column(String(64))
+    user_label: Mapped[str] = mapped_column(String(300), default="")
+    starts_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    ends_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    settings: Mapped[dict] = mapped_column(JSON, default=dict)
+    # scheduled | active | ended | cancelled | start_failed | revert_failed
+    status: Mapped[str] = mapped_column(String(20), default="scheduled", index=True)
+    previous: Mapped[dict] = mapped_column(JSON, default=dict)
+    applied: Mapped[dict] = mapped_column(JSON, default=dict)
+    log: Mapped[list] = mapped_column(JSON, default=list)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
