@@ -83,6 +83,16 @@ Open a control on **ISMS controls** to answer whether it is in place: yes, partl
 
 Readiness is the share of applicable requirements that are met, where a requirement is met when every control that fully satisfies it is implemented with current evidence.
 
+## ISMS risks
+
+**ISMS risks** is the customer's risk register. It is separate from the older **Risk register** tab, whose records will be moved across later.
+
+- **Risk method** (ISMS managers): the likelihood and impact scales, the score bands, the appetite, the acceptance criteria and how often risks are reviewed. Score = likelihood x impact. Each saved change makes a new version. Until it is saved the default 5 x 5 method applies.
+- **Add risk**: title, description, threat, vulnerability, owner, assets affected, inherent rating, treatment and plan, residual rating, and the controls that treat it. Risks are numbered R-001, R-002 and so on. Levels are written out (for example "16 Critical"), and the heat map is a table of counts, so colour is never the only signal.
+- **Accept**: only the risk's owner can accept it, after a treatment is chosen. Above appetite the rationale must be at least 40 characters. The acceptance records who, when, the score and why, and lasts until the next review. Changing the accepted score or the owner ends it.
+- A risk's owner can edit it without broader rights, but only ISMS managers can change who owns it.
+- **Take a snapshot** keeps a dated copy of the whole assessment as evidence of when it was done.
+
 ## Organization, scope and assets
 
 These tabs need an ISMS role that can run the programme (ISMS manager or ISMS administrator).

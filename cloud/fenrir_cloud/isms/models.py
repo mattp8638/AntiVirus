@@ -194,3 +194,76 @@ class IsmsTenantControl(_Row, Base):
     implementation: Mapped[str | None] = mapped_column(Text, nullable=True)
     assessed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     assessed_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+
+@tenant_table
+class IsmsRiskMethod(_Row, Base):
+    """The customer's risk method (ISO 27001 6.1.2): scales, levels, appetite and acceptance criteria, versioned."""
+    __tablename__ = "isms_risk_methods"
+    __table_args__ = (UniqueConstraint("tenant_id", name="uq_isms_risk_method_tenant"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("irm"))
+    likelihood_scale: Mapped[list] = mapped_column(JSON)
+    impact_scale: Mapped[list] = mapped_column(JSON)
+    levels: Mapped[list] = mapped_column(JSON)
+    appetite: Mapped[int] = mapped_column(Integer)
+    acceptance_criteria: Mapped[str] = mapped_column(Text)
+    review_months: Mapped[int] = mapped_column(Integer, default=12)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+
+
+@tenant_table
+class IsmsRisk(_Row, Base):
+    """An information security risk with its inherent and residual ratings and treatment (6.1.2, 6.1.3, 8.2, 8.3)."""
+    __tablename__ = "isms_risks"
+    __table_args__ = (UniqueConstraint("tenant_id", "ref", name="uq_isms_risk_ref"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("irk"))
+    ref: Mapped[str] = mapped_column(String(20))
+    title: Mapped[str] = mapped_column(String(300))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    threat: Mapped[str | None] = mapped_column(Text, nullable=True)
+    vulnerability: Mapped[str | None] = mapped_column(Text, nullable=True)
+    asset_ids: Mapped[list] = mapped_column(JSON, default=list)
+    owner_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    inherent_likelihood: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    inherent_impact: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    treatment: Mapped[str | None] = mapped_column(String(20), nullable=True)  # modify | retain | avoid | share
+    treatment_plan: Mapped[str | None] = mapped_column(Text, nullable=True)
+    residual_likelihood: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    residual_impact: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="identified")
+    next_review: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+
+@tenant_table
+class IsmsRiskControl(_Row, Base):
+    """A control that treats a risk."""
+    __tablename__ = "isms_risk_controls"
+    __table_args__ = (UniqueConstraint("risk_id", "tenant_control_id", name="uq_isms_risk_control"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("irc"))
+    risk_id: Mapped[str] = mapped_column(ForeignKey("isms_risks.id"), index=True)
+    tenant_control_id: Mapped[str] = mapped_column(ForeignKey("isms_tenant_controls.id"), index=True)
+
+
+@tenant_table
+class IsmsRiskAcceptance(_Row, Base):
+    """The risk owner's acceptance of a residual risk: who, when, at what score and why. A record of what happened,
+    so the application only ever adds these."""
+    __tablename__ = "isms_risk_acceptances"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ira"))
+    risk_id: Mapped[str] = mapped_column(ForeignKey("isms_risks.id"), index=True)
+    accepted_by_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    accepted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    residual_score: Mapped[int] = mapped_column(Integer)
+    rationale: Mapped[str] = mapped_column(Text)
+    expires_at: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+
+@tenant_table
+class IsmsRiskSnapshot(_Row, Base):
+    """A dated copy of the whole risk assessment (8.2 evidence). Only ever added."""
+    __tablename__ = "isms_risk_snapshots"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("irs"))
+    taken_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    taken_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    reason: Mapped[str] = mapped_column(String(200), default="manual")
+    payload: Mapped[dict] = mapped_column(JSON)

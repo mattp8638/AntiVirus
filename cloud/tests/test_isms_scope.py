@@ -14,7 +14,8 @@ from sqlalchemy.orm import Session
 
 from fenrir_cloud.isms.models import (IsmsApplicability, IsmsApplicabilityOverride, IsmsAsset, IsmsContextIssue,
                                       IsmsEntity, IsmsInterestedParty, IsmsMembership, IsmsProfileAnswer, IsmsScope,
-                                      IsmsSite, IsmsTenantControl, IsmsTenantFramework)
+                                      IsmsRisk, IsmsRiskAcceptance, IsmsRiskControl, IsmsRiskMethod,
+                                      IsmsRiskSnapshot, IsmsSite, IsmsTenantControl, IsmsTenantFramework)
 from fenrir_cloud.isms.scope import TENANT_TABLES, get_scoped, require_same_tenant, scoped, tenant_table
 from fenrir_cloud.models import Base, GrcPolicy
 
@@ -36,6 +37,13 @@ FACTORIES: dict[type, callable] = {
                                                                    target_key="CC-BKP-01", applicable=False,
                                                                    justification="Not used."),
     IsmsTenantControl: lambda t: IsmsTenantControl(tenant_id=t, ref="CC-BKP-01", title="Backups", statement="x"),
+    IsmsRiskMethod: lambda t: IsmsRiskMethod(tenant_id=t, likelihood_scale=[], impact_scale=[], levels=[], appetite=8,
+                                             acceptance_criteria="x"),
+    IsmsRisk: lambda t: IsmsRisk(tenant_id=t, ref="R-001", title="Ransomware"),
+    IsmsRiskControl: lambda t: IsmsRiskControl(tenant_id=t, risk_id=f"irk_{t}", tenant_control_id=f"itc_{t}"),
+    IsmsRiskAcceptance: lambda t: IsmsRiskAcceptance(tenant_id=t, risk_id=f"irk_{t}", accepted_by_user_id="u",
+                                                     residual_score=4, rationale="Fine."),
+    IsmsRiskSnapshot: lambda t: IsmsRiskSnapshot(tenant_id=t, payload={"risks": []}),
 }
 
 
