@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 110
+LATEST_MIGRATION = 111
 
 def init_engine(url: str, pool_size: int = 5, max_overflow: int = 10) -> Engine:
     global _engine, _session_factory
@@ -696,6 +696,14 @@ def migrate(bind: Engine) -> list[int]:
                     "apple_mdm_configs", "apple_enrollments", "apple_devices", "apple_mdm_commands")])  # MDM-02
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (110)"))
                 applied.append(110)
+            if 111 not in versions:
+                # ISMS (docs/ISMS_REWRITE_PLAN.md): ISMS roles per person per customer, with row-level security.
+                from .isms import rls
+                from .isms.models import IsmsMembership
+                IsmsMembership.__table__.create(conn, checkfirst=True)
+                rls.enable(conn, [IsmsMembership.__tablename__])
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (111)"))
+                applied.append(111)
             conn.commit()
         except Exception:
             conn.rollback()

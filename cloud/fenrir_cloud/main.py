@@ -29,6 +29,7 @@ from .models import Device, DnsQueryLog, Event, RateLimitBucket, Policy, RuleMat
 from .routers import m365_admin as m365_admin_router
 from .routers import m365 as m365_router, network as network_router, grc as grc_router, soc_workflows
 from .routers import documentation as documentation_router
+from .routers import isms as isms_router
 from .routers import push as push_router
 from .routers import backup as backup_router, backup_agent as backup_agent_router, backup_cases as backup_cases_router
 from .routers import active_directory as ad_router
@@ -661,7 +662,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     for module in (m365_admin_router, m365_router, network_router, grc_router, soc_workflows, ad_router, agent_health_router, onboarding_router, m365_exchange_router, m365_signin_router, m365_intune_router, m365_reports_router, m365_collaboration_router, grc_programme_router,
                    rollouts_router, apikeys_router, roles_router, approvals_router, exclusions_router,
                    exposure_intel_router, m365_partner_router, m365_workspace_router, email_security_router, email_policies_router, dns_console_router, m365_lifecycle_router, condition_packages_router, triage_router, clients_router, search_router, defender_router, mobile_apps_router, push_router,
-                   reports_router, branding_router, deploy_router, pentest_router):
+                   reports_router, branding_router, deploy_router, pentest_router, isms_router):
         app.include_router(module.router)
     app.include_router(deploy_router.public)
     app.include_router(backup_router.router)

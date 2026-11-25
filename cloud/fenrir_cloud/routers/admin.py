@@ -1184,6 +1184,10 @@ def platform_readiness(principal: Principal = Depends(current_principal), db: Se
     settings = get_settings()
     users = db.execute(select(User.id)).all()
     _, warnings = production.check(settings, len(users))
+    from ..isms import rls
+
+    if (rls_warning := rls.bypass_warning(db)) is not None:
+        warnings.append(rls_warning)
     schema = db.execute(text("SELECT MAX(version) FROM schema_migrations")).scalar()
     return {"environment": settings.environment, "warnings": warnings, "schemaVersion": schema, "expectedSchemaVersion": LATEST_MIGRATION}
 

@@ -8,6 +8,7 @@ import { ErrorNote, Modal, PageHead, Pill, Table, Tabs, useAction, useData, useL
 import { useSearchParams } from "react-router-dom";
 import { EvidenceTab, ProgrammesTab } from "./grc/Programmes";
 import { PoliciesTab } from "./grc/Policies";
+import { IsmsRolesTab } from "./grc/IsmsRoles";
 import { COMPLIANCE_SECTION, SectionTabs } from "../components/sections";
 
 const CONTROL_TONE:Record<string,string>={met:"good",evidenced:"good",exception:"warn",gap:"bad"};
@@ -51,10 +52,11 @@ export default function Governance() {
     <PageHead title="GRC & compliance" subtitle="UK and UK-targeted governance programmes with requirements, answers, policies, evidence and a risk register."
       actions={can("grc")&&tab==="Risk register"&&<button className="primary" onClick={()=>setCreate({})}>New record</button>}/>
     <ErrorNote error={error}/>
-    <Tabs tabs={["Programmes","Policies","Evidence","Risk register","Controls"]} active={tab} onChange={setTab}/>
+    <Tabs tabs={["Programmes","Policies","Evidence","Risk register","Controls","ISMS roles"]} active={tab} onChange={setTab}/>
     {tab==="Programmes"&&<ProgrammesTab/>}
     {tab==="Policies"&&<PoliciesTab/>}
     {tab==="Evidence"&&<EvidenceTab/>}
+    {tab==="ISMS roles"&&<IsmsRolesTab/>}
     {tab==="Controls"&&<Controls tenantId={tenantId} onAddEvidence={(framework,control)=>setCreate({framework,control})}/>}
     {tab==="Risk register"&&<Table rows={data} onRow={r=>{setSelected(r);setStatus(r.status);setDue(r.reviewDue||"");}} columns={[{key:"title",label:"Record"},{key:"kind",label:"Type"},{key:"framework",label:"Framework"},{key:"owner",label:"Owner"},{key:"riskScore",label:"Risk (1–25)",render:r=>r.kind==="risk"?r.riskScore:"—"},{key:"status",label:"Review",render:r=><Pill value={r.reviewOverdue?"overdue":r.status} tone={r.reviewOverdue?"bad":undefined}/>} ]}/>}
     {create&&<RecordEditor title="New governance record" fields={[{key:"kind",label:"Record type",type:"select",options:["risk","policy","evidence","audit","exception"],required:true,value:create.control?"evidence":"risk"},{key:"title",label:"Title",required:true},{key:"description",label:"Description / treatment / evidence notes",type:"textarea"},{key:"framework",label:"Framework reference",type:"select",options:safeArray<string>(frameworks?.frameworks),value:create.framework},{key:"control",label:"Control reference (start with the control ID, e.g. CE-3)",value:create.control},{key:"owner",label:"Owner"},{key:"likelihood",label:"Likelihood (1–5)",type:"number",value:1},{key:"impact",label:"Impact (1–5)",type:"number",value:1},{key:"reviewDue",label:"Review due (ISO date/time, optional)"},{key:"documentId",label:"Knowledge-base document (optional)",type:"select",source:"documents"},{key:"evidenceUrl",label:"HTTPS evidence link (optional)"}]}
