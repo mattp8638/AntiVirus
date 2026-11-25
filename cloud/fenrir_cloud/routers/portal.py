@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+
 from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi.responses import FileResponse
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .. import audit, presence, psa, services
+from .. import backup as bk
 from ..db import get_db
 from ..deps import Principal, current_principal
-from ..models import Board, Contact, Device, Invoice, KbArticle, Tenant, Ticket, utcnow
+from ..models import (BackupAgent, BackupImage, BackupJob, BackupRepoAccess, Board, Contact, Device, Invoice, KbArticle,
+                      Tenant, Ticket, utcnow)
 from ..serialize import to_dict
 
 router = APIRouter(prefix="/api/portal", tags=["Client portal"])
@@ -124,3 +130,130 @@ def portal_devices(principal: Principal = Depends(_portal), db: Session = Depend
     return [{"id": d.id, "hostname": d.hostname, "osVersion": d.os_version, "healthState": d.health_state,
              "online": presence.is_up(d, now),
              "loggedOnUser": (d.metrics or {}).get("loggedOnUser", "")} for d in rows]
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Self-service restore: files from the backups of the devices an administrator granted this user
+# (Backups > Self-service). Download only: the machine encrypts the files for this browser's one-time key and the
+# server relays ciphertext. Files the latest malware scan found infected are refused.
+# ---------------------------------------------------------------------------------------------------------------------
+
+
+def _self_images(db: Session, principal: Principal) -> list[BackupImage]:
+    devices = list(principal.user.backup_restore_devices or [])
+    if not devices:
+        return []
+    agents = db.execute(select(BackupAgent.id).where(BackupAgent.tenant_id == principal.user.tenant_id,
+                                                     BackupAgent.device_id.in_(devices))).scalars().all()
+    if not agents:
+        return []
+    rows = db.execute(select(BackupImage).where(BackupImage.tenant_id == principal.user.tenant_id,
+                                                BackupImage.agent_id.in_(agents))
+                      .order_by(BackupImage.created_unix.desc())).scalars().all()
+    return [i for i in rows if not (i.machine_id or "").startswith(("saas:", "k8s:", "cdp:"))]
+
+
+def _self_image(db: Session, principal: Principal, image_id: str) -> BackupImage:
+    im = next((i for i in _self_images(db, principal) if i.image_id == image_id), None)
+    if im is None:
+        raise HTTPException(404, "Not found")
+    return im
+
+
+def _self_agent(db: Session, im: BackupImage) -> BackupAgent:
+    rows = db.execute(select(BackupAgent).join(BackupRepoAccess, BackupRepoAccess.agent_id == BackupAgent.id)
+                      .where(BackupRepoAccess.repository_id == im.repository_id,
+                             BackupAgent.revoked.is_(False))).scalars().all()
+    rows = [a for a in rows if "restore_files" in bk.capabilities(a)]
+    rows.sort(key=lambda a: (a.id != im.agent_id, not bk.online(a)))
+    if not rows:
+        raise HTTPException(409, "no machine can read this backup at the moment; ask your IT provider")
+    return rows[0]
+
+
+def _by(principal: Principal) -> str:
+    return f"portal:{principal.user.email}"
+
+
+def _volume(body: dict) -> dict | None:
+    d, p = body.get("disk"), body.get("partition")
+    if isinstance(d, int) and isinstance(p, int) and 0 <= d < 64 and 0 <= p < 256:
+        return {"disk": d, "partition": p}
+    return None
+
+
+@router.get("/backups")
+def portal_backups(principal: Principal = Depends(_portal), db: Session = Depends(get_db)):
+    return [{"imageId": i.image_id, "repositoryId": i.repository_id, "agentId": i.agent_id, "hostname": i.hostname,
+             "vmName": i.vm_name, "created": i.created_unix, "kind": i.kind,
+             "source": "files" if bk.is_folder_backup(i) else "disks"} for i in _self_images(db, principal)[:500]]
+
+
+@router.post("/backups/images/{image_id}/browse")
+def portal_browse(image_id: str, body: dict = Body(default={}), principal: Principal = Depends(_portal),
+                  db: Session = Depends(get_db)):
+    im = _self_image(db, principal, image_id)
+    a = _self_agent(db, im)
+    path = str(body.get("path") or "/")
+    if len(path) > 4000 or ".." in path.replace("\\", "/").split("/"):
+        raise HTTPException(400, "invalid folder")
+    job = bk.queue(db, a, {"type": "browse_files", "image_id": im.image_id, "volume": _volume(body), "path": path},
+                   im.repository_id, _by(principal))
+    if _volume(body) is None:
+        bk.record(db, _by(principal), "backup.self_service.browsed", im.hostname, im.tenant_id, image=im.image_id)
+    db.commit()
+    return {"id": job.id, "agentId": a.id, "agentName": a.display_name or a.hostname, "agentOnline": bk.online(a)}
+
+
+@router.post("/backups/images/{image_id}/download-files")
+def portal_download(image_id: str, body: dict = Body(...), principal: Principal = Depends(_portal),
+                    db: Session = Depends(get_db)):
+    im = _self_image(db, principal, image_id)
+    a = _self_agent(db, im)
+    volume = _volume(body)
+    paths = [str(x) for x in body.get("paths") or [] if str(x).strip("/")]
+    if volume is None or not paths or len(paths) > 1000 or any(len(x) > 4000 for x in paths):
+        raise HTTPException(400, "choose 1 to 1000 files or folders")
+    sc = bk.scan_latest(db, [im.image_id]).get(im.image_id)
+    if sc is not None and sc.state == "infected":
+        hits = [f.get("path", "").lower() for f in sc.findings or []]
+        if any(h == x.rstrip("/").lower() or h.startswith(x.rstrip("/").lower() + "/") for h in hits for x in paths):
+            raise HTTPException(409, "the latest malware scan found an infected file in what you chose; ask your IT provider")
+    recipient = str(body.get("recipient") or "").strip()
+    try:
+        ok = len(base64.b64decode(recipient, validate=True)) == 32
+    except (binascii.Error, ValueError):
+        ok = False
+    if not ok:
+        raise HTTPException(400, "recipient must be a 32-byte X25519 public key (base64)")
+    job = bk.queue(db, a, {"type": "download_files", "image_id": im.image_id, "volume": volume, "paths": paths,
+                           "recipient": recipient}, im.repository_id, _by(principal))
+    bk.record(db, _by(principal), "backup.self_service.download_requested", im.hostname, im.tenant_id,
+              image=im.image_id, items=len(paths), first=paths[0][:300])
+    db.commit()
+    return {"id": job.id}
+
+
+def _own_job(db: Session, principal: Principal, job_id: str) -> BackupJob:
+    job = db.get(BackupJob, job_id)
+    if job is None or job.requested_by != _by(principal) or job.tenant_id != principal.user.tenant_id:
+        raise HTTPException(404, "Not found")
+    return job
+
+
+@router.get("/backups/jobs/{job_id}")
+def portal_job(job_id: str, principal: Principal = Depends(_portal), db: Session = Depends(get_db)):
+    j = _own_job(db, principal, job_id)
+    return {"id": j.id, "state": j.state, "result": j.result, "error": j.error, "warnings": j.warnings or [],
+            "progress": j.progress}
+
+
+@router.get("/backups/jobs/{job_id}/download")
+def portal_job_download(job_id: str, principal: Principal = Depends(_portal), db: Session = Depends(get_db)):
+    j = _own_job(db, principal, job_id)
+    if (j.kind or {}).get("type") != "download_files" or j.state not in ("succeeded", "warning"):
+        raise HTTPException(409, "the download is not ready")
+    path = bk.download_path(j.id)
+    if not path.exists():
+        raise HTTPException(404, "the download has expired")
+    return FileResponse(path, media_type="application/octet-stream", headers={"Cache-Control": "no-store"})

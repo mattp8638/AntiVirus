@@ -30,7 +30,7 @@ from ..config import get_settings
 from ..deps import REAUTH_HEADER, REAUTH_MINUTES, Principal, current_principal, require_reauth, scoped_tenant
 from ..security import digest, issue_token, read_token, reauth_state
 from ..models import (BackupAgent, BackupBootCheck, BackupEnrollment, BackupImage, BackupJob, BackupRepoAccess,
-                      BackupRepository, BackupScan, Device, DrRun, DrRunbook, ImageBackupPlan, Incident, Tenant, utcnow)
+                      BackupRepository, BackupScan, Device, DrRun, DrRunbook, ImageBackupPlan, Incident, Tenant, User, utcnow)
 from .backup_agent import backup_settings, server_url, tls_pin
 
 router = APIRouter(prefix="/api/console/backup", tags=["Backup"])
@@ -2340,3 +2340,40 @@ def put_backup_settings(body: dict = Body(...), p: Principal = Depends(current_p
     bk.record(db, p.actor, "backup.settings.changed", "backup", None, autoUpdate=settings["backup"]["autoUpdate"])
     db.commit()
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Self-service restore (BDR-06): a portal user may browse and download files from the backups of devices an
+# administrator chose for them. The grant is the authorisation (no repository unlock); every browse and download is
+# audited under the user's name.
+# ---------------------------------------------------------------------------------------------------------------------
+
+
+@router.get("/self-service")
+def self_service_users(p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    p.require("configure")
+    users = db.execute(select(User).where(User.tenant_id.in_(p.tenant_ids), User.role == "client",
+                                          User.active.is_(True)).order_by(User.email)).scalars().all()
+    return [{"id": u.id, "email": u.email, "name": u.name, "tenantId": u.tenant_id,
+             "deviceIds": list(u.backup_restore_devices or [])} for u in users]
+
+
+@router.put("/self-service/{user_id}")
+def set_self_service(user_id: str, body: dict = Body(...), p: Principal = Depends(current_principal),
+                     db: Session = Depends(get_db)):
+    p.require("configure")
+    u = db.get(User, user_id)
+    if u is None or u.tenant_id not in p.tenant_ids or u.role != "client":
+        raise HTTPException(404, "no such portal user")
+    ids = body.get("deviceIds")
+    if not isinstance(ids, list) or len(ids) > 200 or not all(isinstance(x, str) for x in ids):
+        bad("deviceIds: a list of up to 200 device IDs")
+    ids = sorted(set(ids))
+    for d in ids:
+        dev = db.get(Device, d)
+        if dev is None or dev.tenant_id != u.tenant_id:
+            bad("each device must belong to the user's own organisation")
+    u.backup_restore_devices = ids or None
+    bk.record(db, p.actor, "backup.self_service.granted", u.email, u.tenant_id, devices=ids)
+    db.commit()
+    return {"id": u.id, "deviceIds": ids}

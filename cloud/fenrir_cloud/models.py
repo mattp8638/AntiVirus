@@ -61,6 +61,8 @@ class User(Base):
     mfa_secret: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # CORE-02: limit the user to these customers (each within their own tenant's subtree); None = the whole subtree.
     assigned_tenant_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Self-service restore (BDR-06): portal users may browse and download files from these devices' backups.
+    backup_restore_devices: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
 class AuditLog(Base):

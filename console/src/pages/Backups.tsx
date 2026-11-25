@@ -111,7 +111,7 @@ export default function Backups() {
       <PageHead title="Backups" subtitle="Image backups of servers, PCs and Hyper-V hosts into repositories you own: a NAS, a file server or a local disk. Encrypted on the machine; this server never sees the keys."
         actions={can("configure") && <button className="primary" onClick={() => setAdding(true)}>Add machines</button>} />
       {!sealSupported() && <div className="card warn-card">This browser cannot encrypt repository secrets (Web Crypto X25519 is needed). Use a current Chrome, Edge, Firefox or Safari over HTTPS.</div>}
-      <Tabs tabs={[...(msp ? ["All customers"] : []), "Overview", "Machines", "Repositories", "Plans", "Images & restore", "Apps & clusters", "DR runbooks", "Activity"]} active={tab} onChange={setTab} />
+      <Tabs tabs={[...(msp ? ["All customers"] : []), "Overview", "Machines", "Repositories", "Plans", "Images & restore", "Apps & clusters", "DR runbooks", "Self-service", "Activity"]} active={tab} onChange={setTab} />
       <ErrorNote error={overview.error || agents.error || repos.error} />
       {tab === "All customers" && <MspDashboard open={(id) => { setTenantId?.(id); setTab("Overview"); }} />}
       {tab === "Overview" && <Overview data={overview.data} agents={agents.data} />}
@@ -121,6 +121,7 @@ export default function Backups() {
       {tab === "Images & restore" && <Images agents={agents.data ?? []} repos={repos.data ?? []} />}
       {tab === "Apps & clusters" && <AppsAndClusters agents={agents.data ?? []} repos={repos.data ?? []} />}
       {tab === "DR runbooks" && <Runbooks agents={agents.data ?? []} />}
+      {tab === "Self-service" && <SelfService agents={agents.data ?? []} />}
       {tab === "Activity" && <Activity />}
       {adding && <AddMachines onClose={() => { setAdding(false); reloadAll(); }} />}
     </>
@@ -1792,5 +1793,38 @@ export function DeviceBackup({ device }: { device: { id: string; hostname: strin
       <MachineImages agent={agent} />
       <div className="card"><h3>Recent backup jobs</h3><JobsTable rows={detail.data?.jobs ?? null} /></div>
     </>
+  );
+}
+
+/** Self-service restore: which client-portal users may find and download files from which devices' backups. */
+function SelfService({ agents }: { agents: BackupAgent[] }) {
+  const { can } = useApp();
+  const { run, busy } = useAction();
+  const { data: users, reload } = useListData<any>("backup/self-service");
+  const devices = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const a of agents) if (a.deviceId && a.role !== "recovery") m.set(a.deviceId, a.name);
+    return [...m.entries()].sort((x, y) => x[1].localeCompare(y[1]));
+  }, [agents]);
+  const toggle = (u: any, id: string) => {
+    const next = u.deviceIds.includes(id) ? u.deviceIds.filter((x: string) => x !== id) : [...u.deviceIds, id];
+    run(() => api(`backup/self-service/${u.id}`, { method: "PUT", body: { deviceIds: next } }), "Saved").then(reload);
+  };
+  return (
+    <div className="card">
+      <p className="small muted" style={{ marginTop: 0 }}>Client-portal users can find and download files from the backups of the devices ticked here, without the repository passphrase: granting a device is the authorisation, so grant only a user's own machines. Every browse and download is in the audit log; files a malware scan found infected are refused. Add portal users under Settings &gt; Users with the client role.</p>
+      {users?.length === 0 && <div className="empty">No client-portal users yet.</div>}
+      {users?.map((u) => (
+        <div key={u.id} style={{ padding: "8px 0", borderTop: "1px solid #172138" }}>
+          <b>{u.name || u.email}</b> <span className="small muted">{u.email}</span>
+          <div className="row small" style={{ gap: 12, flexWrap: "wrap", marginTop: 4 }}>
+            {devices.length === 0 && <span className="muted">No devices with a backup agent.</span>}
+            {devices.map(([id, name]) => (
+              <label key={id} className="row" style={{ gap: 4 }}><input type="checkbox" disabled={!can("configure") || busy} checked={u.deviceIds.includes(id)} onChange={() => toggle(u, id)} /> {name}</label>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }

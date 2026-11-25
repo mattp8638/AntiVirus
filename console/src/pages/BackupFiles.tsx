@@ -34,11 +34,11 @@ const FINAL = ["succeeded", "warning", "failed", "cancelled"];
 const FS_LABEL: Record<string, string> = { ntfs: "NTFS", ext: "ext4", fat32: "FAT32", fat16: "FAT", exfat: "exFAT", xfs: "XFS", btrfs: "Btrfs", refs: "ReFS", bitlocker: "BitLocker", luks: "LUKS", swap: "swap" };
 
 /** Poll a job quickly (browsing is interactive). */
-export async function waitFast(id: string, onProgress?: (j: Job) => void, seconds = 180): Promise<Job> {
+export async function waitFast(id: string, onProgress?: (j: Job) => void, seconds = 180, base = "backup"): Promise<Job> {
   const until = Date.now() + seconds * 1000;
   while (Date.now() < until) {
     await new Promise((r) => setTimeout(r, 700));
-    const j = await api<Job>(`backup/jobs/${id}`);
+    const j = await api<Job>(`${base}/jobs/${id}`);
     if (FINAL.includes(j.state)) {
       if (j.state === "failed" || j.state === "cancelled") throw new Error(j.error || `the job was ${j.state}`);
       return j;
@@ -55,7 +55,11 @@ const when = (t?: number) => (t ? new Date(t * 1000).toLocaleString() : "—");
 /** Where to open: a volume (by disk and partition), a folder in it, and an item to tick (search results). */
 export interface BrowseStart { disk: number; partition: number; folder: string; select?: string }
 
-export function FileBrowser({ image, onClose, start }: { image: BrowseImage; onClose: () => void; start?: BrowseStart }) {
+/** The self-service API in the client portal (download only, the user's granted devices). */
+const PORTAL = "/api/portal/backups";
+
+export function FileBrowser({ image, onClose, start, portal }: { image: BrowseImage; onClose: () => void; start?: BrowseStart; portal?: boolean }) {
+  const base = portal ? PORTAL : "backup";
   const [agentId, setAgentId] = useState<string | undefined>(undefined);
   const [agentName, setAgentName] = useState("");
   const [volumes, setVolumes] = useState<Volume[] | null>(null);
@@ -73,11 +77,11 @@ export function FileBrowser({ image, onClose, start }: { image: BrowseImage; onC
     setBusy(what);
     setError(null);
     try {
-      const r = await api<{ id: string; agentId: string; agentName: string; agentOnline: boolean }>(`backup/images/${image.imageId}/browse`, { body: { ...body, agentId } });
+      const r = await api<{ id: string; agentId: string; agentName: string; agentOnline: boolean }>(`${base}/images/${image.imageId}/browse`, { body: portal ? body : { ...body, agentId } });
       setAgentId(r.agentId);
       setAgentName(r.agentName);
       if (!r.agentOnline) setBusy(`${what} ${r.agentName} is offline; waiting for it…`);
-      return (await waitFast(r.id)).result;
+      return (await waitFast(r.id, undefined, 180, base)).result;
     } catch (e) {
       setError((e as Error).message);
       return null;
@@ -186,7 +190,8 @@ export function FileBrowser({ image, onClose, start }: { image: BrowseImage; onC
           {listing.truncated && <div className="small muted">Showing the first {listing.entries.length} of {listing.total} entries; use the filter to find others.</div>}
         </>
       )}
-      {restoring && volume && (
+      {restoring && volume && portal && <PortalDownload image={image} volume={volume} paths={[...selected].sort()} onClose={() => setRestoring(false)} />}
+      {restoring && volume && !portal && (
         <RestoreFiles image={image} volume={volume} paths={[...selected].sort()} browsingAgent={agentId}
           onClose={(done) => { setRestoring(false); if (done) setSelected(new Set()); }} />
       )}
@@ -300,6 +305,41 @@ function RestoreFiles({ image, volume, paths, browsingAgent, onClose }: { image:
           </div>}
         </div>
       )}
+    </Modal>
+  );
+}
+
+/** Client portal: the chosen files, restored by the machine and encrypted for this browser, saved as a .tar. */
+function PortalDownload({ image, volume, paths, onClose }: { image: BrowseImage; volume: Volume; paths: string[]; onClose: () => void }) {
+  const [state, setState] = useState<{ busy?: boolean; err?: string; progress?: string }>({});
+  const go = async () => {
+    setState({ busy: true, progress: "Preparing…" });
+    try {
+      const k = await downloadKey();
+      const { id } = await api<{ id: string }>(`${PORTAL}/images/${image.imageId}/download-files`, {
+        body: { disk: volume.disk, partition: volume.partition, paths, recipient: k.publicB64 } });
+      const job = await waitFast(id, (j) => setState({ busy: true, progress: j.progress?.message }), 24 * 3600, PORTAL);
+      const header = job.result?.download;
+      if (!header?.sealed_key) throw new Error("the machine did not send a download");
+      setState({ busy: true, progress: "Downloading and decrypting…" });
+      const plain = await k.decrypt(header, await apiBytes(`${PORTAL}/jobs/${id}/download`));
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([plain as BlobPart], { type: "application/x-tar" }));
+      a.download = header.file_name || "restore.tar";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+      setState({ progress: `Downloaded ${a.download}.` });
+    } catch (e) {
+      setState({ err: (e as Error).message });
+    }
+  };
+  return (
+    <Modal title={`Download ${paths.length} item${paths.length === 1 ? "" : "s"}`} onClose={onClose}
+      footer={<button className="primary" disabled={state.busy} onClick={go}>{state.busy ? "Working…" : "Download"}</button>}>
+      <div className="small mono" style={{ maxHeight: 90, overflowY: "auto", marginBottom: 10 }}>{paths.map((p) => <div key={p}>{p}</div>)}</div>
+      <p className="small muted">The files are encrypted for this browser on the machine that reads the backup; nobody in between can open them. They arrive as a .tar file (open it with Windows Explorer, 7-Zip or Archive Utility).</p>
+      {state.progress && <p role="status" className="small">{state.progress}</p>}
+      {state.err && <ErrorNote error={state.err} />}
     </Modal>
   );
 }

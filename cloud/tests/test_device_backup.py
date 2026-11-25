@@ -1761,3 +1761,60 @@ def test_flow07_failed_backup_incident_isolated_recovery_with_measured_rto_rpo(c
     finish(client, h, heartbeat(client, h)["jobs"][0]["id"], images=[image(t=86_400)])
     with session_factory()() as db:
         assert {c["stage"]: c["done"] for c in db.get(Incident, inc_id).checklist}["closure_gate"]
+
+
+def test_self_service_restore_through_the_client_portal(client, admin, tenant):
+    """BDR-06 self-service: an administrator grants a portal user a device; the user sees only that device's
+    backups, browses them and downloads files encrypted for their browser; other users' jobs are invisible."""
+    from conftest import enroll as enroll_device
+
+    dev = enroll_device(client, admin, tenant)
+    other_dev = enroll_device(client, admin, tenant, hostname="ACME-WS-02", serial="SN-2")
+    e = link(client, admin, tenant, deviceId=dev["deviceId"], role="workstation")
+    agent_id, h = agent_enroll(client, e["token"], role="workstation")
+    caps = CAPS + ["restore_files"]
+    heartbeat(client, h, caps=caps)
+    repo = ready_repo(client, admin, tenant, agent_id, h)
+    heartbeat(client, h, caps=caps)
+    r = client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                    json={"kind": {"type": "backup_system"}, "repositoryId": repo})
+    assert r.status_code == 200, r.text
+    im = image()
+    finish(client, h, heartbeat(client, h, caps=caps)["jobs"][0]["id"], images=[im])
+    while (jobs := heartbeat(client, h, caps=caps)["jobs"]):
+        finish(client, h, jobs[0]["id"])
+
+    for email in ("jo@acme.test", "sam@acme.test"):
+        client.post("/api/console/users", headers=admin, json={"email": email, "password": "a-long-password-3",
+                                                               "name": email[:3], "role": "client", "tenantId": tenant["id"]})
+    jo, sam = login(client, "jo@acme.test", "a-long-password-3"), login(client, "sam@acme.test", "a-long-password-3")
+    assert client.get("/api/portal/backups", headers=jo).json() == []
+    users = client.get("/api/console/backup/self-service", headers=admin).json()
+    jo_id = next(u["id"] for u in users if u["email"] == "jo@acme.test")
+    assert client.put(f"/api/console/backup/self-service/{jo_id}", headers=jo, json={"deviceIds": []}).status_code == 403
+    r = client.put(f"/api/console/backup/self-service/{jo_id}", headers=admin, json={"deviceIds": [dev["deviceId"]]})
+    assert r.status_code == 200, r.text
+    assert client.get("/api/portal/backups", headers=sam).json() == []
+    mine = client.get("/api/portal/backups", headers=jo).json()
+    assert [m["imageId"] for m in mine] == [im["image_id"]]
+    # Not repository-unlocked, not the console API.
+    assert client.post(f"/api/console/backup/images/{im['image_id']}/browse", headers=jo, json={}).status_code == 403
+
+    r = client.post(f"/api/portal/backups/images/{im['image_id']}/browse", headers=jo, json={})
+    assert r.status_code == 200, r.text
+    spec = heartbeat(client, h, caps=caps)["jobs"][0]
+    assert spec["kind"] == {"type": "browse_files", "image_id": im["image_id"], "volume": None, "path": "/"}
+    finish(client, h, spec["id"], result={"volumes": []})
+    assert client.get(f"/api/portal/backups/jobs/{spec['id']}", headers=jo).json()["state"] == "succeeded"
+    assert client.get(f"/api/portal/backups/jobs/{spec['id']}", headers=sam).status_code == 404
+    key = base64.b64encode(b"r" * 32).decode()
+    body = {"disk": 0, "partition": 1, "paths": ["/Users/jo/report.docx"], "recipient": key}
+    assert client.post(f"/api/portal/backups/images/{im['image_id']}/download-files", headers=sam, json=body).status_code == 404
+    r = client.post(f"/api/portal/backups/images/{im['image_id']}/download-files", headers=jo, json=body)
+    assert r.status_code == 200, r.text
+    spec = heartbeat(client, h, caps=caps)["jobs"][0]
+    assert spec["kind"]["type"] == "download_files" and spec["kind"]["recipient"] == key
+    assert client.get(f"/api/portal/backups/jobs/{spec['id']}/download", headers=jo).status_code == 409
+    other = client.put(f"/api/console/backup/self-service/{jo_id}", headers=admin, json={"deviceIds": ["dev_nope"]})
+    assert other.status_code == 400
+    assert other_dev["deviceId"]

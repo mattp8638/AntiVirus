@@ -4,6 +4,7 @@ import { useState } from "react";
 import { api, fmtTime, money } from "../api";
 import { useApp } from "../app-context";
 import { Modal, Pill, Table, Tabs, useAction, useData, useListData } from "../components/ui";
+import { FileBrowser, type BrowseImage } from "./BackupFiles";
 
 export default function Portal() {
   const { logout } = useApp();
@@ -15,6 +16,9 @@ export default function Portal() {
   const { data: kb } = useListData<any>("/api/portal/kb");
   const { data: invoices } = useListData<any>("/api/portal/invoices");
   const { data: devices } = useListData<any>("/api/portal/devices");
+  // Self-service restore: only for devices the IT provider granted to this user.
+  const { data: backups } = useListData<BrowseImage>("/api/portal/backups");
+  const [browsing, setBrowsing] = useState<BrowseImage | null>(null);
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto", padding: 24 }}>
       <div className="row" style={{ marginBottom: 20 }}>
@@ -25,8 +29,15 @@ export default function Portal() {
         <button className="primary" onClick={() => setCreating(true)}>Get help</button>
         <button className="small" onClick={logout}>Sign out</button>
       </div>
-      <Tabs tabs={["My requests", "Knowledge base", "Invoices", "Devices"]} active={tab} onChange={setTab} />
+      <Tabs tabs={["My requests", "Knowledge base", "Invoices", "Devices", ...(backups?.length ? ["My backups"] : [])]} active={tab} onChange={setTab} />
       <div className="card">
+        {tab === "My backups" && <>
+          <p className="small muted" style={{ marginTop: 0 }}>Backups of your devices. Open one to find files and download them as they were then.</p>
+          <Table rows={backups} onRow={(b) => setBrowsing(b)} empty="No backups yet." columns={[
+            { key: "hostname", label: "Device", render: (b) => <b>{displayValue(b.vmName || b.hostname)}</b> },
+            { key: "created", label: "Backed up", render: (b) => new Date(b.created * 1000).toLocaleString() },
+            { key: "source", label: "", render: (b) => <button className="small" onClick={(e) => { e.stopPropagation(); setBrowsing(b); }}>Find files</button> }]} />
+        </>}
         {tab === "My requests" && <Table rows={tickets} onRow={(t) => setOpen(t.id)} empty="You have no requests. Use Get help to raise one."
                                          columns={[{ key: "number", label: "#", render: (t) => `#${t.number}` }, { key: "subject", label: "Request", render: (t) => <b>{displayValue(t.subject)}</b> },
                                                    { key: "status", label: "Status", render: (t) => <Pill value={t.status} tone={t.closed ? "muted" : "blue"} /> },
@@ -44,6 +55,7 @@ export default function Portal() {
       </div>
       {creating && <NewRequest onClose={() => { setCreating(false); reload(); }} />}
       {open && <RequestDetail id={open} onClose={() => { setOpen(null); reload(); }} />}
+      {browsing && <FileBrowser image={browsing} portal onClose={() => setBrowsing(null)} />}
     </div>
   );
 }
