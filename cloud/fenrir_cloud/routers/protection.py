@@ -585,6 +585,14 @@ def add_asset(body: dict = Body(...), principal: Principal = Depends(current_pri
     target = str(body.get("target") or "").strip().lower()
     if not target or "/" in target or " " in target:
         raise HTTPException(400, "target must be a single hostname or IP address")
+    from .. import netguard
+
+    try:
+        netguard.resolve_public(target)
+    except netguard.Blocked as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except OSError:
+        pass  # not resolvable yet: it is checked again before every scan
     row = ExternalAsset(tenant_id=tenant_id, target=target, label=str(body.get("label") or ""), ownership_attested_by=principal.actor)
     db.add(row)
     audit.record(db, principal.actor, "exposure.asset.added", target, tenant_id, attested=True)
@@ -623,6 +631,9 @@ def _scan_asset_job(asset_id: str) -> None:
 def scan_asset(asset_id: str, background: BackgroundTasks, principal: Principal = Depends(current_principal),
                db: Session = Depends(get_db)):
     principal.require("respond")
+    from .. import ratelimit
+
+    ratelimit.check(f"exposure-scan:{principal.user.tenant_id}", 30, 3600)  # scans are rate-limited per customer
     asset = db.get(ExternalAsset, asset_id)
     if asset is None:
         raise HTTPException(404, "Not found")

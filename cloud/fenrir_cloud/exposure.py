@@ -373,10 +373,11 @@ def _probe(host: str, port: int, timeout: float) -> dict | None:
         return None
 
 
-def _tls_info(host: str, port: int, timeout: float) -> dict:
+def _tls_info(host: str, port: int, timeout: float, address: str | None = None) -> dict:
     context = ssl.create_default_context()
     try:
-        with socket.create_connection((host, port), timeout=timeout) as sock:
+        # Connect to the address that was checked (no second lookup: DNS rebinding), verifying the name's certificate.
+        with socket.create_connection((address or host, port), timeout=timeout) as sock:
             with context.wrap_socket(sock, server_hostname=host) as tls:
                 cert = tls.getpeercert()
                 expires = datetime.strptime(cert["notAfter"], "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
@@ -391,11 +392,16 @@ def _tls_info(host: str, port: int, timeout: float) -> dict:
 
 def scan_external(asset: ExternalAsset, ports: list[int] | None = None, timeout: float = 1.5) -> dict:
     """TCP connect scan of an asset the tenant has attested it owns."""
+    from . import netguard
+
     ports = ports or sorted(RISKY_PORTS)
     try:
-        address = socket.gethostbyname(asset.target)
+        addresses = netguard.resolve_public(asset.target)
+    except netguard.Blocked as exc:
+        return {"target": asset.target, "error": f"Not scanned: {exc}", "findings": [], "openPorts": []}
     except OSError as exc:
         return {"target": asset.target, "error": f"DNS resolution failed: {exc}", "findings": [], "openPorts": []}
+    address = next((a for a in addresses if ":" not in a), addresses[0])
     with ThreadPoolExecutor(max_workers=32) as pool:
         open_ports = [r for r in pool.map(lambda p: _probe(address, p, timeout), ports) if r]
     findings = []
@@ -405,7 +411,7 @@ def scan_external(asset: ExternalAsset, ports: list[int] | None = None, timeout:
         findings.append({"port": entry["port"], "service": service, "risk": risk, "advice": advice, "banner": entry["banner"]})
     for tls_port in (443, 8443):
         if any(e["port"] == tls_port for e in open_ports):
-            tls = _tls_info(asset.target, tls_port, timeout * 2)
+            tls = _tls_info(asset.target, tls_port, timeout * 2, address)
             if not tls.get("valid"):
                 findings.append({"port": tls_port, "service": "TLS", "risk": "high", "advice": f"Certificate problem: {tls.get('error')}"})
             elif tls.get("expiresInDays", 999) < 21:

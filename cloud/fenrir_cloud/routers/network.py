@@ -52,6 +52,11 @@ def create(body: MonitorInput, principal: Principal = Depends(current_principal)
         config = db.get(Configuration, body.configurationId)
         if config is None or config.account_tenant_id != body.tenantId:
             raise HTTPException(404, "Configuration not found in this tenant")
+    if not body.probeDeviceId:
+        try:
+            network.validate_cloud_target(body.address)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
     row = NetworkMonitor(tenant_id=body.tenantId, name=body.name, address=body.address, port=body.port,
                          interval_seconds=body.intervalSeconds, configuration_id=body.configurationId,
                          probe_device_id=_probe_device(db, body.tenantId, body.probeDeviceId))

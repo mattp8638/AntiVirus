@@ -17,10 +17,21 @@ def validate_address(address):
         raise ValueError("Use a reachable service IP; local, metadata and multicast addresses are not supported")
     return str(ip)
 
+
+def validate_cloud_target(address):
+    """A check run from the server itself reaches public addresses only; private addresses are checked from a device on
+    the customer's network (probe device). See netguard."""
+    from . import netguard
+
+    try:
+        return netguard.check_address(validate_address(address))
+    except netguard.Blocked as exc:
+        raise ValueError(f"{exc}; choose a probe device on the customer's network to check it") from exc
+
 def probe(address, port):
     started = time.monotonic()
     try:
-        with socket.create_connection((validate_address(address), port), timeout=2):
+        with socket.create_connection((validate_cloud_target(address), port), timeout=2):
             return True, round((time.monotonic() - started) * 1000, 2)
     except (OSError, ValueError):
         return False, None
