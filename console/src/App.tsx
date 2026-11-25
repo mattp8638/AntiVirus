@@ -9,6 +9,7 @@ import RemediationPackages from "./pages/rmm/RemediationPackages";
 import Governance from "./pages/Governance";
 import Assurance from "./pages/grc/Assurance";
 import Continuity from "./pages/grc/Continuity";
+import Registers from "./pages/grc/Registers";
 import SocWorkflows from "./pages/SocWorkflows";
 import { FormEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
@@ -180,7 +181,7 @@ const NAV: NavSection[] = [
       { module: "documentation", to: "/vault", label: "Credential vault", icon: "⚿" },
     ],
   },
-  { group: "Governance", icon: "✓", items: [{ module: "governance", to: "/governance", label: "Compliance & GRC", icon: "✓", also: ["/continuous-compliance", "/compliance", "/continuity"] }] },
+  { group: "Governance", icon: "✓", items: [{ module: "governance", to: "/governance", label: "Compliance & GRC", icon: "✓", also: ["/continuous-compliance", "/compliance", "/continuity", "/registers"] }] },
   {
     group: "Admin", icon: "⚙",
     items: [
@@ -524,6 +525,7 @@ function Shell() {
             <Route path="/governance" element={<Governance />} />
             <Route path="/continuous-compliance" element={<Assurance />} />
             <Route path="/continuity" element={<Continuity />} />
+            <Route path="/registers" element={<Registers />} />
             <Route path="/governance/policies/:id" element={<GrcPolicyEditor />} />
             <Route path="/governance/:tenantId/:framework" element={<ProgrammeDetail />} />
             <Route path="/soc-workflows" element={<SocWorkflows />} />

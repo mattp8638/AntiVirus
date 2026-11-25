@@ -3150,6 +3150,87 @@ class DrRun(Base):
     started_by: Mapped[str] = mapped_column(String(200), default="")
 
 
+class GrcRegisterEntry(Base):
+    """An entry of a contextual register (GRC-18): business risks, opportunities, interested parties, internal and
+    external issues, PESTEL factors, and the improvement register (GRC-13). Each change keeps a version."""
+    __tablename__ = "grc_register_entries"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("reg"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    register: Mapped[str] = mapped_column(String(30), index=True)
+    ref: Mapped[str] = mapped_column(String(20))
+    title: Mapped[str] = mapped_column(String(300))
+    description: Mapped[str] = mapped_column(Text, default="")
+    category: Mapped[str] = mapped_column(String(40), default="")
+    owner: Mapped[str] = mapped_column(String(200), default="")
+    status: Mapped[str] = mapped_column(String(20), default="open")
+    likelihood: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    impact: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    residual_likelihood: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    residual_impact: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    treatment: Mapped[str] = mapped_column(String(20), default="")
+    treatment_plan: Mapped[str] = mapped_column(Text, default="")
+    links: Mapped[list] = mapped_column(JSON, default=list)
+    actions: Mapped[list] = mapped_column(JSON, default=list)
+    review_due: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reviewed_by: Mapped[str] = mapped_column(String(200), default="")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    history: Mapped[list] = mapped_column(JSON, default=list)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class GrcRegisterExport(Base):
+    """A register as exported on a date, kept with its hash so it can be produced again unchanged."""
+    __tablename__ = "grc_register_exports"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("rgx"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    register: Mapped[str] = mapped_column(String(30))
+    rows: Mapped[list] = mapped_column(JSON, default=list)
+    sha256: Mapped[str] = mapped_column(String(64))
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class GrcObjective(Base):
+    """A security or management objective with a KPI, its target and its measurements over time (GRC-13)."""
+    __tablename__ = "grc_objectives"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("obj"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    title: Mapped[str] = mapped_column(String(300))
+    description: Mapped[str] = mapped_column(Text, default="")
+    owner: Mapped[str] = mapped_column(String(200), default="")
+    kpi: Mapped[str] = mapped_column(String(200), default="")
+    unit: Mapped[str] = mapped_column(String(40), default="")
+    target: Mapped[float | None] = mapped_column(Float, nullable=True)
+    direction: Mapped[str] = mapped_column(String(10), default="higher")  # higher | lower is better
+    due: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="active")  # active | achieved | dropped
+    measurements: Mapped[list] = mapped_column(JSON, default=list)  # [{at, value, by, note}]
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class GrcReview(Base):
+    """A management review (GRC-13): its input pack built from the current records (kept with a hash), the
+    decisions taken and the actions with owners."""
+    __tablename__ = "grc_reviews"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("rev"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    title: Mapped[str] = mapped_column(String(300))
+    held_on: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="planned")  # planned | held
+    attendees: Mapped[list] = mapped_column(JSON, default=list)
+    pack: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    pack_sha256: Mapped[str] = mapped_column(String(64), default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    decisions: Mapped[list] = mapped_column(JSON, default=list)
+    actions: Mapped[list] = mapped_column(JSON, default=list)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class PolicyAttestation(Base):
     """A policy assigned to a person to read and acknowledge (GRC-08). They are current when they acknowledged the
     policy's approved version; a new approved version makes them due again. An exception excuses them until a date."""

@@ -95,3 +95,20 @@ Approving a new version asks everyone again. People are **outstanding** until th
 asked or from the new version), then **overdue**, and are reminded by email every 7 days (at most six times). An
 **exception** (a reason and an end date) excuses someone until that date; **Remove** stops asking someone who left,
 keeping their record. **Evidence (CSV)** lists every acceptance of every version with its hash.
+
+## Registers, objectives and management reviews
+
+**Compliance & GRC › Registers & reviews** keeps each customer's context registers: **business risks** and
+**opportunities** (likelihood and impact 1 to 5, inherent and residual score, a treatment and its plan), **interested
+parties** (their needs and expectations), **internal and external issues**, a **PESTEL analysis** and the
+**improvement register**. Each entry has an owner, a review date (flagged when overdue), linked requirements and
+actions; every change keeps a version, and **Save as reviewed** records who reviewed it. **Export a version** keeps
+the register as it is now with its SHA-256, so the same export can be downloaded later unchanged.
+
+**Objectives** carry a KPI, a target (higher or lower is better) and their measurements over time.
+
+A **management review** is planned, then **Build the input pack** collects the records as they are: programme
+progress, policies (approved, review overdue, acknowledgements current), open register entries and the top risks,
+improvements, objectives against target, continuity capability, incidents since the previous review and that
+review's open actions. **Record the meeting** keeps the attendees, decisions and actions with owners; from then on
+the pack is fixed, with its hash.
