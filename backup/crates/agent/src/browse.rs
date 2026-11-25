@@ -323,6 +323,7 @@ pub fn download_files(
     volume: VolumeRef,
     paths: &[String],
     recipient: &str,
+    manifest: bool,
     job: Uuid,
     rep: &Reporter,
 ) -> anyhow::Result<JobUpdate> {
@@ -353,11 +354,42 @@ pub fn download_files(
         return Ok(u);
     }
     rep.progress("packing", 0, 1, "");
+    // eDiscovery: each file's SHA-256 in the archive, and the manifest's own hash in the result.
+    let listed = if manifest {
+        let files = crate::download::hash_tree(&work.join("files"))?;
+        Some(crate::download::write_manifest(
+            &work.join("files"),
+            serde_json::json!({ "image_id": image, "volume": volume, "selected": paths }),
+            files,
+        )?)
+    } else {
+        None
+    };
     let tar = work.join("files.tar");
     crate::download::tar_dir(&work.join("files"), &mut std::fs::File::create(&tar)?)?;
     let name = format!("restore-{}.tar", &image.to_string()[..8]);
-    let total = std::fs::metadata(&tar)?.len();
-    let header = crate::download::encrypt_and_send(&tar, recipient, &name, |off, bytes| {
+    let header = send_archive(ctx, rep, job, &tar, recipient, &name)?;
+    let restored = u.result.take().unwrap_or_default();
+    let mut result = serde_json::json!({ "download": header, "restored": restored });
+    if let Some((sha, n)) = listed {
+        result["manifest_sha256"] = sha.into();
+        result["manifest_files"] = n.into();
+    }
+    u.result = Some(result);
+    Ok(u)
+}
+
+/// Encrypt an archive for the browser's key and upload it as this job's download.
+pub(crate) fn send_archive(
+    ctx: &Ctx,
+    rep: &Reporter,
+    job: Uuid,
+    tar: &std::path::Path,
+    recipient: &str,
+    name: &str,
+) -> anyhow::Result<protocol::download::DownloadHeader> {
+    let total = std::fs::metadata(tar)?.len();
+    crate::download::encrypt_and_send(tar, recipient, name, |off, bytes| {
         rep.progress("sending", off, total, "encrypted for your browser");
         let (code, _, body) = ctx.client.raw(
             "POST",
@@ -373,10 +405,7 @@ pub fn download_files(
             );
         }
         Ok(())
-    })?;
-    let restored = u.result.take().unwrap_or_default();
-    u.result = Some(serde_json::json!({ "download": header, "restored": restored }));
-    Ok(u)
+    })
 }
 
 #[cfg(test)]

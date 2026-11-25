@@ -1979,7 +1979,7 @@ def get_download(job_id: str, p: Principal = Depends(current_principal), db: Ses
     """The encrypted stream of a finished download; only the browser that asked can open it."""
     p.require("scripts")
     job = db.get(BackupJob, job_id)
-    if job is None or job.tenant_id not in p.tenant_ids or (job.kind or {}).get("type") != "download_files":
+    if job is None or job.tenant_id not in p.tenant_ids or (job.kind or {}).get("type") not in ("download_files", "export_saas"):
         raise HTTPException(404, "No such download")
     if job.state not in ("succeeded", "warning"):
         raise HTTPException(409, "the download is not ready")
@@ -2151,12 +2151,23 @@ def set_legal_hold(image_id: str, request: Request, body: dict = Body(...), p: P
         reason = str(body.get("reason") or "").strip()
         if not 3 <= len(reason) <= 500:
             bad("say why the backup is held (a case or matter reference), 3 to 500 characters")
-        if im.legal_hold is None:
-            im.legal_hold = {"reason": reason, "by": p.actor, "at": iso(utcnow())}
+        if im.legal_hold is None or (im.legal_hold or {}).get("caseOnly"):
+            # A hold by hand on top of an eDiscovery case's: kept when the case closes.
+            im.legal_hold = {"reason": reason, "by": p.actor, "at": iso(utcnow()),
+                             **({"cases": im.legal_hold["cases"]} if (im.legal_hold or {}).get("cases") else {})}
             bk.record(db, p.actor, "backup.legal_hold.placed", im.vm_name or im.hostname, im.tenant_id,
                       image=im.image_id, reason=reason)
     elif im.legal_hold is not None:
         require_reauth(request, p)
+        if (im.legal_hold or {}).get("cases") and not im.legal_hold.get("caseOnly"):
+            # The case's hold stays until the case is closed.
+            im.legal_hold = {**im.legal_hold, "caseOnly": True}
+            bk.record(db, p.actor, "backup.legal_hold.released", im.vm_name or im.hostname, im.tenant_id,
+                      image=im.image_id, reason=im.legal_hold.get("reason"), still_held_by_cases=im.legal_hold["cases"])
+            db.commit()
+            return {"legalHold": im.legal_hold}
+        if (im.legal_hold or {}).get("cases"):
+            bad("an open eDiscovery case holds this backup; close the case or remove its custodian")
         bk.record(db, p.actor, "backup.legal_hold.released", im.vm_name or im.hostname, im.tenant_id,
                   image=im.image_id, reason=im.legal_hold.get("reason"))
         im.legal_hold = None
@@ -2181,8 +2192,9 @@ def hold_device(request: Request, body: dict = Body(...), p: Principal = Depends
         raise HTTPException(403, "repository_locked")
     n = 0
     for im in rows:
-        if im.legal_hold is None:
-            im.legal_hold = {"reason": reason, "by": p.actor, "at": iso(utcnow())}
+        if im.legal_hold is None or (im.legal_hold or {}).get("caseOnly"):
+            im.legal_hold = {"reason": reason, "by": p.actor, "at": iso(utcnow()),
+                             **({"cases": im.legal_hold["cases"]} if (im.legal_hold or {}).get("cases") else {})}
             n += 1
     bk.record(db, p.actor, "backup.legal_hold.placed", rows[0].vm_name or rows[0].hostname, rows[0].tenant_id,
               images=n, reason=reason)

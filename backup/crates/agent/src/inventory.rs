@@ -117,6 +117,8 @@ pub fn capabilities(role: &str) -> Vec<String> {
         "gateway",
         "kubernetes",
         "saas",
+        // eDiscovery exports with hash manifests (export.rs, download.rs).
+        "ediscovery",
     ]
     .iter()
     .map(|s| s.to_string())

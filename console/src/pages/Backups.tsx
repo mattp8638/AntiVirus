@@ -8,6 +8,7 @@ import { newRecoveryKey, seal, sealSupported, type Sealed } from "../backup-seal
 import { FileBrowser, type BrowseStart } from "./BackupFiles";
 import { SearchBackups } from "./BackupSearch";
 import { AppsAndClusters, isAppPlan } from "./BackupApps";
+import { BackupCases } from "./BackupCases";
 import { confirmDialog, promptDialog } from "../components/dialogs";
 import { ErrorNote, Modal, PageHead, Pill, Stat, Table, Tabs, TenantSelect, useAction, useAutoRefresh, useData, useListData } from "../components/ui";
 
@@ -111,7 +112,7 @@ export default function Backups() {
       <PageHead title="Backups" subtitle="Image backups of servers, PCs and Hyper-V hosts into repositories you own: a NAS, a file server or a local disk. Encrypted on the machine; this server never sees the keys."
         actions={can("configure") && <button className="primary" onClick={() => setAdding(true)}>Add machines</button>} />
       {!sealSupported() && <div className="card warn-card">This browser cannot encrypt repository secrets (Web Crypto X25519 is needed). Use a current Chrome, Edge, Firefox or Safari over HTTPS.</div>}
-      <Tabs tabs={[...(msp ? ["All customers"] : []), "Overview", "Machines", "Repositories", "Plans", "Images & restore", "Apps & clusters", "DR runbooks", "Self-service", "Activity"]} active={tab} onChange={setTab} />
+      <Tabs tabs={[...(msp ? ["All customers"] : []), "Overview", "Machines", "Repositories", "Plans", "Images & restore", "Apps & clusters", "DR runbooks", "eDiscovery", "Self-service", "Activity"]} active={tab} onChange={setTab} />
       <ErrorNote error={overview.error || agents.error || repos.error} />
       {tab === "All customers" && <MspDashboard open={(id) => { setTenantId?.(id); setTab("Overview"); }} />}
       {tab === "Overview" && <Overview data={overview.data} agents={agents.data} />}
@@ -121,6 +122,7 @@ export default function Backups() {
       {tab === "Images & restore" && <Images agents={agents.data ?? []} repos={repos.data ?? []} />}
       {tab === "Apps & clusters" && <AppsAndClusters agents={agents.data ?? []} repos={repos.data ?? []} />}
       {tab === "DR runbooks" && <Runbooks agents={agents.data ?? []} />}
+      {tab === "eDiscovery" && <BackupCases />}
       {tab === "Self-service" && <SelfService agents={agents.data ?? []} />}
       {tab === "Activity" && <Activity />}
       {adding && <AddMachines onClose={() => { setAdding(false); reloadAll(); }} />}

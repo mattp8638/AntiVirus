@@ -3150,6 +3150,26 @@ class DrRun(Base):
     started_by: Mapped[str] = mapped_column(String(200), default="")
 
 
+class BackupCase(Base):
+    """An eDiscovery case (backup/docs/design/ediscovery.md): custodians (machines, SaaS tenants and accounts), a
+    legal hold on their backups while the case is open, saved searches and exports with a chain-of-custody record."""
+    __tablename__ = "backup_cases"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    matter: Mapped[str] = mapped_column(String(200), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(20), default="open")  # open | closed
+    custodians: Mapped[list] = mapped_column(JSON, default=list)  # [{"device": key, "label": str, "accounts": []}]
+    hold_new: Mapped[bool] = mapped_column(Boolean, default=True)
+    searches: Mapped[list] = mapped_column(JSON, default=list)
+    exports: Mapped[list] = mapped_column(JSON, default=list)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    closed_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class BackupScan(Base):
     """A malware scan of the files inside a backup image (agent malware.rs). Findings list paths and what matched;
     file contents never reach the server."""
