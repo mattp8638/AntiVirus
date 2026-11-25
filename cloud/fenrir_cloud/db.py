@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 111
+LATEST_MIGRATION = 112
 
 def init_engine(url: str, pool_size: int = 5, max_overflow: int = 10) -> Engine:
     global _engine, _session_factory
@@ -704,6 +704,16 @@ def migrate(bind: Engine) -> list[int]:
                 rls.enable(conn, [IsmsMembership.__tablename__])
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (111)"))
                 applied.append(111)
+            if 112 not in versions:
+                # ISMS organization and scope (ISO 27001 4.1 to 4.3) and the asset register.
+                from .isms import models as isms_models, rls
+                tables = [isms_models.IsmsScope, isms_models.IsmsEntity, isms_models.IsmsSite,
+                          isms_models.IsmsContextIssue, isms_models.IsmsInterestedParty, isms_models.IsmsAsset]
+                for model in tables:
+                    model.__table__.create(conn, checkfirst=True)
+                rls.enable(conn, [m.__tablename__ for m in tables])
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (112)"))
+                applied.append(112)
             conn.commit()
         except Exception:
             conn.rollback()

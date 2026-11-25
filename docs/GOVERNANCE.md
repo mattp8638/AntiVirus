@@ -61,6 +61,15 @@ Open **Governance → ISMS roles** with a customer chosen in the tenant picker.
 - A person can only be given a role in a customer they can already see in Fenrir. Client portal accounts can only be staff.
 - Every role given, changed or removed is recorded in the audit log.
 
+## Organization, scope and assets
+
+These tabs need an ISMS role that can run the programme (ISMS manager or ISMS administrator).
+
+- **Organization** holds the ISMS scope (4.3) with its boundaries, interfaces and exclusions, the context issues (4.1, including whether climate change is relevant), the interested parties and their requirements (4.2), and the legal entities and sites in and out of scope. Each change to the scope wording makes a new version.
+- **Assets** is the asset register: information, systems, services, people, suppliers and sites, each with a classification and an owner who has an ISMS role in the customer. **Import CSV** takes the columns name, type, classification, owner_email and description (up to 5,000 rows). If any row has a problem nothing is imported, and every problem is listed with its line. A row with the same type and name as an existing asset updates it.
+
+Every change is recorded in the audit log.
+
 ## Hosting update
 
 After merging the governance change into the branch deployed on the VPS:

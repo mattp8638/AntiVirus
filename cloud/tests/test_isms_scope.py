@@ -12,13 +12,20 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
-from fenrir_cloud.isms.models import IsmsMembership
+from fenrir_cloud.isms.models import (IsmsAsset, IsmsContextIssue, IsmsEntity, IsmsInterestedParty, IsmsMembership,
+                                      IsmsScope, IsmsSite)
 from fenrir_cloud.isms.scope import TENANT_TABLES, get_scoped, require_same_tenant, scoped, tenant_table
 from fenrir_cloud.models import Base, GrcPolicy
 
 # Model -> function(tenant_id) returning an unsaved row for that tenant.
 FACTORIES: dict[type, callable] = {
     IsmsMembership: lambda t: IsmsMembership(tenant_id=t, user_id=f"usr_{t}", role="staff"),
+    IsmsScope: lambda t: IsmsScope(tenant_id=t, statement="All services"),
+    IsmsEntity: lambda t: IsmsEntity(tenant_id=t, name="Acme Ltd"),
+    IsmsSite: lambda t: IsmsSite(tenant_id=t, name="Head office"),
+    IsmsContextIssue: lambda t: IsmsContextIssue(tenant_id=t, kind="external", description="New regulation"),
+    IsmsInterestedParty: lambda t: IsmsInterestedParty(tenant_id=t, name="Customers"),
+    IsmsAsset: lambda t: IsmsAsset(tenant_id=t, type="system", name="CRM"),
 }
 
 
