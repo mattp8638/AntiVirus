@@ -101,7 +101,12 @@ def signals(db: Session, tenant: Tenant) -> dict[str, dict]:
         found = [results[r] for r in refs if r in results]
         out[key] = {"passed": all(c["passed"] for c in found) if found else None,
                     "evidence": [e for c in found for e in c["evidence"]]}
-    out["m365-mfa"] = _mfa(db, tenant)
+    from . import evidence_connectors as ec
+
+    stale = ec.m365_fresh(db, tenant)
+    out["m365-mfa"] = {"passed": None, "evidence": [stale]} if stale else _mfa(db, tenant)
+    out.update(ec.record_signals(db, tenant))
+    out.update(ec.connector_signals(db, tenant))
     out["policies-approved"] = _policies(db, tenant)
     out["third-party-risk"] = tprm.signal(db, tenant)
     for control in crosswalk():
@@ -112,6 +117,10 @@ def signals(db: Session, tenant: Tenant) -> dict[str, dict]:
 
 
 def label(key: str) -> str:
+    from .evidence_connectors import SIGNAL_LABELS as CONNECTOR_LABELS
+
+    if key in CONNECTOR_LABELS:
+        return CONNECTOR_LABELS[key]
     if key.startswith("baseline:"):
         control = next((c for c in crosswalk() if c["id"] == key.split(":", 1)[1]), None)
         return f"Endpoint baseline ({control['title'] if control else key})"
@@ -260,6 +269,9 @@ def tick(db: Session) -> None:
         if not ((tenant.settings or {}).get("grcAutomation") or {}).get("enabled"):
             continue
         try:
+            from . import evidence_connectors
+
+            evidence_connectors.run_due(db, tenant)
             collect(db, tenant)
             from . import gaps
 

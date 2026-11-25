@@ -126,7 +126,7 @@ controls:
   - id: FC-ACCOUNTS
     title: Account lifecycle
     description: Accounts are unique, approved, and removed when people leave; dormant and guest accounts are disabled.
-    signals: [baseline:FC-ACCOUNTS]
+    signals: [baseline:FC-ACCOUNTS, leavers-access-removed]
     maps:
       cis-v8-ig1: ["5.1", "5.3", "6.1", "6.2"]
       cyber-essentials: [A5.2, A7.1, A7.2, A7.3]
@@ -176,7 +176,7 @@ controls:
   - id: FC-BACKUP
     title: Backup and recovery
     description: Automated, protected backups with tested restores (evidence from your backup product).
-    signals: []
+    signals: [backup-protection]
     maps:
       cis-v8-ig1: ["11.1", "11.2", "11.3", "11.4"]
       essential-eight: [E8-RB-1, E8-RB-2, E8-RB-3]
@@ -230,7 +230,7 @@ controls:
   - id: FC-POLICY
     title: Security policy and governance
     description: Approved, reviewed security policies with management accountability.
-    signals: [policies-approved]
+    signals: [policies-approved, policy-acknowledgement]
     maps:
       iso-27001: ["5.2", A.5.1]
       ncsc-caf: [B1.a]
@@ -242,10 +242,18 @@ controls:
   - id: FC-RISK
     title: Risk assessment
     description: Information security risks are assessed and treated on a regular cycle.
-    signals: []
+    signals: [risk-register]
     maps:
       iso-27001: [6.1.2, "8.2"]
       ncsc-caf: [A2.a]
       nist-csf-2: [GV.RM]
       soc2: [CC3.2]
       dora: [DORA-RISK]
+  - id: FC-SDLC
+    title: Secure development
+    description: Source code is protected by reviewed changes, and known-vulnerable dependencies are fixed promptly.
+    signals: [dev-branch-protection, dev-dependency-alerts]
+    maps:
+      iso-27001: [A.8.25, A.8.28, A.8.32]
+      nist-csf-2: [PR.PS]
+      soc2: [CC8.1]

@@ -3150,6 +3150,25 @@ class DrRun(Base):
     started_by: Mapped[str] = mapped_column(String(200), default="")
 
 
+class GrcConnector(Base):
+    """A source of continuous compliance evidence (GRC-11): GitHub, an HR roster. Its last success and error are
+    kept; evidence older than max_age_hours is stale and counts as unknown, never as passing."""
+    __tablename__ = "grc_connectors"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("gcn"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    kind: Mapped[str] = mapped_column(String(20))  # github | hr_roster
+    name: Mapped[str] = mapped_column(String(200))
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    secret: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # encrypted envelope
+    max_age_hours: Mapped[int] = mapped_column(Integer, default=26)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class AgreementTemplate(Base):
     """An agreement template with {{variables}} (GRC-09)."""
     __tablename__ = "agreement_templates"
