@@ -203,3 +203,28 @@ def test_programme_data_is_isolated(client, admin, tenant):
     assert client.get(f"/api/console/isms/controls?tenant_id={other['id']}", headers=h).status_code == 404
     assert client.patch(f"/api/console/isms/controls/{their['id']}", headers=h, json={"notes": "x"}).status_code == 404
     assert client.post("/api/console/isms/programme/apply", headers=h, json={"tenantId": other["id"]}).status_code == 404
+
+
+def test_deleting_a_customer_removes_its_isms_data_and_nothing_else(client, admin, tenant):
+    from fenrir_cloud import db as database
+    from fenrir_cloud.isms.scope import TENANT_TABLES
+    from test_documentation_vault import stepup
+
+    other = client.post("/api/console/tenants", json={"name": "Staying Ltd", "template": "balanced"}, headers=admin).json()
+    for t in (tenant, other):
+        me = client.get("/api/console/auth/me", headers=admin).json()["user"]
+        client.put("/api/console/isms/memberships", headers=admin, json={"tenantId": t["id"], "userId": me["id"],
+                                                                         "role": "isms_manager"})
+        choose_iso(client, admin, t["id"])
+        apply(client, admin, t["id"], {"develops_software": False})
+        client.post("/api/console/isms/assets", headers=admin, json={"tenantId": t["id"], "type": "system", "name": "CRM"})
+    preview = client.get(f"/api/console/tenants/{tenant['id']}/deletion", headers=admin)
+    assert preview.status_code == 200 and preview.json()["blockers"] == []
+    done = client.request("DELETE", f"/api/console/tenants/{tenant['id']}", headers=stepup(client, admin),
+                          json={"confirmName": tenant["name"]})
+    assert done.status_code == 200, done.text
+    with database.session_factory()() as db:
+        for model in TENANT_TABLES:
+            assert db.query(model).filter_by(tenant_id=tenant["id"]).count() == 0, model.__tablename__
+        assert db.query(TENANT_TABLES[0]).filter_by(tenant_id=other["id"]).count() == 1
+    assert controls(client, admin, other["id"])["CC-DEV-01"]["state"] == "not_applicable"
