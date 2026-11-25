@@ -3150,6 +3150,20 @@ class DrRun(Base):
     started_by: Mapped[str] = mapped_column(String(200), default="")
 
 
+class AttackPathRun(Base):
+    """One attack-path analysis of a customer (VULN-19): the paths found, each edge marked observed or inferred,
+    and which paths are new or resolved since the previous run."""
+    __tablename__ = "attack_path_runs"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("apr"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    paths: Mapped[list] = mapped_column(JSON, default=list)
+    new: Mapped[list] = mapped_column(JSON, default=list)
+    resolved: Mapped[list] = mapped_column(JSON, default=list)
+    inputs: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class GrcConnector(Base):
     """A source of continuous compliance evidence (GRC-11): GitHub, an HR roster. Its last success and error are
     kept; evidence older than max_age_hours is stale and counts as unknown, never as passing."""
