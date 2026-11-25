@@ -84,6 +84,7 @@ function Snapshot({ id, connection, onClose }: { id: string; connection: any; on
         <Pill value={snap.verified ? "SHA-256 verified" : "does not match its SHA-256"} tone={snap.verified ? "good" : "bad"} />
         <button className="link" onClick={onClose}>Close</button></div>
       {Object.entries(snap.unavailable || {}).map(([r, why]: any) => <p key={r} className="small"><Pill value="not readable" tone="warn" /> {r}: {why}</p>)}
+      <GapAnalysis snapshotId={id} />
       {Object.entries(snap.resources || {}).map(([resource, objs]: any) => (
         <div key={resource} style={{ marginTop: 8 }}><b className="small">{resource}</b>
           {objs.map((o: any) => { const key = `${resource}|${name(resource, o)}`; return (
@@ -116,6 +117,31 @@ function Snapshot({ id, connection, onClose }: { id: string; connection: any; on
           { key: "message", label: "", render: (r: any) => <span className="small">{r.message || ""}</span> },
         ]} />}
       </>}
+    </div>
+  );
+}
+
+const VERDICT_TONE: Record<string, string> = { pass: "good", gap: "bad" };
+
+// M365-15: a modelled evaluation of this backup's Conditional Access policies. Nothing is sent to the tenant.
+function GapAnalysis({ snapshotId }: { snapshotId: string }) {
+  const { run, busy } = useAction();
+  const [result, setResult] = useState<any>(null);
+  return (
+    <div style={{ margin: "8px 0" }}>
+      <button disabled={busy} onClick={async () => setResult(await run(() => api<any>(`m365/config/snapshots/${snapshotId}/simulate`, { body: {} })))}>
+        Conditional Access gap analysis (modelled)</button>
+      {result && <div className="card">
+        <p className="small"><Pill value="modelled, not a real sign-in" tone="blue" /> {result.summary.policies} policies from this backup (SHA-256 {result.snapshotDigest.slice(0, 12)}…) ·
+          {" "}{result.summary.gaps.length} gap(s) · lowest confidence: {result.summary.confidence}</p>
+        <Table rows={result.results} columns={[
+          { key: "title", label: "Scenario" },
+          { key: "verdict", label: "Result", render: (r: any) => <Pill value={r.verdict} tone={VERDICT_TONE[r.verdict]} /> },
+          { key: "reason", label: "Why", render: (r: any) => <span className="small">{r.reason} · modelled outcome: {r.outcome}
+            {r.applied.length > 0 && ` · applied: ${r.applied.map((a: any) => a.policy).join(", ")}`}</span> },
+          { key: "confidence", label: "Confidence", render: (r: any) => <span className="small">{r.confidence}{r.uncertain.length > 0 && ` (${[...new Set(r.uncertain.flatMap((u: any) => u.uncertain))].join(", ")})`}</span> },
+        ]} />
+      </div>}
     </div>
   );
 }

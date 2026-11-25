@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 101
+LATEST_MIGRATION = 102
 
 def init_engine(url: str, pool_size: int = 5, max_overflow: int = 10) -> Engine:
     global _engine, _session_factory
@@ -657,6 +657,10 @@ def migrate(bind: Engine) -> list[int]:
                 Base.metadata.create_all(conn, tables=[Base.metadata.tables["m365_app_reports"]])  # M365-11
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (101)"))
                 applied.append(101)
+            if 102 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["m365_ca_simulations"]])  # M365-15
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (102)"))
+                applied.append(102)
             conn.commit()
         except Exception:
             conn.rollback()

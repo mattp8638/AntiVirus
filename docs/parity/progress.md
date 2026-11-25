@@ -9,9 +9,9 @@ Baseline of the review: `main` at `790e364`. Work branch: `claude/jolly-goodall-
 | State | Count |
 |---|---|
 | verified | 6 (FIX-01 to FIX-05, FIX-08) |
-| implemented-unverified | 37 |
+| implemented-unverified | 38 |
 | partial | 121 |
-| missing | 12 (RMM-14, MDM-02, AV-15, AV-16, AV-21, M365-15/27/29/32, VULN-08, VULN-12, VULN-13) |
+| missing | 11 (RMM-14, MDM-02, AV-15, AV-16, AV-21, M365-27/29/32, VULN-08, VULN-12, VULN-13) |
 | externally-blocked | 2 (FIX-06; AV-24 needs a Microsoft-signed kernel filter) |
 
 Overall parity: **not passed**. MVP: **not yet declared**.
@@ -31,8 +31,8 @@ Each entry below cites its code and tests in `catalogue.csv` and is `implemented
   reproducible agent builds checked in CI, on top of the existing SBOMs and release provenance
   (`docs/SUPPLY_CHAIN.md`).
 * M365-30 cross-tenant bulk and scheduled actions; M365-14 tenant configuration backup, comparison and restore;
-  M365-09 scheduled absences with reversion; M365-11 apps, consent and credential expiry (mocked Microsoft
-  responses).
+  M365-09 scheduled absences with reversion; M365-11 apps, consent and credential expiry; M365-15 modelled
+  Conditional Access gap analysis (mocked Microsoft responses).
 * AV-24 `externally-blocked`: needs a Microsoft-signed kernel filter.
 
 ## 2026-11-25 backup: AT-19 in CI, FLOW-07, BDR-06

@@ -52,6 +52,44 @@ The first reviewed write-administration increment is described in [M365_ACTIONS.
 
 PR #9 provides encrypted direct-tenant application connections and on-demand, read-only users, subscribed licences and Secure Score snapshots. It does not yet implement tenant write administration, GDAP, workload management or baseline enforcement. No live tenant changes have been made as part of this requirement update.
 
+## Conditional Access simulation and gap analysis (M365-15)
+
+On a configuration backup, **Conditional Access gap analysis (modelled)** shows how the backup's Conditional Access
+policies and named locations would treat a set of sign-ins. The code is in
+`cloud/fenrir_cloud/m365_ca_simulation.py`. The API also accepts your own what-if scenarios, each with:
+* user (member or guest, roles, groups);
+* app or user action;
+* client app type;
+* platform;
+* IP address or country;
+* sign-in and user risk.
+
+**This is a model, not a test.** No sign-in is made and nothing is sent to the tenant. Every result is labelled
+*modelled*. Each run keeps:
+* its scenarios;
+* the backup it used and that backup's SHA-256;
+* for each scenario: which policies applied, which were report-only, which did not apply and why, and the outcome
+  (blocked, allowed with conditions, allowed without conditions).
+
+Each result has a confidence rating:
+* *medium* when a policy uses a condition Fenrir cannot evaluate from configuration alone (device filters,
+  authentication context, insider risk, workload identities). The condition is named.
+* *low* when policies target groups and the scenario gave no group membership.
+
+The gap analysis checks seven scenarios:
+* members outside trusted locations;
+* Global Administrators;
+* legacy authentication;
+* Exchange ActiveSync;
+* guests;
+* security-information registration;
+* high-risk sign-ins.
+
+A scenario is a *gap* in any of these cases:
+* nothing requires MFA (or blocks) where it should;
+* only a report-only policy would;
+* an OR choice lets a weaker control (for example a compliant device) stand in for MFA.
+
 ## Enterprise apps, app registrations and consent (M365-11)
 
 The **Apps and consent** tab lists:

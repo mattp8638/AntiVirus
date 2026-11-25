@@ -155,3 +155,53 @@ def execute_restore(restore_id: str, body: Execute, request: Request, principal:
         db.rollback()
         raise _provider_error(exc) from None
     return to_dict(restore)
+
+
+# ---- Conditional Access simulation and gap analysis (M365-15) ------------------------------------------------------
+
+class Scenario(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    key: str = Field(default="scenario", max_length=60)
+    title: str = Field(default="", max_length=200)
+    user: dict = Field(default_factory=lambda: {"kind": "member"})
+    app: str | None = Field(default="All", max_length=64)
+    userAction: str | None = Field(default=None, max_length=100)
+    clientApp: str = Field(default="browser", pattern=r"^(browser|mobileAppsAndDesktopClients|exchangeActiveSync|other)$")
+    platform: str = Field(default="windows", max_length=20)
+    ip: str | None = Field(default=None, max_length=45)
+    country: str | None = Field(default=None, max_length=2)
+    signInRisk: str = Field(default="none", pattern=r"^(none|low|medium|high)$")
+    userRisk: str = Field(default="none", pattern=r"^(none|low|medium|high)$")
+    expect: str | None = Field(default=None, pattern=r"^(mfa|block)$")
+
+
+class Simulate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    scenarios: list[Scenario] = Field(default_factory=list, max_length=50)  # empty: the standard gap analysis
+
+
+@router.post("/snapshots/{snapshot_id}/simulate")
+def simulate(snapshot_id: str, body: Simulate, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """A modelled evaluation of the backup's Conditional Access policies. Nothing is sent to the tenant."""
+    from .. import m365_ca_simulation as sim
+
+    principal.require("configure")
+    snap = _snapshot(db, snapshot_id, principal)
+    ratelimit.check(f"m365-ca-sim:{principal.user.id}", 30, 300)
+    try:
+        row = sim.run(db, snap, [s.model_dump() for s in body.scenarios] or None, principal.actor)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    db.commit()
+    return to_dict(row)
+
+
+@router.get("/connections/{connection_id}/simulations")
+def simulations(connection_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    from ..models import M365CaSimulation
+
+    principal.require("configure")
+    conn = _connection(db, connection_id, principal)
+    rows = db.scalars(select(M365CaSimulation).where(M365CaSimulation.connection_id == conn.id)
+                      .order_by(M365CaSimulation.created_at.desc()).limit(100))
+    return [to_dict(r) for r in rows]

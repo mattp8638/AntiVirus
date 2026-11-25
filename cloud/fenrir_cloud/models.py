@@ -3711,3 +3711,21 @@ class M365AppReport(Base):
     connection_id: Mapped[str] = mapped_column(String(32), index=True)
     data: Mapped[dict] = mapped_column(JSON, default=dict)
     taken_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class M365CaSimulation(Base):
+    """A modelled Conditional Access evaluation (M365-15): which policies would apply to each sign-in scenario and what
+    they would require, worked out by Fenrir from a configuration backup. It is never a real sign-in or a test of the
+    tenant; the inputs (scenarios, the snapshot and its SHA-256) and the confidence of each result are kept."""
+    __tablename__ = "m365_ca_simulations"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("mcsim"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    connection_id: Mapped[str] = mapped_column(String(32), index=True)
+    snapshot_id: Mapped[str] = mapped_column(String(32))
+    snapshot_digest: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(20), default="gap-analysis")  # gap-analysis | what-if
+    scenarios: Mapped[list] = mapped_column(JSON, default=list)
+    results: Mapped[list] = mapped_column(JSON, default=list)
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
