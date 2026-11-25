@@ -21,6 +21,7 @@ export default function Deploy() {
   const [label, setLabel] = useState("Rollout");
   const [groupId, setGroupId] = useState("");
   const [days, setDays] = useState("30");
+  const [backup, setBackup] = useState(true);
   useEffect(() => { setTarget(tenantId); setGroupId(""); }, [tenantId]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -41,7 +42,7 @@ export default function Deploy() {
       const response = await fetch("/api/console/enrollment-installers", {
         method: "POST",
         headers: { Authorization: `Bearer ${bearer}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ os, tenantId: target, groupId: groupId || null, label, expiresInDays: expires }),
+        body: JSON.stringify({ os, tenantId: target, groupId: groupId || null, label, expiresInDays: expires, includeBackup: backup }),
         cache: "no-store",
       });
       if (!response.ok) {
@@ -98,6 +99,11 @@ export default function Deploy() {
             </label>
             <label className="field">Place devices in group <Link className="small" to="/groups">Manage groups</Link>
               <GroupSelect tenantId={target} value={groupId} onChange={setGroupId} emptyLabel="None" />
+            </label>
+            <label className="field">Device backup
+              <span className="row small" style={{ gap: 6, fontWeight: 400 }}>
+                <input type="checkbox" checked={backup} onChange={(e) => setBackup(e.target.checked)} /> Also install the backup agent
+              </span>
             </label>
             <label className="field">Token expiry (days, 1–365)
               <input type="number" min={1} max={365} value={days} onChange={(e) => setDays(e.target.value)} />

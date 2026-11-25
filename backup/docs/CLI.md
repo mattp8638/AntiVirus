@@ -1,0 +1,94 @@
+# `fenrir-backup` command-line reference
+
+```text
+fenrir-backup [--json] [--repo PATH] [--passphrase-file FILE | --recovery-key FILE] <command>
+```
+
+| Option | Meaning |
+|---|---|
+| `--json` | Print exactly one JSON document on stdout. Progress and messages go to stderr. |
+| `--repo PATH` | Repository path. Also `FENRIR_REPO`. `s3://bucket/folder` for S3-compatible storage, configured with `FENRIR_S3_ENDPOINT` (required), `FENRIR_S3_REGION` (default `us-east-1`), `FENRIR_S3_PATH_STYLE=1` (MinIO and most self-hosted), `FENRIR_S3_LOCK=compliance:DAYS` or `governance:DAYS` (Object Lock for new objects), `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. `azure://container/folder` for Azure Blob Storage, configured with `FENRIR_AZURE_ACCOUNT`, `FENRIR_AZURE_KEY` (the account key) or `FENRIR_AZURE_SAS` (a SAS token), `FENRIR_AZURE_ENDPOINT` (default `https://ACCOUNT.blob.core.windows.net`) and `FENRIR_AZURE_LOCK=locked:DAYS` or `unlocked:DAYS` (an immutability policy on each new blob). |
+| `--passphrase-file FILE` | Read the passphrase from the first line of FILE. Otherwise `FENRIR_PASSPHRASE`, otherwise an interactive prompt. |
+| `--recovery-key FILE` | Unlock with a recovery key file instead of a passphrase. |
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `repo init --recovery-key-out FILE [--chunk-size-kib 4096] [--zstd-level 3]` | Create an encrypted repository in an empty or new directory, and write a recovery key to FILE (mode 0600; never overwrites). |
+| `repo info` | Parameters, image and chunk counts, stored bytes. |
+| `key add-passphrase` | Add a passphrase (from `FENRIR_NEW_PASSPHRASE` or prompt). |
+| `key add-recovery --out FILE` | Create another recovery key. |
+| `backup system [--include-disk N]... [--data-disks-only] [--vss-full] [--label L] [--rate-limit-mib N] [--workers N] [--dry-run]` | Windows: application-consistent image of the system disk (and `--include-disk` disks; only those with `--data-disks-only`) through VSS in component mode: SQL Server, Exchange and other writers' components on the imaged volumes are coordinated, listed in the image, and told the backup succeeded (SQL Server records a copy-only backup; with `--vss-full` a full one, and writers may truncate logs). See docs/design/app-aware.md. |
+| `backup system [--disk PATH]... [--allow-inconsistent] [--label L] [--dry-run]` | Linux (as root): crash-consistent image of the running system, every disk holding its file systems (or the `--disk` whole disks). Logical volumes through LVM snapshots, non-LVM partitions up to 4 GiB (`/boot`, the ESP) copied while frozen, swap reduced to its header. Anything else that is mounted (a large root without LVM, LUKS, RAID) is refused unless `--allow-inconsistent`. Snapshots are removed afterwards, and leftovers of a crashed run on the next run. See docs/design/phase-6.md. |
+| `backup disk PATH... [--allow-inconsistent] [--machine-id ID] [--label L] [--dry-run]` | Image block devices or raw image files that are not in use. |
+| `image list` | All images, oldest first. |
+| `image show ID` | Full manifest of one image (ID or unique prefix). |
+| `verify [--image ID]... [--sample PCT \| --full] [--workers N]` | Quick (manifests + chunk presence), sampled or full re-hash. |
+| `restore disk --image ID [--disk N] --target PATH --yes [--no-zero-fill] [--fit] [--grow] [--boot-fixup]` | Write one disk of an image to a device or file. `--fit`: the target may be a different size (the GPT moves to the end of a larger disk; a smaller disk works when every partition fits; a different sector size is refused). `--grow` (implies `--fit`): on a larger target the last partition gets the extra space and its file system is grown: NTFS (`ntfsresize` on Linux, `diskpart` on Windows), ext2/3/4 (`resize2fs`), an LVM physical volume (`pvresize`); XFS, Btrfs and LUKS get the partition and a note on what to run once mounted. `--boot-fixup`: afterwards add the fallback UEFI loader `\EFI\BOOT\BOOTX64.EFI` on the restored EFI system partition if it is missing, so new hardware can start it. |
+| `copy --to REPO [--to-passphrase-file F] [--image ID]... [--full-verify]` | Copy images to another repository (off-site copy): each chunk is decrypted, re-encrypted for the destination and stored there once; manifests are rebuilt and signed for it; the copies are verified there. The destination's passphrase comes from `--to-passphrase-file` or `FENRIR_TO_PASSPHRASE`. A copy has its own image ID in the destination. See docs/design/offsite-copy.md. |
+| `clone --source DISK --target DISK --yes [--fit] [--grow] [--boot-fixup] [--live]` | Copy a disk straight onto another, without a repository: partition tables and used space only (free space in NTFS is skipped), with the same `--fit`, `--grow` and `--boot-fixup` as a restore and the same target checks. The source must not be in use, or `--live` reads it through a snapshot (Linux: LVM, as root; Windows: VSS, the system disk). |
+
+### Safety
+
+* `restore` overwrites its target and does nothing without `--yes`
+  (exit code 6). The target must be named explicitly.
+* A Linux block device that is mounted, used as swap, or held by
+  device-mapper/md is refused (exit code 7). On Windows, restoring to a
+  physical disk from the running system is refused; use the recovery
+  environment (Phase 2).
+* `backup disk` refuses a mounted device unless `--allow-inconsistent`, and
+  then marks the image `inconsistent`.
+* `--dry-run` never writes anything and needs no repository.
+
+### VSS backup type
+
+`backup system` uses the VSS **COPY** backup type by default, so application
+writers (SQL Server, Exchange) keep their own log chains. `--vss-full` uses
+**FULL**, which lets those writers truncate logs after a successful backup;
+only use it if Fenrir-Backup is the application's backup of record.
+
+## Exit codes
+
+Stable; scripts and RMM tools can rely on them.
+
+| Code | Name | Meaning |
+|---|---|---|
+| 0 | `ok` | Success. |
+| 1 | `error` | Unclassified failure. |
+| 2 | `usage` | Bad arguments or missing configuration. |
+| 3 | `verify_failed` | Missing or corrupt data found, or data failed authentication. |
+| 4 | `key_error` | Wrong or missing passphrase / recovery key. |
+| 5 | `not_found` | Repository or image not found. |
+| 6 | `confirmation_required` | Destructive operation needs `--yes`. Nothing changed. |
+| 7 | `safety` | Refused by a safety check. Nothing changed. |
+| 8 | `cancelled` | Cancelled. |
+| 9 | `busy` | Another process holds the repository (a prune is running, or a backup is running when you prune). Retry later. |
+| 10 | `ok_with_warnings` | Succeeded with warnings (e.g. a VSS writer failed, so that application's data is crash-consistent only). |
+
+## JSON output
+
+Success:
+
+```json
+{ "ok": true, "result": { ... }, "warnings": [ ... ] }
+```
+
+Failure:
+
+```json
+{ "ok": false, "error": { "kind": "key_error", "message": "..." }, "exit_code": 4 }
+```
+
+`verify` with problems returns `"ok": false` with the full report in
+`result` and exit code 3.
+
+## Scheduling before the agent exists
+
+Until the agent (Phase 7) ships, schedule the CLI with the OS:
+
+* Windows Task Scheduler, run as SYSTEM with highest privileges:
+  `fenrir-backup.exe --json --repo E:\Backups --passphrase-file C:\ProgramData\Fenrir-Backup\pass.txt backup system`
+  (protect the passphrase file with an ACL granting only SYSTEM and
+  Administrators).
+* Linux systemd timer for `fenrir-backup backup disk` of unmounted disks.

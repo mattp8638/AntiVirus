@@ -38,6 +38,7 @@ Every upload is decoded and redrawn on the server as a new PNG, at most 600 × 2
 | What we did for you (monthly) | Last month's work (or a chosen month) and the customer's health today. It is also kept automatically at the start of each month. |
 | Quarterly business review | Health and how it moved over the quarter, the work done, and the recommended next steps |
 | Vulnerability report | Every open vulnerability, highest risk first, with ageing by severity, overdue fixes, the most exposed devices and accepted risks |
+| Backup report | For the last 7, 30 or 90 days: machines protected (a scheduled plan succeeded within twice its interval), success rate, restores, restore tests (boot checks) and malware scans of backups, each machine's last good backup and restore points, failed backups, and recommended next steps. No file names or contents. |
 
 How the reports work:
 
@@ -57,7 +58,7 @@ How the reports work:
 | `GET /api/console/reports/executive?tenant_id=…&days=30` | The executive figures as JSON |
 | `GET /api/console/clients/{tenant}/reports/{id}.pdf` | A saved report as a PDF |
 
-Optional parameters: `days=7|30|90` for the executive summary, and `period=2026-09` (monthly) or `period=2026-Q3` (quarterly).
+Optional parameters: `days=7|30|90` for the executive summary and the backup report, and `period=2026-09` (monthly) or `period=2026-Q3` (quarterly).
 
 ## Scheduled reports
 

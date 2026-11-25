@@ -1,0 +1,564 @@
+# Device backup
+
+Image backups of Windows servers and PCs, Hyper-V hosts (their VMs, from the host), Linux and macOS machines,
+managed from the console under **Devices › Backups** and on each device's **Backup** tab. The engine, agent and CLI
+are in `backup/` (Rust); the server side is `cloud/fenrir_cloud/backup.py` with `routers/backup.py` (console) and
+`routers/backup_agent.py` (agents). This is separate from `BACKUP_AND_RESTORE.md`, which covers backing up the
+Fenrir server itself.
+
+## How it fits together
+
+* **Backup agent** (`fenrir-backup-agent`): its own service, separate from the Fenrir security agent. Windows:
+  service `FenrirBackupAgent`, `C:\Program Files\Fenrir-Backup\`, state in `C:\ProgramData\Fenrir-Backup\agent`
+  (SYSTEM and Administrators only). Linux: systemd unit `fenrir-backup-agent`. macOS: `uk.fenrir-backup.agent`.
+  Only administrators can stop or remove it. It never touches the security agent's `FenrirAgent` service.
+* **One device**: the backup agent is shown on its device (Devices › the device's Backup tab, and alerts carry the
+  device). It is linked by host name and, when both agents report it, the hardware serial number; when two devices
+  share a host name the serial decides. The two agents keep **separate credentials** on purpose: the backup agent's
+  key is the X25519 key repository passphrases are sealed to, and keeping it out of the security agent (and the
+  security agent's API key out of the backup agent) means a fault in one cannot open backups or act as the other.
+* **Server URL**: agents talk to `https://<this server>/backup` (enrol, heartbeat every 15 s, job updates,
+  self-update downloads). They always connect out; nothing connects to them.
+* **Repositories**: folders on a local disk, a NAS or file server (`\\nas\share\folder`, `smb://`), holding
+  encrypted, deduplicated images. The console encrypts the repository passphrase, and any share password, in the
+  browser to each machine's own X25519 key. The server stores only those sealed copies and cannot open a backup.
+  A recovery key file is made in the browser when a repository is created and is never uploaded.
+
+## Installing the agent
+
+* **With the Fenrir agent (all-in-one, the default)**: the normal Fenrir installers from **Deploy agents** — the
+  Windows `FenrirSetup.exe` and MSI, the RMM / Group Policy / Intune scripts, and the Linux and macOS installers —
+  also install the backup agent. It enrols with the same deployment token, works out its role by itself (Hyper-V
+  host, server or workstation) and appears under **Backups**; it is linked to the device once the security agent has
+  enrolled (by host name, within the customer). Untick **Include device backup** when creating the installer or
+  deployment to leave it out (Windows setup also takes `--no-backup` with `--server`/`--enroll-token`).
+  * Windows: `FenrirSetup.exe` carries `fenrir-backup-agent.exe` (code-signed with the other components in the
+    production build) and installs it last, as the `FenrirBackupAgent` service. Linux and macOS: the installer
+    script carries it and installs a `fenrir-backup-agent` systemd unit / `uk.fenrir-backup.agent` LaunchDaemon,
+    using the installer's `--proxy` if given.
+  * Backup is never allowed to stop the security agent's install: if it cannot be set up, setup says why and
+    finishes; add it later from the device's Backup tab.
+  * Uninstalling the Fenrir agent leaves the backup agent running, so backups continue and a reinstall keeps
+    repository access. To remove it too: `"C:\Program Files\Fenrir-Backup\fenrir-backup-agent.exe" uninstall
+    --yes` as administrator, or the uninstallers on the Backups page (Linux, macOS).
+  * Linux on ARM gets the backup agent only when the server has an `aarch64-unknown-linux-musl` build (the image
+    builds the server's own CPU; CI builds both). Otherwise the installer skips backup with a note.
+* **From a device page** (Backup tab › Enable backup): the Fenrir agent runs the installer as SYSTEM or root
+  (`script.run`). The link inside is bound to that device, lasts a day and works once.
+* **Install links** (Backups › Add machines): per customer and role (desktop, server, Hyper-V host). Windows gets a
+  `Fenrir-Backup-Setup.exe` (double-click, approve the UAC prompt) and a PowerShell one-liner; Linux and macOS a
+  `curl … | sudo sh` line. Links last 1–90 days.
+* Builds: `deploy/Dockerfile` compiles the Linux (static) and Windows agents into
+  `/app/cloud/downloads/backup/<target>/`. macOS builds come from `.github/workflows/backup.yml`; copy them into the
+  same layout (or point `FENRIR_BACKUP_AGENTS_DIR` at a folder). With automatic updates on (the default), agents
+  replace themselves with the server's build after checking its SHA-256.
+
+## Who can do what
+
+| Action | Permission |
+|---|---|
+| View machines, repositories, plans, jobs, and the list of backed-up machines | `read` |
+| Open a machine's backups (list, browse, restore, boot test) | `read` + unlock (below) |
+| Back up now, verify, test a connection, run a plan, cancel, place a hold | `respond` |
+| Browse and restore files; restore to VHDX files, a new Hyper-V VM, or VM files for QEMU, VirtualBox or VMware; boot tests; malware scans; stop a test VM | `scripts` |
+| Install links, repositories, access, plans, share sign-ins, maintenance, gateways | `configure` |
+| Overwrite a physical disk, replace existing files with backup copies, release a hold, reclaim space | `destructive` + password re-check |
+| Turn automatic agent updates on or off | `platform` |
+
+A disk restore also needs the device name typed exactly. Every change is in the audit log (`backup.*`).
+
+## Opening a machine's backups
+
+**Images & restore** lists the backed-up machines (and Hyper-V VMs): how many backups, the latest, space used,
+the last verified boot. Choosing a machine opens its own backups, oldest first (the same view is on the device's
+Backup tab). The backups themselves open only after an unlock:
+
+1. Choose the machine. Enter the **repository passphrase**, **your password** and, if your account has MFA, the
+   **authenticator code**.
+2. The password and code are checked as for any sensitive action. The passphrase is encrypted in your browser for
+   a machine that already has access to the repository (the backed-up machine first, if online), which tries it on
+   the repository. Fenrir Cloud never sees it, and drops the encrypted copy once checked.
+3. If it opens the repository, that repository is unlocked **in this browser tab for 30 minutes**: its backups can
+   be listed, browsed, downloaded, restored and boot-tested. Reloading the page, signing out or **Lock** ends it
+   sooner. The unlock is tied to your sign-in, so it cannot be used from another session.
+
+The server enforces this: without a valid unlock, image lists come back empty and browse, restore, download and
+boot-test requests are refused (`repository_locked`). The device page's Backup tab uses the same unlock. The
+check needs a machine with access to be online (the same is true of any restore); it is usually done within 15
+seconds. Attempts are rate-limited and audited (`backup.repository.unlock_requested`, `backup.repository.unlocked`,
+`backup.repository.unlock_failed`). Scheduled backups, retention and automatic boot tests are not affected.
+
+## Boot tests: restore a backup as a VM to prove it works
+
+**Images & restore › Boot test** restores a backup as a virtual machine on a host of your choice and checks that it
+starts, with the VM's network disconnected:
+
+* **Hosts**: any Windows machine with Hyper-V (detected by the agent, whatever role it was installed with), or a Linux
+  machine with QEMU/KVM. Hosts without access to the repository are listed too: enter the repository passphrase in
+  the dialog to give access (encrypted in the browser for that host only).
+* **Hyper-V**: the backup is written as VHDX files (dynamic, so about as much space as the data in the backup) in the
+  agent's folder or a folder you choose, started as a Generation 1 or 2 VM like the original, and passes when
+  Windows' heartbeat integration service answers; otherwise a screenshot shows what was on screen.
+* **Keep the VM**: tick it to keep the VM afterwards, so you can log in from Hyper-V Manager and check applications
+  and data. It stays (network still disconnected, named `Fenrir check <machine> <date> …`) until you press **Stop and
+  remove** in the boot-test dialog or on the host's machine page, which deletes the VM and its disks. QEMU hosts
+  keep it running for up to 8 hours.
+* Scheduled boot verification (repository settings) tests each machine's newest image regularly and removes the VM
+  each time.
+* For a lasting copy rather than a test, use **Restore › Hyper-V: a new VM on this host** on a Hyper-V host instead.
+
+## Backing up chosen files and folders
+
+A plan's **What** can be **Chosen files and folders**: full paths, one per line (`C:\Users\anna\Documents`,
+`/home/anna`, or a network share `\\server\share\folder` read with the backup agent's own sign-in), and names or paths
+to leave out (`*.tmp`, `~$*`, `node_modules`). After the first backup only new and changed files are read; every backup
+still restores on its own. On Windows the files are read from a VSS snapshot, so open files are copied too.
+
+Folder backups are listed with the machine's other backups as **Files and folders**. Restore them with **Browse files**:
+to a folder, as a download, or **Where each item was**. They can be scanned for malware like disk images.
+
+Design: `backup/docs/design/file-backup.md`.
+
+## Restoring one SQL Server or Exchange database
+
+Application-aware Windows backups list each database's files, so **Images & restore › Restore a database** can restore
+one on its own onto a Windows machine, into a new folder:
+
+* **SQL Server**: optionally attached under a new name (the live database is untouched); an attach script is always left
+  in the folder, for when the agent is not allowed to attach.
+* **Exchange**: the database and logs with a script for the Exchange Management Shell that mounts them as a recovery
+  database and restores chosen mailboxes.
+
+Backups taken before this was added restore databases with the volume. Design: `backup/docs/design/app-restore.md`.
+
+## Backup reports for customers
+
+**Reports › Backup report** shows a customer's device backup for the last 7, 30 or 90 days: machines protected, success
+rate, restores, restore tests and malware scans, each machine's last good backup, failed backups and what to do next. It
+can be emailed on a schedule (weekly: 7 days, monthly: 30, quarterly: 90) like the other reports. See
+`docs/REPORTS_AND_BRANDING.md`.
+
+## eDiscovery cases
+
+**Backups › eDiscovery** opens a case for a matter: name it, give the matter reference, and choose its
+**custodians**: machines, and cloud-service tenants (optionally only some mailboxes or users). While the case is
+open their backups are on legal hold, and with "also hold backups taken while the case is open" every later backup
+of a custodian is held as it arrives. Closing the case (password check) releases the holds it placed; holds placed
+by hand or by another open case stay.
+
+**Search custodians** runs on the machines that keep the backups and keeps the matches with the case. Tick matches
+and **Export**: the machine restores them and writes `fenrir-manifest.json` into the archive with each item's
+SHA-256 (mail as `.eml`, files as themselves, records and directory objects as JSON; cloud items are checked against
+the hash taken at backup time), then encrypts the archive for your browser. When you download it, your browser
+records the SHA-256 of what it saved. **Chain-of-custody manifest** downloads the case's record: custodians, held
+backups, searches, every export with the agent's manifest hash, the hash of the encrypted stream this server relayed
+and your browser's receipt, and the case's audit entries, sealed with the SHA-256 of the record itself. Searching and
+exporting need the repositories unlocked, as for any restore. Design: `backup/docs/design/ediscovery.md`.
+
+## Self-service restore in the client portal
+
+Under **Backups › Self-service**, tick the devices each client-portal user (role `client`) may restore from. Those
+users then see **My backups** in the portal, open a backup, find files and download them: the machine that reads the
+backup encrypts the files for the user's browser and this server only relays them. Granting a device is the
+authorisation (users do not need the repository passphrase), so grant only a person's own machines. Every browse and
+download is in the audit log under the user's name, users never see each other's jobs, and files the latest malware
+scan found infected are refused.
+
+## Finding a file across backups
+
+**Images & restore › a machine › Find a file in these backups** searches every unlocked backup of the machine by name
+(`budget 2026`), pattern (`*.xlsx`) or path (`Documents/report`). Results show each file with the backups that hold it;
+**Open** goes straight to it in Browse files. Each backup is indexed on the machine after it is taken; the index stays on
+the machine and only matches come back (kept a day). Design: `backup/docs/design/search.md`.
+
+## Legal hold
+
+A backup on legal hold is never deleted by retention, whatever the plan keeps. In **Images & restore › a machine**,
+**Legal hold** on a row holds that backup; **Hold all current backups** holds every backup the machine has now (later
+backups are not held). Both need a reason (3 to 500 characters, for example a matter number), which is shown on the row
+and recorded in the audit log. Releasing a hold needs a fresh password check and is audited too. Needs the configure
+permission.
+
+Holds are kept by the server and sent with each retention job; the agent marks held backups as kept with the reason
+"legal hold". An agent too old to understand holds is not sent retention while any backup in the repository is held:
+an alert asks for it to be updated, and nothing is deleted meanwhile. A hold does not stop someone with access to the
+repository deleting files by hand; pair it with immutable storage (S3 Object Lock, below) where that matters.
+
+## Malware scans of backups
+
+**Images & restore › Scan** checks the files inside a backup against your threat intelligence (malicious file hashes
+and YARA rules under Protection › Threat intelligence). The machine the backup came from (or another with access) reads
+the files from the repository; contents never leave it and only findings are reported. By default programs, scripts,
+shortcuts and macro documents are checked; **Every file** checks the rest too. Files that did not change since an
+earlier scan of the same machine are not read again.
+
+* Each backup shows **clean**, **infected** or **scan incomplete**; a machine with infected backups shows a warning and
+  its **last clean** backup.
+* Malware found raises a critical alert (`backup.malware_found`).
+* Restoring an infected backup, or files that include an infected one, asks for **Restore it anyway**; the choice is in
+  the audit log.
+* A plan can **scan each new backup for malware** (plan editor › Malware).
+
+Design: `backup/docs/design/malware-scan.md`.
+
+## Restoring to a virtual machine
+
+**Images & restore › Restore › Restore to** offers, depending on the machine that restores:
+
+| Option | Writes | Then |
+|---|---|---|
+| Hyper-V: a new VM on this host | VHDX files and the VM (Hyper-V hosts) | Start it in Hyper-V Manager |
+| Hyper-V: VHDX disk files | VHDX files | Attach them to a VM |
+| QEMU / KVM | qcow2 files and `start-<name>.sh` | Run the script on a KVM host (OVMF is used for UEFI systems), or import the disks with `virt-install --import` (the script shows the line) or into Proxmox |
+| VirtualBox | VDI files and `register-<name>.cmd` (Windows) or `.sh` | Run the script on the machine with VirtualBox; the VM then appears in VirtualBox Manager |
+| VMware | VMDK files (one growable file each) and `<name>.vmx` | Open the .vmx in VMware Workstation, Fusion or Player. For ESXi, copy the folder to a datastore and convert each disk with `vmkfstools -i <disk>.vmdk -d thin <new>.vmdk` |
+| Azure | a fixed VHD page blob per disk in your storage container (only data is uploaded) | Run the Azure CLI commands the job shows to make a managed disk and VM |
+| AWS | a VHDX per disk in your S3 bucket (written to a staging folder first) | Run the `aws ec2 import-image` command the job shows (needs the vmimport role) |
+| A physical disk | the disk, overwritten | See bare-metal recovery below |
+
+For Azure and AWS, the storage account key or access keys are encrypted in the browser for the restoring machine; the
+server never sees them.
+
+**Standby VM** (plan editor): after each backup, the new image is restored as a Hyper-V VM or VM files on a chosen host,
+replacing the previous standby once ready, and never while the standby VM is running (after a failover). Design:
+`backup/docs/design/cloud-restore.md`.
+
+The files go into a new folder named after the VM, in the folder you choose on the restoring machine. The VM gets the
+CPUs and memory recorded at backup (2 CPUs and 4 GB for a physical machine), the same firmware (UEFI or BIOS, with
+Secure Boot in VMware when it was on) and a SATA disk controller with one NAT network adapter. A Windows system backed
+up from a physical machine may stop at INACCESSIBLE_BOOT_DEVICE in a VM: try another disk controller, or restore it
+with the recovery media, which prepares Windows for different hardware. Disks with 4096-byte sectors can only be
+restored as VHDX. A VMDK holds at most 2 TiB less 1 GiB.
+
+## Live backups of Linux servers
+
+On Linux the agent backs up the running system (**Whole system** in a plan or Back up now), like VSS on Windows:
+every disk holding the system's file systems is imaged while it runs. Logical volumes are read through LVM snapshots
+(LVM freezes each file system while taking its snapshot), `/boot` and the EFI partition are copied while frozen, swap
+keeps only its header, and the snapshots are removed afterwards (also after a crash, on the agent's next start; other
+tools' snapshots are never touched). The image is crash-consistent. The volume group needs free space for the
+snapshots during the backup: 10 % of each logical volume, at least 64 MiB; the job says how much is missing. A
+system that cannot be snapshotted (a root file system without LVM, LUKS, software RAID) is refused with the reason:
+back it up from the recovery media. Disks that only hold the repository are left out. Details:
+`backup/docs/design/phase-6.md`.
+
+**Databases and other applications** are coordinated with the snapshots, and listed with the image like VSS writers on
+Windows (the image is then *application*-consistent):
+
+* MySQL / MariaDB: tables are locked (`FLUSH TABLES WITH READ LOCK`) while the snapshots are taken. The agent connects
+  as root over the server's socket; if that needs a password, put `[client]` `user=` and `password=` in
+  `/etc/fenrir-backup/mysql.cnf` (readable by root only).
+* PostgreSQL: a checkpoint first; the cluster counts as coordinated when its data, write-ahead log and tablespaces are
+  on one logical volume (one snapshot is one instant, which PostgreSQL recovers from like after a power cut).
+* Anything else: executables in `/etc/fenrir-backup/hooks.d` run with `freeze` before and `thaw` after (owned by root,
+  not writable by others).
+
+Applications whose data is not on the imaged disks are left alone. Details: `backup/docs/design/app-aware-linux.md`.
+
+**Cloning a disk** without a repository (an upgrade to a bigger disk, for instance) is done with the agent's CLI:
+`fenrir-backup clone --source /dev/sda --target /dev/sdb --yes --grow [--live]` (Windows: `\\.\PhysicalDriveN`);
+see `backup/docs/CLI.md` and `backup/docs/design/phase-5-grow-clone.md`.
+
+## Frequent backups
+
+A plan can run every few minutes (from 5) as well as every few hours or at a time of day. A run never overlaps the
+previous one: if a backup takes longer than the interval, the next starts when it finishes. Each run reads the used
+disk space again and stores only what changed, so pick an interval longer than one backup takes. Hyper-V VMs are
+the exception: with Resilient Change Tracking (VM configuration version 6.2 or later) a run reads only the blocks
+written since the last backup, with a full read each week and spot checks against the previous image; the plan
+setting `full_read` turns this off. Retention has an
+**Hourly** rule (the newest image of each of the latest N hours) for many short-lived restore points. Design:
+`backup/docs/design/frequent-backups.md`.
+
+## Apps & clusters: Microsoft 365, Google Workspace, Salesforce, QuickBooks Online, Kubernetes
+
+**Backups › Apps & clusters** backs up a customer's Microsoft 365 or Google Workspace mailboxes and drive files,
+Salesforce records, or Kubernetes namespaces (their objects, and with a volume image also their volumes' data) into
+the same repositories as machine images: encrypted, deduplicated, retained like images. One of the customer's machines
+with an up-to-date backup agent does the work. You connect the **customer's own** app registration, service account,
+connected app or cluster token (the page says which permissions); the secret is encrypted in your browser for that
+machine and stored only in that form, so this server never sees it. Backups run daily; after the first, only what
+changed is downloaded. **Restore** puts mail and files into a new "Restored <date>" folder of the same or another
+account, re-creates deleted Salesforce records, and re-creates Kubernetes namespaces (optionally under another name)
+with their volumes. Restores that overwrite what is there now (replacing Kubernetes objects, updating Salesforce
+records) need destructive permission, your password and the cluster's or tenant's name typed. These backups are
+listed by tenant or cluster under Images & restore and open with the repository's passphrase like any other. Details:
+`backup/docs/design/saas.md`, `backup/docs/design/kubernetes.md`.
+
+For Microsoft 365, tick **SharePoint sites**, **Teams messages** and **Entra ID** to back those up too (each needs the
+permission shown beside it; Microsoft approves the Teams one per app). SharePoint files restore into a "Restored"
+folder of the site's document library; Entra users, groups and applications are re-created from their saved
+settings (passwords and secrets are never in a backup). Teams messages are kept and searchable but cannot be posted
+back as the original authors: Microsoft offers no way to recreate channel history. Searching a machine's backups also
+finds mail, files, records, Teams messages and Entra objects in these backups, by subject, name or path.
+
+**QuickBooks Online**: the customer's own Intuit app (Accounting scope), connected to the company once. Enter the
+company (realm) ID, the app's client ID, its client secret and the refresh token from that connection; the secret and
+token are encrypted in your browser for the machine that runs the backups. Every list and transaction type is backed
+up (or the entities you name), incrementally after the first run. Intuit replaces the refresh token as it is used:
+the machine keeps the newest one itself, so the token you entered is only the first link. If backups stop with a
+sign-in error after the machine was rebuilt, or after 100 days without a backup, connect the company again and paste
+the new refresh token. Restore re-creates deleted customers, invoices and other entities (QuickBooks gives them new
+numbers) and, if you tick it, puts the backed-up values back on ones that still exist.
+
+## Continuous data protection (Linux)
+
+For Linux servers that need every write kept, `fenrir-backup cdp` journals a logical volume with the kernel's
+`dm-log-writes` device: every second is restorable, not just each backup. A base image is taken daily and journals are
+shipped to the repository every minute; `cdp restore --at <time>` rebuilds the volume as it was at that second
+(crash-consistent). It is set up on the server with the command line for now; its images appear under Images &
+restore as the volume's name. Windows machines use frequent backups (every 5 minutes or more). Details:
+`backup/docs/design/cdp.md`.
+
+## All customers (MSP view)
+
+With more than one customer, **Backups › All customers** shows backup health across all of them, worst first: per
+customer the machines protected (every scheduled plan succeeded within twice its interval), failing, overdue, without
+a plan, offline, on hold, the 7-day success rate, boot-verified machines and storage; a 14-day chart of backups per
+day; and one list of what needs attention (holds, failing backups, failed boot tests, overdue plans, offline agents,
+machines without a plan). Click a customer or an item to open that customer's backups.
+
+## DR runbooks
+
+**Backups › DR runbooks** describes how a site comes back: groups of machines in order (say, domain controller and
+databases, then application servers), each started from its latest backup as a VM on a host you choose (Linux with
+QEMU, or Hyper-V). **Run a test** starts group 1, waits until every machine's boot is verified, then starts the next
+group, and reports how long each machine took and the overall recovery time; the VMs are stopped afterwards (after the
+runbook's time, or with **Stop**). Tests can run on a schedule, and a failed test raises an alert. **Fail over**
+(destructive permission, password, and the runbook's name typed) does the same and leaves the VMs running. Details:
+`backup/docs/design/dr-runbooks.md`.
+
+## Dedup groups
+
+Machines that back up to the same repository already share stored data. **Dedup group** (when adding a repository)
+lets several repositories in one location share it too: data they have in common is stored once, while each keeps its
+own passphrase, recovery key, machines and backups. Start a group with **Start a dedup group in this location**, then
+add repositories with **Share storage with …** (same location and sign-in; the machine that creates one must already
+have access to the repository it joins). Anyone with one member's passphrase can read the data stored for the whole
+group (not the other members' lists of backups), so a group belongs to one customer and never spans customers.
+Reclaiming space in one member never deletes data another member still uses. An existing repository cannot be moved
+into a group. Details: `backup/docs/design/dedup-groups.md`.
+
+## Off-site copies
+
+A plan can copy each backup to a second repository: **Off-site copy** in the plan editor (for example a NAS
+repository copied to S3 or Azure). After each successful backup the machine copies the new images: every chunk is
+decrypted from the first repository and encrypted again for the second (each repository has its own keys), the image
+is signed for it, and the copy is verified there. Nothing leaves the machine unencrypted. The machine needs access to
+both repositories. A copy has its own image ID and is listed under its repository. The CLI does the same with
+`fenrir-backup copy --to REPO`. Design: `backup/docs/design/offsite-copy.md`.
+
+**Offline media rotation.** Give two or more repositories (USB drives you swap weekly, say) the same **Media set**
+name on their repository cards. A plan copying to any drive of the set copies to whichever is attached when it runs,
+and copies everything that drive lacks, so a drive that was away for weeks catches up. An alert is raised when no
+drive of a set has had a copy for 8 days.
+
+**Archive tiers.** For S3 or Azure repositories, **Storage tier for backup data** puts the chunks (not the indexes
+and manifests) in a cheaper tier: S3 Standard-IA, One Zone-IA, Intelligent-Tiering or Glacier Instant Retrieval, or
+Azure Cool or Cold. Only tiers that read back at once are offered: verification, restores and space reclamation read
+chunks directly, so tiers that need a thaw first (Glacier Flexible, Deep Archive, Azure Archive) are refused. Mind
+the providers' minimum storage periods and per-read fees.
+
+## Moving from a Fenrir-Backup server
+
+Backups made with a standalone Fenrir-Backup server move without copying anything:
+
+1. Enrol the machines here (their backup agent comes with the Fenrir agent); their machine IDs stay the same.
+2. **Repositories › New repository › It already exists**: the same location and its passphrase (encrypted in your
+   browser for each machine). The first machine opens it and lists its backups, so the history comes along; the
+   passphrase and recovery key keep working.
+3. On the old server, **Settings › Move to Fenrir Cloud › Download export** (repositories and plans, no secrets), then
+   here **Plans › Import plans from Fenrir-Backup**. Each plan is recreated for its machine and repository; any that
+   cannot be matched yet are listed with the reason.
+
+Design: `backup/docs/design/migration.md`.
+
+## Restoring individual files
+
+**Images & restore › Browse files** (also on a device's Backup tab) opens any backup as a file explorer: pick the
+volume (C:, D:, /home…), open folders, tick files or folders and restore them. Nothing is restored to a disk.
+
+* **Who reads the backup**: a backup agent with access to the repository opens the image with the repository key it
+  was given, and decrypts only the parts it needs. By default that is the machine the backup came from; any other
+  machine with access can do it (useful when the original is broken). The server only relays folder listings, and
+  drops them from its records after a day. File contents never pass through it.
+* **Where files go**: a folder on the chosen machine (default `C:\Restored\<backup date>`), optionally recreating
+  the original folders inside it, or back to the **original location** when restoring on the machine the backup
+  came from. If a file already exists: keep both (the backup copy is named `report (restored).docx`), skip it, or
+  replace it. Replacing needs the `destructive` permission and a password re-check. Files are written to a
+  temporary name and renamed when complete, keep their modification time, and names are made safe for the target
+  system. Nothing is written outside the chosen folder, and existing links there are not followed.
+* **Download here** sends the chosen files to your browser as a `.tar` archive (up to 4 GiB) instead of writing
+  them on a machine. Your browser makes a one-time key pair; only its public key is sent. The machine restores the
+  files to a private temporary folder, packs them, and encrypts the archive for that key (X25519 + AES-256-GCM in
+  numbered 1 MiB frames, so a changed, reordered or cut-short download is refused). The server stores only the
+  ciphertext, which it cannot read, and deletes it after 24 hours; the browser decrypts it and saves the file.
+  Audited as `backup.files.download_requested`.
+* **Permissions**: browsing and restoring files need `scripts`, like other restores. Opening a backup and every file
+  restore are audited (`backup.files.browsed`, `backup.files.restore_requested`).
+* **Volumes**: NTFS (Windows) and ext2/3/4 (Linux) volumes can be browsed. Windows backups read BitLocker volumes through
+  their snapshot, decrypted, so they browse like any NTFS volume (the image is encrypted with the repository key).
+  Volumes captured still encrypted (LUKS, a Hyper-V VM's own BitLocker) cannot be browsed: restore the disk or VHDX
+  and unlock it there. NTFS
+  files that Windows compressed (the folder's "Compress contents" setting) or encrypted with EFS are listed but
+  not restored yet. Links and cloud-only placeholders (OneDrive "files on demand") are shown but not restored.
+  For other file systems (XFS, Btrfs, FAT, ReFS), restore the volume as a VHDX and open it.
+* While someone is browsing, that machine checks in every second instead of every 15, and keeps the backup open
+  for 5 minutes after the last request.
+
+## Recovery media: bare-metal restore
+
+For a machine that no longer starts, has a new disk, or is replaced by new hardware.
+
+1. **Backups › Add machines**, choose **Recovery media**, pick the customer and **Create recovery media**, then
+   download `fenrir-recovery.iso`. The download carries this server's address and an enrolment code for that
+   customer's recovery sessions (valid 1–90 days; revoke it like any install link). Write it to a USB stick
+   (balenaEtcher, Rufus in DD mode, `dd`) or attach it to a VM.
+2. Start the machine from it; Secure Boot can stay on. It appears under **Machines** as a *recovery session*
+   (restores only, nothing installed, everything in memory).
+3. **Images & restore › Restore**, choose the session as the machine, give it access (the passphrase is sealed in
+   your browser for that session only) and pick its disk. Disks in use on it (its own stick, anything mounted) are not
+   offered and are refused by the server and by the agent. A repository on a NAS the session cannot reach is served
+   to it through the NAS gateway, if the repository has one.
+4. When the restore finishes, remove the stick and restart.
+
+The target disk may be larger (the partition table moves to its end, and with **Use the whole disk**, on by default,
+the last partition gets the extra space and its NTFS, ext4 or LVM file system is grown; XFS and Btrfs get the space
+and a note to grow them once mounted) or smaller if every partition fits. UEFI systems get the fallback boot loader and a firmware boot entry; if the machine
+started in a different firmware mode from the backed-up system, the job says which setting to change. Sessions do not
+raise offline alerts and are removed a week after they were last seen. The recovery screen also restores without a
+server, from a repository on a USB disk or an SMB share.
+
+**Local recovery partition (Windows).** Instead of a stick: on a machine's Backup tab, **Local recovery › Install**
+(destructive permission, password and the machine's name typed) shrinks C: by about 1 GB and adds a hidden recovery
+partition with a **Fenrir Recovery** boot menu entry, built from the machine's own Windows Recovery Environment with its
+network and storage drivers. If Windows no longer starts, choose it in the boot menu (or let it start by itself after
+failed starts, an option): the machine appears as a recovery session, and you restore it from its backups onto the same
+disk or a new one, on this or different hardware, as with recovery media. The partition's enrolment code (recovery
+sessions only) is renewed whenever it is rebuilt, which happens after each agent update; **Remove** gives the space
+back to C:. Details: `backup/docs/design/local-recovery.md`.
+
+**Different hardware.** A restored Windows gets its own storage drivers (AHCI, NVMe, Intel RST, common RAID/SAS
+controllers, Hyper-V, VMware, virtio) set to start at boot in its registry, so moving from RAID to AHCI, SATA to NVMe
+or a physical machine to a VM does not stop it with INACCESSIBLE_BOOT_DEVICE (a copy of the hive is kept as
+`SYSTEM.fenrir-before-hardware`; the job lists the changes). Other drivers (network, chipset, graphics): put the
+driver packages in a `fenrir-drivers` folder on a USB stick; the recovery media copies them into the restored Windows
+and adds them to the folders Windows searches (`DevicePath`), so Windows installs them itself when it first starts.
+A restored **Linux** system gets an initramfs with all storage drivers, rebuilt inside it (dracut without host-only,
+or initramfs-tools with `MODULES=most`), so it finds its root file system on the new controller. Details:
+`backup/docs/design/phase-5-hardware.md`.
+
+**BitLocker.** The Windows agent backs volumes up through their VSS snapshot, which reads them decrypted (the image is
+encrypted with the repository key instead), so a restored Windows starts without the BitLocker recovery key; the job
+reminds you to turn BitLocker on again. Volumes captured still encrypted (a Hyper-V VM's own BitLocker backed up from the
+host) need their recovery key on new hardware; the job says which.
+
+**Windows PE media** (optional): for controllers that only have Windows drivers, or to add drivers to the restored
+Windows. Build it on a Windows PC with Microsoft's free Windows ADK and Windows PE add-on (Fenrir does not ship Windows
+PE): `backup/recovery-env/winpe/New-FenrirWinPE.ps1 -Agent fenrir-backup-agent.exe -Cli fenrir-backup.exe -Settings
+fenrir-recovery.json -Drivers <folder>`. The settings file is **Settings file only** of a recovery media link. Driver
+packages from `-Drivers`, or from a `fenrir-drivers` folder on any USB stick, are added with DISM after the restore.
+
+**Onto a second disk of a running Windows.** Windows machines can also restore onto a disk that is not their system
+disk (Restore › A physical disk): its volumes are locked and dismounted first, and the restore is refused while files
+are open on it.
+
+The ISO comes from the backup workflow (artifact `backup-recovery-iso`, built by `backup/recovery-env/build.sh`). Put
+it at `<FENRIR_BACKUP_AGENTS_DIR>/recovery/fenrir-recovery.iso` (in the container:
+`/app/cloud/downloads/backup/recovery/fenrir-recovery.iso`, for example as a mounted volume); until then the console
+says it is missing. Design: `backup/docs/design/phase-2.md`.
+
+## S3 object storage with Object Lock (immutable backups)
+
+Repositories can live on Amazon S3, Wasabi, Backblaze B2, Cloudflare R2, MinIO or any S3-compatible storage: **New
+repository › Stored on › S3 object storage**. With **Object Lock** in compliance mode every backup is immutable for the
+days chosen: nobody can delete or overwrite it before then, not ransomware holding the keys, not the storage account
+owner, not Fenrir.
+
+* Creating the repository creates the bucket (or Azure container) if it does not exist yet, with Object Lock (or
+  version-level immutability) on when you choose a lock; the key then also needs `CreateBucket`. A bucket you create
+  yourself needs Object Lock enabled at creation, without a default retention: Fenrir locks each object itself. Give Fenrir its own access key limited to the bucket (`PutObject`, `GetObject`, `ListBucket`,
+  `DeleteObject`, `DeleteObjectVersion`, `Get/PutObjectRetention`).
+* The keys are sealed in your browser for each machine, like a share sign-in; this server never sees them.
+  **Test connection** checks the bucket really refuses to delete a locked object.
+* Maintenance (weekly by default, and it must run more often than the lock period) renews the locks of backups still
+  in use; backups retention no longer keeps are deleted once their lock has run out.
+* S3 repositories are reached directly by every machine; the NAS gateway is not used for them.
+
+**Azure Blob Storage** works the same way (**Service › Azure Blob Storage**): the storage account name and its key
+(or a SAS token), a container and a folder in it. For immutable backups, enable version-level immutability on the
+container (and versioning on the account); each backup blob then gets an immutability policy (compliance = locked,
+nobody can shorten it; governance = unlocked), renewed by maintenance like S3 locks.
+
+Design: `backup/docs/design/phase-4-storage.md`.
+
+## Network shares
+
+A repository path such as `\\nas\backups\fenrir` can sign in with:
+
+* **Username and password** (domain optional, or `user@domain`): sealed per machine; the agent connects only while
+  a job runs, as SYSTEM, out of sight of logged-in users.
+* **Computer account**: domain-joined Windows machines connect as `DOMAIN\NAME$`; grant those (or an AD group of
+  backup machines) change rights on the share. No password is stored.
+* **No sign-in**: the share already accepts the machines.
+
+*Test connection* signs in, writes a test file and reports free space before you create the repository.
+
+## Protection and alerts
+
+Alerts go to the normal alert queue (category `backup`):
+
+* `backup.ransomware_hold` (critical): a backup changed far more than usual and the new data does not compress.
+  The repository is put **on hold**: retention and space reclamation stop, so earlier images survive. Release the
+  hold once the machine is clean.
+* `backup.job_failed`, `backup.boot_failed`, `backup.agent_offline` (24 h), `backup.overdue` (no successful plan
+  backup for 3 days). Offline and overdue alerts resolve themselves when the machine recovers.
+
+* `backup.storage_unreachable` (high): the daily check of a repository's storage failed (expired key or password,
+  full or missing share or bucket). A machine with access tests the storage once a day with its own sign-in; the
+  repository card shows the last check. Resolves when a check passes.
+* `backup.offline_copy_overdue`: no drive of an offline media set received a copy for 8 days.
+
+A failed plan backup also opens a **backup-failure incident** for the device (FLOW-07). On the incident, **Recover in
+isolation** boots the newest good backup (or one you choose) as a VM on a boot host with no route to the production
+machine; it needs respond rights and your password again. The result is added to the incident's evidence (hashed),
+with the job, the backup used, how the VM was verified, and the measured recovery time (request to verified boot)
+and recovery point (failure to the backup's time). The checklist's closure gate is met when a backup of the machine
+succeeds again.
+
+The device page lists **other backup software** the agent found on the machine (by what installed programs and
+services call themselves, and Windows Server Backup, File History or Time Machine when set up): two products imaging
+the same disks can interfere with each other's snapshots.
+
+Retention runs after each successful plan backup. Space is reclaimed on the repository's maintenance machine every
+N days (default 7). Boot verification boots each machine's newest image in an isolated VM on a chosen host (Linux
+with QEMU/KVM, or Hyper-V) every N days.
+
+## NAS gateway: machines elsewhere back up to your NAS
+
+Laptops at home or a branch office usually cannot reach the office NAS. One backup agent inside the network — a server
+or PC next to the NAS — can serve the repository to them.
+
+1. **Backups › Repositories › Serve through a gateway**: choose the gateway (a machine with direct access to the
+   repository). Optionally let it listen for direct connections on a port (default 8475; on Windows it adds a
+   Windows Firewall rule for Domain and Private networks) and give an address reachable from outside
+   (`host:port`, e.g. a forwarded port or VPN address).
+2. **Give a machine access** with **Through the gateway** ticked, for each remote machine. It needs only the
+   repository passphrase, not the share sign-in.
+
+How it works:
+
+* Remote machines send each storage request to the gateway: **directly** when one of its addresses answers (the
+  address it reports on its own network, then the one you set), otherwise **relayed** through this server over the
+  connections both agents already make. No inbound port is needed for the relay. A direct address that fails is
+  tried again after five minutes; direct connections never go through a web proxy.
+* **End-to-end encryption**: each message is encrypted and authenticated with a key only the two agents can derive
+  (X25519 between their own key pairs, HKDF-SHA256, AES-256-GCM; `backup/crates/protocol/src/gateway.rs`). The
+  server passes on bytes it can neither read nor forge, and requests older than ten minutes are refused. As
+  everywhere in device backup, the agents' public keys come from this server.
+* **Append-only**: through the gateway a machine can add backups, verify, browse and restore, but cannot delete or
+  overwrite anything except its own lock files. Ransomware on a laptop cannot erase its backup history.
+  Retention and space reclamation for the repository run on the gateway (it becomes the maintenance machine).
+* The gateway must stay online for remote machines to back up; Backups shows it as offline otherwise. Stop
+  serving only after removing the remote machines' access.
+* The relay holds messages in memory in the server process (the image runs one worker), at most 512 MiB at a time.

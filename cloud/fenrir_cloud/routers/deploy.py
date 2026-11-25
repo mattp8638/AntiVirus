@@ -41,8 +41,8 @@ def _base() -> str:
 
 @public.get("/windows.exe")
 def windows_exe(request: Request, x_fenrir_token: str | None = Header(default=None), db: Session = Depends(get_db)):
-    _token(db, request, x_fenrir_token)
-    data, filename, media = deployment_installers.build("windows", _base(), x_fenrir_token)
+    token = _token(db, request, x_fenrir_token)
+    data, filename, media = deployment_installers.build("windows", _base(), x_fenrir_token, token.include_backup is not False)
     return Response(data, media_type=media, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
@@ -55,7 +55,7 @@ def windows_msi(request: Request, x_fenrir_token: str | None = Header(default=No
 def _msi_response(db: Session, token: EnrollmentToken, raw: str) -> Response:
     if not rmm_deploy.msi_available():
         raise HTTPException(409, "MSI packages need msitools (wixl) on the server; it is included in the Docker image")
-    data, _, _ = deployment_installers.build("windows", _base(), raw)
+    data, _, _ = deployment_installers.build("windows", _base(), raw, token.include_backup is not False)
     tenant = db.get(Tenant, token.tenant_id)
     try:
         msi = rmm_deploy.windows_msi(data, token.label, tenant.name if tenant else "Fenrir")
@@ -66,15 +66,15 @@ def _msi_response(db: Session, token: EnrollmentToken, raw: str) -> Response:
 
 @public.get("/linux.sh", response_class=PlainTextResponse)
 def linux_sh(request: Request, x_fenrir_token: str | None = Header(default=None), db: Session = Depends(get_db)):
-    _token(db, request, x_fenrir_token)
-    data, _, media = deployment_installers.build("linux", _base(), x_fenrir_token)
+    token = _token(db, request, x_fenrir_token)
+    data, _, media = deployment_installers.build("linux", _base(), x_fenrir_token, token.include_backup is not False)
     return Response(data, media_type=media)
 
 
 @public.get("/macos.sh", response_class=PlainTextResponse)
 def macos_sh(request: Request, x_fenrir_token: str | None = Header(default=None), db: Session = Depends(get_db)):
-    _token(db, request, x_fenrir_token)
-    data, _, media = deployment_installers.build("macos", _base(), x_fenrir_token)
+    token = _token(db, request, x_fenrir_token)
+    data, _, media = deployment_installers.build("macos", _base(), x_fenrir_token, token.include_backup is not False)
     return Response(data, media_type=media)
 
 
@@ -105,7 +105,7 @@ def create_deployment(body: dict = Body(...), principal: Principal = Depends(cur
     raw = new_secret("fet", 24)
     expires = utcnow() + timedelta(days=days)
     row = EnrollmentToken(tenant_id=tenant_id, group_id=group_id, label=label, token_hash=digest(raw), token_hint=raw[-6:],
-                          max_uses=None, expires_at=expires)
+                          max_uses=None, expires_at=expires, include_backup=body.get("includeBackup", True) is not False)
     db.add(row)
     audit.record(db, principal.actor, "deployment_token.created", label, tenant_id, group=group_id or "", days=days)
     db.commit()
@@ -118,6 +118,7 @@ def create_deployment(body: dict = Body(...), principal: Principal = Depends(cur
         "msi": {"available": rmm_deploy.msi_available(), "downloadPath": f"deploy-scripts/{row.id}/msi",
                 **rmm_deploy.intune_command()},
         "available": deployment_installers.available(),
+        "includeBackup": row.include_backup,
     }
 
 

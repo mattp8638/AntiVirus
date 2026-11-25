@@ -1,0 +1,25 @@
+[package]
+name = "scan"
+description = "Malware scanning of the files inside Fenrir-Backup images (SHA-256 indicators and YARA rules)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+filebrowse.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+sha2 = "0.10"
+# Pure-Rust YARA engine (MIT OR Apache-2.0); hash and PE/ELF modules only.
+boreal = { version = "1.4", default-features = false, features = ["hash", "object"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+core-format = { workspace = true, features = ["test-util"] }
+engine.workspace = true
+nbd-server.workspace = true
+uuid.workspace = true
+zstd.workspace = true
+catalog.workspace = true

@@ -17,13 +17,15 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 73
+LATEST_MIGRATION = 87
 
 def init_engine(url: str, pool_size: int = 5, max_overflow: int = 10) -> Engine:
     global _engine, _session_factory
     kwargs: dict = {"future": True}
     if url.startswith("sqlite"):
-        kwargs["connect_args"] = {"check_same_thread": False}
+        # Wait up to 30 s for a write lock instead of the driver's 5 s: agents polling the relay write often, and a
+        # busy database must slow a request down, not fail it ("database is locked").
+        kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
         if url in {"sqlite://", "sqlite:///:memory:"}:
             from sqlalchemy.pool import StaticPool
 
@@ -529,6 +531,68 @@ def migrate(bind: Engine) -> list[int]:
                     model.__table__.create(conn, checkfirst=True)
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (73)"))
                 applied.append(73)
+            if 74 not in versions:
+                from .models import (BackupAgent, BackupBootCheck, BackupEnrollment, BackupImage, BackupJob,
+                                     BackupRepoAccess, BackupRepository, ImageBackupPlan)
+                for model in (BackupEnrollment, BackupAgent, BackupRepository, BackupRepoAccess, ImageBackupPlan,
+                              BackupJob, BackupImage, BackupBootCheck):  # device backup (backup/README.md)
+                    model.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (74)"))
+                applied.append(74)
+            if 75 not in versions:
+                ensure_columns(Base, conn)  # enrollment_tokens.include_backup: installers bundle the backup agent
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (75)"))
+                applied.append(75)
+            if 76 not in versions:
+                ensure_columns(Base, conn)  # NAS gateway: backup agents, repositories and access
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (76)"))
+                applied.append(76)
+            if 77 not in versions:
+                ensure_columns(Base, conn)  # S3 repositories with Object Lock (backup_repositories.s3)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (77)"))
+                applied.append(77)
+            if 78 not in versions:
+                ensure_columns(Base, conn)  # application-aware backups (backup_images.applications)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (78)"))
+                applied.append(78)
+            if 79 not in versions:
+                ensure_columns(Base, conn)  # off-site copies (image_backup_plans.copy_to_repository_id)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (79)"))
+                applied.append(79)
+            if 80 not in versions:
+                ensure_columns(Base, conn)  # dedup groups (backup_repositories.dedup_source_id)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (80)"))
+                applied.append(80)
+            if 81 not in versions:
+                # DR runbooks and runs: new tables (create_all made them).
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (81)"))
+                applied.append(81)
+            if 82 not in versions:
+                # Malware scans of backup images: a new table.
+                from .models import BackupScan
+                BackupScan.__table__.create(conn, checkfirst=True)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (82)"))
+                applied.append(82)
+            if 83 not in versions:
+                ensure_columns(Base, conn)  # standby VMs (backup_image_plans.standby)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (83)"))
+                applied.append(83)
+            if 84 not in versions:
+                ensure_columns(Base, conn)  # legal holds (backup_images.legal_hold)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (84)"))
+                applied.append(84)
+            if 85 not in versions:
+                ensure_columns(Base, conn)  # media sets and storage checks (backup_repositories)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (85)"))
+                applied.append(85)
+            if 86 not in versions:
+                ensure_columns(Base, conn)  # self-service restore (users.backup_restore_devices)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (86)"))
+                applied.append(86)
+            if 87 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["backup_cases"]])  # eDiscovery cases
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (87)"))
+                applied.append(87)
             conn.commit()
         except Exception:
             conn.rollback()

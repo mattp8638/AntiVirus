@@ -5,6 +5,8 @@ Kinds:
     monthly        "what we did for you" last month (or a given month) and where the customer's health stands
     quarterly      quarterly business review: health and its trend, the work done, and what to do next
     vulnerability  technical: every open vulnerability by risk, ageing, overdue fixes, accepted risks, worst devices
+    backup         device backup for a period (7, 30 or 90 days): machines protected, success rate, restore points,
+                   restore tests (boot checks), malware scans of backups, problems and recommended next steps
 
 Each is available as HTML and PDF, can be kept as sent (client_reports), and emailed on a schedule (schedules.py-style
 settings on the customer: ``Tenant.settings["reportSchedules"]``, see send_schedules).
@@ -27,6 +29,7 @@ KINDS = {
     "monthly": "What we did for you: last month's work and your IT health",
     "quarterly": "Quarterly business review: health trend, work done and recommended next steps",
     "vulnerability": "Vulnerability report: every open vulnerability by risk, with ageing and overdue fixes",
+    "backup": "Backup report: machines protected, success rate, restore points, restore tests and malware scans",
 }
 SEVERITIES = ("critical", "high", "medium", "low")
 SEVERITY_STATUS = {"critical": "bad", "high": "bad", "medium": "warn", "low": "none"}
@@ -338,6 +341,164 @@ def vulnerability_doc(db: Session, tenant: Tenant) -> tuple[str, dict]:
                                       "subtitle": f"Open vulnerabilities as of {now:%d %B %Y}", "blocks": blocks}
 
 
+# --------------------------------------------------------------------------- backup
+
+
+def _bytes(n: int) -> str:
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    v, i = float(n or 0), 0
+    while v >= 1000 and i < len(units) - 1:
+        v, i = v / 1000, i + 1
+    return f"{v:.0f} {units[i]}" if i == 0 else f"{v:.1f} {units[i]}"
+
+
+def backup_data(db: Session, tenant: Tenant, days: int) -> dict:
+    """Device backup of one customer over the last `days`: per machine and in total (no file names, no contents)."""
+    from . import backup as bk
+    from .models import BackupAgent, BackupBootCheck, BackupImage, BackupJob, BackupRepository, BackupScan, ImageBackupPlan
+    from .routers.backup import plan_period
+
+    now = utcnow()
+    since = now - timedelta(days=days)
+    agents = [a for a in db.execute(select(BackupAgent).where(BackupAgent.tenant_id == tenant.id,
+                                                              BackupAgent.revoked.is_(False))).scalars()
+              if a.role != "recovery"]
+    plans = db.execute(select(ImageBackupPlan).where(ImageBackupPlan.tenant_id == tenant.id,
+                                                     ImageBackupPlan.enabled.is_(True))).scalars().all()
+    jobs = db.execute(select(BackupJob).where(BackupJob.tenant_id == tenant.id, BackupJob.finished_at > since)).scalars().all()
+    backups = [j for j in jobs if bk.is_backup(j.kind)]
+    restores = [j for j in jobs if (j.kind or {}).get("type") in ("restore", "restore_files", "download_files",
+                                                                   "restore_application")]
+    images = db.execute(select(BackupImage).where(BackupImage.tenant_id == tenant.id)).scalars().all()
+    by_agent: dict[str, list] = {}
+    for i in images:
+        by_agent.setdefault(i.agent_id or "", []).append(i)
+    checks = db.execute(select(BackupBootCheck).where(BackupBootCheck.tenant_id == tenant.id,
+                                                      BackupBootCheck.at > since)).scalars().all()
+    scans = db.execute(select(BackupScan).where(BackupScan.tenant_id == tenant.id, BackupScan.at > since)).scalars().all()
+    image_agent = {i.image_id: i.agent_id for i in images}
+    repos = db.execute(select(BackupRepository).where(BackupRepository.tenant_id == tenant.id)).scalars().all()
+    last_ok = {}
+    for j in sorted((j for j in backups if j.state in ("succeeded", "warning")), key=lambda j: j.finished_at):
+        last_ok[j.agent_id] = j.finished_at
+    machines = []
+    for a in agents:
+        name = a.display_name or a.hostname
+        mine = [pl for pl in plans if pl.agent_id == a.id and plan_period(pl.schedule)]
+        js = [j for j in backups if j.agent_id == a.id]
+        ok = sum(j.state in ("succeeded", "warning") for j in js)
+        last = max(js, key=lambda j: j.finished_at) if js else None
+        good = last_ok.get(a.id)
+        if not mine:
+            status = "no plan"
+        elif last is not None and last.state == "failed":
+            status = "failing"
+        elif good is None or any(good < now - timedelta(seconds=2 * plan_period(pl.schedule) + 3600) for pl in mine):
+            status = "overdue"
+        else:
+            status = "protected"
+        own = [c for c in checks if image_agent.get(c.image_id) == a.id]
+        latest_check = max(own, key=lambda c: c.at) if own else None
+        own_scans = [sc for sc in scans if image_agent.get(sc.image_id) == a.id]
+        latest_scan = max(own_scans, key=lambda sc: sc.at) if own_scans else None
+        imgs = by_agent.get(a.id, [])
+        machines.append({
+            "name": name, "status": status, "jobs": len(js), "ok": ok, "lastGood": good,
+            "restorePoints": len(imgs), "stored": sum(i.stored_new_bytes or 0 for i in imgs),
+            "bootTest": latest_check.outcome if latest_check else None,
+            "scan": latest_scan.state if latest_scan else None,
+            "infected": sum(1 for sc in own_scans if sc.state == "infected"),
+            "offline": a.last_seen_at is None or now - a.last_seen_at > timedelta(hours=24),
+        })
+    machines.sort(key=lambda m: ({"failing": 0, "overdue": 1, "no plan": 2, "protected": 3}[m["status"]], m["name"].lower()))
+    total_jobs = len(backups)
+    total_ok = sum(j.state in ("succeeded", "warning") for j in backups)
+    failures = [j for j in backups if j.state == "failed"]
+    names = {a.id: a.display_name or a.hostname for a in agents}
+    return {
+        "days": days, "now": now, "machines": machines,
+        "protected": sum(m["status"] == "protected" for m in machines),
+        "jobs": total_jobs, "ok": total_ok,
+        "successRate": round(100 * total_ok / total_jobs) if total_jobs else None,
+        "restores": len(restores), "restoresOk": sum(j.state in ("succeeded", "warning") for j in restores),
+        "bootTests": len(checks), "bootVerified": sum(c.outcome == "verified" for c in checks),
+        "scans": len(scans), "infectedScans": sum(sc.state == "infected" for sc in scans),
+        "stored": sum(i.stored_new_bytes or 0 for i in images),
+        "holds": [r.name for r in repos if r.hold],
+        "failures": [{"machine": names.get(j.agent_id, "?"), "at": j.finished_at, "what": bk.label(j.kind),
+                      "error": (j.error or "")[:200]} for j in sorted(failures, key=lambda j: j.finished_at, reverse=True)[:20]],
+    }
+
+
+def backup_recommendations(data: dict) -> list[str]:
+    out = []
+    ms = data["machines"]
+    if data["holds"]:
+        out.append(f"Possible ransomware put retention on hold in {', '.join(data['holds'])}: check the machines, then release the hold.")
+    infected = [m["name"] for m in ms if m["infected"]]
+    if infected:
+        out.append(f"Malware was found in backups of {', '.join(infected[:5])}: restore from a clean backup and clean the machines.")
+    failing = [m["name"] for m in ms if m["status"] == "failing"]
+    if failing:
+        out.append(f"Fix the failing backups of {', '.join(failing[:5])}.")
+    overdue = [m["name"] for m in ms if m["status"] == "overdue"]
+    if overdue:
+        out.append(f"{', '.join(overdue[:5])} {'has' if len(overdue) == 1 else 'have'} missed scheduled backups.")
+    unplanned = [m["name"] for m in ms if m["status"] == "no plan"]
+    if unplanned:
+        out.append(f"Give {', '.join(unplanned[:5])} a scheduled backup plan.")
+    untested = [m["name"] for m in ms if m["status"] == "protected" and m["bootTest"] != "verified"]
+    if untested:
+        out.append(f"Test a restore of {', '.join(untested[:5])} (a boot test proves the backup starts).")
+    unscanned = [m["name"] for m in ms if m["status"] == "protected" and m["scan"] is None]
+    if unscanned and len(unscanned) == len([m for m in ms if m["status"] == "protected"]):
+        out.append("Turn on malware scans of new backups in the backup plans, to know the last clean restore point.")
+    offline = [m["name"] for m in ms if m["offline"]]
+    if offline:
+        out.append(f"The backup agent of {', '.join(offline[:5])} has not checked in for a day.")
+    return out or ["Nothing needs attention: every machine is backed up on schedule."]
+
+
+def backup_doc(db: Session, tenant: Tenant, days: int) -> tuple[str, dict]:
+    d = backup_data(db, tenant, days)
+    now = d["now"]
+    status = {"protected": "good", "failing": "bad", "overdue": "warn", "no plan": "warn"}
+    blocks = [
+        {"type": "kpis", "items": [
+            {"value": f"{d['protected']} of {len(d['machines'])}", "label": "machines protected"},
+            {"value": "n/a" if d["successRate"] is None else f"{d['successRate']}%", "label": f"backups succeeded ({d['jobs']} run)"},
+            {"value": d["restores"], "label": "restores done"},
+            {"value": f"{d['bootVerified']} of {d['bootTests']}", "label": "restore tests that started"},
+            {"value": d["scans"], "label": "backups scanned for malware"},
+            {"value": d["infectedScans"], "label": "scans that found malware"},
+            {"value": _bytes(d["stored"]), "label": "stored (after deduplication)"},
+        ]},
+        {"type": "heading", "text": "Recommended next steps"},
+        {"type": "list", "items": backup_recommendations(d)},
+        {"type": "heading", "text": "Machines"},
+        {"type": "table", "columns": ["Machine", "Status", "Last good backup", "Backups (ok)", "Restore points",
+                                      "Restore test", "Malware scan", "Stored"],
+         "widths": [2.2, 1.3, 2, 1.3, 1.2, 1.3, 1.3, 1.2], "rows": [
+             [m["name"], {"text": m["status"], "status": status[m["status"]]}, _when(m["lastGood"]),
+              f"{m['jobs']} ({m['ok']})", m["restorePoints"],
+              {"text": m["bootTest"] or "not tested", "status": "good" if m["bootTest"] == "verified" else
+               "bad" if m["bootTest"] == "failed" else None},
+              {"text": m["scan"] or "not scanned", "status": "bad" if m["scan"] == "infected" else
+               "good" if m["scan"] == "clean" else None},
+              _bytes(m["stored"])] for m in d["machines"]]},
+    ]
+    if d["failures"]:
+        blocks += [{"type": "heading", "text": "Failed backups"},
+                   {"type": "table", "columns": ["When", "Machine", "What", "Why"], "widths": [1.8, 2, 1.8, 5],
+                    "rows": [[_when(f["at"]), f["machine"], f["what"], f["error"]] for f in d["failures"]]}]
+    blocks.append({"type": "paragraph", "muted": True, "text":
+                   "Protected: a scheduled plan succeeded within twice its interval. A restore test boots a backup as an "
+                   "isolated virtual machine and checks that it starts. Malware scans check the programs and scripts "
+                   "inside backups against current threat intelligence; file contents never leave the customer's machines."})
+    return now.strftime("%Y-%m-%d"), {"title": f"Backup report: {tenant.name}",
+                                      "subtitle": f"The last {days} days, to {now:%d %B %Y}", "blocks": blocks}
+
+
 def build(db: Session, tenant: Tenant, kind: str, *, days: int = 30, period: str | None = None) -> tuple[str, dict]:
     """(period key, document) for a report kind. Raises ValueError for an unknown kind or a badly formed period."""
     if kind == "executive":
@@ -350,6 +511,10 @@ def build(db: Session, tenant: Tenant, kind: str, *, days: int = 30, period: str
         return quarterly_doc(db, tenant, period)
     if kind == "vulnerability":
         return vulnerability_doc(db, tenant)
+    if kind == "backup":
+        if days not in (7, 30, 90):
+            raise ValueError("days must be 7, 30 or 90")
+        return backup_doc(db, tenant, days)
     raise ValueError(f"kind must be one of {', '.join(KINDS)}")
 
 
@@ -418,7 +583,7 @@ def validate_schedules(value) -> list[dict]:
 
 def _scheduled_doc(db: Session, tenant: Tenant, schedule: dict) -> tuple[str, dict]:
     kind, every = schedule["kind"], schedule["every"]
-    if kind == "executive":
+    if kind in ("executive", "backup"):
         return build(db, tenant, kind, days={"weekly": 7, "monthly": 30, "quarterly": 90}[every])
     return build(db, tenant, kind)  # monthly: last month; quarterly: last complete quarter; vulnerability: now
 

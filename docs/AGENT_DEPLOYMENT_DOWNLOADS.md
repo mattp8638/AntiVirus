@@ -10,6 +10,14 @@ The **Deploy agents** page now selects a target OS and customer/group **before**
 | Windows x64 | `Fenrir-Windows-Enrollment.zip` | Signed staged Setup, **or explicitly enabled SHA-256-pinned unsigned hobby build**; Administrator PowerShell | Both modes verify SHA-256. Signed mode additionally validates Authenticode signer. Unsigned hobby mode is for user-mode lab testing only; it does not disable Windows security or provide kernel minifilter protection. |
 | macOS (Intel / Apple Silicon) | `Install-Fenrir-macOS.sh` | sudo; macOS with launchd | Installs the managed Go agent as a LaunchDaemon (`com.fenrir.agent`) with both architectures embedded and SHA-256 checked. Unsigned: grant `/usr/local/bin/fenrir-agent` Full Disk Access for complete scanning. No screen sharing on macOS yet; not yet tested on a real Mac. |
 
+### Device backup is included
+
+Every installer above also installs the device backup agent (its own service, enrolled with the same token), unless
+**Include device backup** is unticked when the installer or deployment is created. Backup never stops the security
+agent's install. See [DEVICE_BACKUP.md](DEVICE_BACKUP.md#installing-the-agent). A Windows setup you build and stage
+yourself (below) includes backup only if it was built with `-DANTIVIRUS_BACKUP_AGENT_EXE=<path to
+fenrir-backup-agent.exe>`; the Docker image does this automatically.
+
 ### No-cost unsigned hobby / lab mode
 
 If you're experimenting rather than distributing a commercial antivirus, a signed Windows installer isn't mandatory for **user-mode testing**. See [the Phase 1 hobby reliability instructions](PHASE1_HOBBY_AGENT_ACCEPTANCE.md) for building the unsigned setup, pinning its SHA-256 and testing persistence. Set `FENRIR_ALLOW_UNSIGNED_WINDOWS_INSTALLERS=true` explicitly and set `FENRIR_WINDOWS_SETUP_SHA256` to the exact trusted setup hash. This is never the default, is visually flagged in the console, and does not work around Defender, SmartScreen or Windows driver signing.

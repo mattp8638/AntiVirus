@@ -1,0 +1,15 @@
+[package]
+name = "nbd-server"
+description = "Read-only NBD server exporting Fenrir-Backup images straight from the chunk store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+core-format.workspace = true
+
+[dev-dependencies]
+core-format = { workspace = true, features = ["test-util"] }
+engine.workspace = true
+tempfile.workspace = true
