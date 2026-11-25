@@ -77,7 +77,7 @@ KIND_LABELS = {
     "verify": "Verify", "list_images": "Refresh images",
     "apply_retention": "Apply retention", "copy_images": "Copy off-site", "prune": "Reclaim space", "restore": "Restore", "boot_check": "Boot check",
     "stop_vm": "Stop VM", "check_access": "Test connection", "browse_files": "Browse files",
-    "restore_files": "Restore files", "download_files": "Download files",
+    "restore_files": "Restore files", "download_files": "Download files", "export_saas": "eDiscovery export",
     "backup_kubernetes": "Kubernetes backup", "restore_kubernetes": "Kubernetes restore",
     "backup_saas": "SaaS backup", "restore_saas": "SaaS restore",
 }

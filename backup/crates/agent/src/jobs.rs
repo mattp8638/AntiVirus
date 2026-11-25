@@ -205,7 +205,10 @@ fn saas_conn(
         domain_url: t.domain_url.clone(),
         admin: t.admin.clone(),
     };
-    let conn = saas::run::connect(&settings, &secret).map_err(|e| anyhow!("{e}"))?;
+    // Rotating refresh tokens (QuickBooks) are kept in the agent's own state folder.
+    let state = crate::config::state_dir().join("saas");
+    let conn =
+        saas::run::connect_in(&settings, &secret, Some(&state)).map_err(|e| anyhow!("{e}"))?;
     Ok((settings, conn))
 }
 
@@ -933,12 +936,33 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             volume,
             paths,
             recipient,
+            manifest,
         } => crate::browse::download_files(
             ctx,
             access.ok_or_else(|| anyhow!("no repository"))?,
             *image_id,
             *volume,
             paths,
+            recipient,
+            *manifest,
+            spec.id,
+            rep,
+        ),
+        JobKind::ExportSaas {
+            image_id,
+            accounts,
+            kinds,
+            items,
+            recipient,
+        } => crate::export::export_saas(
+            ctx,
+            access.ok_or_else(|| anyhow!("no repository"))?,
+            *image_id,
+            &crate::export::Filter {
+                accounts,
+                kinds,
+                items,
+            },
             recipient,
             spec.id,
             rep,

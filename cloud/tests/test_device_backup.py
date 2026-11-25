@@ -1818,3 +1818,127 @@ def test_self_service_restore_through_the_client_portal(client, admin, tenant):
     other = client.put(f"/api/console/backup/self-service/{jo_id}", headers=admin, json={"deviceIds": ["dev_nope"]})
     assert other.status_code == 400
     assert other_dev["deviceId"]
+
+
+def test_ediscovery_case_holds_searches_exports_and_chain_of_custody(client, admin, tenant):
+    """eDiscovery: a case holds its custodians' backups (and later ones), searches them on the machines with the
+    matches kept, exports with a hash manifest, records the browser's receipt, and its manifest carries the chain of
+    custody; closing it releases only its own holds."""
+    import hashlib
+    import json
+
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    caps = CAPS + ["search_files", "ediscovery", "restore_files"]
+    heartbeat(client, h, caps=caps)
+    repo = ready_repo(client, admin, tenant, agent_id, h)
+    heartbeat(client, h, caps=caps)
+
+    def backup(t, **extra):
+        r = client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin,
+                        json={"kind": {"type": "backup_system"}, "repositoryId": repo})
+        assert r.status_code == 200, r.text
+        im = {**image(t=t), **extra}
+        while (jobs := heartbeat(client, h, caps=caps)["jobs"]):
+            finish(client, h, jobs[0]["id"], **({"images": [im]} if jobs[0]["id"] == r.json()["id"] else {}))
+        return im
+
+    first = backup(0)
+    saas = backup(10, machine_id="saas:m365:contoso", hostname="contoso", kind="saas")
+    admin = unlock(client, admin, h, repo, agent_id, caps=caps)
+    devices = client.get("/api/console/backup/image-devices", headers=admin).json()
+    machine = next(d for d in (devices if isinstance(devices, list) else devices["devices"]) if "saas" not in str(d))
+    key = machine.get("device") or machine.get("key") or machine.get("id")
+    saas_key = "app:saas:m365:contoso|"
+    bad = client.post("/api/console/backup/cases", headers=admin, json={"name": "X", "custodians": []})
+    assert bad.status_code == 400
+    r = client.post("/api/console/backup/cases", headers=admin, json={
+        "tenantId": tenant["id"], "name": "Smith v Acme", "matter": "M-2026-14",
+        "custodians": [{"device": key}, {"device": saas_key, "accounts": ["ann@contoso.com"]}]})
+    assert r.status_code == 200, r.text
+    case = r.json()
+    assert case["heldBackups"] == 2
+    images = {i["imageId"]: i for i in client.get(f"/api/console/backup/images?repositoryId={repo}", headers=admin).json()}
+    assert images[first["image_id"]]["legalHold"]["cases"] == [case["id"]]
+
+    later = backup(20)  # a later backup of a custodian is held too
+    images = {i["imageId"]: i for i in client.get(f"/api/console/backup/images?repositoryId={repo}", headers=admin).json()}
+    assert images[later["image_id"]]["legalHold"]["cases"] == [case["id"]]
+
+    r = client.post(f"/api/console/backup/cases/{case['id']}/search", headers=admin, json={"query": "budget"})
+    assert r.status_code == 200, r.text
+    spec = heartbeat(client, h, caps=caps)["jobs"][0]
+    assert spec["kind"]["type"] == "search_files" and set(spec["kind"]["images"]) == {first["image_id"], saas["image_id"], later["image_id"]}
+    finish(client, h, spec["id"], result={"hits": [
+        {"image_id": first["image_id"], "path": "/Users/ann/budget.xlsx", "size": 10, "folder": False,
+         "volume": {"disk": 0, "partition": 2}},
+        {"image_id": saas["image_id"], "account": "ann@contoso.com", "kind": "mail", "path": "Inbox/Budget", "size": 5},
+        {"image_id": saas["image_id"], "account": "bob@contoso.com", "kind": "mail", "path": "Inbox/Budget", "size": 5}]})
+    full = client.get(f"/api/console/backup/cases/{case['id']}", headers=admin).json()
+    s = full["searches"][0]
+    assert s["state"] == "done" and len(s["hits"]) == 2, "only the case's accounts of the tenant"
+
+    key_b64 = base64.b64encode(b"r" * 32).decode()
+    r = client.post(f"/api/console/backup/cases/{case['id']}/export", headers=admin, json={
+        "imageId": saas["image_id"], "accounts": ["bob@contoso.com"], "recipient": key_b64})
+    assert r.status_code == 400
+    r = client.post(f"/api/console/backup/cases/{case['id']}/export", headers=admin, json={
+        "imageId": saas["image_id"], "kinds": ["mail"], "recipient": key_b64})
+    assert r.status_code == 200, r.text
+    export = r.json()
+    spec = heartbeat(client, h, caps=caps)["jobs"][0]
+    assert spec["kind"] == {"type": "export_saas", "image_id": saas["image_id"], "accounts": ["ann@contoso.com"],
+                            "kinds": ["mail"], "items": [], "recipient": key_b64}
+    stream = b"encrypted-bytes" * 10
+    up = client.post(f"/backup/api/agent/jobs/{spec['id']}/download?offset=0", headers=h, content=stream)
+    assert up.status_code == 200, up.text
+    finish(client, h, spec["id"], result={"download": {"sealed_key": "x"}, "manifest_sha256": "ab" * 32,
+                                          "manifest_files": 3})
+    r = client.post(f"/api/console/backup/cases/{case['id']}/export", headers=admin, json={
+        "imageId": first["image_id"], "disk": 0, "partition": 2, "paths": ["/Users/ann/budget.xlsx"], "recipient": key_b64})
+    assert r.status_code == 200, r.text
+    spec = heartbeat(client, h, caps=caps)["jobs"][0]
+    assert spec["kind"]["type"] == "download_files" and spec["kind"]["manifest"] is True
+    r = client.post(f"/api/console/backup/cases/{case['id']}/exports/{export['id']}/receipt", headers=admin,
+                    json={"sha256": "cd" * 32, "bytes": 1234})
+    assert r.status_code == 200, r.text
+
+    doc = client.get(f"/api/console/backup/cases/{case['id']}/manifest", headers=admin).json()
+    body = {k: v for k, v in doc.items() if k != "sha256"}
+    assert doc["sha256"] == hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()
+    ex = next(x for x in doc["exports"] if x["id"] == export["id"])
+    assert ex["state"] == "succeeded" and ex["manifestSha256"] == "ab" * 32
+    assert ex["ciphertextSha256"] == hashlib.sha256(stream).hexdigest() and ex["receipts"][0]["sha256"] == "cd" * 32
+    assert len(doc["holds"]) == 3 and any(a["action"] == "backup.case.created" for a in doc["auditTrail"])
+
+    # A hold placed by hand stays when the case closes.
+    assert client.post(f"/api/console/backup/images/{first['image_id']}/legal-hold", headers=admin,
+                       json={"hold": True, "reason": "HR matter"}).status_code == 200
+    url = f"/api/console/backup/cases/{case['id']}/close"
+    assert client.post(url, headers=admin).json()["detail"] == "reauth_required"
+    r = client.post(url, headers={**admin, "X-Fenrir-Reauth": reauth(client, admin)})
+    assert r.status_code == 200 and r.json()["status"] == "closed" and r.json()["heldBackups"] == 0
+    images = {i["imageId"]: i for i in client.get(f"/api/console/backup/images?repositoryId={repo}", headers=admin).json()}
+    assert images[later["image_id"]]["legalHold"] is None
+    assert images[first["image_id"]]["legalHold"]["reason"] == "HR matter"
+
+
+def test_quickbooks_online_plans(client, admin, tenant):
+    """QuickBooks Online: the company (realm) ID and the Intuit app's client ID; only the sealed secret is kept."""
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    caps = CAPS + ["saas"]
+    heartbeat(client, h, caps=caps)
+    repo = ready_repo(client, admin, tenant, agent_id, h)
+    heartbeat(client, h, caps=caps)
+    t = {"service": "quickbooks", "tenant": "9130350000000000", "client_id": "ABc", "objects": ["Customer", "Invoice"]}
+    body = {"name": "Books", "agentId": agent_id, "repositoryId": repo, "schedule": {"type": "manual"},
+            "job": {"type": "backup_saas", "tenant": t, "sealed_secret": SEALED}}
+    for bad_t in ({**t, "tenant": "acme"}, {**t, "client_id": ""}, {**t, "domain_url": "http://sandbox"}):
+        assert client.post("/api/console/backup/plans", headers=admin, json={**body, "job": {**body["job"], "tenant": bad_t}}).status_code == 400
+    r = client.post("/api/console/backup/plans", headers=admin, json=body)
+    assert r.status_code == 200, r.text
+    assert client.post(f"/api/console/backup/plans/{r.json()['id']}/run", headers=admin).status_code == 200
+    spec = heartbeat(client, h, caps=caps)["jobs"][0]
+    assert spec["kind"]["tenant"]["service"] == "quickbooks" and spec["kind"]["tenant"]["objects"] == ["Customer", "Invoice"]
+    assert spec["kind"]["sealed_secret"] == SEALED

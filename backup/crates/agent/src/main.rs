@@ -9,6 +9,7 @@ mod cloudrestore;
 mod config;
 mod discover;
 mod download;
+mod export;
 mod folders;
 mod gateway;
 mod hwfix;

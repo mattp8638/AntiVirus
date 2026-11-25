@@ -123,6 +123,67 @@ pub fn tar_dir(root: &Path, out: &mut impl Write) -> io::Result<u64> {
     Ok(c.1)
 }
 
+/// The manifest written into eDiscovery archives.
+pub const MANIFEST: &str = "fenrir-manifest.json";
+
+/// Every file under `root` with its size and SHA-256 (paths with `/`).
+pub fn hash_tree(root: &Path) -> io::Result<Vec<serde_json::Value>> {
+    use sha2::{Digest, Sha256};
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for e in std::fs::read_dir(&dir)?.flatten() {
+            let p = e.path();
+            let md = e.metadata()?;
+            if md.is_dir() {
+                stack.push(p);
+            } else if md.is_file() {
+                let mut h = Sha256::new();
+                io::copy(&mut File::open(&p)?, &mut h)?;
+                let rel = p
+                    .strip_prefix(root)
+                    .unwrap_or(&p)
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                out.push(serde_json::json!({
+                    "file": rel, "size": md.len(), "sha256": hex(&h.finalize()),
+                }));
+            }
+        }
+    }
+    out.sort_by(|a, b| a["file"].as_str().cmp(&b["file"].as_str()));
+    Ok(out)
+}
+
+pub fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// Write `fenrir-manifest.json` into `root` (the source, the agent, the
+/// time, and each entry); returns its SHA-256 and the number of entries.
+pub fn write_manifest(
+    root: &Path,
+    source: serde_json::Value,
+    entries: Vec<serde_json::Value>,
+) -> io::Result<(String, usize)> {
+    use sha2::{Digest, Sha256};
+    let n = entries.len();
+    let doc = serde_json::json!({
+        "format": "fenrir-ediscovery-manifest", "version": 1,
+        "generated_unix": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()),
+        "agent_version": env!("CARGO_PKG_VERSION"),
+        "host": crate::inventory::hostname(),
+        "source": source,
+        "entries": entries,
+    });
+    let bytes = serde_json::to_vec_pretty(&doc)?;
+    std::fs::write(root.join(MANIFEST), &bytes)?;
+    Ok((hex(&Sha256::digest(&bytes)), n))
+}
+
 /// Encrypt `archive` for `recipient` and hand the stream to `upload` in
 /// batches (offset, bytes). Returns the header for the browser.
 pub fn encrypt_and_send(
@@ -237,5 +298,28 @@ mod tests {
             protocol::download::decrypt(&key, &stream).unwrap(),
             std::fs::read(&tar).unwrap()
         );
+    }
+}
+
+#[cfg(test)]
+mod manifest_tests {
+    #[test]
+    fn manifest_lists_each_file_with_its_sha256() {
+        let d = std::env::temp_dir().join(format!("fenrir-manifest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("a")).unwrap();
+        std::fs::write(d.join("a/x.txt"), b"abc").unwrap();
+        let files = super::hash_tree(&d).unwrap();
+        assert_eq!(files[0]["file"], "a/x.txt");
+        assert_eq!(
+            files[0]["sha256"],
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        let (sha, n) = super::write_manifest(&d, serde_json::json!({}), files).unwrap();
+        assert_eq!(n, 1);
+        let bytes = std::fs::read(d.join(super::MANIFEST)).unwrap();
+        use sha2::Digest;
+        assert_eq!(sha, super::hex(&sha2::Sha256::digest(&bytes)));
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

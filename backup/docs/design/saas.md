@@ -82,6 +82,28 @@ signs in at the org's My Domain URL.
 * Restore: a record that still exists is left alone, or updated with `--overwrite` (updateable fields); a deleted
   one is created again (createable fields, a new ID).
 
+## QuickBooks Online (`saas::quickbooks`)
+
+The customer's own Intuit app (Accounting scope), connected to the company once with the OAuth 2.0 authorization-code
+grant; the backup is given the app's client ID and, sealed, its client secret and the refresh token
+(`{"client_secret": ..., "refresh_token": ...}`). The company is the tenant (its realm ID).
+
+* Each entity is an item (`record`, its JSON as the API returns it) under `Entity/Id`: the lists (accounts, classes,
+  departments, terms, payment methods, tax codes and rates, customers, vendors, employees, items) and the
+  transactions (estimates, invoices, sales receipts, payments, credit memos, refund receipts, bills, bill payments,
+  vendor credits, purchases, purchase orders, journal entries, deposits, transfers, time activities), or the
+  entities named.
+* Incremental: a query on `MetaData.LastUpdatedTime` since the previous backup, and deletions from the change data
+  capture API. That API looks back 30 days, so an entity whose last backup is older is listed in full.
+* Intuit rotates refresh tokens as they are used, and the old one stops working. The machine that runs the backups
+  keeps the newest in its state folder (the CLI: next to the secret file), tied to a hash of the token it was given,
+  so a token the administrator enters again replaces the kept one. A token unused for 100 days expires: connect the
+  company again.
+* Restore re-creates deleted entities (QuickBooks gives them new IDs; references to other entities keep their IDs)
+  and, when asked, updates existing ones with their current `SyncToken`. Tax codes and rates are read-only in the API.
+
+Tested against a mock of the API (`tests/quickbooks_mock.rs`); not yet against an Intuit sandbox company.
+
 ## Commands
 
 ```

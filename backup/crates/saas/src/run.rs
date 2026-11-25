@@ -8,19 +8,21 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::store::{self, Item};
-use crate::{err, google, m365, salesforce, Error, Result};
+use crate::{err, google, m365, quickbooks, salesforce, Error, Result};
 
 /// Which service and tenant, and the non-secret parts of the customer's
 /// app registration, service account or connected app.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
-    /// "m365", "google" or "salesforce".
+    /// "m365", "google", "salesforce" or "quickbooks".
     pub service: String,
-    /// Directory (tenant) ID or domain; Google domain; Salesforce org name.
+    /// Directory (tenant) ID or domain; Google domain; Salesforce org name;
+    /// QuickBooks company (realm) ID.
     pub tenant: String,
     #[serde(default)]
     pub client_id: String,
-    /// Salesforce: https://<my-domain>.my.salesforce.com
+    /// Salesforce: https://<my-domain>.my.salesforce.com. QuickBooks: the
+    /// API address (empty: production; the sandbox for development).
     #[serde(default)]
     pub domain_url: String,
     /// Google: an administrator to list users as.
@@ -34,7 +36,8 @@ pub struct Scope {
     /// Users (empty: every user). Not used for Salesforce.
     #[serde(default)]
     pub users: Vec<String>,
-    /// Salesforce objects (empty: the standard ones and every custom object).
+    /// Salesforce objects (empty: the standard ones and every custom
+    /// object); QuickBooks entities (empty: lists and transactions).
     #[serde(default)]
     pub objects: Vec<String>,
     #[serde(default = "yes")]
@@ -73,11 +76,19 @@ pub enum Conn {
     M365(m365::M365),
     Google(Box<google::Google>),
     Salesforce(salesforce::Salesforce),
+    QuickBooks(quickbooks::QuickBooks),
 }
 
 /// Sign-in details. `secret` is the client secret (Microsoft 365,
-/// Salesforce) or the service account's JSON key (Google).
+/// Salesforce), the service account's JSON key (Google), or the client
+/// secret and refresh token as JSON (QuickBooks).
 pub fn connect(s: &Settings, secret: &str) -> Result<Conn> {
+    connect_in(s, secret, None)
+}
+
+/// As `connect`; `state` is a folder of this machine where rotating
+/// refresh tokens (QuickBooks) are kept between runs.
+pub fn connect_in(s: &Settings, secret: &str, state: Option<&std::path::Path>) -> Result<Conn> {
     let need = |v: &str, what: &str| {
         if v.trim().is_empty() {
             Err(err(format!("{what} is needed for {}", s.service)))
@@ -104,9 +115,24 @@ pub fn connect(s: &Settings, secret: &str) -> Result<Conn> {
             client_id: need(&s.client_id, "the consumer key")?,
             client_secret: secret,
         })),
+        "quickbooks" => {
+            let realm = need(&s.tenant, "the company (realm) ID")?;
+            let client = need(&s.client_id, "the client ID")?;
+            let mut cfg = quickbooks::Config::from_secret(&realm, &client, &secret, &s.domain_url)?;
+            cfg.token_cache = state.map(|d| {
+                d.join(format!(
+                    "quickbooks-{}.json",
+                    blake3::hash(format!("{client}|{realm}").as_bytes())
+                        .to_hex()
+                        .get(..16)
+                        .unwrap_or("")
+                ))
+            });
+            Conn::QuickBooks(quickbooks::QuickBooks::new(cfg))
+        }
         other => {
             return Err(err(format!(
-                "unknown service {other}: m365, google or salesforce"
+                "unknown service {other}: m365, google, salesforce or quickbooks"
             )))
         }
     })
@@ -168,6 +194,14 @@ pub fn backup(
             },
             progress,
         ),
+        Conn::QuickBooks(q) => q.backup(
+            &mut w,
+            pi,
+            &quickbooks::Options {
+                entities: scope.objects.clone(),
+            },
+            progress,
+        ),
     }?;
     let items = w.index.items.len();
     let warnings = w.index.warnings.clone();
@@ -218,6 +252,7 @@ pub fn restore(
         Conn::M365(_) => "m365",
         Conn::Google(_) => "google",
         Conn::Salesforce(_) => "salesforce",
+        Conn::QuickBooks(_) => "quickbooks",
     };
     if idx.service != service {
         return Err(err(format!("that is a {} backup", idx.service)));
@@ -290,6 +325,13 @@ pub fn restore(
                 };
                 g.restore_file(&target, &f, it, &data)
             }
+            (Conn::QuickBooks(q), "record") => q
+                .restore_record(
+                    it.meta["entity"].as_str().unwrap_or(""),
+                    &data,
+                    sel.overwrite,
+                )
+                .map(|_| ()),
             (Conn::Salesforce(s), "record") => s
                 .restore_record(
                     it.meta["object"].as_str().unwrap_or(""),

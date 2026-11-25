@@ -21,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import backup as bk
+from .. import backup_cases as cases
 from .. import backup_gateway as gw
 from .. import ratelimit
 from ..security import digest
@@ -291,7 +292,7 @@ async def upload_download(job_id: str, offset: int, request: Request, agent: Bac
         raise HTTPException(404, "unknown job")
     if job.agent_id != agent.id:
         raise HTTPException(403, "job belongs to another agent")
-    if (job.kind or {}).get("type") != "download_files" or job.state in bk.FINAL_STATES:
+    if (job.kind or {}).get("type") not in ("download_files", "export_saas") or job.state in bk.FINAL_STATES:
         raise HTTPException(409, "not a running download")
     body = await request.body()
     if len(body) > 16 << 20 or offset < 0:
@@ -362,6 +363,8 @@ def update_job(job_id: str, body: dict = Body(...), agent: BackupAgent = Depends
                               **{f: int(im.get(f) or 0) for f in IMAGE_INT_FIELDS})
             db.add(row)
             db.flush()
+            if bk.is_backup(kind) or kind.get("type") == "copy_images":
+                cases.hold_new_image(db, row)
             if bk.is_backup(kind):
                 reason = bk.check_anomaly(db, repo.id, im)
                 if reason:
@@ -391,6 +394,8 @@ def update_job(job_id: str, body: dict = Body(...), agent: BackupAgent = Depends
                                f"A boot check of image {kind.get('image_id')} failed: {_str(b.get('message'), 500)}")
         if kind.get("type") == "check_access" and final and job.requested_by == bk.STORAGE_CHECK_BY:
             bk.record_storage_check(db, job, state, job.error)
+        if final and (job.requested_by or "").startswith(cases.PREFIX):
+            cases.record_job(db, job, state)
         if kind.get("type") == "scan_image" and final:
             bk.record_scan(db, job, agent, state, body.get("result") if isinstance(body.get("result"), dict) else None)
         if kind.get("type") == "list_images" and final and repo.status == "pending" and not repo.repo_uuid:

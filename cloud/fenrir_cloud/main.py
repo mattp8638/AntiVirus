@@ -30,7 +30,7 @@ from .routers import m365_admin as m365_admin_router
 from .routers import m365 as m365_router, network as network_router, grc as grc_router, soc_workflows
 from .routers import documentation as documentation_router
 from .routers import push as push_router
-from .routers import backup as backup_router, backup_agent as backup_agent_router
+from .routers import backup as backup_router, backup_agent as backup_agent_router, backup_cases as backup_cases_router
 from .routers import active_directory as ad_router
 from .routers import agent_health as agent_health_router
 from .routers import onboarding as onboarding_router
@@ -624,6 +624,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(deploy_router.public)
     app.include_router(backup_router.router)
     app.include_router(backup_agent_router.router)
+    app.include_router(backup_cases_router.router)
     app.include_router(email_security_router.public)
     app.include_router(documentation_router.router)
     app.include_router(m365_router.oauth)

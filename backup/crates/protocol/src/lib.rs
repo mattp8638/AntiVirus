@@ -521,6 +521,25 @@ pub enum JobKind {
         volume: VolumeRef,
         paths: Vec<String>,
         recipient: String,
+        /// eDiscovery: add `fenrir-manifest.json` (each file's SHA-256)
+        /// to the archive and report the manifest's hash.
+        #[serde(default)]
+        manifest: bool,
+    },
+    /// eDiscovery export of a SaaS backup's items (mail as .eml, files,
+    /// records and messages as JSON) with `fenrir-manifest.json`, each item
+    /// checked against the hash it was backed up with, encrypted for the
+    /// browser like a file download. Filters combine; empty means all.
+    ExportSaas {
+        image_id: Uuid,
+        #[serde(default)]
+        accounts: Vec<String>,
+        #[serde(default)]
+        kinds: Vec<String>,
+        /// Item IDs (the service's), or paths, to export.
+        #[serde(default)]
+        items: Vec<String>,
+        recipient: String,
     },
     /// The local recovery partition (docs/design/local-recovery.md):
     /// install (shrinks the system volume; `confirm` is the machine's name),
@@ -621,6 +640,7 @@ impl JobKind {
             JobKind::RestoreSaas { .. } => "SaaS restore",
             JobKind::RestoreFiles { .. } => "Restore files",
             JobKind::DownloadFiles { .. } => "Download files",
+            JobKind::ExportSaas { .. } => "eDiscovery export",
         }
     }
 }

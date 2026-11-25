@@ -127,6 +127,27 @@ fn sql_str(s: &str) -> String {
 }
 
 /// T-SQL that attaches the restored files as database `name`.
+/// SQL Server data files (.mdf, .ndf) and log files (.ldf), each sorted;
+/// anything else (full-text catalogues, FILESTREAM) is left out.
+pub fn sql_files<'a>(files: impl Iterator<Item = &'a PathBuf>) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let ext = |p: &PathBuf| {
+        p.extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default()
+    };
+    let (mut d, mut l) = (Vec::new(), Vec::new());
+    for p in files {
+        match ext(p).as_str() {
+            "mdf" | "ndf" => d.push(p.clone()),
+            "ldf" => l.push(p.clone()),
+            _ => {}
+        }
+    }
+    d.sort();
+    l.sort();
+    (d, l)
+}
+
 pub fn attach_sql(name: &str, data: &[PathBuf], logs: &[PathBuf]) -> String {
     let files: Vec<String> = data
         .iter()
@@ -336,14 +357,15 @@ pub fn run(
                 .filter(|s| !s.trim().is_empty())
                 .map(str::to_string)
                 .unwrap_or(format!("{name}_restored"));
-            // Some writers list data and log files only as "database" files: sort them by extension.
-            let (mut d, mut l): (Vec<PathBuf>, Vec<PathBuf>) = data
-                .iter()
-                .chain(&logs)
-                .cloned()
-                .partition(|p| !p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ldf")));
-            d.sort();
-            l.sort();
+            // SQL Server's writer lists its files with varying roles (often as plain
+            // files): sort every restored file by its extension instead.
+            let (d, l) = sql_files(data.iter().chain(&logs).chain(&others));
+            if d.is_empty() {
+                bail!(
+                    "no SQL Server data file (.mdf) was restored for {}",
+                    app.component
+                );
+            }
             let sql = attach_sql(&as_name, &d, &l);
             std::fs::write(
                 target.join(format!(
@@ -397,6 +419,33 @@ pub fn run(
 mod tests {
     use super::*;
     use core_format::fsdetect::FsType;
+
+    #[test]
+    fn sql_files_are_sorted_by_extension_whatever_their_role() {
+        let f: Vec<PathBuf> = [
+            "C:\\r\\db_log.LDF",
+            "C:\\r\\db.mdf",
+            "C:\\r\\db2.ndf",
+            "C:\\r\\ft.ftcat",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .collect();
+        let (d, l) = sql_files(f.iter());
+        assert_eq!(
+            d,
+            vec![
+                PathBuf::from("C:\\r\\db.mdf"),
+                PathBuf::from("C:\\r\\db2.ndf")
+            ]
+        );
+        assert_eq!(l, vec![PathBuf::from("C:\\r\\db_log.LDF")]);
+        let sql = attach_sql("x", &d, &l);
+        assert!(
+            sql.contains("(FILENAME = N'C:\\r\\db.mdf')") && sql.contains("db_log.LDF"),
+            "{sql}"
+        );
+    }
 
     fn vol(disk: u32, part: u32, mounts: &[&str]) -> filebrowse::Volume {
         filebrowse::Volume {

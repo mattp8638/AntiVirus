@@ -138,6 +138,23 @@ rate, restores, restore tests and malware scans, each machine's last good backup
 can be emailed on a schedule (weekly: 7 days, monthly: 30, quarterly: 90) like the other reports. See
 `docs/REPORTS_AND_BRANDING.md`.
 
+## eDiscovery cases
+
+**Backups › eDiscovery** opens a case for a matter: name it, give the matter reference, and choose its
+**custodians**: machines, and cloud-service tenants (optionally only some mailboxes or users). While the case is
+open their backups are on legal hold, and with "also hold backups taken while the case is open" every later backup
+of a custodian is held as it arrives. Closing the case (password check) releases the holds it placed; holds placed
+by hand or by another open case stay.
+
+**Search custodians** runs on the machines that keep the backups and keeps the matches with the case. Tick matches
+and **Export**: the machine restores them and writes `fenrir-manifest.json` into the archive with each item's
+SHA-256 (mail as `.eml`, files as themselves, records and directory objects as JSON; cloud items are checked against
+the hash taken at backup time), then encrypts the archive for your browser. When you download it, your browser
+records the SHA-256 of what it saved. **Chain-of-custody manifest** downloads the case's record: custodians, held
+backups, searches, every export with the agent's manifest hash, the hash of the encrypted stream this server relayed
+and your browser's receipt, and the case's audit entries, sealed with the SHA-256 of the record itself. Searching and
+exporting need the repositories unlocked, as for any restore. Design: `backup/docs/design/ediscovery.md`.
+
 ## Self-service restore in the client portal
 
 Under **Backups › Self-service**, tick the devices each client-portal user (role `client`) may restore from. Those
@@ -253,7 +270,7 @@ setting `full_read` turns this off. Retention has an
 **Hourly** rule (the newest image of each of the latest N hours) for many short-lived restore points. Design:
 `backup/docs/design/frequent-backups.md`.
 
-## Apps & clusters: Microsoft 365, Google Workspace, Salesforce, Kubernetes
+## Apps & clusters: Microsoft 365, Google Workspace, Salesforce, QuickBooks Online, Kubernetes
 
 **Backups › Apps & clusters** backs up a customer's Microsoft 365 or Google Workspace mailboxes and drive files,
 Salesforce records, or Kubernetes namespaces (their objects, and with a volume image also their volumes' data) into
@@ -274,6 +291,15 @@ folder of the site's document library; Entra users, groups and applications are 
 settings (passwords and secrets are never in a backup). Teams messages are kept and searchable but cannot be posted
 back as the original authors: Microsoft offers no way to recreate channel history. Searching a machine's backups also
 finds mail, files, records, Teams messages and Entra objects in these backups, by subject, name or path.
+
+**QuickBooks Online**: the customer's own Intuit app (Accounting scope), connected to the company once. Enter the
+company (realm) ID, the app's client ID, its client secret and the refresh token from that connection; the secret and
+token are encrypted in your browser for the machine that runs the backups. Every list and transaction type is backed
+up (or the entities you name), incrementally after the first run. Intuit replaces the refresh token as it is used:
+the machine keeps the newest one itself, so the token you entered is only the first link. If backups stop with a
+sign-in error after the machine was rebuilt, or after 100 days without a backup, connect the company again and paste
+the new refresh token. Restore re-creates deleted customers, invoices and other entities (QuickBooks gives them new
+numbers) and, if you tick it, puts the backed-up values back on ones that still exist.
 
 ## Continuous data protection (Linux)
 
