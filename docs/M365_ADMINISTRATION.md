@@ -52,6 +52,38 @@ The first reviewed write-administration increment is described in [M365_ACTIONS.
 
 PR #9 provides encrypted direct-tenant application connections and on-demand, read-only users, subscribed licences and Secure Score snapshots. It does not yet implement tenant write administration, GDAP, workload management or baseline enforcement. No live tenant changes have been made as part of this requirement update.
 
+## Diagnostics and the Graph explorer (M365-32)
+
+The code is in `cloud/fenrir_cloud/m365_tools.py`.
+
+**Domain and email diagnostics** are under *Microsoft 365 across customers → Diagnostics*. They read only public
+information, need no connection and change nothing:
+* MX;
+* SPF, with its DNS-lookup count against the limit of 10;
+* DMARC policy;
+* the Microsoft 365 DKIM selectors;
+* autodiscover;
+* MTA-STS;
+* the Microsoft tenant the domain belongs to, from Microsoft's public OpenID configuration.
+
+Every check is audited.
+
+**Graph explorer** is the tenant tab of that name. It sends one `GET` to Microsoft Graph through the connection, and
+it cannot be used to get round the reviewed actions:
+* **Method:** `GET` only. Changes go through the reviewed actions, which have previews, step-up and audit.
+* **Paths:** only approved directory, policy, device, report and security resources. Refused, even under an approved
+  resource:
+  * paths to people's content (mail, mailbox settings, files and drives, sites, chats and channels, calendars and
+    events, contacts, notes, photos);
+  * `$batch`;
+  * `$value`.
+* **Addresses:** relative paths, or full `graph.microsoft.com` addresses. Path traversal is refused.
+* **Query options:** only `$select`, `$filter`, `$top` (at most 100), `$orderby`, `$count`, `$search` and `$expand`.
+* **Size:** a single page, cut at 1 MB.
+* **Permission:** `m365_admin`.
+* **Audit:** every request is audited with its path, status and size, but never the response. Refused paths are
+  audited too.
+
 ## Conditional Access simulation and gap analysis (M365-15)
 
 On a configuration backup, **Conditional Access gap analysis (modelled)** shows how the backup's Conditional Access

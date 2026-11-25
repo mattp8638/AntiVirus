@@ -9,9 +9,9 @@ Baseline of the review: `main` at `790e364`. Work branch: `claude/jolly-goodall-
 | State | Count |
 |---|---|
 | verified | 6 (FIX-01 to FIX-05, FIX-08) |
-| implemented-unverified | 39 |
+| implemented-unverified | 40 |
 | partial | 122 |
-| missing | 9 (RMM-14, MDM-02, AV-15, AV-16, AV-21, M365-27/29/32, VULN-12) |
+| missing | 8 (RMM-14, MDM-02, AV-15, AV-16, AV-21, M365-27/29, VULN-12) |
 | externally-blocked | 2 (FIX-06; AV-24 needs a Microsoft-signed kernel filter) |
 
 Overall parity: **not passed**. MVP: **not yet declared**.
@@ -33,6 +33,7 @@ Each entry below cites its code and tests in `catalogue.csv` and is `implemented
 * M365-30 cross-tenant bulk and scheduled actions; M365-14 tenant configuration backup, comparison and restore;
   M365-09 scheduled absences with reversion; M365-11 apps, consent and credential expiry; M365-15 modelled
   Conditional Access gap analysis (mocked Microsoft responses).
+* M365-32 domain diagnostics and a read-only, audited Graph explorer.
 * VULN-08 safe web application assessment (confirmed vs suspected findings, untested categories listed).
 * VULN-13 `partial`: pfSense and OPNsense configuration assessment from uploaded exports; other vendors refused.
 * AV-24 `externally-blocked`: needs a Microsoft-signed kernel filter.

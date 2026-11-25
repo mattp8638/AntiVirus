@@ -7,12 +7,13 @@ import { displayValue } from "../components/DisplayValue";
 import { ErrorNote, Modal, PageHead, Pill, Stat, Table, Tabs, TenantSelect, useAction, useData } from "../components/ui";
 import { M365_SECTION, SectionTabs } from "../components/sections";
 import M365Bulk from "./M365Bulk";
+import { DomainDiagnostics } from "./M365Tools";
 
 const STATUS_TONE: Record<string, string> = { compliant: "good", drifted: "bad", deployed: "blue", failed: "bad", unknown: "muted", active: "good" };
 
 export default function M365Partner() {
   const { can } = useApp();
-  const tabs = [...(can("manage_tenants") && can("m365_admin") ? ["Partner (GDAP)"] : []), "Security standards", "Bulk actions", "Reconciliation"];
+  const tabs = [...(can("manage_tenants") && can("m365_admin") ? ["Partner (GDAP)"] : []), "Security standards", "Bulk actions", "Reconciliation", "Diagnostics"];
   const [tab, setTab] = useState(tabs[0]);
   return (
     <>
@@ -24,6 +25,7 @@ export default function M365Partner() {
       {tab === "Security standards" && <Standards />}
       {tab === "Bulk actions" && <M365Bulk />}
       {tab === "Reconciliation" && <Reconciliation />}
+      {tab === "Diagnostics" && <DomainDiagnostics />}
     </>
   );
 }
