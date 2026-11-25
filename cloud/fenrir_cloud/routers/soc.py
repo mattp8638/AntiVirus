@@ -524,6 +524,10 @@ def update_incident(incident_id: str, body: dict = Body(...), principal: Princip
     if incident.status in {"resolved", "closed"}:
         for alert in db.execute(select(Alert).where(Alert.incident_id == incident.id, Alert.status.in_(("new", "triaged")))).scalars():
             alert.status = "resolved"
+    if "status" in changed and incident.status == "closed":
+        from .. import incident_report
+
+        incident_report.to_governance(db, incident, principal.actor)  # FLOW-03: the record becomes compliance evidence
     audit.record(db, principal.actor, "incident.updated", incident.id, incident.tenant_id, fields=changed)
     db.commit()
     return to_dict(incident)
@@ -757,3 +761,36 @@ def delete_automation(automation_id: str, principal: Principal = Depends(current
 @router.get("/playbooks")
 def list_playbooks(principal: Principal = Depends(current_principal)):
     return playbooks()
+
+
+@router.post("/incidents/{incident_id}/restoration")
+def incident_restoration(incident_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                         db: Session = Depends(get_db)):
+    """Record a restoration step (systems back in service, data restored, accounts re-enabled)."""
+    principal.require("respond")
+    incident = db.get(Incident, incident_id)
+    if incident is None:
+        raise HTTPException(404, "Not found")
+    principal.check_tenant(incident.tenant_id)
+    text = str(body.get("text") or "").strip()
+    if len(text) < 5:
+        raise HTTPException(400, "describe what was restored")
+    incident.timeline = (incident.timeline or []) + [{"at": utcnow().isoformat(), "kind": "restoration", "text": text[:4000],
+                                                      "by": principal.actor}]
+    incident.updated_at = utcnow()
+    audit.record(db, principal.actor, "incident.restoration", incident.id, incident.tenant_id)
+    db.commit()
+    return to_dict(incident)
+
+
+@router.get("/incidents/{incident_id}/report")
+def incident_full_report(incident_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """The incident's full record: sources, alerts, response with approvals and results, restoration, checklist."""
+    from .. import incident_report
+
+    principal.require("read")
+    incident = db.get(Incident, incident_id)
+    if incident is None:
+        raise HTTPException(404, "Not found")
+    principal.check_tenant(incident.tenant_id)
+    return incident_report.report(db, incident)

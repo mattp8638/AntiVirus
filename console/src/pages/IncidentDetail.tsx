@@ -39,6 +39,8 @@ export default function IncidentDetail() {
                   {!inc.assignee && <button onClick={() => update({ assignee: me?.user.email }, "Assigned to you")}>Assign to me</button>}
                   {data.device && <button className="danger" onClick={() => setAction("device.isolate")}>Contain device</button>}
                   {data.device && <button onClick={() => setAction("")}>Response action…</button>}
+                  <button onClick={async () => { const t = window.prompt("What was restored? (systems back in service, data restored, accounts re-enabled)"); if (t) { await api(`incidents/${inc.id}/restoration`, { body: { text: t } }); reload(); } }}>Record restoration</button>
+                  <button onClick={async () => { const r = await api(`incidents/${inc.id}/report`); const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(r, null, 2)], { type: "application/json" })); a.download = `incident-${inc.id}.json`; a.click(); }}>Full record</button>
                   <select value={inc.status} onChange={(e) => update({ status: e.target.value }, "Status updated")} aria-label="Status">
                     {["open", "investigating", "contained", "resolved", "closed"].map((s) => <option key={s}>{s}</option>)}
                   </select>
