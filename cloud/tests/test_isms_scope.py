@@ -12,11 +12,14 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
+from fenrir_cloud.isms.models import IsmsMembership
 from fenrir_cloud.isms.scope import TENANT_TABLES, get_scoped, require_same_tenant, scoped, tenant_table
 from fenrir_cloud.models import Base, GrcPolicy
 
 # Model -> function(tenant_id) returning an unsaved row for that tenant.
-FACTORIES: dict[type, callable] = {}
+FACTORIES: dict[type, callable] = {
+    IsmsMembership: lambda t: IsmsMembership(tenant_id=t, user_id=f"usr_{t}", role="staff"),
+}
 
 
 @dataclass

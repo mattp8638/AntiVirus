@@ -41,6 +41,26 @@ ACSC Essential Eight has been retired from the active UK catalogue, controls, ri
 
 CAF now uses version 4.0 with 41 contributing outcomes. In particular, A2.b is now Understanding Threat, A2.c covers Assurance, and A4.b covers secure software development and support. Existing A2.b answers require review rather than being treated as answers to the new outcome. Newly added outcomes start unanswered. The current CE guide is labelled against requirements v3.3; it does not claim to be the exact current IASME booklet.
 
+## ISMS roles
+
+Governance is gaining a full information security management system (ISMS), ported from the standalone ISMS Platform (see [the plan](ISMS_REWRITE_PLAN.md)). Every person who works in a customer's ISMS needs an ISMS role for that customer, whatever their Fenrir role, including MSP administrators.
+
+Open **Governance → ISMS roles** with a customer chosen in the tenant picker.
+
+| ISMS role | Can |
+| --- | --- |
+| ISMS administrator | Everything, including the customer's ISMS settings and roles |
+| ISMS manager | Run the programme: risks, controls, Statement of Applicability, documents, audits |
+| Control and risk owner | View, upload evidence, complete tasks, and edit the controls and risks they own |
+| Approver | View, approve documents, accept risks |
+| Staff | Read and acknowledge policies (in the client portal) |
+| Auditor | Read-only, log findings and view the audit log; access always ends on a set date, at most a year away |
+| Executive viewer | Read-only, with the executive dashboard |
+
+- Fenrir users with the **grc** permission, and ISMS administrators, can give and remove roles for the customers they can see. Giving roles does not grant access to the ISMS data itself.
+- A person can only be given a role in a customer they can already see in Fenrir. Client portal accounts can only be staff.
+- Every role given, changed or removed is recorded in the audit log.
+
 ## Hosting update
 
 After merging the governance change into the branch deployed on the VPS:

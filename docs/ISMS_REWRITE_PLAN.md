@@ -59,7 +59,7 @@ Fenrir already has programmes (`grcprogramme.py`), a catalogue (`grccatalogue.py
 | R4 | Licence. Code in this repository is Apache 2.0 | The ported module is Apache 2.0, like the rest of Fenrir |
 | R5 | AI assistance (standalone Phase 5) | Port last, behind the same tenant opt-in; off by default |
 | R6 | Data in the standalone app | Demo only, so no import from a standalone database is needed |
-| R7 | How a Fenrir user gets an ISMS role (ISMS manager, approver, control owner, staff, auditor, executive) | Open: see below |
+| R7 | How a Fenrir user gets an ISMS role (ISMS manager, approver, control owner, staff, auditor, executive) | A separate ISMS role per person per customer (option 2 below); nobody, MSP admins included, sees a customer's ISMS without one. Staff use the client portal. Roles are managed by Fenrir users with `grc` and by ISMS administrators |
 | R8 | Standalone plans and usage limits (`plans.ts`) | Not ported: Fenrir's own tenant plans and modules decide what a customer has |
 
 ### R7: ISMS roles for Fenrir users
@@ -70,7 +70,7 @@ The standalone app gives each person a role per organization, and owners get ext
 2. **A separate ISMS role per person per customer** (a new `isms_memberships` table), managed on the Governance settings page. Fenrir's `grc` permission still gates the module. Customer staff who only acknowledge policies would be portal (`client`) users with the `staff` ISMS role.
 3. **Both:** derive a default from the Fenrir role, and let an ISMS role per customer override it.
 
-Recommendation: option 3.
+Decided 25/11/2026: option 2.
 
 ## Proving the port
 
@@ -83,13 +83,16 @@ Each phase is a set of small vertical slices: migration, domain logic, API, cons
 1. **Foundation.**
    - Done: `fenrir_cloud/isms/` package; content pack schema, loader and validator, with the licence check as a test (`tests/test_isms_content.py`); every standalone pack (common controls, ISO 27001, ISO 22301, ISO 42001, Cyber Essentials, NCSC CAF, NIST CSF 2.0, UK GDPR, templates, questionnaires); expression language and applicability engine, held to the standalone engine by the parity test.
    - Done: the rest of the pure domain logic (readiness scoring, risk method, task recurrence, RACI and competence, nonconformity, audit checklist and sampling, objectives, review inputs, digest schedule, CSV import, suppliers, incidents, privacy, business impact analysis, AI management), each held to the standalone engine by recorded cases; ISMS roles and permissions (`isms/access.py`); the tenant-scoping helper (`isms/scope.py`) and its isolation test, which every new ISMS table must join.
-   - Next: decision R7, then Phase 2 starts with the first ISMS tables and row-level security on PostgreSQL.
+   - Done: decision R7. Phase 1 is complete.
 2. **Core register.** Organization and scope, context and interested parties, assets, controls and assessments, Statement of Applicability, risk method and register, evidence (validity, reminders, links to automated GRC signals), tasks and calendar. Migrate existing Governance data.
+   - Done: ISMS roles (`isms_memberships`, migration 88) with the API (`/api/console/isms`), audit events and the **ISMS roles** tab; row-level security on PostgreSQL (`isms/rls.py`), tested on a real server by `tests/test_isms_rls.py` with a non-superuser account.
+   - Found: the official PostgreSQL image makes `POSTGRES_USER` a superuser, and superusers bypass row-level security, so a default install relies on the application's tenant scoping alone. The platform readiness page now says so. Moving installs to a non-superuser database account is a separate deployment change.
+   - Next: organization and scope, context and interested parties, assets, then controls and the Statement of Applicability.
 3. **Documents.** Templates, generation to Word and PDF, approval with immutable versions, acknowledgement.
 4. **Management system.** People and training, internal audit, management review, improvement, objectives and metrics, ISMS change log.
 5. **Assurance and MSP.** Auditor portal, supplier and incident links, portfolio view across customers, template push, dashboards and digests.
 6. **Extra packs.** Privacy, business continuity, AI management.
-7. **AI assistance**, if R5 is accepted.
+7. **AI assistance**, last and off by default (R5).
 8. **Retire the old Governance code** once every page and API has moved and data migration has run on a copy of real data.
 
 ## Acceptance

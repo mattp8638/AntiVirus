@@ -3204,3 +3204,7 @@ class BackupBootCheck(Base):
     accel: Mapped[str] = mapped_column(String(10), default="")
     message: Mapped[str] = mapped_column(Text, default="")
     screenshot: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+
+
+# ISMS tables live in their own module; importing it here puts them in the shared metadata (create_all, deletion).
+from .isms import models as _isms_models  # noqa: E402,F401
