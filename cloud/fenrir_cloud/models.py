@@ -3150,6 +3150,37 @@ class DrRun(Base):
     started_by: Mapped[str] = mapped_column(String(200), default="")
 
 
+class AgreementTemplate(Base):
+    """An agreement template with {{variables}} (GRC-09)."""
+    __tablename__ = "agreement_templates"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("agt"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    body: Mapped[str] = mapped_column(Text)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Agreement(Base):
+    """An agreement sent for signature: its text frozen with a hash, the parties in signing order, and a
+    hash-chained record of every event to completion (GRC-09)."""
+    __tablename__ = "agreements"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("agr"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    title: Mapped[str] = mapped_column(String(300))
+    body: Mapped[str] = mapped_column(Text)
+    sha256: Mapped[str] = mapped_column(String(64))
+    template_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    order: Mapped[str] = mapped_column(String(12), default="sequential")  # sequential | parallel
+    parties: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="draft")  # draft | sent | completed | declined | expired | voided
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    events: Mapped[list] = mapped_column(JSON, default=list)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class AiSystem(Base):
     """An AI system or use-case in a customer's AI-governance inventory (GRC-21): what it does, the model and its
     supplier, the data it uses, its risk and impact assessment, the human oversight around it, and its approval."""

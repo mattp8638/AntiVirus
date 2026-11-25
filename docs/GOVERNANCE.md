@@ -163,3 +163,17 @@ Approval is refused while points are open: unanswered questions, an unconfirmed 
 for the tier (two for high risk), no impact assessment when personal data is used, an unlinked supplier, or no
 evidence for a high-risk system. Changing how an approved system is used withdraws its approval. The suggested tier
 is guidance, not a legal classification; expert review and certification remain outside services.
+
+## Agreements and e-signature
+
+**Compliance & GRC › Agreements** sends agreements for signature. Write templates with `{{variable}}` blanks, or the
+full text; the agreement's text is fixed when it is created, with its SHA-256, which every signer sees. Signers sign
+one after another or in any order, each through a personal link sent by email that stops working once used, when the
+agreement expires, or when it is voided.
+
+A typed name is not enough: the signer asks for a **one-time code** sent to their email address and enters it within
+15 minutes (five attempts), ticks their consent to sign electronically, and types their name as it appears on the
+agreement. Signers can also decline. Every event (created, sent, viewed, code sent, signed, declined, completed,
+voided, expired) is added to a **hash chain**: each event's hash covers the one before, so altering or removing any
+event is detected. When everyone has signed, all parties receive the **completion record** (the document hash, the
+signers with times and addresses, and the chain), which can be checked later with **verify**.

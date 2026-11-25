@@ -14,6 +14,7 @@ export const COMPLIANCE_SECTION: SectionItem[] = [
   { to: "/questionnaires", label: "Questionnaires" },
   { to: "/trust-centre", label: "Trust centre" },
   { to: "/ai-governance", label: "AI governance" },
+  { to: "/agreements", label: "Agreements" },
   { to: "/continuity", label: "Business continuity" },
 ];
 export const NETWORK_SECTION: SectionItem[] = [

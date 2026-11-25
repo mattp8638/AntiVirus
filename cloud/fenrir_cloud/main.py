@@ -46,6 +46,7 @@ from .routers import questionnaires as questionnaires_router
 from .routers import trust as trust_router
 from .routers import gaps as gaps_router
 from .routers import ai_governance as ai_governance_router
+from .routers import esign as esign_router
 from .routers import rollouts as rollouts_router
 from .routers import apikeys as apikeys_router
 from .routers import roles as roles_router
@@ -259,6 +260,12 @@ def _purge_telemetry(db, settings: Settings) -> dict:
     return removed
 
 
+def _agreements_expiry(db) -> None:
+    from .routers import esign
+
+    esign.expire_due(db)
+
+
 def _attestation_reminders(db) -> None:
     from . import attestation
 
@@ -282,7 +289,8 @@ def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
              ("reports.schedules", reports.send_schedules),
              ("billing.sync", billing_sync.tick), ("clients.health", client360.tick),
              ("defender", defender.tick), ("web.profiles", web_profile.tick), ("groups.rules", group_rules.tick),
-             ("backup.hourly", device_backup.hourly), ("grc.attestation", _attestation_reminders)]
+             ("backup.hourly", device_backup.hourly), ("grc.attestation", _attestation_reminders),
+             ("agreements.expiry", _agreements_expiry)]
     if settings.intel_feeds_enabled:
         from . import threat_feeds
 
@@ -674,6 +682,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(trust_router.page)
     app.include_router(gaps_router.router)
     app.include_router(ai_governance_router.router)
+    app.include_router(esign_router.router)
+    app.include_router(esign_router.page)
     app.include_router(grc_assurance_router.public)
     app.include_router(protection.router)
     app.include_router(protection.console)
