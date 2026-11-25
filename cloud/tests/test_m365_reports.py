@@ -60,3 +60,25 @@ def test_schedules_email_csv_attachments_once_per_period(client, admin, tenant, 
         assert m365_reports.send_schedules(db) == 0  # not again until next month
     [email] = [m for m in mailer.OUTBOX if m["to"] == "boss@acme.example"]
     assert sorted(email["attachments"])[0].startswith("licences-") and "MFA registration" in email["body"]
+
+
+COPILOT = "c0000000-0000-0000-0000-00000000c0p1"
+
+
+def test_copilot_licences_and_adoption(client, admin, tenant, fake):
+    conn = connection(client, admin, tenant)
+    assert "No Microsoft 365 Copilot licences" in get(client, admin, conn, "copilot")["summary"]
+    fake.extra_skus = [{"skuId": COPILOT, "skuPartNumber": "Microsoft_365_Copilot", "prepaidUnits": {"enabled": 5}, "consumedUnits": 2}]
+    for user in fake.users.values():
+        user["assignedLicenses"] = [*user.get("assignedLicenses", []), {"skuId": COPILOT}]
+    fake.copilot_usage = [{"userPrincipalName": "jo@acme.example", "lastActivityDate": "2026-11-20",
+                           "wordCopilotLastActivityDate": "2026-11-20", "microsoftTeamsCopilotLastActivityDate": "2026-11-18"}]
+    report = get(client, admin, conn, "copilot")
+    rows = {r["user"]: r for r in report["rows"]}
+    assert rows["jo@acme.example"] == {"user": "jo@acme.example", "licence": "Microsoft_365_Copilot", "lastActivity": "2026-11-20",
+                                       "apps": "Teams, Word", "status": "active"}
+    assert rows["max@acme.example"]["status"] == "not used in 30 days"
+    assert report["summary"].startswith("5 Copilot licence(s) bought, 2 assigned, 1 used in the last 30 days, 1 assigned but unused")
+    fake.copilot_usage = None
+    report = get(client, admin, conn, "copilot")
+    assert "usage is unavailable" in report["summary"] and {r["status"] for r in report["rows"]} == {"usage unavailable"}

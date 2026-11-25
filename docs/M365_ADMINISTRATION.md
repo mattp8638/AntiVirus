@@ -52,6 +52,27 @@ The first reviewed write-administration increment is described in [M365_ACTIONS.
 
 PR #9 provides encrypted direct-tenant application connections and on-demand, read-only users, subscribed licences and Secure Score snapshots. It does not yet implement tenant write administration, GDAP, workload management or baseline enforcement. No live tenant changes have been made as part of this requirement update.
 
+## Microsoft 365 Copilot (M365-29)
+
+The **Reports** tab has a *Microsoft 365 Copilot licences and adoption* report, built only from Microsoft's data.
+The code is `_copilot` in `cloud/fenrir_cloud/m365_reports.py`. For each Copilot licence it shows:
+* which user holds it;
+* when that user last used Copilot;
+* in which apps (Teams, Word, Excel, PowerPoint, Outlook, OneNote, Loop, Copilot Chat), from Microsoft's Copilot
+  usage report for the last 30 days;
+* whether the licence is active, unused, or held by a disabled account.
+
+The summary counts licences bought, assigned, used and unused. Like the other reports, it can be downloaded as CSV and
+emailed on a schedule. A tenant with no Copilot subscription shows no rows.
+
+The usage report is a Microsoft Graph **beta** API (`reports/getMicrosoft365CopilotUsageUserDetail`). When Microsoft
+will not provide it, the report says usage is unavailable and why. It never presents usage as zero.
+
+Not yet available:
+* Copilot settings;
+* plugin and agent (Agent 365) management;
+* package workflows.
+
 ## Diagnostics and the Graph explorer (M365-32)
 
 The code is in `cloud/fenrir_cloud/m365_tools.py`.

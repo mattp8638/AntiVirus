@@ -42,6 +42,8 @@ class FakeTenant:
     def __init__(self):
         now = datetime.now(timezone.utc)
         self.roles = None
+        self.extra_skus: list[dict] = []  # e.g. a Microsoft 365 Copilot subscription
+        self.copilot_usage: list[dict] | None = []  # None: Microsoft refuses the Copilot usage report
         self.requests: list[tuple[str, str, dict | None]] = []
         self.fail: dict[tuple[str, str], int] = {}  # (method, path regex) -> HTTP status to answer instead
         self.users = {
@@ -152,6 +154,10 @@ class FakeTenant:
             if method == request.method and re.search(pattern, path):
                 return httpx.Response(status, json={"error": {"code": "Authorization_RequestDenied", "message": "Insufficient privileges to complete the operation."}})
         query = {k: v[0] for k, v in parse_qs(urlparse(str(request.url)).query).items()}
+        if path.startswith("/beta/reports/getMicrosoft365CopilotUsageUserDetail"):
+            if self.copilot_usage is None:
+                return httpx.Response(403, json={"error": {"code": "UnknownError", "message": "Reports.Read.All required"}})
+            return httpx.Response(200, json={"value": self.copilot_usage})
         try:
             return self.route(request.method, path, query, body)
         except KeyError:
@@ -361,7 +367,8 @@ class FakeTenant:
         if r := m(r"/groups/([^/]+)/members", path):
             return self.page([{"id": u} for u in self.groups[r.group(1)]["members"]])
         if path == "/subscribedSkus":
-            return self.page([{"skuId": SKU, "skuPartNumber": "O365_BUSINESS_PREMIUM", "prepaidUnits": {"enabled": 10}, "consumedUnits": 1}])
+            return self.page([{"skuId": SKU, "skuPartNumber": "O365_BUSINESS_PREMIUM", "prepaidUnits": {"enabled": 10}, "consumedUnits": 1}]
+                             + self.extra_skus)
         if r := m(r"/groups/([^/]+)/owners", path):
             return self.page([{"id": MANAGER, "userPrincipalName": "max@acme.example"}] if r.group(1) == GROUP else [])
         if path == "/admin/sharepoint/settings":
