@@ -92,6 +92,14 @@ FEATURES: dict[str, dict] = {
                       "app": ["Policy.Read.All", "Policy.ReadWrite.ConditionalAccess", "Policy.ReadWrite.Authorization",
                               "Policy.ReadWrite.SecurityDefaults", "DeviceManagementConfiguration.ReadWrite.All", "Group.Read.All"],
                       "delegated": ["Policy.Read.All", "Policy.ReadWrite.ConditionalAccess", "DeviceManagementConfiguration.ReadWrite.All"]},
+    "apps.inventory": {"title": "Enterprise apps, app registrations and consent (read)", "area": "Identity",
+                       "app": ["Application.Read.All", "DelegatedPermissionGrant.Read.All"], "delegated": ["Application.Read.All"]},
+    # Opt-in: Application.ReadWrite.All can be used to grant any permission, so Fenrir does not ask for it by default.
+    # An administrator who wants these actions adds the permissions to Fenrir's app in Entra and grants consent.
+    "apps.manage": {"title": "Turn enterprise apps off, remove expired credentials, revoke consent", "area": "Identity",
+                    "app": ["Application.ReadWrite.All", "DelegatedPermissionGrant.ReadWrite.All"], "delegated": None, "optIn": True,
+                    "note": "Not requested by default: add Application.ReadWrite.All and DelegatedPermissionGrant.ReadWrite.All to "
+                            "Fenrir's app in Entra and grant admin consent to use these actions."},
     "license.assign": {"title": "Assign and remove licences", "area": "Identity",
                        "app": ["LicenseAssignment.ReadWrite.All", "User.Read.All"], "delegated": ["LicenseAssignment.ReadWrite.All", "User.Read.All"]},
     "group.members": {"title": "Change group membership", "area": "Identity", "app": ["GroupMember.ReadWrite.All", "User.Read.All"],
@@ -157,7 +165,7 @@ APP_PERMISSIONS = _ordered(["User.Read.All", "Organization.Read.All", "Directory
                             "AuditLog.Read.All", "Reports.Read.All", "User.ReadWrite.All", "User.RevokeSessions.All",
                             "User.EnableDisableAccount.All", "LicenseAssignment.ReadWrite.All", "GroupMember.ReadWrite.All",
                             "SecurityAlert.Read.All"]
-                           + [p for f in FEATURES.values() for p in (f["app"] or [])])
+                           + [p for f in FEATURES.values() if not f.get("optIn") for p in (f["app"] or [])])
 DELEGATED_PERMISSIONS = _ordered(["Directory.Read.All", "Organization.Read.All", "Domain.Read.All", "User.ReadWrite.All", "Group.ReadWrite.All",
                                   "AuditLog.Read.All", "Reports.Read.All", "UserAuthenticationMethod.Read.All", "SecurityEvents.Read.All",
                                   "Policy.Read.All", "Policy.ReadWrite.ConditionalAccess", "Application.Read.All",

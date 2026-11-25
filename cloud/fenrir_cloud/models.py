@@ -3700,3 +3700,14 @@ class M365Absence(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     created_by: Mapped[str] = mapped_column(String(200), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class M365AppReport(Base):
+    """The last inventory of a tenant's app registrations, service principals, consent grants, consent requests and
+    directory extensions (M365-11), with credential expiry and permission risk worked out."""
+    __tablename__ = "m365_app_reports"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("mar"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    connection_id: Mapped[str] = mapped_column(String(32), index=True)
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    taken_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

@@ -52,6 +52,39 @@ The first reviewed write-administration increment is described in [M365_ACTIONS.
 
 PR #9 provides encrypted direct-tenant application connections and on-demand, read-only users, subscribed licences and Secure Score snapshots. It does not yet implement tenant write administration, GDAP, workload management or baseline enforcement. No live tenant changes have been made as part of this requirement update.
 
+## Enterprise apps, app registrations and consent (M365-11)
+
+The **Apps and consent** tab lists:
+* app registrations, with their secrets, certificates and directory extension properties;
+* enterprise apps (service principals): publisher (this tenant, Microsoft, or another organisation), on or off, and
+  their permissions;
+* pending admin consent requests.
+
+The code is in `cloud/fenrir_cloud/m365_apps.py`.
+
+**Permission contract.** Every permission is labelled *application* or *delegated*:
+* *application* permissions are app role assignments. They work with no user signed in, across the tenant.
+* *delegated* permissions are OAuth2 grants. They act only as the signed-in user, and the consent is either admin
+  (all users) or one user.
+
+Each app is summarised as acting with application permissions, delegated permissions, or both. High-privilege
+permissions (for example `Mail.ReadWrite`, `Directory.ReadWrite.All`, `Application.ReadWrite.All`) are flagged.
+
+**Credential expiry.** Fenrir checks every app daily. Each secret or certificate that has expired, or expires within
+30 days, raises one alert: high severity if expired, medium if expiring. The same alert is not raised twice.
+
+**Actions.** You can:
+* turn an enterprise app off or on;
+* remove an *expired* secret or certificate;
+* revoke a delegated consent grant.
+
+Each action requires step-up authentication and typing the app's name, and is audited. A working credential cannot be
+removed here, and Fenrir's own app cannot be turned off.
+
+The actions need `Application.ReadWrite.All` and `DelegatedPermissionGrant.ReadWrite.All`. Fenrir does **not**
+request them by default (feature *apps.manage* is opt-in), because `Application.ReadWrite.All` can be used to grant
+any permission. Consent requests are approved in the Entra admin centre.
+
 ## Scheduled absences (M365-09)
 
 The **Absences** tab on a tenant schedules a user's absence: automatic replies, forwarding to a colleague (optionally
