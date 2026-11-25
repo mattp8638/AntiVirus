@@ -3150,6 +3150,80 @@ class DrRun(Base):
     started_by: Mapped[str] = mapped_column(String(200), default="")
 
 
+class TrustCentre(Base):
+    """A customer's trust centre (GRC-14): a public page of their security documents, some public and some gated
+    behind an access request with an NDA."""
+    __tablename__ = "trust_centres"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("tcn"))
+    tenant_id: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    slug: Mapped[str] = mapped_column(String(60), unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    overview: Mapped[str] = mapped_column(Text, default="")
+    contact: Mapped[str] = mapped_column(String(200), default="")
+    nda_text: Mapped[str] = mapped_column(Text, default="")
+    published: Mapped[bool] = mapped_column(Boolean, default=False)
+    default_days: Mapped[int] = mapped_column(Integer, default=30)
+    updated_by: Mapped[str] = mapped_column(String(200), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class TrustDocument(Base):
+    """A document on a trust centre, frozen when it was added (its content, as-of date and hash), shown only after
+    its disclosure was approved."""
+    __tablename__ = "trust_documents"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("tdc"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    title: Mapped[str] = mapped_column(String(300))
+    description: Mapped[str] = mapped_column(Text, default="")
+    kind: Mapped[str] = mapped_column(String(20))  # policy | evidence | snapshot | note
+    source_id: Mapped[str] = mapped_column(String(40), default="")
+    access: Mapped[str] = mapped_column(String(10), default="gated")  # public | gated
+    filename: Mapped[str] = mapped_column(String(255), default="")
+    content_type: Mapped[str] = mapped_column(String(120), default="text/plain")
+    content: Mapped[dict] = mapped_column(JSON)  # encrypted envelope
+    sha256: Mapped[str] = mapped_column(String(64))
+    as_of: Mapped[datetime] = mapped_column(DateTime)
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | approved | withdrawn
+    approved_by: Mapped[str] = mapped_column(String(200), default="")
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    added_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class TrustAccessRequest(Base):
+    """A request for gated documents: who, why, the NDA accepted (its hash), and once approved an access link that
+    expires and can be revoked."""
+    __tablename__ = "trust_requests"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("trq"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    email: Mapped[str] = mapped_column(String(200))
+    company: Mapped[str] = mapped_column(String(200), default="")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    nda_sha256: Mapped[str] = mapped_column(String(64), default="")
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | approved | denied | revoked
+    documents: Mapped[list] = mapped_column(JSON, default=list)  # document ids granted ([] = every gated document)
+    token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    decided_by: Mapped[str] = mapped_column(String(200), default="")
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ip: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class TrustAccessLog(Base):
+    __tablename__ = "trust_access_log"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    document_id: Mapped[str] = mapped_column(String(32), index=True)
+    request_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    email: Mapped[str] = mapped_column(String(200), default="")
+    outcome: Mapped[str] = mapped_column(String(20))  # served | refused
+    reason: Mapped[str] = mapped_column(String(200), default="")
+    ip: Mapped[str] = mapped_column(String(64), default="")
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class GrcAnswer(Base):
     """A reusable approved answer to a security question (GRC-15), with the evidence and policies behind it."""
     __tablename__ = "grc_answers"

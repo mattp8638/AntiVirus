@@ -126,3 +126,17 @@ Answers are flagged, live: **stale** when the library answer is past its review 
 current evidence or approved policy behind it, and **edited** when it differs from the library text. The export (CSV)
 includes the flags and reviewers, and each export is recorded with its SHA-256. A reviewed answer can be added to the
 library as a draft, to be approved like any other.
+
+## Trust centre
+
+**Compliance & GRC › Trust centre** publishes a customer's security documents at `/trust/<address>`, a page anyone
+can open without an account. Add documents from an approved policy version, an evidence file or a written note:
+each is **copied as it is now**, so the page shows the date it is as of and its SHA-256, and later edits to the
+source do not change it. A document appears only after its **disclosure is approved**.
+
+**Public** documents can be downloaded by anyone. **On request** documents need access: the visitor gives their
+name, work email, company and reason and accepts the non-disclosure agreement shown (its hash is recorded with the
+request). Approving the request emails a link that works until it **expires** (30 days by default); **Revoke**
+stops it at once, and **Withdraw** stops a document for everyone. Every download, and every refused attempt, is in
+the **access log** with the requester and address. The page states when it was generated, and each document its
+as-of date, so customers and auditors see exactly how current each document is.
