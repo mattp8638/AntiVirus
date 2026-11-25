@@ -112,3 +112,17 @@ progress, policies (approved, review overdue, acknowledgements current), open re
 improvements, objectives against target, continuity capability, incidents since the previous review and that
 review's open actions. **Record the meeting** keeps the attendees, decisions and actions with owners; from then on
 the pack is fixed, with its hash.
+
+## Security questionnaires
+
+**Compliance & GRC › Questionnaires** answers the security questionnaires a customer's own customers send them.
+Keep approved answers in the **Answer library**, each with the evidence and policies behind it and a review period
+(12 months by default). Import a questionnaire by pasting its questions (CSV with a `question` column, optionally
+`id` and `section`, or one per line). For each question the library's closest approved answers are **suggested**;
+nothing is filled in until a person chooses or writes an answer, and every answer must be **marked reviewed** by a
+person before the questionnaire can be completed.
+
+Answers are flagged, live: **stale** when the library answer is past its review date, **unverified** when there is no
+current evidence or approved policy behind it, and **edited** when it differs from the library text. The export (CSV)
+includes the flags and reviewers, and each export is recorded with its SHA-256. A reviewed answer can be added to the
+library as a draft, to be approved like any other.

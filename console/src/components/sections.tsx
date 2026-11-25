@@ -10,6 +10,7 @@ export const COMPLIANCE_SECTION: SectionItem[] = [
   { to: "/continuous-compliance", label: "Continuous assurance" },
   { to: "/compliance", label: "Live posture" },
   { to: "/registers", label: "Registers & reviews" },
+  { to: "/questionnaires", label: "Questionnaires" },
   { to: "/continuity", label: "Business continuity" },
 ];
 export const NETWORK_SECTION: SectionItem[] = [

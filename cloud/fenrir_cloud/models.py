@@ -3150,6 +3150,40 @@ class DrRun(Base):
     started_by: Mapped[str] = mapped_column(String(200), default="")
 
 
+class GrcAnswer(Base):
+    """A reusable approved answer to a security question (GRC-15), with the evidence and policies behind it."""
+    __tablename__ = "grc_answers"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ans"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    question: Mapped[str] = mapped_column(Text)
+    answer: Mapped[str] = mapped_column(Text, default="")
+    tags: Mapped[list] = mapped_column(JSON, default=list)
+    evidence_ids: Mapped[list] = mapped_column(JSON, default=list)
+    policy_ids: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="draft")  # draft | approved | retired
+    approved_by: Mapped[str] = mapped_column(String(200), default="")
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    review_months: Mapped[int] = mapped_column(Integer, default=12)
+    updated_by: Mapped[str] = mapped_column(String(200), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class GrcQuestionnaire(Base):
+    """A security questionnaire a customer of the business sent it (GRC-15): questions, assigned answerers, answers
+    suggested from the library and reviewed by a person, and its export."""
+    __tablename__ = "grc_questionnaires"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("qst"))
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    title: Mapped[str] = mapped_column(String(300))
+    counterparty: Mapped[str] = mapped_column(String(200), default="")
+    due: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="open")  # open | in_review | completed
+    questions: Mapped[list] = mapped_column(JSON, default=list)
+    exports: Mapped[list] = mapped_column(JSON, default=list)  # [{at, by, sha256}]
+    created_by: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class GrcRegisterEntry(Base):
     """An entry of a contextual register (GRC-18): business risks, opportunities, interested parties, internal and
     external issues, PESTEL factors, and the improvement register (GRC-13). Each change keeps a version."""

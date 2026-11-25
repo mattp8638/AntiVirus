@@ -42,6 +42,7 @@ from .routers import m365_collaboration as m365_collaboration_router
 from .routers import grc_programme as grc_programme_router
 from .routers import continuity as continuity_router
 from .routers import grc_registers as grc_registers_router
+from .routers import questionnaires as questionnaires_router
 from .routers import rollouts as rollouts_router
 from .routers import apikeys as apikeys_router
 from .routers import roles as roles_router
@@ -664,6 +665,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(grc_assurance_router.router)
     app.include_router(continuity_router.router)
     app.include_router(grc_registers_router.router)
+    app.include_router(questionnaires_router.router)
     app.include_router(grc_assurance_router.public)
     app.include_router(protection.router)
     app.include_router(protection.console)
