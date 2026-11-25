@@ -59,6 +59,18 @@ Fenrir already has programmes (`grcprogramme.py`), a catalogue (`grccatalogue.py
 | R4 | Licence. Code in this repository is Apache 2.0 | The ported module is Apache 2.0, like the rest of Fenrir |
 | R5 | AI assistance (standalone Phase 5) | Port last, behind the same tenant opt-in; off by default |
 | R6 | Data in the standalone app | Demo only, so no import from a standalone database is needed |
+| R7 | How a Fenrir user gets an ISMS role (ISMS manager, approver, control owner, staff, auditor, executive) | Open: see below |
+| R8 | Standalone plans and usage limits (`plans.ts`) | Not ported: Fenrir's own tenant plans and modules decide what a customer has |
+
+### R7: ISMS roles for Fenrir users
+
+The standalone app gives each person a role per organization, and owners get extra rights on their own records (`fenrir_cloud/isms/access.py`). Fenrir gives each user one platform role (`security.py`). The options:
+
+1. **Derive from the Fenrir role.** `platform_admin`, `msp_admin` and `tenant_admin` act as ISMS tenant admins, other staff roles with `grc` as ISMS managers, `viewer` as executive viewers. No new table, but approvers, auditors and staff cannot be told apart.
+2. **A separate ISMS role per person per customer** (a new `isms_memberships` table), managed on the Governance settings page. Fenrir's `grc` permission still gates the module. Customer staff who only acknowledge policies would be portal (`client`) users with the `staff` ISMS role.
+3. **Both:** derive a default from the Fenrir role, and let an ISMS role per customer override it.
+
+Recommendation: option 3.
 
 ## Proving the port
 
@@ -70,7 +82,8 @@ Each phase is a set of small vertical slices: migration, domain logic, API, cons
 
 1. **Foundation.**
    - Done: `fenrir_cloud/isms/` package; content pack schema, loader and validator, with the licence check as a test (`tests/test_isms_content.py`); every standalone pack (common controls, ISO 27001, ISO 22301, ISO 42001, Cyber Essentials, NCSC CAF, NIST CSF 2.0, UK GDPR, templates, questionnaires); expression language and applicability engine, held to the standalone engine by the parity test.
-   - Next: the remaining pure domain logic (readiness scoring, risk method, task recurrence, RACI and competence, nonconformity, audit checklist and sampling, objectives, review inputs, suppliers, incidents, privacy, business impact analysis, plans), each with its parity cases; ISMS permissions and roles; the shared tenant-scoping helper and its isolation test.
+   - Done: the rest of the pure domain logic (readiness scoring, risk method, task recurrence, RACI and competence, nonconformity, audit checklist and sampling, objectives, review inputs, digest schedule, CSV import, suppliers, incidents, privacy, business impact analysis, AI management), each held to the standalone engine by recorded cases; ISMS roles and permissions (`isms/access.py`); the tenant-scoping helper (`isms/scope.py`) and its isolation test, which every new ISMS table must join.
+   - Next: decision R7, then Phase 2 starts with the first ISMS tables and row-level security on PostgreSQL.
 2. **Core register.** Organization and scope, context and interested parties, assets, controls and assessments, Statement of Applicability, risk method and register, evidence (validity, reminders, links to automated GRC signals), tasks and calendar. Migrate existing Governance data.
 3. **Documents.** Templates, generation to Word and PDF, approval with immutable versions, acknowledgement.
 4. **Management system.** People and training, internal audit, management review, improvement, objectives and metrics, ISMS change log.
