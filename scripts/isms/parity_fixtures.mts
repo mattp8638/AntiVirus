@@ -155,8 +155,129 @@ const diff = domain
   )
   .map((c: any) => ({ ...c }));
 
+
+// 3. Other domain logic: each case is a function name, its arguments and the recorded result -------------------
+const domainCases: { fn: string; args: unknown[]; out: unknown }[] = [];
+const record = (fn: string, ...args: unknown[]) => {
+  let out: unknown;
+  try {
+    const r = (domain as Record<string, (...a: unknown[]) => unknown>)[fn]!(...structuredClone(args));
+    out = r instanceof Date ? { date: r.toISOString() } : r instanceof Map ? [...r.entries()] : r;
+  } catch (e) {
+    out = { error: (e as Error).name };
+  }
+  domainCases.push({ fn, args, out: out === undefined ? null : out });
+};
+const pad2 = (n: number) => String(n).padStart(2, '0');
+const randDay = () => `${2024 + int(5)}-${pad2(1 + int(12))}-${pad2(1 + int(31))}`;
+const STATES = ['not_started', 'in_progress', 'implemented', 'implemented_evidenced', 'not_applicable'];
+for (let i = 0; i < 300; i++) {
+  const reqs = Array.from({ length: int(40) }, (_, k) => ({
+    ref: `r${k}`, applicable: rand() < 0.85, controlStates: Array.from({ length: int(4) }, () => pick(STATES)),
+  }));
+  record('computeReadiness', reqs);
+  record('controlCoverage', reqs.flatMap((r) => r.controlStates));
+}
+const method = () => {
+  const m = domain.defaultRiskMethod();
+  if (rand() < 0.5) m.likelihoodScale = m.likelihoodScale.slice(0, 2 + int(4));
+  if (rand() < 0.3) m.impactScale = [...m.impactScale, { value: rand() < 0.8 ? 6 : 9, label: pick(['', 'X']), description: '' }];
+  if (rand() < 0.3) m.levels = pick([[], [{ min: 2, level: 'a', label: 'A' }], [{ min: 1, level: 'a', label: 'A' }, { min: 1, level: 'b', label: 'B' }, { min: 40, level: 'c', label: 'C' }]]);
+  if (rand() < 0.3) m.appetite = pick([0, 1, 2.5, 25, 26]);
+  if (rand() < 0.2) m.acceptanceCriteria = pick(['', '  ']);
+  if (rand() < 0.3) m.reviewMonths = pick([0, 1, 36, 37, 6.5]);
+  return m;
+};
+for (let i = 0; i < 200; i++) {
+  const m = method();
+  record('validateRiskMethod', m);
+  const l = pick([null, 0, 1, 2, 3, 4, 5, 6]);
+  const im = pick([null, 0, 1, 2, 3, 4, 5, 6]);
+  record('riskScore', m, l, im);
+  record('riskLevel', m, pick([null, 0, 1, 4, 5, 9, 10, 15, 16, 25, 30]));
+  record('withinAppetite', m, pick([null, 1, 8, 9, 25]));
+  record('heatMap', m, Array.from({ length: int(12) }, () => ({ likelihood: pick([null, 0, 1, 2, 3, 4, 5, 6]), impact: pick([null, 0, 1, 2, 3, 5, 6]) })));
+}
+const RECS = ['daily', 'weekly', 'monthly', 'quarterly', 'six-monthly', 'annual'];
+for (let i = 0; i < 400; i++) {
+  const d = randDay();
+  const today = randDay();
+  record('addInterval', d, pick(RECS));
+  record('nextDueDate', pick(RECS), rand() < 0.3 ? null : d, today);
+  record('taskUrgency', d, today, ...(rand() < 0.5 ? [int(40)] : []));
+  record('daysBetween', d, today);
+  record('recurrenceFor', pick([...RECS, 'continuous', 'event-driven', null, '']));
+  record('competenceStatus', rand() < 0.2 ? null : d, today, ...(rand() < 0.5 ? [int(60)] : []));
+  record('reviewPeriodStart', d, rand() < 0.4 ? null : today);
+  record('addCalendarMonths', d, int(30));
+  record('dsrDeadline', d, ...(rand() < 0.7 ? [pick([0, 1, 2, 3, -1, 1.5])] : []));
+  record('nextDigestAt', new Date(Date.UTC(2024 + int(4), int(12), 1 + int(28), int(24), int(60))), pick(['weekly', 'monthly']));
+  record('breachDeadline', `${d.slice(0, 8)}${pad2(1 + int(28))}T${pad2(int(24))}:${pad2(int(60))}:00${pick(['Z', '.250Z', '+01:00', '-05:30'])}`);
+}
+for (let i = 0; i < 200; i++) {
+  const users = Array.from({ length: int(8) }, () => `u${int(10)}`);
+  record('ackProgress', users, Array.from({ length: int(10) }, () => `u${int(12)}`));
+  const values = Array.from({ length: int(6) }, () => ({ measuredOn: randDay(), value: pick([0, 1, 3, 4, 5, 50, 80, 90, 100, 2.5]) }));
+  record('summarizeObjective', values, pick(['at_least', 'at_most']), pick([0, 4, 50, 90]), pick(['monthly', 'quarterly', 'six-monthly', 'annual', 'weekly']), randDay());
+  record('chartGeometry', values, pick([0, 4, 50, 100]), pick([100, 216, 300]), pick([50, 116]));
+  const acts = ['a', 'b', 'c', 'd'].slice(0, 1 + int(4));
+  record('raciIssues', acts, Array.from({ length: int(8) }, () => ({ activityId: pick(acts), roleId: `r${int(4)}`, letter: pick(['R', 'A', 'C', 'I']) })));
+  const qs = Array.from({ length: 1 + int(6) }, (_, k) => ({ ref: `q${k}`, text: 'Q', weight: 1 + int(5), ...(rand() < 0.3 ? { critical: true } : {}) }));
+  record('scoreQuestionnaire', qs, Object.fromEntries(qs.filter(() => rand() < 0.85).map((q) => [q.ref, pick(['yes', 'partly', 'no', 'not_applicable'])])));
+  record('supplierTier', pick(['none', 'internal', 'confidential', 'personal']), pick(['low', 'medium', 'high']));
+  const sev = pick(['low', 'medium', 'high', 'critical']);
+  record('closureBlockers', { severity: sev, rootCause: pick(['', ' ', 'x']), lessonsLearned: pick(['', 'y']), personalData: rand() < 0.5, reportedToAuthorityAt: rand() < 0.5 ? null : '2026-01-01T00:00:00Z' });
+  record('canMoveTo', pick(['reported', 'investigating', 'contained', 'resolved', 'closed']), pick(['reported', 'investigating', 'contained', 'resolved', 'closed']));
+  const impacts = Object.fromEntries([4, 24, 72, 168, 336].filter(() => rand() < 0.6).map((w) => [w, 1 + int(5)]));
+  record('normalizeImpacts', impacts);
+  record('suggestedMtpd', impacts);
+  record('recoveryPriority', pick([null, 0, 4, 24, 25, 72, 73, 500]));
+  record('biaIssues', { mtpdHours: pick([null, 24, 72]), rtoHours: pick([null, 4, 48, 96]), rpoHours: pick([null, 4]), impacts, dependencies: int(3), plans: int(2), lastExercisedOn: rand() < 0.3 ? null : randDay(), today: randDay() });
+  record('rtoMet', pick([null, 3, 4, 6]), pick([null, 4]));
+  record('dpiaRequired', Object.fromEntries(['automated_decisions', 'profiling', 'tracking', 'matching', 'large_scale'].filter(() => rand() < 0.3).map((k) => [k, true])));
+  record('dpiaRiskLevel', pick(['low', 'medium', 'high']), pick(['low', 'medium', 'high']));
+  record('aiRiskTier', Object.fromEntries(['manipulation', 'biometric', 'employment', 'interacts', 'generates', 'emotion'].filter(() => rand() < 0.25).map((k) => [k, true])));
+  record('aiSystemGaps', { tier: pick(['unacceptable', 'high', 'limited', 'minimal']), status: pick(['planned', 'in_use', 'retired']), purpose: pick(['', 'x']), humanOversight: pick(['', 'y']), personalData: rand() < 0.5, processingLinked: rand() < 0.5, hasApprovedAssessment: rand() < 0.5, supplierLinked: rand() < 0.5, role: pick(['developer', 'provider', 'deployer']) });
+  record('processingGaps', { lawfulBasis: pick([null, 'contract']), specialCategory: rand() < 0.5, specialCondition: pick(['', 'x']), transfers: rand() < 0.5, transferSafeguard: pick([null, 'idta']), retention: pick(['', ' ', '6 years']), dataSubjects: rand() < 0.5 ? [] : ['a'], dataCategories: rand() < 0.5 ? [] : ['b'], dpiaRequired: rand() < 0.5, hasApprovedDpia: rand() < 0.5 });
+  record('ncStage', { kind: pick(['nonconformity', 'opportunity']), status: pick(['open', 'closed', 'cancelled']), rootCause: pick(['', ' ', 'x']) }, Array.from({ length: int(3) }, () => ({ done: rand() < 0.6 })));
+  record('effectivenessBlockers', { kind: pick(['nonconformity', 'opportunity']), status: pick(['open', 'closed', 'cancelled']), rootCause: pick(['', 'x']) }, Array.from({ length: int(3) }, () => ({ done: rand() < 0.6 })));
+  record('auditCompletionBlockers', { status: pick(['planned', 'in_progress', 'completed']), independenceNote: pick(['', 'x']), summary: pick(['', 'y']), results: Array.from({ length: int(4) }, () => pick([null, 'conforms', 'minor'])) });
+  record('missingInputs', Object.fromEntries(['previous_actions', 'risk', 'audits', 'objectives', 'monitoring'].filter(() => rand() < 0.6).map((k) => [k, pick([null, {}, 0, ''])])));
+  record('suggestedSampleSize', int(400));
+}
+const REQ_GROUPS = ['clause-4', 'clause-6', 'annex-a-5', 'annex-a-8'];
+for (let i = 0; i < 60; i++) {
+  const reqs = Array.from({ length: int(15) }, (_, k) => ({
+    framework: pick(['iso27001', 'cyber-essentials', 'nist-csf-2']), ref: `R${k}`, title: `T${k}`,
+    groupRef: pick(REQ_GROUPS), groupTitle: 'G', mandatory: rand() < 0.3, applicable: rand() < 0.7,
+    controls: Array.from({ length: int(3) }, () => `CC-X-0${int(9)}`), sort: int(20),
+  }));
+  record('buildChecklist', reqs, ...(rand() < 0.4 ? [REQ_GROUPS.filter(() => rand() < 0.5)] : []));
+  record('programmeCoverage', reqs, reqs.filter(() => rand() < 0.5).map((r) => `${r.framework}:${r.ref}`));
+}
+// Sampling with plain lower-case keys (the port sorts by code point; see _js.py).
+const samples = [];
+for (let i = 0; i < 80; i++) {
+  const keys = [...new Set(Array.from({ length: int(60) }, () => `k${int(1000)}`))];
+  const seedText = pick(['audit-2026', '', 's', 'Zürich £ 🔒', `seed-${int(1e6)}`]);
+  const size = pick([0, 1, 5, 10, 25, 100, -3, 2.7]);
+  samples.push({ keys, seed: seedText, size, out: domain.drawSample(keys.map((k) => ({ k })), size, seedText, (x: { k: string }) => x.k).map((x: { k: string }) => x.k) });
+}
+// CSV over a small alphabet that exercises quoting.
+const csvs = [];
+for (let i = 0; i < 300; i++) {
+  const text = Array.from({ length: int(40) }, () => pick(['a', 'b', ' ', ',', '"', '\n', '\r\n', '\r', '﻿', 'Name', 'Owner Email'])).join('');
+  let out: unknown;
+  try {
+    out = { rows: domain.parseCsv(text), records: domain.parseCsvRecords(text) };
+  } catch {
+    out = { error: true };
+  }
+  csvs.push({ text, out });
+}
+
 writeFileSync(
   join(fenrirDir, 'cloud/tests/fixtures/isms_parity.json.gz'),
-  gzipSync(JSON.stringify({ expressions, parses, applicability: { base, cases, diff } }) + '\n', { level: 9 }),
+  gzipSync(JSON.stringify({ expressions, parses, applicability: { base, cases, diff }, domain: domainCases, samples, csvs }) + '\n', { level: 9 }),
 );
-console.log(`expressions ${expressions.length}, applicability cases ${cases.length}`);
+console.log(`expressions ${expressions.length}, applicability cases ${cases.length}, domain cases ${domainCases.length}, samples ${samples.length}, csv ${csvs.length}`);
