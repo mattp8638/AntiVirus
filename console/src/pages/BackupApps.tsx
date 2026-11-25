@@ -83,6 +83,7 @@ function Connect({ agents, repos, onClose }: { agents: BackupAgent[]; repos: Rep
   const [f, setF] = useState({ tenant: "", client_id: "", domain_url: "", admin: "", users: "", objects: "", name: "", api_server: "", ca_pem: "", namespaces: "", volume_image: "", time: "01:00" });
   const [mail, setMail] = useState(true);
   const [files, setFiles] = useState(true);
+  const [m365, setM365] = useState({ sites: false, teams: false, directory: false });
   const [secret, setSecret] = useState("");
   const meta = KINDS.find((k) => k.id === kind)!;
   const field = (k: keyof typeof f, label: string, placeholder = "") =>
@@ -93,7 +94,7 @@ function Connect({ agents, repos, onClose }: { agents: BackupAgent[]; repos: Rep
     const sealed = await seal(agent.publicKey, secret.trim());
     const job = kind === "kubernetes"
       ? { type: "backup_kubernetes", sealed_token: sealed, cluster: { name: f.name.trim(), api_server: f.api_server.trim(), ca_pem: f.ca_pem.trim(), namespaces: words(f.namespaces), volume_image: f.volume_image.trim() } }
-      : { type: "backup_saas", sealed_secret: sealed, tenant: { service: kind, tenant: f.tenant.trim(), client_id: f.client_id.trim(), domain_url: f.domain_url.trim(), admin: f.admin.trim(), users: words(f.users), objects: words(f.objects), mail, files } };
+      : { type: "backup_saas", sealed_secret: sealed, tenant: { service: kind, tenant: f.tenant.trim(), client_id: f.client_id.trim(), domain_url: f.domain_url.trim(), admin: f.admin.trim(), users: words(f.users), objects: words(f.objects), mail, files, ...(kind === "m365" ? m365 : {}) } };
     const name = kind === "kubernetes" ? `Kubernetes ${f.name.trim()}` : `${meta.label} ${f.tenant.trim()}`;
     return api("backup/plans", { body: { name, agentId: agent.id, repositoryId: repo, job, enabled: true,
       schedule: { type: "daily", time: f.time, days: [], utc_offset_minutes: -new Date().getTimezoneOffset() },
@@ -132,6 +133,11 @@ function Connect({ agents, repos, onClose }: { agents: BackupAgent[]; repos: Rep
       {(kind === "m365" || kind === "google") && <div className="row small" style={{ gap: 14 }}>
         <label className="row" style={{ gap: 4 }}><input type="checkbox" checked={mail} onChange={(e) => setMail(e.target.checked)} /> Mail</label>
         <label className="row" style={{ gap: 4 }}><input type="checkbox" checked={files} onChange={(e) => setFiles(e.target.checked)} /> {kind === "m365" ? "OneDrive" : "Drive"} files</label>
+        {kind === "m365" && <>
+          <label className="row" style={{ gap: 4 }} title="Needs Sites.ReadWrite.All"><input type="checkbox" checked={m365.sites} onChange={(e) => setM365({ ...m365, sites: e.target.checked })} /> SharePoint sites</label>
+          <label className="row" style={{ gap: 4 }} title="Needs ChannelMessage.Read.All (Microsoft approves this permission per app)"><input type="checkbox" checked={m365.teams} onChange={(e) => setM365({ ...m365, teams: e.target.checked })} /> Teams messages</label>
+          <label className="row" style={{ gap: 4 }} title="Needs Directory.Read.All and Policy.Read.All"><input type="checkbox" checked={m365.directory} onChange={(e) => setM365({ ...m365, directory: e.target.checked })} /> Entra ID</label>
+        </>}
       </div>}
       <label className="field">{meta.secret} — encrypted in this browser for {agent?.name ?? "the machine"}
         <textarea rows={kind === "google" ? 5 : 2} value={secret} onChange={(e) => setSecret(e.target.value)} autoComplete="off" spellCheck={false} />
@@ -180,6 +186,7 @@ function Restore({ plan, onClose }: { plan: Plan; onClose: () => void }) {
           {field("to_account", "Into account (empty: the same)")}
           <label className="field">What<select value={f.kind} onChange={(e) => setF({ ...f, kind: e.target.value })}>
             <option value="">Everything</option><option value="mail">Mail</option><option value="file">Files</option><option value="record">Records</option>
+            {job.tenant.service === "m365" && <><option value="site-file">SharePoint files (account: the site's address)</option><option value="directory">Entra ID objects (account: directory:tenant)</option></>}
           </select></label>
           {field("path", "Path starts with (empty: all)")}
         </>}

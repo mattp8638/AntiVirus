@@ -120,8 +120,17 @@ def _s3_settings(path: str, raw, prune_every_days: int) -> dict | None:
                 f"of backups in use); it runs every {prune_every_days or '0 (never)'} days")
     else:
         mode, days = None, 0
-    return {"endpoint": endpoint, "region": str(raw.get("region") or "us-east-1").strip()[:64],
-            "path_style": bool(raw.get("path_style")), "lock_mode": mode, "lock_days": days}
+    # Archive tier for backup data: only tiers read without a restore request first.
+    tier = str(raw.get("storage_class") or "").strip() or None
+    if tier is not None and tier not in (("Hot", "Cool", "Cold") if azure else
+                                         ("STANDARD", "STANDARD_IA", "ONEZONE_IA", "INTELLIGENT_TIERING", "GLACIER_IR")):
+        bad("the access tier is Hot, Cool or Cold" if azure else
+            "the storage class is STANDARD, STANDARD_IA, ONEZONE_IA, INTELLIGENT_TIERING or GLACIER_IR")
+    out = {"endpoint": endpoint, "region": str(raw.get("region") or "us-east-1").strip()[:64],
+           "path_style": bool(raw.get("path_style")), "lock_mode": mode, "lock_days": days}
+    if tier:
+        out["storage_class"] = tier
+    return out
 
 
 def _share_mode(body: dict) -> tuple[str, str | None]:
@@ -156,6 +165,7 @@ def agent_out(db: Session, a: BackupAgent, now=None) -> dict:
                       "serial": d.get("serial") or "", "system": bool(d.get("system")), "inUse": bool(d.get("in_use"))}
                      for d in inv.get("disks") or [] if isinstance(d, dict) and d.get("path")],
         "firmware": inv.get("firmware"), "secureBoot": inv.get("secure_boot"),
+        "otherBackup": [str(x)[:120] for x in (inv.get("other_backup") or [])[:20]] if isinstance(inv.get("other_backup"), list) else [],
         "localRecovery": inv.get("local_recovery") if isinstance(inv.get("local_recovery"), dict) else None,
         "runningVms": [{"sessionId": v.get("session_id"), "imageId": v.get("image_id"), "startedUnix": v.get("started_unix"),
                         "vncPort": v.get("vnc_port") or 0} for v in inv.get("running_vms") or [] if isinstance(v, dict)],
@@ -222,6 +232,9 @@ def repo_out(db: Session, r: BackupRepository) -> dict:
             "bootAgentId": r.boot_agent_id, "bootEveryDays": r.boot_every_days, "lastVerifiedBoot": iso(verified),
             "shareAuth": r.share_auth, "shareUser": r.share_user, "isShare": is_share_path(r.path), "s3": r.s3,
             "dedupGroup": dedup_member(r.path),
+            "mediaSet": r.media_set,
+            "storageCheckedAt": iso(r.storage_checked_at) if r.storage_checked_at else None,
+            "storageError": r.storage_error,
             "agents": [{"id": a.id, "name": a.display_name or a.hostname,
                         "viaGateway": bool((db.get(BackupRepoAccess, (r.id, a.id)) or SimpleNamespace(via_gateway=None)).via_gateway)}
                        for a in agents],
@@ -547,7 +560,10 @@ def _saas_tenant(t) -> dict:
     out = {"service": svc, "tenant": str(t.get("tenant") or "").strip()[:200], "client_id": str(t.get("client_id") or "").strip()[:200],
            "domain_url": str(t.get("domain_url") or "").strip()[:300], "admin": str(t.get("admin") or "").strip()[:320],
            "users": _name_list(t.get("users"), 5000), "objects": _name_list(t.get("objects")),
-           "mail": t.get("mail") is not False, "files": t.get("files") is not False}
+           "mail": t.get("mail") is not False, "files": t.get("files") is not False,
+           # Microsoft 365 workloads with their own permissions (SharePoint, Teams, Entra ID).
+           "sites": svc == "m365" and t.get("sites") is True, "teams": svc == "m365" and t.get("teams") is True,
+           "directory": svc == "m365" and t.get("directory") is True}
     if not out["tenant"]:
         bad("give the tenant (directory, domain or org name)")
     if svc == "m365" and not out["client_id"]:
@@ -1202,6 +1218,22 @@ def set_gateway(repo_id: str, body: dict = Body(...), p: Principal = Depends(cur
               address=address)
     db.commit()
     return {"ok": True}
+
+
+@router.post("/repositories/{repo_id}/media-set")
+def set_media_set(repo_id: str, body: dict = Body(...), p: Principal = Depends(current_principal),
+                  db: Session = Depends(get_db)):
+    """Put a repository (a removable drive) in an offline media set, or take it out: copies to any repository of the
+    set go to whichever of its drives is attached (backup/docs/design/offsite-copy.md)."""
+    p.require("configure")
+    r = _repo(db, p, repo_id)
+    name = str(body.get("mediaSet") or "").strip() or None
+    if name is not None and (len(name) > 60 or any(ord(c) < 32 for c in name)):
+        bad("a media set name is up to 60 characters")
+    r.media_set = name
+    bk.record(db, p.actor, "backup.repository.media_set", r.name, r.tenant_id, media_set=name)
+    db.commit()
+    return {"mediaSet": name}
 
 
 @router.post("/repositories/{repo_id}/hold")

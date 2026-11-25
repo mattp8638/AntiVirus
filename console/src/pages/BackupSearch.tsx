@@ -8,19 +8,22 @@ import { waitFast, type BrowseStart } from "./BackupFiles";
 
 interface SearchJob { id: string; repositoryId: string; agentName: string; agentOnline: boolean; images: number }
 interface Hit {
-  image_id: string; volume: { label: string; disk: number; partition: number }; path: string; size: number;
+  image_id: string; volume?: { label: string; disk: number; partition: number } | null; path: string; size: number;
   modified?: number | null; folder: boolean;
+  /** Cloud-service backups: the mailbox, drive, site or org, and what the item is. */
+  account?: string; kind?: string;
 }
+const KIND_LABEL: Record<string, string> = { mail: "Mail", file: "File", "site-file": "SharePoint", record: "Record", "teams-message": "Teams", directory: "Entra ID" };
 interface ImageRef { imageId: string; created: number }
 
 const when = (t?: number | null) => (t ? new Date(t * 1000).toLocaleString() : "—");
 
 /** Matches grouped by item (volume and path), each with the backups that hold it, newest first. */
 function group(hits: Hit[], created: Map<string, number>) {
-  const m = new Map<string, { key: string; volume: Hit["volume"]; path: string; folder: boolean; versions: Hit[] }>();
+  const m = new Map<string, { key: string; volume: Hit["volume"]; path: string; folder: boolean; account?: string; kind?: string; versions: Hit[] }>();
   for (const h of hits) {
-    const key = `${h.volume.label}|${h.path.toLowerCase()}`;
-    const g = m.get(key) ?? { key, volume: h.volume, path: h.path, folder: h.folder, versions: [] };
+    const key = `${h.account ? `${h.kind}:${h.account}` : h.volume?.label}|${h.path.toLowerCase()}`;
+    const g = m.get(key) ?? { key, volume: h.volume, path: h.path, folder: h.folder, account: h.account, kind: h.kind, versions: [] };
     g.versions.push(h);
     m.set(key, g);
   }
@@ -82,11 +85,11 @@ export function SearchBackups({ device, images, onOpen }: {
           <tbody>
             {groups.map((g) => <Fragment key={g.key}>
               <tr>
-                <td><span className="mono small">{g.volume.label} {g.path}</span>{g.folder && <span className="small muted"> (folder)</span>}</td>
+                <td>{g.account ? <><span className="small">{g.path}</span><div className="small muted">{KIND_LABEL[g.kind ?? ""] ?? g.kind} · {g.account}</div></> : <span className="mono small">{g.volume?.label} {g.path}</span>}{g.folder && <span className="small muted"> (folder)</span>}</td>
                 <td>{g.versions.length}</td>
                 <td className="small">{when(created.get(g.versions[0].image_id))}{!g.folder && ` · ${bytes(g.versions[0].size)}`}</td>
                 <td><div className="row" style={{ gap: 4 }}>
-                  <button className="small primary" onClick={() => onOpen(g.versions[0].image_id, { disk: g.volume.disk, partition: g.volume.partition, folder: g.folder ? g.path : parent(g.path), select: g.folder ? undefined : g.path })}>Open newest</button>
+                  {g.account ? <span className="small muted">Restore it from Apps and clusters</span> : g.volume && <button className="small primary" onClick={() => onOpen(g.versions[0].image_id, { disk: g.volume!.disk, partition: g.volume!.partition, folder: g.folder ? g.path : parent(g.path), select: g.folder ? undefined : g.path })}>Open newest</button>}
                   {g.versions.length > 1 && <button className="small" aria-expanded={open === g.key} onClick={() => setOpen(open === g.key ? null : g.key)}>{open === g.key ? "Hide versions" : "All versions"}</button>}
                 </div></td>
               </tr>
@@ -95,7 +98,7 @@ export function SearchBackups({ device, images, onOpen }: {
                   <td style={{ paddingLeft: 24 }}>Backup of {when(created.get(v.image_id))}</td>
                   <td>{g.folder ? "" : bytes(v.size)}</td>
                   <td>{v.modified ? `changed ${when(v.modified)}` : ""}</td>
-                  <td><button className="small" onClick={() => onOpen(v.image_id, { disk: v.volume.disk, partition: v.volume.partition, folder: g.folder ? g.path : parent(g.path), select: g.folder ? undefined : g.path })}>Open</button></td>
+                  <td>{v.volume && <button className="small" onClick={() => onOpen(v.image_id, { disk: v.volume!.disk, partition: v.volume!.partition, folder: g.folder ? g.path : parent(g.path), select: g.folder ? undefined : g.path })}>Open</button>}</td>
                 </tr>
               ))}
             </Fragment>)}

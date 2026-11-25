@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 84
+LATEST_MIGRATION = 85
 
 def init_engine(url: str, pool_size: int = 5, max_overflow: int = 10) -> Engine:
     global _engine, _session_factory
@@ -581,6 +581,10 @@ def migrate(bind: Engine) -> list[int]:
                 ensure_columns(Base, conn)  # legal holds (backup_images.legal_hold)
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (84)"))
                 applied.append(84)
+            if 85 not in versions:
+                ensure_columns(Base, conn)  # media sets and storage checks (backup_repositories)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (85)"))
+                applied.append(85)
             conn.commit()
         except Exception:
             conn.rollback()

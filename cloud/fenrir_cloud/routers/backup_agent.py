@@ -185,6 +185,16 @@ def _job_spec(db: Session, agent: BackupAgent, job: BackupJob) -> dict | None:
         if target is None:
             return None
         spec["copy_target"] = target
+        # An offline media set: the set's other drives, tried in order when this one is not attached.
+        tr = db.get(BackupRepository, str(job.kind.get("target_repository_id") or ""))
+        if tr is not None and tr.media_set:
+            others = db.execute(select(BackupRepository).where(
+                BackupRepository.tenant_id == tr.tenant_id, BackupRepository.media_set == tr.media_set,
+                BackupRepository.id != tr.id, BackupRepository.status == "ready")
+                .order_by(BackupRepository.name)).scalars().all()
+            alts = [a for a in (_access(db, agent, o.id) for o in others) if a is not None]
+            if alts:
+                spec["copy_alternatives"] = alts
     return spec
 
 
@@ -333,8 +343,12 @@ def update_job(job_id: str, body: dict = Body(...), agent: BackupAgent = Depends
     repo = db.get(BackupRepository, job.repository_id) if job.repository_id else None
     images = body.get("images") or []
     # A copy reports the images it put in its destination.
-    image_repo = db.get(BackupRepository, str(kind.get("target_repository_id"))) \
+    # (an offline media set: the drive that was attached, as the agent reports it)
+    copied_to = (body.get("result") or {}).get("target_repository_id") if isinstance(body.get("result"), dict) else None
+    image_repo = db.get(BackupRepository, str(copied_to or kind.get("target_repository_id"))) \
         if kind.get("type") == "copy_images" else repo
+    if image_repo is not None and repo is not None and image_repo.tenant_id != repo.tenant_id:
+        image_repo = None
     if image_repo is not None:
         for im in images:
             if db.get(BackupImage, str(im["image_id"])) is not None:
@@ -375,6 +389,8 @@ def update_job(job_id: str, body: dict = Body(...), agent: BackupAgent = Depends
                 bk.raise_alert(db, job.tenant_id, agent.device_id, bk.RULE_BOOT,
                                f"Backup of {name} did not boot", "high",
                                f"A boot check of image {kind.get('image_id')} failed: {_str(b.get('message'), 500)}")
+        if kind.get("type") == "check_access" and final and job.requested_by == bk.STORAGE_CHECK_BY:
+            bk.record_storage_check(db, job, state, job.error)
         if kind.get("type") == "scan_image" and final:
             bk.record_scan(db, job, agent, state, body.get("result") if isinstance(body.get("result"), dict) else None)
         if kind.get("type") == "list_images" and final and repo.status == "pending" and not repo.repo_uuid:

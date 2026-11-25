@@ -1575,3 +1575,124 @@ def test_legal_hold_keeps_backups_from_retention(client, admin, tenant):
     held = client.post("/api/console/backup/legal-hold/device", headers=admin,
                        json={"device": dev["key"], "reason": "Matter 2026-120"}).json()["held"]
     assert held == 3
+
+
+def test_storage_is_checked_daily_and_a_failing_check_raises_an_alert(client, admin, tenant):
+    """Credential and storage health: once a day a machine with access tests the repository's storage with the
+    sign-in it was given; a failing check is shown on the repository and raises one alert, cleared when it passes."""
+    from datetime import timedelta
+
+    from fenrir_cloud.db import session_factory
+    from fenrir_cloud.models import Alert, BackupJob, BackupRepository
+
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    heartbeat(client, h)
+    repo_id = ready_repo(client, admin, tenant, agent_id, h)
+    with session_factory()() as db:
+        assert bk.check_storage(db) == 1
+        assert bk.check_storage(db) == 0, "one check at a time, at most daily"
+        db.commit()
+    spec = heartbeat(client, h)["jobs"][0]
+    assert spec["kind"]["type"] == "check_access" and spec["kind"]["path"] == "D:\\Backups"
+    assert spec["kind"]["sealed_share"] is None
+    finish(client, h, spec["id"], state="failed", error="access denied")
+    repo = next(r for r in client.get("/api/console/backup/repositories", headers=admin).json() if r["id"] == repo_id)
+    assert repo["storageError"] == "access denied" and repo["storageCheckedAt"]
+    with session_factory()() as db:
+        assert sum(a.rule_id == bk.RULE_STORAGE for a in db.query(Alert).all()) == 1
+        # A day later it is checked again; this time it passes and the alert is resolved.
+        r = db.get(BackupRepository, repo_id)
+        r.storage_checked_at -= timedelta(days=2)
+        for j in db.query(BackupJob).filter(BackupJob.requested_by == bk.STORAGE_CHECK_BY):
+            j.created_at -= timedelta(days=2)
+        db.commit()
+        assert bk.check_storage(db) == 1
+        db.commit()
+    spec = heartbeat(client, h)["jobs"][0]
+    finish(client, h, spec["id"])
+    repo = next(r for r in client.get("/api/console/backup/repositories", headers=admin).json() if r["id"] == repo_id)
+    assert repo["storageError"] is None
+    with session_factory()() as db:
+        open_ = [a for a in db.query(Alert).all() if a.rule_id == bk.RULE_STORAGE and a.status not in ("resolved", "closed")]
+        assert not open_, [(a.status) for a in open_]
+
+
+def test_offline_media_set_copies_go_to_the_attached_drive(client, admin, tenant):
+    """Offline media rotation: drives of one media set are alternatives for a plan's copy; the machine copies to
+    whichever is attached, the images are listed under that drive, and an overdue set raises an alert."""
+    from fenrir_cloud.db import session_factory
+    from fenrir_cloud.models import Alert
+
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    heartbeat(client, h)
+    local = ready_repo(client, admin, tenant, agent_id, h)
+    drive_a = ready_repo(client, admin, tenant, agent_id, h)
+    drive_b = ready_repo(client, admin, tenant, agent_id, h)
+    for d in (drive_a, drive_b):
+        r = client.post(f"/api/console/backup/repositories/{d}/media-set", headers=admin, json={"mediaSet": "Weekly USB"})
+        assert r.status_code == 200, r.text
+    assert next(r for r in client.get("/api/console/backup/repositories", headers=admin).json()
+                if r["id"] == drive_a)["mediaSet"] == "Weekly USB"
+    with session_factory()() as db:
+        bk.check_media_rotation(db)
+        db.commit()
+        assert sum(a.rule_id == bk.RULE_MEDIA for a in db.query(Alert).all()) == 1
+    plan = client.post("/api/console/backup/plans", headers=admin, json={
+        "name": "Nightly", "agentId": agent_id, "repositoryId": local, "job": {"type": "backup_system"},
+        "schedule": {"type": "manual"}, "copyToRepositoryId": drive_a}).json()["id"]
+    assert client.post(f"/api/console/backup/plans/{plan}/run", headers=admin).status_code == 200
+    job = heartbeat(client, h)["jobs"][0]
+    im = image()
+    finish(client, h, job["id"], images=[im])
+    copy = heartbeat(client, h)["jobs"][0]
+    assert copy["kind"]["type"] == "copy_images" and copy["kind"]["images"] == [], "copies everything the drive lacks"
+    alts = copy.get("copy_alternatives") or []
+    assert [a["repository_id"] for a in alts] == [drive_b]
+    # Drive B was attached: the copies are recorded there.
+    finish(client, h, copy["id"], result={"target_repository_id": drive_b},
+           images=[{**im, "image_id": str(uuid.uuid4()), "created_unix": __import__("time").time().__int__()}])
+    from fenrir_cloud.models import BackupImage
+    with session_factory()() as db:
+        assert db.query(BackupImage).filter(BackupImage.repository_id == drive_b).count() == 1
+        assert db.query(BackupImage).filter(BackupImage.repository_id == drive_a).count() == 0
+        bk.check_media_rotation(db)
+        db.commit()
+        open_ = [a for a in db.query(Alert).all() if a.rule_id == bk.RULE_MEDIA and a.status not in ("resolved", "closed")]
+        assert not open_
+
+
+def test_m365_sites_teams_directory_and_archive_tiers(client, admin, tenant):
+    """SharePoint, Teams and Entra ID are opt-in for Microsoft 365 only; object storage can put backup data in an
+    instant-read archive tier, and only those tiers are accepted."""
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    caps = CAPS + ["saas"]
+    heartbeat(client, h, caps=caps)
+    repo = ready_repo(client, admin, tenant, agent_id, h)
+    heartbeat(client, h, caps=caps)
+    t = {"service": "m365", "tenant": "contoso.onmicrosoft.com", "client_id": "app", "sites": True, "teams": True,
+         "directory": True}
+    r = client.post("/api/console/backup/plans", headers=admin, json={
+        "name": "M365", "agentId": agent_id, "repositoryId": repo, "schedule": {"type": "manual"},
+        "job": {"type": "backup_saas", "tenant": t, "sealed_secret": SEALED}})
+    assert r.status_code == 200, r.text
+    assert client.post(f"/api/console/backup/plans/{r.json()['id']}/run", headers=admin).status_code == 200
+    spec = heartbeat(client, h, caps=caps)["jobs"][0]
+    got = spec["kind"]["tenant"]
+    assert got["sites"] is True and got["teams"] is True and got["directory"] is True
+    finish(client, h, spec["id"])
+
+    def s3_repo(cls):
+        return client.post("/api/console/backup/repositories", headers=admin, json={
+            "name": "Archive", "path": "s3://fenrir-archive/x", "repoUuid": str(uuid.uuid4()), "initAgentId": agent_id,
+            "s3": {"endpoint": "https://s3.eu-west-2.amazonaws.com", "region": "eu-west-2", "path_style": False,
+                   "lock_mode": None, "lock_days": 0, "storage_class": cls},
+            "share_auth": "password", "share_user": "AKID",
+            "access": [{"agentId": agent_id, "sealed": SEALED, "sealedShare": SEALED}]})
+    assert s3_repo("DEEP_ARCHIVE").status_code == 400, "restores could not read a tier that needs a thaw"
+    r = s3_repo("GLACIER_IR")
+    assert r.status_code == 200, r.text
+    spec = next(j for j in heartbeat(client, h, caps=caps)["jobs"] if j["kind"]["type"] == "init_repository")
+    assert spec["repository"]["s3"]["storage_class"] == "GLACIER_IR"

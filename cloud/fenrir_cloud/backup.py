@@ -416,6 +416,10 @@ def queue_copy(db: Session, plan_id: str, repo_id: str, agent: BackupAgent, imag
     ids = [str(i["image_id"]) for i in images if i.get("image_id")]
     if plan is None or not plan.copy_to_repository_id or not ids:
         return
+    # A drive of an offline media set gets everything it lacks (it may have been away for weeks).
+    target = db.get(BackupRepository, plan.copy_to_repository_id)
+    if target is not None and target.media_set:
+        ids = []
     queue(db, agent, {"type": "copy_images", "target_repository_id": plan.copy_to_repository_id, "images": ids,
                       "full_verify": False}, repo_id, "copy", plan_id=plan_id)
 
@@ -857,6 +861,79 @@ def run_dr(db: Session) -> None:
     db.commit()
 
 
+RULE_STORAGE = "backup.storage_unreachable"
+RULE_MEDIA = "backup.offline_copy_overdue"
+STORAGE_CHECK_BY = "storage check"
+
+
+def check_storage(db: Session) -> int:
+    """Once a day per ready repository (not one reached through a gateway), a connection test of its storage with the
+    sign-in a machine with access uses (share password, S3 or Azure keys, sealed to it). The result is kept on the
+    repository (record_storage_check)."""
+    now = utcnow()
+    n = 0
+    for r in db.execute(select(BackupRepository).where(BackupRepository.status == "ready",
+                                                       BackupRepository.gateway_agent_id.is_(None))).scalars():
+        if r.storage_checked_at is not None and now - r.storage_checked_at < timedelta(hours=24):
+            continue
+        recent = db.execute(select(BackupJob.id).where(
+            BackupJob.repository_id == r.id, BackupJob.requested_by == STORAGE_CHECK_BY,
+            (BackupJob.state.in_(("queued", "dispatched", "running"))) | (BackupJob.created_at > now - timedelta(hours=24)))
+        ).first()
+        if recent is not None:
+            continue
+        grants = db.execute(select(BackupRepoAccess).where(BackupRepoAccess.repository_id == r.id)).scalars().all()
+        agents = [(g, db.get(BackupAgent, g.agent_id)) for g in grants if not getattr(g, "via_gateway", False)]
+        agents = [(g, a) for g, a in agents if a is not None and not a.revoked]
+        if not agents:
+            continue
+        agents.sort(key=lambda ga: (ga[1].id != r.maintenance_agent_id, not online(ga[1])))
+        grant, agent = agents[0]
+        kind = {"type": "check_access", "path": r.path, "sealed_share": grant.sealed_share}
+        if r.s3:
+            kind["s3"] = r.s3
+        queue(db, agent, kind, r.id, STORAGE_CHECK_BY)
+        n += 1
+    return n
+
+
+def record_storage_check(db: Session, job: BackupJob, state: str, error: str | None) -> None:
+    """A daily storage check finished: kept on the repository; one that starts failing raises an alert."""
+    r = db.get(BackupRepository, job.repository_id) if job.repository_id else None
+    if r is None:
+        return
+    err = None if state in ("succeeded", "warning") else (error or "the storage could not be reached")
+    was = r.storage_error
+    r.storage_checked_at, r.storage_error = utcnow(), err
+    if err and not was:
+        raise_alert(db, r.tenant_id, None, RULE_STORAGE, f"Storage of {r.name} cannot be reached", "high",
+                    f"The daily check of the repository {r.name}'s storage failed: {err}. Backups into it will fail "
+                    "until this is fixed (an expired key or password, a full disk, or a share or bucket that moved).",
+                    dedupe_key=f"storage:{r.id}")
+    elif not err and was:
+        resolve_alerts(db, r.tenant_id, RULE_STORAGE, f"storage:{r.id}", "The storage can be reached again")
+
+
+def check_media_rotation(db: Session) -> None:
+    """Offline media sets: a copy to some drive of the set at least every 8 days, else the off-site copy is getting
+    old and the next drive of the rotation should be attached."""
+    now = utcnow()
+    sets: dict[tuple[str, str], int | None] = {}
+    for r in db.execute(select(BackupRepository).where(BackupRepository.media_set.is_not(None),
+                                                       BackupRepository.status == "ready")).scalars():
+        newest = db.execute(select(func.max(BackupImage.created_unix)).where(BackupImage.repository_id == r.id)).scalar()
+        key = (r.tenant_id, r.media_set)
+        sets[key] = max(filter(None, [sets.get(key), newest]), default=None)
+    for (tenant, name), newest in sets.items():
+        key = f"media:{name}"
+        if newest is None or now.timestamp() - newest > 8 * 86_400:
+            raise_alert(db, tenant, None, RULE_MEDIA, f"Offline copy overdue: {name}", "medium",
+                        f"No backup has been copied to a drive of the offline media set {name} for more than 8 days. "
+                        "Attach the next drive of the rotation to the machine that makes the copies.", dedupe_key=key)
+        else:
+            resolve_alerts(db, tenant, RULE_MEDIA, key, "A drive of the set received a copy")
+
+
 def tick(db: Session) -> None:
     """30-second scheduler: plans, boot verification, ended recovery sessions."""
     run_due_plans(db)
@@ -1025,6 +1102,8 @@ def hourly(db: Session) -> None:
     link_devices(db)
     run_maintenance(db)
     check_health(db)
+    check_storage(db)
+    check_media_rotation(db)
     purge_listings(db)
 
 
