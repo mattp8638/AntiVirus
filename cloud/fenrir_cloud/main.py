@@ -29,6 +29,7 @@ from .models import Device, DnsQueryLog, Event, RateLimitBucket, Policy, RuleMat
 from .routers import m365_admin as m365_admin_router
 from .routers import m365 as m365_router, network as network_router, grc as grc_router, soc_workflows
 from .routers import documentation as documentation_router
+from .routers import isms as isms_router
 from .routers import push as push_router
 from .routers import backup as backup_router, backup_agent as backup_agent_router, backup_cases as backup_cases_router
 from .routers import active_directory as ad_router
@@ -151,6 +152,11 @@ def bootstrap(settings: Settings) -> None:
         blocklists.ensure_builtin(db)
         psa.ensure_default_boards(db, msp.id)
         webpush.public_key(db)  # the push-notification key exists before anyone asks for it (reads never write)
+        from .isms import library as isms_library
+
+        added = isms_library.publish_shipped(db)  # ISMS content packs: new versions only, never changed
+        if added:
+            log.info("published ISMS content packs: %s", ", ".join(added))
         db.commit()
         sync_builtin_rules(db, settings.rules_dir)
         # Once, after the antimalware precision update: close open alerts the tuned rules no longer raise.
@@ -307,7 +313,7 @@ def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
              ("backup.hourly", device_backup.hourly), ("grc.attestation", _attestation_reminders),
              ("agreements.expiry", _agreements_expiry), ("m365.config-backup", m365_config.tick),
              ("m365.apps", m365_apps.tick), ("workload.scans", workload.tick),
-             ("apple-mdm.renewals", apple_mdm.tick)]
+             ("apple-mdm.renewals", apple_mdm.tick), ("isms.evidence", _isms_evidence_tick)]
     if settings.intel_feeds_enabled:
         from . import threat_feeds
 
@@ -320,6 +326,16 @@ def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
 
         jobs.append(("dns.ruleset", dns_ruleset.tick))  # rebuild the Fenrir DNS ruleset after the feeds change
     return jobs
+
+
+def _isms_evidence_tick(db) -> None:
+    """ISMS: import Fenrir's automated GRC results (collected just before by grc.automation), rescan files waiting for
+    the virus scanner, notice expired evidence."""
+    from .isms import evidence as isms_evidence
+    from .isms import tasks as isms_tasks
+
+    isms_evidence.tick(db)
+    isms_tasks.send_reminders(db)  # each stage once per task, so running hourly sends each reminder once
 
 
 def _maintenance_loop(settings: Settings, stop: threading.Event) -> None:
@@ -654,6 +670,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def approval_required(_request: Request, exc: approval_gate.ApprovalRequired):
         return exc.response()
 
+    from .isms.models import CompletedAudit, FrozenDocumentVersion
+
+    @app.exception_handler(CompletedAudit)
+    @app.exception_handler(FrozenDocumentVersion)
+    async def frozen_record(_request: Request, exc: RuntimeError):
+        # The last line of defence for records that must never change; the services refuse these first.
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+
     remote.install_wake_hook()
     for module in (agent_api, admin, fleet, soc, crm_router, business, rmm_router, service_mgmt, psa_router, remote_router, portal):
         app.include_router(module.router)
@@ -661,7 +685,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     for module in (m365_admin_router, m365_router, network_router, grc_router, soc_workflows, ad_router, agent_health_router, onboarding_router, m365_exchange_router, m365_signin_router, m365_intune_router, m365_reports_router, m365_collaboration_router, grc_programme_router,
                    rollouts_router, apikeys_router, roles_router, approvals_router, exclusions_router,
                    exposure_intel_router, m365_partner_router, m365_workspace_router, email_security_router, email_policies_router, dns_console_router, m365_lifecycle_router, condition_packages_router, triage_router, clients_router, search_router, defender_router, mobile_apps_router, push_router,
-                   reports_router, branding_router, deploy_router, pentest_router):
+                   reports_router, branding_router, deploy_router, pentest_router, isms_router):
         app.include_router(module.router)
     app.include_router(deploy_router.public)
     app.include_router(backup_router.router)

@@ -1,0 +1,13 @@
+# Converted from Fenrir's grc_library/eu-gdpr.yml by scripts/isms/convert_fenrir_frameworks.py.
+id: eu-gdpr-2016
+kind: framework
+framework: eu-gdpr
+name: EU GDPR
+version: Regulation (EU) 2016/679
+pack_version: 1.0.0
+certifiable: false
+licence: open
+attribution: Regulation (EU) 2016/679 (GDPR). (c) European Union, https://eur-lex.europa.eu. Reuse is authorised under Commission
+  Decision 2011/833/EU. Identifiers are the official ones; short titles are our own.
+depends_on:
+- common-controls

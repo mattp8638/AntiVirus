@@ -1,0 +1,13 @@
+# UK Cyber Essentials technical controls. Reference numbers and short titles are our own; the
+# scheme's requirements text is not reproduced. Reuse terms are unconfirmed (D6), so titles only.
+id: cyber-essentials
+kind: framework
+framework: cyber-essentials
+name: Cyber Essentials
+publisher: NCSC and IASME
+version: "requirements for IT infrastructure v3.2"
+pack_version: 1.0.0
+certifiable: true
+licence: crown-copyright-pending
+attribution: "Cyber Essentials is a UK government scheme run by IASME on behalf of the NCSC. Identifiers and short titles only."
+depends_on: [common-controls]

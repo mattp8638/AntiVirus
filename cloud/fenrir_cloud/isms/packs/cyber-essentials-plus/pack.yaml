@@ -1,0 +1,12 @@
+# Converted from Fenrir's grc_library/cyber-essentials-plus.yml by scripts/isms/convert_fenrir_frameworks.py.
+id: cyber-essentials-plus
+kind: framework
+framework: cyber-essentials-plus
+name: Cyber Essentials Plus
+version: Current CE requirements and CE+ test specification
+pack_version: 1.0.0
+certifiable: true
+licence: crown-copyright-pending
+attribution: Cyber Essentials Plus, NCSC and IASME. Identifiers and short titles only.
+depends_on:
+- common-controls

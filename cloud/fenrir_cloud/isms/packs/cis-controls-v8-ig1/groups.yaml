@@ -1,0 +1,61 @@
+# Converted from Fenrir's grc_library/cis-v8-ig1.yml by scripts/isms/convert_fenrir_frameworks.py.
+- ref: '1'
+  title: 1 Inventory and control of enterprise assets
+  sort: 1
+  licence: id-and-title
+- ref: '2'
+  title: 2 Inventory and control of software assets
+  sort: 2
+  licence: id-and-title
+- ref: '3'
+  title: 3 Data protection
+  sort: 3
+  licence: id-and-title
+- ref: '4'
+  title: 4 Secure configuration of enterprise assets and software
+  sort: 4
+  licence: id-and-title
+- ref: '5'
+  title: 5 Account management
+  sort: 5
+  licence: id-and-title
+- ref: '6'
+  title: 6 Access control management
+  sort: 6
+  licence: id-and-title
+- ref: '7'
+  title: 7 Continuous vulnerability management
+  sort: 7
+  licence: id-and-title
+- ref: '8'
+  title: 8 Audit log management
+  sort: 8
+  licence: id-and-title
+- ref: '9'
+  title: 9 Email and web browser protections
+  sort: 9
+  licence: id-and-title
+- ref: '10'
+  title: 10 Malware defenses
+  sort: 10
+  licence: id-and-title
+- ref: '11'
+  title: 11 Data recovery
+  sort: 11
+  licence: id-and-title
+- ref: '12'
+  title: 12 Network infrastructure management
+  sort: 12
+  licence: id-and-title
+- ref: '14'
+  title: 14 Security awareness and skills training
+  sort: 13
+  licence: id-and-title
+- ref: '15'
+  title: 15 Service provider management
+  sort: 14
+  licence: id-and-title
+- ref: '17'
+  title: 17 Incident response management
+  sort: 15
+  licence: id-and-title

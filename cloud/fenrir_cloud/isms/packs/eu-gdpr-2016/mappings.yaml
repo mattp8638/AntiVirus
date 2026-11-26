@@ -1,0 +1,71 @@
+# Converted from Fenrir's grc_library/eu-gdpr.yml by scripts/isms/convert_fenrir_frameworks.py.
+- requirement: GDPR-BREACH
+  control: CC-INC-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-INCIDENT (Incident response) here.
+  licence: original
+- requirement: GDPR-DPIA
+  control: CC-GOV-09
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: GDPR-LAWFUL
+  control: CC-GOV-09
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: GDPR-PROCESSORS
+  control: CC-SUP-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-SUPPLIER (Third-party risk management) here.
+  licence: original
+- requirement: GDPR-PROCESSORS
+  control: CC-SUP-02
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-SUPPLIER (Third-party risk management) here.
+  licence: original
+- requirement: GDPR-RETENTION
+  control: CC-GOV-08
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: GDPR-RETENTION
+  control: CC-MED-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: GDPR-RIGHTS
+  control: CC-GOV-09
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: GDPR-ROLES
+  control: CC-GOV-09
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: GDPR-ROLES
+  control: CC-SUP-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: GDPR-SECURITY
+  control: CC-CRY-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: GDPR-SECURITY
+  control: CC-GOV-09
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: GDPR-TRANSFERS
+  control: CC-GOV-09
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: GDPR-TRANSFERS
+  control: CC-TRF-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original

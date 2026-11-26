@@ -1,0 +1,100 @@
+# ISO/IEC 27001:2022 Annex A to common controls v1.
+- { requirement: A.5.1, control: CC-GOV-01, strength: satisfies, rationale: "Information security policy set is approved and communicated.", licence: original }
+- { requirement: A.5.2, control: CC-GOV-02, strength: satisfies, rationale: "Security roles and management responsibilities are assigned.", licence: original }
+- { requirement: A.5.4, control: CC-GOV-02, strength: satisfies, rationale: "Security roles and management responsibilities are assigned.", licence: original }
+- { requirement: A.5.3, control: CC-GOV-03, strength: satisfies, rationale: "Conflicting duties are separated.", licence: original }
+- { requirement: A.5.5, control: CC-GOV-04, strength: satisfies, rationale: "Contacts with authorities and specialist groups are maintained.", licence: original }
+- { requirement: A.5.6, control: CC-GOV-04, strength: satisfies, rationale: "Contacts with authorities and specialist groups are maintained.", licence: original }
+- { requirement: A.5.7, control: CC-GOV-05, strength: satisfies, rationale: "Threat intelligence is collected and acted on.", licence: original }
+- { requirement: A.5.8, control: CC-GOV-06, strength: satisfies, rationale: "Security is built into projects.", licence: original }
+- { requirement: A.5.31, control: CC-GOV-07, strength: satisfies, rationale: "Legal, regulatory and contractual requirements are tracked.", licence: original }
+- { requirement: A.5.32, control: CC-GOV-07, strength: satisfies, rationale: "Legal, regulatory and contractual requirements are tracked.", licence: original }
+- { requirement: A.5.33, control: CC-GOV-08, strength: satisfies, rationale: "Records are retained and protected.", licence: original }
+- { requirement: A.5.34, control: CC-GOV-09, strength: satisfies, rationale: "Personal data is protected.", licence: original }
+- { requirement: A.5.35, control: CC-GOV-10, strength: satisfies, rationale: "Information security is independently reviewed.", licence: original }
+- { requirement: A.5.36, control: CC-GOV-11, strength: satisfies, rationale: "Compliance with security policy is checked.", licence: original }
+- { requirement: A.5.37, control: CC-GOV-12, strength: satisfies, rationale: "Operating procedures are documented.", licence: original }
+- { requirement: A.5.9, control: CC-AST-01, strength: satisfies, rationale: "Information and associated assets are inventoried with owners.", licence: original }
+- { requirement: A.5.11, control: CC-AST-02, strength: satisfies, rationale: "Assets are returned when people leave.", licence: original }
+- { requirement: A.5.10, control: CC-AUP-01, strength: satisfies, rationale: "Acceptable use rules are accepted by staff.", licence: original }
+- { requirement: A.5.12, control: CC-CLS-01, strength: satisfies, rationale: "Information is classified and labelled.", licence: original }
+- { requirement: A.5.13, control: CC-CLS-01, strength: satisfies, rationale: "Information is classified and labelled.", licence: original }
+- { requirement: A.5.14, control: CC-TRF-01, strength: satisfies, rationale: "Information transfer is controlled.", licence: original }
+- { requirement: A.5.15, control: CC-ACC-01, strength: satisfies, rationale: "Access is granted by role and reviewed.", licence: original }
+- { requirement: A.5.18, control: CC-ACC-01, strength: satisfies, rationale: "Access is granted by role and reviewed.", licence: original }
+- { requirement: A.8.3, control: CC-ACC-01, strength: satisfies, rationale: "Access is granted by role and reviewed.", licence: original }
+- { requirement: A.5.16, control: CC-IAM-01, strength: satisfies, rationale: "Identities are managed across their lifecycle.", licence: original }
+- { requirement: A.5.17, control: CC-IAM-02, strength: satisfies, rationale: "Authentication is strong and secrets are protected.", licence: original }
+- { requirement: A.8.5, control: CC-IAM-02, strength: satisfies, rationale: "Authentication is strong and secrets are protected.", licence: original }
+- { requirement: A.8.2, control: CC-IAM-03, strength: satisfies, rationale: "Privileged access is restricted and monitored.", licence: original }
+- { requirement: A.8.18, control: CC-IAM-03, strength: satisfies, rationale: "Privileged access is restricted and monitored.", licence: original }
+- { requirement: A.5.19, control: CC-SUP-01, strength: satisfies, rationale: "Supplier security is assessed and contracted.", licence: original }
+- { requirement: A.5.20, control: CC-SUP-01, strength: satisfies, rationale: "Supplier security is assessed and contracted.", licence: original }
+- { requirement: A.5.21, control: CC-SUP-01, strength: satisfies, rationale: "Supplier security is assessed and contracted.", licence: original }
+- { requirement: A.5.22, control: CC-SUP-02, strength: satisfies, rationale: "Supplier services are monitored.", licence: original }
+- { requirement: A.5.23, control: CC-CLD-01, strength: satisfies, rationale: "Cloud services are acquired and managed securely.", licence: original }
+- { requirement: A.5.24, control: CC-INC-01, strength: satisfies, rationale: "Incident response procedure is defined and exercised.", licence: original }
+- { requirement: A.5.25, control: CC-INC-01, strength: satisfies, rationale: "Incident response procedure is defined and exercised.", licence: original }
+- { requirement: A.5.26, control: CC-INC-01, strength: satisfies, rationale: "Incident response procedure is defined and exercised.", licence: original }
+- { requirement: A.5.27, control: CC-INC-02, strength: satisfies, rationale: "Incidents are learned from and evidence is preserved.", licence: original }
+- { requirement: A.5.28, control: CC-INC-02, strength: satisfies, rationale: "Incidents are learned from and evidence is preserved.", licence: original }
+- { requirement: A.6.8, control: CC-INC-03, strength: satisfies, rationale: "Staff report security events promptly.", licence: original }
+- { requirement: A.5.29, control: CC-BCM-01, strength: satisfies, rationale: "Security continues during disruption.", licence: original }
+- { requirement: A.5.30, control: CC-BCM-01, strength: satisfies, rationale: "Security continues during disruption.", licence: original }
+- { requirement: A.8.14, control: CC-BCM-02, strength: satisfies, rationale: "Critical systems have enough redundancy.", licence: original }
+- { requirement: A.6.1, control: CC-HR-01, strength: satisfies, rationale: "People are screened before joining.", licence: original }
+- { requirement: A.6.2, control: CC-HR-02, strength: satisfies, rationale: "Employment terms cover security, confidentiality and leaving.", licence: original }
+- { requirement: A.6.4, control: CC-HR-02, strength: satisfies, rationale: "Employment terms cover security, confidentiality and leaving.", licence: original }
+- { requirement: A.6.5, control: CC-HR-02, strength: satisfies, rationale: "Employment terms cover security, confidentiality and leaving.", licence: original }
+- { requirement: A.6.6, control: CC-HR-02, strength: satisfies, rationale: "Employment terms cover security, confidentiality and leaving.", licence: original }
+- { requirement: A.6.3, control: CC-AWR-01, strength: satisfies, rationale: "Staff receive security awareness training.", licence: original }
+- { requirement: A.6.7, control: CC-HR-03, strength: satisfies, rationale: "Remote working and off-site equipment are protected.", licence: original }
+- { requirement: A.7.9, control: CC-HR-03, strength: satisfies, rationale: "Remote working and off-site equipment are protected.", licence: original }
+- { requirement: A.7.1, control: CC-PHY-01, strength: satisfies, rationale: "Premises have secure perimeters and controlled entry.", licence: original }
+- { requirement: A.7.2, control: CC-PHY-01, strength: satisfies, rationale: "Premises have secure perimeters and controlled entry.", licence: original }
+- { requirement: A.7.3, control: CC-PHY-01, strength: satisfies, rationale: "Premises have secure perimeters and controlled entry.", licence: original }
+- { requirement: A.7.6, control: CC-PHY-01, strength: satisfies, rationale: "Premises have secure perimeters and controlled entry.", licence: original }
+- { requirement: A.7.4, control: CC-PHY-02, strength: satisfies, rationale: "Premises are monitored.", licence: original }
+- { requirement: A.7.5, control: CC-PHY-03, strength: satisfies, rationale: "Facilities are protected from environmental threats and utility failure.", licence: original }
+- { requirement: A.7.11, control: CC-PHY-03, strength: satisfies, rationale: "Facilities are protected from environmental threats and utility failure.", licence: original }
+- { requirement: A.7.12, control: CC-PHY-03, strength: satisfies, rationale: "Facilities are protected from environmental threats and utility failure.", licence: original }
+- { requirement: A.7.7, control: CC-PHY-04, strength: satisfies, rationale: "Desks and screens are kept clear.", licence: original }
+- { requirement: A.7.8, control: CC-PHY-05, strength: satisfies, rationale: "Equipment is sited safely and maintained.", licence: original }
+- { requirement: A.7.13, control: CC-PHY-05, strength: satisfies, rationale: "Equipment is sited safely and maintained.", licence: original }
+- { requirement: A.7.10, control: CC-MED-01, strength: satisfies, rationale: "Storage media and data are disposed of securely.", licence: original }
+- { requirement: A.7.14, control: CC-MED-01, strength: satisfies, rationale: "Storage media and data are disposed of securely.", licence: original }
+- { requirement: A.8.10, control: CC-MED-01, strength: satisfies, rationale: "Storage media and data are disposed of securely.", licence: original }
+- { requirement: A.8.1, control: CC-END-01, strength: satisfies, rationale: "User endpoint devices are managed.", licence: original }
+- { requirement: A.8.7, control: CC-MAL-01, strength: satisfies, rationale: "Malware protection is active on every device.", licence: original }
+- { requirement: A.8.8, control: CC-VUL-01, strength: satisfies, rationale: "Vulnerabilities are found and fixed in time.", licence: original }
+- { requirement: A.8.9, control: CC-CFG-01, strength: satisfies, rationale: "Systems follow secure configuration baselines.", licence: original }
+- { requirement: A.8.19, control: CC-CFG-01, strength: satisfies, rationale: "Systems follow secure configuration baselines.", licence: original }
+- { requirement: A.8.6, control: CC-CAP-01, strength: satisfies, rationale: "Capacity is monitored and planned.", licence: original }
+- { requirement: A.8.11, control: CC-DLP-01, strength: satisfies, rationale: "Sensitive data is masked and leakage is prevented.", licence: original }
+- { requirement: A.8.12, control: CC-DLP-01, strength: satisfies, rationale: "Sensitive data is masked and leakage is prevented.", licence: original }
+- { requirement: A.8.13, control: CC-BKP-01, strength: satisfies, rationale: "Backups are taken daily, encrypted and test-restored quarterly.", licence: original }
+- { requirement: A.8.15, control: CC-LOG-01, strength: satisfies, rationale: "Activity is logged, monitored and time synchronized.", licence: original }
+- { requirement: A.8.16, control: CC-LOG-01, strength: satisfies, rationale: "Activity is logged, monitored and time synchronized.", licence: original }
+- { requirement: A.8.17, control: CC-LOG-01, strength: satisfies, rationale: "Activity is logged, monitored and time synchronized.", licence: original }
+- { requirement: A.8.20, control: CC-NET-01, strength: satisfies, rationale: "Networks are secured and segregated.", licence: original }
+- { requirement: A.8.21, control: CC-NET-01, strength: satisfies, rationale: "Networks are secured and segregated.", licence: original }
+- { requirement: A.8.22, control: CC-NET-01, strength: satisfies, rationale: "Networks are secured and segregated.", licence: original }
+- { requirement: A.8.23, control: CC-WEB-01, strength: satisfies, rationale: "Web access is filtered.", licence: original }
+- { requirement: A.8.24, control: CC-CRY-01, strength: satisfies, rationale: "Cryptography is used according to rules.", licence: original }
+- { requirement: A.8.26, control: CC-APP-01, strength: satisfies, rationale: "Applications and systems are designed securely.", licence: original }
+- { requirement: A.8.27, control: CC-APP-01, strength: satisfies, rationale: "Applications and systems are designed securely.", licence: original }
+- { requirement: A.8.25, control: CC-DEV-01, strength: satisfies, rationale: "Secure development process is followed.", licence: original }
+- { requirement: A.8.28, control: CC-DEV-01, strength: satisfies, rationale: "Secure development process is followed.", licence: original }
+- { requirement: A.8.29, control: CC-DEV-02, strength: satisfies, rationale: "Software is security tested and test data is protected.", licence: original }
+- { requirement: A.8.33, control: CC-DEV-02, strength: satisfies, rationale: "Software is security tested and test data is protected.", licence: original }
+- { requirement: A.8.31, control: CC-DEV-03, strength: satisfies, rationale: "Development environments and source code are protected.", licence: original }
+- { requirement: A.8.4, control: CC-DEV-03, strength: satisfies, rationale: "Development environments and source code are protected.", licence: original }
+- { requirement: A.8.30, control: CC-DEV-04, strength: satisfies, rationale: "Outsourced development is supervised.", licence: original }
+- { requirement: A.8.32, control: CC-CHG-01, strength: satisfies, rationale: "Changes are controlled.", licence: original }
+- { requirement: A.8.34, control: CC-AUD-01, strength: satisfies, rationale: "Audit testing does not disrupt operations.", licence: original }
+- { requirement: A.5.37, control: CC-LOG-01, strength: related, rationale: "Supports this requirement alongside its main control.", licence: original }
+- { requirement: A.5.28, control: CC-LOG-01, strength: partial, rationale: "Supports this requirement alongside its main control.", licence: original }
+- { requirement: A.8.2, control: CC-ACC-01, strength: related, rationale: "Supports this requirement alongside its main control.", licence: original }
+- { requirement: A.5.9, control: CC-END-01, strength: partial, rationale: "Supports this requirement alongside its main control.", licence: original }
+- { requirement: A.8.1, control: CC-MAL-01, strength: related, rationale: "Supports this requirement alongside its main control.", licence: original }
+- { requirement: A.5.36, control: CC-GOV-10, strength: related, rationale: "Supports this requirement alongside its main control.", licence: original }

@@ -1,0 +1,61 @@
+# Converted from Fenrir's grc_library/pci-dss.yml by scripts/isms/convert_fenrir_frameworks.py. Identifiers and short titles only.
+- ref: PCI-1
+  group: readiness
+  short_title: Network security controls
+  mandatory: false
+  licence: id-and-title
+- ref: PCI-2
+  group: readiness
+  short_title: Secure configurations
+  mandatory: false
+  licence: id-and-title
+- ref: PCI-3
+  group: readiness
+  short_title: Stored account data
+  mandatory: false
+  licence: id-and-title
+- ref: PCI-4
+  group: readiness
+  short_title: Transmission protection
+  mandatory: false
+  licence: id-and-title
+- ref: PCI-5
+  group: readiness
+  short_title: Malware protection
+  mandatory: false
+  licence: id-and-title
+- ref: PCI-6
+  group: readiness
+  short_title: Secure systems and software
+  mandatory: false
+  licence: id-and-title
+- ref: PCI-7
+  group: readiness
+  short_title: Business-need access
+  mandatory: false
+  licence: id-and-title
+- ref: PCI-8
+  group: readiness
+  short_title: User identification and authentication
+  mandatory: false
+  licence: id-and-title
+- ref: PCI-9
+  group: readiness
+  short_title: Physical access
+  mandatory: false
+  licence: id-and-title
+- ref: PCI-10
+  group: readiness
+  short_title: Logging and monitoring
+  mandatory: false
+  licence: id-and-title
+- ref: PCI-11
+  group: readiness
+  short_title: Security testing
+  mandatory: false
+  licence: id-and-title
+- ref: PCI-12
+  group: readiness
+  short_title: Organisational policy and validation
+  mandatory: false
+  licence: id-and-title

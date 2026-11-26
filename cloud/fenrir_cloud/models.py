@@ -4037,3 +4037,5 @@ class RestoreEvidence(Base):
     record: Mapped[dict] = mapped_column(JSON, default=dict)
     sha256: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+# ISMS tables live in their own module; importing it here puts them in the shared metadata (create_all, deletion).
+from .isms import models as _isms_models  # noqa: E402,F401

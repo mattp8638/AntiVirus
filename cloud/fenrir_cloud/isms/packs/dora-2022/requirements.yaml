@@ -1,0 +1,51 @@
+# Converted from Fenrir's grc_library/dora.yml by scripts/isms/convert_fenrir_frameworks.py. Identifiers and short titles only.
+- ref: DORA-SCOPE
+  group: readiness
+  short_title: Entity and supplier applicability
+  mandatory: true
+  licence: open
+- ref: DORA-GOV
+  group: readiness
+  short_title: Management responsibility
+  mandatory: false
+  licence: open
+- ref: DORA-RISK
+  group: readiness
+  short_title: ICT risk framework
+  mandatory: true
+  licence: open
+- ref: DORA-DETECT
+  group: readiness
+  short_title: Detection and response
+  mandatory: false
+  licence: open
+- ref: DORA-INCIDENT
+  group: readiness
+  short_title: Incident classification and reporting
+  mandatory: false
+  licence: open
+- ref: DORA-TEST
+  group: readiness
+  short_title: Resilience testing
+  mandatory: false
+  licence: open
+- ref: DORA-TLPT
+  group: readiness
+  short_title: Advanced testing applicability
+  mandatory: true
+  licence: open
+- ref: DORA-THIRD
+  group: readiness
+  short_title: ICT third-party oversight
+  mandatory: false
+  licence: open
+- ref: DORA-EXIT
+  group: readiness
+  short_title: Concentration and exit planning
+  mandatory: false
+  licence: open
+- ref: DORA-REVIEW
+  group: readiness
+  short_title: Learning and review
+  mandatory: false
+  licence: open

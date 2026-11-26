@@ -1,0 +1,39 @@
+# UK GDPR articles with platform summaries as short titles.
+- { ref: "Art.5", group: ch-2, short_title: "Personal data is processed in line with the data protection principles", mandatory: true, licence: open }
+- { ref: "Art.5(2)", group: ch-2, short_title: "The organization can demonstrate compliance (accountability)", mandatory: true, licence: open }
+- { ref: "Art.6", group: ch-2, short_title: "Each processing activity has a lawful basis", mandatory: true, licence: open }
+- { ref: "Art.7", group: ch-2, short_title: "Consent, where relied on, is recorded and can be withdrawn", mandatory: true, licence: open }
+- { ref: "Art.8", group: ch-2, short_title: "Children's consent for online services is handled appropriately", mandatory: true, licence: open }
+- { ref: "Art.9", group: ch-2, short_title: "Special category data has an additional condition for processing", mandatory: true, licence: open }
+- { ref: "Art.10", group: ch-2, short_title: "Criminal offence data is processed only with legal authority", mandatory: true, licence: open }
+- { ref: "Art.12", group: ch-3, short_title: "Information and responses to people are clear and on time", mandatory: true, licence: open }
+- { ref: "Art.13", group: ch-3, short_title: "Privacy information is given when data is collected from the person", mandatory: true, licence: open }
+- { ref: "Art.14", group: ch-3, short_title: "Privacy information is given when data comes from elsewhere", mandatory: true, licence: open }
+- { ref: "Art.15", group: ch-3, short_title: "People can get access to their personal data", mandatory: true, licence: open }
+- { ref: "Art.16", group: ch-3, short_title: "Inaccurate personal data is corrected on request", mandatory: true, licence: open }
+- { ref: "Art.17", group: ch-3, short_title: "Personal data is erased on valid request", mandatory: true, licence: open }
+- { ref: "Art.18", group: ch-3, short_title: "Processing is restricted on valid request", mandatory: true, licence: open }
+- { ref: "Art.19", group: ch-3, short_title: "Recipients are told of corrections, erasure or restriction", mandatory: true, licence: open }
+- { ref: "Art.20", group: ch-3, short_title: "Data is provided in a portable format on request", mandatory: true, licence: open }
+- { ref: "Art.21", group: ch-3, short_title: "Objections to processing are handled", mandatory: true, licence: open }
+- { ref: "Art.22", group: ch-3, short_title: "Solely automated decisions with significant effects are safeguarded", mandatory: true, licence: open }
+- { ref: "Art.24", group: ch-4, short_title: "Controller measures are proportionate, documented and reviewed", mandatory: true, licence: open }
+- { ref: "Art.25", group: ch-4, short_title: "Data protection by design and by default", mandatory: true, licence: open }
+- { ref: "Art.26", group: ch-4, short_title: "Joint controllers set out their responsibilities", mandatory: true, licence: open }
+- { ref: "Art.27", group: ch-4, short_title: "A UK representative is appointed where required", mandatory: true, licence: open }
+- { ref: "Art.28", group: ch-4, short_title: "Processors give guarantees and work under a written contract", mandatory: true, licence: open }
+- { ref: "Art.29", group: ch-4, short_title: "Processing happens only on the controller's instructions", mandatory: true, licence: open }
+- { ref: "Art.30", group: ch-4, short_title: "Records of processing activities are kept", mandatory: true, licence: open }
+- { ref: "Art.31", group: ch-4, short_title: "The organization cooperates with the regulator", mandatory: true, licence: open }
+- { ref: "Art.32", group: ch-4, short_title: "Security of processing is appropriate to the risk", mandatory: true, licence: open }
+- { ref: "Art.33", group: ch-4, short_title: "Personal data breaches are reported to the regulator within 72 hours", mandatory: true, licence: open }
+- { ref: "Art.34", group: ch-4, short_title: "People are told of breaches likely to put them at high risk", mandatory: true, licence: open }
+- { ref: "Art.35", group: ch-4, short_title: "DPIAs are carried out for likely high risk processing", mandatory: true, licence: open }
+- { ref: "Art.36", group: ch-4, short_title: "The regulator is consulted before high residual risk processing", mandatory: true, licence: open }
+- { ref: "Art.37", group: ch-4, short_title: "A data protection officer is designated where required", mandatory: true, licence: open }
+- { ref: "Art.38", group: ch-4, short_title: "The data protection officer is involved, independent and supported", mandatory: true, licence: open }
+- { ref: "Art.39", group: ch-4, short_title: "The data protection officer carries out their tasks", mandatory: true, licence: open }
+- { ref: "Art.44", group: ch-5, short_title: "Transfers outside the UK meet the chapter V conditions", mandatory: true, licence: open }
+- { ref: "Art.45", group: ch-5, short_title: "Transfers rely on adequacy regulations where available", mandatory: true, licence: open }
+- { ref: "Art.46", group: ch-5, short_title: "Other transfers have appropriate safeguards", mandatory: true, licence: open }
+- { ref: "Art.49", group: ch-5, short_title: "Exceptions for specific situations are used narrowly", mandatory: true, licence: open }

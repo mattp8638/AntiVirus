@@ -1,0 +1,86 @@
+# Converted from Fenrir's grc_library/nis2.yml by scripts/isms/convert_fenrir_frameworks.py.
+- requirement: NIS2-20
+  control: CC-AWR-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: NIS2-20
+  control: CC-GOV-02
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: NIS2-21a
+  control: CC-GOV-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-POLICY (Security policy and governance) here.
+  licence: original
+- requirement: NIS2-21b
+  control: CC-INC-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-INCIDENT (Incident response) here.
+  licence: original
+- requirement: NIS2-21c
+  control: CC-BKP-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-BACKUP (Backup and recovery) here.
+  licence: original
+- requirement: NIS2-21d
+  control: CC-SUP-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-SUPPLIER (Third-party risk management) here.
+  licence: original
+- requirement: NIS2-21d
+  control: CC-SUP-02
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-SUPPLIER (Third-party risk management) here.
+  licence: original
+- requirement: NIS2-21e
+  control: CC-CFG-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-SECURECONFIG (Secure configuration and hardening baseline) here.
+  licence: original
+- requirement: NIS2-21e
+  control: CC-VUL-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-PATCH (Security updates) here.
+  licence: original
+- requirement: NIS2-21f
+  control: CC-GOV-11
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: NIS2-21g
+  control: CC-AWR-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-TRAINING (Security awareness training) here.
+  licence: original
+- requirement: NIS2-21h
+  control: CC-CRY-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-ENCRYPTION (Encryption at rest) here.
+  licence: original
+- requirement: NIS2-21h
+  control: CC-END-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-ENCRYPTION (Encryption at rest) here.
+  licence: original
+- requirement: NIS2-21i
+  control: CC-AST-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-ASSET (Asset and software inventory) here.
+  licence: original
+- requirement: NIS2-21i
+  control: CC-END-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-ASSET (Asset and software inventory) here.
+  licence: original
+- requirement: NIS2-21j
+  control: CC-IAM-02
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-MFA (Multi-factor authentication) here.
+  licence: original
+- requirement: NIS2-23
+  control: CC-INC-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-INCIDENT (Incident response) here.
+  licence: original

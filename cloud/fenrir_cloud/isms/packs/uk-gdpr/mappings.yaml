@@ -1,0 +1,64 @@
+# UK GDPR articles to common controls v1.
+- { requirement: "Art.5", control: CC-GOV-09, strength: satisfies, rationale: "Personal data is processed in line with the data protection principles.", licence: original }
+- { requirement: "Art.5", control: CC-GOV-07, strength: partial, rationale: "Personal data is processed in line with the data protection principles.", licence: original }
+- { requirement: "Art.5(2)", control: CC-GOV-09, strength: satisfies, rationale: "The organization can demonstrate compliance (accountability).", licence: original }
+- { requirement: "Art.5(2)", control: CC-GOV-11, strength: partial, rationale: "The organization can demonstrate compliance (accountability).", licence: original }
+- { requirement: "Art.6", control: CC-GOV-09, strength: satisfies, rationale: "Each processing activity has a lawful basis.", licence: original }
+- { requirement: "Art.7", control: CC-GOV-09, strength: satisfies, rationale: "Consent, where relied on, is recorded and can be withdrawn.", licence: original }
+- { requirement: "Art.8", control: CC-GOV-09, strength: partial, rationale: "Children's consent for online services is handled appropriately.", licence: original }
+- { requirement: "Art.9", control: CC-GOV-09, strength: satisfies, rationale: "Special category data has an additional condition for processing.", licence: original }
+- { requirement: "Art.9", control: CC-CLS-01, strength: related, rationale: "Special category data has an additional condition for processing.", licence: original }
+- { requirement: "Art.10", control: CC-GOV-09, strength: satisfies, rationale: "Criminal offence data is processed only with legal authority.", licence: original }
+- { requirement: "Art.10", control: CC-HR-01, strength: related, rationale: "Criminal offence data is processed only with legal authority.", licence: original }
+- { requirement: "Art.12", control: CC-GOV-09, strength: satisfies, rationale: "Information and responses to people are clear and on time.", licence: original }
+- { requirement: "Art.13", control: CC-GOV-09, strength: satisfies, rationale: "Privacy information is given when data is collected from the person.", licence: original }
+- { requirement: "Art.14", control: CC-GOV-09, strength: satisfies, rationale: "Privacy information is given when data comes from elsewhere.", licence: original }
+- { requirement: "Art.15", control: CC-GOV-09, strength: satisfies, rationale: "People can get access to their personal data.", licence: original }
+- { requirement: "Art.16", control: CC-GOV-09, strength: satisfies, rationale: "Inaccurate personal data is corrected on request.", licence: original }
+- { requirement: "Art.17", control: CC-GOV-09, strength: satisfies, rationale: "Personal data is erased on valid request.", licence: original }
+- { requirement: "Art.17", control: CC-MED-01, strength: partial, rationale: "Personal data is erased on valid request.", licence: original }
+- { requirement: "Art.18", control: CC-GOV-09, strength: satisfies, rationale: "Processing is restricted on valid request.", licence: original }
+- { requirement: "Art.19", control: CC-GOV-09, strength: partial, rationale: "Recipients are told of corrections, erasure or restriction.", licence: original }
+- { requirement: "Art.20", control: CC-GOV-09, strength: satisfies, rationale: "Data is provided in a portable format on request.", licence: original }
+- { requirement: "Art.21", control: CC-GOV-09, strength: satisfies, rationale: "Objections to processing are handled.", licence: original }
+- { requirement: "Art.22", control: CC-GOV-09, strength: satisfies, rationale: "Solely automated decisions with significant effects are safeguarded.", licence: original }
+- { requirement: "Art.22", control: CC-APP-01, strength: related, rationale: "Solely automated decisions with significant effects are safeguarded.", licence: original }
+- { requirement: "Art.24", control: CC-GOV-09, strength: satisfies, rationale: "Controller measures are proportionate, documented and reviewed.", licence: original }
+- { requirement: "Art.24", control: CC-GOV-01, strength: partial, rationale: "Controller measures are proportionate, documented and reviewed.", licence: original }
+- { requirement: "Art.25", control: CC-GOV-06, strength: satisfies, rationale: "Data protection by design and by default.", licence: original }
+- { requirement: "Art.25", control: CC-APP-01, strength: partial, rationale: "Data protection by design and by default.", licence: original }
+- { requirement: "Art.25", control: CC-DEV-01, strength: related, rationale: "Data protection by design and by default.", licence: original }
+- { requirement: "Art.26", control: CC-GOV-09, strength: partial, rationale: "Joint controllers set out their responsibilities.", licence: original }
+- { requirement: "Art.26", control: CC-SUP-01, strength: related, rationale: "Joint controllers set out their responsibilities.", licence: original }
+- { requirement: "Art.27", control: CC-GOV-07, strength: partial, rationale: "A UK representative is appointed where required.", licence: original }
+- { requirement: "Art.28", control: CC-SUP-01, strength: satisfies, rationale: "Processors give guarantees and work under a written contract.", licence: original }
+- { requirement: "Art.28", control: CC-SUP-02, strength: partial, rationale: "Processors give guarantees and work under a written contract.", licence: original }
+- { requirement: "Art.28", control: CC-CLD-01, strength: related, rationale: "Processors give guarantees and work under a written contract.", licence: original }
+- { requirement: "Art.29", control: CC-SUP-02, strength: partial, rationale: "Processing happens only on the controller's instructions.", licence: original }
+- { requirement: "Art.29", control: CC-HR-02, strength: related, rationale: "Processing happens only on the controller's instructions.", licence: original }
+- { requirement: "Art.30", control: CC-GOV-09, strength: satisfies, rationale: "Records of processing activities are kept.", licence: original }
+- { requirement: "Art.30", control: CC-AST-01, strength: partial, rationale: "Records of processing activities are kept.", licence: original }
+- { requirement: "Art.31", control: CC-GOV-04, strength: satisfies, rationale: "The organization cooperates with the regulator.", licence: original }
+- { requirement: "Art.32", control: CC-GOV-09, strength: partial, rationale: "Security of processing is appropriate to the risk.", licence: original }
+- { requirement: "Art.32", control: CC-CRY-01, strength: partial, rationale: "Security of processing is appropriate to the risk.", licence: original }
+- { requirement: "Art.32", control: CC-ACC-01, strength: partial, rationale: "Security of processing is appropriate to the risk.", licence: original }
+- { requirement: "Art.32", control: CC-BKP-01, strength: partial, rationale: "Security of processing is appropriate to the risk.", licence: original }
+- { requirement: "Art.32", control: CC-IAM-02, strength: related, rationale: "Security of processing is appropriate to the risk.", licence: original }
+- { requirement: "Art.32", control: CC-GOV-11, strength: related, rationale: "Security of processing is appropriate to the risk.", licence: original }
+- { requirement: "Art.33", control: CC-INC-01, strength: satisfies, rationale: "Personal data breaches are reported to the regulator within 72 hours.", licence: original }
+- { requirement: "Art.33", control: CC-GOV-04, strength: partial, rationale: "Personal data breaches are reported to the regulator within 72 hours.", licence: original }
+- { requirement: "Art.34", control: CC-INC-01, strength: satisfies, rationale: "People are told of breaches likely to put them at high risk.", licence: original }
+- { requirement: "Art.35", control: CC-GOV-09, strength: satisfies, rationale: "DPIAs are carried out for likely high risk processing.", licence: original }
+- { requirement: "Art.35", control: CC-GOV-06, strength: partial, rationale: "DPIAs are carried out for likely high risk processing.", licence: original }
+- { requirement: "Art.36", control: CC-GOV-04, strength: partial, rationale: "The regulator is consulted before high residual risk processing.", licence: original }
+- { requirement: "Art.36", control: CC-GOV-09, strength: partial, rationale: "The regulator is consulted before high residual risk processing.", licence: original }
+- { requirement: "Art.37", control: CC-GOV-02, strength: satisfies, rationale: "A data protection officer is designated where required.", licence: original }
+- { requirement: "Art.38", control: CC-GOV-02, strength: satisfies, rationale: "The data protection officer is involved, independent and supported.", licence: original }
+- { requirement: "Art.39", control: CC-GOV-02, strength: partial, rationale: "The data protection officer carries out their tasks.", licence: original }
+- { requirement: "Art.39", control: CC-AWR-01, strength: related, rationale: "The data protection officer carries out their tasks.", licence: original }
+- { requirement: "Art.44", control: CC-TRF-01, strength: satisfies, rationale: "Transfers outside the UK meet the chapter V conditions.", licence: original }
+- { requirement: "Art.44", control: CC-GOV-09, strength: partial, rationale: "Transfers outside the UK meet the chapter V conditions.", licence: original }
+- { requirement: "Art.45", control: CC-TRF-01, strength: partial, rationale: "Transfers rely on adequacy regulations where available.", licence: original }
+- { requirement: "Art.46", control: CC-TRF-01, strength: satisfies, rationale: "Other transfers have appropriate safeguards.", licence: original }
+- { requirement: "Art.46", control: CC-SUP-01, strength: partial, rationale: "Other transfers have appropriate safeguards.", licence: original }
+- { requirement: "Art.49", control: CC-TRF-01, strength: partial, rationale: "Exceptions for specific situations are used narrowly.", licence: original }

@@ -1,0 +1,35 @@
+- ref: develops_software
+  text: Do you develop software in house?
+  help: Include scripts, integrations and configuration code your staff write and maintain for production use.
+  type: bool
+  licence: original
+
+- ref: outsources_development
+  text: Do you pay other companies to develop software for you?
+  type: bool
+  licence: original
+
+- ref: has_premises
+  text: Do you have offices, data centres or other premises you control?
+  help: Answer no only if everyone works remotely and you run no equipment in your own buildings.
+  type: bool
+  licence: original
+
+- ref: hosting_model
+  text: Where do your main systems run?
+  type: single
+  options:
+    - { value: cloud, label: Mostly cloud services }
+    - { value: on_premises, label: Mostly our own servers }
+    - { value: hybrid, label: A mix of both }
+  licence: original
+
+- ref: data_types
+  text: Which kinds of data do you hold?
+  type: multi
+  options:
+    - { value: personal, label: Personal data }
+    - { value: special_category, label: Special category personal data }
+    - { value: payment_card, label: Payment card data }
+    - { value: health, label: Health data }
+  licence: original

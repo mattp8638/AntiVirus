@@ -1,0 +1,5 @@
+# Converted from Fenrir's grc_library/cyber-essentials-plus.yml by scripts/isms/convert_fenrir_frameworks.py.
+- ref: readiness
+  title: Scope, implementation and assurance
+  sort: 1
+  licence: crown-copyright-pending

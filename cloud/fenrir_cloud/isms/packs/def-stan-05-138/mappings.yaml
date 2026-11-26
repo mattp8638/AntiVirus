@@ -1,0 +1,21 @@
+# Converted from Fenrir's grc_library/def-stan-05-138.yml by scripts/isms/convert_fenrir_frameworks.py.
+- requirement: CSM-FLOWDOWN
+  control: CC-SUP-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-SUPPLIER (Third-party risk management) here.
+  licence: original
+- requirement: CSM-FLOWDOWN
+  control: CC-SUP-02
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-SUPPLIER (Third-party risk management) here.
+  licence: original
+- requirement: CSM-INCIDENT
+  control: CC-INC-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: CSM-REVIEW
+  control: CC-GOV-10
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
