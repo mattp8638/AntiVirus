@@ -217,7 +217,7 @@ def build_pdf(meta: DocumentMeta, blocks: list[dict]) -> bytes:
                 pdf.ln(1.5)
             elif n["type"] == "list":
                 for i, item in enumerate(n["items"], start=1):
-                    _pdf_inline(pdf, [((f"{i}. " if n["ordered"] else "• "), False), *item])
+                    _pdf_inline(pdf, [((f"{i}. " if n["ordered"] else "\u2022 "), False), *item])
                 pdf.ln(1.5)
             else:
                 pdf.set_font("DejaVu", "", 8)

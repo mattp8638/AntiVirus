@@ -13,7 +13,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
-from fenrir_cloud.isms.models import (IsmsApplicability, IsmsDocument, IsmsDocumentOverride, IsmsDocumentVersion, IsmsEvidence, IsmsEvidenceLink, IsmsTask, IsmsApplicabilityOverride, IsmsAsset, IsmsContextIssue,
+from fenrir_cloud.isms.models import (IsmsApplicability, IsmsDocument, IsmsDocumentOverride, IsmsDocumentVersion, IsmsEvidence, IsmsEvidenceLink, IsmsImport, IsmsLegacyAnswer, IsmsTask, IsmsApplicabilityOverride, IsmsAsset, IsmsContextIssue,
                                       IsmsEntity, IsmsInterestedParty, IsmsMembership, IsmsProfileAnswer, IsmsScope,
                                       IsmsRisk, IsmsRiskAcceptance, IsmsRiskControl, IsmsRiskMethod,
                                       IsmsRiskSnapshot, IsmsSite, IsmsTenantControl, IsmsTenantFramework)
@@ -52,6 +52,10 @@ FACTORIES: dict[type, callable] = {
                                          number=f"X-POL-{t}"),
     IsmsDocumentVersion: lambda t: IsmsDocumentVersion(tenant_id=t, document_id=f"idc_{t}", version=1, template_ref="x",
                                                        context_hash="0" * 64, blocks=[], html=""),
+    IsmsLegacyAnswer: lambda t: IsmsLegacyAnswer(tenant_id=t, framework="iso27001", source_framework="iso-27001",
+                                                 source_ref="A.7.4", status="not_applicable"),
+    IsmsImport: lambda t: IsmsImport(tenant_id=t, source_table="grc_policies", source_id=f"grcp_{t}",
+                                     target_table="isms_documents"),
     IsmsDocumentOverride: lambda t: IsmsDocumentOverride(tenant_id=t, document_id=f"idc_{t}", block_ref="isp.purpose",
                                                          content="x"),
 }

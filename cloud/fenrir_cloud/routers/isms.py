@@ -465,8 +465,12 @@ def assess_control(control_id: str, body: Assessment, principal: Principal = Dep
 @router.get("/soa")
 def get_soa(tenant_id: str, framework: str, principal: Principal = Depends(current_principal),
             db: Session = Depends(isms_db)):
+    from ..isms import governance_import
+
     require_isms(db, principal, tenant_id, "controls.view")
-    return {"framework": framework, "rows": programme.soa_rows(db, tenant_id, framework)}
+    earlier = governance_import.legacy_answers(db, tenant_id, framework)
+    rows = [{**r, "earlierAnswers": earlier.get(r["ref"], [])} for r in programme.soa_rows(db, tenant_id, framework)]
+    return {"framework": framework, "rows": rows, "unmatchedEarlierAnswers": earlier.get("", [])}
 
 
 @router.get("/soa/export")
@@ -941,3 +945,28 @@ def document_file(version_id: str, format: str = "docx", principal: Principal = 
              else "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     name = "".join(c if c.isalnum() or c in " ._-" else "_" for c in f"{doc.number} {doc.title} v{row.version}.{format}")
     return Response(content=data, media_type=media, headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+# Moving the earlier Governance records ---------------------------------------------------------------------------
+
+@router.get("/governance-import")
+def governance_import_preview(tenant_id: str, principal: Principal = Depends(current_principal),
+                              db: Session = Depends(isms_db)):
+    """What moving this customer's earlier Governance records into the ISMS would bring across."""
+    from ..isms import governance_import
+
+    require_isms(db, principal, tenant_id, "programme.manage")
+    return governance_import.preview(db, tenant_id)
+
+
+@router.post("/governance-import")
+def governance_import_run(body: TenantBody, principal: Principal = Depends(current_principal),
+                          db: Session = Depends(isms_db)):
+    """Moves the records across. Safe to run again: only what is new is added; the earlier records are not changed."""
+    from ..isms import governance_import
+
+    principal.require("grc")
+    require_isms(db, principal, body.tenant_id, "programme.manage")
+    out = governance_import.run(db, body.tenant_id, principal.actor, principal.user.id)
+    db.commit()
+    return out

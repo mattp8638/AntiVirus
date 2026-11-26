@@ -61,6 +61,16 @@ Open **Governance → ISMS roles** with a customer chosen in the tenant picker.
 - A person can only be given a role in a customer they can already see in Fenrir. Client portal accounts can only be staff.
 - Every role given, changed or removed is recorded in the audit log.
 
+## Moving the earlier Governance records
+
+While a customer still has records in the earlier Governance programmes, **Programme setup** offers **Move them into the ISMS** (Fenrir users with the grc permission who also run the customer's ISMS):
+
+- Adopted frameworks become ISMS frameworks (all 15 programmes have an ISMS pack; the retired Essential Eight stays in the earlier module, read-only), and an adoption's scope fills an empty ISMS scope.
+- Requirement answers are kept, read-only, beside the matching rows of the Statement of Applicability. A "not applicable" answer becomes a justified exclusion when it matches directly or covers several ISMS requirements (for example a NIST CSF category); mandatory clauses are never excluded.
+- Policies become documents: the approved version published (withdrawn if the policy was retired), earlier approved versions superseded, and a newer draft kept as a draft.
+- Evidence files are copied, encrypted, into the ISMS store; evidence is linked to the controls that satisfy the requirements it was linked to. Risk register entries become ISMS risks, exceptions become retained risks, and other register entries become evidence notes.
+- Nothing in the earlier module is changed. Running the move again only adds what is new. The move is recorded in the audit log.
+
 ## Programme setup and ISMS controls
 
 **Programme setup** needs an ISMS role that can run the programme.

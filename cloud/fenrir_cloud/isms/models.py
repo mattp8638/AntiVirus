@@ -418,3 +418,35 @@ from sqlalchemy import event as _event  # noqa: E402
 from sqlalchemy.orm import Session as _Session  # noqa: E402
 
 _event.listen(_Session, "before_flush", _guard_versions)
+
+
+@tenant_table
+class IsmsLegacyAnswer(_Row, Base):
+    """An answer from Fenrir's earlier Governance programmes, kept read-only beside the Statement of Applicability.
+    ``refs`` are the ISMS requirements it was matched to (empty when nothing matches)."""
+    __tablename__ = "isms_legacy_answers"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ila"))
+    framework: Mapped[str] = mapped_column(String(80))  # ISMS framework slug
+    source_framework: Mapped[str] = mapped_column(String(80))  # Fenrir framework key
+    source_ref: Mapped[str] = mapped_column(String(80))
+    refs: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(20))
+    answer: Mapped[str] = mapped_column(Text, default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    na_reason: Mapped[str] = mapped_column(Text, default="")
+    owner: Mapped[str] = mapped_column(String(200), default="")
+    answered_by: Mapped[str] = mapped_column(String(200), default="")
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+@tenant_table
+class IsmsImport(_Row, Base):
+    """What was moved from Fenrir's earlier Governance records, so the move can run again without duplicating."""
+    __tablename__ = "isms_imports"
+    __table_args__ = (UniqueConstraint("tenant_id", "source_table", "source_id", name="uq_isms_import_source"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("iim"))
+    source_table: Mapped[str] = mapped_column(String(60))
+    source_id: Mapped[str] = mapped_column(String(64))
+    target_table: Mapped[str] = mapped_column(String(60))
+    target_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    note: Mapped[str] = mapped_column(Text, default="")
