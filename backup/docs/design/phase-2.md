@@ -211,3 +211,17 @@ lacks a storage driver. Not built or published by this project.
   enrolled, and SeaBIOS) with a server on the host network; the recovery
   agent enrols, a restore job writes a test image to a second virtual disk,
   which then boots.
+* Nightly (`.github/workflows/windows-baremetal.yml`, 01:00 UTC and on
+  demand): the same journey with a real Windows instead of the stand-in
+  loader.
+  * Windows Server (evaluation, Server Core) is installed unattended in
+    QEMU/KVM on UEFI with an AHCI disk (`ci/windows-install.py`). The ISO
+    comes from Microsoft's evaluation centre.
+  * At first sign-in it registers a start-up task that writes
+    FENRIR-WINDOWS-UP to the serial port. One boot of the installed disk
+    proves the task works.
+  * A real agent backs the disk up. The recovery ISO restores it onto a
+    blank disk 4 GiB larger.
+  * The restored disk must boot Windows on fresh firmware with no boot
+    entries and report from its start-up task (`ci/e2e-recovery.py` with a
+    system disk).
