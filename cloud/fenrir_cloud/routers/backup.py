@@ -230,6 +230,7 @@ def repo_out(db: Session, r: BackupRepository) -> dict:
             "holdSince": iso(r.hold_since), "maintenanceAgentId": r.maintenance_agent_id,
             "pruneEveryDays": r.prune_every_days, "lastPruneAt": iso(r.last_prune_at), "anomalies": anomalies,
             "bootAgentId": r.boot_agent_id, "bootEveryDays": r.boot_every_days, "lastVerifiedBoot": iso(verified),
+            "bootFullRestore": bool(r.boot_full_restore), "bootWeekday": r.boot_weekday,
             "shareAuth": r.share_auth, "shareUser": r.share_user, "isShare": is_share_path(r.path), "s3": r.s3,
             "dedupGroup": dedup_member(r.path),
             "mediaSet": r.media_set,
@@ -1342,11 +1343,16 @@ def set_boot_verification(repo_id: str, body: dict = Body(...), p: Principal = D
         if not {"boot_kvm", "boot_hyperv"} & set(bk.capabilities(a)):
             bad("that machine cannot boot VMs")
         _has_access(db, repo, a)
+        weekday = body.get("weekday")
+        if weekday is not None and (not isinstance(weekday, int) or isinstance(weekday, bool) or not 0 <= weekday <= 6):
+            bad("the weekday is 0 (Monday) to 6 (Sunday), or null for any day")
         repo.boot_agent_id, repo.boot_every_days = a.id, days
+        repo.boot_full_restore, repo.boot_weekday = body.get("fullRestore") is True, weekday
     else:
-        repo.boot_agent_id, repo.boot_every_days = None, 0
+        repo.boot_agent_id, repo.boot_every_days, repo.boot_full_restore, repo.boot_weekday = None, 0, False, None
     bk.record(db, p.actor, "backup.repository.boot_verification_changed", repo.name, repo.tenant_id,
-              agent=repo.boot_agent_id, every_days=repo.boot_every_days)
+              agent=repo.boot_agent_id, every_days=repo.boot_every_days, full_restore=bool(repo.boot_full_restore),
+              weekday=repo.boot_weekday)
     db.commit()
     return {"ok": True}
 
@@ -2082,6 +2088,9 @@ def create_boot_check(image_id: str, request: Request, body: dict = Body(default
         bad("a backup of files and folders has no system to boot")
     a = _agent(db, p, str(body.get("agentId") or ""))
     mem, cpus, keep = body.get("memoryMb"), body.get("cpus"), bool(body.get("keepRunning"))
+    full = body.get("fullRestore") is True
+    if full and keep:
+        bad("a restore test deletes its VM afterwards: it cannot also keep it running")
     if (mem is not None and not (isinstance(mem, int) and 256 <= mem <= 65536)) or \
             (cpus is not None and not (isinstance(cpus, int) and 1 <= cpus <= 16)):
         bad("memory must be 256 MB to 64 GB, CPUs 1 to 16")
@@ -2094,9 +2103,9 @@ def create_boot_check(image_id: str, request: Request, body: dict = Body(default
     if a.tenant_id != im.tenant_id or db.get(BackupRepoAccess, (im.repository_id, a.id)) is None:
         bad("that machine has no access to the image's repository; give it access first")
     job = bk.queue(db, a, {"type": "boot_check", "image_id": im.image_id, "keep_running": keep, "memory_mb": mem,
-                           "cpus": cpus, "directory": directory}, im.repository_id, p.actor)
+                           "cpus": cpus, "directory": directory, "full_restore": full}, im.repository_id, p.actor)
     bk.record(db, p.actor, "backup.boot_check.requested", im.hostname, im.tenant_id, image=im.image_id, machine=a.hostname,
-              keep=keep, directory=directory)
+              keep=keep, directory=directory, full_restore=full)
     db.commit()
     return {"id": job.id}
 
@@ -2111,6 +2120,39 @@ def list_boot_checks(image_id: str, request: Request, p: Principal = Depends(cur
     return [{"id": b.id, "at": iso(b.at), "outcome": b.outcome, "method": b.method, "seconds": b.seconds,
              "firmware": b.firmware, "accel": b.accel, "message": b.message, "hasScreenshot": b.screenshot is not None,
              "agentId": b.agent_id, "agentName": names.get(b.agent_id), "jobId": b.job_id} for b in rows]
+
+
+# ---------------------------------------------------------------- DR test log and backup status log (ISMS)
+
+def _tenant_scope(p: Principal, tenant_id: str | None) -> list[str]:
+    if tenant_id:
+        if tenant_id not in p.tenant_ids:
+            raise HTTPException(404, "Not found")
+        return [tenant_id]
+    return sorted(p.tenant_ids)
+
+
+@router.get("/restore-tests")
+def restore_test_log(tenantId: str | None = None, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """The DR test log: scheduled and manual restore tests (restored in full, booted, screenshot, VM deleted), each
+    filed as ISMS evidence."""
+    p.require("read")
+    from .. import restore_tests
+
+    return restore_tests.log(db, _tenant_scope(p, tenantId))
+
+
+@router.get("/status-log")
+def backup_status_log(tenantId: str | None = None, days: int = 7, p: Principal = Depends(current_principal),
+                      db: Session = Depends(get_db)):
+    """Every backup's status (succeeded, warning, failed, cancelled, missed) over the last `days` (1 to 90)."""
+    p.require("read")
+    from .. import restore_tests
+
+    if not 1 <= days <= 90:
+        bad("days is 1 to 90")
+    since = utcnow() - timedelta(days=days)
+    return [{**r, "tenantId": t} for t in _tenant_scope(p, tenantId) for r in restore_tests.status_rows(db, t, since)]
 
 
 # ---------------------------------------------------------------- malware scans of images

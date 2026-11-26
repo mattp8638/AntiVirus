@@ -3011,6 +3011,10 @@ class BackupRepository(Base):
     last_prune_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     boot_agent_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     boot_every_days: Mapped[int] = mapped_column(Integer, default=0)
+    # Scheduled restore tests (backup/docs/design/restore-tests.md): each scheduled check restores the image fully,
+    # boots from it, screenshots it and deletes the VM; optionally only on one UTC weekday (0 = Monday).
+    boot_full_restore: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
+    boot_weekday: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Network share sign-in: none | machine (Windows computer account) | password (sealed per agent).
     share_auth: Mapped[str] = mapped_column(String(20), default="none")
     share_user: Mapped[str | None] = mapped_column(String(200), nullable=True)
@@ -3596,6 +3600,10 @@ class BackupBootCheck(Base):
     accel: Mapped[str] = mapped_column(String(10), default="")
     message: Mapped[str] = mapped_column(Text, default="")
     screenshot: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    # A restore test: what was restored and read back, and whether the test VM was deleted.
+    restore_test: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # The ISMS evidence the restore test was filed as (GrcEvidence).
+    evidence_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 
 class M365BulkJob(Base):

@@ -1,7 +1,7 @@
 // Business continuity (GRC-17): plans of business services with impact and recovery targets, linked to backed-up
 // machines and DR runbooks; each service is measured against its targets, and exercises record what was tested.
 import { useMemo, useState } from "react";
-import { api, fmtTime } from "../../api";
+import { api, fmtTime, getToken } from "../../api";
 import { useApp } from "../../app-context";
 import { Modal, PageHead, Pill, Table, useAction, useData, useListData } from "../../components/ui";
 import { COMPLIANCE_SECTION, SectionTabs } from "../../components/sections";
@@ -30,6 +30,8 @@ export default function Continuity() {
           { key: "services", label: "Services", render: (p) => p.services.length },
           { key: "approvedAt", label: "Approved", render: (p) => p.approvedAt ? `v${p.approvedVersion}, ${fmtTime(p.approvedAt)} by ${p.approvedBy}` : "—" }]} />
       </>}
+      {tenantId && <DrTestLog tenantId={tenantId} />}
+      {tenantId && <BackupStatusLog tenantId={tenantId} />}
       {editing && <PlanEditor tenantId={tenantId!} plan={editing === "new" ? null : editing} onClose={() => { setEditing(null); reload(); }} />}
       {open && <PlanDetail id={open} onEdit={(p) => { setOpen(null); setEditing(p); }} onClose={() => { setOpen(null); reload(); }} />}
     </>
@@ -155,5 +157,58 @@ function RecordExercise({ plan, onClose }: { plan: Plan; onClose: () => void }) 
       <label className="field">Lessons<textarea rows={2} value={f.lessons} onChange={(e) => setF({ ...f, lessons: e.target.value })} /></label>
       <label className="field">Actions (one per line)<textarea rows={2} value={f.actions} onChange={(e) => setF({ ...f, actions: e.target.value })} /></label>
     </Modal>
+  );
+}
+
+interface RestoreTestRow {
+  id: number; at: string; machine: string | null; host: string | null; recoveryPoint: string | null; result: string; outcome: string;
+  message: string; restore: { format: string; bytesRestored: number; restoreSeconds: number; chunksChecked: number; mismatches: number; removalError?: string } | null;
+  vmDeleted: boolean; rtoSeconds: number | null; hasScreenshot: boolean; evidenceId: string | null; evidenceSha256: string | null;
+}
+
+const gib = (n: number) => (n >= 1 << 30 ? `${(n / (1 << 30)).toFixed(1)} GiB` : `${Math.round(n / (1 << 20))} MiB`);
+
+/** The DR test log: each restore test (restored in full, booted in an isolated VM, screenshot, VM deleted), filed as
+ * evidence for disaster recovery testing (backup/docs/design/restore-tests.md). */
+function DrTestLog({ tenantId }: { tenantId: string }) {
+  const { data } = useListData<RestoreTestRow>("backup/restore-tests", { tenantId }, [tenantId]);
+  const [shot, setShot] = useState<{ url: string; row: RestoreTestRow } | null>(null);
+  const show = async (row: RestoreTestRow) => {
+    const r = await fetch(`/api/console/grc/evidence/${row.evidenceId}/download`, { headers: { Authorization: `Bearer ${getToken()}` } });
+    if (r.ok) setShot({ url: URL.createObjectURL(await r.blob()), row });
+  };
+  return (
+    <div className="card" style={{ marginTop: 16 }}>
+      <h3>DR test log</h3>
+      <p className="small muted">Scheduled restore tests: each machine's newest backup restored in full, booted in an isolated VM and screenshot, then the VM deleted. Each is kept as evidence for ISO 27001 A.5.30 and A.8.13 (Governance › Evidence) and in the audit log. Set the schedule on Backups › Repositories › Boot verification.</p>
+      <Table rows={data} empty="No restore tests yet." columns={[
+        { key: "at", label: "Tested", render: (t) => fmtTime(t.at) },
+        { key: "machine", label: "Machine", render: (t) => <><b>{t.machine ?? "—"}</b><div className="small muted">recovery point {fmtTime(t.recoveryPoint) || "—"}</div></> },
+        { key: "result", label: "Result", render: (t) => <><Pill value={t.result} tone={t.result === "passed" ? "good" : "bad"} /><div className="small muted">{t.message}</div></> },
+        { key: "restore", label: "Restore", render: (t) => t.restore ? <span className="small">{gib(t.restore.bytesRestored)} as {t.restore.format.toUpperCase()} in {t.restore.restoreSeconds}s{t.restore.chunksChecked ? `, ${t.restore.chunksChecked} chunks read back${t.restore.mismatches ? `, ${t.restore.mismatches} mismatched` : ""}` : ""}{t.rtoSeconds != null ? ` · RTO ${Math.round(t.rtoSeconds / 60)} min` : ""}</span> : "—" },
+        { key: "vmDeleted", label: "Test VM", render: (t) => t.vmDeleted ? <Pill value="deleted" tone="good" /> : <span title={t.restore?.removalError}><Pill value="not deleted" tone="bad" /></span> },
+        { key: "evidence", label: "Evidence", render: (t) => <>{t.hasScreenshot && t.evidenceId ? <button className="small" onClick={() => show(t)}>Screenshot</button> : <span className="small muted">no screenshot</span>}{t.evidenceSha256 && <div className="small muted mono" title={t.evidenceSha256}>{t.evidenceSha256.slice(0, 12)}…</div>}</> }]} />
+      {shot && <Modal title={`${shot.row.machine ?? "VM"} at ${fmtTime(shot.row.at)}`} onClose={() => { URL.revokeObjectURL(shot.url); setShot(null); }}>
+        <img src={shot.url} alt="The test VM's screen at the end of the restore test" style={{ maxWidth: "100%" }} />
+        <p className="small muted mono">SHA-256 {shot.row.evidenceSha256}</p>
+      </Modal>}
+    </div>
+  );
+}
+
+/** Every backup's status over the last week (succeeded, warning, failed, cancelled, missed); filed weekly as evidence. */
+function BackupStatusLog({ tenantId }: { tenantId: string }) {
+  const { data } = useListData<any>("backup/status-log", { tenantId, days: 7 }, [tenantId]);
+  const counts = useMemo(() => (data ?? []).reduce((m: Record<string, number>, r: any) => ({ ...m, [r.state]: (m[r.state] ?? 0) + 1 }), {}), [data]);
+  return (
+    <div className="card" style={{ marginTop: 16 }}>
+      <h3>Backup status log (7 days)</h3>
+      <p className="small muted">{Object.entries(counts).map(([k, n]) => `${n} ${k}`).join(" · ") || "No backups in the last 7 days."} Every status is also in the audit log, and the week's log is filed as evidence for ISO 27001 A.8.13 once a week.</p>
+      <Table rows={(data ?? []).slice().reverse()} empty="No backups in the last 7 days." columns={[
+        { key: "finishedAt", label: "When", render: (r: any) => fmtTime(r.finishedAt) },
+        { key: "machine", label: "Machine", render: (r: any) => <><b>{r.machine}</b>{r.plan && <div className="small muted">{r.plan}</div>}</> },
+        { key: "state", label: "Status", render: (r: any) => <Pill value={r.state} tone={r.state === "succeeded" ? "good" : r.state === "warning" ? "warn" : "bad"} /> },
+        { key: "error", label: "Detail", render: (r: any) => <span className="small">{r.error ?? ""}</span> }]} />
+    </div>
   );
 }

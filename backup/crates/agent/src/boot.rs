@@ -7,6 +7,11 @@
 //!   is written as VHDX into a folder, booted with its network disconnected
 //!   and checked by heartbeat. Then removed again, or kept as a VM to log in
 //!   to and inspect until it is stopped (remembered across agent restarts).
+//! * Restore tests (`full_restore`, docs/design/restore-tests.md): the whole
+//!   image is restored first (raw files read back and matched to the backup
+//!   on KVM hosts, VHDX on Hyper-V), the VM boots from the restored disks,
+//!   and the VM and its disks are deleted afterwards; the job says whether
+//!   that deletion succeeded.
 
 #[cfg(unix)]
 use std::sync::Mutex;
@@ -18,7 +23,7 @@ use anyhow::anyhow;
 use anyhow::bail;
 use base64::Engine;
 use core_format::Repository;
-use protocol::{BootCheckResult, JobState, JobUpdate, RunningVm};
+use protocol::{BootCheckResult, JobState, JobUpdate, RestoreTest, RunningVm};
 
 use crate::jobs::{Ctx, Reporter};
 
@@ -159,7 +164,6 @@ pub fn stop_all() {
     SESSIONS.lock().unwrap().clear();
 }
 
-#[cfg(unix)]
 fn now_unix() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -190,6 +194,90 @@ fn update_for(r: BootCheckResult) -> anyhow::Result<JobUpdate> {
     Ok(u)
 }
 
+/// A restore test's facts from the restore reports of its disks.
+fn restore_facts(format: &str, reports: &[engine::RestoreReport], seconds: u64) -> RestoreTest {
+    let v = reports.iter().filter_map(|r| r.verification.as_ref());
+    RestoreTest {
+        format: format.into(),
+        bytes_restored: reports.iter().map(|r| r.bytes_written).sum(),
+        restore_seconds: seconds,
+        chunks_checked: v.clone().map(|v| v.chunks_checked).sum(),
+        mismatches: v.map(|v| v.mismatches).sum(),
+        ..Default::default()
+    }
+}
+
+/// Record the deletion of a restore test's VM and disks.
+fn removed(t: &mut RestoreTest, result: anyhow::Result<()>) {
+    t.removed_unix = now_unix();
+    match result {
+        Ok(()) => t.vm_removed = true,
+        Err(e) => t.removal_error = format!("{e:#}"),
+    }
+}
+
+/// A restore test whose disks did not read back as written fails, whatever
+/// the boot showed.
+fn apply_restore_test(out: &mut BootCheckResult, t: RestoreTest) {
+    if t.mismatches > 0 {
+        out.outcome = "failed".into();
+        out.message = format!(
+            "{} chunk(s) of the restored disks did not read back as written; {}",
+            t.mismatches, out.message
+        );
+    } else if !t.vm_removed {
+        out.message = format!(
+            "{} The test VM or its disks could not be deleted: {}",
+            out.message, t.removal_error
+        );
+    }
+    out.restore_test = Some(t);
+}
+
+/// Restore every disk of `m` as a raw file in `dir` (new, the agent's own
+/// folder), read back and matched to the backup. Returns the files in disk
+/// order and the reports.
+#[cfg(unix)]
+fn restore_raw(
+    ctx: &Ctx,
+    repo: &Repository,
+    m: &core_format::manifest::ManifestBody,
+    dir: &std::path::Path,
+    rep: &Reporter,
+) -> anyhow::Result<(Vec<std::path::PathBuf>, Vec<engine::RestoreReport>)> {
+    std::fs::create_dir_all(dir)?;
+    let dir = dir.canonicalize()?;
+    let total: u64 = m.disks.iter().map(|d| d.size).sum();
+    let (mut files, mut reports, mut base) = (Vec::new(), Vec::new(), 0u64);
+    for d in &m.disks {
+        let path = dir.join(format!("disk{}.raw", d.index));
+        // A new file in the agent's own restore-test folder, never a disk.
+        let c = engine::DestructiveConfirmation::confirmed_by_user(&path);
+        let t = engine::FileTarget::open(&path, d.size, true, &c)?;
+        let label = format!("restore test: disk {}", d.index);
+        let cb = |done: u64, _t: u64| rep.progress("restoring", base + done, total, &label);
+        let r = engine::restore_disk(
+            repo,
+            m,
+            d.index,
+            &t,
+            &engine::RestoreOptions {
+                workers: 4,
+                zero_fill: false,
+                fit: false,
+                grow: false,
+                verify: true,
+            },
+            &ctx.ctl,
+            &cb,
+        )?;
+        base += d.size;
+        files.push(path);
+        reports.push(r);
+    }
+    Ok((files, reports))
+}
+
 pub struct BootRequest {
     pub image_id: uuid::Uuid,
     pub keep_running: bool,
@@ -197,6 +285,8 @@ pub struct BootRequest {
     pub cpus: Option<u32>,
     /// Hyper-V: folder for the VM's disks.
     pub directory: Option<String>,
+    /// Restore the image fully first, boot from it, delete everything after.
+    pub full_restore: bool,
 }
 
 pub fn run(
@@ -232,13 +322,39 @@ fn kvm(
         })
         .clamp(256, 65536);
     o.cpus = req.cpus.unwrap_or(vm.cpu_count.max(2)).clamp(1, 16);
-    o.keep_running = req.keep_running;
+    o.keep_running = req.keep_running && !req.full_restore;
+    let test_dir = ctx
+        .state_dir
+        .join("restore-tests")
+        .join(req.image_id.simple().to_string());
+    let mut test = None;
+    if req.full_restore {
+        let _ = std::fs::remove_dir_all(&test_dir); // an interrupted test's leftovers
+        let started = std::time::Instant::now();
+        match restore_raw(ctx, repo, &m, &test_dir, rep) {
+            Ok((files, reports)) => {
+                o.disk_files = files;
+                test = Some(restore_facts("raw", &reports, started.elapsed().as_secs()));
+            }
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&test_dir);
+                return Err(e.context("restoring the image for the restore test"));
+            }
+        }
+    }
     rep.progress("starting", 0, 1, "starting the VM");
     let timeout = o.timeout.as_secs();
     let progress = |msg: &str| rep.progress("booting", 0, timeout, msg);
     let ctl = ctx.ctl.clone();
-    let (r, session) = vmboot::boot_check(repo, &m, &host, &o, &|| ctl.is_cancelled(), &progress)
-        .map_err(|e| anyhow!("{e}"))?;
+    let booted = vmboot::boot_check(repo, &m, &host, &o, &|| ctl.is_cancelled(), &progress);
+    if let Some(t) = test.as_mut() {
+        // The VM has stopped (boot_check drops it): delete its restored disks.
+        removed(
+            t,
+            std::fs::remove_dir_all(&test_dir).map_err(|e| anyhow!("{}: {e}", test_dir.display())),
+        );
+    }
+    let (r, session) = booted.map_err(|e| anyhow!("{e}"))?;
     let mut out = BootCheckResult {
         image_id: req.image_id,
         outcome: serde_json::to_value(r.outcome)?
@@ -252,7 +368,11 @@ fn kvm(
         message: r.message.clone(),
         screenshot_png: r.screenshot_png.as_deref().map(b64),
         session: None,
+        restore_test: None,
     };
+    if let Some(t) = test {
+        apply_restore_test(&mut out, t);
+    }
     if let Some(vm) = session {
         let info = RunningVm {
             session_id: uuid::Uuid::new_v4(),
@@ -279,10 +399,11 @@ fn hyperv(
     rep: &Reporter,
 ) -> anyhow::Result<JobUpdate> {
     let m = repo.load_manifest(&req.image_id)?;
+    let keep_running = req.keep_running && !req.full_restore;
     let session_id = uuid::Uuid::new_v4();
     let short = &req.image_id.simple().to_string()[..8];
     // A kept VM gets a name of its own; a plain check reuses one, clearing an interrupted run's leftovers.
-    let name = if req.keep_running {
+    let name = if keep_running {
         format!(
             "Fenrir check {} {} {}",
             m.machine.hostname,
@@ -310,12 +431,29 @@ fn hyperv(
         None => ctx.state_dir.join("boot-checks"),
     };
     let dir = base.join(crate::restore::safe_name(&name));
-    if !req.keep_running {
+    if !keep_running {
         let _ = crate::hyperv::remove_vm(&name);
         let _ = std::fs::remove_dir_all(&dir);
     }
+    let mut test: Option<RestoreTest> = None;
     let result = (|| -> anyhow::Result<BootCheckResult> {
-        let files = crate::restore::write_vhdx(ctx, repo, &m, &[], &dir, rep)?;
+        let started = std::time::Instant::now();
+        let written = crate::restore::write_disk_files_reported(
+            ctx,
+            repo,
+            &m,
+            &[],
+            &dir,
+            vdisk::Format::Vhdx,
+            rep,
+        )?;
+        if req.full_restore {
+            let reports: Vec<engine::RestoreReport> =
+                written.iter().map(|(_, _, r)| r.clone()).collect();
+            test = Some(restore_facts("vhdx", &reports, started.elapsed().as_secs()));
+        }
+        let files: Vec<(u32, std::path::PathBuf)> =
+            written.into_iter().map(|(i, p, _)| (i, p)).collect();
         let mut spec = crate::restore::vm_spec(&m, &name, &dir, &files, None, false);
         spec.switch = None;
         if let Some(mb) = req.memory_mb {
@@ -362,9 +500,10 @@ fn hyperv(
             message,
             screenshot_png: shot,
             session: None,
+            restore_test: None,
         })
     })();
-    let keep = req.keep_running && result.is_ok();
+    let keep = keep_running && result.is_ok();
     if keep {
         // Left for an administrator to log in to; its network stays disconnected. Stop it from the console.
         let info = RunningVm {
@@ -389,9 +528,84 @@ fn hyperv(
         r.message = format!("{} The VM is kept in Hyper-V Manager as '{name}' (network disconnected) until you stop it.", r.message);
         return update_for(r);
     }
-    if let Err(e) = crate::hyperv::remove_vm(&name) {
+    let vm = crate::hyperv::remove_vm(&name);
+    if let Err(e) = &vm {
         crate::log::warn(&format!("could not remove boot-check VM {name}: {e:#}"));
     }
-    let _ = std::fs::remove_dir_all(&dir);
-    update_for(result?)
+    let files = std::fs::remove_dir_all(&dir);
+    let mut out = result?;
+    if let Some(mut t) = test {
+        removed(
+            &mut t,
+            vm.and(files.or_else(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!("{}: {e}", dir.display()))
+                }
+            })),
+        );
+        apply_restore_test(&mut out, t);
+    }
+    update_for(out)
+}
+
+#[cfg(test)]
+mod restore_test_tests {
+    use super::*;
+
+    fn result() -> BootCheckResult {
+        BootCheckResult {
+            image_id: uuid::Uuid::nil(),
+            outcome: "verified".into(),
+            method: "ssh".into(),
+            seconds: 40,
+            firmware: "uefi".into(),
+            accel: "kvm".into(),
+            message: "the guest answered".into(),
+            screenshot_png: None,
+            session: None,
+            restore_test: None,
+        }
+    }
+
+    #[test]
+    fn a_restore_test_records_the_restore_and_the_deletion() {
+        let mut t = RestoreTest {
+            format: "raw".into(),
+            chunks_checked: 12,
+            ..Default::default()
+        };
+        removed(&mut t, Ok(()));
+        assert!(t.vm_removed && t.removed_unix > 0 && t.removal_error.is_empty());
+        let mut r = result();
+        apply_restore_test(&mut r, t);
+        assert_eq!(r.outcome, "verified");
+        assert_eq!(r.restore_test.unwrap().chunks_checked, 12);
+    }
+
+    #[test]
+    fn a_mismatch_fails_and_a_failed_deletion_is_said() {
+        let mut r = result();
+        apply_restore_test(
+            &mut r,
+            RestoreTest {
+                mismatches: 2,
+                vm_removed: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(r.outcome, "failed");
+        assert!(r.message.starts_with("2 chunk(s)"));
+
+        let mut t = RestoreTest::default();
+        removed(&mut t, Err(anyhow::anyhow!("access denied")));
+        assert!(!t.vm_removed && t.removal_error.contains("access denied"));
+        let mut r = result();
+        apply_restore_test(&mut r, t);
+        assert_eq!(r.outcome, "verified");
+        assert!(r.message.contains("could not be deleted: access denied"));
+        let u = update_for(r).unwrap();
+        assert_eq!(u.result.unwrap()["restore_test"]["vm_removed"], false);
+    }
 }

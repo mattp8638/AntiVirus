@@ -596,7 +596,7 @@ def test_boot_test_on_a_hyperv_host_keeps_the_vm_when_asked(client, admin, tenan
     spec = client.post("/backup/api/agent/heartbeat", headers=hv_h, json={"inventory": {
         "hostname": "HV01", "capabilities": ["boot_hyperv", "restore_hyperv"]}}).json()["jobs"][0]
     assert spec["kind"] == {"type": "boot_check", "image_id": im["image_id"], "keep_running": True, "memory_mb": None,
-                            "cpus": None, "directory": "D:\\Fenrir checks"}
+                            "cpus": None, "directory": "D:\\Fenrir checks", "full_restore": False}
 
 
 def test_recovery_media_is_personalised_and_enrols_recovery_sessions_only(client, admin, tenant, tmp_path, monkeypatch):

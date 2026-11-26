@@ -540,12 +540,15 @@ def run_maintenance(db: Session) -> int:
 
 def run_boot_checks(db: Session) -> int:
     """Boot verification: per repository, a boot check of the newest image of each machine not checked within
-    the interval. One check per repository at a time."""
+    the interval. One check per repository at a time. With ``boot_full_restore`` each is a restore test (restored in
+    full, booted, screenshot, VM deleted); with ``boot_weekday`` they are only queued on that UTC weekday."""
     now = utcnow()
     queued = 0
     for repo in db.execute(select(BackupRepository).where(BackupRepository.status == "ready",
                                                           BackupRepository.boot_every_days > 0,
                                                           BackupRepository.boot_agent_id.is_not(None))).scalars().all():
+        if repo.boot_weekday is not None and repo.boot_weekday != now.weekday():
+            continue  # restore tests held to one weekday (UTC, 0 = Monday)
         agent = db.get(BackupAgent, repo.boot_agent_id)
         if agent is None or agent.revoked or db.get(BackupRepoAccess, (repo.id, agent.id)) is None:
             continue
@@ -570,7 +573,8 @@ def run_boot_checks(db: Session) -> int:
             if checked or any(j.kind.get("image_id") == im.image_id for j in recent_try):
                 continue
             queue(db, agent, {"type": "boot_check", "image_id": im.image_id, "keep_running": False,
-                              "memory_mb": None, "cpus": None}, repo.id, "boot verification")
+                              "memory_mb": None, "cpus": None, "full_restore": bool(repo.boot_full_restore)},
+                  repo.id, "boot verification")
             queued += 1
             break
     db.commit()
@@ -600,9 +604,13 @@ def check_health(db: Session) -> None:
         key = f"overdue:{plan.id}"
         agent = db.get(BackupAgent, plan.agent_id)
         if now - since > timedelta(days=3):
-            raise_alert(db, plan.tenant_id, agent.device_id if agent else None, RULE_OVERDUE,
-                        f"No successful backup for 3 days: {plan.name}", "high",
-                        f"Plan {plan.name} has not completed a backup since {since:%Y-%m-%d %H:%M} UTC.", dedupe_key=key)
+            raised = raise_alert(db, plan.tenant_id, agent.device_id if agent else None, RULE_OVERDUE,
+                                 f"No successful backup for 3 days: {plan.name}", "high",
+                                 f"Plan {plan.name} has not completed a backup since {since:%Y-%m-%d %H:%M} UTC.", dedupe_key=key)
+            if raised is not None:  # once per episode, in the backup status log
+                from . import restore_tests
+
+                restore_tests.record_missed(db, plan, agent, last_ok)
         else:
             resolve_alerts(db, plan.tenant_id, RULE_OVERDUE, key, "A backup completed.")
     db.commit()
@@ -944,6 +952,9 @@ def tick(db: Session) -> None:
     refresh_local_recovery(db)
     run_dr(db)
     purge_downloads()
+    from . import restore_tests
+
+    restore_tests.tick(db)
 
 
 # --------------------------------------------------------------------------

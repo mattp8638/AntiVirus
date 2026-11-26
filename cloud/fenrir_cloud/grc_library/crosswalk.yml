@@ -185,6 +185,17 @@ controls:
       nist-csf-2: [RC.RP]
       nis2: [NIS2-21c]
       soc2: [CC9.1]
+  - id: FC-DRTEST
+    title: Disaster recovery testing
+    description: Backups are restored on a schedule into an isolated VM that must boot, with a screenshot, measured times and the test VM deleted afterwards (Fenrir restore tests).
+    signals: [dr-restore-test]
+    maps:
+      iso-27001: [A.5.30, A.8.13]
+      ncsc-caf: [B5.c]
+      nist-csf-2: [RC.RP]
+      nis2: [NIS2-21c]
+      soc2: [CC9.1]
+      dora: [DORA-TEST]
   - id: FC-INCIDENT
     title: Incident response
     description: Incidents are detected, triaged, contained and learned from, with breach notification where required.

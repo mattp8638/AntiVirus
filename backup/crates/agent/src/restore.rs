@@ -87,6 +87,24 @@ pub fn write_disk_files(
     format: vdisk::Format,
     rep: &Reporter,
 ) -> anyhow::Result<Vec<(u32, PathBuf)>> {
+    Ok(
+        write_disk_files_reported(ctx, repo, m, disks, dir, format, rep)?
+            .into_iter()
+            .map(|(i, p, _)| (i, p))
+            .collect(),
+    )
+}
+
+/// `write_disk_files`, with each disk's restore report.
+pub fn write_disk_files_reported(
+    ctx: &Ctx,
+    repo: &Repository,
+    m: &ManifestBody,
+    disks: &[u32],
+    dir: &Path,
+    format: vdisk::Format,
+    rep: &Reporter,
+) -> anyhow::Result<Vec<(u32, PathBuf, engine::RestoreReport)>> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let names = disk_names(m, disks, format.extension());
     if names.is_empty() {
@@ -129,18 +147,19 @@ pub fn write_disk_files(
             &ctx.ctl,
             &cb,
         );
-        match r {
-            Ok(_) => {
+        let report = match r {
+            Ok(report) => {
                 t.finish()?;
+                report
             }
             Err(e) => {
                 drop(t);
                 let _ = std::fs::remove_file(&path);
                 return Err(e.into());
             }
-        }
+        };
         base += d.size;
-        out.push((index, path));
+        out.push((index, path, report));
     }
     Ok(out)
 }

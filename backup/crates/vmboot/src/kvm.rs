@@ -175,6 +175,10 @@ pub struct BootOptions {
     pub keep_running: bool,
     /// Override firmware detection.
     pub firmware: Option<Firmware>,
+    /// Boot from these restored raw disk files (one per image disk, in
+    /// order) instead of reading the backup over NBD. The files are never
+    /// written: the VM writes to an overlay.
+    pub disk_files: Vec<std::path::PathBuf>,
 }
 
 impl BootOptions {
@@ -187,6 +191,7 @@ impl BootOptions {
             stable_for: Duration::from_secs(30),
             keep_running: false,
             firmware: None,
+            disk_files: Vec::new(),
         }
     }
 }
@@ -204,7 +209,7 @@ pub struct Access {
 pub struct VmSession {
     child: Child,
     qmp: Option<qmp::Qmp>,
-    _nbd: NbdServer,
+    _nbd: Option<NbdServer>,
     dir: tempfile::TempDir,
     pub access: Access,
     pub firmware: Firmware,
@@ -250,13 +255,22 @@ impl VmSession {
             .tempdir()
             .map_err(|e| err(format!("temp dir: {e}")))?;
 
-        let mut exports: BTreeMap<String, Arc<dyn Export>> = BTreeMap::new();
-        for d in &image.disks {
-            let e = ImageExport::new(repo, image, d.index, 256 << 20)
-                .map_err(|e| err(e.to_string()))?;
-            exports.insert(format!("disk{}", d.index), Arc::new(e));
+        if !opts.disk_files.is_empty() && opts.disk_files.len() != image.disks.len() {
+            return Err(err(
+                "one restored file is needed for each disk of the image",
+            ));
         }
-        let nbd = NbdServer::start(exports).map_err(|e| err(format!("NBD server: {e}")))?;
+        let nbd = if opts.disk_files.is_empty() {
+            let mut exports: BTreeMap<String, Arc<dyn Export>> = BTreeMap::new();
+            for d in &image.disks {
+                let e = ImageExport::new(repo, image, d.index, 256 << 20)
+                    .map_err(|e| err(e.to_string()))?;
+                exports.insert(format!("disk{}", d.index), Arc::new(e));
+            }
+            Some(NbdServer::start(exports).map_err(|e| err(format!("NBD server: {e}")))?)
+        } else {
+            None
+        };
 
         let accel = if host.kvm { "kvm" } else { "tcg" }.to_string();
         let uefi = firmware == Firmware::Uefi;
@@ -303,7 +317,10 @@ impl VmSession {
                     "-F",
                     "raw",
                     "-b",
-                    &nbd.url(&format!("disk{}", d.index)),
+                    &match &nbd {
+                        Some(n) => n.url(&format!("disk{}", d.index)),
+                        None => opts.disk_files[i].display().to_string(),
+                    },
                 ])
                 .arg(&overlay)
                 .output()
