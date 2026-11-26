@@ -335,6 +335,13 @@ std::vector<Decision> Evaluate(const ProcessFacts& p, const BehaviorPolicy& poli
       out.push_back({L"applicationControl.blockUnknownReputation", action,
                      L"unsigned program with no reputation in a user-writable folder", L"T1204.002"});
     }
+    // Newly seen: unsigned, in a user-writable folder, and first seen on this device less than 24 hours ago.
+    // Signed software and system folders are left alone so installers and updates keep working.
+    if (policy.blockNewlySeenExecutables && !p.signatureVerified && UserWritablePath(c.image) && p.firstSeenUnix > 0 &&
+        p.nowUnix - p.firstSeenUnix < 24 * 3600) {
+      out.push_back({L"applicationControl.blockNewlySeenExecutables", action,
+                     L"unsigned program first seen on this device less than 24 hours ago, in a user-writable folder", L"T1204.002"});
+    }
   }
   return out;
 }

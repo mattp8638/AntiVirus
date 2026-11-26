@@ -33,16 +33,16 @@ Checked against the code on 26/11/2026. Already done and removed from this list:
 agent reads `HKLM\SOFTWARE\FenrirAgent\EnrollmentToken` and sends `X-Fenrir-Token`); Windows executors for
 `scan.quick`, `scan.full`, `forensics.collect` and `ransomware.rollback`; the Microsoft 365 identity and posture modules;
 network discovery (with SNMP and topology); console MFA and Entra ID sign-in; session recording; Xero and QuickBooks
-sync; SLA holiday calendars.
+sync; SLA holiday calendars; and the last five policy settings no agent enforced (banking protection, network attack
+protection, newly seen executables, self-defence level and Windows Update peer caching).
 
 1. **Pre-execution blocking** once the minifilter is attestation-signed (see DRIVER_SIGNING.md); per-device USB exceptions and printer control on Windows; fanotify-based pre-exec checks on Linux.
 2. **macOS scanning.** `agent/macos/Sources/FenrirAgent/ScanEngine.swift` is still a stub (no YARA or hash matching), and the macOS agent has no `scan.quick` / `scan.full` / `forensics.collect` executors. It has not been run on a real Mac.
 3. **Validate `fenrir-remote.exe` on real Windows 10/11.** Check the ConPTY terminal, SendInput on the sign-in desktop and multi-monitor DPI scaling. Then the live Phase 2 gates (docs/PHASE2_FUNCTIONAL_EXIT_GATES.md) in a lab.
-4. **The five policy settings no agent enforces yet** (`web.bankingProtection`, `firewall.networkAttackProtection`, `applicationControl.blockNewlySeenExecutables`, `tamper.selfDefenceSensitivity`, `updates.peerCaching`; see `AGENT_SUPPORT` in `cloud/fenrir_cloud/policy_schema.py`): enforce them or remove them.
-5. **Telemetry at scale.** Move `events` to ClickHouse or OpenSearch and run detection workers from a queue (Redis Streams/NATS). Target 50k endpoints per region.
-6. **ML v2:** retrain on newer samples, add an ELF model for Linux, and track scores in telemetry to monitor drift.
-7. **Identity.** Generic OIDC and SAML sign-in and SCIM provisioning for console users (today: Entra ID only).
-8. **RMM/PSA gaps.** macOS remote control, procurement and purchase orders, satisfaction surveys.
+4. **Telemetry at scale.** Move `events` to ClickHouse or OpenSearch and run detection workers from a queue (Redis Streams/NATS). Target 50k endpoints per region.
+5. **ML v2:** retrain on newer samples, add an ELF model for Linux, and track scores in telemetry to monitor drift.
+6. **Identity.** Generic OIDC and SAML sign-in and SCIM provisioning for console users (today: Entra ID only).
+7. **RMM/PSA gaps.** macOS remote control, procurement and purchase orders, satisfaction surveys.
 
 ## Commercial readiness
 

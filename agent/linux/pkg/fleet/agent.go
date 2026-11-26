@@ -88,6 +88,9 @@ type Agent struct {
 	// Policy firewall (firewall.go): the rules last loaded, so they are only reloaded on change.
 	firewallApplied string
 	firewallSet     bool
+	netHardeningOn  bool
+	netHardeningSet bool
+	firstSeen       *FirstSeenStore
 	// SSH brute-force protection (bruteforce.go).
 	brute *bruteGuard
 	// New USB drives and memory cards (removable.go).
@@ -115,7 +118,8 @@ func New(cfg Config) *Agent {
 	a := &Agent{cfg: cfg, client: NewClient(cfg.Server), scanner: NewScanner(filepath.Join(cfg.StateDir, "quarantine")),
 		schedule: loadScanSchedule(cfg.StateDir),
 		stop:     make(chan struct{}), wake: make(chan struct{}, 1), metrics: &MetricsCollector{ProcRoot: cfg.ProcRoot},
-		remote: remote.NewManager(), exit: os.Exit, restartDelay: 5 * time.Second}
+		remote: remote.NewManager(), exit: os.Exit, restartDelay: 5 * time.Second,
+		firstSeen: OpenFirstSeen(cfg.StateDir)}
 	a.remote.OnEvent = func(eventType, summary string, payload map[string]interface{}) {
 		a.emit(eventType, "remote-access", summary, payload)
 	}
@@ -417,6 +421,9 @@ func (a *Agent) SenseOnce() {
 		} else if (hasHashRules(p) || len(rules) > 0) && proc.Exe != "" {
 			sha = a.hashes.Hash(proc.Exe, a.scanner.MaxFileBytes)
 		}
+		if sha != "" && a.firstSeen != nil && blocksNewlySeen(p) {
+			proc.FirstSeen = a.firstSeen.Observe(sha, time.Now())
+		}
 		if decisions := EvaluateProcess(p, proc, parent, sha); len(decisions) > 0 {
 			if rule := MatchExclusion(rules, "behavior", proc.Exe, sha, parent.Exe, parentSha, proc.Cmdline); rule != nil {
 				names := make([]string, 0, len(decisions))
@@ -448,7 +455,15 @@ func (a *Agent) SenseOnce() {
 }
 
 func hasHashRules(p Policy) bool {
-	return len(p.ModuleStrings("applicationControl", "blockedApps")) > 0 || len(p.ModuleStrings("applicationControl", "allowedHashes")) > 0
+	return len(p.ModuleStrings("applicationControl", "blockedApps")) > 0 || len(p.ModuleStrings("applicationControl", "allowedHashes")) > 0 ||
+		blocksNewlySeen(p)
+}
+
+// blocksNewlySeen: application control is on and blockNewlySeenExecutables is set, so programs need their
+// first-seen time.
+func blocksNewlySeen(p Policy) bool {
+	mode, _ := p.Modules["applicationControl"]["mode"].(string)
+	return mode != "" && mode != "off" && p.ModuleBool("applicationControl", "blockNewlySeenExecutables", false)
 }
 
 func (a *Agent) applyDecisions(proc ProcInfo, decisions []RuleDecision) {
@@ -577,6 +592,7 @@ func (a *Agent) refreshPolicy() {
 		_ = a.saveState()
 		a.applyDeviceControl()
 		a.applyFirewall()
+		a.applyNetworkHardening()
 		a.applyDNSProxy()
 		if a.scanner.Model != nil {
 			sens, _ := policy.Modules["antimalware"]["mlSensitivity"].(string)
@@ -648,6 +664,7 @@ func (a *Agent) Run() {
 	a.refreshPolicy()
 	a.applyDNSProxy()
 	a.applyDeviceControl()
+	a.applyNetworkHardening()
 	a.refreshSignatures()
 	a.refreshModel()
 	a.sendInventory()
@@ -685,6 +702,9 @@ func (a *Agent) Run() {
 			}
 		case <-beat.C:
 			a.heartbeat()
+			if a.firstSeen != nil {
+				_ = a.firstSeen.Save()
+			}
 			if time.Since(a.lastInv) > 12*time.Hour {
 				a.sendInventory()
 			}

@@ -455,6 +455,7 @@ ExtendedPolicy ExtendedPolicy::Parse(const std::string& modulesJson) {
   const bool tamperOn = BoolOr(tamper, "enabled", true);
   policy.tamperServiceLocked = tamperOn && BoolOr(tamper, "protectServiceAndFiles", true);
   policy.tamperUninstallToken = tamperOn && BoolOr(tamper, "uninstallRequiresToken", true);
+  policy.tamperSelfDefenceHigh = tamperOn && WideString(tamper, "selfDefenceSensitivity", L"high") != L"standard";
 
   policy.ransomware.deceptionLures =
       BoolOr(root->Get("edr"), "enabled", true) && BoolOr(root->Get("edr"), "deceptionLures", false);
@@ -470,6 +471,7 @@ ExtendedPolicy ExtendedPolicy::Parse(const std::string& modulesJson) {
   policy.behavior.allowedPublishers = WideList(app, "allowedPublishers");
   policy.behavior.allowedHashes = WideList(app, "allowedHashes");
   policy.behavior.blockUnknownReputation = BoolOr(app, "blockUnknownReputation", false);
+  policy.behavior.blockNewlySeenExecutables = BoolOr(app, "blockNewlySeenExecutables", false);
 
   const auto* dc = root->Get("deviceControl");
   policy.deviceControl.enabled = BoolOr(dc, "enabled", false);

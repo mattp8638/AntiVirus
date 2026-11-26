@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "ExtendedPolicy.h"
+#include "FirstSeenStore.h"
 #include "PolicySnapshot.h"
 #include "TelemetryRecord.h"
 
@@ -52,6 +53,8 @@ class ProcessGuard {
   std::wstring appliedDeviceControlSummary_;
   std::map<std::wstring, double> mlCache_;
   std::map<std::wstring, std::wstring> hashCache_;  // "path|size|mtime" -> sha256, for exclusions
+  FirstSeenStore firstSeen_;                         // applicationControl.blockNewlySeenExecutables
+  long long firstSeenSavedUnix_{0};
 
   std::wstring CachedSha256(const std::wstring& path);
 };

@@ -348,7 +348,9 @@ SCHEMA: tuple[Section, ...] = (
             F("phishingWarnThreshold", "int", 55, "Phishing warn score", min=1, max=99),
             F("phishingBlockThreshold", "int", 80, "Phishing block score", min=1, max=99),
             F("destinationCacheTtlMinutes", "int", 240, "Verdict cache (minutes)", min=5, max=10080),
-            F("bankingProtection", "bool", True, "Secure browser for banking and payments", platforms=("windows",)),
+            F("bankingProtection", "bool", True, "Banking and payment protection",
+              "Edge and Chrome: warnings about phishing and fake sites cannot be clicked through, and Chrome refuses "
+              "code injected into the browser (how banking trojans steal sessions).", platforms=("windows",)),
         ),
     ),
     Section(
@@ -402,7 +404,10 @@ SCHEMA: tuple[Section, ...] = (
             F("defaultsOnLinuxMac", "bool", False, "Apply default actions on Linux and macOS",
               "Off: Linux and macOS only apply custom rules. Turn on after allowing the services a server offers "
               "(SSH always stays open).", platforms=("linux", "macos")),
-            F("networkAttackProtection", "bool", True, "Network attack protection (IDS)"),
+            F("networkAttackProtection", "bool", True, "Network attack protection",
+              "Hardens the network stack. Windows: no source routing, ICMP redirects or router discovery. Linux: SYN "
+              "cookies, spoofed-address filtering, no redirects or source routing, no replies to broadcast pings. "
+              "Turning it off restores the previous settings.", platforms=("windows", "linux")),
             F("botnetProtection", "bool", True, "Botnet / C2 callback blocking"),
             F("bruteForceProtection", "bool", True, "Block RDP/SMB/SSH brute force"),
             F("blockSmbV1", "bool", True, "Block SMBv1", platforms=("windows",)),
@@ -439,7 +444,10 @@ SCHEMA: tuple[Section, ...] = (
             F("allowedPublishers", "list", ["Microsoft Windows", "Microsoft Corporation"], "Trusted publishers"),
             F("allowedHashes", "list", [], "Trusted hashes"),
             F("blockUnknownReputation", "bool", False, "Block apps with no reputation"),
-            F("blockNewlySeenExecutables", "bool", False, "Block executables first seen in the last 24h"),
+            F("blockNewlySeenExecutables", "bool", False, "Block programs new to the device",
+              "Programs this device first saw less than 24 hours ago, running from a user-writable folder (Downloads, "
+              "Temp, home folders). Signed software (Windows) and system folders are not affected. Follows the "
+              "application control mode (audit or block)."),
         ),
     ),
     Section(
@@ -498,7 +506,11 @@ SCHEMA: tuple[Section, ...] = (
             F("enabled", "bool", True, "Tamper protection"),
             F("uninstallRequiresToken", "bool", True, "Uninstall needs a cloud token"),
             F("protectServiceAndFiles", "bool", True, "Protect service, files and registry"),
-            F("selfDefenceSensitivity", "enum", "high", "Self-defence", options=("standard", "high")),
+            F("selfDefenceSensitivity", "enum", "high", "Self-defence",
+              "high: the agent's settings key is read-only for administrators, and the agent process cannot be "
+              "terminated or injected into by anyone but SYSTEM. standard: the service lock only. An administrator "
+              "who takes ownership or uses debug privilege can still get past it.", options=("standard", "high"),
+              platforms=("windows",)),
         ),
     ),
     Section(
@@ -570,7 +582,9 @@ SCHEMA: tuple[Section, ...] = (
             F("channel", "enum", "stable", "Release ring", options=("canary", "beta", "stable", "lts")),
             F("autoUpdateAgent", "bool", True, "Update agent automatically"),
             F("signatureIntervalMinutes", "int", 60, "Signature check interval (minutes)", min=5, max=1440),
-            F("peerCaching", "bool", True, "Share updates between devices on the LAN"),
+            F("peerCaching", "bool", True, "Share Windows updates between devices on the LAN",
+              "Windows Update (Delivery Optimization) downloads from other devices on the same network as well as "
+              "Microsoft. Off: from Microsoft only.", platforms=("windows",)),
         ),
     ),
 )
@@ -644,19 +658,16 @@ AGENT_SUPPORT: dict[str, tuple[str, ...]] = {
     "web.phishingWarnThreshold": ('windows',),
     "web.phishingBlockThreshold": ('windows',),
     "web.destinationCacheTtlMinutes": ('windows',),
-    "web.bankingProtection": (),
     "dns.localProxy": ('windows', 'linux'),  # never on macOS: the agent ignores it (loopback DNS cut Macs off)
     "dns.localProxyFailMode": ('windows', 'linux'),  # never on macOS: the agent ignores it (loopback DNS cut Macs off)
     "dns.sinkholeInterception": ('linux', 'macos'),
     "dns.localCacheMinutes": ('windows', 'linux', 'macos'),
     "dns.localDomains": ('windows',),
-    "firewall.networkAttackProtection": (),
     "firewall.bruteForceProtection": ('windows', 'linux', 'macos'),
     "firewall.blockSmbV1": ('windows',),
     "firewall.blockLlmnrNetbios": ('windows',),
     "firewall.isolationAllowlist": ('linux', 'macos'),
     "applicationControl.allowedPublishers": ('windows',),
-    "applicationControl.blockNewlySeenExecutables": (),
     "privilege.removeLocalAdmins": ('windows',),
     "privilege.elevationRequests": ('windows',),
     "privilege.elevationMinutes": ('windows',),
@@ -666,7 +677,6 @@ AGENT_SUPPORT: dict[str, tuple[str, ...]] = {
     "tamper.enabled": ('windows',),
     "tamper.uninstallRequiresToken": ('windows',),
     "tamper.protectServiceAndFiles": ('windows',),
-    "tamper.selfDefenceSensitivity": (),
     "experience.trayIcon": ('windows',),
     "experience.notifications": ('windows',),
     "experience.allowUserScans": ('windows',),
@@ -675,7 +685,6 @@ AGENT_SUPPORT: dict[str, tuple[str, ...]] = {
     "experience.brandName": ('windows',),
     "experience.supportContact": ('windows',),
     "updates.signatureIntervalMinutes": ('linux', 'macos'),
-    "updates.peerCaching": (),
 }
 
 
@@ -1200,6 +1209,8 @@ def to_agent_policy(policy_id: str, name: str, settings: dict, botnet_ips: list[
                                  "scanNetworkDrives", "quickScanSchedule", "fullScanSchedule", "scanCpuLimitPercent",
                                  "exclusionProcesses")
     }
+    # The web section's verdict thresholds go to the antimalware document above; banking protection is a host setting.
+    doc["modules"]["web"] = {"bankingProtection": bool(web.get("bankingProtection", False))}
     doc["modules"]["firewall"] = dict(fw)
     managed = managed_firewall_rules(settings, botnet_ips)
     doc["modules"]["firewall"]["parsedRules"] = [

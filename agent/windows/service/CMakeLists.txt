@@ -738,6 +738,10 @@ target_link_libraries(fenrir-rmm-tests PRIVATE wtsapi32 userenv urlmon advapi32 
 antivirus_apply_portable_runtime(fenrir-rmm-tests)
 target_include_directories(fenrir-policy-tests PRIVATE include)
 
+add_executable(fenrir-host-hardening-tests ../tests/HostHardeningTests.cpp src/FirewallPolicy.cpp src/ExtendedPolicy.cpp src/BehaviorRules.cpp src/DeviceControl.cpp)
+target_include_directories(fenrir-host-hardening-tests PRIVATE include)
+antivirus_apply_portable_runtime(fenrir-host-hardening-tests)
+
 add_executable(fenrir-dnsproxy-tests ../tests/DnsProxyTests.cpp src/DnsProxyCore.cpp src/ExtendedPolicy.cpp src/BehaviorRules.cpp src/DeviceControl.cpp)
 target_include_directories(fenrir-dnsproxy-tests PRIVATE include)
 antivirus_apply_portable_runtime(fenrir-dnsproxy-tests)

@@ -1,9 +1,15 @@
 #pragma once
 
-// Policy firewall and network hardening for Windows (modules.firewall):
-// Windows Firewall profiles and default actions, custom rules (group "Fenrir policy"),
-// SMBv1 server off, and LLMNR / NetBIOS over TCP/IP off. Applied by a generated PowerShell
-// script; building the script is pure so it can be unit tested anywhere.
+// Policy firewall and host hardening for Windows:
+// modules.firewall: Windows Firewall profiles and default actions, custom rules (group "Fenrir policy"),
+// SMBv1 server off, LLMNR / NetBIOS over TCP/IP off, and network attack protection (no source routing,
+// ICMP redirects or router discovery).
+// modules.web.bankingProtection: Edge and Chrome phishing warnings cannot be bypassed, and Chrome blocks
+// third-party code injection.
+// modules.updates.peerCaching: Windows Update shares downloads between devices on the LAN
+// (Delivery Optimization) or not at all.
+// Every registry value Fenrir sets has its previous value saved first, so turning a setting off restores it.
+// Applied by a generated PowerShell script; building the script is pure so it can be unit tested anywhere.
 
 #include <string>
 #include <utility>
@@ -26,7 +32,15 @@ struct Settings {
   bool blockOutbound{false};
   bool blockSmbV1{false};
   bool blockLlmnrNetbios{false};
+  bool networkAttackProtection{false};
   std::vector<Rule> rules;
+  // Other sections handled by the same script. "has": the section is in the policy, so manage it.
+  bool hasWeb{false};
+  bool bankingProtection{false};
+  bool hasUpdates{false};
+  bool peerCaching{true};
+
+  bool AnythingToManage() const { return present || hasWeb || hasUpdates; }
 };
 
 Settings Parse(const std::string& modulesJson);

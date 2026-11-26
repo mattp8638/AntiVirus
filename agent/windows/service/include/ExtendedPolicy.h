@@ -94,6 +94,7 @@ struct ExtendedPolicy {
   bool removeLocalAdmins{false};      // privilege.enabled && privilege.removeLocalAdmins
   bool tamperServiceLocked{true};     // tamper.enabled && tamper.protectServiceAndFiles
   bool tamperUninstallToken{true};    // tamper.enabled && tamper.uninstallRequiresToken
+  bool tamperSelfDefenceHigh{true};   // tamper.enabled && tamper.selfDefenceSensitivity == "high"
   bool scriptExecution{true};      // modules.response.scriptExecution
   bool remoteAccessEnabled{true};  // modules.remoteAccess.enabled
   bool remoteBackstageAllowed{false};  // modules.remoteAccess.backstage != "off": silent SYSTEM sessions

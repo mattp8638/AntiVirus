@@ -4,7 +4,9 @@
 #include <aclapi.h>
 
 #include <array>
+#include <atomic>
 #include <filesystem>
+#include <mutex>
 #include <vector>
 
 #include "CryptoUtils.h"
@@ -14,6 +16,9 @@ namespace antivirus::agent {
 namespace {
 
 constexpr wchar_t kRegistryRoot[] = L"SOFTWARE\\FenrirAgent";
+
+// tamper.selfDefenceSensitivity "high": administrators only read the agent's registry key.
+std::atomic<bool> g_adminsRegistryReadOnly{false};
 constexpr wchar_t kLegacyRegistryRoot[] = L"SOFTWARE\\AntiVirusAgent";
 constexpr wchar_t kRuntimeRootValueName[] = L"RuntimeRoot";
 constexpr wchar_t kServiceLaunchProtectedValueName[] = L"LaunchProtectedConfigured";
@@ -197,7 +202,7 @@ bool ApplyRegistryAcl(HKEY key, const bool allowUsersRead) {
   std::vector<EXPLICIT_ACCESSW> entries;
   entries.resize(allowUsersRead ? 3 : 2);
 
-  entries[0].grfAccessPermissions = KEY_ALL_ACCESS;
+  entries[0].grfAccessPermissions = g_adminsRegistryReadOnly ? KEY_READ : KEY_ALL_ACCESS;
   entries[0].grfAccessMode = SET_ACCESS;
   entries[0].grfInheritance = CONTAINER_INHERIT_ACE;
   entries[0].Trustee.TrusteeForm = TRUSTEE_IS_SID;
@@ -313,6 +318,53 @@ bool InstallElamCertificateInfoCompat(HANDLE elamFileHandle) {
   }
 
   return installFn(elamFileHandle);
+}
+
+// The agent process's own DACL. high: SYSTEM keeps full access; administrators may only query it and wait on
+// it, so ordinary tools cannot terminate it, write its memory or start threads in it. standard: the DACL the
+// process started with.
+bool ApplyProcessSelfDefence(const bool high) {
+  static std::mutex mutex;
+  static PSECURITY_DESCRIPTOR original = nullptr;
+  static PACL originalDacl = nullptr;
+  std::lock_guard lock(mutex);
+  HANDLE self = GetCurrentProcess();
+  if (original == nullptr && GetSecurityInfo(self, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr,
+                                             &originalDacl, nullptr, &original) != ERROR_SUCCESS) {
+    original = nullptr;
+    return false;
+  }
+  if (!high) {
+    return SetSecurityInfo(self, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
+                           nullptr, nullptr, originalDacl, nullptr) == ERROR_SUCCESS;
+  }
+  std::array<BYTE, SECURITY_MAX_SID_SIZE> administratorsBuffer{};
+  std::array<BYTE, SECURITY_MAX_SID_SIZE> systemBuffer{};
+  PSID administratorsSid = nullptr;
+  PSID systemSid = nullptr;
+  if (!CreateKnownSid(WinBuiltinAdministratorsSid, administratorsBuffer, &administratorsSid) ||
+      !CreateKnownSid(WinLocalSystemSid, systemBuffer, &systemSid)) {
+    return false;
+  }
+  std::array<EXPLICIT_ACCESSW, 2> entries{};
+  entries[0].grfAccessPermissions = PROCESS_ALL_ACCESS;
+  entries[0].grfAccessMode = SET_ACCESS;
+  entries[0].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+  entries[0].Trustee.TrusteeType = TRUSTEE_IS_USER;
+  entries[0].Trustee.ptstrName = static_cast<LPWSTR>(systemSid);
+  entries[1].grfAccessPermissions = PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE | READ_CONTROL;
+  entries[1].grfAccessMode = SET_ACCESS;
+  entries[1].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+  entries[1].Trustee.TrusteeType = TRUSTEE_IS_GROUP;
+  entries[1].Trustee.ptstrName = static_cast<LPWSTR>(administratorsSid);
+  PACL acl = nullptr;
+  if (SetEntriesInAclW(static_cast<ULONG>(entries.size()), entries.data(), nullptr, &acl) != ERROR_SUCCESS) {
+    return false;
+  }
+  const auto status = SetSecurityInfo(self, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                                      nullptr, nullptr, acl, nullptr);
+  LocalFree(acl);
+  return status == ERROR_SUCCESS;
 }
 
 }  // namespace
@@ -641,10 +693,20 @@ bool HardeningManager::ApplyCredentialHardening(const bool enable, bool* rebootR
   return ok;
 }
 
-bool HardeningManager::ApplyTamperPolicy(const bool serviceLocked, const bool uninstallTokenRequired,
+bool HardeningManager::ApplyTamperPolicy(const bool serviceLocked, const bool uninstallTokenRequired, const bool selfDefenceHigh,
                                          std::wstring* errorMessage) const {
+  // Set before any registry write: every write re-applies the key's ACL with the current setting.
+  g_adminsRegistryReadOnly = selfDefenceHigh;
   if (!PersistRegistryDwordValue(L"UninstallTokenRequiredByPolicy", uninstallTokenRequired ? 1 : 0)) {
     if (errorMessage != nullptr) *errorMessage = L"Could not record the uninstall-token policy.";
+    return false;
+  }
+  if (!PersistRegistryDwordValue(L"SelfDefenceHigh", selfDefenceHigh ? 1 : 0)) {
+    if (errorMessage != nullptr) *errorMessage = L"Could not apply the self-defence level to the agent's registry key.";
+    return false;
+  }
+  if (!ApplyProcessSelfDefence(selfDefenceHigh)) {
+    if (errorMessage != nullptr) *errorMessage = L"Could not apply the self-defence level to the agent process.";
     return false;
   }
   return ApplyServiceControlProtection(L"FenrirAgent", nullptr, errorMessage, serviceLocked);

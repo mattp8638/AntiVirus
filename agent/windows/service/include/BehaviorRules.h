@@ -26,6 +26,8 @@ struct ProcessFacts {
   std::wstring sha256;          // optional; only needed for hash rules
   bool onRemovableMedia{false};
   std::wstring parentSha256;    // only computed when an exclusion names the parent's path
+  long long firstSeenUnix{0};   // when this device first saw the program (0: not tracked)
+  long long nowUnix{0};
 };
 
 // A strict EDR exclusion from Fenrir Cloud (modules.edrExclusions.rules; cloud: edr_exclusions.py).
@@ -63,6 +65,7 @@ struct BehaviorPolicy {
   std::vector<std::wstring> allowedPublishers;
   std::vector<std::wstring> allowedHashes;
   bool blockUnknownReputation{false};
+  bool blockNewlySeenExecutables{false};  // first seen on this device less than 24 hours ago
   // exclusions
   std::vector<std::wstring> excludedProcesses;  // image base names
   std::vector<std::wstring> excludedPathRoots;

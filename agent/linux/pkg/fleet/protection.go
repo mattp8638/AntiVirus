@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -95,7 +96,9 @@ func systemPath(path string) bool {
 }
 
 func userWritable(path string) bool {
-	for _, prefix := range []string{"/tmp/", "/var/tmp/", "/dev/shm/", "/home/", "/run/user/"} {
+	// Linux, then macOS (home folders, /tmp and the per-user temporary folders under /private/var/folders).
+	for _, prefix := range []string{"/tmp/", "/var/tmp/", "/dev/shm/", "/home/", "/run/user/",
+		"/Users/", "/private/tmp/", "/private/var/tmp/", "/private/var/folders/"} {
 		if strings.HasPrefix(path, prefix) {
 			return true
 		}
@@ -165,6 +168,13 @@ func EvaluateProcess(p Policy, proc ProcInfo, parent ProcInfo, sha string) []Rul
 		if p.ModuleBool("applicationControl", "blockUnknownReputation", false) && userWritable(proc.Exe) {
 			out = append(out, RuleDecision{"applicationControl.blockUnknownReputation", action,
 				"unknown program running from a user-writable folder", "T1204.002"})
+		}
+		// Newly seen: a program this device first saw less than 24 hours ago, running from a user-writable folder.
+		// System folders are left alone so package updates keep working.
+		if p.ModuleBool("applicationControl", "blockNewlySeenExecutables", false) && userWritable(proc.Exe) &&
+			NewlySeen(proc.FirstSeen, time.Now()) {
+			out = append(out, RuleDecision{"applicationControl.blockNewlySeenExecutables", action,
+				"program first seen on this device less than 24 hours ago, running from a user-writable folder", "T1204.002"})
 		}
 	}
 	return out

@@ -27,6 +27,7 @@ type ProcInfo struct {
 	Cmdline    string
 	UID        int
 	StartTicks uint64
+	FirstSeen  time.Time // when this device first saw the program; zero when not tracked
 }
 
 func readProc(root string, pid int) (ProcInfo, error) {
