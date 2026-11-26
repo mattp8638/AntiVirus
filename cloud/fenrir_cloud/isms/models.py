@@ -183,6 +183,7 @@ class IsmsTenantControl(_Row, Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("itc"))
     ref: Mapped[str] = mapped_column(String(40))
     common: Mapped[bool] = mapped_column(Boolean, default=True)  # False for the customer's own controls
+    test_procedure: Mapped[str | None] = mapped_column(Text, nullable=True)  # the customer's own controls
     title: Mapped[str] = mapped_column(String(300))
     statement: Mapped[str] = mapped_column(Text)
     owner_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
@@ -624,3 +625,255 @@ def _guard_audits(session, _flush_context, _instances) -> None:
 
 
 _event.listen(_Session, "before_flush", _guard_audits)
+
+
+@tenant_table
+class IsmsOrgRole(_Row, Base):
+    """A named ISMS role with its responsibilities and authorities (ISO 27001 5.3), such as information security
+    lead. Separate from ``IsmsMembership``, which decides what a person can do in Fenrir."""
+    __tablename__ = "isms_org_roles"
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_isms_org_role_name"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ior"))
+    name: Mapped[str] = mapped_column(String(120))
+    responsibilities: Mapped[str] = mapped_column(Text, default="")
+    authorities: Mapped[str] = mapped_column(Text, default="")
+    sort: Mapped[int] = mapped_column(Integer, default=0)
+
+
+@tenant_table
+class IsmsOrgRoleHolder(_Row, Base):
+    __tablename__ = "isms_org_role_holders"
+    __table_args__ = (UniqueConstraint("role_id", "user_id", name="uq_isms_org_role_holder"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("irh"))
+    role_id: Mapped[str] = mapped_column(ForeignKey("isms_org_roles.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+
+
+@tenant_table
+class IsmsRaciActivity(_Row, Base):
+    __tablename__ = "isms_raci_activities"
+    __table_args__ = (UniqueConstraint("tenant_id", "title", name="uq_isms_raci_activity"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ira"))
+    title: Mapped[str] = mapped_column(String(160))
+    sort: Mapped[int] = mapped_column(Integer, default=0)
+
+
+@tenant_table
+class IsmsRaciAssignment(_Row, Base):
+    __tablename__ = "isms_raci_assignments"
+    __table_args__ = (UniqueConstraint("activity_id", "role_id", name="uq_isms_raci_cell"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("irc"))
+    activity_id: Mapped[str] = mapped_column(ForeignKey("isms_raci_activities.id"), index=True)
+    role_id: Mapped[str] = mapped_column(ForeignKey("isms_org_roles.id"), index=True)
+    letter: Mapped[str] = mapped_column(String(1))  # R | A | C | I
+
+
+@tenant_table
+class IsmsCompetence(_Row, Base):
+    """A training, qualification, experience or awareness record for one person (ISO 27001 7.2, 7.3)."""
+    __tablename__ = "isms_competence"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("icp"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(20))  # training | qualification | experience | awareness
+    title: Mapped[str] = mapped_column(String(200))
+    achieved_on: Mapped[date] = mapped_column(Date)
+    expires_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    evidence_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    notes: Mapped[str] = mapped_column(Text, default="")
+
+
+@tenant_table
+class IsmsAckCampaign(_Row, Base):
+    """A request for people with an ISMS role to read and acknowledge one published document version."""
+    __tablename__ = "isms_ack_campaigns"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("iac"))
+    document_version_id: Mapped[str] = mapped_column(ForeignKey("isms_document_versions.id"), index=True)
+    audience_roles: Mapped[list[str]] = mapped_column(JSON, default=list)  # ISMS roles asked; empty means everyone
+    due_on: Mapped[date] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(10), default="open")  # open | closed
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_reminded_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+
+@tenant_table
+class IsmsAcknowledgement(Base):
+    """One person's acknowledgement of a campaign's document version. Append-only (see the guard below)."""
+    __tablename__ = "isms_acknowledgements"
+    __table_args__ = (UniqueConstraint("campaign_id", "user_id", name="uq_isms_acknowledgement"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("iag"))
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("isms_ack_campaigns.id"), index=True)
+    document_version_id: Mapped[str] = mapped_column(ForeignKey("isms_document_versions.id"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    content_sha256: Mapped[str] = mapped_column(String(64))  # of the text that was shown
+    acknowledged_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    ip: Mapped[str] = mapped_column(String(64), default="")
+    user_agent: Mapped[str] = mapped_column(String(300), default="")
+    via: Mapped[str] = mapped_column(String(10), default="console")  # console | portal
+
+
+class AcknowledgementsAreFinal(RuntimeError):
+    """An acknowledgement was about to be changed or deleted."""
+
+
+def _guard_acknowledgements(session, _flush_context, _instances) -> None:
+    for obj in list(session.dirty) + list(session.deleted):
+        if isinstance(obj, IsmsAcknowledgement) and (obj in session.deleted or session.is_modified(obj)):
+            raise AcknowledgementsAreFinal("Acknowledgements cannot be changed or deleted.")
+
+
+_event.listen(_Session, "before_flush", _guard_acknowledgements)
+
+
+@tenant_table
+class IsmsManagementReview(_Row, Base):
+    """A management review (ISO 27001 9.3). Its pack is built from live data; recording the meeting freezes the pack,
+    minutes and decisions (see the guard below). Actions can still be added and completed afterwards."""
+    __tablename__ = "isms_management_reviews"
+    __table_args__ = (UniqueConstraint("tenant_id", "ref", name="uq_isms_management_review_ref"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("imr"))
+    ref: Mapped[str] = mapped_column(String(20))  # MR-001
+    title: Mapped[str] = mapped_column(String(200))
+    planned_on: Mapped[date] = mapped_column(Date)
+    period_start: Mapped[date] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(10), default="draft")  # draft | held
+    pack: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    pack_built_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    interested_party_feedback: Mapped[str] = mapped_column(Text, default="")
+    held_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    chair_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    attendees: Mapped[str] = mapped_column(Text, default="")
+    minutes: Mapped[str] = mapped_column(Text, default="")
+    decisions: Mapped[str] = mapped_column(Text, default="")
+    changes_needed: Mapped[str] = mapped_column(Text, default="")
+    recorded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    recorded_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+
+@tenant_table
+class IsmsReviewAction(_Row, Base):
+    __tablename__ = "isms_review_actions"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ima"))
+    review_id: Mapped[str] = mapped_column(ForeignKey("isms_management_reviews.id"), index=True)
+    description: Mapped[str] = mapped_column(Text)
+    owner_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    due_on: Mapped[date] = mapped_column(Date)
+    done_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    done_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    done_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class HeldReview(RuntimeError):
+    """A held management review was about to change or be deleted."""
+
+
+def _guard_reviews(session, _flush_context, _instances) -> None:
+    from sqlalchemy import inspect as sa_inspect
+
+    for obj in list(session.dirty) + list(session.deleted):
+        if not isinstance(obj, IsmsManagementReview):
+            continue
+        hist = sa_inspect(obj).attrs.status.history
+        was = (hist.deleted or [obj.status])[0] if hist.has_changes() else obj.status
+        if was == "held" and (obj in session.deleted or session.is_modified(obj)):
+            raise HeldReview("A held management review cannot change.")
+
+
+_event.listen(_Session, "before_flush", _guard_reviews)
+
+
+@tenant_table
+class IsmsAuditSample(_Row, Base):
+    """A sample an auditor drew from a live population, kept so it can be reproduced and reviewed."""
+    __tablename__ = "isms_audit_samples"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ias"))
+    population: Mapped[str] = mapped_column(String(30))
+    size: Mapped[int] = mapped_column(Integer)
+    seed: Mapped[str] = mapped_column(String(200))
+    population_size: Mapped[int] = mapped_column(Integer)
+    items: Mapped[list] = mapped_column(JSON)
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+
+@tenant_table
+class IsmsEvidenceRequest(_Row, Base):
+    """An auditor's request for evidence, answered by the control's owner or an ISMS manager."""
+    __tablename__ = "isms_evidence_requests"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ier"))
+    tenant_control_id: Mapped[str | None] = mapped_column(ForeignKey("isms_tenant_controls.id"), nullable=True)
+    request: Mapped[str] = mapped_column(Text)
+    due_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(String(10), default="open")  # open | answered | closed
+    response: Mapped[str] = mapped_column(Text, default="")
+    evidence_id: Mapped[str | None] = mapped_column(ForeignKey("isms_evidence.id"), nullable=True)
+    requested_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    answered_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+@tenant_table
+class IsmsSupplierLink(_Row, Base):
+    """Links a Fenrir third-party risk supplier (``tprm_vendors``) to the ISMS assets, risks and controls it touches."""
+    __tablename__ = "isms_supplier_links"
+    __table_args__ = (UniqueConstraint("vendor_id", "target_type", "target_id", name="uq_isms_supplier_link"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("isl"))
+    vendor_id: Mapped[str] = mapped_column(ForeignKey("tprm_vendors.id"), index=True)
+    target_type: Mapped[str] = mapped_column(String(10))  # asset | risk | control
+    target_id: Mapped[str] = mapped_column(String(32))
+
+
+@tenant_table
+class IsmsIncidentReview(_Row, Base):
+    """The ISMS view of a Fenrir SOC incident (ISO 27001 A.5.24 to A.5.28): category, personal data, regulator
+    notice, root cause, lessons learned and the controls involved. The SOC keeps running the incident itself."""
+    __tablename__ = "isms_incident_reviews"
+    __table_args__ = (UniqueConstraint("incident_id", name="uq_isms_incident_review"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("iir"))
+    incident_id: Mapped[str] = mapped_column(ForeignKey("incidents.id"))
+    category: Mapped[str] = mapped_column(String(30), default="other")
+    personal_data: Mapped[bool] = mapped_column(Boolean, default=False)
+    reported_to_authority_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    vendor_id: Mapped[str | None] = mapped_column(ForeignKey("tprm_vendors.id"), nullable=True)
+    root_cause: Mapped[str] = mapped_column(Text, default="")
+    lessons_learned: Mapped[str] = mapped_column(Text, default="")
+    control_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(10), default="open")  # open | complete
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+@tenant_table
+class IsmsControlRequirement(_Row, Base):
+    """Links one of the customer's own controls (CUST-001) to a requirement of a framework in its programme, so the
+    control counts in the Statement of Applicability, readiness and audit checklists."""
+    __tablename__ = "isms_control_requirements"
+    __table_args__ = (UniqueConstraint("tenant_control_id", "framework", "requirement_ref",
+                                       name="uq_isms_control_requirement"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("icq"))
+    tenant_control_id: Mapped[str] = mapped_column(ForeignKey("isms_tenant_controls.id"), index=True)
+    framework: Mapped[str] = mapped_column(String(80))
+    requirement_ref: Mapped[str] = mapped_column(String(80))
+
+
+@tenant_table
+class IsmsDashboardLayout(_Row, Base):
+    """The tiles one person chose for their ISMS dashboard in one customer, in order."""
+    __tablename__ = "isms_dashboard_layouts"
+    __table_args__ = (UniqueConstraint("tenant_id", "user_id", name="uq_isms_dashboard_layout"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("idl"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    tiles: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+
+@tenant_table
+class IsmsDigestSubscription(_Row, Base):
+    """An email digest of the same tiles, weekly (Mondays) or monthly (the 1st), at 07:00 UTC."""
+    __tablename__ = "isms_digest_subscriptions"
+    __table_args__ = (UniqueConstraint("tenant_id", "user_id", name="uq_isms_digest_subscription"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ids"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    frequency: Mapped[str] = mapped_column(String(10))  # weekly | monthly
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    next_send_at: Mapped[datetime] = mapped_column(DateTime)
+    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

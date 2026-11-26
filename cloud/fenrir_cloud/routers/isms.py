@@ -22,9 +22,11 @@ from ..models import User
 router = APIRouter(prefix="/api/console/isms", tags=["ISMS"])
 
 
-def isms_db(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)) -> Session:
+def isms_db(request: Request, principal: Principal = Depends(current_principal),
+            db: Session = Depends(get_db)) -> Session:
     """The request's session, with PostgreSQL row-level security bound to the principal's tenants."""
     rls.bind_tenants(db, principal.tenant_ids)
+    db.info["isms_request"] = (request.method, request.url.path)
     return db
 
 
@@ -112,6 +114,12 @@ def require_isms(db: Session, principal: Principal, tenant_id: str, permission: 
     role = memberships.active_role(db, principal.user, tenant_id)
     if not access.can(role, permission):
         raise HTTPException(403, f"Your ISMS role ({role or 'none'}) cannot do this ({permission})")
+    if role == "auditor" and db.info.get("isms_request"):
+        from ..isms import auditor
+        method, path = db.info.pop("isms_request")  # once per request
+        auditor.record_view(db, principal.actor, tenant_id, method, path)
+        if method == "GET":
+            db.commit()
     return role
 
 
@@ -1307,3 +1315,549 @@ def audit_sample(body: SampleBody, principal: Principal = Depends(current_princi
     """Draws a reproducible sample. Nothing is stored; the seed lets anyone draw the same sample again."""
     _audit_role(db, principal, body.tenantId, "findings.log")
     return _audits().sample(body.population, body.size, body.seed)
+
+
+# People and training (Phase 4) ------------------------------------------------------------------------------------
+
+def _people():
+    from ..isms import people
+    return people
+
+
+@router.get("/people")
+def people_overview(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    """Named roles, the RACI matrix and competence records. Anyone with an ISMS role that can see controls reads them;
+    others see only their own competence records."""
+    role = require_isms(db, principal, tenant_id, "documents.acknowledge")
+    full = access.can(role, "controls.view")
+    return {"roles": _people().role_rows(db, tenant_id) if full else [],
+            "raci": _people().raci(db, tenant_id) if full else None,
+            "competence": _people().competence_rows(db, tenant_id, None if full else principal.user.id),
+            "canManage": access.can(role, "programme.manage")}
+
+
+@router.post("/org-roles")
+def add_org_role(body: TenantBody, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    require_isms(db, principal, body.tenant_id, "programme.manage")
+    _people().save_role(db, body.tenant_id, principal.actor, dict(body.model_extra or {}))
+    db.commit()
+    return {"roles": _people().role_rows(db, body.tenant_id)}
+
+
+def _org_role(db, principal, role_id):
+    from ..isms.models import IsmsOrgRole
+    row = get_scoped(db, IsmsOrgRole, role_id, principal)
+    require_isms(db, principal, row.tenant_id, "programme.manage")
+    return row
+
+
+@router.patch("/org-roles/{role_id}")
+def update_org_role(role_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                    db: Session = Depends(isms_db)):
+    row = _org_role(db, principal, role_id)
+    _people().save_role(db, row.tenant_id, principal.actor, body, row)
+    db.commit()
+    return {"roles": _people().role_rows(db, row.tenant_id)}
+
+
+@router.delete("/org-roles/{role_id}")
+def delete_org_role(role_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    row = _org_role(db, principal, role_id)
+    tid = row.tenant_id
+    _people().delete_role(db, row, principal.actor)
+    db.commit()
+    return {"roles": _people().role_rows(db, tid)}
+
+
+class ActivityBody(BaseModel):
+    tenantId: str
+    title: str
+
+
+@router.post("/raci/activities")
+def add_raci_activity(body: ActivityBody, principal: Principal = Depends(current_principal),
+                      db: Session = Depends(isms_db)):
+    require_isms(db, principal, body.tenantId, "programme.manage")
+    _people().add_activity(db, body.tenantId, principal.actor, body.title)
+    db.commit()
+    return _people().raci(db, body.tenantId)
+
+
+def _activity(db, principal, activity_id):
+    from ..isms.models import IsmsRaciActivity
+    row = get_scoped(db, IsmsRaciActivity, activity_id, principal)
+    require_isms(db, principal, row.tenant_id, "programme.manage")
+    return row
+
+
+@router.delete("/raci/activities/{activity_id}")
+def delete_raci_activity(activity_id: str, principal: Principal = Depends(current_principal),
+                         db: Session = Depends(isms_db)):
+    row = _activity(db, principal, activity_id)
+    tid = row.tenant_id
+    _people().delete_activity(db, row, principal.actor)
+    db.commit()
+    return _people().raci(db, tid)
+
+
+class RaciRow(BaseModel):
+    letters: dict[str, str]
+
+
+@router.put("/raci/activities/{activity_id}")
+def save_raci_row(activity_id: str, body: RaciRow, principal: Principal = Depends(current_principal),
+                  db: Session = Depends(isms_db)):
+    row = _activity(db, principal, activity_id)
+    _people().save_raci_row(db, row, principal.actor, body.letters)
+    db.commit()
+    return _people().raci(db, row.tenant_id)
+
+
+@router.post("/competence")
+def add_competence(body: TenantBody, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    require_isms(db, principal, body.tenant_id, "programme.manage")
+    _people().add_competence(db, body.tenant_id, principal.actor, dict(body.model_extra or {}))
+    db.commit()
+    return {"competence": _people().competence_rows(db, body.tenant_id)}
+
+
+@router.delete("/competence/{record_id}")
+def delete_competence(record_id: str, principal: Principal = Depends(current_principal),
+                      db: Session = Depends(isms_db)):
+    from ..isms.models import IsmsCompetence
+    row = get_scoped(db, IsmsCompetence, record_id, principal)
+    require_isms(db, principal, row.tenant_id, "programme.manage")
+    tid = row.tenant_id
+    _people().delete_competence(db, row, principal.actor)
+    db.commit()
+    return {"competence": _people().competence_rows(db, tid)}
+
+
+@router.get("/acknowledgements/campaigns")
+def list_campaigns(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    role = require_isms(db, principal, tenant_id, "documents.view")
+    manage = access.can(role, "documents.edit")
+    return {"campaigns": _people().campaign_rows(db, tenant_id),
+            "candidates": _people().campaign_candidates(db, tenant_id) if manage else [],
+            "byUser": _people().by_user(db, tenant_id) if manage else [], "canManage": manage,
+            "roles": list(TENANT_ROLES)}
+
+
+@router.post("/acknowledgements/campaigns")
+def start_campaign(body: TenantBody, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    require_isms(db, principal, body.tenant_id, "documents.edit")
+    row = _people().start_campaign(db, body.tenant_id, principal.actor, dict(body.model_extra or {}))
+    db.commit()
+    return _people().campaign_detail(db, row)
+
+
+def _campaign(db, principal, campaign_id):
+    from ..isms.models import IsmsAckCampaign
+    return get_scoped(db, IsmsAckCampaign, campaign_id, principal)
+
+
+@router.get("/acknowledgements/campaigns/{campaign_id}")
+def get_campaign(campaign_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    row = _campaign(db, principal, campaign_id)
+    require_isms(db, principal, row.tenant_id, "documents.edit")
+    return _people().campaign_detail(db, row)
+
+
+@router.post("/acknowledgements/campaigns/{campaign_id}/close")
+def close_campaign(campaign_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    row = _campaign(db, principal, campaign_id)
+    require_isms(db, principal, row.tenant_id, "documents.edit")
+    _people().close_campaign(db, row, principal.actor)
+    db.commit()
+    return _people().campaign_detail(db, row)
+
+
+@router.get("/acknowledgements/mine")
+def my_acknowledgements(principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    """Documents waiting for this person to acknowledge, across every customer they hold an ISMS role in."""
+    return {"pending": _people().pending_for(db, principal.user, principal.tenant_ids)}
+
+
+@router.get("/acknowledgements/{campaign_id}/read")
+def read_for_acknowledgement(campaign_id: str, principal: Principal = Depends(current_principal),
+                             db: Session = Depends(isms_db)):
+    row = _campaign(db, principal, campaign_id)
+    require_isms(db, principal, row.tenant_id, "documents.acknowledge")
+    return _people().acknowledgement_view(db, row, principal.user)
+
+
+class AcknowledgeBody(BaseModel):
+    sha256: str
+    confirm: bool = False
+
+
+@router.post("/acknowledgements/{campaign_id}/acknowledge")
+def acknowledge(campaign_id: str, body: AcknowledgeBody, request: Request,
+                principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    if not body.confirm:
+        raise HTTPException(400, "Tick that you have read and understood the document")
+    row = _campaign(db, principal, campaign_id)
+    require_isms(db, principal, row.tenant_id, "documents.acknowledge")
+    _people().acknowledge(db, row, principal.user, principal.actor, body.sha256,
+                          request.client.host if request.client else "", request.headers.get("user-agent", ""),
+                          "console")
+    db.commit()
+    return _people().acknowledgement_view(db, row, principal.user)
+
+
+# Management review (Phase 4) ---------------------------------------------------------------------------------------
+
+def _review():
+    from ..isms import review
+    return review
+
+
+@router.get("/reviews")
+def list_reviews(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    role = require_isms(db, principal, tenant_id, "controls.view")
+    return {"reviews": _review().review_rows(db, tenant_id), "inputs": _review().inputs(),
+            "canManage": access.can(role, "programme.manage")}
+
+
+@router.post("/reviews")
+def plan_review(body: TenantBody, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    require_isms(db, principal, body.tenant_id, "programme.manage")
+    row = _review().create_review(db, body.tenant_id, principal.actor, dict(body.model_extra or {}))
+    db.commit()
+    return _review().review_rows(db, body.tenant_id, row.id)[0]
+
+
+def _mreview(db, principal, review_id, permission="programme.manage"):
+    from ..isms.models import IsmsManagementReview
+    row = get_scoped(db, IsmsManagementReview, review_id, principal)
+    require_isms(db, principal, row.tenant_id, permission)
+    return row
+
+
+class PackBody(BaseModel):
+    feedback: str | None = None
+
+
+@router.post("/reviews/{review_id}/pack")
+def build_review_pack(review_id: str, body: PackBody, principal: Principal = Depends(current_principal),
+                      db: Session = Depends(isms_db)):
+    row = _mreview(db, principal, review_id)
+    _review().refresh_pack(db, row, principal.actor, body.feedback)
+    db.commit()
+    return _review().review_rows(db, row.tenant_id, row.id)[0]
+
+
+@router.post("/reviews/{review_id}/held")
+def record_review(review_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                  db: Session = Depends(isms_db)):
+    row = _mreview(db, principal, review_id)
+    _review().record_meeting(db, row, principal.actor, principal.user.id, body, _members(db, row.tenant_id))
+    db.commit()
+    return _review().review_rows(db, row.tenant_id, row.id)[0]
+
+
+@router.post("/reviews/{review_id}/actions")
+def add_review_action(review_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                      db: Session = Depends(isms_db)):
+    row = _mreview(db, principal, review_id)
+    _review().add_action(db, row, principal.actor, body, _members(db, row.tenant_id))
+    db.commit()
+    return _review().review_rows(db, row.tenant_id, row.id)[0]
+
+
+@router.post("/review-actions/{action_id}/done")
+def complete_review_action(action_id: str, body: dict = Body(default={}),
+                           principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    """The action's owner, or an ISMS manager, marks it done."""
+    from ..isms.models import IsmsReviewAction
+    a = get_scoped(db, IsmsReviewAction, action_id, principal)
+    role = require_isms(db, principal, a.tenant_id, "tasks.complete")
+    if not access.can(role, "programme.manage") and a.owner_user_id != principal.user.id:
+        raise HTTPException(403, "Only the action's owner or an ISMS manager can mark it done")
+    _review().complete_action(db, a, principal.actor, principal.user.id, str(body.get("note") or ""))
+    db.commit()
+    return _review().review_rows(db, a.tenant_id, a.review_id)[0]
+
+
+@router.delete("/reviews/{review_id}")
+def delete_review(review_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    row = _mreview(db, principal, review_id)
+    _review().delete_review(db, row, principal.actor)
+    db.commit()
+    return {"ok": True}
+
+
+# Auditor workspace (Phase 5) ---------------------------------------------------------------------------------------
+
+def _auditor():
+    from ..isms import auditor
+    return auditor
+
+
+@router.get("/auditor")
+def auditor_workspace(tenant_id: str, principal: Principal = Depends(current_principal),
+                      db: Session = Depends(isms_db)):
+    role = require_isms(db, principal, tenant_id, "controls.view")
+    audits = access.can(role, "findings.log")
+    manage = access.can(role, "programme.manage")
+    mine = None if (audits or manage) else principal.user.id
+    return {"samples": _auditor().sample_rows(db, tenant_id) if audits or manage else [],
+            "requests": _auditor().request_rows(db, tenant_id, "all", mine),
+            "populations": [{"key": k, "label": v} for k, v in _auditor().POPULATIONS.items()],
+            "canAudit": audits, "canManage": manage, "role": role}
+
+
+@router.post("/auditor/samples")
+def draw_audit_sample(body: TenantBody, principal: Principal = Depends(current_principal),
+                      db: Session = Depends(isms_db)):
+    require_isms(db, principal, body.tenant_id, "findings.log")
+    _auditor().create_sample(db, body.tenant_id, principal.actor, principal.user.id, dict(body.model_extra or {}))
+    db.commit()
+    return {"samples": _auditor().sample_rows(db, body.tenant_id)}
+
+
+@router.post("/auditor/requests")
+def request_evidence(body: TenantBody, principal: Principal = Depends(current_principal),
+                     db: Session = Depends(isms_db)):
+    require_isms(db, principal, body.tenant_id, "findings.log")
+    _auditor().create_request(db, body.tenant_id, principal.actor, principal.user.id, dict(body.model_extra or {}))
+    db.commit()
+    return {"requests": _auditor().request_rows(db, body.tenant_id)}
+
+
+class AnswerBody(BaseModel):
+    response: str = ""
+    evidenceId: str | None = None
+
+
+@router.post("/auditor/requests/{request_id}/answer")
+def answer_evidence_request(request_id: str, body: AnswerBody, principal: Principal = Depends(current_principal),
+                            db: Session = Depends(isms_db)):
+    """The control's owner or an ISMS manager answers."""
+    from ..isms.models import IsmsEvidenceRequest
+    row = get_scoped(db, IsmsEvidenceRequest, request_id, principal)
+    role = require_isms(db, principal, row.tenant_id, "controls.view")
+    if not access.can(role, "programme.manage") and _auditor().control_owner(db, row) != principal.user.id:
+        raise HTTPException(403, "Only the control's owner or an ISMS manager can answer this request")
+    _auditor().answer_request(db, row, principal.actor, principal.user.id, body.response, body.evidenceId)
+    db.commit()
+    return {"requests": _auditor().request_rows(db, row.tenant_id)}
+
+
+@router.post("/auditor/requests/{request_id}/close")
+def close_evidence_request(request_id: str, principal: Principal = Depends(current_principal),
+                           db: Session = Depends(isms_db)):
+    from ..isms.models import IsmsEvidenceRequest
+    row = get_scoped(db, IsmsEvidenceRequest, request_id, principal)
+    role = require_isms(db, principal, row.tenant_id, "controls.view")
+    if not (access.can(role, "findings.log") or access.can(role, "programme.manage")):
+        raise HTTPException(403, "Only auditors and ISMS managers close requests")
+    _auditor().close_request(db, row, principal.actor)
+    db.commit()
+    return {"requests": _auditor().request_rows(db, row.tenant_id)}
+
+
+# Suppliers and incidents (Phase 5) ---------------------------------------------------------------------------------
+
+def _ops():
+    from ..isms import operations
+    return operations
+
+
+@router.get("/suppliers")
+def isms_suppliers(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    role = require_isms(db, principal, tenant_id, "controls.view")
+    return {"suppliers": _ops().supplier_rows(db, tenant_id), "canManage": access.can(role, "programme.manage")}
+
+
+class SupplierLinkBody(BaseModel):
+    tenantId: str
+    vendorId: str
+    type: str
+    targetId: str
+
+
+@router.post("/supplier-links")
+def link_supplier(body: SupplierLinkBody, principal: Principal = Depends(current_principal),
+                  db: Session = Depends(isms_db)):
+    require_isms(db, principal, body.tenantId, "programme.manage")
+    _ops().link_supplier(db, body.tenantId, principal.actor, body.vendorId, body.type, body.targetId)
+    db.commit()
+    return {"suppliers": _ops().supplier_rows(db, body.tenantId)}
+
+
+@router.delete("/supplier-links/{link_id}")
+def unlink_supplier(link_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    from ..isms.models import IsmsSupplierLink
+    row = get_scoped(db, IsmsSupplierLink, link_id, principal)
+    require_isms(db, principal, row.tenant_id, "programme.manage")
+    tid = row.tenant_id
+    _ops().unlink_supplier(db, row, principal.actor)
+    db.commit()
+    return {"suppliers": _ops().supplier_rows(db, tid)}
+
+
+@router.get("/incidents")
+def isms_incidents(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    role = require_isms(db, principal, tenant_id, "controls.view")
+    return {"incidents": _ops().incident_rows(db, tenant_id), "categories": list(_ops().CATEGORIES),
+            "canManage": access.can(role, "programme.manage")}
+
+
+def _incident(db: Session, principal: Principal, incident_id: str):
+    from ..models import Incident
+    row = db.get(Incident, incident_id)
+    if row is None or row.tenant_id not in principal.tenant_ids:
+        raise HTTPException(404, "Not found")
+    require_isms(db, principal, row.tenant_id, "programme.manage")
+    return row
+
+
+@router.put("/incidents/{incident_id}/review")
+def save_incident_review(incident_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                         db: Session = Depends(isms_db)):
+    inc = _incident(db, principal, incident_id)
+    _ops().save_review(db, inc, principal.actor, body)
+    db.commit()
+    return _ops().incident_rows(db, inc.tenant_id, inc.id)[0]
+
+
+@router.post("/incidents/{incident_id}/review/complete")
+def complete_incident_review(incident_id: str, principal: Principal = Depends(current_principal),
+                             db: Session = Depends(isms_db)):
+    inc = _incident(db, principal, incident_id)
+    _ops().complete_review(db, inc, principal.actor)
+    db.commit()
+    return _ops().incident_rows(db, inc.tenant_id, inc.id)[0]
+
+
+@router.post("/incidents/{incident_id}/review/reopen")
+def reopen_incident_review(incident_id: str, principal: Principal = Depends(current_principal),
+                           db: Session = Depends(isms_db)):
+    inc = _incident(db, principal, incident_id)
+    _ops().reopen_review(db, inc, principal.actor)
+    db.commit()
+    return _ops().incident_rows(db, inc.tenant_id, inc.id)[0]
+
+
+# The customer's own controls, and pushing them as templates (Phase 5) ---------------------------------------------
+
+def _custom():
+    from ..isms import custom_controls
+    return custom_controls
+
+
+@router.get("/custom-controls")
+def list_custom_controls(tenant_id: str, principal: Principal = Depends(current_principal),
+                         db: Session = Depends(isms_db)):
+    role = require_isms(db, principal, tenant_id, "controls.view")
+    return {"controls": _custom().custom_rows(db, tenant_id),
+            "requirements": _custom().linkable_requirements(db, tenant_id),
+            "frequencies": list(_custom().FREQUENCIES), "canManage": access.can(role, "programme.manage")}
+
+
+@router.post("/custom-controls")
+def add_custom_control(body: TenantBody, principal: Principal = Depends(current_principal),
+                       db: Session = Depends(isms_db)):
+    require_isms(db, principal, body.tenant_id, "programme.manage")
+    row = _custom().create(db, body.tenant_id, principal.actor, dict(body.model_extra or {}), _members(db, body.tenant_id))
+    db.commit()
+    return _custom().control_view(db, row)
+
+
+def _custom_control(db, principal, control_id):
+    row = get_scoped(db, IsmsTenantControl, control_id, principal)
+    require_isms(db, principal, row.tenant_id, "programme.manage")
+    return row
+
+
+@router.patch("/custom-controls/{control_id}")
+def update_custom_control(control_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                          db: Session = Depends(isms_db)):
+    row = _custom_control(db, principal, control_id)
+    _custom().update(db, row, principal.actor, body, _members(db, row.tenant_id))
+    db.commit()
+    return _custom().control_view(db, row)
+
+
+@router.delete("/custom-controls/{control_id}")
+def delete_custom_control(control_id: str, principal: Principal = Depends(current_principal),
+                          db: Session = Depends(isms_db)):
+    row = _custom_control(db, principal, control_id)
+    _custom().delete(db, row, principal.actor)
+    db.commit()
+    return {"ok": True}
+
+
+class PushBody(BaseModel):
+    sourceTenantId: str
+    targetTenantIds: list[str]
+    controlIds: list[str] = []
+
+
+@router.post("/custom-controls/push")
+def push_custom_controls(body: PushBody, principal: Principal = Depends(current_principal),
+                         db: Session = Depends(isms_db)):
+    """Copies the source customer's own controls to other customers. The person needs to run the programme in the
+    source and in every target."""
+    require_isms(db, principal, body.sourceTenantId, "programme.manage")
+    targets = list(dict.fromkeys(t for t in body.targetTenantIds if t != body.sourceTenantId))
+    if not targets:
+        raise HTTPException(400, "Choose at least one other customer.")
+    for t in targets:
+        require_isms(db, principal, t, "programme.manage")
+    added = {t: _custom().push_templates(db, body.sourceTenantId, t, principal.actor, body.controlIds or None)
+             for t in targets}
+    db.commit()
+    return {"added": added}
+
+
+@router.get("/portfolio")
+def isms_portfolio(principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    """Headline figures for every customer where this person holds an ISMS role that can see controls."""
+    from ..isms import portfolio
+    return {"customers": portfolio.portfolio(db, principal.user, principal.tenant_ids)}
+
+
+# Dashboard and digests (Phase 5) -----------------------------------------------------------------------------------
+
+def _dash():
+    from ..isms import dashboard
+    return dashboard
+
+
+@router.get("/dashboard")
+def isms_dashboard(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    """This person's chosen tiles for this customer, computed from live data."""
+    role = require_isms(db, principal, tenant_id, "documents.acknowledge")
+    ids = _dash().layout(db, tenant_id, principal.user.id, role)
+    return {"tiles": _dash().compute_tiles(db, tenant_id, ids), "layout": ids, "available": _dash().allowed_tiles(role),
+            "digest": _dash().subscription(db, tenant_id, principal.user.id)}
+
+
+class LayoutBody(BaseModel):
+    tenantId: str
+    tiles: list[str]
+
+
+@router.put("/dashboard/layout")
+def save_dashboard_layout(body: LayoutBody, principal: Principal = Depends(current_principal),
+                          db: Session = Depends(isms_db)):
+    role = require_isms(db, principal, body.tenantId, "documents.acknowledge")
+    tiles = _dash().save_layout(db, body.tenantId, principal.user.id, principal.actor, role, body.tiles)
+    db.commit()
+    return {"layout": tiles, "tiles": _dash().compute_tiles(db, body.tenantId, tiles)}
+
+
+class DigestBody(BaseModel):
+    tenantId: str
+    frequency: str
+    enabled: bool = True
+
+
+@router.put("/dashboard/digest")
+def save_digest(body: DigestBody, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    require_isms(db, principal, body.tenantId, "documents.acknowledge")
+    _dash().save_subscription(db, body.tenantId, principal.user.id, principal.actor, body.frequency, body.enabled)
+    db.commit()
+    return {"digest": _dash().subscription(db, body.tenantId, principal.user.id)}

@@ -336,6 +336,10 @@ def _isms_evidence_tick(db) -> None:
 
     isms_evidence.tick(db)
     isms_tasks.send_reminders(db)  # each stage once per task, so running hourly sends each reminder once
+    from .isms import people as isms_people
+    isms_people.send_reminders(db)  # at most once a day per campaign
+    from .isms import dashboard as isms_dashboard
+    isms_dashboard.send_due_digests(db)  # weekly on Mondays or monthly on the 1st, from 07:00 UTC
 
 
 def _maintenance_loop(settings: Settings, stop: threading.Event) -> None:
@@ -670,8 +674,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def approval_required(_request: Request, exc: approval_gate.ApprovalRequired):
         return exc.response()
 
-    from .isms.models import CompletedAudit, FrozenDocumentVersion
+    from .isms.models import AcknowledgementsAreFinal, CompletedAudit, FrozenDocumentVersion, HeldReview
 
+    @app.exception_handler(HeldReview)
+    @app.exception_handler(AcknowledgementsAreFinal)
     @app.exception_handler(CompletedAudit)
     @app.exception_handler(FrozenDocumentVersion)
     async def frozen_record(_request: Request, exc: RuntimeError):

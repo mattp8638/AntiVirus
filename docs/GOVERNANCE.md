@@ -153,6 +153,46 @@ Every step is recorded in the audit log.
 
 Objectives, the latest audit programme and improvement figures also appear in the generated ISMS documents (for example the objectives plan and the internal audit procedure).
 
+## People and training
+
+**People and training** has three views.
+
+- **Acknowledgements.** "For you to read" lists the documents waiting for you in this customer. An ISMS manager starts a campaign for one published document version, choosing which ISMS roles are asked (none chosen means everyone with an ISMS role) and a due date. Everyone asked is emailed. Fenrir users acknowledge on this tab; client portal accounts (which can only hold the staff role) see **Documents to read** in the client portal. Acknowledging needs the tick box and records the time, where it was done and a hash of the text that was shown; if the document changes while someone is reading, they are asked to reload. Acknowledgements can never be changed or deleted. Reminders go out once a day from 3 days before the due date until everyone has acknowledged or the campaign is closed. The campaign list shows progress, and **By person** shows each person's completion across every campaign.
+- **Roles and RACI** (5.3). The named roles that run the ISMS (for example information security lead), their holders, responsibilities and authorities, and a matrix of activities against roles. Each activity needs exactly one accountable role and at least one responsible role; problems are shown under the activity. These roles are separate from the ISMS roles that decide what someone can do in Fenrir.
+- **Competence** (7.2, 7.3). Training, qualifications, experience and awareness records per person, with an optional expiry date and evidence. Records expiring within 30 days are flagged. People whose ISMS role cannot see controls see only their own records.
+
+Roles, the RACI matrix and campaign progress also appear in the generated documents (for example the roles and responsibilities document).
+
+## Management review
+
+**Management review** (9.3) plans reviews and records them. ISMS managers plan and record; anyone whose ISMS role can see controls can read them.
+
+- A review covers the period since the last held review (or the year before its planned date when none has been held).
+- **Build pack** gathers every input the review must consider from live records: actions from earlier reviews, changes to context issues and interested parties, nonconformities, monitoring (readiness and objectives), audit results and coverage, objectives, feedback from interested parties (the notes you enter plus complaints), risk and treatment progress, and open improvement opportunities. Rebuild it as often as needed while the review is a draft.
+- **Record and freeze** needs the date it was held (not in the future), the attendees, the minutes and the decisions. The pack is rebuilt one last time and frozen with the meeting record; a held review never changes and cannot be deleted.
+- Actions can be added at any time. Their owner or an ISMS manager marks them done, and they appear in the next review's first input.
+- The latest held review fills the management review minutes document.
+
+## Audit workspace
+
+The **Audit workspace** is where external and internal auditors work.
+
+- **Giving an external auditor access.** Create a Fenrir account for them with the **viewer** role, limited to the customer. Then give them the **auditor** ISMS role on the ISMS roles tab, with an end date (at most a year). They can read the ISMS but change nothing apart from audit results, samples and evidence requests. Their access ends automatically on that date. Every ISMS page they open is recorded in the audit log.
+- **Samples** are drawn from live records (applicable controls, evidence, completed control tasks, open risks, nonconformities or published documents) and saved with the seed, so anyone can draw the same sample again to check it.
+- **Evidence requests** can name a control. The control's owner is emailed and sees the request here; they or an ISMS manager answer with a note, evidence or both. The auditor or an ISMS manager closes the request when satisfied. Requests that name no control are answered by ISMS managers.
+
+## Suppliers and incidents
+
+**Suppliers and incidents** connects the ISMS to registers Fenrir already keeps.
+
+- **Incidents** are run by the SOC as usual. The ISMS review of each one records its category, whether personal data was involved and when the regulator was told, the supplier involved, the root cause, the lessons learned and the controls involved. When personal data is involved the page shows the 72 hour deadline for telling the regulator. A medium or higher incident needs a root cause and lessons learned, and a high or critical personal data breach needs the time it was reported, before the review can be completed; the SOC must also have resolved it. A completed review can be reopened.
+- **Suppliers** stay in third-party risk. Each one can be linked to the ISMS assets, risks and controls it touches; its criticality, data access, risk tier and review state show alongside.
+
+## Own controls and the ISMS portfolio
+
+- **Own controls** holds controls a customer runs that are not in the library. Each gets the next reference (CUST-001 onwards), a statement, a test procedure and frequency, and links to the requirements it meets in the customer's frameworks, so it counts in the Statement of Applicability, readiness and audit checklists. Set its state and owner on the ISMS controls tab. A control linked to evidence or risks cannot be deleted until those links are removed. **Copy to other customers** copies chosen controls to other customers whose ISMS you run, without owners or requirement links; a customer that already has a control with the same title is skipped.
+- **ISMS portfolio** lists every customer where you hold an ISMS role that can see controls, with readiness, overdue tasks, open nonconformities, risks above appetite, documents due for review, open evidence requests and the next audit.
+
 ## Organization, scope and assets
 
 These tabs need an ISMS role that can run the programme (ISMS manager or ISMS administrator).
