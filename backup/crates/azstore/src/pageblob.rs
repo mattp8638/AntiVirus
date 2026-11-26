@@ -107,7 +107,7 @@ impl PageBlobTarget {
         }
         let disk_size = vdisk::vhd::azure_size(size);
         az.create_page_blob(name, disk_size + PAGE)
-            .map_err(io::Error::other)?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
         Ok(PageBlobTarget {
             az,
             name: name.into(),
@@ -131,7 +131,7 @@ impl PageBlobTarget {
             vdisk::vhd::fixed_footer(self.disk_size, unique_id, core_format::timefmt::now_unix());
         self.az
             .put_pages(&self.name, self.disk_size, &f)
-            .map_err(io::Error::other)?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
         Ok(self.url())
     }
 }
@@ -149,7 +149,7 @@ impl engine::WriteTarget for PageBlobTarget {
             let data = self
                 .az
                 .get_range(&self.name, offset + done as u64, n as u64)
-                .map_err(io::Error::other)?;
+                .map_err(|e| io::Error::other(e.to_string()))?;
             buf[done..done + n].copy_from_slice(&data);
             done += n;
         }
@@ -181,7 +181,7 @@ impl engine::WriteTarget for PageBlobTarget {
                         let (a, b) = (s * PAGE as usize, k * PAGE as usize);
                         self.az
                             .put_pages(&self.name, base + a as u64, &piece[a..b])
-                            .map_err(io::Error::other)?;
+                            .map_err(|e| io::Error::other(e.to_string()))?;
                         start = None;
                     }
                     _ => {}
@@ -191,7 +191,7 @@ impl engine::WriteTarget for PageBlobTarget {
                 let a = s * PAGE as usize;
                 self.az
                     .put_pages(&self.name, base + a as u64, &piece[a..])
-                    .map_err(io::Error::other)?;
+                    .map_err(|e| io::Error::other(e.to_string()))?;
             }
         }
         Ok(())

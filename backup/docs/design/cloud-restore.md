@@ -37,7 +37,8 @@ role. The access key and secret are sealed to the restoring machine.
 ## 3. Windows from physical machines
 
 Windows backed up from a physical machine may need its storage drivers
-prepared before it starts on virtual hardware; the job warns, and the
+prepared before it starts on virtual hardware; the job warns (only for an
+image that records Windows, not for a plain disk backup), and the
 recovery media's hardware fix-up (`phase-5-hardware.md`) is the remedy.
 
 ## 4. Standby VMs
@@ -67,6 +68,16 @@ writes all of the image's data: suited to hourly or daily plans.
 * `s3store` with moto: a 12 MiB file uploads in three parts as one object,
   byte for byte.
 * Agent: names, Azure and AWS CLI commands.
+* `ci/e2e-s3.py`, end to end with a real server and agent: a disk backed up
+  to S3 is restored for AWS (a VHDX uploaded to moto; the staging copy is
+  removed) and for Azure (a page blob on Azurite, every chunk read back by
+  the agent). Both are downloaded independently of Fenrir, by boto3 and a
+  Shared Key request written in the test, and their disk content equals the
+  source byte for byte (`qemu-img` reads the VHDX; the VHD ends in its
+  footer and is whole MiB). The restore evidence is verified, its hashes
+  match what was downloaded and it has RPO and RTO. Restoring to the same
+  blob again fails and leaves it unchanged. Creating the managed disk, image
+  and VM needs a real Azure or AWS account and is not run.
 * `cloud/tests/test_device_backup.py`: cloud targets validated and carried
   with the sealed keys; standby settings validated, listed, and the standby
   restore queued for the new image with `replace`.

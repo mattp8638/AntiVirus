@@ -170,7 +170,8 @@ pub fn azure(
         crate::evidence::disk_verification(&refs),
         json!([]),
     );
-    if os_type(m) == "Windows" && m.vm.is_none() {
+    // Only for an image known to hold Windows: a plain disk backup has no OS recorded.
+    if m.os.family.eq_ignore_ascii_case("windows") && m.vm.is_none() {
         u.state = JobState::Warning;
         u.warnings.push("This Windows system comes from a physical machine: if the Azure VM does not start, restore it with the recovery media onto a Hyper-V VM first (it prepares Windows for virtual hardware), then restore that.".into());
     }
