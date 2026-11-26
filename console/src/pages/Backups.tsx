@@ -1697,6 +1697,8 @@ function RestoreEvidenceButton({ id }: { id: string }) {
     const e = out.evidence;
     const checked = (e.verification || []).reduce((n: number, v: any) => n + (v.chunksChecked || 0), 0);
     setInfo(`${e.verified ? "verified" : "not verified"}${checked ? `, ${checked} chunks read back` : `, ${e.outputs.length} output(s) hashed`}`
+      + (e.checks || []).map((c: any) => c.type === "sql-checkdb" ? `, CHECKDB ${c.database}: ${c.result}`
+        : c.type === "exchange-mailbox-restore" ? `, mailbox ${c.source}: ${c.result}${c.items != null ? ` (${c.items} items)` : ""}` : `, ${c.type}: ${c.result}`).join("")
       + `${e.rpoSeconds != null ? `, RPO ${Math.round(e.rpoSeconds / 60)} min` : ""}${e.rtoSeconds != null ? `, RTO ${e.rtoSeconds} s` : ""}${out.intact ? "" : ", RECORD ALTERED"}`);
     const link = document.createElement("a");
     link.href = URL.createObjectURL(new Blob([JSON.stringify(out, null, 2)], { type: "application/json" }));
