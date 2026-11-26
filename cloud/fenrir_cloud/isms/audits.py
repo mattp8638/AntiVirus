@@ -324,6 +324,9 @@ def complete_audit(db: Session, row: IsmsAudit, actor: str, summary: str) -> Non
     row.summary, row.status, row.completed_at, row.updated_by = js_trim(summary)[:8000], "completed", utcnow(), actor
     audit.record(db, actor, "isms.audit_completed", row.ref, row.tenant_id, id=row.id,
                  counts=result_counts([c.result for c in checks]))
+    from .notify import emit
+    emit(db, row.tenant_id, "isms.audit_completed", id=row.id, ref=row.ref, title=row.title,
+         counts=result_counts([c.result for c in checks]))
 
 
 def delete_audit(db: Session, row: IsmsAudit, actor: str) -> None:

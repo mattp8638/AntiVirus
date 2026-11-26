@@ -146,6 +146,9 @@ def create_request(db: Session, tenant_id: str, actor: str, user_id: str, data: 
     db.add(row)
     db.flush()
     audit.record(db, actor, "isms.evidence_requested", control.ref if control else "general", tenant_id, id=row.id)
+    from .notify import emit
+    emit(db, tenant_id, "isms.evidence_requested", id=row.id, control=control.ref if control else None,
+         dueOn=due.isoformat() if due else None)
     if control and control.owner_user_id:
         from .. import mailer
         owner = db.get(User, control.owner_user_id)

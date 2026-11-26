@@ -58,7 +58,7 @@ def roles(principal: Principal = Depends(current_principal)):
 def me(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
     """The signed-in person's ISMS role in one customer, and whether they can manage ISMS roles there."""
     principal.check_tenant(tenant_id)
-    role = memberships.active_role(db, principal.user, tenant_id)
+    role = _role(db, principal, tenant_id)
     return {"tenantId": tenant_id, "userId": principal.user.id, "role": role,
             "permissions": sorted(ROLE_PERMISSIONS.get(role or "", ())),
             "canManageRoles": memberships.can_manage(db, principal, tenant_id)}
@@ -108,10 +108,17 @@ def delete_membership(membership_id: str, principal: Principal = Depends(current
 
 # Organization, scope and assets (ISO 27001 4.1 to 4.3) ----------------------------------------------------------
 
+def _role(db: Session, principal: Principal, tenant_id: str) -> str | None:
+    """A person's ISMS role in the customer; an API credential reads with the "grc" scope and never holds a role."""
+    if principal.credential_id:
+        return access.role_for_credential(principal.scopes)
+    return memberships.active_role(db, principal.user, tenant_id)
+
+
 def require_isms(db: Session, principal: Principal, tenant_id: str, permission: str) -> str:
     """The principal's ISMS role in this customer, which must allow ``permission``."""
     principal.check_tenant(tenant_id)
-    role = memberships.active_role(db, principal.user, tenant_id)
+    role = _role(db, principal, tenant_id)
     if not access.can(role, permission):
         raise HTTPException(403, f"Your ISMS role ({role or 'none'}) cannot do this ({permission})")
     if role == "auditor" and db.info.get("isms_request"):

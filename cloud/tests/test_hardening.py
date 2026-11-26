@@ -214,3 +214,32 @@ def test_column_defaults_fit_their_columns():
                 if isinstance(column.type, String) and column.type.length and column.default is not None
                 and isinstance(getattr(column.default, "arg", None), str) and len(column.default.arg) > column.type.length]
     assert too_long == []
+
+
+def test_migration_128_repairs_columns_and_tables_missed_by_parallel_branches(tmp_path):
+    """A database migrated before the restore-test columns existed, and one that recorded 121 as restore evidence,
+    both come back to the full schema: backup repositories load again and the ISMS people tables exist."""
+    from sqlalchemy import inspect
+    from sqlalchemy.orm import Session
+    from fenrir_cloud.models import BackupRepository
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'drift.db'}")
+    database.migrate(engine)
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE backup_repositories DROP COLUMN boot_full_restore"))
+        conn.execute(text("ALTER TABLE backup_repositories DROP COLUMN boot_weekday"))
+        conn.execute(text("DROP TABLE isms_org_role_holders"))
+        conn.execute(text("DELETE FROM schema_migrations WHERE version = 128"))
+    with Session(engine) as db:
+        try:
+            db.execute(select(BackupRepository)).all()
+            broken = False
+        except Exception:
+            broken = True
+    assert broken  # the 500 on the backup overview
+    assert database.migrate(engine) == [128]
+    cols = {c["name"] for c in inspect(engine).get_columns("backup_repositories")}
+    assert {"boot_full_restore", "boot_weekday"} <= cols
+    assert "isms_org_role_holders" in inspect(engine).get_table_names()
+    with Session(engine) as db:
+        db.execute(select(BackupRepository)).all()
