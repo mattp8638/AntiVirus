@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,7 +34,16 @@ func (s *Scanner) Sample(id, wantSHA string) ([]byte, error) {
 	if wantSHA != "" && !strings.EqualFold(wantSHA, record.SHA256) {
 		return nil, errors.New("the quarantine record is for a different file")
 	}
-	f, err := os.Open(filepath.Join(s.QuarantineDir, id+".bin"))
+	path := filepath.Join(s.QuarantineDir, id+".bin")
+	f, err := os.Open(path)
+	if errors.Is(err, fs.ErrPermission) {
+		// Quarantine leaves the file with no permissions (mode 0). Root reads it anyway; an agent running without
+		// root (and the tests in CI) grants itself read access for this one read and takes it away again.
+		if os.Chmod(path, 0o400) == nil {
+			defer os.Chmod(path, 0)
+			f, err = os.Open(path)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}

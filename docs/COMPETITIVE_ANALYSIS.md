@@ -12,7 +12,7 @@ Status key: **Built** = working in this repo and covered by tests or an end-to-e
 | Attack storyline / process context | SentinelOne Storyline | **Partial**: alerts show ±5 min process lineage; no full graph view yet | `soc.py` `alert_detail` |
 | Threat hunting over raw telemetry | SentinelOne Deep Visibility, Defender Advanced Hunting | **Built**: query language + Sigma retro-hunt | `soc.py` `/events`, `/hunt` |
 | Ransomware behaviour + canaries | ESET Ransomware Shield, Heimdal REP, S1 | **Built**: canaries, mass-encryption correlation, shadow-copy/backup tamper rules, ransom-note rules | `rules/sigma/ransomware.yml`, `pkg/fleet/sensors.go` |
-| Ransomware rollback | SentinelOne 1-click rollback (VSS) | **Partial**: `ransomware.rollback` command, policy and auto-trigger exist; Windows executor still to implement | `commands.py` |
+| Ransomware rollback | SentinelOne 1-click rollback (VSS) | **Partial**: Windows restores from Volume Shadow Copy snapshots for an incident under 24 hours old (command, policy and automatic block-and-rollback); no rollback on Linux or macOS | `commands.py`, `RansomwareShield.cpp` |
 | Controlled folder access | Defender CFA | **Partial**: policy (`protectedFolders*`); enforcement depends on the Windows minifilter path | `policy_schema.py` |
 | Attack surface reduction rules | Defender ASR | **Built**: 15 rules enforced per mode on Windows (ETW process-start, terminate on block) and Linux equivalents; without a kernel driver this acts just after start, not before | `BehaviorRules.cpp`, `ProcessGuard.cpp`, `pkg/fleet/protection.go` |
 | AMSI script inspection | Defender, ESET | **Built** (Windows AMSI provider) | `agent/windows/provider/amsi` |
@@ -59,7 +59,7 @@ Status key: **Built** = working in this repo and covered by tests or an end-to-e
 ## Honest gaps before "best on the market"
 
 - **Independent test results** (AV-Test, AV-Comparatives, MITRE ATT&CK Evaluations). These need a production-grade engine and a test budget.
-- **Ransomware file rollback on Windows** (the command and policy exist; the agent executor does not yet).
+- **Ransomware file rollback on Linux and macOS** (Windows restores from Volume Shadow Copy snapshots).
 - **Pre-execution blocking** needs the signed minifilter driver; see [DRIVER_SIGNING.md](DRIVER_SIGNING.md).
 - **SOC 2 / ISO 27001 for the service itself.**
 
