@@ -21,7 +21,7 @@ def _view(r: AttackPathRun) -> dict:
 
 @router.post("/analyse")
 def analyse(body: dict = Body(...), p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
-    p.require("read")
+    p.require("configure")  # stores a new analysis run: not for read-only roles
     tenant = str(body.get("tenantId") or "")
     p.check_tenant(tenant)
     result = ap.analyse(db, tenant)

@@ -16,7 +16,7 @@ from datetime import datetime
 import pytest
 from sqlalchemy import JSON, Boolean, DateTime, Float, Integer, LargeBinary, String, Text, inspect, select
 
-from conftest import enroll, login
+from conftest import ADMIN_PASSWORD, _reset_dns_caches, enroll, login
 from fenrir_cloud.db import Base, session_factory
 from fenrir_cloud.models import Device, Tenant, utcnow
 
@@ -208,6 +208,31 @@ def _candidates(param: str, path: str, ids, rows) -> list[str]:
     stem = stem.replace("obj", "") or re.sub(r"[^a-z]", "", path.rsplit("/{", 1)[0].rsplit("/", 1)[-1])
     matched = [v for table, values in rows.items() if stem and stem[:5] in table for v in values]
     return matched or [v for values in rows.values() for v in values]
+
+
+@pytest.fixture()
+def client():
+    """The app without its background loops (role "web"): this walk takes minutes, and an hourly maintenance pass
+    starting half-way would change rows the matrix is watching, which is not something any request did."""
+    import dataclasses
+    import os
+
+    from fastapi.testclient import TestClient
+
+    from fenrir_cloud.config import Settings
+    from fenrir_cloud.main import create_app
+
+    _reset_dns_caches()
+    settings = dataclasses.replace(Settings(), database_url=os.getenv("FENRIR_TEST_DATABASE_URL", "sqlite://"), bootstrap_admin_password=ADMIN_PASSWORD,
+                                   secret_key="test-secret", public_base_url="https://fenrir.test", dns_blocklists_enabled=False,
+                                   require_mfa=False, role="web")
+    with TestClient(create_app(settings)) as test_client:
+        yield test_client
+    if settings.database_url.startswith("postgresql"):
+        from fenrir_cloud import db
+
+        db.Base.metadata.drop_all(db.engine())
+        db.engine().dispose()
 
 
 @pytest.fixture()

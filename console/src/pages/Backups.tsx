@@ -1324,12 +1324,19 @@ function AppRestoreDialog({ image, agents, onClose }: { image: Image; agents: Ba
   const [instance, setInstance] = useState("");
   const infected = image.lastScan?.state === "infected";
   const [allowInfected, setAllowInfected] = useState(false);
+  const [source, setSource] = useState("");
+  const [target, setTarget] = useState("");
+  const [folder, setFolder] = useState(`Restored ${new Date().toISOString().slice(0, 10)}`);
+  const [confirm, setConfirm] = useState("");
+  const mailbox = !!app && !sql && source.trim() !== "";
+  const confirmed = !mailbox || (target.trim() !== "" && confirm.trim().toLowerCase() === target.trim().toLowerCase());
   const go = () => run(() => api(`backup/images/${image.imageId}/restore-app`, { body: {
-    agentId, component, directory, ...(sql && attach ? { attachAs, sqlInstance: instance } : {}), ...(allowInfected ? { allowInfected: true } : {}) } }),
+    agentId, component, directory, ...(sql && attach ? { attachAs, sqlInstance: instance } : {}), ...(allowInfected ? { allowInfected: true } : {}),
+    ...(mailbox ? { mailbox: { source: source.trim(), target: target.trim(), folder: folder.trim(), confirm: confirm.trim() } } : {}) } }),
     "Restore queued: follow it in Activity").then((r) => r !== undefined && onClose());
   return (
     <Modal title={`Restore a database from ${unixTime(image.created)}`} onClose={onClose}
-      footer={<button className="primary" disabled={busy || !agentId || !directory.trim() || !component || (infected && !allowInfected)} onClick={go}>Restore</button>}>
+      footer={<button className="primary" disabled={busy || !agentId || !directory.trim() || !component || (infected && !allowInfected) || !confirmed} onClick={go}>{mailbox ? "Restore mailbox" : "Restore"}</button>}>
       <div className="form-grid">
         <label className="field">Database<select value={component} onChange={(e) => { setComponent(e.target.value); setAttachAs(`${e.target.value.split("\\").pop()}_restored`); }}>
           {apps.map((a) => <option key={a.component} value={a.component}>{a.writer === "SqlServerWriter" ? "SQL Server" : "Exchange"}: {a.caption || a.component}</option>)}
@@ -1348,7 +1355,15 @@ function AppRestoreDialog({ image, agents, onClose }: { image: Image; agents: Ba
         </div>}
         <p className="small muted">The database files are copied out of the backup into a new folder named after the database, then attached under the new name, so the live database is not touched. If attaching is not allowed (the agent runs as Local System), the job leaves an attach script in the folder for a SQL Server administrator.</p>
       </>}
-      {app && !sql && <p className="small muted">The database and log files are copied into a new folder with a script for the Exchange Management Shell: it mounts them as a recovery database and restores chosen mailboxes, or items into a folder of a mailbox.</p>}
+      {app && !sql && <>
+        <p className="small muted">The database and log files are copied into a new folder with a script for the Exchange Management Shell. To restore one mailbox unattended, name it: the agent replays the logs, mounts the files as a recovery database on that Exchange Mailbox server, restores the mailbox, then removes the recovery database. The agent's account needs the Mailbox Import Export role.</p>
+        <div className="form-grid">
+          <label className="field">Mailbox in the backup<input value={source} onChange={(e) => setSource(e.target.value)} placeholder="display name or GUID (optional)" maxLength={256} /></label>
+          <label className="field">Restore into mailbox<input value={target} onChange={(e) => setTarget(e.target.value)} placeholder="anna@example.com" maxLength={320} /></label>
+          <label className="field">Under the folder<input value={folder} onChange={(e) => setFolder(e.target.value)} placeholder="blank: original folders" maxLength={255} /></label>
+          {mailbox && <label className="field">Type the target mailbox to confirm<input value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder={target} /></label>}
+        </div>
+      </>}
       {infected && <label className="row small" style={{ gap: 6, marginTop: 8 }}><input type="checkbox" checked={allowInfected} onChange={(e) => setAllowInfected(e.target.checked)} /> This backup contains malware (latest scan): restore from it anyway</label>}
     </Modal>
   );
@@ -1664,9 +1679,33 @@ function JobsTable({ rows }: { rows: Job[] | null }) {
       { key: "state", label: "State", render: (j) => <><StatePill state={j.state} /> <span className="small muted">{progressText(j.progress)}</span></> },
       { key: "createdAt", label: "Requested", render: (j) => <span className="small">{ago(j.createdAt)} by {j.requestedBy}</span> },
       { key: "detail", label: "Detail", render: (j) => <span className="small">{j.error ?? j.warnings.join(" ")}</span> },
-      { key: "cancel", label: "", render: (j) => !FINAL.includes(j.state) && can("respond") && <button className="small" disabled={busy} onClick={() => run(() => api(`backup/jobs/${j.id}/cancel`, { body: {} }), "Cancelling")}>Cancel</button> },
+      { key: "cancel", label: "", render: (j) => !FINAL.includes(j.state) ? (can("respond") && <button className="small" disabled={busy} onClick={() => run(() => api(`backup/jobs/${j.id}/cancel`, { body: {} }), "Cancelling")}>Cancel</button>)
+        : EVIDENCE_KINDS.includes(String((j.kind as { type?: string } | undefined)?.type)) && <RestoreEvidenceButton id={j.id} /> },
     ]} />
   );
+}
+
+const EVIDENCE_KINDS = ["restore", "restore_files", "restore_application", "restore_kubernetes", "restore_saas"];
+
+/** BDR-03: the hashed restore evidence (recovery point, RPO/RTO, what was written and its SHA-256), as a JSON file. */
+function RestoreEvidenceButton({ id }: { id: string }) {
+  const { run, busy } = useAction();
+  const [info, setInfo] = useState<string>("");
+  const fetchIt = async () => {
+    const out = await run(() => api<any>(`backup/jobs/${id}/evidence`));
+    if (!out) return;
+    const e = out.evidence;
+    const checked = (e.verification || []).reduce((n: number, v: any) => n + (v.chunksChecked || 0), 0);
+    setInfo(`${e.verified ? "verified" : "not verified"}${checked ? `, ${checked} chunks read back` : `, ${e.outputs.length} output(s) hashed`}`
+      + (e.checks || []).map((c: any) => c.type === "sql-checkdb" ? `, CHECKDB ${c.database}: ${c.result}`
+        : c.type === "exchange-mailbox-restore" ? `, mailbox ${c.source}: ${c.result}${c.items != null ? ` (${c.items} items)` : ""}` : `, ${c.type}: ${c.result}`).join("")
+      + `${e.rpoSeconds != null ? `, RPO ${Math.round(e.rpoSeconds / 60)} min` : ""}${e.rtoSeconds != null ? `, RTO ${e.rtoSeconds} s` : ""}${out.intact ? "" : ", RECORD ALTERED"}`);
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([JSON.stringify(out, null, 2)], { type: "application/json" }));
+    link.download = `restore-evidence-${id}.json`;
+    link.click();
+  };
+  return <span className="small"><button className="small" disabled={busy} onClick={fetchIt}>Evidence</button> {info}</span>;
 }
 
 function Activity() {

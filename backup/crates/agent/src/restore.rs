@@ -124,6 +124,7 @@ pub fn write_disk_files(
                 zero_fill: false,
                 fit: false,
                 grow: false,
+                verify: true,
             },
             &ctx.ctl,
             &cb,
@@ -194,6 +195,15 @@ fn restore_vm_files(
         "definition": def_path.display().to_string(),
         "firmware": if settings.uefi { "uefi" } else { "bios" },
     }));
+    rep.progress("hashing the restored files", 0, 0, "");
+    let mut paths: Vec<&Path> = files.iter().map(|(_, p)| p.as_path()).collect();
+    paths.push(def_path.as_path());
+    crate::evidence::attach(
+        &mut u,
+        crate::evidence::outputs(&paths),
+        file_level_check(),
+        json!([]),
+    );
     if m.os.family.eq_ignore_ascii_case("windows") && m.vm.is_none() {
         u.state = JobState::Warning;
         u.warnings.push(format!(
@@ -298,6 +308,14 @@ fn run_target(
             u.result = Some(
                 json!({ "files": files.iter().map(|(_, p)| p.display().to_string()).collect::<Vec<_>>() }),
             );
+            rep.progress("hashing the restored files", 0, 0, "");
+            let paths: Vec<&Path> = files.iter().map(|(_, p)| p.as_path()).collect();
+            crate::evidence::attach(
+                &mut u,
+                crate::evidence::outputs(&paths),
+                file_level_check(),
+                json!([]),
+            );
             Ok(u)
         }
         RestoreTarget::HypervVm {
@@ -343,6 +361,13 @@ fn run_target(
             let mut u = done(JobState::Succeeded);
             u.result = Some(
                 json!({ "vm": name, "path": dir.display().to_string(), "output": out.trim(), "standby": replace }),
+            );
+            let paths: Vec<&Path> = files.iter().map(|(_, p)| p.as_path()).collect();
+            crate::evidence::attach(
+                &mut u,
+                crate::evidence::outputs(&paths),
+                file_level_check(),
+                json!([]),
             );
             if *replace {
                 standby_swap(ctx, &format!("hyperv:{name}"), &dir, &mut u.warnings);
@@ -443,6 +468,7 @@ fn run_target(
                     zero_fill: true,
                     fit: true,
                     grow: *grow,
+                    verify: true,
                 },
                 &ctx.ctl,
                 &cb,
@@ -537,9 +563,23 @@ fn run_target(
                 u.state = JobState::Warning;
             }
             u.result = Some(result);
+            crate::evidence::attach(
+                &mut u,
+                json!([{ "target": device, "bytes": r.bytes_written }]),
+                crate::evidence::disk_verification(&[&r]),
+                json!([]),
+            );
             Ok(u)
         }
     }
+}
+
+/// Virtual disk containers are written once and not read back chunk by
+/// chunk; their files are hashed instead, and the data was authenticated
+/// chunk by chunk when it was read from the backup.
+fn file_level_check() -> serde_json::Value {
+    json!([{ "method": "file-sha256", "supported": true,
+             "note": "Each restored file's SHA-256 was read back from disk; the backup data was authenticated chunk by chunk while restoring." }])
 }
 
 /// `20261124-120000` from the image's time, for standby folder names.

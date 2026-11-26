@@ -697,6 +697,9 @@ def migrate(bind: Engine) -> list[int]:
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (110)"))
                 applied.append(110)
             if 111 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["restore_evidence"]])  # BDR-03
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (111)"))
+                applied.append(111)
                 # ISMS (docs/ISMS_REWRITE_PLAN.md): ISMS roles per person per customer, with row-level security.
                 from .isms import rls
                 from .isms.models import IsmsMembership

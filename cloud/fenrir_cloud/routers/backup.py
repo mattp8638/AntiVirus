@@ -906,6 +906,22 @@ def get_job(job_id: str, p: Principal = Depends(current_principal), db: Session 
     return job_out(j, _names(db, [j.tenant_id]))
 
 
+@router.get("/jobs/{job_id}/evidence")
+def job_evidence(job_id: str, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Restore evidence of a finished restore (BDR-03), with its SHA-256 checked again."""
+    from .. import restore_evidence
+    from ..models import RestoreEvidence
+
+    p.require("read")
+    j = db.get(BackupJob, job_id)
+    if j is None or j.tenant_id not in p.tenant_ids:
+        raise HTTPException(404, "No such job")
+    row = db.get(RestoreEvidence, job_id)
+    if row is None:
+        raise HTTPException(404, "This job has no restore evidence (it is not a finished restore)")
+    return restore_evidence.load(row)
+
+
 @router.post("/jobs/{job_id}/cancel")
 def cancel_job(job_id: str, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     p.require("respond")
@@ -2211,6 +2227,26 @@ def hold_device(request: Request, body: dict = Body(...), p: Principal = Depends
 
 # ---------------------------------------------------------------- one application database
 
+def _mailbox_restore(app: dict, m) -> dict | None:
+    """An Exchange mailbox to restore unattended from a recovery database (docs/design/app-restore.md):
+    both mailboxes on one line, and the target typed again since items are written into that live mailbox."""
+    if not m:
+        return None
+    if not isinstance(m, dict):
+        bad("mailbox must be an object")
+    if "exchange" not in str(app.get("writer") or "").lower():
+        bad("a mailbox can only be restored from an Exchange database")
+    source, target, folder = (str(m.get(k) or "").strip() for k in ("source", "target", "folder"))
+
+    def line(v: str, n: int) -> bool:
+        return 0 < len(v) <= n and not any(ord(c) < 32 for c in v)
+    if not line(source, 256) or not line(target, 320) or len(folder) > 255 or any(ord(c) < 32 for c in folder):
+        bad("give the mailbox in the backup and the mailbox to restore into, each on one line")
+    if str(m.get("confirm") or "").strip().lower() != target.lower():
+        bad("type the target mailbox again to confirm: items are written into that live mailbox")
+    return {"source": source, "target": target, "folder": folder}
+
+
 @router.post("/images/{image_id}/restore-app")
 def restore_application(image_id: str, request: Request, body: dict = Body(...), p: Principal = Depends(current_principal),
                         db: Session = Depends(get_db)):
@@ -2242,10 +2278,15 @@ def restore_application(image_id: str, request: Request, body: dict = Body(...),
             bad("database names are up to 128 characters")
         if len(instance) > 200 or not re.fullmatch(r"[A-Za-z0-9_.\-]*(\\[A-Za-z0-9_$\-]+)?", instance):
             bad("SQL Server instance: blank for the default, or SERVER\\INSTANCE")
-    job = bk.queue(db, a, {"type": "restore_application", "image_id": im.image_id, "component": component,
-                           "directory": directory, "attach_as": attach, "sql_instance": instance}, im.repository_id, p.actor)
+    mailbox = _mailbox_restore(app, body.get("mailbox"))
+    kind = {"type": "restore_application", "image_id": im.image_id, "component": component,
+            "directory": directory, "attach_as": attach, "sql_instance": instance}
+    if mailbox:
+        kind["mailbox"] = mailbox
+    job = bk.queue(db, a, kind, im.repository_id, p.actor)
     bk.record(db, p.actor, "backup.restore.application", im.vm_name or im.hostname, im.tenant_id, image=im.image_id,
-              component=component, machine=a.hostname, attach_as=attach, infected_acknowledged=body.get("allowInfected") is True)
+              component=component, machine=a.hostname, attach_as=attach, infected_acknowledged=body.get("allowInfected") is True,
+              **({"source_mailbox": mailbox["source"], "target_mailbox": mailbox["target"]} if mailbox else {}))
     db.commit()
     return {"id": job.id}
 
