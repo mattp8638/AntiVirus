@@ -34,6 +34,14 @@ pub trait WriteTarget: Send + Sync {
     fn write_at(&self, offset: u64, data: &[u8]) -> io::Result<()>;
     fn sync(&self) -> io::Result<()>;
     fn describe(&self) -> String;
+    /// Read back what was written, to verify a restore. Targets that cannot
+    /// (cloud uploads, containers written once) keep the default.
+    fn read_at(&self, _offset: u64, _buf: &mut [u8]) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this target cannot be read back",
+        ))
+    }
     /// Logical sector size of a disk target, if known.
     fn logical_sector_size(&self) -> Option<u32> {
         None
@@ -226,6 +234,28 @@ impl WriteTarget for FileTarget {
     }
     fn sync(&self) -> io::Result<()> {
         self.file.sync_all()
+    }
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::FileExt::read_exact_at(&self.file, buf, offset)
+        }
+        #[cfg(windows)]
+        {
+            let mut done = 0;
+            while done < buf.len() {
+                let n = std::os::windows::fs::FileExt::seek_read(
+                    &self.file,
+                    &mut buf[done..],
+                    offset + done as u64,
+                )?;
+                if n == 0 {
+                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "short read"));
+                }
+                done += n;
+            }
+            Ok(())
+        }
     }
     fn describe(&self) -> String {
         self.path.display().to_string()

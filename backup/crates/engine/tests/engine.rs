@@ -1064,3 +1064,91 @@ fn retention_never_deletes_images_on_legal_hold() {
         .ok
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn restore_reads_back_every_chunk_and_catches_a_changed_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = new_repo(dir.path());
+    let disk = make_disk();
+    let rep = run_backup(&repo, &disk).unwrap();
+    let out = dir.path().join("restored.img");
+    let r = restore_to(&repo, rep.image_id, &out);
+    let v = r.verification.expect("restore verifies by default");
+    let m = repo.load_manifest(&rep.image_id).unwrap();
+    let d = &m.disks[0];
+    assert!(v.supported);
+    assert_eq!(v.chunks_checked, d.chunks.len() as u64);
+    assert_eq!(v.mismatches, 0);
+    assert_eq!(v.content_sha256, engine::restore::content_digest(d));
+    assert_eq!(v.content_sha256.len(), 64);
+
+    // Something changes the restored disk afterwards: a second check finds it.
+    let first = d.chunks.iter().map(|c| c.0).min().unwrap() * m.chunk_size as u64;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&out)
+        .unwrap();
+    std::os::unix::fs::FileExt::write_all_at(&file, b"tampered", first + 100).unwrap();
+    drop(file);
+    let confirm = DestructiveConfirmation::confirmed_by_user(&out);
+    let t = FileTarget::open(&out, 0, false, &confirm).unwrap();
+    let again = engine::restore::verify_disk(
+        &repo,
+        &m,
+        0,
+        &t,
+        u64::MAX,
+        false,
+        2,
+        &JobControl::new(),
+        &|_, _| {},
+    )
+    .unwrap();
+    assert_eq!(again.mismatches, 1);
+    assert_eq!(again.first_mismatches, vec![first]);
+}
+
+#[test]
+fn targets_that_cannot_be_read_back_say_so() {
+    struct WriteOnly(std::sync::Mutex<Vec<u8>>);
+    impl WriteTarget for WriteOnly {
+        fn size(&self) -> u64 {
+            32 * MIB
+        }
+        fn write_at(&self, off: u64, data: &[u8]) -> io::Result<()> {
+            let mut b = self.0.lock().unwrap();
+            b[off as usize..off as usize + data.len()].copy_from_slice(data);
+            Ok(())
+        }
+        fn sync(&self) -> io::Result<()> {
+            Ok(())
+        }
+        fn describe(&self) -> String {
+            "write-only".into()
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let repo = new_repo(dir.path());
+    let rep = run_backup(&repo, &make_disk()).unwrap();
+    let m = repo.load_manifest(&rep.image_id).unwrap();
+    let t = WriteOnly(std::sync::Mutex::new(vec![0; (32 * MIB) as usize]));
+    let r = restore_disk(
+        &repo,
+        &m,
+        0,
+        &t,
+        &RestoreOptions {
+            workers: 2,
+            ..Default::default()
+        },
+        &JobControl::new(),
+        &|_, _| {},
+    )
+    .unwrap();
+    let v = r.verification.unwrap();
+    assert!(!v.supported);
+    assert_eq!(v.chunks_checked, 0);
+    assert_eq!(v.content_sha256.len(), 64);
+}

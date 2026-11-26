@@ -906,6 +906,22 @@ def get_job(job_id: str, p: Principal = Depends(current_principal), db: Session 
     return job_out(j, _names(db, [j.tenant_id]))
 
 
+@router.get("/jobs/{job_id}/evidence")
+def job_evidence(job_id: str, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
+    """Restore evidence of a finished restore (BDR-03), with its SHA-256 checked again."""
+    from .. import restore_evidence
+    from ..models import RestoreEvidence
+
+    p.require("read")
+    j = db.get(BackupJob, job_id)
+    if j is None or j.tenant_id not in p.tenant_ids:
+        raise HTTPException(404, "No such job")
+    row = db.get(RestoreEvidence, job_id)
+    if row is None:
+        raise HTTPException(404, "This job has no restore evidence (it is not a finished restore)")
+    return restore_evidence.load(row)
+
+
 @router.post("/jobs/{job_id}/cancel")
 def cancel_job(job_id: str, p: Principal = Depends(current_principal), db: Session = Depends(get_db)):
     p.require("respond")

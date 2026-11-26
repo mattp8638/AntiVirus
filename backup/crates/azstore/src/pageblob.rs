@@ -64,6 +64,29 @@ impl AzureBackend {
             _ => Err(self.fail("write pages of", &blob, &r)),
         }
     }
+
+    /// Read a byte range back from a blob (restore verification).
+    pub fn get_range(
+        &self,
+        name: &str,
+        offset: u64,
+        len: u64,
+    ) -> core_format::error::Result<Vec<u8>> {
+        let blob = self.blob(name);
+        let h = vec![(
+            "x-ms-range",
+            format!("bytes={}-{}", offset, offset + len - 1),
+        )];
+        let r = self.request("GET", &blob, &[], &h, b"")?;
+        match r.status {
+            200 | 206 if r.body.len() as u64 == len => Ok(r.body),
+            200 | 206 => Err(crate::io(format!(
+                "{blob}: asked for {len} bytes, got {}",
+                r.body.len()
+            ))),
+            _ => Err(self.fail("read", &blob, &r)),
+        }
+    }
 }
 
 /// A restore target writing a disk into a new fixed-VHD page blob.
@@ -116,6 +139,21 @@ impl PageBlobTarget {
 impl engine::WriteTarget for PageBlobTarget {
     fn size(&self) -> u64 {
         self.size
+    }
+
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        // Large reads in pieces, so one verification read never holds a huge response.
+        let mut done = 0usize;
+        while done < buf.len() {
+            let n = (buf.len() - done).min(MAX_PUT);
+            let data = self
+                .az
+                .get_range(&self.name, offset + done as u64, n as u64)
+                .map_err(io::Error::other)?;
+            buf[done..done + n].copy_from_slice(&data);
+            done += n;
+        }
+        Ok(())
     }
 
     fn write_at(&self, offset: u64, data: &[u8]) -> io::Result<()> {

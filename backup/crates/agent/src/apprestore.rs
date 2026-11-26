@@ -194,6 +194,54 @@ try {{ $cmd = $c.CreateCommand(); $cmd.CommandTimeout = 600; $cmd.CommandText = 
     )
 }
 
+/// PowerShell that checks an attached database (BDR-03 application check):
+/// `DBCC CHECKDB` and each user table's row count, as JSON
+/// `{"checkdb": "clean"|"errors", "messages": [...], "tables": [{name, rows}]}`.
+/// Names go in base64 and through a connection-string builder, never spliced.
+pub fn checkdb_script(server: &str, database: &str) -> String {
+    use base64::Engine;
+    let b = |s: &str| base64::engine::general_purpose::STANDARD.encode(s.as_bytes());
+    format!(
+        r#"$ErrorActionPreference = 'Stop'
+function D($s) {{ [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($s)) }}
+$cs = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
+$cs['Data Source'] = D '{server}'; $cs['Initial Catalog'] = D '{db}'; $cs['Integrated Security'] = $true; $cs['Connect Timeout'] = 30
+$c = New-Object System.Data.SqlClient.SqlConnection $cs.ConnectionString
+$out = [ordered]@{{ checkdb = 'clean'; messages = New-Object System.Collections.ArrayList; tables = New-Object System.Collections.ArrayList }}
+$c.FireInfoMessageEventOnUserErrors = $true
+$c.add_InfoMessage({{ param($s, $e) foreach ($m in $e.Errors) {{ if ($m.Class -gt 10) {{ [void]$out.messages.Add($m.Message) }} }} }})
+$c.Open()
+try {{
+  $cmd = $c.CreateCommand(); $cmd.CommandTimeout = 3600
+  $cmd.CommandText = 'DBCC CHECKDB WITH NO_INFOMSGS, ALL_ERRORMSGS'
+  [void]$cmd.ExecuteNonQuery()
+  $cmd.CommandText = 'SELECT s.name + ''.'' + t.name, SUM(p.rows) FROM sys.tables t JOIN sys.schemas s ON s.schema_id = t.schema_id JOIN sys.partitions p ON p.object_id = t.object_id AND p.index_id IN (0, 1) GROUP BY s.name, t.name ORDER BY 1'
+  $r = $cmd.ExecuteReader()
+  while ($r.Read()) {{ [void]$out.tables.Add([ordered]@{{ name = $r.GetString(0); rows = [int64]$r.GetValue(1) }}) }}
+  $r.Close()
+}} finally {{ $c.Close() }}
+if ($out.messages.Count -gt 0) {{ $out.checkdb = 'errors' }}
+$out | ConvertTo-Json -Depth 4 -Compress
+"#,
+        server = b(server),
+        db = b(database),
+    )
+}
+
+/// The JSON object `checkdb_script` printed (PowerShell may print other lines first).
+pub fn parse_checkdb(output: &str) -> anyhow::Result<serde_json::Value> {
+    let line = output
+        .lines()
+        .rev()
+        .find(|l| l.trim_start().starts_with('{'))
+        .ok_or_else(|| anyhow!("no result from the database check"))?;
+    let v: serde_json::Value = serde_json::from_str(line.trim())?;
+    if !matches!(v["checkdb"].as_str(), Some("clean" | "errors")) {
+        bail!("unexpected database check result");
+    }
+    Ok(v)
+}
+
 /// PowerShell for the Exchange Management Shell: mount the restored files as
 /// a recovery database and restore a mailbox from it.
 pub fn exchange_script(db: &str, edb: &Path, log_dir: &Path) -> String {
@@ -340,6 +388,12 @@ pub fn run(
         bail!("nothing could be restored: {}", failed.join("; "));
     }
 
+    // Evidence: hash the restored files now, before an attach lets the
+    // application change them.
+    rep.progress("hashing the restored files", 0, 0, "");
+    let all_files: Vec<PathBuf> = data.iter().chain(&logs).chain(&others).cloned().collect();
+    let outputs = crate::evidence::outputs(&all_files);
+    let mut checks: Vec<serde_json::Value> = Vec::new();
     let mut u = finished(if failed.is_empty() {
         JobState::Succeeded
     } else {
@@ -388,7 +442,29 @@ pub fn run(
                     &sql,
                 );
                 match crate::hyperv::run_ps(&script) {
-                    Ok(_) => result["attached"] = json!(as_name),
+                    Ok(_) => {
+                        result["attached"] = json!(as_name);
+                        rep.progress("checking the database", 0, 0, &as_name);
+                        match crate::hyperv::run_ps(&checkdb_script(&server, &as_name))
+                            .and_then(|o| parse_checkdb(&o))
+                        {
+                            Ok(v) => {
+                                if v["checkdb"] == "errors" {
+                                    u.state = JobState::Warning;
+                                    u.warnings.push(format!("DBCC CHECKDB found problems in {as_name}: the restored database is not consistent. See the job result."));
+                                }
+                                checks.push(json!({ "type": "sql-checkdb", "database": as_name, "result": v["checkdb"],
+                                                    "messages": v["messages"], "tables": v["tables"] }));
+                            }
+                            Err(e) => {
+                                u.state = JobState::Warning;
+                                u.warnings.push(format!(
+                                    "The database was attached, but checking it failed ({e:#})."
+                                ));
+                                checks.push(json!({ "type": "sql-checkdb", "database": as_name, "result": "not run", "error": format!("{e:#}") }));
+                            }
+                        }
+                    }
                     Err(e) => {
                         u.state = JobState::Warning;
                         u.warnings.push(format!(
@@ -412,6 +488,13 @@ pub fn run(
         AppKind::Other => {}
     }
     u.result = Some(result);
+    crate::evidence::attach(
+        &mut u,
+        outputs,
+        json!([{ "method": "file-sha256", "supported": true,
+                 "note": "Each restored file was hashed as read back from disk, before any attach." }]),
+        json!(checks),
+    );
     Ok(u)
 }
 
@@ -419,6 +502,22 @@ pub fn run(
 mod tests {
     use super::*;
     use core_format::fsdetect::FsType;
+
+    #[test]
+    fn checkdb_script_never_splices_names_and_its_result_parses() {
+        let hostile = "x]'; DROP DATABASE master; --";
+        let s = checkdb_script(".\\SQLEXPRESS", hostile);
+        assert!(!s.contains("DROP DATABASE"));
+        assert!(
+            s.contains("SqlConnectionStringBuilder")
+                && s.contains("DBCC CHECKDB WITH NO_INFOMSGS, ALL_ERRORMSGS")
+        );
+        let out = "WARNING: something\n{\"checkdb\":\"clean\",\"messages\":[],\"tables\":[{\"name\":\"dbo.orders\",\"rows\":5001}]}\n";
+        let v = parse_checkdb(out).unwrap();
+        assert_eq!(v["tables"][0]["rows"], 5001);
+        assert!(parse_checkdb("{\"checkdb\":\"maybe\"}").is_err());
+        assert!(parse_checkdb("no json").is_err());
+    }
 
     #[test]
     fn sql_files_are_sorted_by_extension_whatever_their_role() {

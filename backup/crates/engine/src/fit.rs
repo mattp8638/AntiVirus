@@ -436,6 +436,9 @@ impl WriteTarget for Clipped<'_> {
     fn describe(&self) -> String {
         self.inner.describe()
     }
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        self.inner.read_at(offset, buf)
+    }
     fn logical_sector_size(&self) -> Option<u32> {
         self.inner.logical_sector_size()
     }

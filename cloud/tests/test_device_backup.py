@@ -1942,3 +1942,44 @@ def test_quickbooks_online_plans(client, admin, tenant):
     spec = heartbeat(client, h, caps=caps)["jobs"][0]
     assert spec["kind"]["tenant"]["service"] == "quickbooks" and spec["kind"]["tenant"]["objects"] == ["Customer", "Invoice"]
     assert spec["kind"]["sealed_secret"] == SEALED
+
+
+def test_restore_evidence_records_recovery_point_rpo_rto_and_hashes(client, admin, tenant):
+    """BDR-03: a finished restore keeps a hashed evidence record built from the job and image times and what the agent
+    wrote (read-back verification, SHA-256 of outputs)."""
+    from fenrir_cloud import db as database
+    from fenrir_cloud.models import RestoreEvidence
+
+    e = link(client, admin, tenant)
+    agent_id, h = agent_enroll(client, e["token"])
+    disks = [{"path": "/dev/sdb", "size": 1 << 40, "model": "", "system": False}]
+    heartbeat(client, h, disks=disks)
+    repo_id = ready_repo(client, admin, tenant, agent_id, h)
+    client.post(f"/api/console/backup/agents/{agent_id}/jobs", headers=admin, json={"kind": {"type": "backup_system"}, "repositoryId": repo_id})
+    job = heartbeat(client, h)["jobs"][0]
+    im = image()
+    finish(client, h, job["id"], images=[im])
+    admin = unlock(client, admin, h, repo_id, agent_id)
+    heartbeat(client, h, disks=disks)
+    step = {**admin, "X-Fenrir-Reauth": reauth(client, admin)}
+    target = {"type": "disk", "device": "/dev/sdb", "disk": 0, "confirm": "/dev/sdb"}
+    r = client.post("/api/console/backup/restores", headers=step, json={"imageId": im["image_id"], "agentId": agent_id, "target": target})
+    assert r.status_code == 200, r.text
+    spec = heartbeat(client, h)["jobs"][0]
+    assert client.get(f"/api/console/backup/jobs/{spec['id']}/evidence", headers=admin).status_code == 404  # not finished yet
+    client.post(f"/backup/api/agent/jobs/{spec['id']}/update", headers=h, json={"state": "running"})
+    evidence = {"outputs": [{"target": "/dev/sdb", "bytes": 4096}], "checks": [], "verified": True,
+                "verification": [{"disk": 0, "method": "read-back", "supported": True, "chunksChecked": 12, "mismatches": 0,
+                                  "contentSha256": "c" * 64}]}
+    finish(client, h, spec["id"], result={"bytes_written": 4096, "evidence": evidence})
+    out = client.get(f"/api/console/backup/jobs/{spec['id']}/evidence", headers=admin).json()
+    ev = out["evidence"]
+    assert out["intact"] and len(out["sha256"]) == 64
+    assert ev["recoveryPoint"] == "2026-09-21T14:13:20Z" and ev["imageId"] == im["image_id"]
+    assert ev["rpoSeconds"] > 0 and ev["rtoSeconds"] >= 0 and ev["durationSeconds"] >= 0
+    assert ev["verification"][0]["chunksChecked"] == 12 and ev["verified"] is True and ev["agentReportedEvidence"] is True
+    with database.session_factory()() as db:
+        row = db.get(RestoreEvidence, spec["id"])
+        row.record = {**row.record, "rtoSeconds": 1}
+        db.commit()
+    assert client.get(f"/api/console/backup/jobs/{spec['id']}/evidence", headers=admin).json()["intact"] is False

@@ -459,6 +459,9 @@ def update_job(job_id: str, body: dict = Body(...), agent: BackupAgent = Depends
                       repo.name, repo.tenant_id, job=job.id)
     if final:
         bk.record(db, f"backup-agent:{agent.id}", f"backup.job.{state}", job.id, job.tenant_id, kind=kind.get("type"))
+        from .. import restore_evidence
+
+        restore_evidence.record(db, job)  # BDR-03: recovery point, times, RPO/RTO and what was written
     db.commit()
     return {"ok": True}
 

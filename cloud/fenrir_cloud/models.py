@@ -4017,3 +4017,15 @@ class AppleMdmCommand(Base):
     requested_by: Mapped[str] = mapped_column(String(200), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class RestoreEvidence(Base):
+    """Evidence of one finished device restore (BDR-03): the recovery point, times, RPO and RTO, and what the agent
+    wrote with its SHA-256 and read-back check, as canonical JSON with its SHA-256 (backup/docs/design/restore-evidence.md)."""
+    __tablename__ = "restore_evidence"
+    job_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), index=True)
+    image_id: Mapped[str] = mapped_column(String(36), index=True)
+    record: Mapped[dict] = mapped_column(JSON, default=dict)
+    sha256: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

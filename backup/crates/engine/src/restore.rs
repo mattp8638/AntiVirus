@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use core_format::extent::{self, Extent};
 use core_format::manifest::{ChunkRef, ManifestBody};
 use core_format::Repository;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::control::JobControl;
 use crate::target::WriteTarget;
@@ -27,6 +27,10 @@ pub struct RestoreOptions {
     /// With `fit` onto a larger target: give the new space to the last
     /// partition (its file system is grown by the caller, `crate::grow`).
     pub grow: bool,
+    /// After writing, read every restored chunk back from the target and
+    /// check it against its content ID (and zero-filled ranges against
+    /// zeros): evidence that the target holds exactly the backup's data.
+    pub verify: bool,
 }
 
 impl Default for RestoreOptions {
@@ -36,6 +40,7 @@ impl Default for RestoreOptions {
             zero_fill: true,
             fit: false,
             grow: false,
+            verify: true,
         }
     }
 }
@@ -54,6 +59,167 @@ pub struct RestoreReport {
     /// Why nothing was grown, when `grow` was asked for.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
+    /// Read-back check of the target (`RestoreOptions::verify`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification: Option<Verification>,
+}
+
+/// What reading the restored disk back found.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Verification {
+    /// False when the target cannot be read back. The data was still
+    /// authenticated chunk by chunk when it was read from the backup.
+    pub supported: bool,
+    pub chunks_checked: u64,
+    pub bytes_checked: u64,
+    pub zero_ranges_checked: u64,
+    /// Chunks (or zero ranges) whose content on the target differs.
+    pub mismatches: u64,
+    /// Offsets of the first mismatches (at most 20).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub first_mismatches: Vec<u64>,
+    /// Chunks past the end of a smaller target (`fit`): nothing was written there.
+    pub outside_target: u64,
+    /// SHA-256 over the disk's chunk map (index and content ID, in order):
+    /// names exactly the content restored, and can be recomputed from the
+    /// image manifest.
+    pub content_sha256: String,
+}
+
+/// SHA-256 of a disk image's chunk map, in index order.
+pub fn content_digest(disk: &core_format::manifest::DiskImage) -> String {
+    use sha2::{Digest, Sha256};
+    let mut chunks: Vec<&ChunkRef> = disk.chunks.iter().collect();
+    chunks.sort_by_key(|c| c.0);
+    let mut h = Sha256::new();
+    h.update(disk.size.to_le_bytes());
+    for ChunkRef(index, id) in chunks {
+        h.update(index.to_le_bytes());
+        h.update(id.to_hex().as_bytes());
+    }
+    hex_lower(&h.finalize())
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Read the restored chunks back and compare them with their content IDs.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_disk(
+    repo: &Repository,
+    image: &ManifestBody,
+    disk_index: u32,
+    target: &dyn WriteTarget,
+    limit: u64,
+    zero_fill: bool,
+    workers: usize,
+    ctl: &JobControl,
+    progress: &(dyn Fn(u64, u64) + Sync),
+) -> Result<Verification> {
+    let disk = image
+        .disks
+        .iter()
+        .find(|d| d.index == disk_index)
+        .ok_or_else(|| EngineError::InvalidInput(format!("image has no disk {disk_index}")))?;
+    let cs = image.chunk_size as u64;
+    let mut v = Verification {
+        supported: true,
+        content_sha256: content_digest(disk),
+        ..Default::default()
+    };
+    // Probe once: a target that cannot be read back says so instead of failing the restore.
+    if let Some(ChunkRef(index, _)) = disk.chunks.first() {
+        let mut probe = vec![0u8; 1];
+        if let Err(e) = target.read_at(index * cs, &mut probe) {
+            if e.kind() == std::io::ErrorKind::Unsupported {
+                v.supported = false;
+                return Ok(v);
+            }
+        }
+    }
+    let total = extent::total_len(&disk.used_extents);
+    let done = AtomicU64::new(0);
+    let checked = AtomicU64::new(0);
+    let outside = AtomicU64::new(0);
+    let mism: Mutex<(u64, Vec<u64>)> = Mutex::new((0, Vec::new()));
+    let first_err: Mutex<Option<EngineError>> = Mutex::new(None);
+    let queue: Mutex<std::slice::Iter<'_, ChunkRef>> = Mutex::new(disk.chunks.iter());
+    let note = |off: u64| {
+        let mut m = mism.lock().unwrap();
+        m.0 += 1;
+        if m.1.len() < 20 {
+            m.1.push(off);
+        }
+    };
+    std::thread::scope(|s| {
+        for _ in 0..workers.max(1) {
+            s.spawn(|| loop {
+                if !ctl.checkpoint() || first_err.lock().unwrap().is_some() {
+                    break;
+                }
+                let Some(ChunkRef(index, id)) = queue.lock().unwrap().next().copied() else {
+                    break;
+                };
+                let off = index * cs;
+                let len = cs.min(disk.size - off);
+                if off + len > limit {
+                    outside.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+                let mut buf = vec![0u8; len as usize];
+                match target.read_at(off, &mut buf) {
+                    Ok(()) => {
+                        if repo.chunk_id(&buf) != id {
+                            note(off);
+                        }
+                        checked.fetch_add(1, Ordering::Relaxed);
+                        let d = done.fetch_add(len, Ordering::Relaxed) + len;
+                        progress(d.min(total), total);
+                    }
+                    Err(e) => {
+                        first_err.lock().unwrap().get_or_insert(EngineError::Io(e));
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    if let Some(e) = first_err.into_inner().unwrap() {
+        return Err(e);
+    }
+    if ctl.is_cancelled() {
+        return Err(EngineError::Cancelled);
+    }
+    let mut zero_ranges = 0;
+    if zero_fill {
+        let present: std::collections::HashSet<u64> = disk.chunks.iter().map(|c| c.0).collect();
+        for i in 0..disk.size.div_ceil(cs) {
+            if present.contains(&i) {
+                continue;
+            }
+            let range = Extent(i * cs, cs.min(disk.size - i * cs));
+            for e in extent::clip(&disk.used_extents, range) {
+                if e.0 + e.1 > limit {
+                    continue;
+                }
+                let mut buf = vec![0u8; e.1 as usize];
+                target.read_at(e.0, &mut buf)?;
+                if buf.iter().any(|b| *b != 0) {
+                    note(e.0);
+                }
+                zero_ranges += 1;
+            }
+        }
+    }
+    let (n, first) = mism.into_inner().unwrap();
+    v.chunks_checked = checked.load(Ordering::Relaxed);
+    v.bytes_checked = done.load(Ordering::Relaxed);
+    v.zero_ranges_checked = zero_ranges;
+    v.mismatches = n;
+    v.first_mismatches = first;
+    v.outside_target = outside.load(Ordering::Relaxed);
+    Ok(v)
 }
 
 pub fn restore_disk(
@@ -171,6 +337,22 @@ pub fn restore_disk(
         }
     }
     target.sync()?;
+    // Verify before `finish` rewrites the partition table for a resized target.
+    let verification = if opts.verify {
+        Some(verify_disk(
+            repo,
+            image,
+            disk_index,
+            target,
+            clipped.limit,
+            opts.zero_fill,
+            opts.workers,
+            ctl,
+            &|_, _| {},
+        )?)
+    } else {
+        None
+    };
     if let Some(f) = &fit {
         f.finish(clipped.inner)?;
     }
@@ -183,5 +365,6 @@ pub fn restore_disk(
         zero_ranges_written: zero_ranges,
         grown: fit.as_ref().and_then(|f| f.grown().cloned()),
         notes,
+        verification,
     })
 }

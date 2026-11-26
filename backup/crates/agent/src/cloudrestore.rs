@@ -126,6 +126,7 @@ pub fn azure(
         })
     };
     let mut urls = Vec::new();
+    let mut reports = Vec::new();
     let chosen = selected(m, disks);
     let total: u64 = chosen.iter().map(|d| d.size).sum();
     let mut base = 0u64;
@@ -134,7 +135,7 @@ pub fn azure(
         let t = azstore::pageblob::PageBlobTarget::create(make()?, &blob, d.size)?;
         let label = format!("disk {} → {blob}", d.index);
         let cb = |done: u64, _t: u64| rep.progress("uploading", base + done, total, &label);
-        engine::restore_disk(
+        let r = engine::restore_disk(
             repo,
             m,
             d.index,
@@ -144,10 +145,12 @@ pub fn azure(
                 zero_fill: false,
                 fit: false,
                 grow: false,
+                verify: true,
             },
             &ctx.ctl,
             &cb,
         )?;
+        reports.push(r);
         urls.push(t.finish(*uuid::Uuid::new_v4().as_bytes())?);
         base += d.size;
     }
@@ -155,6 +158,18 @@ pub fn azure(
     u.result = Some(json!({
         "cloud": "azure", "blobs": urls, "commands": azure_commands(uefi(m), os_type(m), name, &creds.username, &urls),
     }));
+    let refs: Vec<&engine::RestoreReport> = reports.iter().collect();
+    let outputs = json!(reports
+        .iter()
+        .zip(&urls)
+        .map(|(r, url)| json!({ "target": url, "bytes": r.bytes_written }))
+        .collect::<Vec<_>>());
+    crate::evidence::attach(
+        &mut u,
+        outputs,
+        crate::evidence::disk_verification(&refs),
+        json!([]),
+    );
     if os_type(m) == "Windows" && m.vm.is_none() {
         u.state = JobState::Warning;
         u.warnings.push("This Windows system comes from a physical machine: if the Azure VM does not start, restore it with the recovery media onto a Hyper-V VM first (it prepares Windows for virtual hardware), then restore that.".into());
@@ -210,8 +225,12 @@ pub fn aws(
     let files =
         crate::restore::write_disk_files(ctx, repo, m, disks, &dir, vdisk::Format::Vhdx, rep)?;
     let mut keys = Vec::new();
+    let mut outputs = Vec::new();
     for (i, path) in &files {
         let object = format!("{name}-disk{i}.vhdx");
+        rep.progress("hashing", 0, 0, &object);
+        let (bytes, sha) = crate::evidence::sha256_file(path)?;
+        outputs.push(json!({ "target": s3.s3_uri(&object), "bytes": bytes, "sha256": sha }));
         let label = format!("disk {i} → {}", s3.s3_uri(&object));
         s3.upload_file(&object, path, &|done, total| {
             rep.progress("uploading", done, total, &label)
@@ -228,6 +247,13 @@ pub fn aws(
         "cloud": "aws", "objects": keys.iter().map(|k| format!("s3://{bucket}/{k}")).collect::<Vec<_>>(),
         "commands": aws_commands(uefi(m), name, &bucket, &keys, region),
     }));
+    crate::evidence::attach(
+        &mut u,
+        json!(outputs),
+        json!([{ "method": "file-sha256", "supported": true,
+                 "note": "Each VHDX was hashed after it was written and before upload; S3 confirmed each upload. The backup data was authenticated chunk by chunk while restoring." }]),
+        json!([]),
+    );
     Ok(u)
 }
 

@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 110
+LATEST_MIGRATION = 111
 
 def init_engine(url: str, pool_size: int = 5, max_overflow: int = 10) -> Engine:
     global _engine, _session_factory
@@ -696,6 +696,10 @@ def migrate(bind: Engine) -> list[int]:
                     "apple_mdm_configs", "apple_enrollments", "apple_devices", "apple_mdm_commands")])  # MDM-02
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (110)"))
                 applied.append(110)
+            if 111 not in versions:
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["restore_evidence"]])  # BDR-03
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (111)"))
+                applied.append(111)
             conn.commit()
         except Exception:
             conn.rollback()

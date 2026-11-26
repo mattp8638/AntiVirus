@@ -58,7 +58,13 @@ pub struct RestoreReport {
     /// At most 200 listed; `failed_total` counts all.
     pub failed: Vec<Failure>,
     pub failed_total: u64,
+    /// Files written, in order (at most `WRITTEN_LIST`), for restore evidence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub written: Vec<String>,
 }
+
+/// How many written files a report lists by name.
+pub const WRITTEN_LIST: usize = 10_000;
 
 impl RestoreReport {
     fn fail(&mut self, path: &str, e: impl std::fmt::Display) {
@@ -188,6 +194,9 @@ impl Ctx<'_> {
             Ok(n) => {
                 self.report.files += 1;
                 self.report.bytes += n;
+                if self.report.written.len() < WRITTEN_LIST {
+                    self.report.written.push(dest.display().to_string());
+                }
             }
             Err(Error::Cancelled) => {
                 let _ = fs::remove_file(&tmp);

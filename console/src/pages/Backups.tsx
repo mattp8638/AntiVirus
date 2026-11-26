@@ -1664,9 +1664,31 @@ function JobsTable({ rows }: { rows: Job[] | null }) {
       { key: "state", label: "State", render: (j) => <><StatePill state={j.state} /> <span className="small muted">{progressText(j.progress)}</span></> },
       { key: "createdAt", label: "Requested", render: (j) => <span className="small">{ago(j.createdAt)} by {j.requestedBy}</span> },
       { key: "detail", label: "Detail", render: (j) => <span className="small">{j.error ?? j.warnings.join(" ")}</span> },
-      { key: "cancel", label: "", render: (j) => !FINAL.includes(j.state) && can("respond") && <button className="small" disabled={busy} onClick={() => run(() => api(`backup/jobs/${j.id}/cancel`, { body: {} }), "Cancelling")}>Cancel</button> },
+      { key: "cancel", label: "", render: (j) => !FINAL.includes(j.state) ? (can("respond") && <button className="small" disabled={busy} onClick={() => run(() => api(`backup/jobs/${j.id}/cancel`, { body: {} }), "Cancelling")}>Cancel</button>)
+        : EVIDENCE_KINDS.includes(String((j.kind as { type?: string } | undefined)?.type)) && <RestoreEvidenceButton id={j.id} /> },
     ]} />
   );
+}
+
+const EVIDENCE_KINDS = ["restore", "restore_files", "restore_application", "restore_kubernetes", "restore_saas"];
+
+/** BDR-03: the hashed restore evidence (recovery point, RPO/RTO, what was written and its SHA-256), as a JSON file. */
+function RestoreEvidenceButton({ id }: { id: string }) {
+  const { run, busy } = useAction();
+  const [info, setInfo] = useState<string>("");
+  const fetchIt = async () => {
+    const out = await run(() => api<any>(`backup/jobs/${id}/evidence`));
+    if (!out) return;
+    const e = out.evidence;
+    const checked = (e.verification || []).reduce((n: number, v: any) => n + (v.chunksChecked || 0), 0);
+    setInfo(`${e.verified ? "verified" : "not verified"}${checked ? `, ${checked} chunks read back` : `, ${e.outputs.length} output(s) hashed`}`
+      + `${e.rpoSeconds != null ? `, RPO ${Math.round(e.rpoSeconds / 60)} min` : ""}${e.rtoSeconds != null ? `, RTO ${e.rtoSeconds} s` : ""}${out.intact ? "" : ", RECORD ALTERED"}`);
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([JSON.stringify(out, null, 2)], { type: "application/json" }));
+    link.download = `restore-evidence-${id}.json`;
+    link.click();
+  };
+  return <span className="small"><button className="small" disabled={busy} onClick={fetchIt}>Evidence</button> {info}</span>;
 }
 
 function Activity() {
