@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 127
+LATEST_MIGRATION = 128
 
 def init_engine(url: str, pool_size: int = 5, max_overflow: int = 10) -> Engine:
     global _engine, _session_factory
@@ -855,6 +855,19 @@ def migrate(bind: Engine) -> list[int]:
                 rls.enable(conn, [IsmsMembership.__tablename__])
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (127)"))
                 applied.append(127)
+            if 128 not in versions:
+                # Repairs schema drift from parallel branches. The restore tests added nullable columns
+                # (backup_repositories.boot_full_restore and boot_weekday, backup boot check restore_test and
+                # evidence_id) without a migration, so existing databases failed every query on those tables. And a
+                # database that recorded 121 when it was restore evidence never created the ISMS people tables.
+                # Adds every missing nullable column and creates every missing table; both are idempotent.
+                from .isms import models as isms_models, rls  # noqa: F401  (registers the ISMS tables)
+                from .isms.scope import TENANT_TABLES
+                Base.metadata.create_all(conn)
+                ensure_columns(Base, conn)
+                rls.enable(conn, [m.__tablename__ for m in TENANT_TABLES])
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (128)"))
+                applied.append(128)
             conn.commit()
         except Exception:
             conn.rollback()
