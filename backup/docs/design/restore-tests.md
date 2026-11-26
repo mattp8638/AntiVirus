@@ -1,9 +1,18 @@
 # Design note: scheduled restore tests
 
-Status: implemented. The KVM path (full restore, read-back, boot from the
-restored disk, deletion) is run against a real CirrOS image in CI
-(`vmboot` test `cirros_boots_from_a_full_restore`). The Hyper-V path has
-not been run on a Hyper-V host in CI.
+Status: implemented. The KVM path is run against a real CirrOS image in CI,
+twice:
+
+* `vmboot` test `cirros_boots_from_a_full_restore`: the full restore, the
+  read-back, the boot from the restored disk and the deletion.
+* CI job `restore-test` (`ci/e2e-restore-test.py`): the same end to end
+  through a real server and agent. The repository is set to a weekly full
+  restore test on today's weekday through the API, and the server's own
+  scheduler queues the test. The result, the restore facts and the screenshot
+  are read back through the API, and the agent's restore folder must be
+  gone. The screenshot is kept as a run artifact.
+
+The Hyper-V path has not been run on a Hyper-V host in CI.
 
 A boot check (`vmboot`, `boot.rs`) proves a backup starts. On a KVM host it
 streams the disks from the repository and never restores them in full. A
