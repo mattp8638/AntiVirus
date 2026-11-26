@@ -1,5 +1,7 @@
 #include "ProcessGuard.h"
 
+#include <ctime>
+
 #include <windows.h>
 #include <tlhelp32.h>
 
@@ -108,7 +110,9 @@ int ProcessGuard::TerminateIfImageMatches(unsigned long pid, const std::wstring&
 }
 
 ProcessGuard::ProcessGuard(std::filesystem::path installRoot, std::filesystem::path runtimeRoot)
-    : installRoot_(std::move(installRoot)), runtimeRoot_(std::move(runtimeRoot)) {}
+    : installRoot_(std::move(installRoot)),
+      runtimeRoot_(std::move(runtimeRoot)),
+      firstSeen_(runtimeRoot_.empty() ? std::filesystem::path{} : runtimeRoot_ / L"first-seen.txt") {}
 
 std::filesystem::path ProcessGuard::ModelPath() const {
   const auto overridePath = ReadEnvironmentVariable(L"FENRIR_ML_MODEL");
@@ -181,10 +185,22 @@ std::vector<TelemetryRecord> ProcessGuard::OnProcessStart(EtwProcessContext& pro
                                .parentImagePath = process.parentImagePath, .signer = process.signer,
                                .signatureVerified = !process.signer.empty(), .onRemovableMedia = OnRemovableDrive(process.imagePath)};
   const auto& exclusions = extended.behavior.exclusions;
+  const bool tracksFirstSeen = extended.behavior.blockNewlySeenExecutables && extended.behavior.appControlMode != L"off" &&
+                               !extended.behavior.appControlMode.empty();
   const bool needsHash = !extended.behavior.blockedApps.empty() || !extended.behavior.allowedHashes.empty() ||
-                         behavior::NeedsChildHash(exclusions);
+                         behavior::NeedsChildHash(exclusions) || tracksFirstSeen;
   if (needsHash) {
     facts.sha256 = CachedSha256(process.imagePath);
+  }
+  if (tracksFirstSeen && !facts.sha256.empty()) {
+    const long long now = static_cast<long long>(std::time(nullptr));
+    std::lock_guard lock(mutex_);
+    facts.firstSeenUnix = firstSeen_.Observe(facts.sha256, now);
+    facts.nowUnix = now;
+    if (now - firstSeenSavedUnix_ >= 60) {  // at most one write a minute
+      firstSeen_.Save();
+      firstSeenSavedUnix_ = now;
+    }
   }
   if (!process.parentImagePath.empty() && behavior::NeedsParentHash(exclusions, process.parentImagePath)) {
     facts.parentSha256 = CachedSha256(process.parentImagePath);

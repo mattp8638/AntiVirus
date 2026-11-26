@@ -135,7 +135,7 @@ FRAMEWORKS: dict[str, dict] = {
             ("PR.AA", "Identity and access control", [_least_privilege]),
             ("PR.PS", "Platform security", [_patch_auto, _asr_majority, _s("tamper.enabled"), _agents_current]),
             ("PR.DS", "Data security", [_usb, _s("ransomware.enabled")]),
-            ("DE.CM", "Continuous monitoring", [_s("edr.enabled"), _s("dns.enabled"), _s("firewall.networkAttackProtection")]),
+            ("DE.CM", "Continuous monitoring", [_s("edr.enabled"), _s("dns.enabled")]),
             ("RS.MI", "Incident mitigation", [_s("response.autoKillOnHigh"), _s("firewall.networkContainment")]),
             ("RC.RP", "Recovery plan execution", [_s("ransomware.rollbackSnapshots")]),
         ],

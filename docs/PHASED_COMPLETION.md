@@ -92,8 +92,7 @@ Agent window (Windows):
 - "Request support" opens a PSA ticket for the device (source `agent`, at most 5 an hour per device).
 
 Open:
-- About 30 policy settings are still not enforced by any agent (marked in the editor; see
-  `AGENT_SUPPORT` in `cloud/fenrir_cloud/policy_schema.py`).
+- Every policy setting is enforced by at least one agent. Some apply to one platform only, which the policy editor shows beside each setting (`AGENT_SUPPORT` in `cloud/fenrir_cloud/policy_schema.py`).
 - Ransomware rollback is Windows only: the ransomware shield restores the attacked files from Volume Shadow Copy snapshots, for an incident under 24 hours old and once only (`RansomwareShield::RollbackLastIncident`). Linux and macOS have no rollback.
 
 ## 3. CRM

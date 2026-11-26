@@ -37,7 +37,13 @@ class HardeningManager {
                                          std::wstring* errorMessage = nullptr) const;
   // Policy (modules.tamper): serviceLocked = tamper.enabled && protectServiceAndFiles;
   // uninstallTokenRequired = tamper.enabled && uninstallRequiresToken.
-  bool ApplyTamperPolicy(bool serviceLocked, bool uninstallTokenRequired, std::wstring* errorMessage = nullptr) const;
+  // selfDefenceHigh (tamper.selfDefenceSensitivity "high"): the agent's registry key is read-only for
+  // administrators (only SYSTEM can change it), and the agent process denies terminate, memory-write and
+  // thread-injection access to everyone but SYSTEM. "standard" restores both. Administrators can still take
+  // ownership of the key, and debug privilege bypasses process permissions: full protection against an
+  // administrator needs the protected-process (ELAM) registration.
+  bool ApplyTamperPolicy(bool serviceLocked, bool uninstallTokenRequired, bool selfDefenceHigh,
+                         std::wstring* errorMessage = nullptr) const;
   // edr.credentialProtection: LSA protection (RunAsPPL, needs a restart) and no cleartext WDigest credentials.
   // Only values Fenrir set are reverted when the setting is turned off. rebootRequired is set when LSA
   // protection changes.

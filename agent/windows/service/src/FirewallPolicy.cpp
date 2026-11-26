@@ -88,6 +88,14 @@ Settings Parse(const std::string& modulesJson) {
   Settings settings;
   const auto root = json::Parse(modulesJson);
   if (!root || !root->IsObject()) return settings;
+  if (const auto* web = root->Get("web"); web && web->IsObject()) {
+    settings.hasWeb = true;
+    settings.bankingProtection = BoolOr(web, "bankingProtection", false);
+  }
+  if (const auto* updates = root->Get("updates"); updates && updates->IsObject()) {
+    settings.hasUpdates = true;
+    settings.peerCaching = BoolOr(updates, "peerCaching", true);
+  }
   const auto* fw = root->Get("firewall");
   if (!fw || !fw->IsObject()) return settings;
   settings.present = true;
@@ -96,6 +104,7 @@ Settings Parse(const std::string& modulesJson) {
   settings.blockOutbound = StringOr(fw, "defaultOutbound", "allow") == "block";
   settings.blockSmbV1 = BoolOr(fw, "blockSmbV1", false);
   settings.blockLlmnrNetbios = BoolOr(fw, "blockLlmnrNetbios", false);
+  settings.networkAttackProtection = BoolOr(fw, "networkAttackProtection", false);
   if (const auto* rules = fw->Get("parsedRules")) {
     if (const auto* list = std::get_if<json::Array>(&rules->v)) {
       for (const auto& item : *list) {
@@ -114,8 +123,29 @@ std::string BuildScript(const Settings& s, const std::string& installDirectory) 
       "$group = 'Fenrir policy'\n"
       "$marker = 'HKLM:\\SOFTWARE\\Fenrir\\PolicyHardening'\n"
       "function Ensure-Key($path) { if (-not (Test-Path -LiteralPath $path)) { New-Item -Path $path -Force | Out-Null } }\n"
-      "try { Get-NetFirewallRule -Group $group -ErrorAction SilentlyContinue | Remove-NetFirewallRule } catch { $warnings.Add('old rules: ' + $_.Exception.Message) }\n";
-  if (s.enabled) {
+      // Set-Managed saves a value's previous state (once) under $marker\Saved\<tag> before setting it;
+      // Restore-Managed puts every saved value of a tag back and forgets them.
+      "function Set-Managed($tag, $path, $name, [int]$value) {\n"
+      "  $saved = \"$marker\\Saved\\$tag\"; Ensure-Key $saved; $id = \"$path|$name\"\n"
+      "  if ($null -eq (Get-ItemProperty -LiteralPath $saved -Name $id -ErrorAction SilentlyContinue)) {\n"
+      "    $cur = (Get-ItemProperty -LiteralPath $path -Name $name -ErrorAction SilentlyContinue).$name\n"
+      "    $prev = if ($null -eq $cur) { '<absent>' } else { [string]$cur }\n"
+      "    New-ItemProperty -LiteralPath $saved -Name $id -Value $prev -PropertyType String -Force | Out-Null }\n"
+      "  Ensure-Key $path; New-ItemProperty -LiteralPath $path -Name $name -Value $value -PropertyType DWord -Force | Out-Null\n"
+      "}\n"
+      "function Restore-Managed($tag) {\n"
+      "  $saved = \"$marker\\Saved\\$tag\"; if (-not (Test-Path -LiteralPath $saved)) { return }\n"
+      "  foreach ($p in (Get-ItemProperty -LiteralPath $saved).PSObject.Properties) {\n"
+      "    if (@('PSPath','PSParentPath','PSChildName','PSDrive','PSProvider') -contains $p.Name) { continue }\n"
+      "    $i = $p.Name.LastIndexOf('|'); $path = $p.Name.Substring(0, $i); $name = $p.Name.Substring($i + 1)\n"
+      "    if ($p.Value -eq '<absent>') { Remove-ItemProperty -LiteralPath $path -Name $name -ErrorAction SilentlyContinue }\n"
+      "    else { New-ItemProperty -LiteralPath $path -Name $name -Value ([int]$p.Value) -PropertyType DWord -Force | Out-Null } }\n"
+      "  Remove-Item -LiteralPath $saved -Recurse -Force\n"
+      "}\n";
+  if (s.present) {
+    out += "try { Get-NetFirewallRule -Group $group -ErrorAction SilentlyContinue | Remove-NetFirewallRule } catch { $warnings.Add('old rules: ' + $_.Exception.Message) }\n";
+  }
+  if (s.present && s.enabled) {
     out += "try { Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled True -DefaultInboundAction " +
            std::string(s.blockInbound ? "Block" : "Allow") + " -DefaultOutboundAction " + (s.blockOutbound ? "Block" : "Allow") +
            " } catch { $warnings.Add('profiles: ' + $_.Exception.Message) }\n";
@@ -148,7 +178,7 @@ std::string BuildScript(const Settings& s, const std::string& installDirectory) 
       out += "try { " + cmd + " | Out-Null } catch { $warnings.Add('rule " + std::to_string(index) + ": ' + $_.Exception.Message) }\n";
     }
   }
-  if (s.blockSmbV1) {
+  if (s.present && s.blockSmbV1) {
     // Turning the setting off later stops enforcing it; Fenrir never switches SMBv1 back on.
     out +=
         "try { Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters' -Name SMB1 -Type DWord -Value 0\n"
@@ -157,7 +187,9 @@ std::string BuildScript(const Settings& s, const std::string& installDirectory) 
   }
   const std::string netbt = "'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\NetBT\\Parameters\\Interfaces'";
   const std::string dnsClient = "'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\DNSClient'";
-  if (s.blockLlmnrNetbios) {
+  if (!s.present) {
+    // No firewall section: leave Windows Firewall, SMBv1, LLMNR and the network stack as they are.
+  } else if (s.blockLlmnrNetbios) {
     out += "try { Ensure-Key " + dnsClient + "; Set-ItemProperty -Path " + dnsClient +
            " -Name EnableMulticast -Type DWord -Value 0\n"
            "  Get-ChildItem -Path " + netbt +
@@ -171,6 +203,40 @@ std::string BuildScript(const Settings& s, const std::string& installDirectory) 
            "  Get-ChildItem -Path " + netbt +
            " | ForEach-Object { Set-ItemProperty -Path $_.PSPath -Name NetbiosOptions -Type DWord -Value 0 }\n"
            "  Remove-ItemProperty -Path $marker -Name LlmnrNetbios } } catch { $warnings.Add('LLMNR/NetBIOS undo: ' + $_.Exception.Message) }\n";
+  }
+  const std::string tcpip = "'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters'";
+  const std::string tcpip6 = "'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip6\\Parameters'";
+  if (s.present && s.networkAttackProtection) {
+    // No source-routed packets, ICMP redirects or router discovery: blocks traffic hijacking on the local network.
+    out += "try { Set-Managed 'NetworkAttack' " + tcpip + " 'DisableIPSourceRouting' 2\n"
+           "  Set-Managed 'NetworkAttack' " + tcpip6 + " 'DisableIPSourceRouting' 2\n"
+           "  Set-Managed 'NetworkAttack' " + tcpip + " 'EnableICMPRedirect' 0\n"
+           "  Set-Managed 'NetworkAttack' " + tcpip + " 'PerformRouterDiscovery' 0\n"
+           "} catch { $warnings.Add('network attack protection: ' + $_.Exception.Message) }\n";
+  } else if (s.present) {
+    out += "try { Restore-Managed 'NetworkAttack' } catch { $warnings.Add('network attack protection undo: ' + $_.Exception.Message) }\n";
+  }
+  const std::string edge = "'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge'";
+  const std::string chrome = "'HKLM:\\SOFTWARE\\Policies\\Google\\Chrome'";
+  if (s.hasWeb && s.bankingProtection) {
+    // Fake banking and payment sites: warnings cannot be clicked through. Banking trojans: Chrome refuses
+    // third-party code injected into the browser.
+    out += "try { Set-Managed 'Banking' " + edge + " 'SmartScreenEnabled' 1\n"
+           "  Set-Managed 'Banking' " + edge + " 'SmartScreenPuaEnabled' 1\n"
+           "  Set-Managed 'Banking' " + edge + " 'PreventSmartScreenPromptOverride' 1\n"
+           "  Set-Managed 'Banking' " + edge + " 'PreventSmartScreenPromptOverrideForFiles' 1\n"
+           "  Set-Managed 'Banking' " + edge + " 'TyposquattingCheckerEnabled' 1\n"
+           "  Set-Managed 'Banking' " + chrome + " 'SafeBrowsingProtectionLevel' 1\n"
+           "  Set-Managed 'Banking' " + chrome + " 'DisableSafeBrowsingProceedAnyway' 1\n"
+           "  Set-Managed 'Banking' " + chrome + " 'ThirdPartyBlockingEnabled' 1\n"
+           "} catch { $warnings.Add('banking protection: ' + $_.Exception.Message) }\n";
+  } else if (s.hasWeb) {
+    out += "try { Restore-Managed 'Banking' } catch { $warnings.Add('banking protection undo: ' + $_.Exception.Message) }\n";
+  }
+  if (s.hasUpdates) {
+    // Delivery Optimization download mode: 1 = also from devices on the same LAN, 0 = from Microsoft only.
+    out += "try { Set-Managed 'PeerCaching' 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\DeliveryOptimization' 'DODownloadMode' " +
+           std::string(s.peerCaching ? "1" : "0") + " } catch { $warnings.Add('peer caching: ' + $_.Exception.Message) }\n";
   }
   out += "@{ ok = ($warnings.Count -eq 0); warnings = @($warnings) } | ConvertTo-Json -Compress\n";
   return out;

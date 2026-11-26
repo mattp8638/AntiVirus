@@ -179,7 +179,7 @@ def test_graph_sync_stops_at_total_deadline(monkeypatch):
         with pytest.raises(ValueError, match="time budget"):
             m365.collect(transport, "https://graph.microsoft.com/v1.0/users", "token", deadline=120)
 
-def test_grc_controls_combine_automatic_checks_and_register_evidence(client, admin, tenant):
+def test_grc_controls_combine_automatic_checks_and_register_evidence(client, admin, tenant, monkeypatch):
     library = client.get(f"/api/console/grc/controls?tenant_id={tenant['id']}", headers=admin).json()["frameworks"]
     ce = next(f for f in library if f["framework"] == "cyber-essentials")
     access = next(c for c in ce["controls"] if c["id"] == "CE-3")
@@ -192,5 +192,9 @@ def test_grc_controls_combine_automatic_checks_and_register_evidence(client, adm
     assert [r["id"] for r in linked["records"]] == [record["id"]] and linked["status"] == "gap"  # draft is not evidence yet
     # Unenforced policy switches never count as passing evidence.
     nist = next(f for f in library if f["framework"] == "nist-csf-2")
-    monitoring = next(c for c in nist["controls"] if c["id"] == "DE.CM")  # firewall.networkAttackProtection: no agent yet
+    from fenrir_cloud import policy_schema
+    monkeypatch.setitem(policy_schema.AGENT_SUPPORT, "edr.enabled", ())  # as if no agent acted on it
+    library = client.get(f"/api/console/grc/controls?tenant_id={tenant['id']}", headers=admin).json()["frameworks"]
+    nist = next(f for f in library if f["framework"] == "nist-csf-2")
+    monitoring = next(c for c in nist["controls"] if c["id"] == "DE.CM")
     assert not monitoring["passed"] and any("not enforced" in e for e in monitoring["evidence"])

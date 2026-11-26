@@ -4038,18 +4038,21 @@ void AgentService::ApplyCredentialHardening(const bool enable) {
 }
 
 void AgentService::ApplyTamperPolicy(const ExtendedPolicy& extended) {
-  const std::wstring key = std::wstring(extended.tamperServiceLocked ? L"1" : L"0") + (extended.tamperUninstallToken ? L"1" : L"0");
+  const std::wstring key = std::wstring(extended.tamperServiceLocked ? L"1" : L"0") + (extended.tamperUninstallToken ? L"1" : L"0") +
+                          (extended.tamperSelfDefenceHigh ? L"1" : L"0");
   if (key == appliedTamperPolicy_) {
     return;
   }
   HardeningManager hardening(config_, ResolveInstallRootForConfig(config_));
   std::wstring error;
-  const bool ok = hardening.ApplyTamperPolicy(extended.tamperServiceLocked, extended.tamperUninstallToken, &error);
+  const bool ok = hardening.ApplyTamperPolicy(extended.tamperServiceLocked, extended.tamperUninstallToken,
+                                              extended.tamperSelfDefenceHigh, &error);
   if (ok) {
     appliedTamperPolicy_ = key;
   }
   const auto flags = std::wstring(L"\"serviceLocked\":") + (extended.tamperServiceLocked ? L"true" : L"false") +
-                     L",\"uninstallRequiresToken\":" + (extended.tamperUninstallToken ? L"true" : L"false");
+                     L",\"uninstallRequiresToken\":" + (extended.tamperUninstallToken ? L"true" : L"false") +
+                     L",\"selfDefence\":" + (extended.tamperSelfDefenceHigh ? L"\"high\"" : L"\"standard\"");
   QueueTelemetryEvent(ok ? L"tamper.policy.applied" : L"tamper.policy.failed", L"hardening-manager",
                       ok ? (extended.tamperServiceLocked ? L"Tamper protection on: the agent service cannot be stopped or removed"
                                                          : L"Tamper protection relaxed by policy: administrators can stop the agent service")
@@ -5223,7 +5226,7 @@ void AgentService::ApplyFirewallPolicy() {
     return;
   }
   const auto settings = firewall::Parse(policy_.modulesJson);
-  if (!settings.present) {
+  if (!settings.AnythingToManage()) {
     return;
   }
   auto script = firewall::BuildScript(settings, WideToUtf8(config_.installRootPath.wstring()));
@@ -5231,7 +5234,7 @@ void AgentService::ApplyFirewallPolicy() {
                              ? std::wstring(L"Firewall policy applied (inbound ") + (settings.blockInbound ? L"block" : L"allow") +
                                    L", outbound " + (settings.blockOutbound ? L"block" : L"allow") + L", " +
                                    std::to_wstring(settings.rules.size()) + L" custom rules)"
-                             : std::wstring(L"Network hardening applied (Windows Firewall not managed)");
+                             : std::wstring(L"Host hardening applied (Windows Firewall not managed)");
   std::lock_guard lock(firewallMutex_);
   if (script == appliedFirewallScript_ && pendingFirewallScript_.empty()) {
     return;

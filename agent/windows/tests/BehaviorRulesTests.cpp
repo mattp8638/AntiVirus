@@ -4,6 +4,9 @@
 #include <string>
 
 #include "BehaviorRules.h"
+#include "FirstSeenStore.h"
+
+#include <filesystem>
 
 using namespace antivirus::agent::behavior;
 
@@ -191,6 +194,53 @@ int main() {
     CHECK(NeedsChildHash({hash}));
     CHECK(MatchExclusion({hash}, L"antimalware", ProcessFacts{.imagePath = L"D:\\x.exe", .sha256 = std::wstring(64, L'c')}) != nullptr);
     CHECK(MatchExclusion({hash}, L"antimalware", ProcessFacts{.imagePath = L"D:\\x.exe", .sha256 = std::wstring(64, L'd')}) == nullptr);
+  }
+  {  // Newly seen executables
+    BehaviorPolicy p;
+    p.appControlMode = L"enforce-denylist";
+    p.blockNewlySeenExecutables = true;
+    auto has = [](const std::vector<Decision>& ds, const wchar_t* rule) {
+      for (const auto& d : ds) if (d.rule == rule) return true;
+      return false;
+    };
+    const long long now = 1800000000;
+    ProcessFacts fresh{.imagePath = L"C:\\Users\\Alex\\Downloads\\tool.exe", .sha256 = std::wstring(64, L'a'),
+                       .firstSeenUnix = now - 3600, .nowUnix = now};
+    CHECK(has(Evaluate(fresh, p), L"applicationControl.blockNewlySeenExecutables"));
+    auto old = fresh;
+    old.firstSeenUnix = now - 30 * 3600;
+    CHECK(!has(Evaluate(old, p), L"applicationControl.blockNewlySeenExecutables"));
+    auto signedFresh = fresh;
+    signedFresh.signer = L"Contoso Ltd";
+    signedFresh.signatureVerified = true;
+    CHECK(!has(Evaluate(signedFresh, p), L"applicationControl.blockNewlySeenExecutables"));  // signed installers keep working
+    auto system = fresh;
+    system.imagePath = L"C:\\Windows\\System32\\newtool.exe";
+    CHECK(!has(Evaluate(system, p), L"applicationControl.blockNewlySeenExecutables"));
+    auto untracked = fresh;
+    untracked.firstSeenUnix = 0;
+    CHECK(!has(Evaluate(untracked, p), L"applicationControl.blockNewlySeenExecutables"));
+    p.appControlMode = L"audit";
+    const auto audited = Evaluate(fresh, p);
+    CHECK(has(audited, L"applicationControl.blockNewlySeenExecutables") && audited[0].mode == RuleMode::Audit);
+    p.appControlMode = L"off";
+    CHECK(!has(Evaluate(fresh, p), L"applicationControl.blockNewlySeenExecutables"));
+  }
+  {  // The first-seen record keeps the first sighting, ignores case and survives a restart
+    const auto file = std::filesystem::temp_directory_path() / L"fenrir-first-seen-test.txt";
+    std::filesystem::remove(file);
+    const std::wstring sha = std::wstring(63, L'b') + L"C";
+    {
+      antivirus::agent::FirstSeenStore store(file);
+      CHECK(store.Observe(sha, 1000) == 1000);
+      CHECK(store.Observe(std::wstring(63, L'b') + L"c", 5000) == 1000);
+      CHECK(store.Save());
+    }
+    antivirus::agent::FirstSeenStore again(file);
+    CHECK(again.Size() == 1 && again.Observe(sha, 9000) == 1000);
+    CHECK(antivirus::agent::FirstSeenStore::NewlySeen(1000, 1000 + 23 * 3600));
+    CHECK(!antivirus::agent::FirstSeenStore::NewlySeen(1000, 1000 + 25 * 3600));
+    std::filesystem::remove(file);
   }
   std::printf(failures ? "%d failure(s)\n" : "all behavior rule tests passed\n", failures);
   return failures ? 1 : 0;

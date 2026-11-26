@@ -5,7 +5,6 @@ Curated source copies of the repositories merged into Fenrir. Each is a snapshot
 | Folder | Source | Commit |
 |---|---|---|
 | `sentinel/` | github.com/Palmertech-Webdev/Sentinel | `756b7aba7f9c0ac8c01edeb2812fb135cdbdd03d` |
-| `siem/` | github.com/Palmertech-Webdev/SIEM-Work-Dev | `fae91209ce40a08451f6d9e9e2bcb79f4af0e497` |
 | `crm/` | github.com/zy538324/Palmertech-CRM | `4537ab426c20f28aba4ac5a04dac78f28c03b690` |
 | `signaturedb/` | github.com/zy538324/signaturedb-fenrir | `2b6950f1d1940d5683401e2fc9561ee872fcaee8` |
 
@@ -13,7 +12,7 @@ Curated source copies of the repositories merged into Fenrir. Each is a snapshot
 
 - **sentinel:** its incident playbooks (`playbooks/templates`) are copied into `cloud/fenrir_cloud/playbooks` and drive incident checklists. The whole Sentinel API can be mounted at `/legacy/sentinel` with `FENRIR_ENABLE_LEGACY=1`.
 - **signaturedb:** deploy unchanged to Cloudflare (`wrangler deploy`). Fenrir Cloud pulls its `/api/v1/agent/bundle` hourly when `FENRIR_FEED_SYNC=true`.
-- **siem:** reference for features still being migrated (RMM, patch evidence, compliance evidence). See `docs/ROADMAP.md`.
+- **siem** (removed 26/11/2026): its features (RMM, patch evidence, compliance evidence) are rebuilt in Fenrir, and its agent was an unfinished stub. The copy is in git history (commit `fae91209` of github.com/Palmertech-Webdev/SIEM-Work-Dev).
 - **crm:** reference for the console's CRM screens, which were rebuilt on the Fenrir API.
 
 ## Deliberately not copied

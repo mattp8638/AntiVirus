@@ -17,7 +17,11 @@ def test_scan_schedules_reach_agents_as_plans():
     assert fields["antimalware.quickScanSchedule"]["enforcedOn"] == ["windows", "linux", "macos"]
     assert fields["experience.trayIcon"]["enforcedOn"] == ["windows"]
     assert fields["experience.allowUserPause"]["enforcedOn"] == ["windows"]
-    assert fields["updates.peerCaching"]["enforcedOn"] == []
+    assert fields["updates.peerCaching"]["enforcedOn"] == ["windows"]
+    assert fields["firewall.networkAttackProtection"]["enforcedOn"] == ["windows", "linux"]
+    assert fields["applicationControl.blockNewlySeenExecutables"]["enforcedOn"] == ["windows", "linux", "macos"]
+    # Every setting is enforced by some agent: none is stored and shown without anything acting on it.
+    assert not [path for path, field in fields.items() if field["enforcedOn"] == [] and not path.startswith(("mobile.", "android."))]
 
 
 def test_firewall_rules_are_validated_and_parsed_for_agents():
