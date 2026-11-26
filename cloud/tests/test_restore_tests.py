@@ -152,3 +152,7 @@ def test_every_backup_status_is_logged_and_filed_weekly(client, admin, tenant):
         assert ("iso-27001", "A.8.13") in {(l.framework_key, l.requirement_id)
                                             for l in db.query(GrcEvidenceLink).filter_by(evidence_id=ev.id)}
         assert db.query(AuditLog).filter_by(action="backup.log_filed").count() == 1
+
+
+def test_enrolment_tokens_never_start_with_a_hyphen():
+    assert not any(bk.new_token().startswith("-") for _ in range(5000))

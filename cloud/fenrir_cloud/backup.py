@@ -58,7 +58,11 @@ def from_unix(t: int) -> datetime:
 
 
 def new_token() -> str:
-    return secrets.token_urlsafe(32)
+    """URL-safe, and never starting with '-': pasted after the agent's --token it would read as an option."""
+    while True:
+        t = secrets.token_urlsafe(32)
+        if not t.startswith("-"):
+            return t
 
 
 def token_hash(raw: str) -> str:

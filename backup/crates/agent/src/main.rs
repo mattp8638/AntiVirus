@@ -61,7 +61,8 @@ enum Cmd {
     Enroll {
         #[arg(long)]
         server: String,
-        #[arg(long)]
+        /// Tokens are URL-safe base64 and may start with '-'.
+        #[arg(long, allow_hyphen_values = true)]
         token: String,
         /// SHA-256 of the server certificate (hex) for self-signed servers.
         #[arg(long, default_value = "")]
@@ -115,7 +116,8 @@ enum Cmd {
     Install {
         #[arg(long)]
         server: String,
-        #[arg(long)]
+        /// Tokens are URL-safe base64 and may start with '-'.
+        #[arg(long, allow_hyphen_values = true)]
         token: String,
         #[arg(long, default_value = "")]
         pin: String,
@@ -575,4 +577,23 @@ fn local_recovery_cli(
     _: bool,
 ) -> anyhow::Result<()> {
     anyhow::bail!("local recovery partitions are for Windows")
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn a_token_starting_with_a_hyphen_is_a_value() {
+        let c = Cli::try_parse_from([
+            "fenrir-backup-agent",
+            "enroll",
+            "--server",
+            "https://s",
+            "--token",
+            "-Kx9_a",
+        ])
+        .unwrap();
+        assert!(matches!(c.cmd, Cmd::Enroll { token, .. } if token == "-Kx9_a"));
+    }
 }
