@@ -20,6 +20,7 @@ from .domain._js import js_trim
 from .domain.audit import (AuditableRequirement, AuditForCompletion, audit_completion_blockers, build_checklist,
                            checklist_key, draw_sample, programme_coverage, result_counts, suggested_sample_size)
 from .models import IsmsApplicability, IsmsAudit, IsmsAuditCheck, IsmsAuditProgramme, IsmsNonconformity
+from .custom_controls import links_by_requirement
 from .programme import controls, pinned_packs, tenant_frameworks
 
 CHECK_RESULTS = ("conforms", "observation", "minor", "major", "not_assessed")
@@ -59,6 +60,8 @@ def auditable_requirements(db: Session, tenant_id: str, frameworks: list[str] | 
         for m in pack["mappings"]:
             if m["strength"] != "related" and m["control"] in live:
                 mapped.setdefault(m["requirement"], set()).add(m["control"])
+        for ref, custom in links_by_requirement(db, tenant_id, slug).items():
+            mapped.setdefault(ref, set()).update(c for c in custom if c in live)
         for i, r in enumerate(pack["requirements"]):
             mandatory = bool(r.get("mandatory"))
             applicable = mandatory or decisions.get(f"{slug}:{r['ref']}", True)

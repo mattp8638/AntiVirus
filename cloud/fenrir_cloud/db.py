@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 121
+LATEST_MIGRATION = 127
 
 def init_engine(url: str, pool_size: int = 5, max_overflow: int = 10) -> Engine:
     global _engine, _session_factory
@@ -789,6 +789,63 @@ def migrate(bind: Engine) -> list[int]:
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (120)"))
                 applied.append(120)
             if 121 not in versions:
+                # ISMS people and training: named roles, RACI, competence and acknowledgement campaigns.
+                from .isms import models as isms_models, rls
+                tables = [isms_models.IsmsOrgRole, isms_models.IsmsOrgRoleHolder, isms_models.IsmsRaciActivity,
+                          isms_models.IsmsRaciAssignment, isms_models.IsmsCompetence, isms_models.IsmsAckCampaign,
+                          isms_models.IsmsAcknowledgement]
+                for model in tables:
+                    model.__table__.create(conn, checkfirst=True)
+                rls.enable(conn, [m.__tablename__ for m in tables])
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (121)"))
+                applied.append(121)
+            if 122 not in versions:
+                # ISMS management review and its actions.
+                from .isms import models as isms_models, rls
+                tables = [isms_models.IsmsManagementReview, isms_models.IsmsReviewAction]
+                for model in tables:
+                    model.__table__.create(conn, checkfirst=True)
+                rls.enable(conn, [m.__tablename__ for m in tables])
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (122)"))
+                applied.append(122)
+            if 123 not in versions:
+                # ISMS auditor workspace: saved samples and evidence requests.
+                from .isms import models as isms_models, rls
+                tables = [isms_models.IsmsAuditSample, isms_models.IsmsEvidenceRequest]
+                for model in tables:
+                    model.__table__.create(conn, checkfirst=True)
+                rls.enable(conn, [m.__tablename__ for m in tables])
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (123)"))
+                applied.append(123)
+            if 124 not in versions:
+                # ISMS links to Fenrir's third-party risk suppliers and SOC incidents.
+                from .isms import models as isms_models, rls
+                tables = [isms_models.IsmsSupplierLink, isms_models.IsmsIncidentReview]
+                for model in tables:
+                    model.__table__.create(conn, checkfirst=True)
+                rls.enable(conn, [m.__tablename__ for m in tables])
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (124)"))
+                applied.append(124)
+            if 125 not in versions:
+                # ISMS custom controls: a test procedure on tenant controls and links to framework requirements.
+                from sqlalchemy import inspect as sa_inspect
+                from .isms import models as isms_models, rls
+                if "test_procedure" not in {c["name"] for c in sa_inspect(conn).get_columns("isms_tenant_controls")}:
+                    conn.execute(text("ALTER TABLE isms_tenant_controls ADD COLUMN test_procedure TEXT"))
+                isms_models.IsmsControlRequirement.__table__.create(conn, checkfirst=True)
+                rls.enable(conn, [isms_models.IsmsControlRequirement.__tablename__])
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (125)"))
+                applied.append(125)
+            if 126 not in versions:
+                # ISMS dashboards: each person's tiles and email digests.
+                from .isms import models as isms_models, rls
+                tables = [isms_models.IsmsDashboardLayout, isms_models.IsmsDigestSubscription]
+                for model in tables:
+                    model.__table__.create(conn, checkfirst=True)
+                rls.enable(conn, [m.__tablename__ for m in tables])
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (126)"))
+                applied.append(126)
+            if 127 not in versions:
                 # Restore evidence (BDR-03). It was numbered 111 on the backup branch while the ISMS took 111 on main;
                 # a database from either side lacks one of the two tables, so both are created if missing.
                 Base.metadata.create_all(conn, tables=[Base.metadata.tables["restore_evidence"]])
@@ -796,8 +853,8 @@ def migrate(bind: Engine) -> list[int]:
                 from .isms.models import IsmsMembership
                 IsmsMembership.__table__.create(conn, checkfirst=True)
                 rls.enable(conn, [IsmsMembership.__tablename__])
-                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (121)"))
-                applied.append(121)
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (127)"))
+                applied.append(127)
             conn.commit()
         except Exception:
             conn.rollback()

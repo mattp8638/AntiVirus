@@ -6,14 +6,14 @@ existing tenant table (``grc_policies``).
 """
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
-from fenrir_cloud.isms.models import (IsmsApplicability, IsmsDocument, IsmsDocumentOverride, IsmsDocumentVersion, IsmsAudit, IsmsAuditCheck, IsmsAuditProgramme, IsmsChange, IsmsCorrectiveAction, IsmsEvidence, IsmsEvidenceLink, IsmsImport, IsmsMetricValue, IsmsNonconformity, IsmsObjective, IsmsLegacyAnswer, IsmsTask, IsmsApplicabilityOverride, IsmsAsset, IsmsContextIssue,
+from fenrir_cloud.isms.models import (IsmsApplicability, IsmsDocument, IsmsDocumentOverride, IsmsDocumentVersion, IsmsAckCampaign, IsmsAcknowledgement, IsmsManagementReview, IsmsReviewAction, IsmsAuditSample, IsmsEvidenceRequest, IsmsIncidentReview, IsmsSupplierLink, IsmsControlRequirement, IsmsDashboardLayout, IsmsDigestSubscription, IsmsAudit, IsmsAuditCheck, IsmsCompetence, IsmsAuditProgramme, IsmsChange, IsmsCorrectiveAction, IsmsEvidence, IsmsEvidenceLink, IsmsImport, IsmsMetricValue, IsmsNonconformity, IsmsObjective, IsmsOrgRole, IsmsOrgRoleHolder, IsmsRaciActivity, IsmsRaciAssignment, IsmsLegacyAnswer, IsmsTask, IsmsApplicabilityOverride, IsmsAsset, IsmsContextIssue,
                                       IsmsEntity, IsmsInterestedParty, IsmsMembership, IsmsProfileAnswer, IsmsScope,
                                       IsmsRisk, IsmsRiskAcceptance, IsmsRiskControl, IsmsRiskMethod,
                                       IsmsRiskSnapshot, IsmsSite, IsmsTenantControl, IsmsTenantFramework)
@@ -67,6 +67,28 @@ FACTORIES: dict[type, callable] = {
                                    planned_start=date(2027, 3, 1), planned_end=date(2027, 3, 2)),
     IsmsAuditCheck: lambda t: IsmsAuditCheck(tenant_id=t, audit_id=f"iau_{t}", framework="iso27001",
                                              requirement_ref="9.2", requirement_title="Internal audit"),
+    IsmsOrgRole: lambda t: IsmsOrgRole(tenant_id=t, name="Security lead"),
+    IsmsOrgRoleHolder: lambda t: IsmsOrgRoleHolder(tenant_id=t, role_id=f"ior_{t}", user_id=f"usr_{t}"),
+    IsmsRaciActivity: lambda t: IsmsRaciActivity(tenant_id=t, title="Risk assessment"),
+    IsmsRaciAssignment: lambda t: IsmsRaciAssignment(tenant_id=t, activity_id=f"ira_{t}", role_id=f"ior_{t}", letter="A"),
+    IsmsCompetence: lambda t: IsmsCompetence(tenant_id=t, user_id=f"usr_{t}", kind="training", title="Phishing",
+                                             achieved_on=date(2026, 1, 1)),
+    IsmsAckCampaign: lambda t: IsmsAckCampaign(tenant_id=t, document_version_id=f"idv_{t}", due_on=date(2027, 1, 1)),
+    IsmsAcknowledgement: lambda t: IsmsAcknowledgement(tenant_id=t, campaign_id=f"iac_{t}", document_version_id=f"idv_{t}",
+                                                       user_id=f"usr_{t}", content_sha256="0" * 64),
+    IsmsManagementReview: lambda t: IsmsManagementReview(tenant_id=t, ref="MR-001", title="Review", planned_on=date(2027, 1, 1),
+                                                         period_start=date(2026, 1, 1)),
+    IsmsReviewAction: lambda t: IsmsReviewAction(tenant_id=t, review_id=f"imr_{t}", description="Do it", due_on=date(2027, 2, 1)),
+    IsmsAuditSample: lambda t: IsmsAuditSample(tenant_id=t, population="controls", size=1, seed="s", population_size=1,
+                                               items=[]),
+    IsmsEvidenceRequest: lambda t: IsmsEvidenceRequest(tenant_id=t, request="Board minutes"),
+    IsmsSupplierLink: lambda t: IsmsSupplierLink(tenant_id=t, vendor_id=f"vnd_{t}", target_type="asset", target_id="x"),
+    IsmsIncidentReview: lambda t: IsmsIncidentReview(tenant_id=t, incident_id=f"inc_{t}"),
+    IsmsControlRequirement: lambda t: IsmsControlRequirement(tenant_id=t, tenant_control_id=f"itc_{t}", framework="iso27001",
+                                                             requirement_ref="A.5.1"),
+    IsmsDashboardLayout: lambda t: IsmsDashboardLayout(tenant_id=t, user_id=f"usr_{t}", tiles=["tasks"]),
+    IsmsDigestSubscription: lambda t: IsmsDigestSubscription(tenant_id=t, user_id=f"usr_{t}", frequency="weekly",
+                                                             next_send_at=datetime(2027, 1, 4, 7)),
     IsmsLegacyAnswer: lambda t: IsmsLegacyAnswer(tenant_id=t, framework="iso27001", source_framework="iso-27001",
                                                  source_ref="A.7.4", status="not_applicable"),
     IsmsImport: lambda t: IsmsImport(tenant_id=t, source_table="grc_policies", source_id=f"grcp_{t}",

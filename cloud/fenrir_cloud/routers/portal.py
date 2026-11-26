@@ -318,3 +318,43 @@ def portal_acknowledge(policy_id: str, request: Request, body: dict = Body(...),
         raise HTTPException(409, str(e))
     db.commit()
     return {"acknowledgedVersion": row.version, "at": row.at.isoformat(), "sha256": row.sha256}
+
+
+# ISMS acknowledgement campaigns: client portal accounts hold the ISMS staff role and acknowledge here.
+
+def _isms_db(principal: Principal, db: Session) -> Session:
+    from ..isms import rls
+    rls.bind_tenants(db, principal.tenant_ids)
+    return db
+
+
+@router.get("/isms/acknowledgements")
+def portal_isms_pending(principal: Principal = Depends(_portal), db: Session = Depends(get_db)):
+    from ..isms import people
+    return {"pending": people.pending_for(_isms_db(principal, db), principal.user, list(principal.tenant_ids))}
+
+
+def _isms_campaign(db: Session, principal: Principal, campaign_id: str):
+    from ..isms.models import IsmsAckCampaign
+    from ..isms.scope import get_scoped
+    return get_scoped(_isms_db(principal, db), IsmsAckCampaign, campaign_id, principal)
+
+
+@router.get("/isms/acknowledgements/{campaign_id}")
+def portal_isms_read(campaign_id: str, principal: Principal = Depends(_portal), db: Session = Depends(get_db)):
+    from ..isms import people
+    row = _isms_campaign(db, principal, campaign_id)
+    return people.acknowledgement_view(db, row, principal.user)
+
+
+@router.post("/isms/acknowledgements/{campaign_id}/acknowledge")
+def portal_isms_acknowledge(campaign_id: str, request: Request, body: dict = Body(...),
+                            principal: Principal = Depends(_portal), db: Session = Depends(get_db)):
+    from ..isms import people
+    if body.get("confirm") is not True:
+        raise HTTPException(400, "Tick that you have read and understood the document")
+    row = _isms_campaign(db, principal, campaign_id)
+    people.acknowledge(db, row, principal.user, principal.actor, str(body.get("sha256") or ""),
+                       request.client.host if request.client else "", request.headers.get("user-agent", ""), "portal")
+    db.commit()
+    return people.acknowledgement_view(db, row, principal.user)

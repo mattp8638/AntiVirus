@@ -348,7 +348,8 @@ def control_rows(db: Session, tenant_id: str) -> list[dict]:
                     "applicable": d.applicable if d else c.state != "not_applicable",
                     "reason": d.reason if d else ("Added by your organization." if not c.common else ""),
                     "requirements": sorted(serves.get(c.ref, ())), "satisfies": sorted(satisfies.get(c.ref, ())),
-                    "testProcedure": (library_controls.get(c.ref) or {}).get("test_procedure"),
+                    "testProcedure": (library_controls.get(c.ref) or {}).get("test_procedure") if c.common
+                    else c.test_procedure,
                     "assessment": c.assessment, "implementation": c.implementation,
                     "assessedAt": c.assessed_at.isoformat() + "Z" if c.assessed_at else None})
     return out
@@ -481,6 +482,9 @@ def soa_rows(db: Session, tenant_id: str, framework: str) -> list[dict]:
     for m in pack["mappings"]:
         if m["strength"] == "satisfies":
             implementing.setdefault(m["requirement"], []).append(m["control"])
+    from .custom_controls import links_by_requirement
+    for ref, custom in links_by_requirement(db, tenant_id, framework).items():
+        implementing.setdefault(ref, []).extend(custom)
     decisions = {r.target_key: r for r in db.execute(select(IsmsApplicability).where(
         IsmsApplicability.tenant_id == tenant_id, IsmsApplicability.target_type == "requirement")).scalars()}
     tcs = {c.ref: c for c in controls(db, tenant_id)}
