@@ -57,6 +57,12 @@ Each entry below cites its code and tests in `catalogue.csv` and is `implemented
   falls back to live files with a warning there.
 * Bare-metal recovery from the recovery ISO is proven in CI too (job recovery-e2e, [run 45569395053](https://github.com/zy538324/Fenrir-Backup/actions/runs/45569395053)): the
   tracker had still listed it as not booted in CI.
+* A real Windows restored bare-metal boots (2026-11-26, nightly workflow windows-baremetal, [run 45830323178](https://github.com/zy538324/Fenrir-Backup/actions/runs/45830323178)):
+  * Windows Server 2022 Core is installed unattended under KVM and backed up by a real agent.
+  * The Secure Boot recovery ISO restores it onto a larger blank disk.
+  * The restored disk boots Windows on fresh firmware. Its start-up task's record is read back from the disk.
+  * This closes the last BDR-03 gap that did not need outside accounts.
+  * The same day CI found and fixed an enrolment bug: tokens starting with '-' (1 in 64) were read as an option by the agent's command line.
 * Weekly restore tests and the ISMS DR record (2026-11-26, backup/docs/design/restore-tests.md):
   * A scheduled boot check can be a full restore test:
     * The newest backup of each machine is restored in full. On KVM hosts it is read back and matched.
