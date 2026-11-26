@@ -44,8 +44,20 @@ def test_shipped_packs_validate_with_no_errors_or_warnings(pristine):
     result = validate_packs(pristine)
     assert [i for i in result.issues if i.severity != "info"] == []
     assert sorted(p.meta.id for p in result.packs) == [
-        "common-controls", "cyber-essentials", "iso22301-2019", "iso27001-2022", "iso42001-2023", "ncsc-caf",
-        "nist-csf-2", "templates", "uk-gdpr"]
+        "cis-controls-v8-ig1", "common-controls", "cyber-essentials", "cyber-essentials-plus", "def-stan-05-138",
+        "dora-2022", "eu-gdpr-2016", "govassure", "govs-007", "iso22301-2019", "iso27001-2022", "iso42001-2023",
+        "ncsc-caf", "nis2-2022", "nist-csf-2", "pci-dss-4", "soc2-2017", "templates", "uk-gdpr"]
+
+
+def test_packs_converted_from_fenrir_hold_no_requirement_text(pristine):
+    """Decision R1: Fenrir's requirement summaries were not carried into the converted packs."""
+    converted = {"cis-controls-v8-ig1", "cyber-essentials-plus", "def-stan-05-138", "dora-2022", "eu-gdpr-2016",
+                 "govassure", "govs-007", "nis2-2022", "pci-dss-4", "soc2-2017"}
+    packs = [p for p in validate_packs(pristine).packs if p.meta.id in converted]
+    assert len(packs) == 10
+    for p in packs:
+        assert all(r.text is None and r.guidance is None for r in p.requirements), p.meta.id
+        assert p.meta.attribution
 
 
 def test_iso27001_holds_93_annex_a_controls_and_mandatory_clauses(pristine):

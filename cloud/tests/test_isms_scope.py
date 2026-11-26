@@ -6,17 +6,55 @@ existing tenant table (``grc_policies``).
 """
 
 from dataclasses import dataclass
+from datetime import date
 
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
+from fenrir_cloud.isms.models import (IsmsApplicability, IsmsDocument, IsmsDocumentOverride, IsmsDocumentVersion, IsmsEvidence, IsmsEvidenceLink, IsmsTask, IsmsApplicabilityOverride, IsmsAsset, IsmsContextIssue,
+                                      IsmsEntity, IsmsInterestedParty, IsmsMembership, IsmsProfileAnswer, IsmsScope,
+                                      IsmsRisk, IsmsRiskAcceptance, IsmsRiskControl, IsmsRiskMethod,
+                                      IsmsRiskSnapshot, IsmsSite, IsmsTenantControl, IsmsTenantFramework)
 from fenrir_cloud.isms.scope import TENANT_TABLES, get_scoped, require_same_tenant, scoped, tenant_table
 from fenrir_cloud.models import Base, GrcPolicy
 
 # Model -> function(tenant_id) returning an unsaved row for that tenant.
-FACTORIES: dict[type, callable] = {}
+FACTORIES: dict[type, callable] = {
+    IsmsMembership: lambda t: IsmsMembership(tenant_id=t, user_id=f"usr_{t}", role="staff"),
+    IsmsScope: lambda t: IsmsScope(tenant_id=t, statement="All services"),
+    IsmsEntity: lambda t: IsmsEntity(tenant_id=t, name="Acme Ltd"),
+    IsmsSite: lambda t: IsmsSite(tenant_id=t, name="Head office"),
+    IsmsContextIssue: lambda t: IsmsContextIssue(tenant_id=t, kind="external", description="New regulation"),
+    IsmsInterestedParty: lambda t: IsmsInterestedParty(tenant_id=t, name="Customers"),
+    IsmsAsset: lambda t: IsmsAsset(tenant_id=t, type="system", name="CRM"),
+    IsmsTenantFramework: lambda t: IsmsTenantFramework(tenant_id=t, framework="iso27001", pack_id="iso27001-2022",
+                                                       pack_version="1.1.0"),
+    IsmsProfileAnswer: lambda t: IsmsProfileAnswer(tenant_id=t, question_ref="develops_software", value=True),
+    IsmsApplicability: lambda t: IsmsApplicability(tenant_id=t, target_type="control", target_key="CC-BKP-01",
+                                                   applicable=True, source="derived", reason="Needed."),
+    IsmsApplicabilityOverride: lambda t: IsmsApplicabilityOverride(tenant_id=t, target_type="control",
+                                                                   target_key="CC-BKP-01", applicable=False,
+                                                                   justification="Not used."),
+    IsmsTenantControl: lambda t: IsmsTenantControl(tenant_id=t, ref="CC-BKP-01", title="Backups", statement="x"),
+    IsmsRiskMethod: lambda t: IsmsRiskMethod(tenant_id=t, likelihood_scale=[], impact_scale=[], levels=[], appetite=8,
+                                             acceptance_criteria="x"),
+    IsmsRisk: lambda t: IsmsRisk(tenant_id=t, ref="R-001", title="Ransomware"),
+    IsmsRiskControl: lambda t: IsmsRiskControl(tenant_id=t, risk_id=f"irk_{t}", tenant_control_id=f"itc_{t}"),
+    IsmsRiskAcceptance: lambda t: IsmsRiskAcceptance(tenant_id=t, risk_id=f"irk_{t}", accepted_by_user_id="u",
+                                                     residual_score=4, rationale="Fine."),
+    IsmsRiskSnapshot: lambda t: IsmsRiskSnapshot(tenant_id=t, payload={"risks": []}),
+    IsmsEvidence: lambda t: IsmsEvidence(tenant_id=t, title="Backup report", kind="note", note="x"),
+    IsmsEvidenceLink: lambda t: IsmsEvidenceLink(tenant_id=t, evidence_id=f"iev_{t}", tenant_control_id=f"itc_{t}"),
+    IsmsTask: lambda t: IsmsTask(tenant_id=t, kind="manual", title="Board review", due_on=date(2027, 1, 31)),
+    IsmsDocument: lambda t: IsmsDocument(tenant_id=t, doc_type="information-security-policy", title="Policy",
+                                         number=f"X-POL-{t}"),
+    IsmsDocumentVersion: lambda t: IsmsDocumentVersion(tenant_id=t, document_id=f"idc_{t}", version=1, template_ref="x",
+                                                       context_hash="0" * 64, blocks=[], html=""),
+    IsmsDocumentOverride: lambda t: IsmsDocumentOverride(tenant_id=t, document_id=f"idc_{t}", block_ref="isp.purpose",
+                                                         content="x"),
+}
 
 
 @dataclass

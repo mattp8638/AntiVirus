@@ -41,6 +41,94 @@ ACSC Essential Eight has been retired from the active UK catalogue, controls, ri
 
 CAF now uses version 4.0 with 41 contributing outcomes. In particular, A2.b is now Understanding Threat, A2.c covers Assurance, and A4.b covers secure software development and support. Existing A2.b answers require review rather than being treated as answers to the new outcome. Newly added outcomes start unanswered. The current CE guide is labelled against requirements v3.3; it does not claim to be the exact current IASME booklet.
 
+## ISMS roles
+
+Governance is gaining a full information security management system (ISMS), ported from the standalone ISMS Platform (see [the plan](ISMS_REWRITE_PLAN.md)). Every person who works in a customer's ISMS needs an ISMS role for that customer, whatever their Fenrir role, including MSP administrators.
+
+Open **Governance → ISMS roles** with a customer chosen in the tenant picker.
+
+| ISMS role | Can |
+| --- | --- |
+| ISMS administrator | Everything, including the customer's ISMS settings and roles |
+| ISMS manager | Run the programme: risks, controls, Statement of Applicability, documents, audits |
+| Control and risk owner | View, upload evidence, complete tasks, and edit the controls and risks they own |
+| Approver | View, approve documents, accept risks |
+| Staff | Read and acknowledge policies (in the client portal) |
+| Auditor | Read-only, log findings and view the audit log; access always ends on a set date, at most a year away |
+| Executive viewer | Read-only, with the executive dashboard |
+
+- Fenrir users with the **grc** permission, and ISMS administrators, can give and remove roles for the customers they can see. Giving roles does not grant access to the ISMS data itself.
+- A person can only be given a role in a customer they can already see in Fenrir. Client portal accounts can only be staff.
+- Every role given, changed or removed is recorded in the audit log.
+
+## Programme setup and ISMS controls
+
+**Programme setup** needs an ISMS role that can run the programme.
+
+1. Choose the frameworks the customer runs. Each stays on the content version chosen; a newer version is shown as available and is only adopted after a reviewed upgrade.
+2. Answer the questions the chosen frameworks ask about the organization (for example whether it develops software or has premises).
+3. **Review the changes** shows which requirements, controls and document sections would start or stop applying, and why. Nothing is saved until you choose **Apply**.
+
+Mandatory clauses always apply. A requirement or control can be included or excluded by hand with a written justification, except that mandatory clauses and anything a rule requires cannot be excluded.
+
+**ISMS controls** lists the customer's controls from the common control library. A control is not applicable when no applicable requirement needs it; its owner, state and notes are kept for when it applies again. ISMS managers set owners and states. A control's owner can change its state and notes, but not hand it to someone else. "Implemented with evidence" is set from current evidence, not by hand.
+
+### Is this in place today?
+
+Open a control on **ISMS controls** to answer whether it is in place: yes, partly, no, or (for ISMS managers) it does not apply. Yes and partly need a description of how it is done, which appears in the Statement of Applicability. "It does not apply" needs a justification and excludes the control and every requirement it fully satisfies; a later answer brings them back.
+
+### Statement of Applicability
+
+**Statement of Applicability** lists every non-mandatory requirement of a framework (for ISO 27001, the 93 Annex A controls) with its applicability, the reason or justification, the controls that implement it, its status and owners, and shows the framework's readiness. **Download (Excel)** gives a workbook with a cover sheet and one filterable sheet; every download is recorded in the audit log. Text in the workbook is always stored as plain text, never as a formula.
+
+Readiness is the share of applicable requirements that are met, where a requirement is met when every control that fully satisfies it is implemented with current evidence.
+
+## ISMS risks
+
+**ISMS risks** is the customer's risk register. It is separate from the older **Risk register** tab, whose records will be moved across later.
+
+- **Risk method** (ISMS managers): the likelihood and impact scales, the score bands, the appetite, the acceptance criteria and how often risks are reviewed. Score = likelihood x impact. Each saved change makes a new version. Until it is saved the default 5 x 5 method applies.
+- **Add risk**: title, description, threat, vulnerability, owner, assets affected, inherent rating, treatment and plan, residual rating, and the controls that treat it. Risks are numbered R-001, R-002 and so on. Levels are written out (for example "16 Critical"), and the heat map is a table of counts, so colour is never the only signal.
+- **Accept**: only the risk's owner can accept it, after a treatment is chosen. Above appetite the rationale must be at least 40 characters. The acceptance records who, when, the score and why, and lasts until the next review. Changing the accepted score or the owner ends it.
+- A risk's owner can edit it without broader rights, but only ISMS managers can change who owns it.
+- **Take a snapshot** keeps a dated copy of the whole assessment as evidence of when it was done.
+
+## ISMS evidence
+
+**ISMS evidence** holds evidence that controls operate: files, links, notes, and the results of Fenrir's automated GRC checks.
+
+- A control counts as **implemented with evidence** while it is implemented and has at least one piece of current evidence: scanned clean, not past its valid-until date, and (for Fenrir checks) passing. This updates straight away after any change, and every hour so expiry is noticed.
+- Files (up to 25 MB) are stored encrypted and checked by the ClamAV service set with `FENRIR_CLAMD_HOST` (the one the mail gateway uses). A file the scanner rejects is deleted at once, and the attempt is kept as a record. Without a scanner, production installations keep files waiting (they cannot be downloaded) until one is configured; development installations mark them as not scanned. Program and script files cannot be uploaded.
+- Fenrir's automated GRC evidence is imported every hour (or with **Import Fenrir results now**): a passing result is evidence for the mapped controls and marks a control that was not started or in progress as implemented; a failing result moves an implemented control back to in progress.
+- Evidence about to expire within 30 days is flagged once in the audit log. Downloads, uploads, rejected files and deletions are all audited.
+
+## ISMS tasks and calendar
+
+**ISMS tasks** shows the work that keeps the ISMS running (ISO 27001 8.1), as a list or a month calendar.
+
+- Every applicable control not yet in place gets a task to put it in place (due in 90 days), which closes itself once the control is marked as in place. Controls in place with a regular test frequency get a recurring check, scheduled again each time it is done. ISMS managers can add other tasks. Tasks follow the control's owner.
+- Completing a check records what was checked (a note, a piece of evidence, or both). People who do not run the programme see and complete only their own tasks.
+- Emails go out (through Fenrir's mail settings) when a task is due within 7 days and when it is overdue, and after 14 days overdue it is escalated to the customer's ISMS administrators and managers. Each happens once per task. Owners of controls are also emailed when evidence for them expires within 30 days.
+
+## ISMS documents
+
+**ISMS documents** lists the policies and procedures the ISMS needs, written from the customer's live data (scope, roles, risk method, controls, risks, Statement of Applicability and so on).
+
+- **Generate** makes a draft. A document is marked **out of date** when the data it uses has changed since its latest version; regenerating shows which sections would change. Sections switched off by the onboarding answers are left out (for example secure development when no software is developed).
+- Lifecycle: draft, in review, approved, published, then superseded by the next published version or withdrawn. ISMS managers send drafts for review; approvers and ISMS managers approve, publish and withdraw. Approval stamps the Word and PDF copies with the approver's name and date.
+- Approved and published versions never change: regenerating always makes a new draft, and the application refuses any edit to a version that has left draft.
+- **Use our own wording** replaces one section with the customer's text in every future version (placeholders such as `{{organization.legal_name}}` still work).
+- Staff, executives and auditors see only published versions. Every generation, step and download is recorded in the audit log.
+
+## Organization, scope and assets
+
+These tabs need an ISMS role that can run the programme (ISMS manager or ISMS administrator).
+
+- **Organization** holds the ISMS scope (4.3) with its boundaries, interfaces and exclusions, the context issues (4.1, including whether climate change is relevant), the interested parties and their requirements (4.2), and the legal entities and sites in and out of scope. Each change to the scope wording makes a new version.
+- **Assets** is the asset register: information, systems, services, people, suppliers and sites, each with a classification and an owner who has an ISMS role in the customer. **Import CSV** takes the columns name, type, classification, owner_email and description (up to 5,000 rows). If any row has a problem nothing is imported, and every problem is listed with its line. A row with the same type and name as an existing asset updates it.
+
+Every change is recorded in the audit log.
+
 ## Hosting update
 
 After merging the governance change into the branch deployed on the VPS:

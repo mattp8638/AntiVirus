@@ -276,8 +276,43 @@ for (let i = 0; i < 300; i++) {
   csvs.push({ text, out });
 }
 
+
+// 4. Document templates: every shipped template rendered with random contexts --------------------------------
+const docgen = await import(join(ismsDir, 'packages/docgen/src/index.ts'));
+const tplDir = join(packsRoot, 'templates');
+const words = ['Acme', 'Ltd', '**bold**', '|', '-', '1.', '#', '<b>', '&', '"q"', 'x\ny', '', 'Kim'];
+const randText = () => Array.from({ length: 1 + int(4) }, () => pick(words)).join(pick([' ', '', '\n']));
+const randValue = (depth: number): unknown => {
+  const r = rand();
+  if (depth <= 0 || r < 0.5) return pick([randText(), 0, 3, 1.5, true, false, null, ['a', 'b'], []]);
+  if (r < 0.75) return Array.from({ length: int(4) }, () => Object.fromEntries(['ref', 'title', 'owner', 'status', 'name'].map((k) => [k, randValue(0)])));
+  return Object.fromEntries(['legal_name', 'statement', 'appetite', 'total', 'title'].map((k) => [k, randValue(depth - 1)]));
+};
+const docs = [];
+for (const f of readdirSync(tplDir).filter((f) => f.endsWith('.md')).sort()) {
+  const body = readFileSync(join(tplDir, f), 'utf8').replace(/\r\n/g, '\n').replace(/^---\n[\s\S]*?\n---\n?/, '');
+  const paths = new Set<string>();
+  for (const m of body.matchAll(/\{\{\s*[#/]?\s*(?:each|if|unless)?\s*([a-z_][\w.]*)\s*\}\}/g)) paths.add(m[1]!);
+  for (let i = 0; i < 4; i++) {
+    const ctx: Record<string, any> = {};
+    for (const p of paths) {
+      const parts = p.split('.');
+      let cur = ctx;
+      parts.slice(0, -1).forEach((k) => { cur = cur[k] = (cur[k] && typeof cur[k] === 'object' && !Array.isArray(cur[k])) ? cur[k] : {}; });
+      if (rand() < 0.85) cur[parts.at(-1)!] = randValue(1);
+    }
+    const blocks = docgen.renderTemplate(body, ctx, { excludedSections: new Set(), overrides: new Map() });
+    docs.push({ file: f, ctx, blocks, html: blocks.map((b: any) => docgen.toHtml(docgen.parseMarkdown(b.markdown))), json: docgen.canonicalJson(ctx) });
+  }
+}
+const markdowns = [];
+for (let i = 0; i < 300; i++) {
+  const src = Array.from({ length: int(12) }, () => pick(['# Head', '## Sub', '### Third', '- item', '* star', '1. one', '2. two', '| a | b |', '|---|---|', '| 1 | **2** |', 'text **bold** more', '', '   ', 'plain & <tag>', '| solo'])).join('\n');
+  markdowns.push({ src, nodes: docgen.parseMarkdown(src), html: docgen.toHtml(docgen.parseMarkdown(src)) });
+}
+
 writeFileSync(
   join(fenrirDir, 'cloud/tests/fixtures/isms_parity.json.gz'),
-  gzipSync(JSON.stringify({ expressions, parses, applicability: { base, cases, diff }, domain: domainCases, samples, csvs }) + '\n', { level: 9 }),
+  gzipSync(JSON.stringify({ expressions, parses, applicability: { base, cases, diff }, domain: domainCases, samples, csvs, docs, markdowns }) + '\n', { level: 9 }),
 );
 console.log(`expressions ${expressions.length}, applicability cases ${cases.length}, domain cases ${domainCases.length}, samples ${samples.length}, csv ${csvs.length}`);

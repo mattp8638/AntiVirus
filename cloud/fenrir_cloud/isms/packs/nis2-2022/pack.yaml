@@ -1,0 +1,13 @@
+# Converted from Fenrir's grc_library/nis2.yml by scripts/isms/convert_fenrir_frameworks.py.
+id: nis2-2022
+kind: framework
+framework: nis2
+name: NIS 2 Directive
+version: Directive (EU) 2022/2555
+pack_version: 1.0.0
+certifiable: false
+licence: open
+attribution: Directive (EU) 2022/2555 (NIS 2). (c) European Union, https://eur-lex.europa.eu. Reuse is authorised under Commission
+  Decision 2011/833/EU. Identifiers are the official ones; short titles are our own.
+depends_on:
+- common-controls

@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 110
+LATEST_MIGRATION = 117
 
 def init_engine(url: str, pool_size: int = 5, max_overflow: int = 10) -> Engine:
     global _engine, _session_factory
@@ -696,6 +696,70 @@ def migrate(bind: Engine) -> list[int]:
                     "apple_mdm_configs", "apple_enrollments", "apple_devices", "apple_mdm_commands")])  # MDM-02
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (110)"))
                 applied.append(110)
+            if 111 not in versions:
+                # ISMS (docs/ISMS_REWRITE_PLAN.md): ISMS roles per person per customer, with row-level security.
+                from .isms import rls
+                from .isms.models import IsmsMembership
+                IsmsMembership.__table__.create(conn, checkfirst=True)
+                rls.enable(conn, [IsmsMembership.__tablename__])
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (111)"))
+                applied.append(111)
+            if 112 not in versions:
+                # ISMS organization and scope (ISO 27001 4.1 to 4.3) and the asset register.
+                from .isms import models as isms_models, rls
+                tables = [isms_models.IsmsScope, isms_models.IsmsEntity, isms_models.IsmsSite,
+                          isms_models.IsmsContextIssue, isms_models.IsmsInterestedParty, isms_models.IsmsAsset]
+                for model in tables:
+                    model.__table__.create(conn, checkfirst=True)
+                rls.enable(conn, [m.__tablename__ for m in tables])
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (112)"))
+                applied.append(112)
+            if 113 not in versions:
+                # ISMS content library, framework choices, onboarding answers, applicability and the customer's controls.
+                from .isms import models as isms_models, rls
+                isms_models.IsmsContentPack.__table__.create(conn, checkfirst=True)  # platform content: no tenant_id
+                tables = [isms_models.IsmsTenantFramework, isms_models.IsmsProfileAnswer, isms_models.IsmsApplicability,
+                          isms_models.IsmsApplicabilityOverride, isms_models.IsmsTenantControl]
+                for model in tables:
+                    model.__table__.create(conn, checkfirst=True)
+                rls.enable(conn, [m.__tablename__ for m in tables])
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (113)"))
+                applied.append(113)
+            if 114 not in versions:
+                # ISMS risk method, register, treating controls, acceptances and dated snapshots.
+                from .isms import models as isms_models, rls
+                tables = [isms_models.IsmsRiskMethod, isms_models.IsmsRisk, isms_models.IsmsRiskControl,
+                          isms_models.IsmsRiskAcceptance, isms_models.IsmsRiskSnapshot]
+                for model in tables:
+                    model.__table__.create(conn, checkfirst=True)
+                rls.enable(conn, [m.__tablename__ for m in tables])
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (114)"))
+                applied.append(114)
+            if 115 not in versions:
+                # ISMS evidence and its links to controls.
+                from .isms import models as isms_models, rls
+                tables = [isms_models.IsmsEvidence, isms_models.IsmsEvidenceLink]
+                for model in tables:
+                    model.__table__.create(conn, checkfirst=True)
+                rls.enable(conn, [m.__tablename__ for m in tables])
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (115)"))
+                applied.append(115)
+            if 116 not in versions:
+                # ISMS tasks: putting controls in place, operating them on schedule, and manual tasks.
+                from .isms import models as isms_models, rls
+                isms_models.IsmsTask.__table__.create(conn, checkfirst=True)
+                rls.enable(conn, [isms_models.IsmsTask.__tablename__])
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (116)"))
+                applied.append(116)
+            if 117 not in versions:
+                # ISMS documents, their versions (frozen once out of draft) and the customer's own wording.
+                from .isms import models as isms_models, rls
+                tables = [isms_models.IsmsDocument, isms_models.IsmsDocumentVersion, isms_models.IsmsDocumentOverride]
+                for model in tables:
+                    model.__table__.create(conn, checkfirst=True)
+                rls.enable(conn, [m.__tablename__ for m in tables])
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (117)"))
+                applied.append(117)
             conn.commit()
         except Exception:
             conn.rollback()

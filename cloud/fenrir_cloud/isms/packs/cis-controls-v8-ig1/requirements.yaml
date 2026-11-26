@@ -1,0 +1,281 @@
+# Converted from Fenrir's grc_library/cis-v8-ig1.yml by scripts/isms/convert_fenrir_frameworks.py. Identifiers and short titles only.
+- ref: '1.1'
+  group: '1'
+  short_title: Establish and maintain a detailed enterprise asset inventory
+  mandatory: false
+  licence: id-and-title
+- ref: '1.2'
+  group: '1'
+  short_title: Address unauthorized assets
+  mandatory: false
+  licence: id-and-title
+- ref: '2.1'
+  group: '2'
+  short_title: Establish and maintain a software inventory
+  mandatory: false
+  licence: id-and-title
+- ref: '2.2'
+  group: '2'
+  short_title: Ensure authorized software is currently supported
+  mandatory: false
+  licence: id-and-title
+- ref: '2.3'
+  group: '2'
+  short_title: Address unauthorized software
+  mandatory: false
+  licence: id-and-title
+- ref: '3.1'
+  group: '3'
+  short_title: Establish and maintain a data management process
+  mandatory: false
+  licence: id-and-title
+- ref: '3.2'
+  group: '3'
+  short_title: Establish and maintain a data inventory
+  mandatory: false
+  licence: id-and-title
+- ref: '3.3'
+  group: '3'
+  short_title: Configure data access control lists
+  mandatory: false
+  licence: id-and-title
+- ref: '3.4'
+  group: '3'
+  short_title: Enforce data retention
+  mandatory: false
+  licence: id-and-title
+- ref: '3.5'
+  group: '3'
+  short_title: Securely dispose of data
+  mandatory: false
+  licence: id-and-title
+- ref: '3.6'
+  group: '3'
+  short_title: Encrypt data on end-user devices
+  mandatory: false
+  licence: id-and-title
+- ref: '4.1'
+  group: '4'
+  short_title: Establish and maintain a secure configuration process
+  mandatory: false
+  licence: id-and-title
+- ref: '4.2'
+  group: '4'
+  short_title: Establish and maintain a secure configuration process for network...
+  mandatory: false
+  licence: id-and-title
+- ref: '4.3'
+  group: '4'
+  short_title: Configure automatic session locking on enterprise assets
+  mandatory: false
+  licence: id-and-title
+- ref: '4.4'
+  group: '4'
+  short_title: Implement and manage a firewall on servers
+  mandatory: false
+  licence: id-and-title
+- ref: '4.5'
+  group: '4'
+  short_title: Implement and manage a firewall on end-user devices
+  mandatory: false
+  licence: id-and-title
+- ref: '4.6'
+  group: '4'
+  short_title: Securely manage enterprise assets and software
+  mandatory: false
+  licence: id-and-title
+- ref: '4.7'
+  group: '4'
+  short_title: Manage default accounts on enterprise assets and software
+  mandatory: false
+  licence: id-and-title
+- ref: '5.1'
+  group: '5'
+  short_title: Establish and maintain an inventory of accounts
+  mandatory: false
+  licence: id-and-title
+- ref: '5.2'
+  group: '5'
+  short_title: Use unique passwords
+  mandatory: false
+  licence: id-and-title
+- ref: '5.3'
+  group: '5'
+  short_title: Disable dormant accounts
+  mandatory: false
+  licence: id-and-title
+- ref: '5.4'
+  group: '5'
+  short_title: Restrict administrator privileges to dedicated administrator accounts
+  mandatory: false
+  licence: id-and-title
+- ref: '6.1'
+  group: '6'
+  short_title: Establish an access granting process
+  mandatory: false
+  licence: id-and-title
+- ref: '6.2'
+  group: '6'
+  short_title: Establish an access revoking process
+  mandatory: false
+  licence: id-and-title
+- ref: '6.3'
+  group: '6'
+  short_title: Require MFA for externally-exposed applications
+  mandatory: false
+  licence: id-and-title
+- ref: '6.4'
+  group: '6'
+  short_title: Require MFA for remote network access
+  mandatory: false
+  licence: id-and-title
+- ref: '6.5'
+  group: '6'
+  short_title: Require MFA for administrative access
+  mandatory: false
+  licence: id-and-title
+- ref: '7.1'
+  group: '7'
+  short_title: Establish and maintain a vulnerability management process
+  mandatory: false
+  licence: id-and-title
+- ref: '7.2'
+  group: '7'
+  short_title: Establish and maintain a remediation process
+  mandatory: false
+  licence: id-and-title
+- ref: '7.3'
+  group: '7'
+  short_title: Perform automated operating system patch management
+  mandatory: false
+  licence: id-and-title
+- ref: '7.4'
+  group: '7'
+  short_title: Perform automated application patch management
+  mandatory: false
+  licence: id-and-title
+- ref: '8.1'
+  group: '8'
+  short_title: Establish and maintain an audit log management process
+  mandatory: false
+  licence: id-and-title
+- ref: '8.2'
+  group: '8'
+  short_title: Collect audit logs
+  mandatory: false
+  licence: id-and-title
+- ref: '8.3'
+  group: '8'
+  short_title: Ensure adequate audit log storage
+  mandatory: false
+  licence: id-and-title
+- ref: '9.1'
+  group: '9'
+  short_title: Ensure use of only fully supported browsers and email clients
+  mandatory: false
+  licence: id-and-title
+- ref: '9.2'
+  group: '9'
+  short_title: Use DNS filtering services
+  mandatory: false
+  licence: id-and-title
+- ref: '10.1'
+  group: '10'
+  short_title: Deploy and maintain anti-malware software
+  mandatory: false
+  licence: id-and-title
+- ref: '10.2'
+  group: '10'
+  short_title: Configure automatic anti-malware signature updates
+  mandatory: false
+  licence: id-and-title
+- ref: '10.3'
+  group: '10'
+  short_title: Disable autorun and autoplay for removable media
+  mandatory: false
+  licence: id-and-title
+- ref: '11.1'
+  group: '11'
+  short_title: Establish and maintain a data recovery process
+  mandatory: false
+  licence: id-and-title
+- ref: '11.2'
+  group: '11'
+  short_title: Perform automated backups
+  mandatory: false
+  licence: id-and-title
+- ref: '11.3'
+  group: '11'
+  short_title: Protect recovery data
+  mandatory: false
+  licence: id-and-title
+- ref: '11.4'
+  group: '11'
+  short_title: Establish and maintain an isolated instance of recovery data
+  mandatory: false
+  licence: id-and-title
+- ref: '12.1'
+  group: '12'
+  short_title: Ensure network infrastructure is up-to-date
+  mandatory: false
+  licence: id-and-title
+- ref: '14.1'
+  group: '14'
+  short_title: Establish and maintain a security awareness program
+  mandatory: false
+  licence: id-and-title
+- ref: '14.2'
+  group: '14'
+  short_title: Train workforce members to recognize social engineering attacks
+  mandatory: false
+  licence: id-and-title
+- ref: '14.3'
+  group: '14'
+  short_title: Train workforce members on authentication best practices
+  mandatory: false
+  licence: id-and-title
+- ref: '14.4'
+  group: '14'
+  short_title: Train workforce on data handling best practices
+  mandatory: false
+  licence: id-and-title
+- ref: '14.5'
+  group: '14'
+  short_title: Train workforce members on causes of unintentional data exposure
+  mandatory: false
+  licence: id-and-title
+- ref: '14.6'
+  group: '14'
+  short_title: Train workforce members on recognizing and reporting security incidents
+  mandatory: false
+  licence: id-and-title
+- ref: '14.7'
+  group: '14'
+  short_title: Train workforce on how to identify and report if their enterprise assets...
+  mandatory: false
+  licence: id-and-title
+- ref: '14.8'
+  group: '14'
+  short_title: Train workforce on the dangers of connecting to and transmitting enterprise...
+  mandatory: false
+  licence: id-and-title
+- ref: '15.1'
+  group: '15'
+  short_title: Establish and maintain an inventory of service providers
+  mandatory: false
+  licence: id-and-title
+- ref: '17.1'
+  group: '17'
+  short_title: Designate personnel to manage incident handling
+  mandatory: false
+  licence: id-and-title
+- ref: '17.2'
+  group: '17'
+  short_title: Establish and maintain contact information for reporting security incidents
+  mandatory: false
+  licence: id-and-title
+- ref: '17.3'
+  group: '17'
+  short_title: Establish and maintain an enterprise process for reporting incidents
+  mandatory: false
+  licence: id-and-title

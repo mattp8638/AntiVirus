@@ -1,0 +1,166 @@
+# Converted from Fenrir's grc_library/soc2.yml by scripts/isms/convert_fenrir_frameworks.py. Identifiers and short titles only.
+- ref: CC1.1
+  group: cc1
+  short_title: Integrity and ethical values
+  mandatory: false
+  licence: id-and-title
+- ref: CC1.2
+  group: cc1
+  short_title: Board oversight
+  mandatory: false
+  licence: id-and-title
+- ref: CC1.3
+  group: cc1
+  short_title: Structure, authority and responsibility
+  mandatory: false
+  licence: id-and-title
+- ref: CC1.4
+  group: cc1
+  short_title: Commitment to competence
+  mandatory: false
+  licence: id-and-title
+- ref: CC1.5
+  group: cc1
+  short_title: Accountability
+  mandatory: false
+  licence: id-and-title
+- ref: CC2.1
+  group: cc2
+  short_title: Quality information
+  mandatory: false
+  licence: id-and-title
+- ref: CC2.2
+  group: cc2
+  short_title: Internal communication
+  mandatory: false
+  licence: id-and-title
+- ref: CC2.3
+  group: cc2
+  short_title: External communication
+  mandatory: false
+  licence: id-and-title
+- ref: CC3.1
+  group: cc3
+  short_title: Objectives
+  mandatory: true
+  licence: id-and-title
+- ref: CC3.2
+  group: cc3
+  short_title: Risk identification and analysis
+  mandatory: true
+  licence: id-and-title
+- ref: CC3.3
+  group: cc3
+  short_title: Fraud risk
+  mandatory: true
+  licence: id-and-title
+- ref: CC3.4
+  group: cc3
+  short_title: Changes that affect controls
+  mandatory: false
+  licence: id-and-title
+- ref: CC4.1
+  group: cc4
+  short_title: Ongoing and separate evaluations
+  mandatory: false
+  licence: id-and-title
+- ref: CC4.2
+  group: cc4
+  short_title: Communicating deficiencies
+  mandatory: false
+  licence: id-and-title
+- ref: CC5.1
+  group: cc5
+  short_title: Control activities selected
+  mandatory: true
+  licence: id-and-title
+- ref: CC5.2
+  group: cc5
+  short_title: Technology general controls
+  mandatory: false
+  licence: id-and-title
+- ref: CC5.3
+  group: cc5
+  short_title: Policies and procedures
+  mandatory: false
+  licence: id-and-title
+- ref: CC6.1
+  group: cc6
+  short_title: Logical access security
+  mandatory: false
+  licence: id-and-title
+- ref: CC6.2
+  group: cc6
+  short_title: User registration and authorisation
+  mandatory: false
+  licence: id-and-title
+- ref: CC6.3
+  group: cc6
+  short_title: Role-based access
+  mandatory: false
+  licence: id-and-title
+- ref: CC6.4
+  group: cc6
+  short_title: Physical access
+  mandatory: false
+  licence: id-and-title
+- ref: CC6.5
+  group: cc6
+  short_title: Asset disposal
+  mandatory: false
+  licence: id-and-title
+- ref: CC6.6
+  group: cc6
+  short_title: External threats
+  mandatory: false
+  licence: id-and-title
+- ref: CC6.7
+  group: cc6
+  short_title: Data transmission and movement
+  mandatory: false
+  licence: id-and-title
+- ref: CC6.8
+  group: cc6
+  short_title: Malicious software
+  mandatory: false
+  licence: id-and-title
+- ref: CC7.1
+  group: cc7
+  short_title: Vulnerability and configuration monitoring
+  mandatory: false
+  licence: id-and-title
+- ref: CC7.2
+  group: cc7
+  short_title: Anomaly monitoring
+  mandatory: false
+  licence: id-and-title
+- ref: CC7.3
+  group: cc7
+  short_title: Security event evaluation
+  mandatory: false
+  licence: id-and-title
+- ref: CC7.4
+  group: cc7
+  short_title: Incident response
+  mandatory: false
+  licence: id-and-title
+- ref: CC7.5
+  group: cc7
+  short_title: Incident recovery
+  mandatory: false
+  licence: id-and-title
+- ref: CC8.1
+  group: cc8
+  short_title: Change management
+  mandatory: false
+  licence: id-and-title
+- ref: CC9.1
+  group: cc9
+  short_title: Business disruption
+  mandatory: false
+  licence: id-and-title
+- ref: CC9.2
+  group: cc9
+  short_title: Vendor and partner risk
+  mandatory: false
+  licence: id-and-title

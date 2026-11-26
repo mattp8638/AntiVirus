@@ -265,3 +265,51 @@ def test_csv_parsing_matches_the_standalone_engine():
         except csv_import.CsvError:
             got = {"error": True}
         assert got == c["out"], repr(c["text"])
+
+
+# Document templates ----------------------------------------------------------------------------------------------
+
+from fenrir_cloud.isms import docgen  # noqa: E402
+
+
+def _blocks(blocks):
+    return [{"ref": b["ref"], "markdown": b["markdown"], "overridden": b["overridden"]} for b in blocks]
+
+
+def test_templates_render_as_in_the_standalone_engine():
+    cases = fixture()["docs"]
+    assert len({c["file"] for c in cases}) >= 17
+    for c in cases:
+        body = c["file"]
+        from fenrir_cloud.isms.content import PACKS_ROOT
+
+        text = (PACKS_ROOT / "templates" / body).read_text(encoding="utf-8").replace("\r\n", "\n")
+        text = text.split("\n---\n", 1)[1] if text.startswith("---\n") else text
+        got = docgen.render_template(text, c["ctx"])
+        assert _blocks(got) == _blocks(c["blocks"]), c["file"]
+        assert [docgen.to_html(docgen.parse_markdown(b["markdown"])) for b in got] == c["html"], c["file"]
+        assert docgen.canonical_json(c["ctx"]) == c["json"], c["file"]
+
+
+def _nodes(nodes):
+    def inline(runs):
+        return [{"text": t, "bold": b} for t, b in runs]
+    out = []
+    for n in nodes:
+        n = dict(n)
+        if "text" in n:
+            n["text"] = inline(n["text"])
+        if "items" in n:
+            n["items"] = [inline(i) for i in n["items"]]
+        if "header" in n:
+            n["header"] = [inline(h) for h in n["header"]]
+            n["rows"] = [[inline(c) for c in r] for r in n["rows"]]
+        out.append(n)
+    return out
+
+
+def test_markdown_parses_as_in_the_standalone_engine():
+    for c in fixture()["markdowns"]:
+        got = docgen.parse_markdown(c["src"])
+        assert _nodes(got) == c["nodes"], repr(c["src"])
+        assert docgen.to_html(got) == c["html"], repr(c["src"])
