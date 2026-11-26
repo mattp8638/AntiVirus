@@ -1,0 +1,19 @@
+# Objectives A to D and their principles.
+- { ref: obj-a, title: "Objective A: Managing security risk", sort: 1, licence: crown-copyright-pending }
+- { ref: obj-b, title: "Objective B: Protecting against cyber attack", sort: 2, licence: crown-copyright-pending }
+- { ref: obj-c, title: "Objective C: Detecting cyber security events", sort: 3, licence: crown-copyright-pending }
+- { ref: obj-d, title: "Objective D: Minimising the impact of incidents", sort: 4, licence: crown-copyright-pending }
+- { ref: a1, parent: obj-a, title: "A1 Governance", sort: 10, licence: crown-copyright-pending }
+- { ref: a2, parent: obj-a, title: "A2 Risk management", sort: 11, licence: crown-copyright-pending }
+- { ref: a3, parent: obj-a, title: "A3 Asset management", sort: 12, licence: crown-copyright-pending }
+- { ref: a4, parent: obj-a, title: "A4 Supply chain", sort: 13, licence: crown-copyright-pending }
+- { ref: b1, parent: obj-b, title: "B1 Service protection policies, processes and procedures", sort: 14, licence: crown-copyright-pending }
+- { ref: b2, parent: obj-b, title: "B2 Identity and access control", sort: 15, licence: crown-copyright-pending }
+- { ref: b3, parent: obj-b, title: "B3 Data security", sort: 16, licence: crown-copyright-pending }
+- { ref: b4, parent: obj-b, title: "B4 System security", sort: 17, licence: crown-copyright-pending }
+- { ref: b5, parent: obj-b, title: "B5 Resilient networks and systems", sort: 18, licence: crown-copyright-pending }
+- { ref: b6, parent: obj-b, title: "B6 Staff awareness and training", sort: 19, licence: crown-copyright-pending }
+- { ref: c1, parent: obj-c, title: "C1 Security monitoring", sort: 20, licence: crown-copyright-pending }
+- { ref: c2, parent: obj-c, title: "C2 Proactive security event discovery", sort: 21, licence: crown-copyright-pending }
+- { ref: d1, parent: obj-d, title: "D1 Response and recovery planning", sort: 22, licence: crown-copyright-pending }
+- { ref: d2, parent: obj-d, title: "D2 Lessons learned", sort: 23, licence: crown-copyright-pending }

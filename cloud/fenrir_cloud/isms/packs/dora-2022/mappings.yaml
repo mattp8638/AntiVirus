@@ -1,0 +1,51 @@
+# Converted from Fenrir's grc_library/dora.yml by scripts/isms/convert_fenrir_frameworks.py.
+- requirement: DORA-DETECT
+  control: CC-LOG-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-LOGGING (Logging and monitoring) here.
+  licence: original
+- requirement: DORA-EXIT
+  control: CC-SUP-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-SUPPLIER (Third-party risk management) here.
+  licence: original
+- requirement: DORA-EXIT
+  control: CC-SUP-02
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-SUPPLIER (Third-party risk management) here.
+  licence: original
+- requirement: DORA-GOV
+  control: CC-GOV-02
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: DORA-INCIDENT
+  control: CC-INC-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-INCIDENT (Incident response) here.
+  licence: original
+- requirement: DORA-REVIEW
+  control: CC-INC-02
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: DORA-TEST
+  control: CC-BCM-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: DORA-TEST
+  control: CC-VUL-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: DORA-THIRD
+  control: CC-SUP-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-SUPPLIER (Third-party risk management) here.
+  licence: original
+- requirement: DORA-THIRD
+  control: CC-SUP-02
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-SUPPLIER (Third-party risk management) here.
+  licence: original

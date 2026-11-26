@@ -1,0 +1,41 @@
+# Converted from Fenrir's grc_library/cyber-essentials-plus.yml by scripts/isms/convert_fenrir_frameworks.py.
+- requirement: CEP-ACCESS
+  control: CC-ACC-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: CEP-EXTERNAL
+  control: CC-NET-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: CEP-EXTERNAL
+  control: CC-VUL-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: CEP-INTERNAL
+  control: CC-CFG-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: CEP-INTERNAL
+  control: CC-VUL-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: CEP-MALWARE
+  control: CC-MAL-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-MALWARE (Malware protection) here.
+  licence: original
+- requirement: CEP-PATCH
+  control: CC-VUL-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-PATCH (Security updates) here.
+  licence: original
+- requirement: CEP-RETEST
+  control: CC-VUL-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original

@@ -1,0 +1,125 @@
+# NIST CSF 2.0 subcategories to common controls v1.
+- { requirement: GV.OC-01, control: CC-GOV-06, strength: satisfies, rationale: "Mission is understood and informs risk management.", licence: original }
+- { requirement: GV.OC-02, control: CC-GOV-07, strength: satisfies, rationale: "Stakeholder needs and expectations are understood.", licence: original }
+- { requirement: GV.OC-03, control: CC-GOV-07, strength: satisfies, rationale: "Legal, regulatory and contractual requirements are managed.", licence: original }
+- { requirement: GV.OC-04, control: CC-BCM-01, strength: satisfies, rationale: "Critical objectives, capabilities and services are understood.", licence: original }
+- { requirement: GV.OC-05, control: CC-BCM-01, strength: satisfies, rationale: "Dependencies on the organization are understood.", licence: original }
+- { requirement: GV.OC-05, control: CC-SUP-01, strength: partial, rationale: "Dependencies on the organization are understood.", licence: original }
+- { requirement: GV.RM-01, control: CC-GOV-06, strength: satisfies, rationale: "Risk management objectives are agreed.", licence: original }
+- { requirement: GV.RM-02, control: CC-GOV-06, strength: satisfies, rationale: "Risk appetite and tolerance are set and communicated.", licence: original }
+- { requirement: GV.RM-03, control: CC-GOV-06, strength: satisfies, rationale: "Cyber risk is part of enterprise risk management.", licence: original }
+- { requirement: GV.RM-04, control: CC-GOV-06, strength: satisfies, rationale: "Risk response options are set out.", licence: original }
+- { requirement: GV.RM-05, control: CC-GOV-02, strength: satisfies, rationale: "Lines of communication for risk are established.", licence: original }
+- { requirement: GV.RM-06, control: CC-GOV-06, strength: satisfies, rationale: "A standard method for assessing risk is used.", licence: original }
+- { requirement: GV.RM-07, control: CC-GOV-06, strength: satisfies, rationale: "Positive risks are identified and considered.", licence: original }
+- { requirement: GV.RR-01, control: CC-GOV-02, strength: satisfies, rationale: "Leadership is accountable for cyber risk.", licence: original }
+- { requirement: GV.RR-02, control: CC-GOV-02, strength: satisfies, rationale: "Cyber roles and authorities are set and communicated.", licence: original }
+- { requirement: GV.RR-03, control: CC-GOV-02, strength: satisfies, rationale: "Adequate resources are allocated.", licence: original }
+- { requirement: GV.RR-04, control: CC-HR-01, strength: satisfies, rationale: "Cybersecurity is part of HR practices.", licence: original }
+- { requirement: GV.RR-04, control: CC-HR-02, strength: partial, rationale: "Cybersecurity is part of HR practices.", licence: original }
+- { requirement: GV.PO-01, control: CC-GOV-01, strength: satisfies, rationale: "Cyber policy is set, communicated and enforced.", licence: original }
+- { requirement: GV.PO-02, control: CC-GOV-01, strength: satisfies, rationale: "Cyber policy is reviewed and updated.", licence: original }
+- { requirement: GV.OV-01, control: CC-GOV-10, strength: satisfies, rationale: "Strategy outcomes are reviewed to adjust direction.", licence: original }
+- { requirement: GV.OV-02, control: CC-GOV-10, strength: satisfies, rationale: "Strategy is reviewed to cover requirements and risks.", licence: original }
+- { requirement: GV.OV-03, control: CC-GOV-11, strength: satisfies, rationale: "Risk management performance is evaluated.", licence: original }
+- { requirement: GV.SC-01, control: CC-SUP-01, strength: satisfies, rationale: "A supply chain risk programme is set up.", licence: original }
+- { requirement: GV.SC-02, control: CC-SUP-01, strength: satisfies, rationale: "Supplier security roles are set and coordinated.", licence: original }
+- { requirement: GV.SC-03, control: CC-SUP-01, strength: satisfies, rationale: "Supply chain risk is part of risk management.", licence: original }
+- { requirement: GV.SC-04, control: CC-SUP-01, strength: satisfies, rationale: "Suppliers are known and ranked by criticality.", licence: original }
+- { requirement: GV.SC-04, control: CC-AST-01, strength: partial, rationale: "Suppliers are known and ranked by criticality.", licence: original }
+- { requirement: GV.SC-05, control: CC-SUP-01, strength: satisfies, rationale: "Security requirements are written into supplier contracts.", licence: original }
+- { requirement: GV.SC-06, control: CC-SUP-01, strength: satisfies, rationale: "Due diligence happens before engaging suppliers.", licence: original }
+- { requirement: GV.SC-07, control: CC-SUP-02, strength: satisfies, rationale: "Supplier risks are monitored over the relationship.", licence: original }
+- { requirement: GV.SC-08, control: CC-SUP-02, strength: satisfies, rationale: "Suppliers take part in incident planning and response.", licence: original }
+- { requirement: GV.SC-08, control: CC-INC-01, strength: partial, rationale: "Suppliers take part in incident planning and response.", licence: original }
+- { requirement: GV.SC-09, control: CC-SUP-02, strength: satisfies, rationale: "Supply chain security is part of the lifecycle.", licence: original }
+- { requirement: GV.SC-10, control: CC-SUP-02, strength: satisfies, rationale: "Plans cover what happens when a supplier relationship ends.", licence: original }
+- { requirement: ID.AM-01, control: CC-AST-01, strength: satisfies, rationale: "Hardware is inventoried.", licence: original }
+- { requirement: ID.AM-02, control: CC-AST-01, strength: satisfies, rationale: "Software, services and systems are inventoried.", licence: original }
+- { requirement: ID.AM-03, control: CC-NET-01, strength: satisfies, rationale: "Network data flows are documented.", licence: original }
+- { requirement: ID.AM-04, control: CC-SUP-02, strength: satisfies, rationale: "Supplier services are inventoried.", licence: original }
+- { requirement: ID.AM-05, control: CC-AST-01, strength: satisfies, rationale: "Assets are prioritized by criticality and impact.", licence: original }
+- { requirement: ID.AM-05, control: CC-CLS-01, strength: partial, rationale: "Assets are prioritized by criticality and impact.", licence: original }
+- { requirement: ID.AM-07, control: CC-CLS-01, strength: satisfies, rationale: "Data and its metadata are inventoried.", licence: original }
+- { requirement: ID.AM-08, control: CC-AST-01, strength: satisfies, rationale: "Assets are managed across their lifecycle.", licence: original }
+- { requirement: ID.AM-08, control: CC-MED-01, strength: partial, rationale: "Assets are managed across their lifecycle.", licence: original }
+- { requirement: ID.RA-01, control: CC-VUL-01, strength: satisfies, rationale: "Asset vulnerabilities are identified and recorded.", licence: original }
+- { requirement: ID.RA-02, control: CC-GOV-05, strength: satisfies, rationale: "Threat intelligence is received.", licence: original }
+- { requirement: ID.RA-03, control: CC-GOV-05, strength: satisfies, rationale: "Internal and external threats are identified.", licence: original }
+- { requirement: ID.RA-04, control: CC-GOV-06, strength: satisfies, rationale: "Likelihood and impact of threats are identified.", licence: original }
+- { requirement: ID.RA-05, control: CC-GOV-06, strength: satisfies, rationale: "Risks are prioritized using threats, vulnerabilities and impact.", licence: original }
+- { requirement: ID.RA-06, control: CC-GOV-06, strength: satisfies, rationale: "Risk responses are chosen and tracked.", licence: original }
+- { requirement: ID.RA-07, control: CC-CHG-01, strength: satisfies, rationale: "Changes and exceptions are risk-assessed.", licence: original }
+- { requirement: ID.RA-08, control: CC-VUL-01, strength: satisfies, rationale: "Vulnerability disclosures are handled.", licence: original }
+- { requirement: ID.RA-09, control: CC-SUP-01, strength: satisfies, rationale: "Hardware and software authenticity is checked before use.", licence: original }
+- { requirement: ID.RA-10, control: CC-SUP-01, strength: satisfies, rationale: "Critical suppliers are assessed before acquisition.", licence: original }
+- { requirement: ID.IM-01, control: CC-GOV-10, strength: satisfies, rationale: "Improvements are found through evaluations.", licence: original }
+- { requirement: ID.IM-02, control: CC-INC-01, strength: satisfies, rationale: "Improvements are found through tests and exercises.", licence: original }
+- { requirement: ID.IM-02, control: CC-BCM-01, strength: partial, rationale: "Improvements are found through tests and exercises.", licence: original }
+- { requirement: ID.IM-03, control: CC-INC-02, strength: satisfies, rationale: "Improvements are found through operations.", licence: original }
+- { requirement: ID.IM-04, control: CC-INC-01, strength: satisfies, rationale: "Incident response plans are kept and improved.", licence: original }
+- { requirement: PR.AA-01, control: CC-IAM-01, strength: satisfies, rationale: "Identities and credentials are managed.", licence: original }
+- { requirement: PR.AA-02, control: CC-IAM-01, strength: satisfies, rationale: "Identities are proofed and bound to credentials.", licence: original }
+- { requirement: PR.AA-02, control: CC-HR-01, strength: partial, rationale: "Identities are proofed and bound to credentials.", licence: original }
+- { requirement: PR.AA-03, control: CC-IAM-02, strength: satisfies, rationale: "Users, services and hardware are authenticated.", licence: original }
+- { requirement: PR.AA-04, control: CC-IAM-02, strength: satisfies, rationale: "Identity assertions are protected and verified.", licence: original }
+- { requirement: PR.AA-05, control: CC-ACC-01, strength: satisfies, rationale: "Access permissions follow least privilege and are reviewed.", licence: original }
+- { requirement: PR.AA-05, control: CC-IAM-03, strength: partial, rationale: "Access permissions follow least privilege and are reviewed.", licence: original }
+- { requirement: PR.AA-06, control: CC-PHY-01, strength: satisfies, rationale: "Physical access is managed by risk.", licence: original }
+- { requirement: PR.AT-01, control: CC-AWR-01, strength: satisfies, rationale: "Staff get awareness and training.", licence: original }
+- { requirement: PR.AT-02, control: CC-AWR-01, strength: satisfies, rationale: "Specialist roles get role-based training.", licence: original }
+- { requirement: PR.DS-01, control: CC-CRY-01, strength: satisfies, rationale: "Data at rest is protected.", licence: original }
+- { requirement: PR.DS-01, control: CC-DLP-01, strength: partial, rationale: "Data at rest is protected.", licence: original }
+- { requirement: PR.DS-02, control: CC-CRY-01, strength: satisfies, rationale: "Data in transit is protected.", licence: original }
+- { requirement: PR.DS-02, control: CC-TRF-01, strength: partial, rationale: "Data in transit is protected.", licence: original }
+- { requirement: PR.DS-10, control: CC-DLP-01, strength: satisfies, rationale: "Data in use is protected.", licence: original }
+- { requirement: PR.DS-11, control: CC-BKP-01, strength: satisfies, rationale: "Backups are made, protected and tested.", licence: original }
+- { requirement: PR.PS-01, control: CC-CFG-01, strength: satisfies, rationale: "Configuration management is practised.", licence: original }
+- { requirement: PR.PS-02, control: CC-VUL-01, strength: satisfies, rationale: "Software is maintained, replaced and removed by risk.", licence: original }
+- { requirement: PR.PS-03, control: CC-PHY-05, strength: satisfies, rationale: "Hardware is maintained, replaced and removed by risk.", licence: original }
+- { requirement: PR.PS-03, control: CC-MED-01, strength: partial, rationale: "Hardware is maintained, replaced and removed by risk.", licence: original }
+- { requirement: PR.PS-04, control: CC-LOG-01, strength: satisfies, rationale: "Logs are generated for continuous monitoring.", licence: original }
+- { requirement: PR.PS-05, control: CC-END-01, strength: satisfies, rationale: "Unauthorized software cannot be installed or run.", licence: original }
+- { requirement: PR.PS-05, control: CC-MAL-01, strength: partial, rationale: "Unauthorized software cannot be installed or run.", licence: original }
+- { requirement: PR.PS-06, control: CC-DEV-01, strength: satisfies, rationale: "Secure development practices are followed.", licence: original }
+- { requirement: PR.PS-06, control: CC-DEV-02, strength: partial, rationale: "Secure development practices are followed.", licence: original }
+- { requirement: PR.IR-01, control: CC-NET-01, strength: satisfies, rationale: "Networks are protected from unauthorized access.", licence: original }
+- { requirement: PR.IR-02, control: CC-PHY-03, strength: satisfies, rationale: "Assets are protected from environmental threats.", licence: original }
+- { requirement: PR.IR-03, control: CC-BCM-02, strength: satisfies, rationale: "Resilience mechanisms work in normal and adverse conditions.", licence: original }
+- { requirement: PR.IR-04, control: CC-CAP-01, strength: satisfies, rationale: "Enough capacity is kept for availability.", licence: original }
+- { requirement: DE.CM-01, control: CC-LOG-01, strength: satisfies, rationale: "Networks and network services are monitored.", licence: original }
+- { requirement: DE.CM-01, control: CC-NET-01, strength: partial, rationale: "Networks and network services are monitored.", licence: original }
+- { requirement: DE.CM-02, control: CC-PHY-02, strength: satisfies, rationale: "The physical environment is monitored.", licence: original }
+- { requirement: DE.CM-03, control: CC-LOG-01, strength: satisfies, rationale: "Personnel activity and technology use are monitored.", licence: original }
+- { requirement: DE.CM-06, control: CC-SUP-02, strength: satisfies, rationale: "External service provider activity is monitored.", licence: original }
+- { requirement: DE.CM-09, control: CC-LOG-01, strength: satisfies, rationale: "Computing hardware, software and data are monitored.", licence: original }
+- { requirement: DE.CM-09, control: CC-MAL-01, strength: partial, rationale: "Computing hardware, software and data are monitored.", licence: original }
+- { requirement: DE.AE-02, control: CC-LOG-01, strength: satisfies, rationale: "Potentially adverse events are analysed.", licence: original }
+- { requirement: DE.AE-03, control: CC-LOG-01, strength: satisfies, rationale: "Information is correlated from several sources.", licence: original }
+- { requirement: DE.AE-04, control: CC-INC-01, strength: satisfies, rationale: "The impact and scope of events are understood.", licence: original }
+- { requirement: DE.AE-06, control: CC-INC-03, strength: satisfies, rationale: "Event information goes to the right people.", licence: original }
+- { requirement: DE.AE-07, control: CC-GOV-05, strength: satisfies, rationale: "Threat intelligence informs analysis.", licence: original }
+- { requirement: DE.AE-08, control: CC-INC-01, strength: satisfies, rationale: "Incidents are declared when criteria are met.", licence: original }
+- { requirement: RS.MA-01, control: CC-INC-01, strength: satisfies, rationale: "The response plan is executed with relevant parties.", licence: original }
+- { requirement: RS.MA-02, control: CC-INC-01, strength: satisfies, rationale: "Incident reports are triaged and validated.", licence: original }
+- { requirement: RS.MA-03, control: CC-INC-01, strength: satisfies, rationale: "Incidents are categorized and prioritized.", licence: original }
+- { requirement: RS.MA-04, control: CC-INC-01, strength: satisfies, rationale: "Incidents are escalated as needed.", licence: original }
+- { requirement: RS.MA-05, control: CC-INC-01, strength: satisfies, rationale: "Criteria for starting recovery are applied.", licence: original }
+- { requirement: RS.MA-05, control: CC-BCM-01, strength: partial, rationale: "Criteria for starting recovery are applied.", licence: original }
+- { requirement: RS.AN-03, control: CC-INC-02, strength: satisfies, rationale: "Analysis finds what happened and the root cause.", licence: original }
+- { requirement: RS.AN-06, control: CC-INC-02, strength: satisfies, rationale: "Investigation actions are recorded and preserved.", licence: original }
+- { requirement: RS.AN-07, control: CC-INC-02, strength: satisfies, rationale: "Incident data and metadata are collected with integrity.", licence: original }
+- { requirement: RS.AN-08, control: CC-INC-01, strength: satisfies, rationale: "Incident magnitude is estimated and confirmed.", licence: original }
+- { requirement: RS.CO-02, control: CC-INC-01, strength: satisfies, rationale: "Stakeholders are notified of incidents.", licence: original }
+- { requirement: RS.CO-02, control: CC-GOV-04, strength: partial, rationale: "Stakeholders are notified of incidents.", licence: original }
+- { requirement: RS.CO-03, control: CC-INC-01, strength: satisfies, rationale: "Information is shared with designated stakeholders.", licence: original }
+- { requirement: RS.MI-01, control: CC-INC-01, strength: satisfies, rationale: "Incidents are contained.", licence: original }
+- { requirement: RS.MI-02, control: CC-INC-01, strength: satisfies, rationale: "Incidents are eradicated.", licence: original }
+- { requirement: RC.RP-01, control: CC-BCM-01, strength: satisfies, rationale: "The recovery part of the response plan is executed.", licence: original }
+- { requirement: RC.RP-02, control: CC-BCM-01, strength: satisfies, rationale: "Recovery actions are chosen, scoped and prioritized.", licence: original }
+- { requirement: RC.RP-03, control: CC-BKP-01, strength: satisfies, rationale: "Backups and restored assets are checked before use.", licence: original }
+- { requirement: RC.RP-04, control: CC-BCM-01, strength: satisfies, rationale: "Critical functions are restored to a normal state.", licence: original }
+- { requirement: RC.RP-05, control: CC-BCM-01, strength: satisfies, rationale: "Restored assets are verified to be working.", licence: original }
+- { requirement: RC.RP-06, control: CC-BCM-01, strength: satisfies, rationale: "The end of recovery is declared and documented.", licence: original }
+- { requirement: RC.CO-03, control: CC-BCM-01, strength: satisfies, rationale: "Recovery progress is communicated to stakeholders.", licence: original }
+- { requirement: RC.CO-04, control: CC-BCM-01, strength: satisfies, rationale: "Public updates on recovery are shared through approved channels.", licence: original }

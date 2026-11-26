@@ -67,6 +67,21 @@ def tenant_subtree(db: Session, root_id: str) -> set[str]:
     return out
 
 
+def user_tenant_scope(db: Session, user: User) -> set[str]:
+    """The tenants a console user can see: everything for platform admins, else their tenant's subtree, narrowed to
+    their assigned customers when they have any (CORE-02)."""
+    if user.role == "platform_admin":
+        return {tid for (tid,) in db.execute(select(Tenant.id)).all()}
+    scope = tenant_subtree(db, user.tenant_id)
+    if user.assigned_tenant_ids:
+        assigned: set[str] = set()
+        for tid in user.assigned_tenant_ids:
+            if tid in scope:
+                assigned |= tenant_subtree(db, tid)
+        scope = assigned & scope
+    return scope
+
+
 def current_principal(
     request: Request,
     creds: HTTPAuthorizationCredentials | None = Depends(bearer),
@@ -101,16 +116,7 @@ def current_principal(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Client accounts can only use the client portal")
     if user.role != "client":
         staff_access_check(db, user, request, session_row.method)
-    if user.role == "platform_admin":
-        scope = {tid for (tid,) in db.execute(select(Tenant.id)).all()}
-    else:
-        scope = tenant_subtree(db, user.tenant_id)
-        if user.assigned_tenant_ids:  # CORE-02: limited to chosen customers inside their own tenant
-            assigned: set[str] = set()
-            for tid in user.assigned_tenant_ids:
-                if tid in scope:
-                    assigned |= tenant_subtree(db, tid)
-            scope = assigned & scope
+    scope = user_tenant_scope(db, user)
     scopes = None
     if user.role.startswith("custom:"):
         from . import roles

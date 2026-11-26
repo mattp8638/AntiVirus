@@ -1,0 +1,183 @@
+# Clauses 4 to 10 (mandatory, with original guidance) and the 38 Annex A controls (identifiers and short titles).
+- ref: "4.1"
+  group: clause-4
+  short_title: "Understanding the organization and its context"
+  mandatory: true
+  guidance: "Record the issues that affect your AI work, including your role as developer, provider or user of AI."
+  licence: id-and-title
+- ref: "4.2"
+  group: clause-4
+  short_title: "Understanding the needs and expectations of interested parties"
+  mandatory: true
+  guidance: "List who is affected by or cares about your AI systems and what they require."
+  licence: id-and-title
+- ref: "4.3"
+  group: clause-4
+  short_title: "Determining the scope of the AI management system"
+  mandatory: true
+  guidance: "Write down which AI systems, activities and sites the AI management system covers."
+  licence: id-and-title
+- ref: "4.4"
+  group: clause-4
+  short_title: "AI management system"
+  mandatory: true
+  guidance: "Run the AI management system as a managed system: processes, records and improvement."
+  licence: id-and-title
+- ref: "5.1"
+  group: clause-5
+  short_title: "Leadership and commitment"
+  mandatory: true
+  guidance: "Top management sponsors responsible AI and provides resources."
+  licence: id-and-title
+- ref: "5.2"
+  group: clause-5
+  short_title: "AI policy"
+  mandatory: true
+  guidance: "Approve and publish an AI policy and review it each year."
+  licence: id-and-title
+- ref: "5.3"
+  group: clause-5
+  short_title: "Roles, responsibilities and authorities"
+  mandatory: true
+  guidance: "Name who owns AI governance and who approves AI systems."
+  licence: id-and-title
+- ref: "6.1"
+  group: clause-6
+  short_title: "Actions to address risks and opportunities"
+  mandatory: true
+  guidance: "Assess and treat AI risks, and assess impacts of AI systems on people and society."
+  licence: id-and-title
+- ref: "6.2"
+  group: clause-6
+  short_title: "AI objectives and planning to achieve them"
+  mandatory: true
+  guidance: "Set measurable objectives for responsible AI with owners and dates."
+  licence: id-and-title
+- ref: "6.3"
+  group: clause-6
+  short_title: "Planning of changes"
+  mandatory: true
+  guidance: "Plan changes to the AI management system deliberately."
+  licence: id-and-title
+- ref: "7.1"
+  group: clause-7
+  short_title: "Resources"
+  mandatory: true
+  guidance: "Make sure people, data, tools and computing for AI are available."
+  licence: id-and-title
+- ref: "7.2"
+  group: clause-7
+  short_title: "Competence"
+  mandatory: true
+  guidance: "Make sure people working on AI are competent and keep records."
+  licence: id-and-title
+- ref: "7.3"
+  group: clause-7
+  short_title: "Awareness"
+  mandatory: true
+  guidance: "Staff know the AI policy and their part in responsible AI."
+  licence: id-and-title
+- ref: "7.4"
+  group: clause-7
+  short_title: "Communication"
+  mandatory: true
+  guidance: "Decide what is communicated about AI, to whom and when."
+  licence: id-and-title
+- ref: "7.5"
+  group: clause-7
+  short_title: "Documented information"
+  mandatory: true
+  guidance: "Keep AI management documents and records controlled and current."
+  licence: id-and-title
+- ref: "8.1"
+  group: clause-8
+  short_title: "Operational planning and control"
+  mandatory: true
+  guidance: "Plan and control the processes for AI systems, including outsourced ones."
+  licence: id-and-title
+- ref: "8.2"
+  group: clause-8
+  short_title: "AI risk assessment"
+  mandatory: true
+  guidance: "Assess AI risks at planned intervals and when things change."
+  licence: id-and-title
+- ref: "8.3"
+  group: clause-8
+  short_title: "AI risk treatment"
+  mandatory: true
+  guidance: "Carry out the AI risk treatment plan and keep records."
+  licence: id-and-title
+- ref: "8.4"
+  group: clause-8
+  short_title: "AI system impact assessment"
+  mandatory: true
+  guidance: "Assess the impact of AI systems at planned intervals and when things change."
+  licence: id-and-title
+- ref: "9.1"
+  group: clause-9
+  short_title: "Monitoring, measurement, analysis and evaluation"
+  mandatory: true
+  guidance: "Decide what to measure about AI performance and review the results."
+  licence: id-and-title
+- ref: "9.2"
+  group: clause-9
+  short_title: "Internal audit"
+  mandatory: true
+  guidance: "Audit the AI management system on a planned programme."
+  licence: id-and-title
+- ref: "9.3"
+  group: clause-9
+  short_title: "Management review"
+  mandatory: true
+  guidance: "Top management reviews the AI management system at planned intervals."
+  licence: id-and-title
+- ref: "10.1"
+  group: clause-10
+  short_title: "Continual improvement"
+  mandatory: true
+  guidance: "Improve the AI management system based on results and reviews."
+  licence: id-and-title
+- ref: "10.2"
+  group: clause-10
+  short_title: "Nonconformity and corrective action"
+  mandatory: true
+  guidance: "Correct problems and fix their causes."
+  licence: id-and-title
+- { ref: A.2.2, group: a-2, short_title: "AI policy", licence: id-and-title }
+- { ref: A.2.3, group: a-2, short_title: "Alignment with other organizational policies", licence: id-and-title }
+- { ref: A.2.4, group: a-2, short_title: "Review of the AI policy", licence: id-and-title }
+- { ref: A.3.2, group: a-3, short_title: "AI roles and responsibilities", licence: id-and-title }
+- { ref: A.3.3, group: a-3, short_title: "Reporting of concerns", licence: id-and-title }
+- { ref: A.4.2, group: a-4, short_title: "Resource documentation", licence: id-and-title }
+- { ref: A.4.3, group: a-4, short_title: "Data resources", licence: id-and-title }
+- { ref: A.4.4, group: a-4, short_title: "Tooling resources", licence: id-and-title }
+- { ref: A.4.5, group: a-4, short_title: "System and computing resources", licence: id-and-title }
+- { ref: A.4.6, group: a-4, short_title: "Human resources", licence: id-and-title }
+- { ref: A.5.2, group: a-5, short_title: "AI system impact assessment process", licence: id-and-title }
+- { ref: A.5.3, group: a-5, short_title: "Documentation of AI system impact assessments", licence: id-and-title }
+- { ref: A.5.4, group: a-5, short_title: "Assessing AI system impact on individuals or groups of individuals", licence: id-and-title }
+- { ref: A.5.5, group: a-5, short_title: "Assessing societal impacts of AI systems", licence: id-and-title }
+- { ref: A.6.1.2, group: a-6, short_title: "Objectives for responsible development of AI system", licence: id-and-title }
+- { ref: A.6.1.3, group: a-6, short_title: "Processes for responsible AI system design and development", licence: id-and-title }
+- { ref: A.6.2.2, group: a-6, short_title: "AI system requirements and specification", licence: id-and-title }
+- { ref: A.6.2.3, group: a-6, short_title: "Documentation of AI system design and development", licence: id-and-title }
+- { ref: A.6.2.4, group: a-6, short_title: "AI system verification and validation", licence: id-and-title }
+- { ref: A.6.2.5, group: a-6, short_title: "AI system deployment", licence: id-and-title }
+- { ref: A.6.2.6, group: a-6, short_title: "AI system operation and monitoring", licence: id-and-title }
+- { ref: A.6.2.7, group: a-6, short_title: "AI system technical documentation", licence: id-and-title }
+- { ref: A.6.2.8, group: a-6, short_title: "AI system recording of event logs", licence: id-and-title }
+- { ref: A.7.2, group: a-7, short_title: "Data for development and enhancement of AI system", licence: id-and-title }
+- { ref: A.7.3, group: a-7, short_title: "Acquisition of data", licence: id-and-title }
+- { ref: A.7.4, group: a-7, short_title: "Quality of data for AI systems", licence: id-and-title }
+- { ref: A.7.5, group: a-7, short_title: "Data provenance", licence: id-and-title }
+- { ref: A.7.6, group: a-7, short_title: "Data preparation", licence: id-and-title }
+- { ref: A.8.2, group: a-8, short_title: "System documentation and information for users", licence: id-and-title }
+- { ref: A.8.3, group: a-8, short_title: "External reporting", licence: id-and-title }
+- { ref: A.8.4, group: a-8, short_title: "Communication of incidents", licence: id-and-title }
+- { ref: A.8.5, group: a-8, short_title: "Information for interested parties", licence: id-and-title }
+- { ref: A.9.2, group: a-9, short_title: "Processes for responsible use of AI systems", licence: id-and-title }
+- { ref: A.9.3, group: a-9, short_title: "Objectives for responsible use of AI system", licence: id-and-title }
+- { ref: A.9.4, group: a-9, short_title: "Intended use of the AI system", licence: id-and-title }
+- { ref: A.10.2, group: a-10, short_title: "Allocating responsibilities", licence: id-and-title }
+- { ref: A.10.3, group: a-10, short_title: "Suppliers", licence: id-and-title }
+- { ref: A.10.4, group: a-10, short_title: "Customers", licence: id-and-title }

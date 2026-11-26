@@ -1,0 +1,40 @@
+- ref: R-DEV-01
+  reason: The organization does not develop software, so secure development, coding, testing and source code controls do not apply.
+  when: { "==": [ { "var": "develops_software" }, false ] }
+  effect: exclude
+  targets:
+    - { type: requirement, ref: A.8.4 }
+    - { type: requirement, ref: A.8.25 }
+    - { type: requirement, ref: A.8.28 }
+    - { type: requirement, ref: A.8.29 }
+    - { type: requirement, ref: A.8.31 }
+    - { type: requirement, ref: A.8.33 }
+    - { type: control, ref: CC-DEV-01 }
+    - { type: control, ref: CC-DEV-02 }
+    - { type: control, ref: CC-DEV-03 }
+    - { type: template_section, ref: isp.secure-development }
+  licence: original
+
+- ref: R-OUT-01
+  reason: The organization does not outsource software development.
+  when: { "==": [ { "var": "outsources_development" }, false ] }
+  effect: exclude
+  targets:
+    - { type: requirement, ref: A.8.30 }
+    - { type: control, ref: CC-DEV-04 }
+  licence: original
+
+- ref: R-PHY-01
+  reason: The organization has no premises of its own, so perimeter, entry, secure area, monitoring and cabling controls do not apply. Equipment used at home is covered by remote working controls.
+  when: { "==": [ { "var": "has_premises" }, false ] }
+  effect: exclude
+  targets:
+    - { type: requirement, ref: A.7.1 }
+    - { type: requirement, ref: A.7.2 }
+    - { type: requirement, ref: A.7.3 }
+    - { type: requirement, ref: A.7.4 }
+    - { type: requirement, ref: A.7.6 }
+    - { type: requirement, ref: A.7.12 }
+    - { type: control, ref: CC-PHY-01 }
+    - { type: control, ref: CC-PHY-02 }
+  licence: original

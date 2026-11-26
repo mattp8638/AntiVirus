@@ -1,0 +1,31 @@
+# Converted from Fenrir's grc_library/govassure.yml by scripts/isms/convert_fenrir_frameworks.py. Identifiers and short titles only.
+- ref: GA-1
+  group: readiness
+  short_title: Organisation and essential services
+  mandatory: true
+  licence: crown-copyright-pending
+- ref: GA-2
+  group: readiness
+  short_title: Systems and government profiles
+  mandatory: true
+  licence: crown-copyright-pending
+- ref: GA-3
+  group: readiness
+  short_title: CAF self-assessment evidence
+  mandatory: true
+  licence: crown-copyright-pending
+- ref: GA-4
+  group: readiness
+  short_title: Independent review
+  mandatory: false
+  licence: crown-copyright-pending
+- ref: GA-5
+  group: readiness
+  short_title: Targeted improvement plan
+  mandatory: true
+  licence: crown-copyright-pending
+- ref: GA-REVIEW
+  group: readiness
+  short_title: Annual assurance cycle
+  mandatory: true
+  licence: crown-copyright-pending

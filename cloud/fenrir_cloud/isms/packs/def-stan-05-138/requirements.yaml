@@ -1,0 +1,46 @@
+# Converted from Fenrir's grc_library/def-stan-05-138.yml by scripts/isms/convert_fenrir_frameworks.py. Identifiers and short titles only.
+- ref: CSM-SCOPE
+  group: readiness
+  short_title: Contract and organisation scope
+  mandatory: true
+  licence: crown-copyright-pending
+- ref: CSM-PROFILE
+  group: readiness
+  short_title: Assigned cyber risk level
+  mandatory: true
+  licence: crown-copyright-pending
+- ref: CSM-BASELINE
+  group: readiness
+  short_title: Applicable control set
+  mandatory: true
+  licence: crown-copyright-pending
+- ref: CSM-SAQ
+  group: readiness
+  short_title: Supplier assurance questionnaire
+  mandatory: true
+  licence: crown-copyright-pending
+- ref: CSM-DCC
+  group: readiness
+  short_title: Defence Cyber Certification
+  mandatory: true
+  licence: crown-copyright-pending
+- ref: CSM-FLOWDOWN
+  group: readiness
+  short_title: Subcontractor flow-down
+  mandatory: false
+  licence: crown-copyright-pending
+- ref: CSM-CIP
+  group: readiness
+  short_title: Improvement commitments
+  mandatory: true
+  licence: crown-copyright-pending
+- ref: CSM-INCIDENT
+  group: readiness
+  short_title: Incident and contract obligations
+  mandatory: false
+  licence: crown-copyright-pending
+- ref: CSM-REVIEW
+  group: readiness
+  short_title: Supplier assurance review
+  mandatory: false
+  licence: crown-copyright-pending

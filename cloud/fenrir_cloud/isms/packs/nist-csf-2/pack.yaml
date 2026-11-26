@@ -1,0 +1,13 @@
+# NIST Cybersecurity Framework 2.0: functions, categories and subcategory identifiers. A US
+# government work (open). Short titles are our own summaries; the framework text is not copied.
+id: nist-csf-2
+kind: framework
+framework: nist-csf
+name: NIST Cybersecurity Framework
+publisher: NIST
+version: "2.0"
+pack_version: 1.0.0
+certifiable: false
+licence: open
+attribution: "NIST Cybersecurity Framework 2.0 (NIST CSWP 29), a work of the US government. Short titles are platform summaries."
+depends_on: [common-controls]

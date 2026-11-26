@@ -1,0 +1,56 @@
+# Converted from Fenrir's grc_library/govs-007.yml by scripts/isms/convert_fenrir_frameworks.py.
+- requirement: G007-GOV
+  control: CC-GOV-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-POLICY (Security policy and governance) here.
+  licence: original
+- requirement: G007-INCIDENT
+  control: CC-INC-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-INCIDENT (Incident response) here.
+  licence: original
+- requirement: G007-PEOPLE
+  control: CC-AWR-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: G007-PEOPLE
+  control: CC-HR-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: G007-PHYSICAL
+  control: CC-AST-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: G007-PHYSICAL
+  control: CC-PHY-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: G007-REVIEW
+  control: CC-GOV-10
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: G007-SUPPLIERS
+  control: CC-SUP-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-SUPPLIER (Third-party risk management) here.
+  licence: original
+- requirement: G007-SUPPLIERS
+  control: CC-SUP-02
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-SUPPLIER (Third-party risk management) here.
+  licence: original
+- requirement: G007-TECH
+  control: CC-CFG-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: G007-TECH
+  control: CC-VUL-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
