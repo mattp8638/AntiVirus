@@ -33,6 +33,10 @@ func TestSampleCollectUploadsOnlyMatchingQuarantinedFiles(t *testing.T) {
 	if err != nil || out["artifactId"] != "art-1" || string(uploaded) != string(body) {
 		t.Fatalf("collect failed: %v %v", out, err)
 	}
+	// The quarantined file stays unreadable afterwards (mode 0), even when the agent had to grant itself access.
+	if info, err := os.Stat(filepath.Join(q.QuarantineDir, id+".bin")); err != nil || info.Mode().Perm() != 0 {
+		t.Fatalf("quarantined file must keep mode 0 after a sample is collected: %v %v", info.Mode(), err)
+	}
 	if _, err := SampleCollect(`{"recordId":"`+id+`","sha256":"`+strings.Repeat("0", 64)+`"}`, q, upload); err == nil {
 		t.Fatal("a different SHA-256 must be refused")
 	}

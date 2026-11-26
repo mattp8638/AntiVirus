@@ -94,7 +94,7 @@ Agent window (Windows):
 Open:
 - About 30 policy settings are still not enforced by any agent (marked in the editor; see
   `AGENT_SUPPORT` in `cloud/fenrir_cloud/policy_schema.py`).
-- Ransomware rollback is withdrawn: no agent keeps file snapshots.
+- Ransomware rollback is Windows only: the ransomware shield restores the attacked files from Volume Shadow Copy snapshots, for an incident under 24 hours old and once only (`RansomwareShield::RollbackLastIncident`). Linux and macOS have no rollback.
 
 ## 3. CRM
 
