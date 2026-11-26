@@ -970,3 +970,173 @@ def governance_import_run(body: TenantBody, principal: Principal = Depends(curre
     out = governance_import.run(db, body.tenant_id, principal.actor, principal.user.id)
     db.commit()
     return out
+
+
+# Improvement, objectives and the change log (Phase 4) -------------------------------------------------------------
+
+def _mgmt():
+    from ..isms import management
+    return management
+
+
+@router.get("/nonconformities")
+def list_ncs(tenant_id: str, status: str = "open", principal: Principal = Depends(current_principal),
+             db: Session = Depends(isms_db)):
+    require_isms(db, principal, tenant_id, "controls.view")
+    if status not in ("open", "closed", "cancelled", "all"):
+        raise HTTPException(400, "status is open, closed, cancelled or all")
+    return {"nonconformities": _mgmt().nonconformity_rows(db, tenant_id, status), "sources": _mgmt().NC_SOURCES}
+
+
+@router.post("/nonconformities")
+def raise_nc(body: TenantBody, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    require_isms(db, principal, body.tenant_id, "programme.manage")
+    row = _mgmt().raise_nc(db, body.tenant_id, principal.actor, principal.user.id, dict(body.model_extra or {}),
+                           _members(db, body.tenant_id))
+    db.commit()
+    return _mgmt().nonconformity_rows(db, body.tenant_id, "all", row.id)[0]
+
+
+def _nc(db, principal, nc_id):
+    from ..isms.models import IsmsNonconformity
+    return get_scoped(db, IsmsNonconformity, nc_id, principal)
+
+
+@router.patch("/nonconformities/{nc_id}")
+def update_nc(nc_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+              db: Session = Depends(isms_db)):
+    row = _nc(db, principal, nc_id)
+    require_isms(db, principal, row.tenant_id, "programme.manage")
+    _mgmt().update_nc(db, row, principal.actor, body, _members(db, row.tenant_id))
+    db.commit()
+    return _mgmt().nonconformity_rows(db, row.tenant_id, "all", row.id)[0]
+
+
+@router.post("/nonconformities/{nc_id}/actions")
+def add_corrective_action(nc_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                          db: Session = Depends(isms_db)):
+    row = _nc(db, principal, nc_id)
+    require_isms(db, principal, row.tenant_id, "programme.manage")
+    _mgmt().add_action(db, row, principal.actor, body, _members(db, row.tenant_id))
+    db.commit()
+    return _mgmt().nonconformity_rows(db, row.tenant_id, "all", row.id)[0]
+
+
+@router.post("/corrective-actions/{action_id}/done")
+def complete_corrective_action(action_id: str, body: dict = Body(default={}),
+                               principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    """The action's owner, or an ISMS manager, records it as done."""
+    from ..isms.models import IsmsCorrectiveAction
+
+    a = get_scoped(db, IsmsCorrectiveAction, action_id, principal)
+    role = require_isms(db, principal, a.tenant_id, "tasks.complete")
+    if a.owner_user_id != principal.user.id and not access.can(role, "programme.manage"):
+        raise HTTPException(403, "Only the action's owner or an ISMS manager can complete it")
+    _mgmt().complete_action(db, a, principal.actor, principal.user.id, str(body.get("note") or ""))
+    db.commit()
+    return _mgmt().nonconformity_rows(db, a.tenant_id, "all", a.nonconformity_id)[0]
+
+
+class Effectiveness(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    effective: bool
+    note: str = Field(max_length=4000)
+
+
+@router.post("/nonconformities/{nc_id}/effectiveness")
+def nc_effectiveness(nc_id: str, body: Effectiveness, principal: Principal = Depends(current_principal),
+                     db: Session = Depends(isms_db)):
+    row = _nc(db, principal, nc_id)
+    require_isms(db, principal, row.tenant_id, "programme.manage")
+    _mgmt().record_effectiveness(db, row, principal.actor, principal.user.id, body.effective, body.note)
+    db.commit()
+    return _mgmt().nonconformity_rows(db, row.tenant_id, "all", row.id)[0]
+
+
+class CloseNote(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    outcome: str
+    note: str = Field(max_length=4000)
+
+
+@router.post("/nonconformities/{nc_id}/close")
+def nc_close(nc_id: str, body: CloseNote, principal: Principal = Depends(current_principal),
+             db: Session = Depends(isms_db)):
+    row = _nc(db, principal, nc_id)
+    require_isms(db, principal, row.tenant_id, "programme.manage")
+    _mgmt().close_with_note(db, row, principal.actor, body.outcome, body.note)
+    db.commit()
+    return _mgmt().nonconformity_rows(db, row.tenant_id, "all", row.id)[0]
+
+
+@router.get("/objectives")
+def list_objectives(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    require_isms(db, principal, tenant_id, "controls.view")
+    return {"objectives": _mgmt().objective_rows(db, tenant_id)}
+
+
+@router.post("/objectives")
+def add_objective(body: TenantBody, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    require_isms(db, principal, body.tenant_id, "programme.manage")
+    row = _mgmt().save_objective(db, body.tenant_id, principal.actor, dict(body.model_extra or {}),
+                                 _members(db, body.tenant_id))
+    db.commit()
+    return _mgmt().objective_rows(db, body.tenant_id, row.id)[0]
+
+
+def _objective(db, principal, obj_id):
+    from ..isms.models import IsmsObjective
+    return get_scoped(db, IsmsObjective, obj_id, principal)
+
+
+@router.patch("/objectives/{obj_id}")
+def update_objective(obj_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                     db: Session = Depends(isms_db)):
+    row = _objective(db, principal, obj_id)
+    require_isms(db, principal, row.tenant_id, "programme.manage")
+    if "status" in body and set(body) <= {"status", "note"}:
+        _mgmt().set_objective_status(db, row, principal.actor, body["status"], str(body.get("note") or ""))
+    else:
+        _mgmt().save_objective(db, row.tenant_id, principal.actor, body, _members(db, row.tenant_id), row)
+    db.commit()
+    return _mgmt().objective_rows(db, row.tenant_id, row.id)[0]
+
+
+@router.post("/objectives/{obj_id}/values")
+def record_metric(obj_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                  db: Session = Depends(isms_db)):
+    """The objective's owner, or an ISMS manager, records a measurement."""
+    row = _objective(db, principal, obj_id)
+    role = require_isms(db, principal, row.tenant_id, "controls.view")
+    if row.owner_user_id != principal.user.id and not access.can(role, "programme.manage"):
+        raise HTTPException(403, "Only the objective's owner or an ISMS manager can record values")
+    _mgmt().record_value(db, row, principal.actor, body)
+    db.commit()
+    return _mgmt().objective_rows(db, row.tenant_id, row.id)[0]
+
+
+@router.get("/changes")
+def list_changes(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    require_isms(db, principal, tenant_id, "controls.view")
+    return {"changes": _mgmt().change_rows(db, tenant_id)}
+
+
+@router.post("/changes")
+def add_change(body: TenantBody, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    require_isms(db, principal, body.tenant_id, "programme.manage")
+    row = _mgmt().save_change(db, body.tenant_id, principal.actor, dict(body.model_extra or {}),
+                              _members(db, body.tenant_id))
+    db.commit()
+    return next(c for c in _mgmt().change_rows(db, body.tenant_id) if c["id"] == row.id)
+
+
+@router.patch("/changes/{change_id}")
+def update_change(change_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                  db: Session = Depends(isms_db)):
+    from ..isms.models import IsmsChange
+
+    row = get_scoped(db, IsmsChange, change_id, principal)
+    require_isms(db, principal, row.tenant_id, "programme.manage")
+    _mgmt().save_change(db, row.tenant_id, principal.actor, body, _members(db, row.tenant_id), row)
+    db.commit()
+    return next(c for c in _mgmt().change_rows(db, row.tenant_id) if c["id"] == row.id)

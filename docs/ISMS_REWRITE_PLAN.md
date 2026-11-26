@@ -100,6 +100,7 @@ Each phase is a set of small vertical slices: migration, domain logic, API, cons
 3. **Documents.** Templates, generation to Word and PDF, approval with immutable versions, acknowledgement.
    - Done: the template engine (placeholders, Markdown subset, HTML, context hash, section changes) held to the standalone engine by the parity test on every shipped template; Word (python-docx) and PDF (fpdf2 with Fenrir's DejaVu fonts, so no Gotenberg service); documents, versions and the customer's wording (migration 117) with the lifecycle, frozen versions guarded in the application on both databases, and the **ISMS documents** tab. Acknowledgement campaigns come with the people module (Phase 4).
 4. **Management system.** People and training, internal audit, management review, improvement, objectives and metrics, ISMS change log.
+   - Done: improvement (nonconformities, corrective actions, effectiveness checks, opportunities), objectives with measurements, health, trend and staleness, and the ISMS change log (migration 119), on the **ISMS improvement** tab. Next: people and training with acknowledgement campaigns, internal audit, management review.
 5. **Assurance and MSP.** Auditor portal, supplier and incident links, portfolio view across customers, template push, dashboards and digests.
 6. **Extra packs.** Privacy, business continuity, AI management.
 7. **AI assistance**, last and off by default (R5).

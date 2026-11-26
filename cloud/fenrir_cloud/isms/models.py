@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..db import Base
@@ -450,3 +450,95 @@ class IsmsImport(_Row, Base):
     target_table: Mapped[str] = mapped_column(String(60))
     target_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     note: Mapped[str] = mapped_column(Text, default="")
+
+
+@tenant_table
+class IsmsNonconformity(_Row, Base):
+    """A nonconformity (ISO 27001 10.2) or an improvement opportunity (10.1). Never deleted, only cancelled."""
+    __tablename__ = "isms_nonconformities"
+    __table_args__ = (UniqueConstraint("tenant_id", "ref", name="uq_isms_nonconformity_ref"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("inc"))
+    ref: Mapped[str] = mapped_column(String(20))  # NC-001 or OFI-001
+    kind: Mapped[str] = mapped_column(String(20), default="nonconformity")  # nonconformity | opportunity
+    title: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text, default="")
+    source: Mapped[str] = mapped_column(String(30))
+    severity: Mapped[str | None] = mapped_column(String(10), nullable=True)  # minor | major (nonconformities)
+    requirement_ref: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    raised_on: Mapped[date] = mapped_column(Date)
+    raised_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    owner_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    correction: Mapped[str] = mapped_column(Text, default="")
+    root_cause: Mapped[str] = mapped_column(Text, default="")
+    due_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="open")  # open | closed | cancelled
+    effectiveness_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    effective: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    verified_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    closure_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    audit_finding_id: Mapped[str | None] = mapped_column(String(32), nullable=True)  # raised from an audit finding
+
+
+@tenant_table
+class IsmsCorrectiveAction(_Row, Base):
+    __tablename__ = "isms_corrective_actions"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ica"))
+    nonconformity_id: Mapped[str] = mapped_column(ForeignKey("isms_nonconformities.id"), index=True)
+    description: Mapped[str] = mapped_column(Text)
+    owner_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    due_on: Mapped[date] = mapped_column(Date)
+    done_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    done_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    done_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+@tenant_table
+class IsmsObjective(_Row, Base):
+    """An information security objective with its measure and target (ISO 27001 6.2, 9.1)."""
+    __tablename__ = "isms_objectives"
+    __table_args__ = (UniqueConstraint("tenant_id", "ref", name="uq_isms_objective_ref"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("iob"))
+    ref: Mapped[str] = mapped_column(String(20))
+    title: Mapped[str] = mapped_column(String(200))
+    measure: Mapped[str] = mapped_column(Text)
+    unit: Mapped[str] = mapped_column(String(40), default="")
+    direction: Mapped[str] = mapped_column(String(10))  # at_least | at_most
+    target: Mapped[float] = mapped_column(Float)
+    baseline: Mapped[float | None] = mapped_column(Float, nullable=True)
+    plan: Mapped[str] = mapped_column(Text, default="")
+    resources: Mapped[str] = mapped_column(Text, default="")
+    owner_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    frequency: Mapped[str] = mapped_column(String(20), default="monthly")
+    due_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="active")  # active | achieved | dropped
+    status_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+@tenant_table
+class IsmsMetricValue(_Row, Base):
+    __tablename__ = "isms_metric_values"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("imv"))
+    objective_id: Mapped[str] = mapped_column(ForeignKey("isms_objectives.id"), index=True)
+    measured_on: Mapped[date] = mapped_column(Date)
+    value: Mapped[float] = mapped_column(Float)
+    note: Mapped[str] = mapped_column(Text, default="")
+
+
+@tenant_table
+class IsmsChange(_Row, Base):
+    """A planned change to the ISMS (ISO 27001 6.3)."""
+    __tablename__ = "isms_changes"
+    __table_args__ = (UniqueConstraint("tenant_id", "ref", name="uq_isms_change_ref"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ich"))
+    ref: Mapped[str] = mapped_column(String(20))
+    title: Mapped[str] = mapped_column(String(200))
+    purpose: Mapped[str] = mapped_column(Text)
+    consequences: Mapped[str] = mapped_column(Text, default="")
+    resources: Mapped[str] = mapped_column(Text, default="")
+    owner_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    planned_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="planned")  # planned | in_progress | done | cancelled
+    completed_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    outcome: Mapped[str] = mapped_column(Text, default="")

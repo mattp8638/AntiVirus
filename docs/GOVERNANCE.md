@@ -130,6 +130,16 @@ Readiness is the share of applicable requirements that are met, where a requirem
 - **Use our own wording** replaces one section with the customer's text in every future version (placeholders such as `{{organization.legal_name}}` still work).
 - Staff, executives and auditors see only published versions. Every generation, step and download is recorded in the audit log.
 
+## ISMS improvement
+
+**ISMS improvement** has three views. Everyone with an ISMS role that can see controls can read them; ISMS managers make changes.
+
+- **Nonconformities and improvements** (10.2). Each record gets a reference (NC-001, or OFI-001 for an improvement opportunity), a source (internal or external audit, incident, management review, monitoring, complaint or other) and, for a nonconformity, a severity. A nonconformity moves through: root cause needed, corrective action needed, actions in progress, ready for effectiveness check. The owner of a corrective action marks it done with a note. Once every action is done, the ISMS manager records how they checked it worked: effective closes it, not effective keeps it open for more action. Improvement opportunities close with a note; either kind can be cancelled with a reason.
+- **Objectives and measures** (6.2, 9.1). Each objective has a measure, a target (at least or at most a value), an owner and a frequency. The owner or an ISMS manager records values; the list shows the latest value, whether it is on target, the trend and whether the measure is stale (no value for longer than its frequency). An objective is finished as achieved or retired with a note.
+- **Planned changes** (6.3). Changes to the ISMS itself, with their purpose, possible consequences, resources and owner. A change marked done or cancelled needs the date it finished and its outcome.
+
+Every step is recorded in the audit log.
+
 ## Organization, scope and assets
 
 These tabs need an ISMS role that can run the programme (ISMS manager or ISMS administrator).
