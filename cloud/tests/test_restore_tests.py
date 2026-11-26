@@ -6,10 +6,12 @@ from datetime import timedelta
 
 from test_device_backup import CAPS, SEALED, agent_enroll, finish, heartbeat, image, link, ready_repo, unlock
 from test_grc_assurance import adopt
+from test_isms_evidence import prog, state  # noqa: F401  (prog is a fixture)
 
 from fenrir_cloud import backup as bk
 from fenrir_cloud import crypto, restore_tests
 from fenrir_cloud import db as database
+from fenrir_cloud.isms.models import IsmsEvidence, IsmsEvidenceLink, IsmsTenantControl
 from fenrir_cloud.models import (Alert, AuditLog, BackupBootCheck, BackupJob, BackupRepository, GrcEvidence, GrcEvidenceLink,
                                  ImageBackupPlan, utcnow)
 
@@ -28,8 +30,9 @@ def backed_up(client, admin, tenant):
     return agent_id, h, repo_id, im
 
 
-def test_weekly_restore_test_is_isms_evidence_with_screenshot_and_vm_deletion(client, admin, tenant):
+def test_weekly_restore_test_is_isms_evidence_with_screenshot_and_vm_deletion(client, admin, tenant, prog):
     adopt(client, admin, tenant, "iso-27001")
+    isms_h, _, isms_ctl = prog
     agent_id, h, repo_id, im = backed_up(client, admin, tenant)
     today = utcnow().weekday()
     url = f"{URL}/repositories/{repo_id}/boot-verification"
@@ -60,16 +63,30 @@ def test_weekly_restore_test_is_isms_evidence_with_screenshot_and_vm_deletion(cl
     assert t["restore"]["chunksChecked"] == 1000 and t["recoveryPoint"][:4] == str(utcnow().year)
     with database.session_factory()() as db:
         ev = db.get(GrcEvidence, t["evidenceId"])
-        assert ev.kind == "file" and ev.content_type == "image/png" and ev.control_id == "FC-DRTEST"
+        assert ev.kind == "automated" and ev.control_id == "FC-DRTEST" and ev.data["status"] == "passing"
         assert ev.data["vmDeleted"] is True and ev.data["vmDeletedAt"].startswith("2027-01-15")
-        assert ev.data["screenshotSha256"] == ev.sha256
-        links = {(l.framework_key, l.requirement_id) for l in db.query(GrcEvidenceLink).filter_by(evidence_id=ev.id)}
-        assert {("iso-27001", "A.5.30"), ("iso-27001", "A.8.13")} <= links
+        shot = db.get(GrcEvidence, t["screenshotEvidenceId"])
+        assert shot.kind == "file" and shot.content_type == "image/png" and ev.data["screenshotSha256"] == shot.sha256
+        for e in (ev, shot):
+            links = {(l.framework_key, l.requirement_id) for l in db.query(GrcEvidenceLink).filter_by(evidence_id=e.id)}
+            assert {("iso-27001", "A.5.30"), ("iso-27001", "A.8.13")} <= links
         entry = db.query(AuditLog).filter_by(action="backup.restore_test").one()
         assert entry.details["evidence"] == ev.id and entry.details["vmDeleted"] is True and entry.hash
-    # The screenshot is stored encrypted and downloads as the evidence file.
-    got = client.get(f"/api/console/grc/evidence/{t['evidenceId']}/download", headers=admin)
+        # The ISMS has the screenshot as a file on its continuity and backup controls.
+        f = db.query(IsmsEvidence).filter_by(tenant_id=tenant["id"], kind="file").one()
+        assert f.sha256 == shot.sha256 and f.content_type == "image/png"
+        refs = {db.get(IsmsTenantControl, l.tenant_control_id).ref for l in db.query(IsmsEvidenceLink).filter_by(evidence_id=f.id)}
+        assert refs == {"CC-BCM-01", "CC-BKP-01"}
+    # The screenshot is stored encrypted and downloads as its evidence file.
+    got = client.get(f"/api/console/grc/evidence/{t['screenshotEvidenceId']}/download", headers=admin)
     assert got.status_code == 200 and got.content == PNG
+    # The ISMS imports the passing result for its continuity control.
+    out = client.post("/api/console/isms/evidence/import-fenrir", headers=isms_h, json={"tenantId": tenant["id"]}).json()
+    assert out["passing"] >= 1, out
+    listing = client.get(f"/api/console/isms/evidence?tenant_id={tenant['id']}&control_id={isms_ctl['CC-BCM-01']['id']}",
+                         headers=isms_h).json()["evidence"]
+    assert {e["source"] for e in listing} >= {"fenrir:FC-DRTEST"}
+    assert state(client, isms_h, tenant["id"], "CC-BCM-01") in ("implemented", "implemented_evidenced")
     # The ISMS signal passes: the backed-up machine passed a restore test this week.
     crosswalk = client.get("/api/console/grc-assurance/crosswalk", headers=admin, params={"tenant_id": tenant["id"]}).json()
     dr = next(c for c in crosswalk if c["id"] == "FC-DRTEST")
@@ -92,7 +109,7 @@ def test_a_test_vm_left_behind_or_a_mismatch_is_flagged(client, admin, tenant):
     assert t["result"] == "failed" and not t["vmDeleted"] and not t["hasScreenshot"]
     with database.session_factory()() as db:
         ev = db.get(GrcEvidence, t["evidenceId"])
-        assert ev.kind == "automated" and "NOT deleted: access denied" in ev.description
+        assert ev.kind == "automated" and ev.data["status"] == "failing" and "NOT deleted: access denied" in ev.description
         assert db.query(Alert).filter_by(rule_id=restore_tests.RULE_VM_LEFT).count() == 1
     crosswalk = client.get("/api/console/grc-assurance/crosswalk", headers=admin, params={"tenant_id": tenant["id"]}).json()
     assert next(c for c in crosswalk if c["id"] == "FC-DRTEST")["signals"][0]["passed"] is False
@@ -128,6 +145,7 @@ def test_every_backup_status_is_logged_and_filed_weekly(client, admin, tenant):
         assert restore_tests.weekly_backup_logs(db) == 0  # once a week
         ev = db.query(GrcEvidence).filter(GrcEvidence.title.startswith("Backup log")).one()
         assert ev.control_id == "FC-BACKUP" and ev.data["counts"] == {"succeeded": 1, "failed": 1, "missed": 1}
+        assert ev.data["status"] == "failing"  # a failed or missed backup this week
         body = json.dumps(ev.data, sort_keys=True, separators=(",", ":"), default=str)
         import hashlib
         assert hashlib.sha256(body.encode()).hexdigest() == ev.sha256

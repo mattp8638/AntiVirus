@@ -163,7 +163,7 @@ function RecordExercise({ plan, onClose }: { plan: Plan; onClose: () => void }) 
 interface RestoreTestRow {
   id: number; at: string; machine: string | null; host: string | null; recoveryPoint: string | null; result: string; outcome: string;
   message: string; restore: { format: string; bytesRestored: number; restoreSeconds: number; chunksChecked: number; mismatches: number; removalError?: string } | null;
-  vmDeleted: boolean; rtoSeconds: number | null; hasScreenshot: boolean; evidenceId: string | null; evidenceSha256: string | null;
+  vmDeleted: boolean; rtoSeconds: number | null; hasScreenshot: boolean; evidenceId: string | null; evidenceSha256: string | null; screenshotEvidenceId?: string | null;
 }
 
 const gib = (n: number) => (n >= 1 << 30 ? `${(n / (1 << 30)).toFixed(1)} GiB` : `${Math.round(n / (1 << 20))} MiB`);
@@ -174,7 +174,7 @@ function DrTestLog({ tenantId }: { tenantId: string }) {
   const { data } = useListData<RestoreTestRow>("backup/restore-tests", { tenantId }, [tenantId]);
   const [shot, setShot] = useState<{ url: string; row: RestoreTestRow } | null>(null);
   const show = async (row: RestoreTestRow) => {
-    const r = await fetch(`/api/console/grc/evidence/${row.evidenceId}/download`, { headers: { Authorization: `Bearer ${getToken()}` } });
+    const r = await fetch(`/api/console/grc/evidence/${row.screenshotEvidenceId}/download`, { headers: { Authorization: `Bearer ${getToken()}` } });
     if (r.ok) setShot({ url: URL.createObjectURL(await r.blob()), row });
   };
   return (
@@ -187,10 +187,10 @@ function DrTestLog({ tenantId }: { tenantId: string }) {
         { key: "result", label: "Result", render: (t) => <><Pill value={t.result} tone={t.result === "passed" ? "good" : "bad"} /><div className="small muted">{t.message}</div></> },
         { key: "restore", label: "Restore", render: (t) => t.restore ? <span className="small">{gib(t.restore.bytesRestored)} as {t.restore.format.toUpperCase()} in {t.restore.restoreSeconds}s{t.restore.chunksChecked ? `, ${t.restore.chunksChecked} chunks read back${t.restore.mismatches ? `, ${t.restore.mismatches} mismatched` : ""}` : ""}{t.rtoSeconds != null ? ` · RTO ${Math.round(t.rtoSeconds / 60)} min` : ""}</span> : "—" },
         { key: "vmDeleted", label: "Test VM", render: (t) => t.vmDeleted ? <Pill value="deleted" tone="good" /> : <span title={t.restore?.removalError}><Pill value="not deleted" tone="bad" /></span> },
-        { key: "evidence", label: "Evidence", render: (t) => <>{t.hasScreenshot && t.evidenceId ? <button className="small" onClick={() => show(t)}>Screenshot</button> : <span className="small muted">no screenshot</span>}{t.evidenceSha256 && <div className="small muted mono" title={t.evidenceSha256}>{t.evidenceSha256.slice(0, 12)}…</div>}</> }]} />
+        { key: "evidence", label: "Evidence", render: (t) => <>{t.hasScreenshot && t.screenshotEvidenceId ? <button className="small" onClick={() => show(t)}>Screenshot</button> : <span className="small muted">no screenshot</span>}{t.evidenceSha256 && <div className="small muted mono" title={t.evidenceSha256}>{t.evidenceSha256.slice(0, 12)}…</div>}</> }]} />
       {shot && <Modal title={`${shot.row.machine ?? "VM"} at ${fmtTime(shot.row.at)}`} onClose={() => { URL.revokeObjectURL(shot.url); setShot(null); }}>
         <img src={shot.url} alt="The test VM's screen at the end of the restore test" style={{ maxWidth: "100%" }} />
-        <p className="small muted mono">SHA-256 {shot.row.evidenceSha256}</p>
+        <p className="small muted mono">Record SHA-256 {shot.row.evidenceSha256}</p>
       </Modal>}
     </div>
   );

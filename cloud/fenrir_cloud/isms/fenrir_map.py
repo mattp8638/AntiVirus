@@ -22,6 +22,7 @@ FENRIR_CONTROL_MAP: dict[str, tuple[str, ...]] = {
     "FC-ENCRYPTION": ("CC-END-01", "CC-CRY-01"),
     "FC-LOGGING": ("CC-LOG-01",),
     "FC-BACKUP": ("CC-BKP-01",),
+    "FC-DRTEST": ("CC-BCM-01", "CC-BKP-01"),
     "FC-INCIDENT": ("CC-INC-01",),
     "FC-TRAINING": ("CC-AWR-01",),
     "FC-SUPPLIER": ("CC-SUP-01", "CC-SUP-02"),

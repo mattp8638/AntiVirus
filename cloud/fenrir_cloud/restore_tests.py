@@ -17,8 +17,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import audit, crypto, grc_automation
-from .models import (AuditLog, BackupAgent, BackupBootCheck, BackupImage, BackupJob, GrcEvidence, ImageBackupPlan, Tenant,
-                     utcnow)
+from .models import (AuditLog, BackupAgent, BackupBootCheck, BackupImage, BackupJob, GrcEvidence, GrcEvidenceLink,
+                     ImageBackupPlan, Tenant, utcnow)
 
 DR_SIGNAL = "dr-restore-test"
 BACKUP_SIGNAL = "backup-protection"
@@ -109,7 +109,8 @@ def weekly_backup_logs(db: Session) -> int:
                   for r in rows if r["state"] not in ("succeeded",)][:50]
         ev = grc_automation.record_activity_evidence(
             db, tenant_id, BACKUP_SIGNAL, f"{BACKUP_LOG_TITLE} {since:%Y-%m-%d} to {now:%Y-%m-%d}", lines,
-            {"from": _iso(since), "to": _iso(now), "counts": counts, "statuses": rows}, actor="system:backup")
+            {"status": "failing" if counts.get("failed") or counts.get("missed") else "passing",
+             "from": _iso(since), "to": _iso(now), "counts": counts, "statuses": rows}, actor="system:backup")
         if ev is not None:
             audit.record(db, "system:backup", "backup.log_filed", ev.title, tenant_id=tenant_id, evidence=ev.id,
                          sha256=ev.sha256, statuses=len(rows))
@@ -144,6 +145,27 @@ def clean_restore_test(v) -> dict | None:
             "removedUnix": num("removed_unix"), "removalError": _s(v.get("removal_error"), 500)}
 
 
+def _to_isms(db: Session, tenant_id: str, title: str, filename: str, png: bytes, valid_until) -> None:
+    """File the screenshot in the ISMS (scanned like any upload) on the customer's continuity and backup controls,
+    when the customer runs the ISMS. The test's result reaches the same controls through the hourly Fenrir import."""
+    from fastapi import HTTPException
+
+    from .isms import evidence as isms_evidence
+    from .isms.fenrir_map import FENRIR_CONTROL_MAP
+    from .isms.models import IsmsTenantControl
+
+    ids = list(db.execute(select(IsmsTenantControl.id).where(
+        IsmsTenantControl.tenant_id == tenant_id, IsmsTenantControl.ref.in_(FENRIR_CONTROL_MAP["FC-DRTEST"]),
+        IsmsTenantControl.state != "not_applicable")).scalars())
+    if not ids:
+        return
+    try:
+        isms_evidence.add_file(db, tenant_id, "system:backup", None, title, filename, "image/png", png,
+                               valid_until.date().isoformat() if valid_until else None, ids)
+    except HTTPException as e:  # never lose the restore test over the ISMS copy
+        audit.record(db, "system:backup", "isms.evidence_rejected", title, tenant_id, reason=str(e.detail))
+
+
 def record_restore_test(db: Session, job: BackupJob, agent: BackupAgent, check: BackupBootCheck) -> GrcEvidence | None:
     """File a finished restore test as ISMS evidence (DR testing), the screenshot as its encrypted file, and log it."""
     from .backup import raise_alert
@@ -161,7 +183,7 @@ def record_restore_test(db: Session, job: BackupJob, agent: BackupAgent, check: 
         "recoveryPoint": _unix(image.created_unix) if image else None,
         "host": host, "job": job.id, "requestedAt": _iso(requested), "finishedAt": _iso(job.finished_at),
         "rtoSeconds": int((job.finished_at - requested).total_seconds()) if job.finished_at and requested else None,
-        "result": "passed" if passed else "failed", "boot": {"outcome": check.outcome, "method": check.method,
+        "result": "passed" if passed else "failed", "status": "passing" if passed else "failing", "boot": {"outcome": check.outcome, "method": check.method,
                                                              "seconds": check.seconds, "firmware": check.firmware,
                                                              "accel": check.accel, "message": check.message},
         "restore": rt, "vmDeleted": bool(rt.get("vmRemoved")),
@@ -183,14 +205,26 @@ def record_restore_test(db: Session, job: BackupJob, agent: BackupAgent, check: 
         return None
     record_sha = ev.sha256
     if check.screenshot:
-        ev.kind, ev.filename = "file", f"restore-test-{(image.machine_id if image else 'vm')[:40]}-{when:%Y%m%d}.png"
-        ev.content_type, ev.size, ev.sha256 = "image/png", len(check.screenshot), shot_sha
-        ev.storage_name = hashlib.sha256(f"{ev.id}:{record_sha}".encode()).hexdigest()[:32]
-        ev.description = f"{ev.description}\nRecord SHA-256: {record_sha}"
-        path = _evidence_dir() / ev.storage_name
+        # The screenshot is its own encrypted evidence file next to the record (which stays automated evidence, so
+        # the ISMS imports its result), and is filed in the ISMS for the continuity and backup controls.
+        name = f"restore-test-{(image.machine_id if image else 'vm')[:40]}-{when:%Y%m%d}.png"
+        shot = GrcEvidence(tenant_id=check.tenant_id, title=f"{ev.title}: screenshot", kind="file", filename=name,
+                           content_type="image/png", size=len(check.screenshot), sha256=shot_sha,
+                           storage_name=hashlib.sha256(f"{ev.id}:{record_sha}".encode()).hexdigest()[:32],
+                           description=f"Screen of the test VM at the end of the restore test. Record {ev.id}, SHA-256 {record_sha}.",
+                           valid_until=ev.valid_until, uploaded_by="system:backup", control_id=ev.control_id,
+                           data={"restoreTest": ev.id})
+        db.add(shot)
+        db.flush()
+        for link in db.execute(select(GrcEvidenceLink).where(GrcEvidenceLink.evidence_id == ev.id)).scalars().all():
+            db.add(GrcEvidenceLink(evidence_id=shot.id, tenant_id=link.tenant_id, framework_key=link.framework_key,
+                                   requirement_id=link.requirement_id))
+        path = _evidence_dir() / shot.storage_name
         with open(path, "w", encoding="utf-8") as out:
             path.chmod(0o600)
-            json.dump(crypto.encrypt(bytes(check.screenshot), _aad(ev)), out)
+            json.dump(crypto.encrypt(bytes(check.screenshot), _aad(shot)), out)
+        ev.data = {**(ev.data or {}), "screenshotEvidenceId": shot.id}
+        _to_isms(db, check.tenant_id, f"{ev.title}: screenshot", name, check.screenshot, ev.valid_until)
     check.evidence_id = ev.id
     audit.record(db, f"backup-agent:{agent.id}", "backup.restore_test", machine, tenant_id=check.tenant_id,
                  result=record["result"], image=check.image_id, host=host, evidence=ev.id, recordSha256=record_sha,
@@ -218,6 +252,7 @@ def log(db: Session, tenant_ids: list[str], limit: int = 200) -> list[dict]:
                     "outcome": c.outcome, "message": c.message, "restore": c.restore_test,
                     "vmDeleted": bool((c.restore_test or {}).get("vmRemoved")), "rtoSeconds": data.get("rtoSeconds"),
                     "hasScreenshot": c.screenshot is not None, "evidenceId": c.evidence_id,
+                    "screenshotEvidenceId": data.get("screenshotEvidenceId"),
                     "evidenceSha256": ev.sha256 if ev else None})
     return out
 
