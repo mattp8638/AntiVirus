@@ -29,6 +29,7 @@ interface Repo {
   images: number; storedBytes: number; lastImage: number | null; hold: boolean; holdReason: string | null; holdSince: string | null;
   maintenanceAgentId: string | null; pruneEveryDays: number; lastPruneAt: string | null; anomalies: number;
   bootAgentId: string | null; bootEveryDays: number; lastVerifiedBoot: string | null; shareAuth: string; shareUser: string | null;
+  bootFullRestore?: boolean; bootWeekday?: number | null;
   isShare: boolean; agents: { id: string; name: string; viaGateway?: boolean }[];
   s3?: S3Settings | null;
   dedupGroup?: string | null;
@@ -650,6 +651,7 @@ function Repositories({ repos, agents, reload }: { repos: Repo[] | null; agents:
   const [grant, setGrant] = useState<Repo | null>(null);
   const [share, setShare] = useState<Repo | null>(null);
   const [gateway, setGateway] = useState<Repo | null>(null);
+  const [bootFor, setBootFor] = useState<{ repo: Repo; hosts: BackupAgent[] } | null>(null);
   const act = (fn: () => Promise<unknown>, msg: string) => run(fn, msg).then(reload);
   const name = (id: string | null) => agents.find((a) => a.id === id)?.name ?? "—";
   return (
@@ -687,7 +689,7 @@ function Repositories({ repos, agents, reload }: { repos: Repo[] | null; agents:
                 {" "}· {r.gateway.port ? `direct on ${[...r.gateway.addresses].join(", ") || `port ${r.gateway.port}`}, else relayed` : "relayed through this server"}
               </div>
             )}
-            <div className="small muted">Reclaim space every {r.pruneEveryDays || "—"} days on {name(r.maintenanceAgentId)} (last {fmtTime(r.lastPruneAt) || "never"}) · boot verification {r.bootEveryDays ? `every ${r.bootEveryDays} days on ${name(r.bootAgentId)}, last verified ${fmtTime(r.lastVerifiedBoot) || "never"}` : "off"}</div>
+            <div className="small muted">Reclaim space every {r.pruneEveryDays || "—"} days on {name(r.maintenanceAgentId)} (last {fmtTime(r.lastPruneAt) || "never"}) · boot verification {r.bootEveryDays ? `${r.bootFullRestore ? "full restore test " : ""}every ${r.bootEveryDays} days${r.bootWeekday != null ? ` on ${WEEKDAYS[r.bootWeekday]}s` : ""} on ${name(r.bootAgentId)}, last verified ${fmtTime(r.lastVerifiedBoot) || "never"}` : "off"}</div>
             <div className="row" style={{ gap: 6, marginTop: 8, flexWrap: "wrap" }}>
               {can("configure") && <button className="small" onClick={() => setGrant(r)}>Give a machine access</button>}
               {can("configure") && (r.isShare || r.s3) && <button className="small" onClick={() => setShare(r)}>{r.s3 ? "Change access keys" : "Change share sign-in"}</button>}
@@ -700,10 +702,7 @@ function Repositories({ repos, agents, reload }: { repos: Repo[] | null; agents:
                 {members.map((a) => <option key={a.id} value={a.id}>Maintenance: {a.name}</option>)}
               </select>}
               {can("configure") && <button className="small" onClick={async () => { const d = await promptDialog("Reclaim space every how many days? (0 = never)", String(r.pruneEveryDays)); if (d !== null) act(() => api(`backup/repositories/${r.id}/maintenance`, { body: { pruneEveryDays: Number(d) } }), "Saved"); }}>Reclaim interval</button>}
-              {can("configure") && bootHosts.length > 0 && <button className="small" onClick={async () => {
-                const d = await promptDialog(`Boot-test each machine's newest image every how many days on ${bootHosts[0].name}? (0 = off)`, String(r.bootEveryDays || 7));
-                if (d !== null) act(() => api(`backup/repositories/${r.id}/boot-verification`, { body: Number(d) > 0 ? { agentId: bootHosts[0].id, everyDays: Number(d) } : {} }), "Boot verification saved");
-              }}>Boot verification</button>}
+              {can("configure") && bootHosts.length > 0 && <button className="small" onClick={() => setBootFor({ repo: r, hosts: bootHosts })}>Boot verification and restore tests</button>}
               {can("configure") && <button className="small" onClick={async () => { const m = await promptDialog("Offline media set (rotating drives): name shared by the drives of the set, empty for none", r.mediaSet ?? ""); if (m !== null) act(() => api(`backup/repositories/${r.id}/media-set`, { body: { mediaSet: m.trim() || null } }), "Media set saved"); }}>Media set</button>}
               {can("configure") && <button className="small danger" onClick={async () => { if (await confirmDialog(`Forget ${r.name}? The server forgets it; the backup data on the storage is not touched.`)) act(() => api(`backup/repositories/${r.id}`, { method: "DELETE" }), "Repository forgotten"); }}>Forget</button>}
             </div>
@@ -715,6 +714,7 @@ function Repositories({ repos, agents, reload }: { repos: Repo[] | null; agents:
       })}
       {creating && <CreateRepo agents={agents} repos={repos ?? []} onClose={() => { setCreating(false); reload(); }} />}
       {grant && <GrantAccess repo={grant} agents={agents} onClose={() => { setGrant(null); reload(); }} />}
+      {bootFor && <BootSchedule repo={bootFor.repo} hosts={bootFor.hosts} onClose={() => { setBootFor(null); reload(); }} />}
       {share && <ShareSignin repo={share} agents={agents} onClose={() => { setShare(null); reload(); }} />}
       {gateway && <GatewayDialog repo={gateway} agents={agents} onClose={() => { setGateway(null); reload(); }} />}
     </>
@@ -864,6 +864,40 @@ function GatewayDialog({ repo, agents, onClose }: { repo: Repo; agents: BackupAg
       )}
       {direct && <p className="small muted">Allow inbound TCP {port} on the gateway machine's firewall for the networks that should connect directly. Without it, or from anywhere else, machines use the relay.</p>}
       <p className="small muted">Then give each remote machine access with "Through the gateway" ticked.</p>
+    </Modal>
+  );
+}
+
+const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+/** Scheduled boot verification of a repository's newest images, optionally as weekly full restore tests
+ * (backup/docs/design/restore-tests.md): restored in full, booted, screenshot, VM deleted, filed in the ISMS. */
+function BootSchedule({ repo, hosts, onClose }: { repo: Repo; hosts: BackupAgent[]; onClose: () => void }) {
+  const { run, busy } = useAction();
+  const [agentId, setAgentId] = useState(repo.bootAgentId ?? hosts[0]?.id ?? "");
+  const [days, setDays] = useState(repo.bootEveryDays || 7);
+  const [weekday, setWeekday] = useState<number | null>(repo.bootWeekday ?? null);
+  const [full, setFull] = useState(!!repo.bootFullRestore);
+  const save = (on: boolean) => run(() => api(`backup/repositories/${repo.id}/boot-verification`, {
+    body: on ? { agentId, everyDays: days, weekday, fullRestore: full } : {} }), on ? "Saved" : "Turned off").then((r) => r !== undefined && onClose());
+  return (
+    <Modal title={`Boot verification: ${repo.name}`} onClose={onClose}
+      footer={<>{repo.bootAgentId && <button disabled={busy} onClick={() => save(false)}>Turn off</button>}<button className="primary" disabled={busy || !agentId || days < 1} onClick={() => save(true)}>Save</button></>}>
+      <div className="form-grid">
+        <label className="field">On<select value={agentId} onChange={(e) => setAgentId(e.target.value)}>
+          {hosts.map((a) => <option key={a.id} value={a.id}>{a.name} · {a.capabilities.includes("boot_hyperv") ? "Hyper-V" : "QEMU/KVM"}{a.online ? "" : " (offline)"}</option>)}
+        </select></label>
+        <label className="field">Every<select value={days} onChange={(e) => setDays(Number(e.target.value))}>
+          {[1, 7, 14, 30].map((d) => <option key={d} value={d}>{d === 1 ? "day" : d === 7 ? "week" : `${d} days`}</option>)}
+        </select></label>
+        <label className="field">On<select value={weekday ?? ""} onChange={(e) => setWeekday(e.target.value === "" ? null : Number(e.target.value))}>
+          <option value="">any day</option>
+          {WEEKDAYS.map((n, i) => <option key={n} value={i}>{n}s (UTC)</option>)}
+        </select></label>
+      </div>
+      <label className="row small" style={{ gap: 6, marginTop: 8 }}><input type="checkbox" checked={full} onChange={(e) => setFull(e.target.checked)} />
+        Full restore test: restore each machine's newest backup completely, boot it in an isolated VM and screenshot it, then delete the VM and its disks</label>
+      <p className="small muted">Each machine's newest backup is tested once per interval, one at a time. Every result is kept with the backup; restore tests are also filed in Governance as evidence for disaster recovery testing (ISO 27001 A.5.30 and A.8.13), with the screenshot, and listed in the DR test log under Business continuity. {full && "The host needs free space for the largest machine while a test runs."}</p>
     </Modal>
   );
 }
@@ -1588,6 +1622,7 @@ function BootDialog({ image, agents, repos, onClose }: { image: Image; agents: B
   const host = hosts.find((a) => a.id === agentId);
   const hyperv = !!host?.capabilities.includes("boot_hyperv") && !host?.capabilities.includes("boot_kvm");
   const [keep, setKeep] = useState(false);
+  const [full, setFull] = useState(false);
   const [folder, setFolder] = useState("");
   const [pass, setPass] = useState("");
   const [via, setVia] = useState(false);
@@ -1605,7 +1640,7 @@ function BootDialog({ image, agents, repos, onClose }: { image: Image; agents: B
       const sealed: Sealed = await seal(host.publicKey, JSON.stringify({ passphrase: pass, recovery_key: null }));
       await api(`backup/repositories/${image.repositoryId}/access`, { body: { agentId: host.id, sealed, viaGateway: via } });
     }
-    await api(`backup/images/${image.imageId}/boot-check`, { body: { agentId: host.id, keepRunning: keep, directory: hyperv && folder.trim() ? folder.trim() : null } });
+    await api(`backup/images/${image.imageId}/boot-check`, { body: { agentId: host.id, keepRunning: keep && !full, fullRestore: full, directory: hyperv && folder.trim() ? folder.trim() : null } });
     setMsg(keep
       ? (hyperv ? `Queued. When it has booted, the VM stays in Hyper-V Manager on ${host.name} as "Fenrir check ${image.hostname} …", network disconnected. Stop it from Machines › ${host.name} when you are done.`
                 : `Queued. The VM stays running on ${host.name} (isolated) for up to 8 hours; stop it from Machines › ${host.name}.`)
@@ -1638,7 +1673,11 @@ function BootDialog({ image, agents, repos, onClose }: { image: Image; agents: B
             </div>
           )}
           <label className="row small" style={{ gap: 6, marginTop: 8 }}>
-            <input type="checkbox" checked={keep} onChange={(e) => setKeep(e.target.checked)} />
+            <input type="checkbox" checked={full} onChange={(e) => { setFull(e.target.checked); if (e.target.checked) setKeep(false); }} />
+            Full restore test: restore the backup completely first, boot from it, then delete the VM (filed as DR test evidence)
+          </label>
+          <label className="row small" style={{ gap: 6, marginTop: 8 }}>
+            <input type="checkbox" checked={keep} disabled={full} onChange={(e) => setKeep(e.target.checked)} />
             {hyperv ? "Keep the VM afterwards so I can log in and check it (it stays in Hyper-V Manager until I stop it)" : "Keep it running afterwards (up to 8 hours)"}
           </label>
         </>

@@ -57,6 +57,14 @@ Each entry below cites its code and tests in `catalogue.csv` and is `implemented
   falls back to live files with a warning there.
 * Bare-metal recovery from the recovery ISO is proven in CI too (job recovery-e2e, [run 45569395053](https://github.com/zy538324/Fenrir-Backup/actions/runs/45569395053)): the
   tracker had still listed it as not booted in CI.
+* Weekly restore tests and the ISMS DR record (2026-11-26, backup/docs/design/restore-tests.md):
+  * A scheduled boot check can be a full restore test:
+    * The newest backup of each machine is restored in full. On KVM hosts it is read back and matched.
+    * The VM is booted isolated from the restored disks and screenshot, then deleted.
+    * Whether the deletion worked is recorded, and a VM left behind raises an alert.
+  * Repositories choose a weekday. Each test is filed as ISMS evidence under a new control, FC-DRTEST (ISO 27001 A.5.30 and A.8.13, NIST CSF RC.RP, DORA-TEST), with the screenshot as an encrypted file. It is also written to the audit log and shown in the DR test log under Business continuity.
+  * Every backup status goes into the hash-chained audit log, including missed plans once per episode. The week's backup log is filed as A.8.13 evidence weekly.
+  * The KVM path is proven with a real CirrOS full restore and boot (vmboot test). The Hyper-V path has not been run on a Hyper-V host.
 * BDR-03 restore evidence (2026-11-26): every restore records hashes, read-back verification, the recovery point,
   duration, RPO and RTO in a tamper-evident record (both consoles). The agent's own DBCC CHECKDB after a SQL Server
   restore is proven on real SQL Server (windows-sql, [run 45809110579](https://github.com/zy538324/Fenrir-Backup/actions/runs/45809110579)).

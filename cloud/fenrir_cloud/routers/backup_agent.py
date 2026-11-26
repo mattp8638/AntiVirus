@@ -24,6 +24,7 @@ from .. import backup as bk
 from .. import backup_cases as cases
 from .. import backup_gateway as gw
 from .. import ratelimit
+from .. import restore_tests
 from ..security import digest
 from ..config import get_settings
 from ..db import get_db
@@ -249,7 +250,7 @@ def heartbeat(body: dict = Body(...), agent: BackupAgent = Depends(current_backu
             "gateway": gateway}
 
 
-def _record_boot_check(db: Session, job: BackupJob, agent: BackupAgent, b: dict) -> str:
+def _record_boot_check(db: Session, job: BackupJob, agent: BackupAgent, b: dict) -> BackupBootCheck:
     shot = None
     if b.get("screenshot_png"):
         try:
@@ -258,11 +259,15 @@ def _record_boot_check(db: Session, job: BackupJob, agent: BackupAgent, b: dict)
         except (binascii.Error, ValueError):
             shot = None
     outcome = b.get("outcome") if b.get("outcome") in ("verified", "screen") else "failed"
-    db.add(BackupBootCheck(image_id=str(b["image_id"]), repository_id=job.repository_id, tenant_id=job.tenant_id,
-                           agent_id=agent.id, job_id=job.id, outcome=outcome, method=_str(b.get("method"), 40),
-                           seconds=int(b.get("seconds") or 0), firmware=_str(b.get("firmware"), 10),
-                           accel=_str(b.get("accel"), 10), message=_str(b.get("message"), 1000), screenshot=shot))
-    return outcome
+    row = BackupBootCheck(image_id=str(b["image_id"]), repository_id=job.repository_id, tenant_id=job.tenant_id,
+                          agent_id=agent.id, job_id=job.id, outcome=outcome, method=_str(b.get("method"), 40),
+                          seconds=int(b.get("seconds") or 0), firmware=_str(b.get("firmware"), 10),
+                          accel=_str(b.get("accel"), 10), message=_str(b.get("message"), 1000), screenshot=shot,
+                          restore_test=restore_tests.clean_restore_test(b.get("restore_test"))
+                          if (job.kind or {}).get("full_restore") else None)
+    db.add(row)
+    db.flush()
+    return row
 
 
 IMAGE_INT_FIELDS = ("captured_bytes", "stored_new_bytes", "chunks_total", "chunks_new", "bytes_new_raw")
@@ -388,7 +393,10 @@ def update_job(job_id: str, body: dict = Body(...), agent: BackupAgent = Depends
             repo.last_prune_at = now
         b = body.get("boot_check")
         if kind.get("type") == "boot_check" and final and isinstance(b, dict) and str(b.get("image_id")) == kind.get("image_id"):
-            if _record_boot_check(db, job, agent, b) == "failed":
+            check = _record_boot_check(db, job, agent, b)
+            if check.restore_test is not None:
+                restore_tests.record_restore_test(db, job, agent, check)
+            if check.outcome == "failed":
                 bk.raise_alert(db, job.tenant_id, agent.device_id, bk.RULE_BOOT,
                                f"Backup of {name} did not boot", "high",
                                f"A boot check of image {kind.get('image_id')} failed: {_str(b.get('message'), 500)}")
@@ -457,7 +465,10 @@ def update_job(job_id: str, body: dict = Body(...), agent: BackupAgent = Depends
             bk.record(db, f"backup-agent:{agent.id}",
                       "backup.repository.unlocked" if state in ("succeeded", "warning") else "backup.repository.unlock_failed",
                       repo.name, repo.tenant_id, job=job.id)
-    if final:
+    if final and bk.is_backup(kind):
+        # The backup status log: machine, plan, duration and error in the tamper-evident audit log.
+        restore_tests.record_backup_status(db, job, agent, len(images))
+    elif final:
         bk.record(db, f"backup-agent:{agent.id}", f"backup.job.{state}", job.id, job.tenant_id, kind=kind.get("type"))
         from .. import restore_evidence
 

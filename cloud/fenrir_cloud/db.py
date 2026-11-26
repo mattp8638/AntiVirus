@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 126
+LATEST_MIGRATION = 127
 
 def init_engine(url: str, pool_size: int = 5, max_overflow: int = 10) -> Engine:
     global _engine, _session_factory
@@ -697,9 +697,6 @@ def migrate(bind: Engine) -> list[int]:
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (110)"))
                 applied.append(110)
             if 111 not in versions:
-                Base.metadata.create_all(conn, tables=[Base.metadata.tables["restore_evidence"]])  # BDR-03
-                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (111)"))
-                applied.append(111)
                 # ISMS (docs/ISMS_REWRITE_PLAN.md): ISMS roles per person per customer, with row-level security.
                 from .isms import rls
                 from .isms.models import IsmsMembership
@@ -848,6 +845,16 @@ def migrate(bind: Engine) -> list[int]:
                 rls.enable(conn, [m.__tablename__ for m in tables])
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (126)"))
                 applied.append(126)
+            if 127 not in versions:
+                # Restore evidence (BDR-03). It was numbered 111 on the backup branch while the ISMS took 111 on main;
+                # a database from either side lacks one of the two tables, so both are created if missing.
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["restore_evidence"]])
+                from .isms import rls
+                from .isms.models import IsmsMembership
+                IsmsMembership.__table__.create(conn, checkfirst=True)
+                rls.enable(conn, [IsmsMembership.__tablename__])
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (127)"))
+                applied.append(127)
             conn.commit()
         except Exception:
             conn.rollback()

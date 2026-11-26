@@ -31,7 +31,8 @@ ACK_TARGET = 0.9
 M365_MAX_AGE_HOURS = 48
 SIGNAL_LABELS = {"backup-protection": "Recent, boot-verified backups", "risk-register": "Risk register reviewed",
                  "policy-acknowledgement": "Policies acknowledged by staff", "dev-branch-protection": "Branch protection (GitHub)",
-                 "dev-dependency-alerts": "Critical dependency alerts (GitHub)", "leavers-access-removed": "Leavers' access removed (HR roster)"}
+                 "dev-dependency-alerts": "Critical dependency alerts (GitHub)", "leavers-access-removed": "Leavers' access removed (HR roster)",
+                 "dr-restore-test": "Weekly restore tests passed (restore, boot, screenshot, VM deleted)"}
 
 
 def _aad(c: GrcConnector) -> str:
@@ -195,6 +196,8 @@ def record_signals(db: Session, tenant: Tenant) -> dict[str, dict]:
         ev += [f"{i.vm_name or i.hostname}: last backup {datetime.utcfromtimestamp(i.created_unix).isoformat()[:16]}" for i in old[:10]]
         ev.append("a backup was boot-verified in the last 90 days" if verified else "no backup boot-verified in the last 90 days")
         out["backup-protection"] = {"passed": not old and bool(verified), "evidence": ev}
+    from . import restore_tests
+    out["dr-restore-test"] = restore_tests.signal(db, tenant)
     risks = db.execute(select(GrcRegisterEntry).where(GrcRegisterEntry.tenant_id == tenant.id, GrcRegisterEntry.register == "risk",
                                                       GrcRegisterEntry.status != "closed")).scalars().all()
     if not risks:

@@ -202,6 +202,28 @@ pub struct BootCheckResult {
     /// Set when the VM was left running.
     #[serde(default)]
     pub session: Option<RunningVm>,
+    /// A restore test: the image was fully restored first and the VM booted
+    /// from the restored disks, then deleted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore_test: Option<RestoreTest>,
+}
+
+/// What a restore test did before and after the boot (docs/design/restore-tests.md).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RestoreTest {
+    /// "raw" (KVM hosts) or "vhdx" (Hyper-V hosts).
+    pub format: String,
+    pub bytes_restored: u64,
+    pub restore_seconds: u64,
+    /// Chunks read back from the restored disks and matched to the backup;
+    /// 0 when the format cannot be read back.
+    pub chunks_checked: u64,
+    pub mismatches: u64,
+    /// The VM and its restored disks were deleted after the check.
+    pub vm_removed: bool,
+    pub removed_unix: i64,
+    #[serde(default)]
+    pub removal_error: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -488,6 +510,11 @@ pub enum JobKind {
         /// agent's own folder).
         #[serde(default)]
         directory: Option<String>,
+        /// A restore test: restore the whole image to disk first (read back
+        /// and verified where the format allows), boot from the restored
+        /// disks, then delete the VM and its disks. Not with `keep_running`.
+        #[serde(default)]
+        full_restore: bool,
     },
     /// Power off a VM left running by a boot check.
     StopVm { session_id: Uuid },

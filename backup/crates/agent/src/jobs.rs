@@ -893,6 +893,7 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             memory_mb,
             cpus,
             directory,
+            full_restore,
         } => {
             let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
             let req = crate::boot::BootRequest {
@@ -901,6 +902,7 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
                 memory_mb: *memory_mb,
                 cpus: *cpus,
                 directory: directory.clone(),
+                full_restore: *full_restore,
             };
             crate::boot::run(ctx, &repo, &req, rep)
         }
