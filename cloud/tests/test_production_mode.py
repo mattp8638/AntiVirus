@@ -15,7 +15,7 @@ STRONG = "9f" * 32
 def prod(**overrides):
     base = dict(environment="production", database_url="postgresql+psycopg://u:p@db/fenrir", secret_key=STRONG,
                 bootstrap_admin_password="a-long-random-admin-password", public_base_url="https://fenrir.example.net",
-                open_enrollment=False)
+                open_enrollment=False, trusted_proxies="172.16.0.0/12")
     return dataclasses.replace(Settings(), **{**base, **overrides})
 
 

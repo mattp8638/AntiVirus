@@ -549,6 +549,7 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             directory,
             attach_as,
             sql_instance,
+            mailbox,
         } => {
             let repo = open_repo(ctx, access.ok_or_else(|| anyhow!("no repository"))?)?;
             let req = crate::apprestore::AppRestoreRequest {
@@ -557,6 +558,7 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
                 directory,
                 attach_as: attach_as.as_deref(),
                 sql_instance,
+                mailbox: mailbox.as_ref(),
             };
             crate::apprestore::run(ctx, &repo, &req, rep)
         }

@@ -165,9 +165,58 @@ pub fn restore_files(
     conflict: &str,
     rep: &Reporter,
 ) -> anyhow::Result<JobUpdate> {
-    if target.trim() == ORIGINAL {
-        return restore_to_original(ctx, access, image, volume, paths, conflict, rep);
+    let mut u = if target.trim() == ORIGINAL {
+        restore_to_original(ctx, access, image, volume, paths, conflict, rep)?
+    } else {
+        restore_into(
+            ctx,
+            access,
+            image,
+            volume,
+            paths,
+            target,
+            keep_structure,
+            conflict,
+            rep,
+        )?
+    };
+    // Evidence (BDR-03): each restored file's SHA-256, read back from where it was written.
+    if let Some(r) = u
+        .result
+        .as_ref()
+        .and_then(|v| serde_json::from_value::<filebrowse::RestoreReport>(v.clone()).ok())
+    {
+        rep.progress("hashing the restored files", 0, r.written.len() as u64, "");
+        let outputs =
+            crate::evidence::outputs(&r.written.iter().map(PathBuf::from).collect::<Vec<_>>());
+        let listed = if r.written.len() as u64 >= r.files {
+            "every restored file"
+        } else {
+            "the first restored files"
+        };
+        crate::evidence::attach(
+            &mut u,
+            outputs,
+            serde_json::json!([{ "method": "file-sha256", "supported": true,
+                                 "note": format!("The SHA-256 of {listed} was read back from disk; the backup data was authenticated as it was read.") }]),
+            serde_json::json!([]),
+        );
     }
+    Ok(u)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn restore_into(
+    ctx: &Ctx,
+    access: &RepoAccess,
+    image: Uuid,
+    volume: VolumeRef,
+    paths: &[String],
+    target: &str,
+    keep_structure: bool,
+    conflict: &str,
+    rep: &Reporter,
+) -> anyhow::Result<JobUpdate> {
     let target = PathBuf::from(target.trim());
     if !target.is_absolute() {
         bail!("the restore folder must be a full path on this machine, e.g. C:\\Restored or /srv/restored");
@@ -276,7 +325,7 @@ fn restore_to_original(
     for p in paths {
         let parent = original_parent(p, cfg!(windows))?;
         std::fs::create_dir_all(&parent)?;
-        last = restore_files(
+        last = restore_into(
             ctx,
             access,
             image,
@@ -298,6 +347,11 @@ fn restore_to_original(
             total.skipped += r.skipped;
             total.failed_total += r.failed_total;
             total.failed.extend(r.failed);
+            total.written.extend(
+                r.written
+                    .into_iter()
+                    .take(filebrowse::restore::WRITTEN_LIST.saturating_sub(total.written.len())),
+            );
         }
     }
     let state = match (total.files, total.failed_total) {

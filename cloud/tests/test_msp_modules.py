@@ -95,7 +95,7 @@ def test_monitor_rejects_local_metadata_and_non_ip_targets(address):
         network.validate_address(address)
 
 def test_network_failed_service_alert_and_recovery(client, admin, tenant, monkeypatch):
-    row = post(client,admin,"network/monitors",{"tenantId":tenant["id"],"name":"HTTPS","address":"10.0.0.10","port":443})
+    row = post(client,admin,"network/monitors",{"tenantId":tenant["id"],"name":"HTTPS","address":"1.1.1.1","port":443})
     monkeypatch.setattr(network,"probe",lambda address,port:(False,None))
     for _ in range(3):
         row = post(client,admin,"network/monitors/"+row["id"]+"/check",{})
@@ -140,7 +140,7 @@ def test_incident_evidence_hash_and_scope(client,admin,tenant):
 
 def test_module_cross_tenant_boundaries(client,admin,tenant):
     conn = connection(client,admin,tenant)
-    monitor = post(client,admin,"network/monitors",{"tenantId":tenant["id"],"name":"HTTPS","address":"10.0.0.1","port":443})
+    monitor = post(client,admin,"network/monitors",{"tenantId":tenant["id"],"name":"HTTPS","address":"1.0.0.1","port":443})
     risk = post(client,admin,"grc/records",{"tenantId":tenant["id"],"kind":"risk","title":"Private risk"})
     other = post(client,admin,"tenants",{"name":"Unrelated"})
     post(client,admin,"users",{"tenantId":other["id"],"email":"outsider@test.com","password":ADMIN_PASSWORD,"role":"tenant_admin"})

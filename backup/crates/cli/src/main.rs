@@ -1829,6 +1829,7 @@ fn restore(
             zero_fill: zero_fill || t.is_block_device,
             fit,
             grow,
+            verify: true,
         },
         &JobControl::new(),
         &pr,
@@ -1837,6 +1838,14 @@ fn restore(
         eprintln!();
     }
     drop(t);
+    if let Some(v) = &r.verification {
+        if v.mismatches > 0 {
+            eprintln!(
+                "WARNING: {} restored chunk(s) did not read back as written; do not rely on {}",
+                v.mismatches, r.target
+            );
+        }
+    }
     let mut human = format!(
         "Restored disk {} of image {} to {} ({} written).\n",
         disk,
@@ -2789,6 +2798,7 @@ fn cdp_cmd(ctx: &Ctx, c: CdpCmd) -> R<Outcome> {
                     zero_fill: true,
                     fit: false,
                     grow: false,
+                    verify: true,
                 },
                 &JobControl::new(),
                 &|_, _| {},
