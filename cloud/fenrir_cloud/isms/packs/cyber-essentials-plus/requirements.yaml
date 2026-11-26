@@ -1,0 +1,41 @@
+# Converted from Fenrir's grc_library/cyber-essentials-plus.yml by scripts/isms/convert_fenrir_frameworks.py. Identifiers and short titles only.
+- ref: CEP-SCOPE
+  group: readiness
+  short_title: Confirm the assessed estate
+  mandatory: true
+  licence: crown-copyright-pending
+- ref: CEP-EXTERNAL
+  group: readiness
+  short_title: External exposure testing
+  mandatory: false
+  licence: crown-copyright-pending
+- ref: CEP-INTERNAL
+  group: readiness
+  short_title: Internal technical verification
+  mandatory: false
+  licence: crown-copyright-pending
+- ref: CEP-MALWARE
+  group: readiness
+  short_title: Protection verification
+  mandatory: false
+  licence: crown-copyright-pending
+- ref: CEP-ACCESS
+  group: readiness
+  short_title: Access-control testing
+  mandatory: false
+  licence: crown-copyright-pending
+- ref: CEP-PATCH
+  group: readiness
+  short_title: Supported software and patch checks
+  mandatory: false
+  licence: crown-copyright-pending
+- ref: CEP-RETEST
+  group: readiness
+  short_title: Remediation and retesting
+  mandatory: false
+  licence: crown-copyright-pending
+- ref: CEP-DECISION
+  group: readiness
+  short_title: Certification decision
+  mandatory: true
+  licence: crown-copyright-pending

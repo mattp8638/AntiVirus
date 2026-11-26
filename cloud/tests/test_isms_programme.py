@@ -48,7 +48,7 @@ def test_the_library_is_published_at_startup_and_never_changed(client, caplog):
 
     with database.session_factory()() as db:
         packs = {(p.pack_id, p.pack_version) for p in db.execute(select(IsmsContentPack)).scalars()}
-        assert ("iso27001-2022", "1.1.0") in packs and ("common-controls", "1.0.0") in packs and len(packs) == 9
+        assert ("iso27001-2022", "1.1.0") in packs and ("common-controls", "1.0.0") in packs and len(packs) == 19
         assert library.publish_shipped(db) == []  # already there
         row = library.get(db, "iso27001-2022", "1.1.0")
         row.sha256 = "0" * 64  # as if the shipped pack were edited without a new pack_version

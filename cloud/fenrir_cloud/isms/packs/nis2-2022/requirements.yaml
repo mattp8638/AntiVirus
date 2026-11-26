@@ -1,0 +1,66 @@
+# Converted from Fenrir's grc_library/nis2.yml by scripts/isms/convert_fenrir_frameworks.py. Identifiers and short titles only.
+- ref: NIS2-SCOPE
+  group: readiness
+  short_title: National-law applicability
+  mandatory: true
+  licence: open
+- ref: NIS2-20
+  group: readiness
+  short_title: Management accountability
+  mandatory: false
+  licence: open
+- ref: NIS2-21a
+  group: readiness
+  short_title: Risk and information-system policies
+  mandatory: false
+  licence: open
+- ref: NIS2-21b
+  group: readiness
+  short_title: Incident handling
+  mandatory: false
+  licence: open
+- ref: NIS2-21c
+  group: readiness
+  short_title: Continuity and recovery
+  mandatory: false
+  licence: open
+- ref: NIS2-21d
+  group: readiness
+  short_title: Supply-chain security
+  mandatory: false
+  licence: open
+- ref: NIS2-21e
+  group: readiness
+  short_title: Lifecycle security
+  mandatory: false
+  licence: open
+- ref: NIS2-21f
+  group: readiness
+  short_title: Effectiveness assessment
+  mandatory: false
+  licence: open
+- ref: NIS2-21g
+  group: readiness
+  short_title: Hygiene and training
+  mandatory: false
+  licence: open
+- ref: NIS2-21h
+  group: readiness
+  short_title: Cryptography
+  mandatory: false
+  licence: open
+- ref: NIS2-21i
+  group: readiness
+  short_title: People, access and assets
+  mandatory: false
+  licence: open
+- ref: NIS2-21j
+  group: readiness
+  short_title: Stronger authentication and communications
+  mandatory: false
+  licence: open
+- ref: NIS2-23
+  group: readiness
+  short_title: Incident reporting
+  mandatory: false
+  licence: open

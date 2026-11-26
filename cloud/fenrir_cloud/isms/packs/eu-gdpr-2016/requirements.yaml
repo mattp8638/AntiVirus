@@ -1,0 +1,51 @@
+# Converted from Fenrir's grc_library/eu-gdpr.yml by scripts/isms/convert_fenrir_frameworks.py. Identifiers and short titles only.
+- ref: GDPR-SCOPE
+  group: readiness
+  short_title: EU territorial scope
+  mandatory: true
+  licence: open
+- ref: GDPR-ROLES
+  group: readiness
+  short_title: Controller and processor responsibilities
+  mandatory: false
+  licence: open
+- ref: GDPR-LAWFUL
+  group: readiness
+  short_title: Purpose, lawful basis and transparency
+  mandatory: false
+  licence: open
+- ref: GDPR-RIGHTS
+  group: readiness
+  short_title: Individual rights
+  mandatory: false
+  licence: open
+- ref: GDPR-DPIA
+  group: readiness
+  short_title: Privacy risk assessment
+  mandatory: false
+  licence: open
+- ref: GDPR-SECURITY
+  group: readiness
+  short_title: Security and accountability
+  mandatory: false
+  licence: open
+- ref: GDPR-PROCESSORS
+  group: readiness
+  short_title: Processor contracts
+  mandatory: false
+  licence: open
+- ref: GDPR-TRANSFERS
+  group: readiness
+  short_title: International transfers
+  mandatory: false
+  licence: open
+- ref: GDPR-BREACH
+  group: readiness
+  short_title: Breach assessment and notification
+  mandatory: false
+  licence: open
+- ref: GDPR-RETENTION
+  group: readiness
+  short_title: Retention and disposal
+  mandatory: false
+  licence: open

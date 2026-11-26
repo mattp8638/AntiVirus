@@ -1,0 +1,71 @@
+# Converted from Fenrir's grc_library/pci-dss.yml by scripts/isms/convert_fenrir_frameworks.py.
+- requirement: PCI-1
+  control: CC-NET-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-FIREWALL (Firewalls) here.
+  licence: original
+- requirement: PCI-10
+  control: CC-LOG-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-LOGGING (Logging and monitoring) here.
+  licence: original
+- requirement: PCI-11
+  control: CC-VUL-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-VULN (Vulnerability management) here.
+  licence: original
+- requirement: PCI-12
+  control: CC-GOV-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-POLICY (Security policy and governance) here.
+  licence: original
+- requirement: PCI-2
+  control: CC-CFG-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-SECURECONFIG (Secure configuration and hardening baseline) here.
+  licence: original
+- requirement: PCI-3
+  control: CC-CRY-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-ENCRYPTION (Encryption at rest) here.
+  licence: original
+- requirement: PCI-3
+  control: CC-END-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-ENCRYPTION (Encryption at rest) here.
+  licence: original
+- requirement: PCI-4
+  control: CC-CRY-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: PCI-4
+  control: CC-TRF-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: PCI-5
+  control: CC-MAL-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-MALWARE (Malware protection) here.
+  licence: original
+- requirement: PCI-6
+  control: CC-VUL-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-PATCH (Security updates) here.
+  licence: original
+- requirement: PCI-7
+  control: CC-IAM-03
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-PRIV (Privileged access) here.
+  licence: original
+- requirement: PCI-8
+  control: CC-IAM-02
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-MFA (Multi-factor authentication) here.
+  licence: original
+- requirement: PCI-9
+  control: CC-PHY-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original

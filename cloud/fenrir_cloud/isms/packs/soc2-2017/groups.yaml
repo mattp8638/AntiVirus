@@ -1,0 +1,37 @@
+# Converted from Fenrir's grc_library/soc2.yml by scripts/isms/convert_fenrir_frameworks.py.
+- ref: cc1
+  title: CC1 Control environment
+  sort: 1
+  licence: id-and-title
+- ref: cc2
+  title: CC2 Communication and information
+  sort: 2
+  licence: id-and-title
+- ref: cc3
+  title: CC3 Risk assessment
+  sort: 3
+  licence: id-and-title
+- ref: cc4
+  title: CC4 Monitoring activities
+  sort: 4
+  licence: id-and-title
+- ref: cc5
+  title: CC5 Control activities
+  sort: 5
+  licence: id-and-title
+- ref: cc6
+  title: CC6 Logical and physical access
+  sort: 6
+  licence: id-and-title
+- ref: cc7
+  title: CC7 System operations
+  sort: 7
+  licence: id-and-title
+- ref: cc8
+  title: CC8 Change management
+  sort: 8
+  licence: id-and-title
+- ref: cc9
+  title: CC9 Risk mitigation
+  sort: 9
+  licence: id-and-title

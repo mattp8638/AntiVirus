@@ -1,0 +1,12 @@
+# Converted from Fenrir's grc_library/govs-007.yml by scripts/isms/convert_fenrir_frameworks.py.
+id: govs-007
+kind: framework
+framework: govs-007
+name: 'GovS 007: Security'
+version: '2.0'
+pack_version: 1.0.0
+certifiable: false
+licence: crown-copyright-pending
+attribution: 'Government Functional Standard GovS 007: Security. Identifiers and short titles only.'
+depends_on:
+- common-controls

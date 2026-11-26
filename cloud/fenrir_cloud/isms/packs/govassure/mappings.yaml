@@ -1,0 +1,6 @@
+# Converted from Fenrir's grc_library/govassure.yml by scripts/isms/convert_fenrir_frameworks.py.
+- requirement: GA-4
+  control: CC-GOV-10
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original

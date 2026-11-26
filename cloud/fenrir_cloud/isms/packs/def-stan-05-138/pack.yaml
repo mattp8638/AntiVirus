@@ -1,0 +1,12 @@
+# Converted from Fenrir's grc_library/def-stan-05-138.yml by scripts/isms/convert_fenrir_frameworks.py.
+id: def-stan-05-138
+kind: framework
+framework: def-stan-05-138
+name: Def Stan 05-138 / Cyber Security Model
+version: Issue 4 / CSMv4
+pack_version: 1.0.0
+certifiable: false
+licence: crown-copyright-pending
+attribution: Def Stan 05-138, UK Ministry of Defence. Identifiers and short titles only.
+depends_on:
+- common-controls

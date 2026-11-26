@@ -1,0 +1,326 @@
+# Converted from Fenrir's grc_library/cis-v8-ig1.yml by scripts/isms/convert_fenrir_frameworks.py.
+- requirement: '1.1'
+  control: CC-AST-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-ASSET (Asset and software inventory) here.
+  licence: original
+- requirement: '1.1'
+  control: CC-END-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-ASSET (Asset and software inventory) here.
+  licence: original
+- requirement: '1.2'
+  control: CC-AST-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-ASSET (Asset and software inventory) here.
+  licence: original
+- requirement: '1.2'
+  control: CC-END-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-ASSET (Asset and software inventory) here.
+  licence: original
+- requirement: '10.1'
+  control: CC-MAL-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-MALWARE (Malware protection) here.
+  licence: original
+- requirement: '10.2'
+  control: CC-MAL-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-MALWARE (Malware protection) here.
+  licence: original
+- requirement: '10.3'
+  control: CC-CFG-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-SECURECONFIG (Secure configuration and hardening baseline) here.
+  licence: original
+- requirement: '11.1'
+  control: CC-BKP-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-BACKUP (Backup and recovery) here.
+  licence: original
+- requirement: '11.2'
+  control: CC-BKP-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-BACKUP (Backup and recovery) here.
+  licence: original
+- requirement: '11.3'
+  control: CC-BKP-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-BACKUP (Backup and recovery) here.
+  licence: original
+- requirement: '11.4'
+  control: CC-BKP-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-BACKUP (Backup and recovery) here.
+  licence: original
+- requirement: '12.1'
+  control: CC-NET-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: '12.1'
+  control: CC-VUL-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: '14.1'
+  control: CC-AWR-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-TRAINING (Security awareness training) here.
+  licence: original
+- requirement: '14.2'
+  control: CC-AWR-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-TRAINING (Security awareness training) here.
+  licence: original
+- requirement: '14.3'
+  control: CC-AWR-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-TRAINING (Security awareness training) here.
+  licence: original
+- requirement: '14.4'
+  control: CC-AWR-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-TRAINING (Security awareness training) here.
+  licence: original
+- requirement: '14.5'
+  control: CC-AWR-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-TRAINING (Security awareness training) here.
+  licence: original
+- requirement: '14.6'
+  control: CC-AWR-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-TRAINING (Security awareness training) here.
+  licence: original
+- requirement: '14.7'
+  control: CC-AWR-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-TRAINING (Security awareness training) here.
+  licence: original
+- requirement: '14.8'
+  control: CC-AWR-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-TRAINING (Security awareness training) here.
+  licence: original
+- requirement: '15.1'
+  control: CC-SUP-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-SUPPLIER (Third-party risk management) here.
+  licence: original
+- requirement: '15.1'
+  control: CC-SUP-02
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-SUPPLIER (Third-party risk management) here.
+  licence: original
+- requirement: '17.1'
+  control: CC-INC-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-INCIDENT (Incident response) here.
+  licence: original
+- requirement: '17.2'
+  control: CC-INC-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-INCIDENT (Incident response) here.
+  licence: original
+- requirement: '17.3'
+  control: CC-INC-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-INCIDENT (Incident response) here.
+  licence: original
+- requirement: '2.1'
+  control: CC-AST-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-ASSET (Asset and software inventory) here.
+  licence: original
+- requirement: '2.1'
+  control: CC-END-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-ASSET (Asset and software inventory) here.
+  licence: original
+- requirement: '2.2'
+  control: CC-VUL-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-SUPPORTED (Supported software only) here.
+  licence: original
+- requirement: '2.3'
+  control: CC-AST-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-ASSET (Asset and software inventory) here.
+  licence: original
+- requirement: '2.3'
+  control: CC-CFG-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-APPCONTROL (Application control) here.
+  licence: original
+- requirement: '2.3'
+  control: CC-END-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-ASSET (Asset and software inventory) here.
+  licence: original
+- requirement: '3.1'
+  control: CC-CLS-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: '3.1'
+  control: CC-GOV-08
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: '3.2'
+  control: CC-AST-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: '3.3'
+  control: CC-ACC-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: '3.4'
+  control: CC-GOV-08
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: '3.5'
+  control: CC-MED-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: '3.6'
+  control: CC-CRY-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-ENCRYPTION (Encryption at rest) here.
+  licence: original
+- requirement: '3.6'
+  control: CC-END-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-ENCRYPTION (Encryption at rest) here.
+  licence: original
+- requirement: '4.1'
+  control: CC-CFG-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-SECURECONFIG (Secure configuration and hardening baseline) here.
+  licence: original
+- requirement: '4.2'
+  control: CC-CFG-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-SECURECONFIG (Secure configuration and hardening baseline) here.
+  licence: original
+- requirement: '4.3'
+  control: CC-PHY-04
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-SCREENLOCK (Automatic session locking) here.
+  licence: original
+- requirement: '4.4'
+  control: CC-NET-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-FIREWALL (Firewalls) here.
+  licence: original
+- requirement: '4.5'
+  control: CC-NET-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-FIREWALL (Firewalls) here.
+  licence: original
+- requirement: '4.6'
+  control: CC-CFG-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: '4.7'
+  control: CC-CFG-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-SECURECONFIG (Secure configuration and hardening baseline) here.
+  licence: original
+- requirement: '5.1'
+  control: CC-IAM-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-ACCOUNTS (Account lifecycle) here.
+  licence: original
+- requirement: '5.2'
+  control: CC-IAM-02
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-PASSWORDS (Passwords and authentication information) here.
+  licence: original
+- requirement: '5.3'
+  control: CC-IAM-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-ACCOUNTS (Account lifecycle) here.
+  licence: original
+- requirement: '5.4'
+  control: CC-IAM-03
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-PRIV (Privileged access) here.
+  licence: original
+- requirement: '6.1'
+  control: CC-IAM-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-ACCOUNTS (Account lifecycle) here.
+  licence: original
+- requirement: '6.2'
+  control: CC-IAM-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-ACCOUNTS (Account lifecycle) here.
+  licence: original
+- requirement: '6.3'
+  control: CC-IAM-02
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-MFA (Multi-factor authentication) here.
+  licence: original
+- requirement: '6.4'
+  control: CC-IAM-02
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-MFA (Multi-factor authentication) here.
+  licence: original
+- requirement: '6.5'
+  control: CC-IAM-02
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-MFA (Multi-factor authentication) here.
+  licence: original
+- requirement: '7.1'
+  control: CC-VUL-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-VULN (Vulnerability management) here.
+  licence: original
+- requirement: '7.2'
+  control: CC-VUL-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-VULN (Vulnerability management) here.
+  licence: original
+- requirement: '7.3'
+  control: CC-VUL-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-PATCH (Security updates) here.
+  licence: original
+- requirement: '7.4'
+  control: CC-VUL-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-PATCH (Security updates) here.
+  licence: original
+- requirement: '8.1'
+  control: CC-LOG-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-LOGGING (Logging and monitoring) here.
+  licence: original
+- requirement: '8.2'
+  control: CC-LOG-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-LOGGING (Logging and monitoring) here.
+  licence: original
+- requirement: '8.3'
+  control: CC-LOG-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-LOGGING (Logging and monitoring) here.
+  licence: original
+- requirement: '9.1'
+  control: CC-VUL-01
+  strength: satisfies
+  rationale: Mapped by hand when the pack was converted from Fenrir's library.
+  licence: original
+- requirement: '9.2'
+  control: CC-WEB-01
+  strength: satisfies
+  rationale: Fenrir's crosswalk maps FC-WEBFILTER (Web and DNS filtering) here.
+  licence: original

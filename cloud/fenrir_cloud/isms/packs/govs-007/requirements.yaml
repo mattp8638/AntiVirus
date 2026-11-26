@@ -1,0 +1,41 @@
+# Converted from Fenrir's grc_library/govs-007.yml by scripts/isms/convert_fenrir_frameworks.py. Identifiers and short titles only.
+- ref: G007-GOV
+  group: readiness
+  short_title: Security accountabilities
+  mandatory: false
+  licence: crown-copyright-pending
+- ref: G007-RISK
+  group: readiness
+  short_title: Risk and assurance
+  mandatory: true
+  licence: crown-copyright-pending
+- ref: G007-PEOPLE
+  group: readiness
+  short_title: People security
+  mandatory: false
+  licence: crown-copyright-pending
+- ref: G007-PHYSICAL
+  group: readiness
+  short_title: Physical and asset protection
+  mandatory: false
+  licence: crown-copyright-pending
+- ref: G007-TECH
+  group: readiness
+  short_title: Technical security
+  mandatory: false
+  licence: crown-copyright-pending
+- ref: G007-INCIDENT
+  group: readiness
+  short_title: Incident arrangements
+  mandatory: false
+  licence: crown-copyright-pending
+- ref: G007-SUPPLIERS
+  group: readiness
+  short_title: Third-party responsibilities
+  mandatory: false
+  licence: crown-copyright-pending
+- ref: G007-REVIEW
+  group: readiness
+  short_title: Capability and review
+  mandatory: false
+  licence: crown-copyright-pending
