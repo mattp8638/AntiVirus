@@ -465,8 +465,12 @@ def assess_control(control_id: str, body: Assessment, principal: Principal = Dep
 @router.get("/soa")
 def get_soa(tenant_id: str, framework: str, principal: Principal = Depends(current_principal),
             db: Session = Depends(isms_db)):
+    from ..isms import governance_import
+
     require_isms(db, principal, tenant_id, "controls.view")
-    return {"framework": framework, "rows": programme.soa_rows(db, tenant_id, framework)}
+    earlier = governance_import.legacy_answers(db, tenant_id, framework)
+    rows = [{**r, "earlierAnswers": earlier.get(r["ref"], [])} for r in programme.soa_rows(db, tenant_id, framework)]
+    return {"framework": framework, "rows": rows, "unmatchedEarlierAnswers": earlier.get("", [])}
 
 
 @router.get("/soa/export")
@@ -941,3 +945,365 @@ def document_file(version_id: str, format: str = "docx", principal: Principal = 
              else "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     name = "".join(c if c.isalnum() or c in " ._-" else "_" for c in f"{doc.number} {doc.title} v{row.version}.{format}")
     return Response(content=data, media_type=media, headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+# Moving the earlier Governance records ---------------------------------------------------------------------------
+
+@router.get("/governance-import")
+def governance_import_preview(tenant_id: str, principal: Principal = Depends(current_principal),
+                              db: Session = Depends(isms_db)):
+    """What moving this customer's earlier Governance records into the ISMS would bring across."""
+    from ..isms import governance_import
+
+    require_isms(db, principal, tenant_id, "programme.manage")
+    return governance_import.preview(db, tenant_id)
+
+
+@router.post("/governance-import")
+def governance_import_run(body: TenantBody, principal: Principal = Depends(current_principal),
+                          db: Session = Depends(isms_db)):
+    """Moves the records across. Safe to run again: only what is new is added; the earlier records are not changed."""
+    from ..isms import governance_import
+
+    principal.require("grc")
+    require_isms(db, principal, body.tenant_id, "programme.manage")
+    out = governance_import.run(db, body.tenant_id, principal.actor, principal.user.id)
+    db.commit()
+    return out
+
+
+# Improvement, objectives and the change log (Phase 4) -------------------------------------------------------------
+
+def _mgmt():
+    from ..isms import management
+    return management
+
+
+@router.get("/nonconformities")
+def list_ncs(tenant_id: str, status: str = "open", principal: Principal = Depends(current_principal),
+             db: Session = Depends(isms_db)):
+    require_isms(db, principal, tenant_id, "controls.view")
+    if status not in ("open", "closed", "cancelled", "all"):
+        raise HTTPException(400, "status is open, closed, cancelled or all")
+    return {"nonconformities": _mgmt().nonconformity_rows(db, tenant_id, status), "sources": _mgmt().NC_SOURCES}
+
+
+@router.post("/nonconformities")
+def raise_nc(body: TenantBody, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    require_isms(db, principal, body.tenant_id, "programme.manage")
+    row = _mgmt().raise_nc(db, body.tenant_id, principal.actor, principal.user.id, dict(body.model_extra or {}),
+                           _members(db, body.tenant_id))
+    db.commit()
+    return _mgmt().nonconformity_rows(db, body.tenant_id, "all", row.id)[0]
+
+
+def _nc(db, principal, nc_id):
+    from ..isms.models import IsmsNonconformity
+    return get_scoped(db, IsmsNonconformity, nc_id, principal)
+
+
+@router.patch("/nonconformities/{nc_id}")
+def update_nc(nc_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+              db: Session = Depends(isms_db)):
+    row = _nc(db, principal, nc_id)
+    require_isms(db, principal, row.tenant_id, "programme.manage")
+    _mgmt().update_nc(db, row, principal.actor, body, _members(db, row.tenant_id))
+    db.commit()
+    return _mgmt().nonconformity_rows(db, row.tenant_id, "all", row.id)[0]
+
+
+@router.post("/nonconformities/{nc_id}/actions")
+def add_corrective_action(nc_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                          db: Session = Depends(isms_db)):
+    row = _nc(db, principal, nc_id)
+    require_isms(db, principal, row.tenant_id, "programme.manage")
+    _mgmt().add_action(db, row, principal.actor, body, _members(db, row.tenant_id))
+    db.commit()
+    return _mgmt().nonconformity_rows(db, row.tenant_id, "all", row.id)[0]
+
+
+@router.post("/corrective-actions/{action_id}/done")
+def complete_corrective_action(action_id: str, body: dict = Body(default={}),
+                               principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    """The action's owner, or an ISMS manager, records it as done."""
+    from ..isms.models import IsmsCorrectiveAction
+
+    a = get_scoped(db, IsmsCorrectiveAction, action_id, principal)
+    role = require_isms(db, principal, a.tenant_id, "tasks.complete")
+    if a.owner_user_id != principal.user.id and not access.can(role, "programme.manage"):
+        raise HTTPException(403, "Only the action's owner or an ISMS manager can complete it")
+    _mgmt().complete_action(db, a, principal.actor, principal.user.id, str(body.get("note") or ""))
+    db.commit()
+    return _mgmt().nonconformity_rows(db, a.tenant_id, "all", a.nonconformity_id)[0]
+
+
+class Effectiveness(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    effective: bool
+    note: str = Field(max_length=4000)
+
+
+@router.post("/nonconformities/{nc_id}/effectiveness")
+def nc_effectiveness(nc_id: str, body: Effectiveness, principal: Principal = Depends(current_principal),
+                     db: Session = Depends(isms_db)):
+    row = _nc(db, principal, nc_id)
+    require_isms(db, principal, row.tenant_id, "programme.manage")
+    _mgmt().record_effectiveness(db, row, principal.actor, principal.user.id, body.effective, body.note)
+    db.commit()
+    return _mgmt().nonconformity_rows(db, row.tenant_id, "all", row.id)[0]
+
+
+class CloseNote(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    outcome: str
+    note: str = Field(max_length=4000)
+
+
+@router.post("/nonconformities/{nc_id}/close")
+def nc_close(nc_id: str, body: CloseNote, principal: Principal = Depends(current_principal),
+             db: Session = Depends(isms_db)):
+    row = _nc(db, principal, nc_id)
+    require_isms(db, principal, row.tenant_id, "programme.manage")
+    _mgmt().close_with_note(db, row, principal.actor, body.outcome, body.note)
+    db.commit()
+    return _mgmt().nonconformity_rows(db, row.tenant_id, "all", row.id)[0]
+
+
+@router.get("/objectives")
+def list_objectives(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    require_isms(db, principal, tenant_id, "controls.view")
+    return {"objectives": _mgmt().objective_rows(db, tenant_id)}
+
+
+@router.post("/objectives")
+def add_objective(body: TenantBody, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    require_isms(db, principal, body.tenant_id, "programme.manage")
+    row = _mgmt().save_objective(db, body.tenant_id, principal.actor, dict(body.model_extra or {}),
+                                 _members(db, body.tenant_id))
+    db.commit()
+    return _mgmt().objective_rows(db, body.tenant_id, row.id)[0]
+
+
+def _objective(db, principal, obj_id):
+    from ..isms.models import IsmsObjective
+    return get_scoped(db, IsmsObjective, obj_id, principal)
+
+
+@router.patch("/objectives/{obj_id}")
+def update_objective(obj_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                     db: Session = Depends(isms_db)):
+    row = _objective(db, principal, obj_id)
+    require_isms(db, principal, row.tenant_id, "programme.manage")
+    if "status" in body and set(body) <= {"status", "note"}:
+        _mgmt().set_objective_status(db, row, principal.actor, body["status"], str(body.get("note") or ""))
+    else:
+        _mgmt().save_objective(db, row.tenant_id, principal.actor, body, _members(db, row.tenant_id), row)
+    db.commit()
+    return _mgmt().objective_rows(db, row.tenant_id, row.id)[0]
+
+
+@router.post("/objectives/{obj_id}/values")
+def record_metric(obj_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                  db: Session = Depends(isms_db)):
+    """The objective's owner, or an ISMS manager, records a measurement."""
+    row = _objective(db, principal, obj_id)
+    role = require_isms(db, principal, row.tenant_id, "controls.view")
+    if row.owner_user_id != principal.user.id and not access.can(role, "programme.manage"):
+        raise HTTPException(403, "Only the objective's owner or an ISMS manager can record values")
+    _mgmt().record_value(db, row, principal.actor, body)
+    db.commit()
+    return _mgmt().objective_rows(db, row.tenant_id, row.id)[0]
+
+
+@router.get("/changes")
+def list_changes(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    require_isms(db, principal, tenant_id, "controls.view")
+    return {"changes": _mgmt().change_rows(db, tenant_id)}
+
+
+@router.post("/changes")
+def add_change(body: TenantBody, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    require_isms(db, principal, body.tenant_id, "programme.manage")
+    row = _mgmt().save_change(db, body.tenant_id, principal.actor, dict(body.model_extra or {}),
+                              _members(db, body.tenant_id))
+    db.commit()
+    return next(c for c in _mgmt().change_rows(db, body.tenant_id) if c["id"] == row.id)
+
+
+@router.patch("/changes/{change_id}")
+def update_change(change_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                  db: Session = Depends(isms_db)):
+    from ..isms.models import IsmsChange
+
+    row = get_scoped(db, IsmsChange, change_id, principal)
+    require_isms(db, principal, row.tenant_id, "programme.manage")
+    _mgmt().save_change(db, row.tenant_id, principal.actor, body, _members(db, row.tenant_id), row)
+    db.commit()
+    return next(c for c in _mgmt().change_rows(db, row.tenant_id) if c["id"] == row.id)
+
+
+# Internal audit (Phase 4) -----------------------------------------------------------------------------------------
+
+def _audits():
+    from ..isms import audits
+    return audits
+
+
+def _audit_role(db: Session, principal: Principal, tenant_id: str, permission: str) -> str:
+    """Auditors log findings; ISMS managers plan. Both read with controls.view."""
+    return require_isms(db, principal, tenant_id, permission)
+
+
+@router.get("/audit-programmes")
+def list_audit_programmes(tenant_id: str, principal: Principal = Depends(current_principal),
+                          db: Session = Depends(isms_db)):
+    role = _audit_role(db, principal, tenant_id, "controls.view")
+    return {"programmes": _audits().programme_rows(db, tenant_id),
+            "groups": _audits().auditable_groups(db, tenant_id),
+            "frameworks": [f.framework for f in programme.tenant_frameworks(db, tenant_id)],
+            "canPlan": access.can(role, "programme.manage"), "canAudit": access.can(role, "findings.log")}
+
+
+@router.post("/audit-programmes")
+def add_audit_programme(body: TenantBody, principal: Principal = Depends(current_principal),
+                        db: Session = Depends(isms_db)):
+    _audit_role(db, principal, body.tenant_id, "programme.manage")
+    row = _audits().save_programme(db, body.tenant_id, principal.actor, dict(body.model_extra or {}))
+    db.commit()
+    return _audits().programme_rows(db, body.tenant_id, row.id)[0]
+
+
+@router.patch("/audit-programmes/{programme_id}")
+def update_audit_programme(programme_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                           db: Session = Depends(isms_db)):
+    from ..isms.models import IsmsAuditProgramme
+    row = get_scoped(db, IsmsAuditProgramme, programme_id, principal)
+    _audit_role(db, principal, row.tenant_id, "programme.manage")
+    _audits().save_programme(db, row.tenant_id, principal.actor, body, row)
+    db.commit()
+    return _audits().programme_rows(db, row.tenant_id, row.id)[0]
+
+
+@router.post("/audit-programmes/{programme_id}/audits")
+def plan_audit(programme_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+               db: Session = Depends(isms_db)):
+    from ..isms.models import IsmsAuditProgramme
+    prog = get_scoped(db, IsmsAuditProgramme, programme_id, principal)
+    _audit_role(db, principal, prog.tenant_id, "programme.manage")
+    row = _audits().create_audit(db, prog, principal.actor, body, _members(db, prog.tenant_id))
+    db.commit()
+    return _audits().audit_view(db, row)
+
+
+def _audit(db, principal, audit_id):
+    from ..isms.models import IsmsAudit
+    return get_scoped(db, IsmsAudit, audit_id, principal)
+
+
+@router.get("/audits/{audit_id}")
+def get_audit(audit_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    row = _audit(db, principal, audit_id)
+    _audit_role(db, principal, row.tenant_id, "controls.view")
+    return _audits().audit_view(db, row)
+
+
+@router.patch("/audits/{audit_id}")
+def update_audit(audit_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                 db: Session = Depends(isms_db)):
+    row = _audit(db, principal, audit_id)
+    _audit_role(db, principal, row.tenant_id, "programme.manage")
+    _audits().update_audit(db, row, principal.actor, body, _members(db, row.tenant_id))
+    db.commit()
+    return _audits().audit_view(db, row)
+
+
+@router.delete("/audits/{audit_id}")
+def delete_audit(audit_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    row = _audit(db, principal, audit_id)
+    _audit_role(db, principal, row.tenant_id, "programme.manage")
+    _audits().delete_audit(db, row, principal.actor)
+    db.commit()
+    return {"ok": True}
+
+
+class ChecklistBody(BaseModel):
+    groups: list[str] = []
+
+
+@router.post("/audits/{audit_id}/checklist")
+def audit_checklist(audit_id: str, body: ChecklistBody, principal: Principal = Depends(current_principal),
+                    db: Session = Depends(isms_db)):
+    row = _audit(db, principal, audit_id)
+    _audit_role(db, principal, row.tenant_id, "programme.manage")
+    _audits().generate_checklist(db, row, principal.actor, body.groups)
+    db.commit()
+    return _audits().audit_view(db, row)
+
+
+@router.post("/audits/{audit_id}/start")
+def start_audit(audit_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    row = _audit(db, principal, audit_id)
+    _audit_role(db, principal, row.tenant_id, "findings.log")
+    _audits().start_audit(db, row, principal.actor)
+    db.commit()
+    return _audits().audit_view(db, row)
+
+
+class CheckBody(BaseModel):
+    result: str
+    notes: str = ""
+    evidenceSeen: str = ""
+
+
+@router.put("/audit-checks/{check_id}")
+def record_audit_check(check_id: str, body: CheckBody, principal: Principal = Depends(current_principal),
+                       db: Session = Depends(isms_db)):
+    from ..isms.models import IsmsAuditCheck
+    check = get_scoped(db, IsmsAuditCheck, check_id, principal)
+    _audit_role(db, principal, check.tenant_id, "findings.log")
+    parent = _audits().record_check(db, check, principal.actor, principal.user.id, body.model_dump())
+    db.commit()
+    return _audits().audit_view(db, parent)
+
+
+class FindingBody(BaseModel):
+    ownerId: str | None = None
+
+
+@router.post("/audit-checks/{check_id}/finding")
+def raise_audit_finding(check_id: str, body: FindingBody, principal: Principal = Depends(current_principal),
+                        db: Session = Depends(isms_db)):
+    from ..isms.models import IsmsAudit, IsmsAuditCheck
+    check = get_scoped(db, IsmsAuditCheck, check_id, principal)
+    _audit_role(db, principal, check.tenant_id, "findings.log")
+    _audits().raise_finding(db, check, principal.actor, principal.user.id, body.ownerId, _members(db, check.tenant_id))
+    db.commit()
+    return _audits().audit_view(db, db.get(IsmsAudit, check.audit_id))
+
+
+class CompleteAuditBody(BaseModel):
+    summary: str
+
+
+@router.post("/audits/{audit_id}/complete")
+def complete_audit(audit_id: str, body: CompleteAuditBody, principal: Principal = Depends(current_principal),
+                   db: Session = Depends(isms_db)):
+    row = _audit(db, principal, audit_id)
+    _audit_role(db, principal, row.tenant_id, "findings.log")
+    _audits().complete_audit(db, row, principal.actor, body.summary)
+    db.commit()
+    return _audits().audit_view(db, row)
+
+
+class SampleBody(BaseModel):
+    tenantId: str
+    population: list[str]
+    size: int | None = None
+    seed: str
+
+
+@router.post("/audit-sample")
+def audit_sample(body: SampleBody, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    """Draws a reproducible sample. Nothing is stored; the seed lets anyone draw the same sample again."""
+    _audit_role(db, principal, body.tenantId, "findings.log")
+    return _audits().sample(body.population, body.size, body.seed)

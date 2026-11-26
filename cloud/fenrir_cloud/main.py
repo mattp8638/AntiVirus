@@ -670,6 +670,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def approval_required(_request: Request, exc: approval_gate.ApprovalRequired):
         return exc.response()
 
+    from .isms.models import CompletedAudit, FrozenDocumentVersion
+
+    @app.exception_handler(CompletedAudit)
+    @app.exception_handler(FrozenDocumentVersion)
+    async def frozen_record(_request: Request, exc: RuntimeError):
+        # The last line of defence for records that must never change; the services refuse these first.
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+
     remote.install_wake_hook()
     for module in (agent_api, admin, fleet, soc, crm_router, business, rmm_router, service_mgmt, psa_router, remote_router, portal):
         app.include_router(module.router)

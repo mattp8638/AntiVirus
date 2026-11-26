@@ -61,6 +61,16 @@ Open **Governance → ISMS roles** with a customer chosen in the tenant picker.
 - A person can only be given a role in a customer they can already see in Fenrir. Client portal accounts can only be staff.
 - Every role given, changed or removed is recorded in the audit log.
 
+## Moving the earlier Governance records
+
+While a customer still has records in the earlier Governance programmes, **Programme setup** offers **Move them into the ISMS** (Fenrir users with the grc permission who also run the customer's ISMS):
+
+- Adopted frameworks become ISMS frameworks (all 15 programmes have an ISMS pack; the retired Essential Eight stays in the earlier module, read-only), and an adoption's scope fills an empty ISMS scope.
+- Requirement answers are kept, read-only, beside the matching rows of the Statement of Applicability. A "not applicable" answer becomes a justified exclusion when it matches directly or covers several ISMS requirements (for example a NIST CSF category); mandatory clauses are never excluded.
+- Policies become documents: the approved version published (withdrawn if the policy was retired), earlier approved versions superseded, and a newer draft kept as a draft.
+- Evidence files are copied, encrypted, into the ISMS store; evidence is linked to the controls that satisfy the requirements it was linked to. Risk register entries become ISMS risks, exceptions become retained risks, and other register entries become evidence notes.
+- Nothing in the earlier module is changed. Running the move again only adds what is new. The move is recorded in the audit log.
+
 ## Programme setup and ISMS controls
 
 **Programme setup** needs an ISMS role that can run the programme.
@@ -119,6 +129,29 @@ Readiness is the share of applicable requirements that are met, where a requirem
 - Approved and published versions never change: regenerating always makes a new draft, and the application refuses any edit to a version that has left draft.
 - **Use our own wording** replaces one section with the customer's text in every future version (placeholders such as `{{organization.legal_name}}` still work).
 - Staff, executives and auditors see only published versions. Every generation, step and download is recorded in the audit log.
+
+## ISMS improvement
+
+**ISMS improvement** has three views. Everyone with an ISMS role that can see controls can read them; ISMS managers make changes.
+
+- **Nonconformities and improvements** (10.2). Each record gets a reference (NC-001, or OFI-001 for an improvement opportunity), a source (internal or external audit, incident, management review, monitoring, complaint or other) and, for a nonconformity, a severity. A nonconformity moves through: root cause needed, corrective action needed, actions in progress, ready for effectiveness check. The owner of a corrective action marks it done with a note. Once every action is done, the ISMS manager records how they checked it worked: effective closes it, not effective keeps it open for more action. Improvement opportunities close with a note; either kind can be cancelled with a reason.
+- **Objectives and measures** (6.2, 9.1). Each objective has a measure, a target (at least or at most a value), an owner and a frequency. The owner or an ISMS manager records values; the list shows the latest value, whether it is on target, the trend and whether the measure is stale (no value for longer than its frequency). An objective is finished as achieved or retired with a note.
+- **Planned changes** (6.3). Changes to the ISMS itself, with their purpose, possible consequences, resources and owner. A change marked done or cancelled needs the date it finished and its outcome.
+
+Every step is recorded in the audit log.
+
+## Internal audit
+
+**Internal audit** (9.2) holds audit programmes, each covering a period, and the audits planned in them. ISMS managers plan; people with the auditor role (or ISMS managers) carry out audits.
+
+- Each audit names the frameworks it covers, its dates (starting inside the programme period), a lead auditor with an ISMS role in the customer, and a note on how the auditors are independent of what they audit.
+- **Generate checklist** adds every clause and every applicable requirement of those frameworks, optionally limited to some groups (for example clause 9 and the people controls). Each item is a snapshot, so later pack updates do not change it. Refreshing keeps items that already have a result.
+- Once started, the auditor records a result for each item (conforms, observation, minor or major nonconformity, not assessed) with what was found and the evidence seen. A minor or major finding must be raised as a nonconformity before the audit can be completed; an observation can be raised as an improvement. Both then follow the **ISMS improvement** workflow.
+- Completing needs a result for every item, the independence note and a summary. A completed audit and its checklist never change. Only a planned audit can be deleted.
+- Coverage shows how many of the requirements that must be audited the programme's audits have checked.
+- **Draw a sample** picks items from a list (for example leavers or changes) so the same list, size and seed always give the same sample, which lets anyone check it. Nothing is stored.
+
+Objectives, the latest audit programme and improvement figures also appear in the generated ISMS documents (for example the objectives plan and the internal audit procedure).
 
 ## Organization, scope and assets
 

@@ -57,6 +57,7 @@ function ProgrammeSetup({ tenantId }: { tenantId: string }) {
   };
 
   return <>
+    <EarlierRecords tenantId={tenantId} onDone={() => { reload(); reloadQuestions(); }} />
     <div className="card">
       <h3 style={{ marginTop: 0 }}>1. Frameworks</h3>
       <ErrorNote error={error} />
@@ -83,6 +84,29 @@ function ProgrammeSetup({ tenantId }: { tenantId: string }) {
         { key: "reason", label: "Why", render: (c) => <span className="small">{displayValue(c.reason)}</span> }]} />}
     </Modal>}
   </>;
+}
+
+/** Moving the customer's records from the earlier Governance programmes (shown while there is anything to move). */
+function EarlierRecords({ tenantId, onDone }: { tenantId: string; onDone: () => void }) {
+  const { data, reload } = useData<any>("isms/governance-import", { tenant_id: tenantId }, [tenantId]);
+  const [result, setResult] = useState<any>(null);
+  const { run, busy } = useAction();
+  if (!data) return null;
+  const total = data.answers + data.policies + data.evidence + data.records + safeArray<string>(data.frameworks).length;
+  if (!total) return null;
+  const move = async () => {
+    const r = await run(() => api<any>("isms/governance-import", { body: { tenantId } }), "Earlier records moved");
+    if (r) { setResult(r); reload(); onDone(); }
+  };
+  return <div className="card">
+    <h3 style={{ marginTop: 0 }}>Earlier Governance records</h3>
+    <p className="small">This customer has records in the earlier Governance programmes: {safeArray<string>(data.frameworks).join(", ") || "no frameworks"}, {data.answers} answers, {data.policies} policies, {data.evidence} pieces of evidence and {data.records} register entries.
+      {data.alreadyMoved ? ` ${data.alreadyMoved} have been moved already; moving again only adds what is new.` : ""}</p>
+    <p className="small muted">Moving brings the frameworks, answers (kept beside the Statement of Applicability, with "not applicable" answers as justified exclusions), policies (as documents, every approved version kept), evidence and risks into the ISMS. The earlier records are not changed.</p>
+    {safeArray<string>(data.frameworksNotMoved).length > 0 && <p className="small">Not moved (not in the ISMS): {safeArray<string>(data.frameworksNotMoved).join(", ")}.</p>}
+    <button className="primary" disabled={busy} onClick={move}>{data.alreadyMoved ? "Move what is new" : "Move them into the ISMS"}</button>
+    {result && <p role="status" className="small">Moved {result.frameworks} framework(s), {result.answers} answer(s), {result.documents} document(s), {result.evidence} piece(s) of evidence, {result.risks} risk(s) and {result.notes} note(s).{safeArray<string>(result.skipped).length ? ` Not moved: ${safeArray<string>(result.skipped).slice(0, 5).join("; ")}.` : ""}</p>}
+  </div>;
 }
 
 function QuestionField({ q, value, onChange }: { q: Question; value: unknown; onChange: (v: unknown) => void }) {
@@ -208,6 +232,7 @@ export function IsmsSoaTab() {
       { key: "applicable", label: "Applicable", render: (x) => <><Pill value={x.applicable ? "yes" : "no"} tone={x.applicable ? "good" : "muted"} /><div className="small">{displayValue(x.justification ?? x.reason)}</div></> },
       { key: "controls", label: "Implemented by", render: (x) => <span className="small">{safeArray<any>(x.controls).map((c) => c.ref).join(", ") || "None"}</span> },
       { key: "status", label: "Status", render: (x) => <Pill value={x.status} tone={SOA_TONE[x.status]} /> },
-      { key: "owners", label: "Owner", render: (x) => <span className="small">{safeArray<string>(x.owners).join(", ")}</span> }]} />
+      { key: "owners", label: "Owner", render: (x) => <span className="small">{safeArray<string>(x.owners).join(", ")}</span> },
+      { key: "earlierAnswers", label: "Earlier answer", render: (x) => <span className="small">{safeArray<any>(x.earlierAnswers).map((a) => `${a.sourceRef}: ${a.status.replace("_", " ")}${a.answer ? `, "${a.answer}"` : ""}`).join("; ")}</span> }]} />
   </div>;
 }

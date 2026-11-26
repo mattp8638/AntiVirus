@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..db import Base
@@ -418,3 +418,209 @@ from sqlalchemy import event as _event  # noqa: E402
 from sqlalchemy.orm import Session as _Session  # noqa: E402
 
 _event.listen(_Session, "before_flush", _guard_versions)
+
+
+@tenant_table
+class IsmsLegacyAnswer(_Row, Base):
+    """An answer from Fenrir's earlier Governance programmes, kept read-only beside the Statement of Applicability.
+    ``refs`` are the ISMS requirements it was matched to (empty when nothing matches)."""
+    __tablename__ = "isms_legacy_answers"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ila"))
+    framework: Mapped[str] = mapped_column(String(80))  # ISMS framework slug
+    source_framework: Mapped[str] = mapped_column(String(80))  # Fenrir framework key
+    source_ref: Mapped[str] = mapped_column(String(80))
+    refs: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(20))
+    answer: Mapped[str] = mapped_column(Text, default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    na_reason: Mapped[str] = mapped_column(Text, default="")
+    owner: Mapped[str] = mapped_column(String(200), default="")
+    answered_by: Mapped[str] = mapped_column(String(200), default="")
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+@tenant_table
+class IsmsImport(_Row, Base):
+    """What was moved from Fenrir's earlier Governance records, so the move can run again without duplicating."""
+    __tablename__ = "isms_imports"
+    __table_args__ = (UniqueConstraint("tenant_id", "source_table", "source_id", name="uq_isms_import_source"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("iim"))
+    source_table: Mapped[str] = mapped_column(String(60))
+    source_id: Mapped[str] = mapped_column(String(64))
+    target_table: Mapped[str] = mapped_column(String(60))
+    target_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    note: Mapped[str] = mapped_column(Text, default="")
+
+
+@tenant_table
+class IsmsNonconformity(_Row, Base):
+    """A nonconformity (ISO 27001 10.2) or an improvement opportunity (10.1). Never deleted, only cancelled."""
+    __tablename__ = "isms_nonconformities"
+    __table_args__ = (UniqueConstraint("tenant_id", "ref", name="uq_isms_nonconformity_ref"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("inc"))
+    ref: Mapped[str] = mapped_column(String(20))  # NC-001 or OFI-001
+    kind: Mapped[str] = mapped_column(String(20), default="nonconformity")  # nonconformity | opportunity
+    title: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text, default="")
+    source: Mapped[str] = mapped_column(String(30))
+    severity: Mapped[str | None] = mapped_column(String(10), nullable=True)  # minor | major (nonconformities)
+    requirement_ref: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    raised_on: Mapped[date] = mapped_column(Date)
+    raised_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    owner_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    correction: Mapped[str] = mapped_column(Text, default="")
+    root_cause: Mapped[str] = mapped_column(Text, default="")
+    due_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="open")  # open | closed | cancelled
+    effectiveness_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    effective: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    verified_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    closure_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    audit_finding_id: Mapped[str | None] = mapped_column(String(32), nullable=True)  # raised from an audit finding
+
+
+@tenant_table
+class IsmsCorrectiveAction(_Row, Base):
+    __tablename__ = "isms_corrective_actions"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ica"))
+    nonconformity_id: Mapped[str] = mapped_column(ForeignKey("isms_nonconformities.id"), index=True)
+    description: Mapped[str] = mapped_column(Text)
+    owner_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    due_on: Mapped[date] = mapped_column(Date)
+    done_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    done_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    done_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+@tenant_table
+class IsmsObjective(_Row, Base):
+    """An information security objective with its measure and target (ISO 27001 6.2, 9.1)."""
+    __tablename__ = "isms_objectives"
+    __table_args__ = (UniqueConstraint("tenant_id", "ref", name="uq_isms_objective_ref"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("iob"))
+    ref: Mapped[str] = mapped_column(String(20))
+    title: Mapped[str] = mapped_column(String(200))
+    measure: Mapped[str] = mapped_column(Text)
+    unit: Mapped[str] = mapped_column(String(40), default="")
+    direction: Mapped[str] = mapped_column(String(10))  # at_least | at_most
+    target: Mapped[float] = mapped_column(Float)
+    baseline: Mapped[float | None] = mapped_column(Float, nullable=True)
+    plan: Mapped[str] = mapped_column(Text, default="")
+    resources: Mapped[str] = mapped_column(Text, default="")
+    owner_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    frequency: Mapped[str] = mapped_column(String(20), default="monthly")
+    due_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="active")  # active | achieved | dropped
+    status_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+@tenant_table
+class IsmsMetricValue(_Row, Base):
+    __tablename__ = "isms_metric_values"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("imv"))
+    objective_id: Mapped[str] = mapped_column(ForeignKey("isms_objectives.id"), index=True)
+    measured_on: Mapped[date] = mapped_column(Date)
+    value: Mapped[float] = mapped_column(Float)
+    note: Mapped[str] = mapped_column(Text, default="")
+
+
+@tenant_table
+class IsmsChange(_Row, Base):
+    """A planned change to the ISMS (ISO 27001 6.3)."""
+    __tablename__ = "isms_changes"
+    __table_args__ = (UniqueConstraint("tenant_id", "ref", name="uq_isms_change_ref"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ich"))
+    ref: Mapped[str] = mapped_column(String(20))
+    title: Mapped[str] = mapped_column(String(200))
+    purpose: Mapped[str] = mapped_column(Text)
+    consequences: Mapped[str] = mapped_column(Text, default="")
+    resources: Mapped[str] = mapped_column(Text, default="")
+    owner_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    planned_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="planned")  # planned | in_progress | done | cancelled
+    completed_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    outcome: Mapped[str] = mapped_column(Text, default="")
+
+
+@tenant_table
+class IsmsAuditProgramme(_Row, Base):
+    """An internal audit programme for a period (ISO 27001 9.2)."""
+    __tablename__ = "isms_audit_programmes"
+    __table_args__ = (UniqueConstraint("tenant_id", "title", name="uq_isms_audit_programme_title"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("iap"))
+    title: Mapped[str] = mapped_column(String(160))
+    period_start: Mapped[date] = mapped_column(Date)
+    period_end: Mapped[date] = mapped_column(Date)
+    objectives: Mapped[str] = mapped_column(Text, default="")
+
+
+@tenant_table
+class IsmsAudit(_Row, Base):
+    """One internal audit. A completed audit is a record and never changes (see the guard below)."""
+    __tablename__ = "isms_audits"
+    __table_args__ = (UniqueConstraint("tenant_id", "ref", name="uq_isms_audit_ref"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("iau"))
+    programme_id: Mapped[str] = mapped_column(ForeignKey("isms_audit_programmes.id"), index=True)
+    ref: Mapped[str] = mapped_column(String(20))  # AUD-001
+    title: Mapped[str] = mapped_column(String(160))
+    scope: Mapped[str] = mapped_column(Text, default="")
+    frameworks: Mapped[list[str]] = mapped_column(JSON, default=list)
+    planned_start: Mapped[date] = mapped_column(Date)
+    planned_end: Mapped[date] = mapped_column(Date)
+    lead_auditor_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    other_auditors: Mapped[str] = mapped_column(Text, default="")
+    independence_note: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(20), default="planned")  # planned | in_progress | completed
+    summary: Mapped[str] = mapped_column(Text, default="")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+@tenant_table
+class IsmsAuditCheck(_Row, Base):
+    """A checklist item: a snapshot of one requirement at generation time, with the auditor's result."""
+    __tablename__ = "isms_audit_checks"
+    __table_args__ = (UniqueConstraint("audit_id", "framework", "requirement_ref", name="uq_isms_audit_check"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("iak"))
+    audit_id: Mapped[str] = mapped_column(ForeignKey("isms_audits.id"), index=True)
+    framework: Mapped[str] = mapped_column(String(80))
+    requirement_ref: Mapped[str] = mapped_column(String(80))
+    requirement_title: Mapped[str] = mapped_column(String(300))
+    group_title: Mapped[str] = mapped_column(String(300), default="")
+    mandatory: Mapped[bool] = mapped_column(Boolean, default=False)
+    controls: Mapped[str] = mapped_column(Text, default="")
+    sort: Mapped[int] = mapped_column(Integer, default=0)
+    result: Mapped[str | None] = mapped_column(String(20), nullable=True)  # conforms | observation | minor | major | not_assessed
+    notes: Mapped[str] = mapped_column(Text, default="")
+    evidence_seen: Mapped[str] = mapped_column(Text, default="")
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    checked_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+
+class CompletedAudit(RuntimeError):
+    """A completed audit, or its checklist, was about to change."""
+
+
+def _guard_audits(session, _flush_context, _instances) -> None:
+    from sqlalchemy import inspect as sa_inspect
+
+    for obj in list(session.new) + list(session.dirty) + list(session.deleted):
+        if isinstance(obj, IsmsAudit) and obj not in session.new:
+            hist = sa_inspect(obj).attrs.status.history
+            was = (hist.deleted or [obj.status])[0] if hist.has_changes() else obj.status
+            if was == "completed" and (obj in session.deleted or session.is_modified(obj)):
+                raise CompletedAudit("A completed audit cannot change.")
+            if obj in session.deleted and was != "planned":
+                raise CompletedAudit("Only a planned audit can be deleted.")
+        elif isinstance(obj, IsmsAuditCheck):
+            parent = session.get(IsmsAudit, obj.audit_id)
+            if parent is not None:
+                hist = sa_inspect(parent).attrs.status.history
+                was = (hist.deleted or [parent.status])[0] if hist.has_changes() else parent.status
+                if was == "completed":
+                    raise CompletedAudit("The audit is completed; its checklist cannot change.")
+
+
+_event.listen(_Session, "before_flush", _guard_audits)

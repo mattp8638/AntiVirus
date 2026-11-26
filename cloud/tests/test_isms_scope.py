@@ -13,7 +13,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
-from fenrir_cloud.isms.models import (IsmsApplicability, IsmsDocument, IsmsDocumentOverride, IsmsDocumentVersion, IsmsEvidence, IsmsEvidenceLink, IsmsTask, IsmsApplicabilityOverride, IsmsAsset, IsmsContextIssue,
+from fenrir_cloud.isms.models import (IsmsApplicability, IsmsDocument, IsmsDocumentOverride, IsmsDocumentVersion, IsmsAudit, IsmsAuditCheck, IsmsAuditProgramme, IsmsChange, IsmsCorrectiveAction, IsmsEvidence, IsmsEvidenceLink, IsmsImport, IsmsMetricValue, IsmsNonconformity, IsmsObjective, IsmsLegacyAnswer, IsmsTask, IsmsApplicabilityOverride, IsmsAsset, IsmsContextIssue,
                                       IsmsEntity, IsmsInterestedParty, IsmsMembership, IsmsProfileAnswer, IsmsScope,
                                       IsmsRisk, IsmsRiskAcceptance, IsmsRiskControl, IsmsRiskMethod,
                                       IsmsRiskSnapshot, IsmsSite, IsmsTenantControl, IsmsTenantFramework)
@@ -52,6 +52,25 @@ FACTORIES: dict[type, callable] = {
                                          number=f"X-POL-{t}"),
     IsmsDocumentVersion: lambda t: IsmsDocumentVersion(tenant_id=t, document_id=f"idc_{t}", version=1, template_ref="x",
                                                        context_hash="0" * 64, blocks=[], html=""),
+    IsmsNonconformity: lambda t: IsmsNonconformity(tenant_id=t, ref="NC-001", title="Missing log review",
+                                                   source="internal_audit", severity="minor", raised_on=date(2026, 11, 1)),
+    IsmsCorrectiveAction: lambda t: IsmsCorrectiveAction(tenant_id=t, nonconformity_id=f"inc_{t}", description="Fix it",
+                                                         due_on=date(2026, 12, 1)),
+    IsmsObjective: lambda t: IsmsObjective(tenant_id=t, ref="OBJ-001", title="Patch fast", measure="Days to patch",
+                                           direction="at_most", target=14),
+    IsmsMetricValue: lambda t: IsmsMetricValue(tenant_id=t, objective_id=f"iob_{t}", measured_on=date(2026, 11, 1),
+                                               value=10),
+    IsmsChange: lambda t: IsmsChange(tenant_id=t, ref="CHG-001", title="New MDM", purpose="Manage phones"),
+    IsmsAuditProgramme: lambda t: IsmsAuditProgramme(tenant_id=t, title="Programme", period_start=date(2027, 1, 1),
+                                                     period_end=date(2027, 12, 31)),
+    IsmsAudit: lambda t: IsmsAudit(tenant_id=t, programme_id=f"iap_{t}", ref="AUD-001", title="Audit",
+                                   planned_start=date(2027, 3, 1), planned_end=date(2027, 3, 2)),
+    IsmsAuditCheck: lambda t: IsmsAuditCheck(tenant_id=t, audit_id=f"iau_{t}", framework="iso27001",
+                                             requirement_ref="9.2", requirement_title="Internal audit"),
+    IsmsLegacyAnswer: lambda t: IsmsLegacyAnswer(tenant_id=t, framework="iso27001", source_framework="iso-27001",
+                                                 source_ref="A.7.4", status="not_applicable"),
+    IsmsImport: lambda t: IsmsImport(tenant_id=t, source_table="grc_policies", source_id=f"grcp_{t}",
+                                     target_table="isms_documents"),
     IsmsDocumentOverride: lambda t: IsmsDocumentOverride(tenant_id=t, document_id=f"idc_{t}", block_ref="isp.purpose",
                                                          content="x"),
 }
