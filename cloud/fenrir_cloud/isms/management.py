@@ -135,6 +135,9 @@ def raise_nc(db: Session, tenant_id: str, actor: str, user_id: str, data: dict, 
     db.flush()
     audit.record(db, actor, "isms.nonconformity_raised", row.ref, tenant_id, id=row.id, kind=kind,
                  severity=row.severity)
+    from .notify import emit
+    emit(db, tenant_id, "isms.nonconformity_raised", id=row.id, ref=row.ref, kind=kind, severity=row.severity,
+         source=row.source, title=row.title)
     return row
 
 
@@ -194,6 +197,9 @@ def record_effectiveness(db: Session, row: IsmsNonconformity, actor: str, user_i
         row.status, row.closed_at = "closed", now
     row.updated_at, row.updated_by = now, actor
     audit.record(db, actor, "isms.nonconformity_effectiveness", row.ref, row.tenant_id, id=row.id, effective=effective)
+    if row.status == "closed":
+        from .notify import emit
+        emit(db, row.tenant_id, "isms.nonconformity_closed", id=row.id, ref=row.ref, kind=row.kind, outcome="effective")
 
 
 def close_with_note(db: Session, row: IsmsNonconformity, actor: str, outcome: str, note: str) -> None:
@@ -209,6 +215,8 @@ def close_with_note(db: Session, row: IsmsNonconformity, actor: str, outcome: st
     row.status, row.closure_note, row.closed_at = outcome, note[:4000], utcnow()
     row.updated_at, row.updated_by = utcnow(), actor
     audit.record(db, actor, f"isms.nonconformity_{outcome}", row.ref, row.tenant_id, id=row.id)
+    from .notify import emit
+    emit(db, row.tenant_id, "isms.nonconformity_closed", id=row.id, ref=row.ref, kind=row.kind, outcome=outcome)
 
 
 # Objectives -------------------------------------------------------------------------------------------------

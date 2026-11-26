@@ -324,6 +324,9 @@ def start_campaign(db: Session, tenant_id: str, actor: str, data: dict) -> IsmsA
     targets = _targets(db, tenant_id, audience)
     audit.record(db, actor, "isms.acknowledgement_campaign_started", row.id, tenant_id, document_version_id=v.id,
                  audience=audience, people=len(targets))
+    from .notify import emit
+    emit(db, tenant_id, "isms.acknowledgement_requested", id=row.id, documentVersionId=v.id, version=v.version,
+         audience=audience, people=len(targets), dueOn=due.isoformat())
     _notify(db, row, list(targets), "is asking you to read and acknowledge")
     return row
 

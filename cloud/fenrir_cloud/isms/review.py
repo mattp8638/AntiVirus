@@ -248,6 +248,8 @@ def record_meeting(db: Session, row: IsmsManagementReview, actor: str, user_id: 
     row.changes_needed = js_trim(str(data.get("changesNeeded") or ""))[:8000]
     row.recorded_at, row.recorded_by_user_id, row.status, row.updated_by = utcnow(), user_id, "held", actor
     audit.record(db, actor, "isms.review_held", row.ref, row.tenant_id, id=row.id, held_on=held.isoformat())
+    from .notify import emit
+    emit(db, row.tenant_id, "isms.review_held", id=row.id, ref=row.ref, title=row.title, heldOn=held.isoformat())
 
 
 def add_action(db: Session, row: IsmsManagementReview, actor: str, data: dict, members: set[str]) -> IsmsReviewAction:

@@ -197,6 +197,11 @@ The **Audit workspace** is where external and internal auditors work.
 
 **ISMS dashboard** shows your chosen tiles for the customer in the tenant picker, each from live records with its status in words (OK, needs attention, action needed, for information) and a button to the tab behind it: readiness, control health, tasks, evidence, risks, nonconformities, documents, next audit, incidents and suppliers. You only see the tiles your ISMS role allows. **Choose tiles and email** sets which tiles appear, their order, and an email of the same figures weekly (Mondays) or monthly (the 1st) at 07:00 UTC. The email stops if you lose your ISMS role in the customer.
 
+## ISMS API and webhooks
+
+- **API.** A Fenrir API credential (Settings, API credentials) with the **grc** scope can read the ISMS of the customers it covers: controls, the Statement of Applicability, risks, documents and evidence, through the same `/api/console/isms/...` endpoints the console uses. It cannot change anything in the ISMS, whatever else its scopes allow, and the role it reads with cannot be given to a person.
+- **Webhooks.** Settings, Webhooks can subscribe to ISMS events: document published, nonconformity raised or closed, risk accepted, internal audit completed, management review held, evidence requested by an auditor, document sent for acknowledgement, and incident review completed. They are delivered, signed and retried like every other Fenrir webhook. Each carries references, titles and states only, never document text, evidence contents or notes.
+
 ## Organization, scope and assets
 
 These tabs need an ISMS role that can run the programme (ISMS manager or ISMS administrator).

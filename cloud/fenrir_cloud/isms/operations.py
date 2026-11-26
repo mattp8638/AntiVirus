@@ -190,6 +190,9 @@ def complete_review(db: Session, incident: Incident, actor: str) -> None:
     row.status, row.completed_at, row.updated_by = "complete", utcnow(), actor
     audit.record(db, actor, "isms.incident_review_completed", incident.title, incident.tenant_id,
                  incident_id=incident.id)
+    from .notify import emit
+    emit(db, incident.tenant_id, "isms.incident_review_completed", incidentId=incident.id, category=row.category,
+         personalData=row.personal_data)
 
 
 def reopen_review(db: Session, incident: Incident, actor: str) -> None:

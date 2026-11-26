@@ -28,7 +28,9 @@ def test_unknown_or_missing_roles_are_denied():
 
 
 def test_every_role_is_covered():
-    assert sorted(ROLE_PERMISSIONS) == sorted(TENANT_ROLES)
+    # Every grantable role has permissions; the one extra is the API credential's read-only role, never granted.
+    assert sorted(ROLE_PERMISSIONS) == sorted((*TENANT_ROLES, "api_reader"))
+    assert ROLE_PERMISSIONS["api_reader"] == {"controls.view", "risks.view", "documents.view", "evidence.view"}
     assert all(p in PERMISSIONS for perms in ROLE_PERMISSIONS.values() for p in perms)
 
 

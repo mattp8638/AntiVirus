@@ -188,6 +188,11 @@ const WEBHOOK_EVENTS: [string, string][] = [
   ["vulnerability.detected", "Vulnerability found"], ["vulnerability.verified_fixed", "Vulnerability fixed"],
   ["grc.drift", "Compliance drift"], ["m365.action_finished", "Microsoft 365 action finished"], ["audit.checkpoint", "Audit checkpoint"],
   ["platform.health.degraded", "Fenrir platform degraded"], ["platform.health.recovered", "Fenrir platform recovered"],
+  ["isms.document_published", "ISMS document published"], ["isms.nonconformity_raised", "ISMS nonconformity raised"],
+  ["isms.nonconformity_closed", "ISMS nonconformity closed"], ["isms.risk_accepted", "ISMS risk accepted"],
+  ["isms.audit_completed", "ISMS internal audit completed"], ["isms.review_held", "ISMS management review held"],
+  ["isms.evidence_requested", "ISMS evidence requested by an auditor"], ["isms.acknowledgement_requested", "ISMS document sent for acknowledgement"],
+  ["isms.incident_review_completed", "ISMS incident review completed"],
 ];
 
 function WebhooksTab() {

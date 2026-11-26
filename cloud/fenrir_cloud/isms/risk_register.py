@@ -259,6 +259,9 @@ def accept(db: Session, row: IsmsRisk, actor: str, user_id: str, rationale: str)
                               residual_score=int(score), rationale=text, expires_at=review, updated_by=actor))
     row.status, row.next_review, row.updated_at, row.updated_by = "accepted", review, utcnow(), actor
     audit.record(db, actor, "isms.risk_accepted", row.ref, row.tenant_id, score=score, rationale=text)
+    from .notify import emit
+    emit(db, row.tenant_id, "isms.risk_accepted", id=row.id, ref=row.ref, title=row.title, score=score,
+         reviewBy=review.isoformat() if review else None)
 
 
 def snapshot(db: Session, tenant_id: str, actor: str, user_id: str, reason: str = "manual") -> IsmsRiskSnapshot:

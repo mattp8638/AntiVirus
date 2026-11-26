@@ -42,7 +42,16 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
     "staff": frozenset(("documents.view", "documents.acknowledge", "tasks.complete")),
     "auditor": frozenset((*_READ_ONLY, "audit_log.view", "findings.log")),
     "executive_viewer": frozenset((*_READ_ONLY, "dashboard.executive")),
+    # Not a role anyone can be given: what a Fenrir API credential with the "grc" scope may do in the ISMS of the
+    # customers it covers (see ``role_for_credential``). Reading only; nothing an API key does changes the ISMS.
+    "api_reader": frozenset(_READ_ONLY),
 }
+API_ROLE = "api_reader"
+
+
+def role_for_credential(scopes) -> str | None:
+    """The ISMS role an API credential acts with: read-only with the "grc" scope, none otherwise."""
+    return API_ROLE if scopes and "grc" in scopes else None
 
 # An owner may edit their own controls, risks and documents without broader rights, if their role can view them.
 _OWNER_OVERRIDES = {"controls.edit": "controls.view", "risks.edit": "risks.view", "documents.edit": "documents.view"}

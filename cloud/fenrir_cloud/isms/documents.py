@@ -406,6 +406,10 @@ def transition(db: Session, row: IsmsDocumentVersion, action: str, actor: str, u
     row.updated_at, row.updated_by = now, actor
     audit.record(db, actor, f"isms.document_{action}", f"{doc.number} v{row.version}", row.tenant_id,
                  documentId=doc.id, version=row.version)
+    if row.state == "published":
+        from .notify import emit
+        emit(db, row.tenant_id, "isms.document_published", documentId=doc.id, number=doc.number, title=doc.title,
+             version=row.version)
 
 
 def set_override(db: Session, tenant_id: str, actor: str, doc_type: str, block_ref: str, content: str | None) -> None:
