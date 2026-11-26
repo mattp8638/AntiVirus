@@ -93,6 +93,15 @@ Readiness is the share of applicable requirements that are met, where a requirem
 - A risk's owner can edit it without broader rights, but only ISMS managers can change who owns it.
 - **Take a snapshot** keeps a dated copy of the whole assessment as evidence of when it was done.
 
+## ISMS evidence
+
+**ISMS evidence** holds evidence that controls operate: files, links, notes, and the results of Fenrir's automated GRC checks.
+
+- A control counts as **implemented with evidence** while it is implemented and has at least one piece of current evidence: scanned clean, not past its valid-until date, and (for Fenrir checks) passing. This updates straight away after any change, and every hour so expiry is noticed.
+- Files (up to 25 MB) are stored encrypted and checked by the ClamAV service set with `FENRIR_CLAMD_HOST` (the one the mail gateway uses). A file the scanner rejects is deleted at once, and the attempt is kept as a record. Without a scanner, production installations keep files waiting (they cannot be downloaded) until one is configured; development installations mark them as not scanned. Program and script files cannot be uploaded.
+- Fenrir's automated GRC evidence is imported every hour (or with **Import Fenrir results now**): a passing result is evidence for the mapped controls and marks a control that was not started or in progress as implemented; a failing result moves an implemented control back to in progress.
+- Evidence about to expire within 30 days is flagged once in the audit log. Downloads, uploads, rejected files and deletions are all audited.
+
 ## Organization, scope and assets
 
 These tabs need an ISMS role that can run the programme (ISMS manager or ISMS administrator).

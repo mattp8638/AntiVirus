@@ -267,3 +267,40 @@ class IsmsRiskSnapshot(_Row, Base):
     taken_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     reason: Mapped[str] = mapped_column(String(200), default="manual")
     payload: Mapped[dict] = mapped_column(JSON)
+
+
+@tenant_table
+class IsmsEvidence(_Row, Base):
+    """Evidence that controls operate: an uploaded file (stored encrypted, virus scanned), a link, a note, or a result
+    of Fenrir's automated GRC checks."""
+    __tablename__ = "isms_evidence"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("iev"))
+    title: Mapped[str] = mapped_column(String(300))
+    kind: Mapped[str] = mapped_column(String(20))  # file | link | note | connector_result
+    storage_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    content_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(String(80), default="upload")  # upload | fenrir:FC-BACKUP ...
+    source_ref: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)  # Fenrir GRC evidence id
+    passing: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # automated results only
+    collected_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    valid_until: Mapped[date | None] = mapped_column(Date, nullable=True)
+    scan_status: Mapped[str] = mapped_column(String(20), default="not_required")  # pending | clean | infected | failed | not_required
+    scan_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    scanned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    uploaded_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    expiry_notified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+@tenant_table
+class IsmsEvidenceLink(_Row, Base):
+    """Evidence for a control."""
+    __tablename__ = "isms_evidence_links"
+    __table_args__ = (UniqueConstraint("evidence_id", "tenant_control_id", name="uq_isms_evidence_link"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("iel"))
+    evidence_id: Mapped[str] = mapped_column(ForeignKey("isms_evidence.id"), index=True)
+    tenant_control_id: Mapped[str] = mapped_column(ForeignKey("isms_tenant_controls.id"), index=True)

@@ -375,6 +375,11 @@ def update_control(db: Session, row: IsmsTenantControl, actor: str, owner_id: st
         row.updated_at, row.updated_by = utcnow(), actor
         audit.record(db, actor, "isms.control_updated", row.ref, row.tenant_id, **{
             {"owner_user_id": "ownerId"}.get(k, k): v for k, v in changes.items()})
+        if "state" in changes:
+            from .evidence import refresh_states
+
+            db.flush()
+            refresh_states(db, row.tenant_id)
     return row
 
 
@@ -444,6 +449,10 @@ def assess_control(db: Session, row: IsmsTenantControl, actor: str, user_id: str
             pass
         else:
             row.state = state
+        db.flush()
+        from .evidence import refresh_states
+
+        refresh_states(db, tenant_id)
     audit.record(db, actor, "isms.control_assessed", row.ref, tenant_id, answer=answer,
                  justification=js_trim(justification or "")[:4000] or None)
 

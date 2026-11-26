@@ -313,7 +313,7 @@ def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
              ("backup.hourly", device_backup.hourly), ("grc.attestation", _attestation_reminders),
              ("agreements.expiry", _agreements_expiry), ("m365.config-backup", m365_config.tick),
              ("m365.apps", m365_apps.tick), ("workload.scans", workload.tick),
-             ("apple-mdm.renewals", apple_mdm.tick)]
+             ("apple-mdm.renewals", apple_mdm.tick), ("isms.evidence", _isms_evidence_tick)]
     if settings.intel_feeds_enabled:
         from . import threat_feeds
 
@@ -326,6 +326,14 @@ def _maintenance_jobs(settings: Settings) -> list[tuple[str, object]]:
 
         jobs.append(("dns.ruleset", dns_ruleset.tick))  # rebuild the Fenrir DNS ruleset after the feeds change
     return jobs
+
+
+def _isms_evidence_tick(db) -> None:
+    """ISMS: import Fenrir's automated GRC results (collected just before by grc.automation), rescan files waiting for
+    the virus scanner, notice expired evidence."""
+    from .isms import evidence as isms_evidence
+
+    isms_evidence.tick(db)
 
 
 def _maintenance_loop(settings: Settings, stop: threading.Event) -> None:

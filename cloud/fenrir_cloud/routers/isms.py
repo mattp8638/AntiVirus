@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from ..db import get_db
 from ..deps import Principal, current_principal
 from ..isms import access, memberships, organization, programme, risk_register, rls
+from ..isms import evidence as isms_evidence
 from ..isms.access import ROLE_PERMISSIONS, TENANT_ROLES
 from ..isms.models import IsmsAsset, IsmsMembership, IsmsTenantControl
 from ..isms.scope import get_scoped, scoped
@@ -604,3 +605,164 @@ def list_snapshots(tenant_id: str, principal: Principal = Depends(current_princi
     return {"snapshots": [{"id": r.id, "takenAt": _iso(r.taken_at), "reason": r.reason,
                            "takenBy": names.get(r.taken_by_user_id), "risks": len(r.payload.get("risks", []))}
                           for r in rows]}
+
+
+# Evidence -------------------------------------------------------------------------------------------------------
+
+def _evidence(row, links: dict[str, list[dict]], names: dict[str, str]) -> dict:
+    from ..isms.evidence import is_current
+
+    return {"id": row.id, "title": row.title, "kind": row.kind, "filename": row.filename, "size": row.size,
+            "sha256": row.sha256, "url": row.url, "note": row.note, "source": row.source, "passing": row.passing,
+            "collectedAt": _iso(row.collected_at),
+            "validUntil": row.valid_until.isoformat() if row.valid_until else None, "current": is_current(row),
+            "scanStatus": row.scan_status, "scanDetail": row.scan_detail,
+            "uploadedBy": names.get(row.uploaded_by_user_id or "", row.updated_by), "controls": links.get(row.id, [])}
+
+
+def _evidence_rows(db: Session, rows) -> list[dict]:
+    from ..isms.models import IsmsEvidenceLink
+
+    ids = [r.id for r in rows]
+    links: dict[str, list[dict]] = {}
+    if ids:
+        for eid, tc in db.execute(select(IsmsEvidenceLink.evidence_id, IsmsTenantControl).join(
+                IsmsTenantControl, IsmsTenantControl.id == IsmsEvidenceLink.tenant_control_id)
+                .where(IsmsEvidenceLink.evidence_id.in_(ids))).all():
+            links.setdefault(eid, []).append({"id": tc.id, "ref": tc.ref, "title": tc.title})
+    for v in links.values():
+        v.sort(key=lambda c: c["ref"])
+    user_ids = [r.uploaded_by_user_id for r in rows if r.uploaded_by_user_id]
+    names = {u.id: (u.name or u.email) for u in db.execute(select(User).where(User.id.in_(user_ids))).scalars()} \
+        if user_ids else {}
+    return [_evidence(r, links, names) for r in rows]
+
+
+@router.get("/evidence")
+def list_evidence(tenant_id: str, control_id: str | None = None, principal: Principal = Depends(current_principal),
+                  db: Session = Depends(isms_db)):
+    from ..isms.models import IsmsEvidence, IsmsEvidenceLink
+
+    require_isms(db, principal, tenant_id, "evidence.view")
+    stmt = scoped(IsmsEvidence, principal, tenant_id).order_by(IsmsEvidence.collected_at.desc()).limit(2000)
+    if control_id:
+        stmt = stmt.where(IsmsEvidence.id.in_(select(IsmsEvidenceLink.evidence_id)
+                                              .where(IsmsEvidenceLink.tenant_control_id == control_id)))
+    return {"evidence": _evidence_rows(db, db.execute(stmt).scalars().all())}
+
+
+def _can_upload(db: Session, principal: Principal, tenant_id: str, control_ids: list[str]) -> None:
+    """Evidence upload needs evidence.upload; a control owner may also add evidence to the controls they own."""
+    role = memberships.active_role(db, principal.user, tenant_id)
+    if access.can(role, "evidence.upload"):
+        return
+    owned = set(db.execute(select(IsmsTenantControl.id).where(IsmsTenantControl.tenant_id == tenant_id,
+                                                              IsmsTenantControl.owner_user_id == principal.user.id))
+                .scalars())
+    if not (control_ids and set(control_ids) <= owned and access.can(role, "controls.view")):
+        raise HTTPException(403, f"Your ISMS role ({role or 'none'}) cannot do this (evidence.upload)")
+
+
+class EvidenceIn(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    tenant_id: str = Field(alias="tenantId", min_length=1, max_length=32)
+    title: str = Field(max_length=300)
+    kind: str
+    url: str | None = Field(default=None, max_length=2000)
+    note: str | None = Field(default=None, max_length=10_000)
+    valid_until: str | None = Field(default=None, alias="validUntil")
+    control_ids: list[str] = Field(default_factory=list, alias="controlIds", max_length=200)
+
+
+@router.post("/evidence")
+def add_evidence(body: EvidenceIn, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    """A link or a written note as evidence for controls."""
+    principal.check_tenant(body.tenant_id)
+    _can_upload(db, principal, body.tenant_id, body.control_ids)
+    row = isms_evidence.add_link_or_note(db, body.tenant_id, principal.actor, principal.user.id, body.title, body.kind,
+                                         body.url, body.note, body.valid_until, body.control_ids)
+    db.commit()
+    return _evidence_rows(db, [row])[0]
+
+
+@router.post("/evidence/upload")
+async def upload_evidence(request: Request, tenant_id: str, filename: str, controls: str, title: str = "",
+                          valid_until: str | None = None, principal: Principal = Depends(current_principal),
+                          db: Session = Depends(isms_db)):
+    """The file is the request body (up to 25 MB); ``controls`` is a comma-separated list of control ids."""
+    principal.check_tenant(tenant_id)
+    control_ids = [c for c in controls.split(",") if c][:200]
+    _can_upload(db, principal, tenant_id, control_ids)
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > isms_evidence.MAX_EVIDENCE_BYTES:
+        raise HTTPException(413, "Files can be up to 25 MB.")
+    data = bytearray()
+    async for chunk in request.stream():
+        data.extend(chunk)
+        if len(data) > isms_evidence.MAX_EVIDENCE_BYTES:
+            raise HTTPException(413, "Files can be up to 25 MB.")
+    row = isms_evidence.add_file(db, tenant_id, principal.actor, principal.user.id, title[:300], filename[:255],
+                                 request.headers.get("content-type") or "application/octet-stream", bytes(data),
+                                 valid_until, control_ids)
+    db.commit()
+    return _evidence_rows(db, [row])[0]
+
+
+class EvidenceUpdate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    control_ids: list[str] | None = Field(default=None, alias="controlIds", max_length=200)
+    valid_until: str | None = Field(default=None, alias="validUntil")
+
+
+@router.patch("/evidence/{evidence_id}")
+def update_evidence(evidence_id: str, body: EvidenceUpdate, principal: Principal = Depends(current_principal),
+                    db: Session = Depends(isms_db)):
+    from ..isms.models import IsmsEvidence
+
+    row = get_scoped(db, IsmsEvidence, evidence_id, principal)
+    require_isms(db, principal, row.tenant_id, "programme.manage")
+    if body.control_ids is not None:
+        isms_evidence.set_links(db, row, principal.actor, body.control_ids)
+    if "valid_until" in body.model_fields_set:
+        isms_evidence.set_valid_until(db, row, principal.actor, body.valid_until)
+    db.commit()
+    return _evidence_rows(db, [row])[0]
+
+
+@router.delete("/evidence/{evidence_id}")
+def delete_evidence(evidence_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    from ..isms.models import IsmsEvidence
+
+    row = get_scoped(db, IsmsEvidence, evidence_id, principal)
+    require_isms(db, principal, row.tenant_id, "programme.manage")
+    isms_evidence.delete_evidence(db, row, principal.actor)
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/evidence/{evidence_id}/download")
+def download_evidence(evidence_id: str, principal: Principal = Depends(current_principal),
+                      db: Session = Depends(isms_db)):
+    """The file, once it has been scanned clean. Every download is audited."""
+    from .. import audit
+    from ..isms.models import IsmsEvidence
+
+    row = get_scoped(db, IsmsEvidence, evidence_id, principal)
+    require_isms(db, principal, row.tenant_id, "evidence.view")
+    data = isms_evidence.file_for_download(row)
+    audit.record(db, principal.actor, "isms.evidence_downloaded", row.filename or row.title, row.tenant_id, id=row.id)
+    db.commit()
+    safe = "".join(c if c.isalnum() or c in " ._-" else "_" for c in (row.filename or "evidence"))
+    return Response(content=data, media_type="application/octet-stream",
+                    headers={"Content-Disposition": f'attachment; filename="{safe}"',
+                             "X-Content-Type-Options": "nosniff"})
+
+
+@router.post("/evidence/import-fenrir")
+def import_fenrir_now(body: TenantBody, principal: Principal = Depends(current_principal),
+                      db: Session = Depends(isms_db)):
+    """Imports Fenrir's latest automated GRC results now, instead of waiting for the hourly job."""
+    require_isms(db, principal, body.tenant_id, "programme.manage")
+    out = isms_evidence.import_fenrir(db, body.tenant_id, principal.actor)
+    db.commit()
+    return out
