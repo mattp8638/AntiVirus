@@ -102,6 +102,14 @@ Readiness is the share of applicable requirements that are met, where a requirem
 - Fenrir's automated GRC evidence is imported every hour (or with **Import Fenrir results now**): a passing result is evidence for the mapped controls and marks a control that was not started or in progress as implemented; a failing result moves an implemented control back to in progress.
 - Evidence about to expire within 30 days is flagged once in the audit log. Downloads, uploads, rejected files and deletions are all audited.
 
+## ISMS tasks and calendar
+
+**ISMS tasks** shows the work that keeps the ISMS running (ISO 27001 8.1), as a list or a month calendar.
+
+- Every applicable control not yet in place gets a task to put it in place (due in 90 days), which closes itself once the control is marked as in place. Controls in place with a regular test frequency get a recurring check, scheduled again each time it is done. ISMS managers can add other tasks. Tasks follow the control's owner.
+- Completing a check records what was checked (a note, a piece of evidence, or both). People who do not run the programme see and complete only their own tasks.
+- Emails go out (through Fenrir's mail settings) when a task is due within 7 days and when it is overdue, and after 14 days overdue it is escalated to the customer's ISMS administrators and managers. Each happens once per task. Owners of controls are also emailed when evidence for them expires within 30 days.
+
 ## Organization, scope and assets
 
 These tabs need an ISMS role that can run the programme (ISMS manager or ISMS administrator).

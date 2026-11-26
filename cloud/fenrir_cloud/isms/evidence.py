@@ -283,6 +283,10 @@ def import_fenrir(db: Session, tenant_id: str, actor: str = "system:isms") -> di
     if out["imported"]:
         audit.record(db, actor, "isms.fenrir_evidence_imported", f"{out['imported']} result(s)", tenant_id, **out)
     refresh_states(db, tenant_id)
+    if out["controlsChanged"]:
+        from .tasks import sync_control_tasks
+
+        sync_control_tasks(db, tenant_id, actor)
     return out
 
 
@@ -316,8 +320,35 @@ def tick(db: Session) -> None:
         import_fenrir(db, tenant_id)
         rescan_pending(db, tenant_id)
         refresh_states(db, tenant_id)
-        for e in expiring(db, tenant_id):
-            e.expiry_notified_at = utcnow()
-            audit.record(db, "system:isms", "isms.evidence_expiring", e.title, tenant_id, id=e.id,
-                         validUntil=e.valid_until.isoformat())
+        _notify_expiring(db, tenant_id)
         db.commit()
+
+
+def _notify_expiring(db: Session, tenant_id: str) -> None:
+    """Emails the owners of the controls that evidence about to expire supports (once per piece of evidence)."""
+    from .. import mailer
+    from ..models import User
+
+    items = expiring(db, tenant_id)
+    if not items:
+        return
+    tenant = db.get(Tenant, tenant_id)
+    per_owner: dict[str, list[IsmsEvidence]] = {}
+    for e in items:
+        owners = set(db.execute(select(IsmsTenantControl.owner_user_id).join(
+            IsmsEvidenceLink, IsmsEvidenceLink.tenant_control_id == IsmsTenantControl.id).where(
+            IsmsEvidenceLink.evidence_id == e.id, IsmsTenantControl.owner_user_id.is_not(None))).scalars())
+        for owner in owners:
+            per_owner.setdefault(owner, []).append(e)
+        e.expiry_notified_at = utcnow()
+        audit.record(db, "system:isms", "isms.evidence_expiring", e.title, tenant_id, id=e.id,
+                     validUntil=e.valid_until.isoformat())
+    for owner_id, evs in per_owner.items():
+        user = db.get(User, owner_id)
+        if user is None or not user.active:
+            continue
+        lines = [f"- {e.title} (valid until {e.valid_until.strftime('%d/%m/%Y')})" for e in evs]
+        mailer.send(user.email, f"{tenant.name}: {len(evs)} piece(s) of evidence expiring",
+                    "\n".join([f"Hello {user.name or user.email},", "",
+                               f"Evidence for controls you own at {tenant.name} expires within 30 days:", "", *lines,
+                               "", "Add new evidence before it expires so the controls stay evidenced.", "", "Fenrir"]))

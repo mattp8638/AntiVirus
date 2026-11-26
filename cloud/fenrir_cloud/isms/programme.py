@@ -241,6 +241,9 @@ def apply(db: Session, tenant_id: str, actor: str, answer_changes: dict[str, Any
     for row in existing.values():  # items no longer in the programme
         db.delete(row)
     _sync_controls(db, tenant_id, actor, result.decisions)
+    from .tasks import sync_control_tasks
+
+    sync_control_tasks(db, tenant_id, actor)
     audit.record(db, actor, "isms.applicability_applied", f"{len(result.changes)} change(s)", tenant_id,
                  changes=[{"key": c.key, "from": c.before, "to": c.after} for c in result.changes[:200]])
     db.flush()
@@ -375,11 +378,14 @@ def update_control(db: Session, row: IsmsTenantControl, actor: str, owner_id: st
         row.updated_at, row.updated_by = utcnow(), actor
         audit.record(db, actor, "isms.control_updated", row.ref, row.tenant_id, **{
             {"owner_user_id": "ownerId"}.get(k, k): v for k, v in changes.items()})
+        from .tasks import sync_control_tasks
+
+        db.flush()
         if "state" in changes:
             from .evidence import refresh_states
 
-            db.flush()
             refresh_states(db, row.tenant_id)
+        sync_control_tasks(db, row.tenant_id, actor)  # tasks follow the state and the owner
     return row
 
 
@@ -451,8 +457,10 @@ def assess_control(db: Session, row: IsmsTenantControl, actor: str, user_id: str
             row.state = state
         db.flush()
         from .evidence import refresh_states
+        from .tasks import sync_control_tasks
 
         refresh_states(db, tenant_id)
+        sync_control_tasks(db, tenant_id, actor)
     audit.record(db, actor, "isms.control_assessed", row.ref, tenant_id, answer=answer,
                  justification=js_trim(justification or "")[:4000] or None)
 

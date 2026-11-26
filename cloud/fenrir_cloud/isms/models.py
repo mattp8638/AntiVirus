@@ -304,3 +304,26 @@ class IsmsEvidenceLink(_Row, Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("iel"))
     evidence_id: Mapped[str] = mapped_column(ForeignKey("isms_evidence.id"), index=True)
     tenant_control_id: Mapped[str] = mapped_column(ForeignKey("isms_tenant_controls.id"), index=True)
+
+
+@tenant_table
+class IsmsTask(_Row, Base):
+    """A task (ISO 27001 8.1: planned processes ran): putting a control in place, operating it on its schedule, or
+    anything people add. Reminder columns record each stage once."""
+    __tablename__ = "isms_tasks"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("itk"))
+    tenant_control_id: Mapped[str | None] = mapped_column(ForeignKey("isms_tenant_controls.id"), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(20))  # implement | operate | manual
+    title: Mapped[str] = mapped_column(String(300))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    assignee_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    due_on: Mapped[date] = mapped_column(Date)
+    recurrence: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="open", index=True)  # open | done | cancelled
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    completion_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_id: Mapped[str | None] = mapped_column(ForeignKey("isms_evidence.id"), nullable=True)
+    reminded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    overdue_notified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    escalated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

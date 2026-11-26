@@ -6,13 +6,14 @@ existing tenant table (``grc_policies``).
 """
 
 from dataclasses import dataclass
+from datetime import date
 
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
-from fenrir_cloud.isms.models import (IsmsApplicability, IsmsEvidence, IsmsEvidenceLink, IsmsApplicabilityOverride, IsmsAsset, IsmsContextIssue,
+from fenrir_cloud.isms.models import (IsmsApplicability, IsmsEvidence, IsmsEvidenceLink, IsmsTask, IsmsApplicabilityOverride, IsmsAsset, IsmsContextIssue,
                                       IsmsEntity, IsmsInterestedParty, IsmsMembership, IsmsProfileAnswer, IsmsScope,
                                       IsmsRisk, IsmsRiskAcceptance, IsmsRiskControl, IsmsRiskMethod,
                                       IsmsRiskSnapshot, IsmsSite, IsmsTenantControl, IsmsTenantFramework)
@@ -46,6 +47,7 @@ FACTORIES: dict[type, callable] = {
     IsmsRiskSnapshot: lambda t: IsmsRiskSnapshot(tenant_id=t, payload={"risks": []}),
     IsmsEvidence: lambda t: IsmsEvidence(tenant_id=t, title="Backup report", kind="note", note="x"),
     IsmsEvidenceLink: lambda t: IsmsEvidenceLink(tenant_id=t, evidence_id=f"iev_{t}", tenant_control_id=f"itc_{t}"),
+    IsmsTask: lambda t: IsmsTask(tenant_id=t, kind="manual", title="Board review", due_on=date(2027, 1, 31)),
 }
 
 

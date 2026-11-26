@@ -332,8 +332,10 @@ def _isms_evidence_tick(db) -> None:
     """ISMS: import Fenrir's automated GRC results (collected just before by grc.automation), rescan files waiting for
     the virus scanner, notice expired evidence."""
     from .isms import evidence as isms_evidence
+    from .isms import tasks as isms_tasks
 
     isms_evidence.tick(db)
+    isms_tasks.send_reminders(db)  # each stage once per task, so running hourly sends each reminder once
 
 
 def _maintenance_loop(settings: Settings, stop: threading.Event) -> None:

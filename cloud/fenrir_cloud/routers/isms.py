@@ -766,3 +766,61 @@ def import_fenrir_now(body: TenantBody, principal: Principal = Depends(current_p
     out = isms_evidence.import_fenrir(db, body.tenant_id, principal.actor)
     db.commit()
     return out
+
+
+# Tasks and calendar (ISO 27001 8.1) -----------------------------------------------------------------------------
+
+@router.get("/tasks")
+def list_tasks(tenant_id: str, status: str = "open", mine: bool = False,
+               principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    """Open, done or all tasks. People who do not run the programme see only their own."""
+    from ..isms import tasks as isms_tasks
+
+    role = require_isms(db, principal, tenant_id, "tasks.complete")
+    if status not in ("open", "done", "all"):
+        raise HTTPException(400, "status is open, done or all")
+    own_only = mine or not access.can(role, "programme.manage")
+    return {"tasks": isms_tasks.task_rows(db, tenant_id, status, principal.user.id if own_only else None),
+            "ownOnly": own_only}
+
+
+class ManualTask(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    tenant_id: str = Field(alias="tenantId", min_length=1, max_length=32)
+    title: str = Field(max_length=300)
+    due_on: str = Field(alias="dueOn")
+    assignee_id: str | None = Field(default=None, alias="assigneeId")
+    description: str | None = Field(default=None, max_length=4000)
+
+
+@router.post("/tasks")
+def add_task(body: ManualTask, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    from ..isms import tasks as isms_tasks
+
+    require_isms(db, principal, body.tenant_id, "programme.manage")
+    row = isms_tasks.add_manual(db, body.tenant_id, principal.actor, body.title, body.due_on, body.assignee_id,
+                                body.description, _members(db, body.tenant_id))
+    db.commit()
+    return isms_tasks.task_rows(db, body.tenant_id, "all", task_id=row.id)[0]
+
+
+class TaskDone(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    note: str = Field(default="", max_length=4000)
+    evidence_id: str | None = Field(default=None, alias="evidenceId")
+
+
+@router.post("/tasks/{task_id}/complete")
+def complete_task(task_id: str, body: TaskDone, principal: Principal = Depends(current_principal),
+                  db: Session = Depends(isms_db)):
+    """Completes a task with what was checked (a note, evidence or both); a recurring one is scheduled again."""
+    from ..isms import tasks as isms_tasks
+    from ..isms.models import IsmsTask
+
+    row = get_scoped(db, IsmsTask, task_id, principal)
+    role = require_isms(db, principal, row.tenant_id, "tasks.complete")
+    if row.assignee_user_id != principal.user.id and not access.can(role, "programme.manage"):
+        raise HTTPException(403, "Only the person it is assigned to, or an ISMS manager, can complete this task")
+    isms_tasks.complete(db, row, principal.actor, principal.user.id, body.note, body.evidence_id)
+    db.commit()
+    return isms_tasks.task_rows(db, row.tenant_id, "all", task_id=row.id)[0]
