@@ -1868,3 +1868,108 @@ def save_digest(body: DigestBody, principal: Principal = Depends(current_princip
     _dash().save_subscription(db, body.tenantId, principal.user.id, principal.actor, body.frequency, body.enabled)
     db.commit()
     return {"digest": _dash().subscription(db, body.tenantId, principal.user.id)}
+
+
+# Privacy (Phase 6) -------------------------------------------------------------------------------------------------
+
+def _privacy():
+    from ..isms import privacy
+    return privacy
+
+
+@router.get("/privacy")
+def privacy_overview(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    role = require_isms(db, principal, tenant_id, "controls.view")
+    return {"processing": _privacy().processing_rows(db, tenant_id), "dpias": _privacy().dpia_rows(db, tenant_id),
+            "requests": _privacy().dsr_rows(db, tenant_id, "all"), "summary": _privacy().summary(db, tenant_id),
+            "options": _privacy().options(), "canManage": access.can(role, "programme.manage"),
+            "canApprove": access.can(role, "documents.approve")}
+
+
+@router.post("/privacy/processing")
+def add_processing(body: TenantBody, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    require_isms(db, principal, body.tenant_id, "programme.manage")
+    row = _privacy().save_processing(db, body.tenant_id, principal.actor, dict(body.model_extra or {}),
+                                     _members(db, body.tenant_id))
+    db.commit()
+    return _privacy().processing_rows(db, body.tenant_id, row.id)[0]
+
+
+def _processing(db, principal, pid):
+    from ..isms.models import IsmsProcessingActivity
+    row = get_scoped(db, IsmsProcessingActivity, pid, principal)
+    require_isms(db, principal, row.tenant_id, "programme.manage")
+    return row
+
+
+@router.patch("/privacy/processing/{pid}")
+def update_processing(pid: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+                      db: Session = Depends(isms_db)):
+    row = _processing(db, principal, pid)
+    if set(body) == {"status"}:
+        _privacy().set_processing_status(db, row, principal.actor, str(body["status"]))
+    elif body.get("reviewed") is True and len(body) == 1:
+        _privacy().review_processing(db, row, principal.actor)
+    else:
+        _privacy().save_processing(db, row.tenant_id, principal.actor, body, _members(db, row.tenant_id), row)
+    db.commit()
+    return _privacy().processing_rows(db, row.tenant_id, row.id)[0]
+
+
+@router.post("/privacy/processing/{pid}/dpia")
+def start_dpia(pid: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    row = _processing(db, principal, pid)
+    d = _privacy().create_dpia(db, row, principal.actor)
+    db.commit()
+    return _privacy().dpia_view(db, d)
+
+
+def _dpia(db, principal, dpia_id, permission="programme.manage"):
+    from ..isms.models import IsmsDpia
+    row = get_scoped(db, IsmsDpia, dpia_id, principal)
+    require_isms(db, principal, row.tenant_id, permission)
+    return row
+
+
+@router.put("/privacy/dpias/{dpia_id}")
+def save_dpia(dpia_id: str, body: dict = Body(...), principal: Principal = Depends(current_principal),
+              db: Session = Depends(isms_db)):
+    d = _dpia(db, principal, dpia_id)
+    _privacy().save_dpia(db, d, principal.actor, body)
+    db.commit()
+    return _privacy().dpia_view(db, d)
+
+
+@router.post("/privacy/dpias/{dpia_id}/approve")
+def approve_dpia(dpia_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    d = _dpia(db, principal, dpia_id, "documents.approve")
+    _privacy().approve_dpia(db, d, principal.actor, principal.user.id)
+    db.commit()
+    return _privacy().dpia_view(db, d)
+
+
+@router.post("/privacy/requests")
+def add_dsr(body: TenantBody, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    require_isms(db, principal, body.tenant_id, "programme.manage")
+    row = _privacy().create_dsr(db, body.tenant_id, principal.actor, dict(body.model_extra or {}),
+                                _members(db, body.tenant_id))
+    db.commit()
+    return _privacy().dsr_rows(db, body.tenant_id, "all", row.id)[0]
+
+
+@router.post("/privacy/requests/{dsr_id}/{action}")
+def dsr_action(dsr_id: str, action: str, body: dict = Body(default={}),
+               principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    from ..isms.models import IsmsDataSubjectRequest
+    row = get_scoped(db, IsmsDataSubjectRequest, dsr_id, principal)
+    require_isms(db, principal, row.tenant_id, "programme.manage")
+    if action == "verify":
+        _privacy().verify_identity(db, row, principal.actor, body.get("on"))
+    elif action == "extend":
+        _privacy().extend(db, row, principal.actor, body.get("months"), str(body.get("reason") or ""))
+    elif action == "close":
+        _privacy().close(db, row, principal.actor, str(body.get("status") or ""), str(body.get("response") or ""))
+    else:
+        raise HTTPException(404, "Not found")
+    db.commit()
+    return _privacy().dsr_rows(db, row.tenant_id, "all", row.id)[0]

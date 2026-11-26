@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 128
+LATEST_MIGRATION = 129
 
 def init_engine(url: str, pool_size: int = 5, max_overflow: int = 10) -> Engine:
     global _engine, _session_factory
@@ -868,6 +868,15 @@ def migrate(bind: Engine) -> list[int]:
                 rls.enable(conn, [m.__tablename__ for m in TENANT_TABLES])
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (128)"))
                 applied.append(128)
+            if 129 not in versions:
+                # ISMS privacy: records of processing, DPIAs and data subject requests.
+                from .isms import models as isms_models, rls
+                tables = [isms_models.IsmsProcessingActivity, isms_models.IsmsDpia, isms_models.IsmsDataSubjectRequest]
+                for model in tables:
+                    model.__table__.create(conn, checkfirst=True)
+                rls.enable(conn, [m.__tablename__ for m in tables])
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (129)"))
+                applied.append(129)
             conn.commit()
         except Exception:
             conn.rollback()

@@ -13,7 +13,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
-from fenrir_cloud.isms.models import (IsmsApplicability, IsmsDocument, IsmsDocumentOverride, IsmsDocumentVersion, IsmsAckCampaign, IsmsAcknowledgement, IsmsManagementReview, IsmsReviewAction, IsmsAuditSample, IsmsEvidenceRequest, IsmsIncidentReview, IsmsSupplierLink, IsmsControlRequirement, IsmsDashboardLayout, IsmsDigestSubscription, IsmsAudit, IsmsAuditCheck, IsmsCompetence, IsmsAuditProgramme, IsmsChange, IsmsCorrectiveAction, IsmsEvidence, IsmsEvidenceLink, IsmsImport, IsmsMetricValue, IsmsNonconformity, IsmsObjective, IsmsOrgRole, IsmsOrgRoleHolder, IsmsRaciActivity, IsmsRaciAssignment, IsmsLegacyAnswer, IsmsTask, IsmsApplicabilityOverride, IsmsAsset, IsmsContextIssue,
+from fenrir_cloud.isms.models import (IsmsApplicability, IsmsDocument, IsmsDocumentOverride, IsmsDocumentVersion, IsmsAckCampaign, IsmsAcknowledgement, IsmsManagementReview, IsmsReviewAction, IsmsAuditSample, IsmsEvidenceRequest, IsmsIncidentReview, IsmsSupplierLink, IsmsControlRequirement, IsmsDashboardLayout, IsmsDigestSubscription, IsmsDataSubjectRequest, IsmsDpia, IsmsProcessingActivity, IsmsAudit, IsmsAuditCheck, IsmsCompetence, IsmsAuditProgramme, IsmsChange, IsmsCorrectiveAction, IsmsEvidence, IsmsEvidenceLink, IsmsImport, IsmsMetricValue, IsmsNonconformity, IsmsObjective, IsmsOrgRole, IsmsOrgRoleHolder, IsmsRaciActivity, IsmsRaciAssignment, IsmsLegacyAnswer, IsmsTask, IsmsApplicabilityOverride, IsmsAsset, IsmsContextIssue,
                                       IsmsEntity, IsmsInterestedParty, IsmsMembership, IsmsProfileAnswer, IsmsScope,
                                       IsmsRisk, IsmsRiskAcceptance, IsmsRiskControl, IsmsRiskMethod,
                                       IsmsRiskSnapshot, IsmsSite, IsmsTenantControl, IsmsTenantFramework)
@@ -89,6 +89,11 @@ FACTORIES: dict[type, callable] = {
     IsmsDashboardLayout: lambda t: IsmsDashboardLayout(tenant_id=t, user_id=f"usr_{t}", tiles=["tasks"]),
     IsmsDigestSubscription: lambda t: IsmsDigestSubscription(tenant_id=t, user_id=f"usr_{t}", frequency="weekly",
                                                              next_send_at=datetime(2027, 1, 4, 7)),
+    IsmsProcessingActivity: lambda t: IsmsProcessingActivity(tenant_id=t, ref="ROPA-001", name="Payroll"),
+    IsmsDpia: lambda t: IsmsDpia(tenant_id=t, ref="DPIA-001", processing_id=f"ipa_{t}", title="DPIA: Payroll"),
+    IsmsDataSubjectRequest: lambda t: IsmsDataSubjectRequest(tenant_id=t, ref="DSR-001", type="access", requester="J Smith",
+                                                             received_on=date(2026, 1, 5), clock_starts_on=date(2026, 1, 5),
+                                                             due_on=date(2026, 2, 5)),
     IsmsLegacyAnswer: lambda t: IsmsLegacyAnswer(tenant_id=t, framework="iso27001", source_framework="iso-27001",
                                                  source_ref="A.7.4", status="not_applicable"),
     IsmsImport: lambda t: IsmsImport(tenant_id=t, source_table="grc_policies", source_id=f"grcp_{t}",

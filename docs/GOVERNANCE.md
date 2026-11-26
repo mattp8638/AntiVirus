@@ -41,6 +41,10 @@ ACSC Essential Eight has been retired from the active UK catalogue, controls, ri
 
 CAF now uses version 4.0 with 41 contributing outcomes. In particular, A2.b is now Understanding Threat, A2.c covers Assurance, and A4.b covers secure software development and support. Existing A2.b answers require review rather than being treated as answers to the new outcome. Newly added outcomes start unanswered. The current CE guide is labelled against requirements v3.3; it does not claim to be the exact current IASME booklet.
 
+## Finding your way around
+
+Governance groups its tabs into sections: **Earlier Governance** (the original programmes, policies, evidence, risk register and controls, until they are retired), **ISMS overview** (dashboard and portfolio), **Set-up** (programme set-up, organization, assets, ISMS roles), **Controls and evidence** (ISMS controls, own controls, Statement of Applicability, evidence, tasks), **Risk** (ISMS risks, suppliers and incidents, privacy), **Documents and people**, and **Assurance** (internal audit, audit workspace, management review, improvement). Choose a section, then a tab. Links to a tab (`/governance?tab=...`) open its section.
+
 ## ISMS roles
 
 Governance is gaining a full information security management system (ISMS), ported from the standalone ISMS Platform (see [the plan](ISMS_REWRITE_PLAN.md)). Every person who works in a customer's ISMS needs an ISMS role for that customer, whatever their Fenrir role, including MSP administrators.
@@ -201,6 +205,16 @@ The **Audit workspace** is where external and internal auditors work.
 
 - **API.** A Fenrir API credential (Settings, API credentials) with the **grc** scope can read the ISMS of the customers it covers: controls, the Statement of Applicability, risks, documents and evidence, through the same `/api/console/isms/...` endpoints the console uses. It cannot change anything in the ISMS, whatever else its scopes allow, and the role it reads with cannot be given to a person.
 - **Webhooks.** Settings, Webhooks can subscribe to ISMS events: document published, nonconformity raised or closed, risk accepted, internal audit completed, management review held, evidence requested by an auditor, document sent for acknowledgement, and incident review completed. They are delivered, signed and retried like every other Fenrir webhook. Each carries references, titles and states only, never document text, evidence contents or notes.
+
+## Privacy
+
+**Privacy** (UK GDPR) has three views. Anyone whose ISMS role can see controls can read them; ISMS managers make changes and approvers approve DPIAs.
+
+- **Records of processing** (article 30): each activity's purpose, the customer's role, lawful basis, special category and criminal offence data, the people and data involved, recipients and the third-party risk suppliers that receive it, transfers outside the UK and their safeguard, retention and systems. Each record lists what still needs fixing, is due for review every year, and is retired rather than deleted. Its DPIA screening (one strong indicator, or any two others) says when an impact assessment is needed.
+- **DPIAs** (articles 35 and 36) start from their processing activity. Each risk to people gets a likelihood, severity, measures and residual level; a high residual risk means consulting the regulator before the processing starts. Approval needs the description, necessity, at least one risk with measures, the privacy lead's advice and an outcome. An approved DPIA never changes: a review starts a new one.
+- **Data subject requests** (articles 12 and 15 to 22) are due one month after receipt, or after the person's identity is confirmed if that came later; 31 January becomes the last day of February. A complex or numerous request can be extended by one or two months with a reason. Requests are closed (completed, refused or withdrawn) with what was done, never deleted. The requester's name is kept out of the audit log.
+
+The ISMS dashboard has a Privacy tile, and Continuity and AI systems tiles that read Fenrir's own Business continuity and AI governance pages and link to them.
 
 ## Organization, scope and assets
 
