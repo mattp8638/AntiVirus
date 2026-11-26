@@ -22,6 +22,7 @@ import { IsmsReviewTab } from "./grc/IsmsReview";
 import { IsmsAuditorTab } from "./grc/IsmsAuditor";
 import { IsmsOperationsTab } from "./grc/IsmsOperations";
 import { IsmsCustomControlsTab, IsmsPortfolioTab } from "./grc/IsmsCustom";
+import { IsmsDashboardTab } from "./grc/IsmsDashboard";
 import { COMPLIANCE_SECTION, SectionTabs } from "../components/sections";
 
 const CONTROL_TONE:Record<string,string>={met:"good",evidenced:"good",exception:"warn",gap:"bad"};
@@ -65,7 +66,7 @@ export default function Governance() {
     <PageHead title="GRC & compliance" subtitle="UK and UK-targeted governance programmes with requirements, answers, policies, evidence and a risk register."
       actions={can("grc")&&tab==="Risk register"&&<button className="primary" onClick={()=>setCreate({})}>New record</button>}/>
     <ErrorNote error={error}/>
-    <Tabs tabs={["Programmes","Policies","Evidence","Risk register","Controls","Programme setup","ISMS controls","Own controls","Statement of Applicability","ISMS risks","ISMS evidence","ISMS tasks","ISMS documents","ISMS improvement","Internal audit","People and training","Management review","Audit workspace","Suppliers and incidents","ISMS portfolio","Organization","Assets","ISMS roles"]} active={tab} onChange={setTab}/>
+    <Tabs tabs={["Programmes","Policies","Evidence","Risk register","Controls","ISMS dashboard","Programme setup","ISMS controls","Own controls","Statement of Applicability","ISMS risks","ISMS evidence","ISMS tasks","ISMS documents","ISMS improvement","Internal audit","People and training","Management review","Audit workspace","Suppliers and incidents","ISMS portfolio","Organization","Assets","ISMS roles"]} active={tab} onChange={setTab}/>
     {tab==="Programmes"&&<ProgrammesTab/>}
     {tab==="Policies"&&<PoliciesTab/>}
     {tab==="Evidence"&&<EvidenceTab/>}
@@ -83,6 +84,7 @@ export default function Governance() {
     {tab==="Audit workspace"&&<IsmsAuditorTab/>}
     {tab==="Suppliers and incidents"&&<IsmsOperationsTab/>}
     {tab==="ISMS portfolio"&&<IsmsPortfolioTab/>}
+    {tab==="ISMS dashboard"&&<IsmsDashboardTab onOpenTab={setTab}/>}
     {tab==="Own controls"&&<IsmsCustomControlsTab/>}
     {tab==="Organization"&&<IsmsOrganizationTab/>}
     {tab==="Assets"&&<IsmsAssetsTab/>}

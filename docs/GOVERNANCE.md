@@ -193,6 +193,10 @@ The **Audit workspace** is where external and internal auditors work.
 - **Own controls** holds controls a customer runs that are not in the library. Each gets the next reference (CUST-001 onwards), a statement, a test procedure and frequency, and links to the requirements it meets in the customer's frameworks, so it counts in the Statement of Applicability, readiness and audit checklists. Set its state and owner on the ISMS controls tab. A control linked to evidence or risks cannot be deleted until those links are removed. **Copy to other customers** copies chosen controls to other customers whose ISMS you run, without owners or requirement links; a customer that already has a control with the same title is skipped.
 - **ISMS portfolio** lists every customer where you hold an ISMS role that can see controls, with readiness, overdue tasks, open nonconformities, risks above appetite, documents due for review, open evidence requests and the next audit.
 
+## ISMS dashboard
+
+**ISMS dashboard** shows your chosen tiles for the customer in the tenant picker, each from live records with its status in words (OK, needs attention, action needed, for information) and a button to the tab behind it: readiness, control health, tasks, evidence, risks, nonconformities, documents, next audit, incidents and suppliers. You only see the tiles your ISMS role allows. **Choose tiles and email** sets which tiles appear, their order, and an email of the same figures weekly (Mondays) or monthly (the 1st) at 07:00 UTC. The email stops if you lose your ISMS role in the customer.
+
 ## Organization, scope and assets
 
 These tabs need an ISMS role that can run the programme (ISMS manager or ISMS administrator).
