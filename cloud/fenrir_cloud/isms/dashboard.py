@@ -2,8 +2,7 @@
 
 Each tile answers one question from live data and names the tab that holds the records behind it. People choose and
 order tiles for each customer; the same tiles make up their weekly or monthly digest, sent by the hourly maintenance
-job. A person only sees the tiles their ISMS role allows, in the digest as on screen. The privacy, continuity and AI
-tiles arrive with those modules (plan Phase 6).
+job. A person only sees the tiles their ISMS role allows, in the digest as on screen.
 """
 
 from __future__ import annotations
@@ -42,6 +41,13 @@ TILES = (
      "description": "Open incidents and breach deadlines", "tab": "Suppliers and incidents"},
     {"id": "suppliers", "title": "Suppliers", "permission": "programme.manage",
      "description": "Supplier reviews overdue and unassessed suppliers", "tab": "Suppliers and incidents"},
+    {"id": "privacy", "title": "Privacy", "permission": "programme.manage",
+     "description": "Data subject requests and records of processing to fix", "tab": "Privacy"},
+    # Fenrir's own continuity and AI governance modules (not rebuilt in the ISMS): these tiles open their pages.
+    {"id": "continuity", "title": "Continuity", "permission": "programme.manage",
+     "description": "Business services not ready and plans needing approval", "tab": None, "href": "/continuity"},
+    {"id": "ai", "title": "AI systems", "permission": "programme.manage",
+     "description": "AI systems with governance gaps", "tab": None, "href": "/ai-governance"},
 )
 TILE_IDS = tuple(t["id"] for t in TILES)
 DEFAULT_TILES = ("readiness", "control_health", "tasks", "evidence", "risks", "improvement")
@@ -76,7 +82,7 @@ def compute_tiles(db: Session, tenant_id: str, ids: list[str]) -> list[dict]:
         d = next((t for t in TILES if t["id"] == tid), None)
         if d is None:
             continue
-        base = {"id": tid, "title": d["title"], "tab": d["tab"]}
+        base = {"id": tid, "title": d["title"], "tab": d["tab"], "href": d.get("href")}
         if tid == "readiness":
             ready = programme.readiness(db, tenant_id)
             names = {f["framework"]: f["name"] for f in programme.framework_options(db, tenant_id)}
@@ -156,6 +162,38 @@ def compute_tiles(db: Session, tenant_id: str, ids: list[str]) -> list[dict]:
             out.append({**base, "value": f"{overdue} reviews overdue",
                         "detail": f"{unrated} not assessed, {len(rows)} active",
                         "status": "problem" if overdue else "warning" if unrated else "good"})
+        elif tid == "privacy":
+            from . import privacy
+            p = privacy.summary(db, tenant_id)
+            out.append({**base, "value": f"{p['openRequests']} open requests",
+                        "detail": f"{p['overdueRequests']} overdue, {p['withGaps']} records of processing to fix, "
+                                  f"{p['dpiasNeeded']} DPIAs needed",
+                        "status": "problem" if p["overdueRequests"] else
+                        "warning" if p["withGaps"] or p["dpiasNeeded"] else "good"})
+        elif tid == "continuity":
+            from .. import continuity
+            from ..models import ContinuityExercise, ContinuityPlan
+            plans = [pl for pl in db.execute(select(ContinuityPlan).where(ContinuityPlan.tenant_id == tenant_id))
+                     .scalars() if pl.status != "retired"]
+            services = [sv for pl in plans for sv in continuity.assess(db, pl)["services"]]
+            gaps = sum(1 for sv in services if sv["capability"] == "gap")
+            unapproved = sum(1 for pl in plans if pl.approved_version != pl.version)
+            year = now - timedelta(days=365)
+            exercises = sum(1 for e in db.execute(select(ContinuityExercise).where(
+                ContinuityExercise.tenant_id == tenant_id, ContinuityExercise.held_on >= year)).scalars())
+            out.append({**base, "value": f"{gaps} of {len(services)} not ready" if plans else "No plan",
+                        "detail": f"{unapproved} plans need approval, {exercises} exercises in 12 months",
+                        "status": "problem" if gaps else "warning" if unapproved or not plans else "good"})
+        elif tid == "ai":
+            from .. import ai_governance
+            from ..models import AiSystem
+            live = [a for a in db.execute(select(AiSystem).where(AiSystem.tenant_id == tenant_id)).scalars()
+                    if a.status not in ("retired", "rejected")]
+            gaps = sum(1 for a in live if ai_governance.findings(a))
+            out.append({**base, "value": f"{gaps} with gaps",
+                        "detail": f"{sum(1 for a in live if a.tier == 'high')} high risk, {len(live)} recorded",
+                        "status": "problem" if any(a.tier == "unacceptable" for a in live) else
+                        "warning" if gaps else "good"})
     return out
 
 

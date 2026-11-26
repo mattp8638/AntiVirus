@@ -68,3 +68,16 @@ def test_isolation(client, admin, ctx):
     g = login(client, "isms@globex.test", PW)
     assert client.get(f"{A}/dashboard?tenant_id={tid}", headers=g).status_code == 404
     assert client.put(f"{A}/dashboard/digest", headers=g, json={"tenantId": tid, "frequency": "weekly"}).status_code == 404
+
+
+def test_continuity_and_ai_tiles_read_fenrirs_own_modules(client, admin, ctx):
+    from fenrir_cloud import db as database
+    from fenrir_cloud.models import AiSystem
+    h, tid = ctx
+    with database.session_factory()() as db:
+        db.add(AiSystem(tenant_id=tid, name="Chat assistant", status="in_use", tier="high"))
+        db.commit()
+    tiles = {t["id"]: t for t in client.put(f"{A}/dashboard/layout", headers=h,
+                                            json={"tenantId": tid, "tiles": ["continuity", "ai"]}).json()["tiles"]}
+    assert tiles["continuity"]["value"] == "No plan" and tiles["continuity"]["href"] == "/continuity"
+    assert tiles["ai"]["value"] == "1 with gaps" and tiles["ai"]["detail"].startswith("1 high risk")

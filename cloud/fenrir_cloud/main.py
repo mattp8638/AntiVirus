@@ -674,8 +674,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def approval_required(_request: Request, exc: approval_gate.ApprovalRequired):
         return exc.response()
 
-    from .isms.models import AcknowledgementsAreFinal, CompletedAudit, FrozenDocumentVersion, HeldReview
+    from .isms.models import (AcknowledgementsAreFinal, ApprovedDpia, CompletedAudit, FrozenDocumentVersion,
+                              HeldReview)
 
+    @app.exception_handler(ApprovedDpia)
     @app.exception_handler(HeldReview)
     @app.exception_handler(AcknowledgementsAreFinal)
     @app.exception_handler(CompletedAudit)

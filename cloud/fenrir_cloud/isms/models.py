@@ -877,3 +877,96 @@ class IsmsDigestSubscription(_Row, Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     next_send_at: Mapped[datetime] = mapped_column(DateTime)
     last_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+@tenant_table
+class IsmsProcessingActivity(_Row, Base):
+    """A record of processing activity (UK GDPR article 30). Retired, never deleted."""
+    __tablename__ = "isms_processing_activities"
+    __table_args__ = (UniqueConstraint("tenant_id", "ref", name="uq_isms_processing_ref"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ipa"))
+    ref: Mapped[str] = mapped_column(String(20))  # ROPA-001
+    name: Mapped[str] = mapped_column(String(200))
+    purpose: Mapped[str] = mapped_column(Text, default="")
+    role: Mapped[str] = mapped_column(String(20), default="controller")  # controller | processor | joint_controller
+    lawful_basis: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    special_category: Mapped[bool] = mapped_column(Boolean, default=False)
+    special_condition: Mapped[str] = mapped_column(Text, default="")
+    criminal_data: Mapped[bool] = mapped_column(Boolean, default=False)
+    data_subjects: Mapped[list[str]] = mapped_column(JSON, default=list)
+    data_categories: Mapped[list[str]] = mapped_column(JSON, default=list)
+    recipients: Mapped[str] = mapped_column(Text, default="")
+    transfers: Mapped[bool] = mapped_column(Boolean, default=False)
+    transfer_countries: Mapped[str] = mapped_column(Text, default="")
+    transfer_safeguard: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    retention: Mapped[str] = mapped_column(Text, default="")
+    systems: Mapped[str] = mapped_column(Text, default="")
+    vendor_ids: Mapped[list[str]] = mapped_column(JSON, default=list)  # Fenrir third-party risk suppliers
+    owner_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    dpia_screening: Mapped[dict] = mapped_column(JSON, default=dict)
+    dpia_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(10), default="active")  # active | retired
+    next_review_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+
+@tenant_table
+class IsmsDpia(_Row, Base):
+    """A data protection impact assessment (article 35). An approved DPIA never changes; a review starts a new one."""
+    __tablename__ = "isms_dpias"
+    __table_args__ = (UniqueConstraint("tenant_id", "ref", name="uq_isms_dpia_ref"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("idp"))
+    ref: Mapped[str] = mapped_column(String(20))  # DPIA-001
+    processing_id: Mapped[str] = mapped_column(ForeignKey("isms_processing_activities.id"), index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text, default="")
+    necessity: Mapped[str] = mapped_column(Text, default="")
+    consultation: Mapped[str] = mapped_column(Text, default="")
+    risks: Mapped[list] = mapped_column(JSON, default=list)  # [{description, likelihood, severity, measures, residual}]
+    dpo_advice: Mapped[str] = mapped_column(Text, default="")
+    outcome: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    prior_consultation: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(10), default="draft")  # draft | approved
+    approved_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    review_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+
+@tenant_table
+class IsmsDataSubjectRequest(_Row, Base):
+    """A data subject request (articles 12 and 15 to 22). Closed, never deleted. Holds only what handling needs."""
+    __tablename__ = "isms_data_subject_requests"
+    __table_args__ = (UniqueConstraint("tenant_id", "ref", name="uq_isms_dsr_ref"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("idr"))
+    ref: Mapped[str] = mapped_column(String(20))  # DSR-001
+    type: Mapped[str] = mapped_column(String(30))
+    requester: Mapped[str] = mapped_column(String(200))
+    details: Mapped[str] = mapped_column(Text, default="")
+    received_on: Mapped[date] = mapped_column(Date)
+    identity_verified_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    clock_starts_on: Mapped[date] = mapped_column(Date)
+    extension_months: Mapped[int] = mapped_column(Integer, default=0)
+    extension_reason: Mapped[str] = mapped_column(Text, default="")
+    due_on: Mapped[date] = mapped_column(Date)
+    owner_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="open")  # open | completed | refused | withdrawn
+    response: Mapped[str] = mapped_column(Text, default="")
+    closed_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+
+class ApprovedDpia(RuntimeError):
+    """An approved DPIA was about to change or be deleted."""
+
+
+def _guard_dpias(session, _flush_context, _instances) -> None:
+    from sqlalchemy import inspect as sa_inspect
+
+    for obj in list(session.dirty) + list(session.deleted):
+        if not isinstance(obj, IsmsDpia):
+            continue
+        hist = sa_inspect(obj).attrs.status.history
+        was = (hist.deleted or [obj.status])[0] if hist.has_changes() else obj.status
+        if was == "approved" and (obj in session.deleted or session.is_modified(obj)):
+            raise ApprovedDpia("An approved DPIA cannot change. Start a new one to review it.")
+
+
+_event.listen(_Session, "before_flush", _guard_dpias)

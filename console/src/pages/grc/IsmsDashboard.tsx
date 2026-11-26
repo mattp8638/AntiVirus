@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { api, fmtTime } from "../../api";
 import { useApp } from "../../app-context";
 import { displayValue } from "../../components/DisplayValue";
@@ -31,7 +32,8 @@ export function IsmsDashboardTab({ onOpenTab }: { onOpenTab?: (tab: string) => v
         <div className="row" style={{ marginTop: 6, gap: 6 }}>
           <span className={`badge tone-${STATUS_TONE[t.status]}`}>{STATUS_WORD[t.status]}</span>
           <span style={{ flex: 1 }} />
-          {onOpenTab && <button className="small" onClick={() => onOpenTab(t.tab)}>Open {t.tab}</button>}
+          {t.href ? <Link className="small" to={t.href}>Open {t.title}</Link>
+            : onOpenTab && t.tab && <button className="small" onClick={() => onOpenTab(t.tab)}>Open {t.tab}</button>}
         </div>
       </section>)}
     </div>

@@ -23,6 +23,7 @@ import { IsmsAuditorTab } from "./grc/IsmsAuditor";
 import { IsmsOperationsTab } from "./grc/IsmsOperations";
 import { IsmsCustomControlsTab, IsmsPortfolioTab } from "./grc/IsmsCustom";
 import { IsmsDashboardTab } from "./grc/IsmsDashboard";
+import { IsmsPrivacyTab } from "./grc/IsmsPrivacy";
 import { COMPLIANCE_SECTION, SectionTabs } from "../components/sections";
 
 const CONTROL_TONE:Record<string,string>={met:"good",evidenced:"good",exception:"warn",gap:"bad"};
@@ -51,6 +52,18 @@ function Controls({tenantId,onAddEvidence}:{tenantId:string;onAddEvidence:(frame
     </div>}
   </>;
 }
+// Two levels: a section, then its tabs. Every tab keeps its own ?tab= link.
+const TAB_GROUPS: { name: string; tabs: string[] }[] = [
+  { name: "Earlier Governance", tabs: ["Programmes", "Policies", "Evidence", "Risk register", "Controls"] },
+  { name: "ISMS overview", tabs: ["ISMS dashboard", "ISMS portfolio"] },
+  { name: "Set-up", tabs: ["Programme setup", "Organization", "Assets", "ISMS roles"] },
+  { name: "Controls and evidence", tabs: ["ISMS controls", "Own controls", "Statement of Applicability", "ISMS evidence", "ISMS tasks"] },
+  { name: "Risk", tabs: ["ISMS risks", "Suppliers and incidents", "Privacy"] },
+  { name: "Documents and people", tabs: ["ISMS documents", "People and training"] },
+  { name: "Assurance", tabs: ["Internal audit", "Audit workspace", "Management review", "ISMS improvement"] },
+];
+const groupOf = (tab: string) => TAB_GROUPS.find((g) => g.tabs.includes(tab)) ?? TAB_GROUPS[0];
+
 export default function Governance() {
   const {tenantId,can}=useApp();
   const {data,error,reload}=useListData<any>("grc/records",{tenant_id:tenantId});
@@ -66,7 +79,8 @@ export default function Governance() {
     <PageHead title="GRC & compliance" subtitle="UK and UK-targeted governance programmes with requirements, answers, policies, evidence and a risk register."
       actions={can("grc")&&tab==="Risk register"&&<button className="primary" onClick={()=>setCreate({})}>New record</button>}/>
     <ErrorNote error={error}/>
-    <Tabs tabs={["Programmes","Policies","Evidence","Risk register","Controls","ISMS dashboard","Programme setup","ISMS controls","Own controls","Statement of Applicability","ISMS risks","ISMS evidence","ISMS tasks","ISMS documents","ISMS improvement","Internal audit","People and training","Management review","Audit workspace","Suppliers and incidents","ISMS portfolio","Organization","Assets","ISMS roles"]} active={tab} onChange={setTab}/>
+    <Tabs tabs={TAB_GROUPS.map((g)=>g.name)} active={groupOf(tab).name} onChange={(g)=>setTab(TAB_GROUPS.find((x)=>x.name===g)!.tabs[0])}/>
+    <Tabs tabs={groupOf(tab).tabs} active={tab} onChange={setTab}/>
     {tab==="Programmes"&&<ProgrammesTab/>}
     {tab==="Policies"&&<PoliciesTab/>}
     {tab==="Evidence"&&<EvidenceTab/>}
@@ -84,6 +98,7 @@ export default function Governance() {
     {tab==="Audit workspace"&&<IsmsAuditorTab/>}
     {tab==="Suppliers and incidents"&&<IsmsOperationsTab/>}
     {tab==="ISMS portfolio"&&<IsmsPortfolioTab/>}
+    {tab==="Privacy"&&<IsmsPrivacyTab/>}
     {tab==="ISMS dashboard"&&<IsmsDashboardTab onOpenTab={setTab}/>}
     {tab==="Own controls"&&<IsmsCustomControlsTab/>}
     {tab==="Organization"&&<IsmsOrganizationTab/>}
