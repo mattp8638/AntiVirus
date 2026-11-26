@@ -57,6 +57,13 @@ Each entry below cites its code and tests in `catalogue.csv` and is `implemented
   falls back to live files with a warning there.
 * Bare-metal recovery from the recovery ISO is proven in CI too (job recovery-e2e, [run 45569395053](https://github.com/zy538324/Fenrir-Backup/actions/runs/45569395053)): the
   tracker had still listed it as not booted in CI.
+* BDR-03 restore evidence (2026-11-26): every restore records hashes, read-back verification, the recovery point,
+  duration, RPO and RTO in a tamper-evident record (both consoles). The agent's own DBCC CHECKDB after a SQL Server
+  restore is proven on real SQL Server (windows-sql, [run 45809110579](https://github.com/zy538324/Fenrir-Backup/actions/runs/45809110579)).
+  Exchange single-mailbox restore is automated (unit-tested; no live Exchange in CI). Cloud VM restore to AWS and
+  Azure runs end to end on emulators with byte-for-byte checks of the uploaded disks (CI job s3); this found and fixed
+  a spurious Windows warning on plain disk restores. BDR-03 stays `partial`: live Exchange, real cloud VM creation and
+  a real Windows bare-metal boot in CI remain.
 * BDR-03: one SQL Server database restored and attached by a real agent through the server, verified in CI
   (windows-sql, [run 45605303910](https://github.com/zy538324/Fenrir-Backup/actions/runs/45605303910)); the new journey found and fixed an attach defect.
 * FLOW-07 `implemented-unverified`: failed backup -> incident -> authorised isolated recovery (boot check VM) ->
