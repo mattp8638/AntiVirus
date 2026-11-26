@@ -17,7 +17,7 @@ _session_factory: sessionmaker[Session] | None = None
 
 
 # The newest schema version this build creates. Bump it with every new migration below.
-LATEST_MIGRATION = 116
+LATEST_MIGRATION = 117
 
 def init_engine(url: str, pool_size: int = 5, max_overflow: int = 10) -> Engine:
     global _engine, _session_factory
@@ -751,6 +751,15 @@ def migrate(bind: Engine) -> list[int]:
                 rls.enable(conn, [isms_models.IsmsTask.__tablename__])
                 conn.execute(text("INSERT INTO schema_migrations (version) VALUES (116)"))
                 applied.append(116)
+            if 117 not in versions:
+                # ISMS documents, their versions (frozen once out of draft) and the customer's own wording.
+                from .isms import models as isms_models, rls
+                tables = [isms_models.IsmsDocument, isms_models.IsmsDocumentVersion, isms_models.IsmsDocumentOverride]
+                for model in tables:
+                    model.__table__.create(conn, checkfirst=True)
+                rls.enable(conn, [m.__tablename__ for m in tables])
+                conn.execute(text("INSERT INTO schema_migrations (version) VALUES (117)"))
+                applied.append(117)
             conn.commit()
         except Exception:
             conn.rollback()

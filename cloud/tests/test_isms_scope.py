@@ -13,7 +13,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
-from fenrir_cloud.isms.models import (IsmsApplicability, IsmsEvidence, IsmsEvidenceLink, IsmsTask, IsmsApplicabilityOverride, IsmsAsset, IsmsContextIssue,
+from fenrir_cloud.isms.models import (IsmsApplicability, IsmsDocument, IsmsDocumentOverride, IsmsDocumentVersion, IsmsEvidence, IsmsEvidenceLink, IsmsTask, IsmsApplicabilityOverride, IsmsAsset, IsmsContextIssue,
                                       IsmsEntity, IsmsInterestedParty, IsmsMembership, IsmsProfileAnswer, IsmsScope,
                                       IsmsRisk, IsmsRiskAcceptance, IsmsRiskControl, IsmsRiskMethod,
                                       IsmsRiskSnapshot, IsmsSite, IsmsTenantControl, IsmsTenantFramework)
@@ -48,6 +48,12 @@ FACTORIES: dict[type, callable] = {
     IsmsEvidence: lambda t: IsmsEvidence(tenant_id=t, title="Backup report", kind="note", note="x"),
     IsmsEvidenceLink: lambda t: IsmsEvidenceLink(tenant_id=t, evidence_id=f"iev_{t}", tenant_control_id=f"itc_{t}"),
     IsmsTask: lambda t: IsmsTask(tenant_id=t, kind="manual", title="Board review", due_on=date(2027, 1, 31)),
+    IsmsDocument: lambda t: IsmsDocument(tenant_id=t, doc_type="information-security-policy", title="Policy",
+                                         number=f"X-POL-{t}"),
+    IsmsDocumentVersion: lambda t: IsmsDocumentVersion(tenant_id=t, document_id=f"idc_{t}", version=1, template_ref="x",
+                                                       context_hash="0" * 64, blocks=[], html=""),
+    IsmsDocumentOverride: lambda t: IsmsDocumentOverride(tenant_id=t, document_id=f"idc_{t}", block_ref="isp.purpose",
+                                                         content="x"),
 }
 
 

@@ -327,3 +327,94 @@ class IsmsTask(_Row, Base):
     reminded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     overdue_notified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     escalated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+@tenant_table
+class IsmsDocument(_Row, Base):
+    """A controlled document: generated from a template, or imported from Fenrir's older Governance policies."""
+    __tablename__ = "isms_documents"
+    __table_args__ = (UniqueConstraint("tenant_id", "doc_type", name="uq_isms_document_type"),
+                      UniqueConstraint("tenant_id", "number", name="uq_isms_document_number"))
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("idc"))
+    doc_type: Mapped[str] = mapped_column(String(80))  # template doc_type, or imported-<id> for an imported policy
+    title: Mapped[str] = mapped_column(String(300))
+    number: Mapped[str] = mapped_column(String(40))
+    owner_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    owner_name: Mapped[str | None] = mapped_column(String(200), nullable=True)  # imported owners that are not users
+    review_months: Mapped[int] = mapped_column(Integer, default=12)
+    next_review: Mapped[date | None] = mapped_column(Date, nullable=True)
+    classification: Mapped[str] = mapped_column(String(20), default="Internal")
+    source: Mapped[str] = mapped_column(String(20), default="template")  # template | imported
+
+
+DOCUMENT_CONTENT_COLUMNS = ("document_id", "version", "template_ref", "context_hash", "blocks", "html", "docx_name",
+                            "pdf_name", "tenant_id")
+
+
+@tenant_table
+class IsmsDocumentVersion(_Row, Base):
+    """One version of a document. Its content is frozen once it leaves draft (see the guard below): regenerating
+    always makes a new draft and never touches an approved or published version."""
+    __tablename__ = "isms_document_versions"
+    __table_args__ = (UniqueConstraint("document_id", "version", name="uq_isms_document_version"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("idv"))
+    document_id: Mapped[str] = mapped_column(ForeignKey("isms_documents.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    state: Mapped[str] = mapped_column(String(20), default="draft")  # draft | in_review | approved | published | superseded | withdrawn
+    template_ref: Mapped[str] = mapped_column(String(120))
+    context_hash: Mapped[str] = mapped_column(String(64))
+    blocks: Mapped[list] = mapped_column(JSON)
+    html: Mapped[str] = mapped_column(Text)
+    docx_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pdf_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    final_docx_name: Mapped[str | None] = mapped_column(String(64), nullable=True)  # stamped with the approval
+    final_pdf_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pdf_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    change_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    submitted_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    approved_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    approved_by_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+@tenant_table
+class IsmsDocumentOverride(_Row, Base):
+    """The customer's own wording for one block of a document; it survives regeneration."""
+    __tablename__ = "isms_document_overrides"
+    __table_args__ = (UniqueConstraint("document_id", "block_ref", name="uq_isms_document_override"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("ido"))
+    document_id: Mapped[str] = mapped_column(ForeignKey("isms_documents.id"), index=True)
+    block_ref: Mapped[str] = mapped_column(String(120))
+    content: Mapped[str] = mapped_column(Text)
+
+
+class FrozenDocumentVersion(RuntimeError):
+    """An approved or published document version was about to be changed or deleted."""
+
+
+def _guard_versions(session, _flush_context, _instances) -> None:
+    from sqlalchemy import inspect as sa_inspect
+
+    for obj in list(session.dirty) + list(session.deleted):
+        if not isinstance(obj, IsmsDocumentVersion):
+            continue
+        state = sa_inspect(obj)
+        before = state.attrs.state.history
+        was = (before.deleted or [obj.state])[0] if before.has_changes() else obj.state
+        if was == "draft":
+            continue
+        if obj in session.deleted:
+            raise FrozenDocumentVersion("Document versions that have left draft cannot be deleted.")
+        changed = [c for c in DOCUMENT_CONTENT_COLUMNS if state.attrs[c].history.has_changes()]
+        if changed:
+            raise FrozenDocumentVersion(f"A {was} document version cannot be changed ({', '.join(changed)}).")
+
+
+from sqlalchemy import event as _event  # noqa: E402
+from sqlalchemy.orm import Session as _Session  # noqa: E402
+
+_event.listen(_Session, "before_flush", _guard_versions)

@@ -110,6 +110,16 @@ Readiness is the share of applicable requirements that are met, where a requirem
 - Completing a check records what was checked (a note, a piece of evidence, or both). People who do not run the programme see and complete only their own tasks.
 - Emails go out (through Fenrir's mail settings) when a task is due within 7 days and when it is overdue, and after 14 days overdue it is escalated to the customer's ISMS administrators and managers. Each happens once per task. Owners of controls are also emailed when evidence for them expires within 30 days.
 
+## ISMS documents
+
+**ISMS documents** lists the policies and procedures the ISMS needs, written from the customer's live data (scope, roles, risk method, controls, risks, Statement of Applicability and so on).
+
+- **Generate** makes a draft. A document is marked **out of date** when the data it uses has changed since its latest version; regenerating shows which sections would change. Sections switched off by the onboarding answers are left out (for example secure development when no software is developed).
+- Lifecycle: draft, in review, approved, published, then superseded by the next published version or withdrawn. ISMS managers send drafts for review; approvers and ISMS managers approve, publish and withdraw. Approval stamps the Word and PDF copies with the approver's name and date.
+- Approved and published versions never change: regenerating always makes a new draft, and the application refuses any edit to a version that has left draft.
+- **Use our own wording** replaces one section with the customer's text in every future version (placeholders such as `{{organization.legal_name}}` still work).
+- Staff, executives and auditors see only published versions. Every generation, step and download is recorded in the audit log.
+
 ## Organization, scope and assets
 
 These tabs need an ISMS role that can run the programme (ISMS manager or ISMS administrator).

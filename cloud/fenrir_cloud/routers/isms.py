@@ -824,3 +824,120 @@ def complete_task(task_id: str, body: TaskDone, principal: Principal = Depends(c
     isms_tasks.complete(db, row, principal.actor, principal.user.id, body.note, body.evidence_id)
     db.commit()
     return isms_tasks.task_rows(db, row.tenant_id, "all", task_id=row.id)[0]
+
+
+# Documents (Phase 3) --------------------------------------------------------------------------------------------
+
+@router.get("/documents")
+def list_documents(tenant_id: str, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    from ..isms import documents as isms_documents
+
+    role = require_isms(db, principal, tenant_id, "documents.view")
+    rows = isms_documents.document_rows(db, tenant_id)
+    if not (access.can(role, "documents.edit") or access.can(role, "documents.approve")):
+        rows = [{**r, "latest": r["published"], "outOfDate": False} for r in rows if r["published"]]
+    return {"documents": rows}
+
+
+class Generate(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    tenant_id: str = Field(alias="tenantId", min_length=1, max_length=32)
+    doc_type: str = Field(alias="docType", pattern=r"^[a-z0-9-]{1,80}$")
+    change_note: str | None = Field(default=None, alias="changeNote", max_length=2000)
+
+
+@router.post("/documents/generate")
+def generate_document(body: Generate, principal: Principal = Depends(current_principal),
+                      db: Session = Depends(isms_db)):
+    """A new draft from live data (an existing draft is rebuilt; approved versions are never touched)."""
+    from ..isms import documents as isms_documents
+
+    require_isms(db, principal, body.tenant_id, "documents.edit")
+    row = isms_documents.generate(db, body.tenant_id, principal.actor, principal.user.id, body.doc_type,
+                                  body.change_note)
+    db.commit()
+    return {"documentId": row.document_id, "versionId": row.id, "version": row.version}
+
+
+def _document(db: Session, principal: Principal, document_id: str):
+    from ..isms.models import IsmsDocument
+
+    return get_scoped(db, IsmsDocument, document_id, principal)
+
+
+@router.get("/documents/{document_id}")
+def get_document(document_id: str, version_id: str | None = None, principal: Principal = Depends(current_principal),
+                 db: Session = Depends(isms_db)):
+    from ..isms import documents as isms_documents
+
+    doc = _document(db, principal, document_id)
+    role = require_isms(db, principal, doc.tenant_id, "documents.view")
+    out = isms_documents.detail(db, doc.tenant_id, doc, version_id)
+    if not (access.can(role, "documents.edit") or access.can(role, "documents.approve")):
+        # Readers see published versions only.
+        published = [v for v in out["versions"] if v["state"] == "published"]
+        if out["viewing"] and out["viewing"]["state"] != "published":
+            out["html"], out["blocks"], out["viewing"] = "", [], None
+        out.update(versions=published, changes=[], overrides={}, templateBlocks=[])
+    return out
+
+
+@router.post("/documents/versions/{version_id}/{action}")
+def document_action(version_id: str, action: str, principal: Principal = Depends(current_principal),
+                    db: Session = Depends(isms_db)):
+    """submit, return, approve, publish or withdraw a version."""
+    from ..isms import documents as isms_documents
+    from ..isms.models import IsmsDocumentVersion
+
+    row = get_scoped(db, IsmsDocumentVersion, version_id, principal)
+    if action not in isms_documents.ACTION_PERMISSION:
+        raise HTTPException(404, "Unknown action")
+    require_isms(db, principal, row.tenant_id, isms_documents.ACTION_PERMISSION[action])
+    isms_documents.transition(db, row, action, principal.actor, principal.user)
+    db.commit()
+    return isms_documents._version(row)
+
+
+class Wording(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    tenant_id: str = Field(alias="tenantId", min_length=1, max_length=32)
+    doc_type: str = Field(alias="docType", pattern=r"^[a-z0-9-]{1,80}$")
+    block_ref: str = Field(alias="blockRef", max_length=120)
+    content: str | None = Field(default=None, max_length=20_000)
+
+
+@router.put("/documents/wording")
+def put_wording(body: Wording, principal: Principal = Depends(current_principal), db: Session = Depends(isms_db)):
+    """The customer's own wording for one section; it survives regeneration (empty removes it)."""
+    from ..isms import documents as isms_documents
+
+    require_isms(db, principal, body.tenant_id, "documents.edit")
+    isms_documents.set_override(db, body.tenant_id, principal.actor, body.doc_type, body.block_ref, body.content)
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/documents/versions/{version_id}/file")
+def document_file(version_id: str, format: str = "docx", principal: Principal = Depends(current_principal),
+                  db: Session = Depends(isms_db)):
+    """The Word or PDF file of a version (the approved copy once approved). Readers can download published versions
+    only. Every download is audited."""
+    from .. import audit
+    from ..isms import documents as isms_documents
+    from ..isms.models import IsmsDocument, IsmsDocumentVersion
+
+    row = get_scoped(db, IsmsDocumentVersion, version_id, principal)
+    role = require_isms(db, principal, row.tenant_id, "documents.view")
+    if row.state != "published" and not (access.can(role, "documents.edit") or access.can(role, "documents.approve")):
+        raise HTTPException(404, "Not found")
+    if format not in ("docx", "pdf"):
+        raise HTTPException(400, "format is docx or pdf")
+    data, _ = isms_documents.file_for(row, format)
+    doc = db.get(IsmsDocument, row.document_id)
+    audit.record(db, principal.actor, "isms.document_downloaded", f"{doc.number} v{row.version}", row.tenant_id,
+                 format=format)
+    db.commit()
+    media = ("application/pdf" if format == "pdf"
+             else "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    name = "".join(c if c.isalnum() or c in " ._-" else "_" for c in f"{doc.number} {doc.title} v{row.version}.{format}")
+    return Response(content=data, media_type=media, headers={"Content-Disposition": f'attachment; filename="{name}"'})

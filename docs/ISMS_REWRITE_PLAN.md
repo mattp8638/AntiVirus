@@ -61,6 +61,8 @@ Fenrir already has programmes (`grcprogramme.py`), a catalogue (`grccatalogue.py
 | R6 | Data in the standalone app | Demo only, so no import from a standalone database is needed |
 | R7 | How a Fenrir user gets an ISMS role (ISMS manager, approver, control owner, staff, auditor, executive) | A separate ISMS role per person per customer (option 2 below); nobody, MSP admins included, sees a customer's ISMS without one. Staff use the client portal. Roles are managed by Fenrir users with `grc` and by ISMS administrators |
 | R8 | Standalone plans and usage limits (`plans.ts`) | Not ported: Fenrir's own tenant plans and modules decide what a customer has |
+| R9 | The ten frameworks only Fenrir's Governance had (CE+, CIS IG1, Def Stan 05-138, DORA, EU GDPR, GovAssure, GovS 007, NIS 2, PCI DSS, SOC 2) | Converted to ISMS packs: identifiers and short titles, licence tagged, mapped through Fenrir's crosswalk plus hand mappings |
+| R10 | Existing Governance policies | Imported as ISMS documents, keeping every approved version, owner, review date and status |
 
 ### R7: ISMS roles for Fenrir users
 
@@ -93,8 +95,10 @@ Each phase is a set of small vertical slices: migration, domain logic, API, cons
    - Done: risk method (versioned), risk register with treating controls, owner acceptance and dated snapshots (migration 114), with the **ISMS risks** tab. Fixed on the way: the standalone app hid an acceptance made on the inherent score (a risk without a residual rating), because it compared it with the residual score only.
    - Done: evidence (migration 115): files stored encrypted and virus scanned with ClamAV, links, notes, validity and the evidenced control state, and Fenrir's automated GRC results imported hourly in process (FC-SDLC added to the standalone mapping; FC-RISK stays unmapped), with the **ISMS evidence** tab.
    - Done: tasks (migration 116): the generated task plan and recurring checks, manual tasks, completion with notes or evidence, reminders and escalation by email, evidence expiry emails to control owners, with the **ISMS tasks** tab (list and calendar).
-   - Next: moving existing Governance data into the new model (and removing the ISO requirement summaries), which completes Phase 2.
+   - Done: packs for the ten frameworks only Fenrir's Governance had (decision R9 below), converted by `scripts/isms/convert_fenrir_frameworks.py`.
+   - Next: moving existing Governance data into the new model, including importing policies as documents (decision R10), and removing the ISO requirement summaries.
 3. **Documents.** Templates, generation to Word and PDF, approval with immutable versions, acknowledgement.
+   - Done: the template engine (placeholders, Markdown subset, HTML, context hash, section changes) held to the standalone engine by the parity test on every shipped template; Word (python-docx) and PDF (fpdf2 with Fenrir's DejaVu fonts, so no Gotenberg service); documents, versions and the customer's wording (migration 117) with the lifecycle, frozen versions guarded in the application on both databases, and the **ISMS documents** tab. Acknowledgement campaigns come with the people module (Phase 4).
 4. **Management system.** People and training, internal audit, management review, improvement, objectives and metrics, ISMS change log.
 5. **Assurance and MSP.** Auditor portal, supplier and incident links, portfolio view across customers, template push, dashboards and digests.
 6. **Extra packs.** Privacy, business continuity, AI management.
